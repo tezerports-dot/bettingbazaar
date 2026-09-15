@@ -32,6 +32,23 @@
  * every call — no error, no failing test unless one happens to exercise that
  * exact field, and a 2FA recovery flow that silently has no codes.
  *
+ * ── And the schema's own second owners ─────────────────────────────────────
+ * `CREATE OR REPLACE FUNCTION f()` written twice in one file is not two rules —
+ * it is one rule, the last one, and everything the earlier copies say is text.
+ * `bb_forbid_order_mode_change()` was written THREE times: once for the rail,
+ * once for the USDT chain, once for the frozen quote. Each later copy restated
+ * the earlier branches, so it looked correct at every point in the file, and
+ * editing the first block changed nothing at all. The mutation that deletes the
+ * rail check from block one was reported as SURVIVED for exactly that reason —
+ * the third block put it straight back.
+ *
+ * Same shape for a trigger: `CREATE OR REPLACE TRIGGER t ON tbl` twice is one
+ * trigger, whichever body ran last.
+ *
+ * This is derive-don't-duplicate applied to SQL, and it is mechanical: the
+ * names are read out of the schema itself, so nothing here holds its own copy
+ * of what the schema defines.
+ *
  *   node scripts/verify-migration-coherence.mjs           summary
  *   node scripts/verify-migration-coherence.mjs --list    every finding
  */
@@ -120,11 +137,139 @@ for (const file of REPOS) {
   }
 }
 
+/**
+ * Objects the schema defines more than once.
+ *
+ * Only the LAST definition exists once the file has been applied, so every
+ * earlier one is a comment that reads like code. Counted by NAME, from the
+ * schema's own text — a duplicate is a name that appears in two `CREATE OR
+ * REPLACE` statements of the same kind.
+ *
+ * `CREATE TABLE IF NOT EXISTS` and `ALTER TABLE … ADD COLUMN IF NOT EXISTS` are
+ * deliberately not in scope: those are idempotent by design and repeat all over
+ * this file on purpose.
+ */
+function redefinitions() {
+  const found = new Map();
+  const patterns = [
+    ['function', /CREATE\s+OR\s+REPLACE\s+FUNCTION\s+([a-z_][a-z0-9_]*)\s*\(/gi],
+    ['trigger',  /CREATE\s+OR\s+REPLACE\s+TRIGGER\s+([a-z_][a-z0-9_]*)\s/gi],
+    ['view',     /CREATE\s+OR\s+REPLACE\s+VIEW\s+([a-z_][a-z0-9_]*)\s/gi],
+  ];
+  for (const [kind, re] of patterns) {
+    for (const m of SCHEMA.matchAll(re)) {
+      const key = `${kind} ${m[1]}`;
+      const line = SCHEMA.slice(0, m.index).split('\n').length;
+      found.set(key, [...(found.get(key) ?? []), line]);
+    }
+  }
+  return [...found.entries()]
+    .filter(([, lines]) => lines.length > 1)
+    .map(([name, lines]) => ({ name, lines }));
+}
+
+/**
+ * Columns an INSERT names that the table does not have.
+ *
+ * ── Why this is a separate check from the read gap above ────────────────────
+ * That one scans for `row.some_column` — names the code READS off a result. It
+ * says so itself, and it is per-NAME rather than per-table because a join makes
+ * the table ambiguous.
+ *
+ * An INSERT is the opposite case and the table is not ambiguous at all: the
+ * statement names it. And the failure mode is far louder — PostgreSQL refuses
+ * the whole statement, so the feature does not degrade, it throws.
+ *
+ * This was not checked, and the cost was measured rather than imagined:
+ * `createMerchantAccount` inserted `email` into `users` after `users.email` was
+ * removed with the player email (CLAUDE.md §2). Every merchant signup threw
+ * `column "email" of relation "users" does not exist`, was caught by the
+ * handler, and answered "Signup failed. Please try again." **No merchant could
+ * ever self-register**, on a check that reported the schema coherent, because
+ * nothing read `row.email` anywhere.
+ *
+ * Only literal column lists are examined — `INSERT INTO t (a, b, c)`. A
+ * dynamically built list is skipped rather than guessed at, and the skip is
+ * reported so the number is not mistaken for full coverage.
+ */
+function insertGaps() {
+  const out = [];
+  let skipped = 0;
+  for (const file of REPOS) {
+    const src = readFileSync(join(ROOT, file), 'utf8');
+    const lines = src.split('\n');
+    for (const m of src.matchAll(/INSERT\s+INTO\s+([a-z][a-z0-9_]*)\s*\(([^)]*)\)/gi)) {
+      const table = m[1].toLowerCase();
+      const cols = m[2].split(',').map((c) => c.trim().toLowerCase());
+      // A list built at runtime, or one carrying an expression, is not a
+      // literal column list. Say so rather than inventing a verdict for it.
+      if (cols.some((c) => !/^[a-z][a-z0-9_]*$/.test(c))) { skipped += 1; continue; }
+      const line = src.slice(0, m.index).split('\n').length;
+      for (const col of cols) {
+        if (tableColumns(table)?.has(col)) continue;
+        if (!tableColumns(table)) { skipped += 1; break; }   // table not in schema.sql
+        out.push({ file, line, table, col });
+      }
+    }
+  }
+  return { gaps: out, skipped };
+}
+
+/**
+ * The columns of ONE table — which the read check deliberately does not need,
+ * and this one does, because an INSERT names its table unambiguously.
+ */
+const TABLE_COLUMNS = (() => {
+  const byTable = new Map();
+  for (const m of SCHEMA.matchAll(/CREATE TABLE (?:IF NOT EXISTS )?([a-z][a-z0-9_]*)\s*\(([\s\S]*?)\n\);/g)) {
+    const cols = new Set();
+    for (const c of m[2].matchAll(/\n\s{2}([a-z][a-z0-9_]*)\s+(?:BIG)?[A-Z]/g)) cols.add(c[1]);
+    // A table written more than once in the file (CREATE + later ALTERs) keeps
+    // the union, not the last — an ALTER adds, it does not replace.
+    const prev = byTable.get(m[1]) ?? new Set();
+    byTable.set(m[1], new Set([...prev, ...cols]));
+  }
+  for (const m of SCHEMA.matchAll(/ALTER TABLE\s+([a-z][a-z0-9_]*)[\s\S]{0,200}?ADD COLUMN IF NOT EXISTS ([a-z][a-z0-9_]*)/g)) {
+    const set = byTable.get(m[1]) ?? new Set();
+    set.add(m[2]);
+    byTable.set(m[1], set);
+  }
+  return byTable;
+})();
+const tableColumns = (t) => TABLE_COLUMNS.get(t);
+
+const dupes = redefinitions();
+
+const inserts = insertGaps();
 const list = process.argv.includes('--list');
 console.log('\nMigration coherence — does every column the code names exist?\n');
 console.log(`  ${REPOS.length} repositories scanned`);
 console.log(`  ${COLUMNS.size} column names declared by the schema`);
-console.log(`  ${gaps.length} GAP    (a name read off a row with no column behind it)\n`);
+console.log(`  ${gaps.length} GAP    (a name read off a row with no column behind it)`);
+console.log(`  ${dupes.length} DOUBLE (a schema object defined more than once)`);
+console.log(`  ${inserts.gaps.length} INSERT (a column an INSERT names that its table does not have)`);
+console.log(`  ${inserts.skipped} insert lists skipped (built at runtime, or a table this file does not declare)\n`);
+
+if (dupes.length) {
+  console.log('DOUBLE — the schema defines this object more than once:');
+  for (const d of dupes) console.log(`  ${d.name}  at lines ${d.lines.join(', ')}`);
+  console.log('');
+  console.log('Only the LAST definition survives. Every earlier one is text that reads');
+  console.log('like code: edit it and nothing changes, and a check aimed at it measures');
+  console.log('nothing. Collapse them into one definition.\n');
+  process.exit(1);
+}
+
+if (inserts.gaps.length) {
+  console.log('INSERT — the statement names a column the table does not have:');
+  for (const g of inserts.gaps) console.log(`  ${g.file}:${g.line}  INSERT INTO ${g.table} (… ${g.col} …)`);
+  console.log('');
+  console.log('PostgreSQL refuses the whole statement, so this does not degrade — it');
+  console.log('throws, and whatever the handler answers is what the user is told. The');
+  console.log('merchant signup answered "Signup failed. Please try again." to every');
+  console.log('applicant, forever, on a green check.\n');
+  process.exit(1);
+}
 
 if (gaps.length) {
   console.log('GAP — the code reads a name the schema does not declare:');

@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file.
+// GOVERNANCE: Read CLAUDE.md before editing this file.
 /**
  * repositories/merchantWallets.js — a merchant's money, in the vocabulary the
  * merchant domain calls it by.
@@ -23,7 +23,9 @@
  */
 import { paiseToRupees, rupeesToPaise } from '../../backend/shared/money.js';
 import { moneyOperations } from '../../backend/services/metrics.service.js';
-import { POCKETS, applyMerchantMovement, getMerchantBalances } from './merchantWallets.core.js';
+import {
+  POCKETS, applyMerchantMovement, getMerchantBalances, getSpendablePaiseFor,
+} from './merchantWallets.core.js';
 import { getMerchant } from './merchants.js';
 import { MONEY_PATHS } from '../moneyPaths.js';
 import { pgQuery } from '../client.js';
@@ -199,6 +201,27 @@ export async function getMerchantWalletLedger(merchantId, { page = 1, limit = 50
 
 export async function getMerchantTokenBalance(merchantId) {
   return spendable(await getMerchantBalances(merchantId));
+}
+
+/**
+ * What this merchant can take on RIGHT NOW, in rupees — their available pocket
+ * minus the buy orders they are already serving.
+ *
+ * `getMerchantTokenBalance` answers "what do they hold", which is the right
+ * question for a display and the WRONG one for admission: a merchant holding
+ * 10,000 tokens who has already accepted an 8,000 buy order still reads 10,000
+ * there, and the next order they are handed cannot be funded. See F-018 and
+ * `getSpendablePaiseFor`, which is the one owner of the subtraction.
+ *
+ * Single-merchant convenience over the batched read, so there is exactly one
+ * place the committing states are named.
+ */
+export async function getMerchantSpendableTokens(merchantId, { excludeOrderId = null } = {}) {
+  const row = (await getSpendablePaiseFor([merchantId], { excludeOrderId })).get(String(merchantId));
+  // No wallet row is not a zero balance — the money system has never seen this
+  // merchant. Callers gating an assignment must refuse either way, and 0 is
+  // what every one of them already refuses on.
+  return paiseToRupees(row?.spendable ?? 0);
 }
 
 /**

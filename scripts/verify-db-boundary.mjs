@@ -43,6 +43,7 @@ const SQL_EXEMPT = new Map([
   // enforcement tooling for the boundary, not code that crosses it.
   ['scripts/mutation-check.mjs', 'quotes repository SQL as mutation text; executes none of it'],
   ['scripts/verify-migration-coherence.mjs', 'parses schema.sql as text to find missing columns'],
+  ['scripts/verify-payment-references.mjs', 'names the write patterns it forbids: it refuses a SECOND payment-reference registry, and cannot look for one without saying what a write to one looks like'],
 ]);
 
 function walk(dir, acc = []) {

@@ -1,0 +1,786 @@
+<!--
+  OPERATIONS_MAP.html — every workflow across the three panels, and what each
+  branch decides.
+
+  GOVERNANCE: this file holds DATA AND HISTORY, never rules. Where it disagrees
+  with CLAUDE.md, CLAUDE.md wins and this file is wrong and must be corrected.
+
+  Committed rather than left in a session scratchpad because §17.4 requires it:
+  a session container is ephemeral and the repository is the only durable
+  medium — a rule this project has already had broken twice.
+
+  Route, job, event and state counts are MACHINE-DERIVED, not written from
+  memory. Regenerate the underlying numbers with `npm run audit:map` and the
+  extraction in the session that produced this; anything that has drifted is a
+  correction to make here, not a reason to trust the old figure.
+
+  It is a READING of the code, and §0.5 of docs/audit/SECURITY_AUDIT_MAP.md
+  records that reading is exactly what missed every serious defect in the
+  register until somebody asked a harder question. Bring the four questions to
+  any flow in here.
+-->
+<title>BettingBazaar Operations Map</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Source+Sans+3:ital,wght@0,400;0,600;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+:root{
+  --ink:#14181d; --ink-2:#2b333c; --mid:#5d6975; --faint:#8a95a1;
+  --ground:#f6f7f8; --panel:#ffffff; --rule:#dfe3e7; --rule-2:#eceff2;
+  --signal:#c2410c; --signal-soft:#fdf1ea;
+  --moved:#0f7355; --moved-soft:#e8f4ef;
+  --waiting:#8a6100; --waiting-soft:#fbf3e2;
+  --refused:#a8203a; --refused-soft:#fceff1;
+  --code-bg:#eef1f4;
+  --display:'Archivo',system-ui,sans-serif;
+  --body:'Source Sans 3',system-ui,sans-serif;
+  --mono:'JetBrains Mono',ui-monospace,monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --ink:#e8ecf0; --ink-2:#c3ccd5; --mid:#8d98a4; --faint:#69737e;
+  --ground:#10141a; --panel:#171d25; --rule:#2a323c; --rule-2:#212832;
+  --signal:#f97e3f; --signal-soft:#2a1a12;
+  --moved:#4ec49b; --moved-soft:#122620;
+  --waiting:#d9a72b; --waiting-soft:#251e0d;
+  --refused:#f0748c; --refused-soft:#2a141a;
+  --code-bg:#1e252e;
+}}
+:root[data-theme="dark"]{
+  --ink:#e8ecf0; --ink-2:#c3ccd5; --mid:#8d98a4; --faint:#69737e;
+  --ground:#10141a; --panel:#171d25; --rule:#2a323c; --rule-2:#212832;
+  --signal:#f97e3f; --signal-soft:#2a1a12;
+  --moved:#4ec49b; --moved-soft:#122620;
+  --waiting:#d9a72b; --waiting-soft:#251e0d;
+  --refused:#f0748c; --refused-soft:#2a141a;
+  --code-bg:#1e252e;
+}
+*{box-sizing:border-box}
+body{background:var(--ground);color:var(--ink);font-family:var(--body);font-size:16px;line-height:1.6;margin:0}
+.wrap{max-width:1120px;margin:0 auto;padding:0 20px;padding-block:0 72px}
+code,.mono{font-family:var(--mono);font-size:.86em}
+code{background:var(--code-bg);padding:.1em .38em;border-radius:3px;color:var(--ink-2);word-break:break-word}
+h1,h2,h3,h4{font-family:var(--display);text-wrap:balance;line-height:1.18;margin:0}
+a{color:var(--signal)}
+.eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint)}
+
+/* masthead */
+header.top{border-bottom:2px solid var(--ink);padding-block:44px 22px;margin-bottom:8px}
+header.top h1{font-size:clamp(30px,5.2vw,50px);font-weight:700;letter-spacing:-.02em}
+header.top .sub{color:var(--mid);max-width:62ch;margin-top:12px;font-size:17px}
+.meta{display:flex;flex-wrap:wrap;gap:8px 26px;margin-top:20px;font-family:var(--mono);font-size:11.5px;color:var(--faint)}
+.meta b{color:var(--ink-2);font-weight:600}
+
+/* how to read */
+.legend{background:var(--panel);border:1px solid var(--rule);border-radius:5px;padding:20px 22px;margin-block:28px}
+.legend h3{font-size:14px;text-transform:uppercase;letter-spacing:.1em;color:var(--mid);margin-bottom:14px}
+.legend-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px 26px}
+.legend-grid p{margin:0;font-size:14.5px;color:var(--ink-2)}
+.chip{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.06em;padding:.18em .5em;border-radius:3px;vertical-align:1px}
+.chip.moved{background:var(--moved-soft);color:var(--moved)}
+.chip.waiting{background:var(--waiting-soft);color:var(--waiting)}
+.chip.refused{background:var(--refused-soft);color:var(--refused)}
+.chip.defect{background:var(--signal-soft);color:var(--signal);font-weight:600}
+
+/* nav */
+nav.toc{position:sticky;top:0;z-index:5;background:var(--ground);border-bottom:1px solid var(--rule);padding-block:11px;margin-bottom:34px}
+nav.toc ul{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:6px 18px}
+nav.toc a{font-family:var(--mono);font-size:11.5px;letter-spacing:.05em;text-decoration:none;color:var(--mid);text-transform:uppercase}
+nav.toc a:hover,nav.toc a:focus-visible{color:var(--signal)}
+
+/* sections */
+section{margin-block:52px;scroll-margin-top:58px}
+section > h2{font-size:clamp(21px,3vw,28px);font-weight:700;letter-spacing:-.01em;padding-bottom:9px;border-bottom:1px solid var(--ink);margin-bottom:8px}
+section > .intro{color:var(--mid);max-width:70ch;margin-block:12px 26px}
+
+.flow{background:var(--panel);border:1px solid var(--rule);border-radius:5px;margin-block:26px;overflow:hidden}
+.flow > header{padding:16px 20px;border-bottom:1px solid var(--rule-2);display:flex;flex-wrap:wrap;gap:6px 16px;align-items:baseline}
+.flow > header h3{font-size:18px;font-weight:600}
+.flow > header .who{font-family:var(--mono);font-size:11px;color:var(--faint);letter-spacing:.05em}
+.flow .body{padding:18px 20px 22px}
+.flow p{margin:0 0 12px;color:var(--ink-2);font-size:15px}
+.flow p:last-child{margin-bottom:0}
+
+pre.mermaid{background:transparent;margin:18px 0;text-align:center;overflow-x:auto}
+
+table{width:100%;border-collapse:collapse;font-size:14px;margin-block:16px}
+.scroll{overflow-x:auto;margin-block:16px}
+.scroll table{margin:0}
+th{font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);text-align:left;font-weight:600;padding:7px 12px 7px 0;border-bottom:1px solid var(--rule);white-space:nowrap}
+td{padding:9px 12px 9px 0;border-bottom:1px solid var(--rule-2);vertical-align:top;color:var(--ink-2)}
+td:first-child{color:var(--ink);font-weight:600}
+tr:last-child td{border-bottom:none}
+
+.note{border-left:3px solid var(--signal);background:var(--signal-soft);padding:13px 16px;margin-block:18px;border-radius:0 4px 4px 0}
+.note p{margin:0;font-size:14.5px;color:var(--ink-2)}
+.note .tag{font-family:var(--mono);font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--signal);font-weight:600;display:block;margin-bottom:5px}
+.note.ok{border-color:var(--moved);background:var(--moved-soft)}
+.note.ok .tag{color:var(--moved)}
+
+ul.tight{margin:10px 0;padding-left:20px}
+ul.tight li{margin-bottom:6px;color:var(--ink-2);font-size:14.5px}
+
+footer.end{border-top:2px solid var(--ink);margin-top:60px;padding-top:20px;color:var(--faint);font-size:13.5px}
+@media(max-width:640px){
+  .wrap{padding:0 16px;padding-block:0 48px}
+  nav.toc ul{gap:5px 13px}
+}
+</style>
+
+<div class="wrap">
+
+<header class="top">
+  <p class="eyebrow">Derived from source · 2026-09-10</p>
+  <h1>BettingBazaar Operations Map</h1>
+  <p class="sub">Every workflow across the three panels, what each branch decides, and what the row
+  says afterwards — so a path can be checked by reading rather than by running it.</p>
+  <div class="meta">
+    <span><b>304</b> routes</span>
+    <span><b>11</b> scheduled jobs</span>
+    <span><b>36</b> realtime events</span>
+    <span><b>2</b> settlement rails</span>
+    <span><b>9</b> order states</span>
+    <span><b>65</b> panel screens</span>
+  </div>
+</header>
+
+<div class="legend">
+  <h3>How to read this</h3>
+  <div class="legend-grid">
+    <p><span class="chip moved">MONEY MOVED</span> a balance changed and a ledger row exists.</p>
+    <p><span class="chip waiting">WAITING</span> the row is parked; something else must act.</p>
+    <p><span class="chip refused">REFUSED</span> nothing moved; the caller was told why.</p>
+    <p><span class="chip defect">F-0NN</span> a recorded defect on this path. See the audit register.</p>
+  </div>
+  <p style="margin:16px 0 0;font-size:14.5px;color:var(--ink-2)">
+    Every route, guard, job name and state below was extracted from the code, not written from
+    memory. Where a flow has a known defect it is marked in place rather than described as working.
+    <b>Where something was not verified, it says so.</b>
+  </p>
+</div>
+
+<nav class="toc" aria-label="Sections">
+  <ul>
+    <li><a href="#topology">Topology</a></li>
+    <li><a href="#states">Order states</a></li>
+    <li><a href="#player">Player</a></li>
+    <li><a href="#merchant">Merchant</a></li>
+    <li><a href="#admin">Admin</a></li>
+    <li><a href="#cross">Cross-panel</a></li>
+    <li><a href="#background">Background</a></li>
+    <li><a href="#defects">Open defects</a></li>
+  </ul>
+</nav>
+
+<section id="topology">
+<h2>Topology</h2>
+<p class="intro">One backend, three panels, one database. Everything shared reaches a panel through
+the API or the realtime stream — never through a file copied between panels.</p>
+
+<pre class="mermaid">
+flowchart LR
+  U["User panel<br/>19 screens"] --> API
+  M["Merchant panel<br/>SPA, ROUTES const"] --> API
+  A["Admin panel<br/>45 screens"] --> API
+  TG["Telegram bots<br/>sign-in + recovery"] --> API
+  API["Express<br/>304 routes"] --> PG[("PostgreSQL<br/>the only datastore")]
+  API -.optional.-> RD[("Redis<br/>rate limits · jobs · bridge")]
+  API --> SIO["socket.io<br/>public"]
+  API --> SSE["SSE<br/>authenticated"]
+  SIO --> U
+  SSE --> M
+  SSE --> A
+</pre>
+
+<div class="scroll"><table>
+<tr><th>Mount</th><th>Serves</th><th>Gate at the door</th></tr>
+<tr><td><code>/api/</code></td><td>everything</td><td>1000 req / 15 min per IP, then <code>owaspFilter</code></td></tr>
+<tr><td><code>/api/v1/auth</code></td><td>player auth</td><td><code>authLimiter</code> + subnet limiter + surge breaker</td></tr>
+<tr><td><code>/api/merchant/auth/login</code></td><td>merchant login</td><td>pace limiter + captcha</td></tr>
+<tr><td><code>/api/admin</code></td><td>13 sub-routers</td><td><code>authenticate</code> then <code>isAdmin</code> / <code>isAdminOrSubAdmin</code></td></tr>
+<tr><td><code>/api/payment</code></td><td>orders, both rails</td><td><code>authenticate</code> + KYC gate + <code>orderAccessGuard</code></td></tr>
+<tr><td><code>/api/merchant</code></td><td>merchant panel</td><td><code>merchantAuth</code></td></tr>
+<tr><td><code>/api/telegram</code></td><td>bot webhooks</td><td>per-bot secret header, not a session</td></tr>
+</table></div>
+
+<p style="font-size:14.5px;color:var(--mid)"><b>Guard frequency across all 304 routes:</b>
+<code>authenticate</code> 227 · <code>isAdmin</code> 117 · <code>isAdminOrSubAdmin</code> 44 ·
+<code>merchantAuth</code> 28 · <code>hasPermission</code> 15 · <code>orderAccessGuard</code> 9.</p>
+</section>
+
+<section id="states">
+<h2>The order state machine</h2>
+<p class="intro">Nine states, enforced by a CHECK constraint. Every transition is a guarded UPDATE —
+the state it expects is in the WHERE clause, so two callers racing produce one winner and one
+<span class="chip refused">REFUSED</span>, never two.</p>
+
+<pre class="mermaid">
+stateDiagram-v2
+  [*] --> PENDING_QUEUE: player creates
+  PENDING_QUEUE --> ASSIGNED: auto-assign / admin / merchant accepts
+  PENDING_QUEUE --> CANCELLED: expiry cron
+  ASSIGNED --> PROCESSING: merchant starts
+  ASSIGNED --> CANCELLED: expiry / merchant rejects
+  PROCESSING --> PAID: player submits UTR (deposit)
+  PROCESSING --> PAID: merchant asserts sent (withdrawal)
+  PROCESSING --> CANCELLED: expiry
+  PAID --> COMPLETED: money moves, then this
+  PAID --> DISPUTED: player disputes
+  PROCESSING --> DISPUTED: merchant disputes
+  COMPLETED --> DISPUTED: merchant only
+  DISPUTED --> COMPLETED: admin releases
+  DISPUTED --> CANCELLED: admin refunds
+  COMPLETED --> [*]
+  CANCELLED --> [*]
+</pre>
+
+<div class="note">
+  <span class="tag">Asymmetry worth knowing</span>
+  <p>A <b>merchant</b> may dispute from <code>PROCESSING</code>, <code>PAID</code> or
+  <code>COMPLETED</code>. A <b>player</b> may dispute only from <code>PAID</code> —
+  <code>if (order.status !== 'PAID') return 400</code>. So any bug that moves an order out of
+  <code>PAID</code> without paying the player also removes their only recourse. That is exactly
+  what F-017 was.</p>
+</div>
+
+<div class="note ok">
+  <span class="tag">The ordering rule, now uniform</span>
+  <p><b>Money moves before the status does</b>, on every deposit path. Each movement is keyed on the
+  order id, so a refusal or a crash leaves a <code>PAID</code> order the next attempt replays as
+  no-ops — retryable, and still disputable. The reverse ordering shipped four times in this
+  codebase before it was made uniform.</p>
+</div>
+</section>
+
+<section id="player">
+<h2>Player workflows</h2>
+<p class="intro">The player never sees who they are paying — a payment link, an opaque
+<code>Merchant #ref</code>, a deadline. Everything below is what they can actually reach.</p>
+
+<div class="flow">
+  <header><h3>Signing up</h3><span class="who">Telegram bot → no password, no email</span></header>
+  <div class="body">
+  <p>There is <b>no player email anywhere on this platform</b> and the bot never asks for one.
+  Identity is a mobile number plus a 12-digit Aadhaar held as an HMAC and AES-256-GCM ciphertext.
+  No document is ever collected.</p>
+  <pre class="mermaid">
+flowchart TD
+  S["/start in the bot"] --> C{"Shares contact?"}
+  C -->|No| X1["Cannot proceed<br/>the number must be theirs"]
+  C -->|Yes| P{"Number already linked?"}
+  P -->|Yes| L["Sign in instead"]
+  P -->|No| K["Asks for 12-digit Aadhaar"]
+  K --> H{"Valid + unique?"}
+  H -->|"Duplicate hash"| X2["Refused — one Aadhaar, one account"]
+  H -->|"Typo / invalid"| X3["Row DELETED, may retry<br/>up to MAX_KYC_SUBMISSIONS"]
+  H -->|Yes| A["Account created<br/>KYC = PENDING_APPROVAL"]
+  A --> D["Can DEPOSIT immediately"]
+  A --> W["Cannot WITHDRAW<br/>needs APPROVED"]
+  </pre>
+  <div class="scroll"><table>
+  <tr><th>KYC state</th><th>Deposit</th><th>Withdraw</th><th>Bet</th></tr>
+  <tr><td><code>PENDING_APPROVAL</code></td><td><span class="chip moved">yes</span></td><td>no</td><td>yes</td></tr>
+  <tr><td><code>APPROVED</code></td><td>yes</td><td><span class="chip moved">yes</span></td><td>yes</td></tr>
+  <tr><td><code>REJECTED</code></td><td>no</td><td>no</td><td>—</td></tr>
+  </table></div>
+  <p><b>An APPROVED Aadhaar is immutable.</b> A REJECTED one can be replaced through the bot. A
+  FAILED submission's row is deleted on purpose: <code>aadhaar_hash</code> is unique, so a typo
+  would otherwise park a stranger's Aadhaar in that index and lock its real owner out permanently.</p>
+  </div>
+</div>
+
+<div class="flow">
+  <header><h3>Deposit — the branch that decides everything</h3><span class="who">POST /api/payment/deposit/create</span></header>
+  <div class="body">
+  <p>The <b>live rail</b> decides which form the player sees. The order then carries its own copy of
+  that rail forever, so an admin switching rails mid-flight never changes the rules of an order
+  already created.</p>
+  <pre class="mermaid">
+flowchart TD
+  B["Player taps Add funds"] --> G1{"KYC linked?"}
+  G1 -->|No| R1["Refused"]
+  G1 -->|Yes| G2{"In the Telegram channel?"}
+  G2 -->|No| R2["Refused — channel membership"]
+  G2 -->|Yes| G3{"Rate limit<br/>admin-set per minute"}
+  G3 -->|Over| R3["429"]
+  G3 -->|OK| G4{"Velocity<br/>maxFundingOrdersPerHour"}
+  G4 -->|Over| R4["429 VELOCITY_LIMIT"]
+  G4 -->|OK| G5{"Already an open buy?"}
+  G5 -->|Yes| R5["409 BUY_ALREADY_OPEN"]
+  G5 -->|No| G6{"Open withdrawal?"}
+  G6 -->|Yes| R6["400 OPPOSITE_SIDE_BLOCKED"]
+  G6 -->|No| RAIL{"Which rail is live?"}
+  RAIL -->|P2P_UPI| UPI["Any amount in range"]
+  RAIL -->|CASH_ATM| CASH{"Denomination + ceiling"}
+  RAIL -->|USDT| USDT{"50k / 100k / 500k tokens"}
+  CASH -->|"Not a denomination"| R7["400 NOT_A_DENOMINATION"]
+  CASH -->|"Over ₹10,000"| R8["400 CASH_BUY_CEILING"]
+  USDT -->|"Rate unset"| R9["503 USDT_RATE_UNSET"]
+  UPI --> Q["Order PENDING_QUEUE"]
+  CASH --> Q
+  USDT --> Q
+  Q --> ASG["Auto-assignment"]
+  </pre>
+  <div class="scroll"><table>
+  <tr><th>Rail</th><th>Amounts</th><th>What the player is given</th><th>Their next step</th></tr>
+  <tr><td><code>P2P_UPI</code></td><td>configured min–max</td><td>a dynamic <code>upi://pay</code> intent with the amount already in it</td><td>tap it, pay, submit the UTR</td></tr>
+  <tr><td><code>CASH_ATM</code></td><td>fixed denominations, ≤ ₹10,000</td><td>an ATM cash link supplied by a merchant</td><td>draw the cash, confirm</td></tr>
+  <tr><td>USDT</td><td>50,000 / 100,000 / 500,000 tokens</td><td>the merchant's address <b>for the chain they chose</b></td><td>send, submit the tx hash</td></tr>
+  </table></div>
+  <div class="note">
+    <span class="tag">Why the ceilings exist</span>
+    <p>₹10,000 is the most a cash machine dispenses in one go and ₹40,000 the largest denomination
+    it handles — so they bound the <b>CASH_ATM</b> rail and one payout leg. Neither applies on UPI
+    and neither applies to USDT. They were once enforced on every INR buy: a machine's limit applied
+    where there is no machine.</p>
+  </div>
+  </div>
+</div>
+
+<div class="flow">
+  <header><h3>Deposit — after the player pays</h3><span class="who">the part that moves money</span></header>
+  <div class="body">
+  <pre class="mermaid">
+flowchart TD
+  P["Player submits UTR"] --> CL{"UTR already claimed?"}
+  CL -->|Yes| RJ["409 — one payment, one claim"]
+  CL -->|No| PAID["Order PAID<br/>player's money is gone"]
+  PAID --> MC["Merchant presses Confirm"]
+  MC --> D{"Merchant funded?"}
+  D -->|"No — F-018"| NF["REFUSED · order stays PAID<br/>operator alerted, player notified<br/>still retryable, still disputable"]
+  D -->|Yes| MOV["Debit merchant<br/>credit player deposit + reserve<br/>release the UTR"]
+  MOV --> DONE["Order COMPLETED"]
+  PAID -->|"10 min, no confirm"| DIS["Player may dispute"]
+  DIS --> ADM["Admin queue"]
+  </pre>
+  <div class="note">
+    <span class="tag">F-018 · open · the root cause</span>
+    <p>Reaching the <i>merchant not funded</i> branch at all should be impossible. Eligibility
+    <b>is</b> checked on all three assignment paths — but it is a snapshot, not a hold. The tokens
+    stay spendable, so between assignment and confirmation they can go to another deposit, a
+    withdrawal payout or an admin deduction. The wallet already has
+    <code>reserveForSettlement</code> / <code>completeReservation</code> /
+    <code>cancelReservation</code> to hold them. <b>Nothing calls them.</b></p>
+  </div>
+  </div>
+</div>
+
+<div class="flow">
+  <header><h3>Withdrawal</h3><span class="who">stricter than a deposit at every step</span></header>
+  <div class="body">
+  <pre class="mermaid">
+flowchart TD
+  W["Player requests withdrawal"] --> K{"KYC APPROVED?"}
+  K -->|No| R1["Refused"]
+  K -->|Yes| BK{"Bank details on file?"}
+  BK -->|No| R2["Add account first"]
+  BK -->|Yes| BL{"Blocked?"}
+  BL -->|Yes| R3["Refused"]
+  BL -->|No| BAL{"Affordable?<br/>read from the rows the write locks"}
+  BAL -->|No| R4["400 with the real balance"]
+  BAL -->|Yes| ESC["Stake LOCKED in escrow<br/>order PENDING_QUEUE"]
+  ESC --> ASG["Assigned to a merchant"]
+  ASG --> MP["Merchant asserts they sent it"]
+  MP --> HOLD["Order PAID + hold<br/>~60 min, admin-set"]
+  HOLD --> CRON["withdrawal-hold-settle<br/>every 60s"]
+  CRON --> SET["Stake consumed<br/>merchant credited"]
+  HOLD -->|"Player disputes in the window"| DSP["Reversal, not clawback"]
+  ESC -->|"Nobody takes it"| EXP["expiry cron → escrow REFUNDED"]
+  </pre>
+  <p><b>The hold is the whole design.</b> The merchant asserting payment settles nothing. Until the
+  window passes neither side has moved, so a dispute is a <i>reversal</i> rather than a clawback.
+  This branch previously consumed the stake and credited the merchant in the same request — a
+  merchant who pressed confirm without sending money held spendable tokens instantly.</p>
+  <p>A withdrawal larger than one payout leg is <b>split</b>, never refused. The siblings share a
+  <code>withdrawal_batch_ref</code>, which two admin screens read.</p>
+  </div>
+</div>
+
+<div class="flow">
+  <header><h3>Placing a bet, and getting paid</h3><span class="who">POST /api/bet · settlement is a cron tick</span></header>
+  <div class="body">
+  <pre class="mermaid">
+flowchart TD
+  B["Player places a bet"] --> IK{"Idempotency-Key present?"}
+  IK -->|No| R0["400 — say which request this is"]
+  IK -->|Yes| RP{"Already seen this key?"}
+  RP -->|Yes| SAME["Returns the SAME bet<br/>no second stake move"]
+  RP -->|No| PH{"Cycle still OPEN?"}
+  PH -->|No| R1["Betting closed"]
+  PH -->|Yes| LIM{"Within betLimits for this type?"}
+  LIM -->|No| R2["Refused with this board's own limits"]
+  LIM -->|Yes| AFF{"Affordable?"}
+  AFF -->|No| R3["Refused"]
+  AFF -->|Yes| LK["Stake LOCKED · bet written"]
+  LK --> CY["Cycle runs its phases"]
+  CY --> DEC["Winner written FIRST, then status"]
+  DEC --> STL["Settlement credits winners"]
+  </pre>
+  <div class="note">
+    <span class="tag">Two traps this path already paid for</span>
+    <p><b>The winner is written before the status</b>, and a cycle with no winner is never offered
+    for settlement — otherwise the engine looks healthy and silently never settles.
+    And the payout figure is <code>net</code>: the function returns
+    <code>{gross, fee, net}</code> and has <b>no <code>payout</code> key</b>, so
+    <code>p?.payout ?? 0</code> pays zero while still charging the fee.</p>
+  </div>
+  <p>Real pool totals are derived from the bets table and never stored on the cycle row — a bet
+  holds a share lock there, so a bet that also updated it would deadlock against another bet.</p>
+  </div>
+</div>
+</section>
+
+<section id="merchant">
+<h2>Merchant workflows</h2>
+<p class="intro">A merchant settles on exactly one rail — INR or USDT, never both — and sees the
+payout account and the name on it, and nothing else that identifies the player.</p>
+
+<div class="flow">
+  <header><h3>How an order reaches a merchant</h3><span class="who">three doors, one eligibility rule</span></header>
+  <div class="body">
+  <pre class="mermaid">
+flowchart TD
+  Q["Order PENDING_QUEUE"] --> AUTO["Automatic assignment"]
+  AUTO --> F1{"ACTIVE · APPROVED · online?"}
+  F1 -->|No| SKIP1["Not a candidate"]
+  F1 -->|Yes| F2{"Accepts this direction?"}
+  F2 -->|No| SKIP2["Not a candidate"]
+  F2 -->|Yes| F3{"Same rail as the order?"}
+  F3 -->|No| SKIP3["Not a candidate"]
+  F3 -->|Yes| F4{"USDT: address on THIS chain?"}
+  F4 -->|No| SKIP4["Not a candidate"]
+  F4 -->|Yes| F5{"Token balance covers it?"}
+  F5 -->|No| SKIP5["Excluded by scoring"]
+  F5 -->|Yes| F6{"Under maxConcurrent<br/>default 1"}
+  F6 -->|No| SKIP6["At capacity"]
+  F6 -->|Yes| SC["Scored · best wins"]
+  SC --> ASN["ASSIGNED + snapshot frozen"]
+  Q --> POOL["Merchant claims from the open pool"]
+  POOL --> SAME["Same rail, chain and balance checks"]
+  Q --> ADM["Admin assigns or reassigns"]
+  ADM --> INV["inventoryRefusal()"]
+  </pre>
+  <div class="note">
+    <span class="tag">F-018 · this is where it bites</span>
+    <p>All three doors check the balance and <b>none of them holds it.</b> The check is true at the
+    moment it is made and nothing keeps it true until the merchant confirms.</p>
+  </div>
+  <p><b>What freezes at assignment</b> and can never be re-decided later: the USDT chain, the quote
+  (<code>rate_used</code> and <code>fiat_amount_paise</code>), and the rail the order runs under —
+  all by database trigger. Assignment used to re-read the USDT rate, so an admin edit in between
+  silently re-priced a purchase the player had already agreed to.</p>
+  </div>
+</div>
+
+<div class="flow">
+  <header><h3>The Confirm button — every branch</h3><span class="who">POST /api/merchant/confirm/:id</span></header>
+  <div class="body">
+  <p>One button, two entirely different workflows underneath, decided by the order's own type.</p>
+  <pre class="mermaid">
+flowchart TD
+  C["Confirm"] --> T{"Order type?"}
+  T -->|DEPOSIT| D1{"Bank reference supplied?"}
+  D1 -->|No / too short| DR1["400 — UTR required"]
+  D1 -->|Yes| D2{"Proof on the order or supplied?"}
+  D2 -->|No| DR2["400 — proof required"]
+  D2 -->|Yes| D3{"Merchant funded?"}
+  D3 -->|No| DR3["REFUSED · order stays PAID<br/>alert + player notified"]
+  D3 -->|Yes| D4["Debit merchant → credit player → release UTR"]
+  D4 --> D5["Order COMPLETED"]
+  T -->|WITHDRAWAL| W1{"Hold configured?"}
+  W1 -->|"> 0"| W2["Order PAID · credit HELD<br/>nothing settles yet"]
+  W1 -->|"0"| W3["Completes inline"]
+  W2 --> W4["hold window"]
+  W4 --> W5["Cron settles it later"]
+  </pre>
+  <div class="scroll"><table>
+  <tr><th>Situation</th><th>Order after</th><th>Merchant</th><th>Player</th><th>Recourse</th></tr>
+  <tr><td>Deposit, funded</td><td><code>COMPLETED</code></td><td>debited</td><td>credited</td><td>—</td></tr>
+  <tr><td>Deposit, not funded</td><td><span class="chip waiting">PAID</span></td><td>untouched</td><td>untouched, notified</td><td>retry or dispute</td></tr>
+  <tr><td>Deposit, double-tap</td><td><code>COMPLETED</code></td><td>debited <b>once</b></td><td>credited <b>once</b></td><td>—</td></tr>
+  <tr><td>Withdrawal, hold on</td><td><span class="chip waiting">PAID</span></td><td>credit <code>HELD</code></td><td>stake still locked</td><td>dispute reverses</td></tr>
+  <tr><td>Withdrawal, hold off</td><td><code>COMPLETED</code></td><td>credited</td><td>stake consumed</td><td>dispute is a clawback</td></tr>
+  </table></div>
+  </div>
+</div>
+
+<div class="flow">
+  <header><h3>Rejecting, and the cash rail's own screens</h3><span class="who">the paths that only exist on one rail</span></header>
+  <div class="body">
+  <pre class="mermaid">
+flowchart LR
+  subgraph BOTH["Either rail"]
+    RJ["Reject before payment"] --> Q["Back to the queue"]
+    RJP["Reject after the player says they paid"] --> P1{"Reason ≥ 10 chars<br/>+ proof image?"}
+    P1 -->|No| P2["Refused"]
+    P1 -->|Yes| P3["Cancelled · player warned<br/>may auto-block"]
+  end
+  subgraph CASH["CASH_ATM only"]
+    CL["Supply cash links"] --> CV{"Valid upi:// intent?"}
+    CV -->|No| CR["Refused"]
+    CV -->|Yes| CQ["Pool · matcher every 15s"]
+    CQ --> CE["Sweeper every 20s expires stale"]
+    CDM["CDM receipt on a payout"] --> CC{"Reference already claimed?"}
+    CC -->|Yes| CX["409 — same registry as a UTR"]
+    CC -->|No| CK["Attached to THIS payout only"]
+  end
+  </pre>
+  <p>The merchant's rejection proof is <b>never shown to the player</b> — it can be a bank statement
+  with their name on it. The player gets the reason, not the image.</p>
+  <p>A CDM slip, a UTR and a chain transaction hash are the same fact — <i>this payment happened,
+  once</i> — so they share one registry. Two of the three used to write the reference into a column
+  and claim nothing, so the same slip could be presented twice.</p>
+  </div>
+</div>
+</section>
+
+<section id="admin">
+<h2>Admin workflows</h2>
+<p class="intro">Admin actions are the ones that move money without a counterparty pressing
+anything, so most of them are versioned, justified, or both.</p>
+
+<div class="flow">
+  <header><h3>Switching the settlement rail</h3><span class="who">the switch that changes both other panels</span></header>
+  <div class="body">
+  <pre class="mermaid">
+flowchart TD
+  A["Admin picks the other rail"] --> J{"Justification given?"}
+  J -->|No| R["Refused"]
+  J -->|Yes| V["New ACTIVE version<br/>append-only, old one retained"]
+  V --> E["payment_mode_changed pushed"]
+  E --> M["Merchant banner re-reads<br/>and shows the new workflow"]
+  E --> U["User panel buy form changes<br/>denominations / cash ceiling"]
+  V --> OLD["Orders already created<br/>KEEP their own rail forever"]
+  </pre>
+  <div class="note ok">
+    <span class="tag">Verified — and this is the subtle part</span>
+    <p>Both panels read the <b>live policy</b> for a new order and the <b>order's own frozen
+    mode</b> for an existing one. Getting that backwards would silently rewrite the rules of orders
+    already in flight. The merchant banner also <i>re-reads</i> rather than rendering the pushed
+    payload, so one owner decides what the rail is.</p>
+  </div>
+  <p>The rail in force is <b>not</b> a feature flag — a flag is an env var and an in-process Map,
+  so it cannot survive a restart or say which rail was live when an order was created.</p>
+  </div>
+</div>
+
+<div class="flow">
+  <header><h3>Resolving a dispute</h3><span class="who">the only place money is returned by hand</span></header>
+  <div class="body">
+  <pre class="mermaid">
+flowchart TD
+  D["DISPUTED order in the queue"] --> R{"Admin decides"}
+  R -->|"Release to player"| RL["Credit player · order COMPLETED"]
+  R -->|"Refund"| RF["Return the stake · order CANCELLED"]
+  R -->|"Reject the dispute"| RJ["Back to its prior state"]
+  RL --> AU["Audit row: who, when, why"]
+  RF --> AU
+  RJ --> AU
+  </pre>
+  <p>This queue was <b>permanently empty</b> for a period: the panel called a path the server never
+  served, the component caught the 404 and rendered its empty state — indistinguishable from
+  "no disputes". Release and refund did nothing. <code>check:ui-coverage</code> now fails the build
+  on a panel call that reaches no route.</p>
+  <p>The release button separately marked a disputed deposit <code>COMPLETED</code> and never
+  credited the player, then reported failure — because the write that followed the state change was
+  allowed to fail. The order left the queue, so nothing remained to show it had gone wrong.</p>
+  </div>
+</div>
+
+<div class="flow">
+  <header><h3>Funding a merchant, and paying commission</h3><span class="who">platform-funded, never from a user</span></header>
+  <div class="body">
+  <pre class="mermaid">
+flowchart TD
+  M["Merchant buys tokens"] --> H{"Tx hash supplied?"}
+  H -->|No| R1["Cannot be approved later"]
+  H -->|Yes| CL{"Hash already claimed?"}
+  CL -->|Yes| R2["409"]
+  CL -->|No| AP["Admin approves"]
+  AP --> IS["Tokens issued · treasury posts"]
+  CE["commission-engine · every 10 min"] --> V["Per VARIETY:<br/>currency × payment_mode × denomination"]
+  V --> MV["matched = min(deposits, withdrawals)"]
+  MV --> HW{"Above this variety's high-water mark?"}
+  HW -->|No| SK["Nothing owed"]
+  HW -->|Yes| PR{"Variety priced?"}
+  PR -->|No| UP["Reported UNPRICED · pays nothing"]
+  PR -->|Yes| PL{"Pool funded for the FULL amount?"}
+  PL -->|No| SKIP["Skip entirely — never partial"]
+  PL -->|Yes| PAY["Paid once · mark advances"]
+  </pre>
+  <div class="scroll"><table>
+  <tr><th>Rule</th><th>Why it is not negotiable</th></tr>
+  <tr><td>Match within a variety only</td><td>otherwise a cash run pairs with a UPI payout and one rate pays for two different jobs</td></tr>
+  <tr><td>One mark per (merchant, variety)</td><td>one mark per merchant lets a cash payment advance the UPI mark, and the volume underneath is never paid — withheld silently, with a ledger that reads complete</td></tr>
+  <tr><td>Unpriced ≠ zero</td><td>a row priced 0/0 reads as priced and pays nothing, which is the shape most easily mistaken for a working rate</td></tr>
+  <tr><td>Never partial-issue</td><td>paying what the pool holds while recording the full mark under-pays permanently</td></tr>
+  <tr><td>Check the merchant exists first</td><td>the credit is a silent no-op for an unknown id, so the ledger would record a payment that never arrived</td></tr>
+  </table></div>
+  </div>
+</div>
+</section>
+
+<section id="cross">
+<h2>Cross-panel workflows</h2>
+<p class="intro">Where two or three panels act on one row. These are the paths worth checking by
+hand, because each panel's own tests pass while the seam between them is where things break.</p>
+
+<div class="flow">
+  <header><h3>One deposit, three panels, in parallel</h3><span class="who">who sees what, at each moment</span></header>
+  <div class="body">
+  <pre class="mermaid">
+sequenceDiagram
+  participant P as Player
+  participant S as Server
+  participant M as Merchant
+  participant A as Admin
+  P->>S: create deposit
+  S->>S: guards, rail rules, PENDING_QUEUE
+  S->>M: new_order (only the assignee)
+  S->>A: queue count updates
+  Note over P: sees a payment link<br/>and an opaque Merchant #ref
+  Note over M: sees the amount and the payout account<br/>never the player's phone or UPI
+  P->>S: submits the UTR
+  S->>S: claim it — one payment, one order, for good
+  S->>M: order is PAID
+  M->>S: Confirm
+  alt Merchant funded
+    S->>S: debit, credit, release UTR, then COMPLETED
+    S->>P: wallet_update
+  else Not funded — F-018
+    S->>A: alert
+    S->>P: "taking longer than usual"
+    Note over S: order stays PAID · retryable · disputable
+  end
+  </pre>
+  <div class="scroll"><table>
+  <tr><th>Moment</th><th>Player sees</th><th>Merchant sees</th><th>Admin sees</th></tr>
+  <tr><td>Created</td><td>waiting for a merchant</td><td>nothing yet</td><td>queue depth</td></tr>
+  <tr><td>Assigned</td><td>where to pay + a deadline</td><td>amount, payout account, holder name</td><td>the pairing</td></tr>
+  <tr><td>Paid</td><td>waiting for confirmation</td><td>Confirm becomes available</td><td>—</td></tr>
+  <tr><td>Not funded</td><td>"taking longer than usual"</td><td>"top up your wallet"</td><td><b>alert</b></td></tr>
+  <tr><td>Completed</td><td>balance updated live</td><td>inventory down</td><td>volume counts toward commission</td></tr>
+  </table></div>
+  </div>
+</div>
+
+<div class="flow">
+  <header><h3>What each side is never told</h3><span class="who">privacy points both ways</span></header>
+  <div class="body">
+  <div class="scroll"><table>
+  <tr><th>Direction</th><th>Allowed</th><th>Never</th></tr>
+  <tr><td>Merchant → about the player</td><td>the bank account a withdrawal pays, and the name on it</td><td>phone in whole or part, UPI ID (it resolves to both), a CDM receipt after submission</td></tr>
+  <tr><td>Player → about the merchant</td><td>a payment link, <code>Merchant #ref</code>, a deadline</td><td>UPI handle, QR, bank account, IFSC, holder name, USDT address, panel URL</td></tr>
+  </table></div>
+  <p>Both projections are <b>allowlists in one file each</b>, and the tests assert the response's
+  key set is a <i>subset</i> — so a new column added to the orders table cannot leak by default. A
+  denylist admits the next field automatically and its mistake is always "too much"; an allowlist
+  fails closed and its symptom is a blank field somebody notices.</p>
+  <div class="note">
+    <span class="tag">Stated honestly</span>
+    <p>A <code>upi://pay</code> intent carries the payee, so the player's own banking app will show
+    it. The platform stops publishing the merchant's identity; it cannot hide a payee from a payer.</p>
+  </div>
+  </div>
+</div>
+</section>
+
+<section id="background">
+<h2>What runs on its own</h2>
+<p class="intro">Eleven scheduled jobs, an optional Redis, and a realtime layer. Nothing here needs a
+person, and several of these are the only thing standing between a stuck row and a lost balance.</p>
+
+<div class="scroll"><table>
+<tr><th>Job</th><th>Every</th><th>What it decides</th></tr>
+<tr><td><code>cash-link-match</code></td><td>15 s</td><td>pairs pooled ATM links to waiting cash buys</td></tr>
+<tr><td><code>cash-link-expiry</code></td><td>20 s</td><td>retires stale links so none is offered twice</td></tr>
+<tr><td><code>order-expiry</code></td><td>60 s</td><td>cancels <code>PENDING_QUEUE</code>/<code>ASSIGNED</code>/<code>PROCESSING</code> and <b>refunds withdrawal escrow</b></td></tr>
+<tr><td><code>withdrawal-hold-settle</code></td><td>60 s</td><td>consumes the stake and credits the merchant once the dispute window passes</td></tr>
+<tr><td><code>ledger-reconcile</code></td><td>60 s</td><td>re-derives balances from postings; alerts on disagreement</td></tr>
+<tr><td><code>scheduled-apply</code></td><td>60 s</td><td>activates a deposit policy version at its scheduled time</td></tr>
+<tr><td><code>commission-engine</code></td><td>10 min</td><td>per-variety matched volume above each high-water mark</td></tr>
+<tr><td><code>leaderboard-rebuild</code></td><td>10 min</td><td>rebuilds the cached standings</td></tr>
+<tr><td><code>payment-proof-retention</code></td><td>1 h</td><td>expires stored payment images</td></tr>
+<tr><td><code>data-retention</code></td><td>24 h</td><td>sweeps expired sessions, links, codes and recovery holds</td></tr>
+<tr><td><code>db-backup</code></td><td>24 h</td><td>alerts loudly on failure</td></tr>
+</table></div>
+
+<div class="note">
+  <span class="tag">The one to check by hand</span>
+  <p><code>order-expiry</code> deliberately does <b>not</b> touch <code>PAID</code>. That is
+  correct — auto-cancelling an order the player has already paid for would strand their money. The
+  consequence is that <b>anything which leaves a row stuck at <code>PAID</code> is never swept</b>,
+  and only a person can clear it. That is why the not-funded branch alerts.</p>
+</div>
+
+<div class="flow">
+  <header><h3>Redis, and what happens without it</h3><span class="who">optional everywhere — verified, not assumed</span></header>
+  <div class="body">
+  <pre class="mermaid">
+flowchart TD
+  ST["Server starts"] --> R{"REDIS_URL set?"}
+  R -->|Yes| Y1["Rate limits shared across instances"]
+  R -->|Yes| Y2["Scheduled jobs via BullMQ<br/>one instance runs each tick"]
+  R -->|Yes| Y3["Realtime bridge fans out between instances"]
+  R -->|No| N1["Rate limits are PER INSTANCE"]
+  R -->|No| N2["Jobs fall back to interval timers<br/>EVERY instance runs them"]
+  R -->|No| N3["Realtime reaches only the connected instance"]
+  </pre>
+  <div class="scroll"><table>
+  <tr><th>Without Redis</th><th>Consequence</th><th>Safe?</th></tr>
+  <tr><td>Per-instance rate limits</td><td>effective limit multiplies by instance count</td><td>acceptable on one instance; a real gap on several</td></tr>
+  <tr><td>Every instance runs every cron</td><td>duplicate ticks</td><td><b>yes</b> — each job's work is a guarded transition, so the loser gets <i>idempotent</i> and skips</td></tr>
+  <tr><td>Realtime is instance-local</td><td>a client on another instance misses a push</td><td>screens re-read on their own; not a money path</td></tr>
+  </table></div>
+  <p><b>BullMQ is used for one thing only:</b> scheduling the eleven recurring jobs. The one-off
+  <code>enqueue()</code> API exists, is tested, and <b>is called by nothing in the backend</b> —
+  the same shape as F-018, found while building this map.</p>
+  </div>
+</div>
+
+<div class="flow">
+  <header><h3>Realtime</h3><span class="who">36 event names across three transports</span></header>
+  <div class="body">
+  <p>socket.io for public browser clients, SSE for authenticated private streams, and the emitter
+  module. <b>One name per logical change, unique across all three</b> — a name reused on a different
+  transport for a different meaning is the defect this rule exists to stop.</p>
+  <ul class="tight">
+    <li><b>Two silent dead-delivery traps</b> live here. <code>emitMerchantUpdate('*', …)</code>
+    reaches nobody — it looks the literal <code>'*'</code> up as a merchant id and returns, with no
+    error and no log. Use the broadcast helper.</li>
+    <li>The panel's SSE client registers listeners from a <b>hardcoded name list</b>, so a
+    subscriber for an unlisted event never fires and never errors. A new event must be added to that
+    list as well as emitted.</li>
+  </ul>
+  </div>
+</div>
+</section>
+
+<section id="defects">
+<h2>Open defects, on the flows above</h2>
+<p class="intro">Everything marked in place, gathered. These are recorded in the audit register with
+their sweeps; this is the operational view of them.</p>
+
+<div class="scroll"><table>
+<tr><th>ID</th><th>Where</th><th>What actually happens</th><th>State</th></tr>
+<tr><td>F-018</td><td>assignment → confirm</td><td>eligibility is checked but never <b>held</b>; the reservation mechanism exists and nothing calls it</td><td><span class="chip refused">open · root cause</span></td></tr>
+<tr><td>F-017</td><td>deposit confirm</td><td>ordering fixed; the 16 real-database money tests still sit on a route no screen calls</td><td><span class="chip waiting">partly open</span></td></tr>
+<tr><td>F-009</td><td>casino iframe</td><td><code>frame-src</code> is unset, so the game frame is blocked by the platform's own CSP</td><td><span class="chip waiting">decision needed</span></td></tr>
+<tr><td>F-011</td><td>staff sign-in</td><td>mandatory 2FA has no server-side enforcement point</td><td><span class="chip refused">open · highest</span></td></tr>
+<tr><td>F-001</td><td>admin routes</td><td>44 sub-admin routes carry no permission key</td><td><span class="chip waiting">proposal ready</span></td></tr>
+<tr><td>—</td><td><code>check:dead-code</code></td><td>a <b>test import</b> counts as a consumer; 80 exports sit in that bucket untriaged</td><td><span class="chip refused">gate gap</span></td></tr>
+</table></div>
+
+<div class="note">
+  <span class="tag">What this map is not</span>
+  <p>It is derived from the code, but it is a <b>reading</b>, not a proof. Reading is what missed
+  every one of the defects above until somebody asked a harder question. Four questions found them,
+  and they are the ones to bring to any flow here:
+  <b>does anything actually call this · is this check a snapshot or a guarantee · if it fails
+  halfway what does the row say · am I fixing the symptom or the cause?</b></p>
+</div>
+</section>
+
+<footer class="end">
+  <p>Extracted from the repository on 2026-09-10 · route, job, event and state counts are machine-derived ·
+  defect IDs match <code>docs/audit/SECURITY_AUDIT_MAP.md</code></p>
+</footer>
+
+</div>

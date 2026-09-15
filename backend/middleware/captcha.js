@@ -1,8 +1,8 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * middleware/captcha.js — bot-mitigation challenge on credential endpoints.
  *
- * Closes the second of the two gaps LAUNCH_READINESS §F called out. Rate
+ * Closes the second of the two gaps docs/PROJECT_STATUS.md §3.3 called out. Rate
  * limiting was the only automated-abuse control, and it is the wrong shape for
  * the attack that matters: the login tiers count FAILURES per IP, so a
  * credential-stuffing run spread thin across thousands of residential addresses

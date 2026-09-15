@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * PromoPage.tsx — 2026 "Bazaar" redesign. Pro-tip slides published by admin
  * (location: TRICKS_PAGE) rendered as a themed vertical feed.

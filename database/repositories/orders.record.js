@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file.
+// GOVERNANCE: Read CLAUDE.md before editing this file.
 /**
  * repositories/orders.record.js — the order as a RECORD, beside the state
  * machine that governs it.
@@ -26,6 +26,7 @@
  */
 import { pgQuery } from '../client.js';
 import { rupeesToPaise, paiseToRupees } from '../../backend/shared/money.js';
+import { stampForNewOrder } from './paymentModePolicy.js';
 
 const num = (v) => Number(v ?? 0);
 const rupees = (v) => paiseToRupees(num(v));
@@ -110,8 +111,6 @@ export function toOrder(r) {
     cancelReason: r.cancel_reason, cancelledAt: r.cancelled_at,
     warningIssued: r.warning_issued,
     paidAt: r.paid_at, completedAt: r.completed_at, expiresAt: r.expires_at,
-    bulkPayoutDate: r.bulk_payout_date, bulkPaidAt: r.bulk_paid_at,
-    bulkPayoutBatch: r.bulk_payout_batch,
 
     // The tamper-evidence tag, READ-ONLY. It is written once by `openOrder`
     // with the row and never updated, and `SETTABLE` below deliberately does
@@ -123,6 +122,60 @@ export function toOrder(r) {
     // guard was mounted, the check was there, and it silently never ran. Its
     // test is what found this.
     orderHmac: r.order_hmac ?? null,
+
+    // The rail this order was BORN on — not the rail that is live now. Every
+    // worker and every screen branches on this: after a switch both rails run
+    // side by side until the last pre-flip order settles.
+    paymentMode: r.payment_mode,
+    // On a USDT order, the chain the PLAYER chose to pay on. Fixed at creation:
+    // the merchant snapshot carries the address for this chain and nothing
+    // else, and a chain that moved after assignment would point a player at an
+    // address on a network they cannot reach.
+    usdtChain: r.usdt_chain ?? null,
+    paymentModeVersion: r.payment_mode_version === null ? null : Number(r.payment_mode_version),
+    // The ATM link serving this order, on the cash rail. The id only — the
+    // link itself lives in `cash_link_queue` and is resolved for the ORDER'S
+    // OWNER alone, because it is a claim on notes about to leave a machine.
+    cashLinkId: r.cash_link_id ?? null,
+
+    // The siblings of one withdrawal request, as a LABEL.
+    //
+    // A payout too large for one cash denomination becomes several ORDINARY
+    // withdrawals — not a parent and its legs. This groups the ones that came
+    // from a single request so a player is told "part 2 of 4" instead of
+    // finding four unexplained orders, and so support can pull the set.
+    //
+    // Nothing branches on it. No state is derived from it, no money reads it,
+    // no assignment consults it. The moment something does, it has become the
+    // parent relation again wearing a different name.
+    withdrawalBatchRef: r.withdrawal_batch_ref ?? null,
+
+    // When the player claimed their minute to fetch the UTR. Null until they
+    // do, and non-null forever after: the grace is claimable once, and the row
+    // is what says so.
+    utrGraceAt: r.utr_grace_at ?? null,
+
+    // Where this order sits in the queue for a merchant. Higher goes first; a
+    // retry carries 1, a first attempt 0. The tie is age, so within a rank it
+    // stays first-come-first-served.
+    assignmentPriority: Number(r.assignment_priority ?? 0),
+    // The expired order this one is a second attempt at. A label — nothing
+    // joins on it — and a partial UNIQUE, so one expired order yields one
+    // retry and never two live orders for one intent.
+    retryOfOrderId: r.retry_of_order_id ?? null,
+
+    // ── The CDM receipt is NOT mapped here, on purpose ────────────────────
+    // `cdm_transaction_id`, `cdm_receipt_url` and `cdm_receipt_at` are absent
+    // from this object and must stay absent. Every projection on this platform
+    // — the merchant view, the player's order read, the admin panel — is built
+    // from this mapper, so a field it does not name cannot reach any of them.
+    // That is what makes the receipt write-only BY CONSTRUCTION rather than by
+    // each reader remembering to strip it, which is the shape that fails open.
+    //
+    // `getCdmReceipt` is the one way to read it, and the admin route gated on
+    // canResolveDisputes is its only caller. Adding these three lines here
+    // would hand a CDM slip — account number, branch, timestamp — to the
+    // merchant who uploaded it and to the player, and nothing would fail.
 
     createdAt: r.created_at, updatedAt: r.updated_at,
   };
@@ -199,8 +252,27 @@ const SETTABLE = Object.freeze({
   cancelReason: 'cancel_reason', cancelledAt: 'cancelled_at',
   warningIssued: 'warning_issued',
   paidAt: 'paid_at', completedAt: 'completed_at', expiresAt: 'expires_at',
-  bulkPayoutDate: 'bulk_payout_date', bulkPaidAt: 'bulk_paid_at',
-  bulkPayoutBatch: 'bulk_payout_batch',
+
+  // The label grouping the siblings of one split withdrawal. Settable because
+  // it is written with the row like any other detail; it decides nothing.
+  withdrawalBatchRef: 'withdrawal_batch_ref',
+
+  // The ATM link serving this order. Settable so the claim path can stamp it;
+  // the link itself lives in `cash_link_queue`.
+  cashLinkId: 'cash_link_id',
+
+  // The queue rank and what it is a retry of. Written with the row at creation;
+  // neither is meant to change afterwards, but they go through the same
+  // allowlist as everything else so a typo is refused rather than dropped.
+  assignmentPriority: 'assignment_priority',
+  retryOfOrderId: 'retry_of_order_id',
+
+  // The CDM receipt. WRITABLE here and deliberately absent from `toOrder`
+  // below: a merchant submits it, and only an admin or a disputes manager may
+  // ever read it back. See `getCdmReceipt`.
+  cdmTransactionId: 'cdm_transaction_id',
+  cdmReceiptUrl: 'cdm_receipt_url',
+  cdmReceiptAt: 'cdm_receipt_at',
 });
 
 /**
@@ -218,7 +290,26 @@ const SETTABLE = Object.freeze({
  */
 export async function createOrderRecord({
   orderId, userId, type, tokenAmountRupees, fiatAmountRupees = 0,
-  state = 'PENDING_QUEUE', ...detail
+  state = 'PENDING_QUEUE',
+  // The rail to stamp on this order, for tests that need to build one on a
+  // rail other than the live policy's. Deliberately NOT part of `detail`: it
+  // is not a SETTABLE field, because nothing may update it afterwards.
+  //
+  // A MODE string ('CASH_ATM'), not a policy object. It used to be handed to a
+  // `stampForNewOrder` that read `.activeMode` off it, so every value passed
+  // here was silently discarded and the order opened on the live rail instead —
+  // a cash-rail fixture that was in fact a UPI order. `stampForNewOrder` now
+  // takes the mode and throws on one it does not know.
+  paymentMode = null,
+  // The chain a USDT order is paid on, chosen by the player. A named parameter
+  // and NOT a SETTABLE field, for the same reason `paymentMode` is one: nothing
+  // may change it afterwards. The snapshot carries the merchant's address for
+  // this chain alone, so repointing the order would hand a player an address on
+  // a network they did not choose — and USDT sent on the wrong network is gone.
+  // A trigger refuses the update too; this keeps the allowlist from being one
+  // edit away from permitting it.
+  usdtChain = null,
+  ...detail
 }) {
   if (!orderId) throw new Error('createOrderRecord requires an orderId');
   if (!userId) throw new Error('createOrderRecord requires a userId');
@@ -230,8 +321,19 @@ export async function createOrderRecord({
     throw new TypeError(`createOrderRecord: tokenAmount must be positive, got ${tokenAmountRupees}`);
   }
 
-  const columns = ['order_id', 'user_id', 'order_type', 'state', 'token_amount_paise', 'fiat_amount_paise'];
-  const params = [String(orderId), String(userId), type, state, tokenPaise, rupeesToPaise(fiatAmountRupees)];
+  // ── The rail this order is born on, snapshotted here and nowhere else ─────
+  // Read HERE rather than taken from the caller. A parameter every caller must
+  // remember is a parameter one caller forgets, and the failure is silent: the
+  // column has a DEFAULT, so a forgotten snapshot produces a P2P_UPI order on
+  // a CASH_ATM platform that looks exactly like a correct one.
+  //
+  // The row is immutable afterwards (order_states_mode_immutable), so an admin
+  // switching rails mid-flight cannot change what this order is running under.
+  const stamp = await stampForNewOrder(paymentMode);
+  const columns = ['order_id', 'user_id', 'order_type', 'state', 'token_amount_paise', 'fiat_amount_paise',
+    'payment_mode', 'payment_mode_version', 'usdt_chain'];
+  const params = [String(orderId), String(userId), type, state, tokenPaise, rupeesToPaise(fiatAmountRupees),
+    stamp.mode, stamp.version, usdtChain];
 
   // The same allowlist `setOrderFields` uses, so a field this create accepts is
   // one an update accepts and vice versa — and an unknown one is refused here
@@ -257,6 +359,131 @@ export async function createOrderRecord({
     params, 'order_create_record',
   );
   return rows[0] ? toOrder(rows[0]) : getOrderRecord(orderId);
+}
+
+/**
+ * Buy orders still waiting for a cash link, best claim first.
+ *
+ * ── Why this query has to exist at all ────────────────────────────────────
+ * The link claim ran exactly once per order, at creation. An order created when
+ * no merchant had a link at its denomination therefore never got one: nothing
+ * looked again when the link it had been waiting for was supplied a minute
+ * later. The player watched a live order sit at PENDING_QUEUE until it expired,
+ * while a merchant stood at a machine with a link nobody took.
+ *
+ * This is the queue the matcher walks. Ordering is the rule the design states:
+ * a retry outranks a first-time order, because sending somebody who already
+ * waited and got nothing to the back of the same queue is how they wait twice
+ * and get nothing twice. Age breaks the tie, so within a rank it stays
+ * first-come-first-served.
+ *
+ * `cash_link_id IS NULL` is what makes it a WAITING list rather than a list of
+ * orders — an order that already holds a link is not looking for one.
+ */
+export async function ordersAwaitingCashLink({ limit = 100 } = {}) {
+  const { rows } = await pgQuery(
+    `SELECT * FROM order_states
+      WHERE order_type = 'DEPOSIT'
+        AND state = 'PENDING_QUEUE'
+        AND payment_mode = 'CASH_ATM'
+        AND cash_link_id IS NULL
+      ORDER BY assignment_priority DESC, created_at ASC
+      LIMIT ${Math.min(Math.max(Number(limit) || 100, 1), 500)}`,
+    [], 'orders_awaiting_cash_link',
+  );
+  return rows.map(toOrder);
+}
+
+/**
+ * Claim the player's minute to fetch the UTR — once, and in one statement.
+ *
+ * ── Why this is a single UPDATE and not read-then-write ────────────────────
+ * The decision and the write are the same statement, so two taps arriving
+ * together cannot both pass a check and both extend. The `utr_grace_at IS NULL`
+ * clause is the whole guard: the first UPDATE matches a row and stamps it, the
+ * second matches nothing and returns null. That is the same shape every
+ * transition in this codebase uses, for the same reason — a check followed by a
+ * write is two requests both passing the check.
+ *
+ * Without the once-only rule this is not a courtesy, it is an unbounded
+ * extension: tap every fifty seconds and a merchant's capacity is held open
+ * forever.
+ *
+ * ── GREATEST, so a player with time left is not cut short ─────────────────
+ * The rule is "a full minute FROM THE TAP", which for an order with ten minutes
+ * left would otherwise be a shortening. The deadline only ever moves outward.
+ *
+ * The state list is the one the player can act from. An order already PAID has
+ * its reference; one CANCELLED or expired has nothing left to extend.
+ *
+ * @returns the updated order, or null when the grace was already taken or the
+ *   order is not in a state that can use it. The caller distinguishes the two.
+ */
+export async function claimUtrGrace(orderId, userId, graceSeconds) {
+  const seconds = Math.max(Math.trunc(Number(graceSeconds) || 0), 1);
+  const { rows } = await pgQuery(
+    `UPDATE order_states
+        SET utr_grace_at = now(),
+            expires_at   = GREATEST(COALESCE(expires_at, now()), now() + make_interval(secs => $3)),
+            updated_at   = now()
+      WHERE order_id = $1
+        AND user_id  = $2
+        AND utr_grace_at IS NULL
+        AND state IN ('ASSIGNED', 'PROCESSING')
+      RETURNING *`,
+    [String(orderId), String(userId), seconds], 'order_claim_utr_grace',
+  );
+  return rows[0] ? toOrder(rows[0]) : null;
+}
+
+/**
+ * Withdrawals still waiting for a merchant — the admin's stalled queue.
+ *
+ * ── Not split-specific, on purpose ─────────────────────────────────────────
+ * A payout too large for one cash denomination becomes several ORDINARY
+ * withdrawals, so a sibling nobody has taken is just a queued withdrawal. The
+ * question worth asking is therefore the general one — which payouts have
+ * nobody working them? — and asking it generally covers the split siblings and
+ * every other stuck payout with one query instead of two.
+ *
+ * A player's tokens are locked behind every row here. A withdrawal that finds
+ * no merchant WAITS rather than failing, which is right on the cash rail (the
+ * siblings already paid cannot be clawed back), and the price of it is a lock
+ * with no deadline. An order with no deadline and no owner is one nobody is
+ * answerable for; this queue is the owner. The player can also cancel and take
+ * the tokens back — the two together are what make waiting a decision rather
+ * than a leak.
+ */
+export async function stalledWithdrawals({ olderThanMinutes = 25, limit = 200 } = {}) {
+  const { rows } = await pgQuery(
+    `SELECT * FROM order_states
+      WHERE order_type = 'WITHDRAWAL'
+        AND state = 'PENDING_QUEUE'
+        AND created_at < now() - make_interval(mins => $1)
+      ORDER BY created_at ASC
+      LIMIT ${Math.min(Math.max(Number(limit) || 200, 1), 1000)}`,
+    [Math.max(Number(olderThanMinutes) || 0, 0)], 'orders_stalled_withdrawals',
+  );
+  return rows.map(toOrder);
+}
+
+/**
+ * The siblings of one split withdrawal.
+ *
+ * A support and display read. `withdrawal_batch_ref` is a LABEL — nothing
+ * derives state from it and nothing about the money path consults it — so this
+ * exists to answer "which orders came from that one request", and for no other
+ * purpose.
+ */
+export async function withdrawalBatch(batchRef) {
+  if (!batchRef) return [];
+  const { rows } = await pgQuery(
+    `SELECT * FROM order_states
+      WHERE withdrawal_batch_ref = $1
+      ORDER BY token_amount_paise DESC, order_id ASC`,
+    [String(batchRef)], 'orders_withdrawal_batch',
+  );
+  return rows.map(toOrder);
 }
 
 /**
@@ -291,6 +518,173 @@ export async function findCompletedOrdersMissingEvents({ limit = 200 } = {}) {
     [], 'order_missing_accounting_event',
   );
   return rows.map(toOrder);
+}
+
+/**
+ * Deposits this player already has in flight, on one currency.
+ *
+ * A COUNT of rows, not an accumulator: the number is reconstructed from the
+ * orders themselves every time it is asked for, so a crash mid-flow cannot
+ * leave a player permanently unable to buy with a counter nothing can correct.
+ *
+ * The states are the ones where the player still owes or is owed something.
+ * CANCELLED, FAILED, REJECTED and COMPLETED are finished and must not block a
+ * new purchase — a player whose order failed has to be able to try again.
+ */
+/**
+ * The CDM receipt for one order — the ONLY way to read it.
+ *
+ * Separate from `getOrderRecord` because the answer must not travel with the
+ * order. `toOrder` does not map these columns, so no existing projection can
+ * carry them; this query is the deliberate exception, and its only caller is
+ * the admin route gated on `canResolveDisputes`.
+ *
+ * Returns null when nothing has been submitted, which is a real and expected
+ * state: the merchant's confirm completes the order and the receipt is chased
+ * afterwards, so an order can legitimately be settled with none yet.
+ */
+export async function getCdmReceipt(orderId) {
+  const { rows } = await pgQuery(
+    `SELECT order_id, merchant_id, cdm_transaction_id, cdm_receipt_url, cdm_receipt_at
+       FROM order_states WHERE order_id = $1`,
+    [String(orderId)], 'order_cdm_receipt',
+  );
+  const r = rows[0];
+  if (!r || !r.cdm_receipt_url) return null;
+  return {
+    orderId: r.order_id,
+    merchantId: r.merchant_id,
+    transactionId: r.cdm_transaction_id,
+    receiptUrl: r.cdm_receipt_url,
+    submittedAt: r.cdm_receipt_at,
+  };
+}
+
+/**
+ * Buy orders the PLAYER has paid for and the merchant has not answered.
+ *
+ * ── Why this is its own query and not part of the expiry sweep ─────────────
+ * `findExpiredOrders` covers PENDING_QUEUE, ASSIGNED and PROCESSING, and
+ * CANCELS what it finds. It deliberately stops short of PAID, because
+ * cancelling an order the player has already paid for strands the payment —
+ * and that is right.
+ *
+ * But it left the case with no owner at all. A merchant who neither approves
+ * nor rejects a PAID buy simply keeps it: nothing swept it, nothing counted it
+ * against them, and the only route out was the player noticing and pressing
+ * dispute. The one window where the player's money is ALREADY GONE was the one
+ * window with no clock on it.
+ *
+ * So these are found separately and handled differently: the order goes to an
+ * admin rather than being cancelled, and the silence counts against the
+ * merchant exactly as pressing reject would.
+ *
+ * Measured from `paid_at`, not from `expires_at`. The order's deadline was the
+ * window to PAY, which the player met; what is being timed here is the
+ * merchant's answer, and it starts when the payment was asserted.
+ */
+export async function findUnansweredPaidDeposits({ olderThanMinutes = 30, limit = 200 } = {}) {
+  const { rows } = await pgQuery(
+    `SELECT order_id, merchant_id, user_id, token_amount_paise, paid_at
+       FROM order_states
+      WHERE order_type = 'DEPOSIT'
+        AND state = 'PAID'
+        AND merchant_id IS NOT NULL
+        AND paid_at IS NOT NULL
+        AND paid_at < now() - make_interval(mins => $1)
+      ORDER BY paid_at ASC
+      LIMIT ${Math.min(Math.max(Number(limit) || 200, 1), 1000)}`,
+    [Math.max(Number(olderThanMinutes) || 0, 0)], 'orders_unanswered_paid_deposits',
+  );
+  return rows.map((r) => ({
+    orderId:     String(r.order_id),
+    merchantId:  String(r.merchant_id),
+    userId:      String(r.user_id),
+    tokenAmount: rupees(r.token_amount_paise),
+    paidAt:      r.paid_at,
+  }));
+}
+
+/**
+ * Settled cash withdrawals whose receipt never arrived.
+ *
+ * The merchant's confirm completes the order and the receipt is chased after —
+ * so a missing one does not block the player, and nothing would otherwise
+ * notice it was never sent. This is what makes that pattern visible: a merchant
+ * appearing here repeatedly is asserting payments they are not evidencing.
+ */
+export async function withdrawalsMissingCdmReceipt({ olderThanMinutes = 60, limit = 200 } = {}) {
+  const { rows } = await pgQuery(
+    `SELECT order_id, merchant_id, user_id, token_amount_paise, completed_at
+       FROM order_states
+      WHERE order_type = 'WITHDRAWAL'
+        AND payment_mode = 'CASH_ATM'
+        AND cdm_receipt_url IS NULL
+        AND completed_at IS NOT NULL
+        AND completed_at < now() - make_interval(mins => $1)
+      ORDER BY completed_at ASC
+      LIMIT ${Math.min(Math.max(Number(limit) || 200, 1), 1000)}`,
+    [Math.max(Number(olderThanMinutes) || 0, 0)], 'orders_missing_cdm_receipt',
+  );
+  return rows.map((r) => ({
+    orderId: r.order_id,
+    merchantId: r.merchant_id,
+    userId: r.user_id,
+    tokenAmount: rupees(r.token_amount_paise),
+    completedAt: r.completed_at,
+  }));
+}
+
+/**
+ * The receipts THIS merchant still owes.
+ *
+ * The admin query above answers "who is not evidencing their payouts". This
+ * answers the merchant's own half of it: which of my completed cash payouts
+ * still needs a slip. Without it the receipt can only ever be submitted in the
+ * seconds after the confirm — a merchant whose upload failed, or who did not
+ * have the slip in hand yet, has no way back to the order, and the admin queue
+ * fills with items nobody can clear.
+ *
+ * Deliberately NOT built on `toOrder`: three columns, chosen here, and the
+ * player is not one of them. There is no `user_id` in this result because a
+ * list of "things you owe paperwork for" is not an occasion to re-identify the
+ * people involved.
+ *
+ * `cdm_receipt_url` is read only as IS NULL. The merchant learns whether they
+ * still owe a receipt, never what a submitted one contains — the slip stays
+ * unreadable to them the moment it is stored.
+ */
+export async function merchantWithdrawalsMissingCdmReceipt(merchantId, { limit = 50 } = {}) {
+  const { rows } = await pgQuery(
+    `SELECT order_id, fiat_amount_paise, completed_at
+       FROM order_states
+      WHERE merchant_id = $1
+        AND order_type = 'WITHDRAWAL'
+        AND payment_mode = 'CASH_ATM'
+        AND cdm_receipt_url IS NULL
+        AND completed_at IS NOT NULL
+      ORDER BY completed_at ASC
+      LIMIT ${Math.min(Math.max(Number(limit) || 50, 1), 200)}`,
+    [String(merchantId)], 'merchant_orders_missing_cdm_receipt',
+  );
+  return rows.map((r) => ({
+    orderId: r.order_id,
+    fiatAmount: rupees(r.fiat_amount_paise),
+    completedAt: r.completed_at,
+  }));
+}
+
+export async function countOpenDeposits(userId, { currency = 'INR' } = {}) {
+  const { rows } = await pgQuery(
+    `SELECT COUNT(*)::int AS n
+       FROM order_states
+      WHERE user_id = $1
+        AND order_type = 'DEPOSIT'
+        AND currency = $2
+        AND state IN ('PENDING_QUEUE', 'ASSIGNED', 'PROCESSING', 'PAID')`,
+    [String(userId), String(currency)], 'order_open_deposits_for_user',
+  );
+  return rows[0]?.n ?? 0;
 }
 
 export async function pendingWithdrawalTotal(userId) {
@@ -615,10 +1009,30 @@ export async function scrubExpiredProofs() {
   return rowCount;
 }
 
+/**
+ * Withdrawals whose hold window has closed and which may now settle.
+ *
+ * ── `state = 'PAID'` is the load-bearing line ───────────────────────────────
+ * It excludes a DISPUTED order, and without it this query returned them. The
+ * player's dispute writes the reason and moves the state; it does NOT touch
+ * `merchant_credit_status`, so the row stayed HELD, stayed due, and the worker
+ * settled it — consuming the player's locked stake and crediting the merchant
+ * WHILE the dispute was open and unresolved.
+ *
+ * That is the hold's whole purpose defeated. The window exists so that until it
+ * closes neither side has moved, which is what makes a dispute a REVERSAL
+ * rather than a clawback. Settling underneath one turns it into an argument
+ * about money that has already gone.
+ *
+ * The guard is here, in the WHERE, rather than in the caller: a pre-read in
+ * `settleHold` is a window two callers can both pass, and this is a money path.
+ * `settleHold` carries the same condition for callers that reach it directly.
+ */
 export async function findDueHolds({ limit = 200 } = {}) {
   const { rows } = await pgQuery(
     `SELECT * FROM order_states
       WHERE merchant_credit_status = 'HELD'
+        AND state = 'PAID'
         AND merchant_credit_hold_until IS NOT NULL
         AND merchant_credit_hold_until <= now()
       ORDER BY merchant_credit_hold_until ASC
@@ -806,88 +1220,28 @@ export async function releaseUtr(utr, orderId) {
   return rowCount > 0;
 }
 
-/**
- * A merchant's withdrawals scheduled for one day's bulk payout.
- *
- * `bulk_payout_date` is a DATE, so the window is a day rather than a
- * timestamp range that has to be built by the caller — three call sites were
- * each computing their own IST midnight, and a difference of one in any of them
- * would have paid a different set of orders.
+/*
+ * istToday() and bulkPayoutBatch() were REMOVED 2026-09-10, with the merchant
+ * bulk-payout routes that were their only callers. Nothing in production ever
+ * wrote `bulk_payout_date`, so the batch query they served returned an empty
+ * set on every day the platform has run.
  */
-/**
- * Today's payout date, as the DATABASE reckons it.
+
+/*
+ * bulkCompleteWithdrawals was REMOVED 2026-09-08.
  *
- * `bulk_payout_date` is a DATE in IST, and three route handlers each built
- * their own IST midnight from `new Date()`. A server running in UTC is five and
- * a half hours behind, so between 18:30 and midnight UTC each of them could
- * disagree about which day it is — and a batch listed under one date and paid
- * under another pays a different set of orders than the merchant reviewed.
+ * It was one raw UPDATE straight to `state = 'COMPLETED'`, and it bypassed
+ * every guarantee the single confirm provides: no `order_transitions` row, no
+ * escrow flags, and no withdrawal HOLD — so the settlement worker never picked
+ * the orders up. They read COMPLETED while the player's stake stayed locked and
+ * the merchant's tokens were never credited, with nothing looking for the gap.
  *
- * There is one owner of that value now, and it is the same clock the column is
- * compared against.
+ * A bulk payout is N confirms, not a different operation, so the route now
+ * loops through the same lifecycle calls `POST /merchant/confirm/:id` makes.
+ * The state machine is the one owner of a state change; a second writer that
+ * sets `state` directly is how the two came apart in the first place.
  */
-export async function istToday() {
-  const { rows } = await pgQuery(
-    "SELECT CAST(now() AT TIME ZONE 'Asia/Kolkata' AS DATE) AS today", [], 'order_ist_today',
-  );
-  // A DATE comes back as a JS Date at local midnight; the ISO date part is the
-  // day itself, free of whatever offset the app server happens to run in.
-  const d = rows[0].today;
-  return d instanceof Date
-    ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-    : String(d);
-}
 
-export async function bulkPayoutBatch({ merchantId, payoutDate }) {
-  const { rows } = await pgQuery(
-    `SELECT * FROM order_states
-      WHERE merchant_id = $1
-        AND order_type = 'WITHDRAWAL'
-        AND state IN ('PAID', 'COMPLETED', 'ASSIGNED', 'PROCESSING')
-        AND bulk_payout_date = $2::date
-      ORDER BY created_at ASC`,
-    [String(merchantId), payoutDate], 'order_bulk_batch',
-  );
-  return rows.map(toOrder);
-}
-
-/**
- * Close a batch of a merchant's withdrawals as paid.
- *
- * ONE STATEMENT, with the eligibility in the WHERE clause: this merchant's
- * withdrawals, in a state a payout may legitimately close. An order that moved
- * between the caller's read and this write matches nothing rather than being
- * closed from a state it has already left — which is what an `updateMany` over
- * ids alone would do.
- *
- * Returns which ids were closed, so the caller can tell the merchant that three
- * of their five went through rather than reporting a count they cannot act on.
- */
-export async function bulkCompleteWithdrawals({ orderIds, merchantId, batchId, paidAt = null }) {
-  const ids = [...new Set((orderIds || []).filter(Boolean).map(String))];
-  if (!ids.length) return { completed: 0, orderIds: [], skipped: [] };
-
-  const { rows } = await pgQuery(
-    `UPDATE order_states SET
-       state = 'COMPLETED',
-       completed_at = COALESCE($4::timestamptz, now()),
-       bulk_paid_at = COALESCE($4::timestamptz, now()),
-       bulk_payout_batch = $3,
-       updated_at = now()
-     WHERE order_id = ANY($1::text[])
-       AND merchant_id = $2
-       AND order_type = 'WITHDRAWAL'
-       AND state IN ('PAID', 'ASSIGNED', 'PROCESSING')
-     RETURNING order_id`,
-    [ids, String(merchantId), String(batchId), paidAt], 'order_bulk_complete',
-  );
-  const closed = rows.map((r) => r.order_id);
-  return {
-    completed: closed.length,
-    orderIds: closed,
-    skipped: ids.filter((id) => !closed.includes(id)),
-  };
-}
 
 /**
  * Orders that ran out of time.
@@ -911,13 +1265,45 @@ export async function bulkCompleteWithdrawals({ orderIds, merchantId, batchId, p
  * a no-op lock in the query would suggest the coordination lives here, and the
  * next reader would trust it.
  */
-export async function findExpiredOrders({ limit = 100 } = {}) {
+export async function findExpiredOrders({ limit = 100, assignmentWaitSeconds = 1500 } = {}) {
+  // ── Two due sets, one query ───────────────────────────────────────────────
+  //
+  // 1. Past its own deadline. `expires_at` is set at ASSIGNMENT, from the rail
+  //    the order was created on, so this covers the processing window.
+  //
+  // 2. Never assigned, and out of time waiting. Creation does NOT set
+  //    `expires_at` — assignment does — so an order no merchant ever took had no
+  //    deadline at all, and the `expires_at IS NOT NULL` this query used to open
+  //    with skipped it forever.
+  //
+  //    `expireOrders` says in its own comment that PENDING_QUEUE was added to
+  //    the state list precisely so an unassigned WITHDRAWAL releases its escrow
+  //    rather than locking a player's money with nothing scheduled to free it.
+  //    That fix was made in one clause and cancelled by another in the same
+  //    query: the state list admitted the order, the deadline test threw it back
+  //    out. Every check here was green.
+  //
+  //    The window is the ORDER's own rail's, from the policy version stamped on
+  //    it, falling back to the caller's figure for a row written before versions
+  //    existed. An order held across a rail switch keeps the process it was
+  //    created under, deadlines included.
   const { rows } = await pgQuery(
-    `SELECT * FROM order_states
-      WHERE expires_at IS NOT NULL AND expires_at <= now()
-        AND state IN ('PENDING_QUEUE', 'ASSIGNED', 'PROCESSING')
-      ORDER BY expires_at ASC LIMIT $1`,
-    [Math.min(Math.max(Number(limit) || 100, 1), 500)], 'order_find_expired',
+    `SELECT o.* FROM order_states o
+       LEFT JOIN payment_mode_policies p ON p.version = o.payment_mode_version
+      WHERE o.state IN ('PENDING_QUEUE', 'ASSIGNED', 'PROCESSING')
+        AND (
+              (o.expires_at IS NOT NULL AND o.expires_at <= now())
+              OR (o.expires_at IS NULL
+                  AND o.state = 'PENDING_QUEUE'
+                  AND o.created_at < now() - make_interval(
+                        secs => COALESCE(p.assignment_wait_seconds, $2)))
+            )
+      ORDER BY COALESCE(o.expires_at, o.created_at) ASC LIMIT $1`,
+    [
+      Math.min(Math.max(Number(limit) || 100, 1), 500),
+      Math.max(Number(assignmentWaitSeconds) || 1500, 1),
+    ],
+    'order_find_expired',
   );
   return rows.map(toOrder);
 }
@@ -989,34 +1375,75 @@ export async function countRecentOrders(userId, { withinMinutes = 60 } = {}) {
 }
 
 /**
- * Per-merchant matched volume: the smaller of what they took in and what they
- * paid out, which is what a completed buy→sell cycle actually is.
+ * Matched volume per merchant AND VARIETY: the smaller of what they took in and
+ * what they paid out within one kind of work, which is what a completed
+ * buy→sell cycle actually is.
  *
- * The bonus engine pays on this figure, so it is computed in one statement over
- * completed orders rather than assembled from two aggregates and a loop that
- * defaulted the side it did not find.
+ * The commission engine pays on this figure, so it is computed in one statement
+ * over completed orders rather than assembled from two aggregates and a loop
+ * that defaulted the side it did not find.
+ *
+ * ── Matched WITHIN a variety, never across ─────────────────────────────────
+ * Grouping only by merchant would pair a ₹500 cash run to an ATM with a UPI
+ * payout and pay one rate for two different jobs. The pairing is what the rate
+ * is applied to, so it has to happen inside the variety the rate prices.
+ *
+ * ── token_amount_paise, and why NOT fiat_amount_paise ──────────────────────
+ * `fiat_amount_paise` is "what the payer sends, in the ORDER's currency". On a
+ * USDT order that is USDT — 500, for 50,000 tokens — so summing it across
+ * currencies adds USDT to rupees. The previous version of this query did
+ * exactly that: a 50,000-token USDT deposit contributed ₹500 of "matched
+ * volume" instead of ₹50,000, understating that merchant's work by a hundred
+ * times, in a figure a percentage is then paid on. It is the same mistake as
+ * posting `fiat_amount_paise` to the ledger as rupees, and it was silent for
+ * the same reason: the number is plausible and nothing sums it against
+ * anything.
+ *
+ * `token_amount_paise` is the platform's own unit of account — tokens at the
+ * peg, so INR-equivalent on BOTH rails — which is what a rupee-denominated
+ * commission drawn from a rupee-denominated pool has to be a percentage of.
+ *
+ * ── The denomination is derived, not stored ────────────────────────────────
+ * A cash order IS a denomination: `fiat_amount_paise` on the CASH_ATM rail is
+ * one of the five amounts a machine deals in, by construction. A USDT order's
+ * size is its token count. The UPI rail is a range and has no denomination,
+ * which is the NULL. Deriving it here rather than adding a column keeps one
+ * owner for the value — the order's own amount.
  */
-export async function merchantMatchedVolumes() {
+export async function merchantMatchedVolumesByVariety() {
   const { rows } = await pgQuery(
     `SELECT merchant_id,
-            COALESCE(SUM(fiat_amount_paise) FILTER (WHERE order_type = 'DEPOSIT'), 0)    AS deposit_paise,
-            COALESCE(SUM(fiat_amount_paise) FILTER (WHERE order_type = 'WITHDRAWAL'), 0) AS withdrawal_paise
+            currency,
+            payment_mode,
+            CASE
+              WHEN currency = 'USDT'         THEN token_amount_paise
+              WHEN payment_mode = 'CASH_ATM' THEN fiat_amount_paise
+              ELSE NULL
+            END AS denomination_paise,
+            COALESCE(SUM(token_amount_paise) FILTER (WHERE order_type = 'DEPOSIT'), 0)    AS deposit_paise,
+            COALESCE(SUM(token_amount_paise) FILTER (WHERE order_type = 'WITHDRAWAL'), 0) AS withdrawal_paise
        FROM order_states
       WHERE state = 'COMPLETED' AND merchant_id IS NOT NULL
         AND order_type IN ('DEPOSIT', 'WITHDRAWAL')
-      GROUP BY merchant_id`,
-    [], 'order_merchant_matched_volumes',
+      GROUP BY merchant_id, currency, payment_mode, 4`,
+    [], 'order_merchant_matched_volumes_by_variety',
   );
-  const out = {};
-  for (const r of rows) {
+  return rows.map((r) => {
+    // BIGINT arrives from node-postgres as a STRING. Uncast, '900' >= 1000 is
+    // true and every comparison downstream is wrong, so it is cast once, here,
+    // where the row is read.
     const depositMinor = Number(r.deposit_paise);
     const withdrawalMinor = Number(r.withdrawal_paise);
-    out[r.merchant_id] = {
-      depositMinor, withdrawalMinor,
+    return {
+      merchantId: r.merchant_id,
+      currency: r.currency,
+      paymentMode: r.payment_mode,
+      denominationPaise: r.denomination_paise === null ? null : Number(r.denomination_paise),
+      depositMinor,
+      withdrawalMinor,
       matchedMinor: Math.min(depositMinor, withdrawalMinor),
     };
-  }
-  return out;
+  });
 }
 
 /** Counts for the admin dashboard, in one pass. */
@@ -1042,4 +1469,60 @@ export async function orderCounts({ since = null } = {}) {
     flagged: r.flagged, awaitingReview: r.awaiting_review,
     completedValue: rupees(r.completed_paise),
   };
+}
+
+// ── Refusals ─────────────────────────────────────────────────────────────────
+
+/**
+ * Record that a merchant refused an order.
+ *
+ * Append-only, one row per (order, merchant). A second refusal of the same
+ * order by the same merchant is a no-op rather than an error: the UNIQUE index
+ * decides, not a pre-read two concurrent rejects could both pass, and a
+ * duplicate arriving from a retry is not a fault the caller should handle.
+ *
+ * `userId` is stored on the row rather than joined back from `order_states`,
+ * because the pair query below runs inside merchant ASSIGNMENT — the hot path
+ * of every order — and a join there would cost one per assignment.
+ *
+ * @returns {Promise<boolean>} true when this refusal was newly recorded.
+ */
+export async function recordOrderRejection({ orderId, merchantId, userId, reason = '' }) {
+  if (!orderId) throw new Error('recordOrderRejection requires an orderId');
+  if (!merchantId) throw new Error('recordOrderRejection requires a merchantId');
+  if (!userId) throw new Error('recordOrderRejection requires a userId');
+  const { rows } = await pgQuery(
+    `INSERT INTO order_rejections (order_id, merchant_id, user_id, reason)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (order_id, merchant_id) DO NOTHING
+     RETURNING id`,
+    [String(orderId), String(merchantId), String(userId), String(reason).slice(0, 500)],
+    'order_rejection_record',
+  );
+  return rows.length > 0;
+}
+
+/**
+ * Every merchant who may not be given this order.
+ *
+ * Two rules, one answer, because assignment needs a single list:
+ *
+ *   - anybody who already refused THIS order — otherwise the reject route
+ *     requeues and immediately reassigns, and the same merchant can be handed
+ *     it straight back;
+ *   - anybody who refused ANY order from this PLAYER — a merchant who declines
+ *     one person's orders should not keep receiving them, whatever the reason.
+ *
+ * Returns ids, not rows: the caller feeds them to the candidate query's WHERE.
+ */
+export async function merchantsBarredFrom({ orderId, userId }) {
+  if (!orderId && !userId) return [];
+  const { rows } = await pgQuery(
+    `SELECT DISTINCT merchant_id FROM order_rejections
+      WHERE ($1::text IS NOT NULL AND order_id = $1)
+         OR ($2::text IS NOT NULL AND user_id  = $2)`,
+    [orderId ? String(orderId) : null, userId ? String(userId) : null],
+    'order_rejection_barred',
+  );
+  return rows.map((r) => r.merchant_id);
 }

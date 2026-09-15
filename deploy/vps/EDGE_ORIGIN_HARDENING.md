@@ -1,6 +1,6 @@
 # Edge / origin hardening — hiding the origin behind a scrubbing edge
 
-<!-- GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. -->
+<!-- GOVERNANCE: Read CLAUDE.md before editing this file. -->
 
 Splits the single-VPS deployment (`../VPS_UBUNTU_SETUP.md`) into two tiers: a
 disposable **edge** with a clean public IP that absorbs the internet, and the
@@ -12,7 +12,7 @@ address.
 > **This is an engineering runbook, not a licence.** Same caveat as every
 > deployment doc here: a real-money launch needs a gambling licence, an AML/KYC
 > programme and a third-party pen test first
-> (`docs/governance/LAUNCH_READINESS.md` §G). Infrastructure does not change what
+> (`docs/PROJECT_STATUS.md` §G). Infrastructure does not change what
 > is legal where you operate.
 
 ---
@@ -30,7 +30,7 @@ address.
 **On B.** Static multi-domain is already supported and is the right tool for
 redundancy: every hostname in `SITE_ADDRESS` serves the same app with no
 per-domain logic and no client IP/geo/ISP input, a constraint that is deliberate
-and load-bearing (`04-GOVERNANCE.md` §20). What is *not* included is a controller
+and load-bearing (`CLAUDE.md` §20). What is *not* included is a controller
 that detects a domain being blocked and swaps in a fresh one automatically. That
 component exists to defeat blocking orders rather than to defend against
 attackers, and it is out of scope for this runbook. Everything else here hardens

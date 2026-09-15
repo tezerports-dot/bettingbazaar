@@ -1,10 +1,16 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import {
   MerchantProfile,
   PaymentOrder,
   AuthResponse,
   Earnings,
   Stats,
+  PaymentModeView,
+  CashLinkState,
+  CashLink,
+  OutstandingCdmReceipt,
+  AdminTokenOrder,
+  AdminTokenQuote,
 } from '../types';
 import { ENDPOINTS, ERROR_MESSAGES } from '../constants';
 
@@ -208,6 +214,102 @@ export const getMerchantProfile = async (): Promise<MerchantProfile> => {
   return data.merchant || data;
 };
 
+/**
+ * Which settlement rail this merchant is on, and the windows they are held to.
+ *
+ * Read on panel load. The rail can change under a merchant mid-shift, and the
+ * notification and the SSE push are both best-effort — a merchant with no
+ * linked player account has no inbox, and a dropped socket misses the
+ * broadcast. This read is the one that is always correct.
+ */
+export const getPaymentMode = async (): Promise<PaymentModeView> => {
+  const data = await request<any>(ENDPOINTS.AUTH.PAYMENT_MODE);
+  return {
+    activeMode: data.activeMode ?? null,
+    version: data.version ?? null,
+    label: data.label ?? '',
+    merchantMessage: data.merchantMessage ?? '',
+    timers: data.timers ?? null,
+  };
+};
+
+/**
+ * The ATM cash rail: what this merchant is holding, and whether a trip is
+ * worth making.
+ *
+ * `worthGoing` is computed by the SERVER using the same function that decides
+ * who the demand broadcast reaches. Deciding it here from `waiting > 0` would
+ * put a different answer on the screen than in the notification, and an
+ * expired link earns a merchant nothing — so a wrong "yes" costs them a
+ * journey.
+ */
+export const getCashLinkState = async (): Promise<CashLinkState> => {
+  const data = await request<any>(ENDPOINTS.CASH_LINKS.CURRENT);
+  return {
+    approved: Boolean(data.approved),
+    denomination: data.denomination ?? null,
+    live: data.live ?? null,
+    waiting: data.waiting ?? 0,
+    worthGoing: Boolean(data.worthGoing),
+  };
+};
+
+/** Supply the link the ATM just produced. Amount and lifetime are the server's. */
+export const supplyCashLink = async (paymentLink: string): Promise<CashLink> => {
+  const data = await request<any>(ENDPOINTS.CASH_LINKS.SUPPLY, {
+    method: 'POST',
+    body: JSON.stringify({ paymentLink }),
+  });
+  return data.link;
+};
+
+/** Withdraw a link this merchant can no longer honour. */
+export const cancelCashLink = async (linkId: string): Promise<void> => {
+  await request<any>(`${ENDPOINTS.CASH_LINKS.SUPPLY}/${encodeURIComponent(linkId)}`, {
+    method: 'DELETE',
+  });
+};
+
+// =======================================================================
+// TOKEN SUPPLY — buying platform tokens from the platform, in USDT
+// =======================================================================
+
+/** This merchant's own purchase requests, newest first (server caps at 30). */
+export const getAdminTokenOrders = async (): Promise<AdminTokenOrder[]> => {
+  const data = await request<any>(ENDPOINTS.TOKEN_SUPPLY.LIST);
+  return data.orders ?? [];
+};
+
+/**
+ * Price an amount before committing to it.
+ *
+ * The panel does NOT compute this. The rate, the rounding to whole tens of
+ * USDT and the min/max band all live in one function on the server, because a
+ * second copy here would drift the first time any of them changed (§5) — and
+ * the figure decides how much real USDT a merchant sends.
+ */
+export const quoteAdminTokenPurchase = async (tokenAmount: number): Promise<AdminTokenQuote> => {
+  const params = new URLSearchParams({ tokenAmount: String(tokenAmount) });
+  const data = await request<any>(`${ENDPOINTS.TOKEN_SUPPLY.QUOTE}?${params.toString()}`);
+  return data.quote as AdminTokenQuote;
+};
+
+/**
+ * File the request. The transaction id is required — the platform claims it, so
+ * one USDT payment can fund exactly one purchase, and the row refuses an
+ * approval that does not name the transaction that paid for it.
+ */
+export const createAdminTokenOrder = async (
+  tokenAmount: number,
+  usdtTxHash: string,
+): Promise<AdminTokenOrder> => {
+  const data = await request<any>(ENDPOINTS.TOKEN_SUPPLY.CREATE, {
+    method: 'POST',
+    body: JSON.stringify({ tokenAmount, usdtTxHash }),
+  });
+  return data.order as AdminTokenOrder;
+};
+
 // =======================================================================
 // ORDERS
 // =======================================================================
@@ -245,16 +347,26 @@ export const acceptOrder = async (orderId: string): Promise<PaymentOrder> => {
   return data.order || data;
 };
 
-// FE 4.1 FIX: was sending {transactionProof}, backend reads {proof, utrNumber}
-// -> payment proof always saved as empty string, UTR fraud detection bypassed
-// confirmPayment works for BOTH:
-//   DEPOSIT:    marks order COMPLETED (releases tokens to user after payment received)
-//   WITHDRAWAL: marks order PAID (records that merchant sent money with UTR)
-export const confirmPayment = async (orderId: string, proof?: string, utrNumber?: string): Promise<PaymentOrder> => {
-  const data = await request<any>(ENDPOINTS.ORDERS.CONFIRM(orderId), {
-    method: 'POST',
-    body: JSON.stringify({ proof, utrNumber }),  // correct field names
-  });
+/**
+ * Confirm an order. Works for BOTH:
+ *   DEPOSIT:    PAID → COMPLETED, releasing tokens to the player.
+ *   WITHDRAWAL: PROCESSING → PAID (held) or COMPLETED (hold disabled).
+ *
+ * It sends NO BODY, and that is the point.
+ *
+ * It used to post `{ proof, utrNumber }`. Both were wrong by the time they were
+ * sent. `proof` could only ever be `undefined` — payment-proof collection was
+ * removed platform-wide, so no order has one — and `utrNumber` echoed back the
+ * player's own reference for the server to write over the copy it already had.
+ * That echo was the dangerous half: the reference is claimed against this order
+ * in `utr_registry` (CLAUDE.md §27), and a client sending a different string
+ * would have left the order naming a reference nothing had claimed.
+ *
+ * The route reads the player's reference off the order row and refuses if it is
+ * not there. There is nothing for this caller to supply.
+ */
+export const confirmPayment = async (orderId: string): Promise<PaymentOrder> => {
+  const data = await request<any>(ENDPOINTS.ORDERS.CONFIRM(orderId), { method: 'POST' });
   return data.order || data;
 };
 
@@ -298,6 +410,62 @@ export const rejectPaidOrder = async (
   return data.order || data;
 };
 
+/**
+ * Submit the CDM receipt for a cash payout.
+ *
+ * ── Read this before changing anything here ────────────────────────────────
+ * Once submitted the merchant CANNOT SEE IT AGAIN. Only an admin or a disputes
+ * manager can. So the upload step is the last point at which they can check
+ * what they are sending, and the caller must let them replace the file freely
+ * up to the moment they press submit.
+ *
+ * Three steps, in this order, mirroring the reject proof: ask for a presigned
+ * URL (which also checks the order is this merchant's and is a payout), PUT the
+ * file, then send the reference. The receipt is verified server-side against
+ * THIS merchant and THIS order before it is stored, so a key staged elsewhere
+ * is refused.
+ *
+ * Returns what the server accepted — the transaction id and the time — because
+ * that confirmation is the only look the merchant gets.
+ */
+export const submitCdmReceipt = async (
+  orderId: string, transactionId: string, receipt: File,
+): Promise<{ transactionId: string; submittedAt: string }> => {
+  const presigned = await request<any>(ENDPOINTS.CDM_RECEIPT.UPLOAD_URL(orderId), {
+    method: 'POST',
+    body: JSON.stringify({ fileName: receipt.name, contentType: receipt.type, fileSize: receipt.size }),
+  });
+  if (!presigned?.uploadUrl || !presigned?.fileKey) {
+    throw new Error('Could not prepare the receipt upload');
+  }
+
+  const put = await fetch(presigned.uploadUrl, {
+    method: 'PUT', body: receipt, headers: { 'Content-Type': receipt.type },
+  });
+  if (!put.ok) throw new Error('The receipt image failed to upload');
+
+  const data = await request<any>(ENDPOINTS.CDM_RECEIPT.SUBMIT(orderId), {
+    method: 'POST',
+    body: JSON.stringify({
+      transactionId, receiptFileKey: presigned.fileKey, receiptCdnUrl: presigned.cdnUrl,
+    }),
+  });
+  return data.submitted;
+};
+
+/**
+ * The payouts this merchant still owes a slip for.
+ *
+ * An empty list is the normal state and means nothing is outstanding. It does
+ * NOT mean "no receipts exist" — a submitted one is invisible to the merchant
+ * who submitted it, so a row leaving this list is the only confirmation they
+ * ever get that theirs landed.
+ */
+export const getOutstandingCdmReceipts = async (): Promise<OutstandingCdmReceipt[]> => {
+  const data = await request<any>(ENDPOINTS.CDM_RECEIPT.OUTSTANDING);
+  return data.outstanding || [];
+};
+
 export const rejectOrder = async (orderId: string, reason: string): Promise<PaymentOrder> => {
   const data = await request<any>(ENDPOINTS.ORDERS.REJECT(orderId), {
     method: 'POST',
@@ -307,30 +475,37 @@ export const rejectOrder = async (orderId: string, reason: string): Promise<Paym
 };
 
 // =======================================================================
-// DISPUTE
+// ESCALATION
 // =======================================================================
 
-// Raise a dispute for an order.
-export const raiseDispute = async (orderId: string, reason?: string): Promise<PaymentOrder> => {
-  // Uses the new merchant dispute endpoint (Section 2C)
-  const data = await request<any>(`/api/merchant/order/${orderId}/dispute`, {
+/**
+ * Send an order to an admin because something about it is wrong.
+ *
+ * This used to POST the merchant DISPUTE endpoint, which was deleted on
+ * 2026-09-10: a dispute is the PLAYER's instrument — the party who is owed —
+ * and a merchant who is short simply does not confirm. What a merchant is
+ * entitled to assert is that a transaction FAILED, and they have three ways of
+ * saying it: decline before payment, reject with proof after the player claims
+ * they paid, and this — a red flag on an order that looks fraudulent or cannot
+ * be processed.
+ *
+ * The endpoint it now calls was already in ENDPOINTS and had no caller at all,
+ * so the panel had the right route defined and the wrong one wired.
+ */
+export const redFlagOrder = async (orderId: string, reason?: string): Promise<PaymentOrder> => {
+  const data = await request<any>(ENDPOINTS.ORDERS_EXTRA.RED_FLAG(orderId), {
     method: 'POST',
-    body: JSON.stringify({ reason: reason || 'Merchant raised dispute' }),
+    body: JSON.stringify({ reason: reason || 'Flagged by merchant for admin review' }),
   });
   return data.order || data;
 };
 
-// =======================================================================
-// ORDER APPROVE / REJECT (Migration Patch Section 16.1 / 11.1 / 11.2)
-// =======================================================================
-
-/** approveOrder — POST /api/merchant/orders/:id/approve. Triggers 90/10 token allocation. */
-export const approveOrder = async (orderId: string): Promise<any> => {
-  const data = await request<any>(`/api/merchant/orders/${orderId}/approve`, { method: 'POST' });
-  return data;
-};
-
-// =======================================================================
+// `approveOrder` was here, posting to `/api/merchant/orders/:id/approve`. That
+// route was a second path completing a PAID deposit and has been deleted:
+// `confirmOrder` (POST /confirm/:id) is the one writer, and it is what every
+// screen already called. Nothing rendered this helper — but an exported caller
+// still looks like a caller to the ui-coverage scanner, which is why the dead
+// route read as reachable for as long as this line existed.
 
 
 // Merchants review proofScreenshot (inline image) + utrNumber on order card.
@@ -427,14 +602,19 @@ export const updatePreferences = async (preferences: {
 // =======================================================================
 
 // The backend enforces rail exclusivity on this endpoint: an INR merchant may
-// send upiId/qrCodeUrl/bankDetails, a USDT merchant may send only
-// usdtWalletAddress. Sending a field for the wrong rail is a 400, not a silent
-// no-op (backend/domains/merchant/merchant.routes.js PUT /profile).
+// send upiId/bankDetails, a USDT merchant may send only the wallet
+// addresses. Sending a field for the wrong rail is a 400, not a silent no-op
+// (backend/domains/merchant/merchant.routes.js PUT /profile).
+//
+// The two addresses are independent: send one to set it, send an empty string
+// to clear that chain, omit it to leave it alone. Clearing the LAST one is
+// refused — a merchant with no address receives no orders, and that is worth
+// saying rather than accepting silently.
 export const updateProfile = async (data: {
   upiId?: string;
-  qrCodeUrl?: string;
   bankDetails?: { accountHolderName?: string; bankName?: string; accountNo?: string; ifsc?: string };
-  usdtWalletAddress?: string;
+  usdtAddressTrc20?: string;
+  usdtAddressBep20?: string;
 }): Promise<any> => {
   const result = await request<any>(ENDPOINTS.PROFILE.UPDATE, {
     method: 'PUT',
@@ -479,6 +659,11 @@ export const api = {
   logout,
   getMerchantProfile,
   
+  // Token supply
+  getAdminTokenOrders,
+  quoteAdminTokenPurchase,
+  createAdminTokenOrder,
+
   // Orders
   getOrders,
   acceptOrder,
@@ -488,7 +673,7 @@ export const api = {
   
   
   // Dispute
-  raiseDispute,
+  redFlagOrder,
   
   // Stats
   getEarnings,

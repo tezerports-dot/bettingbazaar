@@ -1,10 +1,19 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /** system.admin.routes.js — System config, token rates, withdrawal requests, error logs */
-import { express, authenticate, isAdmin, isAdminOrSubAdmin } from './_adminShared.js';
-import { INR_TOKEN_RATE } from '../../domains/configuration/tokenRates.js';
-import { setConfigField } from '../../domains/configuration/configVersioning.service.js';
+import {
+  authenticate, express, hasPermission, isAdmin, isAdminOrSubAdmin,
+} from './_adminShared.js';
+import {
+  INR_TOKEN_RATE, isSaneUsdtRate, USDT_RATE_MIN_INR, USDT_RATE_MAX_INR,
+} from '../../domains/configuration/tokenRates.js';
+import { setConfigFields } from '../../domains/configuration/configVersioning.service.js';
 import { getSystemConfig } from '#db/repositories/config.js';
+// The declaration of what a setting IS — its default and its bounds. Read here
+// so this route neither restates a default nor keeps its own list of fields.
+import { SYSTEM_CONFIG_SPEC } from '#db/spec/config.spec.js';
 import { db } from '#db';
+import { MAX_MERGE_BEFORE_END_SEC } from '../../domains/markets/cycleTypes.js';
+import { respondError } from '../../shared/httpError.js';
 
 const router = express.Router();
 
@@ -45,11 +54,11 @@ const FOOTER_PAGE_KEYS = [
 ];
 
 // Token rates removed 2026-07-08: conversion is fixed 1:1 (Phase 006
-// flattening — see docs/governance/04-GOVERNANCE.md). The GET/PUT /token-rates
+// flattening — see CLAUDE.md). The GET/PUT /token-rates
 // endpoints and rate validation that lived here are gone; rates are no
 // longer admin-editable.
 
-router.get('/transactions', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/transactions', authenticate, hasPermission('canViewTransactions'), async (req, res) => {
   try {
     const { type, field, page = 1, limit = 50 } = req.query;
 
@@ -83,17 +92,42 @@ router.get('/transactions', authenticate, isAdminOrSubAdmin, async (req, res) =>
 
 // Get merchant full profile — :merchantId is always Merchant._id.
 // The merchants list guarantees this. No User._id fallback.
-router.get('/system/config', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/system/config', authenticate, isAdmin, async (req, res) => {
   try {
     const config = await getSystemConfig();
     res.json({
       success: true,
       config: {
+        // ── Every setting the spec declares, at its live value ──────────────
+        // `getSystemConfig()` already fills every declared key from the spec's
+        // own default, so spreading it means a setting is SERVED the moment it
+        // is declared — the same rule the PUT follows. Written out field by
+        // field, the response carried neither `withdrawalHoldMinutes` nor
+        // `loadShedding` nor any of the eight `ipDefense` fields, so an admin
+        // screen could not have shown them even if the PUT had taken them.
+        //
+        // `minted` is stripped for the same reason the PUT skips it: it is the
+        // running issuance total, not a setting, and a number on a settings
+        // page is a number somebody will type over (F-022).
+        //
+        // Five groups used to be REBUILT here key by key over the spread, each
+        // with its own `??` restating a schema default. Every restatement
+        // matched, so none of them was wrong — but a rebuild is a SHRINK: the
+        // `cyclePhases` block named `thirtyMin` and `fullDay` only, so the
+        // one-minute board's four phase offsets were declared, defaulted,
+        // consumed by the engine, and invisible to the admin panel. §18.2 asks
+        // for one declaration read by both consumers; a rebuild is a second
+        // list that goes stale the next time a board is added.
+        ...config,
+        adminTokenSupply: { cap: config.adminTokenSupply?.cap ?? 10000000000 }, // schema default: 10,000,000,000
+        // The legacy flat names the panels ask for, over the nested owners
+        // above. These are aliases, not second owners — each one reads the
+        // value it renames.
         minBet:                config.betLimits?.thirtyMin?.min   || 10,
         maxBet:                config.betLimits?.thirtyMin?.max   || 100000,
         max30MinBet:           config.betLimits?.thirtyMin?.max   || 100000,
         maxFullDayBet:         config.betLimits?.fullDay?.max     || 500000,
-        minDeposit:            config.minDeposit            || 100,
+        minDeposit:            config.minDeposit            || 500,  // schema default: 500
         maxDeposit:            config.maxDeposit            || 50000,
         minWithdrawal:         config.minWithdrawal         || 500,
         maxWithdrawal:         config.maxWithdrawal         || 50000,
@@ -105,16 +139,6 @@ router.get('/system/config', authenticate, isAdminOrSubAdmin, async (req, res) =
         tokenSellRate:         INR_TOKEN_RATE,
         // Risk Platform rules (Phase 010) — schema defaults cited inline
         payoutFeePercent:      config.payoutFeePercent ?? 0,  // schema default: 0
-        usdtPricing: {
-          userMerchantBuyInr:  config.usdtPricing?.userMerchantBuyInr  ?? 0, // schema default: 0
-          merchantAdminBuyInr: config.usdtPricing?.merchantAdminBuyInr ?? 1, // schema default: 1
-        },
-        merchantOrderLimits: {
-          minUserTokenPurchaseUsdt:  config.merchantOrderLimits?.minUserTokenPurchaseUsdt  ?? 100, // schema default: 100
-          maxUserTokenPurchaseUsdt:  config.merchantOrderLimits?.maxUserTokenPurchaseUsdt  ?? 0,   // 0 = unlimited
-          minAdminTokenPurchaseUsdt: config.merchantOrderLimits?.minAdminTokenPurchaseUsdt ?? 100, // schema default: 100
-          maxAdminTokenPurchaseUsdt: config.merchantOrderLimits?.maxAdminTokenPurchaseUsdt ?? 0,   // 0 = unlimited
-        },
         // Bet funding split (Phase A) — % of each stake from reserveBalance
         betReservePercent:     config.betReservePercent ?? 1, // schema default: 1
         // Winnings platform fee (Phase A) — % of gross 2x retained at settlement
@@ -125,33 +149,6 @@ router.get('/system/config', authenticate, isAdminOrSubAdmin, async (req, res) =
         retentionMonths:       config.retentionMonths ?? 6, // schema default: 6
         // Business Config Audit (2026-07-11) — formerly-hardcoded business values
         payoutMultiplier:      config.payoutMultiplier ?? 2,   // schema default: 2 (2x)
-        orderExpiryMinutes:    config.orderExpiryMinutes ?? 15, // schema default: 15
-        cyclePhases: {
-          thirtyMin: {
-            mergeBeforeEndSec:     config.cyclePhases?.thirtyMin?.mergeBeforeEndSec     ?? 180,
-            equalizerBeforeEndSec: config.cyclePhases?.thirtyMin?.equalizerBeforeEndSec ?? 120,
-            closeBeforeEndSec:     config.cyclePhases?.thirtyMin?.closeBeforeEndSec     ?? 30,
-            celebrateBeforeEndSec: config.cyclePhases?.thirtyMin?.celebrateBeforeEndSec ?? 10,
-          },
-          fullDay: {
-            mergeBeforeEndSec:     config.cyclePhases?.fullDay?.mergeBeforeEndSec     ?? 300,
-            equalizerBeforeEndSec: config.cyclePhases?.fullDay?.equalizerBeforeEndSec ?? 120,
-            closeBeforeEndSec:     config.cyclePhases?.fullDay?.closeBeforeEndSec     ?? 30,
-            celebrateBeforeEndSec: config.cyclePhases?.fullDay?.celebrateBeforeEndSec ?? 10,
-          },
-        },
-        riskRules: {
-          enforceMultiplesOf10:     config.riskRules?.enforceMultiplesOf10     ?? true,  // schema default: true
-          blockOppositeSideBetting: config.riskRules?.blockOppositeSideBetting ?? false, // schema default: false
-          maxFundingOrdersPerHour:  config.riskRules?.maxFundingOrdersPerHour  ?? 0,     // schema default: 0
-          maxWarnings:              config.riskRules?.maxWarnings              ?? 3,     // schema default: 3 (0 = never)
-        },
-        tlsFingerprintDefense: {
-          enabled:        config.tlsFingerprintDefense?.enabled        ?? true,
-          logOnly:        config.tlsFingerprintDefense?.logOnly        ?? true,
-          requireJa3Hash: config.tlsFingerprintDefense?.requireJa3Hash ?? false,
-          blockJa3Hashes: config.tlsFingerprintDefense?.blockJa3Hashes || [],
-        },
         kycRequired:           config.kycRequired           !== false,
         registrationEnabled:   config.registrationEnabled   !== false,
         maintenanceMode:       config.maintenanceMode       || false,
@@ -193,7 +190,7 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
       webUrl, androidUrl, iosUrl, minVersion, latestVersion,
       payoutFeePercent, usdtPricing, merchantOrderLimits, riskRules, betReservePercent, winningsFeePercent,
       cycleDurationMinutes, retentionMonths,
-      payoutMultiplier, orderExpiryMinutes, cyclePhases,
+      payoutMultiplier, cyclePhases,
       footerPages, alertWebhookUrl, tlsFingerprintDefense,
     } = req.body;
 
@@ -230,6 +227,23 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
           (merchantAdminBuy !== undefined && (typeof merchantAdminBuy !== 'number' || !Number.isFinite(merchantAdminBuy) || merchantAdminBuy <= 0))) {
         return res.status(400).json({ success: false, message: 'USDT buy rates must be non-negative; merchant/admin buy rate must be greater than zero.' });
       }
+      // ── A misplaced decimal here is a rail somebody drains ────────────────
+      // `userMerchantBuyInr` prices EVERY USDT purchase, and the sizes are
+      // large: 10,000 typed for 100 sells 500,000 tokens for 50 USDT, and the
+      // first player to notice does not stop at one. 0 stays legal — it is the
+      // schema default and the way to say "not set", which the rail refuses
+      // outright rather than guessing at.
+      //
+      // The band comes from `tokenRates.js`, the one owner of what a USDT rate
+      // means. A second copy of those numbers here would be a bound that
+      // disagrees with the one the pricing path enforces.
+      if (userMerchantBuy !== undefined && userMerchantBuy !== 0 && !isSaneUsdtRate(userMerchantBuy)) {
+        return res.status(400).json({
+          success: false,
+          message: `A USDT rate must be between ₹${USDT_RATE_MIN_INR} and ₹${USDT_RATE_MAX_INR} per USDT, or 0 to leave it unset. `
+            + `Got ₹${userMerchantBuy} — check for a misplaced decimal.`,
+        });
+      }
     }
     if (merchantOrderLimits !== undefined) {
       if (!merchantOrderLimits || typeof merchantOrderLimits !== 'object' || Array.isArray(merchantOrderLimits)) {
@@ -264,6 +278,13 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
         (!Number.isInteger(riskRules.maxFundingOrdersPerHour) || riskRules.maxFundingOrdersPerHour < 0)) {
       return res.status(400).json({ success: false, message: 'riskRules.maxFundingOrdersPerHour must be a non-negative integer.' });
     }
+    // 0 disables it; 60 is one per second, past which the window stops meaning
+    // anything. Bounds match the spec so the route refuses before the write does.
+    if (riskRules?.maxDepositOrdersPerMinute !== undefined &&
+        (!Number.isInteger(riskRules.maxDepositOrdersPerMinute)
+         || riskRules.maxDepositOrdersPerMinute < 0 || riskRules.maxDepositOrdersPerMinute > 60)) {
+      return res.status(400).json({ success: false, message: 'riskRules.maxDepositOrdersPerMinute must be a whole number between 0 and 60 (0 = off).' });
+    }
     // ── Business Config Audit fields ──────────────────────────────────────────
     if (riskRules?.maxWarnings !== undefined &&
         (!Number.isInteger(riskRules.maxWarnings) || riskRules.maxWarnings < 0)) {
@@ -273,16 +294,20 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
         (!Number.isInteger(payoutMultiplier) || payoutMultiplier < 1 || payoutMultiplier > 10)) {
       return res.status(400).json({ success: false, message: 'payoutMultiplier must be an integer between 1 and 10.' });
     }
-    if (orderExpiryMinutes !== undefined &&
-        (!Number.isInteger(orderExpiryMinutes) || orderExpiryMinutes < 1 || orderExpiryMinutes > 1440)) {
-      return res.status(400).json({ success: false, message: 'orderExpiryMinutes must be an integer between 1 and 1440.' });
-    }
-    if (cyclePhases?.thirtyMin !== undefined) {
-      const err = validateCyclePhaseSet('thirtyMin', cyclePhases.thirtyMin, 600);
-      if (err) return res.status(400).json({ success: false, message: err });
-    }
-    if (cyclePhases?.fullDay !== undefined) {
-      const err = validateCyclePhaseSet('fullDay', cyclePhases.fullDay, 3600);
+    // Every declared board, not two of three. The ceiling on each one's
+    // earliest phase is a property of the BOARD and lives on its META entry;
+    // it was two literals here, and the one-minute board — the 60-second block
+    // where an oversized merge is easiest to enter — had no check at all
+    // because its phases were not admin-reachable.
+    for (const phasesKey of Object.keys(SYSTEM_CONFIG_SPEC.fields.cyclePhases?.fields ?? {})) {
+      if (cyclePhases?.[phasesKey] === undefined) continue;
+      const maxMerge = MAX_MERGE_BEFORE_END_SEC[phasesKey];
+      if (maxMerge === undefined) {
+        // A board declared in the spec with no META entry cannot be validated,
+        // and §18.1 says an unknown type fails loudly rather than defaulting.
+        return res.status(400).json({ success: false, message: `cyclePhases.${phasesKey} has no declared block length; it cannot be validated.` });
+      }
+      const err = validateCyclePhaseSet(phasesKey, cyclePhases[phasesKey], maxMerge);
       if (err) return res.status(400).json({ success: false, message: err });
     }
     if (footerPages !== undefined) {
@@ -312,6 +337,36 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
     }
 
     const fieldWrites = [];
+
+    // ── Every OTHER setting the spec declares, accepted by declaration ──────
+    // This pass runs FIRST and the bespoke block below overwrites anything it
+    // touches (a later entry for the same path wins), so nothing here can
+    // bypass a validator or a normalisation that already exists. What it does
+    // is stop a DECLARED setting from being unreachable just because nobody
+    // added a line: `withdrawalHoldMinutes`, both `loadShedding` ceilings and
+    // all eight `ipDefense` fields were read by live middleware and writable by
+    // no route at all — two of them under a comment that called them
+    // "admin-editable". See F-022.
+    //
+    // `internal` fields are skipped: `adminTokenSupply.minted` is the running
+    // issuance total checked against the 10B cap, and an operator who could set
+    // it to 0 could re-authorise the whole supply.
+    //
+    // The spec still validates every value and its bounds when the write is
+    // applied, so an undeclared key or an out-of-range number is refused with
+    // its path named, not silently stored.
+    const collectDeclared = (node, body, path = []) => {
+      if (!body || typeof body !== 'object' || Array.isArray(body)) return;
+      for (const [key, decl] of Object.entries(node.fields ?? {})) {
+        const value = body[key];
+        if (value === undefined) continue;
+        if (decl.type === 'group') { collectDeclared(decl, value, [...path, key]); continue; }
+        if (decl.internal) continue;
+        fieldWrites.push(['SystemConfig', [...path, key].join('.'), value]);
+      }
+    };
+    collectDeclared(SYSTEM_CONFIG_SPEC, req.body);
+
     if (minBet          !== undefined) fieldWrites.push(['SystemConfig', 'betLimits.thirtyMin.min', minBet]);
     if (maxBet          !== undefined) fieldWrites.push(['SystemConfig', 'betLimits.thirtyMin.max', maxBet]);
     if (max30MinBet     !== undefined) fieldWrites.push(['SystemConfig', 'betLimits.thirtyMin.max', max30MinBet]);
@@ -337,10 +392,19 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
     if (payoutFeePercent !== undefined) fieldWrites.push(['SystemConfig', 'payoutFeePercent', payoutFeePercent]);
     if (usdtPricing?.userMerchantBuyInr  !== undefined) fieldWrites.push(['SystemConfig', 'usdtPricing.userMerchantBuyInr', usdtPricing.userMerchantBuyInr]);
     if (usdtPricing?.merchantAdminBuyInr !== undefined) fieldWrites.push(['SystemConfig', 'usdtPricing.merchantAdminBuyInr', usdtPricing.merchantAdminBuyInr]);
-    if (merchantOrderLimits?.minUserTokenPurchaseUsdt !== undefined) fieldWrites.push(['SystemConfig', 'merchantOrderLimits.minUserTokenPurchaseUsdt', merchantOrderLimits.minUserTokenPurchaseUsdt]);
-    if (merchantOrderLimits?.maxUserTokenPurchaseUsdt !== undefined) fieldWrites.push(['SystemConfig', 'merchantOrderLimits.maxUserTokenPurchaseUsdt', merchantOrderLimits.maxUserTokenPurchaseUsdt]);
-    if (merchantOrderLimits?.minAdminTokenPurchaseUsdt !== undefined) fieldWrites.push(['SystemConfig', 'merchantOrderLimits.minAdminTokenPurchaseUsdt', merchantOrderLimits.minAdminTokenPurchaseUsdt]);
-    if (merchantOrderLimits?.maxAdminTokenPurchaseUsdt !== undefined) fieldWrites.push(['SystemConfig', 'merchantOrderLimits.maxAdminTokenPurchaseUsdt', merchantOrderLimits.maxAdminTokenPurchaseUsdt]);
+    // ── EVERY declared limit is writable, derived from the SPEC ─────────────
+    // Four of these were hand-listed and the rest were not, so an operator
+    // could see `maxConsecutiveRejections` on the settings screen and could not
+    // change it — and every limit added since (the response window, the two
+    // unpaid-order caps, the cool-off) arrived unwritable for the same reason.
+    // A hand list is a second declaration of what the group contains, and it is
+    // always the older one.
+    //
+    // Derived from `SYSTEM_CONFIG_SPEC` instead, so a field is editable the
+    // moment it is declared — the §28 rule, applied to a route: derive what a
+    // thing accepts from the thing it is about. `applyConfig` validates each
+    // value against that same spec's bounds on the way in, so nothing here has
+    // to restate them either.
     // Bet funding split (Phase A) — consumed by bet.routes.js via
     // riskValidation.computeBetFundingPlan
     if (betReservePercent !== undefined) fieldWrites.push(['SystemConfig', 'betReservePercent', betReservePercent]);
@@ -354,6 +418,7 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
     if (riskRules?.enforceMultiplesOf10     !== undefined) fieldWrites.push(['SystemConfig', 'riskRules.enforceMultiplesOf10', !!riskRules.enforceMultiplesOf10]);
     if (riskRules?.blockOppositeSideBetting !== undefined) fieldWrites.push(['SystemConfig', 'riskRules.blockOppositeSideBetting', !!riskRules.blockOppositeSideBetting]);
     if (riskRules?.maxFundingOrdersPerHour  !== undefined) fieldWrites.push(['SystemConfig', 'riskRules.maxFundingOrdersPerHour', riskRules.maxFundingOrdersPerHour]);
+    if (riskRules?.maxDepositOrdersPerMinute !== undefined) fieldWrites.push(['SystemConfig', 'riskRules.maxDepositOrdersPerMinute', riskRules.maxDepositOrdersPerMinute]);
     // Business Config Audit (2026-07-11) — formerly-hardcoded values, now admin-owned
     // Review threshold — consumed by users.admin.routes GET /users/flagged to
     // mark a flagged player for review. It does NOT block: a merchant rejection
@@ -361,22 +426,24 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
     if (riskRules?.maxWarnings !== undefined) fieldWrites.push(['SystemConfig', 'riskRules.maxWarnings', riskRules.maxWarnings]);
     // Payout multiplier — consumed by markets/gameEngine.js via riskValidation.computeWinningsPayout
     if (payoutMultiplier   !== undefined) fieldWrites.push(['SystemConfig', 'payoutMultiplier', payoutMultiplier]);
-    // Payment order window — consumed by payment/paymentProcessing.tryAssignMerchant
-    if (orderExpiryMinutes !== undefined) fieldWrites.push(['SystemConfig', 'orderExpiryMinutes', orderExpiryMinutes]);
+    // The payment order window is NOT here. It moved to
+    // payment_mode_policies.processing_window_seconds, because the two
+    // settlement rails have different timelines by design and one global number
+    // cannot express that. Edited at POST /api/admin/payment-mode.
     // Cycle phase offsets — consumed (cached) by markets/cycleGenerator.getCyclePhases.
     // Written per-type as a whole validated subdocument.
-    if (cyclePhases?.thirtyMin !== undefined) fieldWrites.push(['SystemConfig', 'cyclePhases.thirtyMin', {
-      mergeBeforeEndSec:     cyclePhases.thirtyMin.mergeBeforeEndSec,
-      equalizerBeforeEndSec: cyclePhases.thirtyMin.equalizerBeforeEndSec,
-      closeBeforeEndSec:     cyclePhases.thirtyMin.closeBeforeEndSec,
-      celebrateBeforeEndSec: cyclePhases.thirtyMin.celebrateBeforeEndSec,
-    }]);
-    if (cyclePhases?.fullDay !== undefined) fieldWrites.push(['SystemConfig', 'cyclePhases.fullDay', {
-      mergeBeforeEndSec:     cyclePhases.fullDay.mergeBeforeEndSec,
-      equalizerBeforeEndSec: cyclePhases.fullDay.equalizerBeforeEndSec,
-      closeBeforeEndSec:     cyclePhases.fullDay.closeBeforeEndSec,
-      celebrateBeforeEndSec: cyclePhases.fullDay.celebrateBeforeEndSec,
-    }]);
+    // Validated above, board by board; written the same way. Only the four
+    // declared offsets are carried across, so a stray key in the body cannot
+    // ride along into the document.
+    for (const phasesKey of Object.keys(SYSTEM_CONFIG_SPEC.fields.cyclePhases?.fields ?? {})) {
+      if (cyclePhases?.[phasesKey] === undefined) continue;
+      fieldWrites.push(['SystemConfig', `cyclePhases.${phasesKey}`, {
+        mergeBeforeEndSec:     cyclePhases[phasesKey].mergeBeforeEndSec,
+        equalizerBeforeEndSec: cyclePhases[phasesKey].equalizerBeforeEndSec,
+        closeBeforeEndSec:     cyclePhases[phasesKey].closeBeforeEndSec,
+        celebrateBeforeEndSec: cyclePhases[phasesKey].celebrateBeforeEndSec,
+      }]);
+    }
     // Footer navigation (2026-07-13) — consumed by the user panel Footer via system_config
     if (footerPages !== undefined) {
       // Normalize legacy "chat" entries before persisting
@@ -390,8 +457,18 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
     if (tlsFingerprintDefense?.requireJa3Hash !== undefined) fieldWrites.push(['SystemConfig', 'tlsFingerprintDefense.requireJa3Hash', !!tlsFingerprintDefense.requireJa3Hash]);
     if (tlsFingerprintDefense?.blockJa3Hashes !== undefined) fieldWrites.push(['SystemConfig', 'tlsFingerprintDefense.blockJa3Hashes', [...new Set(tlsFingerprintDefense.blockJa3Hashes.map(h => String(h).trim().toLowerCase()))]]);
 
+    // ONE transaction for the whole save. Written one field at a time, an
+    // out-of-range value committed everything before it and abandoned
+    // everything after it — the admin was told the save failed and reloaded
+    // into a form half-changed, with nothing saying which half (§21). The spec
+    // now validates the whole patch before anything is written.
+    const byModel = new Map();
     for (const [modelName, path, value] of fieldWrites) {
-      await setConfigField(modelName, path, value, actor, {
+      if (!byModel.has(modelName)) byModel.set(modelName, []);
+      byModel.get(modelName).push([path, value]);
+    }
+    for (const [modelName, entries] of byModel) {
+      await setConfigFields(modelName, entries, actor, {
         justification: 'Admin bulk system config update via /system/config',
       });
     }
@@ -402,7 +479,7 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
         minBet:          updatedConfig.betLimits?.thirtyMin?.min   || 10,
         maxBet:          updatedConfig.betLimits?.thirtyMin?.max   || 100000,
         maxFullDayBet:   updatedConfig.betLimits?.fullDay?.max     || 500000,
-        minDeposit:      updatedConfig.minDeposit            || 100,
+        minDeposit:      updatedConfig.minDeposit            || 500,  // schema default: 500
         maxDeposit:      updatedConfig.maxDeposit            || 50000,
         minWithdrawal:   updatedConfig.minWithdrawal         || 500,
         maxWithdrawal:   updatedConfig.maxWithdrawal         || 50000,
@@ -428,8 +505,13 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
 
     res.json({ success: true, message: 'System config updated' });
   } catch (error) {
-    console.error('Update system config error:', error);
-    res.status(500).json({ success: false, message: 'Failed to update system config' });
+    // `respondError` routes on the PRESENCE of `err.status` (§2). A spec
+    // violation carries 400 and names the field and its bound, which is the
+    // only form of this message an operator can act on; anything else is still
+    // logged in full and answered with nothing.
+    return respondError(res, error, 'PUT /admin/system/config', {
+      message: 'Failed to update system config',
+    });
   }
 });
 

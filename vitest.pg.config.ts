@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 // Postgres-only tests: the money paths that Postgres itself is responsible for
 // — row locking, the negative-balance guard, the unique-tx_id idempotency gate,
 // the append-only and conserve-to-zero triggers.

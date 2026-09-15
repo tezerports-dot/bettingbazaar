@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * verify-ui-coverage.mjs — the panels and the API agree about what exists.
  *
@@ -31,6 +31,9 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+// Balanced-bracket call extraction, shared with the privacy gates. A regex that
+// stops at the first `);` stops inside `createSubnetLimiter('auth')`.
+import { callsTo, blankComments } from './lib/privacyLists.mjs';
 // Derived from this file's own location, never a hardcoded path: the first
 // version carried the author's checkout path and so could only run there.
 const ROOT = fileURLToPath(new URL('..', import.meta.url)).replace(/\/$/, '');
@@ -47,35 +50,89 @@ const ADMIN_INDEX = readFileSync(join(ROOT,'backend/routes/admin/index.js'),'utf
 const adminMounted = new Set([...ADMIN_INDEX.matchAll(/^import\s+\w+\s+from\s+'([^']+)'/gm)].map(m=>m[1])
   .filter(p=>p.endsWith('.routes.js'))
   .map(p=>p.replace(/^\.\.\/\.\.\//,'backend/').replace(/^\.\//,'backend/routes/admin/')));
-const PREFIX = {
-  'backend/routes.js':'/api/v1/auth','backend/domains/identity/twoFactor.routes.js':'/api/2fa',
-  'backend/routes/winners.routes.js':'/api','backend/routes/app-bootstrap.routes.js':'/api/app',
-  'backend/domains/casino/gameProvider.routes.js':'/api/game','backend/domains/gameRegistry/gameRegistry.routes.js':'/api/game',
-  'backend/domains/telegram/telegram.routes.js':'/api/telegram','backend/domains/markets/bet.routes.js':'/api/bet',
-  'backend/domains/user/user.routes.js':'/api','backend/domains/merchant/merchant.routes.js':'/api/merchant',
-  'backend/domains/payment/payment.routes.js':'/api/payment','backend/domains/support/support.routes.js':'/api/support',
-  'backend/routes/upload.routes.js':'/api','backend/routes/giftcode.routes.js':'/api/giftcode',
-  'backend/routes/payment-config.routes.js':'/api/payment','backend/routes/retention.routes.js':'/api',
-  'backend/routes/sse.routes.js':'/api/sse','backend/routes/wellKnown.routes.js':'/.well-known',
-  'backend/routes/referralRedirect.routes.js':'',
+/**
+ * Where each router is mounted — DERIVED from server.js, not listed here.
+ *
+ * This was a hand-written table mapping router file to prefix: a second
+ * declaration of something server.js already states, and therefore something
+ * that drifts. It drifted the first time a router was added — the routes were
+ * mounted and served, the panel called them, and this gate reported eight DEAD
+ * BUTTONS because its table had never heard of the file. A gate whose failure
+ * mode is "the author forgot to update me" reports the author, not the code.
+ *
+ * So the two statements server.js already makes are read together:
+ *
+ *     import usdtDepositRoutes from './domains/funding/usdtDeposit.routes.js';
+ *     app.use('/api/payment', usdtDepositRoutes);
+ *
+ * A router mounted twice under different prefixes gets BOTH, because both are
+ * real: `payment-config.routes.js` and `payment.routes.js` share `/api/payment`
+ * today and nothing stops a future router serving two.
+ */
+const SERVER = readFileSync(join(ROOT,'backend/server.js'),'utf8');
+const importedAs = new Map();  // local name → repo-relative router file
+for (const m of SERVER.matchAll(/^import\s+(\w+)\s*(?:,\s*\{[^}]*\})?\s+from\s+'(\.[^']+\.js)'/gm)) {
+  const file = clean('backend/' + m[2].replace(/^\.\//,'')).slice(1);
+  if (file.endsWith('.routes.js') || file.endsWith('/routes.js')) importedAs.set(m[1], file);
+}
+const PREFIX = {};
+// `app.use('<prefix>', a, b, router)` — the prefix is the first string literal
+// and the router is the last argument that names an imported router. The
+// middleware between them is not one.
+//
+// The arguments are extracted by BALANCED BRACKETS, through the same helper the
+// privacy gates use. A regex ending at the first `);` stops inside
+// `createSubnetLimiter('auth')` and loses the router behind it — which is how a
+// first attempt at this derivation reported the auth routes as unserved.
+for (const call of callsTo(blankComments(SERVER), 'app.use')) {
+  const prefix = call.args.match(/^\s*'([^']*)'/);
+  if (!prefix) continue;
+  const names = [...call.args.matchAll(/\b([A-Za-z_$][\w$]*)\b/g)].map((x) => x[1]);
+  const router = names.reverse().find((n) => importedAs.has(n));
+  if (!router) continue;
+  const file = importedAs.get(router);
+  const at = prefix[1].replace(/\/+$/, '');
+  if (!(PREFIX[file] ??= []).includes(at)) PREFIX[file].push(at);
+}
+/**
+ * Routers that server.js does NOT mount with `app.use`, and where they land.
+ *
+ * One entry, with its reason. `sse.routes.js` exports `initSSERoutes(app)` — a
+ * function that registers its own handlers, because an SSE stream needs the
+ * response object held open and the manager attached before any request
+ * arrives. There is no `app.use('<prefix>', router)` to read, so this says
+ * where it goes. Adding a line here is a decision somebody made.
+ */
+const MOUNTED_BY_FUNCTION = {
+  'backend/routes/sse.routes.js': ['/api/sse'],
 };
+for (const [file, at] of Object.entries(MOUNTED_BY_FUNCTION)) PREFIX[file] ??= at;
+
+// A router the panel can reach but that this gate cannot locate is a hole in
+// the check, not a pass. Say so rather than silently serving fewer routes.
+if (!Object.keys(PREFIX).length) {
+  console.error('verify-ui-coverage: could not derive any router mount from server.js — the check would pass vacuously.');
+  process.exit(1);
+}
 // Backend routes as matchers.
 const routes = [];
 for (const f of walk(join(ROOT,'backend'), /\.routes\.js$|^routes\.js$/)) {
   const rel = relative(ROOT,f);
-  const prefix = PREFIX[rel] ?? (adminMounted.has(rel) ? '/api/admin' : null);
-  if (prefix === null) continue;
+  const prefixes = PREFIX[rel] ?? (adminMounted.has(rel) ? ['/api/admin'] : null);
+  if (prefixes === null) continue;
   for (const m of readFileSync(f,'utf8').matchAll(/router\.(get|post|put|patch|delete)\(\s*['"`]([^'"`]+)['"`]/g)) {
+   for (const prefix of prefixes) {
     const path = clean(prefix + '/' + m[2]);
     const re = new RegExp('^' + path.split('/').filter(Boolean)
       .map(s => s.startsWith(':') ? '[^/]+' : s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'))
       .map(s=>'/'+s).join('') + '$');
     routes.push({ method: m[1].toUpperCase(), path, re, rel });
+   }
   }
 }
 // Also: routes declared directly on the app in server.js (app.post('/api/admin/login', ...)).
 {
-  const src = readFileSync(join(ROOT,'backend/server.js'),'utf8');
+  const src = SERVER;
   for (const m of src.matchAll(/\bapp\.(get|post|put|patch|delete)\(\s*['"`]([^'"`]+)['"`]/g)) {
     const path = clean(m[2]);
     const re = new RegExp('^' + path.split('/').filter(Boolean)
@@ -103,6 +160,38 @@ for (const [panel, dir] of Object.entries(PANELS)) {
     }
   }
 }
+// ── The same check for panels that do NOT write the path at the call site ───
+//
+// The scan above matches `api.post('/api/...')` — the path as the first
+// argument of the HTTP verb. The merchant panel does not write a single call
+// that way: every path lives in `constants.ts` as `ENDPOINTS.X.Y`, and the call
+// is `request(ENDPOINTS.X.Y(id), { method: 'POST' })`. So the whole panel was
+// exempt from the fatal half of this gate, and a path that 404s sat there while
+// the check reported zero dead buttons.
+//
+// It was found by the INFORMATIONAL `--unused` half, which greps the panel
+// sources as text — the route showed up as "no UI calls this" because the
+// constant named `/api/upload/merchant/…` while `upload.routes.js` is mounted
+// at `/api`. That is the wrong way round: the triage list caught a live 404 the
+// build-failing check did not.
+//
+// So: any string in a panel that LOOKS like an API path must resolve to a route.
+// The method is unknown in this form, so it matches on path alone — a path no
+// route serves at all is a dead button whatever verb it is called with.
+for (const [panel, dir] of Object.entries(PANELS)) {
+  for (const f of walk(join(ROOT,dir), /\.(ts|tsx|js|jsx)$/)) {
+    // Comments mention endpoints constantly — and a mention is not a call.
+    const src = readFileSync(f,'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '');
+    for (const m of src.matchAll(/['"`](\/api\/[^'"`\s]*)['"`]/g)) {
+      const probe = clean(m[1].split('?')[0]).replace(/\$\{[^}]*\}/g,'X');
+      if (routes.some(r => r.re.test(probe))) continue;
+      dead.push({ panel, file: relative(ROOT,f), method: 'ANY', path: probe });
+    }
+  }
+}
+
 const seen = new Set(), uniq = [];
 for (const d of dead) { const k = `${d.panel} ${d.method} ${d.path}`; if (!seen.has(k)) { seen.add(k); uniq.push(d); } }
 

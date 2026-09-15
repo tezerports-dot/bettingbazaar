@@ -1,5 +1,6 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import React, { useEffect, useState } from 'react';
+import { Link } from 'react-router';
 import { Save, Power, AlertTriangle } from 'lucide-react';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import api from '../../services/api';
@@ -8,6 +9,46 @@ import TwoFactorSetup from '../../components/TwoFactorSetup';
 
 // BB token buy/sell rates remain removed: internal token conversion is fixed 1:1.
 // USDT pricing below is buy-only: no user or merchant USDT sell rail exists.
+// §5 MIRROR — the operational half of `merchantOrderLimits`.
+// Backend owner: `SYSTEM_CONFIG_SPEC.fields.merchantOrderLimits.fields` in
+// `database/spec/config.spec.js`; served and accepted by
+// `backend/routes/admin/system.admin.routes.js`, both of which derive from that
+// spec so a field is editable the moment it is declared there.
+//
+// `min`/`max` repeat the spec's bounds so the input refuses out-of-range values
+// before the round trip; the server validates against the spec regardless, so
+// this is a convenience and never the authority. `fallback` is a LOADING
+// placeholder only (§4) and equals the spec default cited beside it — the GET
+// fills every key from the spec, so after load nothing here is read.
+const MERCHANT_ORDER_RULES: Array<{
+  key: string; label: string; min: number; max: number; fallback: number; help: string;
+}> = [
+  { key: 'maxConcurrentDepositOrders', label: 'Concurrent Buy Orders per Merchant',
+    min: 1, max: 10, fallback: 1,   // spec default: 1
+    help: 'How many buy (deposit) orders one merchant may hold at once. Each one holds their tokens for its whole window.' },
+  { key: 'maxConcurrentWithdrawalOrders', label: 'Concurrent Sell Orders per Merchant',
+    min: 1, max: 10, fallback: 1,   // spec default: 1
+    help: 'How many sell (withdrawal) orders one merchant may hold at once.' },
+  { key: 'maxConsecutiveRejections', label: 'Consecutive Refusals Before Suspension',
+    min: 1, max: 20, fallback: 3,   // spec default: 3
+    help: 'Declines and unanswered PAID buys in a row before the merchant is suspended. Any completed order resets the streak. Lifted by an admin, never by a timer.' },
+  { key: 'paidResponseMinutes', label: 'Merchant Response Window on a PAID Buy (minutes)',
+    min: 5, max: 1440, fallback: 30,   // spec default: 30
+    help: 'The player has already paid. After this long with no answer the order goes to the dispute queue for a human, and the silence counts as a refusal.' },
+  { key: 'maxConsecutivePlayerPaymentFailures', label: 'Player Unpaid Buys Before Cool-off',
+    min: 1, max: 50, fallback: 3,   // spec default: 3
+    help: 'Buy orders a player lets expire without paying, in a row, before they are flagged and cannot open a new order. Cleared when a payment actually arrives.' },
+  { key: 'playerOrderLockMinutes', label: 'Player Cool-off Length (minutes)',
+    min: 1, max: 1440, fallback: 60,   // spec default: 60
+    help: 'How long that player cannot open a new order, on BOTH rails. It lifts itself; no admin action is needed.' },
+  { key: 'maxConsecutiveMerchantExpiries', label: 'Expiries Before Assignment is Paused',
+    min: 1, max: 20, fallback: 3,   // spec default: 3
+    help: 'Buy orders sent to one merchant that expired unpaid, in a row. Most often it means that merchant cannot BE paid (dead QR, closed handle). NOT a suspension: they keep their orders, balance and standing, and an admin resumes them.' },
+  { key: 'minAdminTokenPurchase', label: 'Merchant Minimum Token Top-up (tokens)',
+    min: 1, max: Number.MAX_SAFE_INTEGER, fallback: 50000,   // spec default: 50000
+    help: 'Smallest quantity of platform tokens a merchant may buy from the admin in one order.' },
+];
+
 export const SystemSettings: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
@@ -17,7 +58,7 @@ export const SystemSettings: React.FC = () => {
     maintenanceMode: false,
     maintenanceMessage: '',
     registrationEnabled: true,
-    minDeposit: 100,
+    minDeposit: 500,  // schema default: 500
     minWithdrawal: 100,
     minBet: 10,
     maxBet: 50000,
@@ -30,19 +71,43 @@ export const SystemSettings: React.FC = () => {
     winningsFeePercent: 1,     // schema default: 1
     payoutFeePercent: 0,       // schema default: 0
     usdtPricing: { userMerchantBuyInr: 0, merchantAdminBuyInr: 1 },
-    merchantOrderLimits: { minUserTokenPurchaseUsdt: 100, maxUserTokenPurchaseUsdt: 0, minAdminTokenPurchaseUsdt: 100, maxAdminTokenPurchaseUsdt: 0 },
+    // Every key the spec declares, so every one is sent back on save. The
+    // operational half is seeded from MERCHANT_ORDER_RULES rather than restated.
+    merchantOrderLimits: {
+      minUserTokenPurchaseUsdt: 100, maxUserTokenPurchaseUsdt: 0,
+      minAdminTokenPurchaseUsdt: 100, maxAdminTokenPurchaseUsdt: 0,
+      ...Object.fromEntries(MERCHANT_ORDER_RULES.map((r) => [r.key, r.fallback])),
+    } as Record<string, number>,
     cycleDurationMinutes: 30,  // schema default: 30 (Phase X X-5)
     // Business Config Audit (2026-07-11) — formerly-hardcoded business values
     payoutMultiplier: 2,       // schema default: 2 (2x)
-    orderExpiryMinutes: 15,    // schema default: 15
     cyclePhases: {
+      // The one-minute board is declared in the spec and run by the engine, and
+      // was missing from BOTH halves of this screen and from the route's own
+      // response — a board whose phase timings nobody could see or change.
+      oneMin:    { mergeBeforeEndSec: 12,  equalizerBeforeEndSec: 9,   closeBeforeEndSec: 5,  celebrateBeforeEndSec: 3 },  // schema defaults: 12/9/5/3
       thirtyMin: { mergeBeforeEndSec: 180, equalizerBeforeEndSec: 120, closeBeforeEndSec: 30, celebrateBeforeEndSec: 10 },
       fullDay:   { mergeBeforeEndSec: 300, equalizerBeforeEndSec: 120, closeBeforeEndSec: 30, celebrateBeforeEndSec: 10 },
+    },
+    // How long a withdrawal freezes before the worker settles it.
+    withdrawalHoldMinutes: 60,  // schema default: 60
+    // Overload ceilings — past either one the server answers 503 fast rather
+    // than admitting work into a queue that will never drain.
+    loadShedding: { enabled: true, maxInFlight: 300, maxEventLoopLagMs: 0 },  // schema defaults: true / 300 / 0
+    // IP-rotation defence. `max: 0` means that surge layer is off.
+    ipDefense: {
+      enabled: true, subnetMultiplier: 8,  // schema defaults: true / 8
+      surge: {
+        auth:       { windowSec: 60, max: 0 },  // schema defaults: 60 / 0
+        withdrawal: { windowSec: 60, max: 0 },  // schema defaults: 60 / 0
+        funding:    { windowSec: 60, max: 0 },  // schema defaults: 60 / 0
+      },
     },
     riskRules: {
       enforceMultiplesOf10: true,      // schema default: true
       blockOppositeSideBetting: false, // schema default: false
       maxFundingOrdersPerHour: 0,      // schema default: 0 (off)
+      maxDepositOrdersPerMinute: 1,    // schema default: 1 (0 = off)
       maxWarnings: 3,                  // schema default: 3 (0 = never mark for review)
     },
     // Footer navigation (2026-07-13) — schema default: the historical five tabs
@@ -75,7 +140,7 @@ export const SystemSettings: React.FC = () => {
           maintenanceMode: response.data.maintenanceMode || false,
           maintenanceMessage: response.data.maintenanceMessage || '',
           registrationEnabled: response.data.registrationEnabled !== false,
-          minDeposit: response.data.minDeposit || 100,
+          minDeposit: response.data.minDeposit || 500,  // schema default: 500
           minWithdrawal: response.data.minWithdrawal || 100,
           minBet: response.data.minBet || 10,
           maxBet: response.data.maxBet || 50000,
@@ -89,16 +154,24 @@ export const SystemSettings: React.FC = () => {
             userMerchantBuyInr:  response.data.usdtPricing?.userMerchantBuyInr  ?? 0, // schema default: 0
             merchantAdminBuyInr: response.data.usdtPricing?.merchantAdminBuyInr ?? 1, // schema default: 1
           },
+          // The GET derives from the spec and fills EVERY key with its default,
+          // so the server's object is taken whole. The placeholders underneath
+          // it exist only for a response that predates a newly declared field.
           merchantOrderLimits: {
-            minUserTokenPurchaseUsdt:  response.data.merchantOrderLimits?.minUserTokenPurchaseUsdt  ?? 100,
-            maxUserTokenPurchaseUsdt:  response.data.merchantOrderLimits?.maxUserTokenPurchaseUsdt  ?? 0,
-            minAdminTokenPurchaseUsdt: response.data.merchantOrderLimits?.minAdminTokenPurchaseUsdt ?? 100,
-            maxAdminTokenPurchaseUsdt: response.data.merchantOrderLimits?.maxAdminTokenPurchaseUsdt ?? 0,
-          },
+            minUserTokenPurchaseUsdt: 100, maxUserTokenPurchaseUsdt: 0,
+            minAdminTokenPurchaseUsdt: 100, maxAdminTokenPurchaseUsdt: 0,
+            ...Object.fromEntries(MERCHANT_ORDER_RULES.map((r) => [r.key, r.fallback])),
+            ...(response.data.merchantOrderLimits ?? {}),
+          } as Record<string, number>,
           cycleDurationMinutes: response.data.cycleDurationMinutes ?? 30, // schema default: 30
           payoutMultiplier:   response.data.payoutMultiplier   ?? 2,  // schema default: 2
-          orderExpiryMinutes: response.data.orderExpiryMinutes ?? 15, // schema default: 15
           cyclePhases: {
+            oneMin: {
+              mergeBeforeEndSec:     response.data.cyclePhases?.oneMin?.mergeBeforeEndSec     ?? 12, // schema default: 12
+              equalizerBeforeEndSec: response.data.cyclePhases?.oneMin?.equalizerBeforeEndSec ?? 9,  // schema default: 9
+              closeBeforeEndSec:     response.data.cyclePhases?.oneMin?.closeBeforeEndSec     ?? 5,  // schema default: 5
+              celebrateBeforeEndSec: response.data.cyclePhases?.oneMin?.celebrateBeforeEndSec ?? 3,  // schema default: 3
+            },
             thirtyMin: {
               mergeBeforeEndSec:     response.data.cyclePhases?.thirtyMin?.mergeBeforeEndSec     ?? 180,
               equalizerBeforeEndSec: response.data.cyclePhases?.thirtyMin?.equalizerBeforeEndSec ?? 120,
@@ -116,7 +189,32 @@ export const SystemSettings: React.FC = () => {
             enforceMultiplesOf10:     response.data.riskRules?.enforceMultiplesOf10     ?? true,
             blockOppositeSideBetting: response.data.riskRules?.blockOppositeSideBetting ?? false,
             maxFundingOrdersPerHour:  response.data.riskRules?.maxFundingOrdersPerHour  ?? 0,
+            maxDepositOrdersPerMinute: response.data.riskRules?.maxDepositOrdersPerMinute ?? 1,
             maxWarnings:              response.data.riskRules?.maxWarnings              ?? 3,
+          },
+          withdrawalHoldMinutes: response.data.withdrawalHoldMinutes ?? 60, // schema default: 60
+          loadShedding: {
+            enabled:           response.data.loadShedding?.enabled           ?? true, // schema default: true
+            maxInFlight:       response.data.loadShedding?.maxInFlight       ?? 300,  // schema default: 300
+            maxEventLoopLagMs: response.data.loadShedding?.maxEventLoopLagMs ?? 0,    // schema default: 0
+          },
+          ipDefense: {
+            enabled:          response.data.ipDefense?.enabled          ?? true, // schema default: true
+            subnetMultiplier: response.data.ipDefense?.subnetMultiplier ?? 8,    // schema default: 8
+            surge: {
+              auth: {
+                windowSec: response.data.ipDefense?.surge?.auth?.windowSec ?? 60, // schema default: 60
+                max:       response.data.ipDefense?.surge?.auth?.max       ?? 0,  // schema default: 0
+              },
+              withdrawal: {
+                windowSec: response.data.ipDefense?.surge?.withdrawal?.windowSec ?? 60, // schema default: 60
+                max:       response.data.ipDefense?.surge?.withdrawal?.max       ?? 0,  // schema default: 0
+              },
+              funding: {
+                windowSec: response.data.ipDefense?.surge?.funding?.windowSec ?? 60, // schema default: 60
+                max:       response.data.ipDefense?.surge?.funding?.max       ?? 0,  // schema default: 0
+              },
+            },
           },
           footerPages: response.data.footerPages?.length ? response.data.footerPages : ['home', 'results', 'winners', 'promo', 'profile'],
           alertWebhookUrl: response.data.alertWebhookUrl || '',
@@ -184,7 +282,7 @@ export const SystemSettings: React.FC = () => {
       {/* Account security — THIS admin's own second factor, not a
           platform-wide setting. It sits first because an operator who has not
           enrolled is the single most valuable unprotected credential on the
-          platform (LAUNCH_READINESS §F). */}
+          platform (docs/PROJECT_STATUS.md §3.3). */}
       <TwoFactorSetup />
 
       {/* Maintenance Mode Warning */}
@@ -517,6 +615,47 @@ export const SystemSettings: React.FC = () => {
             </div>
           </div>
 
+          {/* ── Merchant and player order rules ──────────────────────────────
+              Every operational limit the backend acts on, rendered from the
+              §5 mirror above. Adding a field to SYSTEM_CONFIG_SPEC and a row to
+              MERCHANT_ORDER_RULES is all it takes — no per-field wiring here.
+
+              None of these has a timer attached at the far end: a suspension
+              and an assignment pause are both lifted by an admin who has read
+              the reason (CLAUDE.md §2). The one clock that lifts itself is the
+              player cool-off, which the database's own timestamp expires. */}
+          <div className="pt-4 border-t border-dark-700">
+            <h3 className="font-semibold mb-1">Merchant &amp; Player Order Rules</h3>
+            <p className="text-xs text-gray-500 mb-4">
+              These govern who may be handed the next order and what happens when one is not served.
+              A merchant&apos;s order CEILING is not here — it is the tokens they hold, reserved by the
+              deposit escrow at assignment. The FLOOR is Minimum Deposit / Minimum Withdrawal above.
+            </p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {MERCHANT_ORDER_RULES.map((rule) => (
+                <div key={rule.key}>
+                  <label className="label">{rule.label}</label>
+                  <input
+                    type="number" min={rule.min} max={rule.max} step={1}
+                    value={formData.merchantOrderLimits[rule.key] ?? rule.fallback}
+                    onChange={(e) => setFormData({
+                      ...formData,
+                      merchantOrderLimits: {
+                        ...formData.merchantOrderLimits,
+                        [rule.key]: Math.min(
+                          rule.max,
+                          Math.max(rule.min, Math.floor(Number(e.target.value) || rule.min)),
+                        ),
+                      },
+                    })}
+                    className="input"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">{rule.help}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+
           <div className="pt-4 border-t border-dark-700">
             <label className="label">Withdrawal Payout Fee (%)</label>
             <input
@@ -583,6 +722,21 @@ export const SystemSettings: React.FC = () => {
             </div>
 
             <div>
+              <label className="label">Purchase Pace (new buys per minute per user)</label>
+              <input
+                type="number" min={0} max={60} step={1}
+                value={formData.riskRules.maxDepositOrdersPerMinute}
+                onChange={(e) => setFormData({ ...formData, riskRules: { ...formData.riskRules, maxDepositOrdersPerMinute: Math.min(60, Math.max(0, Math.floor(Number(e.target.value) || 0))) } })}
+                className="input"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                How often one player may START a purchase. A player holds one open buy at a
+                time anyway, so a second attempt inside the same minute is a retry storm or a
+                script, not somebody buying twice. 0 = off. Takes effect immediately — no redeploy.
+              </p>
+            </div>
+
+            <div>
               <label className="label">Flag For Review After N Payment Warnings</label>
               <input
                 type="number" min={0} step={1}
@@ -599,17 +753,17 @@ export const SystemSettings: React.FC = () => {
               </p>
             </div>
 
+            {/* The payment order window lives on the settlement rail now: the
+                two rails have different timelines by design and one global
+                number could not express that. Pointing at its new home rather
+                than deleting the field silently — an operator who came here to
+                change it needs to be told where it went. */}
             <div>
-              <label className="label">Payment Order Expiry (minutes)</label>
-              <input
-                type="number" min={1} max={1440} step={1}
-                value={formData.orderExpiryMinutes}
-                onChange={(e) => setFormData({ ...formData, orderExpiryMinutes: Math.max(1, Math.min(1440, Math.floor(Number(e.target.value) || 1))) })}
-                className="input"
-              />
+              <label className="label">Payment Order Expiry</label>
               <p className="text-xs text-gray-500 mt-1">
-                How long a user has to pay the assigned merchant before the order auto-expires
-                and any locked balance is refunded. Applies to new assignments only. 1–1440 min.
+                Moved to <Link to="/business-policy/settlement-rail" className="underline">Settlement Rail</Link>,
+                where it is set per rail: paying a merchant&rsquo;s UPI and drawing cash at an ATM
+                do not take the same time. Your existing value was carried over.
               </p>
             </div>
           </div>
@@ -648,7 +802,7 @@ export const SystemSettings: React.FC = () => {
             Values must strictly decrease: Merge &gt; Equalizer &gt; Close &gt; Celebrate.
             Takes effect within ~30 seconds.
           </p>
-          {([['thirtyMin', '30-Min Cycle'], ['fullDay', 'Full-Day Cycle']] as const).map(([key, label]) => (
+          {([['oneMin', '1-Min Cycle'], ['thirtyMin', '30-Min Cycle'], ['fullDay', 'Full-Day Cycle']] as const).map(([key, label]) => (
             <div key={key} className="mb-3">
               <p className="text-sm font-medium mb-1">{label}</p>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
@@ -677,6 +831,149 @@ export const SystemSettings: React.FC = () => {
                     />
                   </div>
                 ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* ── OPERATIONAL DEFENCES ─────────────────────────────────────────────
+          Every field here was DECLARED in the config spec and read by live
+          code, and reachable from no screen and no route: `withdrawalHoldMinutes`
+          by the withdrawal worker, `loadShedding` by the overload middleware,
+          `ipDefense` by the IP-rotation limiter — the last two under source
+          comments that called them "admin-editable" (F-022). Changing any of
+          them meant editing the spec and redeploying. */}
+      <div className="card">
+        <h3 className="text-lg font-semibold mb-1">Operational Defences</h3>
+        <p className="text-xs text-gray-400 mb-4">
+          Withdrawal timing and the two overload ceilings. These take effect within about 30 seconds
+          of saving — nothing here needs a restart.
+        </p>
+
+        <div>
+          <label className="label">Withdrawal Hold (minutes)</label>
+          <input
+            type="number" min={0} max={1440} step={1}
+            value={formData.withdrawalHoldMinutes}
+            onChange={(e) => setFormData({
+              ...formData,
+              withdrawalHoldMinutes: Math.min(1440, Math.max(0, Math.floor(Number(e.target.value) || 0))),
+            })}
+            className="input"
+          />
+          <p className="text-xs text-gray-500 mt-1">
+            How long a withdrawal is frozen on both sides before the worker settles it. 0 settles immediately.
+          </p>
+        </div>
+
+        <div className="pt-4 mt-4 border-t border-dark-700">
+          <label className="flex items-center space-x-2 mb-2">
+            <input
+              type="checkbox"
+              checked={formData.loadShedding.enabled}
+              onChange={(e) => setFormData({ ...formData, loadShedding: { ...formData.loadShedding, enabled: e.target.checked } })}
+            />
+            <span className="label mb-0">Load shedding</span>
+          </label>
+          <p className="text-xs text-gray-500 mb-3">
+            Past either ceiling the server answers 503 straight away rather than admitting work into a
+            queue that will never drain. Both default to values only genuine overload reaches — ordinary
+            traffic and settlement bursts never see one.
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="label">Max Requests In Flight</label>
+              <input
+                type="number" min={0} step={10}
+                value={formData.loadShedding.maxInFlight}
+                onChange={(e) => setFormData({ ...formData, loadShedding: { ...formData.loadShedding, maxInFlight: Math.max(0, Math.floor(Number(e.target.value) || 0)) } })}
+                className="input"
+              />
+              <p className="text-xs text-gray-500 mt-1">0 turns this ceiling off.</p>
+            </div>
+            <div>
+              <label className="label">Max Event-Loop Lag (ms)</label>
+              <input
+                type="number" min={0} step={10}
+                value={formData.loadShedding.maxEventLoopLagMs}
+                onChange={(e) => setFormData({ ...formData, loadShedding: { ...formData.loadShedding, maxEventLoopLagMs: Math.max(0, Math.floor(Number(e.target.value) || 0)) } })}
+                className="input"
+              />
+              <p className="text-xs text-gray-500 mt-1">0 turns this ceiling off.</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="pt-4 mt-4 border-t border-dark-700">
+          <label className="flex items-center space-x-2 mb-2">
+            <input
+              type="checkbox"
+              checked={formData.ipDefense.enabled}
+              onChange={(e) => setFormData({ ...formData, ipDefense: { ...formData.ipDefense, enabled: e.target.checked } })}
+            />
+            <span className="label mb-0">IP-rotation defence</span>
+          </label>
+          <p className="text-xs text-gray-500 mb-3">
+            Sits on top of the per-IP limiters. Origin and traffic shape only — no geo or ISP lookups
+            and no third-party reputation. A surge <strong>Max of 0 means that layer is off</strong>.
+          </p>
+          <div className="mb-3">
+            <label className="label">Subnet Multiplier</label>
+            <input
+              type="number" min={1} step={1}
+              value={formData.ipDefense.subnetMultiplier}
+              onChange={(e) => setFormData({ ...formData, ipDefense: { ...formData.ipDefense, subnetMultiplier: Math.max(1, Math.floor(Number(e.target.value) || 1)) } })}
+              className="input"
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              How much more a whole /24 (or /64) may do than one address, before the subnet itself is limited.
+            </p>
+          </div>
+          {([
+            ['auth', 'Login & OTP'],
+            ['withdrawal', 'Withdrawals'],
+            ['funding', 'Deposits & funding'],
+          ] as const).map(([key, label]) => (
+            <div key={key} className="mb-3">
+              <p className="text-sm font-medium mb-1">{label}</p>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-xs text-gray-400">Window (sec)</label>
+                  <input
+                    type="number" min={1} step={1}
+                    value={formData.ipDefense.surge[key].windowSec}
+                    onChange={(e) => setFormData({
+                      ...formData,
+                      ipDefense: {
+                        ...formData.ipDefense,
+                        surge: {
+                          ...formData.ipDefense.surge,
+                          [key]: { ...formData.ipDefense.surge[key], windowSec: Math.max(1, Math.floor(Number(e.target.value) || 1)) },
+                        },
+                      },
+                    })}
+                    className="input"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-gray-400">Max in window (0 = off)</label>
+                  <input
+                    type="number" min={0} step={1}
+                    value={formData.ipDefense.surge[key].max}
+                    onChange={(e) => setFormData({
+                      ...formData,
+                      ipDefense: {
+                        ...formData.ipDefense,
+                        surge: {
+                          ...formData.ipDefense.surge,
+                          [key]: { ...formData.ipDefense.surge[key], max: Math.max(0, Math.floor(Number(e.target.value) || 0)) },
+                        },
+                      },
+                    })}
+                    className="input"
+                  />
+                </div>
               </div>
             </div>
           ))}

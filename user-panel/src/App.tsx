@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * App.tsx
  *
@@ -40,7 +40,6 @@ const SportsPage          = React.lazy(() => import('./pages/SportsPage'));
 const WinnersPage         = React.lazy(() => import('./pages/WinnersPage'));
 const LeaderboardPage     = React.lazy(() => import('./pages/LeaderboardPage'));
 const WalletPage          = React.lazy(() => import('./pages/WalletPage'));
-const GiftCodePage        = React.lazy(() => import('./pages/GiftCodePage'));
 const TelegramAuthPage = React.lazy(() => import('./pages/TelegramAuthPage'));
 const ReferralPage = React.lazy(() => import('./pages/ReferralPage'));
 import ErrorBoundary from './components/ui/ErrorBoundary';
@@ -231,7 +230,6 @@ const App: React.FC = () => (
 
                           {/* Finance */}
                           <Route path="/wallet"          element={lazy(<WalletPage />)} />
-                          <Route path="/gift-code"       element={lazy(<GiftCodePage />)} />
 
                           {/* Where a bot login link lands. Recovery is no longer a
                               page in this app — it is a second Telegram bot. */}

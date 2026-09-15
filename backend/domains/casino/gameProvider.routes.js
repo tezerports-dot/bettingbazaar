@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * game-providers.routes.js
  *
@@ -23,6 +23,7 @@ import { networkClient } from '../../services/networkClient.js';
 import { verifyWebhookSignature } from './webhookSignature.js';
 // Credentials are ciphertext in the row; they become usable only here.
 import { sealCredential, openProviderSecrets } from './providerCredentials.js';
+import { serverError } from '../../shared/httpError.js';
 
 const router = express.Router();
 
@@ -106,7 +107,7 @@ router.get('/providers', async (req, res) => {
     }
     res.json({ success: true, providers: grouped });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    return serverError(res, err, 'GET /api/game/providers', 'Games are unavailable right now.');
   }
 });
 
@@ -244,7 +245,7 @@ router.post('/launch', authenticate, async (req, res) => {
     res.json({ success: true, launchUrl, sessionId });
   } catch (err) {
     console.error('Game launch error:', err);
-    res.status(500).json({ success: false, message: err.message });
+    return serverError(res, err, 'POST /launch');
   }
 });
 
@@ -273,7 +274,13 @@ router.post('/wallet/:providerKey', async (req, res) => {
     const secrets = await db.games.getProviderSecrets(providerKey);
     if (!secrets) return res.status(404).json({ success: false });
 
-    const verdict = verifyWebhookSignature(openProviderSecrets(secrets).webhookSecret, req.headers, req.body);
+    // `req.rawBody` is the exact buffer, stashed by the scoped parser in
+    // server.js. The verifier checks it first and the re-serialisation second,
+    // so a provider that signs the real bytes verifies and one whose serialiser
+    // happened to match ours keeps working.
+    const verdict = verifyWebhookSignature(
+      openProviderSecrets(secrets).webhookSecret, req.headers, req.body, req.rawBody,
+    );
     if (!verdict.ok) return res.status(verdict.status).json({ success: false, message: verdict.message });
 
     // Normalise the payload — every supplier spells these differently.
@@ -345,7 +352,7 @@ router.post('/wallet/:providerKey', async (req, res) => {
 // received, which is a stronger guarantee than masking one it did.
 
 // GET /api/admin/game-providers
-router.get('/admin/game-providers', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/admin/game-providers', authenticate, isAdmin, async (req, res) => {
   try {
     await seedProviders();
     res.json({ success: true, providers: await db.games.listProviders() });
@@ -432,7 +439,7 @@ router.post('/admin/game-providers/:key/test', authenticate, isAdmin, async (req
 });
 
 // GET /api/admin/game-transactions — provider callback history
-router.get('/admin/game-transactions', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/admin/game-transactions', authenticate, isAdmin, async (req, res) => {
   try {
     const { providerKey, userId, txType, page = 1, limit = 30 } = req.query;
     // The page and its total come back from one query, so the footer count and

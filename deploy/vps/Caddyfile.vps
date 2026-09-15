@@ -1,4 +1,4 @@
-# GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file.
+# GOVERNANCE: Read CLAUDE.md before editing this file.
 # ══════════════════════════════════════════════════════════════════════════════
 # VPS edge — automatic HTTPS + routing to the two serving roles.
 #
@@ -18,7 +18,7 @@
 # Multi-domain is plain redundancy: every hostname serves the same app, the same
 # routes, the same behaviour (backend/config/network.config.js). Nothing here
 # takes client IP, geo or ISP as an input, and no per-domain logic exists —
-# that constraint is deliberate and load-bearing (04-GOVERNANCE.md §20).
+# that constraint is deliberate and load-bearing (CLAUDE.md §20).
 # ══════════════════════════════════════════════════════════════════════════════
 
 {

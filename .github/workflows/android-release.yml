@@ -1,4 +1,4 @@
-# GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file.
+# GOVERNANCE: Read CLAUDE.md before editing this file.
 # Builds the native Android app — a signed APK (sideload / direct download) and
 # a signed AAB (Play Store upload).
 #

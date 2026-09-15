@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 // The global /api/* rate-limit backstop must NOT throttle phantom (ghost) bet
 // placement — phantom managers fire many equalizer bets in quick succession to
 // keep the display pool balanced. The exemption is expressed as the

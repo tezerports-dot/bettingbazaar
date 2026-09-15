@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /** merchant.admin.routes.js — admin-facing merchant management. Domain: Merchant
  * (BBEPS Phase 003 §3.3). Moved from backend/routes/admin/merchants.admin.routes.js
  * on 2026-07-01 (BBEPS Phase 004 migration). */
@@ -9,6 +9,11 @@ import { creditMerchantTokens, debitMerchantTokens } from './merchantWallet.serv
 import { MERCHANT_CURRENCY, MERCHANT_CURRENCIES, merchantTypeOf } from './merchantCurrency.js';
 import * as issuance from '#db/repositories/adminIssuance.js';
 import { requireIdempotencyKey } from '../../middleware/idempotencyKey.js';
+import { CASH_DENOMINATIONS_PAISE, isCashDenomination } from './denominations.js';
+import { rupeesToPaise } from '../../shared/money.js';
+import { assertExternalHttpsUrl } from '../../shared/storedUrl.js';
+import { assertStaffPassword } from '../identity/passwordPolicy.js';
+import { serverError, respondError } from '../../shared/httpError.js';
 
 const router = express.Router();
 
@@ -132,7 +137,7 @@ router.get('/merchants', authenticate, isAdmin, async (req, res) => {
  */
 
 // ✅ FIX #20: Audit log endpoint now uses EnhancedAuditLog model (defined in models/audit.model.js)
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 router.get('/merchants/:merchantId', authenticate, isAdmin, async (req, res) => {
   try {
     const { merchantId } = req.params;
@@ -199,31 +204,74 @@ router.put('/merchants/:merchantId/activate', authenticate, isAdmin, async (req,
 });
 
 /**
- * Set the order range an admin will route to this merchant.
+ * Set this merchant's concurrency cap and, on the cash rail, their tier.
  *
- * ── One owner for the value ─────────────────────────────────────────────────
- * This wrote `merchantLimits.perTransactionLimit` onto the ACCOUNT, while the
- * merchant record carried `minOrder`/`maxOrder` for the same thing — two
- * owners for one number, which the assignment service read from the merchant
- * and this route wrote to the account. Changing a limit here therefore changed
- * nothing about which orders the merchant was offered.
+ * ── The order RANGE is gone, and nothing replaced it ────────────────────────
+ * This route used to write `minOrder`/`maxOrder`. Two owners had already been
+ * collapsed into one here — `merchantLimits.perTransactionLimit` on the account
+ * versus the merchant row — and the surviving one turned out to gate nothing:
+ * `assignmentCandidates` never named either column, and the only filter on them
+ * was in the admin's available-merchants LIST, a screen. An admin could set a
+ * range, be told it saved, and the merchant would be offered exactly the same
+ * orders. §3: an admin-editable field with no consumer is a violation, so both
+ * are removed rather than given one.
  *
- * The merchant row owns it. That is the row assignment reads, and the row that
- * refuses a range excluding every amount.
+ * What they were reaching for has owners already. The CEILING is the tokens the
+ * merchant holds, and it is enforced rather than checked: the deposit escrow
+ * reserves them the moment an order becomes theirs (F-018). The FLOOR is the
+ * platform's — `SystemConfig.minDeposit` / `minWithdrawal`, 500 tokens, the
+ * same for everyone, because a small order still takes real inventory out of
+ * circulation for the length of its window.
  */
 router.put('/merchants/:merchantId/limits', authenticate, isAdmin, async (req, res) => {
   try {
     const { merchantId } = req.params;
-    const { minOrder, maxOrder, perTransactionLimit, minTransaction } = req.body;
+    const { cashDenomination } = req.body;
 
     // The panel sends either spelling. Both mean the same range.
     const patch = {};
-    const nextMax = maxOrder ?? perTransactionLimit;
-    const nextMin = minOrder ?? minTransaction;
-    if (nextMin !== undefined) patch.minOrder = Number(nextMin);
-    if (nextMax !== undefined) patch.maxOrder = Number(nextMax);
+
+    // ── The cash rail's amount: ONE denomination, or none ────────────────────
+    // The range above governs the UPI rail. On the cash rail a merchant stands
+    // at an ATM and the machine dispenses a fixed amount, so their capability
+    // is a single figure — and it is exactly one, which is why this is a
+    // column rather than a list. `null` withdraws cash-rail approval entirely.
+    if (cashDenomination !== undefined) {
+      if (cashDenomination === null) {
+        patch.cashDenominationPaise = null;
+      } else {
+        const paise = rupeesToPaise(cashDenomination);
+        if (!isCashDenomination(paise)) {
+          return res.status(400).json({
+            success: false,
+            message: `Not a cash denomination: ₹${cashDenomination}. An ATM dispenses ${
+              CASH_DENOMINATIONS_PAISE.map((v) => `₹${v / 100}`).join(', ')} and nothing else.`,
+          });
+        }
+        patch.cashDenominationPaise = paise;
+      }
+    }
+
     if (!Object.keys(patch).length) {
       return res.status(400).json({ success: false, message: 'No limit fields provided.' });
+    }
+
+    // Changing what a merchant serves while they are holding an order changes
+    // the amount they were assigned under. The same shape as the delete guard:
+    // refuse, name the orders, and let the admin wait or reassign.
+    if (patch.cashDenominationPaise !== undefined) {
+      // `getActiveOrderCounts` is already the one owner of this number, derived
+      // from `order_states` rather than accumulated — a second counter here
+      // would be a second answer waiting to disagree.
+      const counts = await db.merchants.getActiveOrderCounts([merchantId]);
+      const open = counts.get(String(merchantId))?.total ?? 0;
+      if (open > 0) {
+        return res.status(409).json({
+          success: false,
+          reason: 'MERCHANT_HAS_OPEN_ORDERS',
+          message: `This merchant is holding ${open} open order(s). Changing the denomination now would change the amount they were assigned under — wait for them to finish, or reassign first.`,
+        });
+      }
     }
 
     let merchant;
@@ -240,7 +288,9 @@ router.put('/merchants/:merchantId/limits', authenticate, isAdmin, async (req, r
     }
     if (!merchant) return res.status(404).json({ success: false, message: 'Merchant not found' });
 
-    const limits = { minOrder: merchant.minOrder, maxOrder: merchant.maxOrder };
+    const limits = {
+      cashDenomination: merchant.cashDenomination,
+    };
 
     await db.audit.recordDetailed({
       performedBy: req.user.userId, action: 'MERCHANT_LIMITS_UPDATED', category: 'MERCHANT',
@@ -276,7 +326,7 @@ router.put('/merchants/:merchantId/limits', authenticate, isAdmin, async (req, r
 router.put('/merchants/:merchantId/capabilities', authenticate, isAdmin, async (req, res) => {
   try {
     const { merchantId } = req.params;
-    const { acceptsDeposits, acceptsWithdrawals, acceptedCurrencies, merchantType, minOrder, maxOrder } = req.body;
+    const { acceptsDeposits, acceptsWithdrawals, acceptedCurrencies, merchantType } = req.body;
 
     const merchant = await db.merchants.getMerchant(merchantId);
     if (!merchant) return res.status(404).json({ success: false, message: 'Merchant not found' });
@@ -302,23 +352,14 @@ router.put('/merchants/:merchantId/capabilities', authenticate, isAdmin, async (
         if (nextRail === MERCHANT_CURRENCY.USDT) {
           patch.bankUpiId = null; patch.bankAccountNo = null;
           patch.bankIfsc = null; patch.bankAccountHolderName = null;
-          patch.qrCodeUrl = null;
         } else {
-          patch.usdtWalletAddress = null;
+          patch.usdtAddressTrc20 = null; patch.usdtAddressBep20 = null;
         }
       }
       patch.acceptedCurrencies = rails;
     }
     if (typeof acceptsDeposits === 'boolean')    patch.acceptsDeposits = acceptsDeposits;
     if (typeof acceptsWithdrawals === 'boolean') patch.acceptsWithdrawals = acceptsWithdrawals;
-    if (minOrder !== undefined) {
-      if (!(Number(minOrder) >= 0)) return res.status(400).json({ success: false, message: 'minOrder must be >= 0.' });
-      patch.minOrder = Number(minOrder);
-    }
-    if (maxOrder !== undefined) {
-      if (!(Number(maxOrder) > 0)) return res.status(400).json({ success: false, message: 'maxOrder must be > 0.' });
-      patch.maxOrder = Number(maxOrder);
-    }
 
     // The range and the rail are checked by the ROW as well. These messages
     // exist so an admin gets one they can act on rather than a constraint name.
@@ -337,7 +378,6 @@ router.put('/merchants/:merchantId/capabilities', authenticate, isAdmin, async (
     const capabilities = {
       acceptsDeposits: updated.acceptsDeposits, acceptsWithdrawals: updated.acceptsWithdrawals,
       merchantType: updated.merchantType, acceptedCurrencies: updated.acceptedCurrencies,
-      minOrder: updated.minOrder, maxOrder: updated.maxOrder,
     };
 
     // Not swallowed. This is the record of an admin changing which orders a
@@ -450,6 +490,65 @@ router.put('/merchants/:merchantId/approve', authenticate, isAdmin, async (req, 
   }
 });
 
+/**
+ * Lift an assignment pause after speaking to the merchant.
+ *
+ * The merchant was paused because three buy orders in a row expired with nobody
+ * paying — which says nothing about their honesty and quite a lot about whether
+ * anyone can actually pay them. There is no timer on it, deliberately: a clock
+ * cannot tell whether the QR was fixed, and an admin who has just had the
+ * conversation can.
+ *
+ * SEPARATE from approve/suspend, because it answers a different question (§7).
+ * `approveMerchant` is about whether this merchant is allowed to trade at all;
+ * this is about whether the platform currently believes they are reachable.
+ * Folding it into approve would mean lifting a pause required un-suspending a
+ * merchant nobody had suspended.
+ *
+ * The expiry streak is zeroed with it, in the same statement — left at three,
+ * the next ordinary expiry pauses them again and this decision lasts one order.
+ */
+router.put('/merchants/:merchantId/resume-assignment', authenticate, isAdmin, async (req, res) => {
+  try {
+    const { merchantId } = req.params;
+    const { note } = req.body ?? {};
+
+    const before = await db.merchants.getMerchant(merchantId);
+    if (!before) return res.status(404).json({ success: false, message: 'Merchant not found' });
+    if (!before.assignmentPausedAt) {
+      // 200, not an error: an admin clearing a pause that a completed order has
+      // already cleared has got what they wanted.
+      return res.json({ success: true, message: 'This merchant was not paused.', alreadyActive: true });
+    }
+
+    const merchant = await db.merchants.resumeAssignment(merchantId);
+
+    await db.audit.recordDetailed({
+      performedBy: req.user.userId, action: 'MERCHANT_ASSIGNMENT_RESUMED', category: 'MERCHANT',
+      targetType: 'Merchant', targetId: merchantId, targetName: merchant.name,
+      // What they were paused FOR travels into the record, because the row no
+      // longer carries it once the pause is lifted.
+      details: {
+        pausedAt: before.assignmentPausedAt,
+        pausedReason: before.assignmentPauseReason,
+        expiriesAtPause: before.consecutiveExpiries,
+        note: note ? String(note).slice(0, 500) : null,
+      },
+    });
+
+    if (global.sseManager) {
+      global.sseManager.broadcastToAdmins('merchant_assignment_resumed', {
+        merchantId, resumedAt: new Date(),
+      });
+    }
+
+    res.json({ success: true, message: 'Assignment resumed for this merchant.' });
+  } catch (error) {
+    console.error('Resume merchant assignment error:', error);
+    res.status(500).json({ success: false, message: 'Failed to resume assignment' });
+  }
+});
+
 // Reject merchant — FIX B6-b: new endpoint (previously missing)
 router.put('/merchants/:merchantId/reject', authenticate, isAdmin, async (req, res) => {
   try {
@@ -492,6 +591,15 @@ router.post('/merchants/create', authenticate, isAdmin, async (req, res) => {
     // fix as the self-signup path, and for the same reason: a failure on the
     // second write left an account flagged as a merchant with no merchant
     // record behind it, holding a mobile nobody could reuse.
+    // The same floor as merchant self-signup. An admin creating the account is
+    // not a reason for a weaker password — it is the same credential, on the
+    // same rail, holding the same float.
+    try {
+      assertStaffPassword(password, { mobile, username }, 'merchant');
+    } catch (e) {
+      return res.status(e.status || 400).json({ success: false, code: e.code, message: e.message });
+    }
+
     const created = await db.merchants.createMerchantAccount({
       userId: db.users.newUserId(),
       username, mobile, email: email || null,
@@ -652,7 +760,7 @@ router.post('/merchants/:merchantId/fund', authenticate, isAdmin, async (req, re
 
   } catch (error) {
     console.error('❌ Admin fund merchant error:', error);
-    res.status(error.status || 500).json({ success: false, message: error.message || 'Failed to fund merchant wallet' });
+    return respondError(res, error, 'POST /admin/merchants/:merchantId/fund', { message: 'Failed to fund merchant wallet' });
   }
 });
 
@@ -758,7 +866,7 @@ router.post('/merchant-token-orders/:orderId/approve', authenticate, isAdmin, as
     });
   } catch (error) {
     console.error('POST /admin/merchant-token-orders/:orderId/approve error:', error);
-    res.status(error.status || 500).json({ success: false, message: error.message || 'Failed to approve merchant token order' });
+    return respondError(res, error, 'POST /admin/merchant-token-orders/:orderId/approve', { message: 'Failed to approve merchant token order' });
   }
 });
 
@@ -862,10 +970,7 @@ router.post('/merchants/:merchantId/deduct', authenticate, isAdmin, async (req, 
     // Idempotency-Key — the one refusal that tells the caller exactly what to
     // do — into "the server broke", on a money route where a 500 also reads as
     // "it may have half-applied". Nothing had moved.
-    res.status(error.status || 500).json({
-      success: false,
-      message: error.status ? error.message : 'Failed to deduct merchant wallet',
-    });
+    return respondError(res, error, 'POST /admin/merchants/:merchantId/deduct');
   }
 });
 
@@ -883,7 +988,14 @@ router.put('/merchants/:merchantId/panel-url', authenticate, isAdmin, async (req
 
     // The panel URL lives on the merchant record. It was written to the
     // account, which nothing reads.
-    const merchant = await db.merchants.updateMerchant(merchantId, { panelUrl: panelUrl || '' });
+    // Stored by an admin, followed by a merchant — the condition under which a
+    // downgrade to http is somebody else's problem. Empty clears it.
+    let safePanelUrl = '';
+    if (String(panelUrl ?? '').trim()) {
+      try { safePanelUrl = assertExternalHttpsUrl(panelUrl, 'panel URL'); }
+      catch (e) { return res.status(400).json({ success: false, message: e.message }); }
+    }
+    const merchant = await db.merchants.updateMerchant(merchantId, { panelUrl: safePanelUrl });
     if (!merchant) {
       return res.status(404).json({ success: false, message: 'Merchant not found' });
     }
@@ -989,7 +1101,7 @@ router.get('/merchants/:merchantId/profit-engine', authenticate, isAdmin, async 
     });
   } catch (err) {
     console.error('[profit-engine]', err.message);
-    res.status(500).json({ success: false, message: err.message });
+    return serverError(res, err, 'GET /merchants/:merchantId/profit-engine');
   }
 });
 

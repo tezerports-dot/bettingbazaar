@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * domains/markets/cycleTypes.js — the cycle-type vocabulary, in one place.
  *
@@ -55,6 +55,9 @@ const META = Object.freeze({
     // ordering invariant could not catch that because it only checks the
     // phases against each other.
     fixedDurationMin: 1,
+    // The ceiling on the earliest phase — see `maxMergeFor` below. 60s, the
+    // block's own length, because this board's duration is fixed.
+    maxMergeBeforeEndSec: 60,
     newCycleMessage: 'New 1-minute cycle started!',
     mergeMessage: 'Pools merging...',
     closeMessage: 'Bets closed! Calculating winner...',
@@ -68,6 +71,10 @@ const META = Object.freeze({
     // null = read SystemConfig.cycleDurationMinutes (admin-tunable, must divide
     // 60 evenly). The '30_MIN' label does not change when that value does.
     fixedDurationMin: null,
+    // 600s — BELOW the 10-minute minimum an admin may choose for this board's
+    // duration, so the merge fits whatever duration is in force rather than
+    // whatever it was when the phases were set.
+    maxMergeBeforeEndSec: 600,
     newCycleMessage: 'New 30-minute cycle started!',
     mergeMessage: 'Pools merging...',
     closeMessage: 'Bets closed! Calculating winner...',
@@ -79,6 +86,7 @@ const META = Object.freeze({
     idPrefix: 'FULLDAY',
     interval: false,
     fixedDurationMin: null,
+    maxMergeBeforeEndSec: 3600,
     newCycleMessage: 'New full-day cycle started!',
     mergeMessage: 'Daily pools merging...',
     closeMessage: 'Daily bets closed! Calculating winner...',
@@ -147,4 +155,24 @@ export function limitsKeyFor(type) {
  * generator enforces it at read time; `cycleTypes.test.js` pins it for every
  * type so a bad default can never be what a consumer falls back to.
  */
+/**
+ * The ceiling on a board's earliest phase offset, keyed by its `phasesKey`.
+ *
+ * §18.3 states the invariant the ordering check CANNOT see: "Phases must fit
+ * the block. The ordering invariant compares phases only with each other, never
+ * with the duration — a merge offset larger than the block fires before the
+ * cycle starts and nothing objects." This is the other half, and it lives on
+ * the META because it is a property of the BOARD.
+ *
+ * It had been two literals passed at one call site, for two of the three
+ * boards. The one-minute board — whose 60-second block makes it the one where
+ * an oversized merge is easiest to enter — was not validated at all, because
+ * its phases were not admin-reachable and nobody had needed to.
+ *
+ * A new board declares its own value here (§18.2).
+ */
+export const MAX_MERGE_BEFORE_END_SEC = Object.freeze(
+  Object.fromEntries(Object.values(META).map((m) => [m.phasesKey, m.maxMergeBeforeEndSec])),
+);
+
 export { DEFAULT_CYCLE_PHASES } from '#db/spec/config.spec.js';

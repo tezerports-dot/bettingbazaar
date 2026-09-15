@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * DepositPolicy.tsx — Business Policy Platform (BBEPS Phase 006).
  *
@@ -9,7 +9,7 @@
  * governs ONLY the deposit/reserve split and reserve usage rules — merchant
  * incentive pay ("Merchant Performance Bonus") is a separate, cycle-
  * completion-triggered mechanism, not a deposit-time one (2026-07-08
- * correction, see docs/governance/04-GOVERNANCE.md). Future siblings (Withdrawal
+ * correction, see CLAUDE.md). Future siblings (Withdrawal
  * Policy, Risk Policy, Merchant Policy...) belong in this same
  * Pages/BusinessPolicy/ folder and the same 'policy' nav group, not
  * scattered into Finance/Settings.

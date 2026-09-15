@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * domains/casino/webhookSignature.js — the authentication boundary for the
  * game-provider wallet callback.
@@ -34,19 +34,30 @@ import crypto from 'crypto';
  *      identity/totp.service.js). Lengths are compared first because
  *      `timingSafeEqual` throws when they differ.
  *
- * NOTE — known limitation, deliberately preserved: the digest is taken over
- * `JSON.stringify(body)`, a RE-SERIALISATION of the parsed body rather than the
- * bytes the provider actually signed. Key order and unicode escaping must match
- * the provider's serialiser for a legitimate call to verify. Signing the raw
- * body is the correct fix but changes the wire contract, so it is left to the
- * provider-integration work rather than folded into a security patch.
+ * ── The raw bytes, and why BOTH encodings are accepted ────────────────────
+ * The digest used to be taken only over `JSON.stringify(body)` — a
+ * RE-SERIALISATION of the parsed body rather than the bytes the provider
+ * actually signed. Key order, whitespace and unicode escaping all have to match
+ * the provider's serialiser for a legitimate call to verify, so a correct
+ * caller could be rejected. The file recorded that as a known limitation and
+ * deferred the fix because signing the raw body changes the wire contract.
+ *
+ * It is resolved here without changing that contract: when the raw bytes are
+ * available the digest is checked against THEM first, and against the
+ * re-serialisation second. That is a superset — every callback that verified
+ * before still verifies, and one signed over the real bytes now verifies too.
+ *
+ * Accepting two encodings does not weaken anything. An attacker has to produce
+ * a valid HMAC under a secret they do not hold; being allowed to aim at either
+ * of two messages does not help them compute one.
  *
  * @param {string|undefined} secret   the provider's configured webhookSecret
  * @param {object} headers            request headers (lowercased, as Express gives them)
  * @param {*} body                    the parsed request body
+ * @param {Buffer|string} [rawBody]   the exact bytes received, when captured
  * @returns {{ok: true} | {ok: false, status: number, message: string}}
  */
-export function verifyWebhookSignature(secret, headers = {}, body = undefined) {
+export function verifyWebhookSignature(secret, headers = {}, body = undefined, rawBody = undefined) {
   if (!secret) {
     return { ok: false, status: 503, message: 'Provider webhook not configured' };
   }
@@ -54,11 +65,17 @@ export function verifyWebhookSignature(secret, headers = {}, body = undefined) {
   if (!provided) {
     return { ok: false, status: 401, message: 'Missing signature' };
   }
-  const expected = crypto.createHmac('sha256', secret).update(JSON.stringify(body)).digest('hex');
+  // The raw bytes first when we have them, the re-serialisation second.
+  const candidates = [];
+  if (rawBody !== undefined && rawBody !== null && rawBody.length) candidates.push(rawBody);
+  candidates.push(JSON.stringify(body));
+
   const a = Buffer.from(provided);
-  const b = Buffer.from(expected);
-  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
-    return { ok: false, status: 401, message: 'Invalid signature' };
+  for (const payload of candidates) {
+    const expected = crypto.createHmac('sha256', secret).update(payload).digest('hex');
+    const b = Buffer.from(expected);
+    // Length first: timingSafeEqual throws when the buffers differ in size.
+    if (a.length === b.length && crypto.timingSafeEqual(a, b)) return { ok: true };
   }
-  return { ok: true };
+  return { ok: false, status: 401, message: 'Invalid signature' };
 }

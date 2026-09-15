@@ -1,8 +1,8 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 // Domain: Funding Platform (BBEPS Phase 009).
 //
 // THE ONLY entry point for money entering or leaving the ecosystem
-// (docs/governance/04-GOVERNANCE.md §1). Routes call requestDeposit/requestWithdrawal;
+// (CLAUDE.md §1). Routes call requestDeposit/requestWithdrawal;
 // nothing outside this platform calls a provider (or the P2P order
 // machinery) directly for money movement.
 //
@@ -25,12 +25,15 @@ import { getProvider, listProviders, DEFAULT_PROVIDER } from './providerRegistry
  * An "intent-based deposit": the returned order is an intent that a
  * provider (merchant P2P today, gateway/crypto later) fulfils and verifies.
  */
-export async function requestDeposit({ userId, tokenAmount, provider = DEFAULT_PROVIDER }) {
+export async function requestDeposit({ userId, tokenAmount, provider = DEFAULT_PROVIDER, usdtChain = null }) {
   const adapter = getProvider(provider);
   if (!adapter.active) throw Object.assign(new Error(`Funding provider ${adapter.label} is not active.`), { status: 503 });
   if (!adapter.capabilities.deposit) throw Object.assign(new Error(`${adapter.label} does not support deposits.`), { status: 400 });
 
-  const result = await adapter.createDeposit({ userId, tokenAmount });
+  // `usdtChain` is meaningful to the USDT adapter and ignored by the others.
+  // Passed through rather than read here: which fields an adapter needs is the
+  // adapter's business, and this platform is the one entry point for all of them.
+  const result = await adapter.createDeposit({ userId, tokenAmount, usdtChain });
 
   // Funding event — non-blocking, consumers must never affect the money flow.
   try {

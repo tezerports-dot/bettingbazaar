@@ -1,0 +1,1620 @@
+<!--
+  PANEL_WORKFLOWS.html — every screen, every button, every branch, every
+  outcome, across the player, merchant and admin panels.
+
+  GOVERNANCE: this file holds DATA AND HISTORY, never rules. Where it disagrees
+  with CLAUDE.md, CLAUDE.md wins and this file is wrong and must be corrected.
+
+  Sibling of OPERATIONS_MAP.html, and deliberately at a different grain: that
+  file maps WORKFLOWS end to end; this one maps CONTROLS — what a person can
+  press, every way the server can refuse it, and in the server's own wording.
+  Where the two overlap they must agree; where they disagree, follow the code.
+
+  ── How it was derived, and why that matters ────────────────────────────────
+  Every row was traced screen -> api layer -> route -> service, because §28 says
+  a route test proves a handler works and can never prove anything calls it.
+  Reading the handler is not enough; reading the component is not enough; the
+  two are checked against each other.
+
+  The appendix (§5) is MACHINE-GENERATED. Mount prefixes are derived from
+  server.js's own imports — the same derivation check:ui-coverage uses, and
+  deliberately not a hand-written table, because a gate whose failure mode is
+  "the author forgot to update me" reports the author (§28). Regenerate it in
+  the session that needs it rather than editing numbers by hand; anything that
+  has drifted is a correction to make here, not a reason to trust the old
+  figure.
+
+  ── What it does NOT establish ──────────────────────────────────────────────
+  No workflow in here has been driven through a real browser. It traces code
+  paths, and a correct code path can still be unreachable behind a broken
+  render. §29: absence of a failing check is not evidence of correctness when no
+  check covers the thing being claimed.
+
+  Committed rather than left in a session scratchpad because §17.4 requires it:
+  a session container is ephemeral and the repository is the only durable
+  medium — a rule this project has already had broken twice.
+-->
+<title>Panel Workflows</title>
+<style>
+:root{
+  --bg:#faf8f4; --ink:#1a1714; --muted:#6b625a; --rule:#e3ddd3;
+  --card:#fffdf9; --accent:#8a6d2f; --accent-soft:#f5efe1;
+  --danger:#8c2f2f; --danger-soft:#fbf0ee; --ok:#2f5d3a;
+  --code-bg:#f2ede4;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#14120f; --ink:#eae4da; --muted:#a49a8d; --rule:#322c25;
+    --card:#1c1915; --accent:#d4af6a; --accent-soft:#241f17;
+    --danger:#e0897f; --danger-soft:#2a1b19; --ok:#8fc79f;
+    --code-bg:#231f1a;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#14120f; --ink:#eae4da; --muted:#a49a8d; --rule:#322c25;
+  --card:#1c1915; --accent:#d4af6a; --accent-soft:#241f17;
+  --danger:#e0897f; --danger-soft:#2a1b19; --ok:#8fc79f;
+  --code-bg:#231f1a;
+}
+*{box-sizing:border-box}
+body{
+  background:var(--bg); color:var(--ink);
+  font:16px/1.65 "Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
+  margin:0; padding-block:0; padding-left:20px; padding-right:20px;
+  -webkit-text-size-adjust:100%;
+}
+.wrap{max-width:900px; margin:0 auto; padding-block:56px 96px}
+h1{font-size:clamp(28px,5vw,40px); line-height:1.15; margin:0 0 10px; letter-spacing:-.02em}
+h2{font-size:clamp(21px,3.4vw,27px); margin:64px 0 14px; padding-bottom:8px;
+   border-bottom:2px solid var(--rule); letter-spacing:-.01em}
+h3{font-size:clamp(17px,2.6vw,20px); margin:38px 0 10px; color:var(--accent)}
+h4{font-size:15.5px; margin:26px 0 8px; letter-spacing:.01em}
+p{margin:0 0 13px}
+ul,ol{margin:0 0 14px; padding-left:22px}
+li{margin-bottom:5px}
+code{
+  font:13px/1.5 ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  background:var(--code-bg); padding:1px 5px; border-radius:4px;
+  word-break:break-word;
+}
+pre{background:var(--card); border:1px solid var(--rule); border-radius:10px;
+    padding:16px; overflow-x:auto; margin:0 0 18px}
+pre code{background:none; padding:0}
+.subtitle{color:var(--muted); font-size:16.5px; margin:0 0 6px}
+.stamp{color:var(--muted); font-size:13.5px; font-family:ui-monospace,monospace}
+.lede{font-size:17px; color:var(--muted); margin:0 0 18px}
+.note, .factbox, .danger{
+  border-radius:10px; padding:13px 16px; margin:0 0 16px; font-size:14.5px; line-height:1.6;
+}
+.note{background:var(--card); border:1px solid var(--rule)}
+.factbox{background:var(--accent-soft); border:1px solid var(--rule); border-left:3px solid var(--accent)}
+.danger{background:var(--danger-soft); border:1px solid var(--rule); border-left:3px solid var(--danger)}
+.note p:last-child,.factbox p:last-child,.danger p:last-child{margin-bottom:0}
+.tablewrap{overflow-x:auto; margin:0 0 18px; -webkit-overflow-scrolling:touch}
+table{border-collapse:collapse; width:100%; font-size:14px; margin:0 0 18px}
+th,td{text-align:left; vertical-align:top; padding:8px 11px; border-bottom:1px solid var(--rule)}
+th{font-size:12.5px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted);
+   font-weight:600; border-bottom:2px solid var(--rule); white-space:nowrap}
+tbody tr:hover{background:var(--card)}
+table.tight{font-size:13px}
+table.tight td{padding:5px 9px}
+.filerow td{background:var(--accent-soft); font-size:12px; padding-top:12px}
+.nocall{color:var(--muted); font-style:italic}
+nav.toc{background:var(--card); border:1px solid var(--rule); border-radius:12px;
+        padding:18px 22px; margin:28px 0 8px; font-size:14.5px}
+nav.toc ol{margin:0; padding-left:20px}
+nav.toc a{color:var(--ink); text-decoration:none; border-bottom:1px solid var(--rule)}
+nav.toc a:hover{color:var(--accent); border-bottom-color:var(--accent)}
+hr{border:0; border-top:1px solid var(--rule); margin:40px 0}
+@media (max-width:640px){
+  .wrap{padding-block:36px 64px}
+  th,td{padding:7px 8px}
+  table{font-size:13px}
+  table.tight{font-size:12px}
+}
+</style>
+<div class="wrap">
+<h1>Panel Workflows</h1>
+<p class="subtitle">Every screen, every button, every branch, every outcome —
+across the player, merchant and admin panels of BettingBazaar.</p>
+<p class="stamp">Derived from the code on 2026-09-11 · 318 routes · 3 panels</p>
+
+<div class="danger" style="margin-top:24px">
+<p><strong>How to read this, and what it is not.</strong> Every row below was
+traced screen → api layer → route → service. Refusal wordings are the server's
+own strings, copied. Where a branch is recorded as a defect that shipped, that is
+history, not speculation — it is in
+<code>docs/audit/SECURITY_AUDIT_MAP.md</code> with the test that now holds it.</p>
+<p><strong>What has NOT been done:</strong> no workflow here has been driven
+through a real browser. This traces code paths, and a code path that is correct
+can still be unreachable behind a broken render. §29 — absence of a failing check
+is not evidence of correctness when no check covers the thing being claimed.</p>
+</div>
+
+<nav class="toc">
+<ol>
+<li><a href="#spine">The spine every button hangs on</a> — state machine, rails, assignment, the hold, the workers, the three counters</li>
+<li><a href="#merchant">The merchant panel</a> — 7 screens</li>
+<li><a href="#admin">The admin panel</a> — 42 screens</li>
+<li><a href="#user">The player panel</a></li>
+<li><a href="#appendix">Appendix — the machine-derived inventory</a></li>
+</ol>
+</nav>
+
+<section id="spine">
+<h2>1 · The spine every button hangs on</h2>
+
+<h3>1.1 The order state machine</h3>
+<p>Nine states, and one rule table: <code>ALLOWED_FROM</code> in
+<code>database/repositories/orders.core.js</code>.</p>
+<pre class="mermaid">
+stateDiagram-v2
+    [*] --> PENDING_QUEUE
+    PENDING_QUEUE --> ASSIGNED
+    ASSIGNED --> PENDING_QUEUE : merchant declines
+    ASSIGNED --> PROCESSING : merchant accepts
+    PENDING_QUEUE --> PROCESSING : claimed from the open pool
+    PROCESSING --> PAID : player asserts payment
+    ASSIGNED --> PAID
+    PAID --> COMPLETED
+    PROCESSING --> COMPLETED
+    DISPUTED --> COMPLETED : admin resolves
+    PROCESSING --> DISPUTED
+    PAID --> DISPUTED
+    COMPLETED --> DISPUTED : a dispute can follow completion
+    DISPUTED --> CANCELLED : resolved for the payer
+    PAID --> CANCELLED
+    ASSIGNED --> CANCELLED
+    PENDING_QUEUE --> CANCELLED
+    PROCESSING --> CANCELLED
+    PAID --> FAILED
+    ASSIGNED --> REJECTED
+</pre>
+<div class="factbox">
+<p><strong>The guard lives in the UPDATE's WHERE clause.</strong> A caller
+arriving with a stale idea of the order matches no row and is refused. That is
+what makes an out-of-order provider callback <em>safe</em> rather than merely
+unlikely — the case a status field with no guard obeys silently.</p>
+<p><strong>Money moves with the state, in one transaction.</strong> A transition
+that produces an accounting event writes both together and records the ledger key
+on the transition row. Either the order advanced and the books recorded it, or
+neither happened.</p>
+<p><strong><code>order_transitions.tx_id</code> is UNIQUE</strong>, so the same
+callback delivered twice collides INSIDE the transaction and the whole thing
+unwinds. There is no pre-read to race.</p>
+</div>
+<p class="danger"><strong>Two edges exist because they were missing and something
+broke.</strong> <code>DISPUTED → COMPLETED</code>: without it DISPUTED had no
+outgoing edges at all, so every admin resolution refused <em>itself</em> — the
+resolve route confirms the order is DISPUTED and then asks for COMPLETED, the
+guarded update matched no row, and it returned 409 for the one status those
+routes exist to handle. A disputed order could be created and never resolved.
+And <code>ASSIGNED → PENDING_QUEUE</code> (the requeue edge) turned the graph
+cyclic, which broke the default transition key: the second assignment of a
+rejected order collided on <code>ord_&lt;order&gt;_ASSIGNED</code>, was reported
+<code>{ok: true, idempotent: true}</code>, and the order stayed in PENDING_QUEUE
+still carrying the FIRST merchant's id.</p>
+
+<h3>1.2 Two rails, and an order belongs to the one it was born on</h3>
+<div class="tablewrap"><table>
+<thead><tr><th></th><th>P2P_UPI</th><th>CASH_ATM</th></tr></thead>
+<tbody>
+<tr><td>Player buys by</td><td>Paying a UPI link / QR</td><td>Paying at a cash machine using a link the merchant supplied</td></tr>
+<tr><td>Player sells by</td><td>Merchant transfers to their bank</td><td>Merchant deposits cash; submits a CDM slip</td></tr>
+<tr><td>Order reaches a merchant by</td><td>Assignment (buy) / open pool (sell)</td><td>Matching to a supplied link</td></tr>
+<tr><td>Amounts</td><td>No machine ceiling</td><td>₹10,000 max per buy; payouts split across ₹500…₹40,000</td></tr>
+</tbody>
+</table></div>
+<p class="danger">The rail in force is <code>payment_mode_policies</code> — one
+ACTIVE version, append-only, justified. The rail an ORDER runs under is
+<code>order_states.payment_mode</code>, stamped at creation and
+<strong>immutable by trigger</strong>. Every worker and screen branches on the
+order's own value, never the current policy, so both rails run side by side after
+a switch until the last pre-flip order settles.</p>
+
+<h3>1.3 How an order reaches a merchant</h3>
+<div class="factbox">
+<p><strong>A BUY is ASSIGNED, never claimed.</strong>
+<code>tryAssignMerchant</code> ranks the eligible merchants so the biggest holder
+takes the biggest order. Letting merchants claim a queued buy first-come rewarded
+whoever polled hardest and threw the ranking away.</p>
+<p><strong>A SELL may be claimed from the open pool, deliberately.</strong> A
+withdrawal nobody is free for waits in the open rather than burning retry
+attempts.</p>
+<p><strong>A cash BUY is matched to a link</strong> — a queue on the supply side,
+not a contest.</p>
+</div>
+<p>Eligibility asks the same questions on every path —
+<code>assignmentCandidates</code>, <code>cashSuppliersFor</code>, and the
+cash-link claim:</p>
+<ul>
+<li>ACTIVE and APPROVED</li>
+<li>online, and accepting this order's direction</li>
+<li>this order's rail, and for USDT this order's <em>chain</em></li>
+<li>under both concurrency caps</li>
+<li>not barred from this player by <code>order_rejections</code></li>
+<li>not assignment-paused (<code>assignment_paused_at IS NULL</code>)</li>
+<li><strong>able to fund it — proved by taking the hold, not by reading a balance</strong></li>
+</ul>
+<p class="danger"><strong>The cash-link claim asked none of these.</strong> It
+joined <code>merchants</code> not at all, under a comment saying so deliberately,
+so a merchant an admin had stopped kept being handed players through a link they
+had left behind. A link is supplied minutes before it is claimed: eligibility is
+a question about the <em>claim</em>, not about the supply.</p>
+
+<h3>1.4 The hold — why a check is not a lock</h3>
+<div class="factbox">
+<p>A merchant's tokens on a BUY order are <strong>HELD</strong>, in
+<code>merchant_settlements</code> (<code>direction='DEPOSIT'</code>), through
+<code>depositEscrow.service.js</code>. Taken at ATTACHMENT by all three routes
+that attach a merchant — auto-assignment, admin assign/reassign, and claiming
+from the open pool — released automatically on every terminal outcome, and
+consumed by the confirm. At most one live hold per order, enforced by
+<code>merchant_settlements_one_live_deposit</code>.</p>
+</div>
+<p class="danger"><strong>A guard you can pass twice is not a guard, however good
+its number is.</strong> The first fix for this made the assignment check read a
+MORE ACCURATE balance — available minus the orders already in flight — and left
+it a read. Two buy orders arriving in the same instant both passed it and were
+both assigned to a merchant who could fund one. <em>Measured, not theorised.</em>
+A number read in one statement and acted on in another is a snapshot no matter
+how good the number is. The guard is now in the <code>UPDATE</code>'s own
+<code>WHERE</code> under a row lock, and the caller learns the answer from
+whether the write landed. <strong>Taking the hold IS the check.</strong></p>
+<p class="note"><strong>Nothing else can reach held tokens.</strong> Every other
+movement touches <code>available</code>; <code>reserved</code> is reachable only
+through the settlement state machine. An admin deduction is
+<code>legs: { available: -a }</code>, so it cannot reach a player's promised
+tokens, and no production caller passes <code>allowNegativeAvailable</code>.</p>
+
+<h3>1.5 What runs on its own</h3>
+<div class="tablewrap"><table>
+<thead><tr><th>Job</th><th>Every</th><th>What it does · why that interval</th></tr></thead>
+<tbody>
+<tr><td>order-expiry</td><td>60s</td><td>Expires unserved orders. An expired BUY is <strong>nobody's fault</strong> and still advances two counts — the player's and the merchant's — from one owner, so it cannot be recorded against one party and forgotten against the other.</td></tr>
+<tr><td>paid-order-timeout</td><td>2 min</td><td>A merchant who ignores a PAID buy past <code>paidResponseMinutes</code>. The order goes to <strong>DISPUTED</strong>, never cancelled and never reassigned — the player paid THAT merchant's account, so only a person can decide. <code>disputeRaisedBy</code> is <code>'system'</code>, because a player who raised nothing must not appear to have. This was the one window where the player's money was already gone and nothing was watching it.</td></tr>
+<tr><td>deposit-escrow-sweep</td><td>5 min</td><td>A stranded hold is RELEASED; an order owed a hold it does not have is <strong>reported, never silently re-held</strong> — re-taking it hides the path that forgot.</td></tr>
+<tr><td>withdrawal-hold-settle</td><td>60s</td><td>Settles withdrawals past their hold window</td></tr>
+<tr><td>cash-link-match</td><td>15s</td><td>Matches waiting cash orders to supplied links</td></tr>
+<tr><td>cash-link-expiry</td><td>20s</td><td>Frequent, because a link lives ~120s and a sweep a minute late leaves a dead link being offered to players</td></tr>
+<tr><td>ledger-reconcile</td><td>60s</td><td></td></tr>
+<tr><td>commission-engine</td><td>10 min</td><td>Matched buy→sell volume, per variety, above a high-water mark</td></tr>
+<tr><td>leaderboard-rebuild</td><td>10 min</td><td></td></tr>
+<tr><td>scheduled-apply</td><td>60s</td><td></td></tr>
+<tr><td>data-retention · payment-proof-retention · db-backup</td><td>24h / 1h / 24h</td><td></td></tr>
+</tbody>
+</table></div>
+
+<h3>1.6 The three consequence counters, and what each is for</h3>
+<div class="tablewrap"><table>
+<thead><tr><th>Counter</th><th>Counts</th><th>At the cap</th><th>Lifted by</th></tr></thead>
+<tbody>
+<tr><td><code>merchants.consecutive_rejections</code></td><td>Declines <em>and</em> unanswered PAID buys <em>and</em> expired SELLs — <strong>they mix</strong></td><td><strong>SUSPENDED</strong></td><td>An admin or sub-admin who reads the reason. <strong>No timer.</strong> Any COMPLETED order resets the streak.</td></tr>
+<tr><td><code>merchants.consecutive_expiries</code></td><td>BUY orders that expired unpaid, against this merchant</td><td><strong>Assignment PAUSED</strong> — not a suspension; they keep their orders, balance and standing</td><td><code>PUT …/resume-assignment</code>, or any COMPLETED order. <strong>No timer</strong> — a clock cannot tell whether the QR was fixed.</td></tr>
+<tr><td><code>users.consecutive_payment_failures</code></td><td>BUY orders this player let expire unpaid</td><td><strong>Flagged, and locked out of new orders for <code>playerOrderLockMinutes</code></strong> — on BOTH rails</td><td>Itself: <code>users.order_lock_until</code> is a timestamp on the DATABASE's clock. Cleared when money actually arrives.</td></tr>
+</tbody>
+</table></div>
+<p class="danger"><strong>Whose fault an expiry is depends on the
+DIRECTION.</strong> A BUY that expires before PAID is the PLAYER not paying and
+is not a refusal at all. A BUY that is PAID and unanswered, a SELL that expires,
+and any decline are the merchant's. Counting every expiry against the merchant
+suspended honest merchants for players who changed their minds; an earlier
+version marked the players instead. The second counter exists for a different
+question entirely: three different players sent to one merchant, none able to
+pay, most likely means <em>that merchant cannot BE paid</em> — a dead QR, a
+closed handle — which is invisible one order at a time.</p>
+</section>
+
+<section id="merchant">
+<h2>2 · The merchant panel</h2>
+
+<p class="lede">Seven screens. A merchant is a person with money in a bank account
+or a USDT wallet, standing by their phone. Everything below is what they can
+press and what the server does about it.</p>
+
+<div class="factbox">
+  <strong>Derivation.</strong> Every row was read from the screen, followed
+  through <code>merchant-panel/src/services/api.ts</code> to its
+  <code>ENDPOINTS</code> constant, to the route that serves it, to the service
+  behind it. Refusal wordings below are the server's own strings, copied, not
+  paraphrased — a merchant reads these at a cash machine.
+</div>
+
+<h3>2.1 Sign in — <code>/</code></h3>
+<p><code>LoginPage.tsx</code> → <code>POST /api/merchant/auth/login</code>.</p>
+<div class="tablewrap"><table>
+<thead><tr><th>What happens</th><th>Status</th><th>What the merchant sees</th></tr></thead>
+<tbody>
+<tr><td>Mobile or password left blank</td><td>400</td><td>mobile and password are required</td></tr>
+<tr><td>No merchant on that number</td><td>401</td><td>No merchant account found for this mobile number</td></tr>
+<tr><td>Wrong password</td><td>401</td><td>Invalid credentials</td></tr>
+<tr><td>Application not yet approved</td><td>403</td><td>Application pending approval.</td></tr>
+<tr><td>Application rejected</td><td>403</td><td>Application rejected.</td></tr>
+<tr><td><strong>Admin suspended them</strong></td><td>403</td><td>Account suspended.</td></tr>
+<tr><td>Correct, and 2FA is enrolled</td><td>200</td><td>Enter the code from your authenticator app. — no token yet</td></tr>
+<tr><td>Correct, no 2FA</td><td>200</td><td>Token issued; lands on the dashboard</td></tr>
+</tbody>
+</table></div>
+<p class="note"><strong>A suspended merchant cannot trade, and the login is not
+the only door.</strong> <code>merchantAuth</code> re-reads the merchant row on
+<em>every</em> request and refuses on <code>status</code> or on
+<code>merchantApprovalStatus !== 'APPROVED'</code> — so a merchant suspended
+while holding a live session is refused on their next tap with
+<em>"Account suspended. Contact support."</em>, not on their next login. A
+revoked token fails closed on the same path.</p>
+
+<h3>2.2 The order card — the four buttons that move money</h3>
+<p>Rendered by <code>OrderCard.tsx</code> and <code>OrderDetail.tsx</code>;
+the behaviour is shared in <code>hooks/useOrderActions.ts</code> so the card,
+the drawer and the dashboard cannot diverge.</p>
+
+<h4>Accept — <code>POST /api/merchant/accept/:id</code></h4>
+<p>Shown while the order is <code>ASSIGNED</code>. Eleven refusals, in this
+order, and the order matters: every cheap refusal runs before the hold, so
+none of them has a hold to unwind.</p>
+<div class="tablewrap"><table>
+<thead><tr><th>#</th><th>Refused when</th><th>Status</th><th>Message</th></tr></thead>
+<tbody>
+<tr><td>1</td><td>No such order</td><td>404</td><td>Order not found.</td></tr>
+<tr><td>2</td><td>Assigned to a different merchant</td><td>403</td><td>This order is assigned to a different merchant.</td></tr>
+<tr><td>3</td><td>Not in ASSIGNED or PENDING_QUEUE</td><td>400</td><td>Order cannot be accepted in status: …</td></tr>
+<tr><td>4</td><td><strong>A BUY still in PENDING_QUEUE</strong></td><td>409</td><td>Buy orders are assigned automatically. This one has not been assigned to you.</td></tr>
+<tr><td>5</td><td>Order's rail ≠ merchant's rail</td><td>400</td><td>This is a USDT order and you settle in INR.</td></tr>
+<tr><td>6</td><td>USDT order naming no chain</td><td>400</td><td>This USDT order names no chain and cannot be served.</td></tr>
+<tr><td>7</td><td>No address on <em>that</em> chain</td><td>400</td><td>This order pays on Tron (TRC-20). Add that address in Profile before taking it.</td></tr>
+<tr><td>8</td><td>Buys switched off in preferences</td><td>400</td><td>Merchant is not enabled for buy orders.</td></tr>
+<tr><td>9</td><td>Sells switched off in preferences</td><td>400</td><td>Merchant is not enabled for sell orders.</td></tr>
+<tr><td>10</td><td>Already at the concurrency cap</td><td>400</td><td>Merchant has reached DEPOSIT active order limit (1).</td></tr>
+<tr><td>11a</td><td><strong>Another merchant got there first</strong></td><td>409</td><td>Another merchant is already serving this buy order.</td></tr>
+<tr><td>11b</td><td><strong>Cannot fund it</strong></td><td>400</td><td>Your available token balance cannot cover this buy order. Top up, or finish an order you are already serving.</td></tr>
+</tbody>
+</table></div>
+<p class="note"><strong>Why #4 exists.</strong> A buy is <em>assigned</em>, never
+claimed. The handler used to admit a <code>PENDING_QUEUE</code> deposit, which
+made an unassigned buy claimable first-come by anyone who knew its id — the only
+place on the buy side where two merchants could race. It also defeated the
+ranking that exists so the biggest holder takes the biggest order.
+The sell pool is deliberately different: a withdrawal nobody is free for waits
+in the open rather than burning retry attempts.</p>
+<p class="note"><strong>Why 11a and 11b are different codes.</strong> Losing a
+race is a CONFLICT and the merchant should try the next order; a shortfall is
+theirs to act on by topping up. Collapsing both into 400 told a merchant who had
+simply been outpaced that their balance was short.</p>
+<p class="note"><strong>#10 counts the orders, not a counter.</strong> The
+merchant record used to carry an <code>activeOrderCount</code> incremented on
+accept and decremented on finish; a crash between the two throttled that merchant
+<em>permanently</em>, with nothing able to correct it. And the order being
+accepted is subtracted from its own count — otherwise a merchant at a limit of 1
+was assigned an order and then refused when they tried to accept it, blocked by
+the very order they were accepting.</p>
+<p><strong>On success:</strong> tokens are HELD in <code>merchant_settlements</code>
+(<code>direction='DEPOSIT'</code>), the state moves <code>ASSIGNED → PROCESSING</code>,
+the merchant snapshot is frozen onto the order, and a 15-minute window starts.</p>
+
+<h4>Reject — <code>POST /api/merchant/reject/:id</code></h4>
+<p>Shown while the order is <code>ASSIGNED</code> — <em>before</em> the player has paid.
+The dialog demands a reason.</p>
+<div class="tablewrap"><table>
+<thead><tr><th>Refused when</th><th>Status</th><th>Message</th></tr></thead>
+<tbody>
+<tr><td>No reason given</td><td>400</td><td>A rejection reason is required.</td></tr>
+<tr><td>Not the merchant's order</td><td>404</td><td>Order not found.</td></tr>
+<tr><td>Not in ASSIGNED</td><td>400 / 409</td><td>Order can only be rejected in ASSIGNED status. Current: …</td></tr>
+</tbody>
+</table></div>
+<p><strong>On success, four things happen in this order, and the order is load-bearing:</strong></p>
+<ol>
+<li>The order is requeued to <code>PENDING_QUEUE</code> and <em>committed</em>.</li>
+<li><strong>The deposit hold is released.</strong> Before, not after, the reassignment —
+<code>merchant_settlements_one_live_deposit</code> permits exactly one live hold per
+order, so releasing afterwards would have the new merchant's hold refused as
+<code>held_by_another</code>: the order reassigned with nobody's tokens behind it
+and the first merchant's still locked.</li>
+<li>The refusal is recorded through <code>merchantRefusal.service.js</code> — the pair is
+barred (this order never returns to this merchant, and this merchant never sees
+this <em>player</em> again), the consecutive streak advances, and at
+<code>maxConsecutiveRejections</code> the merchant is SUSPENDED.</li>
+<li>Reassignment runs, and already sees the bar.</li>
+</ol>
+<p class="note"><strong>An EXPIRED assignment lands in the same function and
+counts identically.</strong> That is what stops a merchant refusing without limit
+simply by never pressing the button. A decline and a lapse mix: two lapses and a
+decline is three. Only a COMPLETED order resets the streak, and only an admin or
+sub-admin lifts the suspension — <code>approveMerchant</code> zeroes the count in
+the same statement, because a merchant reinstated while standing at the cap is
+re-suspended by the very next refusal and the admin's decision lasts one order.</p>
+
+<h4>Confirm &amp; release — <code>POST /api/merchant/confirm/:id</code> (BUY)</h4>
+<p>Shown while the order is <code>PAID</code>. The panel refuses <em>before</em>
+the request if the player has not evidenced payment:</p>
+<div class="tablewrap"><table>
+<thead><tr><th>Refused when</th><th>Where</th><th>Message</th></tr></thead>
+<tbody>
+<tr><td>Player's reference under 12 characters</td><td>panel</td><td>The user has not submitted a valid UTR yet — it must be at least 12 characters.</td></tr>
+<tr><td>No proof screenshot</td><td>panel</td><td>The user has not uploaded payment proof yet.</td></tr>
+<tr><td>Not in PAID</td><td>server 400</td><td>Deposit can only be confirmed in PAID status. Current: …</td></tr>
+<tr><td>Reference missing/short at the server</td><td>server 400</td><td>UTR number (minimum 12 characters) is required to confirm a deposit.</td></tr>
+<tr><td>No proof at the server either</td><td>server 400</td><td>Payment proof screenshot is required.</td></tr>
+</tbody>
+</table></div>
+<p class="danger"><strong>The money moves BEFORE the status, and that is the fix
+for a defect that cost players real money.</strong> This route used to run
+<code>completeOrder</code> first and debit the merchant after. The refusal
+therefore landed AFTER the status had committed: an under-funded merchant
+pressing confirm left the order reading COMPLETED with the player never
+credited. The player had already sent real money, the order showed SUCCESS in
+their history, no sweep touched it (<code>expireOrders</code> skips COMPLETED),
+and they could not even raise it — the dispute route refuses anything that is not
+PAID. Every movement is now keyed on the order id, so a refusal or a crash leaves
+a PAID order the next confirm replays as no-ops.
+Proven in <code>depositConfirmUnderfundedPg.test.js</code>.</p>
+
+<h4>I've sent the money — <code>POST /api/merchant/confirm/:id</code> (SELL)</h4>
+<div class="tablewrap"><table>
+<thead><tr><th>Refused when</th><th>Status</th><th>Message</th></tr></thead>
+<tbody>
+<tr><td>Not in PROCESSING or ASSIGNED</td><td>400</td><td>Withdrawal can only be confirmed in PROCESSING/ASSIGNED status. Current: …</td></tr>
+</tbody>
+</table></div>
+<p>On the <strong>CASH_ATM</strong> rail only, a successful payout immediately opens the
+CDM-slip dialog — the merchant is still at the machine holding the receipt.
+The prompt runs <em>after</em> the confirm and <em>only if it succeeded</em>: the
+action helper returns a boolean precisely so a payout that threw does not lead to
+a slip being filed against an unsettled order.
+Dismissing it is allowed; the slip stays on the outstanding list.</p>
+<p class="note">The panel branches on <strong>the order's own</strong>
+<code>paymentMode</code>, never the live policy. An admin can switch rails at any
+moment, and both rails then run side by side until the last pre-flip order
+settles — an order held across a switch settles the way it was created.</p>
+
+<h4>Flag for review — <code>POST /api/merchant/orders/:id/red-flag</code></h4>
+<div class="tablewrap"><table>
+<thead><tr><th>Refused when</th><th>Status</th><th>Message</th></tr></thead>
+<tbody>
+<tr><td>No reason</td><td>400</td><td>A reason is required to red-flag an order.</td></tr>
+<tr><td>Not the merchant's order</td><td>404</td><td>Order not found.</td></tr>
+<tr><td>Already COMPLETED or CANCELLED</td><td>400</td><td>Cannot red-flag a completed or cancelled order.</td></tr>
+<tr><td>State moved under them</td><td>409</td><td>Cannot red-flag an order that is …</td></tr>
+</tbody>
+</table></div>
+<p>The flag and the move to <code>DISPUTED</code> land in ONE update — a flag
+written separately could leave an order flagged but not disputed, which is the
+state the admin queue cannot see. A system message is posted to the order chat
+and admins are pushed <code>order_red_flagged</code> over SSE.</p>
+<p class="note"><strong>A merchant reports; they do not dispute.</strong> The
+dispute is the instrument of the party who is owed, which on this platform is
+always the player.</p>
+
+<h4>Payment not received — <code>POST /api/merchant/orders/:id/reject</code></h4>
+<p>A different button from Reject, and a much heavier one: it says the player's
+money never arrived, on an order the player has marked PAID.</p>
+<div class="tablewrap"><table>
+<thead><tr><th>Refused when</th><th>Status</th><th>Message</th></tr></thead>
+<tbody>
+<tr><td>Reason under 10 characters</td><td>400</td><td>A rejection reason of at least 10 characters is required — it is what the player is shown.</td></tr>
+<tr><td>No proof file</td><td>400</td><td>Proof is required: upload a screenshot or photo showing the payment did not arrive.</td></tr>
+<tr><td>Not the merchant's order</td><td>403</td><td>This order is not assigned to you</td></tr>
+<tr><td>Proof not verifiable as theirs, for this order</td><td>400</td><td>Proof could not be verified: …</td></tr>
+<tr><td>Not in PAID or PROCESSING</td><td>409</td><td>Cannot reject order in … status</td></tr>
+</tbody>
+</table></div>
+<p class="note">The dialog stays OPEN on failure with the typed reason and the
+chosen file still in it — closing it would make the merchant start again without
+saying which half was wrong.</p>
+<p class="danger"><strong>It warns the player and flags them. It cannot block
+them, and that is deliberate.</strong> <code>maxWarnings</code> is passed as
+<code>0</code> — "never block from here" — so no path reachable by a merchant can
+close a player's account. A rejection is one merchant's unreviewed word, and the
+harsher of the merchant's two options was the easier to reach, because it closes
+the order immediately instead of waiting on an admin. At a threshold of three,
+two honest mistakes and one bad actor locked a player out of their own balance.</p>
+<p class="note">The proof is bound to <em>this</em> merchant and <em>this</em>
+order before it is stored. Without that check a merchant could name a key they
+never uploaded, or one staged against a different order, and the stored evidence
+would point at somebody else's.</p>
+
+<h3>2.3 Dashboard — <code>/dashboard</code></h3>
+<p><code>Dashboard.tsx</code>. Six endpoints: the live order list, stats,
+earnings, the settlement-rail banner, the outstanding CDM-slip list, and
+online-status. There is no button here the order card does not also carry — the
+dashboard renders the same <code>OrderCard</code>, wired to the same
+<code>useOrderActions</code>, which is why the two cannot behave differently.</p>
+<p class="note"><strong>The rail banner reads the merchant's own rail on load</strong>
+(<code>GET /api/merchant/payment-mode</code>), not a socket event: a notification
+can be missed and a socket can drop, but the panel always loads.</p>
+<p class="note"><strong>Every count on this screen is derived from rows.</strong>
+Active order counts come from <code>getActiveOrderCounts</code>, which reads the
+orders; earnings come from the commission ledger. Nothing here is an accumulator
+— an accumulator counts passes, not rows, and a crash mid-pass loses the count
+permanently while the money stays correct.</p>
+
+<h3>2.4 History — <code>/history</code></h3>
+<p><code>HistoryViews.tsx</code>. Read-only: completed orders, earnings, and
+weekly earnings. Three endpoints, no writes. The only interactive elements are
+filters and copy-to-clipboard.</p>
+
+<h3>2.5 Cash links — <code>/cash-links</code></h3>
+<p><code>CashLinks.tsx</code>. Reachable only on the CASH_ATM rail.</p>
+<h4>Supply a link — <code>POST /api/merchant/cash-links</code></h4>
+<div class="tablewrap"><table>
+<thead><tr><th>Refused when</th><th>Status</th><th>Message</th></tr></thead>
+<tbody>
+<tr><td>Platform is on the UPI rail</td><td>400</td><td>The platform is not on the ATM cash rail right now, so a cash link cannot be used.</td></tr>
+<tr><td>No denomination set for them</td><td>400</td><td>You are not approved for the ATM cash rail. An admin sets the denomination you serve.</td></tr>
+<tr><td>Already working an order</td><td>409</td><td>You are already working an order. Finish it before going to another machine.</td></tr>
+<tr><td>A link of theirs is already live</td><td>409</td><td>(LINK_ALREADY_LIVE — rendered as state, not as an error)</td></tr>
+<tr><td>Not a payment intent</td><td>400</td><td>(the validator's own wording)</td></tr>
+</tbody>
+</table></div>
+<p class="note"><strong>The refusals are ordered by what the merchant most needs
+to hear.</strong> The link-format check runs LAST: a merchant on the UPI rail
+needs to be told that, not told their link is malformed.</p>
+<p class="note"><strong>The concurrency refusal has to be here, and was not.</strong>
+<code>cash_link_one_live_per_merchant</code> stops two UNCLAIMED links and does
+nothing once one is claimed — so supply → claimed → supply → claimed gave one
+merchant unbounded concurrent orders. On this rail the cap is <strong>1 by
+derivation, not by configuration</strong>: <code>concurrencyCapFor</code> returns
+1 for CASH_ATM before it looks at anything else, so the policy column and the
+per-merchant <code>maxConcurrentOrders</code> override govern the UPI rail only.
+The notes in their hand are the same notes, and two orders would promise them
+twice — an admin cannot grant a merchant a second pair of hands. The column's
+comment said 1 and its value said 3, and nothing reconciled them.</p>
+<p>On success the matcher runs <em>immediately and awaited</em>, not on the next
+cron sweep: a link lives about two minutes, and the merchant's very next question
+is "may I supply another?" — leaving the match in flight makes their own next
+request race it.</p>
+
+<h4>Withdraw a link — <code>DELETE /api/merchant/cash-links/:linkId</code></h4>
+<div class="tablewrap"><table>
+<thead><tr><th>Refused when</th><th>Status</th><th>Message</th></tr></thead>
+<tbody>
+<tr><td>Not live, or not theirs</td><td>404</td><td>No live link of yours with that id — it may have been taken or expired already.</td></tr>
+</tbody>
+</table></div>
+
+<h3>2.6 Token supply — <code>/token-supply</code></h3>
+<p>Where a merchant buys the float they trade with. <code>TokenSupply.tsx</code>.</p>
+<div class="tablewrap"><table>
+<thead><tr><th>Button</th><th>Route</th><th>Branches</th></tr></thead>
+<tbody>
+<tr><td>Get quote</td><td>GET /api/merchant/admin-token-orders/quote</td><td>Prices an amount without creating anything</td></tr>
+<tr><td>Submit request</td><td>POST /api/merchant/admin-token-orders</td><td>See below</td></tr>
+</tbody>
+</table></div>
+<div class="tablewrap"><table>
+<thead><tr><th>Refused when</th><th>Status</th><th>Message</th></tr></thead>
+<tbody>
+<tr><td>Not an approved, active merchant</td><td>403</td><td>Only approved active merchants can buy admin tokens.</td></tr>
+<tr><td>Amount outside the admin-set bounds</td><td>400</td><td>(the quote's own wording, naming both ends)</td></tr>
+<tr><td>Transaction hash missing or malformed</td><td>400</td><td>(MERCHANT_TOKEN_REFERENCE_SPEC.hint)</td></tr>
+<tr><td><strong>That hash already funded another purchase</strong></td><td>400/409</td><td>names the original order id</td></tr>
+<tr><td>Second request the same day</td><td>429</td><td>Only one admin token purchase request is allowed per day.</td></tr>
+</tbody>
+</table></div>
+<p class="note">The hash goes through <code>claimPaymentReference()</code> — the
+same registry as a player's UTR and a CDM slip. It used to be written straight
+into a column, so one payment could fund two purchases of the platform's own
+inventory.</p>
+
+<h3>2.7 Profile — <code>/profile</code></h3>
+<div class="tablewrap"><table>
+<thead><tr><th>Refused when</th><th>Status</th><th>Message</th></tr></thead>
+<tbody>
+<tr><td>UPI/bank details on a USDT account</td><td>400</td><td>This is a USDT merchant account — UPI, QR and bank details do not apply. Update the USDT wallet addresses instead.</td></tr>
+<tr><td>USDT address on an INR account</td><td>400</td><td>This is an INR merchant account — a USDT wallet address does not apply. Update UPI/bank details instead.</td></tr>
+<tr><td>Clearing the last wallet address</td><td>400</td><td>Keep at least one wallet address. With none, no order can be assigned to you.</td></tr>
+<tr><td>Nothing valid in the body</td><td>400</td><td>No valid profile fields provided.</td></tr>
+<tr><td><strong>Those details belong to another merchant</strong></td><td>409</td><td>Those payment details are already registered to another merchant. Money sent to them would reach the wrong account.</td></tr>
+<tr><td>Malformed details</td><td>400</td><td>Those payment details are not in a valid format.</td></tr>
+</tbody>
+</table></div>
+<p>Also on this screen: <strong>online/offline</strong>
+(<code>PUT /online-status</code>, refuses a non-boolean), <strong>accept buys /
+accept sells</strong> (<code>PUT /preferences</code> — these are what refusals #8
+and #9 on Accept read), 2FA enrolment, and log out.</p>
+
+<h3>2.8 What the merchant is NOT shown</h3>
+<div class="factbox">
+<p>A merchant sees the bank account a withdrawal pays and the name on it.
+<strong>Nothing else identifies the player</strong> — not the phone number in
+whole or in part, not the UPI ID (which resolves to both), not a CDM receipt
+after submission.</p>
+<p>This was a denylist that deleted the player's payout destinations only on the
+DEPOSIT branch, so on <em>every withdrawal</em> the merchant received the
+player's UPI ID — and the panel had a render waiting for it, while its order
+search matched on the player's phone number. It is now an allowlist in one file,
+<code>domains/merchant/merchantOrderView.js</code>, and the tests assert the
+response's key set is a SUBSET of it, so a new leak fails without anybody adding
+a line. <code>npm run check:merchant-privacy</code>.</p>
+</div>
+</section>
+
+<section id="admin">
+<h2>3 · The admin panel</h2>
+
+<p class="lede">42 screens. Where money is decided by a person rather than by a
+rule — and where the most expensive mistakes are available in one click.</p>
+
+<div class="factbox">
+  <strong>Two authorities, not one.</strong> <code>isAdmin</code> is the owner.
+  <code>hasPermission('canX')</code> is a sub-admin key. They are not
+  interchangeable, and where a screen mixes them the table below says so:
+  reading the dispute queue takes <code>canResolveDisputes</code>, but
+  <em>resolving</em> one takes <code>isAdmin</code>.
+</div>
+
+<h3>3.1 Disputes — <code>/disputes</code></h3>
+<p><code>DisputeManager.tsx</code> → six endpoints in
+<code>disputeResolution.admin.routes.js</code>. This is the screen where the
+platform's money decisions are made by hand.</p>
+<div class="tablewrap"><table>
+<thead><tr><th>Button</th><th>Route</th><th>Who</th></tr></thead>
+<tbody>
+<tr><td>(list)</td><td>GET /api/admin/dispute-orders</td><td>canResolveDisputes</td></tr>
+<tr><td>Open</td><td>GET /api/admin/dispute-orders/:orderId</td><td>canResolveDisputes</td></tr>
+<tr><td>Chat tab</td><td>GET + POST …/chat</td><td>canResolveDisputes</td></tr>
+<tr><td>Escalate</td><td>POST …/escalate</td><td>canResolveDisputes</td></tr>
+<tr><td>Read CDM slip</td><td>GET /api/admin/orders/:orderId/cdm-receipt</td><td>canResolveDisputes</td></tr>
+<tr><td><strong>Resolve</strong></td><td>POST …/resolve</td><td><strong>isAdmin</strong></td></tr>
+</tbody>
+</table></div>
+
+<h4>Resolve — the three decisions</h4>
+<div class="tablewrap"><table>
+<thead><tr><th>Refused when</th><th>Status</th><th>Message</th></tr></thead>
+<tbody>
+<tr><td>Decision not one of the three</td><td>400</td><td>Invalid decision</td></tr>
+<tr><td>Notes blank</td><td>400</td><td>Resolution notes required</td></tr>
+<tr><td>No such order</td><td>404</td><td>Order not found</td></tr>
+<tr><td>Not DISPUTED/PROCESSING/PAID/ASSIGNED</td><td>400</td><td>Cannot resolve order in status: …</td></tr>
+<tr><td>State moved under the admin</td><td>409</td><td>Cannot resolve order in status: …</td></tr>
+<tr><td>Already resolved</td><td>200</td><td>Dispute already resolved — idempotent, not an error</td></tr>
+</tbody>
+</table></div>
+
+<p><strong>What each decision actually moves, and it is not symmetric:</strong></p>
+<div class="tablewrap"><table>
+<thead><tr><th>Order</th><th>Decision</th><th>Money</th></tr></thead>
+<tbody>
+<tr><td>BUY</td><td>RELEASE_TO_USER</td><td>Tokens credited to the player's deposit balance</td></tr>
+<tr><td>BUY</td><td>RELEASE_TO_MERCHANT / CANCEL</td><td><strong>Nothing moves.</strong> The finding is that the player did not pay</td></tr>
+<tr><td>SELL, still HELD</td><td>RELEASE_TO_MERCHANT</td><td><code>settleHold</code> — settles BOTH sides at once</td></tr>
+<tr><td>SELL, still HELD</td><td>RELEASE_TO_USER / CANCEL</td><td><code>reverseHold</code> — the still-locked stake returns</td></tr>
+<tr><td>SELL, already settled</td><td>RELEASE_TO_MERCHANT</td><td>Nothing further — already paid</td></tr>
+<tr><td>SELL, already settled</td><td>RELEASE_TO_USER / CANCEL</td><td><strong>Player credited; the merchant keeps the tokens.</strong> Logged as requiring manual recovery</td></tr>
+</tbody>
+</table></div>
+<p class="danger"><strong>Two defects this branching exists to prevent, both of
+which had shipped.</strong> Ruling for the merchant on a HELD withdrawal used to
+set COMPLETED and move no tokens at all — the player's stake stayed locked
+forever and the merchant was never paid. And the settled-refund branch ran with
+no idempotency key, so resolving the same dispute twice credited the player
+twice. The last row is honest about what it cannot do: this route cannot claw
+back tokens a merchant may already have spent, so it credits the player, warns
+in the log, and leaves recovery as a stated manual action rather than pretending
+the books balance.</p>
+<p class="note"><strong>Penalties are noted, not applied.</strong>
+<code>penaltyUser</code> and <code>penaltyMerchant</code> append a line to the
+system message saying manual action is required. Nothing is deducted.</p>
+
+<h3>3.1a Signing in, and the factor you are made to hold</h3>
+<p><code>Login.tsx</code> → <code>POST /api/admin/login</code>. Two branches
+beyond the password, and they are different things:</p>
+<div class="tablewrap"><table>
+<thead><tr><th>Account state</th><th>What happens</th></tr></thead>
+<tbody>
+<tr><td>Enrolled in 2FA</td><td>No session. A five-minute challenge, redeemed at <code>/api/admin/login/2fa</code>.</td></tr>
+<tr><td><strong>Must hold a factor, never enrolled</strong></td><td>A real session <em>is</em> issued, carrying <code>mustEnroll2FA</code>. The panel shows the enrolment screen and nothing else until it is done.</td></tr>
+<tr><td>Ordinary account</td><td>Straight through.</td></tr>
+</tbody>
+</table></div>
+<p class="danger"><strong>The second row was doing nothing at all.</strong> The
+server has sent <code>mustEnroll2FA</code> since 2026-09-10 and the merchant
+panel has routed on it all along — the admin panel's API mapper returned a fixed
+<code>{token, admin}</code> shape and <strong>discarded it one function
+later</strong>, so an admin who never enrolled held a password-only session over
+the entire admin surface, permanently and silently. <code>seedAdmin</code> does
+not enrol, so the bootstrapped admin started in exactly that state.
+<code>check:ui-coverage</code> could not see it: the path was correct, and the
+field was thrown away after the response arrived. F-011.</p>
+<p class="note"><strong>The gate wraps the whole route table, not each
+guard.</strong> There are four guards and each checks <code>isAuthenticated</code>
+for itself; adding the obligation to each is four copies of one rule, and the
+fifth guard added next year is the one that forgets. Deleting the wrapper was
+mutated in during the fix and every other test still passed — the component
+worked and nothing put it in the path, which is §28 inside the fix for §28.</p>
+<p class="note"><strong>It is not a lockout.</strong> Enrolment is reachable, it
+is the only thing reachable, and signing out always is. The obligation is
+re-read on every session check, so it also lifts itself when the factor is added
+from another device — and it catches an account <em>promoted</em> to staff
+mid-session, who owes a factor from the promotion rather than from their next
+sign-in.</p>
+<p class="danger"><strong>Still open, and it is the owner's switch:</strong> the
+server does not yet refuse an unenrolled staff session. An account that must
+hold a factor should reach only <code>/api/2fa/setup</code> and
+<code>/api/2fa/activate</code> until it enrols. What changed is that flipping
+that switch now meets an operator already looking at the enrolment screen,
+instead of 403ing every request with nothing on screen to say why.</p>
+
+<h3>3.2 Merchants — <code>/merchants</code></h3>
+<p><code>MerchantsList.tsx</code> → <code>merchant.admin.routes.js</code>.
+Every action here is <code>isAdmin</code>.</p>
+<div class="tablewrap"><table>
+<thead><tr><th>Button</th><th>Route</th><th>What it does · what it refuses</th></tr></thead>
+<tbody>
+<tr><td>Approve</td><td>PUT …/approve</td><td>Sets ACTIVE, records who and when, and <strong>clears any stale suspension or rejection reason in the same statement</strong> — so an ACTIVE merchant cannot still be carrying "rejected: documents did not verify". Also zeroes <code>consecutive_rejections</code>, <code>consecutive_expiries</code> and the assignment pause. 404 if no such merchant.</td></tr>
+<tr><td>Reject</td><td>PUT …/reject</td><td><strong>400 without a reason</strong>: "Rejection reason is required"</td></tr>
+<tr><td>Suspend</td><td>PUT …/suspend</td><td><strong>400 without a reason</strong>: "Suspension reason is required". A suspension nobody can explain is one nobody can appeal.</td></tr>
+<tr><td>Activate</td><td>PUT …/activate</td><td>Lifts the suspension. No timer exists anywhere — a person reads the reason and decides.</td></tr>
+<tr><td>Resume assignment</td><td>PUT …/resume-assignment</td><td>Lifts the <em>pause</em> (three unpaid buys in a row against this merchant). <strong>200, not an error, if they were not paused</strong> — an admin clearing a pause a completed order already cleared has got what they wanted. The reason and the count at the time of pausing are copied into the audit record, because the row stops carrying them once lifted.</td></tr>
+<tr><td>Limits</td><td>PUT …/limits</td><td>Concurrency only. <strong>There is no per-merchant order range</strong> — see 3.2.1.</td></tr>
+<tr><td>Capabilities</td><td>PUT …/capabilities</td><td>Which rails and denominations they serve</td></tr>
+<tr><td>Fund</td><td>POST …/fund</td><td>400 unless <code>tokenAmount</code> is a positive number</td></tr>
+<tr><td>Deduct</td><td>POST …/deduct</td><td>See below</td></tr>
+<tr><td>Panel URL</td><td>PUT …/panel-url</td><td></td></tr>
+<tr><td>Token orders: approve / reject</td><td>POST /merchant-token-orders/:id/…</td><td>The merchant's float purchase</td></tr>
+</tbody>
+</table></div>
+
+<h4>Deduct — the one that cannot reach a player's tokens</h4>
+<div class="tablewrap"><table>
+<thead><tr><th>Refused when</th><th>Status</th><th>Message</th></tr></thead>
+<tbody>
+<tr><td>Not a positive number</td><td>400</td><td>tokenAmount must be a positive number</td></tr>
+<tr><td>No reason</td><td>400</td><td>A reason is required to deduct merchant tokens (audit trail).</td></tr>
+<tr><td>No such merchant</td><td>404</td><td>Merchant not found</td></tr>
+<tr><td>Balance short</td><td>400</td><td>Insufficient merchant balance: has N tokens, tried to deduct M. Deductions never overdraft.</td></tr>
+</tbody>
+</table></div>
+<p class="danger"><strong>A deduction is <code>legs: { available: -a }</code>,
+so it cannot reach tokens a merchant has promised to a player.</strong>
+<code>reserved</code> is reachable only through the settlement state machine. An
+admin deducting a merchant's balance while that merchant holds a live buy order
+takes from what is free, and is refused rather than eating the escrow.</p>
+<p class="note">The "which one?" split is deliberate: a missing merchant and a
+short balance decide different next actions, so the handler looks up which it was
+rather than collapsing both into one message. And the balance it reports comes
+from the WALLET, not a stored copy — reporting a stale figure would tell an admin
+the deduction should have fit when the wallet says otherwise.</p>
+
+<h4>3.2.1 What is NOT on this screen, and why</h4>
+<div class="factbox">
+<p><strong>Min order / max order are gone.</strong> The columns
+(<code>merchants.min_order</code> / <code>max_order</code>), the admin route
+fields and the panel inputs were all removed on 2026-09-10.</p>
+<p>Nothing read them. <code>assignmentCandidates</code> never named either
+column; the only filter on them lived in an admin SCREEN — while a comment in
+<code>merchant.routes.js</code> said assignment filtered on them, and that
+comment was believed twice.</p>
+<p>A merchant's <strong>ceiling is the tokens they hold</strong>, and it is
+ENFORCED rather than checked: the deposit escrow reserves them at assignment.
+The <strong>floor is platform-wide</strong> — <code>minDeposit</code> and
+<code>minWithdrawal</code>, both 500 tokens, the same rule read from either end.</p>
+</div>
+
+<h3>3.3 KYC — <code>/kyc</code></h3>
+<p><code>KYCQueue.tsx</code>. Both actions take <code>canVerifyKYC</code>.</p>
+<div class="tablewrap"><table>
+<thead><tr><th>Button</th><th>Refused when</th><th>Status</th><th>Message</th></tr></thead>
+<tbody>
+<tr><td>Approve</td><td>No such user</td><td>404</td><td>User not found</td></tr>
+<tr><td>Approve</td><td>Not in a state that can be approved</td><td>409</td><td>Cannot approve KYC from … status</td></tr>
+<tr><td>Reject</td><td><strong>No reason</strong></td><td>400</td><td>A rejection reason is required — it is what the user is shown.</td></tr>
+<tr><td>Reject</td><td>Wrong state</td><td>409</td><td>Cannot reject KYC from … status</td></tr>
+</tbody>
+</table></div>
+<p class="danger"><strong>Both halves of this screen were broken, silently.</strong>
+Approval was a read-modify-write on a stale read, so two reviewers acting at once
+both passed and the last save won with no record of the other — and the block
+that recorded WHO approved never executed, because <code>user.kyc</code> is not a
+path on the schema (only <code>kycData</code> is). Every approval on this route
+was anonymous. Rejection had the same bug on the reason: it was written to
+<code>user.kyc.rejectionReason</code>, which does not exist, so every rejected
+player was told they were rejected and never told why — unable to fix the
+submission and resubmit. The decision is now the gate, in one guarded write.</p>
+<p class="danger"><strong>Approving grants withdrawal access</strong>, which is
+why the row-selection bug on this screen mattered:
+<code>find(u =&gt; u._id === selectedId)</code> matched the <em>first</em> row
+every time, because the server has never sent <code>_id</code> — it sends
+<code>userId</code>. A reviewer clicking the fifth player read the first
+player's record, and every row rendered highlighted. See §23 of CLAUDE.md.</p>
+
+<h3>3.4 Players — <code>/users</code>, <code>/users/flagged</code>, <code>/users/balance-adjust</code></h3>
+<div class="tablewrap"><table>
+<thead><tr><th>Button</th><th>Route</th><th>Who</th><th>Refusals</th></tr></thead>
+<tbody>
+<tr><td>Adjust balance</td><td>POST …/adjust-balance</td><td>isAdmin</td><td>400 "amount must be a non-zero number" · 404 · 400 "Insufficient …: have ₹N"</td></tr>
+<tr><td>Block</td><td>PUT …/block</td><td>isAdmin</td><td><strong>400 "A block requires a reason"</strong> — the CHECK <code>users_blocked_has_reason</code> refuses a blocked row without one</td></tr>
+<tr><td>Unblock</td><td>PUT …/unblock</td><td>isAdmin</td><td>404 · optional <code>resetWarnings</code></td></tr>
+<tr><td>Clear flag</td><td>POST …/clear-flag</td><td>isAdmin</td><td>404</td></tr>
+<tr><td>Roles</td><td>PUT …/roles</td><td>isAdmin</td><td></td></tr>
+<tr><td>Phantom access</td><td>POST …/phantom-access</td><td>isAdmin</td><td>Scoped per board, so an agent can be granted one without all</td></tr>
+<tr><td>Queue-manager role</td><td>POST …/queue-manager</td><td>isAdmin</td><td></td></tr>
+<tr><td><strong>Delete</strong></td><td>DELETE /users/:userId</td><td>isAdmin</td><td>See below</td></tr>
+</tbody>
+</table></div>
+<h4>Delete — two guards that lived only in dead code</h4>
+<div class="tablewrap"><table>
+<thead><tr><th>Refused when</th><th>Status</th><th>Message</th></tr></thead>
+<tbody>
+<tr><td>Orders still open</td><td>409</td><td>Cannot delete: N order(s) still open. Resolve or cancel them first.</td></tr>
+<tr><td>Money locked</td><td>409</td><td>Cannot delete: ₹N is locked in escrow or an open bet.</td></tr>
+</tbody>
+</table></div>
+<p class="danger">Both guards existed <strong>only</strong> in
+<code>services/admin.service.js</code> — 380 lines nothing imported, whose only
+export was a <code>default</code> and which was therefore exempt from every
+dead-code check. A test asserted the locked-balance guard <em>against that dead
+file</em> and passed, while the LIVE route would soft-delete a player with a
+withdrawal still in escrow. See §22.</p>
+<p class="note">The order check runs first because it is the cheaper read and the
+more common refusal. The balance is read from the WALLET — a decision read that
+refuses an irreversible action must see the rows the write would lock.</p>
+<p class="note"><strong><code>?resetWarnings=true</code> used to 500 AFTER the
+unblock committed</strong>, leaving <code>is_blocked</code> false with
+<code>status</code> still <code>BLOCKED</code>: a <code>NOT NULL</code> column
+refuses an explicit <code>null</code>, and <code>updateUser</code> passes values
+straight through. §21.</p>
+
+<h3>3.5 Settlement rail — <code>/business-policy/settlement-rail</code></h3>
+<p>The single button that changes the workflow every merchant performs and what
+every new order asks of a player. <strong>Reads are open to sub-admins; the
+switch is <code>isAdmin</code> only.</strong></p>
+<div class="tablewrap"><table>
+<thead><tr><th>Refused when</th><th>Message</th></tr></thead>
+<tbody>
+<tr><td>Nothing named</td><td>Nothing to change: name a rail, a timer, or both.</td></tr>
+<tr><td>Unknown mode</td><td>Unknown payment mode 'X'. Known modes: …</td></tr>
+<tr><td><strong>No justification</strong></td><td>A change of settlement rail must say why. It is what a reviewer reads months later.</td></tr>
+<tr><td>A field that is not on a policy version</td><td>Not a field on a policy version: … Timers go in `timers`: …</td></tr>
+<tr><td>Unknown timer</td><td>Not a timer on this policy: …</td></tr>
+<tr><td>Timer ≤ 0 or not an integer</td><td>X must be a positive whole number of seconds (got N). Zero is not "no limit", it is "expire immediately".</td></tr>
+</tbody>
+</table></div>
+<p><strong>On success:</strong> a new <em>append-only</em> policy version is
+published; every merchant is notified <em>only if the rail itself changed</em>
+(a timer edit does not change what a merchant does, so it does not interrupt
+them); <code>payment_mode_changed</code> goes out over SSE so a merchant mid-shift
+is not left on the old workflow until their next page load.</p>
+<p class="danger"><strong>This is not a feature flag and not the gateway
+setting.</strong> <code>featureFlags.service.js</code> is an env var and an
+in-process Map: it does not survive a restart and cannot answer "which rail was
+live when this order was created". <code>payment_gateway_configs.active_mode</code>
+is P2P vs a third-party gateway — both rails here are P2P. The rail an ORDER runs
+under is stamped on <code>order_states.payment_mode</code> at creation and is
+<strong>immutable by trigger</strong>, so both rails run side by side after a
+switch until the last pre-flip order settles. Every worker and screen branches on
+the order's own value, never the current policy.</p>
+<p class="note">The announcement happens only on success and only AFTER the row
+is committed — a notification sent before the write lands is a merchant told to
+change workflow by a switch that then failed its CHECK.</p>
+
+<h3>3.6 System settings — <code>/settings</code></h3>
+<p><code>SystemSettings.tsx</code> → <code>GET</code>/<code>PUT
+/api/admin/system/config</code>. <strong>isAdmin</strong> to write;
+<code>isAdminOrSubAdmin</code> to read.</p>
+<div class="factbox">
+<p><strong>Every setting the spec declares is served, accepted and bounds-checked
+by virtue of being declared.</strong> The PUT derives its accepted fields by
+walking <code>SYSTEM_CONFIG_SPEC</code>; the GET spreads the spec-defaulted
+document. Adding a field to the spec is all it takes.</p>
+<p>Before that it was three hand-written lists that disagreed: twelve
+<code>merchantOrderLimits</code> fields declared and four writable;
+<code>withdrawalHoldMinutes</code>, both <code>loadShedding</code> ceilings and
+all eight <code>ipDefense</code> fields read by live middleware and reachable
+from nothing — two of them under a comment calling them "admin-editable"; and the
+one-minute board's four phase offsets, run by the engine and invisible to both
+halves. <code>maxConsecutiveRejections</code> was the sharpest: returned by the
+GET and dropped by the PUT, so it rendered on this screen, accepted typing, said
+"saved" — and the next merchant refusal was judged against the old cap.</p>
+<p>One value is deliberately <em>not</em> editable:
+<code>adminTokenSupply.minted</code>, the running total of tokens ever issued
+against a 10-billion cap. It is marked <code>internal</code> in the spec, so
+every derived list skips it. Setting it to 0 does not correct a count; it
+re-authorises minting the entire supply.</p>
+</div>
+<div class="tablewrap"><table>
+<thead><tr><th>Refused when</th><th>Status</th><th>Message</th></tr></thead>
+<tbody>
+<tr><td>Value outside its declared bounds</td><td>400</td><td>config: 'merchantOrderLimits.maxConcurrentDepositOrders' must be &lt;= 10, got 11</td></tr>
+<tr><td>Undeclared key</td><td>400</td><td>config: refusing to write undeclared setting '…'</td></tr>
+<tr><td>Phase offsets not strictly decreasing</td><td>400</td><td>cyclePhases.oneMin offsets must strictly decrease: merge &gt; equalizer &gt; close &gt; celebrate.</td></tr>
+<tr><td>Merge offset larger than the block</td><td>400</td><td>cyclePhases.oneMin.mergeBeforeEndSec must be less than 60s so the phase fits inside the block.</td></tr>
+<tr><td>cycleDurationMinutes does not divide 60</td><td>400</td><td>must be an integer that divides 60 evenly (10, 12, 15, 20, 30, or 60)</td></tr>
+</tbody>
+</table></div>
+<p class="danger"><strong>One bad number used to commit part of the save.</strong>
+Each field was written in its own transaction, so a value out of range committed
+everything ordered before it, abandoned everything after it, and reported
+failure. The admin reloaded into a form half old and half new with nothing
+saying which half. It also answered 500 rather than 400, so the message naming
+the field and its bound was swallowed by <code>serverError</code>, which answers
+with nothing by design. Both fixed: the whole patch is validated before a
+transaction opens, and the spec's refusals carry <code>status: 400</code> at the
+throw.</p>
+
+<h3>3.7 The remaining screens</h3>
+<div class="tablewrap"><table>
+<thead><tr><th>Screen</th><th>Route prefix</th><th>What it is</th></tr></thead>
+<tbody>
+<tr><td>Live cycles · Cycle history · Profit/loss</td><td>/api/admin/cycles*</td><td>Read, plus manage-cycle</td></tr>
+<tr><td>Queue manager</td><td>/api/admin/queue*</td><td>Manual assignment, confined to the curated <code>queueManagerPool</code> so it cannot reach every ACTIVE merchant</td></tr>
+<tr><td>Transactions · Token flow · Revenue ledger</td><td>/api/admin/…</td><td>Read-only over <code>accounting_events</code></td></tr>
+<tr><td>UTR manager</td><td>/api/admin/utr*</td><td>The one registry — a UTR, a chain hash and a CDM slip share it</td></tr>
+<tr><td>CDM receipts · Stalled withdrawals</td><td>/api/admin/orders/…</td><td>canResolveDisputes</td></tr>
+<tr><td>Merchant platform · Operations · Reports</td><td>/api/admin/…</td><td>Enterprise read screens</td></tr>
+<tr><td>Deposit policy</td><td>/api/admin/deposit-policy/:currency</td><td>Whole-document versioned, one ACTIVE per currency, with approve and rollback</td></tr>
+<tr><td>Sub-admins</td><td>/api/admin/sub-admins*</td><td>Permission keys from <code>utils/permissions.ts</code></td></tr>
+<tr><td>Telegram · Branding · App assets · Content · Games · Providers · Winners · Announcements · Chat · Referrals · Support</td><td>various</td><td>Configuration and content</td></tr>
+<tr><td>Audit logs · Error logs</td><td>/api/admin/…</td><td>Read-only</td></tr>
+</tbody>
+</table></div>
+<p class="danger"><strong>Open, and named here rather than buried:</strong>
+<code>npm run audit:map</code> reports <strong>44 sub-admin-reachable routes with
+no permission key</strong>. They are gated by <code>isAdminOrSubAdmin</code> —
+a TIER check standing in for a PERMISSION check — so a sub-admin granted one
+capability can reach all of them. That is finding F-001 and it is not fixed.</p>
+</section>
+
+<section id="user">
+<h2>4 · The player panel</h2>
+
+<p class="lede">The one with the most users and the least authority. A player
+can buy tokens, sell them, bet, and dispute. That is it.</p>
+
+<h3>4.1 Getting in</h3>
+<p>Signup is in the <strong>Telegram bot</strong>, not here. The panel's
+<code>AuthModal</code> logs in an account the bot created.</p>
+<div class="factbox">
+<p><strong>KYC is a 12-digit Aadhaar number, held as an HMAC plus AES-256-GCM
+ciphertext. No document is collected, stored or accepted</strong> — do not add
+an upload path for one. There is also <strong>no player email</strong>; the bot
+never asks for one. (<code>SupportLinks.email</code> and
+<code>merchants.email</code> are different things and stay.)</p>
+</div>
+<div class="tablewrap"><table>
+<thead><tr><th>KYC state</th><th>Can buy?</th><th>Can sell?</th><th>What the player is told</th></tr></thead>
+<tbody>
+<tr><td>PENDING_SUBMISSION</td><td>no</td><td>no</td><td>Finish signing up in our Telegram bot — we still need your Aadhaar number before you can play.</td></tr>
+<tr><td>PENDING_APPROVAL</td><td><strong>yes</strong></td><td>no</td><td>Your Aadhaar is being verified. This is done in batches and needs nothing from you — you will be able to play as soon as it clears.</td></tr>
+<tr><td>APPROVED</td><td>yes</td><td>yes</td><td>—</td></tr>
+<tr><td>REJECTED</td><td>no</td><td>no</td><td>Your Aadhaar could not be verified against the issuing authority. Please contact support — this usually means a mismatch we can sort out for you.</td></tr>
+</tbody>
+</table></div>
+<p class="note"><strong>Buying takes <code>requireLinkedKyc</code>; selling takes
+<code>requireApprovedKyc</code>.</strong> The asymmetry is deliberate: a player
+whose Aadhaar is queued for a batch check can put money in, because the platform
+holds it either way; taking money out waits for the check.</p>
+<p class="note">An APPROVED Aadhaar is immutable. A REJECTED one may be replaced
+through the bot up to <code>MAX_KYC_SUBMISSIONS</code>. A FAILED submission's row
+is DELETED — <code>aadhaar_hash</code> is unique, so a typo would otherwise park
+a stranger's Aadhaar in that index and lock its owner out forever.</p>
+
+<h3>4.2 Buy tokens — <code>/wallet</code></h3>
+<p><code>WalletPage.tsx</code> → <code>POST /api/payment/deposit/create</code>.
+Guards, in order: <code>authenticate</code> → <code>requireLinkedKyc</code> →
+<code>requireChannelMembership</code> → <code>depositCreateLimiter</code>.</p>
+<div class="tablewrap"><table>
+<thead><tr><th>Refused when</th><th>Status</th><th>What the player sees</th></tr></thead>
+<tbody>
+<tr><td>KYC not linked</td><td>403</td><td>the state's own wording, above</td></tr>
+<tr><td>Not in the official channel</td><td>403</td><td>gate modal, with a join link</td></tr>
+<tr><td><strong>Three orders expired unpaid in a row</strong></td><td>429</td><td>Three of your orders in a row expired without payment, so new orders are paused until 14:35. Paying for an order clears this straight away.</td></tr>
+<tr><td>Account suspended for payment violations</td><td>403</td><td>Your account has been suspended due to payment violations. Contact support.</td></tr>
+<tr><td>USDT with no network chosen</td><td>400</td><td>Choose the network you will send USDT on: TRC20 or BEP20.</td></tr>
+<tr><td>USDT rate not set</td><td>400</td><td>USDT pricing has not been set. Contact support.</td></tr>
+<tr><td>More than one deposit order a minute</td><td>429</td><td>rate limiter</td></tr>
+</tbody>
+</table></div>
+<p class="danger"><strong>The cool-off is a database timestamp, not a cron.</strong>
+<code>users.order_lock_until</code> is written by the DATABASE's clock, so it
+expires on its own with nothing to fail, and <code>GREATEST</code> extends rather
+than shortens. It applies on <strong>both</strong> rails — a player locked out of
+buying would otherwise just sell instead. It is cleared by
+<code>moveDepositMoney</code>, where the money is known to have ARRIVED, not at
+PAID: clearing at PAID would let a false UTR wipe the record.</p>
+<p class="note"><strong>Nobody is auto-blocked by it.</strong> The player is
+flagged for an admin. The only blocking path is an admin pressing Block, which
+itself requires a reason.</p>
+
+<h4>USDT is one token on several chains</h4>
+<div class="factbox">
+<p>A USDT buy is denominated in <strong>platform tokens</strong> — exactly
+50,000, 100,000 or 500,000 — and what the player <em>sends</em> is DERIVED from
+the admin's rate at creation. There is no second denomination list, because the
+rate is admin-editable and a stored USDT amount would be a second owner that
+drifts the moment it changes.</p>
+<p><strong>The quote is the contract.</strong> <code>rate_used</code> and
+<code>fiat_amount_paise</code> are written WITH the order and frozen by trigger.
+Assignment used to re-read the rate, so an admin edit in between silently
+re-priced a purchase the player had already agreed to.</p>
+<p><strong>The player picks the network first</strong>, before an order exists,
+because it decides which merchants can serve it. The address and its network
+always travel together — in the snapshot, in <code>payTo</code>, on the screen.
+USDT sent to a Tron address from a BNB Smart Chain wallet is gone, and it is the
+only unrecoverable mistake this platform can make.</p>
+</div>
+
+<h3>4.3 Paying for a buy</h3>
+<div class="tablewrap"><table>
+<thead><tr><th>Button</th><th>Route</th><th>Refusals</th></tr></thead>
+<tbody>
+<tr><td>I have paid</td><td>POST /order/:id/mark-paid</td><td>400 "utrNumber is required" · 404 · 403 "Access denied" · 400 "Cannot mark paid — order is in X status" (only ASSIGNED/PROCESSING) · 400 "Only DEPOSIT orders can be marked paid by user"</td></tr>
+<tr><td>(duplicate reference)</td><td>same</td><td>This UTR has already been used for another order. Each payment can only be claimed once — check you have copied the right one, and contact support if you believe this is a mistake.</td></tr>
+<tr><td>I need more time</td><td>POST /order/:id/utr-grace</td><td>400 "Only a buy order takes a UTR" · "You have already been given extra time for this order." · "This order is X and no longer waiting for a payment reference."</td></tr>
+<tr><td>Try again</td><td>POST /order/:id/retry</td><td>"This order is X. Only an order that ended without being served can be retried." · duplicate retry refused by a unique index</td></tr>
+<tr><td>Cancel</td><td>POST /order/cancel</td><td></td></tr>
+<tr><td>Raise a dispute</td><td>POST /order/:id/dispute</td><td>See below</td></tr>
+</tbody>
+</table></div>
+<p class="note"><strong>The refusal speaks the submitter's vocabulary.</strong>
+A player holding a Tron transaction hash who is shown "This UTR was already used"
+reads it as another system's error and submits it again. A UTR, a chain hash and
+a CDM slip share ONE registry — <code>utr_registry</code>, one reference to one
+order, for good — and the message names whichever kind the submitter has. A hex
+hash is uppercased before it is claimed, so <code>0xAB…</code> and
+<code>0xab…</code> collide on the primary key as they must.</p>
+
+<h4>Dispute</h4>
+<div class="tablewrap"><table>
+<thead><tr><th>Refused when</th><th>Status</th><th>Message</th></tr></thead>
+<tbody>
+<tr><td>No reason</td><td>400</td><td>reason is required</td></tr>
+<tr><td>Not PAID or COMPLETED</td><td>400</td><td>A dispute can be raised once an order is paid or completed.</td></tr>
+<tr><td>PAID less than 10 minutes ago</td><td>400</td><td>Please wait at least 10 minutes before raising a dispute</td></tr>
+<tr><td>State moved under them</td><td>409</td><td>Cannot dispute an order that is …</td></tr>
+</tbody>
+</table></div>
+<p class="note">The ten-minute wait applies to a <strong>PAID</strong> order only.
+A COMPLETED one has already had its window; making somebody wait ten minutes to
+report that a finished order did not pay them is the wrong way round.</p>
+
+<h3>4.4 Sell tokens — <code>/wallet</code></h3>
+<p><code>POST /api/payment/withdrawal/create</code>. Guards:
+<code>authenticate</code> → <code>requireApprovedKyc</code> →
+<code>requireChannelMembership</code> → <code>withdrawalLimiter</code> →
+<code>createSubnetLimiter</code> → <code>globalSurgeBreaker</code>.</p>
+<div class="tablewrap"><table>
+<thead><tr><th>Refused when</th><th>Status</th><th>What the player sees</th></tr></thead>
+<tbody>
+<tr><td>Aadhaar not APPROVED</td><td>403</td><td>Your Aadhaar must be verified before you can withdraw.</td></tr>
+<tr><td>No bank details</td><td>400</td><td>Please add your bank account details before withdrawing</td></tr>
+<tr><td>Cool-off active</td><td>429</td><td>the same cool-off message — both rails</td></tr>
+<tr><td>Suspended for payment violations</td><td>403</td><td>Your account has been suspended due to payment violations. Contact support.</td></tr>
+<tr><td><strong>Not an amount a cash machine can make</strong></td><td>400</td><td>Cash withdrawals are paid at an ATM, so the payout must be made up of ₹500, ₹2,000, … ₹40,000. ₹7,770 cannot be.</td></tr>
+<tr><td>Winnings balance short</td><td>400</td><td>the escrow debit refuses it — see below</td></tr>
+</tbody>
+</table></div>
+<p class="danger"><strong>The escrow debit IS the gate, and it is the whole
+gate.</strong> Winnings → locked, under <code>SELECT … FOR UPDATE</code> on the
+wallet row, in one transaction with its ledger entry, idempotent on
+<code>wd_&lt;id&gt;</code>. It runs BEFORE any order row exists, so a failed
+debit leaves nothing to undo. The three checks that used to precede it are gone:
+they raced each other AND double-counted the escrow, so they admitted overdrafts
+under concurrency and refused legitimate withdrawals otherwise.</p>
+<p class="note"><strong>A large payout is SPLIT, never refused.</strong> On the
+cash rail a withdrawal too large for one denomination becomes several orders
+sharing a <code>withdrawal_batch_ref</code> — a LABEL, so the player is told
+"part 2 of 4" and support can pull the set. Nothing derives state from it, no
+money reads it, and no assignment consults it. ₹10,000 and ₹40,000 are the cash
+machine's ceilings, not the platform's, and neither applies on the UPI rail or
+to USDT.</p>
+
+<h3>4.5 What the player is NOT shown</h3>
+<div class="factbox">
+<p>A player sees <strong>where to pay and nothing about who they are paying</strong>
+— a payment link, an opaque <code>Merchant #&lt;ref&gt;</code>, a deadline.</p>
+<p>Every player-facing response used to carry <code>merchantSnapshot</code> whole
+— the merchant's UPI handle, QR, bank account number, IFSC, account-holder name
+and USDT address — on creation, fetch, dispute, assignment push and every status
+poll. A player could copy and keep a merchant's account number from one deposit.
+It is now an allowlist in one file,
+<code>domains/payment/playerOrderView.js</code>, asserted as a key-set SUBSET so
+a new leak fails without anybody adding a line.
+<code>npm run check:player-privacy</code>.</p>
+<p><strong>Stated honestly:</strong> a <code>upi://pay</code> intent carries the
+payee, so the payer's own banking app will show it. The platform stops
+publishing the merchant's identity; it cannot hide a payee from a payer.</p>
+</div>
+
+<h3>4.6 Betting and the rest</h3>
+<div class="tablewrap"><table>
+<thead><tr><th>Screen</th><th>What it does</th></tr></thead>
+<tbody>
+<tr><td>Game · Casino · Crash · Sports</td><td>Place a bet. Affordability is decided by the wallet authority against the rows the write will lock — never a display read (§9). A stake lock goes through the same authority.</td></tr>
+<tr><td>My bets · History · Results · Winners · Leaderboard</td><td>Read-only. Cycle history comes from <code>cycleHistory.service.js</code>, capped at 1,440 rows for one type and 200 when several are asked for together — three deep windows is ~864 KB against socket.io's 1 MB default.</td></tr>
+<tr><td>Referrals</td><td>A flat ₹25 per verified signup, two tiers, from a bounded pool. <strong>Never a share of anyone's losses and never attached to settlement.</strong> Paid strictly in joining-number order, on an admin-triggered disbursal.</td></tr>
+<tr><td>Support</td><td>Tickets and chat attachments</td></tr>
+<tr><td>Profile</td><td>Bank details, notification preferences. <code>users.mobile</code> is never mutable.</td></tr>
+<tr><td>Promo · Rules · FAQ</td><td>Content, from the CMS</td></tr>
+</tbody>
+</table></div>
+<p class="danger"><strong>Never read <code>p?.payout</code> from
+<code>computeWinningsPayout()</code>.</strong> It returns
+<code>{gross, fee, net, …}</code> and has no <code>payout</code> key — writing
+<code>p?.payout ?? 0</code> silently pays <strong>zero</strong> while still
+charging the fee. Read <code>net</code>.</p>
+</section>
+
+<section id="appendix">
+<h2>5 · Appendix — the machine-derived inventory</h2>
+<p class="lede">Generated from the code, not written by hand: mount prefixes come
+from <code>server.js</code>'s own imports (the same derivation
+<code>check:ui-coverage</code> uses), routes from each router's own
+<code>router.verb()</code> calls, and panel references from the panel sources
+with comments blanked.</p>
+<div class="factbox">
+<strong>318</strong> distinct routes ·
+<strong>272</strong> reached by at least one panel ·
+<strong>46</strong> reached by none.
+<p>A route no panel reaches is triage, not a failure — webhooks, SSE streams and
+bootstrap endpoints belong on that list. Anything else on it is either work
+somebody forgot to finish, or code to delete (§28).</p>
+</div>
+
+<h3>5.1 Screens, and the endpoints each one names</h3>
+<h4>player — 19 files</h4>
+<div class="tablewrap"><table class="tight">
+<thead><tr><th>File</th><th>Endpoints</th></tr></thead>
+<tbody>
+<tr><td><code>App.tsx</code></td><td><code>GET /app-assets/:name</code></td></tr>
+<tr><td><code>components/Layout/Header.tsx</code></td><td><code>GET /app-assets/:name</code></td></tr>
+<tr><td><code>components/Layout/NotificationBell.tsx</code></td><td><code>GET /api/user/notifications</code><br><code>GET /api/user/notifications/unread-count</code><br><code>POST /api/user/notifications/read</code></td></tr>
+<tr><td><code>components/Modals/AuthModal.tsx</code></td><td><code>GET /api/telegram/public-config</code><br><code>GET /app-assets/:name</code></td></tr>
+<tr><td><code>components/Modals/ChannelGateModal.tsx</code></td><td><code>GET /api/telegram/membership</code></td></tr>
+<tr><td><code>components/Modals/ShareModal.tsx</code></td><td><code>GET /api/download/android</code><br><code>GET /api/download/ios</code><br><code>GET /app-assets/:name</code></td></tr>
+<tr><td><code>components/Modals/WalletModal.tsx</code></td><td><code>GET /api/payment/order/:orderId</code><br><code>GET /api/v1/user/profile</code><br><code>POST /api/payment/deposit/create</code><br><code>POST /api/payment/withdrawal/create</code></td></tr>
+<tr><td><code>components/UsdtBuyPanel.tsx</code></td><td><code>POST /api/payment/order/:orderId/mark-paid</code><br><code>POST /api/payment/usdt/deposit/create</code></td></tr>
+<tr><td><code>components/WithdrawalBatchParts.tsx</code></td><td><code>GET /api/payment/order/:orderId</code><br><code>GET /api/payment/order/:orderId/batch</code><br><code>POST /api/payment/order/cancel</code></td></tr>
+<tr><td><code>pages/CasinoPage.tsx</code></td><td><code>GET /api/game/categories</code><br><code>GET /api/game/games</code><br><code>POST /api/game/launch</code></td></tr>
+<tr><td><code>pages/CrashPage.tsx</code></td><td><code>POST /api/game/launch</code></td></tr>
+<tr><td><code>pages/LeaderboardPage.tsx</code></td><td><code>GET /api/leaderboard/:period</code></td></tr>
+<tr><td><code>pages/ReferralPage.tsx</code></td><td><code>GET /api/telegram/public-config</code><br><code>GET /api/user/referrals</code></td></tr>
+<tr><td><code>pages/SportsPage.tsx</code></td><td><code>POST /api/game/launch</code></td></tr>
+<tr><td><code>pages/SupportPage.tsx</code></td><td><code>GET /api/support/status</code><br><code>GET /api/support/tickets</code><br><code>GET /api/support/tickets/:ticketId</code><br><code>POST /api/support/ask</code><br><code>POST /api/support/tickets</code><br><code>POST /api/support/tickets/:ticketId/reply</code></td></tr>
+<tr><td><code>pages/WalletPage.tsx</code></td><td><code>GET /api/payment/order/:orderId</code><br><code>GET /api/payment/order/:orderId/status</code><br><code>GET /api/user/bet-limits</code><br><code>GET /api/v1/system/config</code><br><code>GET /api/v1/user/profile</code><br><code>POST /api/payment/deposit/create</code><br><code>POST /api/payment/order/:orderId/dispute</code><br><code>POST /api/payment/order/:orderId/mark-paid</code><br><code>POST /api/payment/order/:orderId/retry</code><br><code>POST /api/payment/order/:orderId/status</code><br><code>POST /api/payment/order/:orderId/utr-grace</code><br><code>POST /api/payment/order/cancel</code><br><code>POST /api/payment/withdrawal/create</code></td></tr>
+<tr><td><code>redesign/RedesignShell.tsx</code></td><td><code>GET /app-assets/:name</code></td></tr>
+<tr><td><code>services/GameProviderContext.tsx</code></td><td><code>GET /api/game/providers</code></td></tr>
+<tr><td><code>services/realBackend.ts</code></td><td><code>GET /api/admin/system/config</code><br><code>GET /api/sse/events</code><br><code>GET /api/user/:userId/bets</code><br><code>GET /api/v1/content/ai-analysis</code><br><code>GET /api/v1/game/cycle/:type/:startTime</code><br><code>GET /api/v1/user/:id/data</code><br><code>POST /api/admin/manage-cycle</code><br><code>POST /api/bet/phantom</code><br><code>POST /api/bet/place</code><br><code>POST /api/telegram/exchange</code><br><code>POST /api/telegram/otp/request</code><br><code>POST /api/telegram/otp/verify</code><br><code>PUT /api/admin/system/config</code><br><code>PUT /api/user/:userId/profile</code></td></tr>
+</tbody>
+</table></div>
+<h4>merchant — 28 files</h4>
+<div class="tablewrap"><table class="tight">
+<thead><tr><th>File</th><th>Endpoints</th></tr></thead>
+<tbody>
+<tr><td><code>App.tsx</code></td><td><code>POST /api/merchant/orders/:id/cdm-receipt</code><br><code>POST /api/merchant/orders/:id/reject</code></td></tr>
+<tr><td><code>components/CdmReceiptDialog.tsx</code></td><td><code>POST /api/merchant/orders/:id/cdm-receipt</code><br><code>POST /api/merchant/orders/:id/reject</code></td></tr>
+<tr><td><code>components/Layout.tsx</code></td><td><code>PUT /api/merchant/online-status</code></td></tr>
+<tr><td><code>components/OrderCard.tsx</code></td><td><code>POST /api/merchant/orders/:id/cdm-receipt</code><br><code>POST /api/merchant/orders/:id/reject</code></td></tr>
+<tr><td><code>components/OrderDetail.tsx</code></td><td><code>POST /api/merchant/orders/:id/cdm-receipt</code><br><code>POST /api/merchant/orders/:id/reject</code></td></tr>
+<tr><td><code>components/PaymentNotReceivedDialog.tsx</code></td><td><code>POST /api/merchant/orders/:id/cdm-receipt</code><br><code>POST /api/merchant/orders/:id/reject</code></td></tr>
+<tr><td><code>components/SettlementRailBanner.tsx</code></td><td><code>GET /api/merchant/payment-mode</code><br><code>POST /api/merchant/orders/:id/cdm-receipt</code><br><code>POST /api/merchant/orders/:id/reject</code></td></tr>
+<tr><td><code>components/TwoFactorEnrol.tsx</code></td><td><code>GET /api/merchant/2fa/status</code><br><code>POST /api/merchant/2fa/activate</code><br><code>POST /api/merchant/2fa/setup</code><br><code>POST /api/merchant/orders/:id/cdm-receipt</code><br><code>POST /api/merchant/orders/:id/reject</code></td></tr>
+<tr><td><code>components/ui.tsx</code></td><td><code>POST /api/merchant/orders/:id/cdm-receipt</code><br><code>POST /api/merchant/orders/:id/reject</code></td></tr>
+<tr><td><code>constants.ts</code></td><td><code>DELETE /api/merchant/cash-links/:linkId</code><br><code>GET /api/merchant/2fa/status</code><br><code>GET /api/merchant/admin-token-orders</code><br><code>GET /api/merchant/admin-token-orders/quote</code><br><code>GET /api/merchant/cash-links/current</code><br><code>GET /api/merchant/cdm-receipts/outstanding</code><br><code>GET /api/merchant/earnings</code><br><code>GET /api/merchant/earnings/weekly</code><br><code>GET /api/merchant/orders</code><br><code>GET /api/merchant/payment-mode</code><br><code>GET /api/merchant/profile</code><br><code>GET /api/merchant/stats</code><br><code>POST /api/merchant/2fa/activate</code><br><code>POST /api/merchant/2fa/setup</code><br><code>POST /api/merchant/accept/:id</code><br><code>POST /api/merchant/admin-token-orders</code><br><code>POST /api/merchant/auth/login</code><br><code>POST /api/merchant/auth/login/2fa</code><br><code>POST /api/merchant/auth/signup</code><br><code>POST /api/merchant/cash-links</code><br><code>POST /api/merchant/cdm-receipt/:orderId/upload-url</code><br><code>POST /api/merchant/confirm/:id</code><br><code>POST /api/merchant/order-reject-proof/:orderId/upload-url</code><br><code>POST /api/merchant/orders/:id/cdm-receipt</code><br><code>POST /api/merchant/orders/:id/red-flag</code><br><code>POST /api/merchant/orders/:id/reject</code><br><code>POST /api/merchant/reject/:id</code><br><code>PUT /api/merchant/online-status</code><br><code>PUT /api/merchant/preferences</code><br><code>PUT /api/merchant/profile</code></td></tr>
+<tr><td><code>hooks/useCdmReceipt.ts</code></td><td><code>GET /api/merchant/cdm-receipts/outstanding</code><br><code>POST /api/merchant/cdm-receipt/:orderId/upload-url</code><br><code>POST /api/merchant/orders/:id/cdm-receipt</code><br><code>POST /api/merchant/orders/:id/reject</code></td></tr>
+<tr><td><code>hooks/useCountdown.ts</code></td><td><code>POST /api/merchant/orders/:id/cdm-receipt</code><br><code>POST /api/merchant/orders/:id/reject</code></td></tr>
+<tr><td><code>hooks/useOrderActions.ts</code></td><td><code>POST /api/merchant/accept/:id</code><br><code>POST /api/merchant/confirm/:id</code><br><code>POST /api/merchant/order-reject-proof/:orderId/upload-url</code><br><code>POST /api/merchant/orders/:id/cdm-receipt</code><br><code>POST /api/merchant/orders/:id/red-flag</code><br><code>POST /api/merchant/orders/:id/reject</code><br><code>POST /api/merchant/reject/:id</code></td></tr>
+<tr><td><code>hooks/useOrders.ts</code></td><td><code>GET /api/merchant/orders</code><br><code>POST /api/merchant/orders/:id/cdm-receipt</code><br><code>POST /api/merchant/orders/:id/reject</code></td></tr>
+<tr><td><code>hooks/useRetryCountdown.ts</code></td><td><code>POST /api/merchant/orders/:id/cdm-receipt</code><br><code>POST /api/merchant/orders/:id/reject</code></td></tr>
+<tr><td><code>hooks/useViewport.ts</code></td><td><code>POST /api/merchant/orders/:id/cdm-receipt</code><br><code>POST /api/merchant/orders/:id/reject</code></td></tr>
+<tr><td><code>pages/CashLinks.tsx</code></td><td><code>GET /api/merchant/cash-links/current</code><br><code>POST /api/merchant/cash-links</code><br><code>POST /api/merchant/orders/:id/cdm-receipt</code><br><code>POST /api/merchant/orders/:id/reject</code></td></tr>
+<tr><td><code>pages/Dashboard.tsx</code></td><td><code>GET /api/merchant/earnings</code><br><code>GET /api/merchant/earnings/weekly</code><br><code>GET /api/merchant/stats</code><br><code>POST /api/merchant/orders/:id/cdm-receipt</code><br><code>POST /api/merchant/orders/:id/reject</code><br><code>PUT /api/merchant/online-status</code></td></tr>
+<tr><td><code>pages/HistoryViews.tsx</code></td><td><code>GET /api/merchant/earnings/weekly</code><br><code>POST /api/merchant/orders/:id/cdm-receipt</code><br><code>POST /api/merchant/orders/:id/reject</code></td></tr>
+<tr><td><code>pages/LoginPage.tsx</code></td><td><code>POST /api/merchant/auth/signup</code><br><code>POST /api/merchant/orders/:id/cdm-receipt</code><br><code>POST /api/merchant/orders/:id/reject</code></td></tr>
+<tr><td><code>pages/OrderManagement.tsx</code></td><td><code>POST /api/merchant/orders/:id/cdm-receipt</code><br><code>POST /api/merchant/orders/:id/reject</code></td></tr>
+<tr><td><code>pages/ProfileSettings.tsx</code></td><td><code>POST /api/merchant/orders/:id/cdm-receipt</code><br><code>POST /api/merchant/orders/:id/reject</code><br><code>PUT /api/merchant/preferences</code><br><code>PUT /api/merchant/profile</code></td></tr>
+<tr><td><code>pages/TokenSupply.tsx</code></td><td><code>GET /api/merchant/admin-token-orders</code><br><code>GET /api/merchant/admin-token-orders/quote</code><br><code>POST /api/merchant/admin-token-orders</code><br><code>POST /api/merchant/orders/:id/cdm-receipt</code><br><code>POST /api/merchant/orders/:id/reject</code></td></tr>
+<tr><td><code>services/AuthContext.tsx</code></td><td><code>GET /api/merchant/profile</code><br><code>POST /api/merchant/auth/login</code><br><code>POST /api/merchant/auth/login/2fa</code><br><code>POST /api/merchant/orders/:id/cdm-receipt</code><br><code>POST /api/merchant/orders/:id/reject</code></td></tr>
+<tr><td><code>services/sse.ts</code></td><td><code>POST /api/merchant/orders/:id/cdm-receipt</code><br><code>POST /api/merchant/orders/:id/reject</code></td></tr>
+<tr><td><code>services/ThemeContext.tsx</code></td><td><code>POST /api/merchant/orders/:id/cdm-receipt</code><br><code>POST /api/merchant/orders/:id/reject</code></td></tr>
+<tr><td><code>theme.ts</code></td><td><code>POST /api/merchant/orders/:id/cdm-receipt</code><br><code>POST /api/merchant/orders/:id/reject</code></td></tr>
+<tr><td><code>utils/rail.ts</code></td><td><code>POST /api/merchant/orders/:id/cdm-receipt</code><br><code>POST /api/merchant/orders/:id/reject</code></td></tr>
+</tbody>
+</table></div>
+<h4>admin — 21 files</h4>
+<div class="tablewrap"><table class="tight">
+<thead><tr><th>File</th><th>Endpoints</th></tr></thead>
+<tbody>
+<tr><td><code>Pages/Branding/BrandingSettings.tsx</code></td><td><code>POST /api/admin/branding/confirm-upload</code><br><code>POST /api/admin/branding/upload-url</code></td></tr>
+<tr><td><code>Pages/Content/ContentSlideManager.tsx</code></td><td><code>DELETE /api/admin/promo/:id</code><br><code>GET /api/admin/promo</code><br><code>POST /api/admin/promo</code><br><code>POST /api/admin/promo/upload-url</code><br><code>PUT /api/admin/promo/:id</code></td></tr>
+<tr><td><code>Pages/Cycles/CycleHistory.tsx</code></td><td><code>GET /api/admin/analytics/phantom-stats</code></td></tr>
+<tr><td><code>Pages/Cycles/LiveCycles.tsx</code></td><td><code>GET /api/admin/cycles/phases</code></td></tr>
+<tr><td><code>Pages/Disputes/DisputeManager.tsx</code></td><td><code>GET /api/admin/dispute-orders</code><br><code>GET /api/admin/dispute-orders/:orderId</code><br><code>GET /api/admin/dispute-orders/:orderId/chat</code><br><code>POST /api/admin/dispute-orders/:orderId/chat</code><br><code>POST /api/admin/dispute-orders/:orderId/escalate</code><br><code>POST /api/admin/dispute-orders/:orderId/resolve</code></td></tr>
+<tr><td><code>Pages/Enterprise/MerchantPlatform.tsx</code></td><td><code>GET /api/admin/merchant-commission-policy</code><br><code>GET /api/admin/merchant-commission-policy/history</code><br><code>GET /api/admin/merchant-platform/:merchantId/wallet-ledger</code><br><code>GET /api/admin/merchant-platform/leaderboard</code><br><code>POST /api/admin/merchant-commission-policy/version/:versionId/rollback</code><br><code>POST /api/admin/merchant-platform/commission-engine/run</code><br><code>PUT /api/admin/merchant-commission-policy</code></td></tr>
+<tr><td><code>Pages/Enterprise/OperationsOverview.tsx</code></td><td><code>GET /api/admin/communication/admin-activity</code><br><code>GET /api/admin/communication/audit-feed</code><br><code>GET /api/admin/communication/channels</code><br><code>GET /api/admin/operations/config-catalog</code><br><code>GET /api/admin/operations/overview</code><br><code>GET /api/leaderboard/:period</code><br><code>POST /api/leaderboard/rebuild</code></td></tr>
+<tr><td><code>Pages/Enterprise/Reports.tsx</code></td><td><code>GET /api/admin/reports/financial</code><br><code>GET /api/admin/reports/ledger-export</code><br><code>GET /api/admin/reports/merchants</code><br><code>GET /api/admin/reports/settlement</code></td></tr>
+<tr><td><code>Pages/Enterprise/RevenueLedger.tsx</code></td><td><code>GET /api/admin/revenue/ledger</code><br><code>GET /api/admin/revenue/summary</code><br><code>POST /api/admin/revenue/bonus-pool/fund</code></td></tr>
+<tr><td><code>Pages/Finance/TokenFlow.tsx</code></td><td><code>GET /api/admin/analytics/deposit-dashboard</code><br><code>GET /api/admin/analytics/merchant-funding</code><br><code>GET /api/admin/analytics/trends</code><br><code>GET /api/admin/analytics/withdrawal-dashboard</code></td></tr>
+<tr><td><code>Pages/Finance/UTRManager.tsx</code></td><td><code>GET /api/admin/utr-registry</code><br><code>GET /api/admin/utr/contested</code><br><code>GET /api/admin/utr/flagged</code><br><code>GET /api/admin/utr/stats</code><br><code>POST /api/admin/utr/resolve/:orderId</code></td></tr>
+<tr><td><code>Pages/GameProviders/GameProviders.tsx</code></td><td><code>DELETE /api/game/admin/game-providers/:key</code><br><code>GET /api/game/admin/game-providers</code><br><code>GET /api/game/admin/game-transactions</code><br><code>POST /api/game/admin/game-providers</code><br><code>POST /api/game/admin/game-providers/:key/test</code><br><code>PUT /api/game/admin/game-providers/:key</code></td></tr>
+<tr><td><code>Pages/Games/GamesManager.tsx</code></td><td><code>DELETE /api/game/admin/categories/:id</code><br><code>DELETE /api/game/admin/games/:id</code><br><code>GET /api/game/admin/categories</code><br><code>GET /api/game/admin/game-providers</code><br><code>GET /api/game/admin/games</code><br><code>POST /api/game/admin/categories</code><br><code>POST /api/game/admin/game-providers</code><br><code>POST /api/game/admin/games</code><br><code>PUT /api/game/admin/categories/:id</code><br><code>PUT /api/game/admin/games/:id</code></td></tr>
+<tr><td><code>Pages/Merchants/MerchantsList.tsx</code></td><td><code>GET /api/admin/merchants/:merchantId/profit-engine</code><br><code>PUT /api/admin/merchants/:merchantId/capabilities</code><br><code>PUT /api/admin/merchants/:merchantId/scoring</code></td></tr>
+<tr><td><code>Pages/Payment/PaymentControlCenter.tsx</code></td><td><code>GET /api/payment/admin/config</code><br><code>POST /api/admin/payment-orders/:orderId/resolve</code><br><code>POST /api/payment/admin/test-gateway</code><br><code>PUT /api/payment/admin/config</code></td></tr>
+<tr><td><code>Pages/Promotions/AnnouncementsPage.tsx</code></td><td><code>DELETE /api/admin/announcements/:id</code><br><code>GET /api/admin/announcements</code><br><code>POST /api/admin/announcements</code><br><code>PUT /api/admin/announcements/:id</code></td></tr>
+<tr><td><code>Pages/Support/SupportAssistant.tsx</code></td><td><code>GET /api/admin/support/documents</code><br><code>GET /api/admin/support/status</code><br><code>POST /api/admin/support/ingest</code><br><code>POST /api/admin/support/ingest/knowledge-base</code></td></tr>
+<tr><td><code>Pages/Users/BalanceAdjustment.tsx</code></td><td><code>GET /api/admin/balance-adjustments</code><br><code>POST /api/admin/balance-adjust</code></td></tr>
+<tr><td><code>Pages/Users/UsersList.tsx</code></td><td><code>POST /api/admin/users/:userId/phantom-access</code></td></tr>
+<tr><td><code>Pages/Winners/FakeWinnersManager.tsx</code></td><td><code>DELETE /api/admin/fake-winners/:id</code><br><code>GET /api/admin/fake-winners</code><br><code>POST /api/admin/fake-winners</code><br><code>PUT /api/admin/fake-winners/:id</code></td></tr>
+<tr><td><code>services/api.ts</code></td><td><code>DELETE /api/admin/app-assets/:name</code><br><code>DELETE /api/admin/branding/images/:imageId</code><br><code>DELETE /api/admin/chat/ban/:userId</code><br><code>DELETE /api/admin/content/faq/:faqId</code><br><code>DELETE /api/admin/error-reports</code><br><code>DELETE /api/admin/sub-admins/:subAdminId</code><br><code>DELETE /api/admin/users/:userId</code><br><code>GET /api/2fa/status</code><br><code>GET /api/admin/analytics/dashboard</code><br><code>GET /api/admin/analytics/financials</code><br><code>GET /api/admin/app-assets</code><br><code>GET /api/admin/audit-logs</code><br><code>GET /api/admin/branding</code><br><code>GET /api/admin/branding/images</code><br><code>GET /api/admin/chat/bans</code><br><code>GET /api/admin/chat/messages</code><br><code>GET /api/admin/content/faq</code><br><code>GET /api/admin/content/support-links</code><br><code>GET /api/admin/cycles/history</code><br><code>GET /api/admin/deposit-policy/:currency</code><br><code>GET /api/admin/deposit-policy/:currency/history</code><br><code>GET /api/admin/dispute-orders</code><br><code>GET /api/admin/dispute-orders/:orderId</code><br><code>GET /api/admin/error-reports</code><br><code>GET /api/admin/kyc/bulk/stats</code><br><code>GET /api/admin/kyc/queue</code><br><code>GET /api/admin/merchant-token-orders</code><br><code>GET /api/admin/merchants</code><br><code>GET /api/admin/merchants/:merchantId</code><br><code>GET /api/admin/merchants/:merchantId/earnings</code><br><code>GET /api/admin/merchants/:merchantId/profile</code><br><code>GET /api/admin/merchants/:merchantId/transactions</code><br><code>GET /api/admin/orders/:orderId/cdm-receipt</code><br><code>GET /api/admin/orders/cdm-receipts/missing</code><br><code>GET /api/admin/orders/stalled-withdrawals</code><br><code>GET /api/admin/payment-mode</code><br><code>GET /api/admin/payment-queue</code><br><code>GET /api/admin/phantom-agents</code><br><code>GET /api/admin/queue-managers</code><br><code>GET /api/admin/queue/available-merchants</code><br><code>GET /api/admin/queue/eligible-merchants</code><br><code>GET /api/admin/queue/merchant-pool</code><br><code>GET /api/admin/queue/pending-orders</code><br><code>GET /api/admin/referral/stats</code><br><code>GET /api/admin/sub-admins</code><br><code>GET /api/admin/support/tickets</code><br><code>GET /api/admin/support/tickets/:id</code><br><code>GET /api/admin/system/config</code><br><code>GET /api/admin/telegram/bots</code><br><code>GET /api/admin/telegram/config</code><br><code>GET /api/admin/telegram/templates</code><br><code>GET /api/admin/transactions</code><br><code>GET /api/admin/users</code><br><code>GET /api/admin/users/:userId</code><br><code>GET /api/admin/users/:userId/transactions</code><br><code>GET /api/admin/users/flagged</code><br><code>GET /api/admin/utr/flagged</code><br><code>GET /api/admin/utr/stats</code><br><code>GET /api/admin/utr/user-history/:userId</code><br><code>GET /api/cycles/:cycleId</code><br><code>GET /api/cycles/active</code><br><code>GET /api/v1/auth/me</code><br><code>POST /api/2fa/activate</code><br><code>POST /api/2fa/disable</code><br><code>POST /api/2fa/setup</code><br><code>POST /api/admin/app-assets/upload</code><br><code>POST /api/admin/branding/cdn-url</code><br><code>POST /api/admin/branding/confirm-upload</code><br><code>POST /api/admin/branding/images</code><br><code>POST /api/admin/branding/upload-url</code><br><code>POST /api/admin/chat/ban</code><br><code>POST /api/admin/chat/messages/:id/delete</code><br><code>POST /api/admin/content/faq</code><br><code>POST /api/admin/cycles/:cycleId/equalize</code><br><code>POST /api/admin/deposit-policy/version/:versionId/approve</code><br><code>POST /api/admin/deposit-policy/version/:versionId/rollback</code><br><code>POST /api/admin/dispute-orders/:orderId/escalate</code><br><code>POST /api/admin/dispute-orders/:orderId/resolve</code><br><code>POST /api/admin/kyc/:userId/approve</code><br><code>POST /api/admin/kyc/:userId/reject</code><br><code>POST /api/admin/kyc/bulk/import</code><br><code>POST /api/admin/login</code><br><code>POST /api/admin/login/2fa</code><br><code>POST /api/admin/manage-cycle</code><br><code>POST /api/admin/merchant-token-orders/:orderId/approve</code><br><code>POST /api/admin/merchant-token-orders/:orderId/reject</code><br><code>POST /api/admin/merchants/:merchantId/deduct</code><br><code>POST /api/admin/merchants/:merchantId/fund</code><br><code>POST /api/admin/merchants/create</code><br><code>POST /api/admin/payment-mode</code><br><code>POST /api/admin/payment-orders/:id/reassign</code><br><code>POST /api/admin/payment-orders/:orderId/action</code><br><code>POST /api/admin/queue/assign/:orderId</code><br><code>POST /api/admin/referral/disburse</code><br><code>POST /api/admin/sub-admins</code><br><code>POST /api/admin/support/tickets/:id/reply</code><br><code>POST /api/admin/telegram/bots</code><br><code>POST /api/admin/telegram/bots/:id/promote</code><br><code>POST /api/admin/telegram/bots/:id/retire</code><br><code>POST /api/admin/telegram/bots/:id/webhook</code><br><code>POST /api/admin/telegram/channel</code><br><code>POST /api/admin/telegram/config</code><br><code>POST /api/admin/users/:userId/adjust-balance</code><br><code>POST /api/admin/users/:userId/clear-flag</code><br><code>POST /api/admin/users/:userId/phantom-access</code><br><code>POST /api/admin/users/:userId/queue-manager</code><br><code>POST /api/admin/utr/resolve/:orderId</code><br><code>POST /api/v1/auth/logout</code><br><code>PUT /api/admin/branding</code><br><code>PUT /api/admin/content/faq/:faqId</code><br><code>PUT /api/admin/content/support-links</code><br><code>PUT /api/admin/deposit-policy/:currency</code><br><code>PUT /api/admin/merchants/:merchantId/activate</code><br><code>PUT /api/admin/merchants/:merchantId/approve</code><br><code>PUT /api/admin/merchants/:merchantId/limits</code><br><code>PUT /api/admin/merchants/:merchantId/panel-url</code><br><code>PUT /api/admin/merchants/:merchantId/reject</code><br><code>PUT /api/admin/merchants/:merchantId/resume-assignment</code><br><code>PUT /api/admin/merchants/:merchantId/suspend</code><br><code>PUT /api/admin/queue/merchant-pool</code><br><code>PUT /api/admin/sub-admins/:subAdminId/permissions</code><br><code>PUT /api/admin/system/config</code><br><code>PUT /api/admin/telegram/templates/:key</code><br><code>PUT /api/admin/users/:userId/block</code><br><code>PUT /api/admin/users/:userId/roles</code><br><code>PUT /api/admin/users/:userId/unblock</code></td></tr>
+</tbody>
+</table></div>
+
+<h3>5.2 Every route, its guards, and who calls it</h3>
+<div class="tablewrap"><table class="tight">
+<thead><tr><th>Method</th><th>Path</th><th>Guards</th><th>Called by</th></tr></thead>
+<tbody>
+<tr class="filerow"><td colspan="4"><code>backend/domains/analytics/analytics.admin.routes.js</code></td></tr>
+<tr><td>GET</td><td><code>/api/admin/analytics/dashboard</code></td><td><code>authenticate</code> <code>isAdminOrSubAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/analytics/deposit-dashboard</code></td><td><code>authenticate</code> <code>isAdminOrSubAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/analytics/financials</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/analytics/merchant-funding</code></td><td><code>authenticate</code> <code>isAdminOrSubAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/analytics/trends</code></td><td><code>authenticate</code> <code>isAdminOrSubAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/analytics/withdrawal-dashboard</code></td><td><code>authenticate</code> <code>isAdminOrSubAdmin</code></td><td>admin</td></tr>
+<tr class="filerow"><td colspan="4"><code>backend/domains/casino/gameProvider.routes.js</code></td></tr>
+<tr><td>GET</td><td><code>/api/game/admin/game-providers</code></td><td><code>authenticate</code> <code>isAdminOrSubAdmin</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/game/admin/game-providers</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>PUT</td><td><code>/api/game/admin/game-providers/:key</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>DELETE</td><td><code>/api/game/admin/game-providers/:key</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/game/admin/game-providers/:key/test</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/game/admin/game-transactions</code></td><td><code>authenticate</code> <code>isAdminOrSubAdmin</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/game/launch</code></td><td><code>authenticate</code></td><td>user</td></tr>
+<tr><td>GET</td><td><code>/api/game/providers</code></td><td><span class="nocall">none</span></td><td>user</td></tr>
+<tr><td>POST</td><td><code>/api/game/wallet/:providerKey</code></td><td><span class="nocall">none</span></td><td><span class="nocall">— no panel</span></td></tr>
+<tr class="filerow"><td colspan="4"><code>backend/domains/cms/content.admin.routes.js</code></td></tr>
+<tr><td>GET</td><td><code>/api/admin/content/faq</code></td><td><code>authenticate</code> <code>isAdminOrSubAdmin</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/admin/content/faq</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>PUT</td><td><code>/api/admin/content/faq/:faqId</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>DELETE</td><td><code>/api/admin/content/faq/:faqId</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/content/support-links</code></td><td><code>authenticate</code> <code>isAdminOrSubAdmin</code></td><td>admin</td></tr>
+<tr><td>PUT</td><td><code>/api/admin/content/support-links</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/promo</code></td><td><code>authenticate</code> <code>isAdminOrSubAdmin</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/admin/promo</code></td><td><code>authenticate</code></td><td>admin</td></tr>
+<tr><td>PUT</td><td><code>/api/admin/promo/:id</code></td><td><code>authenticate</code></td><td>admin</td></tr>
+<tr><td>DELETE</td><td><code>/api/admin/promo/:id</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/admin/promo/upload-url</code></td><td><code>authenticate</code></td><td>admin</td></tr>
+<tr class="filerow"><td colspan="4"><code>backend/domains/communication/communication.admin.routes.js</code></td></tr>
+<tr><td>GET</td><td><code>/api/admin/communication/admin-activity</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/communication/audit-feed</code></td><td><code>authenticate</code> <code>isAdminOrSubAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/communication/channels</code></td><td><code>authenticate</code> <code>isAdminOrSubAdmin</code></td><td>admin</td></tr>
+<tr class="filerow"><td colspan="4"><code>backend/domains/configuration/depositPolicy.admin.routes.js</code></td></tr>
+<tr><td>GET</td><td><code>/api/admin/deposit-policy/:currency</code></td><td><code>authenticate</code> <code>isAdminOrSubAdmin</code></td><td>admin</td></tr>
+<tr><td>PUT</td><td><code>/api/admin/deposit-policy/:currency</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/deposit-policy/:currency/history</code></td><td><code>authenticate</code> <code>isAdminOrSubAdmin</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/admin/deposit-policy/version/:versionId/approve</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/admin/deposit-policy/version/:versionId/rollback</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr class="filerow"><td colspan="4"><code>backend/domains/configuration/merchantCommissionPolicy.admin.routes.js</code></td></tr>
+<tr><td>GET</td><td><code>/api/admin/merchant-commission-policy</code></td><td><code>authenticate</code> <code>isAdminOrSubAdmin</code></td><td>admin</td></tr>
+<tr><td>PUT</td><td><code>/api/admin/merchant-commission-policy</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/merchant-commission-policy/history</code></td><td><code>authenticate</code> <code>isAdminOrSubAdmin</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/admin/merchant-commission-policy/version/:versionId/rollback</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr class="filerow"><td colspan="4"><code>backend/domains/configuration/paymentMode.admin.routes.js</code></td></tr>
+<tr><td>GET</td><td><code>/api/admin/payment-mode</code></td><td><code>authenticate</code> <code>isAdminOrSubAdmin</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/admin/payment-mode</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/payment-mode/history</code></td><td><code>authenticate</code> <code>isAdminOrSubAdmin</code></td><td><span class="nocall">— no panel</span></td></tr>
+<tr class="filerow"><td colspan="4"><code>backend/domains/disputes/disputeResolution.admin.routes.js</code></td></tr>
+<tr><td>GET</td><td><code>/api/admin/dispute-orders</code></td><td><code>authenticate</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/dispute-orders/:orderId</code></td><td><code>authenticate</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/dispute-orders/:orderId/chat</code></td><td><code>authenticate</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/admin/dispute-orders/:orderId/chat</code></td><td><code>authenticate</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/admin/dispute-orders/:orderId/escalate</code></td><td><code>authenticate</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/admin/dispute-orders/:orderId/resolve</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/orders/:orderId/cdm-receipt</code></td><td><code>authenticate</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/orders/cdm-receipts/missing</code></td><td><code>authenticate</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/orders/stalled-withdrawals</code></td><td><code>authenticate</code></td><td>admin</td></tr>
+<tr class="filerow"><td colspan="4"><code>backend/domains/gameRegistry/gameRegistry.routes.js</code></td></tr>
+<tr><td>GET</td><td><code>/api/game/admin/categories</code></td><td><code>authenticate</code> <code>isAdminOrSubAdmin</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/game/admin/categories</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>PUT</td><td><code>/api/game/admin/categories/:id</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>DELETE</td><td><code>/api/game/admin/categories/:id</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/game/admin/games</code></td><td><code>authenticate</code> <code>isAdminOrSubAdmin</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/game/admin/games</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>PUT</td><td><code>/api/game/admin/games/:id</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>DELETE</td><td><code>/api/game/admin/games/:id</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/game/categories</code></td><td><span class="nocall">none</span></td><td>user</td></tr>
+<tr><td>GET</td><td><code>/api/game/games</code></td><td><span class="nocall">none</span></td><td>user</td></tr>
+<tr class="filerow"><td colspan="4"><code>backend/domains/identity/twoFactor.routes.js</code></td></tr>
+<tr><td>POST</td><td><code>/api/2fa/activate</code></td><td><code>authenticate</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/2fa/disable</code></td><td><code>authenticate</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/2fa/setup</code></td><td><code>authenticate</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/2fa/status</code></td><td><code>authenticate</code></td><td>admin</td></tr>
+<tr class="filerow"><td colspan="4"><code>backend/domains/markets/bet.routes.js</code></td></tr>
+<tr><td>POST</td><td><code>/api/bet/phantom</code></td><td><code>authenticate</code></td><td>user</td></tr>
+<tr><td>POST</td><td><code>/api/bet/place</code></td><td><code>authenticate</code></td><td>user</td></tr>
+<tr class="filerow"><td colspan="4"><code>backend/domains/merchant/merchant.admin.routes.js</code></td></tr>
+<tr><td>GET</td><td><code>/api/admin/merchant-token-orders</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/admin/merchant-token-orders/:orderId/approve</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/admin/merchant-token-orders/:orderId/reject</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/merchants</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/merchants/:merchantId</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>PUT</td><td><code>/api/admin/merchants/:merchantId/activate</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>PUT</td><td><code>/api/admin/merchants/:merchantId/approve</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>PUT</td><td><code>/api/admin/merchants/:merchantId/capabilities</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/admin/merchants/:merchantId/deduct</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/merchants/:merchantId/earnings</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/admin/merchants/:merchantId/fund</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>PUT</td><td><code>/api/admin/merchants/:merchantId/limits</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>PUT</td><td><code>/api/admin/merchants/:merchantId/panel-url</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/merchants/:merchantId/profile</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/merchants/:merchantId/profit-engine</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>PUT</td><td><code>/api/admin/merchants/:merchantId/reject</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>PUT</td><td><code>/api/admin/merchants/:merchantId/resume-assignment</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>PUT</td><td><code>/api/admin/merchants/:merchantId/suspend</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/merchants/:merchantId/transactions</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/admin/merchants/create</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr class="filerow"><td colspan="4"><code>backend/domains/merchant/merchant.assignment.routes.js</code></td></tr>
+<tr><td>PUT</td><td><code>/api/admin/merchants/:merchantId/scoring</code></td><td><code>authenticate</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/admin/payment-orders/:id/reassign</code></td><td><code>authenticate</code> <code>isAdminOrSubAdminOrQueueManager</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/admin/queue/assign/:orderId</code></td><td><code>authenticate</code> <code>isAdminOrSubAdminOrQueueManager</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/queue/available-merchants</code></td><td><code>authenticate</code> <code>isAdminOrSubAdminOrQueueManager</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/queue/eligible-merchants</code></td><td><code>authenticate</code> <code>isAdminOrSubAdminOrQueueManager</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/queue/merchant-pool</code></td><td><code>authenticate</code> <code>isAdminOrSubAdminOrQueueManager</code></td><td>admin</td></tr>
+<tr><td>PUT</td><td><code>/api/admin/queue/merchant-pool</code></td><td><code>authenticate</code> <code>isAdminOrSubAdminOrQueueManager</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/queue/pending-orders</code></td><td><code>authenticate</code> <code>isAdminOrSubAdminOrQueueManager</code></td><td>admin</td></tr>
+<tr class="filerow"><td colspan="4"><code>backend/domains/merchant/merchant.routes.js</code></td></tr>
+<tr><td>POST</td><td><code>/api/merchant/2fa/activate</code></td><td><code>merchantAuth</code></td><td>merchant</td></tr>
+<tr><td>POST</td><td><code>/api/merchant/2fa/setup</code></td><td><code>merchantAuth</code></td><td>merchant</td></tr>
+<tr><td>GET</td><td><code>/api/merchant/2fa/status</code></td><td><code>merchantAuth</code></td><td>merchant</td></tr>
+<tr><td>POST</td><td><code>/api/merchant/accept/:id</code></td><td><code>merchantAuth</code></td><td>merchant</td></tr>
+<tr><td>GET</td><td><code>/api/merchant/admin-token-orders</code></td><td><code>merchantAuth</code></td><td>merchant</td></tr>
+<tr><td>POST</td><td><code>/api/merchant/admin-token-orders</code></td><td><code>merchantAuth</code></td><td>merchant</td></tr>
+<tr><td>GET</td><td><code>/api/merchant/admin-token-orders/quote</code></td><td><code>merchantAuth</code></td><td>merchant</td></tr>
+<tr><td>POST</td><td><code>/api/merchant/auth/login</code></td><td><span class="nocall">none</span></td><td>merchant</td></tr>
+<tr><td>POST</td><td><code>/api/merchant/auth/login/2fa</code></td><td><span class="nocall">none</span></td><td>merchant</td></tr>
+<tr><td>POST</td><td><code>/api/merchant/auth/signup</code></td><td><span class="nocall">none</span></td><td>merchant</td></tr>
+<tr><td>POST</td><td><code>/api/merchant/cash-links</code></td><td><code>merchantAuth</code></td><td>merchant</td></tr>
+<tr><td>DELETE</td><td><code>/api/merchant/cash-links/:linkId</code></td><td><code>merchantAuth</code></td><td>merchant</td></tr>
+<tr><td>GET</td><td><code>/api/merchant/cash-links/current</code></td><td><code>merchantAuth</code></td><td>merchant</td></tr>
+<tr><td>GET</td><td><code>/api/merchant/cdm-receipts/outstanding</code></td><td><code>merchantAuth</code></td><td>merchant</td></tr>
+<tr><td>POST</td><td><code>/api/merchant/confirm/:id</code></td><td><code>merchantAuth</code></td><td>merchant</td></tr>
+<tr><td>GET</td><td><code>/api/merchant/earnings</code></td><td><code>merchantAuth</code></td><td>merchant</td></tr>
+<tr><td>GET</td><td><code>/api/merchant/earnings/weekly</code></td><td><code>merchantAuth</code></td><td>merchant</td></tr>
+<tr><td>PUT</td><td><code>/api/merchant/online-status</code></td><td><code>merchantAuth</code></td><td>merchant</td></tr>
+<tr><td>GET</td><td><code>/api/merchant/orders</code></td><td><code>merchantAuth</code></td><td>merchant</td></tr>
+<tr><td>POST</td><td><code>/api/merchant/orders/:id/cdm-receipt</code></td><td><code>merchantAuth</code></td><td>merchant</td></tr>
+<tr><td>POST</td><td><code>/api/merchant/orders/:id/red-flag</code></td><td><code>merchantAuth</code></td><td>merchant</td></tr>
+<tr><td>POST</td><td><code>/api/merchant/orders/:id/reject</code></td><td><code>merchantAuth</code></td><td>merchant</td></tr>
+<tr><td>GET</td><td><code>/api/merchant/payment-mode</code></td><td><code>merchantAuth</code></td><td>merchant</td></tr>
+<tr><td>PUT</td><td><code>/api/merchant/preferences</code></td><td><code>merchantAuth</code></td><td>merchant</td></tr>
+<tr><td>GET</td><td><code>/api/merchant/profile</code></td><td><code>merchantAuth</code></td><td>merchant</td></tr>
+<tr><td>PUT</td><td><code>/api/merchant/profile</code></td><td><code>merchantAuth</code></td><td>merchant</td></tr>
+<tr><td>POST</td><td><code>/api/merchant/reject/:id</code></td><td><code>merchantAuth</code></td><td>merchant</td></tr>
+<tr><td>GET</td><td><code>/api/merchant/stats</code></td><td><code>merchantAuth</code></td><td>merchant</td></tr>
+<tr class="filerow"><td colspan="4"><code>backend/domains/merchant/merchantPlatform.admin.routes.js</code></td></tr>
+<tr><td>GET</td><td><code>/api/admin/merchant-platform/:merchantId/funding-stats</code></td><td><code>authenticate</code> <code>isAdminOrSubAdmin</code></td><td><span class="nocall">— no panel</span></td></tr>
+<tr><td>GET</td><td><code>/api/admin/merchant-platform/:merchantId/performance-history</code></td><td><code>authenticate</code> <code>isAdminOrSubAdmin</code></td><td><span class="nocall">— no panel</span></td></tr>
+<tr><td>GET</td><td><code>/api/admin/merchant-platform/:merchantId/wallet-ledger</code></td><td><code>authenticate</code> <code>isAdminOrSubAdmin</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/admin/merchant-platform/commission-engine/run</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/merchant-platform/leaderboard</code></td><td><code>authenticate</code> <code>isAdminOrSubAdmin</code></td><td>admin</td></tr>
+<tr class="filerow"><td colspan="4"><code>backend/domains/operations/operations.admin.routes.js</code></td></tr>
+<tr><td>GET</td><td><code>/api/admin/operations/config-catalog</code></td><td><code>authenticate</code> <code>isAdminOrSubAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/operations/overview</code></td><td><code>authenticate</code> <code>isAdminOrSubAdmin</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/admin/operations/retention/run</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td><span class="nocall">— no panel</span></td></tr>
+<tr class="filerow"><td colspan="4"><code>backend/domains/payment/payment.routes.js</code></td></tr>
+<tr><td>POST</td><td><code>/api/payment/deposit/:orderId/confirm</code></td><td><span class="nocall">none</span></td><td><span class="nocall">— no panel</span></td></tr>
+<tr><td>POST</td><td><code>/api/payment/deposit/create</code></td><td><code>authenticate</code></td><td>user</td></tr>
+<tr><td>GET</td><td><code>/api/payment/order/:orderId</code></td><td><code>authenticate</code></td><td>user</td></tr>
+<tr><td>GET</td><td><code>/api/payment/order/:orderId/batch</code></td><td><code>authenticate</code></td><td>user</td></tr>
+<tr><td>POST</td><td><code>/api/payment/order/:orderId/dispute</code></td><td><code>authenticate</code></td><td>user</td></tr>
+<tr><td>POST</td><td><code>/api/payment/order/:orderId/mark-paid</code></td><td><code>authenticate</code></td><td>user</td></tr>
+<tr><td>POST</td><td><code>/api/payment/order/:orderId/retry</code></td><td><code>authenticate</code></td><td>user</td></tr>
+<tr><td>GET</td><td><code>/api/payment/order/:orderId/status</code></td><td><code>authenticate</code></td><td>user</td></tr>
+<tr><td>POST</td><td><code>/api/payment/order/:orderId/status</code></td><td><code>authenticate</code></td><td>user</td></tr>
+<tr><td>POST</td><td><code>/api/payment/order/:orderId/utr-grace</code></td><td><code>authenticate</code></td><td>user</td></tr>
+<tr><td>POST</td><td><code>/api/payment/order/cancel</code></td><td><code>authenticate</code></td><td>user</td></tr>
+<tr><td>GET</td><td><code>/api/payment/orders</code></td><td><code>authenticate</code></td><td><span class="nocall">— no panel</span></td></tr>
+<tr><td>POST</td><td><code>/api/payment/usdt/deposit/create</code></td><td><span class="nocall">none</span></td><td>user</td></tr>
+<tr><td>POST</td><td><code>/api/payment/withdrawal/create</code></td><td><code>authenticate</code></td><td>user</td></tr>
+<tr class="filerow"><td colspan="4"><code>backend/domains/payment/paymentOrder.routes.js</code></td></tr>
+<tr><td>POST</td><td><code>/api/admin/payment-orders/:orderId/action</code></td><td><code>authenticate</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/admin/payment-orders/:orderId/resolve</code></td><td><code>authenticate</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/payment-queue</code></td><td><code>authenticate</code></td><td>admin</td></tr>
+<tr class="filerow"><td colspan="4"><code>backend/domains/reporting/reporting.admin.routes.js</code></td></tr>
+<tr><td>GET</td><td><code>/api/admin/reports/financial</code></td><td><code>authenticate</code> <code>isAdminOrSubAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/reports/ledger-export</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/reports/merchants</code></td><td><code>authenticate</code> <code>isAdminOrSubAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/reports/settlement</code></td><td><code>authenticate</code> <code>isAdminOrSubAdmin</code></td><td>admin</td></tr>
+<tr class="filerow"><td colspan="4"><code>backend/domains/revenue/revenue.admin.routes.js</code></td></tr>
+<tr><td>POST</td><td><code>/api/admin/revenue/bonus-pool/fund</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/revenue/ledger</code></td><td><code>authenticate</code> <code>isAdminOrSubAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/revenue/summary</code></td><td><code>authenticate</code> <code>isAdminOrSubAdmin</code></td><td>admin</td></tr>
+<tr class="filerow"><td colspan="4"><code>backend/domains/support/support.admin.routes.js</code></td></tr>
+<tr><td>GET</td><td><code>/api/admin/support/documents</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>DELETE</td><td><code>/api/admin/support/documents/:docId</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td><span class="nocall">— no panel</span></td></tr>
+<tr><td>POST</td><td><code>/api/admin/support/ingest</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/admin/support/ingest/knowledge-base</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/support/status</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr class="filerow"><td colspan="4"><code>backend/domains/support/support.routes.js</code></td></tr>
+<tr><td>POST</td><td><code>/api/support/ask</code></td><td><code>authenticate</code></td><td>user</td></tr>
+<tr><td>GET</td><td><code>/api/support/status</code></td><td><span class="nocall">none</span></td><td>user</td></tr>
+<tr><td>POST</td><td><code>/api/support/tickets</code></td><td><code>authenticate</code></td><td>user</td></tr>
+<tr><td>GET</td><td><code>/api/support/tickets</code></td><td><code>authenticate</code></td><td>user</td></tr>
+<tr><td>GET</td><td><code>/api/support/tickets/:ticketId</code></td><td><code>authenticate</code></td><td>user</td></tr>
+<tr><td>POST</td><td><code>/api/support/tickets/:ticketId/reply</code></td><td><code>authenticate</code></td><td>user</td></tr>
+<tr class="filerow"><td colspan="4"><code>backend/domains/telegram/telegram.routes.js</code></td></tr>
+<tr><td>POST</td><td><code>/api/telegram/exchange</code></td><td><span class="nocall">none</span></td><td>user</td></tr>
+<tr><td>GET</td><td><code>/api/telegram/membership</code></td><td><code>authenticate</code></td><td>user</td></tr>
+<tr><td>POST</td><td><code>/api/telegram/otp/request</code></td><td><span class="nocall">none</span></td><td>user</td></tr>
+<tr><td>POST</td><td><code>/api/telegram/otp/verify</code></td><td><span class="nocall">none</span></td><td>user</td></tr>
+<tr><td>GET</td><td><code>/api/telegram/public-config</code></td><td><span class="nocall">none</span></td><td>user</td></tr>
+<tr><td>POST</td><td><code>/api/telegram/recovery/webhook</code></td><td><span class="nocall">none</span></td><td><span class="nocall">— no panel</span></td></tr>
+<tr><td>POST</td><td><code>/api/telegram/webhook</code></td><td><span class="nocall">none</span></td><td><span class="nocall">— no panel</span></td></tr>
+<tr class="filerow"><td colspan="4"><code>backend/domains/user/user.routes.js</code></td></tr>
+<tr><td>GET</td><td><code>/api/cycles/:cycleId</code></td><td><span class="nocall">none</span></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/cycles/active</code></td><td><span class="nocall">none</span></td><td>admin</td></tr>
+<tr><td>PUT</td><td><code>/api/user/:userId/bank-details</code></td><td><code>authenticate</code></td><td><span class="nocall">— no panel</span></td></tr>
+<tr><td>GET</td><td><code>/api/user/:userId/bets</code></td><td><code>authenticate</code></td><td>user</td></tr>
+<tr><td>PUT</td><td><code>/api/user/:userId/profile</code></td><td><code>authenticate</code></td><td>user</td></tr>
+<tr><td>GET</td><td><code>/api/user/:userId/transactions</code></td><td><code>authenticate</code></td><td><span class="nocall">— no panel</span></td></tr>
+<tr><td>GET</td><td><code>/api/user/bet-limits</code></td><td><code>authenticate</code></td><td>user</td></tr>
+<tr><td>GET</td><td><code>/api/user/notifications</code></td><td><code>authenticate</code></td><td>user</td></tr>
+<tr><td>POST</td><td><code>/api/user/notifications/read</code></td><td><code>authenticate</code></td><td>user</td></tr>
+<tr><td>GET</td><td><code>/api/user/notifications/unread-count</code></td><td><code>authenticate</code></td><td>user</td></tr>
+<tr><td>GET</td><td><code>/api/user/referrals</code></td><td><code>authenticate</code></td><td>user</td></tr>
+<tr><td>GET</td><td><code>/api/v1/branding</code></td><td><span class="nocall">none</span></td><td><span class="nocall">— no panel</span></td></tr>
+<tr><td>GET</td><td><code>/api/v1/content/ai-analysis</code></td><td><span class="nocall">none</span></td><td>user</td></tr>
+<tr><td>GET</td><td><code>/api/v1/content/faq</code></td><td><span class="nocall">none</span></td><td><span class="nocall">— no panel</span></td></tr>
+<tr><td>GET</td><td><code>/api/v1/content/promo/:location</code></td><td><span class="nocall">none</span></td><td><span class="nocall">— no panel</span></td></tr>
+<tr><td>GET</td><td><code>/api/v1/content/support-links</code></td><td><span class="nocall">none</span></td><td><span class="nocall">— no panel</span></td></tr>
+<tr><td>GET</td><td><code>/api/v1/game/cycle/:type/:startTime</code></td><td><span class="nocall">none</span></td><td>user</td></tr>
+<tr><td>GET</td><td><code>/api/v1/game/cycles/history</code></td><td><span class="nocall">none</span></td><td><span class="nocall">— no panel</span></td></tr>
+<tr><td>GET</td><td><code>/api/v1/system/config</code></td><td><span class="nocall">none</span></td><td>user</td></tr>
+<tr><td>GET</td><td><code>/api/v1/system/time</code></td><td><span class="nocall">none</span></td><td><span class="nocall">— no panel</span></td></tr>
+<tr><td>GET</td><td><code>/api/v1/token/rates</code></td><td><span class="nocall">none</span></td><td><span class="nocall">— no panel</span></td></tr>
+<tr><td>GET</td><td><code>/api/v1/tokens/rate</code></td><td><span class="nocall">none</span></td><td><span class="nocall">— no panel</span></td></tr>
+<tr><td>GET</td><td><code>/api/v1/user/:id/data</code></td><td><code>authenticate</code></td><td>user</td></tr>
+<tr><td>GET</td><td><code>/api/v1/user/profile</code></td><td><code>authenticate</code></td><td>user</td></tr>
+<tr><td>GET</td><td><code>/api/v1/wallet/ledger</code></td><td><code>authenticate</code></td><td><span class="nocall">— no panel</span></td></tr>
+<tr class="filerow"><td colspan="4"><code>backend/routes.js</code></td></tr>
+<tr><td>GET</td><td><code>/api/v1/auth/health</code></td><td><span class="nocall">none</span></td><td><span class="nocall">— no panel</span></td></tr>
+<tr><td>POST</td><td><code>/api/v1/auth/logout</code></td><td><span class="nocall">none</span></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/v1/auth/me</code></td><td><span class="nocall">none</span></td><td>admin</td></tr>
+<tr class="filerow"><td colspan="4"><code>backend/routes/admin/audit.admin.routes.js</code></td></tr>
+<tr><td>GET</td><td><code>/api/admin/audit-logs</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr class="filerow"><td colspan="4"><code>backend/routes/admin/branding.admin.routes.js</code></td></tr>
+<tr><td>GET</td><td><code>/api/admin/app-assets</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>DELETE</td><td><code>/api/admin/app-assets/:name</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/admin/app-assets/upload</code></td><td><span class="nocall">none</span></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/branding</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>PUT</td><td><code>/api/admin/branding</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/admin/branding/cdn-url</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/admin/branding/confirm-upload</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/admin/branding/images</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/branding/images</code></td><td><code>authenticate</code> <code>isAdminOrSubAdmin</code></td><td>admin</td></tr>
+<tr><td>DELETE</td><td><code>/api/admin/branding/images/:imageId</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/admin/branding/upload-url</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr class="filerow"><td colspan="4"><code>backend/routes/admin/chat.admin.routes.js</code></td></tr>
+<tr><td>POST</td><td><code>/api/admin/chat/ban</code></td><td><span class="nocall">none</span></td><td>admin</td></tr>
+<tr><td>DELETE</td><td><code>/api/admin/chat/ban/:userId</code></td><td><span class="nocall">none</span></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/chat/bans</code></td><td><span class="nocall">none</span></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/chat/messages</code></td><td><span class="nocall">none</span></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/admin/chat/messages/:id/delete</code></td><td><span class="nocall">none</span></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/support/tickets</code></td><td><span class="nocall">none</span></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/support/tickets/:id</code></td><td><span class="nocall">none</span></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/admin/support/tickets/:id/reply</code></td><td><span class="nocall">none</span></td><td>admin</td></tr>
+<tr class="filerow"><td colspan="4"><code>backend/routes/admin/cycles.admin.routes.js</code></td></tr>
+<tr><td>POST</td><td><code>/api/admin/cycles/:cycleId/equalize</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/cycles/history</code></td><td><code>authenticate</code> <code>isAdminOrSubAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/cycles/phases</code></td><td><code>authenticate</code> <code>isAdminOrSubAdmin</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/admin/manage-cycle</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin, user</td></tr>
+<tr class="filerow"><td colspan="4"><code>backend/routes/admin/kyc.admin.routes.js</code></td></tr>
+<tr><td>POST</td><td><code>/api/admin/kyc/:userId/approve</code></td><td><code>authenticate</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/admin/kyc/:userId/reject</code></td><td><code>authenticate</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/kyc/queue</code></td><td><code>authenticate</code></td><td>admin</td></tr>
+<tr class="filerow"><td colspan="4"><code>backend/routes/admin/subadmins.admin.routes.js</code></td></tr>
+<tr><td>GET</td><td><code>/api/admin/sub-admins</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/admin/sub-admins</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>DELETE</td><td><code>/api/admin/sub-admins/:subAdminId</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>PUT</td><td><code>/api/admin/sub-admins/:subAdminId/permissions</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr class="filerow"><td colspan="4"><code>backend/routes/admin/system.admin.routes.js</code></td></tr>
+<tr><td>GET</td><td><code>/api/admin/error-reports</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>DELETE</td><td><code>/api/admin/error-reports</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/system/config</code></td><td><code>authenticate</code> <code>isAdminOrSubAdmin</code></td><td>admin, user</td></tr>
+<tr><td>PUT</td><td><code>/api/admin/system/config</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin, user</td></tr>
+<tr><td>GET</td><td><code>/api/admin/transactions</code></td><td><code>authenticate</code> <code>isAdminOrSubAdmin</code></td><td>admin</td></tr>
+<tr class="filerow"><td colspan="4"><code>backend/routes/admin/telegram.admin.routes.js</code></td></tr>
+<tr><td>GET</td><td><code>/api/admin/kyc/bulk/export</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td><span class="nocall">— no panel</span></td></tr>
+<tr><td>POST</td><td><code>/api/admin/kyc/bulk/import</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/kyc/bulk/stats</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/admin/referral/disburse</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/referral/stats</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/telegram/bots</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/admin/telegram/bots</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/admin/telegram/bots/:id/promote</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/admin/telegram/bots/:id/retire</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/admin/telegram/bots/:id/webhook</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/admin/telegram/channel</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/telegram/config</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/admin/telegram/config</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/telegram/templates</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>PUT</td><td><code>/api/admin/telegram/templates/:key</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr class="filerow"><td colspan="4"><code>backend/routes/admin/users.admin.routes.js</code></td></tr>
+<tr><td>GET</td><td><code>/api/admin/analytics/phantom-stats</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/phantom-agents</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/queue-managers</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/users</code></td><td><code>authenticate</code> <code>isAdminOrSubAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/users/:userId</code></td><td><code>authenticate</code> <code>isAdminOrSubAdmin</code></td><td>admin</td></tr>
+<tr><td>DELETE</td><td><code>/api/admin/users/:userId</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/admin/users/:userId/adjust-balance</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>PUT</td><td><code>/api/admin/users/:userId/block</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/admin/users/:userId/clear-flag</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/admin/users/:userId/phantom-access</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/admin/users/:userId/queue-manager</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>PUT</td><td><code>/api/admin/users/:userId/roles</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/users/:userId/transactions</code></td><td><code>authenticate</code> <code>isAdminOrSubAdmin</code></td><td>admin</td></tr>
+<tr><td>PUT</td><td><code>/api/admin/users/:userId/unblock</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/users/flagged</code></td><td><code>authenticate</code> <code>isAdminOrSubAdmin</code></td><td>admin</td></tr>
+<tr class="filerow"><td colspan="4"><code>backend/routes/admin/utr.admin.routes.js</code></td></tr>
+<tr><td>GET</td><td><code>/api/admin/utr-registry</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/utr-registry/:utr</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td><span class="nocall">— no panel</span></td></tr>
+<tr><td>PUT</td><td><code>/api/admin/utr-registry/:utr/clear</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td><span class="nocall">— no panel</span></td></tr>
+<tr><td>PUT</td><td><code>/api/admin/utr-registry/:utr/flag</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td><span class="nocall">— no panel</span></td></tr>
+<tr><td>GET</td><td><code>/api/admin/utr/contested</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/utr/flagged</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/admin/utr/resolve/:orderId</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/utr/stats</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/utr/user-history/:userId</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr class="filerow"><td colspan="4"><code>backend/routes/app-bootstrap.routes.js</code></td></tr>
+<tr><td>GET</td><td><code>/api/app/bootstrap</code></td><td><span class="nocall">none</span></td><td><span class="nocall">— no panel</span></td></tr>
+<tr class="filerow"><td colspan="4"><code>backend/routes/payment-config.routes.js</code></td></tr>
+<tr><td>GET</td><td><code>/api/payment/admin/config</code></td><td><code>authenticate</code> <code>isAdminOrSubAdmin</code></td><td>admin</td></tr>
+<tr><td>PUT</td><td><code>/api/payment/admin/config</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/payment/admin/test-gateway</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr class="filerow"><td colspan="4"><code>backend/routes/referralRedirect.routes.js</code></td></tr>
+<tr><td>GET</td><td><code>/r/:code</code></td><td><span class="nocall">none</span></td><td><span class="nocall">— no panel</span></td></tr>
+<tr class="filerow"><td colspan="4"><code>backend/routes/retention.routes.js</code></td></tr>
+<tr><td>GET</td><td><code>/api/admin/announcements</code></td><td><code>authenticate</code> <code>isAdminOrSubAdmin</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/admin/announcements</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>PUT</td><td><code>/api/admin/announcements/:id</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>DELETE</td><td><code>/api/admin/announcements/:id</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/admin/balance-adjust</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/admin/balance-adjustments</code></td><td><code>authenticate</code> <code>isAdminOrSubAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/announcements</code></td><td><span class="nocall">none</span></td><td><span class="nocall">— no panel</span></td></tr>
+<tr><td>GET</td><td><code>/api/bonuses/my</code></td><td><code>authenticate</code></td><td><span class="nocall">— no panel</span></td></tr>
+<tr><td>GET</td><td><code>/api/leaderboard/:period</code></td><td><span class="nocall">none</span></td><td>admin, user</td></tr>
+<tr><td>POST</td><td><code>/api/leaderboard/rebuild</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr class="filerow"><td colspan="4"><code>backend/routes/sse.routes.js</code></td></tr>
+<tr><td>GET</td><td><code>/api/sse/admin/events</code></td><td><span class="nocall">none</span></td><td><span class="nocall">— no panel</span></td></tr>
+<tr><td>GET</td><td><code>/api/sse/events</code></td><td><span class="nocall">none</span></td><td>user</td></tr>
+<tr><td>GET</td><td><code>/api/sse/merchant/events</code></td><td><span class="nocall">none</span></td><td><span class="nocall">— no panel</span></td></tr>
+<tr><td>GET</td><td><code>/api/sse/stats</code></td><td><span class="nocall">none</span></td><td><span class="nocall">— no panel</span></td></tr>
+<tr class="filerow"><td colspan="4"><code>backend/routes/upload.routes.js</code></td></tr>
+<tr><td>POST</td><td><code>/api/merchant/cdm-receipt/:orderId/upload-url</code></td><td><code>merchantAuth</code></td><td>merchant</td></tr>
+<tr><td>POST</td><td><code>/api/merchant/order-reject-proof/:orderId/upload-url</code></td><td><code>merchantAuth</code></td><td>merchant</td></tr>
+<tr><td>POST</td><td><code>/api/user/profile/picture/confirm-upload</code></td><td><code>authenticate</code></td><td><span class="nocall">— no panel</span></td></tr>
+<tr><td>POST</td><td><code>/api/user/profile/picture/upload-url</code></td><td><code>authenticate</code></td><td><span class="nocall">— no panel</span></td></tr>
+<tr class="filerow"><td colspan="4"><code>backend/routes/wellKnown.routes.js</code></td></tr>
+<tr><td>GET</td><td><code>/.well-known/assetlinks.json</code></td><td><span class="nocall">none</span></td><td><span class="nocall">— no panel</span></td></tr>
+<tr class="filerow"><td colspan="4"><code>backend/routes/winners.routes.js</code></td></tr>
+<tr><td>GET</td><td><code>/api/admin/fake-winners</code></td><td><code>authenticate</code> <code>isAdminOrSubAdmin</code></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/admin/fake-winners</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>PUT</td><td><code>/api/admin/fake-winners/:id</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>DELETE</td><td><code>/api/admin/fake-winners/:id</code></td><td><code>authenticate</code> <code>isAdmin</code></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/v1/winners</code></td><td><span class="nocall">none</span></td><td><span class="nocall">— no panel</span></td></tr>
+<tr class="filerow"><td colspan="4"><code>backend/server.js</code></td></tr>
+<tr><td>GET</td><td><code>/{*splat}</code></td><td><span class="nocall">none</span></td><td><span class="nocall">— no panel</span></td></tr>
+<tr><td>GET</td><td><code>/admin/*splat</code></td><td><span class="nocall">none</span></td><td><span class="nocall">— no panel</span></td></tr>
+<tr><td>POST</td><td><code>/api/admin/login</code></td><td><span class="nocall">none</span></td><td>admin</td></tr>
+<tr><td>POST</td><td><code>/api/admin/login/2fa</code></td><td><span class="nocall">none</span></td><td>admin</td></tr>
+<tr><td>GET</td><td><code>/api/download/android</code></td><td><span class="nocall">none</span></td><td>user</td></tr>
+<tr><td>GET</td><td><code>/api/download/ios</code></td><td><span class="nocall">none</span></td><td>user</td></tr>
+<tr><td>POST</td><td><code>/api/internal/error-report</code></td><td><span class="nocall">none</span></td><td><span class="nocall">— no panel</span></td></tr>
+<tr><td>GET</td><td><code>/api/v1/health</code></td><td><span class="nocall">none</span></td><td><span class="nocall">— no panel</span></td></tr>
+<tr><td>GET</td><td><code>/app-assets/:name</code></td><td><span class="nocall">none</span></td><td>user</td></tr>
+<tr><td>GET</td><td><code>/health</code></td><td><span class="nocall">none</span></td><td><span class="nocall">— no panel</span></td></tr>
+<tr><td>GET</td><td><code>/health/live</code></td><td><span class="nocall">none</span></td><td><span class="nocall">— no panel</span></td></tr>
+<tr><td>GET</td><td><code>/health/ready</code></td><td><span class="nocall">none</span></td><td><span class="nocall">— no panel</span></td></tr>
+<tr><td>GET</td><td><code>/merchant/*splat</code></td><td><span class="nocall">none</span></td><td><span class="nocall">— no panel</span></td></tr>
+<tr><td>GET</td><td><code>/metrics</code></td><td><span class="nocall">none</span></td><td><span class="nocall">— no panel</span></td></tr>
+</tbody>
+</table></div>
+</section>
+
+
+<hr>
+<p class="stamp">Sources of truth this document defers to, never replaces:
+<code>CLAUDE.md</code> (every rule) ·
+<code>docs/audit/SECURITY_AUDIT_MAP.md</code> (every finding, and §4.0's shape index) ·
+<code>docs/reference/REALTIME_EVENTS.md</code> (event names) ·
+<code>docs/PROJECT_STATUS.md</code> (what is built and what is left).</p>
+</div>

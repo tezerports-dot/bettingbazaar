@@ -1,6 +1,6 @@
 # Capacity planning — the optimizations that come before hardware
 
-<!-- GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. -->
+<!-- GOVERNANCE: Read CLAUDE.md before editing this file. -->
 
 Sizing for this platform, grounded in where **this** code actually bends — not a
 generic DAU→servers table. The governing principle: **remove a bottleneck from
@@ -15,7 +15,7 @@ Deltas, async fan-out, counter sharding and caching are for everything that is
 not the debit, the reserve, and the double-entry ledger.
 
 > **Not a licence, and not a capacity guarantee.** Real numbers come from a load
-> test (`docs/governance/LAUNCH_READINESS.md` §D); the tiers below are a buy
+> test (`docs/PROJECT_STATUS.md` §D); the tiers below are a buy
 > *order*, not a promise. And none of it substitutes for the licence/AML/pen-test
 > gate in §G.
 
@@ -98,7 +98,7 @@ and adding app nodes did not help — they queued on the same row. That was the
 pair deadlocks — PostgreSQL raises **40P01** and one of them dies. So real pool
 totals are **not stored on the cycle row at all**; only phantom figures are. Real
 pools are derived, which is the same rule the money ledger already follows —
-*balances are derived from postings, never stored* (`04-GOVERNANCE.md` §1):
+*balances are derived from postings, never stored* (`CLAUDE.md` §1):
 
 ```
 real_delhi = SUM(amount_paise) FROM bets WHERE cycle_id = $1 AND side = 'DELHI'
@@ -274,7 +274,7 @@ itself stays synchronous, ACID and strongly consistent:
 - **Double-entry ledger** — conserve-to-zero, append-only, DB-enforced. Idempotent
   by caller-supplied `txId`.
 - **Authority flips** — per-path, dependency-ordered, owner-gated, reconciled with
-  rollback (`LAUNCH_READINESS.md` §E). Not a performance lever.
+  rollback (`docs/PROJECT_STATUS.md` §E). Not a performance lever.
 
 Counter sharding (§1.2) applies to the *pool tallies*, not the wallet. Delta
 updates (§1.5) apply to *odds display*, not to what a bet debited. If an

@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * postgres/identityPg.js — revoked tokens, and the Aadhaar verification queue.
  *
@@ -7,7 +7,7 @@
  * proof, no selfie and no video, and there is no upload route to add one to.
  * The number is held as an HMAC (for uniqueness, enforced by the database) plus
  * an AES-256-GCM ciphertext (for the audited bulk export), and nothing else.
- * See 04-GOVERNANCE.md §1 before proposing any change here.
+ * See CLAUDE.md §1 before proposing any change here.
  *
  * ── Expiry is enforced by the read ───────────────────────────────────────────
  * `isTokenRevoked` filters on `expires_at`, and `sweepExpired` only reclaims

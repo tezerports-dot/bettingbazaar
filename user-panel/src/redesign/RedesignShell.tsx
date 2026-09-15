@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * RedesignShell.tsx — persistent app shell for the 2026 "Bazaar" redesign.
  *
@@ -72,7 +72,6 @@ const MENU_SECTIONS = [
   ] },
   { title: 'Finance', items: [
     { label: 'Wallet', icon: '💳', path: '/wallet' },
-    { label: 'Gift Code', icon: '🎁', path: '/gift-code' },
   ] },
   { title: 'Info', items: [
     { label: 'Pro Tips', icon: '💡', path: '/promo' },

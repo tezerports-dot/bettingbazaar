@@ -1,6 +1,6 @@
 # Single-VPS deployment — Ubuntu 22.04 / 24.04 LTS
 
-<!-- GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. -->
+<!-- GOVERNANCE: Read CLAUDE.md before editing this file. -->
 
 Provisions the whole platform on one Ubuntu box: Node 22, PostgreSQL 18 +
 pgvector, Redis, MinIO (S3-compatible), PM2 with the three runtime roles, and
@@ -11,7 +11,7 @@ deployment dead, and all four fail *after* you think you are finished.
 
 > **This is an engineering runbook, not a licence.** A real-money launch needs a
 > gambling licence, an AML/KYC programme and a third-party pen test first —
-> `docs/governance/LAUNCH_READINESS.md` §G. Nothing here substitutes for that.
+> `docs/PROJECT_STATUS.md` §G. Nothing here substitutes for that.
 
 ---
 
@@ -99,7 +99,7 @@ SQL
 
 Named `bb_money`, not `bb_shadow` — Postgres is a shadow *today*, but the whole
 point of the cutover machinery is that it stops being one
-(`docs/governance/LAUNCH_READINESS.md` §E). A database name that becomes a lie
+(`docs/PROJECT_STATUS.md` §E). A database name that becomes a lie
 after the flip is a bad name.
 
 `pgvector` is only needed if you enable the RAG support assistant. Creating the
@@ -454,7 +454,7 @@ Then the checks that actually prove it works end to end:
 - **Scrape `/metrics`** with the `METRICS_TOKEN` bearer and import
   `deploy/grafana/bettingbazaar-dashboard.json`.
 - **Run a load test before opening to real traffic.** It is a launch blocker, not
-  a nice-to-have (`LAUNCH_READINESS.md` §D), and single-VPS is precisely the shape
+  a nice-to-have (`docs/PROJECT_STATUS.md` §D), and single-VPS is precisely the shape
   where the ceilings in `docs/governance/LATENCY.md` — Argon2 threadpool, the
   `Cycle` document write contention — arrive soonest.
 
@@ -470,7 +470,7 @@ Honest limits, so they are decisions rather than surprises:
 - **Backups on the same disk are not backups.** Ship the bucket off-host.
 - **There is no money cutover to decide.** PostgreSQL is the only store and is
   authoritative for everything from the first boot — no flags, no shadow mode,
-  no reconciliation window (`CLAUDE.md`, `LAUNCH_READINESS.md` §E).
+  no reconciliation window (`CLAUDE.md`, `docs/PROJECT_STATUS.md` §E).
 - Deploying updates means downtime unless you add a second process and shift the
   upstream. The app drains gracefully on SIGTERM, so `pm2 reload` is close.
 
@@ -478,6 +478,6 @@ Honest limits, so they are decisions rather than surprises:
 
 **See also:** `docs/governance/ENV.md` (every variable) · `.env.example`
 (annotated reference) · `DEPLOYMENT.md` (platform deploys) ·
-`docs/governance/LAUNCH_READINESS.md` (what is not code) ·
-`docs/governance/04-GOVERNANCE.md` §21 (SRE runbooks) · `deploy/README.md`
+`docs/PROJECT_STATUS.md` (what is not code) ·
+`CLAUDE.md` §21 (SRE runbooks) · `deploy/README.md`
 (Docker Compose and Kubernetes)

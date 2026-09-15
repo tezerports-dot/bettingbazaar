@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import axios, { AxiosInstance, AxiosError } from 'axios';
 import type {
   Admin,
@@ -99,7 +99,17 @@ export const auth = {
       return { success: false, twoFactorRequired: true, challengeToken: res.data.challengeToken as string };
     }
     if (res.data?.success && res.data?.token) {
-      return { success: true, data: { token: res.data.token, admin: res.data.user } };
+      // `mustEnroll2FA` is carried through, not dropped. The server has sent it
+      // since 2026-09-10 — computed from `requires2FA()` so the panel and the
+      // policy cannot disagree — and this mapper returned a fixed
+      // `{token, admin}` shape that discarded it, so an admin who must hold a
+      // second factor and never enrolled was never once asked. The merchant
+      // panel has routed on the same flag all along (F-011).
+      return {
+        success: true,
+        data: { token: res.data.token, admin: res.data.user },
+        mustEnroll2FA: !!res.data.mustEnroll2FA,
+      };
     }
     return res.data;
   },
@@ -108,7 +118,15 @@ export const auth = {
   loginTwoFactor: async (challengeToken: string, code: string) => {
     const res = await api.post<any>('/api/admin/login/2fa', { challengeToken, code });
     if (res.data?.success && res.data?.token) {
-      return { success: true, data: { token: res.data.token, admin: res.data.user } };
+      // Carried here too, though it is always false on this leg by
+      // construction: reaching it means a factor was presented, so the account
+      // is enrolled. Reading the server's answer rather than assuming that
+      // keeps one owner for the question.
+      return {
+        success: true,
+        data: { token: res.data.token, admin: res.data.user },
+        mustEnroll2FA: !!res.data.mustEnroll2FA,
+      };
     }
     return res.data;
   },
@@ -122,7 +140,14 @@ export const auth = {
   verifySession: async () => {
     const res = await api.get<any>('/api/v1/auth/me');
     if (res.data?.success && res.data?.user) {
-      return { success: true, data: { admin: res.data.user } };
+      // Carried for the same reason as on login, and this is the path that
+      // catches an account PROMOTED to staff while holding a session: the
+      // obligation begins at the promotion, not at their next sign-in.
+      return {
+        success: true,
+        data: { admin: res.data.user },
+        mustEnroll2FA: !!res.data.mustEnroll2FA,
+      };
     }
     return res.data;
   },
@@ -298,6 +323,15 @@ export const merchants = {
     return res.data;
   },
 
+  // Lift an assignment pause after speaking to the merchant. Three buy orders
+  // in a row expired with nobody paying, which usually means nobody CAN pay
+  // them — a dead QR, a closed UPI handle. It is not a suspension and they were
+  // not accused of anything; an admin who has had the conversation clears it.
+  resumeAssignment: async (merchantId: string, note?: string) => {
+    const res = await api.put(`/api/admin/merchants/${merchantId}/resume-assignment`, { note });
+    return res.data;
+  },
+
   // FIX A3: Reject route -- backend PUT /merchants/:id/reject added in Batch 1
   reject: async (merchantId: string, reason: string) => {
     const res = await api.put(`/api/admin/merchants/${merchantId}/reject`, { reason });
@@ -313,6 +347,37 @@ export const merchants = {
     if (res.data?.success && res.data?.transactions) {
       return { success: true, data: res.data.transactions };
     }
+    return res.data;
+  },
+};
+
+// --- MERCHANT TOKEN PURCHASES ------------------------------------------------
+//
+// A merchant buys the float they trade with from the platform, paying in USDT.
+// Approving one MINTS supply and credits their wallet, so this is treasury:
+// the routes are full-admin (isAdmin), never a sub-admin permission.
+export const merchantTokenOrders = {
+  /** `status` filters server-side; omit for every request, newest first. */
+  list: async (status?: string) => {
+    const res = await api.get<any>('/api/admin/merchant-token-orders', {
+      params: status && status !== 'ALL' ? { status } : undefined,
+    });
+    return res.data;
+  },
+
+  /**
+   * Mint, credit, then record the decision — in that order, server-side, all
+   * keyed on the order. Approving twice is the same act twice: the second call
+   * returns 404 rather than crediting again.
+   */
+  approve: async (orderId: string, note?: string) => {
+    const res = await api.post(`/api/admin/merchant-token-orders/${orderId}/approve`, { note });
+    return res.data;
+  },
+
+  /** The reason is required by the row — a merchant cannot fix what they cannot read. */
+  reject: async (orderId: string, reason: string) => {
+    const res = await api.post(`/api/admin/merchant-token-orders/${orderId}/reject`, { reason });
     return res.data;
   },
 };
@@ -402,6 +467,32 @@ export const depositPolicy = {
 
   rollback: async (versionId: string) => {
     const res = await api.post(`/api/admin/deposit-policy/version/${versionId}/rollback`);
+    return res.data;
+  },
+};
+
+// --- SETTLEMENT RAIL ----------------------------------------------------------
+// One button moves the whole platform between the UPI rail and the ATM cash
+// rail. Orders already in flight keep the rail they were created on — that is
+// enforced by the database, not by this client.
+
+export const paymentMode = {
+  getCurrent: async () => {
+    const res = await api.get<any>('/api/admin/payment-mode');
+    return res.data;
+  },
+
+  getHistory: async (limit = 50) => {
+    const res = await api.get<any>(`/api/admin/payment-mode/history?limit=${limit}`);
+    return res.data;
+  },
+
+  update: async (fields: {
+    activeMode?: string;
+    timers?: Record<string, number>;
+    justification: string;
+  }) => {
+    const res = await api.post('/api/admin/payment-mode', fields);
     return res.data;
   },
 };
@@ -766,6 +857,18 @@ export const subAdmins = {
     return res.data;
   },
 
+  /**
+   * Every account that currently holds phantom access, in one read.
+   *
+   * The grant beside it had a caller and this had none, so the roster could
+   * only be reconstructed by paging the whole user list — which means nobody
+   * did, and a grant nobody enumerates is a grant nobody revokes.
+   */
+  listPhantomAgents: async () => {
+    const res = await api.get<any>('/api/admin/phantom-agents');
+    return res.data;
+  },
+
   assignPhantomAccess: async (
     userId: string,
     // Mirrors the User.phantomAccess enum. 'BOTH' predates the 1-minute block
@@ -1000,6 +1103,55 @@ export const disputes = {
     const res = await api.post(`/api/admin/dispute-orders/${id}/escalate`, { notes });
     return res.data;
   },
+
+  /**
+   * The CDM slip for one cash payout — the only read of one that exists.
+   *
+   * Neither the player nor the merchant who uploaded it can see it again; the
+   * order mapper does not carry the columns, so no other projection can either.
+   * `canResolveDisputes` gates it, and EVERY call is written to the audit log:
+   * a record nobody may see is one whose access has to be accountable.
+   *
+   * So this must only ever be called from a deliberate click. Fetching it when
+   * a screen opens would record a slip view for every dispute anybody glanced
+   * at, and "who looked at this player's bank slip" would stop meaning
+   * anything.
+   *
+   * `receipt: null` is a real and expected answer, not an error: the merchant's
+   * confirm completes the order and the slip is chased afterwards.
+   */
+  getCdmReceipt: async (orderId: string) => {
+    const res = await api.get<any>(`/api/admin/orders/${orderId}/cdm-receipt`);
+    return res.data;
+  },
+
+  /**
+   * Cash payouts settled without a slip.
+   *
+   * `olderThanMinutes` accepts 0 — "everything missing one right now", which is
+   * what an incident needs — so it is passed through explicitly rather than
+   * left to a falsy default.
+   */
+  missingCdmReceipts: async (olderThanMinutes: number) => {
+    const res = await api.get<any>('/api/admin/orders/cdm-receipts/missing', { params: { olderThanMinutes } });
+    return res.data;
+  },
+
+  /**
+   * Withdrawals no merchant has taken.
+   *
+   * One that cannot find a merchant WAITS rather than failing — on the cash
+   * rail a large payout is several separate withdrawals, and the ones already
+   * paid cannot be clawed back. The price is an unbounded token lock, which is
+   * why this queue exists: an order with no deadline and no owner is one nobody
+   * is answerable for.
+   *
+   * `olderThanMinutes` accepts 0 — "everything waiting right now".
+   */
+  stalledWithdrawals: async (olderThanMinutes: number) => {
+    const res = await api.get<any>('/api/admin/orders/stalled-withdrawals', { params: { olderThanMinutes } });
+    return res.data;
+  },
 };
 
 // ─── UTR MONITOR ───────────────────────────────────────────────────────────
@@ -1174,6 +1326,7 @@ export default {
   analytics,
   users,
   merchants,
+  merchantTokenOrders,
   cycles,
   depositPolicy,
   queueManager,

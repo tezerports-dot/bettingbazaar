@@ -182,7 +182,7 @@ jobs:
   # production dependency tree and publish it as a build artifact. Uses npm's
   # native generator (no extra tooling). This is the inventory a CVE-response or
   # SLSA/attestation process consumes; artifact signing/provenance layer on top
-  # of it when an image registry is introduced (see docs/governance/04-GOVERNANCE.md).
+  # of it when an image registry is introduced (see CLAUDE.md).
   sbom:
     runs-on: ubuntu-latest
     steps:
@@ -268,6 +268,35 @@ jobs:
       # panel, and every check here was green while it did.
       - name: Every order `set` names a real column
         run: npm run check:settable
+      # A merchant may see the bank account a withdrawal pays and the name on
+      # it. Nothing else identifies the player to them. The projection this
+      # replaced was a denylist that stripped the player's payout details only
+      # on a DEPOSIT, so every WITHDRAWAL carried their UPI ID — and the panel
+      # rendered it, and let a merchant search players by phone number.
+      - name: A merchant is told no player identity
+        run: npm run check:merchant-privacy
+      # The same rule pointing the other way. Every player-facing response
+      # carried `merchantSnapshot` whole — the merchant's UPI handle, their QR
+      # and their bank account number, IFSC and account-holder name — and the
+      # player's screen rendered the handle in a copy-to-clipboard row.
+      - name: A player is told no merchant identity
+        run: npm run check:player-privacy
+      # One payment cannot be claimed twice. A UTR, a chain transaction hash and
+      # a CDM slip's bank id are the same fact — this payment happened, once —
+      # so they share one registry and every path claims through one owner.
+      # Two of the three used to write the reference and claim nothing.
+      - name: One payment, one claim
+        run: npm run check:payment-references
+      # F-008 and F-013, as ONE gate on purpose. An unexpected failure — a
+      # Postgres constraint name, an fs path, an internal host from a fetch —
+      # is logged in full and answered with nothing; a refusal somebody WROTE
+      # for the caller keeps its wording. The two shapes are checked together
+      # because a gate written for `res.status(500).json({ message: err.message })`
+      # alone goes green over 26 sites of `res.status(err.status || 500)` and
+      # reports the class closed — §29, absence of a failing check is not
+      # evidence when no check covers the thing being claimed.
+      - name: An unexpected failure describes itself to nobody
+        run: npm run check:error-responses
       # Items 5+58: architecture validation — circular imports and governance
       # boundary violations (domain core importing routes, wallet importing
       # products) fail the build instead of waiting for human review.
@@ -292,6 +321,15 @@ jobs:
       # registry claims must have its evidence/docs/tests present on disk.
       - name: Capability registry verification
         run: npm run verify:capabilities
+      # The security audit map's numbers are DERIVED from the codebase, not
+      # typed. This fails when they drift — which is the whole point: a new
+      # route with no auth, a new admin route with no permission key, a new SQL
+      # interpolation or a new render sink turns the map red until somebody
+      # re-runs it and READS what changed. The gate cannot judge whether the
+      # change is safe; it makes sure a person is asked. See
+      # docs/audit/SECURITY_AUDIT_MAP.md §0.
+      - name: Security audit map is current
+        run: npm run audit:map -- --check
       # The user panel now carries logic worth testing on its own — origin
       # failover decides which host the app talks to when one stops answering,
       # and a silent regression there is an outage the build would not catch.

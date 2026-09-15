@@ -1,9 +1,9 @@
 # Latency — what the code costs, and what is unmeasured
 
-<!-- GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. -->
+<!-- GOVERNANCE: Read CLAUDE.md before editing this file. -->
 
 **Read this first.** No load test has been run against this platform
-(`LAUNCH_READINESS.md` §D). What follows is measured *component* cost plus an
+(`docs/PROJECT_STATUS.md` §D). What follows is measured *component* cost plus an
 analysis of the request path — it is not a prediction of production latency
 under real traffic, and it must not be quoted as one. The numbers below come
 from a build container, not production hardware.

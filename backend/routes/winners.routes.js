@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * winners.routes.js — the public winners feed, and the curated entries an
  * operator adds to it.
@@ -16,7 +16,9 @@
  */
 import express from 'express';
 import { db } from '#db';
-import { authenticate, isAdmin, isAdminOrSubAdmin } from '../domains/identity/auth.middleware.js';
+import {
+  authenticate, hasPermission, isAdmin, isAdminOrSubAdmin,
+} from '../domains/identity/auth.middleware.js';
 
 const router = express.Router();
 
@@ -51,7 +53,7 @@ router.get('/v1/winners', async (req, res) => {
 
 // ── ADMIN ─────────────────────────────────────────────────────────────────────
 
-router.get('/admin/fake-winners', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/admin/fake-winners', authenticate, hasPermission('canManageContent'), async (req, res) => {
   try {
     // Every entry, including the ones switched off — this is the editor, not
     // the feed.
