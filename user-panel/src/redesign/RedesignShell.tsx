@@ -121,13 +121,30 @@ const RedesignShell: React.FC<React.PropsWithChildren<{}>> = ({ children }) => {
           padding: '0 14px', background: 'color-mix(in srgb, var(--bg) 82%, transparent)', backdropFilter: 'blur(14px)',
           borderBottom: '1px solid var(--line)', position: 'relative', zIndex: 60,
         }}>
-          <button onClick={() => go(isAuthenticated ? '/wallet' : '/wallet')} style={{
+          {/*
+            Signed in, this is the wallet. Signed OUT it reads "Sign in / TO
+            PLAY", so it OPENS THE SIGN-IN DOOR.
+
+            It used to be `go(isAuthenticated ? '/wallet' : '/wallet')` — a
+            ternary with two identical branches, which is the shape of an
+            intention that never landed. A logged-out visitor clicking the most
+            prominent control on the page, the one that says "Sign in", was
+            navigated to the wallet instead: `/api/v1/user/profile` answered 401,
+            the page logged "Session expired. Please log in again." and bounced
+            them back to where they started. Nothing on screen explained it, and
+            the site read as broken rather than as asking them to log in.
+
+            `openAuth` and the modal behind it were already here and already
+            working — the drawer's own Sign In button has always called it. Only
+            this button was wired to the wrong half.
+          */}
+          <button onClick={() => (isAuthenticated ? go('/wallet') : openAuth('login'))} style={{
             display: 'flex', alignItems: 'center', gap: 9, background: 'var(--pill)', border: '1px solid var(--pill-line)',
             padding: '7px 13px 7px 8px', borderRadius: 999, cursor: 'pointer', boxShadow: 'var(--shadow-sm)',
           }}>
             <span style={{
               flex: 'none', width: 26, height: 26, borderRadius: '50%',
-              background: 'linear-gradient(to bottom right,#F5C77A,#D4AF37)', display: 'flex', alignItems: 'center',
+              background: 'linear-gradient(to bottom right,var(--gold2),var(--gold))', display: 'flex', alignItems: 'center',
               justifyContent: 'center', color: '#1a1200', fontWeight: 900, fontSize: 13, border: '1px solid rgba(255,255,255,.2)',
             }}>₹</span>
             <span style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.05, textAlign: 'left' }}>

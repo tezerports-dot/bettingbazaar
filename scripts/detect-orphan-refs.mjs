@@ -17,11 +17,32 @@
  * merchant auth middleware — every merchant request answered 500.
  *
  * ── What it will and will not tell you ──────────────────────────────────────
- * There is no scope analysis here: every binding anywhere in a file is treated
- * as visible everywhere in that file. That UNDER-reports — a name declared
- * inside one function covers a use inside another — and deliberately so. A
+ * It resolves every reference against a real SCOPE CHAIN: module, function and
+ * block scopes, with `var` and function declarations hoisted to the enclosing
+ * function and `let`/`const`/`class` kept to their block. A name is an orphan
+ * when no scope enclosing its use declares it.
+ *
+ * It did NOT do that, and the reason it did not is worth keeping: every binding
+ * anywhere in a file was treated as visible everywhere in that file, because "a
  * detector whose findings turn into code changes must never report a name that
- * is genuinely bound; a missed one costs a later run, a false one costs a bug.
+ * is genuinely bound; a missed one costs a later run, a false one costs a bug."
+ * The instinct is right. The cost of the under-report was not a later run:
+ *
+ *   `bet.routes.js` broadcast its pool totals as bare `totalDelhi` /
+ *   `totalBombay` / `realNow` inside the REAL bet handler. Those three names
+ *   exist only in the PHANTOM handler 130 lines below — the block had been
+ *   written against that shape. Flat scope saw them declared in the file and
+ *   said nothing, so every REAL bet threw `ReferenceError: totalDelhi is not
+ *   defined` AFTER the stake was locked and committed: the player was told
+ *   "Failed to place bet" and watched the money leave anyway (§21).
+ *
+ * So the false-positive bar is kept, and met a different way. Anything this
+ * cannot resolve CONFIDENTLY is not reported: a `with` block or an indirect
+ * `eval` makes a file's scoping undecidable and the file is skipped by name in
+ * the output rather than guessed at. The two findings are also separated in the
+ * report, because they are different bugs with different fixes — a name bound
+ * NOWHERE in the file is a deleted import, and a name bound in a DIFFERENT
+ * scope is a block copied between functions.
  */
 import { readFileSync, globSync } from 'node:fs';
 
@@ -53,6 +74,10 @@ const GLOBALS = new Set([
 
 const findings = [];
 const parseErrors = [];
+const skipped = [];
+// `file:name` -> true when the name IS bound elsewhere in the file (a block
+// copied between scopes) rather than nowhere at all (a deleted import).
+const outOfScope = new Map();
 
 for (const file of files) {
   const src = readFileSync(file, 'utf8');
@@ -67,63 +92,231 @@ for (const file of files) {
     continue;
   }
 
-  // Acorn-walk has no scope analysis, so collect every binding name in the file
-  // and treat the file as one flat scope. That under-reports (a name declared in
-  // one function "covers" a use in another) but never FALSELY reports, which is
-  // what matters for a detector whose findings become code changes.
-  const declared = new Set();
-  const addPattern = (node) => {
+  // ── Scope chain ──────────────────────────────────────────────────────────
+  // Declarations and references are collected in ONE pass and resolved after
+  // it, which is what makes hoisting and forward references work for free: a
+  // function declared at the bottom of a module is visible to a call at the
+  // top, and neither a second pass nor an ordering rule is needed to say so.
+  const scopes = [];
+  const newScope = (kind, parent) => {
+    const scope = { kind, parent, names: new Set() };
+    scopes.push(scope);
+    return scope;
+  };
+  // `var` and function declarations belong to the nearest FUNCTION, not the
+  // block they are written in. `let`, `const` and `class` belong to the block.
+  const varScope = (scope) => {
+    let s = scope;
+    while (s.kind === 'block') s = s.parent;
+    return s;
+  };
+
+  const refs = [];
+  let undecidable = null;
+
+  const declarePattern = (node, scope) => {
     if (!node) return;
     switch (node.type) {
-      case 'Identifier': declared.add(node.name); break;
+      case 'Identifier': scope.names.add(node.name); break;
       case 'ObjectPattern':
-        for (const p of node.properties) {
-          if (p.type === 'RestElement') addPattern(p.argument);
-          else addPattern(p.value);
-        } break;
-      case 'ArrayPattern': node.elements.forEach(addPattern); break;
-      case 'AssignmentPattern': addPattern(node.left); break;
-      case 'RestElement': addPattern(node.argument); break;
+        for (const prop of node.properties) {
+          if (prop.type === 'RestElement') { declarePattern(prop.argument, scope); continue; }
+          // A COMPUTED key is an expression evaluated in the enclosing scope.
+          if (prop.computed) visit(prop.key, scope);
+          declarePattern(prop.value, scope);
+        }
+        break;
+      case 'ArrayPattern': for (const el of node.elements) declarePattern(el, scope); break;
+      // The default value is an expression, and it is evaluated where the
+      // pattern sits — so it is VISITED, not declared.
+      case 'AssignmentPattern': declarePattern(node.left, scope); visit(node.right, scope); break;
+      case 'RestElement': declarePattern(node.argument, scope); break;
+      // `({ a.b } = x)` and `[obj.k] = x` assign THROUGH a member expression;
+      // nothing is declared and the object is a reference.
+      case 'MemberExpression': visit(node, scope); break;
       default: break;
     }
   };
 
-  walk.full(ast, (node) => {
-    if (node.type === 'VariableDeclarator') addPattern(node.id);
-    else if (node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression'
-             || node.type === 'ArrowFunctionExpression') {
-      if (node.id) declared.add(node.id.name);
-      node.params.forEach(addPattern);
-    } else if (node.type === 'ClassDeclaration' || node.type === 'ClassExpression') {
-      if (node.id) declared.add(node.id.name);
-    } else if (node.type === 'ImportDeclaration') {
-      for (const s of node.specifiers) declared.add(s.local.name);
-    } else if (node.type === 'CatchClause') addPattern(node.param);
-    else if (node.type === 'LabeledStatement') declared.add(node.label.name);
-  });
+  const visitFunction = (node, scope, selfNamedIn) => {
+    const fn = newScope('function', scope);
+    // A named function EXPRESSION can call itself: the name is bound inside its
+    // own scope and nowhere else. A DECLARATION's name belongs to the enclosing
+    // scope, and the caller has already put it there.
+    if (selfNamedIn === 'self' && node.id) fn.names.add(node.id.name);
+    for (const param of node.params) declarePattern(param, fn);
+    if (node.body.type === 'BlockStatement') {
+      // Visited WITHOUT a further block scope: a `var` in a function body and a
+      // parameter of the same name are the same binding.
+      for (const stmt of node.body.body) visit(stmt, fn);
+    } else {
+      visit(node.body, fn); // concise arrow body
+    }
+  };
+
+  function visit(node, scope) {
+    if (!node || typeof node.type !== 'string') return;
+    switch (node.type) {
+      case 'Identifier':
+        refs.push({ name: node.name, line: node.loc.start.line, scope });
+        return;
+
+      case 'WithStatement':
+        // `with` puts an object's properties into scope at RUNTIME. Nothing
+        // static can resolve a name inside it, so the file is not guessed at.
+        undecidable = 'a `with` statement';
+        return;
+
+      case 'FunctionDeclaration':
+        if (node.id) varScope(scope).names.add(node.id.name);
+        visitFunction(node, scope, 'enclosing');
+        return;
+      case 'FunctionExpression':
+        visitFunction(node, scope, 'self');
+        return;
+      case 'ArrowFunctionExpression':
+        visitFunction(node, scope, 'none');
+        return;
+
+      case 'ClassDeclaration':
+        if (node.id) scope.names.add(node.id.name);
+        visit(node.body, newScope('block', scope));
+        return;
+      case 'ClassExpression': {
+        const inner = newScope('block', scope);
+        if (node.id) inner.names.add(node.id.name);
+        if (node.superClass) visit(node.superClass, scope);
+        visit(node.body, inner);
+        return;
+      }
+      case 'MethodDefinition':
+      case 'PropertyDefinition':
+        if (node.computed) visit(node.key, scope);
+        visit(node.value, scope);
+        return;
+      case 'StaticBlock': {
+        const inner = newScope('function', scope);
+        for (const stmt of node.body) visit(stmt, inner);
+        return;
+      }
+
+      case 'VariableDeclaration': {
+        const target = node.kind === 'var' ? varScope(scope) : scope;
+        for (const d of node.declarations) {
+          declarePattern(d.id, target);
+          visit(d.init, scope);
+        }
+        return;
+      }
+
+      case 'BlockStatement': {
+        const inner = newScope('block', scope);
+        for (const stmt of node.body) visit(stmt, inner);
+        return;
+      }
+      case 'SwitchStatement': {
+        visit(node.discriminant, scope);
+        const inner = newScope('block', scope);
+        for (const c of node.cases) {
+          visit(c.test, inner);
+          for (const stmt of c.consequent) visit(stmt, inner);
+        }
+        return;
+      }
+      case 'ForStatement': {
+        const inner = newScope('block', scope);
+        visit(node.init, inner); visit(node.test, inner);
+        visit(node.update, inner); visit(node.body, inner);
+        return;
+      }
+      case 'ForInStatement':
+      case 'ForOfStatement': {
+        const inner = newScope('block', scope);
+        // `for (x of …)` assigns to an EXISTING binding; `for (const x of …)`
+        // creates one. Only the declaration form declares.
+        // A non-declaration left is an assignment TARGET — `for (x of …)`
+        // writes to an existing binding, so its identifiers are references.
+        visit(node.left, inner);
+        visit(node.right, inner);
+        visit(node.body, inner);
+        return;
+      }
+      case 'CatchClause': {
+        const inner = newScope('block', scope);
+        if (node.param) declarePattern(node.param, inner);
+        for (const stmt of node.body.body) visit(stmt, inner);
+        return;
+      }
+
+      case 'MemberExpression':
+        visit(node.object, scope);
+        if (node.computed) visit(node.property, scope);
+        return;
+      case 'Property':
+        if (node.computed) visit(node.key, scope);
+        visit(node.value, scope);
+        return;
+
+      case 'ImportDeclaration':
+        for (const spec of node.specifiers) scope.names.add(spec.local.name);
+        return;
+      case 'ExportNamedDeclaration':
+        // `export { a } from './x'` re-exports without binding anything here,
+        // so its specifiers are not references to this module's scope.
+        if (node.source) return;
+        visit(node.declaration, scope);
+        for (const spec of node.specifiers) visit(spec.local, scope);
+        return;
+      case 'ExportAllDeclaration':
+        return;
+
+      case 'LabeledStatement': visit(node.body, scope); return;
+      case 'BreakStatement':
+      case 'ContinueStatement':
+      case 'MetaProperty':
+        return;
+
+      default: {
+        // Everything else: recurse into child nodes generically. A node type
+        // this file has never seen still gets walked rather than skipped.
+        for (const key of Object.keys(node)) {
+          if (key === 'loc' || key === 'start' || key === 'end' || key === 'range') continue;
+          const child = node[key];
+          if (Array.isArray(child)) { for (const c of child) visit(c, scope); }
+          else if (child && typeof child.type === 'string') visit(child, scope);
+        }
+      }
+    }
+  }
+
+  const moduleScope = newScope('function', null);
+  for (const stmt of ast.body) visit(stmt, moduleScope);
+
+  if (undecidable) {
+    skipped.push({ file, why: undecidable });
+    continue;
+  }
+
+  // Every binding anywhere in the file, for telling the two findings apart.
+  const anywhere = new Set();
+  for (const sc of scopes) for (const n of sc.names) anywhere.add(n);
 
   const used = new Map();
-  walk.ancestor(ast, {
-    Identifier(node, _state, ancestors) {
-      const parent = ancestors[ancestors.length - 2];
-      if (!parent) return;
-      // Skip anything that is a name rather than a reference.
-      if (parent.type === 'MemberExpression' && parent.property === node && !parent.computed) return;
-      if (parent.type === 'Property' && parent.key === node && !parent.computed) return;
-      if (parent.type === 'PropertyDefinition' && parent.key === node && !parent.computed) return;
-      if (parent.type === 'MethodDefinition' && parent.key === node && !parent.computed) return;
-      if (parent.type === 'ImportSpecifier' || parent.type === 'ImportDefaultSpecifier'
-          || parent.type === 'ImportNamespaceSpecifier') return;
-      if (parent.type === 'ExportSpecifier') return;
-      if (parent.type === 'LabeledStatement' || parent.type === 'BreakStatement'
-          || parent.type === 'ContinueStatement') return;
-      if (!used.has(node.name)) used.set(node.name, node.loc.start.line);
-    },
-  });
+  for (const ref of refs) {
+    if (GLOBALS.has(ref.name)) continue;
+    let s = ref.scope, found = false;
+    while (s) { if (s.names.has(ref.name)) { found = true; break; } s = s.parent; }
+    if (found) continue;
+    if (!used.has(ref.name)) {
+      used.set(ref.name, ref.line);
+      // Bound SOMEWHERE in this file, just not here: a block copied between
+      // functions, not a deleted import. Different bug, different fix.
+      outOfScope.set(`${file}:${ref.name}`, anywhere.has(ref.name));
+    }
+  }
 
   for (const [name, line] of used) {
-    if (declared.has(name) || GLOBALS.has(name)) continue;
-    findings.push({ file, name, line });
+    findings.push({ file, name, line, wrongScope: outOfScope.get(`${file}:${name}`) === true });
   }
 }
 
@@ -140,11 +333,25 @@ if (parseErrors.length) {
   process.exit(1);
 }
 
+if (skipped.length) {
+  // Named, never silent: a file nothing could resolve is a hole in this gate's
+  // coverage, and a hole reported reads differently from a hole that passed.
+  console.log(`${skipped.length} file(s) SKIPPED — scoping is not statically decidable:`);
+  for (const sk of skipped) console.log(`        ${sk.file} — ${sk.why}`);
+  console.log('');
+}
+
 const sorted = [...byName.entries()].sort((a, b) => b[1].length - a[1].length);
 let total = 0;
 for (const [name, hits] of sorted) {
   total += hits.length;
-  console.log(`${String(hits.length).padStart(4)}  ${name}`);
+  // The two findings are different bugs. A name bound NOWHERE in the file is a
+  // deleted import; a name bound in another SCOPE is a block copied between
+  // functions, which reads as declared to anyone grepping the file.
+  const kind = hits.every((h) => h.wrongScope) ? '  [declared in a DIFFERENT scope]'
+             : hits.some((h) => h.wrongScope)  ? '  [some declared in a DIFFERENT scope]'
+             : '';
+  console.log(`${String(hits.length).padStart(4)}  ${name}${kind}`);
   for (const h of hits.slice(0, 60)) console.log(`        ${h.file}:${h.line}${h.note ? ' — ' + h.note : ''}`);
   if (hits.length > 60) console.log(`        … and ${hits.length - 60} more`);
 }
