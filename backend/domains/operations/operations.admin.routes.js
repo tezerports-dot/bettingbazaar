@@ -30,8 +30,23 @@ const router = express.Router();
 // GET /api/admin/operations/overview — the enterprise dashboard payload.
 router.get('/operations/overview', authenticate, hasPermission('canViewAnalytics'), async (req, res) => {
   try {
+    // EIGHT names were destructured from SEVEN promises here. `orderCounts()`
+    // landed in `pendingOrders` — the whole `{total, pending, active,
+    // completed, disputed, flagged, awaitingReview, completedValue}` object —
+    // and `openDisputes` got nothing at all.
+    //
+    // Both were then rendered straight into the page, so React threw
+    // "Objects are not valid as a React child" and the Operations screen went
+    // WHITE. The admin panel does not recover from that by navigating: every
+    // screen opened afterwards stayed blank until a full reload, so one broken
+    // screen took the whole panel down for the rest of the session.
+    //
+    // The two numbers the screen wants are both inside that one object, which
+    // is why the second query was dropped in the first place — only the
+    // destructuring was never updated to match. Named `counts` now, so the
+    // shape is visible at the call site instead of implied by a position.
     const [trial, distributableMinor, depositPolicy, commissionPolicy, riskRules,
-           topMerchants, pendingOrders, openDisputes] = await Promise.all([
+           topMerchants, counts] = await Promise.all([
       getTrialBalance(),
       getDistributableRevenueMinor(),
       getActivePolicy('INR'),
@@ -64,8 +79,8 @@ router.get('/operations/overview', authenticate, hasPermission('canViewAnalytics
         // ── Funding monitoring (Funding Platform) ─────────────────────────
         funding: {
           providers: listProviders(),
-          openOrders: pendingOrders,
-          disputedOrders: openDisputes,
+          openOrders: counts.pending,
+          disputedOrders: counts.disputed,
         },
         // ── Risk monitoring (Risk Platform / Business Policy numbers) ─────
         risk: riskRules,

@@ -349,18 +349,47 @@ export type TransactionType =
   | 'ESCROW_LOCK'
   | 'ESCROW_RELEASE';
 
+/**
+ * One WALLET LEDGER row, exactly as `platformLedger()` projects it in
+ * `database/repositories/wallets.js` — which is what `GET /api/admin/transactions`
+ * returns. Check this against that projection before adding a field (§23).
+ *
+ * It used to describe a document-store collection that no longer exists, and
+ * every field below was wrong in a way TypeScript could not catch, because the
+ * INTERFACE was the thing that was wrong:
+ *
+ *     _id          the server has never sent one — the id is `txId`
+ *     status       a ledger row has no status; it is a record that money MOVED
+ *     balanceType  the row says `field` ('depositBalance' | 'winningsBalance' | …)
+ *     referenceId  the row says `refId`
+ *     description  the row says `reason`
+ *     timestamp    the row says `createdAt`
+ *     userId       never a populated object; the joined user is on `user`
+ *
+ * `tx._id.slice(-10)` therefore threw `Cannot read properties of undefined` and
+ * the Transactions screen went WHITE — and the admin panel does not recover
+ * from a render crash by navigating, so every screen opened afterwards stayed
+ * blank until a full reload.
+ *
+ * The fix that finds every call site is renaming the field here and letting
+ * `tsc` list them; a search misses one, and a missed one is another blank page.
+ */
 export interface Transaction {
-  _id: string;
-  // userId may be populated as { _id, username, mobile } when fetched via admin route
-  userId: string | { _id: string; username: string; mobile: string };
-  type: TransactionType;
+  /** The idempotency key, and the row's identity. Never `_id`. */
+  txId: string;
+  userId: string;
+  /** LEFT JOINed, so it is null when the account is gone but the money moved. */
+  user: { userId: string; username: string; mobile: string } | null;
+  /** The DIRECTION of the movement. */
+  type: 'CREDIT' | 'DEBIT';
+  /** Which pocket moved. */
+  field: 'depositBalance' | 'winningsBalance' | 'tokenBalance' | 'reserveBalance' | 'lockedBalance';
   amount: number;
-  balanceType: 'DEPOSIT' | 'WINNINGS' | 'BOTH';
-  // FE 4.6 FIX: COMPLETED removed — not a valid Transaction status
-  status: 'SUCCESS' | 'PENDING' | 'FAILED';
-  referenceId?: string;
-  description: string;
-  timestamp: string;
+  balanceBefore: number;
+  balanceAfter: number;
+  reason: string;
+  refId?: string | null;
+  createdAt: string;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

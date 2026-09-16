@@ -30,18 +30,56 @@ describe('request context (correlation id)', () => {
 });
 
 describe('structured logger', () => {
-  it('carries the correlation id into the record (prod JSON mode)', () => {
-    const prev = process.env.NODE_ENV;
+  /**
+   * A logger loaded with the env this test is ABOUT, not the env it happens to
+   * run in.
+   *
+   * `THRESHOLD` in services/logger.js is a module-load `const` reading
+   * `LOG_LEVEL` first, so a test that flips `NODE_ENV` after importing the
+   * module has already missed its chance — and a developer (or a CI job) with
+   * `LOG_LEVEL=warn` exported suppressed every `info` call, so both info tests
+   * saw an EMPTY spy and failed with "Cannot read properties of undefined".
+   *
+   * That reads exactly like the redaction guard being broken. It was not: the
+   * logger was fine and the suite was measuring the ambient environment. The
+   * `error()` test below kept passing throughout, because error passes a `warn`
+   * threshold — which is what made the failure look selective and real.
+   *
+   * So the level is pinned here and the module re-imported under it.
+   *
+   * `runWithContext` comes back from the SAME fresh graph, and it has to:
+   * `vi.resetModules()` gives the re-imported logger a new `requestContext`
+   * module with its own AsyncLocalStorage, so the top-level `runWithContext`
+   * imported by this file would be writing into a different store than the one
+   * the logger reads — and `reqId` would come back undefined with everything
+   * else correct, which is the most confusing way for this to fail.
+   */
+  const freshLogger = async () => {
+    vi.resetModules();
     process.env.NODE_ENV = 'production';
+    process.env.LOG_LEVEL = 'debug';
+    const [{ logger }, ctx] = await Promise.all([
+      import('../../services/logger.js'),
+      import('../../middleware/requestContext.js'),
+    ]);
+    return { logger, runWithContext: ctx.runWithContext };
+  };
+
+  it('carries the correlation id into the record (prod JSON mode)', async () => {
+    const prev = process.env.NODE_ENV;
+    const prevLevel = process.env.LOG_LEVEL;
+    const { logger, runWithContext: run } = await freshLogger();
     const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
     try {
-      runWithContext('corr-9', () => logger.info('deposit credited', { orderId: 'o1' }));
+      run('corr-9', () => logger.info('deposit credited', { orderId: 'o1' }));
       const line = spy.mock.calls.at(-1)[0];
       const rec = JSON.parse(line);
       expect(rec).toMatchObject({ level: 'info', msg: 'deposit credited', reqId: 'corr-9', orderId: 'o1' });
       expect(rec.ts).toBeTruthy();
     } finally {
       process.env.NODE_ENV = prev;
+      if (prevLevel === undefined) delete process.env.LOG_LEVEL;
+      else process.env.LOG_LEVEL = prevLevel;
     }
   });
 
@@ -58,9 +96,10 @@ describe('structured logger', () => {
     }
   });
 
-  it('REDACTS sensitive keys before they reach the log sink (AQ-13)', () => {
+  it('REDACTS sensitive keys before they reach the log sink (AQ-13)', async () => {
     const prev = process.env.NODE_ENV;
-    process.env.NODE_ENV = 'production';
+    const prevLevel = process.env.LOG_LEVEL;
+    const { logger } = await freshLogger();
     const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
     try {
       logger.info('login attempt', {
@@ -78,6 +117,8 @@ describe('structured logger', () => {
       expect(rec.mobile).toBe('9990001111');
       expect(rec.body.note).toBe('ok');
     } finally {
+      if (prevLevel === undefined) delete process.env.LOG_LEVEL;
+      else process.env.LOG_LEVEL = prevLevel;
       process.env.NODE_ENV = prev;
     }
   });

@@ -268,19 +268,39 @@ export async function getProgramme(key = 'main') {
 }
 
 export async function upsertProgramme({ key = 'main', budgetRupees, memberCap, active }) {
+  // ── Only the columns actually supplied are NAMED ─────────────────────────
+  // Every other column then takes its `DEFAULT` from `schema.sql`, which is
+  // where this table's defaults live and the only place they may (§6). Writing
+  // `COALESCE($2, 0)` here would be a second owner for the same number.
+  //
+  // It used to name all four unconditionally and pass `null` for anything the
+  // caller omitted. The `ON CONFLICT DO UPDATE` branch guarded every one of
+  // those with COALESCE — so the UPDATE path was safe — but the INSERT branch
+  // had no such defence, and `budget_paise` is `NOT NULL`.
+  //
+  // `getProgramme()` calls this with the key ALONE to create the row lazily, so
+  // the very first call on a fresh database threw `null value in column
+  // "budget_paise" ... violates not-null constraint`. That is the whole admin
+  // Referrals screen 500ing on a platform that has simply never had a referral
+  // programme yet — the state every new deployment starts in. §21's relative:
+  // a NOT NULL column refuses an explicit null, so check the column before
+  // writing one.
+  const cols = ['programme_key'];
+  const vals = [String(key)];
+  if (budgetRupees !== undefined) { cols.push('budget_paise'); vals.push(rupeesToPaise(budgetRupees)); }
+  if (memberCap    !== undefined) { cols.push('member_cap');   vals.push(Number(memberCap)); }
+  if (active       !== undefined) { cols.push('active');       vals.push(Boolean(active)); }
+
+  // With a column omitted there is no `EXCLUDED` value to fall back FROM, so
+  // the SET list is built from the same supplied set: an absent field leaves
+  // the stored one untouched, which is what COALESCE was achieving before.
+  const sets = cols.slice(1).map((c) => `${c} = EXCLUDED.${c}`).concat('updated_at = now()');
   const { rows } = await pgQuery(
-    `INSERT INTO referral_programmes (programme_key, budget_paise, member_cap, active)
-     VALUES ($1, $2, $3, $4)
-     ON CONFLICT (programme_key) DO UPDATE SET
-       budget_paise = COALESCE(EXCLUDED.budget_paise, referral_programmes.budget_paise),
-       member_cap   = COALESCE(EXCLUDED.member_cap, referral_programmes.member_cap),
-       active       = COALESCE(EXCLUDED.active, referral_programmes.active),
-       updated_at   = now()
+    `INSERT INTO referral_programmes (${cols.join(', ')})
+     VALUES (${cols.map((_, i) => `$${i + 1}`).join(', ')})
+     ON CONFLICT (programme_key) DO UPDATE SET ${sets.join(', ')}
      RETURNING *`,
-    [String(key),
-      budgetRupees === undefined ? null : rupeesToPaise(budgetRupees),
-      memberCap === undefined ? null : Number(memberCap),
-      active === undefined ? null : Boolean(active)],
+    vals,
     'programme_upsert',
   );
   return toProgramme(rows[0]);

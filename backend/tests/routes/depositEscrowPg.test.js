@@ -517,8 +517,25 @@ describePg('a buy order HOLDS the merchant\'s tokens', () => {
       const m = await merchant(1_000);
       const order = await buy(600, { state: 'ASSIGNED', merchantId: m.merchantId });
 
-      const unheld = await findUnheldDepositOrders({ olderThanMinutes: 0 });
-      expect(unheld.map((u) => u.orderId)).toContain(order.orderId);
+      // Scoped to THIS merchant, and asked for the widest window the query
+      // allows. `findUnheldDepositOrders` is global, capped (200 by default,
+      // 1000 max) and ordered `updated_at ASC` — oldest first — so the order
+      // this test just made sorts LAST and drops out of the window the moment a
+      // shared database holds more unheld orders than the cap.
+      //
+      // That is not hypothetical: it fails exactly this way on a developer
+      // database with a few hundred leftover fixtures from other suites (MP-,
+      // PAY-, SPEND-, rj- … none of which clean up), while passing forever in
+      // CI against a fresh one. Trap 10 with a LIMIT on the end of it: a global
+      // read is being used to find a row this test owns.
+      //
+      // The merchant is this test's own, so filtering on it is the delta the
+      // trap asks for. The cap can still hide the row past 1000 unheld orders;
+      // if that day comes, the fix is for the suites to put their fixtures back,
+      // not to raise the number again.
+      const unheld = await findUnheldDepositOrders({ olderThanMinutes: 0, limit: 1000 });
+      expect(unheld.filter((u) => String(u.merchantId) === String(m.merchantId))
+        .map((u) => u.orderId)).toContain(order.orderId);
 
       await sweepDepositHolds({ graceMinutes: 0 });
       // Still unheld ON PURPOSE. Re-taking it could fail, and succeeding would

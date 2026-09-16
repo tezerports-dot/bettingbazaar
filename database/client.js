@@ -171,7 +171,48 @@ export async function applySchema() {
     path.join(path.dirname(new URL(import.meta.url).pathname), 'schema.sql'), 'utf8');
   await pgQuery(sql);
   console.log('✅ PostgreSQL schema applied');
+  await reportMissingExtensions();
   return true;
+}
+
+/**
+ * Say at BOOT which optional Postgres extensions this server is missing.
+ *
+ * `validateEnv` already does exactly this for environment variables, and prints
+ * a named list with the reason each one matters. A required EXTENSION is the
+ * same class of deployment dependency and had no such check: `supportDocuments`
+ * states "PRODUCTION REQUIREMENT: the pgvector extension must be available" in
+ * a comment, and nothing verified it.
+ *
+ * So the way an operator discovered it was absent was clicking Support
+ * Assistant in the admin panel and being told "Failed to load" — a 500 whose
+ * real cause (`extension "vector" is not available`) reached the server log and
+ * never reached the person who could install it.
+ *
+ * A WARNING, not a refusal: the support assistant is not on the money path and
+ * a platform without it still takes deposits. The point is that the operator
+ * learns on the boot line rather than from a screen that looks broken.
+ */
+async function reportMissingExtensions() {
+  const OPTIONAL = [
+    ['vector', 'pgvector — the support assistant\'s document search. Without it '
+             + '/api/admin/support/documents answers 500 and the Support '
+             + 'Assistant screen cannot list or ingest anything.'],
+  ];
+  try {
+    const { rows } = await pgQuery(
+      `SELECT name FROM pg_available_extensions WHERE name = ANY($1)`,
+      [OPTIONAL.map(([n]) => n)],
+    );
+    const available = new Set(rows.map((r) => r.name));
+    const absent = OPTIONAL.filter(([n]) => !available.has(n));
+    if (!absent.length) return;
+    console.warn('⚠️  Optional Postgres extension(s) not available on this server:');
+    for (const [name, why] of absent) console.warn(`   - ${name}: ${why}`);
+  } catch {
+    // Never let a diagnostic take the boot down. If this cannot be read, the
+    // features that need the extension will still report their own failure.
+  }
 }
 
 /**

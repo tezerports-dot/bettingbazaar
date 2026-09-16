@@ -887,9 +887,18 @@ export const subAdmins = {
 // --- FINANCE ------------------------------------------------------------------
 
 export const finance = {
-  getTransactions: async (page = 1, limit = 50, type?: string, status?: string, startDate?: string, endDate?: string) => {
+  /**
+   * The wallet ledger. `GET /api/admin/transactions` reads exactly `type`
+   * (CREDIT / DEBIT) and `field` (which pocket moved) — see
+   * `routes/admin/system.admin.routes.js`.
+   *
+   * This used to pass a `status`, which that route has never read: the screen's
+   * Status dropdown was a control with no consumer (§3), and choosing a value
+   * changed nothing while looking like a filter that had been applied.
+   */
+  getTransactions: async (page = 1, limit = 50, type?: string, field?: string, startDate?: string, endDate?: string) => {
     const res = await api.get<any>('/api/admin/transactions', {
-      params: { page, limit, type, status, startDate, endDate },
+      params: { page, limit, type, field, startDate, endDate },
     });
     if (res.data?.success && res.data?.transactions) {
       return { success: true, data: res.data.transactions, pagination: res.data.pagination };
