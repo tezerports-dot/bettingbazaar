@@ -424,8 +424,23 @@ export interface ConfirmRequest {
   body: string;
   confirmLabel: string;
   tone: ButtonTone;
-  /** When set, the operator must type a reason before confirming. */
-  reasonLabel?: string;
+  /**
+   * When set, the operator must type something before confirming.
+   *
+   * This was `reasonLabel?: string` — a textarea that only checked for
+   * non-empty and refused with "Please add a reason". That was the whole
+   * vocabulary, so the payout dialog (which needs a bank UTR: one line, a
+   * minimum length, and a refusal that says what a UTR is) could not be
+   * expressed without calling a reference a "reason" on the merchant's screen.
+   */
+  input?: {
+    /** Shown as the field's placeholder. Say what to type, not what it is for. */
+    label: string;
+    /** A UTR is one token; a reason is a paragraph. */
+    multiline?: boolean;
+    /** Returns the error to show, or null when the value is acceptable. */
+    validate?: (value: string) => string | null;
+  };
   /**
    * `Promise<unknown>` rather than `Promise<void>`: the dialog only awaits it
    * and closes, but its callers report whether the action worked so they can
@@ -445,12 +460,16 @@ export const ConfirmDialog: React.FC<{ request: ConfirmRequest | null; onClose: 
   useDismissable(open, onClose);
 
   if (!request) return null;
-  const needsReason = !!request.reasonLabel;
+  const field = request.input;
 
   const confirm = async () => {
-    if (needsReason && !reason.trim()) {
-      toast.error('Please add a reason');
-      return;
+    if (field) {
+      // The caller's own rule, so the refusal can name what is wrong with THIS
+      // field rather than the one generic sentence every dialog used to share.
+      const problem = field.validate
+        ? field.validate(reason.trim())
+        : (reason.trim() ? null : 'Please fill this in');
+      if (problem) { toast.error(problem); return; }
     }
     setBusy(true);
     try {
@@ -490,14 +509,24 @@ export const ConfirmDialog: React.FC<{ request: ConfirmRequest | null; onClose: 
           </span>
           <div style={{ fontSize: 17, fontWeight: 800, color: 'var(--text)', marginBottom: 6 }}>{request.title}</div>
           <div style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--text-2)', lineHeight: 1.55 }}>{request.body}</div>
-          {needsReason && (
-            <textarea
-              value={reason}
-              autoFocus
-              onChange={(e) => setReason(e.target.value)}
-              placeholder={request.reasonLabel}
-              style={{ ...inputStyle, marginTop: 14, minHeight: 66, resize: 'none', fontSize: 13 }}
-            />
+          {field && (
+            field.multiline ? (
+              <textarea
+                value={reason}
+                autoFocus
+                onChange={(e) => setReason(e.target.value)}
+                placeholder={field.label}
+                style={{ ...inputStyle, marginTop: 14, minHeight: 66, resize: 'none', fontSize: 13 }}
+              />
+            ) : (
+              <input
+                value={reason}
+                autoFocus
+                onChange={(e) => setReason(e.target.value)}
+                placeholder={field.label}
+                style={{ ...inputStyle, marginTop: 14, fontSize: 13 }}
+              />
+            )
           )}
         </div>
         <div style={{ display: 'flex', gap: 9, padding: '0 22px 22px' }}>

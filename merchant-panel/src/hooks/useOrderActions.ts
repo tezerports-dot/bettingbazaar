@@ -6,14 +6,19 @@
 // Backend contract (backend/domains/merchant/merchant.routes.js):
 //   accept   POST /accept/:id            ASSIGNED|PENDING_QUEUE → PROCESSING
 //   reject   POST /reject/:id  {reason}  → REJECTED, requires a reason
-//   confirm  POST /confirm/:id {}
-//              DEPOSIT (PAID → COMPLETED) — takes NO body. The route reads the
-//              player's reference off the order row and refuses if it is not
-//              there; it does not accept one from the merchant, because the
-//              reference is the player's and is claimed against this order in
-//              `utr_registry` (CLAUDE.md §27). There is no payment-proof
+//   confirm  POST /confirm/:id {utrNumber?}
+//              The reference sits on OPPOSITE sides of the two order types,
+//              because opposite parties make the payment.
+//              DEPOSIT (PAID → COMPLETED) — takes NO body. The PLAYER paid, so
+//              the reference is theirs: submitted at mark-paid and claimed
+//              against this order in `utr_registry` (CLAUDE.md §27). The route
+//              reads it off the row and refuses if it is not there. It does not
+//              accept one from the merchant. There is no payment-proof
 //              requirement — proof collection was removed platform-wide.
-//              WITHDRAWAL (PROCESSING → COMPLETED) — no reference required.
+//              WITHDRAWAL (PROCESSING → PAID/COMPLETED) — the MERCHANT paid, so
+//              `utrNumber` is theirs to give and required on the UPI rail. At a
+//              cash machine it is not asked for: that payout is evidenced by the
+//              CDM slip, which has its own route and its own claim.
 //   redFlag  POST /orders/:id/red-flag {reason} → flagged + DISPUTED for review
 //   payment-not-received
 //            POST /orders/:id/reject {reason, proofFileKey, proofCdnUrl}
@@ -29,6 +34,9 @@ import { railCopy, type MerchantRail } from '../utils/rail';
 import type { PaymentOrder } from '../types';
 import type { ConfirmRequest } from '../components/ui';
 import type { OrderActions } from '../components/OrderCard';
+
+/** The shortest string the backend will accept as a bank UTR. */
+const MIN_UTR_LENGTH = 12;
 
 const orderRef = (order: PaymentOrder): string => String(order._id || order.id || order.orderId);
 
@@ -87,7 +95,7 @@ export function useOrderActions(
       body: 'It returns to the queue for reassignment. This cannot be undone.',
       confirmLabel: 'Reject order',
       tone: 'danger',
-      reasonLabel: 'Reason for rejection (required)',
+      input: { label: 'Reason for rejection (required)', multiline: true },
       onConfirm: (reason) => run(() => api.rejectOrder(orderRef(order), reason), 'Order rejected'),
     }),
 
@@ -127,12 +135,28 @@ export function useOrderActions(
         title: 'Mark payout as sent?',
         body: atMachine
           ? 'Confirm the cash is in the player\u2019s account. The order completes immediately and you will be asked for the CDM slip next \u2014 keep it to hand.'
-          : 'Confirm you have transferred the amount to the user. The order completes automatically.',
+          : 'Confirm you have transferred the amount to the user, and enter the reference your bank gave the transfer.',
         confirmLabel: "I've sent the money",
         tone: 'ok',
-        onConfirm: async () => {
+        // ── The reference on a SELL is the MERCHANT's ──────────────────────
+        // A buy and a sell put the reference on opposite sides. On a buy the
+        // PLAYER pays and submits their UTR; on a sell the MERCHANT pays, so
+        // the reference for that transfer is theirs to give and there is
+        // nobody else who could.
+        //
+        // Not asked at a cash machine: that payout's evidence is the CDM slip,
+        // collected separately below, and a bank UTR does not exist for it.
+        ...(atMachine ? {} : {
+          input: {
+            label: `UTR for this transfer (min ${MIN_UTR_LENGTH} characters)`,
+            validate: (v: string) => (v.length >= MIN_UTR_LENGTH
+              ? null
+              : `A UTR is at least ${MIN_UTR_LENGTH} characters. It is on your transfer receipt.`),
+          },
+        }),
+        onConfirm: async (utr: string) => {
           const settled = await run(
-            () => api.confirmPayment(orderRef(order)),
+            () => api.confirmPayment(orderRef(order), atMachine ? undefined : utr),
             'Payout confirmed — order completed'
           );
           // AFTER the confirm, and only if it SUCCEEDED. The receipt is chased
@@ -154,7 +178,7 @@ export function useOrderActions(
       body: 'Use this when an order looks fraudulent or cannot be processed. An admin will review it.',
       confirmLabel: 'Flag for review',
       tone: 'dispute',
-      reasonLabel: 'What is wrong with it?',
+      input: { label: 'What is wrong with it?', multiline: true },
       onConfirm: (reason) => run(() => api.redFlagOrder(orderRef(order), reason), 'Flagged — an admin will review'),
     }),
 

@@ -285,6 +285,12 @@ export async function upsertProgramme({ key = 'main', budgetRupees, memberCap, a
   // programme yet — the state every new deployment starts in. §21's relative:
   // a NOT NULL column refuses an explicit null, so check the column before
   // writing one.
+  // ── The reading `check:coherence` asks for on an interpolated statement ──
+  // `cols` is built HERE, from string literals in the three lines below, and a
+  // caller can only decide WHETHER a column is named — never what it is called.
+  // Nothing from `req.body` reaches the statement text; every value still
+  // travels as a bound parameter. The interpolation is the column LIST, which
+  // cannot be parameterised in SQL, and its contents are closed.
   const cols = ['programme_key'];
   const vals = [String(key)];
   if (budgetRupees !== undefined) { cols.push('budget_paise'); vals.push(rupeesToPaise(budgetRupees)); }

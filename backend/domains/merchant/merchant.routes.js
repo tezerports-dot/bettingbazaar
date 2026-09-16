@@ -62,9 +62,11 @@ import { postSystemMessage } from '#db/repositories/chat.js';
 // slip's bank id — is claimed through ONE registry, so the same payment cannot
 // be presented twice.
 import {
-  claimPaymentReference, CDM_REFERENCE_SPEC, MERCHANT_TOKEN_REFERENCE_SPEC,
+  claimPaymentReference, referenceSpecFor,
+  CDM_REFERENCE_SPEC, MERCHANT_TOKEN_REFERENCE_SPEC,
 } from '../payment/paymentReference.js';
 import cdnService from '../../services/cdn.service.js';
+import { respondError } from '../../shared/httpError.js';
 import { adminToMerchantUsdtRate } from '../configuration/tokenRates.js';
 import { rupeesToPaise } from '../../shared/money.js';
 import { MONEY_PATHS } from '#db/moneyPaths.js';
@@ -1511,6 +1513,49 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
             }
         }
 
+        // ── The reference sits on the side that PAID ────────────────────────
+        // A buy and a sell are mirror images, and the reference follows the
+        // money rather than the order:
+        //
+        //   BUY   the PLAYER pays the merchant. Their UTR arrives at mark-paid
+        //         and is claimed against the order there. The merchant restates
+        //         nothing — the branch above reads it off the row.
+        //   SELL  the MERCHANT pays the player, out of their own bank account.
+        //         The reference for that transfer exists only on their receipt,
+        //         so it is theirs to give and there is nobody else who could.
+        //
+        // Not asked at a cash machine: a CASH_ATM payout is evidenced by the CDM
+        // slip, which has its own route and its own claim (§27), and no bank UTR
+        // exists for a note handed over a counter.
+        //
+        // CLAIMED, not merely stored. A merchant's payout reference is a real
+        // bank transfer exactly as a player's is, so the same registry decides
+        // whether it has been spent — otherwise one transfer could be presented
+        // as proof of two payouts, which is the defect §27 records for the CDM
+        // slip. `claimPaymentReference` throws rather than returning a flag, and
+        // it runs BEFORE the transition so a refusal leaves the order untouched.
+        let payoutReference = null;
+        if (!isDeposit && order.paymentMode !== PAYMENT_MODES.CASH_ATM) {
+            const submitted = String(req.body?.utrNumber ?? '').trim();
+            if (!submitted) {
+                return res.status(400).json({
+                    success: false,
+                    code: 'PAYOUT_REFERENCE_REQUIRED',
+                    message: 'Enter the UTR your bank gave this transfer. It is what a dispute is matched against.',
+                });
+            }
+            // The order's OWN rule, so a USDT payout is held to a chain hash and
+            // an INR one to a bank UTR, rather than one length check for both.
+            const claimed = await claimPaymentReference({
+                reference: submitted,
+                orderId: order.orderId,
+                userId: order.userId,
+                amountRupees: order.tokenAmount,
+                spec: referenceSpecFor(order),
+            });
+            payoutReference = claimed.reference;
+        }
+
         // THE TRANSITION IS THE GATE, and it runs before the money.
         //
         // Every branch below moves value — a merchant debit and a user credit on
@@ -1591,6 +1636,7 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
             moved = await markOrderPaidState(order._id, {
                 expectFrom: ['PROCESSING', 'ASSIGNED'],
                 set: {
+                    ...(payoutReference ? { utrNumber: payoutReference } : {}),
                     merchantCreditStatus:    'HELD',
                     merchantCreditHoldUntil: new Date(Date.now() + holdFor * 60 * 1000),
                     escrowLocked:            true,
@@ -1600,6 +1646,7 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
             moved = await completeOrder(order._id, {
                 expectFrom: 'PROCESSING',
                 set: {
+                    ...(payoutReference ? { utrNumber: payoutReference } : {}),
                     completedAt: new Date(),
                     merchantCreditStatus: 'RELEASED', escrowLocked: false,
                 },
@@ -1776,8 +1823,25 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
 
         res.json({ success: true, order: toMerchantOrderView(order) });
     } catch (err) {
-        console.error('POST /merchant/confirm/:id error:', err);
-        res.status(500).json({ success: false, message: 'Failed to confirm payment.' });
+        // `respondError`, not a flat 500. This handler now throws CALLER errors:
+        // `claimPaymentReference` refuses a malformed reference with 400 and an
+        // already-spent one with 409, and the message it carries is the only
+        // thing telling the merchant what to type instead — "this UTR was
+        // already used on order WD_…" rather than "Failed to confirm payment."
+        //
+        // §21, in the sentence that section spends a paragraph on: the refusal
+        // is the caller's, so it carries its status at the throw, and a catch
+        // that flattens everything to 500 swallows the one sentence that was
+        // worth sending. Routed on the PRESENCE of `err.status`, never its
+        // value, so a genuine fault still logs in full and answers with nothing.
+        return respondError(res, err, 'POST /merchant/confirm/:id', {
+            message: 'Failed to confirm payment.',
+            // WHICH payout already holds the reference. Support answering
+            // "it says already used" needs it, and looking it up again is a
+            // query that can return something different from the one that
+            // refused the claim.
+            passthrough: ['originalOrderId'],
+        });
     }
 });
 

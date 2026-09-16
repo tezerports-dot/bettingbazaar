@@ -2445,7 +2445,7 @@ exists.
 
 | Measure | Count |
 |---|---|
-| Route declarations in `backend/**` | 309 |
+| Route declarations in `backend/**` | 308 |
 | Reachable with **no auth middleware** | 40 |
 | Gated `isAdminOrSubAdmin` with **no permission key** | 2 |
 | — of those, **writes** (non-GET) | 0 |
@@ -2509,9 +2509,9 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 408 |
+| `pgQuery` call sites | 409 |
 | Parameters only (safe by construction) | 261 |
-| Interpolating into statement text (each needs a reading) | 147 |
+| Interpolating into statement text (each needs a reading) | 148 |
 
 ### Panel injection sinks
 

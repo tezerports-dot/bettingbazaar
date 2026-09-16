@@ -352,21 +352,26 @@ export const acceptOrder = async (orderId: string): Promise<PaymentOrder> => {
  *   DEPOSIT:    PAID → COMPLETED, releasing tokens to the player.
  *   WITHDRAWAL: PROCESSING → PAID (held) or COMPLETED (hold disabled).
  *
- * It sends NO BODY, and that is the point.
+ * `utrNumber` is sent on a WITHDRAWAL and never on a deposit, because the two
+ * order types put the payment on opposite sides:
  *
- * It used to post `{ proof, utrNumber }`. Both were wrong by the time they were
- * sent. `proof` could only ever be `undefined` — payment-proof collection was
- * removed platform-wide, so no order has one — and `utrNumber` echoed back the
- * player's own reference for the server to write over the copy it already had.
- * That echo was the dangerous half: the reference is claimed against this order
- * in `utr_registry` (CLAUDE.md §27), and a client sending a different string
- * would have left the order naming a reference nothing had claimed.
+ *   BUY   the PLAYER pays the merchant. Their UTR arrives at mark-paid and is
+ *         claimed against the order there. The merchant restating it would be a
+ *         second writer for a value that already has an owner (§27) — this used
+ *         to post it back and the route used to overwrite the stored value with
+ *         whatever arrived.
+ *   SELL  the MERCHANT pays the player. The reference for that transfer is
+ *         theirs to give and nobody else has it, so it is collected on the
+ *         payout dialog and claimed by the confirm.
  *
- * The route reads the player's reference off the order row and refuses if it is
- * not there. There is nothing for this caller to supply.
+ * `proof` is gone from both: it could only ever be `undefined` once
+ * payment-proof collection was removed platform-wide.
  */
-export const confirmPayment = async (orderId: string): Promise<PaymentOrder> => {
-  const data = await request<any>(ENDPOINTS.ORDERS.CONFIRM(orderId), { method: 'POST' });
+export const confirmPayment = async (orderId: string, utrNumber?: string): Promise<PaymentOrder> => {
+  const data = await request<any>(ENDPOINTS.ORDERS.CONFIRM(orderId), {
+    method: 'POST',
+    ...(utrNumber ? { body: JSON.stringify({ utrNumber }) } : {}),
+  });
   return data.order || data;
 };
 
