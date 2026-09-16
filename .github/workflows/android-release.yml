@@ -45,7 +45,26 @@ jobs:
           distribution: temurin
           java-version: '21'
 
+      # `packages` is set EXPLICITLY, and it is not cosmetic. The action's
+      # default is `tools platform-tools`, and Google REMOVED `tools` from the
+      # SDK repository — it has been deprecated since 2021 — so the default
+      # makes this job run `sdkmanager tools`, print "Failed to find package
+      # 'tools'", and exit 1.
+      #
+      # The job therefore died in SETUP, before a line of this repository was
+      # compiled, and had been red on every commit and on the base branch alike.
+      # That is the shape worth naming: a red check that says nothing about the
+      # code is a check people learn to scroll past, and the next real Android
+      # break would have arrived in a job that was already failing.
+      #
+      # `platform-tools` is kept rather than an empty list: it is a real package
+      # that still exists, so the step keeps proving the SDK is reachable
+      # instead of succeeding by doing nothing. The platform and build-tools
+      # Gradle needs are preinstalled on the runner image and resolved by the
+      # Android Gradle plugin, not from here.
       - uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools
 
       - uses: gradle/actions/setup-gradle@v6
 
