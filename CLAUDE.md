@@ -238,8 +238,32 @@ wrong owner gets working code deleted by the next reader.
   `Branding`**, injected as a CSS variable (`--brand-primary`,
   `--brand-secondary`, `--brand-accent`) or via `localStorage.app_branding`.
   Never a hex literal in a component. This is still being remediated; re-count
-  with `grep -ro "D4AF37" user-panel/src admin-panel/src merchant-panel/src | wc -l`.
-  The merchant panel is already at zero.
+  with `npm run report:branding` (`--files`, `--lines`), **never by grepping a
+  hex**.
+
+  **The figure this file used to quote was 89 and the real one is 209**, because
+  the command it named — `grep -ro "D4AF37"` — counts one spelling of one of the
+  three brand colours. The panel writes the same gold as `rgba(212,175,55,…)`
+  91 times for shadows and tints, and `--brand-secondary` (`#B8860B`) and
+  `--brand-accent` (`#F5C77A`) have their own literals. It also said the
+  merchant panel was **at zero** and it is at one, and the admin panel reads
+  nine rather than the two that grep finds. Every one of those errors was in the
+  reassuring direction: the work looked nearly done, and an operator changing
+  their brand colour would have found most of the player panel still gold. This
+  is §29 — absence of a failing check is not evidence when no check covers the
+  claim — and it is §1's lesson about quoting the printed figure rather than an
+  estimate, which this bullet was not following.
+
+  A literal is PERMITTED where it is the schema default sitting behind a brand
+  variable — the `--brand-primary: #D4AF37` declaration itself, or a
+  `var(--brand-primary, #D4AF37)` fallback. The tokens have to be defined
+  somewhere and the definition is a hex by necessity. The report counts those
+  separately as anchors rather than ignoring them, so deleting one by accident
+  shows up instead of reading as progress.
+
+  The report does not FAIL the build, deliberately: a gate that goes red over
+  work already known to be outstanding is a gate somebody switches off. It turns
+  red-worthy the day the count reaches zero.
 - Any permission key, status enum or event name originates from a shared module.
 
 ---
