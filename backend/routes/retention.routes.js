@@ -296,6 +296,23 @@ router.post('/admin/balance-adjust', authenticate, isAdmin, async (req, res) => 
       }
     }
 
+    // ── Tell the player, and the admin room ────────────────────────────────
+    // Carried over from `/users/:userId/adjust-balance`, which this route
+    // absorbed. Without it an operator credits an account and the player goes on
+    // seeing the old number until something else makes them reload — and the
+    // two screens behaved differently depending on which one was used.
+    //
+    // The balances come from the movement itself, never a re-read: a re-read can
+    // pick up a LATER movement and attribute it to this one.
+    if (global.io) {
+      global.io.to(`user-${userId}`).emit('user_update', {
+        depositBalance:  result.balances?.depositBalance  ?? 0,
+        winningsBalance: result.balances?.winningsBalance ?? 0,
+        server_ts: Date.now(),
+      });
+      global.io.to('admin-room').emit('admin_stats_delta', { type: 'BALANCE_ADJUSTED', server_ts: Date.now() });
+    }
+
     res.json({
       success: true,
       message: `${type === 'CREDIT' ? 'Credited' : 'Debited'} ₹${amount} ${type === 'CREDIT' ? 'to' : 'from'} ${user.username}`,

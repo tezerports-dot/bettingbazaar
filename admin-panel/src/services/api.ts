@@ -196,9 +196,27 @@ export const users = {
     return res.data;
   },
 
+  /**
+   * Adjust a player's balance. ONE route, `POST /api/admin/balance-adjust`,
+   * shared with the dedicated Balance Adjustment screen.
+   *
+   * This used to post to `/api/admin/users/:userId/adjust-balance`, a second
+   * admin route doing the same job with different side effects — it wrote no
+   * bonus record and let the reason be omitted. Both were live, so a credit
+   * meant different things depending on which screen issued it (§5).
+   *
+   * The signed amount stays HERE, as the caller's convenience: the Users screen
+   * thinks in "add ₹500 / deduct ₹500", and the route thinks in CREDIT/DEBIT
+   * with a positive magnitude. Translating at the boundary keeps both honest.
+   */
   adjustBalance: async (userId: string, amount: number, reason: string, walletType: 'depositBalance' | 'winningsBalance' = 'depositBalance') => {
-    // FIX 10: walletType is now a proper param sent to backend (was stuffed into reason string)
-    const res = await api.post(`/api/admin/users/${userId}/adjust-balance`, { amount, reason, walletType });
+    const res = await api.post('/api/admin/balance-adjust', {
+      userId,
+      type:   amount >= 0 ? 'CREDIT' : 'DEBIT',
+      field:  walletType,
+      amount: Math.abs(amount),
+      reason,
+    });
     return res.data;
   },
 

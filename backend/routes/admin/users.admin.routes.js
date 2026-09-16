@@ -42,57 +42,37 @@ function parseCursor(raw) {
 }
 
 
-/**
- * POST /api/admin/users/:userId/adjust-balance
+/*
+ * POST /api/admin/users/:userId/adjust-balance was HERE, and is gone.
  *
- * The affordability check used to read `user[field]` off the account document
- * while the debit moved `wallets` — two different numbers, and the guard held
- * the one that was not going to change. It now happens inside `adminAdjustment`
- * against the locked wallet row, so what this route does is translate a signed
- * rupee amount into a CREDIT/DEBIT and render the answer.
+ * It was a SECOND admin route adjusting a player's balance, alongside
+ * `POST /api/admin/balance-adjust` in routes/retention.routes.js. Both were
+ * live and both were reachable from the admin panel — the Users screen's inline
+ * modal called this one, the dedicated Balance Adjustment screen calls the
+ * other — so the same decision took different paths depending on which screen
+ * the operator happened to be on.
  *
- * The balances echoed back are the ones the movement itself reported, not a
- * re-read: a re-read can pick up a later movement and attribute it to this one.
+ * The MONEY was never in doubt: both handed off to `adminAdjustment`, the one
+ * writer (§9). What differed was everything around it, and it differed
+ * silently:
+ *
+ *   reason        REQUIRED there; optional here, defaulting to the string
+ *                 "Admin adjustment" — so an audit row could record a money
+ *                 movement with nothing on it explaining why.
+ *   pockets       validated there against `ADJUSTABLE_FIELDS`, the writer's own
+ *                 list, under a comment saying exactly why it must not be
+ *                 copied. Here it was a hand-written ternary of two — a second
+ *                 copy, free to drift from the writer that decides.
+ *   bonus record  written there for a CREDIT, keyed on the adjustment id.
+ *                 Not written here at all, so a credit issued from the Users
+ *                 screen never appeared in engagement reporting and one issued
+ *                 from the Balance Adjustment screen did.
+ *
+ * §5, in the form that section says it keeps being violated: the same payload
+ * assembled in two places drifts, and it drifts silently. The surviving route
+ * takes the realtime emit this one had — that half was this route's own
+ * improvement and the reason it could not simply be deleted.
  */
-router.post('/users/:userId/adjust-balance', authenticate, isAdmin, async (req, res) => {
-  try {
-    const { amount, reason, walletType } = req.body;
-    const userId = req.params.userId;
-    if (!Number.isFinite(Number(amount)) || Number(amount) === 0) {
-      return res.status(400).json({ success: false, message: 'amount must be a non-zero number' });
-    }
-    const user = await getUser(userId);
-    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
-
-    const field = (walletType === 'winnings' || walletType === 'winningsBalance')
-      ? 'winningsBalance' : 'depositBalance';
-    const type = Number(amount) >= 0 ? 'CREDIT' : 'DEBIT';
-
-    const result = await adminAdjustment(
-      req.user.userId, userId, type, field, Math.abs(Number(amount)),
-      reason || 'Admin adjustment', randomBytes(12).toString('hex'),
-    );
-    if (!result.ok) {
-      return res.status(400).json({
-        success: false,
-        message: `Insufficient ${field}: have ₹${result.availableRupees}`,
-      });
-    }
-
-    const newBalance = {
-      depositBalance:  result.balances?.depositBalance  ?? 0,
-      winningsBalance: result.balances?.winningsBalance ?? 0,
-    };
-    if (global.io) {
-      global.io.to(`user-${userId}`).emit('user_update', { ...newBalance, server_ts: Date.now() });
-      global.io.to('admin-room').emit('admin_stats_delta', { type: 'BALANCE_ADJUSTED', server_ts: Date.now() });
-    }
-    res.json({ success: true, newBalance, adjustment: result.adjustment });
-  } catch (error) {
-    console.error('Adjust balance error:', error);
-    res.status(500).json({ success: false, message: 'Failed to adjust balance' });
-  }
-});
 router.get('/users', authenticate, hasPermission('canManageUsers'), async (req, res) => {
   try {
     const { status, kycStatus, search, page = 1, limit = 50, cursor } = req.query;
