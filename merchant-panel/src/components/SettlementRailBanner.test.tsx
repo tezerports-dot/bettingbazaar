@@ -74,6 +74,23 @@ describe('the settlement rail a merchant is on', () => {
     expect(container).toBeEmptyDOMElement();
   });
 
+  it('says nothing to a USDT merchant, whose rail is neither of these', async () => {
+    // P2P_UPI and CASH_ATM are how an INR order settles. A USDT order settles by
+    // the player sending USDT to the merchant's own wallet address, and a USDT
+    // merchant can never be given an INR order at all — every assignment path
+    // filters on `m.merchant_type = <the order's currency>`.
+    //
+    // So on the day an admin switched the platform to CASH_ATM, every USDT
+    // merchant was told — in a banner headed "which workflow you are performing
+    // today" — to go and scan a cash-withdrawal QR at a cash machine. Correct
+    // copy for the rail; not their rail.
+    api.getPaymentMode.mockResolvedValue(upi);
+    const { container } = render(<SettlementRailBanner rail="USDT" />);
+    expect(container).toBeEmptyDOMElement();
+    // And it does not even ask: there is no answer that would change this.
+    expect(api.getPaymentMode).not.toHaveBeenCalled();
+  });
+
   it('renders the wording the server sent, not a copy of its own', async () => {
     api.getPaymentMode.mockResolvedValue(upi);
     render(<SettlementRailBanner />);

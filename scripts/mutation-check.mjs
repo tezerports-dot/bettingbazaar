@@ -99,9 +99,23 @@ const MUTATIONS = [
   {
     id: 'M32', file: 'backend/domains/merchant/merchant.assignment.routes.js', config: UNIT,
     test: 'backend/tests/unit/merchantEligibilityReads.test.js',
-    why: 'an eligibility gate goes back to reading a stored balance off the merchant record',
-    from: `  const balance = await getMerchantTokenBalance(merchantId);`,
-    to: `  const balance = merchant.tokenBalance < order.tokenAmount ? 0 : merchant.tokenBalance;`,
+    why: 'the manual-assign gate goes back to READING a balance instead of taking the hold, so two admins assigning at once both pass it (F-018)',
+    // ── Retargeted 2026-09-16 ────────────────────────────────────────────────
+    // The anchor named `const balance = await getMerchantTokenBalance(...)`,
+    // and that line is gone because the defect it guarded was fixed properly:
+    // `inventoryRefusal` no longer READS a number and let the caller assign in
+    // a later statement. It TAKES the hold, and the refusal is the reserve
+    // leg's own `UPDATE … WHERE` under the merchant's row lock.
+    //
+    // So the mutation is now the real regression: put the read back. This is
+    // trap 18 — a number read in one statement and acted on in another is a
+    // snapshot however good the number is, and this is the one assignment path
+    // with no concurrency query behind it.
+    from: `  const held = await holdDepositTokens(order, merchantId, { actor });
+  if (held.ok) return null;`,
+    to: `  const balance = await getSpendablePaiseFor([merchantId]);
+  if ((balance.get(String(merchantId))?.spendable ?? 0) >= order.tokenAmount * 100) return null;
+  const held = { ok: false, reason: 'insufficient' };`,
   },
   // ── The accounts table: four properties, each verified to be load-bearing ──
   {
@@ -214,7 +228,12 @@ const MUTATIONS = [
     id: 'M54', file: 'backend/domains/merchant/merchantScoring.service.js', config: UNIT,
     test: 'backend/tests/unit/moneyDecisionsReadTheWallet.test.js',
     why: 'assignment filters candidates on a stored balance, routing orders nobody can fund',
-    from: `    candidates = candidates.filter((m) => (availablePaise.get(String(m.merchantId)) ?? -1) >= neededPaise);`,
+    // The read moved from `availablePaise` (the available pocket) to
+    // `getSpendablePaiseFor` (available MINUS the buy orders already in
+    // flight), via a `paiseOf` helper — F-018's more accurate number. The
+    // mutation is unchanged in substance: go back to the stored balance on the
+    // merchant record, which is the defect this entry names.
+    from: `    candidates = candidates.filter((m) => paiseOf(m) >= neededPaise);`,
     to: `    candidates = candidates.filter((m) => m.tokenBalance >= neededPaise);`,
   },
   {
@@ -324,7 +343,10 @@ const MUTATIONS = [
     // survives (it did). Taking the path away is what declaring this route
     // BELOW `/users/:userId` actually does: the request falls through to the
     // single-user handler, which 404s on a player called "flagged".
-    from: `router.get('/users/flagged', authenticate, isAdminOrSubAdmin, async (req, res) => {`,
+    // `isAdminOrSubAdmin` → `hasPermission('canManageUsers')` (F-001: the gate
+    // asks whether you hold the permission, not whether you are staff). The
+    // mutation is unchanged in substance — take the path away.
+    from: `router.get('/users/flagged', authenticate, hasPermission('canManageUsers'), async (req, res) => {`,
     to: `router.get('/users/flagged-unreachable', authenticate, isAdminOrSubAdmin, async (req, res) => {`,
   },
   // ── status and is_blocked cannot come apart ───────────────────────────────
@@ -378,14 +400,39 @@ const MUTATIONS = [
         resolutionNotes:   reason.trim(),`,
   },
   {
-    id: 'M74', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
-    test: 'backend/tests/routes/disputeResolvePathsRoutes.test.js',
-    why: 'a merchant dispute lands DISPUTED with no reason again',
-    from: `                disputeRaisedBy: 'merchant',
-            },`,
-    to: `                disputeRaisedBy: 'merchant',
-                updatedAt:       new Date(),
-            },`,
+    id: 'M74', file: 'backend/domains/payment/payment.routes.js', config: PG,
+    test: 'backend/tests/routes/paymentRoutes.test.js',
+    why: 'the dispute transition carries a field the order writer refuses, so it throws AFTER the state has already moved — the order is DISPUTED and the handler answers 500',
+    // ── Retargeted 2026-09-16 ────────────────────────────────────────────────
+    // This named `merchant.routes.js` and a `disputeRaisedBy: 'merchant'`
+    // block. There is no such block and no such route: a MERCHANT does not
+    // raise disputes on this platform. The player does (here) and the
+    // unanswered-PAID sweep does as 'system'. The anchor had been missing for
+    // long enough that nobody could say when the route went, which is the cost
+    // of a harness that reports NOT-MEASURED and carries on.
+    //
+    // The SHAPE is kept, because it is the one worth guarding and it is §21's:
+    // `setOrderFields` throws on a field name it does not know, and the
+    // lifecycle moves the state FIRST — so a bad field in the accompanying
+    // write happens after the transition has committed. The order is left
+    // DISPUTED, the handler's catch answers 500, and everything it meant to do
+    // next never runs. That has shipped three times in three files.
+    // Widened to name ONE site. `payment.routes.js` has TWO routes that let a
+    // player dispute an order and the `set` block is identical in both, so the
+    // narrow anchor mutated whichever came first — trap 13. `disputeReason:
+    // reason.trim()` is the line only this one has; the other truncates to
+    // 1,000 characters.
+    //
+    // (That the two exist at all, with different `expectFrom` and different
+    // handling of the same field, is its own question — recorded, not fixed
+    // here.)
+    from: `        disputeReason:   reason.trim(),
+        disputeRaisedAt: new Date(),
+        disputeRaisedBy: 'user',`,
+    to: `        disputeReason:   reason.trim(),
+        disputeRaisedAt: new Date(),
+        disputeRaisedBy: 'user',
+        updatedAt:       new Date(),`,
   },
 
   // ── A per-user limiter that counts per IP is not a per-user limiter ───────
@@ -606,8 +653,28 @@ const MUTATIONS = [
     id: 'M101', file: 'database/repositories/cashLinks.js', config: PG,
     test: 'database/tests/cashLinkQueuePg.test.js',
     why: 'the claim matches any denomination at or above the order, so a merchant at a 40,000 machine is handed a 5,000 order',
-    from: `            AND l.denomination_paise = $1`,
-    to: `            AND l.denomination_paise >= $1`,
+    // ── Why this mutates the MERCHANT's column and not the link's ───────────
+    // The claim tests the denomination TWICE, and they are different
+    // questions: `l.denomination_paise` is the size the link was supplied for,
+    // `m.cash_denomination_paise` is the tier the merchant is on NOW, re-read
+    // because an admin can move them after they supplied it. Both are
+    // load-bearing and neither is a duplicate of the other.
+    //
+    // But it means loosening ONE of them changes no outcome: a merchant and
+    // their own link always agree at supply time, so the other condition still
+    // refuses and the mutation is unkillable BY CONSTRUCTION. This entry
+    // mutated `l.denomination_paise` alone and reported SURVIVED for as long as
+    // it has existed — read as a hole in the suite when it was a hole in the
+    // mutation. A test was written against it and still could not kill it,
+    // which is how the difference showed.
+    //
+    // Mutating the merchant's condition expresses the behaviour the entry
+    // NAMES — "the claim stops matching the size exactly" — because it is the
+    // one a claim for a smaller order actually reaches.
+    edits: [
+      [`            AND l.denomination_paise = $1`, `            AND l.denomination_paise >= $1`],
+      [`            AND m.cash_denomination_paise = $1`, `            AND m.cash_denomination_paise >= $1`],
+    ],
   },
   {
     id: 'M102', file: 'database/repositories/cashLinks.js', config: PG,
@@ -884,8 +951,16 @@ const MUTATIONS = [
     id: 'M132', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
     test: 'backend/tests/routes/retryAndMatchPg.test.js',
     why: 'a claim whose order will not move is left standing, so the link is consumed and the order holds a link id while still queued — the link out of the queue so no merchant can be sent with it, the order showing a payment link nobody is working',
-    from: `    await db.cashLinks.releaseClaim({ linkId: claim.link.linkId, orderId: order.orderId })`,
-    to: `    await Promise.resolve({ ok: true })`,
+    // Widened to name ONE site. The same release appears twice in this file —
+    // once when the HOLD fails and once when the transition does — and the
+    // narrow anchor mutated whichever came first, so the verdict described a
+    // different defect from the one this entry names (trap 13). The comment
+    // above the first one is what only it has.
+    from: `      // The link is given back for the same reason as below: it was claimed
+      // before this could fail, and a consumed link on an unassigned order is
+      // two people waiting on nothing.
+      await db.cashLinks.releaseClaim({ linkId: claim.link.linkId, orderId: order.orderId })`,
+    to: `      await Promise.resolve({ ok: true })`,
   },
   {
     id: 'M133', file: 'database/repositories/cashLinks.js', config: PG,
@@ -1160,9 +1235,35 @@ function verdictFrom(reportPath, exit) {
 
 const results = [];
 
+/**
+ * The edits one mutation makes, as `[from, to]` pairs.
+ *
+ * ── Why a mutation may need more than one ──────────────────────────────────
+ * Some behaviour is enforced in two places ON PURPOSE, and then loosening
+ * either one alone changes no outcome — the other still refuses, the mutant
+ * behaves exactly like the original, and the entry reports SURVIVED forever.
+ * That reads as a hole in the suite when it is a hole in the MUTATION, and it
+ * is the more expensive of the two mistakes because the fix people reach for is
+ * writing a test that cannot possibly pass.
+ *
+ * M101 is the case that showed it. The cash-link claim tests the denomination
+ * twice — `l.denomination_paise`, the size the link was supplied for, and
+ * `m.cash_denomination_paise`, the tier the merchant is on now — and both are
+ * load-bearing, because an admin can move a merchant between the two moments. A
+ * mutation of either one is unkillable by construction, and a test was written
+ * against it and still could not kill it, which is how the difference showed.
+ *
+ * So `edits` expresses "this BEHAVIOUR stops holding", which is what a mutation
+ * is supposed to say. Every pair is still checked for presence and for
+ * ambiguity individually, so the multi-site form loosens nothing.
+ */
+const editsOf = (m) => (m.edits ?? [[m.from, m.to]]);
+
 for (const m of selected) {
   const original = readFileSync(m.file, 'utf8');
-  if (!original.includes(m.from)) {
+  const edits = editsOf(m);
+  const missing = edits.find(([from]) => !original.includes(from));
+  if (missing) {
     results.push({ ...m, outcome: 'ANCHOR-MISSING' });
     console.log(`❓ ${m.id}  anchor not found in ${m.file} — mutation could not be applied`);
     continue;
@@ -1174,12 +1275,16 @@ for (const m of selected) {
   // comes first, and the verdict then describes a defect somewhere other than
   // the one the entry names. A KILLED for the wrong reason is worse than a
   // SURVIVED, because nobody looks at it again.
-  if (original.indexOf(m.from) !== original.lastIndexOf(m.from)) {
+  //
+  // Checked per EDIT, not per mutation: a multi-site mutation is several
+  // unambiguous anchors, never one ambiguous one.
+  const ambiguous = edits.find(([from]) => original.indexOf(from) !== original.lastIndexOf(from));
+  if (ambiguous) {
     results.push({ ...m, outcome: 'ANCHOR-AMBIGUOUS' });
     console.log(`❓ ${m.id}  anchor appears more than once in ${m.file} — widen it so it names ONE site`);
     continue;
   }
-  writeFileSync(m.file, original.replace(m.from, m.to));
+  writeFileSync(m.file, edits.reduce((text, [from, to]) => text.replace(from, to), original));
   let outcome;
   const report = join(tmpdir(), `mutation-${m.id}.json`);
   try { rmSync(report, { force: true }); } catch { /* first run */ }

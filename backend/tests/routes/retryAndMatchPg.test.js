@@ -26,7 +26,7 @@ import { updateMerchant } from '#db/repositories/merchants.js';
 import {
   PAYMENT_MODES, getActivePolicy, publishPolicyVersion, concurrencyCapFor,
 } from '#db/repositories/paymentModePolicy.js';
-import { getLiveLinkFor, releaseClaim } from '#db/repositories/cashLinks.js';
+import { getLiveLinkFor, releaseClaim, cancelLink } from '#db/repositories/cashLinks.js';
 import { supplyCashLink } from '../../domains/merchant/cashLink.service.js';
 // The matcher lives with the ASSIGNMENT, not with the link supply: it has to go
 // through the complete operation — claim the link, make its owner the order's
@@ -104,8 +104,8 @@ describePg('a retry, and the link that arrives late', () => {
     return orderId;
   };
 
-  const cashMerchant = async () => {
-    const merchant = await merchantActor({ tokensRupees: 500_000 });
+  const cashMerchant = async ({ tokensRupees = 500_000 } = {}) => {
+    const merchant = await merchantActor({ tokensRupees });
     await updateMerchant(merchant.merchantId, {
       cashDenominationPaise: DENOM_PAISE, isOnline: true, merchantApprovalStatus: 'APPROVED',
     });
@@ -408,6 +408,60 @@ describePg('a retry, and the link that arrives late', () => {
     // be served by it — both, or the order looks served by a link that has gone
     // to somebody else.
     expect((await getOrderRecord(orderId)).cashLinkId).toBeNull();
+  });
+
+  it('gives the link back when the merchant cannot hold the tokens', async () => {
+    // ── The OTHER rollback, and the one nothing covered ──────────────────────
+    // `tryClaimCashLink` claims the link first and then takes the merchant's
+    // tokens. Both can fail after the claim has committed, and there are two
+    // separate releases for it. The case below stages the transition failing;
+    // this one stages the HOLD failing, which is the likelier of the two — a
+    // merchant standing at a machine with a link supplied and no float left,
+    // because the buy they are already serving reserved it.
+    //
+    // M132 mutated the first release to a no-op and SURVIVED until this
+    // existed. What that no-op leaves behind is worse than an unserved order:
+    // the link is consumed and out of the queue, so no merchant can be sent
+    // with it, while the order sits queued holding a link id nobody is working.
+    // Two people waiting on nothing.
+    const player = await actor({});
+    const broke = await cashMerchant({ tokensRupees: 0 });
+    const orderId = await waitingBuy(player, { priority: await rankAboveQueue() });
+
+    const supplied = await supplyCashLink({
+      merchantId: broke.merchantId,
+      merchant: { cashDenominationPaise: DENOM_PAISE },
+      paymentLink: 'upi://pay?pa=atm@bank&am=5000',
+    });
+    expect(supplied.ok, 'supply is not what this case is about').toBe(true);
+
+    const assigned = await tryClaimCashLink(await getOrderRecord(orderId));
+    expect(assigned, 'an order was assigned to a merchant who cannot fund it').toBe(false);
+
+    // The order is untouched: still queued, no merchant, no link.
+    const after = await getOrderRecord(orderId);
+    expect(after.state ?? after.status).toBe('PENDING_QUEUE');
+    expect(after.merchantId ?? null).toBeNull();
+    expect(after.cashLinkId).toBeNull();
+
+    // And the link is LIVE again in its owner's hands — not merely unclaimed,
+    // which a delete would also satisfy. A merchant who walked to a machine
+    // still has something to serve with.
+    const live = await getLiveLinkFor(broke.merchantId);
+    expect(live?.linkId, 'the link did not come back to the merchant').toBe(supplied.link.linkId);
+    const stranded = await pgQuery(
+      "SELECT link_id FROM cash_link_queue WHERE claimed_by_order = $1",
+      [orderId],
+    );
+    expect(stranded.rows).toHaveLength(0);
+
+    // Retired, not left live. The whole point of this case is a merchant with
+    // no float, and their link is exactly the poison the matcher must not be
+    // handed by a NEIGHBOURING test: `matchWaitingOrdersToLinks` takes it, the
+    // hold fails, and the case that supplied its own good link watches its
+    // order go unserved. Leaving it here broke the case two below on the first
+    // run — the shared-database shape (trap 10) in its most ordinary form.
+    await cancelLink(supplied.link.linkId, broke.merchantId);
   });
 
   it('rolls the claim back when the order has already moved on', async () => {

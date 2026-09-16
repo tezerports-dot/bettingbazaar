@@ -15,11 +15,25 @@
 //
 // It renders NOTHING while the rail is unknown, rather than guessing a default.
 // A banner that confidently names the wrong workflow is worse than no banner.
+//
+// ── And that applies to the USDT merchant, who is on NEITHER rail ──────────
+// P2P_UPI and CASH_ATM are how an INR order settles. A USDT order settles by
+// the player sending USDT straight to the merchant's own wallet address —
+// there is no UPI handle in it and no cash machine — and a USDT merchant can
+// never be given an INR order at all: every assignment path filters on
+// `m.merchant_type = <the order's currency>`.
+//
+// This read the platform rail and nothing else, so on the day an admin switched
+// to CASH_ATM every USDT merchant was told, in a banner headed "which workflow
+// you are performing today", to go and scan a cash-withdrawal QR at an ATM.
+// Seen on a real screen, which is the only reason it was noticed: the copy is
+// correct for the rail and the rail is not theirs.
 import React, { useCallback, useEffect, useState } from 'react';
 import { Info, RefreshCw } from 'lucide-react';
 import { getPaymentMode } from '../services/api';
 import sseService from '../services/sse';
 import type { PaymentModeView } from '../types';
+import { RAIL, type MerchantRail } from '../utils/rail';
 import { cardStyle } from './ui';
 
 const formatWindow = (seconds?: number | null): string => {
@@ -28,11 +42,31 @@ const formatWindow = (seconds?: number | null): string => {
   return `${seconds}s`;
 };
 
-export const SettlementRailBanner: React.FC = () => {
+export const SettlementRailBanner: React.FC<{
+  /**
+   * The rail THIS merchant settles on. A prop rather than a `useAuth()` inside,
+   * so the component keeps stating what it needs instead of reaching for it —
+   * and so it can still be rendered on its own, which is how its own suite
+   * tests it. Defaults to INR, which is the schema default for
+   * `accepted_currencies` and therefore the same answer `railOf(null)` gives.
+   */
+  rail?: MerchantRail;
+}> = ({ rail = RAIL.INR }) => {
+  // A USDT merchant performs one workflow and it never changes, so there is no
+  // "today's rail" to announce and neither INR rail is theirs to be told about.
+  // Their own instructions live on the order and on Profile, beside the address
+  // and its network.
+  //
+  // Decided ONCE, here, and used by both the fetch and the render — so the
+  // banner does not poll a rail it will never show. Putting this only at the
+  // render made every USDT merchant's dashboard load ask the server a question
+  // whose answer could not change the page.
+  const applies = rail !== RAIL.USDT;
   const [mode, setMode] = useState<PaymentModeView | null>(null);
   const [changed, setChanged] = useState(false);
 
   const load = useCallback(async (markChanged = false) => {
+    if (!applies) return;
     try {
       const next = await getPaymentMode();
       setMode(next);
@@ -41,7 +75,7 @@ export const SettlementRailBanner: React.FC = () => {
       // A failed read leaves the previous answer on screen rather than
       // replacing it with a wrong one. The merchant is not blocked by this.
     }
-  }, []);
+  }, [applies]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -60,6 +94,7 @@ export const SettlementRailBanner: React.FC = () => {
     return () => sseService.off('payment_mode_changed', onChange);
   }, [load]);
 
+  if (!applies) return null;
   if (!mode?.activeMode) return null;
 
   return (

@@ -87,9 +87,12 @@ const COPY: Record<MerchantRail, RailCopy> = {
     proofSectionLabel: 'On-chain proof',
     payoutDestinationLabel: 'Send USDT to user address',
     walletLabel: 'BB Token balance',
-    // What the merchant HOLDS is tokens; what a player SENDS them is USDT. The
-    // note says both so the tile answers "why is my USDT float shown in BB".
-    walletNote: 'Funded by admin · you settle player orders in USDT',
+    // Both legs, and their direction. The merchant HOLDS platform tokens and
+    // GIVES THEM UP on a buy; what comes back is USDT, sent by the player to
+    // the merchant's own wallet address. The platform never holds that USDT —
+    // it is off-platform, between two people — which is exactly why the balance
+    // on this tile is counted in BB and not in USDT.
+    walletNote: 'Funded by admin · players pay you USDT for these tokens',
   },
 };
 
@@ -135,8 +138,14 @@ export function formatMoneyCompact(amount: number | undefined | null, rail: Merc
  * `merchant_wallets` holds BB tokens for every merchant — an admin top-up of
  * 1,000,000 writes 100,000,000 paise of TOKENS whether that merchant settles
  * in rupees or in USDT — and the deposit escrow reserves tokens against every
- * order. USDT is what a PLAYER SENDS on a USDT order; it is not what the
- * merchant's float is counted in.
+ * order.
+ *
+ * On a USDT buy the merchant GIVES UP tokens and RECEIVES USDT, sent by the
+ * player straight to the merchant's own wallet address. That USDT never
+ * touches the platform: it is a transfer between two people, and the platform's
+ * side of it is only the token movement. So there is no USDT balance here to
+ * show — the merchant's float is tokens, on both rails, and the rail says who
+ * pays them, not what they hold.
  *
  * This said "on the USDT rail it holds USDT" and rendered `<n> USDT`. On a live
  * server at ₹90 per USDT, a merchant's 900,000-token float reads as

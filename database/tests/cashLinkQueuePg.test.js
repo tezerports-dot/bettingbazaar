@@ -140,6 +140,60 @@ describePg('the ATM cash-link queue', () => {
     await cancelLink(third.link.linkId, m);
   });
 
+  it('will not hand a ₹5,000 order a ₹40,000 link, or any other size', async () => {
+    // The denomination match is EXACT, and this is the case that says so.
+    // M101 mutated `= $1` to `>= $1` and SURVIVED — nothing in the suite could
+    // tell the difference, so a guard was being reported as covered with
+    // nothing behind it.
+    //
+    // `>=` is not a near-miss. A cash link is one merchant standing at one
+    // machine: ₹40,000 is the largest denomination an ATM deals in at all and
+    // ₹10,000 the most it dispenses in one go (§25), so a link is an offer of
+    // THAT pile of notes and nothing else. Handing it a ₹5,000 order asks the
+    // merchant to make change at a cash machine, and the player is sent to
+    // collect a sum the machine will not give them.
+    //
+    // Three sizes, so the assertion cannot pass by there being only one link.
+    const big    = await merchant({ denominationPaise: 4_000_000 });
+    const middle = await merchant({ denominationPaise: 1_000_000 });
+
+    const supplied = [];
+    for (const [who, size] of [[big, 4_000_000], [middle, 1_000_000]]) {
+      const r = await supplyLink({
+        linkId: uid('lnk'), merchantId: who, denominationPaise: size,
+        paymentLink: `upi://pay?am=${size / 100}`, expiresAt: inMinutes(5),
+      });
+      expect(r.ok).toBe(true);
+      supplied.push([r.link.linkId, who]);
+    }
+
+    // An order for a size NEITHER link carries. Under `>=` both links qualify
+    // and the smaller of them is taken; under `=` neither does.
+    const small = await claimLinkForOrder({
+      orderId: await orderAt(500_000), denominationPaise: 500_000, minRemainingSeconds: 60,
+    });
+    expect(small.ok, 'a 5,000 order took a larger link').toBe(false);
+
+    // And the exact size still works, so the case cannot pass by the claim
+    // being broken outright.
+    const exact = await supplyLink({
+      linkId: uid('lnk'), merchantId: await merchant({ denominationPaise: 500_000 }),
+      denominationPaise: 500_000, paymentLink: 'upi://pay?am=5000', expiresAt: inMinutes(5),
+    });
+    expect(exact.ok).toBe(true);
+    const matched = await claimLinkForOrder({
+      orderId: await orderAt(500_000), denominationPaise: 500_000, minRemainingSeconds: 60,
+    });
+    expect(matched.ok).toBe(true);
+    expect(matched.link.denominationPaise ?? 500_000).toBe(500_000);
+
+    // Retired, for the reason stated above the case before this one: the tier
+    // shares one database, and two links this case no longer needs are ambient
+    // supply every later case would have to reason about. Leaving them here
+    // broke two of them on the first run.
+    for (const [linkId, who] of supplied) await cancelLink(linkId, who);
+  });
+
   it('gives two simultaneous orders two DIFFERENT links, never the same one', async () => {
     // The assertion this whole design turns on, run concurrently because
     // reading the SQL proves nothing about behaviour under contention.
