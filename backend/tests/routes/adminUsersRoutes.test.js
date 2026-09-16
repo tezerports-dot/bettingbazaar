@@ -19,6 +19,7 @@ import { pgConfigured, applySchema, closePg } from '#db/client.js';
 import { getBalancesPaise, applyMovementPaise } from '#db/repositories/wallets.core.js';
 import { createOrderRecord } from '#db/repositories/orders.record.js';
 import { getUser, flagPaymentWarning, softDeleteUser } from '#db/repositories/users.js';
+import { listNotifications } from '#db/repositories/engagement.js';
 import { mountRouter, actor, as, request } from './_harness.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
@@ -86,6 +87,47 @@ describePg('admin user routes', () => {
     const after = await getUser(plain.userId);
     expect(after.isBlocked).toBe(true);
     expect(after.blockReason).toMatch(/fraud/i);
+  });
+
+  /**
+   * A block the player can READ.
+   *
+   * The reason is required by the route and recorded in `audit_logs`, which is
+   * a record for the platform, not for the person it is about. Without an inbox
+   * row the player meets a 403 on every screen and no explanation anywhere.
+   *
+   * This was asserted by two comments and by nothing else. `GET
+   * /user/notifications` and `NotificationBell` both describe an admin block as
+   * the live writer into the inbox — "a player was blocked, the system
+   * carefully recorded the explanation meant for them, and they could never
+   * see it" — the read side was built on the strength of it, and the write was
+   * never there. Confirmed against a live server: blocking a fresh account
+   * produced zero notification rows. Each half assumed the other did it (§28).
+   */
+  it('tells the blocked player why, in the inbox they can read', async () => {
+    const who = await subject();
+    const res = await as(app, admin)
+      .put(`/users/${who.userId}/block`)
+      .send({ reason: 'fraud review' });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+
+    const inbox = await listNotifications(who.userId, { limit: 10 });
+    const notice = inbox.find(n => /suspend/i.test(n.title));
+    expect(notice, 'a blocked player must be told').toBeTruthy();
+    // The reason the admin was REQUIRED to type has to be the one they read.
+    expect(notice.message).toMatch(/fraud review/i);
+  });
+
+  it('tells them again when the block is lifted', async () => {
+    // Otherwise the inbox leaves them reading a suspension that no longer
+    // applies, which is worse than silence.
+    const who = await subject();
+    await as(app, admin).put(`/users/${who.userId}/block`).send({ reason: 'mistake' });
+    await as(app, admin).put(`/users/${who.userId}/unblock`).send({});
+
+    const inbox = await listNotifications(who.userId, { limit: 10 });
+    expect(inbox.some(n => /suspend/i.test(n.title)), 'the block notice').toBe(true);
+    expect(inbox.some(n => /restored/i.test(n.title)), 'the restore notice').toBe(true);
   });
 
   it('unblocks an account it previously blocked', async () => {

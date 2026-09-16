@@ -16,6 +16,7 @@ import { randomBytes } from 'node:crypto';
 // rejection now marks a flagged player for review; it is READ here, never
 // re-declared, so editing it in System Settings changes this screen.
 import { getRiskRules } from '../../domains/risk/riskValidation.service.js';
+import { notify } from '../../domains/communication/communication.service.js';
 
 const router = express.Router();
 
@@ -299,6 +300,31 @@ router.put('/users/:userId/block', authenticate, isAdmin, async (req, res) => {
       details: { reason },
     });
 
+    // ── TELL THE PLAYER ────────────────────────────────────────────────────
+    // The audit row above is for the platform; it is not readable by the
+    // person it is about. Without this the player simply finds every screen
+    // answering 403 with no explanation anywhere, and the reason the admin was
+    // required to type reaches nobody.
+    //
+    // Two comments in this repository — on `GET /user/notifications` and in
+    // `NotificationBell` — already describe this exact event as the live
+    // writer into the inbox: "a player was blocked, the system carefully
+    // recorded the explanation meant for them, and they could never see it."
+    // The read side was then built and the bell mounted. But the write was
+    // never here: blocking wrote an audit row and nothing else, which a live
+    // run confirmed (zero notification rows for a freshly blocked account).
+    // Both halves believed the other one did it (§28).
+    //
+    // Failure is swallowed: an inbox write must not undo a block that has
+    // already committed (§21 — a write that follows a commit must not be able
+    // to fail).
+    await notify({
+      userId: String(user.userId),
+      type: 'ALERT',
+      title: 'Your account has been suspended',
+      message: `Reason: ${reason}. Contact support if you believe this is a mistake.`,
+    }).catch(() => {});
+
     res.json({ success: true, message: 'User blocked successfully' });
   } catch (error) {
     console.error('Block user error:', error);
@@ -343,6 +369,17 @@ router.put('/users/:userId/unblock', authenticate, isAdmin, async (req, res) => 
       targetType: 'User', targetId: String(user.userId),
       details: { resetWarnings },
     });
+
+    // The other half of the block notice. A player who was told their account
+    // was suspended has to be told when it is not, or the inbox leaves them
+    // reading a suspension that no longer applies. Swallowed for the same
+    // reason as the block's (§21).
+    await notify({
+      userId: String(user.userId),
+      type: 'INFO',
+      title: 'Your account has been restored',
+      message: 'Your account is active again. You can deposit, play and withdraw as before.',
+    }).catch(() => {});
 
     res.json({
       success: true,
