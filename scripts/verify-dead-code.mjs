@@ -124,7 +124,14 @@ const ENTRY = [
   /^backend\/server\.js$/,           // the process entry point
   /^backend\/cron\//,                // scheduled jobs, started by the runner
   /\/index\.(m?js|ts|tsx)$/,          // barrels, imported by directory
-  /^(admin|user|merchant)-panel\/src\//, // bundler-resolved: JSX, lazy(), assets
+  // A panel's own entry points: `index.html` names main.tsx, and nothing
+  // imports a vite env shim. NOT the whole `src/` tree — that blanket
+  // exemption meant no panel component could ever be reported dead, which is
+  // exactly where dead UI hides. A `lazy(() => import('./Page'))` is still an
+  // import and is resolved above, and a component used as `<Foo />` has to be
+  // imported at the top of the file that renders it, so neither needs the
+  // exemption. It was hiding a whole buy/sell modal.
+  /^(admin|user|merchant)-panel\/src\/(main|App|vite-env)\.(tsx?|d\.ts)$/,
   /\.d\.ts$/,
 ];
 
@@ -146,25 +153,66 @@ const ORPHAN_ALLOW = [
   // provider must satisfy, and `tools/validate-migration.sh` checks they exist.
   [/^backend\/providers\/(casino|payment|sportsbook)\/\w+\.interface\.js$/,
    'declared extension point; no implementation built yet'],
+
+  // CAP-72 / CAP-73 in `platform/capabilities.yaml`, both declared
+  // `implementation_status: architecture-ready, activation_status: dormant`.
+  // The platform is a modular monolith and every domain runs in-process; these
+  // answer "local or remote?" the day a domain is extracted, and by design
+  // nothing imports them until a `SERVICE_<DOMAIN>_URL` is set. Pure, no I/O,
+  // and each carries the unit suite named in its registry entry.
+  //
+  // Allowed because the registry records the decision and `verify:capabilities`
+  // checks the evidence is still on disk — NOT because a test imports them.
+  // That is the distinction this gate now draws: the three below are dormant on
+  // purpose, and the panel modules it found beside them were simply unreachable.
+  [/^backend\/gateway\/(serviceTopology|consistentHash|serviceAuth)\.js$/,
+   'CAP-72/CAP-73: dormant extraction seam, activated by SERVICE_<DOMAIN>_URL'],
 ];
 
-const importedPaths = new Set();
-for (const [f, src] of all) {
-  for (const m of src.matchAll(/(?:from|import)\s*\(?\s*['"`]([^'"`]+)['"`]/g)) {
-    const spec = m[1];
-    if (!spec.startsWith('.') && !spec.startsWith('#')) continue;
-    // Resolve a relative specifier against the importing file's directory; a
-    // `#db/...` subpath maps to database/. Extensionless and /index forms both
-    // count, so a barrel import marks the barrel.
-    const base = spec.startsWith('#db')
-      ? spec.replace(/^#db\/?/, 'database/').replace(/^database$/, 'database/index.js')
-      : join(dirname(f), spec);
-    for (const cand of [base, `${base}.js`, `${base}.ts`, `${base}.tsx`,
-                        `${base}/index.js`, `${base}/index.ts`]) {
-      importedPaths.add(cand.replace(/\\/g, '/'));
+/**
+ * Every path some file imports, resolved.
+ *
+ * Built TWICE, over two different sets of importers, because "is this module
+ * imported" and "is this module REACHABLE" are different questions and only
+ * the second one is about the product:
+ *
+ *   importedPaths      — every file, tests included.
+ *   productionImports  — the same, minus the tests.
+ *
+ * A module in the first and not the second is reached by nothing but its own
+ * test. `CLAUDE.md` §22 already says what that is — "a test that reads a
+ * file's source is not a consumer of it" — but the rule was only enforced on
+ * EXPORTS. For MODULES the test counted as an importer, so a whole file could
+ * be unreachable while this gate printed `orphan modules : 0`.
+ *
+ * It was hiding `WalletModal.tsx`: a complete buy/sell modal, with its own
+ * order poller and a passing test suite, that no screen had mounted since the
+ * header stopped rendering it — and a comment in `Header.tsx` that said
+ * "WalletModal fully eliminated — zero dead UI layer" while the file sat
+ * there. That is §22's `admin.service.js` shape exactly, in the panel layer.
+ */
+const resolveImports = (files) => {
+  const out = new Set();
+  for (const [f, src] of files) {
+    for (const m of src.matchAll(/(?:from|import)\s*\(?\s*['"`]([^'"`]+)['"`]/g)) {
+      const spec = m[1];
+      if (!spec.startsWith('.') && !spec.startsWith('#')) continue;
+      // Resolve a relative specifier against the importing file's directory; a
+      // `#db/...` subpath maps to database/. Extensionless and /index forms both
+      // count, so a barrel import marks the barrel.
+      const base = spec.startsWith('#db')
+        ? spec.replace(/^#db\/?/, 'database/').replace(/^database$/, 'database/index.js')
+        : join(dirname(f), spec);
+      for (const cand of [base, `${base}.js`, `${base}.ts`, `${base}.tsx`,
+                          `${base}/index.js`, `${base}/index.ts`, `${base}/index.tsx`]) {
+        out.add(cand.replace(/\\/g, '/'));
+      }
     }
   }
-}
+  return out;
+};
+const importedPaths = resolveImports(all);
+const productionImports = resolveImports(all.filter(([f]) => isTest(f) === false));
 
 // A file can also be reached WITHOUT an import: a worker thread is loaded by
 // path (`path.join(__dirname, 'cpuWorker.js')`, `new Worker(...)`), and calling
@@ -189,6 +237,23 @@ const orphanModules = all
     && !importedPaths.has(f)
     && !pathLoaded.has(f));
 
+/**
+ * Imported, but only ever by a test. Reported separately from an orphan
+ * because the remedy differs: an orphan is usually a leftover, while one of
+ * these has a suite standing over it that will keep passing after the product
+ * stops reaching it. Both are failures — `ORPHAN_ALLOW` is the one way out,
+ * and adding a line there is a decision with a reason attached (§22).
+ */
+const testOnlyModules = all
+  .map(([f]) => f)
+  .filter((f) => !isTest(f)
+    && !ENTRY.some((re) => re.test(f))
+    && !ALLOW_FILES.some((re) => re.test(f))
+    && !ORPHAN_ALLOW.some(([re]) => re.test(f))
+    && importedPaths.has(f)
+    && !productionImports.has(f)
+    && !pathLoaded.has(f));
+
 const group = (rows) => {
   const by = {};
   for (const r of rows) (by[r.file] ??= []).push(r.name);
@@ -202,7 +267,8 @@ const print = (title, rows) => {
 console.log(`exports scanned            : ${dead.length + testOnly.length + over.length + files.length}`);
 console.log(`DEAD (referenced nowhere)  : ${dead.length}`);
 console.log(`orphan modules (no import) : ${orphanModules.length}`);
-console.log(`test-only (informational)  : ${testOnly.length}`);
+console.log(`modules only a test reaches: ${testOnlyModules.length}`);
+console.log(`test-only exports (info)   : ${testOnly.length}`);
 console.log(`over-exported (info)       : ${over.length}`);
 
 if (process.argv.includes('--all')) {
@@ -216,6 +282,13 @@ if (process.argv.includes('--all')) {
 if (dead.length) {
   print('DEAD — referenced nowhere, not even a test', dead);
   console.error('\n✗ Delete these, or wire them up. Code nothing calls cannot be right.');
+  process.exitCode = 1;
+}
+if (testOnlyModules.length) {
+  console.log(`\nMODULES ONLY A TEST REACHES — the product does not import these: ${testOnlyModules.length}`);
+  for (const f of testOnlyModules.sort()) console.log(`   ${f}`);
+  console.error('\n✗ Delete these, or wire them up, or put them in ORPHAN_ALLOW with a reason.');
+  console.error('  A passing suite over a module no screen mounts reports the module as working (§22).');
   process.exitCode = 1;
 }
 if (orphanModules.length) {

@@ -2445,7 +2445,7 @@ exists.
 
 | Measure | Count |
 |---|---|
-| Route declarations in `backend/**` | 308 |
+| Route declarations in `backend/**` | 307 |
 | Reachable with **no auth middleware** | 40 |
 | Gated `isAdminOrSubAdmin` with **no permission key** | 2 |
 | — of those, **writes** (non-GET) | 0 |
@@ -2517,8 +2517,8 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Panel | .ts/.tsx files | `dangerouslySetInnerHTML` | `.innerHTML =` |
 |---|---|---|---|
-| `user-panel` | 89 | 0 | 0 |
-| `admin-panel` | 93 | 0 | 0 |
+| `user-panel` | 74 | 0 | 0 |
+| `admin-panel` | 91 | 0 | 0 |
 | `merchant-panel` | 38 | 0 | 0 |
 
 <!-- END GENERATED -->

@@ -241,18 +241,28 @@ wrong owner gets working code deleted by the next reader.
   with `npm run report:branding` (`--files`, `--lines`), **never by grepping a
   hex**.
 
-  **The figure this file used to quote was 89 and the real one is 209**, because
-  the command it named — `grep -ro "D4AF37"` — counts one spelling of one of the
-  three brand colours. The panel writes the same gold as `rgba(212,175,55,…)`
-  91 times for shadows and tints, and `--brand-secondary` (`#B8860B`) and
-  `--brand-accent` (`#F5C77A`) have their own literals. It also said the
-  merchant panel was **at zero** and it is at one, and the admin panel reads
-  nine rather than the two that grep finds. Every one of those errors was in the
-  reassuring direction: the work looked nearly done, and an operator changing
-  their brand colour would have found most of the player panel still gold. This
-  is §29 — absence of a failing check is not evidence when no check covers the
-  claim — and it is §1's lesson about quoting the printed figure rather than an
-  estimate, which this bullet was not following.
+  **The figure this file used to quote was 89, the report then printed 209, and
+  it now prints 117** — 107 user, 9 admin, 1 merchant. Run the report; do not
+  quote a number from here.
+
+  The 89 was wrong because the command it named — `grep -ro "D4AF37"` — counts
+  one spelling of one of the three brand colours. The panel writes the same gold
+  as `rgba(212,175,55,…)` for shadows and tints, and `--brand-secondary`
+  (`#B8860B`) and `--brand-accent` (`#F5C77A`) have their own literals. It also
+  said the merchant panel was **at zero** and it is at one, and the admin panel
+  reads nine rather than the two that grep finds. Every one of those errors was
+  in the reassuring direction: the work looked nearly done, and an operator
+  changing their brand colour would have found most of the player panel still
+  gold. This is §29 — absence of a failing check is not evidence when no check
+  covers the claim — and it is §1's lesson about quoting the printed figure
+  rather than an estimate, which this bullet was not following.
+
+  The drop from 209 to 117 was not remediation. It is what fell out when the
+  pre-redesign user-panel layer — `Layout/Header`, `Layout/Footer`, the seven
+  `components/Game/*` files and `WalletModal` — was deleted for being
+  unreachable: **92 of the literals were in code no screen had mounted since
+  `RedesignShell` replaced it.** Worth stating plainly, because a count falling
+  by nearly half reads like progress on the repaint and none of it was.
 
   A literal is PERMITTED where it is the schema default sitting behind a brand
   variable — the `--brand-primary: #D4AF37` declaration itself, or a

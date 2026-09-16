@@ -20,6 +20,8 @@ import { useTheme } from './ThemeContext';
 import { useViewport } from './useViewport';
 import { fmt } from './format';
 import AuthModal from '../components/Modals/AuthModal';
+import NotificationBell from '../components/Layout/NotificationBell';
+import ShareModal from '../components/Modals/ShareModal';
 import ChannelGateModal from '../components/Modals/ChannelGateModal';
 
 interface ShellContextValue {
@@ -76,6 +78,14 @@ const MENU_SECTIONS = [
   { title: 'Info', items: [
     { label: 'Pro Tips', icon: '💡', path: '/promo' },
     { label: 'Refer & Earn', icon: '🎁', path: '/referrals' },
+    // Opens a modal rather than navigating. It is the ONLY way a player can
+    // reach the app downloads: an admin sets `androidUrl`/`iosUrl` in system
+    // config, `/api/download/android` and `/api/download/ios` 302 to them, and
+    // before this entry existed nothing in the panel linked to either — the
+    // fields were admin-editable with no consumer (§3) and the routes were a
+    // backend feature with no UI (§28). `ShareModal` had been built for it and
+    // hung off the old `Layout/Header`, which this shell replaced.
+    { label: 'Share & Get the App', icon: '📲', path: '#share', action: 'share' as const },
     { label: 'Rules & How to Play', icon: '📋', path: '/rules' },
     { label: 'FAQ / Help', icon: '❓', path: '/faq' },
     { label: 'Support', icon: '🛟', path: '/support' },
@@ -102,6 +112,7 @@ const RedesignShell: React.FC<React.PropsWithChildren<{}>> = ({ children }) => {
   const openAuth = (mode: 'login' | 'register' = 'login') => { setAuthMode(mode); setAuthOpen(true); setMenuOpen(false); };
   const openMenu = () => setMenuOpen(true);
 
+  const [shareOpen, setShareOpen] = useState(false);
   const ctx = useMemo<ShellContextValue>(() => ({ isAuthenticated, openAuth, openMenu }), [isAuthenticated]);
 
   const go = (path: string) => { navigate(path); setMenuOpen(false); };
@@ -174,6 +185,24 @@ const RedesignShell: React.FC<React.PropsWithChildren<{}>> = ({ children }) => {
           </button>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            {/*
+              The notification inbox. `notify()` has been persisting rows on
+              real events all along — an admin blocking an account writes the
+              explanation meant for that player — and `NotificationBell` was
+              built to show them, against three routes that work
+              (`/api/user/notifications`, `.../unread-count`, `.../read`).
+
+              It was never mounted. It hung off the OLD `Layout/Header`, this
+              shell replaced that header, and the bell was not carried across —
+              so the component, its tests and its endpoints were all green
+              while no screen in the panel rendered it. A player was blocked,
+              the platform recorded why, and they were locked out with no way
+              to read it (§28: a backend feature with no UI is not shipped).
+
+              It takes `isAuthenticated` because it polls: signed out there is
+              nothing to count and no token to count it with.
+            */}
+            <NotificationBell isAuthenticated={isAuthenticated} />
             <button onClick={toggleTheme} aria-label="Toggle theme" style={{ ...iconBtn, color: 'var(--gold-ink)', fontSize: 17 }}>
               {theme === 'dark' ? '☀️' : '🌙'}
             </button>
@@ -260,7 +289,10 @@ const RedesignShell: React.FC<React.PropsWithChildren<{}>> = ({ children }) => {
                     {sec.items.map(it => {
                       const active = isActive(it.path);
                       return (
-                        <button key={it.path + it.label} onClick={() => go(it.path)} style={{
+                        <button key={it.path + it.label} onClick={() => {
+                          if ('action' in it && it.action === 'share') { setMenuOpen(false); setShareOpen(true); return; }
+                          go(it.path);
+                        }} style={{
                           width: '100%', display: 'flex', alignItems: 'center', gap: 12, padding: '11px 12px', border: 'none',
                           borderRadius: 11, background: active ? 'color-mix(in srgb,var(--gold) 12%,transparent)' : 'transparent',
                           cursor: 'pointer', textAlign: 'left', marginBottom: 2,
@@ -290,6 +322,7 @@ const RedesignShell: React.FC<React.PropsWithChildren<{}>> = ({ children }) => {
         )}
 
         {authOpen && !isAuthenticated && <AuthModal onClose={() => setAuthOpen(false)} initialMode={authMode} />}
+        {shareOpen && <ShareModal onClose={() => setShareOpen(false)} />}
 
         {/*
           Mounted unconditionally and rendering nothing until the server refuses

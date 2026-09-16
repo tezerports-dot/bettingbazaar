@@ -59,4 +59,3 @@ export const setCdnBaseUrl = (url: string) => {
     window.dispatchEvent(new CustomEvent('cdn_url_updated', { detail: clean }));
   }
 };
-export const getCdnBaseUrl = () => _cdnBaseUrl;
