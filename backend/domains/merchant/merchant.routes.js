@@ -52,6 +52,11 @@ import {
   releaseForOrder as releaseDepositHold,
 } from './depositEscrow.service.js';
 import { debitMerchantTokens, creditMerchantTokens } from './merchantWallet.service.js';
+// The merchant's own balance for a SCREEN. It lives in `merchant_wallets`, not
+// on the merchant row — `database/repositories/merchants.js` says so in its
+// header and means it, so a projection that reads `merchant.tokenBalance` gets
+// `undefined` every time. See `formatMerchant` below.
+import { getMerchantTokenBalance } from '#db/repositories/merchantWallets.js';
 import { publish as publishDomainEvent, EVENTS as DOMAIN_EVENTS } from '../../services/eventBus.service.js';
 // Order chat. Every write here named a model registered nowhere, so the thread
 // echoed over the socket and never survived a reload.
@@ -99,7 +104,37 @@ const router     = express.Router();
 
 
 
-const formatMerchant = (merchant, user = null) => {
+/**
+ * The merchant's own view of their account.
+ *
+ * ── ASYNC, because the balance is not on the row ───────────────────────────
+ * `merchant_wallets` owns the token balance — deliberately, so nothing can keep
+ * a second copy that drifts from the pocket the debits move
+ * (`database/repositories/merchants.js`, "THE TOKEN BALANCE"). This read
+ * `merchant.tokenBalance` straight off the record, which the repository has
+ * never emitted, so the key was absent from every profile response and the
+ * panel's `formatWallet(merchant?.tokenBalance, rail)` rendered
+ * `Number(undefined) || 0`.
+ *
+ * Measured on a live server: a merchant holding 900,000 available tokens (plus
+ * 100,000 reserved against an order in flight) was shown **"USDT balance
+ * 0 USDT"** on their Dashboard, "0" on Token Supply — the screen where they
+ * decide whether to buy more float from the platform — and 0 on their Profile,
+ * while the ADMIN list read the same merchant correctly at 900,000 because it
+ * goes to `getAvailablePaiseFor`. Nothing was red: the projection named a key,
+ * the component had a `?? 0`, and a zero balance is indistinguishable from a
+ * new merchant.
+ *
+ * The read is INSIDE this function rather than a `tokenBalance` argument each
+ * caller supplies, for the reason §2 gives about deriving an accept list from
+ * the spec: a fifth caller added later cannot forget to wire it. That is also
+ * why it is async — the cost of making it impossible to omit.
+ *
+ * `getMerchantTokenBalance` is the AVAILABLE pocket, which is what the admin
+ * list shows for the same merchant. Reserved tokens are still theirs but are
+ * committed to orders in flight, and the two screens must not disagree.
+ */
+const formatMerchant = async (merchant, user = null) => {
     // A merchant settles on exactly one rail; the panel renders UPI/bank OR the
     // TRC-20 address from this, never both (domains/merchant/merchantCurrency.js).
     // merchantTypeOf() is used rather than the `merchantType` virtual so lean()
@@ -126,7 +161,7 @@ const formatMerchant = (merchant, user = null) => {
         usdtAddressBep20:     merchant.usdtAddressBep20 || '',
         usdtChains:           usdtChainsHeldBy(merchant),
         limits:               merchant.limits,
-        tokenBalance:         merchant.tokenBalance,
+        tokenBalance:         await getMerchantTokenBalance(merchant._id),
         earnings:             merchant.earnings,
         totalProcessedVolume: merchant.totalProcessedVolume,
         // Performance figures the panel's dashboard/profile show; all are
@@ -286,7 +321,7 @@ router.post('/auth/login', async (req, res) => {
         // refuse the login (which would lock out every existing merchant the
         // moment this deploys) the session is issued with a flag the panel
         // uses to force enrolment before anything else is reachable.
-        return issueMerchantSession(merchant, res, { mustEnroll2FA: true });
+        return await issueMerchantSession(merchant, res, { mustEnroll2FA: true });
     } catch (error) {
         console.error('Merchant login error:', error);
         res.status(500).json({ success: false, message: 'Login failed. Please try again.' });
@@ -298,7 +333,7 @@ router.post('/auth/login', async (req, res) => {
  * post-OTP path cannot grant different claims — same reasoning as
  * issueSession in routes.js.
  */
-function issueMerchantSession(merchant, res, extra = {}) {
+async function issueMerchantSession(merchant, res, extra = {}) {
     const token = signToken(
         { merchantId: merchant._id, userId: merchant.userId, mobile: merchant.mobile, isMerchant: true, isAdmin: false }
     );
@@ -308,7 +343,11 @@ function issueMerchantSession(merchant, res, extra = {}) {
             _id: merchant._id, userId: merchant.userId,
             username: merchant.username, mobile: merchant.mobile, email: merchant.email,
             status: merchant.status, isOnline: merchant.isOnline,
-            tokenBalance: merchant.tokenBalance || 0,
+            // Same defect as `formatMerchant` above, on the login response: the
+            // panel stores this merchant object and renders from it until the
+            // first profile refresh, so a merchant's first sight of their own
+            // panel said their float was zero.
+            tokenBalance: await getMerchantTokenBalance(merchant._id),
             acceptsDeposits: merchant.acceptsDeposits !== false,
             acceptsWithdrawals: merchant.acceptsWithdrawals !== false,
             twoFactorEnabled: merchant.twoFactorEnabled || false,
@@ -364,7 +403,7 @@ router.post('/auth/login/2fa', loginPaceLimiter, twoFactorLimiter, async (req, r
         if (verdict.usedBackupCode) {
             console.warn(`🔐 Recovery code used for merchant ${merchant._id} — ${verdict.backupCodesRemaining} remaining`);
         }
-        return issueMerchantSession(merchant, res);
+        return await issueMerchantSession(merchant, res);
     } catch (error) {
         console.error('Merchant 2FA login error:', error);
         res.status(500).json({ success: false, message: 'Login failed. Please try again.' });
@@ -799,7 +838,7 @@ router.get('/profile', merchantAuth, async (req, res) => {
         res.json({
             success: true,
             merchant: {
-                ...formatMerchant(merchant, req.user),
+                ...(await formatMerchant(merchant, req.user)),
                 prices: { buyPrice: 1, sellPrice: 1, profit: 0 },
             },
         });
@@ -913,7 +952,7 @@ router.put('/profile', merchantAuth, async (req, res) => {
             throw e;
         }
 
-        res.json({ success: true, merchant: formatMerchant(merchant, req.user) });
+        res.json({ success: true, merchant: await formatMerchant(merchant, req.user) });
     } catch (err) {
         console.error('PUT /merchant/profile error:', err);
         if (err?.name === 'ValidationError') {
@@ -943,7 +982,7 @@ router.put('/online-status', merchantAuth, async (req, res) => {
                 updatedAt:  new Date(),
             });
         }
-        res.json({ success: true, merchant: formatMerchant(merchant, req.user) });
+        res.json({ success: true, merchant: await formatMerchant(merchant, req.user) });
     } catch (err) {
         console.error('PUT /merchant/online-status error:', err);
         res.status(500).json({ success: false, message: 'Failed to update online status.' });
@@ -960,7 +999,7 @@ router.put('/preferences', merchantAuth, async (req, res) => {
             return res.status(400).json({ success: false, message: 'No valid preference fields provided.' });
         }
         const merchant = await db.merchants.updateMerchant(req.merchantId, update);
-        res.json({ success: true, merchant: formatMerchant(merchant, req.user) });
+        res.json({ success: true, merchant: await formatMerchant(merchant, req.user) });
     } catch (err) {
         console.error('PUT /merchant/preferences error:', err);
         res.status(500).json({ success: false, message: 'Failed to update preferences.' });

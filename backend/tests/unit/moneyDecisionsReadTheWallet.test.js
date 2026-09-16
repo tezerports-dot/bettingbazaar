@@ -99,15 +99,43 @@ const SITES = [
     file: 'domains/merchant/merchant.routes.js',
     gates: [/if \(!held\.ok\) \{/],
     source: /const held = await holdDepositTokens\(order, merchant\.merchantId/,
+    // A COMPARISON of a balance against an order amount is a gate wherever it
+    // appears, so this one is banned across the whole file.
     forbidden: [
       /\(merchant\.tokenBalance \|\| 0\) < order\.tokenAmount/,
-      // Every reader, by name. All three answer "what does this merchant have",
-      // and admission needs "are these tokens now MINE" — which only a write
-      // can answer (F-018).
-      /await getMerchantTokenBalance\(/,
-      /getMerchantSpendableTokens\(/,
-      /getAvailablePaiseFor\(/,
     ],
+    // ── The reader names are banned INSIDE THE HANDLER, not file-wide ────────
+    // They were banned across the file, and that was a proxy standing in for
+    // what this entry actually means: no balance read has come back to THIS
+    // GATE. The proxy held only while nothing else in the file had a reason to
+    // read a balance — and then something did. `formatMerchant` and
+    // `issueMerchantSession` project the merchant's own wallet figure onto
+    // their panel, which is a DISPLAY read (§9) feeding a screen, not a gate
+    // deciding anything. The file-wide ban failed it, and a gate that fails a
+    // correct change is how a gate loses trust and gets silenced (§28).
+    //
+    // So the ban is scoped to the accept handler's own body — "derive what a
+    // gate checks from the thing it is checking". A read reintroduced AT the
+    // gate still fails; a read used to paint a number on a screen does not.
+    //
+    // §9 is what makes this safe to narrow: every balance read is classified
+    // display or decision, and `check:balance-reads` audits that classification
+    // across the whole backend independently of this file. This entry is the
+    // one-site belt; that script is the braces.
+    forbiddenWithin: {
+      // Both ends are asserted below, so a rename that makes this select
+      // nothing is a FAILURE rather than a silent pass over zero lines
+      // (§24.6 — a check that measures nothing reads exactly like a check).
+      from: /^router\.post\('\/accept\/:id'/m,
+      to:   /^router\.post\('\/confirm\/:id'/m,
+      patterns: [
+        // All three answer "what does this merchant have", and admission needs
+        // "are these tokens now MINE" — which only a write can answer (F-018).
+        /await getMerchantTokenBalance\(/,
+        /getMerchantSpendableTokens\(/,
+        /getAvailablePaiseFor\(/,
+      ],
+    },
   },
   {
     // ── This entry pointed at a file NOTHING IMPORTED ────────────────────────
@@ -195,6 +223,34 @@ describe('every money decision reads the wallet', () => {
         it(`does NOT gate on a record field: ${bad.source.slice(0, 40)}`, () => {
           expect(source).not.toMatch(bad);
         });
+      }
+
+      if (site.forbiddenWithin) {
+        const { from, to, patterns } = site.forbiddenWithin;
+
+        // The slice is asserted before anything is asserted ABOUT it. A
+        // `from`/`to` that no longer matches would otherwise hand every check
+        // below an empty string, which passes every `not.toMatch` there is —
+        // a check measuring nothing, reading exactly like a check (§24.6).
+        const start = source.search(from);
+        const rest  = start < 0 ? '' : source.slice(start + 1);
+        const end   = rest.search(to);
+        const body  = start < 0 || end < 0 ? '' : rest.slice(0, end);
+
+        it('can still find the handler it is scoped to', () => {
+          expect(start, `${site.file}: ${from} no longer matches`).toBeGreaterThanOrEqual(0);
+          expect(end, `${site.file}: ${to} no longer matches`).toBeGreaterThanOrEqual(0);
+          // A handler this short is a delimiter that has slid, not a handler.
+          expect(body.length).toBeGreaterThan(400);
+          // And it really is the gate's own body.
+          expect(body).toMatch(site.source);
+        });
+
+        for (const bad of patterns) {
+          it(`does not read a balance inside the handler: ${bad.source.slice(0, 40)}`, () => {
+            expect(body).not.toMatch(bad);
+          });
+        }
       }
     });
   }

@@ -339,8 +339,48 @@ export const withdrawalLimiter = rateLimit({
 // every player behind one carrier-grade NAT in the same bucket and stops
 // nobody willing to reconnect — the same reasoning as the withdrawal cap above.
 
-/** Named so each limiter's message can say what it is limiting. */
-function railLimiter(prefix, tier, message) {
+/**
+ * Named so each limiter's message can say what it is limiting.
+ *
+ * ── `bounds` is REQUIRED, and it is the whole decision ─────────────────────
+ * A limiter on a money route is bounding one of two different things, and
+ * which one it is decides whether a REFUSED request should cost the caller
+ * part of their budget:
+ *
+ *   'effects'  — the limiter exists because a SUCCESSFUL call does something
+ *                expensive: creates an order, holds a price, takes a
+ *                merchant's inventory out of circulation. A request the server
+ *                refused did none of that, so charging for it bounds nothing
+ *                and only punishes the caller for a mistake the server has
+ *                just explained to them.
+ *
+ *   'attempts' — the limiter exists because the REFUSALS are the attack. A
+ *                caller sweeping other people's orders looking for one that
+ *                has not claimed its grace minute generates nothing but
+ *                refusals; skipping them would switch the limiter off.
+ *
+ * It was one shared configuration counting every request, and the two cases
+ * were never separated. Measured on the live server: four malformed USDT
+ * creates — a size that is not a denomination, a missing chain, a chain that
+ * does not exist — spent four fifths of the hour's budget of five without a
+ * single order existing, leaving room for exactly one real purchase. Each of
+ * those four was refused BY NAME so the player could correct it (§25), and
+ * then the correction was what they could not afford.
+ *
+ * The sharpest version is not a player's typo at all: `USDT_RATE_UNSET` is
+ * refused the same way, so during a window when no admin has set a rate, five
+ * taps on Continue cost a player the rail for an hour over a platform-side
+ * outage they had no part in.
+ *
+ * No default. A new rail limiter has to state which kind it is, because the
+ * wrong answer is silent in both directions — an 'attempts' limiter written as
+ * 'effects' is off, and an 'effects' limiter written as 'attempts' locks out
+ * the people it was meant to serve.
+ */
+function railLimiter(prefix, tier, message, { bounds }) {
+    if (bounds !== 'effects' && bounds !== 'attempts') {
+        throw new Error(`railLimiter(${prefix}): \`bounds\` must be 'effects' or 'attempts'.`);
+    }
     return rateLimit({
         store: createRateLimitStore(prefix),
         ...tier,
@@ -348,37 +388,72 @@ function railLimiter(prefix, tier, message) {
         standardHeaders: true,
         legacyHeaders: false,
         keyGenerator: actorKey,
+        // `decrement` after the response, on any status >= 400 — which includes
+        // this limiter's own 429, deliberately: a pace is not a lockout, and a
+        // caller who keeps knocking should not push their own window further
+        // out. The store implements `decrement` (redisRateLimitStore.js) on
+        // both the Redis and the in-memory path, so this is not a flag that
+        // quietly does nothing.
+        skipFailedRequests: bounds === 'effects',
     });
 }
 
-/** Creating a USDT invoice: an outbound call to BTCPay, and a held price. */
+/**
+ * Creating a USDT purchase: it holds a PRICE at the rate live at that moment
+ * and puts a merchant's tokens on the hook for the length of the window.
+ *
+ * There is no payment processor on this rail and there never is one — the
+ * counterparty is a person (`CLAUDE.md` §25). This and the tier beside it in
+ * `security.config.js` both described "an outbound request to BTCPay", which
+ * is a call no code in this repository makes; that is the §1 shape — a comment
+ * describing an abandoned plan — and it is also what made the budget look like
+ * it was protecting somebody else's server rather than the player's own hour.
+ */
 export const usdtDepositLimiter = railLimiter(
     'rl:usdtdep:', RATE_LIMIT_TIERS.usdtDeposit,
     'Too many USDT purchase attempts. Please wait before trying again.',
+    { bounds: 'effects' },
 );
 
 /** Retrying an order: a new order, and on a sell a new escrow lock. */
 export const orderRetryLimiter = railLimiter(
     'rl:retry:', RATE_LIMIT_TIERS.orderRetry,
     'Too many retries. Please wait before trying again.',
+    { bounds: 'effects' },
 );
 
-/** Claiming the minute to fetch a UTR. */
+/**
+ * Claiming the minute to fetch a UTR.
+ *
+ * 'attempts', not 'effects'. It is once per order by construction
+ * (`utr_grace_at IS NULL`), so a caller sweeping across orders looking for one
+ * that has not claimed it gets a refusal every time — the refusals ARE the
+ * sweep this bounds, and skipping them would leave it counting nothing.
+ */
 export const utrGraceLimiter = railLimiter(
     'rl:utrgrace:', RATE_LIMIT_TIERS.utrGrace,
     'Too many requests. Please wait a moment.',
+    { bounds: 'attempts' },
 );
 
 /** A merchant supplying a cash link from an ATM. */
 export const cashLinkSupplyLimiter = railLimiter(
     'rl:cashlink:', RATE_LIMIT_TIERS.cashLinkSupply,
     'Too many links supplied. Please wait before supplying another.',
+    { bounds: 'effects' },
 );
 
-/** Submitting a CDM deposit slip. */
+/**
+ * Submitting a CDM deposit slip.
+ *
+ * 'attempts', for the same reason as the grace claim: one per order, so a
+ * caller walking other orders to find one without a receipt produces refusals
+ * and nothing else.
+ */
 export const cdmReceiptLimiter = railLimiter(
     'rl:cdm:', RATE_LIMIT_TIERS.cdmReceipt,
     'Too many receipt submissions. Please wait before trying again.',
+    { bounds: 'attempts' },
 );
 
 /**

@@ -47,13 +47,26 @@ interface RailCopy {
   proofSectionLabel: string;
   /** Where a withdrawal payout is sent. */
   payoutDestinationLabel: string;
-  /** Sub-line under a copied payment address, if any. */
-  networkNote: string;
-  /** Wallet card heading on Dashboard/Profile. */
+  /**
+   * Wallet card heading on Dashboard/Profile.
+   *
+   * The same on both rails, because the wallet IS the same on both rails: it
+   * holds BB tokens (see `formatTokens`). This said "USDT balance" for a USDT
+   * merchant, which put a heading and its own figure in different currencies
+   * on one tile.
+   */
   walletLabel: string;
   /** Sub-line under the wallet balance. */
   walletNote: string;
 }
+
+// `networkNote` was declared here and set on both rails — 'TRC-20 network' on
+// the USDT one — and READ BY NOTHING. A constant with no consumer is §3, and
+// this one was also wrong: a merchant serving a BEP-20 order would have been
+// told Tron by it. Deleted rather than corrected, because the chain belongs to
+// the ORDER (`tokenColumn` reads `order.usdtChain`) and a rail-level copy
+// string cannot know it.
+
 
 const COPY: Record<MerchantRail, RailCopy> = {
   INR: {
@@ -63,7 +76,6 @@ const COPY: Record<MerchantRail, RailCopy> = {
     proofLabel: 'UTR',
     proofSectionLabel: 'Payment proof',
     payoutDestinationLabel: 'Send to bank account',
-    networkNote: '',
     walletLabel: 'BB Token balance',
     walletNote: 'Funded by admin · 1:1 with INR',
   },
@@ -74,9 +86,10 @@ const COPY: Record<MerchantRail, RailCopy> = {
     proofLabel: 'Tx ID',
     proofSectionLabel: 'On-chain proof',
     payoutDestinationLabel: 'Send USDT to user address',
-    networkNote: 'TRC-20 network',
-    walletLabel: 'USDT balance',
-    walletNote: 'TRC-20 settlement wallet',
+    walletLabel: 'BB Token balance',
+    // What the merchant HOLDS is tokens; what a player SENDS them is USDT. The
+    // note says both so the tile answers "why is my USDT float shown in BB".
+    walletNote: 'Funded by admin · you settle player orders in USDT',
   },
 };
 
@@ -116,15 +129,41 @@ export function formatMoneyCompact(amount: number | undefined | null, rail: Merc
 }
 
 /**
- * The merchant's wallet balance, in the unit the wallet is actually denominated
- * in. On the INR rail the wallet holds BB tokens (1:1 with rupees since
- * 2026-07-08, but still counted as tokens, so "₹2.50L" would mislabel it); on
- * the USDT rail it holds USDT.
+ * A figure denominated in PLATFORM TOKENS, on either rail.
+ *
+ * ── The unit does not change with the rail. The rail is not the unit ───────
+ * `merchant_wallets` holds BB tokens for every merchant — an admin top-up of
+ * 1,000,000 writes 100,000,000 paise of TOKENS whether that merchant settles
+ * in rupees or in USDT — and the deposit escrow reserves tokens against every
+ * order. USDT is what a PLAYER SENDS on a USDT order; it is not what the
+ * merchant's float is counted in.
+ *
+ * This said "on the USDT rail it holds USDT" and rendered `<n> USDT`. On a live
+ * server at ₹90 per USDT, a merchant's 900,000-token float reads as
+ * "900,000 USDT" — a float actually worth about 10,000 USDT, overstated ninety
+ * times, on the merchant's own balance tile. That is `CLAUDE.md` trap 15 in the
+ * line a human reads: the same number is true in one currency and a lie in the
+ * other, and nothing about it looks wrong.
+ *
+ * Sharper still, the two defects hid each other. The balance was never sent
+ * (`formatMerchant` read it off the merchant row, which does not carry it), so
+ * this rendered 0 — and "0 USDT" is correct-looking in every currency. Fixing
+ * the backend alone would have turned a zero into a ninety-fold overstatement.
  */
-export function formatWallet(balance: number | undefined | null, rail: MerchantRail): string {
-  const value = Number(balance) || 0;
-  if (rail === RAIL.USDT) return formatMoney(value, RAIL.USDT);
+export function formatTokens(amount: number | undefined | null): string {
+  const value = Number(amount) || 0;
   return `${value.toLocaleString('en-IN', { maximumFractionDigits: 2 })} BB`;
+}
+
+/**
+ * The merchant's wallet balance.
+ *
+ * Tokens on both rails — see `formatTokens`. Kept as its own name because the
+ * call sites read as "the wallet", and because the next person to wonder what
+ * unit a USDT merchant's wallet is in should land on that explanation.
+ */
+export function formatWallet(balance: number | undefined | null, _rail?: MerchantRail): string {
+  return formatTokens(balance);
 }
 
 /**
@@ -134,7 +173,15 @@ export function formatWallet(balance: number | undefined | null, rail: MerchantR
  * useful number there.
  */
 export function tokenColumn(order: PaymentOrder, rail: MerchantRail): { label: string; value: string } {
-  if (rail === RAIL.USDT) return { label: 'Network', value: 'TRC-20' };
+  if (rail === RAIL.USDT) {
+    // THE ORDER'S OWN CHAIN. This was the literal 'TRC-20', so every USDT order
+    // in the panel announced Tron — including a BEP-20 order, whose merchant
+    // would then be watching the wrong wallet for a payment that is not coming.
+    // `CLAUDE.md` §25.3: the address and its network always travel together,
+    // and a network stated from anywhere but the order is not the order's.
+    const chain = (order as { usdtChain?: string }).usdtChain as UsdtChain | undefined;
+    return { label: 'Network', value: chain ? USDT_CHAIN_INFO[chain]?.label ?? chain : '—' };
+  }
   return {
     label: 'Credited as',
     value: `${(Number(order.tokenAmount) || 0).toLocaleString('en-IN')} BB`,

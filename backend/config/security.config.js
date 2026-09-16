@@ -105,11 +105,23 @@ export const RATE_LIMIT_TIERS = {
   // global /api/* backstop is 1000 per 15 minutes — which is no limit at all
   // for a route that calls an external API or writes to a queue.
   //
-  // Creating a USDT invoice makes an outbound request to BTCPay and HOLDS A
-  // PRICE at the rate live at that moment. Unlimited creation is both a way to
-  // exhaust somebody else's server on our behalf and a way to accumulate
-  // options on the exchange rate. The one-open-invoice rule is the real guard;
-  // this bounds the attempts that reach it.
+  // Creating a USDT purchase HOLDS A PRICE at the rate live at that moment and
+  // puts a merchant's tokens on the hook for the length of the window.
+  // Unlimited creation is a way to accumulate options on the exchange rate.
+  //
+  // It said "makes an outbound request to BTCPay". No code in this repository
+  // calls BTCPay or any other processor, and none ever will: on this rail the
+  // counterparty is a person (`CLAUDE.md` §25). A comment describing an
+  // abandoned plan is the §1 shape, and this one mattered — reading it as
+  // "protects somebody else's server" is how a budget of five got written for
+  // a number that is actually a player's own hour.
+  //
+  // Five per hour is deliberately tight because each one prices a purchase.
+  // It is survivable ONLY because the limiter counts orders that were actually
+  // created: `railLimiter(..., { bounds: 'effects' })` in middleware/security.js
+  // skips refusals, so a size that is not a denomination, a missing chain, or a
+  // `USDT_RATE_UNSET` outage costs the player nothing. Raise this number if
+  // that ever stops being true.
   usdtDeposit: { windowMs: 60 * 60 * 1000, max: 5 },
   // A retry creates a NEW order, and on a sell it locks tokens in escrow. The
   // database refuses a second retry of the same order, so this bounds the rate

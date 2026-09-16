@@ -18,7 +18,7 @@ import { useViewport } from '../hooks/useViewport';
 import TwoFactorEnrol from '../components/TwoFactorEnrol';
 import { SUCCESS_MESSAGES } from '../constants';
 import {
-  formatMoney, formatWallet, railCopy, railOf,
+  formatTokens, formatWallet, railCopy, railOf,
   USDT_CHAINS, USDT_CHAIN_INFO, isUsdtAddress, type UsdtChain,
 } from '../utils/rail';
 import {
@@ -191,8 +191,13 @@ const ProfileSettings: React.FC = () => {
         <div style={{ display: 'grid', gridTemplateColumns: perfColumns, gap: 11 }}>
           {[
             { label: 'Completed orders', value: merchant?.totalOrdersCompleted !== undefined ? String(merchant.totalOrdersCompleted) : '—', tone: 'var(--text)' },
-            { label: 'Deposits processed', value: merchant?.totalDepositAmount !== undefined ? formatMoney(merchant.totalDepositAmount, rail) : '—', tone: 'var(--dep)' },
-            { label: 'Withdrawals processed', value: merchant?.totalWithdrawalAmount !== undefined ? formatMoney(merchant.totalWithdrawalAmount, rail) : '—', tone: 'var(--wd)' },
+            // TOKENS, not the rail's currency. `merchants.total_deposit_amount_paise`
+            // is fed `order.tokenAmount` by merchantScoring, so on the USDT rail
+            // `formatMoney(..., rail)` printed a token count with a USDT suffix —
+            // a 50,000-token deposit read "50,000 USDT" for about 555 USDT of work.
+            // CLAUDE.md trap 15, in the line a human reads.
+            { label: 'Deposits processed', value: merchant?.totalDepositAmount !== undefined ? formatTokens(merchant.totalDepositAmount) : '—', tone: 'var(--dep)' },
+            { label: 'Withdrawals processed', value: merchant?.totalWithdrawalAmount !== undefined ? formatTokens(merchant.totalWithdrawalAmount) : '—', tone: 'var(--wd)' },
             { label: 'Merchant rating', value: merchant?.rating !== undefined ? `${merchant.rating.toFixed(1)} ★` : '—', tone: 'var(--text)' },
           ].map((tile) => (
             <div key={tile.label} style={{ background: 'var(--surface-2)', borderRadius: 13, padding: 14 }}>

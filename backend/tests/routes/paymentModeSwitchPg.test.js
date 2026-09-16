@@ -25,7 +25,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { pgConfigured, applySchema, closePg, pgQuery } from '#db/client.js';
 import {
-  PAYMENT_MODES, getActivePolicy, getActivePaymentMode, publishPolicyVersion,
+  PAYMENT_MODES, POLICY_TIMERS, getActivePolicy, getActivePaymentMode, publishPolicyVersion,
   getPolicyHistory, getPolicyVersion, stampForNewOrder,
 } from '#db/repositories/paymentModePolicy.js';
 import { createOrderRecord, getOrderRecord, setOrderFields } from '#db/repositories/orders.record.js';
@@ -43,11 +43,43 @@ describePg('the settlement rail, and the orders it must not disturb', () => {
   const oid = () => `pm-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}-${seq += 1}`;
   const uniqueUtr = () => `${Date.now()}`.slice(-9) + String(Math.floor(Math.random() * 900) + 100);
 
-  // Every test leaves the platform on the rail it found it on. These run in the
-  // same database as the rest of the pg tier, and an order created by an
-  // unrelated suite while this one had flipped the rail would be stamped
-  // CASH_ATM — a failure in a file that never mentions payment modes.
+  // Every test leaves the platform on the policy it found it on — the rail AND
+  // the timers. These run in the same database as the rest of the pg tier, and
+  // an order created by an unrelated suite while this one had flipped the rail
+  // would be stamped CASH_ATM — a failure in a file that never mentions payment
+  // modes.
+  //
+  // ── Restoring the rail alone was not restoring anything ───────────────────
+  // This put back `activeMode` and nothing else, and `publishPolicyVersion`
+  // CARRIES TIMERS FORWARD from the version it supersedes — deliberately, so an
+  // admin switching the rail does not discard windows they tuned last week. So
+  // a timer this suite set was inherited by the restore, by every version after
+  // it, and by every version after those: permanent, in one direction, with no
+  // later restore by any suite able to undo it.
+  //
+  // The cases below set `processingWindowSeconds` to 60 to make an order expire
+  // inside a test. Found on a working database: three consecutive ACTIVE
+  // versions all carrying a 60-second processing window against a schema
+  // default of 900 — every order on that database, on every rail, expiring one
+  // minute after assignment. On the USDT rail that is a player sent to their
+  // wallet to make a Tron transfer and paste a hash, with the order gone before
+  // they are back. It reads exactly like a product defect and is not one, which
+  // is the expensive part.
+  //
+  // Unconditional, too. The old guard only restored when the MODE differed, so
+  // a case that changed a timer and left the rail where it found it restored
+  // nothing at all — which is how the 60 got in.
+  //
+  // CLAUDE.md trap 10: a suite that writes a one-row config takes a baseline in
+  // `beforeAll` and puts the whole of it back in `afterAll`.
   let restore = null;
+
+  /** The timers as this suite found them, in the shape the writer accepts. */
+  const timersOf = (policy) => Object.fromEntries(
+    Object.keys(POLICY_TIMERS)
+      .filter((k) => Number.isInteger(policy?.[k]) && policy[k] > 0)
+      .map((k) => [k, policy[k]]),
+  );
 
   beforeAll(async () => {
     await applySchema();
@@ -55,14 +87,56 @@ describePg('the settlement rail, and the orders it must not disturb', () => {
   }, 60_000);
 
   afterAll(async () => {
-    if (restore && (await getActivePaymentMode()) !== restore.activeMode) {
+    if (restore) {
+      // Written unconditionally: comparing first would need this to know which
+      // fields it is allowed to differ on, and that is the assumption that made
+      // the timers invisible. One extra version in an append-only history is
+      // cheaper than a wrong live policy.
       await publishPolicyVersion({
         activeMode: restore.activeMode,
-        justification: 'Restoring the rail this suite found in force.',
+        timers: timersOf(restore),
+        justification: 'Restoring the rail AND the timers this suite found in force.',
         changedByName: 'test teardown',
       });
     }
     await closePg();
+  });
+
+  it('puts every timer back, not only the rail', async () => {
+    // The teardown is the thing under test here. It runs after every case in
+    // this file, so nothing else can assert on it — this proves the mechanism
+    // on its own versions instead.
+    const before = await getActivePolicy();
+    const published = await publishPolicyVersion({
+      activeMode: before.activeMode,
+      timers: { processingWindowSeconds: 61 },
+      justification: 'Proving a timer change survives a mode-only restore.',
+      changedByName: 'test',
+    });
+    expect(published.ok).toBe(true);
+
+    // A mode-only restore — what this suite used to do. The rail matches, so
+    // the old teardown would not even have run; run the write it would have
+    // made and show the timer is still wrong afterwards.
+    await publishPolicyVersion({
+      activeMode: before.activeMode,
+      justification: 'A restore that names only the rail.',
+      changedByName: 'test',
+    });
+    expect((await getActivePolicy()).processingWindowSeconds).toBe(61);
+
+    // The restore this suite now performs.
+    await publishPolicyVersion({
+      activeMode: before.activeMode,
+      timers: timersOf(before),
+      justification: 'Restoring the rail AND the timers.',
+      changedByName: 'test',
+    });
+    const after = await getActivePolicy();
+    expect(after.processingWindowSeconds).toBe(before.processingWindowSeconds);
+    for (const key of Object.keys(POLICY_TIMERS)) {
+      expect(after[key], key).toBe(before[key]);
+    }
   });
 
   it('seeds exactly one active policy, on the rail already in production', async () => {

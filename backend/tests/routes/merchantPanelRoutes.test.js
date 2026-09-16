@@ -120,6 +120,53 @@ describePg('merchant panel routes', () => {
     expect((await as(app, pending).get('/profile')).status).toBe(403);
   });
 
+  // ── The merchant's own balance ────────────────────────────────────────────
+  //
+  // `merchant_wallets` owns the token balance and the merchant row deliberately
+  // does not carry one, so `formatMerchant`'s `merchant.tokenBalance` was
+  // `undefined` on every response this panel has ever made. The panel's
+  // `formatWallet(merchant?.tokenBalance, rail)` renders `Number(undefined)||0`,
+  // so a funded merchant's Dashboard, Profile and Token Supply screens all read
+  // ZERO — the last of those being where they decide whether to buy more float.
+  //
+  // Driven live: a merchant holding 900,000 available tokens was shown
+  // "USDT balance 0 USDT" while the ADMIN list read the same merchant at
+  // 900,000, because that route goes to `getAvailablePaiseFor`.
+  //
+  // Asserted against the wallet rather than against the number the fixture
+  // asked for: the wallet is the authority, and a test comparing the response
+  // to its own input would pass against a projection that had stopped reading
+  // anything at all.
+  it('tells a merchant what they actually hold', async () => {
+    const m = await merchantActor({ tokensRupees: 7500 });
+    const held = await getMerchantTokenBalance(m.merchantId);
+    expect(held, 'fixture did not fund the merchant').toBeGreaterThan(0);
+
+    const res = await as(app, m).get('/profile');
+    expect(res.status).toBe(200);
+    expect(res.body.merchant.tokenBalance).toBe(held);
+  });
+
+  it('keeps telling them after tokens move', async () => {
+    // A stale copy on the merchant row would survive this; a read of the wallet
+    // cannot. The order takes an escrow HOLD at accept, which moves tokens out
+    // of the available pocket the panel shows.
+    const m = await merchantActor({ tokensRupees: 5000 });
+    const before = (await as(app, m).get('/profile')).body.merchant.tokenBalance;
+
+    // ASSIGNED, not PENDING_QUEUE: a BUY is assigned, never claimed, and the
+    // accept handler refuses a queued deposit outright (§2).
+    const { orderId } = await order({
+      type: 'DEPOSIT', tokens: 500, betting: 400, reserve: 100,
+      state: 'ASSIGNED', merchantId: m.merchantId,
+    });
+    expect((await as(app, m).post(`/accept/${orderId}`).send({})).status).toBe(200);
+
+    const after = (await as(app, m).get('/profile')).body.merchant.tokenBalance;
+    expect(after).toBe(await getMerchantTokenBalance(m.merchantId));
+    expect(before - after, 'the hold did not show up in the merchant’s own figure').toBe(500);
+  });
+
   // ── Accepting an order ────────────────────────────────────────────────────
   it('404s an order that does not exist', async () => {
     const m = await merchantActor({ tokensRupees: 5000 });
