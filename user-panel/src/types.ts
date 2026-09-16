@@ -28,12 +28,23 @@ export interface User {
   id: string;
   mobile: string;
   username: string;
-  walletBalance: number;       
   lockedBalance: number;
 
-  // FIX (Audit #38): dual balance system fields — backend uses these, not walletBalance
+  // ── The player's pockets. All FOUR of them ────────────────────────────────
+  // `realtimeEmitters.js` has always pushed four, and this interface named
+  // three. `reserveBalance` was the missing one, so every merge in
+  // GameContext dropped it and the shell header — which totals what this
+  // object holds — showed 900 after a 1,000-token purchase, the reserve cut
+  // being 10% under the ACTIVE deposit policy. The wallet screen reads
+  // `/api/user/bet-limits`, which reports all four, and showed 1,000. Two
+  // totals for the same money in one session, and the smaller one sat under
+  // the word "Wallet".
+  //
+  // This is §23 in the omission direction: a type that does not name a field
+  // the server sends is as silent as one that names a field it does not.
   depositBalance: number;      // NON-WITHDRAWABLE: can only be used for betting
   winningsBalance: number;     // WITHDRAWABLE: from bet payouts, can be withdrawn
+  reserveBalance: number;      // NON-WITHDRAWABLE: the deposit policy's reserve share
 
   walletAddress: string;
   profilePic?: string;

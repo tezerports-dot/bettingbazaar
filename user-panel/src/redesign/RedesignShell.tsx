@@ -15,7 +15,7 @@
  */
 import React, { createContext, useContext, useMemo, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router';
-import { useGame } from '../services/GameContext';
+import { useGame, spendableBalance } from '../services/GameContext';
 import { useTheme } from './ThemeContext';
 import { useViewport } from './useViewport';
 import { fmt } from './format';
@@ -107,7 +107,19 @@ const RedesignShell: React.FC<React.PropsWithChildren<{}>> = ({ children }) => {
   const [logoFailed, setLogoFailed] = useState(false);
 
   const logoSrc = resolveLogo();
-  const totalBal = isAuthenticated ? (user?.depositBalance ?? 0) + (user?.winningsBalance ?? 0) : null;
+  // ── DELIBERATELY deposit + winnings, and NOT the reserve ──────────────────
+  // This pill is smaller than the total on the wallet screen, on purpose. The
+  // reserve is not freely spendable — only `betReservePercent` of a stake may
+  // be drawn from it — and `backend/routes.js` records what happened when a
+  // headline figure included it: players tried bets the engine then refused.
+  // The wallet screen can show the larger number because it shows the RESERVE
+  // tile beside it and publishes the real ceiling from
+  // `/api/user/bet-limits`; a bare pill in the header cannot.
+  //
+  // Left as a named helper rather than an inline sum so the next reader meets
+  // this reasoning instead of "the header forgot a pocket" — which is exactly
+  // how it was read once already.
+  const totalBal = isAuthenticated ? spendableBalance(user) : null;
 
   const openAuth = (mode: 'login' | 'register' = 'login') => { setAuthMode(mode); setAuthOpen(true); setMenuOpen(false); };
   const openMenu = () => setMenuOpen(true);
