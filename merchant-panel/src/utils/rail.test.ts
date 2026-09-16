@@ -84,15 +84,45 @@ describe('formatWallet — the unit the wallet is denominated in', () => {
     expect(formatWallet(0, RAIL.INR)).toBe('0 BB');
   });
 
-  it('labels the USDT wallet as USDT', () => {
-    expect(formatWallet(1000, RAIL.USDT)).toBe('1,000 USDT');
+  it('labels the USDT wallet as BB tokens too — the rail is not the unit', () => {
+    // This asserted '1,000 USDT' and was PINNING THE DEFECT (§28). The wallet
+    // holds BB tokens for every merchant: an admin top-up of 1,000,000 writes
+    // 100,000,000 paise of TOKENS whether the merchant settles in rupees or in
+    // USDT, and the deposit escrow reserves tokens against every order. USDT is
+    // what a PLAYER SENDS on a USDT order.
+    //
+    // At ₹90 per USDT this suffix turned a 900,000-token float into
+    // "900,000 USDT" — a float worth about 10,000 USDT, overstated ninety
+    // times, on the merchant's own balance tile. Trap 15 in the line a human
+    // reads.
+    expect(formatWallet(1000, RAIL.USDT)).toBe('1,000 BB');
+    expect(formatWallet(1000, RAIL.USDT)).toBe(formatWallet(1000, RAIL.INR));
   });
 });
 
 describe('tokenColumn — the second figure beside the amount', () => {
-  it('shows the BB credit on INR and the network on USDT', () => {
+  it('shows the BB credit on INR', () => {
     expect(tokenColumn(order({ tokenAmount: 500 }), RAIL.INR)).toEqual({ label: 'Credited as', value: '500 BB' });
-    expect(tokenColumn(order(), RAIL.USDT)).toEqual({ label: 'Network', value: 'TRC-20' });
+  });
+
+  it('shows THE ORDER’S OWN network on USDT, not a literal', () => {
+    // This asserted 'TRC-20' against an order carrying no chain at all, so it
+    // passed against a hardcoded string — every USDT order in the panel
+    // announced Tron, a BEP-20 one included, and its merchant would then be
+    // watching the wrong wallet for a payment that is not coming. §25.3: the
+    // address and its network always travel together, and a network stated
+    // from anywhere but the order is not the order's.
+    expect(tokenColumn(order({ currency: 'USDT', usdtChain: 'TRC20' } as Partial<PaymentOrder>), RAIL.USDT))
+      .toEqual({ label: 'Network', value: 'Tron (TRC-20)' });
+    expect(tokenColumn(order({ currency: 'USDT', usdtChain: 'BEP20' } as Partial<PaymentOrder>), RAIL.USDT))
+      .toEqual({ label: 'Network', value: 'BNB Smart Chain (BEP-20)' });
+  });
+
+  it('says nothing rather than guessing when an order names no chain', () => {
+    // A USDT order without a chain cannot exist — `order_states` refuses one by
+    // CHECK — so this is the malformed case, and the honest answer is a dash.
+    // Defaulting to either chain here is how the literal got in.
+    expect(tokenColumn(order({ currency: 'USDT' }), RAIL.USDT)).toEqual({ label: 'Network', value: '—' });
   });
 });
 
