@@ -368,7 +368,9 @@ export const MerchantPlatform: React.FC = () => {
               {leaderboard.map((m: any) => (
                 <tr key={m.merchantId} className="border-b border-dark-800">
                   <td className="py-2 pr-3 text-gray-200">{m.username}</td>
-                  <td className="py-2 pr-3 text-right font-mono">{inr(m.tokenBalance)}</td>
+                  {/* A token count, so BB — not `inr()`. The merchant's own panel
+                      calls it BB and the two must agree (§5). */}
+                  <td className="py-2 pr-3 text-right font-mono">{(m.tokenBalance ?? 0).toLocaleString('en-IN')} BB</td>
                   <td className="py-2 pr-3 text-right">{m.completedOrders}/{m.totalOrders}</td>
                   <td className="py-2 pr-3 text-right font-mono text-gold-400/90">{inr(m.completedVolume)}</td>
                   <td className="py-2 pr-3 text-center">{m.isOnline ? '🟢' : '⚫'}</td>

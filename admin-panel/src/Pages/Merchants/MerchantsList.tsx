@@ -274,7 +274,12 @@ export const MerchantsList: React.FC = () => {
       render: (m: Merchant) => (
         <div className="text-sm">
           {/* FIX 8: Show tokenBalance (actual capacity) instead of daily processed volume */}
-          <p className="font-medium text-gold-400">Rs.{((m as any).tokenBalance ?? 0).toLocaleString()} <span className="text-xs text-gray-500 font-normal">tokens</span></p>
+          {/* BB, not "Rs." — this is a token count, and the merchant's own panel
+              calls it "BB". Two panels naming one value differently is the drift
+              §5 is about, and this one said "Rs.900,000 tokens", which is two
+              units on one line. The peg makes the magnitude right and the label
+              wrong. */}
+          <p className="font-medium text-gold-400">{((m as any).tokenBalance ?? 0).toLocaleString('en-IN')} <span className="text-xs text-gray-500 font-normal">BB</span></p>
           <p className="text-gray-400 text-xs">Orders: {m.merchantStats?.totalOrdersProcessed || (m as any).totalOrdersAll || 0}</p>
         </div>
       ),
@@ -440,7 +445,7 @@ export const MerchantsList: React.FC = () => {
                   {/* FIX 8: Show tokenBalance prominently -- this is the merchant's actual capacity */}
                   <div className="p-3 bg-dark-700 rounded-lg border border-gold-500/30">
                     <p className="text-xs text-gray-400">Token Wallet</p>
-                    <p className="text-xl font-bold text-gold-400">Rs.{((selectedMerchant as any).tokenBalance ?? 0).toLocaleString()}</p>
+                    <p className="text-xl font-bold text-gold-400">{((selectedMerchant as any).tokenBalance ?? 0).toLocaleString('en-IN')} <span className="text-xs text-gray-500 font-normal">BB</span></p>
                     <p className="text-xs text-gray-500">Available balance</p>
                   </div>
                   <div className="p-3 bg-dark-700 rounded-lg"><p className="text-xs text-gray-400">Total Orders</p><p className="text-xl font-bold">{selectedMerchant.statistics?.totalOrders || 0}</p></div>
@@ -514,7 +519,7 @@ export const MerchantsList: React.FC = () => {
               {/* FIX 8: tokenBalance is the capacity -- show it prominently and allow top-up */}
               <div className="p-4 bg-dark-700 rounded-lg border border-gold-500/30">
                 <p className="text-xs text-gray-400 mb-1">Current Token Wallet Balance</p>
-                <p className="text-3xl font-bold text-gold-400">Rs.{((selectedMerchant as any).tokenBalance ?? 0).toLocaleString()}</p>
+                <p className="text-3xl font-bold text-gold-400">{((selectedMerchant as any).tokenBalance ?? 0).toLocaleString('en-IN')} <span className="text-base text-gray-500 font-normal">BB</span></p>
                 <p className="text-xs text-gray-500 mt-1">Merchant can only process orders up to this amount</p>
               </div>
 

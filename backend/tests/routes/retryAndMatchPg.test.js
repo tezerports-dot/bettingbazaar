@@ -91,11 +91,11 @@ describePg('a retry, and the link that arrives late', () => {
   // shared queue taking links from the next test or the next run.
   const created = [];
 
-  const waitingBuy = async (player, { priority } = {}) => {
+  const waitingBuy = async (player, { priority, tokensRupees = DENOM_RUPEES } = {}) => {
     const orderId = oid();
     await createOrderRecord({
       orderId, userId: player.userId, type: 'DEPOSIT',
-      tokenAmountRupees: DENOM_RUPEES, fiatAmountRupees: DENOM_RUPEES,
+      tokenAmountRupees: tokensRupees, fiatAmountRupees: tokensRupees,
       state: 'PENDING_QUEUE',
       paymentMode: PAYMENT_MODES.CASH_ATM,
       assignmentPriority: priority,
@@ -104,10 +104,15 @@ describePg('a retry, and the link that arrives late', () => {
     return orderId;
   };
 
-  const cashMerchant = async ({ tokensRupees = 500_000 } = {}) => {
+  // `denominationPaise` sets the MERCHANT ROW's tier, which the claim query
+  // tests as well as the link's own (`m.cash_denomination_paise = $1`). Passing
+  // it only to `supplyCashLink` leaves the row on the default, the claim matches
+  // nothing, and a case that meant to exercise the claim quietly exercises the
+  // early return instead — passing for the wrong reason.
+  const cashMerchant = async ({ tokensRupees = 500_000, denominationPaise = DENOM_PAISE } = {}) => {
     const merchant = await merchantActor({ tokensRupees });
     await updateMerchant(merchant.merchantId, {
-      cashDenominationPaise: DENOM_PAISE, isOnline: true, merchantApprovalStatus: 'APPROVED',
+      cashDenominationPaise: denominationPaise, isOnline: true, merchantApprovalStatus: 'APPROVED',
     });
     return merchant;
   };
@@ -424,14 +429,24 @@ describePg('a retry, and the link that arrives late', () => {
     // the link is consumed and out of the queue, so no merchant can be sent
     // with it, while the order sits queued holding a link id nobody is working.
     // Two people waiting on nothing.
+    // ── A denomination NO OTHER CASE IN THIS FILE USES ──────────────────────
+    // The claim matches the denomination EXACTLY, so this is what isolates the
+    // case from ambient supply. Written with `DENOM_PAISE` it passed alone and
+    // failed in the full tier: another suite's funded link at ₹5,000 was
+    // claimed instead of this merchant's, the hold succeeded, and the order was
+    // assigned — the case asserting the opposite of what it had staged, and the
+    // link it stole missing from the case that supplied it. Trap 10.
+    const ISOLATED_PAISE = 100_000;   // ₹1,000 — on the ladder, unused here
     const player = await actor({});
-    const broke = await cashMerchant({ tokensRupees: 0 });
-    const orderId = await waitingBuy(player, { priority: await rankAboveQueue() });
+    const broke = await cashMerchant({ tokensRupees: 0, denominationPaise: ISOLATED_PAISE });
+    const orderId = await waitingBuy(player, {
+      priority: await rankAboveQueue(), tokensRupees: ISOLATED_PAISE / 100,
+    });
 
     const supplied = await supplyCashLink({
       merchantId: broke.merchantId,
-      merchant: { cashDenominationPaise: DENOM_PAISE },
-      paymentLink: 'upi://pay?pa=atm@bank&am=5000',
+      merchant: { cashDenominationPaise: ISOLATED_PAISE },
+      paymentLink: 'upi://pay?pa=atm@bank&am=1000',
     });
     expect(supplied.ok, 'supply is not what this case is about').toBe(true);
 

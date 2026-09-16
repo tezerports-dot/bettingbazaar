@@ -32,7 +32,10 @@
  */
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { applySchema, closePg, pgQuery } from '../client.js';
-import { merchantEarnings, merchantDailyEarnings } from '../repositories/stats.js';
+import {
+  merchantEarnings, merchantDailyEarnings,
+  platformFinance, merchantLeaderboard, tokenFlow,
+} from '../repositories/stats.js';
 
 const M = 'earn-merchant-1';
 
@@ -141,6 +144,47 @@ describe('a merchant’s earnings', () => {
     expect(days).toHaveLength(3);
     expect(days[0].earnings).toBe(0);
     expect(days[0].orders).toBe(0);
+  });
+
+  // ── The same trap, in the aggregates an ADMIN reads ──────────────────────
+  //
+  // Trap 15 says "any AGGREGATE over that column", and the first pass at it
+  // fixed the merchant's own two and left four siblings summing
+  // `fiat_amount_paise` across every merchant and both rails. One of them
+  // RANKED merchants by the result; another was served to the admin as
+  // `totalINRDeposited`, so a 555.56 USDT purchase was added to a rupee total
+  // as 555.56 rupees.
+  //
+  // One fixture for all of them: a USDT order worth 50,000 tokens for which the
+  // player sent 555.56 USDT, beside an INR order of 500 tokens for ₹500.
+  // Summing the order currency gives 1,055.56 — a number in no currency at all.
+  // Summing tokens gives 50,500, which is what the two orders are worth.
+  describe('the platform-wide aggregates', () => {
+    beforeEach(async () => {
+      await order({ id: 'agg-u', tokens: 50_000_00, fiat: 555_56, currency: 'USDT' });
+      await order({ id: 'agg-i', tokens: 500_00, fiat: 500_00, currency: 'INR' });
+    });
+
+    it('platformFinance counts tokens, not the order currency', async () => {
+      const f = await platformFinance({});
+      expect(f.deposits.amount).toBe(50_500);
+      expect(f.deposits.amount).not.toBe(1_055.56);
+      expect(f.deposits.count).toBe(2);
+    });
+
+    it('merchantLeaderboard ranks on tokens — it orders merchants by this', async () => {
+      const rows = await merchantLeaderboard({ days: 30, limit: 50 });
+      const mine = rows.find((r) => r.merchantId === M);
+      expect(mine?.completedVolume).toBe(50_500);
+    });
+
+    it('tokenFlow serves the same number under both of its names', async () => {
+      // `fiat` reaches the admin as `totalINRDeposited`. At the 1:1 peg it is
+      // the token figure, and the two must not be able to drift apart.
+      const flow = await tokenFlow({ direction: 'DEPOSIT' });
+      expect(flow.tokens).toBe(50_500);
+      expect(flow.fiat).toBe(flow.tokens);
+    });
   });
 
   it('gives a merchant who has been paid nothing a zero, not a crash', async () => {

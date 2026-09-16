@@ -80,6 +80,10 @@ type SellStep = 'amount' | 'waiting';
 // ── Helpers ────────────────────────────────────────────────────────────────────
 const r2 = (n: number) => Math.round((Number(n) || 0) * 100) / 100;
 const fmtINR = (n: number) => `₹${r2(n).toLocaleString('en-IN', { minimumFractionDigits: 2 })}`;
+// NOTE THE UNIT: this appends " T" itself, so a caller must never add another.
+// Two did — the max-stake tile and the reserve-locked sentence — and both
+// rendered "1,000 T T" to the player. Named for what it returns, not for the
+// number it takes, so the next caller sees it.
 const fmtT = (n: number) => `${r2(n).toLocaleString('en-IN')} T`;
 const fmtDate = (s: string) => new Date(s).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' });
 
@@ -632,7 +636,7 @@ const WalletPage: React.FC = () => {
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>
           <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.12em', textTransform: 'uppercase', color: '#9c9484' }}>Available to bet</span>
           <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 17, color: maxStake > 0 ? '#8ff0b6' : '#e08a8a' }}>
-            {limits ? `${fmtT(maxStake)} T` : '—'}
+            {limits ? fmtT(maxStake) : '—'}
           </span>
         </div>
 
@@ -648,7 +652,7 @@ const WalletPage: React.FC = () => {
             does not need a paragraph explaining a limit they will never hit. */}
         {reserveLocked > 0 && (
           <div style={{ marginTop: 10, padding: '9px 11px', borderRadius: 11, background: 'rgba(120,150,255,.07)', border: '1px solid rgba(120,150,255,.18)', fontSize: 11, lineHeight: 1.55, color: '#a9b6e0' }}>
-            <strong style={{ color: '#c3cdf5' }}>{fmtT(reserveLocked)} T</strong> of your reserve is not available for betting yet.
+            <strong style={{ color: '#c3cdf5' }}>{fmtT(reserveLocked)}</strong> of your reserve is not available for betting yet.
             Each bet may draw only {limits?.reservePercent}% from reserve — the rest comes from deposit and winnings, so
             adding to your deposit raises this limit.
           </div>

@@ -266,9 +266,13 @@ export async function merchantActivityReport({ from = null, to = null } = {}) {
     `WITH orders AS (
        SELECT merchant_id,
               COUNT(*) FILTER (WHERE order_type = 'DEPOSIT')::int    AS deposits,
-              COALESCE(SUM(fiat_amount_paise) FILTER (WHERE order_type = 'DEPOSIT'), 0)    AS deposit_volume,
+              -- TOKENS, not "fiat_amount_paise". Trap 15: on a USDT order that column
+              -- holds USDT, so summing it ACROSS MERCHANTS adds 555 to 50,000 and
+              -- calls the result rupees. "token_amount_paise" is the INR-equivalent
+              -- at the peg, which is what the ledger posts for the same reason.
+              COALESCE(SUM(token_amount_paise) FILTER (WHERE order_type = 'DEPOSIT'), 0)    AS deposit_volume,
               COUNT(*) FILTER (WHERE order_type = 'WITHDRAWAL')::int AS withdrawals,
-              COALESCE(SUM(fiat_amount_paise) FILTER (WHERE order_type = 'WITHDRAWAL'), 0) AS withdrawal_volume
+              COALESCE(SUM(token_amount_paise) FILTER (WHERE order_type = 'WITHDRAWAL'), 0) AS withdrawal_volume
          FROM order_states
         WHERE ${orderWhere.join(' AND ')}
         GROUP BY merchant_id
@@ -379,7 +383,9 @@ export async function businessTrend({ days = 30, timezone = 'Asia/Kolkata' } = {
      ), funding AS (
        SELECT CAST(completed_at AT TIME ZONE $1 AS DATE) AS day, order_type,
               COUNT(*)::int AS orders,
-              COALESCE(SUM(fiat_amount_paise), 0) AS volume
+              -- TOKENS. Every order on the platform, so every currency, in one
+              -- daily total an operator reads as money (trap 15).
+              COALESCE(SUM(token_amount_paise), 0) AS volume
          FROM order_states
         WHERE state = 'COMPLETED' AND completed_at IS NOT NULL
         GROUP BY 1, 2
@@ -505,7 +511,11 @@ export async function merchantLeaderboard({ days = 30, limit = 20, sortBy = 'vol
               COUNT(*)::int AS total_orders,
               COUNT(*) FILTER (WHERE state IN ('COMPLETED','PAID'))::int AS completed_orders,
               COUNT(*) FILTER (WHERE state IN ('FAILED','CANCELLED','REJECTED'))::int AS failed_orders,
-              COALESCE(SUM(fiat_amount_paise) FILTER (WHERE state IN ('COMPLETED','PAID')), 0) AS completed_volume
+              -- TOKENS. This one RANKS merchants against each other, so the
+              -- cross-currency sum did not merely misreport: a USDT merchant's
+              -- 50,000-token order counted as 555 beside an INR merchant's
+              -- 50,000, and they were ordered by it. Trap 15.
+              COALESCE(SUM(token_amount_paise) FILTER (WHERE state IN ('COMPLETED','PAID')), 0) AS completed_volume
          FROM order_states
         WHERE merchant_id IS NOT NULL AND created_at >= $1
         GROUP BY merchant_id
@@ -565,6 +575,12 @@ export async function merchantFundingStats(merchantId) {
     `SELECT
        (SELECT COUNT(*)::int FROM order_states
          WHERE merchant_id = $1 AND state = 'COMPLETED' AND order_type = 'DEPOSIT')    AS deposits,
+       -- ── SWEPT for trap 15, and DELIBERATELY left as the order currency ─────
+       -- Every row here is scoped to ONE merchant, and a merchant settles on
+       -- exactly one rail (§2) — so this sum cannot span currencies, and what
+       -- it reports is the thing that is actually useful to them: the money
+       -- their counterparties sent. The platform-wide aggregates in this file
+       -- are the opposite case and all count tokens.
        (SELECT COALESCE(SUM(fiat_amount_paise), 0) FROM order_states
          WHERE merchant_id = $1 AND state = 'COMPLETED' AND order_type = 'DEPOSIT')    AS deposit_volume,
        (SELECT COUNT(*)::int FROM order_states
@@ -623,6 +639,8 @@ export async function merchantPerformanceHistory(merchantId, { days = 30, timezo
      ), completed AS (
        SELECT CAST(completed_at AT TIME ZONE $2 AS DATE) AS day, order_type,
               COUNT(*)::int AS orders,
+              -- The order currency, and safe: scoped to one merchant, who is on
+              -- one rail (§2). Swept for trap 15 — see merchantFundingStats.
               COALESCE(SUM(fiat_amount_paise), 0) AS volume
          FROM order_states
         WHERE merchant_id = $1 AND state = 'COMPLETED' AND completed_at IS NOT NULL
@@ -812,6 +830,11 @@ export async function merchantProfitEngine(merchantId) {
        COUNT(*) FILTER (WHERE order_type = 'WITHDRAWAL' AND state IN ('COMPLETED','PAID'))::int AS withdrawals,
        COALESCE(SUM(token_amount_paise) FILTER (WHERE order_type = 'DEPOSIT'    AND state IN ('COMPLETED','PAID')), 0) AS tokens_out,
        COALESCE(SUM(token_amount_paise) FILTER (WHERE order_type = 'WITHDRAWAL' AND state IN ('COMPLETED','PAID')), 0) AS tokens_back,
+       -- "revenue" and "exposure" are what this merchant's counterparties
+       -- actually sent and received, in the currency they sent it — one
+       -- merchant, one rail (§2), so no currency is being added to another.
+       -- Swept for trap 15 and kept on purpose; "tokens_out"/"tokens_back"
+       -- above are the token side of the same orders.
        COALESCE(SUM(fiat_amount_paise)  FILTER (WHERE order_type = 'DEPOSIT'    AND state IN ('COMPLETED','PAID')), 0) AS revenue,
        COALESCE(SUM(fiat_amount_paise)  FILTER (WHERE order_type = 'WITHDRAWAL' AND state IN ('COMPLETED','PAID')), 0) AS exposure,
        jsonb_object_agg(state, cnt) FILTER (WHERE state IS NOT NULL) AS status_map
@@ -883,9 +906,12 @@ export async function platformFinance({ from = null, to = null } = {}) {
   const [funding, betting] = await Promise.all([
     pgQuery(
       `SELECT
-         COALESCE(SUM(fiat_amount_paise) FILTER (WHERE order_type = 'DEPOSIT'), 0)    AS deposits,
+         -- TOKENS across every merchant and both rails — see trap 15. This is
+         -- the platform's own deposit and withdrawal total, so it is the sum
+         -- most certain to span currencies.
+         COALESCE(SUM(token_amount_paise) FILTER (WHERE order_type = 'DEPOSIT'), 0)    AS deposits,
          COUNT(*) FILTER (WHERE order_type = 'DEPOSIT')::int                          AS deposit_count,
-         COALESCE(SUM(fiat_amount_paise) FILTER (WHERE order_type = 'WITHDRAWAL'), 0) AS withdrawals,
+         COALESCE(SUM(token_amount_paise) FILTER (WHERE order_type = 'WITHDRAWAL'), 0) AS withdrawals,
          COUNT(*) FILTER (WHERE order_type = 'WITHDRAWAL')::int                       AS withdrawal_count
        FROM order_states
       WHERE state = 'COMPLETED' ${window('completed_at')}`,
@@ -946,7 +972,9 @@ export async function dailyFinance({ days = 7, timezone = 'Asia/Kolkata' } = {})
         GROUP BY 1
      ), deposited AS (
        SELECT CAST(completed_at AT TIME ZONE $1 AS DATE) AS day,
-              COALESCE(SUM(fiat_amount_paise), 0) AS amount
+              -- TOKENS, for the same reason: this sits beside stakes and
+              -- payouts, which are token figures, in one daily finance row.
+              COALESCE(SUM(token_amount_paise), 0) AS amount
          FROM order_states
         WHERE order_type = 'DEPOSIT' AND state = 'COMPLETED' AND completed_at IS NOT NULL
         GROUP BY 1
@@ -996,7 +1024,16 @@ export async function tokenFlow({ direction = 'DEPOSIT', from = null, to = null,
 
   const [summary, daily] = await Promise.all([
     pgQuery(
-      `SELECT COALESCE(SUM(fiat_amount_paise), 0)  AS fiat,
+      `SELECT
+              -- ONE expression, served under both names. "fiat" reaches the
+              -- admin as "totalINRDeposited" / "totalINRWithdrawn" and it was
+              -- SUM(fiat_amount_paise) — so a 555.56 USDT purchase was added to
+              -- a RUPEE total as 555.56 rupees. "token_amount_paise" is the
+              -- INR-equivalent at the peg (trap 15), which is both what the
+              -- field claims to be and what the ledger posts for the same
+              -- reason. The two names now describe the same number because, at
+              -- a 1:1 peg, they ARE the same number — and a second expression
+              -- that merely agreed today is the drift §5 is about.
               COALESCE(SUM(token_amount_paise), 0) AS tokens,
               COUNT(DISTINCT user_id)::int         AS parties,
               COUNT(*)::int                        AS orders
@@ -1015,7 +1052,10 @@ export async function tokenFlow({ direction = 'DEPOSIT', from = null, to = null,
 
   const s = summary.rows[0];
   return {
-    fiat: rupees(s.fiat), tokens: rupees(s.tokens),
+    // Both names, one number: the INR-equivalent at the peg. `fiat` is what the
+    // admin routes serve as `totalINRDeposited`/`totalINRWithdrawn`, kept so
+    // those responses do not change shape.
+    fiat: rupees(s.tokens), tokens: rupees(s.tokens),
     parties: int(s.parties), orders: int(s.orders),
     daily: daily.rows.map((r) => ({
       date: isoDay(r.day), tokens: rupees(r.tokens), count: int(r.n),
