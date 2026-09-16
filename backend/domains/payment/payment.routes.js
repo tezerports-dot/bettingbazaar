@@ -563,7 +563,11 @@ router.post('/order/:orderId/dispute', authenticate, orderAccessGuard, async (re
     const disputed = await disputeOrder(order.orderId, {
       expectFrom: DISPUTABLE,
       set: {
-        disputeReason:   reason.trim(),
+        // Capped. `dispute_reason` is TEXT, so an oversized reason does not
+        // error — it is stored whole, and an admin's dispute queue renders it.
+        // The cap lived on the OTHER dispute route, which is now gone; this is
+        // it carried across rather than lost with it.
+        disputeReason:   reason.trim().slice(0, 1000),
         disputeRaisedAt: new Date(),
         disputeRaisedBy: 'user',
       },
@@ -590,25 +594,35 @@ router.post('/order/:orderId/dispute', authenticate, orderAccessGuard, async (re
   } catch (err) { return serverError(res, err, 'POST /order/:orderId/dispute'); }
 });
 
-router.post('/order/:orderId/status', authenticate, orderAccessGuard, async (req, res) => {
-  try {
-    const { status, reason = 'User requested dispute' } = req.body;
-    if (status !== 'DISPUTED') return res.status(400).json({ success: false, message: 'Only DISPUTED transition is supported here' });
-    const order = req.p2pOrder;
-    const moved = await disputeOrder(order.orderId, {
-      expectFrom: 'PAID',
-      set: {
-        disputeReason:   String(reason).trim().slice(0, 1000),
-        disputeRaisedAt: new Date(),
-        disputeRaisedBy: 'user',
-      },
-    });
-    if (!moved.ok) {
-      return res.status(409).json({ success: false, message: `Cannot transition ${moved.status ?? 'unknown'} → ${status}` });
-    }
-    emitAdminUpdate('queue_order_update', { orderId: order.orderId, status: moved.status });
-    res.json({ success: true, order: forPlayer(moved.order ?? order) });
-  } catch (err) { res.status(500).json({ success: false, message: 'Failed to update status' }); }
-});
+/*
+ * ── `POST /order/:orderId/status` was here, and it was a SECOND way to raise a
+ *    dispute ─────────────────────────────────────────────────────────────────
+ *
+ * Both it and `/order/:orderId/dispute` went through `disputeOrder`, so the
+ * state machine had one writer and §5 looked satisfied. What had drifted was
+ * ADMISSION, and each route held a guard the other did not:
+ *
+ *   /dispute   required a reason, restricted the state to PAID or COMPLETED,
+ *              and — on a PAID order — refused for TEN MINUTES after payment,
+ *              so a merchant gets a chance to confirm before the order goes to
+ *              an admin. It did not bound the reason's length.
+ *   /status    bounded the reason at 1,000 characters. It required no reason,
+ *              took any PAID order, and enforced NO WAIT AT ALL.
+ *
+ * So the cooling-off period was bypassable by calling the other path, and a
+ * DISPUTED order keeps the merchant's tokens reserved (§2) — a player could
+ * pay, immediately dispute, and tie up a merchant's inventory, repeatedly,
+ * without ever waiting. That is §2's `maxConsecutiveRejections` shape: one
+ * rule, two half-implementations, disagreeing in both directions.
+ *
+ * NO PANEL CALLED IT. `WalletPage` polls `GET /order/:id/status`, which stays;
+ * nothing POSTs to that path. It survived because `check:ui-coverage --unused`
+ * matches a route's PATH and not its METHOD, so the GET marked the POST
+ * reached — and because it had route tests of its own, which is §22: a test
+ * that exercises a handler can never show that anything calls it.
+ *
+ * Deleted rather than aligned. Two admission paths to one state transition is
+ * the thing that drifts; its one real guard moved onto `/dispute` above.
+ */
 
 export default router;

@@ -687,30 +687,62 @@ describePg('payment routes', () => {
     expect((await getOrderRecord(orderId)).disputeReason).toBe('first');
   });
 
-  it('409s — not 400 — when the transition itself refuses', async () => {
-    // The status endpoint has no pre-read: it asks the state machine and reports
-    // what it says. "Understood and refused because the order moved on" is a
-    // different answer from "your request was malformed", and a merchant
-    // confirming while the player was typing is the ordinary case.
+  // ── These exercised `POST /order/:orderId/status`, which is gone ──────────
+  // It was a SECOND route that raised a dispute, with a different admission
+  // rule: no reason required and — the part that mattered — no ten-minute wait
+  // after payment, which `/dispute` enforces so a merchant can confirm before
+  // the order reaches an admin. A DISPUTED order keeps the merchant's tokens
+  // reserved (§2), so the bypass let a player pay, dispute at once, and hold a
+  // merchant's inventory. No panel ever called it.
+  //
+  // Its one guard the survivor lacked — the reason cap — moved with it, and is
+  // asserted below. The rest is re-pointed at `/dispute` where it still says
+  // something.
+  it('refuses a dispute on an order that is not disputable', async () => {
     const { orderId, who } = await depositOrder({ state: 'PENDING_QUEUE' });
-    const res = await as(app, who).post(`/order/${orderId}/status`).send({ status: 'DISPUTED' });
-    expect(res.status).toBe(409);
-    expect(res.body.message).toMatch(/PENDING_QUEUE/);
+    const res = await as(app, who).post(`/order/${orderId}/dispute`).send({ reason: 'nothing arrived' });
+    expect(res.status).toBe(400);
     expect((await getOrderRecord(orderId)).state).toBe('PENDING_QUEUE');
   });
 
-  it('accepts only the DISPUTED transition on the status endpoint', async () => {
+  it('requires a reason — the admin queue reads it', async () => {
     const { orderId, who } = await depositOrder({ state: 'PAID' });
-    for (const status of [undefined, 'COMPLETED', 'CANCELLED', 'disputed']) {
-      const res = await as(app, who).post(`/order/${orderId}/status`).send({ status });
-      expect(res.status, `accepted status=${status}`).toBe(400);
+    for (const reason of [undefined, '', '   ']) {
+      const res = await as(app, who).post(`/order/${orderId}/dispute`).send({ reason });
+      expect(res.status, `accepted reason=${JSON.stringify(reason)}`).toBe(400);
+    }
+    expect((await getOrderRecord(orderId)).state).toBe('PAID');
+  });
+
+  it('holds a freshly PAID order back for ten minutes, by EVERY path', async () => {
+    // The wait exists so the merchant gets a chance to confirm before the order
+    // reaches an admin — and a DISPUTED order keeps the merchant's tokens
+    // reserved (§2), so evading it ties up their inventory on demand.
+    //
+    // It WAS evadable: `POST /order/:id/status` raised the same dispute with no
+    // wait at all. That route is gone, and this asserts the rule against every
+    // route the player has, so a third path cannot quietly reintroduce the hole.
+    const { orderId, who } = await depositOrder({ state: 'PAID', extra: { paidAt: new Date() } });
+
+    const res = await as(app, who).post(`/order/${orderId}/dispute`).send({ reason: 'nothing arrived' });
+    expect(res.status).toBe(400);
+    expect(res.body.message).toMatch(/10 minutes/i);
+    expect((await getOrderRecord(orderId)).state).toBe('PAID');
+
+    // And no OTHER route will do it either. Any POST under this order that
+    // moves it to DISPUTED would be the bypass coming back.
+    for (const path of [`/order/${orderId}/status`, `/order/${orderId}/dispute-now`]) {
+      const sneak = await as(app, who).post(path).send({ status: 'DISPUTED', reason: 'let me in' });
+      expect(sneak.status, `${path} answered ${sneak.status}`).not.toBe(200);
     }
     expect((await getOrderRecord(orderId)).state).toBe('PAID');
   });
 
   it('truncates a runaway dispute reason rather than storing it whole', async () => {
+    // `dispute_reason` is TEXT, so this does not error — it stores whatever it
+    // is sent, and an admin's queue renders it.
     const { orderId, who } = await depositOrder({ state: 'PAID' });
-    const res = await as(app, who).post(`/order/${orderId}/status`).send({ status: 'DISPUTED', reason: 'x'.repeat(5000) });
+    const res = await as(app, who).post(`/order/${orderId}/dispute`).send({ reason: 'x'.repeat(5000) });
     expect(res.status, res.body.message).toBe(200);
     expect((await getOrderRecord(orderId)).disputeReason).toHaveLength(1000);
   });
