@@ -532,22 +532,33 @@ export const getEarnings = async (params?: {
     const endpoint = `${ENDPOINTS.EARNINGS.GET}${queryParams.toString() ? '?' + queryParams.toString() : ''}`;
     const data = await request<any>(endpoint);
     
-    // Backend returns structure: { earnings: { lifetime: {...}, today: {...} } }
+    // ── What a merchant EARNED, from the one place that records it ──────────
+    //
+    // This read `today.deposits.totalFees`, which came from
+    // `order_states.merchant_profit_paise` — written as the literal 0 at order
+    // creation and never set again, because commission moved to
+    // `merchant_commission_*` and the wallet ledger (§26). So the "Today's
+    // earnings" tile was a structural zero for every merchant on every rail,
+    // on a platform that does pay commission. It was also only the DEPOSIT
+    // half, so even against a live column it would have under-reported.
+    //
+    // `todayEarned` is the commission ledger's own figure and needs no
+    // reshaping here. Where a mapper has nothing to do, it should do nothing:
+    // arithmetic in this file is a second owner of a money number.
     return {
       earnings: {
-        today: data.earnings?.today?.deposits?.totalFees || 0,
-        week: 0, // Calculate from lifetime if needed
-        month: 0, // Calculate from lifetime if needed
+        today: data.earnings?.todayEarned || 0,
+        // `week` and `month` were the literals 0 with "Calculate from lifetime
+        // if needed" beside them — a permanent TODO (§14) on a field nothing
+        // renders (§3). Gone; the weekly chart has its own endpoint, which
+        // returns real days.
         total: data.earnings?.lifetime?.totalEarnings || 0,
         lifetime: data.earnings?.lifetime,
-        pending: data.earnings?.pending || 0,
       }
     };
   } catch (error) {
     console.error('Error loading earnings:', error);
-    return {
-      earnings: { today: 0, week: 0, month: 0, total: 0 }
-    };
+    return { earnings: { today: 0, total: 0 } };
   }
 };
 

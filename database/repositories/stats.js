@@ -669,42 +669,64 @@ export async function merchantPerformanceHistory(merchantId, { days = 30, timezo
 export async function merchantEarnings(merchantId, { from = null, to = null } = {}) {
   const params = [String(merchantId), from, to];
   const { rows } = await pgQuery(
-    `SELECT
-       -- today
-       COUNT(*) FILTER (WHERE completed_at >= CURRENT_DATE AND order_type = 'DEPOSIT')::int AS today_deposit_count,
-       COALESCE(SUM(merchant_profit_paise) FILTER (WHERE completed_at >= CURRENT_DATE AND order_type = 'DEPOSIT'), 0) AS today_deposit_fees,
-       COALESCE(SUM(fiat_amount_paise)     FILTER (WHERE completed_at >= CURRENT_DATE AND order_type = 'DEPOSIT'), 0) AS today_deposit_amount,
-       COUNT(*) FILTER (WHERE completed_at >= CURRENT_DATE AND order_type = 'WITHDRAWAL')::int AS today_withdrawal_count,
-       COALESCE(SUM(merchant_profit_paise) FILTER (WHERE completed_at >= CURRENT_DATE AND order_type = 'WITHDRAWAL'), 0) AS today_withdrawal_fees,
-       COALESCE(SUM(fiat_amount_paise)     FILTER (WHERE completed_at >= CURRENT_DATE AND order_type = 'WITHDRAWAL'), 0) AS today_withdrawal_amount,
-       -- the requested range, or everything when none was given
-       COUNT(*) FILTER (WHERE ($2::timestamptz IS NULL OR completed_at >= $2)
-                          AND ($3::timestamptz IS NULL OR completed_at <= $3))::int AS range_orders,
-       COALESCE(SUM(merchant_profit_paise) FILTER (WHERE ($2::timestamptz IS NULL OR completed_at >= $2)
-                          AND ($3::timestamptz IS NULL OR completed_at <= $3)), 0) AS range_earnings,
-       COALESCE(SUM(fiat_amount_paise)     FILTER (WHERE ($2::timestamptz IS NULL OR completed_at >= $2)
-                          AND ($3::timestamptz IS NULL OR completed_at <= $3)), 0) AS range_volume
-     FROM order_states
-     WHERE merchant_id = $1 AND state IN ('PAID', 'COMPLETED')`,
+    `WITH work AS (
+       -- WORK DONE: the orders. Volume only — what a merchant EARNS is not
+       -- here, see "paid" below.
+       SELECT
+         COUNT(*) FILTER (WHERE completed_at >= CURRENT_DATE AND order_type = 'DEPOSIT')::int AS today_deposit_count,
+         COALESCE(SUM(token_amount_paise) FILTER (WHERE completed_at >= CURRENT_DATE AND order_type = 'DEPOSIT'), 0) AS today_deposit_amount,
+         COUNT(*) FILTER (WHERE completed_at >= CURRENT_DATE AND order_type = 'WITHDRAWAL')::int AS today_withdrawal_count,
+         COALESCE(SUM(token_amount_paise) FILTER (WHERE completed_at >= CURRENT_DATE AND order_type = 'WITHDRAWAL'), 0) AS today_withdrawal_amount,
+         COUNT(*) FILTER (WHERE ($2::timestamptz IS NULL OR completed_at >= $2)
+                            AND ($3::timestamptz IS NULL OR completed_at <= $3))::int AS range_orders,
+         COALESCE(SUM(token_amount_paise) FILTER (WHERE ($2::timestamptz IS NULL OR completed_at >= $2)
+                            AND ($3::timestamptz IS NULL OR completed_at <= $3)), 0) AS range_volume
+       FROM order_states
+       -- COMPLETED only, and "completed_at" is what every window above filters
+       -- on. PAID was in this list while the windows all keyed off
+       -- "completed_at", which a PAID order does not have — so a PAID order
+       -- fell out of every dated bucket and still counted in "range_orders",
+       -- whose window is two NULL comparisons that a NULL date passes. A
+       -- merchant's lifetime volume therefore included money that had not
+       -- moved yet. "completed_at IS NOT NULL" rather than trusting the state,
+       -- because trap 17 says those are not the same question.
+       WHERE merchant_id = $1 AND state = 'COMPLETED' AND completed_at IS NOT NULL
+     ), paid AS (
+       -- WHAT THEY EARNED: the commission ledger, which is where merchant pay
+       -- actually lives (§26 — matched volume, above a high-water mark, from
+       -- the platform-funded pool). "commissionHighWaterMarks" reads the same
+       -- rows for the same reason.
+       SELECT
+         COALESCE(SUM(amount_paise) FILTER (WHERE created_at >= CURRENT_DATE), 0) AS today_paid,
+         COALESCE(SUM(amount_paise) FILTER (WHERE ($2::timestamptz IS NULL OR created_at >= $2)
+                            AND ($3::timestamptz IS NULL OR created_at <= $3)), 0) AS range_paid
+       FROM accounting_events
+       WHERE event_type = 'MERCHANT_BONUS_ISSUED'
+         AND ref_model = 'Merchant' AND ref_id = $1
+     )
+     SELECT * FROM work, paid`,
     params, 'stats_merchant_earnings',
   );
   const r = rows[0];
   return {
     today: {
+      // ONE figure, because commission is not attributed per order and cannot
+      // honestly be split across the two directions. It is paid on MATCHED
+      // volume — min(deposits, withdrawals) within a variety — so a deposit's
+      // "share" of it does not exist to be reported.
+      earned: rupees(r.today_paid),
       deposits: {
         count: r.today_deposit_count,
-        totalFees: rupees(r.today_deposit_fees),
         totalAmount: rupees(r.today_deposit_amount),
       },
       withdrawals: {
         count: r.today_withdrawal_count,
-        totalFees: rupees(r.today_withdrawal_fees),
         totalAmount: rupees(r.today_withdrawal_amount),
       },
     },
     lifetime: {
       totalOrders: r.range_orders,
-      totalEarnings: rupees(r.range_earnings),
+      totalEarnings: rupees(r.range_paid),
       totalVolume: rupees(r.range_volume),
     },
   };
@@ -728,14 +750,37 @@ export async function merchantDailyEarnings(merchantId, { days = 7, timezone = '
      )
      SELECT span.day,
             COUNT(o.order_id)::int AS orders,
-            COALESCE(SUM(o.merchant_profit_paise), 0) AS earnings,
-            COALESCE(SUM(o.fiat_amount_paise), 0)     AS volume
+            -- What the merchant was actually PAID that day, from the commission
+            -- ledger. This summed "merchant_profit_paise", which is written as
+            -- the literal 0 at order creation and never set again — commission
+            -- moved to "merchant_commission_*" and the wallet ledger (§26) — so
+            -- the weekly chart was a flat zero on every rail, for every
+            -- merchant, and looked like a merchant who had earned nothing.
+            --
+            -- A LATERAL rather than a second LEFT JOIN: joining two independent
+            -- sets to "span" multiplies their rows, so a day with three orders
+            -- and two payments would count each payment three times.
+            COALESCE(paid.amount, 0) AS earnings,
+            -- TOKENS, not "fiat_amount_paise". Trap 15's second mouth: on a
+            -- USDT order that column holds USDT, so a 50,000-token deposit
+            -- counted as 555 of volume beside a rupee order's 500, and the two
+            -- were added together.
+            COALESCE(SUM(o.token_amount_paise), 0) AS volume
        FROM span
        LEFT JOIN order_states o
          ON (o.completed_at AT TIME ZONE $2)::date = span.day
         AND o.merchant_id = $1
-        AND o.state IN ('PAID', 'COMPLETED')
-      GROUP BY span.day
+        -- COMPLETED only, for the reason "merchantEarnings" gives: every window
+        -- here keys off "completed_at", which a PAID order does not have.
+        AND o.state = 'COMPLETED'
+       LEFT JOIN LATERAL (
+         SELECT COALESCE(SUM(e.amount_paise), 0) AS amount
+           FROM accounting_events e
+          WHERE e.event_type = 'MERCHANT_BONUS_ISSUED'
+            AND e.ref_model = 'Merchant' AND e.ref_id = $1
+            AND (e.created_at AT TIME ZONE $2)::date = span.day
+       ) paid ON TRUE
+      GROUP BY span.day, paid.amount
       ORDER BY span.day ASC`,
     [String(merchantId), String(timezone), span], 'stats_merchant_daily',
   );

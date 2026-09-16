@@ -2162,16 +2162,38 @@ router.get('/earnings', merchantAuth, async (req, res) => {
         res.json({
             success: true,
             earnings: {
+                // `todayEarned` is a NUMBER at the top level, and `today` keeps
+                // the per-direction counts under it.
+                //
+                // The panel's `Earnings` interface declared `today: number` and
+                // rendered `formatMoneyCompact(earnings.today, rail)` — against
+                // an OBJECT. `Number({deposits, withdrawals})` is NaN, `|| 0`
+                // makes it 0, and the "Today's earnings" tile was structurally
+                // zero for every merchant on every rail. §23: TypeScript could
+                // not catch it because the interface was the thing that was
+                // wrong. The shapes agree now, and the panel reads a field that
+                // is a number where it treats it as one.
+                todayEarned: earnings.today.earned,
                 today: {
-                    deposits:    { totalFees: todayDeposits.totalFees,    totalAmount: todayDeposits.totalAmount,    count: todayDeposits.count },
-                    withdrawals: { totalFees: todayWithdrawals.totalFees, totalAmount: todayWithdrawals.totalAmount, count: todayWithdrawals.count },
+                    // No `totalFees`. Commission is paid on MATCHED volume
+                    // within a variety (§26), so there is no per-direction
+                    // share of it to report — reporting one would be inventing
+                    // an attribution the engine does not make.
+                    deposits:    { totalAmount: todayDeposits.totalAmount,    count: todayDeposits.count },
+                    withdrawals: { totalAmount: todayWithdrawals.totalAmount, count: todayWithdrawals.count },
                 },
                 lifetime: {
                     totalEarnings: lifetime.totalEarnings,
                     totalVolume:   lifetime.totalVolume,
                     totalOrders:   lifetime.totalOrders,
                 },
-                pending: req.merchant.earnings || 0,
+                // `merchants.earnings_paise`, which is also never written —
+                // the same dead column in a different table. It read as
+                // "commission owed but not yet paid", a state the engine does
+                // not have: it issues the ledger event and the wallet credit in
+                // one pass, or it skips the merchant entirely (§26.6, never
+                // partial-issue). Removed rather than reported as a permanent
+                // zero that an operator would read as "nothing outstanding".
             },
         });
     } catch (err) {

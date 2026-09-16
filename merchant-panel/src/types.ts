@@ -344,25 +344,37 @@ export interface LoginCredentials {
   loginType?: string;
 }
 
+/**
+ * What a merchant earned, as `getEarnings` returns it.
+ *
+ * ── Every field here is one the server actually sends ─────────────────────
+ * It declared `week`, `month` and `pending` as well, and a `lifetime` shape of
+ * `{deposits, withdrawals, totalEarnings}`. The server sends
+ * `{totalEarnings, totalVolume, totalOrders}` and has never sent the other
+ * three: `week` and `month` were literal zeroes assigned in the mapper, and
+ * `pending` came from `merchants.earnings_paise`, a column nothing writes.
+ *
+ * §23 — a type that lies is worse than no type. Every one of those typechecked
+ * and was `undefined` at runtime, so nothing could tell a reader that a figure
+ * they were about to render did not exist.
+ */
 export interface Earnings {
+  /** Commission credited today, from the ledger. Rupees, 1:1 with tokens. */
   today: number;
-  week: number;
-  month: number;
+  /** Commission credited over the requested range — lifetime when unbounded. */
   total: number;
   lifetime?: {
-    deposits: {
-      count: number;
-      totalAmount: number;
-      totalFees: number;
-    };
-    withdrawals: {
-      count: number;
-      totalAmount: number;
-      totalFees: number;
-    };
+    /** Commission actually issued: `MERCHANT_BONUS_ISSUED` events. */
     totalEarnings: number;
+    /**
+     * Matched volume, in TOKENS on both rails — never the order's own currency,
+     * which on a USDT order is USDT and cannot be added to a rupee order
+     * (trap 15).
+     */
+    totalVolume: number;
+    /** COMPLETED orders only. A PAID order is money that has not moved yet. */
+    totalOrders: number;
   };
-  pending?: number;
 }
 
 export interface Stats {
