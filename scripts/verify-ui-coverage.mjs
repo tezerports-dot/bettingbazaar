@@ -223,10 +223,56 @@ if (process.argv.includes('--unused')) {
     return new RegExp('(?<![A-Za-z0-9_\\-/])(?:/api)?/' + body + '(?![A-Za-z0-9_-])');
   };
   const unused = routes.filter(r => { const re = loose(r.path); return !Object.values(hay).some(h => re.test(h)); });
+
+  // ── Reached on a SIBLING's back ────────────────────────────────────────────
+  //
+  // The list above asks "does this path appear in a panel". That is a question
+  // about the PATH, and 32 paths here are served under more than one verb, so
+  // a panel that only GETs `/order/:id/status` answers it for the POST as well.
+  // That is not hypothetical: `POST /order/:orderId/status` was a second route
+  // to DISPUTED that skipped the ten-minute wait, no panel called it, and it
+  // stayed off this list for its whole life because `WalletPage` polls the GET.
+  //
+  // The verb cannot be read off the path — the merchant panel writes
+  // `request(ENDPOINTS.X.Y(id), { method: 'POST' })`, so it is not even in the
+  // same string. So look NEAR each match instead: `api.post(`, `.delete(` or a
+  // `method: 'PUT'` within a window of the hit. A route whose path is present
+  // and whose verb is not is not declared reached and not declared dead — it is
+  // reported as unproven, which is the true answer and the one a reader can act
+  // on. Ambiguity is printed, never resolved in the reassuring direction.
+  const WINDOW = 240;
+  const verbNear = (hay, re, method) => {
+    const verb = new RegExp(
+      `\\.${method.toLowerCase()}\\s*(?:<[^>()]*>)?\\s*\\(` +
+      `|method\\s*:\\s*['"\`]${method}['"\`]` +
+      `|method\\s*:\\s*['"\`]${method.toLowerCase()}['"\`]`);
+    for (const h of Object.values(hay)) {
+      for (const m of h.matchAll(new RegExp(re.source, 'g' + re.flags.replace('g','')))) {
+        const from = Math.max(0, m.index - WINDOW);
+        if (verb.test(h.slice(from, m.index + m[0].length + WINDOW))) return true;
+      }
+    }
+    return false;
+  };
+  const unproven = routes.filter(r =>
+    !unused.includes(r) &&
+    routes.some(o => o.path === r.path && o.method !== r.method) &&
+    !verbNear(hay, loose(r.path), r.method));
   console.log(`\nENDPOINTS WITH NO UI       : ${unused.length}  (informational)`);
   const byFile = {};
   for (const u of unused) (byFile[u.rel] ??= []).push(`${u.method} ${u.path}`);
   for (const [f, l] of Object.entries(byFile).sort((a, b) => b[1].length - a[1].length)) {
+    console.log(`\n── ${f}  (${l.length})`);
+    for (const x of l.sort()) console.log(`     ${x}`);
+  }
+
+  console.log(`\nVERB UNPROVEN              : ${unproven.length}  (informational)`);
+  console.log('   Path appears in a panel, but only as a sibling verb on the same path.');
+  console.log('   Either a screen calls it in a shape this scan cannot see, or nothing calls it.');
+  console.log("   A GET written `fetch(path, { headers })` has no verb token and lands here legitimately.");
+  const byVerbFile = {};
+  for (const u of unproven) (byVerbFile[u.rel] ??= []).push(`${u.method} ${u.path}`);
+  for (const [f, l] of Object.entries(byVerbFile).sort((a, b) => b[1].length - a[1].length)) {
     console.log(`\n── ${f}  (${l.length})`);
     for (const x of l.sort()) console.log(`     ${x}`);
   }
