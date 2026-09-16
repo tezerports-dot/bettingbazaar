@@ -1,6 +1,6 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * A payment-rail limiter spends its budget on what it actually bounds.
+ * A money limiter spends its budget on what it actually bounds.
  *
  * ── The defect this pins ───────────────────────────────────────────────────
  * `usdtDepositLimiter` allows five requests an hour and counted every one of
@@ -23,10 +23,23 @@
  * the refusals ARE the sweep. Skipping them there would switch the limiter off
  * while leaving it looking configured.
  *
- * So `railLimiter` takes `bounds` and refuses to build without it. This suite
+ * So `moneyLimiter` takes `bounds` and refuses to build without it. This suite
  * asserts both halves, because a fix that only proved the first half would be
  * one grep away from being applied to the other two and silently disabling
  * them.
+ *
+ * ── And the first fix only covered the rails ───────────────────────────────
+ * `railLimiter` was the helper, so the sweep that introduced `bounds` reached
+ * exactly the five limiters built with it. THREE more had the identical shape
+ * and were declared by hand, so they were never asked the question: bets
+ * (30/min), withdrawals (5/HOUR) and deposit creation (1/MINUTE). Driven
+ * against the live server, a brand-new player who mistyped an amount once —
+ * refused by name, "must be a multiple of 10 tokens" — was answered "You are
+ * starting purchases too quickly" on the corrected amount and could not buy
+ * for the rest of the minute; a player who typed it right first time was
+ * served. That is `CLAUDE.md` §0.5 rule 13: a fix that closes one instance and
+ * leaves its siblings. The helper is now `moneyLimiter` and every one of the
+ * eight goes through it.
  */
 import { describe, it, expect } from 'vitest';
 import express from 'express';
@@ -35,6 +48,7 @@ import { readFileSync } from 'node:fs';
 import {
   usdtDepositLimiter, orderRetryLimiter, cashLinkSupplyLimiter,
   utrGraceLimiter, cdmReceiptLimiter,
+  ipBetLimiter, withdrawalLimiter, depositCreateLimiter,
 } from '../../middleware/security.js';
 import { RATE_LIMIT_TIERS } from '../../config/security.config.js';
 
@@ -64,7 +78,7 @@ async function post(app, who, status) {
   return request(app).post('/go').set('X-Probe-Actor', who).send({ status });
 }
 
-describe('a rail limiter that bounds EFFECTS does not charge for refusals', () => {
+describe('a money limiter that bounds EFFECTS does not charge for refusals', () => {
   it('spends nothing on the four refusals that cost a real USDT purchase', async () => {
     const app = appWith(usdtDepositLimiter);
     const who = actor();
@@ -116,7 +130,50 @@ describe('a rail limiter that bounds EFFECTS does not charge for refusals', () =
   });
 });
 
-describe('a rail limiter that bounds ATTEMPTS still counts refusals', () => {
+describe('the three that were declared by hand, and so were never asked', () => {
+  it('a mistyped amount does not cost the player their purchase', async () => {
+    // The live sequence, exactly: one refusal the route explains, then the
+    // corrected amount. `depositCreateLimiter`'s schema default is ONE per
+    // minute, so before the fix the correction was the request that got 429.
+    const app = appWith(depositCreateLimiter);
+    const who = actor();
+
+    const typo = await post(app, who, 400);
+    expect(typo.status, 'the route refuses a non-multiple of 10 by name').toBe(400);
+
+    const corrected = await post(app, who, 200);
+    expect(corrected.status, 'the corrected amount must still be affordable').toBe(200);
+
+    // Still a real pace: the SECOND real purchase inside the minute is refused.
+    expect((await post(app, who, 200)).status).toBe(429);
+  });
+
+  it('a player refused five times can still ask for their money', async () => {
+    // Five per HOUR, and a first-time withdrawer is refused for ordinary
+    // reasons — below the floor, more than the winnings pocket holds, no bank
+    // details yet. Charging for those locked them out of their own money for
+    // an hour with no withdrawal ever created.
+    const app = appWith(withdrawalLimiter);
+    const who = actor();
+    for (let i = 0; i < RATE_LIMIT_TIERS.withdrawal.max; i++) {
+      expect((await post(app, who, 400)).status, `refusal ${i + 1}`).toBe(400);
+    }
+    expect((await post(app, who, 200)).status, 'the real withdrawal').toBe(200);
+  });
+
+  it('bets refused at a cycle boundary do not eat the minute', async () => {
+    // The seconds around a close are when a player is most likely to be
+    // refused AND trying hardest to get a real bet in.
+    const app = appWith(ipBetLimiter);
+    const who = actor();
+    for (let i = 0; i < RATE_LIMIT_TIERS.bet.max; i++) {
+      expect((await post(app, who, 400)).status, `closed-cycle refusal ${i + 1}`).toBe(400);
+    }
+    expect((await post(app, who, 200)).status, 'the bet that was actually placed').toBe(200);
+  });
+});
+
+describe('a money limiter that bounds ATTEMPTS still counts refusals', () => {
   it('bounds a sweep across other orders, which is nothing but refusals', async () => {
     // If this ever starts passing at 200, the grace-claim and CDM limiters have
     // been switched off by a change that looked like a consistency fix.
@@ -135,12 +192,12 @@ describe('a rail limiter that bounds ATTEMPTS still counts refusals', () => {
 });
 
 describe('the declaration cannot be omitted', () => {
-  it('every rail limiter states which kind it is', () => {
+  it('every money limiter states which kind it is', () => {
     // Read as source: the point is that a NEW limiter cannot be added without
     // the decision, and a call site is the only place that shows.
     const src = readFileSync(new URL('../../middleware/security.js', import.meta.url), 'utf8');
-    const calls = src.match(/railLimiter\(\s*'rl:[^)]*?\)/gs) ?? [];
-    expect(calls.length, 'rail limiters found').toBeGreaterThanOrEqual(5);
+    const calls = src.match(/moneyLimiter\(\s*'rl:[^)]*?\)/gs) ?? [];
+    expect(calls.length, 'money limiters found').toBeGreaterThanOrEqual(8);
     for (const call of calls) {
       expect(call, call.slice(0, 60)).toMatch(/bounds:\s*'(effects|attempts)'/);
     }
@@ -151,6 +208,6 @@ describe('the declaration cannot be omitted', () => {
     // throws, so an omission is a boot failure rather than a silent default.
     const src = readFileSync(new URL('../../middleware/security.js', import.meta.url), 'utf8');
     expect(src).toMatch(/bounds !== 'effects' && bounds !== 'attempts'/);
-    expect(src).toMatch(/throw new Error\(`railLimiter/);
+    expect(src).toMatch(/throw new Error\(`moneyLimiter/);
   });
 });

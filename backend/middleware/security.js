@@ -291,19 +291,22 @@ export const twoFactorLimiter = rateLimit({
     },
 });
 
-export const ipBetLimiter = rateLimit({
-    store: createRateLimitStore('rl:bet:'),
-    ...RATE_LIMIT_TIERS.bet, // 30 / min
-    message: { 
-        success: false,
-        message: "Slow down! You are placing bets too quickly. Please wait a moment."
-    },
-    standardHeaders: true,
-    legacyHeaders: false,
-    // Track per user, not per IP (users may share IPs). This comment was
-    // already here, above a line that tracked per IP — see `actorKey`.
-    keyGenerator: actorKey
-});
+/*
+ * 'effects'. A bet the server refused — the cycle had closed, the stake was
+ * outside the board's limits, the balance would not cover it — placed nothing,
+ * so it must not cost one of the thirty. The window where a player is most
+ * likely to be refused is the seconds around a cycle boundary, which is also
+ * exactly when they are trying hardest to get a real bet in.
+ *
+ * Keyed per user, not per IP (players share IPs). That comment was already
+ * here, above a line that keyed on the IP — see `actorKey`.
+ */
+export const ipBetLimiter = moneyLimiter(
+    'rl:bet:',
+    RATE_LIMIT_TIERS.bet, // 30 / min
+    'Slow down! You are placing bets too quickly. Please wait a moment.',
+    { bounds: 'effects' },
+);
 
 
 export const betLimiter = [ipBetLimiter, betBehaviorLimiter];
@@ -314,19 +317,22 @@ export const betLimiter = [ipBetLimiter, betBehaviorLimiter];
 
 // Rate limiter for withdrawal requests
 // Prevents rapid withdrawal attempts
-export const withdrawalLimiter = rateLimit({
-    store: createRateLimitStore('rl:withdraw:'),
-    ...RATE_LIMIT_TIERS.withdrawal, // 5 / hour
-    message: { 
-        success: false,
-        message: "Too many withdrawal requests. Please wait before trying again."
-    },
-    standardHeaders: true,
-    legacyHeaders: false,
-    // Per user. Keyed on the IP, a withdrawal cap is reset by a mobile
-    // reconnect — and this one guards money leaving the platform.
-    keyGenerator: actorKey
-});
+/*
+ * 'effects'. Five per HOUR, and a withdrawal is the request a player is most
+ * likely to get refused on the first few tries: below the floor, more than the
+ * winnings pocket holds, no bank details on file yet. Charging for those spent
+ * a player's whole hour before one withdrawal existed — locked out of their own
+ * money by the messages telling them how to ask for it.
+ *
+ * Keyed per user, not per IP: keyed on the IP a withdrawal cap is reset by a
+ * mobile reconnect, and this one guards money leaving the platform.
+ */
+export const withdrawalLimiter = moneyLimiter(
+    'rl:withdraw:',
+    RATE_LIMIT_TIERS.withdrawal, // 5 / hour
+    'Too many withdrawal requests. Please wait before trying again.',
+    { bounds: 'effects' },
+);
 
 // ==================== PAYMENT RAIL RATE LIMITERS ====================
 //
@@ -377,13 +383,17 @@ export const withdrawalLimiter = rateLimit({
  * 'effects' is off, and an 'effects' limiter written as 'attempts' locks out
  * the people it was meant to serve.
  */
-function railLimiter(prefix, tier, message, { bounds }) {
+function moneyLimiter(prefix, tier, message, { bounds, ...rest }) {
     if (bounds !== 'effects' && bounds !== 'attempts') {
-        throw new Error(`railLimiter(${prefix}): \`bounds\` must be 'effects' or 'attempts'.`);
+        throw new Error(`moneyLimiter(${prefix}): \`bounds\` must be 'effects' or 'attempts'.`);
     }
     return rateLimit({
         store: createRateLimitStore(prefix),
         ...tier,
+        // Anything else the limiter needs (a dynamic `limit`, a `skip`). It is
+        // spread BEFORE the fixed keys so a caller cannot quietly override the
+        // actor key or the `bounds` decision by passing them here.
+        ...rest,
         message: { success: false, message },
         standardHeaders: true,
         legacyHeaders: false,
@@ -409,14 +419,14 @@ function railLimiter(prefix, tier, message, { bounds }) {
  * describing an abandoned plan — and it is also what made the budget look like
  * it was protecting somebody else's server rather than the player's own hour.
  */
-export const usdtDepositLimiter = railLimiter(
+export const usdtDepositLimiter = moneyLimiter(
     'rl:usdtdep:', RATE_LIMIT_TIERS.usdtDeposit,
     'Too many USDT purchase attempts. Please wait before trying again.',
     { bounds: 'effects' },
 );
 
 /** Retrying an order: a new order, and on a sell a new escrow lock. */
-export const orderRetryLimiter = railLimiter(
+export const orderRetryLimiter = moneyLimiter(
     'rl:retry:', RATE_LIMIT_TIERS.orderRetry,
     'Too many retries. Please wait before trying again.',
     { bounds: 'effects' },
@@ -430,14 +440,14 @@ export const orderRetryLimiter = railLimiter(
  * that has not claimed it gets a refusal every time — the refusals ARE the
  * sweep this bounds, and skipping them would leave it counting nothing.
  */
-export const utrGraceLimiter = railLimiter(
+export const utrGraceLimiter = moneyLimiter(
     'rl:utrgrace:', RATE_LIMIT_TIERS.utrGrace,
     'Too many requests. Please wait a moment.',
     { bounds: 'attempts' },
 );
 
 /** A merchant supplying a cash link from an ATM. */
-export const cashLinkSupplyLimiter = railLimiter(
+export const cashLinkSupplyLimiter = moneyLimiter(
     'rl:cashlink:', RATE_LIMIT_TIERS.cashLinkSupply,
     'Too many links supplied. Please wait before supplying another.',
     { bounds: 'effects' },
@@ -450,7 +460,7 @@ export const cashLinkSupplyLimiter = railLimiter(
  * caller walking other orders to find one without a receipt produces refusals
  * and nothing else.
  */
-export const cdmReceiptLimiter = railLimiter(
+export const cdmReceiptLimiter = moneyLimiter(
     'rl:cdm:', RATE_LIMIT_TIERS.cdmReceipt,
     'Too many receipt submissions. Please wait before trying again.',
     { bounds: 'attempts' },
@@ -499,19 +509,22 @@ async function depositPacePerMinute() {
     }
 }
 
-export const depositCreateLimiter = rateLimit({
-    store: createRateLimitStore('rl:depcreate:'),
-    windowMs: 60 * 1000,
-    limit: depositPacePerMinute,
-    skip: async () => (await depositPacePerMinute()) === 0,
-    message: {
-        success: false,
-        message: 'You are starting purchases too quickly. Please wait a moment and try again.',
-    },
-    standardHeaders: true,
-    legacyHeaders: false,
-    keyGenerator: actorKey,
-});
+/*
+ * 'effects', and at a limit of ONE per minute this is the sharpest instance of
+ * the whole class. Measured on the live server: a player who mistypes the
+ * amount once — the route refuses it BY NAME, "must be a multiple of 10
+ * tokens" — is answered "You are starting purchases too quickly" on the
+ * corrected amount, and cannot buy for the rest of the minute. A player who
+ * types it right the first time is served. The refusal that taught them the
+ * rule is the thing that took the budget away, on the first action a new
+ * account performs.
+ */
+export const depositCreateLimiter = moneyLimiter(
+    'rl:depcreate:',
+    { windowMs: 60 * 1000, limit: depositPacePerMinute },
+    'You are starting purchases too quickly. Please wait a moment and try again.',
+    { bounds: 'effects', skip: async () => (await depositPacePerMinute()) === 0 },
+);
 
 // ==================== GENERAL API RATE LIMITER ====================
 
