@@ -14,6 +14,12 @@
  *  4. Provider calls our webhook on every bet/win → we debit/credit user wallet
  */
 import express from 'express';
+// Enabling or disabling a provider changes which origins a game may be framed
+// from, so the CSP's frame-src is re-read here. This is an OPTIMISATION, not
+// the guarantee: `providerFrameSources` refreshes on its own timer, so a fourth
+// mutation path that forgets this call costs at most that window and never
+// correctness. A hook that has to be remembered in N places is §2's shape.
+import { refreshProviderFrameSources } from './providerFrameSources.js';
 // Balances go to a third-party provider. They come from the wallet.
 import { getBalances } from '../wallet/walletAuthority.service.js';
 import { db } from '#db';
@@ -386,6 +392,7 @@ router.put('/admin/game-providers/:key', authenticate, isAdmin, async (req, res)
 
     const provider = await db.games.updateProvider(req.params.key, patch, { updatedBy: req.user.userId });
     if (!provider) return res.status(404).json({ success: false, message: 'Provider not found' });
+    await refreshProviderFrameSources();
 
     // Who changed a payment-facing integration, and which fields — without the
     // values, because an audit log is not a place to put an API secret.
@@ -480,6 +487,7 @@ router.post('/admin/game-providers', authenticate, isAdmin, async (req, res) => 
       updatedBy: req.user.userId,
     });
     if (!provider) return res.status(409).json({ success: false, message: `Provider "${slug}" already exists` });
+    await refreshProviderFrameSources();
 
     await db.audit.recordDetailed({
       performedBy: req.user.userId, action: 'GAME_PROVIDER_CREATED', category: 'CONFIG',
@@ -512,6 +520,7 @@ router.delete('/admin/game-providers/:key', authenticate, isAdmin, async (req, r
         message: `${result.games} game${result.games === 1 ? '' : 's'} still use this provider. Remove or reassign them first.`,
       });
     }
+    await refreshProviderFrameSources();
     await db.audit.recordDetailed({
       performedBy: req.user.userId, action: 'GAME_PROVIDER_DELETED', category: 'CONFIG',
       targetType: 'GameProvider', targetId: req.params.key,

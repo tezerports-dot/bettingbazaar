@@ -31,12 +31,47 @@ export const CSP_DIRECTIVES = {
   imgSrc:     ["'self'", 'data:', 'https:'],
   connectSrc: ["'self'", 'wss:', 'ws:', 'https:'],
   objectSrc:  ["'none'"], manifestSrc: ["'self'"],
+  // `frameSrc` is NOT here. It is the one directive whose value is data in the
+  // database — see `helmetOptionsFraming` below and providerFrameSources.js.
 };
 
 export const HELMET_OPTIONS = {
   contentSecurityPolicy: { directives: CSP_DIRECTIVES },
   crossOriginEmbedderPolicy: false, // provider game iframes + CDN images
 };
+
+/**
+ * The helmet options, for a given set of frameable origins.
+ *
+ * ── Why `frame-src` cannot be a literal in this file ──────────────────────
+ * WHO WE MAY FRAME. `frameAncestors` — who may frame US — was here from
+ * helmet's defaults and this was not, and they are opposite questions. With no
+ * `frame-src`, CSP falls back to `default-src 'self'`, so every provider game
+ * the platform can launch was blocked by the browser: CasinoPage, CrashPage and
+ * SportsPage each rendered their chrome around a blank frame, with the refusal
+ * only in the browser console.
+ *
+ * The answer lives in `game_providers`, which an admin edits. A literal list
+ * here would be a second owner of "who are our suppliers" (§2, §5) — an
+ * operator would add a provider, the game would still not load, and nothing
+ * would say why.
+ *
+ * ── Why a BUILDER rather than a function in the directive ─────────────────
+ * Helmet's directive values are ITERABLES. It accepts a function as an ELEMENT
+ * of one — `(req, res) => 'https://x'`, a single source — but not in place of
+ * the list, and passing one throws `directiveValue is not iterable` at boot.
+ * So the middleware is rebuilt when the set of origins changes, which uses
+ * helmet exactly as designed and keeps this file pure data plus one pure
+ * function. `cspMiddleware.js` owns the rebuilding.
+ */
+export function helmetOptionsFraming(frameSrc = []) {
+  return {
+    ...HELMET_OPTIONS,
+    contentSecurityPolicy: {
+      directives: { ...CSP_DIRECTIVES, frameSrc: ["'self'", ...frameSrc] },
+    },
+  };
+}
 
 // ── CORS ──────────────────────────────────────────────────────────────────────
 // The origin check function stays in server.js (it closes over env parsing);

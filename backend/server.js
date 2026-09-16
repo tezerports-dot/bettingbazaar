@@ -7,7 +7,6 @@ import http         from 'http';
 import https        from 'https';
 import { Server as SocketIOServer } from 'socket.io';
 import cors         from 'cors';
-import helmet       from 'helmet';
 import compression  from 'compression';
 import rateLimit    from 'express-rate-limit';
 // AQ-6 (Express 5): the sanitizer package this replaced reassigned the now read-only
@@ -98,7 +97,9 @@ import { seedGameRegistry } from './domains/gameRegistry/gameRegistry.seed.js';
 import { httpMetrics, metricsHandler, setRealtimeStatsProvider } from './services/metrics.service.js';
 // Plan items 19/21/28/24/4/51 (2026-07-13): central security + network config,
 // OWASP filter, service registry, storage abstraction.
-import { HELMET_OPTIONS, CORS_SHAPE, RATE_LIMIT_TIERS, isPhantomBetPlacement } from './config/security.config.js';
+import { CORS_SHAPE, RATE_LIMIT_TIERS, isPhantomBetPlacement } from './config/security.config.js';
+import { refreshProviderFrameSources, startProviderFrameSourceRefresh } from './domains/casino/providerFrameSources.js';
+import { securityHeaders } from './middleware/cspMiddleware.js';
 import { network, canonicalRedirect } from './config/network.config.js';
 import {
   attachProxyProtocolRequestMetadata,
@@ -202,7 +203,14 @@ const PORT = network.port; // item 28: single parse point in config/network.conf
 app.use(rejectAmbiguousFraming);
 app.use(attachProxyProtocolRequestMetadata);
 app.use(compression());
-app.use(helmet(HELMET_OPTIONS));
+// The CSP's `frame-src` is read from `game_providers`, so the first read has to
+// happen before a response can need it, and it has to keep happening. Not
+// awaited: a database that is not up yet must not stop the server binding, and
+// an empty list is `default-src 'self'` — the behaviour that shipped — which
+// self-heals on the next refresh. See providerFrameSources.js, "Failing closed".
+refreshProviderFrameSources();
+startProviderFrameSourceRefresh();
+app.use(securityHeaders);
 // Item 29: optional canonical-host 301 (only when CANONICAL_HOST is set; keys
 // on the requested Host only — see network.config.js).
 app.use(canonicalRedirect);
