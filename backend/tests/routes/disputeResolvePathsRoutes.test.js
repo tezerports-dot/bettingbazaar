@@ -116,8 +116,15 @@ describePg('disputes are raised and resolved, not half-written', () => {
   });
 
   describe('an admin resolves a dispute', () => {
+    /**
+     * A disputed order WITH a funded merchant, because that is the only kind
+     * that exists: a deposit reaches DISPUTED from PAID, and nothing reaches
+     * PAID unassigned. These fixtures had none, and passed only because the
+     * release credited the player while debiting nobody — it MINTED the tokens.
+     */
     const disputed = async (opts) => {
-      const orderId = await order(opts);
+      const merchant = opts.merchant || await merchantActor({ tokensRupees: 50_000 });
+      const orderId = await order({ ...opts, merchant });
       await transitionOrder(orderId, 'DISPUTED', {
         set: { disputeReason: 'no credit', disputeRaisedBy: 'merchant', disputeRaisedAt: new Date() },
       });

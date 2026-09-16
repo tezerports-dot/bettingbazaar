@@ -14,7 +14,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { pgConfigured, applySchema, closePg } from '#db/client.js';
 import { getBalancesPaise } from '#db/repositories/wallets.core.js';
 import { createOrderRecord, getOrderRecord, setOrderFields } from '#db/repositories/orders.record.js';
-import { mountRouter, actor, as, request } from './_harness.js';
+import { mountRouter, actor, merchantActor, as, request } from './_harness.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 
@@ -32,17 +32,30 @@ describePg('dispute resolution routes', () => {
 
   afterAll(async () => { await closePg(); });
 
+  /**
+   * A disputed order WITH a funded merchant on it, because that is the only
+   * kind that exists.
+   *
+   * A deposit reaches DISPUTED from PAID, and nothing reaches PAID without an
+   * assigned merchant — so a merchantless disputed deposit is not a case this
+   * route can meet in production. These fixtures had no merchant, and passed
+   * only because the release credited the player while debiting nobody: it
+   * MINTED the tokens. Releasing now moves them from the merchant who owes
+   * them, which needs a merchant who has them.
+   */
   const disputed = async ({ type = 'DEPOSIT', tokens = 500, owner = null, merchantCreditStatus = null } = {}) => {
     seq += 1;
     const who = owner || await actor({});
+    const merchant = await merchantActor({ tokensRupees: 50_000 });
     const orderId = `DR-${RUN}-${seq}`;
     await createOrderRecord({
       orderId, userId: who.userId, type,
       tokenAmountRupees: tokens, fiatAmountRupees: tokens, state: 'DISPUTED',
+      merchantId: merchant.merchantId,
       ...(type === 'DEPOSIT' ? { depositAllocation: tokens, reserveAllocation: 0 } : {}),
       ...(merchantCreditStatus ? { merchantCreditStatus } : {}),
     });
-    return { orderId, who };
+    return { orderId, who, merchant };
   };
 
   // ── Authorisation & validation ──────────────────────────────────────────────

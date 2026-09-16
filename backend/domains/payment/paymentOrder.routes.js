@@ -209,7 +209,42 @@ router.post('/payment-orders/:orderId/resolve', authenticate, hasPermission('can
     if (resolution === 'release') {
       // Release: complete the order — credit tokens to user (DEPOSIT) or mark complete (WITHDRAWAL)
       if (order.type === 'DEPOSIT') {
-        await creditDeposit(order.userId, order.tokenAmount, String(order.orderId));
+        // ── Through the ONE owner, exactly as the two confirm routes do ────
+        // This used to be `creditDeposit(userId, order.tokenAmount, …)` — the
+        // WHOLE amount into the betting pocket — plus a hand-rolled merchant
+        // debit below. A subset of `moveDepositMoney`, and it differed from it
+        // in three ways that all reached a real person:
+        //
+        //   the SPLIT     `deposit_policies` decides how a deposit divides
+        //                 between the betting balance and the reserve (§2), and
+        //                 this path did not ask it. The same ₹1,000 landed as
+        //                 ₹900 + ₹100 when confirmed normally and ₹1,000 + ₹0
+        //                 when released through a dispute — measured, on a live
+        //                 server, before this change.
+        //   the UTR       never released, so the reference stayed held against
+        //                 an order that had finished.
+        //   the STREAK    `clearPlayerPaymentFailures` never ran. That is the
+        //                 one point where the money is KNOWN to have arrived,
+        //                 and a dispute resolved in the player's favour is
+        //                 exactly that. So a player who was right, and whom an
+        //                 admin agreed with, kept a payment-failure strike —
+        //                 and three of those stop them opening a new order for
+        //                 an hour, on both rails (§2).
+        //
+        // `allowOverdraft` keeps this site's documented semantics: an admin has
+        // already decided, and the transition above has already committed, so
+        // refusing the money now would leave the order resolved and the player
+        // uncredited. The merchant going negative is correct — they owe it.
+        const moved = await moveDepositMoney(order, {
+          debitMerchantTokens, creditDeposit, creditReserve, releaseUTR,
+          allowOverdraft: true,
+        });
+        if (!moved.ok) {
+          // `moveDepositMoney` has already reported it. Loud here too: the
+          // order is resolved and the player is not credited, which is a repair
+          // case a person has to see.
+          console.error(`[dispute resolve] ${order.orderId} released but money did not move:`, moved.reason);
+        }
       } else {
         // WITHDRAWAL release: the tokens were locked when the order was created
         // and the escrow already debited them, so completing is all that is
@@ -224,19 +259,12 @@ router.post('/payment-orders/:orderId/resolve', authenticate, hasPermission('can
         await emitWalletUpdate(order.userId);
       }
 
-      // Merchant inventory deduction for DEPOSIT
-      // GOVERNANCE §1: via merchantWallet.service.js; canonical txId means a
-      // deposit already deducted via the normal confirm/approve path is NOT
-      // deducted again here (idempotent no-op). allowOverdraft preserves this
-      // site's historical blind-$inc semantics.
-      if (order.type === 'DEPOSIT' && order.merchantId) {
-        await debitMerchantTokens({
-          merchantId: order.merchantId, amount: order.tokenAmount,
-          reason: `Deposit ${order.orderId} released via dispute resolution`,
-          refModel: 'PaymentOrder', refId: String(order.orderId),
-          txId: `mw_dep_deduct_${order.orderId}`, allowOverdraft: true,
-        }).catch(e => console.error('[dispute resolve] tokenBalance decrement:', e.message));
-      }
+      // The merchant debit was HERE, as a second call carrying the same
+      // canonical txId. `moveDepositMoney` above owns it now — it debits the
+      // merchant and credits the player as one decision, which is the whole
+      // point of there being one owner. Two calls with one key worked only
+      // because the key made the second a no-op; that is idempotency covering
+      // for a duplicate, not an absence of one.
 
       // The order was written by the transition above, resolution fields and
       // all — there is no second save, and therefore no window in which the

@@ -201,6 +201,21 @@ export async function reportUncreditableDeposit(order, total) {
  */
 export async function moveDepositMoney(order, {
   debitMerchantTokens, creditDeposit, creditReserve, releaseUTR,
+  /**
+   * Let the merchant's balance go negative rather than refusing the movement.
+   *
+   * FALSE everywhere a merchant is choosing to confirm: they are asserting the
+   * money arrived, and a merchant who cannot fund it must be refused so the
+   * order stays PAID and retryable.
+   *
+   * TRUE for exactly one caller — an ADMIN resolving a dispute in the player's
+   * favour. There the decision has already been made by a person who looked at
+   * the evidence, and the transition has already committed; refusing the money
+   * afterwards would leave the order resolved and the player uncredited, which
+   * is the §21 shape this whole module exists to avoid. The merchant going
+   * negative is the correct outcome: they owe it.
+   */
+  allowOverdraft = false,
 }) {
   const { depositCredit, reserveCredit, total } = depositCreditSplit(order);
 
@@ -209,6 +224,7 @@ export async function moveDepositMoney(order, {
     reason: `Deposit ${order.orderId} confirmed — tokens dispensed to user`,
     refModel: 'PaymentOrder', refId: order.orderId,
     txId: `mw_dep_deduct_${order.orderId}`,
+    ...(allowOverdraft ? { allowOverdraft: true } : {}),
   });
   if (!debited) {
     await reportUncreditableDeposit(order, total);

@@ -2,7 +2,10 @@
 
 import { express, authenticate, isAdmin, isAdminOrSubAdmin, hasPermission } from '../../routes/admin/_adminShared.js';
 import { db } from '#db';
-import { creditDeposit, creditWinnings } from '../wallet/walletAuthority.service.js';
+import { creditDeposit, creditReserve, creditWinnings } from '../wallet/walletAuthority.service.js';
+import { moveDepositMoney } from '../payment/depositCredit.js';
+import { debitMerchantTokens } from '../merchant/merchantWallet.service.js';
+import { releaseUTR } from '../../middleware/utrValidation.js';
 // The order state machine. Resolving a dispute is a guarded transition, and it
 // runs BEFORE any money moves so that it is what decides the race.
 import { completeOrder, cancelOrder } from '../payment/orderLifecycle.service.js';
@@ -308,8 +311,48 @@ router.post('/dispute-orders/:orderId/resolve', authenticate, isAdmin, async (re
     // ── Apply token movement based on decision + order type ──────────────────
     if (order.type === 'DEPOSIT') {
       if (decision === 'RELEASE_TO_USER') {
-        await creditDeposit(order.userId, order.tokenAmount,
-          `Dispute resolved — deposit credited: ${order.orderId}`);
+        // ── Through `moveDepositMoney`, the one owner of a deposit credit ──
+        // This was `creditDeposit(userId, order.tokenAmount, <a sentence>)`,
+        // and it was wrong in four ways at once. Every one of them reached
+        // money, and this is the route the Disputes screen actually calls.
+        //
+        //  1. TOKENS WERE MINTED. Nothing in this file debits a merchant —
+        //     `grep -c debitMerchant` returns 0. The player was credited and
+        //     the tokens came from nowhere, so a released dispute broke the
+        //     conservation the whole settlement design rests on. The other
+        //     resolve route debited the merchant; this one never has.
+        //
+        //  2. THE IDEMPOTENCY KEY WAS A SENTENCE. The third argument is the
+        //     ORDER ID — `creditDeposit` builds `dep_complete_<orderId>` from
+        //     it. Passing "Dispute resolved — deposit credited: DEP_…" makes a
+        //     DIFFERENT key from the one the normal confirm uses, so the gate
+        //     could not see that the deposit had already been credited: an
+        //     order confirmed normally and then released here was paid TWICE.
+        //     `moveDepositMoney` warns about exactly this in as many words —
+        //     "a sentence here would make a second key for the same deposit and
+        //     open the idempotency gate."
+        //
+        //  3. NO SPLIT. `deposit_policies` decides how a deposit divides
+        //     between the betting balance and the reserve (§2); the whole
+        //     amount went to the betting pocket.
+        //
+        //  4. NO UTR RELEASE, AND NO STREAK CLEAR. A dispute resolved in the
+        //     player's favour IS the money arriving, which is the one point
+        //     where `clearPlayerPaymentFailures` is meant to run — so a player
+        //     who was right, and whom an admin agreed with, kept a
+        //     payment-failure strike toward an hour-long buying lockout.
+        //
+        // `allowOverdraft` because an admin has already decided and the
+        // transition has already committed: refusing the money now would leave
+        // the dispute resolved and the player uncredited. A merchant going
+        // negative is the correct outcome — they owe it.
+        const moved = await moveDepositMoney(order, {
+          debitMerchantTokens, creditDeposit, creditReserve, releaseUTR,
+          allowOverdraft: true,
+        });
+        if (!moved.ok) {
+          console.error(`[dispute resolve] ${order.orderId} released but money did not move:`, moved.reason);
+        }
         systemMessage = `✅ Admin Decision: DEPOSIT APPROVED\n` +
           `${order.tokenAmount} tokens credited to user deposit balance.\n` +
           `Resolution: ${resolution}`;
