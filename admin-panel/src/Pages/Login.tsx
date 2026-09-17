@@ -198,8 +198,8 @@ export const Login: React.FC = () => {
             </div>
 
             {/* Password */}
-            <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: 'var(--text-2)', marginBottom: 7 }}>Password</label>
-            <input
+            <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: 'var(--text-2)', marginBottom: 7 }} htmlFor="password">Password</label>
+            <input id="password"
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}

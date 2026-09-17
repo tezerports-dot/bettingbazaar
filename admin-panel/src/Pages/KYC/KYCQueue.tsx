@@ -234,8 +234,8 @@ export const KYCQueue: React.FC = () => {
           <div className="space-y-4">
             <p className="text-gray-400">Rejecting KYC for <strong>{rejectUser.username}</strong>. They will be told the reason and asked to contact support.</p>
             <div>
-              <label className="label">Rejection Reason *</label>
-              <textarea value={rejectReason} onChange={(e) => setRejectReason(e.target.value)} className="input min-h-[100px]" placeholder="Please provide a clear reason for rejection…" required />
+              <label className="label" htmlFor="rejection-reason">Rejection Reason *</label>
+              <textarea id="rejection-reason" value={rejectReason} onChange={(e) => setRejectReason(e.target.value)} className="input min-h-[100px]" placeholder="Please provide a clear reason for rejection…" required />
             </div>
             <div className="flex space-x-3">
               <button onClick={() => { setRejectUser(null); setRejectReason(''); }} className="flex-1 btn-secondary">Cancel</button>

@@ -207,8 +207,8 @@ export const ChatSupport: React.FC = () => {
           <div className="space-y-4">
             <p className="text-gray-400">Bans this user from public chat for 24 hours. Recorded in Audit Logs.</p>
             <div>
-              <label className="label">Reason *</label>
-              <textarea value={banReason} onChange={(e) => setBanReason(e.target.value)} className="input min-h-[90px]" placeholder="Reason for the ban…" required />
+              <label className="label" htmlFor="reason">Reason *</label>
+              <textarea id="reason" value={banReason} onChange={(e) => setBanReason(e.target.value)} className="input min-h-[90px]" placeholder="Reason for the ban…" required />
             </div>
             <div className="flex space-x-3">
               <button onClick={() => { setBanTarget(null); setBanReason(''); }} className="flex-1 btn-secondary">Cancel</button>

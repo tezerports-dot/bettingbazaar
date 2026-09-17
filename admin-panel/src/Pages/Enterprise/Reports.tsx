@@ -78,8 +78,8 @@ export const Reports: React.FC = () => {
         ]}
       />
       <div className="flex items-end gap-2 flex-wrap">
-        <div><label className="label">From</label><input type="date" className="input" style={{ width: 170 }} value={from} onChange={(e) => setFrom(e.target.value)} /></div>
-        <div><label className="label">To</label><input type="date" className="input" style={{ width: 170 }} value={to} onChange={(e) => setTo(e.target.value)} /></div>
+        <div><label className="label" htmlFor="from">From</label><input id="from" type="date" className="input" style={{ width: 170 }} value={from} onChange={(e) => setFrom(e.target.value)} /></div>
+        <div><label className="label" htmlFor="to">To</label><input id="to" type="date" className="input" style={{ width: 170 }} value={to} onChange={(e) => setTo(e.target.value)} /></div>
         <button onClick={load} className="btn-primary flex items-center h-10" disabled={loading}>
           <RefreshCw size={16} className={`mr-2 ${loading ? 'animate-spin' : ''}`} /> Run
         </button>

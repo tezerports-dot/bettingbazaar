@@ -205,8 +205,8 @@ export const TelegramConfig: React.FC = () => {
           </div>
 
           <div style={{ gridColumn: '1 / -1' }}>
-            <label style={label}>Recovery bot token</label>
-            <input
+            <label style={label} htmlFor="recovery-bot-token">Recovery bot token</label>
+            <input id="recovery-bot-token"
               type="password" autoComplete="off" value={form.recoveryBotToken}
               onChange={(e) => setForm({ ...form, recoveryBotToken: e.target.value })}
               placeholder="Optional — a SECOND bot, not the same one" className="font-mono" style={input}
@@ -225,22 +225,22 @@ export const TelegramConfig: React.FC = () => {
             />
           </div>
           <div>
-            <label style={label}>Channel @username</label>
-            <input
+            <label style={label} htmlFor="channel-username">Channel @username</label>
+            <input id="channel-username"
               value={form.channelUsername} onChange={(e) => setForm({ ...form, channelUsername: e.target.value })}
               placeholder="bettingbazaar" style={input}
             />
           </div>
           <div>
-            <label style={label}>Channel invite link</label>
-            <input
+            <label style={label} htmlFor="channel-invite-link">Channel invite link</label>
+            <input id="channel-invite-link"
               value={form.channelInviteLink} onChange={(e) => setForm({ ...form, channelInviteLink: e.target.value })}
               placeholder="https://t.me/+…" style={input}
             />
           </div>
           <div>
-            <label style={label}>Public URL for the webhook</label>
-            <input
+            <label style={label} htmlFor="public-url-for-the-webhook">Public URL for the webhook</label>
+            <input id="public-url-for-the-webhook"
               value={form.webhookBaseUrl} onChange={(e) => setForm({ ...form, webhookBaseUrl: e.target.value })}
               placeholder="https://your-domain.example" style={input}
             />
@@ -249,8 +249,8 @@ export const TelegramConfig: React.FC = () => {
             </div>
           </div>
           <div style={{ gridColumn: '1 / -1' }}>
-            <label style={label}>Reason</label>
-            <input
+            <label style={label} htmlFor="reason">Reason</label>
+            <input id="reason"
               value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })}
               placeholder="e.g. previous bot suspended by Telegram" style={input}
             />
@@ -329,16 +329,16 @@ export const TelegramConfig: React.FC = () => {
             />
           </div>
           <div>
-            <label style={label}>Channel @username</label>
-            <input
+            <label style={label} htmlFor="channel-username-2">Channel @username</label>
+            <input id="channel-username-2"
               value={channelForm.channelUsername}
               onChange={(e) => setChannelForm({ ...channelForm, channelUsername: e.target.value })}
               placeholder="bettingbazaar" style={input}
             />
           </div>
           <div>
-            <label style={label}>Invite link</label>
-            <input
+            <label style={label} htmlFor="invite-link">Invite link</label>
+            <input id="invite-link"
               value={channelForm.channelInviteLink}
               onChange={(e) => setChannelForm({ ...channelForm, channelInviteLink: e.target.value })}
               placeholder="https://t.me/+…" style={input}
@@ -348,8 +348,8 @@ export const TelegramConfig: React.FC = () => {
             </div>
           </div>
           <div>
-            <label style={label}>Reason</label>
-            <input
+            <label style={label} htmlFor="reason-2">Reason</label>
+            <input id="reason-2"
               value={channelForm.reason}
               onChange={(e) => setChannelForm({ ...channelForm, reason: e.target.value })}
               placeholder="e.g. old channel deleted" style={input}

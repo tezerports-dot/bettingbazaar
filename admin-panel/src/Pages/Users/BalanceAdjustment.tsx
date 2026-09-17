@@ -62,15 +62,15 @@ export const BalanceAdjustment: React.FC = () => {
             </div>
           </div>
           <div>
-            <label className="text-xs text-gray-400 mb-1 block">Balance Field</label>
-            <select value={form.field} onChange={e=>setForm(f=>({...f,field:e.target.value}))} className="input w-full">
+            <label className="text-xs text-gray-400 mb-1 block" htmlFor="balance-field">Balance Field</label>
+            <select id="balance-field" value={form.field} onChange={e=>setForm(f=>({...f,field:e.target.value}))} className="input w-full">
               <option value="depositBalance">Deposit Balance</option>
               <option value="winningsBalance">Winnings Balance</option>
               <option value="tokenBalance">Token Balance</option>
             </select>
           </div>
-          <div><label className="text-xs text-gray-400 mb-1 block">Amount (₹)</label><input type="number" value={form.amount} onChange={e=>setForm(f=>({...f,amount:e.target.value}))} className="input w-full" placeholder="500"/></div>
-          <div><label className="text-xs text-gray-400 mb-1 block">Reason</label><input value={form.reason} onChange={e=>setForm(f=>({...f,reason:e.target.value}))} className="input w-full" placeholder="Compensation for issue #123"/></div>
+          <div><label className="text-xs text-gray-400 mb-1 block" htmlFor="amount">Amount (₹)</label><input id="amount" type="number" value={form.amount} onChange={e=>setForm(f=>({...f,amount:e.target.value}))} className="input w-full" placeholder="500"/></div>
+          <div><label className="text-xs text-gray-400 mb-1 block" htmlFor="reason">Reason</label><input id="reason" value={form.reason} onChange={e=>setForm(f=>({...f,reason:e.target.value}))} className="input w-full" placeholder="Compensation for issue #123"/></div>
         </div>
         <button onClick={submit} disabled={processing} className="btn-primary w-full">{processing?'Processing…':'Apply Adjustment'}</button>
       </div>

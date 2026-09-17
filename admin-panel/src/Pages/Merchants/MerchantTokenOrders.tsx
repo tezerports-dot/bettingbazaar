@@ -300,8 +300,8 @@ export const MerchantTokenOrders: React.FC = () => {
               <p className="text-xs text-gray-500 font-mono mt-1 break-all">{rejecting.usdtTxHash || '—'}</p>
             </div>
             <div>
-              <label className="label">Reason</label>
-              <textarea
+              <label className="label" htmlFor="reason">Reason</label>
+              <textarea id="reason"
                 value={rejectReason}
                 onChange={(e) => setRejectReason(e.target.value)}
                 rows={3}

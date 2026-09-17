@@ -204,46 +204,46 @@ export const GamesManager: React.FC = () => {
               <button onClick={() => setEditing(null)}><X size={18} className="text-slate-400" /></button>
             </div>
             <div className="grid grid-cols-2 gap-3">
-              <div className="col-span-2"><label className={lbl}>Name *</label>
-                <input className={inp} value={editing.name} onChange={e => setEditing({ ...editing, name: e.target.value })} /></div>
-              <div><label className={lbl}>Category</label>
-                <select className={inp} value={editing.categorySlug} onChange={e => setEditing({ ...editing, categorySlug: e.target.value })}>
+              <div className="col-span-2"><label className={lbl} htmlFor="name">Name *</label>
+                <input id="name" className={inp} value={editing.name} onChange={e => setEditing({ ...editing, name: e.target.value })} /></div>
+              <div><label className={lbl} htmlFor="category">Category</label>
+                <select id="category" className={inp} value={editing.categorySlug} onChange={e => setEditing({ ...editing, categorySlug: e.target.value })}>
                   <option value="">—</option>
                   {categories.map(c => <option key={c.slug} value={c.slug}>{c.name}</option>)}
                 </select></div>
-              <div><label className={lbl}>Provider</label>
-                <select className={inp} value={editing.providerKey} onChange={e => setEditing({ ...editing, providerKey: e.target.value })}>
+              <div><label className={lbl} htmlFor="provider">Provider</label>
+                <select id="provider" className={inp} value={editing.providerKey} onChange={e => setEditing({ ...editing, providerKey: e.target.value })}>
                   <option value="">in-house</option>
                   {providers.map(p => <option key={p.key} value={p.key}>{p.name}</option>)}
                 </select></div>
-              <div><label className={lbl}>Launch Strategy</label>
-                <select className={inp} value={editing.launchStrategy} onChange={e => setEditing({ ...editing, launchStrategy: e.target.value })}>
+              <div><label className={lbl} htmlFor="launch-strategy">Launch Strategy</label>
+                <select id="launch-strategy" className={inp} value={editing.launchStrategy} onChange={e => setEditing({ ...editing, launchStrategy: e.target.value })}>
                   {STRATEGIES.map(s => <option key={s} value={s}>{s}</option>)}
                 </select></div>
-              <div><label className={lbl}>Status</label>
-                <select className={inp} value={editing.status} onChange={e => setEditing({ ...editing, status: e.target.value })}>
+              <div><label className={lbl} htmlFor="status">Status</label>
+                <select id="status" className={inp} value={editing.status} onChange={e => setEditing({ ...editing, status: e.target.value })}>
                   {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
                 </select></div>
-              <div><label className={lbl}>Provider Game ID</label>
-                <input className={inp} value={editing.externalGameId} onChange={e => setEditing({ ...editing, externalGameId: e.target.value })} placeholder="e.g. vs20sugardance" /></div>
-              <div><label className={lbl}>Launch URL (internal/external)</label>
-                <input className={inp} value={editing.launchUrl} onChange={e => setEditing({ ...editing, launchUrl: e.target.value })} placeholder="/  or  https://…" /></div>
-              <div><label className={lbl}>Thumbnail URL</label>
-                <input className={inp} value={editing.thumbnail} onChange={e => setEditing({ ...editing, thumbnail: e.target.value })} /></div>
-              <div><label className={lbl}>Banner URL</label>
-                <input className={inp} value={editing.banner} onChange={e => setEditing({ ...editing, banner: e.target.value })} /></div>
-              <div><label className={lbl}>Badge</label>
-                <input className={inp} value={editing.badge} onChange={e => setEditing({ ...editing, badge: e.target.value })} placeholder="🔴 Live" /></div>
-              <div><label className={lbl}>RTP</label>
-                <input className={inp} value={editing.rtp} onChange={e => setEditing({ ...editing, rtp: e.target.value })} placeholder="97.3%" /></div>
-              <div><label className={lbl}>Tags (comma-sep)</label>
-                <input className={inp} value={editing.tags as string} onChange={e => setEditing({ ...editing, tags: e.target.value })} placeholder="popular, live" /></div>
-              <div><label className={lbl}>Min Bet</label>
-                <input type="number" className={inp} value={editing.minBet} onChange={e => setEditing({ ...editing, minBet: Number(e.target.value) })} /></div>
-              <div><label className={lbl}>Max Bet</label>
-                <input type="number" className={inp} value={editing.maxBet} onChange={e => setEditing({ ...editing, maxBet: Number(e.target.value) })} /></div>
-              <div><label className={lbl}>Sort Order</label>
-                <input type="number" className={inp} value={editing.order} onChange={e => setEditing({ ...editing, order: Number(e.target.value) })} /></div>
+              <div><label className={lbl} htmlFor="provider-game-id">Provider Game ID</label>
+                <input id="provider-game-id" className={inp} value={editing.externalGameId} onChange={e => setEditing({ ...editing, externalGameId: e.target.value })} placeholder="e.g. vs20sugardance" /></div>
+              <div><label className={lbl} htmlFor="launch-url-internal-external">Launch URL (internal/external)</label>
+                <input id="launch-url-internal-external" className={inp} value={editing.launchUrl} onChange={e => setEditing({ ...editing, launchUrl: e.target.value })} placeholder="/  or  https://…" /></div>
+              <div><label className={lbl} htmlFor="thumbnail-url">Thumbnail URL</label>
+                <input id="thumbnail-url" className={inp} value={editing.thumbnail} onChange={e => setEditing({ ...editing, thumbnail: e.target.value })} /></div>
+              <div><label className={lbl} htmlFor="banner-url">Banner URL</label>
+                <input id="banner-url" className={inp} value={editing.banner} onChange={e => setEditing({ ...editing, banner: e.target.value })} /></div>
+              <div><label className={lbl} htmlFor="badge">Badge</label>
+                <input id="badge" className={inp} value={editing.badge} onChange={e => setEditing({ ...editing, badge: e.target.value })} placeholder="🔴 Live" /></div>
+              <div><label className={lbl} htmlFor="rtp">RTP</label>
+                <input id="rtp" className={inp} value={editing.rtp} onChange={e => setEditing({ ...editing, rtp: e.target.value })} placeholder="97.3%" /></div>
+              <div><label className={lbl} htmlFor="tags-comma-sep">Tags (comma-sep)</label>
+                <input id="tags-comma-sep" className={inp} value={editing.tags as string} onChange={e => setEditing({ ...editing, tags: e.target.value })} placeholder="popular, live" /></div>
+              <div><label className={lbl} htmlFor="min-bet">Min Bet</label>
+                <input id="min-bet" type="number" className={inp} value={editing.minBet} onChange={e => setEditing({ ...editing, minBet: Number(e.target.value) })} /></div>
+              <div><label className={lbl} htmlFor="max-bet">Max Bet</label>
+                <input id="max-bet" type="number" className={inp} value={editing.maxBet} onChange={e => setEditing({ ...editing, maxBet: Number(e.target.value) })} /></div>
+              <div><label className={lbl} htmlFor="sort-order">Sort Order</label>
+                <input id="sort-order" type="number" className={inp} value={editing.order} onChange={e => setEditing({ ...editing, order: Number(e.target.value) })} /></div>
               <div className="flex items-end pb-1">
                 <label className="flex items-center gap-2 text-sm cursor-pointer">
                   <input type="checkbox" checked={editing.featured} onChange={e => setEditing({ ...editing, featured: e.target.checked })} />
@@ -267,12 +267,12 @@ export const GamesManager: React.FC = () => {
               <button onClick={() => setCatEditing(null)}><X size={18} className="text-slate-400" /></button>
             </div>
             <div className="space-y-3">
-              <div><label className={lbl}>Name *</label>
-                <input className={inp} value={catEditing.name} onChange={e => setCatEditing({ ...catEditing, name: e.target.value })} /></div>
-              <div><label className={lbl}>Icon (emoji)</label>
-                <input className={inp} value={catEditing.icon} onChange={e => setCatEditing({ ...catEditing, icon: e.target.value })} placeholder="🎰" /></div>
-              <div><label className={lbl}>Sort Order</label>
-                <input type="number" className={inp} value={catEditing.order} onChange={e => setCatEditing({ ...catEditing, order: Number(e.target.value) })} /></div>
+              <div><label className={lbl} htmlFor="name-2">Name *</label>
+                <input id="name-2" className={inp} value={catEditing.name} onChange={e => setCatEditing({ ...catEditing, name: e.target.value })} /></div>
+              <div><label className={lbl} htmlFor="icon-emoji">Icon (emoji)</label>
+                <input id="icon-emoji" className={inp} value={catEditing.icon} onChange={e => setCatEditing({ ...catEditing, icon: e.target.value })} placeholder="🎰" /></div>
+              <div><label className={lbl} htmlFor="sort-order-2">Sort Order</label>
+                <input id="sort-order-2" type="number" className={inp} value={catEditing.order} onChange={e => setCatEditing({ ...catEditing, order: Number(e.target.value) })} /></div>
               <label className="flex items-center gap-2 text-sm cursor-pointer">
                 <input type="checkbox" checked={catEditing.enabled} onChange={e => setCatEditing({ ...catEditing, enabled: e.target.checked })} /> Enabled (visible)
               </label>

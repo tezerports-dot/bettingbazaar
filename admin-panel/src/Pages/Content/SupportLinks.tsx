@@ -84,8 +84,8 @@ export const SupportLinks: React.FC = () => {
           </h3>
           <div className="space-y-4">
             <div>
-              <label className="label">Email</label>
-              <input
+              <label className="label" htmlFor="email">Email</label>
+              <input id="email"
                 type="email"
                 value={formData.email}
                 onChange={(e) => setFormData({ ...formData, email: e.target.value })}
@@ -94,8 +94,8 @@ export const SupportLinks: React.FC = () => {
               />
             </div>
             <div>
-              <label className="label">Phone</label>
-              <input
+              <label className="label" htmlFor="phone">Phone</label>
+              <input id="phone"
                 type="tel"
                 value={formData.phone}
                 onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
@@ -104,8 +104,8 @@ export const SupportLinks: React.FC = () => {
               />
             </div>
             <div>
-              <label className="label">WhatsApp</label>
-              <input
+              <label className="label" htmlFor="whatsapp">WhatsApp</label>
+              <input id="whatsapp"
                 type="tel"
                 value={formData.whatsapp}
                 onChange={(e) => setFormData({ ...formData, whatsapp: e.target.value })}
@@ -114,8 +114,8 @@ export const SupportLinks: React.FC = () => {
               />
             </div>
             <div>
-              <label className="label">Telegram</label>
-              <input
+              <label className="label" htmlFor="telegram">Telegram</label>
+              <input id="telegram"
                 type="text"
                 value={formData.telegram}
                 onChange={(e) => setFormData({ ...formData, telegram: e.target.value })}
@@ -134,8 +134,8 @@ export const SupportLinks: React.FC = () => {
           </h3>
           <div className="space-y-4">
             <div>
-              <label className="label">Instagram</label>
-              <input
+              <label className="label" htmlFor="instagram">Instagram</label>
+              <input id="instagram"
                 type="url"
                 value={formData.instagram}
                 onChange={(e) => setFormData({ ...formData, instagram: e.target.value })}
@@ -144,8 +144,8 @@ export const SupportLinks: React.FC = () => {
               />
             </div>
             <div>
-              <label className="label">Facebook</label>
-              <input
+              <label className="label" htmlFor="facebook">Facebook</label>
+              <input id="facebook"
                 type="url"
                 value={formData.facebook}
                 onChange={(e) => setFormData({ ...formData, facebook: e.target.value })}
@@ -154,8 +154,8 @@ export const SupportLinks: React.FC = () => {
               />
             </div>
             <div>
-              <label className="label">Twitter</label>
-              <input
+              <label className="label" htmlFor="twitter">Twitter</label>
+              <input id="twitter"
                 type="url"
                 value={formData.twitter}
                 onChange={(e) => setFormData({ ...formData, twitter: e.target.value })}
@@ -164,8 +164,8 @@ export const SupportLinks: React.FC = () => {
               />
             </div>
             <div>
-              <label className="label">YouTube</label>
-              <input
+              <label className="label" htmlFor="youtube">YouTube</label>
+              <input id="youtube"
                 type="url"
                 value={formData.youtube}
                 onChange={(e) => setFormData({ ...formData, youtube: e.target.value })}
@@ -181,8 +181,8 @@ export const SupportLinks: React.FC = () => {
           <h3 className="text-lg font-semibold mb-4">Support Details</h3>
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="label">Support Hours</label>
-              <input
+              <label className="label" htmlFor="support-hours">Support Hours</label>
+              <input id="support-hours"
                 type="text"
                 value={formData.supportHours}
                 onChange={(e) => setFormData({ ...formData, supportHours: e.target.value })}
@@ -191,8 +191,8 @@ export const SupportLinks: React.FC = () => {
               />
             </div>
             <div>
-              <label className="label">Average Response Time</label>
-              <input
+              <label className="label" htmlFor="average-response-time">Average Response Time</label>
+              <input id="average-response-time"
                 type="text"
                 value={formData.responseTime}
                 onChange={(e) => setFormData({ ...formData, responseTime: e.target.value })}

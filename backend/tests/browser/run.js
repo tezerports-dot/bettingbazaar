@@ -36,16 +36,18 @@
  */
 import { spawn } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { chromium } from 'playwright-core';
 import { panelScreens } from './routes.js';
+import { PAGE_SCRIPT, collect, shell, idOf } from './controls.js';
 import { seedPlayer, seedMerchant, seedAdmin } from '../e2e/seed.js';
 import { playerToken, merchantToken, adminToken, check, note, summary } from '../e2e/harness.js';
 
 const ROOT = fileURLToPath(new URL('../../..', import.meta.url));
 const SHOTS = join(ROOT, 'backend', 'tests', 'browser', 'screenshots');
+const MANIFEST = join(ROOT, 'backend', 'tests', 'browser', 'controls.manifest.json');
 const API = process.env.BB_BASE ?? 'http://127.0.0.1:8099';
 
 // The browser is pre-installed in this environment and must not be re-fetched.
@@ -241,18 +243,23 @@ async function visit(page, panel, screen, cfg) {
   page.off('response', onResponse);
   page.off('requestfailed', onRequestFailed);
 
+  // Every control a person can touch on this screen, by the name they would
+  // use to find it. This is the denominator: "every button tested" is a claim
+  // about a number, and the number has to come from the screen itself (§29).
+  const controls = await collect(page).catch(() => []);
+
   const label = `${screen}`;
   const where = seen.scoped ? 'in <main>' : 'on the page';
   const shape = `${seen.text} chars ${where}, ${seen.buttons} controls, ${seen.inputs} inputs`;
 
   if (nav !== 'ok') {
     check('BROWSER', panel, label, 'the screen opens', nav, false);
-    return;
+    return controls;
   }
   if (errors.length) {
     check('BROWSER', panel, label, 'no uncaught exception', `THREW: ${errors[0]}`, false,
       'an uncaught render error is a blank or half-drawn screen — the thing no route test can see');
-    return;
+    return controls;
   }
   // ── A failed request is only a DEFECT when the screen hides it ───────────
   // §28's defect is the empty state that reads as "no data", not the failed
@@ -268,37 +275,38 @@ async function visit(page, panel, screen, cfg) {
   if (broke.length) {
     check('BROWSER', panel, label, 'no 5xx', `${broke.length}: ${broke.slice(0, 3).join(' | ')}`, false,
       'a 500 is answered with no message at all — the screen cannot be showing the reason');
-    return;
+    return controls;
   }
   if (failed.length && seen.text < 40) {
     check('BROWSER', panel, label, 'a refusal the screen explains', `${failed.length} failed and nothing rendered: ${failed.slice(0, 3).join(' | ')}`, false,
       '§28: the component catches it and renders an empty state, which reads as "no data"');
-    return;
+    return controls;
   }
   if (seen.text < 40) {
     check('BROWSER', panel, label, 'the routed region renders something', `only ${shape}`
       + (seen.scoped ? ` (the shell around it drew ${seen.chrome} chars)` : ''), false,
       'a screen with nothing in it is the exact symptom the five dead buttons produced — '
       + 'and the shell drawing normally around it is why nobody saw them');
-    return;
+    return controls;
   }
   if (failed.length) {
     note('BROWSER', panel, label, 'every request answered', `${shape}; ${failed.length} refused: ${failed.slice(0, 2).join(' | ')}`,
       'the screen still rendered, so read it: a refusal a screen EXPLAINS is correct behaviour, '
       + 'and one it hides behind an empty state is the defect');
-    return;
+    return controls;
   }
   if (dead.length) {
     note('BROWSER', panel, label, 'every request reaches something', `${shape}; ${dead.length} unreachable`,
       dead[0].slice(0, 200));
-    return;
+    return controls;
   }
   if (console_.length) {
     note('BROWSER', panel, label, 'a clean console', `${shape}; console.error x${console_.length}`,
       console_[0].slice(0, 160));
-    return;
+    return controls;
   }
   check('BROWSER', panel, label, 'opens, renders, no failed request', shape, true);
+  return controls;
 }
 
 // ── Run ─────────────────────────────────────────────────────────────────────
@@ -316,6 +324,17 @@ const actors = {
 };
 
 mkdirSync(SHOTS, { recursive: true });
+
+/**
+ * The denominator.
+ *
+ * "Every button tested" is a claim about a NUMBER, and §29 says the number has
+ * to be one something printed rather than an impression. This manifest is that
+ * number, read off the running screens rather than off the source, so a control
+ * that only appears once data is loaded is counted and one that was deleted is
+ * not.
+ */
+const manifest = { takenAt: new Date().toISOString(), shell: {}, screens: [] };
 const browser = await chromium.launch({ executablePath: EXECUTABLE, args: ['--no-sandbox'], headless: !process.env.BB_HEADED });
 
 try {
@@ -336,14 +355,22 @@ try {
     await ctx.addInitScript(([k, v]) => {
       try { localStorage.setItem(k, v); } catch { /* blocked storage */ }
     }, [cfg.key, token]);
+    // The control bridge, installed before any page script runs so it survives
+    // every navigation the pass makes.
+    await ctx.addInitScript(PAGE_SCRIPT);
 
     const page = await ctx.newPage();
     // Boot once and let the session verify before anything is measured.
     await page.goto(cfg.entry(base), { waitUntil: 'domcontentloaded', timeout: 60000 });
     await settle(page, 30000);
 
+    // The shell is the same links on every screen of a panel, so it is
+    // inventoried once here rather than 44 times.
+    manifest.shell[panel] = await shell(page).catch(() => []);
+
     for (const screen of screens) {
-      await visit(page, panel, screen, cfg);
+      const controls = await visit(page, panel, screen, cfg);
+      manifest.screens.push({ panel, screen, controls: controls ?? [] });
       await page.screenshot({ path: join(SHOTS, `${panel}${screen.replace(/\//g, '_') || '_root'}.png`) }).catch(() => {});
     }
     await ctx.close();
@@ -359,6 +386,26 @@ try {
   await browser.close();
   stopAll();
 }
+
+writeFileSync(MANIFEST, JSON.stringify(manifest, null, 2));
+
+// ── The inventory, per panel ───────────────────────────────────────────────
+console.log(`\n${'─'.repeat(78)}\nCONTROLS a person can touch\n`);
+let grand = 0, unnamed = 0, disabled = 0;
+for (const [panel, list] of Object.entries(manifest.shell)) {
+  const own = manifest.screens.filter((s) => s.panel === panel);
+  const n = own.reduce((t, s) => t + s.controls.length, 0);
+  const u = own.reduce((t, s) => t + s.controls.filter((c) => c.unnamed).length, 0);
+  const d = own.reduce((t, s) => t + s.controls.filter((c) => c.disabled).length, 0);
+  grand += n; unnamed += u; disabled += d;
+  console.log(`${panel.padEnd(16)} ${String(n).padStart(4)} in ${String(own.length).padStart(2)} screens`
+    + `   + ${String(list.length).padStart(3)} in the shell`
+    + `   (${u} unnamed, ${d} disabled on arrival)`);
+}
+const shellTotal = Object.values(manifest.shell).reduce((t, l) => t + l.length, 0);
+console.log(`\n${grand} screen controls + ${shellTotal} shell controls = ${grand + shellTotal} to exercise.`);
+console.log(`${unnamed} have NO accessible name — a screen reader announces "button" and nobody can address them.`);
+console.log(`Manifest: ${MANIFEST}`);
 
 const { failed } = summary();
 console.log(`\nScreenshots: ${SHOTS}`);

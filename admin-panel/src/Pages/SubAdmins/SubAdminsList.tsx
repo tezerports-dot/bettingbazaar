@@ -349,8 +349,8 @@ export const SubAdminsList: React.FC = () => {
       >
         <form onSubmit={handleCreate} className="space-y-4">
           <div>
-            <label className="label">Username</label>
-            <input
+            <label className="label" htmlFor="username">Username</label>
+            <input id="username"
               type="text"
               value={formData.username}
               onChange={(e) => setFormData({ ...formData, username: e.target.value })}
@@ -359,8 +359,8 @@ export const SubAdminsList: React.FC = () => {
             />
           </div>
           <div>
-            <label className="label">Mobile</label>
-            <input
+            <label className="label" htmlFor="mobile">Mobile</label>
+            <input id="mobile"
               type="tel"
               value={formData.mobile}
               onChange={(e) => setFormData({ ...formData, mobile: e.target.value })}
@@ -369,8 +369,8 @@ export const SubAdminsList: React.FC = () => {
             />
           </div>
           <div>
-            <label className="label">Password</label>
-            <input
+            <label className="label" htmlFor="password">Password</label>
+            <input id="password"
               type="password"
               value={formData.password}
               onChange={(e) => setFormData({ ...formData, password: e.target.value })}
@@ -464,8 +464,8 @@ export const SubAdminsList: React.FC = () => {
               Assign phantom betting access for <strong>{selectedUser.username}</strong>
             </p>
             <div>
-              <label className="label">Phantom Access Level</label>
-              <select
+              <label className="label" htmlFor="phantom-access-level">Phantom Access Level</label>
+              <select id="phantom-access-level"
                 value={phantomAccess}
                 onChange={(e) => setPhantomAccess(e.target.value as any)}
                 className="input"

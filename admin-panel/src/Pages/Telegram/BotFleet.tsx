@@ -228,8 +228,8 @@ export const BotFleet: React.FC<{ webhookBaseUrl?: string; onChanged?: () => voi
           </div>
         </div>
         <div style={{ gridColumn: '1 / -1' }}>
-          <label style={label}>Notes</label>
-          <input
+          <label style={label} htmlFor="notes">Notes</label>
+          <input id="notes"
             value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })}
             placeholder="e.g. created on the ops account, 14 Mar" style={input}
           />

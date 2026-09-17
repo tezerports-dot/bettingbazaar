@@ -449,8 +449,8 @@ export const DisputeManager: React.FC = () => {
             {activeTab === 'resolve' && (
               <div className="space-y-4 overflow-y-auto flex-1">
                 <div>
-                  <label className="label">Decision</label>
-                  <select value={decision} onChange={e => setDecision(e.target.value)} className="input">
+                  <label className="label" htmlFor="decision">Decision</label>
+                  <select id="decision" value={decision} onChange={e => setDecision(e.target.value)} className="input">
                     <option value="FAVOR_USER">✓ APPROVE — Refund user, penalise merchant</option>
                     <option value="FAVOR_MERCHANT">✗ REJECT — No refund, favour merchant</option>
                     <option value="SPLIT">↔ SPLIT — Partial refund</option>
@@ -469,15 +469,15 @@ export const DisputeManager: React.FC = () => {
 
                 {decision === 'RELEASE_TO_MERCHANT' && (
                   <div>
-                    <label className="label">Merchant Penalty (₹) — optional</label>
-                    <input type="number" value={penaltyAmt} onChange={e => setPenaltyAmt(e.target.value)}
+                    <label className="label" htmlFor="merchant-penalty-optional">Merchant Penalty (₹) — optional</label>
+                    <input id="merchant-penalty-optional" type="number" value={penaltyAmt} onChange={e => setPenaltyAmt(e.target.value)}
                       className="input" placeholder="0" />
                   </div>
                 )}
 
                 <div>
-                  <label className="label">Resolution Notes *</label>
-                  <textarea value={resolution} onChange={e => setResolution(e.target.value)}
+                  <label className="label" htmlFor="resolution-notes">Resolution Notes *</label>
+                  <textarea id="resolution-notes" value={resolution} onChange={e => setResolution(e.target.value)}
                     className="input min-h-[80px] resize-none"
                     placeholder="Explain the decision… This is posted as a system message in the chat." />
                 </div>

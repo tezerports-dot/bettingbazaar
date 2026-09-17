@@ -176,8 +176,8 @@ export const FAQManager: React.FC = () => {
       >
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="label">Question</label>
-            <input
+            <label className="label" htmlFor="question">Question</label>
+            <input id="question"
               type="text"
               value={formData.question}
               onChange={(e) => setFormData({ ...formData, question: e.target.value })}
@@ -187,8 +187,8 @@ export const FAQManager: React.FC = () => {
           </div>
 
           <div>
-            <label className="label">Answer</label>
-            <textarea
+            <label className="label" htmlFor="answer">Answer</label>
+            <textarea id="answer"
               value={formData.answer}
               onChange={(e) => setFormData({ ...formData, answer: e.target.value })}
               className="input min-h-[150px]"
@@ -197,8 +197,8 @@ export const FAQManager: React.FC = () => {
           </div>
 
           <div>
-            <label className="label">Category</label>
-            <select
+            <label className="label" htmlFor="category">Category</label>
+            <select id="category"
               value={formData.category}
               onChange={(e) => setFormData({ ...formData, category: e.target.value as FAQ['category'] })}
               className="input"

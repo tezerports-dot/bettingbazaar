@@ -1,11 +1,43 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useId, useState } from 'react';
 import { Plus, Trash2, Edit2, RefreshCw, Trophy, Eye, EyeOff } from 'lucide-react';
 import api from '../../services/api';
 import { Toolbar } from '../../components/design';
 import toast from 'react-hot-toast';
 
 const EMPTY = { displayName:'', profilePic:'', city:'', amount:'', game:'Delhi/Bombay', badge:'', isPublic:true, sortOrder:'0', displayTime:'' };
+
+/**
+ * ── This lives at module level, and that is the whole point ────────────────
+ * It used to be `const F = …` INSIDE `FakeWinnersManager`. A component
+ * declared inside another is a NEW COMPONENT TYPE on every parent render, so
+ * React cannot reconcile it — it unmounts the old `<input>` and mounts a fresh
+ * one. Typing calls `setForm`, which renders the parent, which remounts the
+ * field, which takes the caret with it.
+ *
+ * Measured in a real browser before this was touched: typing "Rahul" into
+ * Display Name left the field holding **"R"** with focus on `<body>`. Four of
+ * five keystrokes went nowhere. The same test on `/game-providers`, whose
+ * `Field` was already at module level, kept all five and kept focus — the
+ * control case, so the cause is this and not the environment.
+ *
+ * No test could have caught it: it renders correctly, it has no failing
+ * assertion to make, and every keystroke is "handled". It needs a browser and
+ * more than one character (§28).
+ */
+const F = ({ label, value, onChange, type = 'text', ph = '' }: any) => {
+  // Per instance, stable across renders — the labels here are the operator's
+  // only way to tell eight identical text boxes apart, and a screen reader
+  // needs the association to read them out at all.
+  const id = useId();
+  return (
+    <div>
+      <label htmlFor={id} className="text-xs text-gray-400 mb-1 block">{label}</label>
+      <input id={id} type={type} value={value || ''} onChange={(e) => onChange(e.target.value)}
+        placeholder={ph} className="input w-full text-sm"/>
+    </div>
+  );
+};
 
 export const FakeWinnersManager: React.FC = () => {
   const [winners, setWinners] = useState<any[]>([]);
@@ -51,14 +83,6 @@ export const FakeWinnersManager: React.FC = () => {
     load();
   };
 
-  const F = ({ label, k, type='text', ph='' }:any) => (
-    <div>
-      <label className="text-xs text-gray-400 mb-1 block">{label}</label>
-      <input type={type} value={form[k]||''} onChange={e=>setForm((f:any)=>({...f,[k]:e.target.value}))}
-        placeholder={ph} className="input w-full text-sm"/>
-    </div>
-  );
-
   return (
     <div className="om-fade space-y-6">
       <Toolbar actions={[
@@ -70,17 +94,17 @@ export const FakeWinnersManager: React.FC = () => {
         <div className="card border border-yellow-500/30 space-y-4">
           <h3 className="font-semibold">{editId ? 'Edit' : 'Add'} Winner Entry</h3>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-            <F label="Display Name" k="displayName" ph="Rahul K."/>
-            <F label="Amount Won (₹)" k="amount" type="number" ph="50000"/>
-            <F label="City" k="city" ph="Mumbai"/>
-            <F label="Game" k="game" ph="Delhi/Bombay"/>
-            <F label="Badge Text" k="badge" ph="Big Win 🔥"/>
-            <F label="Sort Order (lower = first)" k="sortOrder" type="number" ph="0"/>
+            <F label="Display Name" value={form.displayName} onChange={(v: string) => setForm((f: any) => ({ ...f, displayName: v }))} ph="Rahul K."/>
+            <F label="Amount Won (₹)" value={form.amount} onChange={(v: string) => setForm((f: any) => ({ ...f, amount: v }))} type="number" ph="50000"/>
+            <F label="City" value={form.city} onChange={(v: string) => setForm((f: any) => ({ ...f, city: v }))} ph="Mumbai"/>
+            <F label="Game" value={form.game} onChange={(v: string) => setForm((f: any) => ({ ...f, game: v }))} ph="Delhi/Bombay"/>
+            <F label="Badge Text" value={form.badge} onChange={(v: string) => setForm((f: any) => ({ ...f, badge: v }))} ph="Big Win 🔥"/>
+            <F label="Sort Order (lower = first)" value={form.sortOrder} onChange={(v: string) => setForm((f: any) => ({ ...f, sortOrder: v }))} type="number" ph="0"/>
             <div className="col-span-2">
-              <F label="Profile Picture URL (CDN/S3 link)" k="profilePic" ph="https://cdn.example.com/avatar.jpg"/>
+              <F label="Profile Picture URL (CDN/S3 link)" value={form.profilePic} onChange={(v: string) => setForm((f: any) => ({ ...f, profilePic: v }))} ph="https://cdn.example.com/avatar.jpg"/>
             </div>
             <div>
-              <F label="Display Time (shown to users)" k="displayTime" type="datetime-local"/>
+              <F label="Display Time (shown to users)" value={form.displayTime} onChange={(v: string) => setForm((f: any) => ({ ...f, displayTime: v }))} type="datetime-local"/>
             </div>
             <div className="flex items-center gap-3 pt-5">
               <label className="text-sm text-gray-300">Public:</label>

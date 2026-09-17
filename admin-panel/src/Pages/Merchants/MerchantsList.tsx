@@ -526,8 +526,8 @@ export const MerchantsList: React.FC = () => {
               <div className="space-y-3">
                 <p className="text-sm font-semibold text-gray-300">Top-Up Wallet</p>
                 <div>
-                  <label className="label">Amount to Add (Rs. tokens)</label>
-                  <input
+                  <label className="label" htmlFor="amount-to-add-rs-tokens">Amount to Add (Rs. tokens)</label>
+                  <input id="amount-to-add-rs-tokens"
                     type="number" min="1"
                     value={topUpAmount || ''}
                     onChange={(e) => setTopUpAmount(Number(e.target.value) || 0)}
@@ -558,8 +558,8 @@ export const MerchantsList: React.FC = () => {
               <div className="border-t border-dark-600 pt-4 space-y-3">
                 <p className="text-sm font-semibold text-gray-300">Deduct From Wallet</p>
                 <div>
-                  <label className="label">Amount to Remove (Rs. tokens)</label>
-                  <input
+                  <label className="label" htmlFor="amount-to-remove-rs-tokens">Amount to Remove (Rs. tokens)</label>
+                  <input id="amount-to-remove-rs-tokens"
                     type="number" min="1"
                     value={deductForm.amount || ''}
                     onChange={(e) => setDeductForm(f => ({ ...f, amount: Number(e.target.value) || 0 }))}
@@ -568,8 +568,8 @@ export const MerchantsList: React.FC = () => {
                   />
                 </div>
                 <div>
-                  <label className="label">Reason (required, audit-logged)</label>
-                  <input
+                  <label className="label" htmlFor="reason-required-audit-logged">Reason (required, audit-logged)</label>
+                  <input id="reason-required-audit-logged"
                     type="text"
                     value={deductForm.reason}
                     onChange={(e) => setDeductForm(f => ({ ...f, reason: e.target.value }))}

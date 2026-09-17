@@ -322,8 +322,8 @@ export const SystemSettings: React.FC = () => {
             </p>
             {formData.maintenanceMode && (
               <div className="mb-4">
-                <label className="label">Maintenance Message</label>
-                <textarea
+                <label className="label" htmlFor="maintenance-message">Maintenance Message</label>
+                <textarea id="maintenance-message"
                   value={formData.maintenanceMessage}
                   onChange={(e) =>
                     setFormData({ ...formData, maintenanceMessage: e.target.value })
@@ -383,8 +383,8 @@ export const SystemSettings: React.FC = () => {
         <h3 className="text-lg font-semibold mb-4">Transaction Limits</h3>
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <label className="label">Min Deposit Amount (Rs.)</label>
-            <input
+            <label className="label" htmlFor="min-deposit-amount-rs">Min Deposit Amount (Rs.)</label>
+            <input id="min-deposit-amount-rs"
               type="number"
               value={formData.minDeposit}
               onChange={(e) =>
@@ -394,8 +394,8 @@ export const SystemSettings: React.FC = () => {
             />
           </div>
           <div>
-            <label className="label">Min Withdrawal Amount (Rs.)</label>
-            <input
+            <label className="label" htmlFor="min-withdrawal-amount-rs">Min Withdrawal Amount (Rs.)</label>
+            <input id="min-withdrawal-amount-rs"
               type="number"
               value={formData.minWithdrawal}
               onChange={(e) =>
@@ -412,8 +412,8 @@ export const SystemSettings: React.FC = () => {
         <h3 className="text-lg font-semibold mb-4">Betting Limits</h3>
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <label className="label">Min Bet Amount (Rs.)</label>
-            <input
+            <label className="label" htmlFor="min-bet-amount-rs">Min Bet Amount (Rs.)</label>
+            <input id="min-bet-amount-rs"
               type="number"
               value={formData.minBet}
               onChange={(e) =>
@@ -423,8 +423,8 @@ export const SystemSettings: React.FC = () => {
             />
           </div>
           <div>
-            <label className="label">Max Bet Amount (Rs.)</label>
-            <input
+            <label className="label" htmlFor="max-bet-amount-rs">Max Bet Amount (Rs.)</label>
+            <input id="max-bet-amount-rs"
               type="number"
               value={formData.maxBet}
               onChange={(e) =>
@@ -484,8 +484,8 @@ export const SystemSettings: React.FC = () => {
 
         <div className="space-y-5">
           <div>
-            <label className="label">Bet Reserve Percent (%)</label>
-            <input
+            <label className="label" htmlFor="bet-reserve-percent">Bet Reserve Percent (%)</label>
+            <input id="bet-reserve-percent"
               type="number" min={0} max={100} step={0.01}
               value={formData.betReservePercent}
               onChange={(e) => setFormData({ ...formData, betReservePercent: Number(e.target.value) })}
@@ -505,8 +505,8 @@ export const SystemSettings: React.FC = () => {
           </div>
 
           <div className="pt-4 border-t border-dark-700">
-            <label className="label">Payout Multiplier (×)</label>
-            <input
+            <label className="label" htmlFor="payout-multiplier">Payout Multiplier (×)</label>
+            <input id="payout-multiplier"
               type="number" min={1} max={10} step={1}
               value={formData.payoutMultiplier}
               onChange={(e) => setFormData({ ...formData, payoutMultiplier: Math.max(1, Math.min(10, Math.floor(Number(e.target.value) || 1))) })}
@@ -523,8 +523,8 @@ export const SystemSettings: React.FC = () => {
           </div>
 
           <div className="pt-4 border-t border-dark-700">
-            <label className="label">Winnings Platform Fee (%)</label>
-            <input
+            <label className="label" htmlFor="winnings-platform-fee">Winnings Platform Fee (%)</label>
+            <input id="winnings-platform-fee"
               type="number" min={0} max={100} step={0.01}
               value={formData.winningsFeePercent}
               onChange={(e) => setFormData({ ...formData, winningsFeePercent: Number(e.target.value) })}
@@ -544,8 +544,8 @@ export const SystemSettings: React.FC = () => {
           </div>
 
           <div className="pt-4 border-t border-dark-700">
-            <label className="label">USDT Buy Price: User ↔ Merchant (INR)</label>
-            <input
+            <label className="label" htmlFor="usdt-buy-price-user-merchant-inr">USDT Buy Price: User ↔ Merchant (INR)</label>
+            <input id="usdt-buy-price-user-merchant-inr"
               type="number" min={0} step={0.01}
               value={formData.usdtPricing.userMerchantBuyInr}
               onChange={(e) => setFormData({ ...formData, usdtPricing: { ...formData.usdtPricing, userMerchantBuyInr: Math.max(0, Number(e.target.value) || 0) } })}
@@ -558,8 +558,8 @@ export const SystemSettings: React.FC = () => {
           </div>
 
           <div className="pt-4 border-t border-dark-700">
-            <label className="label">USDT Buy Price: Merchant ↔ Admin (INR)</label>
-            <input
+            <label className="label" htmlFor="usdt-buy-price-merchant-admin-inr">USDT Buy Price: Merchant ↔ Admin (INR)</label>
+            <input id="usdt-buy-price-merchant-admin-inr"
               type="number" min={0.01} step={0.01}
               value={formData.usdtPricing.merchantAdminBuyInr}
               onChange={(e) => setFormData({ ...formData, usdtPricing: { ...formData.usdtPricing, merchantAdminBuyInr: Math.max(0.01, Number(e.target.value)) } })}
@@ -574,8 +574,8 @@ export const SystemSettings: React.FC = () => {
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-4 border-t border-dark-700">
             <div>
-              <label className="label">User Token Buy Min Order (USDT)</label>
-              <input
+              <label className="label" htmlFor="user-token-buy-min-order-usdt">User Token Buy Min Order (USDT)</label>
+              <input id="user-token-buy-min-order-usdt"
                 type="number" min={100} step={10}
                 value={formData.merchantOrderLimits.minUserTokenPurchaseUsdt}
                 onChange={(e) => setFormData({ ...formData, merchantOrderLimits: { ...formData.merchantOrderLimits, minUserTokenPurchaseUsdt: Math.max(100, Math.ceil((Number(e.target.value) || 100) / 10) * 10) } })}
@@ -584,8 +584,8 @@ export const SystemSettings: React.FC = () => {
               <p className="text-xs text-gray-500 mt-1">Minimum buy-only user USDT deposit to receive BB tokens from a merchant. Multiple of 10 USDT.</p>
             </div>
             <div>
-              <label className="label">User Token Buy Max Order (USDT)</label>
-              <input
+              <label className="label" htmlFor="user-token-buy-max-order-usdt">User Token Buy Max Order (USDT)</label>
+              <input id="user-token-buy-max-order-usdt"
                 type="number" min={0} step={10}
                 value={formData.merchantOrderLimits.maxUserTokenPurchaseUsdt}
                 onChange={(e) => setFormData({ ...formData, merchantOrderLimits: { ...formData.merchantOrderLimits, maxUserTokenPurchaseUsdt: Math.max(0, Math.ceil((Number(e.target.value) || 0) / 10) * 10) } })}
@@ -594,8 +594,8 @@ export const SystemSettings: React.FC = () => {
               <p className="text-xs text-gray-500 mt-1">Optional maximum buy-only user USDT deposit. Use 0 for unlimited; users cannot sell tokens for USDT.</p>
             </div>
             <div>
-              <label className="label">Merchant Admin Token Min Order (USDT)</label>
-              <input
+              <label className="label" htmlFor="merchant-admin-token-min-order-usdt">Merchant Admin Token Min Order (USDT)</label>
+              <input id="merchant-admin-token-min-order-usdt"
                 type="number" min={100} step={10}
                 value={formData.merchantOrderLimits.minAdminTokenPurchaseUsdt}
                 onChange={(e) => setFormData({ ...formData, merchantOrderLimits: { ...formData.merchantOrderLimits, minAdminTokenPurchaseUsdt: Math.max(100, Math.ceil((Number(e.target.value) || 100) / 10) * 10) } })}
@@ -604,8 +604,8 @@ export const SystemSettings: React.FC = () => {
               <p className="text-xs text-gray-500 mt-1">Minimum merchant admin-token purchase value. Multiple of 10 USDT and cannot be below 100 USDT.</p>
             </div>
             <div>
-              <label className="label">Merchant Admin Token Max Order (USDT)</label>
-              <input
+              <label className="label" htmlFor="merchant-admin-token-max-order-usdt">Merchant Admin Token Max Order (USDT)</label>
+              <input id="merchant-admin-token-max-order-usdt"
                 type="number" min={0} step={10}
                 value={formData.merchantOrderLimits.maxAdminTokenPurchaseUsdt}
                 onChange={(e) => setFormData({ ...formData, merchantOrderLimits: { ...formData.merchantOrderLimits, maxAdminTokenPurchaseUsdt: Math.max(0, Math.ceil((Number(e.target.value) || 0) / 10) * 10) } })}
@@ -634,8 +634,9 @@ export const SystemSettings: React.FC = () => {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {MERCHANT_ORDER_RULES.map((rule) => (
                 <div key={rule.key}>
-                  <label className="label">{rule.label}</label>
+                  <label className="label" htmlFor={`mol-${rule.key}`}>{rule.label}</label>
                   <input
+                    id={`mol-${rule.key}`}
                     type="number" min={rule.min} max={rule.max} step={1}
                     value={formData.merchantOrderLimits[rule.key] ?? rule.fallback}
                     onChange={(e) => setFormData({
@@ -657,8 +658,8 @@ export const SystemSettings: React.FC = () => {
           </div>
 
           <div className="pt-4 border-t border-dark-700">
-            <label className="label">Withdrawal Payout Fee (%)</label>
-            <input
+            <label className="label" htmlFor="withdrawal-payout-fee">Withdrawal Payout Fee (%)</label>
+            <input id="withdrawal-payout-fee"
               type="number" min={0} max={100} step={0.01}
               value={formData.payoutFeePercent}
               onChange={(e) => setFormData({ ...formData, payoutFeePercent: Number(e.target.value) })}
@@ -708,8 +709,8 @@ export const SystemSettings: React.FC = () => {
             </div>
 
             <div>
-              <label className="label">Funding Velocity Limit (orders per hour per user)</label>
-              <input
+              <label className="label" htmlFor="funding-velocity-limit-orders-per-hour-per-user">Funding Velocity Limit (orders per hour per user)</label>
+              <input id="funding-velocity-limit-orders-per-hour-per-user"
                 type="number" min={0} step={1}
                 value={formData.riskRules.maxFundingOrdersPerHour}
                 onChange={(e) => setFormData({ ...formData, riskRules: { ...formData.riskRules, maxFundingOrdersPerHour: Math.max(0, Math.floor(Number(e.target.value) || 0)) } })}
@@ -722,8 +723,8 @@ export const SystemSettings: React.FC = () => {
             </div>
 
             <div>
-              <label className="label">Purchase Pace (new buys per minute per user)</label>
-              <input
+              <label className="label" htmlFor="purchase-pace-new-buys-per-minute-per-user">Purchase Pace (new buys per minute per user)</label>
+              <input id="purchase-pace-new-buys-per-minute-per-user"
                 type="number" min={0} max={60} step={1}
                 value={formData.riskRules.maxDepositOrdersPerMinute}
                 onChange={(e) => setFormData({ ...formData, riskRules: { ...formData.riskRules, maxDepositOrdersPerMinute: Math.min(60, Math.max(0, Math.floor(Number(e.target.value) || 0))) } })}
@@ -737,8 +738,8 @@ export const SystemSettings: React.FC = () => {
             </div>
 
             <div>
-              <label className="label">Flag For Review After N Payment Warnings</label>
-              <input
+              <label className="label" htmlFor="flag-for-review-after-n-payment-warnings">Flag For Review After N Payment Warnings</label>
+              <input id="flag-for-review-after-n-payment-warnings"
                 type="number" min={0} step={1}
                 value={formData.riskRules.maxWarnings}
                 onChange={(e) => setFormData({ ...formData, riskRules: { ...formData.riskRules, maxWarnings: Math.max(0, Math.floor(Number(e.target.value) || 0)) } })}
@@ -778,8 +779,8 @@ export const SystemSettings: React.FC = () => {
           cycle the generator creates.
         </p>
         <div>
-          <label className="label">Short Cycle Duration</label>
-          <select
+          <label className="label" htmlFor="short-cycle-duration">Short Cycle Duration</label>
+          <select id="short-cycle-duration"
             className="input"
             value={formData.cycleDurationMinutes}
             onChange={(e) => setFormData({ ...formData, cycleDurationMinutes: Number(e.target.value) })}
@@ -813,8 +814,9 @@ export const SystemSettings: React.FC = () => {
                   ['celebrateBeforeEndSec', 'Celebrate'],
                 ] as const).map(([field, flabel]) => (
                   <div key={field}>
-                    <label className="text-xs text-gray-400">{flabel}</label>
+                    <label className="text-xs text-gray-400" htmlFor={`phase-${key}-${field}`}>{flabel}</label>
                     <input
+                      id={`phase-${key}-${field}`}
                       type="number" min={0} step={1}
                       value={formData.cyclePhases[key][field]}
                       onChange={(e) => setFormData({
@@ -852,8 +854,8 @@ export const SystemSettings: React.FC = () => {
         </p>
 
         <div>
-          <label className="label">Withdrawal Hold (minutes)</label>
-          <input
+          <label className="label" htmlFor="withdrawal-hold-minutes">Withdrawal Hold (minutes)</label>
+          <input id="withdrawal-hold-minutes"
             type="number" min={0} max={1440} step={1}
             value={formData.withdrawalHoldMinutes}
             onChange={(e) => setFormData({
@@ -883,8 +885,8 @@ export const SystemSettings: React.FC = () => {
           </p>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <label className="label">Max Requests In Flight</label>
-              <input
+              <label className="label" htmlFor="max-requests-in-flight">Max Requests In Flight</label>
+              <input id="max-requests-in-flight"
                 type="number" min={0} step={10}
                 value={formData.loadShedding.maxInFlight}
                 onChange={(e) => setFormData({ ...formData, loadShedding: { ...formData.loadShedding, maxInFlight: Math.max(0, Math.floor(Number(e.target.value) || 0)) } })}
@@ -893,8 +895,8 @@ export const SystemSettings: React.FC = () => {
               <p className="text-xs text-gray-500 mt-1">0 turns this ceiling off.</p>
             </div>
             <div>
-              <label className="label">Max Event-Loop Lag (ms)</label>
-              <input
+              <label className="label" htmlFor="max-event-loop-lag-ms">Max Event-Loop Lag (ms)</label>
+              <input id="max-event-loop-lag-ms"
                 type="number" min={0} step={10}
                 value={formData.loadShedding.maxEventLoopLagMs}
                 onChange={(e) => setFormData({ ...formData, loadShedding: { ...formData.loadShedding, maxEventLoopLagMs: Math.max(0, Math.floor(Number(e.target.value) || 0)) } })}
@@ -919,8 +921,8 @@ export const SystemSettings: React.FC = () => {
             and no third-party reputation. A surge <strong>Max of 0 means that layer is off</strong>.
           </p>
           <div className="mb-3">
-            <label className="label">Subnet Multiplier</label>
-            <input
+            <label className="label" htmlFor="subnet-multiplier">Subnet Multiplier</label>
+            <input id="subnet-multiplier"
               type="number" min={1} step={1}
               value={formData.ipDefense.subnetMultiplier}
               onChange={(e) => setFormData({ ...formData, ipDefense: { ...formData.ipDefense, subnetMultiplier: Math.max(1, Math.floor(Number(e.target.value) || 1)) } })}
@@ -939,8 +941,8 @@ export const SystemSettings: React.FC = () => {
               <p className="text-sm font-medium mb-1">{label}</p>
               <div className="grid grid-cols-2 gap-2">
                 <div>
-                  <label className="text-xs text-gray-400">Window (sec)</label>
-                  <input
+                  <label className="text-xs text-gray-400" htmlFor="window-sec">Window (sec)</label>
+                  <input id="window-sec"
                     type="number" min={1} step={1}
                     value={formData.ipDefense.surge[key].windowSec}
                     onChange={(e) => setFormData({
@@ -957,8 +959,8 @@ export const SystemSettings: React.FC = () => {
                   />
                 </div>
                 <div>
-                  <label className="text-xs text-gray-400">Max in window (0 = off)</label>
-                  <input
+                  <label className="text-xs text-gray-400" htmlFor="max-in-window-0-off">Max in window (0 = off)</label>
+                  <input id="max-in-window-0-off"
                     type="number" min={0} step={1}
                     value={formData.ipDefense.surge[key].max}
                     onChange={(e) => setFormData({
@@ -1034,8 +1036,8 @@ export const SystemSettings: React.FC = () => {
           format — Slack, Discord (with /slack suffix), Mattermost, or any HTTP
           collector works. Leave empty to disable.
         </p>
-        <label className="label">Alert Webhook URL</label>
-        <input
+        <label className="label" htmlFor="alert-webhook-url">Alert Webhook URL</label>
+        <input id="alert-webhook-url"
           type="url"
           value={formData.alertWebhookUrl}
           onChange={(e) => setFormData({ ...formData, alertWebhookUrl: e.target.value.trim() })}
@@ -1084,8 +1086,8 @@ export const SystemSettings: React.FC = () => {
           ))}
 
           <div>
-            <label className="label">Blocked JA3 Hashes</label>
-            <textarea
+            <label className="label" htmlFor="blocked-ja3-hashes">Blocked JA3 Hashes</label>
+            <textarea id="blocked-ja3-hashes"
               value={formData.tlsFingerprintDefense.blockJa3Hashes.join('\n')}
               onChange={(e) => setFormData({
                 ...formData,
@@ -1115,8 +1117,8 @@ export const SystemSettings: React.FC = () => {
 
         <div className="space-y-4">
           <div>
-            <label className="label">Web App URL</label>
-            <input
+            <label className="label" htmlFor="web-app-url">Web App URL</label>
+            <input id="web-app-url"
               type="url"
               value={formData.webUrl}
               onChange={(e) => setFormData({ ...formData, webUrl: e.target.value })}
@@ -1127,8 +1129,8 @@ export const SystemSettings: React.FC = () => {
           </div>
 
           <div>
-            <label className="label">Android APK URL</label>
-            <input
+            <label className="label" htmlFor="android-apk-url">Android APK URL</label>
+            <input id="android-apk-url"
               type="url"
               value={formData.androidUrl}
               onChange={(e) => setFormData({ ...formData, androidUrl: e.target.value })}
@@ -1151,8 +1153,8 @@ export const SystemSettings: React.FC = () => {
 
           <div className="grid grid-cols-2 gap-4 pt-2 border-t border-dark-700">
             <div>
-              <label className="label">Minimum Version</label>
-              <input
+              <label className="label" htmlFor="minimum-version">Minimum Version</label>
+              <input id="minimum-version"
                 type="text"
                 value={formData.minVersion}
                 onChange={(e) => setFormData({ ...formData, minVersion: e.target.value })}
@@ -1162,8 +1164,8 @@ export const SystemSettings: React.FC = () => {
               <p className="text-xs text-gray-500 mt-1">Users below this version see a forced update screen and cannot use the app until they refresh.</p>
             </div>
             <div>
-              <label className="label">Latest Version</label>
-              <input
+              <label className="label" htmlFor="latest-version">Latest Version</label>
+              <input id="latest-version"
                 type="text"
                 value={formData.latestVersion}
                 onChange={(e) => setFormData({ ...formData, latestVersion: e.target.value })}

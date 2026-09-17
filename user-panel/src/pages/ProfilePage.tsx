@@ -155,13 +155,13 @@ const ProfilePage: React.FC = () => {
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}><span className="font-grotesk" style={{ fontWeight: 700, fontSize: 17, color: 'var(--text)' }}>Bank / UPI Details</span><button onClick={() => setBankOpen(false)} style={{ width: 30, height: 30, borderRadius: '50%', border: '1px solid var(--line)', background: 'var(--surface3)', color: 'var(--text2)', cursor: 'pointer', fontSize: 12 }}>✕</button></div>
             <p style={{ fontSize: 11, color: 'var(--text2)', margin: '0 0 14px' }}>Required to receive sell-order payouts. Stored securely.</p>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 11 }}>
-              <div><label style={fieldLabel}>UPI ID</label><input value={bank.upiId} onChange={e => setBank({ ...bank, upiId: e.target.value })} placeholder="yourname@okhdfc" style={inputStyle} /></div>
+              <div><label style={fieldLabel} htmlFor="upi-id">UPI ID</label><input id="upi-id" value={bank.upiId} onChange={e => setBank({ ...bank, upiId: e.target.value })} placeholder="yourname@okhdfc" style={inputStyle} /></div>
               <div style={{ textAlign: 'center', fontSize: 10, fontWeight: 800, letterSpacing: '.1em', color: 'var(--text3)' }}>— OR BANK ACCOUNT —</div>
-              <div><label style={fieldLabel}>Account holder name</label><input value={bank.accountHolderName} onChange={e => setBank({ ...bank, accountHolderName: e.target.value })} placeholder="Full name as per bank" style={inputStyle} /></div>
-              <div><label style={fieldLabel}>Account number</label><input value={bank.accountNumber} onChange={e => setBank({ ...bank, accountNumber: e.target.value })} inputMode="numeric" placeholder="0000 0000 0000" className="font-grotesk" style={inputStyle} /></div>
+              <div><label style={fieldLabel} htmlFor="account-holder-name">Account holder name</label><input id="account-holder-name" value={bank.accountHolderName} onChange={e => setBank({ ...bank, accountHolderName: e.target.value })} placeholder="Full name as per bank" style={inputStyle} /></div>
+              <div><label style={fieldLabel} htmlFor="account-number">Account number</label><input id="account-number" value={bank.accountNumber} onChange={e => setBank({ ...bank, accountNumber: e.target.value })} inputMode="numeric" placeholder="0000 0000 0000" className="font-grotesk" style={inputStyle} /></div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                <div><label style={fieldLabel}>IFSC</label><input value={bank.ifscCode} onChange={e => setBank({ ...bank, ifscCode: e.target.value.toUpperCase() })} placeholder="HDFC0001234" style={{ ...inputStyle, textTransform: 'uppercase' }} /></div>
-                <div><label style={fieldLabel}>Bank</label><input value={bank.bankName} onChange={e => setBank({ ...bank, bankName: e.target.value })} placeholder="HDFC Bank" style={inputStyle} /></div>
+                <div><label style={fieldLabel} htmlFor="ifsc">IFSC</label><input id="ifsc" value={bank.ifscCode} onChange={e => setBank({ ...bank, ifscCode: e.target.value.toUpperCase() })} placeholder="HDFC0001234" style={{ ...inputStyle, textTransform: 'uppercase' }} /></div>
+                <div><label style={fieldLabel} htmlFor="bank">Bank</label><input id="bank" value={bank.bankName} onChange={e => setBank({ ...bank, bankName: e.target.value })} placeholder="HDFC Bank" style={inputStyle} /></div>
               </div>
               <button onClick={saveBank} disabled={saving} style={{ ...goldButton, opacity: saving ? .6 : 1 }}>{saving ? 'Saving…' : 'Save details'}</button>
             </div>

@@ -235,13 +235,13 @@ export const MerchantPlatform: React.FC = () => {
               </label>
             </div>
             <div>
-              <label className="label">Min matched volume (₹)</label>
-              <input type="number" min={0} className="input"
+              <label className="label" htmlFor="min-matched-volume">Min matched volume (₹)</label>
+              <input id="min-matched-volume" type="number" min={0} className="input"
                 value={form.minMatchedVolume} onChange={e => setForm({ ...form, minMatchedVolume: Number(e.target.value) })} />
             </div>
             <div>
-              <label className="label">Justification (required)</label>
-              <input type="text" className="input" placeholder="Why this change?"
+              <label className="label" htmlFor="justification-required">Justification (required)</label>
+              <input id="justification-required" type="text" className="input" placeholder="Why this change?"
                 value={form.justification} onChange={e => setForm({ ...form, justification: e.target.value })} />
             </div>
           </div>

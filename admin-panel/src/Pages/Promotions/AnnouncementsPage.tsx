@@ -41,11 +41,11 @@ export const AnnouncementsPage: React.FC = () => {
         <div className="card space-y-4 border border-blue-500/30">
           <h3 className="font-semibold">{editId ? 'Edit' : 'New'} Announcement</h3>
           <div className="grid grid-cols-2 gap-4">
-            <div className="col-span-2"><label className="text-xs text-gray-400 mb-1 block">Title</label><input value={form.title} onChange={e=>setForm(f=>({...f,title:e.target.value}))} className="input w-full" placeholder="Maintenance on Sunday..."/></div>
-            <div className="col-span-2"><label className="text-xs text-gray-400 mb-1 block">Body</label><textarea value={form.body} onChange={e=>setForm(f=>({...f,body:e.target.value}))} className="input w-full h-24 resize-none" placeholder="Full message text..."/></div>
-            <div><label className="text-xs text-gray-400 mb-1 block">Type</label><select value={form.type} onChange={e=>setForm(f=>({...f,type:e.target.value}))} className="input w-full"><option>INFO</option><option>WARNING</option><option>PROMO</option><option>MAINTENANCE</option></select></div>
-            <div><label className="text-xs text-gray-400 mb-1 block">Priority (higher = shown first)</label><input type="number" value={form.priority} onChange={e=>setForm(f=>({...f,priority:e.target.value}))} className="input w-full"/></div>
-            <div><label className="text-xs text-gray-400 mb-1 block">Expires At (optional)</label><input type="datetime-local" value={form.expiresAt} onChange={e=>setForm(f=>({...f,expiresAt:e.target.value}))} className="input w-full"/></div>
+            <div className="col-span-2"><label className="text-xs text-gray-400 mb-1 block" htmlFor="title">Title</label><input id="title" value={form.title} onChange={e=>setForm(f=>({...f,title:e.target.value}))} className="input w-full" placeholder="Maintenance on Sunday..."/></div>
+            <div className="col-span-2"><label className="text-xs text-gray-400 mb-1 block" htmlFor="body">Body</label><textarea id="body" value={form.body} onChange={e=>setForm(f=>({...f,body:e.target.value}))} className="input w-full h-24 resize-none" placeholder="Full message text..."/></div>
+            <div><label className="text-xs text-gray-400 mb-1 block" htmlFor="type">Type</label><select id="type" value={form.type} onChange={e=>setForm(f=>({...f,type:e.target.value}))} className="input w-full"><option>INFO</option><option>WARNING</option><option>PROMO</option><option>MAINTENANCE</option></select></div>
+            <div><label className="text-xs text-gray-400 mb-1 block" htmlFor="priority-higher-shown-first">Priority (higher = shown first)</label><input id="priority-higher-shown-first" type="number" value={form.priority} onChange={e=>setForm(f=>({...f,priority:e.target.value}))} className="input w-full"/></div>
+            <div><label className="text-xs text-gray-400 mb-1 block" htmlFor="expires-at-optional">Expires At (optional)</label><input id="expires-at-optional" type="datetime-local" value={form.expiresAt} onChange={e=>setForm(f=>({...f,expiresAt:e.target.value}))} className="input w-full"/></div>
           </div>
           <div className="flex gap-3"><button onClick={save} className="btn-primary">Save</button><button onClick={()=>setShowForm(false)} className="btn-secondary">Cancel</button></div>
         </div>

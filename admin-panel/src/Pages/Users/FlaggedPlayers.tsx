@@ -266,8 +266,8 @@ export const FlaggedPlayers: React.FC = () => {
             </span>
           </p>
           <div>
-            <label className="label">Reason (shown in the audit trail)</label>
-            <textarea value={blockReason} onChange={e => setBlockReason(e.target.value)}
+            <label className="label" htmlFor="reason-shown-in-the-audit-trail">Reason (shown in the audit trail)</label>
+            <textarea id="reason-shown-in-the-audit-trail" value={blockReason} onChange={e => setBlockReason(e.target.value)}
               className="input resize-none w-full" rows={3}
               placeholder="e.g. Third unverified payment claim; proof shows no credit on any of them." />
           </div>

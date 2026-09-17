@@ -208,8 +208,8 @@ export const PhantomAgents: React.FC = () => {
               <p className="text-xs text-gray-500 mt-1">Currently: {editing.phantomAccess}</p>
             </div>
             <div>
-              <label className="label">Scope</label>
-              <select value={level} onChange={(e) => setLevel(e.target.value)} className="input">
+              <label className="label" htmlFor="scope">Scope</label>
+              <select id="scope" value={level} onChange={(e) => setLevel(e.target.value)} className="input">
                 {LEVELS.map((l) => <option key={l.value} value={l.value}>{l.label}</option>)}
               </select>
             </div>

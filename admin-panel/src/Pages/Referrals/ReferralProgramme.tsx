@@ -121,10 +121,10 @@ export const ReferralProgramme: React.FC = () => {
             reported back to you unspent.
           </p>
 
-          <label style={{ display: 'block', fontSize: 10.5, fontWeight: 700, color: 'var(--text-2)', marginBottom: 5 }}>
+          <label style={{ display: 'block', fontSize: 10.5, fontWeight: 700, color: 'var(--text-2)', marginBottom: 5 }} htmlFor="pool-amount">
             Pool amount (₹)
           </label>
-          <input
+          <input id="pool-amount"
             value={amount}
             onChange={(e) => { setAmount(e.target.value.replace(/[^0-9.]/g, '')); setConfirming(false); }}
             inputMode="decimal" placeholder="100000" className="font-mono"

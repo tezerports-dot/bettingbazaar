@@ -394,8 +394,8 @@ export const DepositPolicy: React.FC = () => {
         <div className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="label">Deposit Wallet %</label>
-              <input
+              <label className="label" htmlFor="deposit-wallet">Deposit Wallet %</label>
+              <input id="deposit-wallet"
                 type="number" step="0.01" min="0" max="100"
                 value={form.depositAllocationPercent}
                 onChange={(e) => onDepositPercentChange(e.target.value)}
@@ -403,8 +403,8 @@ export const DepositPolicy: React.FC = () => {
               />
             </div>
             <div>
-              <label className="label">Reserve Wallet %</label>
-              <input
+              <label className="label" htmlFor="reserve-wallet">Reserve Wallet %</label>
+              <input id="reserve-wallet"
                 type="number" step="0.01" min="0" max="100"
                 value={form.reserveAllocationPercent}
                 onChange={(e) => onReservePercentChange(e.target.value)}
@@ -446,8 +446,8 @@ export const DepositPolicy: React.FC = () => {
               </label>
             </div>
             <div>
-              <label className="label">Notes</label>
-              <textarea
+              <label className="label" htmlFor="notes">Notes</label>
+              <textarea id="notes"
                 value={form.notes}
                 onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))}
                 className="input w-full h-16 resize-none"
@@ -457,8 +457,8 @@ export const DepositPolicy: React.FC = () => {
           </div>
 
           <div>
-            <label className="label">Business Justification (required)</label>
-            <textarea
+            <label className="label" htmlFor="business-justification-required">Business Justification (required)</label>
+            <textarea id="business-justification-required"
               value={form.justification}
               onChange={(e) => setForm((f) => ({ ...f, justification: e.target.value }))}
               className="input w-full h-20 resize-none"
@@ -468,8 +468,8 @@ export const DepositPolicy: React.FC = () => {
 
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="label">Effective At (optional — blank = immediate)</label>
-              <input
+              <label className="label" htmlFor="effective-at-optional-blank-immediate">Effective At (optional — blank = immediate)</label>
+              <input id="effective-at-optional-blank-immediate"
                 type="datetime-local"
                 value={form.effectiveAt}
                 onChange={(e) => setForm((f) => ({ ...f, effectiveAt: e.target.value }))}

@@ -1,5 +1,5 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useId, useState } from 'react';
 import { Save, TestTube, RefreshCw, ToggleLeft, ToggleRight, ChevronDown, ChevronUp,
          Gamepad2, Trophy, Zap, Activity, Plus, Trash2, X } from 'lucide-react';
 import api from '../../services/api';
@@ -15,17 +15,25 @@ const CATEGORY_META: Record<string, { label: string; icon: React.ReactNode; colo
 
 const CATEGORIES = ['casino', 'crash', 'sports', 'slots'];
 
-const Field = ({ label, value, onChange, type = 'text', placeholder = '', help = '' }: any) => (
+const Field = ({ label, value, onChange, type = 'text', placeholder = '', help = '' }: any) => {
+  // `useId` rather than a slug of the label: this component renders once per
+  // provider as well as once in the create form, so a label-derived id would
+  // collide and point three labels at one input. React guarantees this one is
+  // unique per instance and stable across renders.
+  const id = useId();
+  return (
   <div>
-    <label className="text-xs text-gray-400 mb-1 block">{label}</label>
+    <label className="text-xs text-gray-400 mb-1 block" htmlFor={id}>{label}</label>
     <input
+      id={id}
       type={type} value={value || ''} onChange={e => onChange(e.target.value)}
       placeholder={placeholder}
       className="w-full bg-dark-800 border border-dark-600 rounded-lg px-3 py-2 text-sm text-white focus:border-yellow-500/50 outline-hidden"
     />
     {help && <p className="text-[10px] text-gray-600 mt-0.5">{help}</p>}
   </div>
-);
+  );
+};
 
 const EMPTY_NEW = { key: '', name: '', category: 'casino', description: '', logoUrl: '',
                     apiUrl: '', apiKey: '', apiSecret: '', merchantId: '', webhookSecret: '' };
@@ -167,8 +175,8 @@ export const GameProviders: React.FC = () => {
               <Field label="Display Name" value={newProv.name}
                 onChange={(v: string) => setNewProv(p => ({ ...p, name: v }))} placeholder="e.g. Evolution Gaming" />
               <div>
-                <label className="text-xs text-gray-400 mb-1 block">Category</label>
-                <select value={newProv.category}
+                <label className="text-xs text-gray-400 mb-1 block" htmlFor="category">Category</label>
+                <select id="category" value={newProv.category}
                   onChange={e => setNewProv(p => ({ ...p, category: e.target.value }))}
                   className="w-full bg-dark-700 border border-dark-600 rounded-lg px-3 py-2 text-sm text-white outline-hidden">
                   {CATEGORIES.map(c => <option key={c} value={c}>{CATEGORY_META[c]?.label || c}</option>)}

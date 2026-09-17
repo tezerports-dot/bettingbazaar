@@ -73,8 +73,8 @@ export const ProfitLoss: React.FC = () => {
       <Toolbar tabs={PRESETS.map((p) => ({ label: p.label, active: preset === p.key, onClick: () => changePreset(p.key) }))} />
       {preset === 'custom' && (
         <div className="flex items-end gap-3">
-          <div><label className="text-xs text-gray-400 mb-1 block">From</label><input type="date" value={startDate} onChange={(e) => setStart(e.target.value)} className="input" style={{ width: 175 }} /></div>
-          <div><label className="text-xs text-gray-400 mb-1 block">To</label><input type="date" value={endDate} onChange={(e) => setEnd(e.target.value)} className="input" style={{ width: 175 }} /></div>
+          <div><label className="text-xs text-gray-400 mb-1 block" htmlFor="from">From</label><input id="from" type="date" value={startDate} onChange={(e) => setStart(e.target.value)} className="input" style={{ width: 175 }} /></div>
+          <div><label className="text-xs text-gray-400 mb-1 block" htmlFor="to">To</label><input id="to" type="date" value={endDate} onChange={(e) => setEnd(e.target.value)} className="input" style={{ width: 175 }} /></div>
           <button onClick={load} className="btn-primary text-xs">Apply</button>
         </div>
       )}

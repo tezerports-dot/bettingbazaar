@@ -276,8 +276,9 @@ export const PaymentControlCenter: React.FC = () => {
             { key: 'gatewayWebhookSecret', label: 'Webhook Secret', ph: 'whsec_…' },
           ].map(f => (
             <div key={f.key}>
-              <label className="text-xs text-gray-400 mb-1 block">{f.label}</label>
+              <label className="text-xs text-gray-400 mb-1 block" htmlFor={`gw-${f.key}`}>{f.label}</label>
               <input
+                id={`gw-${f.key}`}
                 type={f.key.toLowerCase().includes('secret') ? 'password' : 'text'}
                 value={cfg[f.key] || ''}
                 onChange={e => set(f.key, e.target.value)}

@@ -134,16 +134,16 @@ export const TokenFlow: React.FC = () => {
         </div>
         <div className="flex flex-wrap items-end gap-3">
           <div>
-            <label className="label text-xs">From</label>
-            <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} className="input text-sm" />
+            <label className="label text-xs" htmlFor="from">From</label>
+            <input id="from" type="date" value={startDate} onChange={e => setStartDate(e.target.value)} className="input text-sm" />
           </div>
           <div>
-            <label className="label text-xs">To</label>
-            <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} className="input text-sm" />
+            <label className="label text-xs" htmlFor="to">To</label>
+            <input id="to" type="date" value={endDate} onChange={e => setEndDate(e.target.value)} className="input text-sm" />
           </div>
           <div>
-            <label className="label text-xs">Trend window</label>
-            <select value={days} onChange={e => setDays(Number(e.target.value))} className="input text-sm">
+            <label className="label text-xs" htmlFor="trend-window">Trend window</label>
+            <select id="trend-window" value={days} onChange={e => setDays(Number(e.target.value))} className="input text-sm">
               {[7, 30, 90, 365].map(n => <option key={n} value={n}>{n} days</option>)}
             </select>
           </div>
