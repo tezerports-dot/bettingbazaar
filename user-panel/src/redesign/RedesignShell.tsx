@@ -22,6 +22,7 @@ import { fmt } from './format';
 import AuthModal from '../components/Modals/AuthModal';
 import NotificationBell from '../components/Layout/NotificationBell';
 import ShareModal from '../components/Modals/ShareModal';
+import AnnouncementBanner from '../components/AnnouncementBanner';
 import ChannelGateModal from '../components/Modals/ChannelGateModal';
 
 interface ShellContextValue {
@@ -228,6 +229,18 @@ const RedesignShell: React.FC<React.PropsWithChildren<{}>> = ({ children }) => {
 
         {/* ░░ MAIN + CATEGORY STRIP ░░ */}
         <main style={{ flex: 1, minHeight: 0, position: 'relative', overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
+          {/*
+            What the platform is telling everyone. `announcements` had an admin
+            page that writes them and a route that serves them, and no screen
+            here that read it — so an operator's "deposits are paused for an
+            hour" reached nobody (§28, the third instance of that shape).
+
+            Above the content rather than inside a page, because it applies to
+            whatever the player is looking at, and rendered signed out too:
+            the people who most need to read a service notice are the ones who
+            cannot get in.
+          */}
+          <AnnouncementBanner />
           <div className="bb-noscroll" style={{
             flex: 'none', display: 'flex', gap: 10, padding: '8px 14px', overflowX: 'auto',
             background: 'color-mix(in srgb, var(--bg) 55%, transparent)', borderBottom: '1px solid var(--line)',
