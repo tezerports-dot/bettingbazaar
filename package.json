@@ -42,7 +42,8 @@
     "check:error-responses": "node scripts/verify-error-responses.mjs",
     "audit:map": "node scripts/audit-map.mjs",
     "report:branding": "node scripts/report-branding-literals.mjs",
-    "test:browser": "node backend/tests/browser/run.js"
+    "test:browser": "node backend/tests/browser/run.js",
+    "test:drive": "node backend/tests/browser/drive.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.122.0",

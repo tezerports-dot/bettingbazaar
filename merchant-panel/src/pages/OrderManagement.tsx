@@ -144,6 +144,10 @@ const OrderManagement: React.FC = () => {
           return (
             <button
               key={tile.key}
+              // The filter that is ON was a border colour alone. This tile also
+              // TOGGLES (pressing the active one clears back to ALL), which is
+              // exactly what aria-pressed means.
+              aria-pressed={active}
               onClick={() => setStatusFilter(active ? 'ALL' : tile.key)}
               className="bb-lift"
               style={{

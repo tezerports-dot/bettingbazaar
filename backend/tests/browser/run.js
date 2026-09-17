@@ -313,7 +313,11 @@ async function visit(page, panel, screen, cfg) {
 const only = process.argv.slice(2).filter((a) => !a.startsWith('-'));
 const wanted = panelScreens().filter((p) => !only.length || only.includes(p.panel));
 
-if (!await waitFor(`${API}/api/v1/system/config`, 'the backend')) process.exit(1);
+// `/health/live`, not `/api/v1/system/config`. The config route is rate
+// limited — correctly — and a 500ms poll plus a pass that drives 1,700 controls
+// through it looks exactly like abuse, so the probe was answered 429 and the
+// harness concluded the server was down. The liveness endpoint exists for this.
+if (!await waitFor(`${API}/health/live`, 'the backend')) process.exit(1);
 
 // One actor per panel, seeded fresh, so a screen that shows "no data" is showing
 // this run's data and not a leftover (trap 10).

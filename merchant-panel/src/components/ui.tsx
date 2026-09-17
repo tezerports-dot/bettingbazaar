@@ -160,7 +160,7 @@ export function SegmentedControl<T extends string>({ value, options, onChange, s
   style?: React.CSSProperties;
 }) {
   return (
-    <div style={{
+    <div role="group" style={{
       display: 'flex', gap: 2, padding: 3, background: 'var(--surface-2)',
       border: '1px solid var(--border)', borderRadius: 11, ...style,
     }}>
@@ -170,6 +170,19 @@ export function SegmentedControl<T extends string>({ value, options, onChange, s
           <button
             key={option.value}
             title={option.title}
+            // ── Which one is selected, said out loud ─────────────────────
+            // The selected segment was shown with a background, a colour and a
+            // shadow, and nothing else. A sighted operator can see it; a screen
+            // reader announced three identical buttons with no way to tell
+            // which tab they were looking at. `Toggle`, thirty lines below,
+            // already does this correctly with role="switch" + aria-checked —
+            // the idiom was in the file, this component just did not use it.
+            //
+            // aria-pressed rather than role="radio": radio semantics oblige
+            // arrow-key navigation within the group, and claiming a role whose
+            // keyboard contract is not implemented is worse than the plain
+            // button this already is.
+            aria-pressed={active}
             onClick={() => onChange(option.value)}
             style={{
               padding: '6px 11px', border: 0, borderRadius: 8, cursor: 'pointer',

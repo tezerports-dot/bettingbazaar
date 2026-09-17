@@ -2517,8 +2517,8 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Panel | .ts/.tsx files | `dangerouslySetInnerHTML` | `.innerHTML =` |
 |---|---|---|---|
-| `user-panel` | 78 | 0 | 0 |
-| `admin-panel` | 94 | 0 | 0 |
+| `user-panel` | 79 | 0 | 0 |
+| `admin-panel` | 95 | 0 | 0 |
 | `merchant-panel` | 38 | 0 | 0 |
 
 <!-- END GENERATED -->

@@ -6,7 +6,7 @@
  * (net placed / winnings / win-rate / cycles), KYC status (KYCModal), bank/UPI
  * details (backend.updateBankDetails), theme appearance toggle, and logout.
  */
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { useGame } from '../services/GameContext';
 import { useTheme } from '../redesign/ThemeContext';
@@ -85,13 +85,41 @@ const ProfilePage: React.FC = () => {
     } catch (err: any) { alert(err?.message || 'Upload failed.'); }
   };
 
-  const settingsRows = [
-    { ic: '🔔', t: 'Notifications', v: 'On' },
-    { ic: '🌐', t: 'Language', v: 'English' },
-    { ic: '🔒', t: 'Security & PIN', v: '' },
-    { ic: '📄', t: 'Responsible Play', v: '' },
-    { ic: 'ℹ️', t: 'About & Terms', v: '' },
-  ];
+  /**
+   * ── These rows were five dead buttons ────────────────────────────────────
+   * `<button key={op.t} style={…}>` with NO `onClick`. Five rows, each ending
+   * in a `›` that promises a screen, and tapping any of them did nothing —
+   * found by pressing them in a browser, because there is no request to fail
+   * and no error to catch (§28: `check:ui-coverage` can only see a call that
+   * resolves to no route; it cannot see a control that calls nothing).
+   *
+   * Three of them named a feature this platform does not have — no
+   * notification settings, no i18n, no PIN — so they are gone. A control that
+   * promises what the product cannot do is worse than no control.
+   *
+   * The rest name PAGES, and the platform already had somewhere to get them:
+   * `SUPPORT_LINKS_SPEC` declares `helpCenterUrl`, `termsUrl` and `privacyUrl`,
+   * an admin can set them, and **nothing read them** — the same hole from the
+   * other side (§3: an admin-editable field with no consumer). So each row is
+   * now that link, and a row whose URL is unset is HIDDEN rather than shown
+   * dead: blank means the operator has not published that page, and a player
+   * should not be offered it.
+   */
+  const [pages, setPages] = useState<Record<string, string>>({});
+  useEffect(() => {
+    let alive = true;
+    (getBackend() as any).getSupportLinks?.()
+      .then((l: any) => { if (alive) setPages(l ?? {}); })
+      .catch(() => { /* a support document nobody has filled in is not an error */ });
+    return () => { alive = false; };
+  }, []);
+
+  const settingsRows = ([
+    { ic: '❓', t: 'Help Centre',        key: 'helpCenterUrl' },
+    { ic: '📄', t: 'Terms & Conditions', key: 'termsUrl' },
+    { ic: '🔐', t: 'Privacy Policy',     key: 'privacyUrl' },
+  ] as const).map(r => ({ ...r, href: (pages as any)[r.key] as string | undefined }))
+    .filter(r => !!r.href?.trim());
 
   return (
     <ScreenShell icon="👤" title="Profile" sub="Account, stats & preferences">
@@ -139,10 +167,14 @@ const ProfilePage: React.FC = () => {
           <button onClick={toggleTheme} style={{ padding: '6px 13px', borderRadius: 999, border: '1px solid var(--line2)', background: 'var(--surface3)', color: 'var(--gold-ink)', fontSize: 11, fontWeight: 800, cursor: 'pointer' }}>Switch theme</button>
         </div>
         {settingsRows.map(op => (
-          <button key={op.t} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 12, padding: '14px 15px', border: 'none', borderTop: '1px solid var(--line)', background: 'none', cursor: 'pointer', textAlign: 'left' }}>
+          // An anchor, not a button: it goes somewhere, and a player should get
+          // the browser's own affordances for that (open in a new tab, copy the
+          // address, and a middle click that works).
+          <a key={op.t} href={op.href} target="_blank" rel="noopener noreferrer"
+            style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 12, padding: '14px 15px', borderTop: '1px solid var(--line)', background: 'none', cursor: 'pointer', textAlign: 'left', textDecoration: 'none' }}>
             <span style={{ fontSize: 17 }}>{op.ic}</span><span style={{ flex: 1, fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{op.t}</span>
-            <span style={{ fontSize: 11, color: 'var(--text3)' }}>{op.v}</span><span style={{ fontSize: 14, color: 'var(--text3)' }}>›</span>
-          </button>
+            <span style={{ fontSize: 14, color: 'var(--text3)' }}>›</span>
+          </a>
         ))}
       </div>
 

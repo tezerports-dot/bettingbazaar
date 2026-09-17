@@ -118,16 +118,56 @@ window.__bb = (() => {
       return null;
     },
 
-    /** What is on screen now, for telling "it did something" from "it did not". */
+    /**
+     * What is on screen now, for telling "it did something" from "it did not".
+     *
+     * ── Why it is not just the text ──────────────────────────────────────
+     * The first version read innerText, which does NOT include what is in an
+     * input. So typing "12" into a number field came back as INERT — the pass
+     * accusing a working field of doing nothing, which is worse than missing a
+     * defect, because somebody then goes and "fixes" what was never broken. The
+     * same blindness hid every toggle: an ON/OFF switch that changes only a
+     * class is invisible to text.
+     *
+     * (No backticks anywhere in this string. It is a template literal, and a
+     * backtick in a comment inside one ends the literal — the trap CLAUDE.md
+     * records against a SQL comment, met a second time here.)
+     *
+     * So it reads four independent things, and any one of them moving counts:
+     * the text, the VALUES in the fields, the CHECKED and pressed states, and
+     * the markup's own length — which catches a class flip that changes nothing
+     * else. Cheap, and it fails in the safe direction: a false "it acted" is a
+     * missed dead button, but a false "inert" sends somebody hunting a bug that
+     * is not there.
+     */
     fingerprint: () => {
       const r = region();
-      const open = document.querySelectorAll('[role="dialog"], .modal, [data-modal]').length;
+      const fields = [...r.querySelectorAll('input, select, textarea')];
       return {
         text: (r.innerText || '').trim().length,
         controls: inRegion().length,
-        dialogs: open,
+        dialogs: document.querySelectorAll('[role="dialog"], .modal, [data-modal]').length,
         hash: location.hash,
         path: location.pathname,
+        // What the fields HOLD — invisible to innerText, and the whole point of
+        // typing into them.
+        values: fields.map((f) => String(f.value ?? '')).join('\u0001').slice(0, 4000),
+        checked: fields.map((f) => (f.checked ? '1' : '0')).join(''),
+        pressed: [...r.querySelectorAll('[aria-pressed], [aria-selected], [aria-expanded], [data-state]')]
+          .map((e) => (e.getAttribute('aria-pressed') ?? '') + (e.getAttribute('aria-selected') ?? '')
+                    + (e.getAttribute('aria-expanded') ?? '') + (e.getAttribute('data-state') ?? '')).join(''),
+        // A class flip — an active tab, a lit toggle — moves this and nothing
+        // else. It is a HASH, not a length: the length CANCELS. Moving the
+        // selected class from one tab to its neighbour makes one string longer
+        // and the other shorter by exactly the same amount, so the total is
+        // unchanged and four working leaderboard tabs were reported as dead
+        // buttons. A hash has no such symmetry.
+        markup: (() => {
+          const html = r.innerHTML || '';
+          let h = 5381;
+          for (let i = 0; i < html.length; i++) h = ((h * 33) ^ html.charCodeAt(i)) >>> 0;
+          return h;
+        })(),
         toast: [...document.querySelectorAll('[role="status"], [role="alert"]')]
           .map((e) => (e.innerText || '').trim()).filter(Boolean).slice(0, 4).join(' | ').slice(0, 300),
       };

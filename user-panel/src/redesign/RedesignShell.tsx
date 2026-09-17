@@ -248,7 +248,13 @@ const RedesignShell: React.FC<React.PropsWithChildren<{}>> = ({ children }) => {
             {CATEGORIES.map(cat => {
               const active = isActive(cat.path);
               return (
-                <button key={cat.path} onClick={() => go(cat.path)} style={{
+                <button key={cat.path} onClick={() => go(cat.path)}
+                  // Which category you are IN, said out loud. It was a border
+                  // colour and a glow and nothing else, so a screen reader read
+                  // four identical buttons. `aria-current="page"` because these
+                  // navigate — they are not a toggle.
+                  aria-current={active ? 'page' : undefined}
+                  style={{
                   flex: 'none', width: 158, height: 60, borderRadius: 14, padding: '0 14px', display: 'flex',
                   alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer',
                   background: active ? 'linear-gradient(135deg,var(--surface2),var(--surface3))' : 'var(--surface)',

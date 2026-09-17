@@ -45,7 +45,19 @@ import ScreenShell, { card } from '../redesign/Screen';
 
 const backend = getBackend();
 
-interface SupportLinks { whatsapp: string; telegram: string; telegramGroupUrl: string; telegramChannelUrl: string; instagram: string; youtube: string; email: string; }
+/**
+ * Every field `SUPPORT_LINKS_SPEC` declares. It used to name seven of twelve,
+ * and the five it omitted were unreachable for players even though an admin
+ * could set them — the §32 S10 shape, a type that omits a field the server does
+ * send. `phone` and `helpCenterUrl` are picked up here; `termsUrl` and
+ * `privacyUrl` are rows on Profile, where a player looks for them.
+ */
+interface SupportLinks {
+  whatsapp: string; telegram: string; telegramUsername: string;
+  telegramGroupUrl: string; telegramChannelUrl: string;
+  instagram: string; youtube: string; email: string; phone: string;
+  helpCenterUrl: string; termsUrl: string; privacyUrl: string;
+}
 interface ChatMsg { me: boolean; t: string; who?: string; assistant?: boolean; }
 
 const authHeaders = () => {
@@ -269,8 +281,32 @@ const SupportPage: React.FC = () => {
   useEffect(() => {
     (backend as any).getSupportLinks?.()
       .then((data: any) => {
+        // A THIRD hand-written list of these fields lived here, and it named
+        // seven. Every field it forgot was unreachable no matter what an admin
+        // set. Take what the server sent and coerce the shape, so a field added
+        // to the spec arrives without an edit here (§5: two builders of one
+        // payload are one bug waiting for the next field).
         const d = data?.links ?? data;
-        if (d) setLinks({ whatsapp: d.whatsapp || '', telegram: d.telegram || d.telegramUsername || '', telegramGroupUrl: d.telegramGroupUrl || '', telegramChannelUrl: d.telegramChannelUrl || '', instagram: d.instagram || '', youtube: d.youtube || '', email: d.email || '' });
+        if (d) {
+          const str = (v: unknown) => (typeof v === 'string' ? v : '');
+          setLinks({
+            ...(d as SupportLinks),
+            whatsapp: str(d.whatsapp),
+            // `telegram` is the legacy single field; the username supersedes it
+            // and either may be the one an operator filled in.
+            telegram: str(d.telegram) || str(d.telegramUsername),
+            telegramUsername: str(d.telegramUsername),
+            telegramGroupUrl: str(d.telegramGroupUrl),
+            telegramChannelUrl: str(d.telegramChannelUrl),
+            instagram: str(d.instagram),
+            youtube: str(d.youtube),
+            email: str(d.email),
+            phone: str(d.phone),
+            helpCenterUrl: str(d.helpCenterUrl),
+            termsUrl: str(d.termsUrl),
+            privacyUrl: str(d.privacyUrl),
+          });
+        }
       })
       .catch(() => {})
       .finally(() => setLoading(false));
@@ -284,6 +320,8 @@ const SupportPage: React.FC = () => {
     links.instagram && { icon: '📸', label: 'Instagram', sub: 'Follow us', href: links.instagram.startsWith('http') ? links.instagram : `https://instagram.com/${links.instagram.replace('@', '')}`, tag: 'Follow', tagBg: '#E1306C' },
     links.youtube && { icon: '▶️', label: 'YouTube', sub: 'Watch tutorials', href: links.youtube, tag: 'Watch', tagBg: 'var(--red)' },
     links.email && { icon: '📧', label: 'Email', sub: links.email, href: `mailto:${links.email}`, tag: '~24h', tagBg: 'var(--text3)' },
+    links.phone && { icon: '📞', label: 'Phone', sub: links.phone, href: `tel:${links.phone.replace(/[^\d+]/g, '')}`, tag: 'Call', tagBg: 'var(--green)' },
+    links.helpCenterUrl && { icon: '📚', label: 'Help Centre', sub: 'Guides and answers', href: links.helpCenterUrl, tag: 'Read', tagBg: 'var(--text3)' },
   ].filter(Boolean) as Array<{ icon: string; label: string; sub: string; href: string; tag: string; tagBg: string }> : [];
 
   return (

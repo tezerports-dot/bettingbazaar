@@ -40,3 +40,4 @@ user-panel/node_modules/
 backend/package-lock.json
 backend/tests/browser/screenshots/
 backend/tests/browser/controls.manifest.json
+backend/tests/browser/drive.report.json

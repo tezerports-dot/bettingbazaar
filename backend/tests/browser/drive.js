@@ -1,0 +1,369 @@
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
+/**
+ * Press every control on every screen, and watch what happens.
+ *
+ * ── What opening a screen could never find ─────────────────────────────────
+ * `run.js` opens all 68 screens and catches a screen broken ON ARRIVAL. It
+ * cannot find a button that does nothing, a tab that renders the wrong panel,
+ * a filter that 500s, or a form that throws away four of your five keystrokes.
+ * Those need a finger on the control, which is what this is.
+ *
+ * ── What counts as "it worked" ─────────────────────────────────────────────
+ * Not a toast — a toast is what the screen SAYS happened. Three things are
+ * watched instead, in this order:
+ *
+ *   1. It did not throw. An uncaught error after a click is a half-dead screen.
+ *   2. It did not 5xx. A 500 is answered with nothing (§2), so whatever the
+ *      screen draws over it cannot be the truth.
+ *   3. SOMETHING CHANGED. A control that leaves the screen byte-identical —
+ *      same text, same control count, same dialogs, same route — did nothing
+ *      that a person could see. That is the dead-button shape (§28), and it is
+ *      reported as INERT rather than passed.
+ *
+ * Inert is a NOTE, not a failure, and that distinction is the honest part: a
+ * "Refresh" that re-fetches identical data legitimately changes nothing on
+ * screen. The list is triage — every entry gets read, the way `--unused` does.
+ *
+ * ── What it will not press ─────────────────────────────────────────────────
+ * Anything that leaves the app or destroys somebody else's row. Logging out
+ * ends the session for every screen after it; deleting the eleventh player in
+ * a live queue is not a test, it is an incident. Those are listed as DEFERRED
+ * with the reason, and driven deliberately in the mutating pass against rows
+ * this run created — never against whatever happened to be in the database
+ * (trap 10).
+ *
+ *   npm run test:drive                      every panel
+ *   npm run test:drive -- admin-panel       one panel
+ *   npm run test:drive -- admin-panel /kyc  one screen
+ */
+import { spawn } from 'node:child_process';
+import { setTimeout as sleep } from 'node:timers/promises';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
+import { chromium } from 'playwright-core';
+import { panelScreens } from './routes.js';
+import { PAGE_SCRIPT, collect, fingerprint, find, idOf } from './controls.js';
+import { seedPlayer, seedMerchant, seedAdmin } from '../e2e/seed.js';
+import { playerToken, merchantToken, adminToken, check, note, summary } from '../e2e/harness.js';
+
+const ROOT = fileURLToPath(new URL('../../..', import.meta.url));
+const SHOTS = join(ROOT, 'backend', 'tests', 'browser', 'screenshots', 'drive');
+const REPORT = join(ROOT, 'backend', 'tests', 'browser', 'drive.report.json');
+const API = process.env.BB_BASE ?? 'http://127.0.0.1:8099';
+const EXECUTABLE = process.env.BB_CHROMIUM ?? '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
+
+const PANELS = {
+  'user-panel':     { port: 5301, entry: (b) => `${b}/#/`,        router: 'hash',    key: 'auth_token',    wrap: (t) => t },
+  'admin-panel':    { port: 5302, entry: (b) => `${b}/admin/#/`,  router: 'hash',    key: 'admin-auth',
+    wrap: (t) => JSON.stringify({ state: { token: t, admin: null, isAuthenticated: true, mustEnroll2FA: false }, version: 0 }) },
+  'merchant-panel': { port: 5303, entry: (b) => `${b}/merchant/`, router: 'history', base: '/merchant', key: 'merchantToken', wrap: (t) => t },
+};
+
+/**
+ * Controls this pass will not press, and why.
+ *
+ * Each is a rule about CONSEQUENCE, not a list of names to keep in step with
+ * the UI — §28's "a gate whose failure mode is the author forgot to update me".
+ */
+const DEFER = [
+  { why: 'ends the session for every screen after it', test: (c) => /^(log ?out|sign ?out)$/i.test(c.name) },
+  { why: 'leaves the panel', test: (c) => c.kind === 'link' && /^https?:/i.test(c.href) },
+  { why: 'downloads a file the browser cannot hand back', test: (c) => /^(export|download|csv|pdf)\b/i.test(c.name) },
+  { why: 'destroys a row this run did not create — driven in the mutating pass, against its own rows (trap 10)',
+    test: (c) => /^(delete|remove|reject|suspend|block|deduct|terminate|revoke|purge|reset|wipe|end)\b/i.test(c.name) },
+  { why: 'approves or pays out against a row this run did not create',
+    test: (c) => /^(approve|confirm|release|refund|pay|payout|issue|fund|disburse|settle|mint|credit)\b/i.test(c.name) },
+  { why: 'publishes a platform-wide change from whatever the form happens to hold',
+    test: (c) => /^(save|publish|apply|update|submit|activate|deactivate|switch)\b/i.test(c.name) },
+  { why: 'a file picker cannot be driven from here', test: (c) => c.kind === 'input:file' },
+];
+const deferred = (c) => DEFER.find((d) => d.test(c));
+
+/** A control that only READS is safe to press anywhere. */
+const FIELDS = ['text', 'controls', 'dialogs', 'hash', 'path', 'toast',
+                'values', 'checked', 'pressed', 'markup'];
+const changed = (a, b) => FIELDS.some((k) => a[k] !== b[k]);
+/** Which of them moved — so an INERT note can say what was compared. */
+const moved = (a, b) => FIELDS.filter((k) => a[k] !== b[k]);
+
+const children = [];
+const stopAll = () => { for (const c of children) { try { c.kill('SIGTERM'); } catch { /* gone */ } } };
+process.on('exit', stopAll);
+process.on('SIGINT', () => { stopAll(); process.exit(130); });
+
+async function waitFor(url, label, tries = 120) {
+  for (let i = 0; i < tries; i++) {
+    try { if ((await fetch(url)).ok) return true; } catch { /* not up */ }
+    await sleep(500);
+  }
+  console.error(`${label} never answered at ${url}`);
+  return false;
+}
+
+function startVite(panel, port) {
+  const child = spawn('npx', ['vite', '--port', String(port), '--strictPort', '--host', '127.0.0.1'], {
+    cwd: join(ROOT, panel),
+    env: { ...process.env, VITE_API_URL: API },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const log = [];
+  child.stdout.on('data', (d) => log.push(String(d)));
+  child.stderr.on('data', (d) => log.push(String(d)));
+  children.push(child);
+  return { child, log };
+}
+
+/**
+ * Navigate inside the SPA, surviving a press that navigated the whole page.
+ *
+ * A control CAN be an `<a href>` or a submit button, and those do a real
+ * navigation. `page.evaluate` run while one is in flight throws "Execution
+ * context was destroyed" and took the whole pass down with it — which is the
+ * pass reporting its own fragility as the application's fault. So: wait for the
+ * document to settle, try, and on that one specific failure do a hard `goto`.
+ */
+async function navigate(page, cfg, screen, base) {
+  const inSpa = async () => {
+    if (cfg.router === 'hash') await page.evaluate((s) => { window.location.hash = s; }, screen);
+    else {
+      await page.evaluate(([b, s]) => {
+        window.history.pushState({}, '', `${b}${s}`);
+        window.dispatchEvent(new PopStateEvent('popstate'));
+      }, [cfg.base ?? '', screen]);
+    }
+  };
+  await page.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
+  try {
+    await inSpa();
+  } catch (e) {
+    if (!/Execution context was destroyed|Target closed|Navigation/i.test(e.message)) throw e;
+    // The press took the browser somewhere. Come back the long way.
+    if (base) {
+      await page.goto(cfg.entry(base), { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+      await sleep(400);
+      await inSpa().catch(() => {});
+    }
+  }
+}
+
+/** Wait for the routed region to stop changing. Not for the network to go quiet. */
+async function settle(page, ms = 10000) {
+  let last = -1;
+  for (let waited = 0; waited < ms; waited += 350) {
+    await sleep(350);
+    const now = await page.evaluate(() => {
+      const m = document.querySelector('main') ?? document.body;
+      return m?.innerText?.trim().length ?? 0;
+    }).catch(() => 0);
+    if (now > 40 && now === last) return;
+    last = now;
+  }
+}
+
+const IGNORE = [/favicon\.ico/i, /\/@vite\/client/, /\[vite\]/, /Download the React DevTools/i];
+const ignored = (s) => IGNORE.some((re) => re.test(String(s)));
+
+/**
+ * Press one control and report what it did.
+ *
+ * The screen is re-read BEFORE and AFTER, and the control is re-found by its
+ * triple immediately before the press — the previous press may have re-rendered
+ * everything, and a handle captured earlier would be pointing at a node that is
+ * no longer in the document.
+ */
+async function press(page, panel, screen, c, seen) {
+  const id = idOf(panel, screen, c);
+  if (seen.has(id)) return { verdict: 'DUPLICATE' };
+  seen.add(id);
+
+  const skip = deferred(c);
+  if (skip) return { verdict: 'DEFERRED', why: skip.why };
+  if (c.disabled) return { verdict: 'DISABLED' };
+
+  const el = await find(page, c);
+  if (!el) return { verdict: 'GONE', why: 'the control is no longer on the screen — an earlier press removed it' };
+
+  const before = await fingerprint(page);
+  const errors = [], failed = [];
+  const onErr = (e) => errors.push(e.message);
+  const onRes = (r) => {
+    if (r.status() >= 500 && !ignored(r.url())) {
+      failed.push(`${r.status()} ${r.request().method()} ${r.url().replace(/^https?:\/\/[^/]+/, '')}`);
+    }
+  };
+  page.on('pageerror', onErr);
+  page.on('response', onRes);
+
+  let acted = 'clicked';
+  try {
+    if (c.kind.startsWith('input:') && !/checkbox|radio|file|submit|button|range|color/.test(c.kind)) {
+      // A text or number field is exercised by TYPING into it, and by typing
+      // more than one character — one keystroke passes on a form that throws
+      // away the rest, which is exactly how the winners form stayed broken.
+      await el.click({ timeout: 4000 });
+      await el.fill('');
+      await page.keyboard.type(c.kind === 'input:number' ? '12' : 'bb', { delay: 40 });
+      acted = 'typed into';
+    } else if (c.kind === 'select') {
+      const opts = (c.options ?? []).filter(Boolean);
+      if (!opts.length) { acted = 'no options to choose'; }
+      else { await el.selectOption(opts[opts.length - 1], { timeout: 4000 }); acted = 'chose an option in'; }
+    } else if (c.kind === 'textarea') {
+      await el.click({ timeout: 4000 });
+      await page.keyboard.type('bb', { delay: 40 });
+      acted = 'typed into';
+    } else {
+      await el.click({ timeout: 4000 });
+    }
+  } catch (e) {
+    page.off('pageerror', onErr); page.off('response', onRes);
+    return { verdict: 'UNREACHABLE', why: e.message.split('\n')[0].slice(0, 120) };
+  }
+
+  await sleep(700);
+  const after = await fingerprint(page).catch(() => before);
+  page.off('pageerror', onErr);
+  page.off('response', onRes);
+
+  if (errors.length) return { verdict: 'THREW', why: errors[0].slice(0, 200), acted };
+  if (failed.length) return { verdict: 'FIVE_HUNDRED', why: failed.join(' | ').slice(0, 200), acted };
+  if (!changed(before, after)) return { verdict: 'INERT', acted };
+  return { verdict: 'ACTED', acted, moved: moved(before, after).join(',') };
+}
+
+/**
+ * Put the screen back the way it was found.
+ *
+ * A press can open a dialog, switch a tab, or navigate. The next control's
+ * triple was taken from the ORIGINAL screen, so it has to be the original
+ * screen again — otherwise the pass drifts into whatever the last click opened
+ * and silently stops testing the screen it names.
+ */
+async function reset(page, cfg, screen, base) {
+  await page.keyboard.press('Escape').catch(() => {});
+  await navigate(page, cfg, '/__bb_reset_never_matches__', base).catch(() => {});
+  await sleep(150);
+  await navigate(page, cfg, screen, base).catch(() => {});
+  await settle(page, 8000);
+}
+
+// ── Run ─────────────────────────────────────────────────────────────────────
+const args = process.argv.slice(2).filter((a) => !a.startsWith('-'));
+const onlyPanels  = args.filter((a) => a.endsWith('-panel'));
+const onlyScreens = args.filter((a) => a.startsWith('/'));
+
+// `/health/live`, not `/api/v1/system/config`. The config route is rate
+// limited — correctly — and a 500ms poll plus a pass that drives 1,700 controls
+// through it looks exactly like abuse, so the probe was answered 429 and the
+// harness concluded the server was down. The liveness endpoint exists for this.
+if (!await waitFor(`${API}/health/live`, 'the backend')) process.exit(1);
+
+const actors = {
+  'user-panel':     playerToken(await seedPlayer({ balancePaise: 150000 })),
+  'admin-panel':    adminToken(await seedAdmin()),
+  'merchant-panel': merchantToken(await seedMerchant({ currency: 'INR', tokensPaise: 500000000 })),
+};
+
+mkdirSync(SHOTS, { recursive: true });
+const report = { takenAt: new Date().toISOString(), pressed: [] };
+const tally = {};
+const bump = (v) => { tally[v] = (tally[v] ?? 0) + 1; };
+
+const browser = await chromium.launch({ executablePath: EXECUTABLE, args: ['--no-sandbox'], headless: !process.env.BB_HEADED });
+
+try {
+  for (const { panel, screens } of panelScreens()) {
+    if (onlyPanels.length && !onlyPanels.includes(panel)) continue;
+    const cfg = PANELS[panel];
+    const base = `http://127.0.0.1:${cfg.port}`;
+    const { log } = startVite(panel, cfg.port);
+    const probe = `${base}${panel === 'user-panel' ? '/' : `/${panel.split('-')[0]}/`}`;
+    if (!await waitFor(probe, `${panel}'s dev server`)) {
+      check('DRIVE', panel, 'the dev server starts', 'listening', log.join('').slice(-300), false);
+      continue;
+    }
+
+    const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    await ctx.addInitScript(([k, v]) => {
+      try { localStorage.setItem(k, v); } catch { /* blocked */ }
+    }, [cfg.key, cfg.wrap(actors[panel])]);
+    await ctx.addInitScript(PAGE_SCRIPT);
+    // A confirm() that nobody answers blocks the page for ever. Auto-dismiss:
+    // this pass never presses a control whose confirm it would want to accept.
+    const page = await ctx.newPage();
+    page.on('dialog', (d) => d.dismiss().catch(() => {}));
+
+    await page.goto(cfg.entry(base), { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await settle(page, 30000);
+
+    for (const screen of screens) {
+      if (onlyScreens.length && !onlyScreens.includes(screen)) continue;
+      await navigate(page, cfg, screen, base);
+      await settle(page);
+
+      const controls = await collect(page).catch(() => []);
+      const seen = new Set();
+      const results = [];
+
+      for (const c of controls) {
+        // One control must not be able to end the pass. A press can navigate,
+        // close the context, or wedge the page; the verdict for THAT control is
+        // the failure, and the other 1,700 still deserve to be pressed.
+        let r;
+        try {
+          r = await press(page, panel, screen, c, seen);
+        } catch (e) {
+          r = { verdict: 'UNREACHABLE', why: `pressing it broke the pass: ${e.message.split('\n')[0].slice(0, 120)}` };
+        }
+        bump(r.verdict);
+        results.push({ control: idOf(panel, screen, c), ...r });
+        report.pressed.push({ panel, screen, kind: c.kind, name: c.name, ordinal: c.ordinal, ...r });
+
+        // Anything that moved the screen means the next control's triple was
+        // taken somewhere else. Go back before pressing it.
+        if (r.verdict === 'ACTED' || r.verdict === 'THREW' || r.verdict === 'FIVE_HUNDRED') {
+          await reset(page, cfg, screen, base);
+        }
+      }
+
+      const broke  = results.filter((r) => r.verdict === 'THREW' || r.verdict === 'FIVE_HUNDRED');
+      const inert  = results.filter((r) => r.verdict === 'INERT');
+      const gone   = results.filter((r) => r.verdict === 'GONE' || r.verdict === 'UNREACHABLE');
+      const acted  = results.filter((r) => r.verdict === 'ACTED').length;
+      const defer  = results.filter((r) => r.verdict === 'DEFERRED').length;
+      const shape  = `${controls.length} controls: ${acted} acted, ${inert.length} inert, ${defer} deferred, ${gone.length} unreachable`;
+
+      if (broke.length) {
+        check('DRIVE', panel, screen, 'no control throws or 5xxes', 
+          broke.map((b) => `${b.control} → ${b.verdict}: ${b.why}`).slice(0, 3).join('  ||  '), false,
+          'pressed as a person would; the screen was re-read before and after each press');
+        await page.screenshot({ path: join(SHOTS, `${panel}${screen.replace(/\//g, '_') || '_root'}.png`) }).catch(() => {});
+      } else if (gone.length) {
+        note('DRIVE', panel, screen, 'every control reachable', shape,
+          gone.map((g) => `${g.control}: ${g.why}`).slice(0, 2).join(' | '));
+      } else if (inert.length) {
+        note('DRIVE', panel, screen, 'every control does something', shape,
+          `inert (text, field values, checked, aria state and markup length all unmoved): `
+          + inert.map((i) => i.control.split('#')[1]).slice(0, 6).join(', '));
+      } else {
+        check('DRIVE', panel, screen, 'every control pressed, all responded', shape, true);
+      }
+    }
+    await ctx.close();
+  }
+} finally {
+  await browser.close();
+  stopAll();
+}
+
+writeFileSync(REPORT, JSON.stringify(report, null, 2));
+console.log(`\n${'─'.repeat(78)}\nCONTROLS PRESSED\n`);
+for (const [v, n] of Object.entries(tally).sort((a, b) => b[1] - a[1])) {
+  console.log(`  ${String(n).padStart(4)}  ${v}`);
+}
+const total = Object.values(tally).reduce((a, b) => a + b, 0);
+console.log(`  ${String(total).padStart(4)}  TOTAL\nReport: ${REPORT}`);
+
+const { failed: failures } = summary();
+process.exit(failures ? 1 : 0);
