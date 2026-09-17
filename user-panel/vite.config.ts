@@ -30,9 +30,29 @@ export default defineConfig({
   },
   base: '/',
   server: {
-    port: 5174,
+    // 5173 (vite's own default), not 5174 — the ADMIN panel declares 5174, and
+    // two panels claiming one port means whichever starts second silently gets
+    // a different one and every note about "the panel on 5174" is wrong half
+    // the time. One owner per value, applied to a port (§2).
+    port: 5173,
     proxy: {
+      // ── Mirror the Caddyfile, or dev is a different application ─────────
+      // Production is ONE origin: Caddy serves the three panels and proxies
+      // /api, /app-assets and /storage to the backend from the same host. The
+      // dev server proxied only /api, so every branding image, app-asset
+      // preview, CDM receipt and payment proof 404'd here and rendered fine in
+      // production — a divergence that makes a browser pass over dev say
+      // nothing about the thing that ships (§28: no path that only works on
+      // one machine, pointed at the dev server instead of a script).
       '/api': {
+        target: process.env.VITE_API_URL || 'http://localhost:8080',
+        changeOrigin: true,
+      },
+      '/app-assets': {
+        target: process.env.VITE_API_URL || 'http://localhost:8080',
+        changeOrigin: true,
+      },
+      '/storage': {
         target: process.env.VITE_API_URL || 'http://localhost:8080',
         changeOrigin: true,
       },

@@ -27,7 +27,7 @@ listed below, which hold **data and history, never rules**.
 | **How this audit keeps missing things, and the four questions that find them** | `docs/audit/SECURITY_AUDIT_MAP.md` **§0.5 — read before trusting a green check** |
 | **Every defect SHAPE found so far, how wide you must search to see it, and what actually found it** | `docs/audit/SECURITY_AUDIT_MAP.md` **§4.0 — the shape index. Read it before auditing anything.** |
 | **What every change must REPORT, as a table, before it is done** | **§31 — the completeness contract** |
-| **The nineteen shapes that keep shipping here, each with the question that finds it** | **§32 — ask these of the change in front of you** |
+| **The twenty-one shapes that keep shipping here, each with the question that finds it** | **§32 — ask these of the change in front of you** |
 
 ---
 
@@ -66,7 +66,7 @@ listed below, which hold **data and history, never rules**.
     every row, with `done` / `n/a` + reason / `NOT DONE`. The rows nobody fills
     in are where every defect in the 2026-09 review was living, and none of them
     was a wrong calculation.
-14. **Ask §32's nineteen questions of what you just wrote.** They are the shapes
+14. **Ask §32's twenty-one questions of what you just wrote.** They are the shapes
     this codebase has actually produced, each with the question that finds it.
 15. **If it fixes a vulnerability, sweep for the same SHAPE across the whole
     codebase and record the result** — including "swept, none found". A fix that
@@ -1047,6 +1047,16 @@ A route test proves a handler works. It can never prove anything calls it.
   refuse: a false failure, which is how a gate loses trust and gets silenced. A
   `set` is now checked against **the writer it is handed to**.
 
+- `check:orphans` scans `backend/**` with Node's globals, and
+  `backend/tests/browser/` holds functions that are serialised and run inside
+  Chromium. It reported `document` and `localStorage` as references that
+  "throw a ReferenceError the moment [they] run" — they cannot; they never run
+  in that process. A false failure is how a gate loses its authority and gets
+  switched off, so the gate learned the rule (a function argument to
+  `page.evaluate` and friends is browser code) rather than the file being
+  exempted. It still catches an orphan on either side of that line; both were
+  planted on purpose to check.
+
 **Derive what a gate checks from the thing it is checking.**
 
 ### No path that only works on one machine
@@ -1175,6 +1185,20 @@ these are the specific ones this codebase has actually produced.
 | S17 | An admin decision no other panel reflects | What does the merchant/player see after this? |
 | S18 | A silent no-op after a committed write | Can the recipient actually receive, before the record says they did? |
 | S19 | A test asserting a precondition it never established | Did THIS run create the state this asserts, or is it reading whatever the database happened to hold? |
+| S20 | A cache or deduplicator that shares a SINGLE-USE resource | Can two callers both consume what this hands back, or does the first one spend it? |
+| S21 | A screen that renders only the shell when its own content failed | Measure the ROUTED region, not the page. What is inside `<main>`? |
+
+**S20 was live on two player screens and every tier was green.** The user
+panel's `apiClient` deduplicated concurrent GETs by holding the `Response` and
+handing the second caller `resp.clone().json()`. A `Response` may only be cloned
+while its body is UNDISTURBED, and the first caller starts reading it on the
+same tick the second wakes up — so they raced, and when the first won, the
+second threw `Failed to execute 'clone' on 'Response': Response body is already
+used`. On the wallet that landed in `loadMeta`'s catch and the balances, stake
+ceiling and settlement rail were never set (a wallet of zeroes, no error shown);
+on Refer & Earn it was rendered to the PLAYER as their error message. Share the
+PARSED result, never a single-use object — and note that no route test can see
+this, because no route test has two components in it.
 
 **S19 is S16's mirror and cost a green suite.** The USDT scenario opened by
 reading `usdtPricing` out of whatever database it ran against and asserting it
@@ -1216,3 +1240,5 @@ noticed for months that one of the two confirm routes never checked for one.
 | `npm run check:error-responses` | No 5xx hands the caller its own error text, and `serverError` still logs. |
 | `npm run verify:capabilities` | Every claimed capability has its evidence on disk. |
 | `npm run audit:map -- --check` | The security audit map's counts still match the code. |
+| `npm run test:e2e` | The whole server, over real HTTP, as all three actors. |
+| `npm run test:browser` | **Every screen in all three panels, opened in a real browser.** Needs a backend (`BB_BASE`) and starts the dev servers itself. |

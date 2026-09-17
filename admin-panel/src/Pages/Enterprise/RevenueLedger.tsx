@@ -21,7 +21,18 @@ interface LedgerAccount {
 }
 
 interface LedgerEntry {
-  _id: string;
+  // ── `idempotencyKey`, not `_id` — the server has never sent an `_id` ──────
+  // `GET /api/admin/revenue/ledger` emits `idempotencyKey, eventType,
+  // amountMinor, refModel, refId, postings, description, createdAt`. The key is
+  // the right identity in its own right: it is UNIQUE and it is the thing that
+  // makes the posting idempotent (§26.4), so two rows cannot share one.
+  //
+  // With `key={e._id}` every row's key was `undefined`, so React fell back to
+  // position — and position is not identity in a PAGINATED table. Turning the
+  // page reuses the same DOM nodes for different postings, which on a
+  // double-entry ledger is the one screen where a stale row is worst (§23).
+  idempotencyKey: string;
+  amountMinor?: number;
   eventType: string;
   description?: string;
   refModel?: string;
@@ -172,7 +183,7 @@ export const RevenueLedger: React.FC = () => {
             </thead>
             <tbody>
               {entries.map(e => (
-                <tr key={e._id} className="border-b border-dark-800 align-top">
+                <tr key={e.idempotencyKey} className="border-b border-dark-800 align-top">
                   <td className="py-2 pr-3 whitespace-nowrap text-gray-400">
                     {new Date(e.occurredAt || e.createdAt).toLocaleString()}
                   </td>

@@ -37,7 +37,28 @@ export function toVectorLiteral(vec) {
 export async function initSchema() {
   if (!pgConfigured()) return false;
   const dim = embeddingDim();
-  await pgQuery('CREATE EXTENSION IF NOT EXISTS vector');
+  try {
+    await pgQuery('CREATE EXTENSION IF NOT EXISTS vector');
+  } catch (e) {
+    // ── The one thing an operator can actually DO about this ────────────────
+    // Without this, `extension "vector" is not available` reached `respondError`
+    // with no status, so it routed to `serverError`, which logs in full and
+    // answers with nothing BY DESIGN (§2). The admin's Support Assistant screen
+    // therefore showed a green Retrieval light, "0 document(s) · 0 passage(s)"
+    // and an empty list — indistinguishable from a store nobody has ingested
+    // into yet, which is exactly §28's empty state that reads as "no data".
+    //
+    // It is the CALLER's refusal, so it carries its status AT THE THROW (§21):
+    // this is a provisioning fact, not a bug, and the person reading it can fix
+    // it in about a minute if they are told what it is (S14).
+    throw Object.assign(
+      new Error('The support assistant stores its passages with the pgvector extension, '
+        + 'and this PostgreSQL server does not have it available. Install pgvector on the '
+        + 'server (the pgvector/pgvector image ships with it; most managed providers offer '
+        + 'it as an extension to enable), then reload this screen. '
+        + `PostgreSQL said: ${e.message}`),
+      { status: 503, code: 'PGVECTOR_UNAVAILABLE' });
+  }
   await pgQuery(`
     CREATE TABLE IF NOT EXISTS support_documents (
       id             BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

@@ -185,4 +185,33 @@ describe('SupportAssistant', () => {
     render(<SupportAssistant />);
     expect(await screen.findByText(/The assistant has nothing to answer from/)).toBeInTheDocument();
   });
+
+  /**
+   * ── A store that REFUSES must not read as a store that is EMPTY ───────────
+   * Found with a browser open, on a PostgreSQL without pgvector: the documents
+   * endpoint 500'd on every call, the list stayed empty, and the screen showed
+   * a green Retrieval light over "0 document(s) · 0 passage(s)" — the §28 empty
+   * state that reads as "no data". The reason was known to the server the whole
+   * time; nothing carried it to the person who could act on it.
+   */
+  it('shows WHY the list is empty when the store refuses', async () => {
+    get.mockImplementation((url: string) => {
+      if (url === '/api/admin/support/status') {
+        return Promise.resolve({ data: {
+          ...READY,
+          storeReady: false, enabled: false, retrievalReady: false,
+          store: { configured: true, documents: 0, chunks: 0, note: 'store not ready: extension "vector" is not available' },
+        } });
+      }
+      return Promise.reject({ response: { data: { message: 'The support assistant stores its passages with the pgvector extension, and this PostgreSQL server does not have it available.' } } });
+    });
+    render(<SupportAssistant />);
+
+    // The store's own verdict, on the readiness card.
+    expect(await screen.findByText(/extension "vector" is not available/)).toBeInTheDocument();
+    // And the refusal itself, where the list would have been.
+    expect(await screen.findByRole('alert')).toHaveTextContent(/pgvector extension/);
+    // The green light is off, because the store cannot hold a passage.
+    expect(screen.getByText(/The passage store is not usable/)).toBeInTheDocument();
+  });
 });

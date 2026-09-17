@@ -41,7 +41,8 @@
     "check:payment-references": "node scripts/verify-payment-references.mjs",
     "check:error-responses": "node scripts/verify-error-responses.mjs",
     "audit:map": "node scripts/audit-map.mjs",
-    "report:branding": "node scripts/report-branding-literals.mjs"
+    "report:branding": "node scripts/report-branding-literals.mjs",
+    "test:browser": "node backend/tests/browser/run.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.122.0",
@@ -80,6 +81,7 @@
     "@types/qrcode": "^1.5.6",
     "dependency-cruiser": "^18.2.0",
     "nodemon": "^3.1.14",
+    "playwright-core": "^1.63.0",
     "stylelint": "^17.14.1",
     "stylelint-config-standard": "^40.0.0",
     "supertest": "^7.2.2",

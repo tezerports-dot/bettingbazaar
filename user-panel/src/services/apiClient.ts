@@ -63,7 +63,34 @@ function announceGate(json: any): void {
 }
 
 // ── In-flight deduplication ───────────────────────────────────────────────────
-const inFlight = new Map<string, Promise<Response>>();
+/**
+ * The map holds the PARSED RESULT, not the `Response`.
+ *
+ * ── Why, and what the Response version actually did ────────────────────────
+ * It used to hold `Promise<Response>`, and the second caller of a duplicated
+ * GET did `resp.clone().json()`. `Response.clone()` throws once the body is
+ * DISTURBED — and the first caller starts reading the body the instant it
+ * stops awaiting, which is the same tick the second caller wakes up on. So the
+ * two raced for the body, and whenever the first won, the second threw
+ *
+ *     Failed to execute 'clone' on 'Response': Response body is already used
+ *
+ * …into whatever `catch` happened to be around it. On the wallet screen that
+ * is `loadMeta`'s, which logs and returns — so the balances, the stake ceiling
+ * and the settlement rail were never set, and the player read a wallet of
+ * zeroes with no error on the screen. Nondeterministic, silent, and only ever
+ * visible with a browser open, which is why it survived every tier (§28).
+ *
+ * Sharing the parsed value has no such window: it is an ordinary promise, every
+ * caller awaits the same settled result, and a rejection reaches all of them.
+ * The entry is removed when it settles, so this is deduplication of concurrent
+ * calls and never a cache — a later GET goes to the network as it should.
+ *
+ * What it does NOT change: two callers passing different `AbortSignal`s still
+ * share one request, so one aborting ends it for both. That was already true
+ * when they shared the Response, and it is the price of deduplicating at all.
+ */
+const inFlight = new Map<string, Promise<unknown>>();
 
 function dedupKey(method: string, url: string, body?: unknown): string {
   return `${method}:${url}:${JSON.stringify(body ?? '')}`;
@@ -93,16 +120,31 @@ async function apiFetch(
   body?: unknown,
   options: { retry?: number; signal?: AbortSignal } = {}
 ): Promise<unknown> {
+  // Deduplicate GET requests only. A retry re-enters through `performFetch`
+  // directly, not here, so a retry of a shared call stays that one shared call.
+  if (method !== 'GET') return performFetch(method, path, body, options);
+
+  const key = dedupKey('GET', `${currentOrigin()}${path}`, body);
+  const running = inFlight.get(key);
+  if (running) return running;
+
+  const shared = performFetch(method, path, body, options);
+  inFlight.set(key, shared);
+  // Settled — not resolved. A rejected request must clear the slot too, or one
+  // failure pins every later caller to it for the life of the tab.
+  void shared.catch(() => {}).finally(() => { if (inFlight.get(key) === shared) inFlight.delete(key); });
+  return shared;
+}
+
+async function performFetch(
+  method: string,
+  path: string,
+  body?: unknown,
+  options: { retry?: number; signal?: AbortSignal } = {}
+): Promise<unknown> {
   const origin  = currentOrigin();
   const url     = `${origin}${path}`;
   const attempt = options.retry ?? 0;
-  const key     = dedupKey(method, url, body);
-
-  // Deduplicate GET requests only
-  if (method === 'GET' && inFlight.has(key)) {
-    const resp = await inFlight.get(key)!;
-    return resp.clone().json();
-  }
 
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   const token = getToken();
@@ -115,8 +157,6 @@ async function apiFetch(
     body:        body !== undefined ? JSON.stringify(body) : undefined,
     signal:      options.signal,
   });
-
-  if (method === 'GET') inFlight.set(key, fetchPromise);
 
   let resp: Response;
   try {
@@ -131,11 +171,9 @@ async function apiFetch(
       // is actually reachable, so the retry is not aimed at the same dead host.
       if (failoverAvailable()) await reportOriginUnreachable(origin);
       await new Promise(r => setTimeout(r, 300 * 2 ** attempt));
-      return apiFetch(method, path, body, { ...options, retry: attempt + 1 });
+      return performFetch(method, path, body, { ...options, retry: attempt + 1 });
     }
     throw err;
-  } finally {
-    if (method === 'GET') inFlight.delete(key);
   }
 
   if (resp.status === 401) {

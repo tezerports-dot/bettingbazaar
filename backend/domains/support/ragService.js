@@ -124,9 +124,22 @@ async function generateGroundedAnswer({ system, userContent }) {
 
 export async function ragStatus() {
   const store = await stats().catch(() => ({ configured: pgConfigured(), documents: 0, chunks: 0 }));
+  // ── Readiness is MEASURED here, not assumed ─────────────────────────────
+  // `retrievalReady()` asks whether the two things were CONFIGURED: a
+  // DATABASE_URL and an embedding key. It cannot see whether the database can
+  // actually hold a vector, and on a PostgreSQL without pgvector it answered
+  // true while `GET /admin/support/documents` returned 500 on every call —
+  // two routes on one feature disagreeing, with the optimistic one lighting
+  // the screen's green light (§29, S3/S4).
+  //
+  // `stats()` already knows: it catches the failure and puts the reason in
+  // `store.note`. Nothing read it. So the store's own verdict is reported as
+  // a field in its own right, and the two summary flags respect it.
+  const storeReady = !!store.configured && !store.note;
   return {
-    enabled: ragEnabled(),
-    retrievalReady: retrievalReady(),
+    storeReady,
+    enabled: ragEnabled() && storeReady,
+    retrievalReady: retrievalReady() && storeReady,
     generationReady: generationReady(),
     generationProvider: generationProvider(),
     embedding: embeddingInfo(),

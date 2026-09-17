@@ -38,3 +38,4 @@ user-panel/node_modules/
 # this guards against a stray `npm install` inside backend/ re-introducing a
 # second, drifting lockfile (and the Dependabot noise that came with it).
 backend/package-lock.json
+backend/tests/browser/screenshots/

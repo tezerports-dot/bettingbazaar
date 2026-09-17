@@ -72,6 +72,33 @@ const GLOBALS = new Set([
   'atob','btoa','navigator','WebSocket','arguments','Function','Intl','FinalizationRegistry',
 ]);
 
+/**
+ * ── Globals that exist in a BROWSER, not in Node ────────────────────────────
+ * A function handed to `page.evaluate()` is serialised and run inside Chromium,
+ * so `document` there is no more a ReferenceError than `process` is here. This
+ * gate scans `backend/**`, which now includes `backend/tests/browser/` — the
+ * pass that opens every screen — and reported four perfectly correct lines as
+ * references that "throw a ReferenceError the moment [they] run". They cannot:
+ * they never run in this process.
+ *
+ * That is §28's own warning turned on the gate itself. A false failure is how a
+ * gate loses its authority and gets switched off, so the gate learns the rule
+ * instead of the file being exempted: a function argument to one of the
+ * evaluation calls below is BROWSER code, and only inside it do these names
+ * resolve.
+ */
+const BROWSER_GLOBALS = new Set([
+  'window','document','location','localStorage','sessionStorage','history',
+  'PopStateEvent','CustomEvent','HTMLElement','Node','getComputedStyle','alert',
+  'requestAnimationFrame','cancelAnimationFrame','matchMedia','IntersectionObserver',
+  'MutationObserver','ResizeObserver','Image','DOMParser','EventSource','screen',
+]);
+
+/** Playwright/Puppeteer calls whose function argument executes in the page. */
+const BROWSER_EVAL = new Set([
+  'evaluate','evaluateHandle','addInitScript','$eval','$$eval','waitForFunction','exposeFunction',
+]);
+
 const findings = [];
 const parseErrors = [];
 const skipped = [];
@@ -98,8 +125,8 @@ for (const file of files) {
   // function declared at the bottom of a module is visible to a call at the
   // top, and neither a second pass nor an ordering rule is needed to say so.
   const scopes = [];
-  const newScope = (kind, parent) => {
-    const scope = { kind, parent, names: new Set() };
+  const newScope = (kind, parent, browser = parent?.browser ?? false) => {
+    const scope = { kind, parent, names: new Set(), browser };
     scopes.push(scope);
     return scope;
   };
@@ -138,8 +165,8 @@ for (const file of files) {
     }
   };
 
-  const visitFunction = (node, scope, selfNamedIn) => {
-    const fn = newScope('function', scope);
+  const visitFunction = (node, scope, selfNamedIn, browser) => {
+    const fn = newScope('function', scope, browser ?? scope.browser);
     // A named function EXPRESSION can call itself: the name is bound inside its
     // own scope and nowhere else. A DECLARATION's name belongs to the enclosing
     // scope, and the caller has already put it there.
@@ -166,6 +193,22 @@ for (const file of files) {
         // static can resolve a name inside it, so the file is not guessed at.
         undecidable = 'a `with` statement';
         return;
+
+      case 'CallExpression':
+      case 'NewExpression': {
+        // A function handed to `page.evaluate(…)` and friends runs in the PAGE.
+        // Everything else about the call is ordinary and visited as such.
+        const inPage = node.callee?.type === 'MemberExpression'
+          && !node.callee.computed
+          && BROWSER_EVAL.has(node.callee.property?.name);
+        visit(node.callee, scope);
+        for (const arg of node.arguments ?? []) {
+          const isFn = arg?.type === 'ArrowFunctionExpression' || arg?.type === 'FunctionExpression';
+          if (inPage && isFn) visitFunction(arg, scope, arg.type === 'FunctionExpression' ? 'self' : 'none', true);
+          else visit(arg, scope);
+        }
+        return;
+      }
 
       case 'FunctionDeclaration':
         if (node.id) varScope(scope).names.add(node.id.name);
@@ -304,6 +347,7 @@ for (const file of files) {
   const used = new Map();
   for (const ref of refs) {
     if (GLOBALS.has(ref.name)) continue;
+    if (ref.scope?.browser && BROWSER_GLOBALS.has(ref.name)) continue;
     let s = ref.scope, found = false;
     while (s) { if (s.names.has(ref.name)) { found = true; break; } s = s.parent; }
     if (found) continue;

@@ -35,7 +35,11 @@ interface RagStatus {
   // Field names match embeddingInfo() exactly — `dim`, not `dimensions`. A card
   // reading a name the server never sends renders blank, not an error.
   embedding?: { provider?: string; model?: string; dim?: number; configured?: boolean };
-  store?: { configured: boolean; documents: number; chunks: number };
+  // `storeReady` and `store.note` are the store's own verdict, measured rather
+  // than inferred from configuration. Without them this screen showed a green
+  // Retrieval light over a store that could not accept a single passage.
+  storeReady?: boolean;
+  store?: { configured: boolean; documents: number; chunks: number; note?: string };
 }
 
 interface Doc { doc_id: string; title: string | null; category: string | null; chunks: number; updated_at: string; }
@@ -54,6 +58,7 @@ const Light: React.FC<{ ok: boolean; label: string; detail?: string }> = ({ ok, 
 export const SupportAssistant: React.FC = () => {
   const [status, setStatus] = useState<RagStatus | null>(null);
   const [docs, setDocs] = useState<Doc[]>([]);
+  const [docsError, setDocsError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [form, setForm] = useState({ docId: '', title: '', category: 'general', text: '' });
@@ -65,7 +70,19 @@ export const SupportAssistant: React.FC = () => {
       api.get<any>('/api/admin/support/documents'),
     ]);
     if (st.status === 'fulfilled' && st.value.data?.success) setStatus(st.value.data);
-    if (dl.status === 'fulfilled' && dl.value.data?.success) setDocs(dl.value.data.documents || []);
+    if (dl.status === 'fulfilled' && dl.value.data?.success) {
+      setDocs(dl.value.data.documents || []);
+      setDocsError(null);
+    } else {
+      // A rejected list used to leave `docs` empty and say nothing, so a store
+      // that was REFUSING and a store that was EMPTY looked identical (§28).
+      setDocs([]);
+      setDocsError(
+        (dl.status === 'rejected'
+          ? (dl.reason?.response?.data?.message ?? dl.reason?.message)
+          : dl.value?.data?.message)
+        || 'The document list could not be read.');
+    }
     setLoading(false);
   };
 
@@ -136,7 +153,9 @@ export const SupportAssistant: React.FC = () => {
               <Light ok={status.retrievalReady} label="Retrieval"
                 detail={status.retrievalReady
                   ? `${status.embedding?.provider ?? 'embeddings'} · ${status.embedding?.model ?? ''} · ${status.embedding?.dim ?? '?'}d`
-                  : 'No embedding provider — nothing can be found'} />
+                  : status.store?.note
+                    ? 'The passage store is not usable — see below'
+                    : 'No embedding provider — nothing can be found'} />
               <Light ok={status.generationReady} label="Generation"
                 detail={status.generationReady
                   ? `${status.generationProvider} · ${status.generationModel}`
@@ -150,6 +169,9 @@ export const SupportAssistant: React.FC = () => {
             <p className="text-xs text-gray-500">
               {status.store?.documents ?? 0} document(s) · {status.store?.chunks ?? 0} passage(s) in the store
             </p>
+            {status.store?.note && (
+              <p className="text-sm text-amber-400" role="status">{status.store.note}</p>
+            )}
           </>
         )}
       </div>
@@ -193,6 +215,9 @@ export const SupportAssistant: React.FC = () => {
 
       <div className="card">
         <p className="text-sm font-semibold text-gray-300 mb-3">Ingested documents ({docs.length})</p>
+        {docsError && (
+          <p className="text-sm text-amber-400 mb-3" role="alert">{docsError}</p>
+        )}
         {docs.length === 0 ? (
           <p className="text-sm text-gray-500 py-6 text-center">
             Nothing ingested. The assistant has nothing to answer from.

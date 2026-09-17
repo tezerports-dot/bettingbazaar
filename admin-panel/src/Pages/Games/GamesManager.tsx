@@ -14,13 +14,34 @@ import api from '../../services/api';
 import { Toolbar } from '../../components/design';
 import toast from 'react-hot-toast';
 
+/**
+ * ── The slug IS the identity. There is no `_id` ─────────────────────────────
+ * This interface declared one, and the server has never sent it: `GET
+ * /api/game/admin/games` emits `slug, name, providerKey, …` and the mutation
+ * routes say so in their own comment — "the slug IS the identity — renaming
+ * one is creating a different game". `db.games.getGame(req.params.id)` looks
+ * up by slug.
+ *
+ * So every `g._id` typechecked and was `undefined` at runtime, and three
+ * things followed, none of which raised an error anywhere (§23):
+ *
+ *   - Delete was `if (!g._id) return;` — the button did NOTHING, silently.
+ *   - Save on an EXISTING game took the `editing._id ? PUT : POST` false
+ *     branch, so "Save changes" tried to CREATE a second game on the same slug.
+ *   - The dialog titled itself "New Game" while editing an existing one, and
+ *     its button read "Create game" — the visible symptom, for months.
+ *
+ * The fix that finds every call site is removing the field from the interface
+ * and letting `tsc` list them, exactly as §23 says. A search would have missed
+ * one, and a missed one is a silent no-op.
+ */
 interface Game {
-  _id?: string; slug?: string; name: string; providerKey: string; categorySlug: string;
+  slug?: string; name: string; providerKey: string; categorySlug: string;
   launchStrategy: string; externalGameId: string; launchUrl: string;
   thumbnail: string; banner: string; badge: string; rtp: string; tags: string[] | string;
   minBet: number; maxBet: number; status: string; featured: boolean; order: number;
 }
-interface Category { _id?: string; slug?: string; name: string; icon: string; order: number; enabled: boolean; }
+interface Category { slug?: string; name: string; icon: string; order: number; enabled: boolean; }
 interface Provider { key: string; name: string; category: string; }
 
 const BLANK_GAME: Game = {
@@ -73,16 +94,16 @@ export const GamesManager: React.FC = () => {
       order: Number(editing.order) || 0,
     };
     try {
-      const r = editing._id
-        ? await api.put(`/api/game/admin/games/${editing._id}`, body)
+      const r = editing.slug
+        ? await api.put(`/api/game/admin/games/${encodeURIComponent(editing.slug)}`, body)
         : await api.post('/api/game/admin/games', body);
-      if (r.data.success) { toast.success(editing._id ? 'Game updated' : 'Game created'); setEditing(null); load(); }
+      if (r.data.success) { toast.success(editing.slug ? 'Game updated' : 'Game created'); setEditing(null); load(); }
       else toast.error(r.data.message || 'Save failed');
     } catch (e: any) { toast.error(e?.response?.data?.message || 'Save failed'); }
   };
   const deleteGame = async (g: Game) => {
-    if (!g._id || !confirm(`Delete "${g.name}"?`)) return;
-    try { const r = await api.delete(`/api/game/admin/games/${g._id}`); if (r.data.success) { toast.success('Deleted'); load(); } }
+    if (!g.slug || !confirm(`Delete "${g.name}"?`)) return;
+    try { const r = await api.delete(`/api/game/admin/games/${encodeURIComponent(g.slug)}`); if (r.data.success) { toast.success('Deleted'); load(); } }
     catch (e: any) { toast.error(e?.response?.data?.message || 'Delete failed'); }
   };
 
@@ -91,16 +112,16 @@ export const GamesManager: React.FC = () => {
     if (!catEditing) return;
     if (!catEditing.name.trim()) return toast.error('Name is required');
     try {
-      const r = catEditing._id
-        ? await api.put(`/api/game/admin/categories/${catEditing._id}`, catEditing)
+      const r = catEditing.slug
+        ? await api.put(`/api/game/admin/categories/${encodeURIComponent(catEditing.slug)}`, catEditing)
         : await api.post('/api/game/admin/categories', catEditing);
       if (r.data.success) { toast.success('Saved'); setCatEditing(null); load(); }
       else toast.error(r.data.message || 'Save failed');
     } catch (e: any) { toast.error(e?.response?.data?.message || 'Save failed'); }
   };
   const deleteCat = async (c: Category) => {
-    if (!c._id || !confirm(`Delete category "${c.name}"?`)) return;
-    try { const r = await api.delete(`/api/game/admin/categories/${c._id}`); if (r.data.success) { toast.success('Deleted'); load(); } }
+    if (!c.slug || !confirm(`Delete category "${c.name}"?`)) return;
+    try { const r = await api.delete(`/api/game/admin/categories/${encodeURIComponent(c.slug)}`); if (r.data.success) { toast.success('Deleted'); load(); } }
     catch (e: any) { toast.error(e?.response?.data?.message || 'Delete failed'); }
   };
 
@@ -125,7 +146,7 @@ export const GamesManager: React.FC = () => {
             </thead>
             <tbody>
               {games.map(g => (
-                <tr key={g._id} className="border-t border-[#1e2736] hover:bg-[#121826]/50">
+                <tr key={g.slug} className="border-t border-[#1e2736] hover:bg-[#121826]/50">
                   <td className="p-2">
                     <div className="font-semibold">{g.name}</div>
                     <div className="text-[10px] text-slate-500">{g.slug} · {g.badge}</div>
@@ -142,8 +163,9 @@ export const GamesManager: React.FC = () => {
                   <td className="p-2 text-center">{g.featured ? <Star size={14} className="inline text-yellow-400 fill-yellow-400" /> : ''}</td>
                   <td className="p-2 text-right whitespace-nowrap">
                     <button onClick={() => setEditing({ ...g, tags: Array.isArray(g.tags) ? g.tags.join(', ') : g.tags })}
-                      className="text-yellow-400 hover:underline text-xs mr-3">Edit</button>
-                    <button onClick={() => deleteGame(g)} className="text-red-400 hover:text-red-300"><Trash2 size={14} /></button>
+                      title={`Edit ${g.name}`} className="text-yellow-400 hover:underline text-xs mr-3">Edit</button>
+                    <button onClick={() => deleteGame(g)} title={`Delete ${g.name}`} aria-label={`Delete ${g.name}`}
+                      className="text-red-400 hover:text-red-300"><Trash2 size={14} /></button>
                   </td>
                 </tr>
               ))}
@@ -154,7 +176,7 @@ export const GamesManager: React.FC = () => {
       ) : (
         <div className="grid gap-2">
           {categories.map(c => (
-            <div key={c._id} className="flex items-center justify-between bg-[#121826] border border-[#1e2736] rounded-lg p-3">
+            <div key={c.slug} className="flex items-center justify-between bg-[#121826] border border-[#1e2736] rounded-lg p-3">
               <div className="flex items-center gap-3">
                 <span className="text-xl">{c.icon}</span>
                 <div>
@@ -163,8 +185,9 @@ export const GamesManager: React.FC = () => {
                 </div>
               </div>
               <div className="flex items-center gap-3">
-                <button onClick={() => setCatEditing(c)} className="text-yellow-400 hover:underline text-xs">Edit</button>
-                <button onClick={() => deleteCat(c)} className="text-red-400 hover:text-red-300"><Trash2 size={14} /></button>
+                <button onClick={() => setCatEditing(c)} title={`Edit ${c.name}`} className="text-yellow-400 hover:underline text-xs">Edit</button>
+                <button onClick={() => deleteCat(c)} title={`Delete ${c.name}`} aria-label={`Delete ${c.name}`}
+                  className="text-red-400 hover:text-red-300"><Trash2 size={14} /></button>
               </div>
             </div>
           ))}
@@ -177,7 +200,7 @@ export const GamesManager: React.FC = () => {
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4" onClick={() => setEditing(null)}>
           <div className="bg-[#1A1F2E] rounded-xl p-5 w-full max-w-2xl max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-4">
-              <h3 className="font-bold text-lg">{editing._id ? 'Edit Game' : 'New Game'}</h3>
+              <h3 className="font-bold text-lg">{editing.slug ? 'Edit Game' : 'New Game'}</h3>
               <button onClick={() => setEditing(null)}><X size={18} className="text-slate-400" /></button>
             </div>
             <div className="grid grid-cols-2 gap-3">
@@ -229,7 +252,7 @@ export const GamesManager: React.FC = () => {
               </div>
             </div>
             <button onClick={saveGame} className="mt-4 w-full bg-yellow-500 hover:bg-yellow-400 text-black font-bold py-2.5 rounded-lg flex items-center justify-center gap-2">
-              <Save size={16} /> {editing._id ? 'Save changes' : 'Create game'}
+              <Save size={16} /> {editing.slug ? 'Save changes' : 'Create game'}
             </button>
           </div>
         </div>
@@ -240,7 +263,7 @@ export const GamesManager: React.FC = () => {
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4" onClick={() => setCatEditing(null)}>
           <div className="bg-[#1A1F2E] rounded-xl p-5 w-full max-w-sm" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-4">
-              <h3 className="font-bold text-lg">{catEditing._id ? 'Edit Category' : 'New Category'}</h3>
+              <h3 className="font-bold text-lg">{catEditing.slug ? 'Edit Category' : 'New Category'}</h3>
               <button onClick={() => setCatEditing(null)}><X size={18} className="text-slate-400" /></button>
             </div>
             <div className="space-y-3">
