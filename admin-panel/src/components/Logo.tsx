@@ -69,7 +69,7 @@ export const LogoMark: React.FC<LogoMarkProps> = ({ size = 36, radius = 10, useB
         width: size, height: size, flex: 'none', borderRadius: radius,
         background: 'linear-gradient(140deg,var(--gold-ink),var(--gold-deep))',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
-        boxShadow: '0 4px 14px rgba(212,175,55,.32)',
+        boxShadow: '0 4px 14px rgba(var(--gold-rgb),.32)',
       }}
     >
       <svg width={size * 0.53} height={size * 0.53} viewBox="0 0 24 24" fill="var(--gold-on)">

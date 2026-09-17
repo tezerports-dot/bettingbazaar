@@ -11,7 +11,7 @@ import { apiUrl } from '../services/apiUrl';
 interface Winner { displayName: string; profilePic?: string; amount: number; betAmount?: number; game?: string; }
 
 const MEDAL: Record<number, { color: string; medal: string; podH: number; avSize: number }> = {
-  1: { color: '#F5C77A', medal: '👑', podH: 92, avSize: 62 },
+  1: { color: 'var(--brand-accent, #F5C77A)', medal: '👑', podH: 92, avSize: 62 },
   2: { color: '#C7CBD1', medal: '🥈', podH: 70, avSize: 52 },
   3: { color: '#D9A066', medal: '🥉', podH: 54, avSize: 52 },
 };
@@ -51,9 +51,9 @@ export default function WinnersPage() {
       ) : (
         <>
           {/* Podium */}
-          <div style={{ position: 'relative', overflow: 'hidden', borderRadius: 20, background: 'radial-gradient(120% 90% at 50% -10%,rgba(212,175,55,.22),transparent 60%),linear-gradient(180deg,var(--surface2),var(--surface))', border: '1px solid var(--line2)', boxShadow: 'var(--shadow)', padding: '18px 10px 14px', marginBottom: 14 }}>
+          <div style={{ position: 'relative', overflow: 'hidden', borderRadius: 20, background: 'radial-gradient(120% 90% at 50% -10%,rgba(var(--brand-primary-rgb), .22),transparent 60%),linear-gradient(180deg,var(--surface2),var(--surface))', border: '1px solid var(--line2)', boxShadow: 'var(--shadow)', padding: '18px 10px 14px', marginBottom: 14 }}>
             <div style={{ position: 'absolute', inset: 0, overflow: 'hidden', pointerEvents: 'none' }}>
-              {COINS.map((L, i) => <span key={i} style={{ position: 'absolute', top: -20, left: L + '%', width: 13 + (i % 3) * 4, height: 13 + (i % 3) * 4, borderRadius: '50%', background: 'radial-gradient(circle at 35% 30%,#FFF1B8,#D4AF37 55%,#9c7a15)', boxShadow: '0 0 6px rgba(212,175,55,.6)', animation: `bb-coinfall ${(2.8 + (i % 4) * 0.5).toFixed(1)}s linear ${(i * 0.5 % 3.2).toFixed(2)}s infinite` }} />)}
+              {COINS.map((L, i) => <span key={i} style={{ position: 'absolute', top: -20, left: L + '%', width: 13 + (i % 3) * 4, height: 13 + (i % 3) * 4, borderRadius: '50%', background: 'radial-gradient(circle at 35% 30%,#FFF1B8,var(--brand-primary, #D4AF37) 55%,#9c7a15)', boxShadow: '0 0 6px rgba(var(--brand-primary-rgb), .6)', animation: `bb-coinfall ${(2.8 + (i % 4) * 0.5).toFixed(1)}s linear ${(i * 0.5 % 3.2).toFixed(2)}s infinite` }} />)}
             </div>
             <div style={{ position: 'relative', textAlign: 'center', fontSize: 10, fontWeight: 800, letterSpacing: '.2em', textTransform: 'uppercase', color: 'var(--gold-ink)', marginBottom: 10 }}>🏆 Hall of Champions</div>
             <div style={{ position: 'relative', display: 'flex', alignItems: 'flex-end', justifyContent: 'center', gap: 8 }}>

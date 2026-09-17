@@ -90,7 +90,7 @@ const ShareModal: React.FC<ShareModalProps> = ({ onClose }) => {
     <Modal onClose={onClose} title="Invite & Play">
       <div className="text-center space-y-6">
          <div className="flex justify-center mb-4">
-            <div className="w-20 h-20 bg-gradient-to-br from-[#1E293B] to-[#0B0E14] rounded-2xl flex items-center justify-center border-2 border-[#D4AF37] shadow-[0_0_20px_rgba(212,175,55,0.3)]">
+            <div className="w-20 h-20 bg-gradient-to-br from-[#1E293B] to-[#0B0E14] rounded-2xl flex items-center justify-center border-2 border-[var(--brand-primary, #D4AF37)] shadow-[0_0_20px_rgba(var(--brand-primary-rgb), 0.3)]">
                 {logoUrl ? (
             <img src={logoUrl} alt="Share logo" className="w-14 h-14 object-contain" />
           ) : <span className="text-3xl">🚀</span>}
@@ -106,7 +106,7 @@ const ShareModal: React.FC<ShareModalProps> = ({ onClose }) => {
 
          <div className="space-y-3">
             {/* OPTION 1: WEBSITE */}
-            <div className="bg-[#121826] p-4 rounded-xl border border-slate-700 flex items-center justify-between group hover:border-[#D4AF37]/50 transition-colors">
+            <div className="bg-[#121826] p-4 rounded-xl border border-slate-700 flex items-center justify-between group hover:border-[var(--brand-primary, #D4AF37)]/50 transition-colors">
                 <div className="text-left">
                     <div className="text-white font-bold text-sm">Play on Web</div>
                     <div className="text-[10px] text-slate-500">Desktop & iOS Compatible</div>
@@ -114,7 +114,7 @@ const ShareModal: React.FC<ShareModalProps> = ({ onClose }) => {
                 <button 
                     onClick={() => handleShare('Join me on Bazaar Clash!', webUrl)}
                     disabled={!webUrl}
-                    className="bg-[#D4AF37] hover:bg-[#B8860B] text-black font-bold px-4 py-2 rounded-lg text-xs shadow-lg transition-transform active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="bg-[var(--brand-primary, #D4AF37)] hover:bg-[var(--brand-secondary, #B8860B)] text-black font-bold px-4 py-2 rounded-lg text-xs shadow-lg transition-transform active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                     {!webUrl ? 'Unavailable' : copied === 'failed' ? 'Copy failed' : copied === 'link' ? 'Copied!' : 'Share Link'}
                 </button>

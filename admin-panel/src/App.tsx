@@ -2,6 +2,7 @@
 import React, { useEffect } from 'react';
 import { HashRouter as Router, Routes, Route, Navigate } from 'react-router';
 import { Toaster } from 'react-hot-toast';
+import { applyBranding, applyCachedBranding } from './services/branding';
 import { Layout } from './components/Layout';
 import { Login } from './Pages/Login';
 import { Dashboard } from './Pages/Dashboard';
@@ -122,17 +123,8 @@ const App: React.FC = () => {
   // C-02 fix: Admin panel applies its own branding — logo, title, primary colour.
   // GOVERNANCE §3 + §9: any name/colour shown to end-users must originate from Branding.
   useEffect(() => {
-    function applyBranding(b: any) {
-      if (!b || typeof b !== 'object') return;
-      if (b.primaryColor) document.documentElement.style.setProperty('--brand-primary', b.primaryColor);
-      if (b.adminPanelName) document.title = b.adminPanelName;
-      try { localStorage.setItem('app_branding', JSON.stringify(b)); } catch { /* ignore */ }
-    }
-    // Apply cached branding immediately (avoids flash on load)
-    try {
-      const cached = localStorage.getItem('app_branding');
-      if (cached) applyBranding(JSON.parse(cached));
-    } catch { /* ignore */ }
+    // Apply cached branding immediately (avoids a flash on load).
+    applyCachedBranding();
 
     // Subscribe to live branding updates via SSE admin channel
     sseService.on('branding',         applyBranding);
@@ -172,7 +164,8 @@ const App: React.FC = () => {
         toastOptions={{
           duration: 3000,
           style: { background: '#1E293B', color: '#F3F4F6', border: '1px solid #334155' },
-          success: { iconTheme: { primary: '#D4AF37', secondary: '#0B0E14' } },
+          // react-hot-toast applies these as CSS values, so the brand token resolves.
+          success: { iconTheme: { primary: 'var(--gold)', secondary: '#0B0E14' } },
         }}
       />
       <MandatoryTwoFactor>

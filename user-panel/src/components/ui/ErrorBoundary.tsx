@@ -103,7 +103,7 @@ class ErrorBoundary extends Component<Props, State> {
           <div className="flex gap-4 mb-8">
             <button
               onClick={this.handleSoftReset}
-              className="bg-[#D4AF37] hover:bg-[#B8860B] text-black font-bold py-3 px-8 rounded-xl shadow-[0_10px_20px_rgba(212,175,55,0.2)] transition-all active:scale-95 uppercase tracking-wide text-xs"
+              className="bg-[var(--brand-primary, #D4AF37)] hover:bg-[var(--brand-secondary, #B8860B)] text-black font-bold py-3 px-8 rounded-xl shadow-[0_10px_20px_rgba(var(--brand-primary-rgb), 0.2)] transition-all active:scale-95 uppercase tracking-wide text-xs"
             >
               Try Again
             </button>
@@ -120,7 +120,7 @@ class ErrorBoundary extends Component<Props, State> {
             <div className="max-w-lg w-full">
               <button
                 onClick={() => this.setState(s => ({ showDetails: !s.showDetails }))}
-                className="text-xs text-slate-500 hover:text-[#D4AF37] mb-3 transition-colors flex items-center gap-1 mx-auto"
+                className="text-xs text-slate-500 hover:text-[var(--brand-primary, #D4AF37)] mb-3 transition-colors flex items-center gap-1 mx-auto"
               >
                 <span>{showDetails ? '▾' : '▸'}</span>
                 {showDetails ? 'Hide' : 'Show'} error details (admin)

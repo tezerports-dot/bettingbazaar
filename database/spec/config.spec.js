@@ -309,7 +309,27 @@ export const BRANDING_SPEC = group({
   userPanelName: s('Betting Bazaar'), adminPanelName: s('Bazaar Admin'),
   merchantPanelName: s('Merchant Panel'), queueManagerPanelName: s('Queue Manager'),
   // ── Brand colours ─────────────────────────────────────────────────────────
-  primaryColor: s('#D4AF37'), secondaryColor: s('#8B5CF6'), accentColor: s('#F59E0B'),
+  //
+  // This spec is the OWNER, and its secondary and accent had drifted from the
+  // product that renders them. Three sets existed for one value:
+  //
+  //   here                        #D4AF37 / #8B5CF6 (purple) / #F59E0B (amber)
+  //   user-panel/src/index.css    #D4AF37 / #B8860B (deep gold) / #F5C77A
+  //   admin BrandingSettings form #D4AF37 / #0ea5e9 (blue)  / #F5C77A
+  //
+  // Only the primary agreed. It never showed, because nothing read the
+  // secondary or accent: they were written as literal rgba() tints in the
+  // panels, so an operator changing them saw nothing move (§4, and the reason
+  // `report:branding` exists). The moment those tints were repointed at the
+  // tokens, the purple and amber here would have become visible — as purple
+  // borders on a gold panel.
+  //
+  // Aligned to the values the shipped panel actually renders, because the
+  // rendered product is the evidence of what this brand is, and an owner that
+  // disagrees with every consumer is the wrong number rather than the true
+  // one. An operator who wants purple sets it in the admin panel, which is
+  // exactly what these being real tokens now makes possible.
+  primaryColor: s('#D4AF37'), secondaryColor: s('#B8860B'), accentColor: s('#F5C77A'),
   // ── Copy ──────────────────────────────────────────────────────────────────
   tagline: s('Your Premier Betting Platform'),
   description: s('Safe, secure, and exciting betting experience'),

@@ -106,7 +106,11 @@ export const SettlementRailBanner: React.FC<{
         display: 'flex',
         gap: 12,
         alignItems: 'flex-start',
-        borderColor: changed ? 'var(--warn, #b8860b)' : undefined,
+        // `--warn` is defined in index.css for both themes (#C2740A light,
+        // #F5B34A dark). The fallback here was #b8860b — the BRAND's secondary
+        // — standing in for a warning colour, so a rebrand would have tinted a
+        // warning border and the fallback pointed at the wrong owner besides.
+        borderColor: changed ? 'var(--warn)' : undefined,
       }}
     >
       <Info size={18} aria-hidden />

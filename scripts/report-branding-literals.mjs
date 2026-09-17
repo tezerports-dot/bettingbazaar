@@ -56,9 +56,28 @@ const BRAND = [
   { token: '--brand-accent',    patterns: [/#F5C77A\b/gi, /rgba?\(\s*245\s*,\s*199\s*,\s*122\s*[,)]/gi] },
 ];
 
-/** A line that DEFINES a brand token, or falls back to one inside `var()`. */
+/**
+ * A line §4 PERMITS to hold a literal. Three forms, and no others:
+ *
+ *   1. the token's own declaration — `--brand-primary: #D4AF37;`
+ *   2. a fallback inside `var()`   — `var(--brand-primary, #D4AF37)`
+ *   3. a loading placeholder that CITES the schema default
+ *
+ * The third is §4's own wording — "a `??` fallback is a loading placeholder
+ * only, permitted when its value equals the schema default and a comment cites
+ * that default" — and this check did not implement it. The admin branding form
+ * initialises its colour fields and then merges the server's document over
+ * them, which is exactly that case, and it was being counted as three
+ * violations that could not be fixed without removing the placeholder.
+ *
+ * The citation is required, not the intent: a bare literal stays a violation.
+ * That is the point — the comment is what makes the next reader able to check
+ * the value still matches, and §4 asks for it by name.
+ */
 const isAnchor = (line) =>
-  /--brand-(primary|secondary|accent)\s*:/.test(line) || /var\(\s*--brand-[a-z]+\s*,/.test(line);
+  /--brand-(primary|secondary|accent)\s*:/.test(line)
+  || /var\(\s*--brand-[a-z]+\s*,/.test(line)
+  || /\/[/*]\s*schema default/i.test(line);
 
 function walk(dir, out = []) {
   let entries;
@@ -92,7 +111,11 @@ for (const panel of PANELS) {
         for (const re of patterns) found += (code.match(re) ?? []).length;
       }
       if (!found) return;
-      if (isAnchor(code)) { anchors += found; return; }
+      // The RAW line, not the stripped one. Two of the three permitted forms
+      // live in code, but the third IS a comment — `isAnchor(code)` could
+      // never see a `// schema default` citation, so the rule §4 states could
+      // not be satisfied by any line that followed it.
+      if (isAnchor(line)) { anchors += found; return; }
       hits += found;
       if (process.argv.includes('--lines')) {
         console.log(`  ${relative(ROOT, file)}:${i + 1}  ${line.trim().slice(0, 100)}`);
@@ -121,5 +144,27 @@ for (const [panel, { violations, anchors, files }] of perPanel) {
 console.log(`\n${totalViolations} to remediate, ${totalAnchors} token definitions and var() fallbacks kept.`);
 console.log('`--files` lists them per file; `--lines` prints every line.\n');
 
-// Always zero. See the header: this reports, it does not gate.
+/*
+ * ── It gates now ───────────────────────────────────────────────────────────
+ * This reported and never failed, deliberately: "a gate that goes red over
+ * work already known to be outstanding is a gate somebody switches off. It
+ * turns red-worthy the day the count reaches zero" (`CLAUDE.md` §4).
+ *
+ * 2026-09-17 is that day — 209 → 117 when the unreachable pre-redesign panel
+ * layer was deleted, then 117 → 0 by repointing every tint at
+ * `--brand-*-rgb`. There is nothing outstanding left for it to go red over,
+ * so from here a red run means a literal was just ADDED, which is the one
+ * thing this exists to catch.
+ *
+ * The three permitted forms are in `isAnchor`, so a token definition, a
+ * `var()` fallback and a cited loading placeholder all still pass.
+ */
+if (totalViolations > 0) {
+  console.error(`✗ ${totalViolations} brand colour literal(s). An operator who changes their`);
+  console.error('  brand colour will not see these move. Use var(--brand-*) for a solid');
+  console.error('  colour, or rgba(var(--brand-*-rgb), a) for a tint — the panel appliers');
+  console.error('  (services/branding.ts) derive the triplet from whatever hex is saved.');
+  process.exit(1);
+}
+console.log('✅ Every brand colour is painted from `Branding`.\n');
 process.exit(0);

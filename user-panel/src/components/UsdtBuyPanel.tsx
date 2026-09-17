@@ -297,7 +297,7 @@ export const UsdtBuyPanel: React.FC<{
                 display: 'flex', justifyContent: 'space-between', alignItems: 'baseline',
                 padding: '14px 14px', borderRadius: 12, cursor: 'pointer', fontWeight: 800, fontSize: 15,
                 border: amount === value ? '2px solid var(--gold)' : '1px solid var(--line)',
-                background: amount === value ? 'var(--gold-soft, rgba(212,175,55,.12))' : 'transparent',
+                background: amount === value ? 'var(--gold-soft, rgba(var(--brand-primary-rgb), .12))' : 'transparent',
                 color: amount === value ? 'var(--gold-ink)' : 'var(--text)',
               }}
             >
@@ -328,7 +328,7 @@ export const UsdtBuyPanel: React.FC<{
               padding: '12px 14px', borderRadius: 12, cursor: 'pointer', fontWeight: 700, fontSize: 13,
               textAlign: 'left',
               border: chain === option.chain ? '2px solid var(--gold)' : '1px solid var(--line)',
-              background: chain === option.chain ? 'var(--gold-soft, rgba(212,175,55,.12))' : 'transparent',
+              background: chain === option.chain ? 'var(--gold-soft, rgba(var(--brand-primary-rgb), .12))' : 'transparent',
               color: chain === option.chain ? 'var(--gold-ink)' : 'var(--text)',
             }}
           >

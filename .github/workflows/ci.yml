@@ -258,6 +258,16 @@ jobs:
       # while being mounted nowhere. Neither failed a test; nothing was looking.
       - name: No export nothing calls
         run: npm run check:dead-code
+      # Branding is only branding if it MOVES. This reported and never failed
+      # while the count was outstanding — a gate that goes red over known work
+      # is one somebody switches off — and §4 said it turns red-worthy the day
+      # the count reaches zero. 2026-09-17: 209 -> 117 when the unreachable
+      # pre-redesign panel layer was deleted, then 117 -> 0 by repointing every
+      # tint at `--brand-*-rgb`, a triplet each panel's applier derives from
+      # whatever hex the operator saved. A red run now means a literal was
+      # ADDED, which is the only thing left for it to catch.
+      - name: Every brand colour comes from Branding
+        run: npm run report:branding
       # The order lifecycle moves the STATE first and writes the accompanying
       # fields second, so an order is never found in a state without the facts
       # that justify it. The cost is that a bad field name throws AFTER the

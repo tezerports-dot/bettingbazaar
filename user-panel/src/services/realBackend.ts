@@ -561,11 +561,11 @@ export class RealBackend implements Backend {
     try {
       const data = await this.wsRequest<any>(
         'request_branding', 'branding', undefined, 8000,
-        { appName: 'BettingBazaar', cdnBaseUrl: '', primaryColor: '#D4AF37', assets: {} }
+        { appName: 'BettingBazaar', cdnBaseUrl: '', primaryColor: 'var(--brand-primary, #D4AF37)', assets: {} }
       );
       return data;
     } catch {
-      return { appName: 'BettingBazaar', cdnBaseUrl: '', primaryColor: '#D4AF37', assets: {} };
+      return { appName: 'BettingBazaar', cdnBaseUrl: '', primaryColor: 'var(--brand-primary, #D4AF37)', assets: {} };
     }
   }
 

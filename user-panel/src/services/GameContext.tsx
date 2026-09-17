@@ -28,6 +28,7 @@ import React, { createContext, useContext, useState, useEffect, useRef, useCallb
 import { CycleType, GameState, User, Bet, BettingSide, GameCycle } from '../types';
 import { ANALYTICS_WINDOW } from '../constants';
 import { getBackend, setCdnBaseUrl } from './backend.service';
+import { applyBranding } from './branding';
 
 
 // All components that need minBet / minDeposit / tokenRates should read from here.
@@ -765,13 +766,11 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
     const handleBrandingUpdated = (data: any) => {
       if (!data?.branding) return;
       const b = data.branding;
-      localStorage.setItem('app_branding', JSON.stringify(b));
-      // Inject CSS variables so every component using var(--brand-*) updates instantly
-      const root = document.documentElement;
-      if (b.primaryColor)   root.style.setProperty('--brand-primary',   b.primaryColor);
-      if (b.secondaryColor) root.style.setProperty('--brand-secondary', b.secondaryColor);
-      if (b.accentColor)    root.style.setProperty('--brand-accent',    b.accentColor);
-      if (b.appName)        document.title = b.appName;
+      // ONE applier (services/branding.ts). This was a second copy, and it had
+      // already drifted: it titled the tab from `appName` while App.tsx used
+      // `userPanelName`, so which name the tab showed depended on which of the
+      // two fired last (§5, §13).
+      applyBranding(b);
       window.dispatchEvent(new CustomEvent('branding_updated', { detail: b }));
     };
 

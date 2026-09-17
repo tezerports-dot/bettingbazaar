@@ -241,39 +241,57 @@ wrong owner gets working code deleted by the next reader.
   with `npm run report:branding` (`--files`, `--lines`), **never by grepping a
   hex**.
 
-  **The figure this file used to quote was 89, the report then printed 209, and
-  it now prints 117** — 107 user, 9 admin, 1 merchant. Run the report; do not
-  quote a number from here.
+  **The count is ZERO as of 2026-09-17, and the report now FAILS the build.**
+  Run it; do not quote a number from here.
 
-  The 89 was wrong because the command it named — `grep -ro "D4AF37"` — counts
-  one spelling of one of the three brand colours. The panel writes the same gold
-  as `rgba(212,175,55,…)` for shadows and tints, and `--brand-secondary`
-  (`#B8860B`) and `--brand-accent` (`#F5C77A`) have their own literals. It also
-  said the merchant panel was **at zero** and it is at one, and the admin panel
-  reads nine rather than the two that grep finds. Every one of those errors was
-  in the reassuring direction: the work looked nearly done, and an operator
-  changing their brand colour would have found most of the player panel still
-  gold. This is §29 — absence of a failing check is not evidence when no check
-  covers the claim — and it is §1's lesson about quoting the printed figure
-  rather than an estimate, which this bullet was not following.
+  How it got there, because two of the three steps were not remediation:
 
-  The drop from 209 to 117 was not remediation. It is what fell out when the
-  pre-redesign user-panel layer — `Layout/Header`, `Layout/Footer`, the seven
-  `components/Game/*` files and `WalletModal` — was deleted for being
-  unreachable: **92 of the literals were in code no screen had mounted since
-  `RedesignShell` replaced it.** Worth stating plainly, because a count falling
-  by nearly half reads like progress on the repaint and none of it was.
+  | | count | what happened |
+  |---|---|---|
+  | quoted here | 89 | wrong — `grep -ro "D4AF37"` counts one spelling of one of three colours |
+  | first real report | 209 | all three colours, every spelling |
+  | after the dead-UI delete | 117 | **92 were in code no screen had mounted** since `RedesignShell` replaced `Layout/Header`. Not repainting — deletion. |
+  | after the repaint | **0** | every tint repointed at `--brand-*-rgb` |
 
-  A literal is PERMITTED where it is the schema default sitting behind a brand
-  variable — the `--brand-primary: #D4AF37` declaration itself, or a
-  `var(--brand-primary, #D4AF37)` fallback. The tokens have to be defined
-  somewhere and the definition is a hex by necessity. The report counts those
-  separately as anchors rather than ignoring them, so deleting one by accident
-  shows up instead of reading as progress.
+  The original 89 was reassuring in every direction: it said the merchant panel
+  was at zero when it was at one, and the admin panel at two when it read nine.
+  The work looked nearly done, and an operator changing their brand colour would
+  have found most of the player panel still gold. That is §29 — absence of a
+  failing check is not evidence when no check covers the claim.
 
-  The report does not FAIL the build, deliberately: a gate that goes red over
-  work already known to be outstanding is a gate somebody switches off. It turns
-  red-worthy the day the count reaches zero.
+  **Why a hex was not enough, and what fixed it.** `--brand-primary` is a hex,
+  which is all `color: var(--brand-primary)` needs. But most brand colour in
+  these panels is tints, glows, borders and shadows, and CSS cannot take an
+  alpha channel off a hex variable — so the same colour was written twice: once
+  as a token an operator controls, and a hundred times as a literal rgba()
+  triplet they do not. Each panel now also publishes `--brand-primary-rgb`,
+  `--brand-secondary-rgb` and `--brand-accent-rgb`, **derived** from the saved
+  hex by its own `services/branding.ts`, never stored separately, so the two
+  cannot disagree (§2). A tint is `rgba(var(--brand-primary-rgb), 0.25)`.
+
+  **One applier per panel.** The user panel had two — `App.tsx` and
+  `GameContext` — and they had already drifted: one titled the tab from
+  `userPanelName` and the other from `appName`, so which name appeared depended
+  on which fired last. §5, exactly.
+
+  **And the owner itself was wrong.** `SYSTEM_CONFIG_SPEC.branding` declared
+  `secondaryColor: #8B5CF6` (purple) and `accentColor: #F59E0B` (amber) while
+  the shipped panel rendered `#B8860B` and `#F5C77A`, and the admin form
+  defaulted to a third set. Only the primary agreed. It never showed because
+  nothing READ the secondary or accent — they were literals — so the drift was
+  invisible until the tints were repointed at the tokens, at which point the
+  spec's purple would have appeared as borders on a gold panel. The spec is now
+  aligned to what the product renders: an owner that disagrees with every
+  consumer is the wrong number, not the true one.
+
+  A literal is PERMITTED in exactly three forms, and `isAnchor` in the report
+  implements all three: the token's own declaration (`--brand-primary: #D4AF37`),
+  a `var(--brand-primary, #D4AF37)` fallback, and a loading placeholder that
+  CITES the schema default in a comment. The third is this section's own wording
+  and the report did not implement it — it was handed the comment-STRIPPED line,
+  so a citation could never be seen and the rule could not be satisfied by any
+  line that followed it.
+
 - Any permission key, status enum or event name originates from a shared module.
 
 ---
