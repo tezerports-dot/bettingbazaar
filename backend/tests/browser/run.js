@@ -102,17 +102,28 @@ async function navigate(page, cfg, screen) {
  * response. This reads what a person would read: the text in `<main>`, until it
  * is non-empty and the same twice running.
  */
-async function settle(page, ms = 12000) {
+async function settle(page, ms = 15000) {
+  // Text AND control count, three consecutive identical readings, and a floor.
+  // Watching the text alone returns while a fetch is still in flight — the page
+  // heading is on screen immediately and can sit unchanged across two samples,
+  // which made the driver see one control on a screen that has 353. See the
+  // longer note in `drive.js`.
   const read = () => page.evaluate(() => {
-    const main = document.querySelector('main');
-    return (main ?? document.body)?.innerText?.trim().length ?? 0;
-  }).catch(() => 0);
-  let last = -1;
-  for (let waited = 0; waited < ms; waited += 400) {
+    const m = document.querySelector('main') ?? document.body;
+    return {
+      text: m?.innerText?.trim().length ?? 0,
+      controls: m ? m.querySelectorAll('button, a[href], select, textarea, input, [role="button"]').length : 0,
+    };
+  }).catch(() => ({ text: 0, controls: 0 }));
+  const FLOOR = 1600;
+  let same = 0, last = null, waited = 0;
+  while (waited < ms) {
     await sleep(400);
+    waited += 400;
     const now = await read();
-    if (now > 40 && now === last) return;
+    same = (last && now.text === last.text && now.controls === last.controls) ? same + 1 : 0;
     last = now;
+    if (waited >= FLOOR && now.text > 40 && same >= 2) return;
   }
 }
 

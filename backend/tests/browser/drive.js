@@ -147,17 +147,41 @@ async function navigate(page, cfg, screen, base) {
   }
 }
 
-/** Wait for the routed region to stop changing. Not for the network to go quiet. */
-async function settle(page, ms = 10000) {
-  let last = -1;
-  for (let waited = 0; waited < ms; waited += 350) {
-    await sleep(350);
-    const now = await page.evaluate(() => {
-      const m = document.querySelector('main') ?? document.body;
-      return m?.innerText?.trim().length ?? 0;
-    }).catch(() => 0);
-    if (now > 40 && now === last) return;
+/**
+ * Wait for the routed region to stop changing — text AND control count.
+ *
+ * ── Why both, and why three samples ──────────────────────────────────────
+ * The first version compared only the text length, over two consecutive 350ms
+ * samples. The shell and the page heading are on screen immediately, so the
+ * text is already past the threshold and can sit unchanged for two samples
+ * while a fetch is still in flight. On `/users` that made the driver collect
+ * ONE control and press it — out of the 353 the screen actually has once its
+ * fifty rows arrive. A pass that reports 280 of 1,422 controls pressed while
+ * believing it pressed them all is worse than no pass.
+ *
+ * So: the CONTROL COUNT is watched as well (it is what the pass is about, and
+ * it is what grows when rows land), three consecutive identical readings are
+ * required rather than two, and there is a floor below which it will not
+ * return at all.
+ */
+async function settle(page, ms = 15000) {
+  const read = () => page.evaluate(() => {
+    const m = document.querySelector('main') ?? document.body;
+    return {
+      text: m?.innerText?.trim().length ?? 0,
+      controls: m ? m.querySelectorAll('button, a[href], select, textarea, input, [role="button"]').length : 0,
+    };
+  }).catch(() => ({ text: 0, controls: 0 }));
+
+  const FLOOR = 1600;          // never return before the first fetch could land
+  let same = 0, last = null, waited = 0;
+  while (waited < ms) {
+    await sleep(400);
+    waited += 400;
+    const now = await read();
+    same = (last && now.text === last.text && now.controls === last.controls) ? same + 1 : 0;
     last = now;
+    if (waited >= FLOOR && now.text > 40 && same >= 2) return;
   }
 }
 
@@ -172,10 +196,31 @@ const ignored = (s) => IGNORE.some((re) => re.test(String(s)));
  * everything, and a handle captured earlier would be pointing at a node that is
  * no longer in the document.
  */
-async function press(page, panel, screen, c, seen) {
+/**
+ * How many instances of ONE control to press per screen.
+ *
+ * `/users` renders seven row actions across fifty rows: 353 controls, of which
+ * 346 are the same seven handlers again with a different id. Pressing the
+ * fiftieth Delete proves nothing the first did not, and it costs the run twenty
+ * minutes. Three is enough to catch a handler that only works on the row it was
+ * written against, and the rest are reported as REPRESENTED rather than quietly
+ * dropped — "every button pressed" is a claim about a number (§29), so the
+ * number it is NOT is stated too.
+ */
+const PER_NAME = 3;
+
+/** How long to stand back when the platform says we are asking too fast. */
+const THROTTLE_PAUSE_MS = Number(process.env.BB_THROTTLE_PAUSE_MS ?? 20000);
+
+async function press(page, panel, screen, c, seen, byName) {
   const id = idOf(panel, screen, c);
   if (seen.has(id)) return { verdict: 'DUPLICATE' };
   seen.add(id);
+
+  const nameKey = `${c.kind}\u0000${c.name}`;
+  const nth = (byName.get(nameKey) ?? 0);
+  byName.set(nameKey, nth + 1);
+  if (nth >= PER_NAME) return { verdict: 'REPRESENTED', why: `instance ${nth + 1} of the same control` };
 
   const skip = deferred(c);
   if (skip) return { verdict: 'DEFERRED', why: skip.why };
@@ -185,9 +230,10 @@ async function press(page, panel, screen, c, seen) {
   if (!el) return { verdict: 'GONE', why: 'the control is no longer on the screen — an earlier press removed it' };
 
   const before = await fingerprint(page);
-  const errors = [], failed = [];
+  const errors = [], failed = [], throttled = [];
   const onErr = (e) => errors.push(e.message);
   const onRes = (r) => {
+    if (r.status() === 429) { throttled.push(r.url()); return; }
     if (r.status() >= 500 && !ignored(r.url())) {
       failed.push(`${r.status()} ${r.request().method()} ${r.url().replace(/^https?:\/\/[^/]+/, '')}`);
     }
@@ -217,8 +263,19 @@ async function press(page, panel, screen, c, seen) {
       await el.click({ timeout: 4000 });
     }
   } catch (e) {
-    page.off('pageerror', onErr); page.off('response', onRes);
-    return { verdict: 'UNREACHABLE', why: e.message.split('\n')[0].slice(0, 120) };
+    // Almost always an overlay left open by an earlier press. Close it and try
+    // once more before accusing the control of being unreachable — 23 of these
+    // in one run were the harness's own leftovers, not the screen's fault.
+    await page.keyboard.press('Escape').catch(() => {});
+    await sleep(250);
+    try {
+      const again = await find(page, c);
+      if (!again) throw e;
+      await again.click({ timeout: 4000 });
+    } catch {
+      page.off('pageerror', onErr); page.off('response', onRes);
+      return { verdict: 'UNREACHABLE', why: e.message.split('\n')[0].slice(0, 120) };
+    }
   }
 
   await sleep(700);
@@ -226,6 +283,17 @@ async function press(page, panel, screen, c, seen) {
   page.off('pageerror', onErr);
   page.off('response', onRes);
 
+  // ── The platform's own rate limiter, correctly refusing us ──────────────
+  // `RATE_LIMIT_TIERS.global` is 1,000 requests per 15 minutes per IP, and a
+  // pass that presses 1,400 controls goes through that. The limiter is right;
+  // the harness was wrong to read its refusal as a verdict on the control. It
+  // is also not something to weaken for a test — production behaviour is what
+  // is under test — so this waits, the way any well-behaved client would, and
+  // the control is reported as never actually reached.
+  if (throttled.length) {
+    await sleep(THROTTLE_PAUSE_MS);
+    return { verdict: 'THROTTLED', why: 'the platform rate-limited this request (429) — not the control\'s fault' };
+  }
   if (errors.length) return { verdict: 'THREW', why: errors[0].slice(0, 200), acted };
   if (failed.length) return { verdict: 'FIVE_HUNDRED', why: failed.join(' | ').slice(0, 200), acted };
   if (!changed(before, after)) return { verdict: 'INERT', acted };
@@ -304,6 +372,7 @@ try {
 
       const controls = await collect(page).catch(() => []);
       const seen = new Set();
+      const byName = new Map();
       const results = [];
 
       for (const c of controls) {
@@ -312,7 +381,7 @@ try {
         // the failure, and the other 1,700 still deserve to be pressed.
         let r;
         try {
-          r = await press(page, panel, screen, c, seen);
+          r = await press(page, panel, screen, c, seen, byName);
         } catch (e) {
           r = { verdict: 'UNREACHABLE', why: `pressing it broke the pass: ${e.message.split('\n')[0].slice(0, 120)}` };
         }
@@ -320,25 +389,37 @@ try {
         results.push({ control: idOf(panel, screen, c), ...r });
         report.pressed.push({ panel, screen, kind: c.kind, name: c.name, ordinal: c.ordinal, ...r });
 
-        // Anything that moved the screen means the next control's triple was
-        // taken somewhere else. Go back before pressing it.
-        if (r.verdict === 'ACTED' || r.verdict === 'THREW' || r.verdict === 'FIVE_HUNDRED') {
+        // Go back when the press moved the screen STRUCTURALLY — a dialog
+        // opened, the control count changed, or it navigated. The next
+        // control's triple was taken from the original screen, so it has to be
+        // the original screen again. A press that only changed some text has
+        // not invalidated anything, and resetting on every one of 1,400 presses
+        // would add half an hour of navigation for nothing.
+        const structural = /dialogs|controls|hash|path/.test(r.moved ?? '');
+        if (structural || r.verdict === 'THREW' || r.verdict === 'FIVE_HUNDRED' || r.verdict === 'UNREACHABLE') {
           await reset(page, cfg, screen, base);
         }
       }
 
+      const throttledOut = results.filter((r) => r.verdict === 'THROTTLED');
       const broke  = results.filter((r) => r.verdict === 'THREW' || r.verdict === 'FIVE_HUNDRED');
       const inert  = results.filter((r) => r.verdict === 'INERT');
       const gone   = results.filter((r) => r.verdict === 'GONE' || r.verdict === 'UNREACHABLE');
       const acted  = results.filter((r) => r.verdict === 'ACTED').length;
       const defer  = results.filter((r) => r.verdict === 'DEFERRED').length;
-      const shape  = `${controls.length} controls: ${acted} acted, ${inert.length} inert, ${defer} deferred, ${gone.length} unreachable`;
+      const repr   = results.filter((r) => r.verdict === 'REPRESENTED').length;
+      const shape  = `${controls.length} controls: ${acted} acted, ${inert.length} inert, ${defer} deferred`
+        + `, ${gone.length} unreachable${repr ? `, ${repr} repeats of one already pressed` : ''}`;
 
       if (broke.length) {
         check('DRIVE', panel, screen, 'no control throws or 5xxes', 
           broke.map((b) => `${b.control} → ${b.verdict}: ${b.why}`).slice(0, 3).join('  ||  '), false,
           'pressed as a person would; the screen was re-read before and after each press');
         await page.screenshot({ path: join(SHOTS, `${panel}${screen.replace(/\//g, '_') || '_root'}.png`) }).catch(() => {});
+      } else if (throttledOut.length) {
+        note('DRIVE', panel, screen, 'every control actually reached', shape,
+          `${throttledOut.length} never reached — the platform rate-limited the run (429). `
+          + 'Re-run this screen on its own; these are NOT verified.');
       } else if (gone.length) {
         note('DRIVE', panel, screen, 'every control reachable', shape,
           gone.map((g) => `${g.control}: ${g.why}`).slice(0, 2).join(' | '));

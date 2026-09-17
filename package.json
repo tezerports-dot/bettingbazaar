@@ -43,7 +43,8 @@
     "audit:map": "node scripts/audit-map.mjs",
     "report:branding": "node scripts/report-branding-literals.mjs",
     "test:browser": "node backend/tests/browser/run.js",
-    "test:drive": "node backend/tests/browser/drive.js"
+    "test:drive": "node backend/tests/browser/drive.js",
+    "report:ui-coverage": "node scripts/report-ui-coverage.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.122.0",

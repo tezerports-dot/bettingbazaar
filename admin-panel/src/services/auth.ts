@@ -143,8 +143,23 @@ export const useAuthStore = create<AuthState>()(
           } else {
             set({ isAuthenticated: false, token: null });
           }
-        } catch {
-          set({ isAuthenticated: false });
+        } catch (err: any) {
+          // ── A blip is not a logout ────────────────────────────────────
+          // This used to drop `isAuthenticated` on ANY failure, so a 429, a
+          // 502 during a deploy, or a dropped connection in a lift showed the
+          // login form to an admin whose token was perfectly valid — and made
+          // them do 2FA again over it, losing whatever they were part-way
+          // through. Measured: the browser pass made enough requests to trip
+          // the platform's own IP limiter, `GET /api/v1/auth/me` answered 429,
+          // and every screen in the panel rendered as logged out.
+          //
+          // A session that is genuinely INVALID does not need this branch: the
+          // response interceptor in `api.ts` clears storage and redirects on a
+          // 401. So only an explicit refusal ends the session here, and
+          // everything else leaves it alone — the next request will be refused
+          // with a 401 if the token really is dead.
+          const status = err?.response?.status;
+          if (status === 401 || status === 403) set({ isAuthenticated: false, token: null });
         }
       },
     }),
