@@ -66,16 +66,35 @@ const PANELS = {
  * Each is a rule about CONSEQUENCE, not a list of names to keep in step with
  * the UI — §28's "a gate whose failure mode is the author forgot to update me".
  */
+/**
+ * Names are matched with their decoration STRIPPED.
+ *
+ * The rules below anchor on the first word — `^release`, `^delete` — and the
+ * admin dispute buttons are labelled "✅ Release to User" and "↩️ Refund to
+ * Merchant". The emoji is the first character, so every one of those anchors
+ * missed, and the pass pressed both of them against 36 live disputed deposits.
+ *
+ * Nothing moved, and only by luck: the handler opens `window.prompt` for a
+ * resolution reason, this pass dismisses dialogs, and `if (!reason?.trim())
+ * return;` sent it home. Had that prompt not been there, a test run would have
+ * released thirty-six disputed deposits — real money, on someone's database.
+ *
+ * So the guard is not allowed to depend on how a label is decorated.
+ */
+const bare = (name) => String(name ?? '')
+  .replace(/^[^\p{L}\p{N}]+/u, '')   // leading emoji, arrows, bullets
+  .trim();
+
 const DEFER = [
-  { why: 'ends the session for every screen after it', test: (c) => /^(log ?out|sign ?out)$/i.test(c.name) },
+  { why: 'ends the session for every screen after it', test: (c) => /^(log ?out|sign ?out)$/i.test(bare(c.name)) },
   { why: 'leaves the panel', test: (c) => c.kind === 'link' && /^https?:/i.test(c.href) },
-  { why: 'downloads a file the browser cannot hand back', test: (c) => /^(export|download|csv|pdf)\b/i.test(c.name) },
+  { why: 'downloads a file the browser cannot hand back', test: (c) => /^(export|download|csv|pdf|choose)\b/i.test(bare(c.name)) },
   { why: 'destroys a row this run did not create — driven in the mutating pass, against its own rows (trap 10)',
-    test: (c) => /^(delete|remove|reject|suspend|block|deduct|terminate|revoke|purge|reset|wipe|end)\b/i.test(c.name) },
+    test: (c) => /^(delete|remove|reject|suspend|block|deduct|terminate|revoke|purge|reset|wipe|end)\b/i.test(bare(c.name)) },
   { why: 'approves or pays out against a row this run did not create',
-    test: (c) => /^(approve|confirm|release|refund|pay|payout|issue|fund|disburse|settle|mint|credit)\b/i.test(c.name) },
+    test: (c) => /^(approve|confirm|release|refund|pay|payout|issue|fund|disburse|settle|mint|credit|resolve|escalate)\b/i.test(bare(c.name)) },
   { why: 'publishes a platform-wide change from whatever the form happens to hold',
-    test: (c) => /^(save|publish|apply|update|submit|activate|deactivate|switch)\b/i.test(c.name) },
+    test: (c) => /^(save|publish|apply|update|submit|activate|deactivate|switch)\b/i.test(bare(c.name)) },
   { why: 'a file picker cannot be driven from here', test: (c) => c.kind === 'input:file' },
 ];
 const deferred = (c) => DEFER.find((d) => d.test(c));
@@ -230,6 +249,7 @@ async function press(page, panel, screen, c, seen, byName) {
   if (!el) return { verdict: 'GONE', why: 'the control is no longer on the screen — an earlier press removed it' };
 
   const before = await fingerprint(page);
+  const asked = page.__bbAsked ?? 0;
   const errors = [], failed = [], throttled = [];
   const onErr = (e) => errors.push(e.message);
   const onRes = (r) => {
@@ -244,13 +264,30 @@ async function press(page, panel, screen, c, seen, byName) {
   let acted = 'clicked';
   try {
     if (c.kind.startsWith('input:') && !/checkbox|radio|file|submit|button|range|color/.test(c.kind)) {
-      // A text or number field is exercised by TYPING into it, and by typing
-      // more than one character — one keystroke passes on a form that throws
-      // away the rest, which is exactly how the winners form stayed broken.
+      // ── Type what the field is FOR ────────────────────────────────────
+      // A text or number field is exercised by TYPING into it, and by more
+      // than one character — one keystroke passes on a form that throws the
+      // rest away, which is how the winners form stayed broken.
+      //
+      // WHICH characters matters. The wallet's amount box is `type=text` and
+      // filters non-digits, so typing "bb" left it empty and the pass called
+      // the money field INERT — accusing correct behaviour. Verified in a
+      // browser: "bb" leaves it blank with Continue disabled, "500" fills it
+      // and enables Continue. So letters are tried first and, if the field
+      // took nothing, digits are tried too; the verdict is about the field,
+      // not about the harness's choice of alphabet.
+      const digitsFirst = c.kind !== 'input:text'
+        || /amount|qty|quantity|number|mobile|phone|pin|otp|tokens|price|rate|limit|min|max|₹|e\.g\. \d/i.test(c.name);
       await el.click({ timeout: 4000 });
       await el.fill('');
-      await page.keyboard.type(c.kind === 'input:number' ? '12' : 'bb', { delay: 40 });
-      acted = 'typed into';
+      await page.keyboard.type(digitsFirst ? '500' : 'bb', { delay: 40 });
+      let held = await el.inputValue().catch(() => '');
+      if (!held) {
+        // It refused that alphabet. Try the other one before judging it.
+        await page.keyboard.type(digitsFirst ? 'bb' : '500', { delay: 40 });
+        held = await el.inputValue().catch(() => '');
+      }
+      acted = held ? `typed ${JSON.stringify(held)} into` : 'typed into (it accepted nothing)';
     } else if (c.kind === 'select') {
       const opts = (c.options ?? []).filter(Boolean);
       if (!opts.length) { acted = 'no options to choose'; }
@@ -296,7 +333,12 @@ async function press(page, panel, screen, c, seen, byName) {
   }
   if (errors.length) return { verdict: 'THREW', why: errors[0].slice(0, 200), acted };
   if (failed.length) return { verdict: 'FIVE_HUNDRED', why: failed.join(' | ').slice(0, 200), acted };
-  if (!changed(before, after)) return { verdict: 'INERT', acted };
+  if (!changed(before, after)) {
+    if (asked !== (page.__bbAsked ?? 0)) {
+      return { verdict: 'NEEDS_INPUT', acted, why: 'it asked a confirm/prompt, which this pass declines' };
+    }
+    return { verdict: 'INERT', acted };
+  }
   return { verdict: 'ACTED', acted, moved: moved(before, after).join(',') };
 }
 
@@ -360,7 +402,11 @@ try {
     // A confirm() that nobody answers blocks the page for ever. Auto-dismiss:
     // this pass never presses a control whose confirm it would want to accept.
     const page = await ctx.newPage();
-    page.on('dialog', (d) => d.dismiss().catch(() => {}));
+    // A confirm() or prompt() nobody answers blocks the page for ever, so they
+    // are dismissed — and REMEMBERED, because a control that asked a question
+    // and was told no did not do nothing, it was declined. Reporting that as
+    // INERT would send somebody hunting a dead button that works.
+    page.on('dialog', (d) => { page.__bbAsked = (page.__bbAsked ?? 0) + 1; d.dismiss().catch(() => {}); });
 
     await page.goto(cfg.entry(base), { waitUntil: 'domcontentloaded', timeout: 60000 });
     await settle(page, 30000);
