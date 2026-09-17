@@ -23,6 +23,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const identityFindOne = vi.fn();
 const membershipFor = vi.fn();
 const joinPrompt = vi.fn();
+const sendAlert = vi.fn();
 
 vi.mock('#db', () => ({
   db: { telegram: { getIdentityByUserId: (...a) => identityFindOne(...a) } },
@@ -31,6 +32,10 @@ vi.mock('#db', () => ({
 vi.mock('../../domains/telegram/telegramMembership.js', () => ({
   membershipFor: (...a) => membershipFor(...a),
   joinPrompt: (...a) => joinPrompt(...a),
+}));
+
+vi.mock('../../services/alerting.service.js', () => ({
+  sendAlert: (...a) => { sendAlert(...a); return Promise.resolve(); },
 }));
 
 const { requireChannelMembership } = await import('../../middleware/requireChannelMembership.js');
@@ -60,6 +65,7 @@ beforeEach(() => {
   identityFindOne.mockReset();
   membershipFor.mockReset();
   joinPrompt.mockReset();
+  sendAlert.mockReset();
 });
 
 describe('when the platform has no Telegram channel configured', () => {
@@ -79,6 +85,23 @@ describe('when the platform has no Telegram channel configured', () => {
     });
     expect(next).toHaveBeenCalled();
     expect(res.statusCode).toBeNull();
+  });
+
+  /**
+   * Letting everyone through is the right call here — but it means the
+   * membership requirement is NOT BEING APPLIED, platform-wide, to betting,
+   * games and the wallet. That was reported by a `console.error` alone, which
+   * is a line in scrollback rather than a signal anyone receives. The fix that
+   * makes the gate humane must not also make it silent (§29: absence of a
+   * failing check is not evidence).
+   */
+  it('ALERTS that membership is unenforced while it lets everyone through', async () => {
+    const { next } = await run({ user: PLAYER, identity: null, verdict: UNCONFIGURED });
+    expect(next).toHaveBeenCalled();
+    expect(sendAlert).toHaveBeenCalled();
+    const [key, title] = sendAlert.mock.calls[0];
+    expect(key).toBe('channel-gate-unconfigured');
+    expect(title).toMatch(/unenforced/i);
   });
 
   it('asks about configuration BEFORE looking at the player', async () => {
@@ -137,6 +160,32 @@ describe('the outage window', () => {
       verdict: UNREACHABLE_MEMBER,
     });
     expect(next).toHaveBeenCalled();
+  });
+
+  /**
+   * The grace window is FINITE. A player admitted on a cached answer today is
+   * refused with a 503 once it expires, so the operator needs to know at the
+   * start of the outage — not when the complaints arrive. Nothing signalled
+   * this branch at all before: it simply called next().
+   */
+  it('ALERTS when it starts admitting players on a cached answer', async () => {
+    await run({
+      user: PLAYER,
+      identity: { telegramUserId: '42', channelCheckedAt: new Date() },
+      verdict: UNREACHABLE_MEMBER,
+    });
+    expect(sendAlert).toHaveBeenCalled();
+    expect(sendAlert.mock.calls[0][0]).toBe('channel-gate-telegram-unreachable');
+  });
+
+  it('does not alert on the ordinary path, where nothing is degraded', async () => {
+    // An alert that fires when everything is fine is one an operator mutes.
+    await run({
+      user: PLAYER,
+      identity: { telegramUserId: '42' },
+      verdict: { joined: true, status: 'member' },
+    });
+    expect(sendAlert).not.toHaveBeenCalled();
   });
 
   it('expires it once the window has passed', async () => {
