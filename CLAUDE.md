@@ -27,7 +27,7 @@ listed below, which hold **data and history, never rules**.
 | **How this audit keeps missing things, and the four questions that find them** | `docs/audit/SECURITY_AUDIT_MAP.md` **§0.5 — read before trusting a green check** |
 | **Every defect SHAPE found so far, how wide you must search to see it, and what actually found it** | `docs/audit/SECURITY_AUDIT_MAP.md` **§4.0 — the shape index. Read it before auditing anything.** |
 | **What every change must REPORT, as a table, before it is done** | **§31 — the completeness contract** |
-| **The eighteen shapes that keep shipping here, each with the question that finds it** | **§32 — ask these of the change in front of you** |
+| **The nineteen shapes that keep shipping here, each with the question that finds it** | **§32 — ask these of the change in front of you** |
 
 ---
 
@@ -66,7 +66,7 @@ listed below, which hold **data and history, never rules**.
     every row, with `done` / `n/a` + reason / `NOT DONE`. The rows nobody fills
     in are where every defect in the 2026-09 review was living, and none of them
     was a wrong calculation.
-14. **Ask §32's eighteen questions of what you just wrote.** They are the shapes
+14. **Ask §32's nineteen questions of what you just wrote.** They are the shapes
     this codebase has actually produced, each with the question that finds it.
 15. **If it fixes a vulnerability, sweep for the same SHAPE across the whole
     codebase and record the result** — including "swept, none found". A fix that
@@ -176,6 +176,7 @@ wrong owner gets working code deleted by the next reader.
 | Three unpaid buys by one PLAYER | `users.consecutive_payment_failures` (advanced and read in one statement); at `maxConsecutivePlayerPaymentFailures` (schema default 3) they cannot open a new order for `playerOrderLockMinutes` (60) — **on BOTH rails**, or a player locked out of buying just sells instead. `users.order_lock_until` is a TIMESTAMP written by the DATABASE's clock, so it expires on its own with no cron to fail, and `GREATEST` extends rather than shortens. Flagged for an admin too, **never auto-blocked**. Cleared by `moveDepositMoney` — where the money is known to have ARRIVED, not at PAID, or a false UTR would wipe the record. |
 | Three unpaid buys against one MERCHANT | `merchants.consecutive_expiries` — **deliberately NOT `consecutive_rejections`**, because an expiry is not a refusal and must never reach the suspension cap. Three different players sent to one merchant, none able to pay, most likely means that merchant cannot BE paid (dead QR, closed handle) — invisible one order at a time. At `maxConsecutiveMerchantExpiries` (schema default 3) `assignment_paused_at` is set and they stop being a candidate on every path: `assignmentCandidates`, `cashSuppliersFor`, and the cash-link claim. **Not a suspension**: they keep their orders, balance and standing. **No timer** — `PUT /api/admin/merchants/:id/resume-assignment` lifts it, because a clock cannot tell whether the QR was fixed; `approveMerchant` clears it too, and both zero the count in the same statement. Any COMPLETED order clears the run by itself. |
 | A merchant who ignores a PAID buy | `sweepUnansweredPaidDeposits`, every 2 minutes, against `SystemConfig.merchantOrderLimits.paidResponseMinutes` (schema default 30). The order goes to **DISPUTED** — the admin queue — never cancelled and never reassigned: the player paid THAT merchant's account, so only a person can decide. `disputeRaisedBy` is `'system'`, because a player who raised nothing must not appear to have. The silence counts as a refusal. This was the one window where the player's money was already gone and nothing was watching it. |
+| **A cash player who taps Paid and never submits a reference** | `sweepUtrAfterPaid`, every 2 minutes, against `SystemConfig.merchantOrderLimits.utrAfterPaidMinutes` (schema default 15, bounded 2–60). **Only on the CASH_ATM rail**, because only there does PAID come before the reference. An ATM has a time limit: the player taps **Paid** so the merchant can press Continue on the machine, and the UTR arrives after, off the slip. So `PAID` with no `utr` is a state this rail deliberately creates, and two sweeps had to be split to tell the two silences apart — `sweepUnansweredPaidDeposits` (the MERCHANT ignoring evidence that exists) now requires `utr IS NOT NULL`, or it would have counted a refusal against a merchant who had been shown nothing. This one is the PLAYER's silence and goes through `playerPaymentFailure.service.js`, the one owner of "a buy nobody evidenced" — never through `merchantRefusal`. |
 | Who may be given a CASH order | The claim query in `database/repositories/cashLinks.js`, which now asks every question `assignmentCandidates` asks on the UPI rail — ACTIVE, APPROVED, online, accepts buys, the merchant's own rail and tier, both concurrency caps, and the `order_rejections` bar. It joined `merchants` not at all before, under a comment saying so deliberately, so a merchant an admin had stopped kept being handed players through a link they had left behind. **A link is supplied minutes before it is claimed: eligibility is a question about the claim, not about the supply.** |
 | Which CHAIN a USDT order settles on | `order_states.usdt_chain`, frozen by trigger. A merchant holds one address **per chain** (`usdt_address_trc20`, `usdt_address_bep20`). See §25. |
 | The USDT quote | `order_states.rate_used` + `fiat_amount_paise`, written WITH the order and frozen by trigger. Assignment may not re-price. See §25. |
@@ -1173,6 +1174,18 @@ these are the specific ones this codebase has actually produced.
 | S16 | A fixture in a state production cannot produce | Could the platform actually create this row? |
 | S17 | An admin decision no other panel reflects | What does the merchant/player see after this? |
 | S18 | A silent no-op after a committed write | Can the recipient actually receive, before the record says they did? |
+| S19 | A test asserting a precondition it never established | Did THIS run create the state this asserts, or is it reading whatever the database happened to hold? |
+
+**S19 is S16's mirror and cost a green suite.** The USDT scenario opened by
+reading `usdtPricing` out of whatever database it ran against and asserting it
+was positive. On a database somebody had priced, it passed for weeks. On a
+fresh one it failed twice and reported the platform REFUSING BY NAME
+(`USDT_RATE_UNSET`) — §25's deliberate no-fallback, working exactly as written —
+as a defect. A scenario that needs a value SETS it, through the route a human
+would use, and puts the old one back in a `finally`; that also turns a dead
+ambient read into a real cross-panel assertion (the admin sets 90, the player
+panel is told 90). Trap 10 already says this about `config_documents`; S19 is
+the same rule stated from the reading side.
 
 **S16 deserves its own note, because it is how several of the others hid.** A
 test that stages an impossible row stops testing the handler and starts

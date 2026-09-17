@@ -54,6 +54,24 @@ export function registerCronJobs(rebuildLeaderboard) {
     } catch (e) { console.error('[paid-timeout] cron error:', e.message); }
   });
 
+  // ── The player's half of the same clock — every 2 minutes ──────────────────
+  // A cash buy reaches PAID on the player's tap, so the merchant can carry on
+  // at a machine that is timing out, and the reference follows. This catches
+  // the ones where it never does.
+  //
+  // Separate from `paid-order-timeout` above on purpose: that one is the
+  // merchant's silence and records a REFUSAL against them, and these orders are
+  // ones the merchant CANNOT act on — their Confirm refuses without a
+  // reference. One sweep for both would suspend a merchant for a player's
+  // delay (§2: whose fault an expiry is depends on the DIRECTION).
+  registerRecurring('utr-after-paid-timeout', 2 * 60 * 1000, async () => {
+    try {
+      const { sweepUtrAfterPaid } = await import('../domains/payment/paymentProcessing.service.js');
+      const n = await sweepUtrAfterPaid();
+      if (n > 0) console.warn(`[utr-timeout] ${n} cash order(s) went to the admin queue with no reference`);
+    } catch (e) { console.error('[utr-timeout] cron error:', e.message); }
+  });
+
   // ── Deposit escrow sweep — runs every 5 minutes ─────────────────────────────
   // The net under every path that takes a merchant's tokens for a buy order.
   // Releases holds whose order has finished, and REPORTS orders that still owe

@@ -5,14 +5,57 @@
 // tokens, and what moves here is the token side of that trade.
 import { pgQuery } from '#db/client.js';
 import { seedPlayer, seedMerchant, seedAdmin, trc20, bep20 } from '../seed.js';
-import { playerToken, merchantToken, adminToken, GET, POST, check, note } from '../harness.js';
+import { playerToken, merchantToken, adminToken, GET, POST, PUT, check, note } from '../harness.js';
 
 const A = 'USDT';
 export default async function run() {
   const admin = await seedAdmin(); const aT = adminToken(admin);
+
+  // ── The rate is a PRECONDITION this scenario establishes, not one it assumes ─
+  // It read the rate ambiently and asserted it was positive. The schema default
+  // is 0 — §25's "there is no fallback", which is the CORRECT state of a database
+  // nobody has priced — so on a fresh database this failed twice and reported the
+  // platform refusing by name (`USDT_RATE_UNSET`) as a defect. That is trap 10 in
+  // its config form: `config_documents` is one row per scope holding the live
+  // rules, so a scenario that needs a value SETS it, through the admin route a
+  // human would use, and puts the old one back in a `finally` — outside any
+  // assertion, because a restore that only runs when the run passed is the one
+  // that matters least.
+  const cfgBefore = await GET(aT, '/api/admin/system/config');
+  const priced = cfgBefore.body?.config?.usdtPricing ?? {};
+  const baseline = Number(priced.userMerchantBuyInr ?? 0);
+  check(A, 'admin', 'the admin can read the USDT price', '200 with a pricing group',
+    `${cfgBefore.status} userMerchantBuyInr=${baseline}`,
+    cfgBefore.status === 200 && priced.userMerchantBuyInr !== undefined,
+    'the field the Settings screen binds — absent here means the screen edits nothing');
+
+  const setRate = await PUT(aT, '/api/admin/system/config', {
+    usdtPricing: { ...priced, userMerchantBuyInr: 90 },
+  });
+  check(A, 'admin', 'the admin prices the USDT rail', '200',
+    `${setRate.status} ${setRate.body?.message ?? ''}`, setRate.status === 200,
+    '§25: the rate is admin-set and bounded — a misplaced decimal could price the whole rail');
+
+  try {
+    await drivePricedRail();
+  } finally {
+    await PUT(aT, '/api/admin/system/config', {
+      usdtPricing: { ...priced, userMerchantBuyInr: baseline },
+    });
+  }
+}
+
+/** Everything that needs a priced rail. The caller owns the price and restores it. */
+async function drivePricedRail() {
+  // Cross-panel: the price the ADMIN just set is the price the PLAYER panel is
+  // told, from one owner (§2 `SystemConfig.usdtPricing`). Reading it here and
+  // asserting it is positive used to be the whole check, which asserted the
+  // ambient state of whatever database it ran against rather than anything the
+  // platform does.
   const cfg = (await GET(playerToken(await seedPlayer({})), '/api/v1/system/config')).body?.config ?? {};
   const rate = cfg.usdtTokensPerUnit;
-  check(A, 'system', 'a USDT rate is set', 'a positive number', String(rate), Number(rate) > 0,
+  check(A, 'player', 'the player panel is told the rate the admin set', '90',
+    String(rate), Number(rate) === 90,
     '§25: there is no fallback — 0 gives Infinity USDT and 1 sells 50,000 tokens for 50,000 USDT');
 
   // A TRC-20 merchant with tokens to sell, holding an address on that chain only.

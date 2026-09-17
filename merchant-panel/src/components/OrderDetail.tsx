@@ -43,7 +43,21 @@ export const OrderDetail: React.FC<{
   const urgent = remaining !== null && remaining < URGENT_SECONDS;
 
   const canAccept = order.status === OrderStatus.ASSIGNED || order.status === OrderStatus.PENDING_QUEUE;
-  const canRelease = order.status === OrderStatus.PAID && isDeposit;
+  /**
+   * PAID, but not yet evidenced.
+   *
+   * On the CASH rail the player taps "I've paid" the moment the machine gives
+   * them the notes — that is what lets this merchant carry on at an ATM whose
+   * session is timing out — and the reference follows a minute later. The
+   * server refuses Confirm until it lands (§27: a completed deposit the
+   * registry never saw leaves a later dispute nothing to match against).
+   *
+   * So the button is not offered while it would only be refused. A control
+   * that fails when pressed reads as a broken panel, and the merchant's next
+   * move is to call support about a working guard.
+   */
+  const awaitingReference = order.status === OrderStatus.PAID && isDeposit && !order.utrNumber;
+  const canRelease = order.status === OrderStatus.PAID && isDeposit && !awaitingReference;
   const canPayout = order.status === OrderStatus.PROCESSING && !isDeposit;
 
   // Payment rows: the merchant's own receiving credentials on a deposit, the
@@ -99,7 +113,16 @@ export const OrderDetail: React.FC<{
     </>
   );
 
-  const footer = canAccept ? (
+  const footer = awaitingReference ? (
+    <div style={{
+      flex: 1, padding: 13, borderRadius: 12, textAlign: 'center',
+      background: 'var(--warn-bg)', border: '1px solid var(--warn)',
+      color: 'var(--text)', fontSize: 12.5, fontWeight: 700,
+    }}>
+      The player has reported paying. Waiting for their payment reference —
+      you can release as soon as it arrives.
+    </div>
+  ) : canAccept ? (
     <>
       <Button onClick={() => actions.onAccept(order)} style={{ flex: 1, padding: 14, fontSize: 14 }}>Accept order</Button>
       <Button variant="outline" tone="danger" onClick={() => actions.onReject(order)} style={{ padding: '14px 18px', fontSize: 14 }}>

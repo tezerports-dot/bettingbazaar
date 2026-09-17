@@ -591,6 +591,13 @@ export async function findUnansweredPaidDeposits({ olderThanMinutes = 30, limit 
         AND state = 'PAID'
         AND merchant_id IS NOT NULL
         AND paid_at IS NOT NULL
+        -- A merchant can only be blamed for silence on an order they could
+        -- ACT on. A cash buy reaches PAID on the player's tap and carries no
+        -- reference until they supply one, and the merchant's Confirm refuses
+        -- until it lands — so without this clause the merchant's own timeout
+        -- fires on a player's delay and records a REFUSAL against them.
+        -- findPaidDepositsAwaitingReference owns that case instead.
+        AND utr IS NOT NULL AND utr <> ''
         AND paid_at < now() - make_interval(mins => $1)
       ORDER BY paid_at ASC
       LIMIT ${Math.min(Math.max(Number(limit) || 200, 1), 1000)}`,
@@ -602,6 +609,37 @@ export async function findUnansweredPaidDeposits({ olderThanMinutes = 30, limit 
     userId:      String(r.user_id),
     tokenAmount: rupees(r.token_amount_paise),
     paidAt:      r.paid_at,
+  }));
+}
+
+/**
+ * Cash buys the player said they had paid for and never evidenced.
+ *
+ * PAID, on the cash rail, carrying no reference, past the window. The mirror
+ * of `findUnansweredPaidDeposits`: that one is the MERCHANT's silence, this
+ * one is the PLAYER's, and they must not be the same row — a merchant blamed
+ * for a reference that never arrived is suspended for somebody else's delay
+ * (§2: whose fault an expiry is depends on the DIRECTION).
+ */
+export async function findPaidDepositsAwaitingReference({ olderThanMinutes = 15, limit = 200 } = {}) {
+  const { rows } = await pgQuery(
+    `SELECT order_id, merchant_id, user_id, token_amount_paise, paid_at
+       FROM order_states
+      WHERE order_type = 'DEPOSIT'
+        AND state = 'PAID'
+        AND payment_mode = 'CASH_ATM'
+        AND (utr IS NULL OR utr = '')
+        AND paid_at IS NOT NULL
+        AND paid_at < now() - make_interval(mins => $1)
+      ORDER BY paid_at ASC
+      LIMIT ${Math.min(Math.max(Number(limit) || 200, 1), 1000)}`,
+    [Math.max(Number(olderThanMinutes) || 0, 0)], 'orders_paid_awaiting_reference',
+  );
+  return rows.map((r) => ({
+    orderId:    String(r.order_id),
+    merchantId: r.merchant_id ? String(r.merchant_id) : null,
+    userId:     String(r.user_id),
+    paidAt:     r.paid_at,
   }));
 }
 

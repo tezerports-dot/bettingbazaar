@@ -24,7 +24,7 @@ import {
 import { requireChannelMembership } from '../../middleware/requireChannelMembership.js';
 // Item 12: per-subnet backstop against IP rotation on withdrawal creation.
 import { createSubnetLimiter, globalSurgeBreaker } from '../../middleware/ipDefense.js';
-import { markOrderPaid, cancelOrder, claimUtrGrace, retryOrder } from './paymentProcessing.service.js';
+import { markOrderPaid, submitPaymentReference, cancelOrder, claimUtrGrace, retryOrder } from './paymentProcessing.service.js';
 // The only shape of an order a player receives. A player sees where to pay and
 // nothing about who they are paying.
 import { toPlayerOrderView, toPlayerOrderViews } from './playerOrderView.js';
@@ -208,6 +208,28 @@ router.post('/order/:orderId/retry', authenticate, orderRetryLimiter, orderAcces
  * courtesy but an unbounded extension, and the merchant's capacity is what it
  * spends.
  */
+/**
+ * POST /api/payment/order/:orderId/payment-reference — the second half of a
+ * CASH buy: the player supplies the reference for a payment they have already
+ * told us about.
+ *
+ * The merchant's Confirm refuses until this lands (§27 — a completed deposit
+ * the registry never saw leaves a later dispute nothing to match against), so
+ * this is the step that unblocks the money rather than a formality. Rate
+ * limited on ATTEMPTS: a caller guessing references against somebody else's
+ * order produces nothing but refusals, and those refusals ARE the sweep.
+ */
+router.post('/order/:orderId/payment-reference', authenticate, utrGraceLimiter, orderAccessGuard, async (req, res) => {
+  try {
+    const order = await submitPaymentReference(req.user.userId, req.params.orderId, req.body?.utrNumber);
+    res.json({ success: true, message: 'Reference received. Awaiting merchant review.', order: forPlayer(order) });
+  } catch (err) {
+    return respondError(res, err, 'POST /payment/order/:orderId/payment-reference', {
+      passthrough: ['originalOrderId'],
+    });
+  }
+});
+
 router.post('/order/:orderId/utr-grace', authenticate, utrGraceLimiter, orderAccessGuard, async (req, res) => {
   try {
     const order = await claimUtrGrace(req.user.userId, req.params.orderId);
@@ -228,8 +250,14 @@ router.post('/order/:orderId/mark-paid', authenticate, orderAccessGuard, async (
     // approval read it, while the merchant matches the UTR against their own
     // bank statement, which is the only part of this submission the platform
     // can verify.
+    //
+    // OPTIONAL on the CASH rail, and only there. The merchant is standing at an
+    // ATM whose session times out, so a cash buy reaches PAID on the tap — that
+    // is what lets them carry on at the machine — and the reference follows
+    // through `/order/:orderId/payment-reference`. The service decides, not
+    // this route: it reads the order's own `paymentMode`, and a body that
+    // omits the reference on any other rail is still refused there.
     const { utrNumber } = req.body;
-    if (!utrNumber?.trim()) return res.status(400).json({ success: false, message: 'utrNumber is required' });
     const order = await markOrderPaid(req.user.userId, req.params.orderId, utrNumber);
     res.json({ success: true, message: 'Payment marked. Awaiting merchant review.', order: forPlayer(order) });
   } catch (err) {

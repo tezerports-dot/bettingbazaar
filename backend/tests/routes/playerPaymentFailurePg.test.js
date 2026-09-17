@@ -268,6 +268,12 @@ describePg('a buy order nobody paid for', () => {
         orderId, userId: who.userId, type: 'DEPOSIT',
         tokenAmountRupees: 500, fiatAmountRupees: 500, state: 'PAID',
         depositAllocation: 450, reserveAllocation: 50, merchantId,
+        // The reference matters to THIS test, not as decoration: the merchant's
+        // silence is a refusal only on an order they could act on, and their
+        // Confirm refuses one carrying no reference. Without it the sweep
+        // correctly skips this row — a cash buy waiting on the PLAYER, which
+        // `sweepUtrAfterPaid` owns — and the merchant is never blamed.
+        utrNumber: `UTRPPF${RUN}${String(seq).padStart(5, '0')}`.toUpperCase(),
       });
       await setOrderFields(orderId, { paidAt: new Date(Date.now() - minutesAgo * 60_000) });
       return { orderId, who };

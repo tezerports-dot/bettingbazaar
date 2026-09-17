@@ -1240,6 +1240,62 @@ export async function markOrderPaid(userId, orderId, utrNumber) {
   if (order.type !== 'DEPOSIT')
     throw Object.assign(new Error('Only DEPOSIT orders can be marked paid by user'), { status: 400 });
 
+  // ── The CASH rail reaches PAID on the TAP, with the reference to follow ──
+  //
+  // On every other rail the player is at their own phone and can read the
+  // reference off their banking app before they say anything. At a cash
+  // machine they are not: the MERCHANT is standing at the ATM with a session
+  // that times out, and making them wait while the player goes and finds a
+  // twelve-character bank reference loses the machine — and with it the
+  // player's turn at it.
+  //
+  // So a cash buy is PAID the moment the player says so, which is what
+  // unblocks the merchant to continue at the machine, and the reference
+  // follows through `submitPaymentReference` below. What does NOT move is the
+  // money: the merchant cannot confirm until the reference is on the row, so
+  // PAID here means "the player says they have paid", not "evidenced".
+  // `sweepUtrAfterPaid` sends an order whose reference never arrives to an
+  // admin rather than cancelling it, because at a machine the cash may
+  // genuinely have been dispensed and only a person can tell.
+  //
+  // Any other rail still requires it up front. The ATM's clock is the whole
+  // reason for the split, and there is no clock on a UPI transfer.
+  const isCashRail = order.paymentMode === PAYMENT_MODES.CASH_ATM;
+  const deferred = isCashRail && !String(utrNumber ?? '').trim();
+
+  if (!deferred && !String(utrNumber ?? '').trim()) {
+    throw Object.assign(new Error('utrNumber is required'), { status: 400 });
+  }
+
+  if (deferred) {
+    const paidNow = await markOrderPaidState(order.orderId, {
+      expectFrom: ['ASSIGNED', 'PROCESSING'],
+      set: { paidAt: new Date() },
+    });
+    if (!paidNow.ok) {
+      throw Object.assign(
+        new Error(`Cannot mark paid — order is in ${paidNow.status ?? 'unknown'} status`),
+        { status: 409, code: paidNow.reason },
+      );
+    }
+    const row = paidNow.order ?? order;
+    order.status = 'PAID';
+    order.paidAt = row.paidAt;
+    order.utrNumber = null;
+    if (order.merchantId) {
+      // The merchant's screen needs to know this is the tap and not the
+      // evidence, or their Confirm button looks broken when it refuses.
+      emitMerchantUpdate(String(order.merchantId), 'order_paid', {
+        orderId: order.orderId, _id: order.orderId, status: 'PAID',
+        utrNumber: null, awaitingReference: true,
+        fiatAmount: order.fiatAmount, tokenAmount: order.tokenAmount,
+        paidAt: order.paidAt, server_ts: Date.now(),
+      });
+    }
+    emitAdminUpdate('queue_order_update', { orderId: order.orderId, status: 'PAID', server_ts: Date.now() });
+    return order;
+  }
+
   // What a valid reference looks like on THIS order, and what to call it.
   // Derived from the order's own currency and chain, never from what the
   // submitter says it is: a caller that could name its own format could submit
@@ -1310,6 +1366,79 @@ export async function markOrderPaid(userId, orderId, utrNumber) {
 
   return order;
 }
+
+/**
+ * "Here is the reference" — the second half of a CASH buy.
+ *
+ * The player tapped Paid, which put the order at PAID and let the merchant
+ * carry on at the machine. The order carries no reference yet, and the
+ * merchant cannot confirm without one, so this is the step that unblocks the
+ * money.
+ *
+ * ── Only where the split applies ────────────────────────────────────────────
+ * PAID, a DEPOSIT, the player's own, on the CASH rail, and carrying no
+ * reference already. Every one of those is refused by name rather than
+ * silently ignored: a player who submits a second reference to an order that
+ * has one is telling us something is wrong, and §27 means the first is the
+ * one that counts.
+ *
+ * ── The claim commits before the row is written ─────────────────────────────
+ * `claimPaymentReference` binds the reference to this order in `utr_registry`
+ * and THROWS rather than returning a flag. The field write follows it, which
+ * is §21's shape — but the two disagree only in the direction that is
+ * recoverable: the registry names the order, so a reference claimed without
+ * the row showing it can be found and repaired, whereas writing the row first
+ * would leave a confirmable order whose reference nothing had claimed. That is
+ * the same ordering `markOrderPaid` above uses, for the same reason.
+ */
+export async function submitPaymentReference(userId, orderId, utrNumber) {
+  const order = await db.orders.getOrderRecord(orderId);
+  if (!order) throw Object.assign(new Error('Order not found'), { status: 404 });
+  if (String(order.userId) !== String(userId))
+    throw Object.assign(new Error('Access denied'), { status: 403 });
+  if (order.type !== 'DEPOSIT')
+    throw Object.assign(new Error('Only a deposit carries a payment reference from the player'), { status: 400 });
+  if (order.paymentMode !== PAYMENT_MODES.CASH_ATM)
+    throw Object.assign(
+      new Error('On this rail the reference is submitted with the payment, not after it'),
+      { status: 400 },
+    );
+  if (order.status !== 'PAID')
+    throw Object.assign(
+      new Error(`A reference can only be added to a paid order — this one is ${order.status}`),
+      { status: 409 },
+    );
+  if (String(order.utrNumber ?? '').trim())
+    throw Object.assign(
+      new Error('This order already has a payment reference.'),
+      { status: 409 },
+    );
+  if (!String(utrNumber ?? '').trim())
+    throw Object.assign(new Error('utrNumber is required'), { status: 400 });
+
+  const { reference } = await claimPaymentReference({
+    reference: utrNumber, orderId: order.orderId, userId: order.userId,
+    amountRupees: order.currency === MERCHANT_CURRENCY.USDT ? null : order.fiatAmount,
+    spec: referenceSpecFor(order),
+  });
+
+  await db.orders.setOrderFields(order.orderId, { utrNumber: reference });
+  order.utrNumber = reference;
+
+  if (order.merchantId) {
+    // The merchant's Confirm button has been refusing until now. This is what
+    // turns it on, so it has to reach them without a refresh.
+    emitMerchantUpdate(String(order.merchantId), 'order_paid', {
+      orderId: order.orderId, _id: order.orderId, status: 'PAID',
+      utrNumber: reference, awaitingReference: false,
+      fiatAmount: order.fiatAmount, tokenAmount: order.tokenAmount,
+      paidAt: order.paidAt, server_ts: Date.now(),
+    });
+  }
+  emitAdminUpdate('queue_order_update', { orderId: order.orderId, status: 'PAID', server_ts: Date.now() });
+  return order;
+}
+
 
 /**
  * Record an order against a merchant's scoring stats.
@@ -1518,6 +1647,77 @@ export async function sweepUnansweredPaidDeposits() {
   }
   return handled;
 }
+
+/**
+ * A cash buy the player said they had paid for and never evidenced.
+ *
+ * The mirror of `sweepUnansweredPaidDeposits`, and deliberately NOT the same
+ * sweep. That one is the MERCHANT's silence on an order they could act on;
+ * this is the PLAYER's, on an order the merchant CANNOT act on because their
+ * Confirm refuses without a reference. Running them as one row would suspend a
+ * merchant for somebody else's delay, which is §2 in as many words: whose
+ * fault an expiry is depends on the DIRECTION.
+ *
+ * ── DISPUTED, never CANCELLED ───────────────────────────────────────────────
+ * The player tapped Paid at a machine. The cash may genuinely have been
+ * dispensed and the reference simply not found — a bank app that never showed
+ * it, a slip dropped — and cancelling would take tokens back from somebody who
+ * paid. Only a person can tell, so it goes to the admin queue with
+ * `disputeRaisedBy: 'system'`: a player who raised nothing must not appear to
+ * have.
+ *
+ * **No merchant refusal is recorded.** They did nothing wrong, and the hold on
+ * their tokens stays because DISPUTED is a committing state — they still owe
+ * them if the resolution goes the player's way.
+ */
+export async function sweepUtrAfterPaid() {
+  const config = await getSystemConfig();
+  // schema default: 15 (merchantOrderLimits.utrAfterPaidMinutes)
+  const minutes = config?.merchantOrderLimits?.utrAfterPaidMinutes ?? 15;
+
+  const due = await db.orders.findPaidDepositsAwaitingReference({ olderThanMinutes: minutes });
+  if (!due.length) return 0;
+
+  let handled = 0;
+  for (const order of due) {
+    try {
+      const moved = await disputeOrderState(order.orderId, {
+        expectFrom: 'PAID',
+        set: {
+          disputeReason:
+            `No payment reference was submitted within ${minutes} minutes of the payment being reported.`,
+          disputeRaisedAt: new Date(),
+          disputeRaisedBy: 'system',
+        },
+      });
+      // Two cron instances racing: the loser gets `idempotent` and skips, so
+      // one missing reference produces one dispute.
+      if (!moved.ok || moved.idempotent) continue;
+      handled += 1;
+
+      console.error(
+        `[utr-timeout] ${order.orderId}: no payment reference within ${minutes} minutes of the `
+        + 'player reporting payment. Sent to the admin queue.',
+      );
+
+      const { notify } = await import('../communication/communication.service.js');
+      await notify({
+        userId: String(order.userId),
+        type: 'ORDER_UPDATE',
+        title: 'We still need your payment reference',
+        message:
+          'You told us you had paid but we did not receive the reference in time, so our team is '
+          + 'checking this order. You do not need to pay again.',
+        meta: { orderId: order.orderId },
+      }).catch(() => {});
+    } catch (e) {
+      // One bad row must not stop the rest: the next one is a different player.
+      console.error(`[utr-timeout] ${order.orderId}:`, e.message);
+    }
+  }
+  return handled;
+}
+
 
 // ═════════════════════════════════════════════════════════════════════════════
 // expireOrders  — cron worker (called from cronJobs.js or setInterval)

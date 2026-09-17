@@ -182,6 +182,22 @@ export const SYSTEM_CONFIG_SPEC = group({
     // longer than a page refresh; a ceiling of a day, because a player who has
     // paid should never be waiting longer than that for a person to look.
     paidResponseMinutes:           n(30, 5, 1440),
+    // ── The player has tapped "I have paid" and owes a reference ───────────
+    // On the CASH rail the player pays at a machine, and the merchant is
+    // STANDING AT IT with a session that times out. Making them wait for a
+    // twelve-character bank reference before the platform will even register
+    // the payment loses the machine. So a cash buy reaches PAID on the tap,
+    // which unblocks the merchant, and the reference follows.
+    //
+    // This is the window for it to follow IN. Missing it sends the order to
+    // the admin queue, not to CANCELLED: the cash may genuinely have been
+    // dispensed, and only a person can tell. The merchant still cannot confirm
+    // until the reference lands, so nothing moves on a promise.
+    //
+    // Short — a floor of 2 minutes because a bank app takes a moment, a
+    // ceiling of 60 because a merchant's tokens are held for the whole of it
+    // and an order nobody can evidence should not hold them for an afternoon.
+    utrAfterPaidMinutes:           n(15, 2, 60),
     // ── Three unpaid buy orders in a row, from either side ─────────────────
     // An expired buy is NOBODY's fault: the player did not pay and the merchant
     // did nothing wrong. Neither of these is a punishment for it. They are two

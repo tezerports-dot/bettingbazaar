@@ -196,6 +196,31 @@ export function BuyPaymentUI({ order, onPaid, onExpire, onExpiryExtended, cashLi
     }
   }, [order.status, order.paidAt]);
 
+  /**
+   * On the CASH rail the payment and the reference are TWO steps.
+   *
+   * The merchant is standing at an ATM whose session times out. Making them
+   * wait while the player reads a twelve-character reference off a banking app
+   * loses the machine, so the tap is what reaches PAID and unblocks them, and
+   * the reference follows. `awaitingReference` is that in-between state: paid,
+   * not yet evidenced, and the merchant's Confirm refuses until it is.
+   *
+   * On every other rail there is no machine and no clock, so the reference is
+   * still submitted with the payment — one step, as before.
+   */
+  const awaitingReference = onCashRail && order.status === 'PAID' && !order.utrNumber;
+  const tapToPay = onCashRail && order.status !== 'PAID';
+
+  /** "I have paid" — the CASH tap. No reference yet, deliberately. */
+  const handleTapPaid = async () => {
+    setSubmitting(true); setError('');
+    try {
+      await apiClient.post(`/api/payment/order/${order.orderId}/mark-paid`, {});
+      onPaid();
+    } catch (err: any) { setError(err?.message || 'Failed to submit. Try again.'); }
+    finally { setSubmitting(false); }
+  };
+
   const handleSubmitPayment = async () => {
     if (utr.trim().length < 12) { setError('UTR must be at least 12 characters'); return; }
     setSubmitting(true); setError('');
@@ -203,7 +228,21 @@ export function BuyPaymentUI({ order, onPaid, onExpire, onExpiryExtended, cashLi
       // The UTR alone. A screenshot proved nothing — trivially forged, read by
       // no approval, and the merchant matches this reference against their own
       // bank statement.
-      await apiClient.post(`/api/payment/order/${order.orderId}/mark-paid`, { utrNumber: utr.trim() });
+      //
+      // Two routes, because they are two different things: `mark-paid` reports
+      // the payment, `payment-reference` evidences one already reported. On the
+      // cash rail the order is already PAID by the time this runs.
+      //
+      // Written out rather than interpolated. `${order.orderId}/${path}` is one
+      // string to a reader and TWO unresolvable segments to
+      // `check:ui-coverage`, which reported it as a dead button — correctly,
+      // since a gate that cannot see which route a call reaches cannot tell you
+      // the route exists (§28).
+      if (awaitingReference) {
+        await apiClient.post(`/api/payment/order/${order.orderId}/payment-reference`, { utrNumber: utr.trim() });
+      } else {
+        await apiClient.post(`/api/payment/order/${order.orderId}/mark-paid`, { utrNumber: utr.trim() });
+      }
       onPaid();
     } catch (err: any) { setError(err?.message || 'Failed to submit. Try again.'); }
     finally { setSubmitting(false); }
@@ -330,6 +369,18 @@ export function BuyPaymentUI({ order, onPaid, onExpire, onExpiryExtended, cashLi
         <div style={{ background: 'var(--surface2)', border: '1px solid var(--line)', borderRadius: 12, padding: 14, textAlign: 'center', fontSize: 12, color: 'var(--text3)' }}>⏳ Waiting for merchant details…</div>
       )}
 
+      {/* While the cash tap is all that is being asked for, the reference field
+          is not on screen: showing an input the player cannot fill yet — they
+          are at the machine — is what makes them hunt for a number instead of
+          pressing the button that frees the merchant. It appears once the
+          order is PAID and the reference is what is actually owed. */}
+      {tapToPay ? (
+        <div style={{ background: 'var(--surface2)', border: '1px solid var(--line)', borderRadius: 12, padding: 12, fontSize: 11.5, color: 'var(--text2)' }}>
+          Press this as soon as the machine has your cash. We will ask for the
+          reference next — the merchant needs to know now so they can finish at
+          the ATM.
+        </div>
+      ) : (
       <div>
         <label style={{ display: 'block', fontSize: 10, fontWeight: 800, letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--text3)', marginBottom: 6 }}>UTR / UPI Ref No. <span style={{ color: 'var(--text3)', fontWeight: 600, textTransform: 'none', letterSpacing: 0 }}>(min 12 chars)</span></label>
         <input
@@ -352,13 +403,24 @@ export function BuyPaymentUI({ order, onPaid, onExpire, onExpiryExtended, cashLi
         />
         {utr.length > 0 && utr.length < 12 && <span style={{ fontSize: 10, color: 'var(--red)', fontWeight: 700 }}>{12 - utr.length} more characters needed</span>}
         {graceNote && <span style={{ fontSize: 10.5, color: 'var(--green)', fontWeight: 700 }}>{graceNote}</span>}
+        {awaitingReference && (
+          <span style={{ display: 'block', fontSize: 10.5, color: 'var(--text3)', marginTop: 4 }}>
+            The merchant has been told you paid. They cannot release your tokens
+            until this reference arrives.
+          </span>
+        )}
       </div>
+      )}
 
       {error && <p style={{ color: 'var(--red)', fontSize: 11, textAlign: 'center' }}>{error}</p>}
 
-      <button onClick={handleSubmitPayment} disabled={utr.trim().length < 12 || submitting}
-        style={{ width: '100%', padding: 14, borderRadius: 13, border: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 15, color: utr.trim().length >= 12 ? '#1a1200' : 'var(--text3)', background: utr.trim().length >= 12 ? 'linear-gradient(135deg,var(--gold2),var(--gold))' : 'var(--surface3)' }}>
-        {submitting ? '⏳ Submitting…' : "✅ I've Paid"}
+      <button onClick={tapToPay ? handleTapPaid : handleSubmitPayment}
+        disabled={submitting || (!tapToPay && utr.trim().length < 12)}
+        style={{ width: '100%', padding: 14, borderRadius: 13, border: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 15, color: (tapToPay || utr.trim().length >= 12) ? '#1a1200' : 'var(--text3)', background: (tapToPay || utr.trim().length >= 12) ? 'linear-gradient(135deg,var(--gold2),var(--gold))' : 'var(--surface3)' }}>
+        {submitting ? '⏳ Submitting…'
+          : tapToPay ? "✅ I've Paid — tell the merchant"
+          : awaitingReference ? '✅ Submit reference'
+          : "✅ I've Paid"}
       </button>
     </div>
   );
