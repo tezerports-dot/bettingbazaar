@@ -794,7 +794,23 @@ export async function findOrders({
   limit = 50, cursor = null, offset = 0,
 } = {}) {
   const where = []; const params = [];
-  const add = (sql, value) => { params.push(value); where.push(sql.replace('$?', `$${params.length}`)); };
+  // `replaceAll`, not `replace`. A string pattern replaces the FIRST occurrence
+  // only, so a clause naming the same value twice —
+  //
+  //     add('(username ILIKE $? || \'%\' OR mobile LIKE $? || \'%\')', search)
+  //
+  // — left a literal `$?` in the SQL and PostgreSQL answered 42601, syntax
+  // error. That is every admin search for a player, 500ing since the search box
+  // was added: `serverError` answers with nothing (§2), so the screen showed an
+  // empty list and an admin read it as "no such player".
+  //
+  // CLAUDE.md trap 13 is this exact mistake, recorded against the mutation
+  // harness — "String.replace(string, …) changes the first occurrence only" —
+  // and it was made a second time in production SQL. Fixed in all six
+  // repositories that carry this helper, not just the one with a live caller
+  // (§0.15): the other five are one two-placeholder clause away from the same
+  // 500. One value, two references to the same $n, which is what Postgres wants.
+  const add = (sql, value) => { params.push(value); where.push(sql.replaceAll('$?', `$${params.length}`)); };
 
   if (userId) add('user_id = $?', String(userId));
   if (merchantId) add('merchant_id = $?', String(merchantId));

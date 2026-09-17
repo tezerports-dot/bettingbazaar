@@ -27,7 +27,7 @@ listed below, which hold **data and history, never rules**.
 | **How this audit keeps missing things, and the four questions that find them** | `docs/audit/SECURITY_AUDIT_MAP.md` **§0.5 — read before trusting a green check** |
 | **Every defect SHAPE found so far, how wide you must search to see it, and what actually found it** | `docs/audit/SECURITY_AUDIT_MAP.md` **§4.0 — the shape index. Read it before auditing anything.** |
 | **What every change must REPORT, as a table, before it is done** | **§31 — the completeness contract** |
-| **The twenty-one shapes that keep shipping here, each with the question that finds it** | **§32 — ask these of the change in front of you** |
+| **The twenty-five shapes that keep shipping here, each with the question that finds it** | **§32 — ask these of the change in front of you** |
 
 ---
 
@@ -66,7 +66,7 @@ listed below, which hold **data and history, never rules**.
     every row, with `done` / `n/a` + reason / `NOT DONE`. The rows nobody fills
     in are where every defect in the 2026-09 review was living, and none of them
     was a wrong calculation.
-14. **Ask §32's twenty-one questions of what you just wrote.** They are the shapes
+14. **Ask §32's twenty-five questions of what you just wrote.** They are the shapes
     this codebase has actually produced, each with the question that finds it.
 15. **If it fixes a vulnerability, sweep for the same SHAPE across the whole
     codebase and record the result** — including "swept, none found". A fix that
@@ -1187,6 +1187,40 @@ these are the specific ones this codebase has actually produced.
 | S19 | A test asserting a precondition it never established | Did THIS run create the state this asserts, or is it reading whatever the database happened to hold? |
 | S20 | A cache or deduplicator that shares a SINGLE-USE resource | Can two callers both consume what this hands back, or does the first one spend it? |
 | S21 | A screen that renders only the shell when its own content failed | Measure the ROUTED region, not the page. What is inside `<main>`? |
+| S22 | A control with NO handler — it calls nothing at all | Press it. Did anything a person can see change? `check:ui-coverage` cannot help: it finds a call resolving to no route, never a control that calls nothing. |
+| S23 | A component declared INSIDE another component | Does this identity survive the parent's next render? If not, React remounts it and the caret goes with it. |
+| S24 | A label that names a control it is not attached to | Can a screen reader — or a test — address this field by the name printed next to it? |
+| S25 | A panel keeping its own list of a document's fields | Which list does the SERVER agree with? Every other copy will drift, in both directions. |
+
+**S22 through S25 all came out of pressing controls rather than opening
+screens, and each was invisible to every tier below a browser.**
+
+- **S22** — the player's Profile had five rows, each ending in a `›` promising a
+  screen, each a `<button>` with no `onClick` at all. Nothing fails, so nothing
+  reports. Three named features this platform does not have; the other two named
+  PAGES whose URLs an admin could already set and NOTHING read (§3) — the same
+  hole from both ends, which is how it survived: each half looked like the other
+  half's job.
+- **S23** — `FakeWinnersManager` declared its field component inside itself, so
+  it was a new component TYPE on every parent render. React unmounts and
+  remounts it, and typing (which re-renders the parent) takes the caret with it.
+  Typing "Rahul" left the field holding **"R"**. Eight fields, every one. A test
+  that types ONE character passes, which is why it needs a real caret and more
+  than one letter.
+- **S24** — 124 labels sat next to the control they named with no `htmlFor` and
+  no `id`. The text is on screen so it looks labelled; it is not ASSOCIATED. On
+  System Settings that is thirty identical spin buttons to a screen reader, on
+  the screen where §21 says an operator types the platform's business numbers.
+  Untestable and unusable turn out to have one cause.
+- **S25** — the admin Support Links screen kept its own list of ten fields;
+  `SUPPORT_LINKS_SPEC` declares twelve different ones. Four it offered were never
+  declared, six declared ones it never offered, and the player panel had a THIRD
+  list naming seven. The PUT validates the patch as a whole, so the first
+  undeclared key refused the entire save: **the screen had never once saved
+  anything**, and the refusal named a Facebook field the admin had not touched.
+  The fix is §2's own rule — the thing that DECLARES a setting is what makes it
+  editable, and a panel can read that from the document the server sends rather
+  than keeping a copy.
 
 **S20 was live on two player screens and every tier was green.** The user
 panel's `apiClient` deduplicated concurrent GETs by holding the `Response` and
@@ -1242,3 +1276,4 @@ noticed for months that one of the two confirm routes never checked for one.
 | `npm run audit:map -- --check` | The security audit map's counts still match the code. |
 | `npm run test:e2e` | The whole server, over real HTTP, as all three actors. |
 | `npm run test:browser` | **Every screen in all three panels, opened in a real browser.** Needs a backend (`BB_BASE`) and starts the dev servers itself. |
+| `npm run test:drive` | **Every control on every screen, pressed.** Reports THREW, 5xx, or INERT — a control that left the screen byte-identical. Inert is triage, not failure: read the list. |
