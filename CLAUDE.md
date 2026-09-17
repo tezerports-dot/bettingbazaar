@@ -26,6 +26,8 @@ listed below, which hold **data and history, never rules**.
 | What has been security-audited, and what has not | `docs/audit/SECURITY_AUDIT_MAP.md` (`npm run audit:map`) |
 | **How this audit keeps missing things, and the four questions that find them** | `docs/audit/SECURITY_AUDIT_MAP.md` **§0.5 — read before trusting a green check** |
 | **Every defect SHAPE found so far, how wide you must search to see it, and what actually found it** | `docs/audit/SECURITY_AUDIT_MAP.md` **§4.0 — the shape index. Read it before auditing anything.** |
+| **What every change must REPORT, as a table, before it is done** | **§31 — the completeness contract** |
+| **The eighteen shapes that keep shipping here, each with the question that finds it** | **§32 — ask these of the change in front of you** |
 
 ---
 
@@ -60,7 +62,13 @@ listed below, which hold **data and history, never rules**.
     and *plus the business model* (who bears the loss) — and those are where the
     HIGH findings live. "I read the whole file" is not an answer to "did you
     check the clock".
-13. **If it fixes a vulnerability, sweep for the same SHAPE across the whole
+13. **Before you report the change as done, fill in §31's table.** Every front,
+    every row, with `done` / `n/a` + reason / `NOT DONE`. The rows nobody fills
+    in are where every defect in the 2026-09 review was living, and none of them
+    was a wrong calculation.
+14. **Ask §32's eighteen questions of what you just wrote.** They are the shapes
+    this codebase has actually produced, each with the question that finds it.
+15. **If it fixes a vulnerability, sweep for the same SHAPE across the whole
     codebase and record the result** — including "swept, none found". A fix that
     closes one instance and leaves its siblings is how `setOrderFields` shipped
     the same defect three times (§21). The procedure and the register are in
@@ -1080,6 +1088,97 @@ the thing being claimed.**
 - **Do not accommodate; remove.**
 - **Derive, do not duplicate.** One owner per value (§2).
 - **Money is integer paise, everywhere, in `BIGINT`.**
+
+---
+
+## 31. Every change reports what it covered. No exceptions.
+
+**The problem this exists to stop.** Six sessions in a row reported this
+platform as ready on the strength of the code being correct. It was correct.
+It was also, at various times: crediting nobody because a handler threw after
+the commit; showing an empty dispute queue because five buttons called routes
+the server never served; refusing every deposit because a check outlived the
+thing it checked; charging a player for the refusal that taught them the rule;
+and storing an operator's announcement where no player could read it. Every one
+passed CI. Every one was found by RUNNING it, usually after the owner pushed
+back.
+
+The common cause is not carelessness. It is that "I changed the handler" and
+"the feature works" are different claims, and only the first one is ever
+checked. So:
+
+**A change is not reported as done until its author states, as a table, which
+fronts it touched and what was verified on each.** Copy this table into the
+commit message or the reply. Every row gets one of:
+
+- **done** — verified, and the table says HOW (the command, the number, the
+  screen)
+- **n/a** — with a reason. "Not applicable" without a reason is not an answer.
+- **NOT DONE** — the honest one. This is allowed. Hiding it is not.
+
+| Front | Question it answers |
+|---|---|
+| Data layer | Does the column/table exist, and does one owner write it (§2)? |
+| Backend route | Does the handler work, through a real database (§1)? |
+| Route ADMISSION | If a second route reaches the same state, do they admit the SAME things? |
+| Panel UI | Is there a screen, and does it render the new field? |
+| The button | Does a control actually CALL it — `check:ui-coverage`, and the `--unused` list read, not counted (§28)? |
+| Cross-panel | What do the OTHER two panels show after this? An admin action a merchant or player never sees is half a feature. |
+| Failure path | What does the user see when it refuses? Is the message actionable (§25)? |
+| Money | Both sides asserted — debited AND credited — against a real database (§9, §19)? |
+| Tests | Which tier, how many, and does a mutation of the fix fail them? |
+| Gates | Which ones ran, and what did they PRINT (§29)? |
+
+**Rows nobody fills in are where the defects were.** Of everything found in the
+2026-09 review, not one was a wrong calculation. They were: a route no button
+called, a button calling no route, a panel rendering a field the server never
+sent, a server sending a field no panel read, two routes admitting different
+things, and a message that blamed the player. Six of the ten rows above.
+
+### 31.1 Keep the table current
+
+This section and §32 are UPDATED BY THE CHANGE THAT INVALIDATES THEM, in the
+same commit — the same rule §12 applies to realtime events and §0.4 to new
+authorities. A new feature adds its row; a shape found for the first time is
+added to §32 with the question that would have caught it.
+
+A rules file that lags the code is worse than none, because §0 tells the next
+session to trust it.
+
+---
+
+## 32. The shapes that keep shipping here
+
+Not a list of bugs. A list of SHAPES, each with the question that finds it.
+Ask these of the change in front of you — §0.5's four are the general form and
+these are the specific ones this codebase has actually produced.
+
+| # | Shape | The question |
+|---|---|---|
+| S1 | A button calls a route that does not exist | Does this path resolve, with this METHOD? |
+| S2 | A route no button calls | Read `--unused`. Is this unfinished, or is it a hole nothing is hiding but the UI? |
+| S3 | Two routes reach one state with different admission | What does the OTHER one refuse that this one allows? |
+| S4 | A consumer outliving its producer | Does anything still WRITE the thing this reads? |
+| S5 | A producer outliving its consumer | Does anything still READ the thing this writes? |
+| S6 | A guard you can pass twice | Is this a read acted on in another statement, or a write the database serialises? |
+| S7 | A write after a commit that can fail | If the second write throws, what does the row say? |
+| S8 | A gate measuring a fraction | Make it fail on purpose. Does it? |
+| S9 | A type that names a field the server never sends | Check the mapper, not the interface. |
+| S10 | A type that omits a field the server does send | Check the emitter, not the interface. |
+| S11 | The same value assembled twice | Which one is the owner (§2)? The other is a bug with a delay. |
+| S12 | A default that disagrees with the spec | Does the schema default equal every fallback that cites it? |
+| S13 | A refusal that costs the user their next attempt | Does this limiter bound EFFECTS or ATTEMPTS? |
+| S14 | A message blaming the user for the platform's state | Can the person reading this act on it? |
+| S15 | An aggregate across currencies | Is this column in the ORDER's currency (trap 15)? |
+| S16 | A fixture in a state production cannot produce | Could the platform actually create this row? |
+| S17 | An admin decision no other panel reflects | What does the merchant/player see after this? |
+| S18 | A silent no-op after a committed write | Can the recipient actually receive, before the record says they did? |
+
+**S16 deserves its own note, because it is how several of the others hid.** A
+test that stages an impossible row stops testing the handler and starts
+testing the absence of a guard. Two fixtures staged a PAID deposit with no
+payment reference — a row `mark-paid` cannot produce — and that is why nobody
+noticed for months that one of the two confirm routes never checked for one.
 
 ---
 
