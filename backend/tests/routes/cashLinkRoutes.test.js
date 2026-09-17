@@ -17,7 +17,7 @@
  * go: on this rail a buy means they receive cash and give TOKENS.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { pgConfigured, applySchema, closePg } from '#db/client.js';
+import { pgConfigured, applySchema, closePg, pgQuery } from '#db/client.js';
 import { updateMerchant } from '#db/repositories/merchants.js';
 import { createOrderRecord } from '#db/repositories/orders.record.js';
 import { cancelOrder } from '#db/repositories/orders.core.js';
@@ -88,8 +88,35 @@ describePg('a merchant supplying an ATM cash link', () => {
   // PENDING_QUEUE leftovers sitting at a steady three rather than accumulating.
   // So this cleanup removes a real contamination source and the suite is green
   // with it; it is not proven to be the whole cause of the flake. Do not read
-  // its presence as a closed case. If these three fail again, the first thing
-  // to look at is what else is holding cash buy orders at DENOMINATION.
+  // its presence as a closed case.
+  //
+  // ── 2026-09-17: what has since been RULED OUT ──────────────────────────
+  // It failed once in CI and once locally, then stayed green for 13
+  // consecutive full-tier runs, so it did not reproduce on demand. The
+  // mechanism is nonetheless established: `POST /cash-links` runs
+  // `matchWaitingOrdersToLinks()` before it answers, so a waiting order can
+  // take the link between the supply and the read, and `getLiveLinkFor`
+  // filters `status = 'LIVE'` — a claimed link comes back null.
+  //
+  // The note above said the first thing to look at is what else holds cash
+  // buy orders at DENOMINATION. The answer is: nothing found.
+  //
+  //   · The claim needs an EXACT amount match — `claimLinkFor` computes
+  //     `Math.round(order.tokenAmount * 100)` — so only a ₹40,000 cash
+  //     deposit can take a ₹40,000 link. Not a rounding or a range.
+  //   · No other suite in the tier creates one. `retryAndMatchPg`, the only
+  //     other file that runs the matcher, works entirely at ₹5,000.
+  //   · Within this file the three ₹40,000 `waitingOrder()` fixtures are
+  //     created AFTER these tests and cancelled in `afterAll`.
+  //   · CI starts from a fresh database, so a previous run cannot be it
+  //     there — which is what the original diagnosis rested on.
+  //
+  // So the cause is NOT a stray claimant on the paths that were checked, and
+  // the next person should look elsewhere. Rather than guess further, the
+  // assertion now names what it found: `whyNoLiveLink` dumps this merchant's
+  // link rows and every order that could have claimed them, so the next red
+  // run identifies the claimant — or shows there was none, which would move
+  // the search to why a LIVE row was not LIVE.
   const created = [];
   const waitingOrder = async (paise = DENOMINATION) => {
     const orderId = oid();
@@ -99,6 +126,33 @@ describePg('a merchant supplying an ATM cash link', () => {
     });
     created.push(orderId);
     return orderId;
+  };
+
+  /**
+   * What took the link, for the failure that keeps not reproducing.
+   *
+   * A supplied link only stops being LIVE because something CLAIMED it, and
+   * the claim needs a PENDING_QUEUE CASH_ATM deposit whose own amount is
+   * exactly this merchant's denomination (`claimLinkFor` computes
+   * `Math.round(order.tokenAmount * 100)`). This names the row so the next
+   * red run identifies the claimant instead of throwing on a null.
+   */
+  const whyNoLiveLink = async (merchantId) => {
+    const links = await pgQuery(
+      `SELECT link_id, status, denomination_paise, claimed_by_order, expires_at
+         FROM cash_link_queue WHERE merchant_id = $1 ORDER BY created_at DESC LIMIT 3`,
+      [String(merchantId)],
+    ).catch((e) => ({ rows: [{ error: e.message }] }));
+    const claimants = await pgQuery(
+      `SELECT order_id, state, token_amount_paise, payment_mode, cash_link_id
+         FROM order_states
+        WHERE payment_mode = 'CASH_ATM' AND state = 'PENDING_QUEUE'
+          AND token_amount_paise = $1 LIMIT 5`,
+      [DENOMINATION],
+    ).catch((e) => ({ rows: [{ error: e.message }] }));
+    return 'no LIVE link for this merchant. Links: '
+      + `${JSON.stringify(links.rows)} · orders that could have claimed it: `
+      + `${JSON.stringify(claimants.rows)}`;
   };
 
   beforeAll(async () => {
@@ -141,6 +195,12 @@ describePg('a merchant supplying an ATM cash link', () => {
     expect(res.status).toBe(200);
 
     const stored = await getLiveLinkFor(m.merchantId);
+    // `getLiveLinkFor` filters `status = 'LIVE'`, so a link CLAIMED between the
+    // supply and this read comes back null and the next line throws a bare
+    // TypeError that says nothing about why. Supply runs
+    // `matchWaitingOrdersToLinks()` before it answers, so that is a real
+    // window. Say what happened instead of dying on `.denominationPaise`.
+    expect(stored, await whyNoLiveLink(m.merchantId)).toBeTruthy();
     expect(stored.denominationPaise).toBe(DENOMINATION);
 
     // The lifetime is the policy's, measured in minutes not a day.
