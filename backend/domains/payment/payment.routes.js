@@ -275,7 +275,7 @@ router.post('/deposit/:orderId/confirm', paymentActorAuth, orderAccessGuard, asy
     if (order.type !== 'DEPOSIT') {
       return res.status(404).json({ success: false, message: 'Order not found' });
     }
-    if (!['PAID', 'PROCESSING'].includes(order.status)) {
+    if (order.status !== 'PAID') {
       // A read, not the gate — the transition below settles the race. This
       // exists so an already-completed order gets a clear answer instead of a
       // 409 the merchant panel renders as a failure.
@@ -286,6 +286,39 @@ router.post('/deposit/:orderId/confirm', paymentActorAuth, orderAccessGuard, asy
         });
       }
       return res.status(409).json({ success: false, message: `Cannot confirm in ${order.status} status` });
+    }
+
+    // ── PAID only, and the player's reference must be on the row ────────────
+    //
+    // This admitted PROCESSING as well, and never looked at the reference —
+    // while `/api/merchant/confirm/:id`, the route the panel's button calls,
+    // required both. Two confirms for one money movement with different
+    // admission is F-017's other half, and it was the weaker one that nothing
+    // called, so nothing noticed.
+    //
+    // PROCESSING is the state an order sits in AFTER a merchant accepts it and
+    // BEFORE the player has paid. Driven on a live server as the assigned
+    // merchant, on the same order:
+    //
+    //   /api/merchant/confirm/:id        -> 400 "Deposit can only be confirmed
+    //                                            in PAID status. Current:
+    //                                            PROCESSING"
+    //   /api/payment/deposit/:id/confirm -> 200 "Deposit completed"
+    //   state COMPLETED | utr NONE | player 0 -> 1000 tokens
+    //
+    // A player credited with no payment made and no reference recorded, leaving
+    // a COMPLETED deposit `utr_registry` never saw — so a later dispute has
+    // nothing to match against (§27). The merchant's own float pays for it,
+    // which is what makes it a collusion route rather than a mistake.
+    //
+    // The reference is READ FROM THE ROW, never taken from this request, for
+    // the same reason the merchant route does it: it belongs to the PLAYER,
+    // who bound it to this order at mark-paid (§27).
+    if (!String(order.utrNumber ?? '').trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'This order has no payment reference from the user yet.',
+      });
     }
 
     // The player's pockets are split; the merchant's side is not. `depositCredit.js`

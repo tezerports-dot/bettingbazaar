@@ -61,22 +61,40 @@ describePg('payment routes', () => {
    * `depositCreditSplit` refuses the split and credits the whole amount to the
    * betting pocket — which is the safe fallback, not the case under test.
    */
+  /**
+   * A deposit in a state PRODUCTION can actually produce.
+   *
+   * PAID orders get a payment reference by default, because that is the only
+   * way an order reaches PAID: `mark-paid` is the player's route, it requires
+   * the reference, and it claims it against the order in `utr_registry` (§27).
+   * This fixture used to leave it null, which staged a PAID deposit carrying
+   * no reference — a row the platform cannot create — and both confirm routes
+   * happily completed it because only one of them was checking.
+   *
+   * Pass `utrNumber: null` deliberately to test the refusal.
+   */
   const depositOrder = async ({
     state = 'PAID', tokens = 500, betting = 400, reserve = 100,
     owner = null, merchant = null, extra = {},
+    utrNumber = undefined,
   } = {}) => {
     seq += 1;
     const who = owner || await actor({});
     const m = merchant || await merchantActor({ tokensRupees: 10_000 });
     const orderId = `PAY-${RUN}-${seq}`;
+    // Unique per order: the registry holds one reference to one order, for good.
+    const reference = utrNumber === undefined
+      ? `UTRPAY${RUN}${String(seq).padStart(6, '0')}`.toUpperCase()
+      : utrNumber;
     await createOrderRecord({
       orderId, userId: who.userId, type: 'DEPOSIT',
       tokenAmountRupees: tokens, fiatAmountRupees: tokens, state,
       merchantId: m.merchantId,
       depositAllocation: betting, reserveAllocation: reserve,
+      ...(state === 'PAID' && reference ? { utrNumber: reference } : {}),
       ...extra,
     });
-    return { orderId, who, merchant: m };
+    return { orderId, who, merchant: m, utrNumber: reference };
   };
 
   // ── The gate chain in front of the create routes ──────────────────────────

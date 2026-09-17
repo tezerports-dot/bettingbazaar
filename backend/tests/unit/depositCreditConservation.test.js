@@ -126,12 +126,21 @@ function fakeRes() {
   return res;
 }
 
+/**
+ * A PAID deposit carries the player's payment reference, always: `mark-paid`
+ * is the only route to PAID and it claims the reference against the order
+ * (§27). The stub left it out, which is a row the platform cannot produce —
+ * and the confirm route now refuses one, as the merchant panel's route always
+ * has. A fixture in a state production cannot reach is a fixture that stops
+ * testing the handler and starts testing the absence of a guard.
+ */
 const makeOrder = (over = {}) => ({
   orderId: 'ORD1',
   userId: 'u1',
   merchantId: 'm1',
   type: 'DEPOSIT',
   status: 'PAID',
+  utrNumber: 'UTR000000000001',
   tokenAmount: 1000,
   depositAllocation: 900,
   reserveAllocation: 100,

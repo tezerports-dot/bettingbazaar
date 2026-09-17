@@ -68,7 +68,7 @@ describePg('a merchant can release tokens on a paid deposit', () => {
   // gets its own. `utrNumber: null` means the player has not submitted one yet.
   const nextUtr = () => String(410000000000 + (seq * 7919) + Math.floor(Math.random() * 7000));
 
-  const paidDeposit = async ({ tokensRupees = 1000, utrNumber = nextUtr() } = {}) => {
+  const paidDeposit = async ({ tokensRupees = 1000, utrNumber = nextUtr(), state = 'PAID' } = {}) => {
     const merchant = await merchantActor({ tokensRupees: 50_000 });
     await updateMerchant(merchant.merchantId, {
       isOnline: true, acceptsDeposits: true,
@@ -79,7 +79,7 @@ describePg('a merchant can release tokens on a paid deposit', () => {
     await createOrderRecord({
       orderId, userId: player.userId, type: 'DEPOSIT',
       tokenAmountRupees: tokensRupees, fiatAmountRupees: tokensRupees,
-      state: 'PAID', merchantId: merchant.merchantId,
+      state, merchantId: merchant.merchantId,
       ...(utrNumber ? { utrNumber } : {}),
     });
     // The tokens are held from the moment the order became this merchant's, as
@@ -144,4 +144,66 @@ describePg('a merchant can release tokens on a paid deposit', () => {
     // And the removed proof field was not resurrected through the body either.
     expect(row.proofScreenshot ?? null).toBeNull();
   });
+
+  /**
+   * ── The OTHER confirm route admitted a state this one refuses ────────────
+   *
+   * F-017 records that there are two deposit-confirm implementations and that
+   * the money assertions live on the one no screen calls. What it did not
+   * record is that the two disagree about ADMISSION, and the unreachable one
+   * is the weaker:
+   *
+   *   /api/merchant/confirm/:id        PAID only, and refuses an order with no
+   *   (the panel's button)             payment reference on the row.
+   *   /api/payment/deposit/:id/confirm PAID **or PROCESSING**, and never read
+   *   (nothing calls it)               the reference at all.
+   *
+   * PROCESSING is where an order sits after a merchant accepts it and BEFORE
+   * the player pays. Driven on a live server as the assigned merchant, on one
+   * order: the panel's route answered 400 "Current: PROCESSING" and the other
+   * answered 200 "Deposit completed" — leaving a COMPLETED deposit with no
+   * reference and a player a thousand tokens richer for a payment nobody made.
+   * The merchant's own float funds it, which is what makes it a collusion
+   * route rather than a mistake, and it leaves `utr_registry` with nothing for
+   * a later dispute to match against (§27).
+   *
+   * It was invisible because `check:ui-coverage` fails on a panel call that
+   * reaches no route and never on a route no panel calls. The `--unused` list
+   * had it the whole time.
+   */
+  describe('the unreachable confirm route holds the same admission', () => {
+    let payments;
+    beforeAll(async () => {
+      payments = mountRouter((await import('../../domains/payment/payment.routes.js')).default);
+    }, 60_000);
+
+    it('refuses a PROCESSING deposit, and moves no money', async () => {
+      // Staged in the state a merchant reaches by accepting, before the player
+      // has paid anything.
+      const { merchant, player, orderId } = await paidDeposit({ state: 'PROCESSING', utrNumber: null });
+
+      const before = await getBalances(player.userId);
+      const res = await as(payments, merchant).post(`/deposit/${orderId}/confirm`).send({});
+
+      expect(res.status, JSON.stringify(res.body)).toBe(409);
+      expect((await getOrderRecord(orderId)).state).toBe('PROCESSING');
+      const after = await getBalances(player.userId);
+      expect(after.depositBalance, 'no tokens for a payment nobody made').toBe(before.depositBalance);
+    });
+
+    it('refuses a PAID deposit that carries no payment reference', async () => {
+      // §27: the reference belongs to the player and is bound to the order at
+      // mark-paid. A confirm on an order without one completes a deposit the
+      // registry never saw.
+      const { merchant, player, orderId } = await paidDeposit({ utrNumber: null });
+      const before = await getBalances(player.userId);
+      const res = await as(payments, merchant).post(`/deposit/${orderId}/confirm`).send({});
+
+      expect(res.status, JSON.stringify(res.body)).toBe(400);
+      expect(res.body.message).toMatch(/payment reference/i);
+      expect((await getOrderRecord(orderId)).state).toBe('PAID');
+      expect((await getBalances(player.userId)).depositBalance).toBe(before.depositBalance);
+    });
+  });
+
 });
