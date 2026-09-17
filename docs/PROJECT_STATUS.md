@@ -73,6 +73,7 @@ what the B-numbers refer to.
 | **B4** | A withdrawal too large for one denomination, paid in parts | `2dde492`, `19ba696` |
 | **B5a** | The minute to fetch the UTR, and the admin window that decides it | `9c71cc4` |
 | **B5b** | Retry with priority, and the link that never reached a waiting order | `61e29f4` |
+| **B5c** | Paid and the UTR are two steps — an ATM has a clock, so the merchant presses Continue before the slip exists | `81353f5` |
 | **B7** | USDT deposits — originally through BTCPay Server | `5ba3f2c` |
 | — | **B7 superseded:** USDT is a merchant rail, two chains, one claim per payment | `53d637c` |
 | — | USDT buys are denominated in TOKENS; the ledger speaks one currency | `59e6bdb` |
