@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * The player-facing payment routes, over HTTP against a real database.
  *
@@ -61,22 +61,40 @@ describePg('payment routes', () => {
    * `depositCreditSplit` refuses the split and credits the whole amount to the
    * betting pocket — which is the safe fallback, not the case under test.
    */
+  /**
+   * A deposit in a state PRODUCTION can actually produce.
+   *
+   * PAID orders get a payment reference by default, because that is the only
+   * way an order reaches PAID: `mark-paid` is the player's route, it requires
+   * the reference, and it claims it against the order in `utr_registry` (§27).
+   * This fixture used to leave it null, which staged a PAID deposit carrying
+   * no reference — a row the platform cannot create — and both confirm routes
+   * happily completed it because only one of them was checking.
+   *
+   * Pass `utrNumber: null` deliberately to test the refusal.
+   */
   const depositOrder = async ({
     state = 'PAID', tokens = 500, betting = 400, reserve = 100,
     owner = null, merchant = null, extra = {},
+    utrNumber = undefined,
   } = {}) => {
     seq += 1;
     const who = owner || await actor({});
     const m = merchant || await merchantActor({ tokensRupees: 10_000 });
     const orderId = `PAY-${RUN}-${seq}`;
+    // Unique per order: the registry holds one reference to one order, for good.
+    const reference = utrNumber === undefined
+      ? `UTRPAY${RUN}${String(seq).padStart(6, '0')}`.toUpperCase()
+      : utrNumber;
     await createOrderRecord({
       orderId, userId: who.userId, type: 'DEPOSIT',
       tokenAmountRupees: tokens, fiatAmountRupees: tokens, state,
       merchantId: m.merchantId,
       depositAllocation: betting, reserveAllocation: reserve,
+      ...(state === 'PAID' && reference ? { utrNumber: reference } : {}),
       ...extra,
     });
-    return { orderId, who, merchant: m };
+    return { orderId, who, merchant: m, utrNumber: reference };
   };
 
   // ── The gate chain in front of the create routes ──────────────────────────
@@ -102,13 +120,73 @@ describePg('payment routes', () => {
   // tokens and rupees stopped being the same unit" is now asserted against the
   // owner of that value, in unit/systemConfigPayload.test.js.
 
-  it('refuses deposits and withdrawals to an unverified player', async () => {
-    // KYC gates the money routes and nothing else. A player who cannot deposit
-    // must still be able to read their own order history.
-    const unverified = await actor({ kycStatus: 'PENDING_APPROVAL' });
-    expect((await as(app, unverified).post('/deposit/create').send({ tokenAmount: 500 })).status).toBe(403);
-    expect((await as(app, unverified).post('/withdrawal/create').send({ tokenAmount: 500 })).status).toBe(403);
-    expect((await as(app, unverified).get('/orders')).status).toBe(200);
+  /**
+   * Money IN needs identity LINKED; money OUT needs it APPROVED.
+   *
+   * The asymmetry is an owner decision: an Aadhaar submitted and queued is
+   * enough to fund an account, because verification runs in batches and the
+   * player can do nothing to hurry it. Holding deposits behind it loses the
+   * player without protecting anyone — the protection that matters is on the
+   * way out, which cannot be undone.
+   *
+   * This test used to assert the opposite for deposits, because the ROUTE
+   * admitted PENDING_APPROVAL and the SERVICE behind it demanded APPROVED, so a
+   * player passed the gate built to let them through and was refused one layer
+   * down. Both now read the same predicate (`kycGates.js`), and this pins each
+   * side of the asymmetry so neither can drift into the other.
+   */
+  it('lets a player with a submitted Aadhaar deposit, but not withdraw', async () => {
+    const pending = await actor({ kycStatus: 'PENDING_APPROVAL' });
+
+    const deposit = await as(app, pending).post('/deposit/create').send({ tokenAmount: 500 });
+    expect(deposit.status, `deposit refused: ${JSON.stringify(deposit.body)}`).toBe(200);
+
+    const withdrawal = await as(app, pending).post('/withdrawal/create').send({ tokenAmount: 500 });
+    expect(withdrawal.status).toBe(403);
+
+    // KYC gates the money routes and nothing else.
+    expect((await as(app, pending).get('/orders')).status).toBe(200);
+  });
+
+  it('refuses BOTH to a player who has submitted no Aadhaar at all', async () => {
+    // The guard that must survive relaxing the deposit rule: "linked" is a real
+    // bar, not an open door. A player the bot has never taken an Aadhaar from
+    // is refused on the way in as well as the way out.
+    const unlinked = await actor({ kycStatus: 'PENDING_SUBMISSION' });
+    const deposit = await as(app, unlinked).post('/deposit/create').send({ tokenAmount: 500 });
+    expect(deposit.status).toBe(403);
+    expect((await as(app, unlinked).post('/withdrawal/create').send({ tokenAmount: 500 })).status).toBe(403);
+    expect((await as(app, unlinked).get('/orders')).status).toBe(200);
+  });
+
+  /**
+   * The purchase pace, and that it is the LIMITER refusing rather than the
+   * one-open-buy rule.
+   *
+   * Those two are easy to confuse: a second create would be refused either way.
+   * The limiter is middleware and runs BEFORE the handler, so it answers 429
+   * while the business rule answers 409 — asserting the code is what proves
+   * which control actually fired.
+   *
+   * `/deposit/create` was the only money-creation route with no limit at all
+   * while both its siblings carried one.
+   */
+  it('paces new purchases per minute, and it is the limiter that says so', async () => {
+    const player = await actor({});
+
+    const first = await as(app, player).post('/deposit/create').send({ tokenAmount: 500 });
+    expect(first.status).toBe(200);
+
+    const second = await as(app, player).post('/deposit/create').send({ tokenAmount: 500 });
+    expect(second.status, 'the second create inside a minute was not paced').toBe(429);
+  });
+
+  it('refuses a player whose Aadhaar was REJECTED', async () => {
+    // REJECTED is not "waiting": the details given did not match the issuing
+    // authority, and the benefit of the doubt is the wrong default here.
+    const rejected = await actor({ kycStatus: 'REJECTED' });
+    expect((await as(app, rejected).post('/deposit/create').send({ tokenAmount: 500 })).status).toBe(403);
+    expect((await as(app, rejected).post('/withdrawal/create').send({ tokenAmount: 500 })).status).toBe(403);
   });
 
   // ── mark-paid validation ──────────────────────────────────────────────────
@@ -531,11 +609,15 @@ describePg('payment routes', () => {
 
   // ── The polling endpoint ──────────────────────────────────────────────────
   it('serves only the fields the payment screen polls for', async () => {
+    // `payTo`, not `merchantSnapshot`. This is the response that fires most
+    // often — every few seconds while a player is on the payment screen — and
+    // it used to carry the snapshot WHOLE: the merchant's UPI handle, their QR
+    // image, their bank account number, IFSC and the name on it.
     const { orderId, who } = await depositOrder({ extra: { userPhone: '9998887777' } });
     const res = await as(app, who).get(`/order/${orderId}/status`);
     expect(res.status).toBe(200);
     expect(Object.keys(res.body).sort()).toEqual(
-      ['expiresAt', 'merchantSnapshot', 'proofScreenshot', 'status', 'success', 'utrNumber'],
+      ['expiresAt', 'payTo', 'proofScreenshot', 'status', 'success', 'utrNumber'],
     );
   });
 
@@ -571,11 +653,16 @@ describePg('payment routes', () => {
     }
   });
 
-  it('only disputes a PAID order', async () => {
-    const { orderId, who } = await depositOrder({ state: 'PENDING_QUEUE' });
-    const res = await as(app, who).post(`/order/${orderId}/dispute`).send({ reason: 'nobody is paying me' });
+  it('disputes a PAID or COMPLETED order, and nothing earlier', async () => {
+    // This asserted `only dispute PAID` until 2026-09-10, which read as a
+    // tightening and was the opposite: a defect that moved an order to
+    // COMPLETED without paying the player ALSO removed their only recourse.
+    // The full model, and who owns it, is pinned in disputeOwnershipPg.test.js.
+    const early = await depositOrder({ state: 'PENDING_QUEUE' });
+    const res = await as(app, early.who).post(`/order/${early.orderId}/dispute`)
+      .send({ reason: 'nobody is paying me' });
     expect(res.status).toBe(400);
-    expect(res.body.message).toMatch(/only dispute PAID/i);
+    expect(res.body.message).toMatch(/paid or completed/i);
   });
 
   it('makes a player wait ten minutes before disputing', async () => {
@@ -618,30 +705,62 @@ describePg('payment routes', () => {
     expect((await getOrderRecord(orderId)).disputeReason).toBe('first');
   });
 
-  it('409s — not 400 — when the transition itself refuses', async () => {
-    // The status endpoint has no pre-read: it asks the state machine and reports
-    // what it says. "Understood and refused because the order moved on" is a
-    // different answer from "your request was malformed", and a merchant
-    // confirming while the player was typing is the ordinary case.
+  // ── These exercised `POST /order/:orderId/status`, which is gone ──────────
+  // It was a SECOND route that raised a dispute, with a different admission
+  // rule: no reason required and — the part that mattered — no ten-minute wait
+  // after payment, which `/dispute` enforces so a merchant can confirm before
+  // the order reaches an admin. A DISPUTED order keeps the merchant's tokens
+  // reserved (§2), so the bypass let a player pay, dispute at once, and hold a
+  // merchant's inventory. No panel ever called it.
+  //
+  // Its one guard the survivor lacked — the reason cap — moved with it, and is
+  // asserted below. The rest is re-pointed at `/dispute` where it still says
+  // something.
+  it('refuses a dispute on an order that is not disputable', async () => {
     const { orderId, who } = await depositOrder({ state: 'PENDING_QUEUE' });
-    const res = await as(app, who).post(`/order/${orderId}/status`).send({ status: 'DISPUTED' });
-    expect(res.status).toBe(409);
-    expect(res.body.message).toMatch(/PENDING_QUEUE/);
+    const res = await as(app, who).post(`/order/${orderId}/dispute`).send({ reason: 'nothing arrived' });
+    expect(res.status).toBe(400);
     expect((await getOrderRecord(orderId)).state).toBe('PENDING_QUEUE');
   });
 
-  it('accepts only the DISPUTED transition on the status endpoint', async () => {
+  it('requires a reason — the admin queue reads it', async () => {
     const { orderId, who } = await depositOrder({ state: 'PAID' });
-    for (const status of [undefined, 'COMPLETED', 'CANCELLED', 'disputed']) {
-      const res = await as(app, who).post(`/order/${orderId}/status`).send({ status });
-      expect(res.status, `accepted status=${status}`).toBe(400);
+    for (const reason of [undefined, '', '   ']) {
+      const res = await as(app, who).post(`/order/${orderId}/dispute`).send({ reason });
+      expect(res.status, `accepted reason=${JSON.stringify(reason)}`).toBe(400);
+    }
+    expect((await getOrderRecord(orderId)).state).toBe('PAID');
+  });
+
+  it('holds a freshly PAID order back for ten minutes, by EVERY path', async () => {
+    // The wait exists so the merchant gets a chance to confirm before the order
+    // reaches an admin — and a DISPUTED order keeps the merchant's tokens
+    // reserved (§2), so evading it ties up their inventory on demand.
+    //
+    // It WAS evadable: `POST /order/:id/status` raised the same dispute with no
+    // wait at all. That route is gone, and this asserts the rule against every
+    // route the player has, so a third path cannot quietly reintroduce the hole.
+    const { orderId, who } = await depositOrder({ state: 'PAID', extra: { paidAt: new Date() } });
+
+    const res = await as(app, who).post(`/order/${orderId}/dispute`).send({ reason: 'nothing arrived' });
+    expect(res.status).toBe(400);
+    expect(res.body.message).toMatch(/10 minutes/i);
+    expect((await getOrderRecord(orderId)).state).toBe('PAID');
+
+    // And no OTHER route will do it either. Any POST under this order that
+    // moves it to DISPUTED would be the bypass coming back.
+    for (const path of [`/order/${orderId}/status`, `/order/${orderId}/dispute-now`]) {
+      const sneak = await as(app, who).post(path).send({ status: 'DISPUTED', reason: 'let me in' });
+      expect(sneak.status, `${path} answered ${sneak.status}`).not.toBe(200);
     }
     expect((await getOrderRecord(orderId)).state).toBe('PAID');
   });
 
   it('truncates a runaway dispute reason rather than storing it whole', async () => {
+    // `dispute_reason` is TEXT, so this does not error — it stores whatever it
+    // is sent, and an admin's queue renders it.
     const { orderId, who } = await depositOrder({ state: 'PAID' });
-    const res = await as(app, who).post(`/order/${orderId}/status`).send({ status: 'DISPUTED', reason: 'x'.repeat(5000) });
+    const res = await as(app, who).post(`/order/${orderId}/dispute`).send({ reason: 'x'.repeat(5000) });
     expect(res.status, res.body.message).toBe(200);
     expect((await getOrderRecord(orderId)).disputeReason).toHaveLength(1000);
   });

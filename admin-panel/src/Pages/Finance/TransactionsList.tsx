@@ -1,8 +1,7 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import React, { useEffect, useState } from 'react';
 import { FileText, Download } from 'lucide-react';
 import { DataTable } from '../../components/DataTable';
-import { StatusBadge } from '../../components/StatusBadge';
 import { SearchBar } from '../../components/SearchBar';
 import { Kpis, Toolbar, AvatarCell } from '../../components/design';
 import { DateRangePicker } from '../../components/DateRangePicker';
@@ -19,7 +18,7 @@ export const TransactionsList: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState('ALL');
-  const [statusFilter, setStatusFilter] = useState('ALL');
+  const [fieldFilter, setFieldFilter] = useState('ALL');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
 
@@ -28,7 +27,7 @@ export const TransactionsList: React.FC = () => {
 
   useEffect(() => {
     loadTransactions();
-  }, [page, debouncedSearch, typeFilter, statusFilter, startDate, endDate]);
+  }, [page, debouncedSearch, typeFilter, fieldFilter, startDate, endDate]);
 
   const loadTransactions = async () => {
     setIsLoading(true);
@@ -37,7 +36,7 @@ export const TransactionsList: React.FC = () => {
         page,
         limit,
         typeFilter === 'ALL' ? undefined : typeFilter,
-        statusFilter === 'ALL' ? undefined : statusFilter,
+        fieldFilter === 'ALL' ? undefined : fieldFilter,
         startDate || undefined,
         endDate || undefined
       );
@@ -52,32 +51,42 @@ export const TransactionsList: React.FC = () => {
     }
   };
 
-  const getTransactionTypeBadge = (type: string) => {
-    const colors: Record<string, string> = {
-      DEPOSIT: 'bg-green-500/20 text-green-500',
-      WITHDRAWAL: 'bg-red-500/20 text-red-500',
-      BET_PLACED: 'bg-blue-500/20 text-blue-500',
-      BET_WIN: 'bg-gold-500/20 text-gold-500',
-      BET_LOSS: 'bg-gray-500/20 text-gray-500',
-      BET_REFUND: 'bg-purple-500/20 text-purple-500',
-      ADMIN_ADJUSTMENT: 'bg-orange-500/20 text-orange-500',
-    };
-
-    return (
-      <span className={`px-2 py-1 rounded-sm text-xs font-medium ${colors[type] || colors.DEPOSIT}`}>
-        {type.replace(/_/g, ' ')}
-      </span>
-    );
+  /**
+   * A ledger row records a MOVEMENT: a direction and a pocket. It has no
+   * "transaction type" and no status — it is written inside the same
+   * transaction as the balance change, so a row existing IS the money having
+   * moved. The badges below were coloured by DEPOSIT / WITHDRAWAL / BET_WIN /
+   * BET_LOSS, an enum from the document collection this replaced; none of those
+   * values has ever appeared in `tx_type`, so every row rendered the fallback.
+   */
+  const FIELD_LABEL: Record<Transaction['field'], string> = {
+    depositBalance:  '💰 Deposit',
+    winningsBalance: '🏆 Winnings',
+    tokenBalance:    '🪙 Tokens',
+    reserveBalance:  '🛟 Reserve',
+    lockedBalance:   '🔒 Locked',
   };
+
+  const directionBadge = (tx: Transaction) => (
+    <span className={`px-2 py-1 rounded-sm text-xs font-medium ${
+      tx.type === 'CREDIT' ? 'bg-green-500/20 text-green-500' : 'bg-red-500/20 text-red-500'
+    }`}>
+      {tx.type}
+    </span>
+  );
 
   const columns = [
     {
-      key: 'id',
+      key: 'txId',
       label: 'Reference',
       render: (tx: Transaction) => (
         <div>
-          <span className="text-xs font-mono text-gold-400">{tx.referenceId || tx._id.slice(-10)}</span>
-          <p className="text-xs text-gray-500 font-mono">{tx._id.slice(-8)}</p>
+          {/* The idempotency key IS the identity of the row, and it is what an
+              operator needs to trace one movement across the ledger, the order
+              and the wallet. It is shown whole, because a truncated key cannot
+              be searched for. */}
+          <span className="text-xs font-mono text-gold-400 break-all">{tx.txId}</span>
+          {tx.refId ? <p className="text-xs text-gray-500 font-mono">{tx.refId}</p> : null}
         </div>
       ),
     },
@@ -86,100 +95,100 @@ export const TransactionsList: React.FC = () => {
       label: 'User',
       render: (tx: Transaction) => (
         <AvatarCell
-          name={typeof tx.userId === 'object' ? tx.userId.username : String(tx.userId)}
-          sub={typeof tx.userId === 'object' ? tx.userId._id.slice(-8) : String(tx.userId).slice(-8)}
+          // LEFT JOINed: the row outlives the account, and a deleted player must
+          // not take their money's record off this screen.
+          name={tx.user?.username || tx.userId}
+          sub={tx.user?.mobile || tx.userId}
           index={Math.max(0, transactions.indexOf(tx))}
         />
       ),
     },
-    {
-      key: 'type',
-      label: 'Type',
-      render: (tx: Transaction) => getTransactionTypeBadge(tx.type),
-    },
+    { key: 'type',  label: 'Direction', render: directionBadge },
     {
       key: 'amount',
       label: 'Amount',
       render: (tx: Transaction) => (
-        <span
-          className={`font-semibold ${
-            tx.type === 'DEPOSIT' || tx.type === 'BET_WIN'
-              ? 'text-green-500'
-              : 'text-red-500'
-          }`}
-        >
-          {tx.type === 'DEPOSIT' || tx.type === 'BET_WIN' ? '+' : '-'}
-          {formatters.currency(tx.amount)}
+        <span className={`font-semibold ${tx.type === 'CREDIT' ? 'text-green-500' : 'text-red-500'}`}>
+          {tx.type === 'CREDIT' ? '+' : '-'}{formatters.currency(tx.amount)}
         </span>
       ),
     },
     {
-      key: 'balanceType',
-      label: 'Balance Type',
+      key: 'field',
+      label: 'Pocket',
       render: (tx: Transaction) => (
-        <span className="text-xs">
-          {tx.balanceType === 'DEPOSIT' ? '💰 Deposit' : tx.balanceType === 'WINNINGS' ? '🏆 Winnings' : '💰🏆 Both'}
-        </span>
+        <span className="text-xs">{FIELD_LABEL[tx.field] || tx.field}</span>
       ),
     },
     {
-      key: 'status',
-      label: 'Status',
+      key: 'balance',
+      label: 'Balance after',
       render: (tx: Transaction) => (
-        <StatusBadge
-          status={tx.status}
-          type="order"
-        />
+        <span className="text-sm text-gray-300">{formatters.currency(tx.balanceAfter)}</span>
       ),
     },
     {
-      key: 'timestamp',
+      key: 'reason',
+      label: 'Reason',
+      render: (tx: Transaction) => (
+        <span className="text-xs text-gray-400">{tx.reason}</span>
+      ),
+    },
+    {
+      key: 'createdAt',
       label: 'Date & Time',
       render: (tx: Transaction) => (
-        <span className="text-sm text-gray-400">{formatters.datetime(tx.timestamp)}</span>
+        <span className="text-sm text-gray-400">{formatters.datetime(tx.createdAt)}</span>
       ),
     },
   ];
 
-  const totalDeposits = transactions
-    .filter((t) => t.type === 'DEPOSIT' && t.status === 'SUCCESS')
-    .reduce((sum, t) => sum + t.amount, 0);
-
-  const totalWithdrawals = transactions
-    .filter((t) => t.type === 'WITHDRAWAL' && t.status === 'SUCCESS')
-    .reduce((sum, t) => sum + t.amount, 0);
-
-  const totalBets = transactions
-    .filter((t) => t.type === 'BET_PLACED')
-    .reduce((sum, t) => sum + t.amount, 0);
+  // Summed over the page the operator is looking at, by DIRECTION — the only
+  // thing a ledger row says. These used to filter on `type === 'DEPOSIT'` and
+  // `status === 'SUCCESS'`, neither of which a row carries, so all three tiles
+  // read ₹0 on every page of a busy ledger.
+  const sumWhere = (fn: (t: Transaction) => boolean) =>
+    transactions.filter(fn).reduce((sum, t) => sum + t.amount, 0);
+  const totalCredited = sumWhere((t) => t.type === 'CREDIT');
+  const totalDebited  = sumWhere((t) => t.type === 'DEBIT');
+  const totalStaked   = sumWhere((t) => t.field === 'lockedBalance' && t.type === 'CREDIT');
 
   return (
     <div className="om-fade">
       <Kpis items={[
         { label: 'Total Transactions', value: total.toLocaleString('en-IN') },
-        { label: 'Total Deposits', value: formatters.currency(totalDeposits), tone: 'var(--success)' },
-        { label: 'Total Withdrawals', value: formatters.currency(totalWithdrawals), tone: 'var(--danger)' },
-        { label: 'Total Bets', value: formatters.currency(totalBets), tone: 'var(--info)' },
+        { label: 'Credited (this page)', value: formatters.currency(totalCredited), tone: 'var(--success)' },
+        { label: 'Debited (this page)', value: formatters.currency(totalDebited), tone: 'var(--danger)' },
+        { label: 'Staked (this page)', value: formatters.currency(totalStaked), tone: 'var(--info)' },
       ]} />
 
       <Toolbar
         tabs={[
           { label: 'All', active: typeFilter === 'ALL', onClick: () => setTypeFilter('ALL') },
-          { label: 'Deposits', active: typeFilter === 'DEPOSIT', onClick: () => setTypeFilter('DEPOSIT') },
-          { label: 'Withdrawals', active: typeFilter === 'WITHDRAWAL', onClick: () => setTypeFilter('WITHDRAWAL') },
-          { label: 'Bets', active: typeFilter === 'BET_PLACED', onClick: () => setTypeFilter('BET_PLACED') },
-          { label: 'Adjustments', active: typeFilter === 'ADMIN_ADJUSTMENT', onClick: () => setTypeFilter('ADMIN_ADJUSTMENT') },
+          /* CREDIT / DEBIT is what `tx_type` holds. These tabs used to send
+             DEPOSIT / WITHDRAWAL / BET_PLACED / ADMIN_ADJUSTMENT — an enum from
+             the collection this screen was written against — so choosing any of
+             them filtered the ledger down to nothing and the operator was shown
+             an empty table rather than an error. */
+          { label: 'Credits', active: typeFilter === 'CREDIT', onClick: () => setTypeFilter('CREDIT') },
+          { label: 'Debits', active: typeFilter === 'DEBIT', onClick: () => setTypeFilter('DEBIT') },
         ]}
         search={{ value: search, onChange: setSearch, placeholder: 'Search txn id, player, ref…' }}
       />
 
       {/* Secondary filters */}
       <div className="flex flex-wrap items-center gap-3 mb-4">
-        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="input" style={{ width: 160 }}>
-          <option value="ALL">All Status</option>
-          <option value="SUCCESS">Success</option>
-          <option value="PENDING">Pending</option>
-          <option value="FAILED">Failed</option>
+        {/* The POCKET, which the route reads as `field`. This was a Status
+            dropdown (Success / Pending / Failed) — a ledger row has no status,
+            and the route never read the parameter, so it was a filter that
+            looked applied and did nothing. */}
+        <select value={fieldFilter} onChange={(e) => setFieldFilter(e.target.value)} className="input" style={{ width: 180 }}>
+          <option value="ALL">All pockets</option>
+          <option value="depositBalance">Deposit</option>
+          <option value="winningsBalance">Winnings</option>
+          <option value="reserveBalance">Reserve</option>
+          <option value="lockedBalance">Locked</option>
+          <option value="tokenBalance">Tokens</option>
         </select>
         <DateRangePicker startDate={startDate} endDate={endDate} onStartDateChange={setStartDate} onEndDateChange={setEndDate} />
       </div>

@@ -1,16 +1,20 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import React, { useEffect } from 'react';
 import { HashRouter as Router, Routes, Route, Navigate } from 'react-router';
 import { Toaster } from 'react-hot-toast';
+import { applyBranding, applyCachedBranding } from './services/branding';
 import { Layout } from './components/Layout';
 import { Login } from './Pages/Login';
 import { Dashboard } from './Pages/Dashboard';
 import { UsersList } from './Pages/Users/UsersList';
 import { FlaggedPlayers } from './Pages/Users/FlaggedPlayers';
+import { PhantomAgents } from './Pages/Users/PhantomAgents';
 import { MerchantsList } from './Pages/Merchants/MerchantsList';
+import { MerchantTokenOrders } from './Pages/Merchants/MerchantTokenOrders';
 import { LiveCycles } from './Pages/Cycles/LiveCycles';
 import { CycleHistory } from './Pages/Cycles/CycleHistory';
 import { DepositPolicy } from './Pages/BusinessPolicy/DepositPolicy';
+import { SettlementRail } from './Pages/BusinessPolicy/SettlementRail';
 import { TransactionsList } from './Pages/Finance/TransactionsList';
 import { ProfitLoss } from './Pages/Finance/ProfitLoss';
 import { TokenFlow } from './Pages/Finance/TokenFlow';
@@ -30,11 +34,12 @@ import { SystemSettings } from './Pages/Settings/SystemSettings';
 import { AuditLogs } from './Pages/Settings/AuditLogs';
 import ErrorLogs from './Pages/Settings/ErrorLogs';
 import { DisputeManager } from './Pages/Disputes/DisputeManager';
+import { CdmReceiptQueue } from './Pages/Disputes/CdmReceiptQueue';
+import { StalledWithdrawals } from './Pages/Disputes/StalledWithdrawals';
 import { AppAssetsPage } from './Pages/AppAssets/AppAssetsPage';
 // UTR REMOVED: import { UTRManager } from './Pages/Finance/UTRManager';
 // ── NEW FEATURE PAGES ──────────────────────────────────────────────────────
 import { PaymentControlCenter } from './Pages/Payment/PaymentControlCenter';
-import { GiftCodes }      from './Pages/Promotions/GiftCodes';
 import { AnnouncementsPage } from './Pages/Promotions/AnnouncementsPage';
 import { BalanceAdjustment } from './Pages/Users/BalanceAdjustment';
 import { GameProviders }           from './Pages/GameProviders/GameProviders';
@@ -49,6 +54,9 @@ import { MerchantPlatform }   from './Pages/Enterprise/MerchantPlatform';
 import { useAuthStore } from './services/auth';
 import { usePermissions } from './hooks/usePermission';
 import sseService from './services/sse';
+// The obligation gate. Wraps the whole route table rather than each guard —
+// see the file header for why four copies of one rule is the wrong shape.
+import MandatoryTwoFactor from './components/MandatoryTwoFactor';
 // Permission strings in PermRoute must exist in PERMISSION_KEYS (utils/permissions.ts) — GOVERNANCE.md M-1
 
 // ─── Route Guards ─────────────────────────────────────────────────────────────
@@ -115,17 +123,8 @@ const App: React.FC = () => {
   // C-02 fix: Admin panel applies its own branding — logo, title, primary colour.
   // GOVERNANCE §3 + §9: any name/colour shown to end-users must originate from Branding.
   useEffect(() => {
-    function applyBranding(b: any) {
-      if (!b || typeof b !== 'object') return;
-      if (b.primaryColor) document.documentElement.style.setProperty('--brand-primary', b.primaryColor);
-      if (b.adminPanelName) document.title = b.adminPanelName;
-      try { localStorage.setItem('app_branding', JSON.stringify(b)); } catch { /* ignore */ }
-    }
-    // Apply cached branding immediately (avoids flash on load)
-    try {
-      const cached = localStorage.getItem('app_branding');
-      if (cached) applyBranding(JSON.parse(cached));
-    } catch { /* ignore */ }
+    // Apply cached branding immediately (avoids a flash on load).
+    applyCachedBranding();
 
     // Subscribe to live branding updates via SSE admin channel
     sseService.on('branding',         applyBranding);
@@ -165,9 +164,11 @@ const App: React.FC = () => {
         toastOptions={{
           duration: 3000,
           style: { background: '#1E293B', color: '#F3F4F6', border: '1px solid #334155' },
-          success: { iconTheme: { primary: '#D4AF37', secondary: '#0B0E14' } },
+          // react-hot-toast applies these as CSS values, so the brand token resolves.
+          success: { iconTheme: { primary: 'var(--gold)', secondary: '#0B0E14' } },
         }}
       />
+      <MandatoryTwoFactor>
       <Routes>
         <Route path="/login" element={<Login />} />
 
@@ -224,6 +225,17 @@ const App: React.FC = () => {
             These release national identity numbers, move the platform's
             identity root, and pay real money. Admin 2FA is mandatory, so
             AdminOnly also means a second factor was proved. */}
+        {/* Treasury: approving one MINTS platform supply and credits a
+            merchant's wallet, so it is AdminOnly like the rest of this group —
+            matching the `isAdmin` the routes themselves enforce. */}
+        <Route path="/merchant-token-orders" element={
+          <AdminOnly><Layout><MerchantTokenOrders /></Layout></AdminOnly>
+        } />
+        {/* Reading back who can place cosmetic bets. The grant is made from the
+            Users list; this is the roster and the way to take it away. */}
+        <Route path="/users/phantom-agents" element={
+          <AdminOnly><Layout><PhantomAgents /></Layout></AdminOnly>
+        } />
         <Route path="/kyc/bulk" element={
           <AdminOnly><Layout><KycBulk /></Layout></AdminOnly>
         } />
@@ -316,6 +328,11 @@ const App: React.FC = () => {
         <Route path="/business-policy/deposit" element={
           <AdminOnly><Layout><DepositPolicy /></Layout></AdminOnly>
         } />
+        {/* The settlement rail: one switch moves the whole platform between the
+            UPI rail and the ATM cash rail. Orders in flight keep their own. */}
+        <Route path="/business-policy/settlement-rail" element={
+          <AdminOnly><Layout><SettlementRail /></Layout></AdminOnly>
+        } />
         <Route path="/sub-admins" element={
           <AdminOnly><Layout><SubAdminsList /></Layout></AdminOnly>
         } />
@@ -332,6 +349,21 @@ const App: React.FC = () => {
         <Route path="/disputes" element={
           <PermRoute permission="canResolveDisputes">
             <Layout><DisputeManager /></Layout>
+          </PermRoute>
+        } />
+        {/* Gated on the SAME permission as the dispute queue, because it is the
+            same job: the slip is the evidence a cash-payout dispute is decided
+            from, and reading one is audited either way. */}
+        <Route path="/disputes/cdm-receipts" element={
+          <PermRoute permission="canResolveDisputes">
+            <Layout><CdmReceiptQueue /></Layout>
+          </PermRoute>
+        } />
+        {/* Same gate again: a stalled withdrawal is a player's tokens locked
+            with no deadline, which is what the disputes desk answers for. */}
+        <Route path="/disputes/stalled-withdrawals" element={
+          <PermRoute permission="canResolveDisputes">
+            <Layout><StalledWithdrawals /></Layout>
           </PermRoute>
         } />
         {/* UTR REMOVED: route /utr-monitor stripped per product decision */}
@@ -370,11 +402,6 @@ const App: React.FC = () => {
         } />
 
         {/* ── PROMOTIONS — canManageContent sub-admins can manage these ── */}
-        <Route path="/promotions/gift-codes" element={
-          <PermRoute permission="canManageContent">
-            <Layout><GiftCodes /></Layout>
-          </PermRoute>
-        } />
         <Route path="/promotions/announcements" element={
           <PermRoute permission="canManageContent">
             <Layout><AnnouncementsPage /></Layout>
@@ -390,6 +417,7 @@ const App: React.FC = () => {
 
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
+      </MandatoryTwoFactor>
     </Router>
   );
 };

@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * OperationsOverview.tsx — the Operations Platform console (Phase 012 APIs,
  * UI shipped Phase C 2026-07-10). Orchestration-only: every number is read
@@ -118,8 +118,13 @@ export const OperationsOverview: React.FC = () => {
           <Section title="Funding Platform">
             <KV k="Open orders" v={overview.funding.openOrders} />
             <KV k="Disputed orders" v={overview.funding.disputedOrders} />
+            {/* `listProviders()` returns { code, label, currency, kind, active,
+                capabilities } — it has never had a `key` or a `name`. Reading
+                those gave every row `key={undefined}` AND an empty label, so
+                the operator saw a stack of rows reading "LIVE" / "declared"
+                with nothing saying WHICH rail each one was. */}
             {(overview.funding.providers || []).map((p: any) => (
-              <KV key={p.key || p.name} k={p.key || p.name}
+              <KV key={p.code} k={p.label || p.code}
                 v={<span className={p.active ? 'text-green-400' : 'text-gray-500'}>{p.active ? 'LIVE' : 'declared'}</span>} />
             ))}
           </Section>
@@ -137,14 +142,19 @@ export const OperationsOverview: React.FC = () => {
             <KV k="Deposit policy" v={overview.policies.depositPolicy
               ? `v${overview.policies.depositPolicy.version} — ${overview.policies.depositPolicy.deposit}/${overview.policies.depositPolicy.reserve}`
               : 'not configured (90/10 fallback)'} />
-            <KV k="Merchant bonus policy" v={overview.policies.merchantBonusPolicy
-              ? `v${overview.policies.merchantBonusPolicy.version} — ${overview.policies.merchantBonusPolicy.enabled ? `ON @ ${overview.policies.merchantBonusPolicy.bonusPercent}%` : 'disabled'}`
+            <KV k="Merchant commission policy" v={overview.policies.merchantCommissionPolicy
+              ? `v${overview.policies.merchantCommissionPolicy.version} — ${overview.policies.merchantCommissionPolicy.enabled
+                  ? `ON, ${overview.policies.merchantCommissionPolicy.pricedVarieties} variety(ies) priced`
+                  : 'disabled'}`
               : 'not configured'} />
           </Section>
 
           <Section title="Communication & Product Flags">
+            {/* Same shape as the providers above: `listChannels()` returns
+                { code, label, active } and has never had a `key` or a
+                `channel`, so these rows were unkeyed and unlabelled too. */}
             {(overview.communication.channels || []).map((c: any) => (
-              <KV key={c.key || c.channel} k={c.key || c.channel}
+              <KV key={c.code} k={c.label || c.code}
                 v={<span className={c.active ? 'text-green-400' : 'text-gray-500'}>{c.active ? 'LIVE' : 'declared'}</span>} />
             ))}
             {Object.entries(overview.productFlags || {}).map(([f, on]) => (

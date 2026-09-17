@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 //
 // The merchant's order queue: one fetch + the private merchant SSE stream.
 // Dashboard and Orders both read from this so they never disagree about what

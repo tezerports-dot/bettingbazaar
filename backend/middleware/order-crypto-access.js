@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file.
+// GOVERNANCE: Read CLAUDE.md before editing this file.
 /**
  * order-crypto-access.js — the order tamper-evidence tag, and the guard over it.
  *

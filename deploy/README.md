@@ -1,6 +1,6 @@
 # deploy/ — deployment targets & strategies (plan items 40, 41, 43, 44, 29)
 
-The app is one portable Docker image (see `Dockerfile`, `docs/governance/04-GOVERNANCE.md` §17) and a
+The app is one portable Docker image (see `Dockerfile`, `CLAUDE.md` §17) and a
 **verified-stateless app tier** — these files are how you run it. The current
 plan is a **single Shinjiru dedicated box** (`VPS_UBUNTU_SETUP.md`); the rest
 exist so a platform move is configuration, not a project.

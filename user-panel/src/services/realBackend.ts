@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * ======================================================================
  * ? REAL BACKEND -- v4.3.0
@@ -24,7 +24,7 @@
  * NEW     -- getWinners(), getFaq(), getSupportLinks(), getBranding() methods added.
  *            Required by WinnersPage, FaqPage, SupportPage, and app-init branding fetch.
  */
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import { Backend } from './backend.interface';
 // L-01 fix: GAME_CORE.ts header requires realBackend.ts to import from it.
 import { PAYOUT, WINNER, PHASE } from '../GAME_CORE';
@@ -561,11 +561,11 @@ export class RealBackend implements Backend {
     try {
       const data = await this.wsRequest<any>(
         'request_branding', 'branding', undefined, 8000,
-        { appName: 'BettingBazaar', cdnBaseUrl: '', primaryColor: '#D4AF37', assets: {} }
+        { appName: 'BettingBazaar', cdnBaseUrl: '', primaryColor: 'var(--brand-primary, #D4AF37)', assets: {} }
       );
       return data;
     } catch {
-      return { appName: 'BettingBazaar', cdnBaseUrl: '', primaryColor: '#D4AF37', assets: {} };
+      return { appName: 'BettingBazaar', cdnBaseUrl: '', primaryColor: 'var(--brand-primary, #D4AF37)', assets: {} };
     }
   }
 

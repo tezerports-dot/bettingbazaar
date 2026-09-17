@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 //
 // Order detail — a right drawer on desktop, a bottom sheet on mobile (design
 // handoff "BB Merchant Panel.dc.html"). Everything on the card, plus the full
@@ -7,7 +7,7 @@
 import React from 'react';
 import { ArrowDownLeft, ArrowUpRight, Check, ShieldCheck } from 'lucide-react';
 import { OrderStatus, type MerchantProfile, type PaymentOrder } from '../types';
-import { counterpartyOf, formatMoney, railCopy, railOf, tokenColumn } from '../utils/rail';
+import { counterpartyOf, formatMoney, railCopy, railOf, receivingAddressFor, tokenColumn } from '../utils/rail';
 import { formatCountdown, secondsLeft, URGENT_SECONDS } from '../hooks/useCountdown';
 import { Banner, Button, CopyInline, Panel, StatusPill } from './ui';
 import type { OrderActions } from './OrderCard';
@@ -43,7 +43,21 @@ export const OrderDetail: React.FC<{
   const urgent = remaining !== null && remaining < URGENT_SECONDS;
 
   const canAccept = order.status === OrderStatus.ASSIGNED || order.status === OrderStatus.PENDING_QUEUE;
-  const canRelease = order.status === OrderStatus.PAID && isDeposit;
+  /**
+   * PAID, but not yet evidenced.
+   *
+   * On the CASH rail the player taps "I've paid" the moment the machine gives
+   * them the notes — that is what lets this merchant carry on at an ATM whose
+   * session is timing out — and the reference follows a minute later. The
+   * server refuses Confirm until it lands (§27: a completed deposit the
+   * registry never saw leaves a later dispute nothing to match against).
+   *
+   * So the button is not offered while it would only be refused. A control
+   * that fails when pressed reads as a broken panel, and the merchant's next
+   * move is to call support about a working guard.
+   */
+  const awaitingReference = order.status === OrderStatus.PAID && isDeposit && !order.utrNumber;
+  const canRelease = order.status === OrderStatus.PAID && isDeposit && !awaitingReference;
   const canPayout = order.status === OrderStatus.PROCESSING && !isDeposit;
 
   // Payment rows: the merchant's own receiving credentials on a deposit, the
@@ -51,8 +65,12 @@ export const OrderDetail: React.FC<{
   const paymentRows: Array<{ label: string; value: string }> = [];
   if (isDeposit) {
     if (rail === 'USDT') {
-      if (merchant?.usdtWalletAddress) paymentRows.push({ label: 'Your USDT address', value: merchant.usdtWalletAddress });
-      paymentRows.push({ label: 'Network', value: 'TRC-20' });
+      // The network comes from the ORDER, not from a constant. The player chose
+      // it, and a merchant watching the wrong explorer sees no payment and
+      // concludes they were not paid.
+      const receiving = receivingAddressFor(merchant, order.usdtChain);
+      if (receiving) paymentRows.push({ label: 'Your USDT address', value: receiving.address });
+      paymentRows.push({ label: 'Network', value: receiving?.label ?? 'Not set for this network' });
     } else {
       const upi = merchant?.settlementDetails?.upiId || merchant?.bankDetails?.upiId;
       if (upi) paymentRows.push({ label: 'Your UPI ID', value: upi });
@@ -60,7 +78,6 @@ export const OrderDetail: React.FC<{
       if (holder) paymentRows.push({ label: 'Account holder', value: holder });
     }
   } else if (rail === 'USDT') {
-    if (order.userUsdtAddress) paymentRows.push({ label: 'User wallet', value: order.userUsdtAddress });
     paymentRows.push({ label: 'Network', value: 'TRC-20' });
   } else {
     const bank = order.userBankDetails;
@@ -68,7 +85,6 @@ export const OrderDetail: React.FC<{
     if (bank?.accountNumber) paymentRows.push({ label: 'Account no.', value: bank.accountNumber });
     if (bank?.ifscCode) paymentRows.push({ label: 'IFSC', value: bank.ifscCode });
     if (bank?.bankName) paymentRows.push({ label: 'Bank', value: bank.bankName });
-    if (order.upiId) paymentRows.push({ label: 'UPI ID', value: order.upiId });
   }
 
   const paySectionLabel = isDeposit
@@ -97,7 +113,16 @@ export const OrderDetail: React.FC<{
     </>
   );
 
-  const footer = canAccept ? (
+  const footer = awaitingReference ? (
+    <div style={{
+      flex: 1, padding: 13, borderRadius: 12, textAlign: 'center',
+      background: 'var(--warn-bg)', border: '1px solid var(--warn)',
+      color: 'var(--text)', fontSize: 12.5, fontWeight: 700,
+    }}>
+      The player has reported paying. Waiting for their payment reference —
+      you can release as soon as it arrives.
+    </div>
+  ) : canAccept ? (
     <>
       <Button onClick={() => actions.onAccept(order)} style={{ flex: 1, padding: 14, fontSize: 14 }}>Accept order</Button>
       <Button variant="outline" tone="danger" onClick={() => actions.onReject(order)} style={{ padding: '14px 18px', fontSize: 14 }}>
@@ -109,8 +134,8 @@ export const OrderDetail: React.FC<{
       <Button tone="ok" onClick={() => actions.onRelease(order)} style={{ flex: 1, padding: 14, fontSize: 14 }}>
         <ShieldCheck size={16} /> Confirm &amp; release
       </Button>
-      <Button variant="outline" tone="dispute" onClick={() => actions.onDispute(order)} style={{ padding: '14px 18px', fontSize: 14 }}>
-        Dispute
+      <Button variant="outline" tone="dispute" onClick={() => actions.onRedFlag(order)} style={{ padding: '14px 18px', fontSize: 14 }}>
+        Flag
       </Button>
     </>
   ) : canPayout ? (
@@ -118,8 +143,8 @@ export const OrderDetail: React.FC<{
       <Button tone="ok" onClick={() => actions.onPayout(order)} style={{ flex: 1, padding: 14, fontSize: 14 }}>
         <Check size={16} /> Mark payout sent
       </Button>
-      <Button variant="outline" tone="dispute" onClick={() => actions.onDispute(order)} style={{ padding: '14px 18px', fontSize: 14 }}>
-        Dispute
+      <Button variant="outline" tone="dispute" onClick={() => actions.onRedFlag(order)} style={{ padding: '14px 18px', fontSize: 14 }}>
+        Flag
       </Button>
     </>
   ) : undefined;
@@ -226,7 +251,7 @@ export const OrderDetail: React.FC<{
       )}
       {order.status === OrderStatus.REJECTED && (
         <Banner tone="danger" title="Rejected">
-          {order.rejectionReason || 'This order was rejected.'}
+          {order.rejectedReason || 'This order was rejected.'}
         </Banner>
       )}
     </Panel>

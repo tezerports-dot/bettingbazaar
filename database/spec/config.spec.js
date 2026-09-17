@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * postgres/configSpec.js — what every configuration setting IS.
  *
@@ -66,6 +66,23 @@ const s = (def = '') => ({ type: 'string', default: def });
 const sa = (def = []) => ({ type: 'string[]', default: def });
 /** A nested group of settings. */
 const group = (fields) => ({ type: 'group', fields });
+/**
+ * A value the PLATFORM writes, living in this document but not a setting.
+ *
+ * The admin config route derives the fields it will accept from this spec, so
+ * that a setting is editable the moment it is declared and nobody has to
+ * remember to wire it (CLAUDE.md §2). `internal` is the other half of that:
+ * without it, deriving would have handed an operator a text box for
+ * `adminTokenSupply.minted` — the running total of tokens ever issued, checked
+ * against a 10-billion cap. Setting it back to 0 does not correct a count; it
+ * re-authorises minting the entire supply again.
+ *
+ * So the rule is a property of the DECLARATION, not of any route's memory: a
+ * counter the platform maintains is marked here, and every derived accept list
+ * skips it. Bounds and defaults still apply — the value is still validated when
+ * the code that owns it writes it.
+ */
+const internal = (decl) => ({ ...decl, internal: true });
 
 const phaseGroup = (d) => group({
   mergeBeforeEndSec:     n(d.mergeBeforeEndSec, 0),
@@ -108,20 +125,100 @@ export const SYSTEM_CONFIG_SPEC = group({
     fullDay:   group({ min: n(100, 0), max: n(500000, 0) }),
   }),
 
-  minDeposit:            n(100, 0),
+  // ── The platform floor on a BUY, in tokens ──────────────────────────────
+  // 500, the same as `minWithdrawal`, because it is the same rule read from
+  // either end: no order below 500 tokens, whichever way it points. It was 100
+  // on the buy side and 500 on the sell side — one number for the same policy,
+  // written twice and drifted.
+  //
+  // A floor exists at all because every buy order HOLDS a merchant's tokens for
+  // the length of its window (F-018). An order small enough to be free to place
+  // still takes real inventory out of circulation while it waits, so the floor
+  // is what stops the queue being filled with them.
+  minDeposit:            n(500, 0),
   maxDeposit:            n(50000, 0),
   minWithdrawal:         n(500, 0),
   maxWithdrawal:         n(50000, 0),
   maxWinningsWithdrawal: n(500000, 0),
 
   // Minted merchant inventory may never exceed the cap.
-  adminTokenSupply: group({ cap: n(10000000000, 0), minted: n(0, 0) }),
+  // `cap` is a policy an operator sets. `minted` is the running total the
+  // issuance path maintains — see `internal` above for why it must not be a
+  // text box on a settings screen.
+  adminTokenSupply: group({ cap: n(10000000000, 0), minted: internal(n(0, 0)) }),
 
   // Platform defaults for per-type merchant concurrency; a merchant's own
   // override lives on the merchant row.
   merchantOrderLimits: group({
-    maxConcurrentDepositOrders:    n(1, 1, 10),
-    maxConcurrentWithdrawalOrders: n(1, 1, 10),
+    // No upper bound. The owner's model: on the UPI rail this is whatever an
+    // operator decides a merchant can carry, because they are moving bank
+    // balance rather than holding notes. The cash rail's 1 is derived in
+    // `concurrencyCapFor` and cannot be raised from configuration at all, so
+    // capping the setting only ever limited the rail that has no physical
+    // constraint.
+    maxConcurrentDepositOrders:    n(1, 1),
+    maxConcurrentWithdrawalOrders: n(1, 1),
+    // CONSECUTIVE rejections a merchant may make before they are suspended.
+    // Consecutive, not total: a merchant who declines three in a row is either
+    // gaming the queue or is not in a position to serve it, and either way the
+    // next player should not be the one who finds out. Any COMPLETED order
+    // resets the streak to zero, so an ordinary merchant who occasionally
+    // declines never approaches it.
+    //
+    // The minimum is 1 rather than 0 — a cap of zero would suspend a merchant
+    // on their first decline, which is not a cap but a ban on declining.
+    // Raising it is an operator's call; disabling it is not offered.
+    maxConsecutiveRejections:      n(3, 1, 20),
+    // How long a merchant has to answer a buy order the player has ALREADY
+    // PAID for, before the platform treats the silence as a refusal and sends
+    // the order to an admin.
+    //
+    // This is the only clock on the merchant that matters, because it is the
+    // only window in which the player's money is already gone. The assignment
+    // window before it expires the order harmlessly; this one cannot, so the
+    // order goes to a human instead.
+    //
+    // A floor of 5 minutes, because a merchant checking a bank app needs
+    // longer than a page refresh; a ceiling of a day, because a player who has
+    // paid should never be waiting longer than that for a person to look.
+    paidResponseMinutes:           n(30, 5, 1440),
+    // ── The player has tapped "I have paid" and owes a reference ───────────
+    // On the CASH rail the player pays at a machine, and the merchant is
+    // STANDING AT IT with a session that times out. Making them wait for a
+    // twelve-character bank reference before the platform will even register
+    // the payment loses the machine. So a cash buy reaches PAID on the tap,
+    // which unblocks the merchant, and the reference follows.
+    //
+    // This is the window for it to follow IN. Missing it sends the order to
+    // the admin queue, not to CANCELLED: the cash may genuinely have been
+    // dispensed, and only a person can tell. The merchant still cannot confirm
+    // until the reference lands, so nothing moves on a promise.
+    //
+    // Short — a floor of 2 minutes because a bank app takes a moment, a
+    // ceiling of 60 because a merchant's tokens are held for the whole of it
+    // and an order nobody can evidence should not hold them for an afternoon.
+    utrAfterPaidMinutes:           n(15, 2, 60),
+    // ── Three unpaid buy orders in a row, from either side ─────────────────
+    // An expired buy is NOBODY's fault: the player did not pay and the merchant
+    // did nothing wrong. Neither of these is a punishment for it. They are two
+    // different questions the same event answers.
+    //
+    // THE PLAYER: three in a row and they cannot open a new order for an hour.
+    // Every one of those orders held a merchant's tokens for its full window,
+    // so a player cycling through them is taking inventory out of circulation
+    // that other players needed. The cool-off is short and lifts itself.
+    maxConsecutivePlayerPaymentFailures: n(3, 1, 50),
+    playerOrderLockMinutes:              n(60, 1, 1440),
+    // THE MERCHANT: three in a row and they stop being assigned until an admin
+    // has spoken to them. If three different players were each sent to the same
+    // merchant and none of them could pay, the likeliest explanation is that
+    // something about that merchant is broken — a dead QR, a closed handle, a
+    // bank refusing. Nothing else on the platform can see that, because each
+    // failure on its own looks like an ordinary abandoned purchase.
+    //
+    // Counted separately from `maxConsecutiveRejections` on purpose: an expiry
+    // is not a refusal, and mixing them would suspend an honest merchant.
+    maxConsecutiveMerchantExpiries:      n(3, 1, 20),
     minAdminTokenPurchase:     n(50000, 1),
     minUserTokenPurchaseUsdt:  n(100, 100),
     maxUserTokenPurchaseUsdt:  n(0, 0),      // 0 = unlimited
@@ -133,6 +230,11 @@ export const SYSTEM_CONFIG_SPEC = group({
     enforceMultiplesOf10:     b(true),
     blockOppositeSideBetting: b(false),
     maxFundingOrdersPerHour:  n(0, 0),       // 0 = off
+    // Order CREATION pacing, per player, per minute. 1 by default: a player
+    // holds one open buy at a time anyway, so a second attempt inside the same
+    // minute is a retry storm or a script, never a person buying twice.
+    // 0 = off. Enforced by `depositCreateLimiter` on the create route.
+    maxDepositOrdersPerMinute: n(1, 0, 60),
     maxWarnings:              n(3, 0),       // 0 = never mark for review
   }),
 
@@ -159,7 +261,10 @@ export const SYSTEM_CONFIG_SPEC = group({
   // MUST divide 60 evenly so blocks tile the hour cleanly. The type label
   // '30_MIN' is a fixed identifier and does NOT rename when this changes.
   cycleDurationMinutes: n(30, 10, 60),
-  orderExpiryMinutes:   n(15, 1, 1440),
+  // orderExpiryMinutes moved to payment_mode_policies.processing_window_seconds
+  // (2026-09-08): the two settlement rails have different timelines and one
+  // global number cannot express that. The seeded policy carries the value
+  // an admin had already set — see schema.sql.
   retentionMonths:      n(6, 1, 120),
 
   cyclePhases: group({
@@ -220,7 +325,27 @@ export const BRANDING_SPEC = group({
   userPanelName: s('Betting Bazaar'), adminPanelName: s('Bazaar Admin'),
   merchantPanelName: s('Merchant Panel'), queueManagerPanelName: s('Queue Manager'),
   // ── Brand colours ─────────────────────────────────────────────────────────
-  primaryColor: s('#D4AF37'), secondaryColor: s('#8B5CF6'), accentColor: s('#F59E0B'),
+  //
+  // This spec is the OWNER, and its secondary and accent had drifted from the
+  // product that renders them. Three sets existed for one value:
+  //
+  //   here                        #D4AF37 / #8B5CF6 (purple) / #F59E0B (amber)
+  //   user-panel/src/index.css    #D4AF37 / #B8860B (deep gold) / #F5C77A
+  //   admin BrandingSettings form #D4AF37 / #0ea5e9 (blue)  / #F5C77A
+  //
+  // Only the primary agreed. It never showed, because nothing read the
+  // secondary or accent: they were written as literal rgba() tints in the
+  // panels, so an operator changing them saw nothing move (§4, and the reason
+  // `report:branding` exists). The moment those tints were repointed at the
+  // tokens, the purple and amber here would have become visible — as purple
+  // borders on a gold panel.
+  //
+  // Aligned to the values the shipped panel actually renders, because the
+  // rendered product is the evidence of what this brand is, and an owner that
+  // disagrees with every consumer is the wrong number rather than the true
+  // one. An operator who wants purple sets it in the admin panel, which is
+  // exactly what these being real tokens now makes possible.
+  primaryColor: s('#D4AF37'), secondaryColor: s('#B8860B'), accentColor: s('#F5C77A'),
   // ── Copy ──────────────────────────────────────────────────────────────────
   tagline: s('Your Premier Betting Platform'),
   description: s('Safe, secure, and exciting betting experience'),
@@ -269,15 +394,12 @@ export const DEPOSIT_POLICY_SPEC = group({
   note: s(''),
 });
 
-/** Merchant bonus policy — the spread a merchant earns per completed order. */
-export const MERCHANT_BONUS_POLICY_SPEC = group({
-  enabled: b(false),
-  depositBonusPercent:    n(0, 0, 100),
-  withdrawalBonusPercent: n(0, 0, 100),
-  minOrderForBonus: n(0, 0),
-  maxBonusPerOrder: n(0, 0),
-  note: s(''),
-});
+// A `merchantBonusPolicy` scope used to sit here, declaring a per-order spread
+// (depositBonusPercent / withdrawalBonusPercent / maxBonusPerOrder). Nothing
+// ever read it, and what a merchant earns is owned by
+// `merchant_commission_policies` — a versioned, justified, append-only table.
+// A second set of earnings fields an admin could reach was a second owner
+// waiting to disagree with the first, so it is gone rather than left dormant.
 
 /** Chat room configuration — the public room's rules. */
 export const CHAT_ROOM_CONFIG_SPEC = group({
@@ -304,7 +426,6 @@ export const SCOPES = Object.freeze({
   branding:             BRANDING_SPEC,
   supportLinks:         SUPPORT_LINKS_SPEC,
   depositPolicy:        DEPOSIT_POLICY_SPEC,
-  merchantBonusPolicy:  MERCHANT_BONUS_POLICY_SPEC,
   chatRoomConfig:       CHAT_ROOM_CONFIG_SPEC,
   checkInConfig:        CHECKIN_CONFIG_SPEC,
 });

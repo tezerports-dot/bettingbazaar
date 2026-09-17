@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * middleware/requireChannelMembership.js — betting, games and the wallet are
  * for members of the official Telegram channel.
@@ -31,6 +31,7 @@
  */
 import { db } from '#db';
 import { membershipFor, joinPrompt } from '../domains/telegram/telegramMembership.js';
+import { sendAlert } from '../services/alerting.service.js';
 
 /** How long a last-known membership is honoured while Telegram is unreachable. */
 const GRACE_MS = Number(process.env.TELEGRAM_MEMBERSHIP_GRACE_MS || 24 * 60 * 60 * 1000);
@@ -87,6 +88,16 @@ export function requireChannelMembership({ action = 'continue' } = {}) {
       // exist. Loud, because it means membership is currently unenforced.
       if (verdict.unconfigured) {
         console.error('[channel-gate] no active Telegram config — membership cannot be enforced');
+        // ── The gate is OFF, and a console line is not a signal ─────────────
+        // This branch admits EVERY player to betting, games and the wallet. It
+        // is the right call — an operator's unfinished setup must not be
+        // blamed on a player — but "the membership requirement is currently
+        // not being applied" is not something anyone should learn from
+        // scrollback. `sendAlert` holds a per-key cooldown, so calling it on a
+        // gated request is a bounded number of alerts, not one per request.
+        sendAlert('channel-gate-unconfigured',
+          'Channel membership is UNENFORCED — no active Telegram config',
+          { path: req.path, action }).catch(() => {});
         return next();
       }
 
@@ -103,6 +114,17 @@ export function requireChannelMembership({ action = 'continue' } = {}) {
       }
 
       if (verdict.joined) {
+        // Telegram is unreachable and this player is being admitted on a
+        // last-known answer. That is the policy (see the header) and it is
+        // deliberate — but it is also the platform running with membership
+        // unverified, and the grace window is finite: when it expires these
+        // same players start getting 503s. An operator wants to know at the
+        // START of that window, not when the complaints arrive.
+        if (verdict.unreachable) {
+          sendAlert('channel-gate-telegram-unreachable',
+            'Telegram unreachable — channel membership is being honoured from cache',
+            { graceMs: GRACE_MS, path: req.path }).catch(() => {});
+        }
         // A stale "member" honoured during an outage is allowed only inside the
         // window. Outside it, the answer expires.
         if (verdict.unreachable && !withinGrace(identity)) {

@@ -1,4 +1,4 @@
-/* GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+/* GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
  * ════════════════════════════════════════════════════════════════════════════
  * REDESIGN THEME TOKENS — Betting Bazaar user panel  (2026 "Bazaar" redesign)
  * ════════════════════════════════════════════════════════════════════════════
@@ -18,7 +18,7 @@
 /* ── DARK (default) ─────────────────────────────────────────────────────────── */
 :root,
 :root[data-theme='dark'] {
-  --app-bg: radial-gradient(1100px 620px at 50% -10%, rgba(212, 175, 55, .08), transparent 60%),
+  --app-bg: radial-gradient(1100px 620px at 50% -10%, rgba(var(--brand-primary-rgb), .08), transparent 60%),
             radial-gradient(920px 520px at 102% 112%, rgba(30, 136, 229, .06), transparent 55%),
             linear-gradient(180deg, #0A0E17 0%, #0B1120 100%);
   --bg: #0A0E17;
@@ -26,13 +26,13 @@
   --surface2: #161F31;
   --surface3: #1E2740;
   --line: rgba(255, 255, 255, .07);
-  --line2: rgba(212, 175, 55, .22);
+  --line2: rgba(var(--brand-primary-rgb), .22);
   --text: #EAEEF6;
   --text2: #98A2B6;
   --text3: #5D6678;
   --gold: var(--brand-primary, #D4AF37);
   --gold2: var(--brand-accent, #F5C77A);
-  --gold3: #B8860B;
+  --gold3: var(--brand-secondary, #B8860B);
   --gold-ink: #F1CE7E;
   --green: #31C46E;
   --red: #EF4A4A;
@@ -41,16 +41,16 @@
   --chip-bg: rgba(255, 255, 255, .02);
   --shadow: 0 18px 44px -14px rgba(0, 0, 0, .7);
   --shadow-sm: 0 6px 18px -8px rgba(0, 0, 0, .6);
-  --glow: rgba(212, 175, 55, .42);
+  --glow: rgba(var(--brand-primary-rgb), .42);
   --pill: #161F31;
-  --pill-line: rgba(212, 175, 55, .28);
+  --pill-line: rgba(var(--brand-primary-rgb), .28);
   --skel: rgba(255, 255, 255, .06);
   --skel2: rgba(255, 255, 255, .11);
 }
 
 /* ── LIGHT ──────────────────────────────────────────────────────────────────── */
 :root[data-theme='light'] {
-  --app-bg: radial-gradient(1000px 580px at 50% -12%, rgba(212, 175, 55, .16), transparent 60%),
+  --app-bg: radial-gradient(1000px 580px at 50% -12%, rgba(var(--brand-primary-rgb), .16), transparent 60%),
             radial-gradient(900px 520px at 102% 112%, rgba(30, 136, 229, .08), transparent 55%),
             linear-gradient(180deg, #F4F1E9 0%, #ECE9DF 100%);
   --bg: #F1EEE5;
@@ -58,7 +58,7 @@
   --surface2: #FFFFFF;
   --surface3: #F6F4EC;
   --line: rgba(24, 26, 42, .10);
-  --line2: rgba(184, 134, 11, .34);
+  --line2: rgba(var(--brand-secondary-rgb), .34);
   --text: #171B24;
   --text2: #5B6474;
   --text3: #98A0AF;
@@ -75,7 +75,7 @@
   --shadow-sm: 0 8px 20px -12px rgba(40, 44, 74, .22);
   --glow: rgba(199, 154, 43, .35);
   --pill: #FFFFFF;
-  --pill-line: rgba(184, 134, 11, .30);
+  --pill-line: rgba(var(--brand-secondary-rgb), .30);
   --skel: rgba(24, 26, 42, .06);
   --skel2: rgba(24, 26, 42, .11);
 }

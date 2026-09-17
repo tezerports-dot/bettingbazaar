@@ -254,7 +254,7 @@ a **rebuild**, not a restart. An APK carries whatever was set when it was built.
 | `VITE_APP_ORIGIN` | web: no · **native: yes** | The panel's public origin, and it **must equal the backend's `PUBLIC_APP_ORIGIN`**. Decides which incoming deep links the shell trusts, and its host is baked into the APK's App Link filter at build time. Player auth is Telegram-only, so an APK with this wrong is an APK nobody can sign in to. |
 | `VITE_API_FALLBACK_URLS` | no | Comma-separated alternate origins serving the SAME deployment, tried in order when the primary does not answer. |
 | `VITE_MERCHANT_PANEL_URL` | no | Where `/merchant` links point on a split-origin deploy. |
-| `VITE_TURNSTILE_SITE_KEY` | no | Turnstile **site** key (public half). The captcha gate is a pass-through until this and the backend's `TURNSTILE_SECRET_KEY` are both set — see LAUNCH_READINESS §F. |
+| `VITE_TURNSTILE_SITE_KEY` | no | Turnstile **site** key (public half). The captcha gate is a pass-through until this and the backend's `TURNSTILE_SECRET_KEY` are both set — see docs/PROJECT_STATUS.md §3.3. |
 | `VITE_APP_VERSION` | never set by hand | Injected at build time from `package.json`; §2 forbids a version literal in a source file. |
 
 `npm run build:native` refuses to build without a valid `VITE_API_URL` **and**
@@ -275,7 +275,7 @@ that is talking to us would turn a server-side bug into a multi-origin outage.
 
 This addresses origin availability. It takes no client IP, geo or ISP as an
 input — the candidate order is static and identical for every user — and it is
-not a circumvention mechanism (`04-GOVERNANCE.md` §20, 2026-07-28).
+not a circumvention mechanism (`CLAUDE.md` §20, 2026-07-28).
 
 ## Identity at rest (Aadhaar, bot tokens)
 

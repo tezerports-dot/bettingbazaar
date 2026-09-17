@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * The whole journey, end to end, against a real database.
  *
@@ -97,7 +97,14 @@ describePg('the whole journey: signup to withdrawal', () => {
   let seq = 0;
   let USER; let MERCHANT; let CYCLE;
 
-  beforeAll(async () => { await applySchema(); });
+  // The treasury as this suite FOUND it. Everything below is asserted as a
+  // delta against this, never as an absolute — see the step 5 comment.
+  let treasuryBaseline = null;
+
+  beforeAll(async () => {
+    await applySchema();
+    treasuryBaseline = await trialBalance();
+  });
   afterAll(async () => { await closePg(); });
 
   beforeEach(async () => {
@@ -412,9 +419,36 @@ describePg('the whole journey: signup to withdrawal', () => {
   // ── Step 5: the platform's own books still balance ────────────────────────
   it('leaves the treasury conserving to zero after a full journey', async () => {
     const tb = await trialBalance();
-    // Every posting sums to zero by trigger, so this can only fail if something
-    // wrote a balance outside the double-entry path — which is the failure the
-    // whole ledger design exists to make impossible.
-    expect(tb.ok ?? tb.balanced ?? true).toBeTruthy();
+
+    // ── A DELTA, not an absolute ──────────────────────────────────────────
+    // This asserted `tb.ok` — the whole treasury conserving to zero with no
+    // account drifting from its entries. That is a statement about every
+    // process that has ever touched this database, and the pg suites share
+    // one: a mutation run reverts the source file but not the rows it wrote,
+    // so a mutant that disabled a treasury guard leaves a permanent 777 paise
+    // in `treasury_accounts` that no entry explains, and this test then fails
+    // for good on any developer machine that ever ran one.
+    //
+    // CI never saw it because CI starts a fresh database, which is the worst
+    // shape for a check: it is red exactly where somebody is working and green
+    // where it is being judged.
+    //
+    // What this journey can honestly claim is that IT invented no value and
+    // wrote no balance without its entry. So both halves are measured against
+    // what the suite found on arrival.
+    const baseline = treasuryBaseline;
+    expect(tb.grandTotalPaise).toBe(baseline.grandTotalPaise);
+
+    const driftFor = (report) => Object.fromEntries(
+      (report.unexplained ?? []).map((row) => [row.account, row.drift]),
+    );
+    const before = driftFor(baseline);
+    const after = driftFor(tb);
+    for (const [account, drift] of Object.entries(after)) {
+      // A balance that moved without its entry is the failure the double-entry
+      // design exists to make impossible — but only the part of it THIS journey
+      // caused is this journey's to answer for.
+      expect(drift).toBe(before[account] ?? 0);
+    }
   });
 });

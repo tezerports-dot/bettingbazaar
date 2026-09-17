@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file.
+// GOVERNANCE: Read CLAUDE.md before editing this file.
 /**
  * The support chat sends what the player typed to a real ticket.
  *

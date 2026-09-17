@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * The route harness — a real Express app, real routers, real database.
  *
@@ -19,6 +19,7 @@
  * Rate limiting, CSRF and the WAF filter are mounted by `server.js`, not by the
  * routers, so a route test says nothing about them. They have their own suites.
  */
+import { randomInt } from 'node:crypto';
 import express from 'express';
 import cookieParser from 'cookie-parser';
 import request from 'supertest';
@@ -32,12 +33,27 @@ import { creditMerchantTokens } from '../../domains/merchant/merchantWallet.serv
 /**
  * A mobile number nothing else in the run holds.
  *
- * `users.mobile` and `merchants.mobile` are both UNIQUE, and a generator built
- * on `Date.now()` alone repeats whenever a test builds several actors inside
- * one millisecond — which `Promise.all` does every time. The counter is what
- * makes it monotonic; the random suffix keeps two vitest workers apart.
+ * ── The defect this shape used to have, and what it cost ────────────────────
+ * The seed was `Math.random() * 90_000` and the generator counted up from it.
+ * Each test FILE gets a fresh module registry, so each drew its own seed out of
+ * a 90,000-wide space and then walked forward through it. Across the 65 files in
+ * this tier, two files starting near each other and each taking a few dozen
+ * numbers overlap routinely — and the database is shared and never reset
+ * between files, so the second file's insert hit the first file's row.
+ *
+ * `createUser` is `ON CONFLICT (mobile) DO NOTHING`, so that collision wrote
+ * NOTHING and returned the OTHER user. The harness signed a token for a
+ * `userId` with no row behind it, and the failure surfaced hundreds of lines
+ * away as a 401 from `authenticate` and a `null` from the test's own `getUser`
+ * — in a file that had nothing to do with whichever file took the number first.
+ *
+ * The space is now the full nine digits from `crypto.randomInt`, which is
+ * 1-in-a-billion per draw rather than 1-in-90,000, and the counter still
+ * guarantees uniqueness WITHIN a file when several actors are built in the same
+ * millisecond by `Promise.all`. The retry in `actor()` covers the rest: this
+ * generator makes a collision unlikely, and that check makes one harmless.
  */
-let mobileSeq = Math.floor(Math.random() * 90_000);
+let mobileSeq = randomInt(0, 1_000_000_000);
 function uniqueMobile(prefix) {
   mobileSeq = (mobileSeq + 1) % 1_000_000_000;
   return `${prefix}${String(mobileSeq).padStart(9, '0')}`;
@@ -72,15 +88,45 @@ export function mountRouter(router, { prefix = '' } = {}) {
  * by the same middleware, so an auth change that breaks the routes breaks these
  * tests too. A hand-written `req.user` would keep passing.
  */
+/**
+ * @param twoFactorEnabled whether this account has enrolled a second factor.
+ *   Defaults to TRUE for staff, because since F-011 step 2 a staff account that
+ *   has NOT enrolled reaches the enrolment handshake and nothing else — so an
+ *   unenrolled admin is not a normal admin a route test can use, it is an admin
+ *   mid-onboarding, and every assertion about any other route would be
+ *   asserting the 2FA guard instead.
+ *
+ *   Pass `false` deliberately to test the guard itself.
+ */
 export async function actor({
   userId, roles = [], isAdmin = false, isSubAdmin = false,
   isQueueManager = false, kycStatus = 'APPROVED', permissions = null,
+  twoFactorEnabled = undefined,
 } = {}) {
   const id = userId || `rt-${Math.random().toString(36).slice(2, 10)}`;
-  const mobile = uniqueMobile('9');
 
-  await createUser({ userId: id, username: id, mobile, kycStatus });
+  // `createUser` is ON CONFLICT (mobile) DO NOTHING and returns the OTHER user
+  // when the number is taken. Ignoring that return is how this harness used to
+  // hand back an actor with NO ROW BEHIND IT: the token signed fine, and the
+  // consequence arrived later as a 401 from `authenticate` and a `null` from
+  // the test's own read, in whichever assertion happened to touch it first.
+  //
+  // So the insert is checked. A collision is retried with a fresh number, and
+  // running out of attempts throws HERE, naming the cause, rather than
+  // producing a mystery failure somewhere downstream.
+  let mobile = null;
+  for (let attempt = 1; attempt <= 5; attempt += 1) {
+    const candidate = uniqueMobile('9');
+    const { created } = await createUser({ userId: id, username: id, mobile: candidate, kycStatus });
+    if (created) { mobile = candidate; break; }
+  }
+  if (!mobile) {
+    throw new Error(`actor(): could not claim a free mobile for ${id} in 5 attempts — the number space is colliding, not the test`);
+  }
+
   const patch = { isAdmin, isSubAdmin, isQueueManager };
+  // Staff enrol by default — see the note on the parameter.
+  patch.twoFactorEnabled = twoFactorEnabled ?? (isAdmin || isSubAdmin);
   if (permissions) patch.subAdminPermissions = permissions;
   await updateUser(id, patch);
   if (roles.length) await setRoles(id, roles);

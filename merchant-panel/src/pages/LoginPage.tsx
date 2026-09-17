@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 //
 // Operator sign-in and merchant application — design handoff
 // "BB Merchant Panel.dc.html". A merchant's settlement rail is assigned by an

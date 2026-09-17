@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * ContentSlideManager.tsx
  *
@@ -202,7 +202,7 @@ export const ContentSlideManager: React.FC = () => {
               key={slide._id}
               className={`relative rounded-xl overflow-hidden border transition-all
                 ${slide.status === 'ACTIVE'
-                  ? 'border-gold-500/40 shadow-[0_0_12px_rgba(212,175,55,0.15)]'
+                  ? 'border-gold-500/40 shadow-[0_0_12px_rgba(var(--gold-rgb),0.15)]'
                   : 'border-dark-600 opacity-50 grayscale'}`}
             >
               {/* Image */}

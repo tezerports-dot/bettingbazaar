@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * ════════════════════════════════════════════════════════════════════════════
  * SSE ROUTES — backend/routes/sse.routes.js  v2.0.0
@@ -33,6 +33,10 @@ import { verifyJwt } from '../domains/identity/jwt.util.js';
 import { isTokenRevoked } from '../domains/identity/auth.middleware.js';
 import { decodeOrderCursor, encodeOrderCursor, normalizeLimit } from '../utils/cursorPagination.js';
 import { fetchCycleHistory } from '../domains/markets/cycleHistory.service.js';
+// The one shape a merchant receives. The merchant stream is a merchant-facing
+// responder like any route handler, and it was the only one not going through
+// this.
+import { toMerchantOrderViews } from '../domains/merchant/merchantOrderView.js';
 
 // The admin queue projection used to be a hand-written field list here. It is
 // the repository's `toOrder` now — one description of what an order looks like
@@ -185,8 +189,14 @@ export function initSSERoutes(sseManager, cycleGenerator) {
                 cursor: decodeOrderCursor(req.query.cursor),
             });
 
+            // Through the merchant projection, like every other merchant-facing
+            // responder. This sent `page.orders` RAW — the player's phone
+            // number, their UPI id, their bank details, the platform's treasury
+            // split and the risk verdicts on them — to every merchant, on every
+            // connect. `check:merchant-privacy` read only `merchant.routes.js`,
+            // so it never looked at this file.
             sseManager.writeEvent(res, 'merchant_orders_snapshot', {
-                orders: page.orders,
+                orders: toMerchantOrderViews(page.orders),
                 nextCursor: page.nextCursor ? encodeOrderCursor(page.nextCursor) : null,
                 hasMore: Boolean(page.nextCursor),
                 serverTime: Date.now(),

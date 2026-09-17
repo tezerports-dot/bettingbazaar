@@ -15,7 +15,7 @@ Two documents carry the deep detail; this runbook tells you **when** to use them
 > regulated. You need a gambling licence for each country you serve, an AML/KYC
 > policy, and geo-restriction to licensed countries. That is a legal task, not a
 > code task, and it is cheaper to solve before launch than after. See
-> `docs/governance/LAUNCH_READINESS.md` §G.
+> `docs/PROJECT_STATUS.md` §G.
 
 ---
 
@@ -411,4 +411,4 @@ Good prompts for this repo:
 | `npm run certify:report` | Which store owns each money path, **live** |
 | `npm run preflight:flip` | Whether Postgres may safely hold authority |
 | `docs/POSTGRES_FULL_AUTHORITY_PLAN.md` | The money-cutover machinery in depth |
-| `docs/governance/LAUNCH_READINESS.md` | Everything that is not code (licence, load, legal) |
+| `docs/PROJECT_STATUS.md` | Everything that is not code (licence, load, legal) |

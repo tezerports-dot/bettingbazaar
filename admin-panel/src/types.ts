@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 // ═══════════════════════════════════════════════════════════════════════════
 // 🎯 COMPLETE TYPE DEFINITIONS
 // ═══════════════════════════════════════════════════════════════════════════
@@ -122,7 +122,7 @@ export interface User {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Mirrors CYCLE_TYPE_VALUES in backend/domains/markets/cycleTypes.js, which is
-// the authority for this vocabulary (04-GOVERNANCE.md §1, §4 citation).
+// the authority for this vocabulary (CLAUDE.md §1, §4 citation).
 export type CycleType = '1_MIN' | '30_MIN' | 'FULL_DAY';
 export type CycleStatus =
   | 'OPEN'
@@ -183,6 +183,39 @@ export interface Bet {
 // snapshot (deposit%/reserve% always sum to 100 within one version). See
 // backend/domains/configuration/depositPolicy.model.js for the source of truth.
 // ─────────────────────────────────────────────────────────────────────────────
+
+// ── Settlement rail ──────────────────────────────────────────────────────────
+// The platform runs ONE of two P2P rails at a time and an admin switches
+// between them. Backend authority: database/repositories/paymentModePolicy.js
+// (payment_mode_policies), whose CHECK is what makes these the only two.
+export type PaymentMode = 'P2P_UPI' | 'CASH_ATM';
+
+export interface PaymentModeTimers {
+  assignmentWaitSeconds: number;
+  processingWindowSeconds: number;
+  utrSubmitSeconds: number;
+  disputeWindowSeconds: number;
+  linkExpirySeconds: number;
+  linkMinRemainingSeconds: number;
+}
+
+export interface PaymentModePolicy extends PaymentModeTimers {
+  _id: string;
+  version: number;
+  status: 'ACTIVE' | 'SUPERSEDED';
+  activeMode: PaymentMode;
+  justification: string;
+  changedBy: string | null;
+  changedByName: string;
+  createdAt: string;
+  supersededAt: string | null;
+}
+
+export interface PaymentModeOption {
+  mode: PaymentMode;
+  label: string;
+  merchantMessage: string;
+}
 
 export type DepositPolicyCurrency = 'INR' | 'USDT';
 
@@ -316,18 +349,47 @@ export type TransactionType =
   | 'ESCROW_LOCK'
   | 'ESCROW_RELEASE';
 
+/**
+ * One WALLET LEDGER row, exactly as `platformLedger()` projects it in
+ * `database/repositories/wallets.js` — which is what `GET /api/admin/transactions`
+ * returns. Check this against that projection before adding a field (§23).
+ *
+ * It used to describe a document-store collection that no longer exists, and
+ * every field below was wrong in a way TypeScript could not catch, because the
+ * INTERFACE was the thing that was wrong:
+ *
+ *     _id          the server has never sent one — the id is `txId`
+ *     status       a ledger row has no status; it is a record that money MOVED
+ *     balanceType  the row says `field` ('depositBalance' | 'winningsBalance' | …)
+ *     referenceId  the row says `refId`
+ *     description  the row says `reason`
+ *     timestamp    the row says `createdAt`
+ *     userId       never a populated object; the joined user is on `user`
+ *
+ * `tx._id.slice(-10)` therefore threw `Cannot read properties of undefined` and
+ * the Transactions screen went WHITE — and the admin panel does not recover
+ * from a render crash by navigating, so every screen opened afterwards stayed
+ * blank until a full reload.
+ *
+ * The fix that finds every call site is renaming the field here and letting
+ * `tsc` list them; a search misses one, and a missed one is another blank page.
+ */
 export interface Transaction {
-  _id: string;
-  // userId may be populated as { _id, username, mobile } when fetched via admin route
-  userId: string | { _id: string; username: string; mobile: string };
-  type: TransactionType;
+  /** The idempotency key, and the row's identity. Never `_id`. */
+  txId: string;
+  userId: string;
+  /** LEFT JOINed, so it is null when the account is gone but the money moved. */
+  user: { userId: string; username: string; mobile: string } | null;
+  /** The DIRECTION of the movement. */
+  type: 'CREDIT' | 'DEBIT';
+  /** Which pocket moved. */
+  field: 'depositBalance' | 'winningsBalance' | 'tokenBalance' | 'reserveBalance' | 'lockedBalance';
   amount: number;
-  balanceType: 'DEPOSIT' | 'WINNINGS' | 'BOTH';
-  // FE 4.6 FIX: COMPLETED removed — not a valid Transaction status
-  status: 'SUCCESS' | 'PENDING' | 'FAILED';
-  referenceId?: string;
-  description: string;
-  timestamp: string;
+  balanceBefore: number;
+  balanceAfter: number;
+  reason: string;
+  refId?: string | null;
+  createdAt: string;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

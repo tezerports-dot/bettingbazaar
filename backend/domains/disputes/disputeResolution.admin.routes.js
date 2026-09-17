@@ -1,8 +1,11 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 
 import { express, authenticate, isAdmin, isAdminOrSubAdmin, hasPermission } from '../../routes/admin/_adminShared.js';
 import { db } from '#db';
-import { creditDeposit, creditWinnings } from '../wallet/walletAuthority.service.js';
+import { creditDeposit, creditReserve, creditWinnings } from '../wallet/walletAuthority.service.js';
+import { moveDepositMoney } from '../payment/depositCredit.js';
+import { debitMerchantTokens } from '../merchant/merchantWallet.service.js';
+import { releaseUTR } from '../../middleware/utrValidation.js';
 // The order state machine. Resolving a dispute is a guarded transition, and it
 // runs BEFORE any money moves so that it is what decides the race.
 import { completeOrder, cancelOrder } from '../payment/orderLifecycle.service.js';
@@ -12,6 +15,123 @@ import { listMessages, postMessage, postSystemMessage } from '#db/repositories/c
 
 const router = express.Router();
 
+
+/**
+ * GET /api/admin/orders/:orderId/cdm-receipt — the only way to read one.
+ *
+ * A CDM slip carries an account number, a branch, a timestamp and a bank
+ * transaction reference. It is the strongest evidence in a cash-payout dispute
+ * and the least appropriate thing to hand back to either party — so neither the
+ * player nor the merchant who uploaded it can see it again.
+ *
+ * The narrowness is enforced in the data layer, not by this handler being
+ * careful: `toOrder` does not map these columns, so no projection built on it
+ * can carry them. `getCdmReceipt` is a separate query and this is its only
+ * caller.
+ *
+ * Gated on `canResolveDisputes`, which is the disputes-manager permission the
+ * rest of this file already uses — an admin holds it, and so does the person
+ * whose job is deciding these.
+ *
+ * Every read is AUDITED. A record nobody may see is one whose access has to be
+ * accountable; without this row, "who looked at this player's bank slip" has
+ * no answer.
+ */
+router.get('/orders/:orderId/cdm-receipt', authenticate, hasPermission('canResolveDisputes'), async (req, res) => {
+  try {
+    const receipt = await db.orders.getCdmReceipt(req.params.orderId);
+    if (!receipt) {
+      // A real and expected state, not an error: the merchant's confirm
+      // completes the order and the receipt is chased afterwards, so a settled
+      // order can legitimately have none yet.
+      return res.json({ success: true, receipt: null, message: 'No CDM receipt has been submitted for this order.' });
+    }
+
+    await db.audit.recordDetailed({
+      performedBy: req.user.userId, performedByName: req.user.username,
+      performedByRole: 'admin', action: 'CDM_RECEIPT_VIEWED', category: 'FINANCIAL',
+      targetType: 'PaymentOrder', targetId: String(req.params.orderId),
+      details: { merchantId: receipt.merchantId, submittedAt: receipt.submittedAt },
+    });
+
+    res.json({ success: true, receipt });
+  } catch (error) {
+    console.error('Get CDM receipt error:', error);
+    res.status(500).json({ success: false, message: 'Failed to read the CDM receipt' });
+  }
+});
+
+/**
+ * GET /api/admin/orders/cdm-receipts/missing — payouts settled without evidence.
+ *
+ * The merchant's confirm completes the order and the receipt follows, so a
+ * receipt that never arrives blocks nobody and nothing would otherwise notice.
+ * This is what makes the pattern visible: a merchant appearing here repeatedly
+ * is asserting payments they are not evidencing.
+ */
+router.get('/orders/cdm-receipts/missing', authenticate, hasPermission('canResolveDisputes'), async (req, res) => {
+  try {
+    // `??`, never `||`. ZERO is meaningful here — it is how an admin asks
+    // "everything missing a receipt right now", which is exactly what they
+    // want during an incident — and `||` treats it as absent and substitutes
+    // the default, silently answering a different question. The same
+    // falsy-zero trap the concurrency caps and the hold window both had.
+    const asked = parseInt(req.query.olderThanMinutes, 10);
+    const olderThanMinutes = Number.isFinite(asked) && asked >= 0 ? asked : 60;
+    const orders = await db.orders.withdrawalsMissingCdmReceipt({ olderThanMinutes });
+    res.json({ success: true, olderThanMinutes, orders });
+  } catch (error) {
+    console.error('List missing CDM receipts error:', error);
+    res.status(500).json({ success: false, message: 'Failed to list payouts missing a receipt' });
+  }
+});
+
+/**
+ * GET /api/admin/orders/stalled-withdrawals — payouts nobody has taken.
+ *
+ * A withdrawal that cannot find a merchant WAITS rather than failing. On the
+ * cash rail that is the only safe answer: a large payout is several separate
+ * withdrawals, and the ones already paid cannot be clawed back, so failing the
+ * outstanding one would mean unwinding a payout that has partly happened.
+ *
+ * The price is a token lock with no deadline, which is exactly why this queue
+ * exists. An order with no deadline and no owner is an order nobody is
+ * answerable for; a payout past the assignment window appears here so somebody
+ * is. The player can also cancel it themselves and take the tokens back — the
+ * two together are what make waiting a decision instead of a leak.
+ *
+ * Deliberately NOT split-specific. A part of a split withdrawal is an ORDINARY
+ * queued withdrawal, so the general question — which payouts have nobody
+ * working them — covers it and every other stuck payout with one query.
+ *
+ * `olderThanMinutes` accepts 0, which is how an admin asks "everything waiting
+ * right now" during an incident. `??`, never `||`, for exactly that reason.
+ */
+router.get('/orders/stalled-withdrawals', authenticate, hasPermission('canResolveDisputes'), async (req, res) => {
+  try {
+    const asked = parseInt(req.query.olderThanMinutes, 10);
+    const olderThanMinutes = Number.isFinite(asked) && asked >= 0 ? asked : 25;
+    const orders = await db.orders.stalledWithdrawals({ olderThanMinutes });
+    res.json({
+      success: true,
+      olderThanMinutes,
+      orders: orders.map((o) => ({
+        orderId:    o.orderId,
+        userId:     o.userId,
+        amount:     o.fiatAmount,
+        tokenAmount: o.tokenAmount,
+        createdAt:  o.createdAt,
+        // The label grouping the siblings of one request, when there was one.
+        // It tells an admin that a player asked for a large payout rather than
+        // several small ones — useful context, and nothing more than context.
+        batchRef:   o.withdrawalBatchRef ?? null,
+      })),
+    });
+  } catch (error) {
+    console.error('List stalled withdrawals error:', error);
+    res.status(500).json({ success: false, message: 'Failed to list stalled withdrawals' });
+  }
+});
 
 router.get('/dispute-orders', authenticate, hasPermission('canResolveDisputes'), async (req, res) => {
   try {
@@ -191,8 +311,48 @@ router.post('/dispute-orders/:orderId/resolve', authenticate, isAdmin, async (re
     // ── Apply token movement based on decision + order type ──────────────────
     if (order.type === 'DEPOSIT') {
       if (decision === 'RELEASE_TO_USER') {
-        await creditDeposit(order.userId, order.tokenAmount,
-          `Dispute resolved — deposit credited: ${order.orderId}`);
+        // ── Through `moveDepositMoney`, the one owner of a deposit credit ──
+        // This was `creditDeposit(userId, order.tokenAmount, <a sentence>)`,
+        // and it was wrong in four ways at once. Every one of them reached
+        // money, and this is the route the Disputes screen actually calls.
+        //
+        //  1. TOKENS WERE MINTED. Nothing in this file debits a merchant —
+        //     `grep -c debitMerchant` returns 0. The player was credited and
+        //     the tokens came from nowhere, so a released dispute broke the
+        //     conservation the whole settlement design rests on. The other
+        //     resolve route debited the merchant; this one never has.
+        //
+        //  2. THE IDEMPOTENCY KEY WAS A SENTENCE. The third argument is the
+        //     ORDER ID — `creditDeposit` builds `dep_complete_<orderId>` from
+        //     it. Passing "Dispute resolved — deposit credited: DEP_…" makes a
+        //     DIFFERENT key from the one the normal confirm uses, so the gate
+        //     could not see that the deposit had already been credited: an
+        //     order confirmed normally and then released here was paid TWICE.
+        //     `moveDepositMoney` warns about exactly this in as many words —
+        //     "a sentence here would make a second key for the same deposit and
+        //     open the idempotency gate."
+        //
+        //  3. NO SPLIT. `deposit_policies` decides how a deposit divides
+        //     between the betting balance and the reserve (§2); the whole
+        //     amount went to the betting pocket.
+        //
+        //  4. NO UTR RELEASE, AND NO STREAK CLEAR. A dispute resolved in the
+        //     player's favour IS the money arriving, which is the one point
+        //     where `clearPlayerPaymentFailures` is meant to run — so a player
+        //     who was right, and whom an admin agreed with, kept a
+        //     payment-failure strike toward an hour-long buying lockout.
+        //
+        // `allowOverdraft` because an admin has already decided and the
+        // transition has already committed: refusing the money now would leave
+        // the dispute resolved and the player uncredited. A merchant going
+        // negative is the correct outcome — they owe it.
+        const moved = await moveDepositMoney(order, {
+          debitMerchantTokens, creditDeposit, creditReserve, releaseUTR,
+          allowOverdraft: true,
+        });
+        if (!moved.ok) {
+          console.error(`[dispute resolve] ${order.orderId} released but money did not move:`, moved.reason);
+        }
         systemMessage = `✅ Admin Decision: DEPOSIT APPROVED\n` +
           `${order.tokenAmount} tokens credited to user deposit balance.\n` +
           `Resolution: ${resolution}`;

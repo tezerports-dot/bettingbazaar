@@ -176,7 +176,18 @@
     --text: #eaeff5;
     --text-2: #9dabbc;
     --muted: #5f6e7e;
-    --gold: #d4af37;
+    /* The panel's gold IS the brand's primary. It was a standalone hex, so an
+       operator who changed their brand colour saw it applied only where
+       `--brand-primary` is named directly and nowhere `--gold` is used, which
+       is most of this panel. The hex behind the var is the schema default and
+       §4 permits it as the anchor.
+
+       `--gold-rgb` exists for the same reason as the user panel's triplets:
+       CSS cannot take an alpha channel off a hex variable, so every
+       rgba() tint needed its own literal triplet. `App.tsx` derives
+       `--brand-primary-rgb` from whatever colour the operator saved. */
+    --gold: var(--brand-primary, #d4af37);
+    --gold-rgb: var(--brand-primary-rgb, 212, 175, 55);
     --gold-ink: #f0cf7a;
     --gold-deep: #b8941f;
     --gold-on: #1c1602;
@@ -197,7 +208,7 @@
     --overlay: rgba(3, 6, 11, 0.66);
     --grid: #1a2432;
     --track: #0c121c;
-    --focus: 0 0 0 3px rgba(212, 175, 55, 0.4);
+    --focus: 0 0 0 3px rgba(var(--gold-rgb), 0.4);
     --sh1: 0 1px 2px rgba(0, 0, 0, 0.4);
     --sh2: 0 10px 30px rgba(0, 0, 0, 0.44);
     --sh3: 0 28px 64px rgba(0, 0, 0, 0.55);
@@ -286,7 +297,7 @@
     text-rendering: optimizeLegibility;
     -webkit-font-smoothing: antialiased;
   }
-  ::selection { background: rgba(212,175,55,.28); }
+  ::selection { background: rgba(var(--gold-rgb), .28); }
   input::placeholder, textarea::placeholder { color: var(--muted); }
   a { color: var(--info); text-decoration: none; }
   a:hover { color: var(--gold-ink); }

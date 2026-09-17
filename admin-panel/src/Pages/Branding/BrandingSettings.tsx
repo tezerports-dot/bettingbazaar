@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import React, { useEffect, useState } from 'react';
 import { Save, Palette, Eye, RefreshCw, Image as ImageIcon } from 'lucide-react';
 import api from '../../services/api';
@@ -170,9 +170,15 @@ export const BrandingSettings: React.FC = () => {
     appName: 'Betting Bazaar',
     tagline: 'Bet Smart, Win Big',
     description: '',
-    primaryColor: '#D4AF37',
-    secondaryColor: '#0ea5e9',
-    accentColor: '#F5C77A',
+    // Loading placeholders only — line ~216 merges the server's document over
+    // these the moment it arrives (§4 permits a placeholder that EQUALS the
+    // schema default and cites it). These are
+    // `SYSTEM_CONFIG_SPEC.branding` in database/spec/config.spec.js, where the
+    // secondary read #0ea5e9 here and #8B5CF6 there while the panel rendered
+    // #B8860B — three numbers for one value, which is what §4 forbids.
+    primaryColor: '#D4AF37',    // schema default
+    secondaryColor: '#B8860B',  // schema default
+    accentColor: '#F5C77A',     // schema default
     contactEmail: '',
     contactPhone: '',
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file.
+# GOVERNANCE: Read CLAUDE.md before editing this file.
 # ═════════════════════════════════════════════════════════════════════════════
 # Lock the ORIGIN (Shinjiru) firewall to: WireGuard-from-the-edge + SSH-from-you.
 #

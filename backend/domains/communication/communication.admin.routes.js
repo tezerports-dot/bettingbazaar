@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * communication.admin.routes.js — Communication Platform admin surface
  * (BBEPS Phase 012): channel registry view, the Audit Feed, and the Admin
@@ -6,20 +6,22 @@
  * the audit data itself stays owned by its existing writers).
  * Mounted at /api/admin via routes/admin/index.js.
  */
-import { express, authenticate, isAdmin, isAdminOrSubAdmin } from '../../routes/admin/_adminShared.js';
+import {
+  authenticate, express, hasPermission, isAdmin, isAdminOrSubAdmin,
+} from '../../routes/admin/_adminShared.js';
 import { db } from '#db';
 import { listChannels } from './communication.service.js';
 
 const router = express.Router();
 
 // GET /api/admin/communication/channels — adapter registry state.
-router.get('/communication/channels', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/communication/channels', authenticate, hasPermission('canViewAnalytics'), async (req, res) => {
   res.json({ success: true, channels: listChannels() });
 });
 
 // GET /api/admin/communication/audit-feed?page=&limit=&category=&action=
 // The Audit Feed: newest-first audit entries with filters.
-router.get('/communication/audit-feed', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/communication/audit-feed', authenticate, hasPermission('canViewAnalytics'), async (req, res) => {
   try {
     const page  = Math.max(1, parseInt(req.query.page) || 1);
     const limit = Math.min(200, Math.max(1, parseInt(req.query.limit) || 50));

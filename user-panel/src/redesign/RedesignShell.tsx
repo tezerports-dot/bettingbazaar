@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * RedesignShell.tsx — persistent app shell for the 2026 "Bazaar" redesign.
  *
@@ -15,11 +15,14 @@
  */
 import React, { createContext, useContext, useMemo, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router';
-import { useGame } from '../services/GameContext';
+import { useGame, spendableBalance } from '../services/GameContext';
 import { useTheme } from './ThemeContext';
 import { useViewport } from './useViewport';
 import { fmt } from './format';
 import AuthModal from '../components/Modals/AuthModal';
+import NotificationBell from '../components/Layout/NotificationBell';
+import ShareModal from '../components/Modals/ShareModal';
+import AnnouncementBanner from '../components/AnnouncementBanner';
 import ChannelGateModal from '../components/Modals/ChannelGateModal';
 
 interface ShellContextValue {
@@ -72,11 +75,18 @@ const MENU_SECTIONS = [
   ] },
   { title: 'Finance', items: [
     { label: 'Wallet', icon: '💳', path: '/wallet' },
-    { label: 'Gift Code', icon: '🎁', path: '/gift-code' },
   ] },
   { title: 'Info', items: [
     { label: 'Pro Tips', icon: '💡', path: '/promo' },
     { label: 'Refer & Earn', icon: '🎁', path: '/referrals' },
+    // Opens a modal rather than navigating. It is the ONLY way a player can
+    // reach the app downloads: an admin sets `androidUrl`/`iosUrl` in system
+    // config, `/api/download/android` and `/api/download/ios` 302 to them, and
+    // before this entry existed nothing in the panel linked to either — the
+    // fields were admin-editable with no consumer (§3) and the routes were a
+    // backend feature with no UI (§28). `ShareModal` had been built for it and
+    // hung off the old `Layout/Header`, which this shell replaced.
+    { label: 'Share & Get the App', icon: '📲', path: '#share', action: 'share' as const },
     { label: 'Rules & How to Play', icon: '📋', path: '/rules' },
     { label: 'FAQ / Help', icon: '❓', path: '/faq' },
     { label: 'Support', icon: '🛟', path: '/support' },
@@ -98,11 +108,24 @@ const RedesignShell: React.FC<React.PropsWithChildren<{}>> = ({ children }) => {
   const [logoFailed, setLogoFailed] = useState(false);
 
   const logoSrc = resolveLogo();
-  const totalBal = isAuthenticated ? (user?.depositBalance ?? 0) + (user?.winningsBalance ?? 0) : null;
+  // ── DELIBERATELY deposit + winnings, and NOT the reserve ──────────────────
+  // This pill is smaller than the total on the wallet screen, on purpose. The
+  // reserve is not freely spendable — only `betReservePercent` of a stake may
+  // be drawn from it — and `backend/routes.js` records what happened when a
+  // headline figure included it: players tried bets the engine then refused.
+  // The wallet screen can show the larger number because it shows the RESERVE
+  // tile beside it and publishes the real ceiling from
+  // `/api/user/bet-limits`; a bare pill in the header cannot.
+  //
+  // Left as a named helper rather than an inline sum so the next reader meets
+  // this reasoning instead of "the header forgot a pocket" — which is exactly
+  // how it was read once already.
+  const totalBal = isAuthenticated ? spendableBalance(user) : null;
 
   const openAuth = (mode: 'login' | 'register' = 'login') => { setAuthMode(mode); setAuthOpen(true); setMenuOpen(false); };
   const openMenu = () => setMenuOpen(true);
 
+  const [shareOpen, setShareOpen] = useState(false);
   const ctx = useMemo<ShellContextValue>(() => ({ isAuthenticated, openAuth, openMenu }), [isAuthenticated]);
 
   const go = (path: string) => { navigate(path); setMenuOpen(false); };
@@ -122,13 +145,30 @@ const RedesignShell: React.FC<React.PropsWithChildren<{}>> = ({ children }) => {
           padding: '0 14px', background: 'color-mix(in srgb, var(--bg) 82%, transparent)', backdropFilter: 'blur(14px)',
           borderBottom: '1px solid var(--line)', position: 'relative', zIndex: 60,
         }}>
-          <button onClick={() => go(isAuthenticated ? '/wallet' : '/wallet')} style={{
+          {/*
+            Signed in, this is the wallet. Signed OUT it reads "Sign in / TO
+            PLAY", so it OPENS THE SIGN-IN DOOR.
+
+            It used to be `go(isAuthenticated ? '/wallet' : '/wallet')` — a
+            ternary with two identical branches, which is the shape of an
+            intention that never landed. A logged-out visitor clicking the most
+            prominent control on the page, the one that says "Sign in", was
+            navigated to the wallet instead: `/api/v1/user/profile` answered 401,
+            the page logged "Session expired. Please log in again." and bounced
+            them back to where they started. Nothing on screen explained it, and
+            the site read as broken rather than as asking them to log in.
+
+            `openAuth` and the modal behind it were already here and already
+            working — the drawer's own Sign In button has always called it. Only
+            this button was wired to the wrong half.
+          */}
+          <button onClick={() => (isAuthenticated ? go('/wallet') : openAuth('login'))} style={{
             display: 'flex', alignItems: 'center', gap: 9, background: 'var(--pill)', border: '1px solid var(--pill-line)',
             padding: '7px 13px 7px 8px', borderRadius: 999, cursor: 'pointer', boxShadow: 'var(--shadow-sm)',
           }}>
             <span style={{
               flex: 'none', width: 26, height: 26, borderRadius: '50%',
-              background: 'linear-gradient(to bottom right,#F5C77A,#D4AF37)', display: 'flex', alignItems: 'center',
+              background: 'linear-gradient(to bottom right,var(--gold2),var(--gold))', display: 'flex', alignItems: 'center',
               justifyContent: 'center', color: '#1a1200', fontWeight: 900, fontSize: 13, border: '1px solid rgba(255,255,255,.2)',
             }}>₹</span>
             <span style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.05, textAlign: 'left' }}>
@@ -158,6 +198,24 @@ const RedesignShell: React.FC<React.PropsWithChildren<{}>> = ({ children }) => {
           </button>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            {/*
+              The notification inbox. `notify()` has been persisting rows on
+              real events all along — an admin blocking an account writes the
+              explanation meant for that player — and `NotificationBell` was
+              built to show them, against three routes that work
+              (`/api/user/notifications`, `.../unread-count`, `.../read`).
+
+              It was never mounted. It hung off the OLD `Layout/Header`, this
+              shell replaced that header, and the bell was not carried across —
+              so the component, its tests and its endpoints were all green
+              while no screen in the panel rendered it. A player was blocked,
+              the platform recorded why, and they were locked out with no way
+              to read it (§28: a backend feature with no UI is not shipped).
+
+              It takes `isAuthenticated` because it polls: signed out there is
+              nothing to count and no token to count it with.
+            */}
+            <NotificationBell isAuthenticated={isAuthenticated} />
             <button onClick={toggleTheme} aria-label="Toggle theme" style={{ ...iconBtn, color: 'var(--gold-ink)', fontSize: 17 }}>
               {theme === 'dark' ? '☀️' : '🌙'}
             </button>
@@ -171,6 +229,18 @@ const RedesignShell: React.FC<React.PropsWithChildren<{}>> = ({ children }) => {
 
         {/* ░░ MAIN + CATEGORY STRIP ░░ */}
         <main style={{ flex: 1, minHeight: 0, position: 'relative', overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
+          {/*
+            What the platform is telling everyone. `announcements` had an admin
+            page that writes them and a route that serves them, and no screen
+            here that read it — so an operator's "deposits are paused for an
+            hour" reached nobody (§28, the third instance of that shape).
+
+            Above the content rather than inside a page, because it applies to
+            whatever the player is looking at, and rendered signed out too:
+            the people who most need to read a service notice are the ones who
+            cannot get in.
+          */}
+          <AnnouncementBanner />
           <div className="bb-noscroll" style={{
             flex: 'none', display: 'flex', gap: 10, padding: '8px 14px', overflowX: 'auto',
             background: 'color-mix(in srgb, var(--bg) 55%, transparent)', borderBottom: '1px solid var(--line)',
@@ -244,7 +314,10 @@ const RedesignShell: React.FC<React.PropsWithChildren<{}>> = ({ children }) => {
                     {sec.items.map(it => {
                       const active = isActive(it.path);
                       return (
-                        <button key={it.path + it.label} onClick={() => go(it.path)} style={{
+                        <button key={it.path + it.label} onClick={() => {
+                          if ('action' in it && it.action === 'share') { setMenuOpen(false); setShareOpen(true); return; }
+                          go(it.path);
+                        }} style={{
                           width: '100%', display: 'flex', alignItems: 'center', gap: 12, padding: '11px 12px', border: 'none',
                           borderRadius: 11, background: active ? 'color-mix(in srgb,var(--gold) 12%,transparent)' : 'transparent',
                           cursor: 'pointer', textAlign: 'left', marginBottom: 2,
@@ -274,6 +347,7 @@ const RedesignShell: React.FC<React.PropsWithChildren<{}>> = ({ children }) => {
         )}
 
         {authOpen && !isAuthenticated && <AuthModal onClose={() => setAuthOpen(false)} initialMode={authMode} />}
+        {shareOpen && <ShareModal onClose={() => setShareOpen(false)} />}
 
         {/*
           Mounted unconditionally and rendering nothing until the server refuses

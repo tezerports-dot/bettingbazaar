@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * App.tsx
  *
@@ -40,10 +40,10 @@ const SportsPage          = React.lazy(() => import('./pages/SportsPage'));
 const WinnersPage         = React.lazy(() => import('./pages/WinnersPage'));
 const LeaderboardPage     = React.lazy(() => import('./pages/LeaderboardPage'));
 const WalletPage          = React.lazy(() => import('./pages/WalletPage'));
-const GiftCodePage        = React.lazy(() => import('./pages/GiftCodePage'));
 const TelegramAuthPage = React.lazy(() => import('./pages/TelegramAuthPage'));
 const ReferralPage = React.lazy(() => import('./pages/ReferralPage'));
 import ErrorBoundary from './components/ui/ErrorBoundary';
+import { applyBranding, applyCachedBranding } from './services/branding';
 import { getBackend } from './services/backend.service';
 const APP_VERSION = import.meta.env.VITE_APP_VERSION ?? '0.0.0';
 
@@ -52,18 +52,7 @@ const backend = getBackend();
 const MerchantRedirect = () => {
   // GOVERNANCE §12: all panels subscribe to branding events and apply CSS vars.
   useEffect(() => {
-    function applyBranding(b: any) {
-      if (!b || typeof b !== 'object') return;
-      if (b.primaryColor) document.documentElement.style.setProperty('--brand-primary', b.primaryColor);
-      if (b.secondaryColor) document.documentElement.style.setProperty('--brand-secondary', b.secondaryColor);
-      if (b.accentColor) document.documentElement.style.setProperty('--brand-accent', b.accentColor);
-      if (b.userPanelName) document.title = b.userPanelName;
-      try { localStorage.setItem('app_branding', JSON.stringify(b)); } catch { /* ignore */ }
-    }
-    try {
-      const cached = localStorage.getItem('app_branding');
-      if (cached) applyBranding(JSON.parse(cached));
-    } catch { /* ignore */ }
+    applyCachedBranding();
     return backend.subscribeToBranding(applyBranding);
   }, []);
 
@@ -86,15 +75,15 @@ const PageSkeleton: React.FC = () => (
 );
 
 const LoadingScreen = () => (
-  <div className="flex flex-col items-center justify-center h-full text-[#D4AF37]" style={{ background: 'var(--app-bg, #0A0E17)' }}>
+  <div className="flex flex-col items-center justify-center h-full text-[var(--brand-primary, #D4AF37)]" style={{ background: 'var(--app-bg, #0A0E17)' }}>
     <img
       src="/app-assets/logo.png"
       alt="Betting Bazaar"
       className="h-40 w-auto object-contain mb-6"
       onError={(e) => { (e.target as HTMLImageElement).src = '/logo.png'; }}
-      style={{ filter: 'drop-shadow(0 4px 24px rgba(212,175,55,0.45))' }}
+      style={{ filter: 'drop-shadow(0 4px 24px rgba(var(--brand-primary-rgb), 0.45))' }}
     />
-    <div className="w-10 h-10 border-4 border-[#D4AF37]/20 border-t-[#D4AF37] rounded-full animate-spin mb-4" />
+    <div className="w-10 h-10 border-4 border-[var(--brand-primary, #D4AF37)]/20 border-t-[var(--brand-primary, #D4AF37)] rounded-full animate-spin mb-4" />
     <div className="text-[10px] font-black tracking-[0.3em] uppercase opacity-70">Synchronizing...</div>
   </div>
 );
@@ -117,12 +106,12 @@ const UpdateRequiredScreen = ({ latest }: { latest: string }) => (
       alt="Betting Bazaar"
       className="h-40 w-auto object-contain mb-6"
       onError={(e) => { (e.target as HTMLImageElement).src = '/logo.png'; }}
-      style={{ filter: 'drop-shadow(0 4px 24px rgba(212,175,55,0.4))' }}
+      style={{ filter: 'drop-shadow(0 4px 24px rgba(var(--brand-primary-rgb), 0.4))' }}
     />
-    <div className="w-20 h-20 bg-[#D4AF37]/10 rounded-3xl flex items-center justify-center text-4xl mb-6 border border-[#D4AF37]/20 animate-bounce">🚀</div>
+    <div className="w-20 h-20 bg-[var(--brand-primary, #D4AF37)]/10 rounded-3xl flex items-center justify-center text-4xl mb-6 border border-[var(--brand-primary, #D4AF37)]/20 animate-bounce">🚀</div>
     <h1 className="text-2xl font-black uppercase tracking-tighter mb-2">Update Available</h1>
     <p className="text-sm mb-8 leading-relaxed max-w-xs mx-auto" style={{ color: 'var(--text2)' }}>
-      Version <span className="text-[#D4AF37] font-bold">{latest}</span> is ready with critical security patches.
+      Version <span className="text-[var(--brand-primary, #D4AF37)] font-bold">{latest}</span> is ready with critical security patches.
     </p>
     <button
       onClick={() => {
@@ -133,7 +122,7 @@ const UpdateRequiredScreen = ({ latest }: { latest: string }) => (
           });
         } else { window.location.reload(); }
       }}
-      className="w-full max-w-xs bg-[#D4AF37] hover:bg-[#F5C77A] text-black font-black py-4 rounded-2xl shadow-xl transition-all active:scale-95"
+      className="w-full max-w-xs bg-[var(--brand-primary, #D4AF37)] hover:bg-[var(--brand-accent, #F5C77A)] text-black font-black py-4 rounded-2xl shadow-xl transition-all active:scale-95"
     >
       UPDATE & RESTART
     </button>
@@ -231,7 +220,6 @@ const App: React.FC = () => (
 
                           {/* Finance */}
                           <Route path="/wallet"          element={lazy(<WalletPage />)} />
-                          <Route path="/gift-code"       element={lazy(<GiftCodePage />)} />
 
                           {/* Where a bot login link lands. Recovery is no longer a
                               page in this app — it is a second Telegram bot. */}

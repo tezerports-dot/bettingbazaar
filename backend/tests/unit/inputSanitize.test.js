@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 // Unit tests for the AQ-6 Express-5-safe request-key sanitizer. It replaced a
 // package that reassigned req.query, which Express 5 makes read-only.
 import { describe, it, expect } from 'vitest';

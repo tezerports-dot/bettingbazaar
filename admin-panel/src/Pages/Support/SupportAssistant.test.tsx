@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file.
+// GOVERNANCE: Read CLAUDE.md before editing this file.
 /**
  * Support Assistant reaches all five endpoints, and reports the two halves apart.
  *

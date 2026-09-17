@@ -1,13 +1,12 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 
 
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import express      from 'express';
 import http         from 'http';
 import https        from 'https';
 import { Server as SocketIOServer } from 'socket.io';
 import cors         from 'cors';
-import helmet       from 'helmet';
 import compression  from 'compression';
 import rateLimit    from 'express-rate-limit';
 // AQ-6 (Express 5): the sanitizer package this replaced reassigned the now read-only
@@ -34,6 +33,32 @@ validateEnv();
 if (!process.env.DATABASE_URL) {
   console.error('❌ Refusing to start: DATABASE_URL is not set. PostgreSQL is the only datastore.');
   process.exit(1);
+}
+
+// ── The one way the 2FA guard can become a real lockout ─────────────────────
+// Staff who have not enrolled a second factor reach the enrolment handshake and
+// nothing else (F-011 step 2). Enrolment stores the TOTP secret encrypted under
+// TOTP_ENCRYPTION_KEY, so WITHOUT that key an admin owes a factor they cannot
+// create: refused everywhere, and refused at the one door left open.
+//
+// That is worse than an outage because it is quiet. Players keep depositing
+// while nobody can approve KYC, resolve a dispute or release a payment, and the
+// first symptom is a support queue rather than an alarm.
+//
+// It does not exit: a missing key locks out STAFF, and turning that into a
+// refusal to boot would take the platform away from players too. It is loud
+// instead, and checked at startup rather than discovered by the first admin.
+if (!String(process.env.TOTP_ENCRYPTION_KEY || '').trim()) {
+  console.error(
+    '\n' + '='.repeat(72) + '\n'
+    + '❌ TOTP_ENCRYPTION_KEY IS NOT SET — NO STAFF MEMBER CAN SIGN IN.\n'
+    + '   Admin and sub-admin accounts must hold a second factor, and enrolling\n'
+    + '   one needs this key. Without it every staff account is locked out of\n'
+    + '   everything except an enrolment screen that cannot complete.\n'
+    + '   Set a base64 32-byte key and restart. Back it up like a signing key:\n'
+    + '   rotating it makes every stored 2FA secret undecryptable.\n'
+    + '='.repeat(72) + '\n',
+  );
 }
 
 const __filename = fileURLToPath(import.meta.url);
@@ -65,7 +90,6 @@ import paymentRoutes      from './domains/payment/payment.routes.js';
 import supportRoutes      from './domains/support/support.routes.js'; // CAP-71: RAG support assistant
 import uploadRoutes       from './routes/upload.routes.js';
 import paymentCfgRoutes   from './routes/payment-config.routes.js';
-import giftCodeRoutes     from './routes/giftcode.routes.js';
 import retentionRoutes, { rebuildLeaderboard } from './routes/retention.routes.js';
 import gameProviderRoutes from './domains/casino/gameProvider.routes.js';
 import gameRegistryRoutes from './domains/gameRegistry/gameRegistry.routes.js';
@@ -73,7 +97,9 @@ import { seedGameRegistry } from './domains/gameRegistry/gameRegistry.seed.js';
 import { httpMetrics, metricsHandler, setRealtimeStatsProvider } from './services/metrics.service.js';
 // Plan items 19/21/28/24/4/51 (2026-07-13): central security + network config,
 // OWASP filter, service registry, storage abstraction.
-import { HELMET_OPTIONS, CORS_SHAPE, RATE_LIMIT_TIERS, isPhantomBetPlacement } from './config/security.config.js';
+import { CORS_SHAPE, RATE_LIMIT_TIERS, isPhantomBetPlacement } from './config/security.config.js';
+import { refreshProviderFrameSources, startProviderFrameSourceRefresh } from './domains/casino/providerFrameSources.js';
+import { securityHeaders } from './middleware/cspMiddleware.js';
 import { network, canonicalRedirect } from './config/network.config.js';
 import {
   attachProxyProtocolRequestMetadata,
@@ -102,7 +128,7 @@ import { authLimiter, adminAuthLimiter, merchantAuthLimiter, betLimiter, twoFact
 // Item 12 (2026-07-13): IP-rotation defense — per-subnet backstop + optional
 // global surge breaker on sensitive endpoints, on top of the per-IP limiters.
 import { createSubnetLimiter, globalSurgeBreaker, startIpDefenseConfigRefresh } from './middleware/ipDefense.js';
-// Bot-mitigation challenge on credential endpoints (LAUNCH_READINESS §F).
+// Bot-mitigation challenge on credential endpoints (docs/PROJECT_STATUS.md §3.3).
 // Pass-through until TURNSTILE_SECRET_KEY is set, like every other integration.
 import { requireCaptcha } from './middleware/captcha.js';
 import GameEngine         from './domains/markets/gameEngine.js';
@@ -177,7 +203,14 @@ const PORT = network.port; // item 28: single parse point in config/network.conf
 app.use(rejectAmbiguousFraming);
 app.use(attachProxyProtocolRequestMetadata);
 app.use(compression());
-app.use(helmet(HELMET_OPTIONS));
+// The CSP's `frame-src` is read from `game_providers`, so the first read has to
+// happen before a response can need it, and it has to keep happening. Not
+// awaited: a database that is not up yet must not stop the server binding, and
+// an empty list is `default-src 'self'` — the behaviour that shipped — which
+// self-heals on the next refresh. See providerFrameSources.js, "Failing closed".
+refreshProviderFrameSources();
+startProviderFrameSourceRefresh();
+app.use(securityHeaders);
 // Item 29: optional canonical-host 301 (only when CANONICAL_HOST is set; keys
 // on the requested Host only — see network.config.js).
 app.use(canonicalRedirect);
@@ -198,7 +231,26 @@ const JSON_LIMIT = process.env.JSON_BODY_LIMIT || '1mb';
 const _tightJson = express.json({ limit: JSON_LIMIT });
 const _assetJson = express.json({ limit: process.env.ASSET_JSON_LIMIT || '8mb' });
 const _ASSET_UPLOAD_PATHS = new Set(['/api/admin/app-assets/upload']);
-app.use((req, res, next) => (_ASSET_UPLOAD_PATHS.has(req.path) ? _assetJson : _tightJson)(req, res, next));
+// ── The provider wallet callback needs the bytes it was signed over ────────
+// Its HMAC is computed over the request BODY, and a digest taken over a
+// re-serialisation of the parsed body only matches when our serialiser happens
+// to agree with the provider's — key order, whitespace, unicode escaping.
+// `verify` stashes the exact buffer so the signature can be checked against it
+// (webhookSignature.js accepts either, so nothing that verified before stops).
+//
+// SCOPED to that path on purpose. Keeping a raw copy of every request body
+// doubles what a 1 MB upload holds in memory, for a check only one route makes.
+// The Telegram webhooks do NOT need it — they authenticate with a secret HEADER,
+// not a body digest.
+const _RAW_BODY_PREFIX = '/api/game/wallet/';
+const _rawJson = express.json({
+  limit: JSON_LIMIT,
+  verify: (req, _res, buf) => { req.rawBody = buf; },
+});
+app.use((req, res, next) => {
+  if (req.path.startsWith(_RAW_BODY_PREFIX)) return _rawJson(req, res, next);
+  return (_ASSET_UPLOAD_PATHS.has(req.path) ? _assetJson : _tightJson)(req, res, next);
+});
 // NO urlencoded body parser — deliberately. This is CSRF defence, not cleanup.
 //
 // Auth cookies are issued with `sameSite: 'none'` in production (routes.js),
@@ -440,7 +492,7 @@ startIpDefenseConfigRefresh();
 app.use('/api/v1/auth', authLimiter, createSubnetLimiter('auth'), globalSurgeBreaker('auth'), authRoutes);
 // Player signup and login are NOT here — they run through the Telegram bot
 // webhooks and the one-time-link exchange, mounted at /api/telegram below.
-// 2FA enrolment and management (LAUNCH_READINESS §F). Mandatory for admin and
+// 2FA enrolment and management (docs/PROJECT_STATUS.md §3.3). Mandatory for admin and
 // sub-admin roles; players do not have passwords and so have no second factor
 // to enrol. Enforcement at login lives in the auth handler, this router only
 // manages enrolment.
@@ -457,7 +509,7 @@ app.post('/api/admin/login', loginPaceLimiter, adminAuthLimiter, createSubnetLim
   next();
 }, loginHandler);
 // Second leg of the admin login. 2FA is MANDATORY for admins and sub-admins
-// (LAUNCH_READINESS §F), so without this route an enrolled admin gets a
+// (docs/PROJECT_STATUS.md §3.3), so without this route an enrolled admin gets a
 // challenge token from the line above and has nowhere to redeem it. Rate
 // limited on the OTP tier, not the admin-password tier: six digits is a 10^6
 // space, so it warrants its own tighter budget.
@@ -519,7 +571,6 @@ app.use('/api/merchant',  merchantRoutes);
 app.use('/api/payment', paymentRoutes);
 app.use('/api/support',   supportRoutes); // CAP-71: RAG support assistant (dormant until keys set)
 app.use('/api',           uploadRoutes);
-app.use('/api/giftcode',  giftCodeRoutes);
 app.use('/api/payment',   paymentCfgRoutes);
 app.use('/api',           retentionRoutes);
 // Referral and VIP were removed from the platform on 2026-07-30 (owner

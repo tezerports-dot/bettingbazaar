@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * FaqPage.tsx — 2026 "Bazaar" redesign. Admin-written FAQs (GET /v1/content/faq
  * via backend.getFaq) in a themed accordion, with a static fallback set.

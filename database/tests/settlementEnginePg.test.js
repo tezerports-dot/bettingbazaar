@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file.
+// GOVERNANCE: Read CLAUDE.md before editing this file.
 /**
  * settlementEnginePg.test.js — the settlement engine, end to end, against a
  * real PostgreSQL.

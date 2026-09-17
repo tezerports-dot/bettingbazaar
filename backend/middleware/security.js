@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import { rateLimit, ipKeyGenerator } from 'express-rate-limit';
 import { createHash } from 'node:crypto';
 import { db } from '#db';
@@ -12,6 +12,9 @@ import { betBehaviorLimiter } from './behavioralRateLimit.js';
 // The IP deny-list. Was a model registered nowhere; every call threw into a
 // silent fail-open catch, so nothing was ever blocked. Now a real table.
 import { isIpBlocked, blockIp, unblockIp } from '#db/repositories/security.js';
+// The deposit pace is a business number an operator sets, so the limiter reads
+// it at request time rather than baking it into a tier constant.
+import { getSystemConfig } from '#db/repositories/config.js';
 
 // ==================== AUTHENTICATION RATE LIMITERS ====================
 
@@ -288,19 +291,22 @@ export const twoFactorLimiter = rateLimit({
     },
 });
 
-export const ipBetLimiter = rateLimit({
-    store: createRateLimitStore('rl:bet:'),
-    ...RATE_LIMIT_TIERS.bet, // 30 / min
-    message: { 
-        success: false,
-        message: "Slow down! You are placing bets too quickly. Please wait a moment."
-    },
-    standardHeaders: true,
-    legacyHeaders: false,
-    // Track per user, not per IP (users may share IPs). This comment was
-    // already here, above a line that tracked per IP — see `actorKey`.
-    keyGenerator: actorKey
-});
+/*
+ * 'effects'. A bet the server refused — the cycle had closed, the stake was
+ * outside the board's limits, the balance would not cover it — placed nothing,
+ * so it must not cost one of the thirty. The window where a player is most
+ * likely to be refused is the seconds around a cycle boundary, which is also
+ * exactly when they are trying hardest to get a real bet in.
+ *
+ * Keyed per user, not per IP (players share IPs). That comment was already
+ * here, above a line that keyed on the IP — see `actorKey`.
+ */
+export const ipBetLimiter = moneyLimiter(
+    'rl:bet:',
+    RATE_LIMIT_TIERS.bet, // 30 / min
+    'Slow down! You are placing bets too quickly. Please wait a moment.',
+    { bounds: 'effects' },
+);
 
 
 export const betLimiter = [ipBetLimiter, betBehaviorLimiter];
@@ -311,19 +317,214 @@ export const betLimiter = [ipBetLimiter, betBehaviorLimiter];
 
 // Rate limiter for withdrawal requests
 // Prevents rapid withdrawal attempts
-export const withdrawalLimiter = rateLimit({
-    store: createRateLimitStore('rl:withdraw:'),
-    ...RATE_LIMIT_TIERS.withdrawal, // 5 / hour
-    message: { 
-        success: false,
-        message: "Too many withdrawal requests. Please wait before trying again."
-    },
-    standardHeaders: true,
-    legacyHeaders: false,
-    // Per user. Keyed on the IP, a withdrawal cap is reset by a mobile
-    // reconnect — and this one guards money leaving the platform.
-    keyGenerator: actorKey
-});
+/*
+ * 'effects'. Five per HOUR, and a withdrawal is the request a player is most
+ * likely to get refused on the first few tries: below the floor, more than the
+ * winnings pocket holds, no bank details on file yet. Charging for those spent
+ * a player's whole hour before one withdrawal existed — locked out of their own
+ * money by the messages telling them how to ask for it.
+ *
+ * Keyed per user, not per IP: keyed on the IP a withdrawal cap is reset by a
+ * mobile reconnect, and this one guards money leaving the platform.
+ */
+export const withdrawalLimiter = moneyLimiter(
+    'rl:withdraw:',
+    RATE_LIMIT_TIERS.withdrawal, // 5 / hour
+    'Too many withdrawal requests. Please wait before trying again.',
+    { bounds: 'effects' },
+);
+
+// ==================== PAYMENT RAIL RATE LIMITERS ====================
+//
+// Every one of these routes shipped with NO limit. They are not login
+// endpoints, so the auth tiers never covered them, and the global /api/*
+// backstop is 1000 requests per 15 minutes — which for a route that calls an
+// external API, locks escrow, or writes to a merchant queue is not a limit.
+//
+// All keyed on the ACTOR, not the IP. A per-IP throttle on a money route puts
+// every player behind one carrier-grade NAT in the same bucket and stops
+// nobody willing to reconnect — the same reasoning as the withdrawal cap above.
+
+/**
+ * Named so each limiter's message can say what it is limiting.
+ *
+ * ── `bounds` is REQUIRED, and it is the whole decision ─────────────────────
+ * A limiter on a money route is bounding one of two different things, and
+ * which one it is decides whether a REFUSED request should cost the caller
+ * part of their budget:
+ *
+ *   'effects'  — the limiter exists because a SUCCESSFUL call does something
+ *                expensive: creates an order, holds a price, takes a
+ *                merchant's inventory out of circulation. A request the server
+ *                refused did none of that, so charging for it bounds nothing
+ *                and only punishes the caller for a mistake the server has
+ *                just explained to them.
+ *
+ *   'attempts' — the limiter exists because the REFUSALS are the attack. A
+ *                caller sweeping other people's orders looking for one that
+ *                has not claimed its grace minute generates nothing but
+ *                refusals; skipping them would switch the limiter off.
+ *
+ * It was one shared configuration counting every request, and the two cases
+ * were never separated. Measured on the live server: four malformed USDT
+ * creates — a size that is not a denomination, a missing chain, a chain that
+ * does not exist — spent four fifths of the hour's budget of five without a
+ * single order existing, leaving room for exactly one real purchase. Each of
+ * those four was refused BY NAME so the player could correct it (§25), and
+ * then the correction was what they could not afford.
+ *
+ * The sharpest version is not a player's typo at all: `USDT_RATE_UNSET` is
+ * refused the same way, so during a window when no admin has set a rate, five
+ * taps on Continue cost a player the rail for an hour over a platform-side
+ * outage they had no part in.
+ *
+ * No default. A new rail limiter has to state which kind it is, because the
+ * wrong answer is silent in both directions — an 'attempts' limiter written as
+ * 'effects' is off, and an 'effects' limiter written as 'attempts' locks out
+ * the people it was meant to serve.
+ */
+function moneyLimiter(prefix, tier, message, { bounds, ...rest }) {
+    if (bounds !== 'effects' && bounds !== 'attempts') {
+        throw new Error(`moneyLimiter(${prefix}): \`bounds\` must be 'effects' or 'attempts'.`);
+    }
+    return rateLimit({
+        store: createRateLimitStore(prefix),
+        ...tier,
+        // Anything else the limiter needs (a dynamic `limit`, a `skip`). It is
+        // spread BEFORE the fixed keys so a caller cannot quietly override the
+        // actor key or the `bounds` decision by passing them here.
+        ...rest,
+        message: { success: false, message },
+        standardHeaders: true,
+        legacyHeaders: false,
+        keyGenerator: actorKey,
+        // `decrement` after the response, on any status >= 400 — which includes
+        // this limiter's own 429, deliberately: a pace is not a lockout, and a
+        // caller who keeps knocking should not push their own window further
+        // out. The store implements `decrement` (redisRateLimitStore.js) on
+        // both the Redis and the in-memory path, so this is not a flag that
+        // quietly does nothing.
+        skipFailedRequests: bounds === 'effects',
+    });
+}
+
+/**
+ * Creating a USDT purchase: it holds a PRICE at the rate live at that moment
+ * and puts a merchant's tokens on the hook for the length of the window.
+ *
+ * There is no payment processor on this rail and there never is one — the
+ * counterparty is a person (`CLAUDE.md` §25). This and the tier beside it in
+ * `security.config.js` both described "an outbound request to BTCPay", which
+ * is a call no code in this repository makes; that is the §1 shape — a comment
+ * describing an abandoned plan — and it is also what made the budget look like
+ * it was protecting somebody else's server rather than the player's own hour.
+ */
+export const usdtDepositLimiter = moneyLimiter(
+    'rl:usdtdep:', RATE_LIMIT_TIERS.usdtDeposit,
+    'Too many USDT purchase attempts. Please wait before trying again.',
+    { bounds: 'effects' },
+);
+
+/** Retrying an order: a new order, and on a sell a new escrow lock. */
+export const orderRetryLimiter = moneyLimiter(
+    'rl:retry:', RATE_LIMIT_TIERS.orderRetry,
+    'Too many retries. Please wait before trying again.',
+    { bounds: 'effects' },
+);
+
+/**
+ * Claiming the minute to fetch a UTR.
+ *
+ * 'attempts', not 'effects'. It is once per order by construction
+ * (`utr_grace_at IS NULL`), so a caller sweeping across orders looking for one
+ * that has not claimed it gets a refusal every time — the refusals ARE the
+ * sweep this bounds, and skipping them would leave it counting nothing.
+ */
+export const utrGraceLimiter = moneyLimiter(
+    'rl:utrgrace:', RATE_LIMIT_TIERS.utrGrace,
+    'Too many requests. Please wait a moment.',
+    { bounds: 'attempts' },
+);
+
+/** A merchant supplying a cash link from an ATM. */
+export const cashLinkSupplyLimiter = moneyLimiter(
+    'rl:cashlink:', RATE_LIMIT_TIERS.cashLinkSupply,
+    'Too many links supplied. Please wait before supplying another.',
+    { bounds: 'effects' },
+);
+
+/**
+ * Submitting a CDM deposit slip.
+ *
+ * 'attempts', for the same reason as the grace claim: one per order, so a
+ * caller walking other orders to find one without a receipt produces refusals
+ * and nothing else.
+ */
+export const cdmReceiptLimiter = moneyLimiter(
+    'rl:cdm:', RATE_LIMIT_TIERS.cdmReceipt,
+    'Too many receipt submissions. Please wait before trying again.',
+    { bounds: 'attempts' },
+);
+
+/**
+ * Creating a deposit order — ADMIN-EDITABLE, unlike every limiter above it.
+ *
+ * ── Why this one is configurable and the others are not ────────────────────
+ * The tiers above are security budgets: how many wrong passwords, how many
+ * retries. This is a BUSINESS pace — how often a player may start a purchase —
+ * and a business number belongs to the operator, not to a constant in a
+ * security file (`CLAUDE.md` §4). It reads `riskRules.maxDepositOrdersPerMinute`
+ * on every request, so a change takes effect without a redeploy.
+ *
+ * ── Why it was needed ──────────────────────────────────────────────────────
+ * `/deposit/create` was the only money-creation route with NO limit at all:
+ * `/withdrawal/create` carries one plus a subnet limiter and a surge breaker,
+ * and `/usdt/deposit/create` carries one. The one-open-buy rule bounded the
+ * damage to repeated 409s, and the hourly velocity rule defaults to OFF, so
+ * nothing paced the attempt itself.
+ *
+ * Default 1/minute: a player may hold one open buy at a time anyway, so a
+ * second create inside the same minute is a retry storm or a script, never
+ * somebody buying twice.
+ *
+ * `0` disables it, matching `maxFundingOrdersPerHour`'s convention. Express
+ * rate-limit treats a limit of 0 as "block everything", which is the opposite
+ * of what an operator typing 0 means here — so `skip` short-circuits first and
+ * the limiter never sees that case.
+ *
+ * Keyed on the ACTOR for the reason every money route is: a per-IP throttle
+ * puts every player behind one carrier-grade NAT in the same bucket and stops
+ * nobody willing to reconnect.
+ */
+async function depositPacePerMinute() {
+    try {
+        const cfg = await getSystemConfig();
+        const value = Number(cfg?.riskRules?.maxDepositOrdersPerMinute);
+        // schema default: 1 (database/spec/config.spec.js riskRules)
+        return Number.isFinite(value) && value >= 0 ? value : 1;
+    } catch {
+        // A config read that fails must not open the gate. The schema default is
+        // the safe answer, not "unlimited".
+        return 1;
+    }
+}
+
+/*
+ * 'effects', and at a limit of ONE per minute this is the sharpest instance of
+ * the whole class. Measured on the live server: a player who mistypes the
+ * amount once — the route refuses it BY NAME, "must be a multiple of 10
+ * tokens" — is answered "You are starting purchases too quickly" on the
+ * corrected amount, and cannot buy for the rest of the minute. A player who
+ * types it right the first time is served. The refusal that taught them the
+ * rule is the thing that took the budget away, on the first action a new
+ * account performs.
+ */
+export const depositCreateLimiter = moneyLimiter(
+    'rl:depcreate:',
+    { windowMs: 60 * 1000, limit: depositPacePerMinute },
+    'You are starting purchases too quickly. Please wait a moment and try again.',
+    { bounds: 'effects', skip: async () => (await depositPacePerMinute()) === 0 },
+);
 
 // ==================== GENERAL API RATE LIMITER ====================
 

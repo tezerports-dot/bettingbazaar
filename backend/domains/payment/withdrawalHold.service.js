@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * domains/payment/withdrawalHold.service.js — the settlement half of a withdrawal.
  *
@@ -96,6 +96,17 @@ export async function settleHold(orderId) {
   // settle, never which of two concurrent callers wins. Once a settlement row
   // exists its own state machine decides and this check is skipped entirely.
   if (!existing && order.merchantCreditStatus !== 'HELD') return false;
+
+  // A DISPUTED withdrawal does not settle, whatever its timer says.
+  //
+  // `findDueHolds` excludes these in its WHERE, which is where the real guard
+  // belongs; this repeats it because `settleHold` is exported and callable on
+  // its own. The dispute moves the STATE and deliberately leaves the credit
+  // HELD, so a check on the credit status alone cannot see it — and this
+  // function settled disputed withdrawals until 2026-09-10, consuming the
+  // player's locked stake and crediting the merchant while the dispute was
+  // open. Proven in backend/tests/routes/disputedHoldPg.test.js.
+  if (order.state === 'DISPUTED') return false;
 
   if (!existing) {
     // Opened lazily. An order held by a confirm that failed to open its

@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 
 import React, { createContext, useContext, useState, useCallback } from 'react';
 
@@ -38,7 +38,7 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
               pointer-events-auto rounded-lg px-4 py-3 shadow-2xl border flex items-center justify-between animate-in fade-in slide-in-from-top-4
               ${toast.type === 'success' ? 'bg-[#0B0E14] border-green-500 text-green-400' : 
                 toast.type === 'error' ? 'bg-[#0B0E14] border-red-500 text-red-400' : 
-                'bg-[#0B0E14] border-[#D4AF37] text-[#D4AF37]'}
+                'bg-[#0B0E14] border-[var(--brand-primary, #D4AF37)] text-[var(--brand-primary, #D4AF37)]'}
             `}
           >
             <span className="text-xs font-bold">{toast.message}</span>
