@@ -186,6 +186,7 @@ wrong owner gets working code deleted by the next reader.
 | Merchant earnings | `merchant_commission_policies` + `merchant_commission_rates` (one row per variety), read by `domains/merchant/merchantCommission.service.js`, which owns no numbers. Platform-funded from `MERCHANT_BONUS_POOL`, never deducted from users. Do not reintroduce `commissionRate`, a buy/sell spread, or a deposit-triggered commission. See §26. |
 | **How many tokens exist, and where they are** | **`SystemConfig.adminTokenSupply.total` — 20,000,000,000, and NONE ARE EVER CREATED** (owner, 2026-09-23). The platform starts holding all of them; every movement after that is a TRANSFER — platform → merchant when a merchant buys inventory, merchant → player when a player buys, and back the other way when they sell. So `platform holding + every merchant wallet + every player wallet = total`, always, and that is an invariant the double-entry books prove rather than a promise a counter makes. `transferred` is what has left the platform's own holding (`internal`: an operator who could set it to 0 would be telling the platform it still holds tokens it has already given away); what it still holds is `total - transferred`. **Do not reintroduce minting.** The word survived in `reserveAdminMint`, "Approving one mints supply", and a 10-billion "cap" that read as a ceiling on creation — all of which described a model this platform does not have. |
 | Merchant token balance mutations | `domains/merchant/merchantWallet.service.js` exclusively — idempotent `tx_id`. |
+| **What the platform GOT, or GAVE, for an admin↔merchant token movement** | `admin_token_considerations` via `database/repositories/adminTokenConsiderations.js` — one row per movement, keyed BY the movement, so the money fact inherits the token movement's idempotency instead of inventing its own. The treasury says the tokens moved; nothing said what they moved FOR, so every P&L reading of the admin↔merchant leg was missing its revenue side and the books balanced in tokens while saying nothing about money. **Two amounts, deliberately** (trap 15): `fiat_amount_minor` is hundredths of the currency actually transacted — what a human is shown and what reconciles against a bank line or a chain explorer — and must NEVER be summed across currencies; `inr_equivalent_paise` is the same event in rupees and is the ONLY column anything may aggregate. `rate_used` is frozen on the row for §25's reason: an operator editing the USDT price must not restate a settled trade. The figure is **REQUIRED** on both routes and **0 is a real answer** meaning "no money changed hands" — absence and zero are different facts, and a nullable column could not tell them apart. USDT comes IN only; the platform buys its tokens back in rupees (owner, 2026-09-23), stated as a CHECK so the rule survives the next route that writes here. Validated BEFORE any token moves, because the row is written after the movement commits (§21). |
 | A merchant's tokens on a BUY order | **HELD, in `merchant_settlements` (`direction='DEPOSIT'`), through `domains/merchant/depositEscrow.service.js` — the one owner.** Taken at ATTACHMENT by all three routes that attach a merchant (auto-assignment, admin assign/reassign, claiming from the open pool); released automatically on every terminal outcome; consumed by the confirm. At most one live hold per order, enforced by `merchant_settlements_one_live_deposit`. **No gate may ADMIT an order by reading a balance** — a read in one statement acted on in another is a snapshot, and two orders arriving together both passed it. Taking the hold IS the check. See §9 and F-018. |
 | Whether a merchant's held tokens can be taken by anything else | **No.** Every other movement touches `available`; `reserved` is reachable only through the settlement state machine. An admin deduction is `legs: { available: -a }`, so it cannot reach a player's promised tokens, and no production caller passes `allowNegativeAvailable`. |
 | Whether a merchant is owed a hold they do not have | `findUnheldDepositOrders()` + `findStrandedDepositHolds()`, swept every 5 minutes by `sweepDepositHolds`. A stranded hold is RELEASED; an unheld order is **reported, never silently re-held** — re-taking it hides the path that forgot. `getSpendablePaiseFor()` is the same question as an invariant: with universal holds it must EQUAL `available`, and any divergence is an unheld order. It is no longer a gate. |
@@ -737,6 +738,17 @@ it achieves.
     `merchants`, so this was reachable. **Check that the recipient can receive
     before writing the record that says they did.**
 
+    **The same shape, found a second time, on the admin top-up (2026-09-23).**
+    `POST /admin/merchants/:id/fund` read the recipient from the CREDIT's return
+    value — after the treasury transfer had already committed. Measured on a
+    running server: funding a merchant id that does not exist answers **404
+    "Merchant not found"** while the tokens leave `TOKEN_SUPPLY` and land in
+    `MERCHANT_FLOAT`, credited to nobody. `MERCHANT_FLOAT` then claims tokens no
+    merchant wallet holds, so §2's conservation invariant — platform holding +
+    every merchant wallet + every player wallet = the total — is broken by a
+    typo in a URL, silently, with the admin told nothing moved. **A 404 is not a
+    rollback.** Read the recipient FIRST.
+
 ---
 
 ## 21. A write that follows a commit must not be able to fail
@@ -1192,9 +1204,22 @@ these are the specific ones this codebase has actually produced.
 | S23 | A component declared INSIDE another component | Does this identity survive the parent's next render? If not, React remounts it and the caret goes with it. |
 | S24 | A label that names a control it is not attached to | Can a screen reader — or a test — address this field by the name printed next to it? |
 | S25 | A panel keeping its own list of a document's fields | Which list does the SERVER agree with? Every other copy will drift, in both directions. |
+| S26 | A button calling the RIGHT route with a request that route refuses | `check:ui-coverage` proves the path and the method resolve. Does the call carry what the handler REQUIRES — a header, a required field? Press it and read the toast. |
 
 **S22 through S25 all came out of pressing controls rather than opening
 screens, and each was invisible to every tier below a browser.**
+
+**S26 is the gap between "a button calls a route" and "the route accepts the
+call".** `POST /admin/merchants/:id/deduct` requires an `Idempotency-Key` and
+answers 400 without one — only the caller can tell a redelivery from a second
+deliberate deduction, so the server refuses to guess. The admin panel's
+`deductWallet` never sent one. **"Deduct From Wallet" had therefore never once
+worked**, and what the operator was shown as the reason was the protocol
+message: "Idempotency-Key is required for this request. Send the SAME key when
+retrying" — S14 on a money screen, on a failure they cannot act on. Every tier
+was green: the route test sends the header, the gate checks that the path and
+method resolve, and no one asked whether the CALL THE BUTTON MAKES is one the
+route accepts. Assert the request, not just the URL.
 
 - **S22** — the player's Profile had five rows, each ending in a `›` promising a
   screen, each a `<button>` with no `onClick` at all. Nothing fails, so nothing
@@ -1278,3 +1303,6 @@ noticed for months that one of the two confirm routes never checked for one.
 | `npm run test:e2e` | The whole server, over real HTTP, as all three actors. |
 | `npm run test:browser` | **Every screen in all three panels, opened in a real browser.** Needs a backend (`BB_BASE`) and starts the dev servers itself. |
 | `npm run test:drive` | **Every control on every screen, pressed.** Reports THREW, 5xx, or INERT — a control that left the screen byte-identical. Inert is triage, not failure: read the list. |
+| `npm run check:cors-headers` | Every header a panel SENDS is one CORS allows. A header the server has not agreed to is never sent — the browser cancels the request, so there is no status code and no log line for anything below a browser to see. |
+| `npm run test:wallet-buttons` | Top Up and Deduct, pressed in a browser, asserted against the wallet AND the money record. |
+| `npm run test:bet-button` | The bet card, pressed in a browser, cross-origin — the pass that found the CORS block. |

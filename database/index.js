@@ -103,6 +103,7 @@ import * as settlements from './repositories/settlements.js';
 import * as merchantSettlements from './repositories/merchantSettlements.js';
 import * as treasury from './repositories/treasury.js';
 import * as adminIssuance from './repositories/adminIssuance.js';
+import * as adminTokenConsiderations from './repositories/adminTokenConsiderations.js';
 
 /** Mechanism + vocabulary under one name. The caller does not need the split. */
 const merge = (core, api) => Object.freeze({ ...core, ...api });
@@ -118,6 +119,7 @@ export const db = Object.freeze({
   wallets: merge(walletsCore, walletsApi),
   ledger: merge(ledgerCore, ledgerApi),
   treasury,
+  adminTokenConsiderations,
   balanceAdjustments,
 
   // Trading
@@ -167,5 +169,6 @@ export default db;
 // Named re-exports for the call sites that read better without the namespace.
 export { users, identity, security, telegram, merchants, chat, config };
 export { treasury, settlements, merchantSettlements, adminIssuance, balanceAdjustments };
+export { adminTokenConsiderations };
 export { markets, games, content, engagement, social, referrals };
 export { audit, cashLinks, compliance, depositPolicy, merchantCommissionPolicy, paymentModePolicy, operations, paymentConfig, supportDocuments, stats, utr };

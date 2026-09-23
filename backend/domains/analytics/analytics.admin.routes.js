@@ -14,6 +14,7 @@ import { db } from '#db';
 // Analytics Platform trends (Phase 012 — Enterprise Services tier)
 import { growthTrend, businessTrend, revenueTrend, riskTrend } from './analyticsPlatform.service.js';
 import { serverError } from '../../shared/httpError.js';
+import { paiseToRupees } from '../../shared/money.js';
 
 const router = express.Router();
 
@@ -221,9 +222,15 @@ router.get('/analytics/merchant-funding', authenticate, hasPermission('canViewAn
     // player transaction collection by three type strings that were never
     // written to it, so all three tiles read zero on a platform that had funded
     // merchants every day.
-    const [funding, merchants] = await Promise.all([
+    const [funding, merchants, trade] = await Promise.all([
       db.merchantWallets.fundingTotals(),
       db.stats.merchantStats(),
+      // The MONEY side of that same funding. The three tiles above count TOKENS
+      // handed to merchants; until the top-up and deduct forms captured a
+      // settlement figure, nothing anywhere recorded what the platform got for
+      // them, so this screen could say how much float was issued and not one
+      // thing about whether it had been paid for.
+      db.adminTokenConsiderations.platformConsiderationTotals(),
     ]);
     res.json({
       success: true,
@@ -232,6 +239,25 @@ router.get('/analytics/merchant-funding', authenticate, hasPermission('canViewAn
         merchantReserve:   funding.reserve,
         merchantLiquidity: funding.liquidity,
         activeMerchants:   merchants.total,
+        // Rupees. `receivedInr` is the INR-EQUIVALENT across every settlement
+        // currency and is the only figure that may be added up; `byCurrency`
+        // keeps what merchants actually sent apart, because summing 500 USDT
+        // with 500 INR as 1,000 of anything is trap 15.
+        tokenTrade: {
+          receivedInr:      paiseToRupees(trade.receivedInrPaise),
+          paidInr:          paiseToRupees(trade.paidInrPaise),
+          netInr:           paiseToRupees(trade.netInrPaise),
+          tokensSold:       paiseToRupees(trade.tokensSoldPaise),
+          tokensBoughtBack: paiseToRupees(trade.tokensBoughtBackPaise),
+          movements:        trade.movements,
+          byCurrency:       Object.fromEntries(
+            Object.entries(trade.byCurrency).map(([code, v]) => [code, {
+              received:  paiseToRupees(v.receivedMinor),
+              paid:      paiseToRupees(v.paidMinor),
+              movements: v.movements,
+            }]),
+          ),
+        },
       },
     });
   } catch (err) {

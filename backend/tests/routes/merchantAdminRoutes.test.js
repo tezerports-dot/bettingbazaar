@@ -48,14 +48,28 @@ describePg('merchant admin routes', () => {
 
   afterAll(async () => { await closePg(); });
 
-  /** POST with an Idempotency-Key header, the way a real caller must. */
+  /**
+   * POST with an Idempotency-Key header, the way a real caller must.
+   *
+   * Both routes also REQUIRE a settlement figure — what the platform received
+   * or paid for the tokens — because a token movement with no money against it
+   * leaves the profit and loss missing the revenue side of the trade. These
+   * suites are about idempotency, the overdraft guard and the audit trail, not
+   * about that figure, so the helpers supply one explicitly rather than each
+   * case restating it; what the figure itself refuses, records and values is
+   * asserted in `adminTokenConsideration.test.js`. Stated here rather than
+   * defaulted silently, so a reader can see the precondition these cases run
+   * under instead of inheriting whatever the route happens to tolerate (S19).
+   */
   const fund = (merchantId, body, idemKey) =>
     as(app, admin).post(`/merchants/${merchantId}/fund`)
-      .set('Idempotency-Key', idemKey).send(body);
+      .set('Idempotency-Key', idemKey)
+      .send({ settlementAmount: 0, settlementCurrency: 'INR', ...body });
 
   const deduct = (merchantId, body, idemKey) =>
     as(app, admin).post(`/merchants/${merchantId}/deduct`)
-      .set('Idempotency-Key', idemKey).send(body);
+      .set('Idempotency-Key', idemKey)
+      .send({ settlementAmount: 0, ...body });
 
   // ── Authorisation ─────────────────────────────────────────────────────────
   it('refuses every treasury route without a token', async () => {

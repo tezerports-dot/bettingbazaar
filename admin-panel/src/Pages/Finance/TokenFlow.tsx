@@ -37,6 +37,14 @@ interface WithdrawalData {
 interface FundingData {
   merchantTopup: number; merchantReserve: number;
   merchantLiquidity: number; activeMerchants: number;
+  // What the platform GOT for that float. The three figures above count tokens
+  // handed out; these are the money side of the same trades, which nothing
+  // recorded until the top-up and deduct forms began capturing it.
+  tokenTrade?: {
+    receivedInr: number; paidInr: number; netInr: number;
+    tokensSold: number; tokensBoughtBack: number; movements: number;
+    byCurrency: Record<string, { received: number; paid: number; movements: number }>;
+  };
 }
 interface Trends {
   growth?: { signups: { day: string; count: number }[]; firstTimeDepositors: { day: string; count: number }[] };
@@ -192,6 +200,34 @@ export const TokenFlow: React.FC = () => {
           <Tile label="Liquidity" value={formatters.currency(funding?.merchantLiquidity ?? 0)} tone="text-blue-400" />
           <Tile label="Active merchants" value={funding?.activeMerchants ?? 0} />
         </div>
+
+        {/* The money side of the same float. Separate row and separate heading
+            because these are rupees the platform RECEIVED, not tokens it
+            issued, and a reader who adds one to the other gets nothing real. */}
+        {funding?.tokenTrade && (
+          <div className="mt-4 pt-4 border-t border-dark-700 space-y-3">
+            <p className="text-xs uppercase tracking-wider text-gray-400">
+              Paid for that float
+            </p>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <Tile label="Received from merchants" value={formatters.currency(funding.tokenTrade.receivedInr)} tone="text-green-400" />
+              <Tile label="Paid on buy-backs" value={formatters.currency(funding.tokenTrade.paidInr)} tone="text-red-400" />
+              <Tile label="Net to platform" value={formatters.currency(funding.tokenTrade.netInr)} tone={funding.tokenTrade.netInr >= 0 ? 'text-green-400' : 'text-red-400'} />
+              <Tile label="Trades recorded" value={funding.tokenTrade.movements} />
+            </div>
+            {Object.keys(funding.tokenTrade.byCurrency ?? {}).length > 0 && (
+              <p className="text-xs text-gray-500">
+                As settled:{' '}
+                {Object.entries(funding.tokenTrade.byCurrency)
+                  .map(([code, v]) =>
+                    `${code} ${v.received.toLocaleString('en-IN')} in`
+                    + (v.paid ? ` / ${v.paid.toLocaleString('en-IN')} out` : ''))
+                  .join(' · ')}
+                {' '}— the rupee figures above are the INR equivalent at the rate each trade settled at.
+              </p>
+            )}
+          </div>
+        )}
       </Section>
 
       {trends?.growth && (

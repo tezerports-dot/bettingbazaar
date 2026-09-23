@@ -2509,8 +2509,8 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 411 |
-| Parameters only (safe by construction) | 262 |
+| `pgQuery` call sites | 416 |
+| Parameters only (safe by construction) | 267 |
 | Interpolating into statement text (each needs a reading) | 149 |
 
 ### Panel injection sinks
@@ -2518,7 +2518,7 @@ new route and decide. Each of the three questions is defined in §2.
 | Panel | .ts/.tsx files | `dangerouslySetInnerHTML` | `.innerHTML =` |
 |---|---|---|---|
 | `user-panel` | 80 | 0 | 0 |
-| `admin-panel` | 96 | 0 | 0 |
+| `admin-panel` | 97 | 0 | 0 |
 | `merchant-panel` | 40 | 0 | 0 |
 
 <!-- END GENERATED -->

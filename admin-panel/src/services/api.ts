@@ -315,10 +315,27 @@ export const merchants = {
   // Pass `idempotencyKey` explicitly to retry a call whose response was lost
   // (a timeout, a dropped connection) — that is the case where reusing the
   // ORIGINAL key is the whole point.
-  fundWallet: async (merchantId: string, tokenAmount: number, note?: string, idempotencyKey?: string) => {
+  //
+  // `settlementAmount` is what the platform RECEIVED for these tokens, in the
+  // major unit — rupees, or whole USDT — and it is REQUIRED: the server refuses
+  // a top-up without one, so that the profit and loss is never missing the
+  // revenue side of a trade nobody can reconstruct afterwards. Zero is a valid
+  // answer and means "no money changed hands", which is a different fact from
+  // "nobody recorded it".
+  fundWallet: async (
+    merchantId: string,
+    tokenAmount: number,
+    settlement: { amount: number; currency: 'INR' | 'USDT' },
+    note?: string,
+    idempotencyKey?: string,
+  ) => {
     const res = await api.post(
       `/api/admin/merchants/${merchantId}/fund`,
-      { tokenAmount, note },
+      {
+        tokenAmount, note,
+        settlementAmount: settlement.amount,
+        settlementCurrency: settlement.currency,
+      },
       { headers: { 'Idempotency-Key': idempotencyKey || newIdempotencyKey() } },
     );
     return res.data;
@@ -326,8 +343,30 @@ export const merchants = {
 
   // Phase B (2026-07-10): deduct merchant tokens — strict (no overdraft),
   // reason required and audit-logged (backend: POST /merchants/:id/deduct)
-  deductWallet: async (merchantId: string, tokenAmount: number, reason: string) => {
-    const res = await api.post(`/api/admin/merchants/${merchantId}/deduct`, { tokenAmount, reason });
+  //
+  // ── The Idempotency-Key was MISSING, and the button had never worked ──────
+  // The route requires one and answers 400 without it, so every press of
+  // "Deduct From Wallet" since this shipped returned "Idempotency-Key is
+  // required for this request" — a protocol message an operator cannot act on,
+  // rendered as the failure reason on a money screen. Confirmed against a
+  // running server: the same call with a key succeeds. One invocation is one
+  // intent, so the key is minted here, exactly as the top-up above does.
+  //
+  // `settlementAmount` is what the platform PAID to take the tokens back, in
+  // rupees. There is no currency argument: payouts are INR (owner, 2026-09-23),
+  // and the server and the table both refuse anything else.
+  deductWallet: async (
+    merchantId: string,
+    tokenAmount: number,
+    reason: string,
+    settlementAmount: number,
+    idempotencyKey?: string,
+  ) => {
+    const res = await api.post(
+      `/api/admin/merchants/${merchantId}/deduct`,
+      { tokenAmount, reason, settlementAmount, settlementCurrency: 'INR' },
+      { headers: { 'Idempotency-Key': idempotencyKey || newIdempotencyKey() } },
+    );
     return res.data;
   },
 

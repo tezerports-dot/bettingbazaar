@@ -14,6 +14,13 @@ import { rupeesToPaise } from '../../shared/money.js';
 import { assertExternalHttpsUrl } from '../../shared/storedUrl.js';
 import { assertStaffPassword } from '../identity/passwordPolicy.js';
 import { serverError, respondError } from '../../shared/httpError.js';
+import { getSystemConfig } from '#db/repositories/config.js';
+import { adminToMerchantUsdtRate } from '../configuration/tokenRates.js';
+import {
+  DIRECTIONS as CONSIDERATION_DIRECTIONS,
+  CONSIDERATION_CURRENCIES,
+  assertRecordable as assertConsiderationRecordable,
+} from '#db/repositories/adminTokenConsiderations.js';
 
 const router = express.Router();
 
@@ -676,6 +683,77 @@ router.get('/merchants/:merchantId/transactions', authenticate, isAdmin, async (
 
 // ✅ FIX #18: Missing endpoint — admin panel QueueDashboard calls this at startup
 // GET /api/admin/queue/available-merchants?type=DEPOSIT|WITHDRAWAL&orderAmount=5000
+
+// ─────────────────────────────────────────────────────────────────────────────
+// What the platform got, or gave, for the tokens — read off the request and
+// checked BEFORE anything moves.
+//
+// Both money routes below hand an admin's typed figure to the same function, so
+// the two cannot come to different conclusions about the same input (§5). It is
+// called at the TOP of each handler, before a single token moves, because the
+// row it prepares is written AFTER the movement commits: §21's shape, where
+// anything that can throw on the second write throws with the tokens already
+// gone. By the time the insert runs, every CHECK on the table is known to hold.
+//
+// `settlementAmount` arrives in the MAJOR unit — rupees, or whole USDT — the
+// way `tokenAmount` does, because that is what an admin types. It is stored in
+// hundredths, and `rupeesToPaise` is the same rounding every other money field
+// on this platform uses, so ₹0.1 + ₹0.2 cannot become ₹0.30000000000000004.
+//
+// The USDT rate is NOT typed. It is the admin's own configured buy rate read at
+// this moment and frozen on the row (§25): an operator editing that rate
+// tomorrow must not restate a trade that has already settled. When it is unset
+// the trade is REFUSED BY NAME rather than valued at the INR peg — a 500 USDT
+// receipt booked as ₹500 is trap 15, a hundredfold understatement in the exact
+// figure this feature exists to get right.
+// ─────────────────────────────────────────────────────────────────────────────
+async function resolveConsideration(body, direction) {
+  const currency = String(body?.settlementCurrency ?? 'INR').toUpperCase();
+  const raw      = body?.settlementAmount;
+
+  // Refused here rather than at the repository so the message names the field
+  // the operator can see, and carries 400 so respondError keeps its wording.
+  const refuse = (message) => { const e = new Error(message); e.status = 400; throw e; };
+
+  if (raw === null || raw === undefined || raw === '') {
+    refuse(
+      'Record what the platform '
+      + (direction === CONSIDERATION_DIRECTIONS.RECEIVED ? 'received' : 'paid')
+      + ' for these tokens. Enter 0 if no money changed hands.',
+    );
+  }
+  const major = Number(raw);
+  if (!Number.isFinite(major) || major < 0) {
+    refuse(`The settlement amount must be zero or more — got '${raw}'.`);
+  }
+  if (!CONSIDERATION_CURRENCIES.includes(currency)) {
+    refuse(`Settlement currency must be one of ${CONSIDERATION_CURRENCIES.join(', ')} — got '${currency}'.`);
+  }
+
+  let rateUsed = null;
+  if (currency === 'USDT') {
+    const cfg  = await getSystemConfig();
+    const rate = adminToMerchantUsdtRate(cfg);
+    // adminToMerchantUsdtRate falls back to 1 when unset, which is correct for
+    // quoting a purchase and wrong for valuing one: 1 means "1 USDT = ₹1".
+    if (!Number.isFinite(rate) || rate <= 1) {
+      refuse(
+        'The admin USDT buy rate is not set, so a USDT receipt cannot be valued in rupees. '
+        + 'Set it in System Settings → USDT Pricing, or record this settlement in INR.',
+      );
+    }
+    rateUsed = rate;
+  }
+
+  const consideration = {
+    direction,
+    currency,
+    fiatAmountMinor: rupeesToPaise(major),
+    rateUsed,
+  };
+  return consideration;
+}
+
 router.post('/merchants/:merchantId/fund', authenticate, isAdmin, async (req, res) => {
   // Logs a MERCHANT_TOPUP transaction — appears in merchant-funding dashboard only,
   // NEVER in user deposit/withdrawal dashboards.
@@ -713,12 +791,40 @@ router.post('/merchants/:merchantId/fund', authenticate, isAdmin, async (req, re
     // distinguish a retry from a deliberate second top-up, so an absent key is
     // a 400 rather than a guess.
     const transferKey = requireIdempotencyKey(req);
+    const movementId  = `mint_${transferKey}`;
+
+    // ── The recipient, BEFORE the tokens move (trap 19) ────────────────────
+    // This used to be read from the credit's own return value, AFTER the
+    // treasury transfer had committed: `creditMerchantTokens` answers
+    // `{ merchant: null }` for an id with no merchant row — it does not throw —
+    // and the handler returned 404 without unwinding. Measured on a live
+    // server: funding a merchant id that does not exist answered "Merchant not
+    // found" while 777 tokens left TOKEN_SUPPLY and landed in MERCHANT_FLOAT,
+    // credited to nobody. MERCHANT_FLOAT then claims tokens no merchant wallet
+    // holds, which is CLAUDE.md §2's conservation invariant — platform holding
+    // + every merchant wallet + every player wallet = the total — broken
+    // silently, by a typo in a URL, with the admin told nothing moved.
+    const recipient = await db.merchants.getMerchant(merchantId);
+    if (!recipient) {
+      return res.status(404).json({ success: false, message: 'Merchant not found' });
+    }
+
+    // ── What the platform got for them, checked before they move (§21) ─────
+    // The consideration row is written after the credit commits, so everything
+    // that can refuse it is refused here, while refusing still costs nothing.
+    const consideration = await resolveConsideration(req.body, CONSIDERATION_DIRECTIONS.RECEIVED);
+    assertConsiderationRecordable({
+      ...consideration,
+      movementId, merchantId: String(merchantId),
+      tokenAmountPaise: rupeesToPaise(tokenAmountNum),
+      recordedBy: String(req.user.userId),
+    });
 
     let supply;
     let creditResult;
     try {
       supply = await reserveAdminTransfer(tokenAmountNum, {
-        movementId: `mint_${transferKey}`, merchantId: String(merchantId),
+        movementId, merchantId: String(merchantId),
         actor: String(req.user.userId), refModel: 'Merchant', refId: String(merchantId),
         reason: `Admin wallet top-up${note ? ` — ${note}` : ''}`,
       });
@@ -728,10 +834,20 @@ router.post('/merchants/:merchantId/fund', authenticate, isAdmin, async (req, re
         refModel: 'Merchant', refId: String(merchantId),
         txId: `mw_topup_${transferKey}`,
       });
+      // The pre-read above makes this unreachable in practice. It stays because
+      // a merchant deleted between the two statements would otherwise land back
+      // in exactly the hole the pre-read closes, and because a silent null is
+      // what made the original invisible: raising it turns the race into the
+      // rollback path below rather than a 404 over a broken invariant.
+      if (!creditResult?.merchant) {
+        const gone = new Error('Merchant disappeared between the check and the credit.');
+        gone.status = 409;
+        throw gone;
+      }
     } catch (transferErr) {
       if (supply) {
         await rollbackAdminTransfer(tokenAmountNum, {
-          movementId: `mint_${transferKey}`, actor: String(req.user.userId),
+          movementId, actor: String(req.user.userId),
           refModel: 'Merchant', refId: String(merchantId),
           reason: 'Admin wallet top-up failed after the transfer',
         }).catch((e) => console.error('[admin fund] transfer rollback failed:', e.message));
@@ -740,19 +856,35 @@ router.post('/merchants/:merchantId/fund', authenticate, isAdmin, async (req, re
     }
     const { merchant } = creditResult;
 
-    if (!merchant) {
-      return res.status(404).json({ success: false, message: 'Merchant not found' });
-    }
-
     // No separate transaction row. The mint writes a treasury entry and the
     // credit writes a merchant-wallet entry, both append-only and both inside
     // their own movements — a third hand-written record here would be a copy
     // that can disagree with the two the money actually made, and it is those
     // that reconciliation is computed from. WHO did it is the audit entry.
+    // ── The money the platform got for them ───────────────────────────────
+    // Keyed by the SAME movement id as the transfer, so a redelivered request
+    // collides here exactly as it collides in the treasury: one row for one
+    // movement, whatever the network did. Every CHECK it must satisfy was
+    // proved before the tokens moved, so this cannot be the write that fails
+    // after the commit (§21).
+    const { consideration: recorded } = await db.adminTokenConsiderations.recordConsideration({
+      ...consideration,
+      movementId, merchantId: String(merchantId),
+      tokenAmountPaise: rupeesToPaise(tokenAmountNum),
+      recordedBy: String(req.user.userId),
+      note: note || null,
+    });
+
     await db.audit.recordDetailed({
       performedBy: req.user.userId, action: 'MERCHANT_FUNDED', category: 'TREASURY',
       targetType: 'Merchant', targetId: String(merchantId),
-      details: { tokenAmount: tokenAmountNum, note: note || null, movementId: `mint_${transferKey}` },
+      details: {
+        tokenAmount: tokenAmountNum, note: note || null, movementId,
+        settlementCurrency: recorded.currency,
+        settlementAmount:   paiseToRupees(recorded.fiatAmountMinor),
+        settlementInr:      paiseToRupees(recorded.inrEquivalentPaise),
+        rateUsed:           recorded.rateUsed,
+      },
     });
 
     // From the WALLET, after the credit. The merchant record carries no
@@ -765,6 +897,15 @@ router.post('/merchants/:merchantId/fund', authenticate, isAdmin, async (req, re
       merchantUserId:   merchantId,
       tokenAmountAdded: tokenAmountNum,
       newTokenBalance,
+      // Echoed so the screen can show the operator what was BOOKED rather than
+      // what they typed — the two differ when a USDT figure is valued in
+      // rupees, and the booked one is what the P&L will read.
+      settlement: {
+        currency:  recorded.currency,
+        amount:    paiseToRupees(recorded.fiatAmountMinor),
+        inrValue:  paiseToRupees(recorded.inrEquivalentPaise),
+        rateUsed:  recorded.rateUsed,
+      },
     });
 
   } catch (error) {
@@ -927,13 +1068,28 @@ router.post('/merchants/:merchantId/deduct', authenticate, isAdmin, async (req, 
     // tell them apart. A server-generated id — which is what this used —
     // is `random()`: the UNIQUE gate behind it could never fire, so every
     // redelivery deducted a second time while the code read as protected.
-    const deductKey = requireIdempotencyKey(req);
+    const deductKey  = requireIdempotencyKey(req);
+    const movementId = `mw_deduct_${deductKey}`;
+
+    // ── What the platform paid for them, checked before they move ─────────
+    // Same discipline as the top-up: the consideration row lands after the
+    // debit commits, so everything that can refuse it is refused first (§21).
+    // PAID is INR only — the platform buys its tokens back in rupees (owner,
+    // 2026-09-23) — and the repository's CHECK says so too, so the rule holds
+    // for the next route that writes here without reading this one.
+    const consideration = await resolveConsideration(req.body, CONSIDERATION_DIRECTIONS.PAID);
+    assertConsiderationRecordable({
+      ...consideration,
+      movementId, merchantId: String(merchantId),
+      tokenAmountPaise: rupeesToPaise(Number(tokenAmount)),
+      recordedBy: String(req.user.userId),
+    });
 
     const { merchant, idempotent } = await debitMerchantTokens({
       merchantId, amount: tokenAmount,
       reason: `Admin wallet deduction — ${String(reason).trim()}`,
       refModel: 'Merchant', refId: String(merchantId),
-      txId: `mw_deduct_${deductKey}`,
+      txId: movementId,
       // allowOverdraft deliberately NOT set — the strict guard applies.
     });
 
@@ -957,10 +1113,27 @@ router.post('/merchants/:merchantId/deduct', authenticate, isAdmin, async (req, 
 
     // The movement wrote its own append-only entry. What is recorded here is
     // WHO decided it and why — which the ledger row cannot say.
+    // The money that went back out for them, keyed by the same movement the
+    // debit used — one row per movement, and a redelivery collides rather than
+    // booking a second payout. Pre-validated above, so this cannot be the write
+    // that fails after the commit.
+    const { consideration: recorded } = await db.adminTokenConsiderations.recordConsideration({
+      ...consideration,
+      movementId, merchantId: String(merchantId),
+      tokenAmountPaise: rupeesToPaise(Number(tokenAmount)),
+      recordedBy: String(req.user.userId),
+      note: String(reason).trim(),
+    });
+
     await db.audit.recordDetailed({
       performedBy: req.user.userId, action: 'MERCHANT_TOKENS_DEDUCTED', category: 'TREASURY',
       targetType: 'Merchant', targetId: String(merchantId),
-      details: { tokenAmount, reason: String(reason).trim(), movementId: `mw_deduct_${deductKey}` },
+      details: {
+        tokenAmount, reason: String(reason).trim(), movementId,
+        settlementCurrency: recorded.currency,
+        settlementAmount:   paiseToRupees(recorded.fiatAmountMinor),
+        settlementInr:      paiseToRupees(recorded.inrEquivalentPaise),
+      },
     });
 
     const newTokenBalance = await db.merchantWallets.getMerchantTokenBalance(merchantId);
@@ -970,6 +1143,12 @@ router.post('/merchants/:merchantId/deduct', authenticate, isAdmin, async (req, 
       merchantUserId:     merchantId,
       tokenAmountRemoved: tokenAmount,
       newTokenBalance,
+      settlement: {
+        currency: recorded.currency,
+        amount:   paiseToRupees(recorded.fiatAmountMinor),
+        inrValue: paiseToRupees(recorded.inrEquivalentPaise),
+        rateUsed: recorded.rateUsed,
+      },
     });
 
   } catch (error) {
@@ -1084,6 +1263,16 @@ router.get('/merchants/:merchantId/profit-engine', authenticate, isAdmin, async 
     const roi         = fundingCost > 0 ? ((profit / fundingCost) * 100) : 0;
     const netUserVolume = revenue + withdrawalExposure;
 
+    // ── The PLATFORM's side of the same relationship ──────────────────────
+    // Everything above is the MERCHANT's trade: what they collected from
+    // players against what they paid out. It says nothing about what the
+    // platform itself made on this merchant, because until now nothing recorded
+    // it — tokens left the platform's holding and no figure said they had been
+    // sold. These are those figures, summed on the INR-equivalent column and
+    // never on the raw one, because a merchant who paid in USDT would otherwise
+    // read as having paid a hundredth of what they did (trap 15).
+    const platformTrade = await db.adminTokenConsiderations.merchantConsiderationTotals(merchant.merchantId);
+
     const statusMap = engine.orderStatus;
 
     res.json({
@@ -1106,6 +1295,26 @@ router.get('/merchants/:merchantId/profit-engine', authenticate, isAdmin, async 
         buyRate,
         sellRate,
         orderStatus:         statusMap,
+
+        // What the PLATFORM took in and paid out for this merchant's tokens.
+        // Rupees throughout — `byCurrency` keeps the figures the merchant
+        // actually sent apart by currency, because those are the only ones that
+        // reconcile against a bank line or a chain explorer.
+        platformTokenTrade: {
+          receivedInr:      paiseToRupees(platformTrade.receivedInrPaise),
+          paidInr:          paiseToRupees(platformTrade.paidInrPaise),
+          netInr:           paiseToRupees(platformTrade.netInrPaise),
+          tokensSold:       paiseToRupees(platformTrade.tokensSoldPaise),
+          tokensBoughtBack: paiseToRupees(platformTrade.tokensBoughtBackPaise),
+          movements:        platformTrade.movements,
+          byCurrency:       Object.fromEntries(
+            Object.entries(platformTrade.byCurrency).map(([code, v]) => [code, {
+              received:  paiseToRupees(v.receivedMinor),
+              paid:      paiseToRupees(v.paidMinor),
+              movements: v.movements,
+            }]),
+          ),
+        },
       },
     });
   } catch (err) {

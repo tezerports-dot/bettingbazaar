@@ -2460,6 +2460,91 @@ CREATE INDEX IF NOT EXISTS merchant_token_orders_merchant_idx
 CREATE INDEX IF NOT EXISTS merchant_token_orders_queue_idx
   ON merchant_admin_token_orders (requested_at) WHERE status = 'PENDING';
 
+-- ─────────────────────────────────────────────────────────────────────────────
+-- What the PLATFORM got, or gave, for an admin↔merchant token movement.
+--
+-- The treasury already says the tokens moved: TOKEN_SUPPLY -N, MERCHANT_FLOAT
+-- +N, legs summing to zero. What it cannot say is the OTHER SIDE of that trade
+-- — the rupees that arrived in a bank account, or the USDT that arrived in a
+-- wallet, in exchange. Without it the books are internally consistent and the
+-- profit and loss is missing one half of every admin↔merchant trade: tokens
+-- leave the platform's holding and nothing records that they were SOLD.
+--
+-- One row per MOVEMENT, and movement_id is the primary key, so the fiat fact
+-- inherits the token movement's idempotency rather than needing its own: a
+-- retried top-up collides here for exactly the same reason it collides in the
+-- treasury, and a second deliberate top-up carries a different key and gets its
+-- own row.
+--
+-- ── Why not a column on treasury_entries ────────────────────────────────────
+-- A movement is TWO legs there. A column would hold the figure twice, and two
+-- copies of one value drift (§5). This is one row for the movement itself.
+--
+-- ── Why not accounting_events ───────────────────────────────────────────────
+-- That table's trigger requires every posting set to conserve to zero, which is
+-- the right rule for the platform's own token books. This is EXTERNAL money —
+-- rupees in a bank, USDT on a chain — with no balancing token leg, and forcing
+-- it in would make the conservation invariant mean something weaker.
+--
+-- ── Two amounts, deliberately, and this is trap 15 ─────────────────────────
+-- `fiat_amount_minor` is in the currency the platform actually transacted:
+-- hundredths of it, so paise for INR and hundredths of a USDT for USDT. That is
+-- the figure a human is shown and the one that reconciles against a bank line
+-- or a chain explorer. `inr_equivalent_paise` is the SAME event valued in
+-- rupees, and it is the only one anything may SUM — summing the first across
+-- currencies reads 500 USDT as ₹500, which is the exact hundredfold
+-- understatement that reached the commission engine. `rate_used` is the rate it
+-- was converted at, FROZEN here the way §25 freezes an order's quote, so a
+-- later edit of the admin's USDT price cannot restate a trade that has settled.
+CREATE TABLE IF NOT EXISTS admin_token_considerations (
+  movement_id          TEXT PRIMARY KEY,
+  merchant_id          TEXT NOT NULL,
+  direction            TEXT NOT NULL,
+  token_amount_paise   BIGINT NOT NULL,
+  currency             TEXT NOT NULL,
+  fiat_amount_minor    BIGINT NOT NULL,
+  inr_equivalent_paise BIGINT NOT NULL,
+  rate_used            NUMERIC(18, 6),
+  recorded_by          TEXT NOT NULL,
+  note                 TEXT,
+  created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- RECEIVED: tokens left the platform's holding and money came in.
+  -- PAID:     tokens came back and money went out.
+  CONSTRAINT admin_token_considerations_direction_known CHECK (
+    direction IN ('RECEIVED', 'PAID')),
+  CONSTRAINT admin_token_considerations_currency_known CHECK (
+    currency IN ('INR', 'USDT')),
+  CONSTRAINT admin_token_considerations_tokens_positive CHECK (token_amount_paise > 0),
+  -- Zero is ALLOWED and is not the same as absent. An admin correcting their own
+  -- mis-keyed top-up moved tokens for no money, and recording that as 0 says so;
+  -- leaving it out would let the row be missing for two different reasons.
+  CONSTRAINT admin_token_considerations_fiat_nonneg CHECK (fiat_amount_minor >= 0),
+  CONSTRAINT admin_token_considerations_inr_nonneg CHECK (inr_equivalent_paise >= 0),
+  -- The token is pegged to the rupee and the peg is not configurable, so an INR
+  -- consideration IS its own INR equivalent and carries no rate. A rate stored
+  -- beside it would be a second owner of a number that cannot vary.
+  CONSTRAINT admin_token_considerations_inr_is_its_own_equivalent CHECK (
+    currency <> 'INR' OR (inr_equivalent_paise = fiat_amount_minor AND rate_used IS NULL)),
+  -- A USDT figure with no rate cannot be valued, and a row that cannot be valued
+  -- is one the P&L would have to guess at. Refused here rather than defaulted.
+  CONSTRAINT admin_token_considerations_usdt_is_priced CHECK (
+    currency <> 'USDT' OR (rate_used IS NOT NULL AND rate_used > 0)),
+  -- The platform pays merchants back in rupees (owner, 2026-09-23). USDT comes
+  -- IN only. Stated as a constraint so the rule survives the next route that
+  -- writes here without reading this file.
+  CONSTRAINT admin_token_considerations_payouts_are_inr CHECK (
+    direction <> 'PAID' OR currency = 'INR')
+);
+CREATE INDEX IF NOT EXISTS admin_token_considerations_merchant_idx
+  ON admin_token_considerations (merchant_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS admin_token_considerations_created_idx
+  ON admin_token_considerations (created_at DESC);
+-- Append-only for the same reason the treasury is: this is what the books are
+-- reconciled from, and a figure that can be edited after the fact is a figure
+-- an audit cannot rely on.
+CREATE OR REPLACE TRIGGER admin_token_considerations_append_only
+  BEFORE UPDATE OR DELETE ON admin_token_considerations FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
+
 -- The payment-gateway credentials. One row, key 'main'.
 CREATE TABLE IF NOT EXISTS payment_gateway_configs (
   config_key       TEXT PRIMARY KEY,

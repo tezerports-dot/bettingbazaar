@@ -46,8 +46,17 @@ export const MerchantsList: React.FC = () => {
   // and read like a cap the platform enforces. It is neither: it is how many
   // tokens the admin is about to hand this merchant.
   const [topUpAmount, setTopUpAmount] = useState(0);
+  // What the platform GOT for those tokens. The treasury records that they
+  // moved; without this nothing records that they were SOLD, and the profit and
+  // loss is missing the revenue side of every admin↔merchant trade. Empty
+  // string rather than 0 as the initial value, because 0 is a real answer here
+  // ("no money changed hands") and must be something the operator typed.
+  const [topUpSettlement, setTopUpSettlement] =
+    useState<{ amount: string; currency: 'INR' | 'USDT' }>({ amount: '', currency: 'INR' });
   // Phase B (2026-07-10): admin token-deduction control (strict, audited)
-  const [deductForm, setDeductForm]   = useState({ amount: 0, reason: '' });
+  // `paid` is what the platform handed back for the tokens — INR only, because
+  // the platform buys its tokens back in rupees (owner, 2026-09-23).
+  const [deductForm, setDeductForm]   = useState({ amount: 0, reason: '', paid: '' });
   const [panelUrl, setPanelUrl]       = useState('');
   const [merchantEarnings, setMerchantEarnings] = useState<any>(null);
 
@@ -535,16 +544,62 @@ export const MerchantsList: React.FC = () => {
                     className="input"
                   />
                 </div>
+                <div>
+                  <label className="label" htmlFor="topup-settlement-amount">
+                    Received from merchant ({topUpSettlement.currency === 'INR' ? 'Rs.' : 'USDT'})
+                  </label>
+                  <div className="flex gap-2">
+                    <input id="topup-settlement-amount"
+                      type="number" min="0" step="0.01"
+                      value={topUpSettlement.amount}
+                      onChange={(e) => setTopUpSettlement(f => ({ ...f, amount: e.target.value }))}
+                      placeholder="e.g. 9500"
+                      className="input flex-1"
+                    />
+                    <select
+                      aria-label="Settlement currency"
+                      value={topUpSettlement.currency}
+                      onChange={(e) => setTopUpSettlement(f => ({ ...f, currency: e.target.value as 'INR' | 'USDT' }))}
+                      className="input w-28"
+                    >
+                      <option value="INR">INR</option>
+                      <option value="USDT">USDT</option>
+                    </select>
+                  </div>
+                  <p className="text-xs text-gray-500 mt-1">
+                    What the platform actually received for these tokens. Enter 0 if this is a correction
+                    and no money changed hands. USDT is valued at the admin USDT buy rate and frozen on
+                    the record, so a later rate change cannot restate this trade.
+                  </p>
+                </div>
                 <button
-                  disabled={isSavingLimits || !topUpAmount}
+                  disabled={isSavingLimits || !topUpAmount || topUpSettlement.amount === ''}
                   onClick={async () => {
                     setIsSavingLimits(true);
                     try {
-                      await (api.merchants as any).fundWallet(selectedMerchant._id, topUpAmount);
-                      toast.success(`Wallet topped up by Rs.${topUpAmount}`);
+                      const res = await (api.merchants as any).fundWallet(
+                        selectedMerchant._id, topUpAmount,
+                        { amount: Number(topUpSettlement.amount), currency: topUpSettlement.currency },
+                      );
+                      // The BOOKED figure, not the typed one: they differ when a
+                      // USDT amount is valued in rupees, and the booked one is
+                      // what the profit and loss will read.
+                      const booked = res?.settlement;
+                      toast.success(
+                        `Wallet topped up by Rs.${topUpAmount}`
+                        + (booked ? ` — recorded ${booked.currency === 'INR' ? 'Rs.' : ''}${booked.amount}`
+                          + `${booked.currency === 'USDT' ? ' USDT (Rs.' + booked.inrValue + ')' : ''} received` : ''),
+                      );
                       setTopUpAmount(0);
+                      setTopUpSettlement({ amount: '', currency: 'INR' });
                       loadMerchants();
-                    } catch { toast.error('Failed to top up wallet'); }
+                    } catch (e: any) {
+                      // The server's own wording — it names the field and what to
+                      // do about it (an unset USDT rate, a missing figure). A
+                      // fixed string here threw that away and told an operator
+                      // only that something failed.
+                      toast.error(e?.response?.data?.message || 'Failed to top up wallet');
+                    }
                     finally { setIsSavingLimits(false); }
                   }}
                   className="btn-primary w-full disabled:opacity-50"
@@ -577,15 +632,36 @@ export const MerchantsList: React.FC = () => {
                     className="input"
                   />
                 </div>
+                <div>
+                  <label className="label" htmlFor="deduct-settlement-amount">Paid back to merchant (Rs.)</label>
+                  <input id="deduct-settlement-amount"
+                    type="number" min="0" step="0.01"
+                    value={deductForm.paid}
+                    onChange={(e) => setDeductForm(f => ({ ...f, paid: e.target.value }))}
+                    placeholder="e.g. 5000"
+                    className="input"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    What the platform handed back for these tokens. Enter 0 if this is a correction and no
+                    money changed hands. Payouts are always in rupees.
+                  </p>
+                </div>
                 <button
-                  disabled={isSavingLimits || !deductForm.amount || !deductForm.reason.trim()}
+                  disabled={isSavingLimits || !deductForm.amount || !deductForm.reason.trim() || deductForm.paid === ''}
                   onClick={async () => {
                     setIsSavingLimits(true);
                     try {
-                      const res = await (api.merchants as any).deductWallet(selectedMerchant._id, deductForm.amount, deductForm.reason.trim());
+                      const res = await (api.merchants as any).deductWallet(
+                        selectedMerchant._id, deductForm.amount, deductForm.reason.trim(),
+                        Number(deductForm.paid),
+                      );
                       if (res?.success) {
-                        toast.success(`Wallet deducted by Rs.${deductForm.amount}`);
-                        setDeductForm({ amount: 0, reason: '' });
+                        const booked = res?.settlement;
+                        toast.success(
+                          `Wallet deducted by Rs.${deductForm.amount}`
+                          + (booked ? ` — recorded Rs.${booked.amount} paid out` : ''),
+                        );
+                        setDeductForm({ amount: 0, reason: '', paid: '' });
                         loadMerchants();
                       } else {
                         toast.error(res?.message || 'Failed to deduct wallet');
@@ -739,6 +815,50 @@ export const MerchantsList: React.FC = () => {
                 </div>
               )}
               <p className="text-xs text-gray-600 pt-2 border-t border-dark-700">Formula: Revenue − Funding Cost − Withdrawal Exposure = Profit</p>
+
+              {/* ── The PLATFORM's side of the same relationship ─────────────
+                  Everything above is the MERCHANT's trade. These are the
+                  platform's: what it took in when it sold this merchant tokens
+                  and what it paid to buy them back. Until the settlement figure
+                  was captured on the top-up and deduct forms there was nothing
+                  to show here at all — the books balanced in tokens and said
+                  nothing about money. */}
+              {merchantProfit?.platformTokenTrade && (
+                <div className="space-y-3 pt-3 border-t border-dark-700">
+                  <h4 className="font-semibold text-sm text-gray-400 uppercase tracking-wider">
+                    Platform ↔ Merchant Token Trade
+                  </h4>
+                  <div className="grid grid-cols-2 gap-3">
+                    {([
+                      ['Received for Tokens','₹'+(merchantProfit.platformTokenTrade.receivedInr||0).toLocaleString('en-IN'),'green'],
+                      ['Paid to Buy Back','₹'+(merchantProfit.platformTokenTrade.paidInr||0).toLocaleString('en-IN'),'red'],
+                      ['Net to Platform','₹'+(merchantProfit.platformTokenTrade.netInr||0).toLocaleString('en-IN'),(merchantProfit.platformTokenTrade.netInr||0)>=0?'green':'red'],
+                      ['Tokens Sold',(merchantProfit.platformTokenTrade.tokensSold||0).toLocaleString('en-IN')+' T',''],
+                      ['Tokens Bought Back',(merchantProfit.platformTokenTrade.tokensBoughtBack||0).toLocaleString('en-IN')+' T',''],
+                      ['Movements Recorded',String(merchantProfit.platformTokenTrade.movements||0),''],
+                    ] as [string,string,string][]).map(([lbl,val,hl]) => (
+                      <div key={lbl} className="bg-dark-700 rounded-lg p-3">
+                        <p className="text-xs text-gray-400">{lbl}</p>
+                        <p className={`font-bold text-sm ${hl==='green'?'text-green-400':hl==='red'?'text-red-400':'text-white'}`}>{val}</p>
+                      </div>
+                    ))}
+                  </div>
+                  {/* The figures the merchant actually sent, kept APART by
+                      currency. The rupee totals above are the INR-equivalent, and
+                      they are the only ones anything may add up: summing the raw
+                      figures would read 500 USDT as ₹500. */}
+                  {Object.entries(merchantProfit.platformTokenTrade.byCurrency || {}).length > 0 && (
+                    <p className="text-xs text-gray-500">
+                      As settled:{' '}
+                      {Object.entries(merchantProfit.platformTokenTrade.byCurrency as Record<string, any>)
+                        .map(([code, v]) =>
+                          `${code} ${(v.received || 0).toLocaleString('en-IN')} in`
+                          + (v.paid ? ` / ${(v.paid).toLocaleString('en-IN')} out` : ''))
+                        .join(' · ')}
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </Modal>

@@ -40,11 +40,14 @@
     "check:player-privacy": "node scripts/verify-player-privacy.mjs",
     "check:payment-references": "node scripts/verify-payment-references.mjs",
     "check:error-responses": "node scripts/verify-error-responses.mjs",
+    "check:cors-headers": "node scripts/verify-cors-headers.mjs",
     "audit:map": "node scripts/audit-map.mjs",
     "report:branding": "node scripts/report-branding-literals.mjs",
     "test:browser": "node backend/tests/browser/run.js",
     "test:drive": "node backend/tests/browser/drive.js",
     "test:forms": "node backend/tests/browser/forms.js",
+    "test:wallet-buttons": "node backend/tests/browser/walletButtons.js",
+    "test:bet-button": "node backend/tests/browser/betButton.js",
     "report:ui-coverage": "node scripts/report-ui-coverage.mjs"
   },
   "dependencies": {

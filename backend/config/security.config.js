@@ -79,7 +79,26 @@ export function helmetOptionsFraming(frameSrc = []) {
 export const CORS_SHAPE = {
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  // ── Every header a panel is allowed to send, and why the list matters ────
+  // A browser will not send a header that is not named here. It asks first, in
+  // a preflight, and if the answer omits the header it CANCELS the request —
+  // the call never reaches the server, so there is no log line, no status code
+  // and nothing for a route test to see.
+  //
+  // `Idempotency-Key` was missing, and three routes REQUIRE it: `POST
+  // /bet/place`, and the admin top-up and deduction. So from any browser on a
+  // different origin from the API — which is the deployment model (§15: three
+  // frontends, one backend, each deployed on its own) — **placing a bet and
+  // funding a merchant were both blocked before they left the page**, with the
+  // panel seeing a network failure rather than a refusal it could explain.
+  //
+  // Nothing could see it below a browser: curl sends what it is told, so the
+  // route tests, the panel tests and a hand-made request all passed. It was
+  // found by pressing the button (§28, §32 S26).
+  //
+  // A header a panel sends belongs in this list in the SAME change that starts
+  // sending it.
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Idempotency-Key'],
   optionsSuccessStatus: 200,
 };
 
