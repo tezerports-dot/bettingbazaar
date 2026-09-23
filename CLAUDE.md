@@ -1205,9 +1205,24 @@ these are the specific ones this codebase has actually produced.
 | S24 | A label that names a control it is not attached to | Can a screen reader — or a test — address this field by the name printed next to it? |
 | S25 | A panel keeping its own list of a document's fields | Which list does the SERVER agree with? Every other copy will drift, in both directions. |
 | S26 | A button calling the RIGHT route with a request that route refuses | `check:ui-coverage` proves the path and the method resolve. Does the call carry what the handler REQUIRES — a header, a required field? Press it and read the toast. |
+| S27 | A limiter counting a REJECTED SESSION as a failed credential | Does the path it guards check a credential at all? A 401 from an expired token is not a guess. |
 
 **S22 through S25 all came out of pressing controls rather than opening
 screens, and each was invisible to every tier below a browser.**
+
+**S27 locked users out of LOGGING OUT.** `authLimiter` — four FAILED attempts
+per thirty minutes, keyed by IP, answering "Too many failed login attempts" — is
+mounted on `/api/v1/auth`, which holds `/me`, `/logout` and `/health` and checks
+NO CREDENTIAL. Measured: four unauthenticated `GET /me` calls, which is what a
+panel does when a token expires, put all three paths at 429 for half an hour,
+while `/api/admin/login` and `/api/merchant/auth/login` were untouched (their
+own limiters, their own stores). So it stopped no brute force and instead
+punished the one user who had done nothing wrong — S13 and S14 together, and
+IP-keyed, so one person on shared wifi does it to everyone. The mount's own
+comment had already made this argument and removed the CAPTCHA for it; the
+limiter stayed. Fixed by not counting a rejected session check on a path that
+verifies nothing — **the bound is unchanged**, and the test that matters asserts
+a non-session failure still trips it at four.
 
 **S26 is the gap between "a button calls a route" and "the route accepts the
 call".** `POST /admin/merchants/:id/deduct` requires an `Idempotency-Key` and
@@ -1306,3 +1321,4 @@ noticed for months that one of the two confirm routes never checked for one.
 | `npm run check:cors-headers` | Every header a panel SENDS is one CORS allows. A header the server has not agreed to is never sent — the browser cancels the request, so there is no status code and no log line for anything below a browser to see. |
 | `npm run test:wallet-buttons` | Top Up and Deduct, pressed in a browser, asserted against the wallet AND the money record. |
 | `npm run test:bet-button` | The bet card, pressed in a browser, cross-origin — the pass that found the CORS block. |
+| `npm run test:mutate` | **Every control that CHANGES something, pressed against rows the run seeded.** Each case asserts the DATABASE and a BYSTANDER beside the target, and puts back anything platform-wide in a `finally`. Wants its own database (`bb_drive`) and a backend on it. |

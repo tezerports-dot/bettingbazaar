@@ -275,6 +275,13 @@ const telegramGeneration = async () => {
       ORDER BY generation DESC LIMIT 1`).catch(() => ({ rows: [] }));
   return rows[0] ?? null;
 };
+/** The gateway mode — P2P vs a third-party gateway (§2), not the settlement rail. */
+const gatewayMode = async () => {
+  const { rows } = await pgQuery(
+    `SELECT active_mode FROM payment_gateway_configs ORDER BY config_key LIMIT 1`)
+    .catch(() => ({ rows: [] }));
+  return rows[0]?.active_mode ?? null;
+};
 const cdnImageExists = async (id) => {
   const { rows } = await pgQuery('SELECT 1 FROM cdn_images WHERE image_id = $1', [String(id)]);
   return rows.length > 0;
@@ -1288,8 +1295,18 @@ const CASES = [
         { timeout: 20000 },
       ).catch(() => null);
       await activate.click({ timeout: 8000 });
-      await settle(page, 4000);
-      await confirmWith(page, 'Activate');
+      await settle(page, 3000);
+      // An INLINE two-step, like the referral disbursal: pressing Activate
+      // swaps the button for "Yes, activate" beside a warning, in the page
+      // rather than a dialog. `confirmWith` is dialog-only by design (a
+      // page-wide fallback once deleted a second chat message), so a screen
+      // that confirms inline is confirmed here, by name. Third screen with this
+      // shape — "Yes, pay out", "Yes, activate" — and neither is a dialog.
+      const yes = page.getByRole('button', { name: /^\s*Yes, activate\s*$/i }).first();
+      if (await yes.count() === 0) {
+        return ['FAILED', 'pressing Activate raised no "Yes, activate" step'];
+      }
+      await yes.click({ timeout: 8000 });
       const reply = await answered;
       await settle(page, 8000);
 
@@ -1308,6 +1325,109 @@ const CASES = [
         return ['DROVE', `refused ${reply.status()}, generation unchanged — ${body.slice(0, 110)}`];
       }
       return ['FAILED', `Activate answered ${reply.status()} and the generation did not move — ${body.slice(0, 140)}`];
+    },
+  },
+
+
+  // ── The payment gateway configuration ────────────────────────────────────
+  {
+    id: 'admin/payment-control/save',
+    panel: 'admin-panel',
+    what: 'Save the payment system configuration',
+    async run(page, cfg, base) {
+      await go(page, cfg, base, '/payment-control');
+      const save = page.getByRole('button', { name: /^\s*Save\s*$/i }).first();
+      if (await save.count() === 0) return ['NOT DRIVEN', 'no Save button on /payment-control'];
+
+      const answered = page.waitForResponse(
+        (r) => /\/payment\/admin\/config/.test(r.url()) && r.request().method() === 'PUT',
+        { timeout: 15000 },
+      ).catch(() => null);
+      await save.click({ timeout: 8000 });
+      const reply = await answered;
+      await settle(page, 8000);
+
+      if (!reply) return ['FAILED', 'pressing Save sent no PUT at all — the control is inert'];
+      const body = (await reply.text().catch(() => '')).replace(/\s+/g, ' ');
+      if (reply.status() >= 500) return ['FAILED', `Save answered ${reply.status()} — ${body.slice(0, 140)}`];
+
+      // The row the route owns, read back. §2: this is `active_mode` — P2P vs a
+      // third-party gateway — and NOT the settlement rail, which lives in
+      // `payment_mode_policies`. Confusing the two is how a screen comes to
+      // report a rail it does not control.
+      const stored = await gatewayMode();
+      if (!stored) return ['FAILED', `Save answered ${reply.status()} but no gateway config row exists`];
+      return ['DROVE', `answered ${reply.status()}, active_mode is '${stored}'`];
+    },
+  },
+
+  // ── Deferred by NAME, and not a mutation at all ──────────────────────────
+  // `drive.js` defers on the first word of a control's name, which is the right
+  // rule for an action and wrong for these two: Token Flow's "Apply" re-READS
+  // the window, and the player's theme toggle is a per-viewer preference. They
+  // were never pressed by any pass, so they are pressed here — with the
+  // assertion each actually deserves, which is that NOTHING was written.
+  {
+    id: 'admin/token-flow/apply',
+    panel: 'admin-panel',
+    what: 'Apply the analytics window (a READ)',
+    async run(page, cfg, base) {
+      await go(page, cfg, base, '/token-flow');
+      const window = page.locator('#trend-window');
+      if (await window.count() === 0) return ['NOT DRIVEN', 'no #trend-window on /token-flow'];
+      await window.selectOption('90').catch(() => {});
+      await settle(page, 1500);
+
+      const apply = page.getByRole('button', { name: /^\s*Apply\s*$/i }).first();
+      if (await apply.count() === 0) return ['NOT DRIVEN', 'no Apply button on /token-flow'];
+
+      const writes = [];
+      const watch = (r) => { if (r.method() !== 'GET' && /\/api\//.test(r.url())) writes.push(`${r.method()} ${r.url()}`); };
+      page.on('request', watch);
+      const reads = page.waitForResponse(
+        (r) => /analytics|token/i.test(r.url()) && r.request().method() === 'GET',
+        { timeout: 15000 },
+      ).catch(() => null);
+      await apply.click({ timeout: 8000 });
+      const reply = await reads;
+      await settle(page, 6000);
+      page.off('request', watch);
+
+      if (!reply) return ['FAILED', 'pressing Apply fetched nothing — the control is inert'];
+      if (writes.length) return ['FAILED', `"Apply" WROTE: ${writes.slice(0, 2).join(', ')}`];
+      return ['DROVE', `re-read at ${reply.status()}, and wrote nothing — correctly not a mutation`];
+    },
+  },
+
+  {
+    id: 'user/profile/switch-theme',
+    panel: 'user-panel',
+    what: 'Switch the theme (a per-viewer preference)',
+    async run(page, cfg, base) {
+      await go(page, cfg, base, '/');
+      const toggle = page.getByRole('button', { name: /Toggle theme/i }).first();
+      if (await toggle.count() === 0) return ['NOT DRIVEN', 'no theme toggle on the player shell'];
+
+      const themeNow = () => page.evaluate(() =>
+        document.documentElement.getAttribute('data-theme')
+        ?? document.body.getAttribute('data-theme')
+        ?? getComputedStyle(document.body).backgroundColor);
+      const before = await themeNow();
+
+      const writes = [];
+      const watch = (r) => { if (r.method() !== 'GET' && /\/api\//.test(r.url())) writes.push(`${r.method()} ${r.url()}`); };
+      page.on('request', watch);
+      await toggle.click({ timeout: 8000 });
+      await settle(page, 4000);
+      page.off('request', watch);
+      const after = await themeNow();
+
+      if (after === before) return ['FAILED', `pressing the toggle left the theme at '${before}'`];
+      // §11 allows a genuine UI-only value as a frontend concern. The assertion
+      // is that it STAYED one: a theme that posted to the server would be a
+      // preference with a second owner.
+      if (writes.length) return ['FAILED', `the theme toggle WROTE: ${writes.slice(0, 2).join(', ')}`];
+      return ['DROVE', `theme '${before}' → '${after}', and nothing was sent to the server`];
     },
   },
 
