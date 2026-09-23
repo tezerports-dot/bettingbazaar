@@ -511,6 +511,47 @@ const drovenow = new Set();
 const tally = {};
 const bump = (v) => { tally[v] = (tally[v] ?? 0) + 1; };
 
+/**
+ * ── The pass SETS the state its screens need, and puts it back ─────────────
+ * `/crash` and `/sports` redirect to `/` when their category has no enabled
+ * provider — correct behaviour, and it means those two screens are never
+ * opened by anything that clicks unless the pass arranges for them to exist.
+ * Reading whatever the database happened to hold is S19; the run would either
+ * skip the screens or report the redirect as a defect, depending on which
+ * machine it ran on.
+ *
+ * So it enables one provider per category through the same columns an admin
+ * sets, and restores every row to exactly what it found in a `finally` —
+ * because a pass that leaves its fixtures behind is trap 10, and these rows
+ * decide what every player sees.
+ */
+const PROVIDERS_FOR = ['spribe', 'betby'];
+const providerState = await (async () => {
+  const { pgQuery } = await import('#db/client.js');
+  const { rows } = await pgQuery(
+    'SELECT provider_key, enabled, api_url FROM game_providers WHERE provider_key = ANY($1)',
+    [PROVIDERS_FOR],
+  );
+  for (const key of PROVIDERS_FOR) {
+    // `game_providers_enabled_has_url` refuses an enabled provider with no URL,
+    // so both columns move together.
+    await pgQuery(
+      'UPDATE game_providers SET enabled = TRUE, api_url = $2 WHERE provider_key = $1',
+      [key, `https://${key}.drive.invalid`],
+    );
+  }
+  return rows;
+})();
+const restoreProviders = async () => {
+  const { pgQuery } = await import('#db/client.js');
+  for (const r of providerState) {
+    await pgQuery(
+      'UPDATE game_providers SET enabled = $2, api_url = $3 WHERE provider_key = $1',
+      [r.provider_key, r.enabled, r.api_url],
+    );
+  }
+};
+
 const browser = await chromium.launch({ executablePath: EXECUTABLE, args: ['--no-sandbox'], headless: !process.env.BB_HEADED });
 
 try {
@@ -744,6 +785,8 @@ try {
 } finally {
   await browser.close();
   stopAll();
+  // Outside any assertion, so it runs whether the pass passed or not.
+  await restoreProviders().catch((e) => console.error('could not restore game_providers:', e.message));
 }
 
 writeFileSync(REPORT, JSON.stringify(report, null, 2));
