@@ -264,6 +264,21 @@ router.post('/admin/balance-adjust', authenticate, isAdmin, async (req, res) => 
     if (!(Number(amount) > 0)) {
       return res.status(400).json({ success: false, message: 'amount must be positive' });
     }
+    // ── The ceiling on one adjustment ──────────────────────────────────────
+    // This was bounded at `> 0` and nothing else. A DEBIT is capped by what
+    // the player holds (the `Insufficient` branch below), so the open end was
+    // a CREDIT: one admin, one click, any sum, with an audit row as the only
+    // record. `SystemConfig.maxBalanceAdjustment` is the one owner of the
+    // number — the panel reads the same value to bound its input, rather than
+    // repeating it (§2, §4).
+    const { maxBalanceAdjustment } = await db.config.getSystemConfig();
+    if (Number(amount) > Number(maxBalanceAdjustment)) {
+      return res.status(400).json({
+        success: false,
+        message: `amount must be at most ₹${Number(maxBalanceAdjustment).toLocaleString('en-IN')}`
+          + ' — raise the ceiling in System Settings if this is intended',
+      });
+    }
 
     const user = await db.users.getUser(userId);
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });

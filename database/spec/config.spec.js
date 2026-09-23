@@ -141,6 +141,21 @@ export const SYSTEM_CONFIG_SPEC = group({
   maxWithdrawal:         n(50000, 0),
   maxWinningsWithdrawal: n(500000, 0),
 
+  // ── The most one admin may move in one balance adjustment ────────────────
+  // ₹10,00,000, owner-set 2026-09-23.
+  //
+  // `POST /api/admin/balance-adjust` bounded the amount at `> 0` and nothing
+  // else. A DEBIT is capped by what the player holds ("Insufficient
+  // {field}"), so the open end was a CREDIT: one admin, one click, any sum,
+  // with an audit row as the only record. The form pass found the field
+  // carried no `min`/`max` on the client either.
+  //
+  // Declared here rather than as a literal in the route, because the panel
+  // needs the same number to bound its input and two copies of a business
+  // value is §4. The route refuses above it; the screen reads it from the
+  // config GET and sets it as the input's `max`.
+  maxBalanceAdjustment:  n(1000000, 0),
+
   // Minted merchant inventory may never exceed the cap.
   // `cap` is a policy an operator sets. `minted` is the running total the
   // issuance path maintains — see `internal` above for why it must not be a

@@ -11,9 +11,21 @@ export const BalanceAdjustment: React.FC = () => {
   const [userSearch, setUserSearch] = useState('');
   const [users, setUsers] = useState<any[]>([]);
   const [selectedUser, setSelectedUser] = useState<any>(null);
+  /**
+   * The ceiling on one adjustment, read from the platform rather than repeated
+   * here. `SystemConfig.maxBalanceAdjustment` is the one owner (§2); the route
+   * refuses above it and this bounds the input to the same number, so the
+   * screen cannot drift from what the server will accept (§4).
+   */
+  const [maxAdjustment, setMaxAdjustment] = useState<number | null>(null);
 
   const loadHistory = async () => { try { const r = await api.get('/api/admin/balance-adjustments'); if(r.data.success) setHistory(r.data.adjustments); } catch{}; };
-  useEffect(() => { loadHistory(); }, []);
+  const loadCeiling = async () => {
+    // Left null if the platform cannot be reached: an input bounded by a
+    // guessed number is worse than one the server will judge.
+    try { const r = await api.get('/api/admin/system/config'); setMaxAdjustment(Number(r.data?.config?.maxBalanceAdjustment ?? r.data?.maxBalanceAdjustment) || null); } catch {}
+  };
+  useEffect(() => { loadHistory(); loadCeiling(); }, []);
 
   const searchUsers = async () => {
     if (!userSearch) return;
@@ -52,6 +64,9 @@ export const BalanceAdjustment: React.FC = () => {
     if (!form.userId)  return toast.error('Search for a player and select them first');
     if (!form.amount)  return toast.error('Enter an amount');
     if (!form.reason)  return toast.error('Enter a reason — it is written to the audit log');
+    if (maxAdjustment !== null && Number(form.amount) > maxAdjustment) {
+      return toast.error(`The most one adjustment may move is ₹${maxAdjustment.toLocaleString('en-IN')}`);
+    }
     setProcessing(true);
     try {
       const r = await api.post('/api/admin/balance-adjust', form);
@@ -96,7 +111,9 @@ export const BalanceAdjustment: React.FC = () => {
               <option value="tokenBalance">Token Balance</option>
             </select>
           </div>
-          <div><label className="text-xs text-gray-400 mb-1 block" htmlFor="amount">Amount (₹)</label><input id="amount" type="number" min={1} step={1} value={form.amount} onChange={e=>setForm(f=>({...f,amount:e.target.value}))} className="input w-full" placeholder="500"/></div>
+          <div><label className="text-xs text-gray-400 mb-1 block" htmlFor="amount">Amount (₹)</label><input id="amount" type="number" min={1} step={1} max={maxAdjustment ?? undefined} value={form.amount} onChange={e=>setForm(f=>({...f,amount:e.target.value}))} className="input w-full" placeholder="500"/>
+            {maxAdjustment !== null && <p className="text-[11px] text-gray-500 mt-1">Up to ₹{maxAdjustment.toLocaleString('en-IN')} per adjustment</p>}
+          </div>
           <div><label className="text-xs text-gray-400 mb-1 block" htmlFor="reason">Reason</label><input id="reason" value={form.reason} onChange={e=>setForm(f=>({...f,reason:e.target.value}))} className="input w-full" placeholder="Compensation for issue #123"/></div>
         </div>
         <button onClick={submit} disabled={processing} className="btn-primary w-full">{processing?'Processing…':'Apply Adjustment'}</button>

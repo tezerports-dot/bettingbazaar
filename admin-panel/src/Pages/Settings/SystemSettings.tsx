@@ -66,6 +66,7 @@ export const SystemSettings: React.FC = () => {
     // the schema default is §4, and `||` means a legitimate 0 becomes it.
     minWithdrawal: 500,   // schema default: 500
     maxWithdrawal: 50000, // schema default: 50000
+    maxBalanceAdjustment: 1000000, // schema default: 1000000 (₹10,00,000)
     minBet: 10,           // schema default: 10
     maxBet: 100000,       // schema default: 100000 (was 50000 here — §4 drift)
     max30MinBet: 50000,
@@ -152,6 +153,7 @@ export const SystemSettings: React.FC = () => {
           maxDeposit: response.data.maxDeposit ?? 50000,      // schema default: 50000
           minWithdrawal: response.data.minWithdrawal ?? 500,  // schema default: 500
           maxWithdrawal: response.data.maxWithdrawal ?? 50000,// schema default: 50000
+          maxBalanceAdjustment: response.data.maxBalanceAdjustment ?? 1000000, // schema default: 1000000
           minBet: response.data.minBet ?? 10,                 // schema default: 10
           maxBet: response.data.maxBet ?? 100000,             // schema default: 100000
           max30MinBet: response.data.max30MinBet || 50000,
@@ -462,6 +464,24 @@ export const SystemSettings: React.FC = () => {
           typed or pasted value still lands — so the warning names the pair and
           the Save button below refuses until it is resolved.
         */}
+        {/* An admin adjustment moves money into or out of a player's balance in
+            one click. The ceiling is a setting rather than a constant so it is
+            an operator's decision, and it is rendered here because a setting
+            nobody can reach is §3. */}
+        <div className="mt-4">
+          <label className="label" htmlFor="max-balance-adjustment">Max Balance Adjustment (Rs., per adjustment)</label>
+          <input id="max-balance-adjustment"
+            type="number" min={0}
+            value={formData.maxBalanceAdjustment}
+            onChange={(e) => setFormData({ ...formData, maxBalanceAdjustment: (Number(e.target.value) || 0) })}
+            className="input"
+          />
+          <p className="text-xs text-gray-500 mt-1">
+            The most one admin may credit or debit in a single adjustment. A debit is
+            capped by the player's balance regardless.
+          </p>
+        </div>
+
         {formData.minDeposit > formData.maxDeposit && (
           <div className="mt-3 flex items-center space-x-2 p-3 bg-red-500/10 border border-red-500/30 rounded-lg">
             <AlertTriangle className="text-red-500 shrink-0" size={16} />
