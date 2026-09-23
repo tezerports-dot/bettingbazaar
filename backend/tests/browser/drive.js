@@ -227,6 +227,13 @@ const ignored = (s) => IGNORE.some((re) => re.test(String(s)));
  * number it is NOT is stated too.
  */
 const PER_NAME = 3;
+/**
+ * A screen with no controls is judged by what `<main>` SAYS. Below this it is
+ * a shell that failed to render; above it, an empty state explaining itself.
+ * Deliberately generous — the shortest real empty state measured here is the
+ * merchant cash-links one at 205 characters, and a shell renders 0.
+ */
+const EMPTY_STATE_MIN_CHARS = 40;
 
 /** How long to stand back when the platform says we are asking too fast. */
 const THROTTLE_PAUSE_MS = Number(process.env.BB_THROTTLE_PAUSE_MS ?? 20000);
@@ -250,8 +257,15 @@ async function press(page, panel, screen, c, seen, byName) {
 
   const before = await fingerprint(page);
   const asked = page.__bbAsked ?? 0;
-  const errors = [], failed = [], throttled = [];
+  const errors = [], failed = [], throttled = [], calls = [];
   const onErr = (e) => errors.push(e.message);
+  const onReq = (r) => {
+    // What the control ASKED THE SERVER. See the INERT/REFETCHED split below.
+    const u = r.url();
+    if (/\/api\//.test(u) && !/\/api\/sse\//.test(u)) {
+      calls.push(`${r.method()} ${u.replace(/^https?:\/\/[^/]+/, '').slice(0, 80)}`);
+    }
+  };
   const onRes = (r) => {
     if (r.status() === 429) { throttled.push(r.url()); return; }
     if (r.status() >= 500 && !ignored(r.url())) {
@@ -260,6 +274,7 @@ async function press(page, panel, screen, c, seen, byName) {
   };
   page.on('pageerror', onErr);
   page.on('response', onRes);
+  page.on('request', onReq);
 
   let acted = 'clicked';
   try {
@@ -310,7 +325,7 @@ async function press(page, panel, screen, c, seen, byName) {
       if (!again) throw e;
       await again.click({ timeout: 4000 });
     } catch {
-      page.off('pageerror', onErr); page.off('response', onRes);
+      page.off('pageerror', onErr); page.off('response', onRes); page.off('request', onReq);
       return { verdict: 'UNREACHABLE', why: e.message.split('\n')[0].slice(0, 120) };
     }
   }
@@ -319,6 +334,7 @@ async function press(page, panel, screen, c, seen, byName) {
   const after = await fingerprint(page).catch(() => before);
   page.off('pageerror', onErr);
   page.off('response', onRes);
+  page.off('request', onReq);
 
   // ── The platform's own rate limiter, correctly refusing us ──────────────
   // `RATE_LIMIT_TIERS.global` is 1,000 requests per 15 minutes per IP, and a
@@ -337,7 +353,40 @@ async function press(page, panel, screen, c, seen, byName) {
     if (asked !== (page.__bbAsked ?? 0)) {
       return { verdict: 'NEEDS_INPUT', acted, why: 'it asked a confirm/prompt, which this pass declines' };
     }
-    return { verdict: 'INERT', acted };
+    /**
+     * ── A Refresh button is not dead because the data did not change ───────
+     * Nearly every screen here has a Refresh, and on a quiet database it
+     * refetches the same rows and repaints them identically — so the
+     * fingerprint (text, values, checked, aria, markup) is unmoved and the
+     * pass filed it as INERT. That is the harness accusing a working control,
+     * and it was doing it on nine screens at once.
+     *
+     * What separates the two is not the SCREEN, it is the WIRE. S22 is a
+     * control with NO handler: it calls nothing at all. A working Refresh
+     * issues a request. So a press that moved nothing but spoke to the server
+     * is REFETCHED — it did its job, the answer was the same — and INERT is
+     * reserved for a control that changed nothing and asked for nothing,
+     * which is the shape actually worth hunting.
+     */
+    /**
+     * ── The segment that is already selected ──────────────────────────────
+     * `All` on the merchant's order filter and `Volume` on its history tabs
+     * are the DEFAULT segments. Pressing the one already chosen correctly
+     * changes nothing, and the pass called both dead buttons.
+     *
+     * The control says so itself — `aria-pressed`/`aria-selected` was read at
+     * collection — so this is not a guess about the name. It is also the same
+     * fact a screen reader announces, which is why S24's labelling work and
+     * this share a cause: state a control does not publish is state nothing
+     * can check.
+     */
+    if (c.on) {
+      return { verdict: 'ALREADY_ON', acted, why: 'it was already the selected one — pressing it again correctly changes nothing' };
+    }
+    if (calls.length) {
+      return { verdict: 'REFETCHED', acted, why: `no visible change, but it called ${calls[0]}${calls.length > 1 ? ` (+${calls.length - 1} more)` : ''}` };
+    }
+    return { verdict: 'INERT', acted, why: 'it changed nothing on screen AND called no route — nothing happened at all (S22)' };
   }
   return { verdict: 'ACTED', acted, moved: moved(before, after).join(',') };
 }
@@ -372,7 +421,12 @@ if (!await waitFor(`${API}/health/live`, 'the backend')) process.exit(1);
 const actors = {
   'user-panel':     playerToken(await seedPlayer({ balancePaise: 150000 })),
   'admin-panel':    adminToken(await seedAdmin()),
-  'merchant-panel': merchantToken(await seedMerchant({ currency: 'INR', tokensPaise: 500000000 })),
+  // ₹5,000 — a real ATM denomination, so `/cash-links` renders its working
+  // screen instead of the "not approved for the ATM cash rail" empty state.
+  // Without it the whole CASH_ATM supply side is never opened by this pass.
+  'merchant-panel': merchantToken(await seedMerchant({
+    currency: 'INR', tokensPaise: 500000000, cashDenominationPaise: 500000,
+  })),
 };
 
 mkdirSync(SHOTS, { recursive: true });
@@ -426,6 +480,20 @@ try {
     // and was told no did not do nothing, it was declined. Reporting that as
     // INERT would send somebody hunting a dead button that works.
     page.on('dialog', (d) => { page.__bbAsked = (page.__bbAsked ?? 0) + 1; d.dismiss().catch(() => {}); });
+    /**
+     * ── A 429 during a screen's OWN load voids that screen ─────────────────
+     * The merchant panel is driven last, after ~1,600 presses have gone
+     * through one IP, and `RATE_LIMIT_TIERS.global` is 1,000 per 15 minutes.
+     * So `/api/merchant/profile` came back **429**, the panel rendered without
+     * a profile, and six of its seven screens collected zero controls — which
+     * the pass then reported as `ok`.
+     *
+     * A refusal the harness provoked is not a result about the product. Count
+     * them per screen so the verdict can say the screen was never measured.
+     */
+    page.on('response', (r) => {
+      if (r.status() === 429) page.__bb429 = (page.__bb429 ?? 0) + 1;
+    });
 
     await page.goto(cfg.entry(base), { waitUntil: 'domcontentloaded', timeout: 60000 });
     await settle(page, 30000);
@@ -435,7 +503,15 @@ try {
       await navigate(page, cfg, screen, base);
       await settle(page);
 
+      page.__bb429 = 0;
       const controls = await collect(page).catch(() => []);
+      // What `<main>` SAYS, for the no-controls verdict below. A screen with
+      // nothing to press is either a shell that failed or an empty state that
+      // explains itself, and only the text tells the two apart.
+      const said = await page.evaluate(() => {
+        const m = document.querySelector('main');
+        return ((m || document.body).innerText || '').replace(/\s+/g, ' ').trim();
+      }).catch(() => '');
       // This screen is being driven now, so whatever a previous run recorded
       // for it is superseded rather than added to.
       const key = `${panel}\u0000${screen}`;
@@ -481,12 +557,55 @@ try {
       const inert  = results.filter((r) => r.verdict === 'INERT');
       const gone   = results.filter((r) => r.verdict === 'GONE' || r.verdict === 'UNREACHABLE');
       const acted  = results.filter((r) => r.verdict === 'ACTED').length;
+      // A control that called a route and got the same answer back DID something.
+      const refetched = results.filter((r) => r.verdict === 'REFETCHED').length;
       const defer  = results.filter((r) => r.verdict === 'DEFERRED').length;
       const repr   = results.filter((r) => r.verdict === 'REPRESENTED').length;
-      const shape  = `${controls.length} controls: ${acted} acted, ${inert.length} inert, ${defer} deferred`
+      const shape  = `${controls.length} controls: ${acted} acted`
+        + `${refetched ? `, ${refetched} refetched (called a route, same answer)` : ''}`
+        + `, ${inert.length} inert, ${defer} deferred`
         + `, ${gone.length} unreachable${repr ? `, ${repr} repeats of one already pressed` : ''}`;
 
-      if (broke.length) {
+      /**
+       * ── Zero controls is a FAILURE, never a pass ───────────────────────────
+       * This branch is the whole reason the merchant panel read green on a run
+       * that never opened it. `0 controls: 0 acted, 0 inert, 0 deferred` fell
+       * through every case below and landed on `check(..., true)` — a screen
+       * with nothing to press satisfied "every control pressed, all responded"
+       * VACUOUSLY, and six screens passed on having measured nothing.
+       *
+       * That is §29 in the harness itself: absence of a failing check read as
+       * evidence, and S8 — a gate measuring a fraction, reported green. Every
+       * screen in this platform has at least one control; zero means the screen
+       * rendered only its shell (S21), the router never arrived, or the pass was
+       * refused at the door. None of those is a pass.
+       */
+      if (!controls.length) {
+        await page.screenshot({ path: join(SHOTS, `${panel}${screen.replace(/\//g, '_') || '_root'}.png`) }).catch(() => {});
+        if (page.__bb429) {
+          check('DRIVE', panel, screen, 'the screen was actually measured',
+            `NOTHING TO PRESS — the platform answered 429 ${page.__bb429}x while this screen loaded, so it `
+            + 'never rendered. NOT verified; re-run this screen on its own.', false,
+            'the harness provoked the refusal; this says nothing about the product');
+        } else if (said.length < EMPTY_STATE_MIN_CHARS) {
+          // A shell. `<main>` rendered, and rendered nothing — the S21 shape,
+          // and exactly what sixteen admin screens looked like earlier in this
+          // review when the harness, not the app, was at fault.
+          check('DRIVE', panel, screen, 'the screen renders its content',
+            `NOTHING TO PRESS and <main> says ${said ? JSON.stringify(said) : 'NOTHING'} — a shell (S21), `
+            + 'or the pass never reached it. Open it in a browser before believing either.', false,
+            'measured inside <main>, after the screen settled');
+        } else {
+          // An empty state that EXPLAINS itself is a working screen. The
+          // merchant cash-links screen is the case that taught this: no
+          // controls, because the account is not approved for the ATM rail,
+          // and a sentence saying so and naming who fixes it. Failing that
+          // would be the harness accusing correct code again — so the verdict
+          // records the SENTENCE, for a person to judge (§14/S14).
+          note('DRIVE', panel, screen, 'nothing to press, and the screen says why',
+            `0 controls — an empty state, not a shell`, said.slice(0, 220));
+        }
+      } else if (broke.length) {
         check('DRIVE', panel, screen, 'no control throws or 5xxes', 
           broke.map((b) => `${b.control} → ${b.verdict}: ${b.why}`).slice(0, 3).join('  ||  '), false,
           'pressed as a person would; the screen was re-read before and after each press');

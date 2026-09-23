@@ -1,6 +1,6 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import { db } from '#db';
-import { createMerchantWithWallet, approveMerchant, setOnline } from '#db/repositories/merchants.js';
+import { createMerchantWithWallet, approveMerchant, setOnline, updateMerchant } from '#db/repositories/merchants.js';
 import { creditMerchantTokens } from '../../domains/merchant/merchantWallet.service.js';
 import { rid } from './harness.js';
 
@@ -25,9 +25,25 @@ export async function seedPlayer({ kycStatus = 'APPROVED', balancePaise = 0 } = 
   return { ...user, userId, mobile: user.mobile };
 }
 
+/**
+ * ── `cashDenominationPaise` is what makes a merchant a CASH merchant ────────
+ * It is not a second rail (§2: `accepted_currencies` is exactly one entry). An
+ * ATM merchant is an INR merchant an admin has told which single denomination
+ * they stand at, and `CashLinks.tsx` renders its whole screen off that: with
+ * no denomination it shows an empty state explaining the account is not
+ * approved for the ATM rail, and nothing to press.
+ *
+ * Which is why this option exists. The browser pass seeded a plain INR
+ * merchant, so `/cash-links` rendered that empty state on every run — zero
+ * controls, and the pass reported `ok`. The entire supply side of the CASH_ATM
+ * rail had never once been opened by anything that clicks.
+ *
+ * Must be one of `CASH_DENOMINATIONS_PAISE`; the column's CHECK refuses
+ * anything else (verified: 50_000_000 was refused by name).
+ */
 export async function seedMerchant({
   currency = 'INR', approve = true, tokensPaise = 0, online = true,
-  usdtAddressTrc20 = null, usdtAddressBep20 = null,
+  usdtAddressTrc20 = null, usdtAddressBep20 = null, cashDenominationPaise = null,
 } = {}) {
   const name = rid('merch');
   const merchant = await createMerchantWithWallet({
@@ -39,6 +55,9 @@ export async function seedMerchant({
     usdtAddressTrc20, usdtAddressBep20,
   });
   const id = merchant._id ?? merchant.merchantId;
+  if (cashDenominationPaise !== null) {
+    await updateMerchant(id, { cashDenominationPaise: Number(cashDenominationPaise) });
+  }
   if (approve) await approveMerchant(id, { actor: 'e2e' });
   if (online) await setOnline(id, true);
   if (tokensPaise > 0) {

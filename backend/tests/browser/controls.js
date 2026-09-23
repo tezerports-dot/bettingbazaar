@@ -80,6 +80,13 @@ window.__bb = (() => {
       return {
         kind, name, ordinal,
         disabled: !!(el.disabled || el.getAttribute('aria-disabled') === 'true'),
+        // Whether this control is ALREADY the chosen one. A segmented control's
+        // selected segment, pressed again, correctly changes nothing — and the
+        // pass was filing that as a dead button. Read from the control's own
+        // ARIA state, which is the same fact a screen reader announces.
+        on: el.getAttribute('aria-pressed') === 'true'
+          || el.getAttribute('aria-selected') === 'true'
+          || el.getAttribute('aria-current') === 'page',
         href: el.tagName === 'A' ? (el.getAttribute('href') || '') : '',
         options: el.tagName === 'SELECT' ? [...el.options].map((o) => o.value).slice(0, 40) : undefined,
         unnamed: name.length === 0,
