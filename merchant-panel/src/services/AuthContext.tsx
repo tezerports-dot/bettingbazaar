@@ -54,17 +54,51 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
               // Update localStorage with fresh data
               localStorage.setItem('merchantData', JSON.stringify(freshData));
             }
-          } catch (refreshErr) {
-            // Token may be expired — clear stale auth
-            
+          } catch (refreshErr: any) {
+            /**
+             * ── A blip is not a logout ──────────────────────────────────────
+             * This called `api.logout()` on ANY failure of the profile refresh,
+             * under a comment saying "token may be expired". It handled every
+             * case EXCEPT that one: a genuine 401 is already cleared inside
+             * `request()`, which redirects before this catch ever runs.
+             *
+             * What actually reached here was the transient failures — a 429
+             * from the global limiter (1,000 req / 15 min per IP, which several
+             * merchants behind one office NAT share), a 502 while the gateway
+             * restarts, a dropped connection — and `logout()` clears the token
+             * and hard-navigates to the sign-in form.
+             *
+             * Measured in a browser, answering the profile call 429 / 502 / 401
+             * and reading what the panel left behind:
+             *
+             *     429  →  token cleared, thrown to /merchant/ sign-in
+             *     502  →  token cleared, thrown to /merchant/ sign-in
+             *     401  →  token cleared, thrown to /merchant/ sign-in  (correct)
+             *
+             * The cost is not just the re-login. A merchant serving a PAID
+             * deposit has `paidResponseMinutes` (30) before the order goes to
+             * DISPUTED and the silence is counted against them as a refusal
+             * (§2) — so a two-second gateway bounce can put a mark on an honest
+             * merchant's streak while they are standing at the machine.
+             *
+             * So: the session is only given up when the SERVER says the
+             * credential is no good. Anything else keeps the cached profile,
+             * and the next call refreshes it. Same fix, same reasoning, as the
+             * admin panel's `verifySession` — this is its sibling (§0.15).
+             */
             console.warn('Merchant profile refresh failed:', refreshErr);
+            const status = refreshErr?.status;
+            const credentialRejected = status === 401 || status === 403;
             const isPublicRoute = ['/chat/'].some(p => window.location.pathname.startsWith(p));
             if (isPublicRoute) {
-              setMerchant(null); 
-            } else {
+              setMerchant(null);
+            } else if (credentialRejected) {
               api.logout();
               setMerchant(null);
             }
+            // Otherwise: keep the session and whatever profile was cached. A
+            // stale token balance for a few seconds beats being signed out
+            // mid-order over a refusal that was never about this merchant.
           }
         }
       } catch (error) {
