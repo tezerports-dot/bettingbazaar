@@ -160,17 +160,26 @@ async function confirmWith(page, verb) {
   // which it never will, and reports `Timeout 30000ms exceeded` — a message
   // that names neither the ambiguity nor the overlay. Measured: that is what
   // made the deduct and suspend cases look like app failures.
+  // ── DIALOG ONLY. The page-wide fallback was actively dangerous ──────────
+  // With no dialog open this used to search the whole page, and on
+  // /chat-management every message's delete control is named exactly "Delete".
+  // So one press deleted the message, `window.confirm` was accepted, and then
+  // this clicked ANOTHER row's Delete: one press, TWO messages gone. The case
+  // caught it ("2 messages went, expected exactly 1") only because it counted.
+  //
+  // A confirmation lives in a dialog. When there is none — a `window.confirm`
+  // the dialog handler already answered, or a control that needs no second
+  // press — the honest answer is 'none', and the caller carries on.
   const dialog = page.locator('[role="dialog"]').last();
-  const inDialog = await dialog.count() > 0 && await dialog.isVisible().catch(() => false);
-  const scope = inDialog ? dialog : page;
+  if (await dialog.count() === 0 || !(await dialog.isVisible().catch(() => false))) return 'none';
 
-  const button = scope.getByRole('button', { name: new RegExp(`^\\s*${verb}\\s*$`, 'i') }).last();
+  const button = dialog.getByRole('button', { name: new RegExp(`^\\s*${verb}\\s*$`, 'i') }).last();
   if (await button.count() && await button.isVisible().catch(() => false)) {
     // Bounded, so a confirmation that cannot be pressed is REPORTED rather than
     // spending thirty seconds proving it.
     try { await button.click({ timeout: 8000 }); } catch { return 'stuck'; }
     await settle(page, 8000);
-    return inDialog ? 'dialog' : 'inline';
+    return 'dialog';
   }
   return 'none';
 }
@@ -209,12 +218,90 @@ const isSubAdmin = async (userId) => {
   const { rows } = await pgQuery('SELECT is_sub_admin FROM users WHERE user_id = $1', [userId]);
   return rows[0]?.is_sub_admin === true;
 };
+const orderStatus = async (orderId) => {
+  const { rows } = await pgQuery(
+    'SELECT status FROM merchant_admin_token_orders WHERE order_id = $1', [String(orderId)]);
+  return rows[0]?.status ?? null;
+};
+const orderState = async (orderId) => {
+  const { rows } = await pgQuery('SELECT state FROM order_states WHERE order_id = $1', [String(orderId)]);
+  return rows[0]?.state ?? null;
+};
+/** The bonus pool's balance, from the treasury — the one owner (§2). */
+const poolPaise = async () => (await db.treasury.getTreasuryBalances()).BONUS_POOL ?? 0;
+/**
+ * The messages the moderation screen can still see.
+ *
+ * A delete here is a SOFT delete — `is_deleted` is set and the row survives, so
+ * counting rows would report nothing removed on a delete that worked perfectly.
+ * Count what the feed counts.
+ */
+const chatCount = async () => {
+  const { rows } = await pgQuery('SELECT COUNT(*)::int AS n FROM public_chat_messages WHERE NOT is_deleted');
+  return Number(rows[0]?.n ?? 0);
+};
 const providerExists = async (key) => {
   const { rows } = await pgQuery('SELECT 1 FROM game_providers WHERE provider_key = $1', [String(key)]);
   return rows.length > 0;
 };
 /** §9: every player balance read goes through the wallet authority. */
 const balances = (userId) => db.wallets.getBalances(userId);
+
+
+/**
+ * A "Save" case, declared rather than written out four times.
+ *
+ * Every one of these screens does the same thing — read a config document, edit
+ * one field, press Save, and publish it platform-wide — so writing them out
+ * separately would be §5's shape: four copies of one procedure, drifting. What
+ * differs is the screen, the field, the button's wording and the document, and
+ * those are the four things this takes.
+ *
+ * The restore is in a `finally` and outside every early return, because these
+ * cases rewrite the platform's live rules and a restore that only runs on the
+ * happy path is the one that matters least (trap 10).
+ */
+function configSave({ id, screen, selector, button, scope, key, value, label }) {
+  return {
+    id,
+    panel: 'admin-panel',
+    what: label,
+    async run(page, cfg, base) {
+      const before = await db.config.getConfig(scope);
+      const was = before?.[key];
+      try {
+        await go(page, cfg, base, screen);
+        const typed = await fill(page, selector, value);
+        if (!typed.ok) return ['NOT DRIVEN', typed.why];
+        await settle(page, 1500);
+
+        const save = page.getByRole('button', { name: new RegExp(`^\\s*${button}\\s*$`, 'i') }).first();
+        if (await save.count() === 0) return ['NOT DRIVEN', `no "${button}" button on ${screen}`];
+        if (await save.isDisabled()) return ['NOT DRIVEN', `"${button}" is disabled with a valid value`];
+        await save.click({ timeout: 8000 });
+        await settle(page, 8000);
+
+        // The DOCUMENT, freshly, not the form: a screen that keeps its own copy
+        // of what it just sent is not evidence anything was stored (§32 S25).
+        const after = await db.config.getConfig(scope, { fresh: true });
+        if (String(after?.[key] ?? '') !== String(value)) {
+          return ['FAILED',
+            `pressed ${button}; ${scope}.${key} is '${after?.[key]}', expected '${value}'`
+            + ` — screen said: ${(await words(page)).slice(-140)}`];
+        }
+        const said = await words(page);
+        if (!/saved|updated|success/i.test(said)) {
+          return ['FAILED', `${scope}.${key} was written; the screen never confirmed it`];
+        }
+        return ['DROVE', `${scope}.${key} '${was}' → '${value}', confirmed on screen`];
+      } finally {
+        await db.config.applyConfig({
+          scope, actor: 'mutating-drive', patch: { [key]: was },
+        }).catch((e) => console.error(`   ! could not restore ${scope}.${key}:`, e.message));
+      }
+    },
+  };
+}
 
 // ════════════════════════════════════════════════════════════════════════════
 // THE CASES
@@ -557,6 +644,211 @@ const CASES = [
     },
   },
 
+
+  // ── Money: the platform hands a merchant inventory ───────────────────────
+  {
+    id: 'admin/merchant-token-orders/approve',
+    panel: 'admin-panel',
+    what: 'Approve a merchant token purchase',
+    async run(page, cfg, base) {
+      const target = await seedMerchant({ currency: 'USDT', tokensPaise: 0 });
+      const bystander = await seedMerchant({ currency: 'USDT', tokensPaise: 0 });
+      const mineId = rid('TO');
+      const theirsId = rid('TO');
+      for (const [orderId, m] of [[mineId, target], [theirsId, bystander]]) {
+        await pgQuery(
+          `INSERT INTO merchant_admin_token_orders
+             (order_id, merchant_id, token_paise, usdt_rate, usdt_amount, usdt_tx_hash, status)
+           VALUES ($1, $2, $3, 90, 100, $4, 'PENDING')`,
+          [orderId, m.merchantId, 900000, `0xDRIVE${orderId}`],
+        );
+      }
+
+      await go(page, cfg, base, '/merchant-token-orders');
+      const row = await rowFor(page, target.merchantId) ?? await rowFor(page, target.name);
+      if (!row) return ['NOT DRIVEN', `seeded PENDING order for ${target.name} never appeared`];
+      const hit = await pressInRow(row, 'Approve — transfers tokens from the platform\'s holding to the merchant');
+      if (!hit.ok) return ['NOT DRIVEN', hit.why];
+      await settle(page, 8000);
+
+      // BOTH sides, against the database: the merchant's wallet AND the
+      // platform's own holding. A credit that came from nowhere would pass an
+      // assertion that only looked at the wallet.
+      const got = await db.merchantWallets.getMerchantTokenBalance(target.merchantId);
+      const neighbour = await db.merchantWallets.getMerchantTokenBalance(bystander.merchantId);
+      const state = await orderStatus(mineId);
+      if (Number(got) !== 9000) return ['FAILED', `merchant holds ${got} tokens, expected 9000`];
+      if (Number(neighbour) !== 0) return ['FAILED', `the BYSTANDER merchant was credited ${neighbour}`];
+      if (state !== 'APPROVED') return ['FAILED', `the order is ${state}, not APPROVED`];
+      if (await orderStatus(theirsId) !== 'PENDING') return ['FAILED', "the BYSTANDER's order was decided too"];
+      return ['DROVE', `9,000 tokens transferred, order APPROVED, bystander still PENDING at 0`];
+    },
+  },
+
+
+  // ── Money: an admin decides a disputed deposit ───────────────────────────
+  {
+    id: 'admin/payment-control/release',
+    panel: 'admin-panel',
+    what: 'Release a disputed deposit to the player',
+    async run(page, cfg, base) {
+      const player = await seedPlayer({ balancePaise: 0 });
+      const other = await seedPlayer({ balancePaise: 0 });
+      const merchant = await seedMerchant({ currency: 'INR', tokensPaise: 100000000 });
+      const mine = rid('DISP');
+      const theirs = rid('DISP');
+      for (const [orderId, u] of [[mine, player], [theirs, other]]) {
+        await pgQuery(
+          `INSERT INTO order_states
+             (order_id, user_id, merchant_id, order_type, state, token_amount_paise, fiat_amount_paise)
+           VALUES ($1, $2, $3, 'DEPOSIT', 'DISPUTED', 50000, 50000)`,
+          [orderId, u.userId, merchant.merchantId],
+        );
+      }
+
+      await go(page, cfg, base, '/payment-control');
+      // ── MY order's card, not merely an element mentioning it ─────────────
+      // `:has-text()` matches every ancestor too, and `.last()` gives the
+      // innermost — a <span> holding the order id and no button. The case then
+      // reported "no Release to User" while FOUR were on the page, which reads
+      // as an empty dispute queue over a working one. Ask for the card that
+      // contains BOTH the id and the control, and take the innermost of those.
+      const card = page.locator('div')
+        .filter({ hasText: mine })
+        .filter({ has: page.getByRole('button', { name: /Release to User/i }) })
+        .last();
+      const release = (await card.count())
+        ? card.getByRole('button', { name: /Release to User/i }).first()
+        : page.locator('nothing-matches-this');
+      if (await release.count() === 0) {
+        // Measure the ROUTED region, not the page (§32 S21): the shell is on
+        // screen either way, so quoting the top of the body reports the nav bar
+        // and tells the reader nothing about whether the queue rendered.
+        const routed = await page.locator('main').innerText().catch(() => '(no <main>)');
+        const all = await page.getByRole('button', { name: /Release to User/i }).count();
+        return ['NOT DRIVEN',
+          `no "Release to User" for ${mine} (${all} on the page) — routed region: `
+          + `${routed.replace(/\s+/g, ' ').trim().slice(0, 220)}`];
+      }
+
+      const before = await balances(player.userId);
+      // The handler asks for a reason through `window.prompt`, and returns early
+      // on an empty one — so the prompt is ANSWERED, not merely accepted.
+      page.__bbAccept = 'mutating drive: released';
+      try {
+        await release.click({ timeout: 8000 });
+        await settle(page, 10000);
+      } finally { page.__bbAccept = false; }
+
+      const after = await balances(player.userId);
+      const neighbour = await balances(other.userId);
+      const state = await orderState(mine);
+      if ((after.depositBalance ?? 0) <= (before.depositBalance ?? 0)) {
+        return ['FAILED', `the player was not credited (₹${before.depositBalance} → ₹${after.depositBalance});`
+          + ` order is ${state} — screen said: ${(await words(page)).slice(-140)}`];
+      }
+      if ((neighbour.depositBalance ?? 0) !== 0) return ['FAILED', 'the BYSTANDER player was credited too'];
+      if (await orderState(theirs) !== 'DISPUTED') return ['FAILED', "the BYSTANDER's dispute was resolved too"];
+      return ['DROVE', `player credited ₹${after.depositBalance}, order ${state}, the other dispute untouched`];
+    },
+  },
+
+  // ── Money: the platform funds its own bonus pool ─────────────────────────
+  {
+    id: 'admin/revenue/fund-pool',
+    panel: 'admin-panel',
+    what: 'Fund the merchant bonus pool',
+    async run(page, cfg, base) {
+      await go(page, cfg, base, '/revenue');
+      const amount = page.locator('input[placeholder^="Amount"]').first();
+      if (await amount.count() === 0) return ['NOT DRIVEN', 'no amount field on /revenue'];
+      await amount.fill('100');
+      await fill(page, 'input[placeholder^="Business justification"]', 'mutating drive');
+      await settle(page, 1500);
+
+      const before = await poolPaise();
+      const fund = page.getByRole('button', { name: /^\s*Fund Pool\s*$/i }).first();
+      if (await fund.count() === 0) return ['NOT DRIVEN', 'no Fund Pool button'];
+      await fund.click({ timeout: 8000 });
+      await settle(page, 10000);
+
+      const after = await poolPaise();
+      const said = await words(page);
+      // The backend REFUSES anything beyond distributable revenue, and on a
+      // fresh database there is none — so a refusal here is the platform
+      // working, not failing, and the case says which happened rather than
+      // calling a correct refusal a defect (S19).
+      if (after > before) return ['DROVE', `pool ${before} → ${after} paise`];
+      if (/revenue|insufficient|distributable|cannot/i.test(said)) {
+        return ['DROVE', `refused by name, pool unchanged — "${said.match(/[^.]*(?:revenue|distributable|insufficient)[^.]*/i)?.[0]?.trim().slice(0, 100)}"`];
+      }
+      return ['FAILED', `pressed Fund Pool: pool unchanged and the screen said nothing — ${said.slice(-140)}`];
+    },
+  },
+
+  // ── Deleting a player's chat message ─────────────────────────────────────
+  {
+    id: 'admin/chat-management/delete',
+    panel: 'admin-panel',
+    what: 'Delete a chat message',
+    async run(page, cfg, base) {
+      // ── The PUBLIC chat, which is not `chat_messages` ────────────────────
+      // Two different chats exist: `chat_messages` is the P2P conversation
+      // attached to an ORDER, and `public_chat_messages` is the open room this
+      // screen moderates. Seeding the first left the screen correctly empty
+      // while the table said two rows — a harness reporting "nothing to delete"
+      // over rows the screen was never going to show.
+      const player = await seedPlayer({});
+      for (const body of ['drive-target', 'drive-bystander']) {
+        await pgQuery(
+          `INSERT INTO public_chat_messages (user_id, display_name, content)
+           VALUES ($1, $2, $3)`,
+          [player.userId, `Drive ${player.userId.slice(-6)}`, body],
+        );
+      }
+
+      await go(page, cfg, base, '/chat-management');
+      const before = await chatCount();
+      const del = page.getByTitle('Delete').first();
+      if (await del.count() === 0) {
+        return ['NOT DRIVEN', `no message to delete on /chat-management (${before} in the table)`];
+      }
+      page.__bbAccept = true;
+      try {
+        await del.click({ timeout: 8000 });
+        await settle(page, 6000);
+        await confirmWith(page, 'Delete');
+      } finally { page.__bbAccept = false; }
+
+      const after = await chatCount();
+      if (after >= before) return ['FAILED', `messages ${before} → ${after}; nothing was removed`];
+      if (before - after !== 1) return ['FAILED', `${before - after} messages went, expected exactly 1`];
+      return ['DROVE', `one message removed (${before} → ${after}), the rest kept`];
+    },
+  },
+
+  configSave({
+    id: 'admin/content/support/save',
+    screen: '/content/support',
+    selector: '#sl-whatsapp',
+    button: 'Save support links',
+    scope: 'supportLinks',
+    key: 'whatsapp',
+    value: 'https://wa.me/919999900001',
+    label: 'Save the support links document',
+  }),
+
+  configSave({
+    id: 'admin/branding/save',
+    screen: '/branding',
+    selector: '#app-name',
+    button: 'Save Branding Settings',
+    scope: 'branding',
+    key: 'appName',
+    value: 'Drive Pass Bazaar',
+    label: 'Save the branding document',
+  }),
+
   // ── A platform-wide document: snapshot, press, assert, put back ───────────
   {
     id: 'admin/settings/save',
@@ -641,7 +933,19 @@ async function main() {
     // `page.once('dialog')` would not work, because every registered listener
     // runs and this one, registered first, dismissed before the case's accept
     // could land. That is why "Delete" reported the row still in the catalogue.
-    page.on('dialog', (d) => (page.__bbAccept ? d.accept() : d.dismiss()).catch(() => {}));
+    // `page.__bbAccept` is false to dismiss, true to accept, or a STRING to
+    // type into a `window.prompt` — the dispute resolution asks for a reason
+    // that way, and `if (!reason?.trim()) return` means an empty accept is
+    // indistinguishable from a cancel: the button would do nothing and the case
+    // would report the platform as failing to release money it was never asked
+    // to release.
+    page.on('dialog', (d) => {
+      const want = page.__bbAccept;
+      const p = want === false || want === undefined
+        ? d.dismiss()
+        : d.accept(typeof want === 'string' ? want : undefined);
+      p.catch(() => {});
+    });
     if (process.env.BB_DIAG) {
       page.on('request', (r) => { if (/\/api\//.test(r.url())) console.log('   [req]', r.method(), r.url().slice(0, 90)); });
       page.on('requestfailed', (r) => console.log('   [reqfail]', r.url().slice(0, 90), r.failure()?.errorText));
