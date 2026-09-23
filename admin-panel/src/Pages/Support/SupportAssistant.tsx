@@ -138,7 +138,9 @@ export const SupportAssistant: React.FC = () => {
             The knowledge base players are answered from. The assistant may only use what is here.
           </p>
         </div>
-        <button onClick={load} disabled={loading} className="p-2 hover:bg-dark-700 rounded-lg disabled:opacity-50">
+        <button onClick={load} disabled={loading}
+          title="Reload the assistant's documents" aria-label="Reload the assistant's documents"
+          className="p-2 hover:bg-dark-700 rounded-lg disabled:opacity-50">
           <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
         </button>
       </div>

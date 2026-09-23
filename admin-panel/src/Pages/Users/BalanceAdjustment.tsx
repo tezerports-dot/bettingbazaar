@@ -21,10 +21,37 @@ export const BalanceAdjustment: React.FC = () => {
     catch {}
   };
 
-  const selectUser = (u: any) => { setSelectedUser(u); setForm(f => ({...f, userId: u._id})); setUsers([]); setUserSearch(''); };
+  /**
+   * ── The id is `userId`. The users route has never sent an `_id` ───────────
+   * `GET /api/admin/users` returns
+   *   userId, username, mobile, joiningNumber, referralCode, … (38 keys)
+   * and not one of them is `_id`. This read `u._id`, so `form.userId` was
+   * `undefined` on every selection — and `submit` opens with
+   *
+   *     if (!form.userId || !form.amount || !form.reason)
+   *       return toast.error('All fields required');
+   *
+   * So the whole screen was inert, in the way that is hardest to report:
+   * measured in a browser, an admin searches, clicks the player, the screen
+   * confirms "Selected: e2e-player-… (9274754612)", they type an amount and a
+   * reason, press Apply Adjustment — and are told **"All fields required"**.
+   * Everything is filled in and the player is named on screen. They will try
+   * again, and again. No balance adjustment could ever be made here.
+   *
+   * §23's shape and §32's S14 together: a type that names a field the server
+   * never sends, producing a message that blames the operator for the
+   * platform's state. Swept the rest of this file against the live payloads —
+   * the history rows DO carry `_id` (aliased server-side), so `key={h._id}` is
+   * correct and stays.
+   */
+  const selectUser = (u: any) => { setSelectedUser(u); setForm(f => ({...f, userId: u.userId})); setUsers([]); setUserSearch(''); };
 
   const submit = async () => {
-    if (!form.userId || !form.amount || !form.reason) return toast.error('All fields required');
+    // Name what is missing. "All fields required" while every field is filled
+    // in is what made the `_id` defect above so hard to see from the outside.
+    if (!form.userId)  return toast.error('Search for a player and select them first');
+    if (!form.amount)  return toast.error('Enter an amount');
+    if (!form.reason)  return toast.error('Enter a reason — it is written to the audit log');
     setProcessing(true);
     try {
       const r = await api.post('/api/admin/balance-adjust', form);
@@ -46,7 +73,7 @@ export const BalanceAdjustment: React.FC = () => {
           {selectedUser&&<div className="mt-2 p-2 bg-green-500/10 border border-green-500/30 rounded-sm text-sm text-green-400">Selected: {selectedUser.username} ({selectedUser.mobile})</div>}
           {users.length>0&&(
             <div className="mt-2 bg-dark-700 rounded-lg border border-dark-600 overflow-hidden">
-              {users.map(u=><button key={u._id} onClick={()=>selectUser(u)} className="w-full text-left px-3 py-2 hover:bg-dark-600 text-sm border-b border-dark-600 last:border-0">{u.username} — {u.mobile} — Dep: ₹{u.depositBalance||0}</button>)}
+              {users.map(u=><button key={u.userId} onClick={()=>selectUser(u)} className="w-full text-left px-3 py-2 hover:bg-dark-600 text-sm border-b border-dark-600 last:border-0">{u.username} — {u.mobile} — Dep: ₹{u.depositBalance||0}</button>)}
             </div>
           )}
         </div>

@@ -313,7 +313,11 @@ export const BrandingSettings: React.FC = () => {
                   <label htmlFor={c.id} className="label">{c.label}</label>
                   <div className="flex items-center gap-2">
                     <input id={c.id} name={c.name} type="color" value={(formData as any)[c.key]} onChange={(e) => set(c.key, e.target.value)} className="w-12 h-9 rounded-sm border border-dark-600 cursor-pointer bg-transparent" />
-                    <input type="text" value={(formData as any)[c.key]} onChange={(e) => set(c.key, e.target.value)} className="input font-mono flex-1" />
+                    {/* The swatch beside this carries the label; the hex box
+                        carried nothing, so a screen reader read the colour's
+                        name and then an anonymous text field. Three of them. */}
+                    <input type="text" aria-label={`${c.label} — hex value`}
+                      value={(formData as any)[c.key]} onChange={(e) => set(c.key, e.target.value)} className="input font-mono flex-1" />
                   </div>
                 </div>
               ))}

@@ -229,7 +229,8 @@ export const MerchantPlatform: React.FC = () => {
             <div className="flex items-center justify-between md:flex-col md:items-start gap-2">
               <p className="font-medium text-sm">Enabled</p>
               <label className="relative inline-flex items-center cursor-pointer">
-                <input type="checkbox" checked={form.enabled}
+                <input type="checkbox" aria-label="Commission policy enabled"
+                  checked={form.enabled}
                   onChange={e => setForm({ ...form, enabled: e.target.checked })} className="sr-only peer" />
                 <div className="w-11 h-6 bg-gray-700 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-gold-500"></div>
               </label>

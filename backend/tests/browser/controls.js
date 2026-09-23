@@ -43,7 +43,18 @@ window.__bb = (() => {
   };
 
   const nameOf = (el) => {
-    const labelled = el.id ? document.querySelector('label[for="' + CSS.escape(el.id) + '"]') : null;
+    // A label names a control two ways, and this only knew one of them.
+    // A label that WRAPS its input is an IMPLICIT association: the browser and
+    // every screen reader announce the label's text, and there is no for= and
+    // no id= anywhere. Reading only label[for=...] reported those as having no
+    // accessible name, so the inventory would have sent somebody to fix markup
+    // that was already correct.
+    //
+    // (No backticks in this comment: the whole bridge is a template literal,
+    // and a backtick here ends it. That is the trap CLAUDE.md records, and it
+    // caught me a second time writing this very line.)
+    const labelled = (el.id ? document.querySelector('label[for="' + CSS.escape(el.id) + '"]') : null)
+      || el.closest('label');
     const isField = ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName);
     const raw = el.getAttribute('aria-label')
       || el.getAttribute('title')

@@ -276,7 +276,8 @@ export const DisputeManager: React.FC = () => {
             <option value="RESOLVED">Resolved</option>
             <option value="ESCALATED">Escalated</option>
           </select>
-          <button onClick={load} className="p-2 hover:bg-dark-700 rounded-lg"><RefreshCw size={16} /></button>
+          <button onClick={load} title="Reload the dispute queue" aria-label="Reload the dispute queue"
+            className="p-2 hover:bg-dark-700 rounded-lg"><RefreshCw size={16} /></button>
         </div>
       </div>
 

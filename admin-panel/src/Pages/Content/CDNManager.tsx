@@ -112,7 +112,10 @@ export const CDNManager: React.FC = () => {
                 <img src={img.url} alt={img.title} onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
                   className="max-h-full max-w-full object-contain" />
                 <div className="absolute inset-0 flex items-center justify-center opacity-0 hover:opacity-100 bg-black/50 transition-opacity">
-                  <a href={img.url} target="_blank" rel="noreferrer" className="p-2 bg-white/20 rounded-full mr-2"><ExternalLink size={16}/></a>
+                  <a href={img.url} target="_blank" rel="noreferrer"
+                    title={`Open "${img.title}" in a new tab`}
+                    aria-label={`Open "${img.title}" in a new tab`}
+                    className="p-2 bg-white/20 rounded-full mr-2"><ExternalLink size={16}/></a>
                 </div>
               </div>
 
