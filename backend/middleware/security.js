@@ -18,6 +18,22 @@ import { getSystemConfig } from '#db/repositories/config.js';
 
 // ==================== AUTHENTICATION RATE LIMITERS ====================
 
+/**
+ * Paths under `/api/v1/auth` that check NO CREDENTIAL.
+ *
+ * A 401 from one of these does not mean somebody guessed wrong — it means the
+ * caller's session has expired, which is what a panel discovers on an ordinary
+ * page load. See `requestWasSuccessful` below for why that distinction had to
+ * be made, and what it cost before it was.
+ *
+ * Listed by path rather than derived, and that is deliberate in THIS direction:
+ * a route added under this prefix and not listed here has its 401s COUNTED, so
+ * a forgotten entry fails strict. The failure mode of a hand-written list is
+ * normally "the author forgot to update me" reporting the author (§28); here
+ * forgetting only tightens the guard, never loosens it.
+ */
+const SESSION_PATHS = new Set(['/me', '/logout', '/health']);
+
 // Stricter rate limiting for authentication endpoints
 // Prevents brute force password attacks
 export const authLimiter = rateLimit({
@@ -35,6 +51,37 @@ export const authLimiter = rateLimit({
     keyGenerator: (req) => ipKeyGenerator(req.ip),
     // Skip successful requests
     skipSuccessfulRequests: true,
+    /**
+     * ── An EXPIRED session is not a failed login attempt ───────────────────
+     *
+     * This limiter is the brute-force guard: four FAILED attempts per thirty
+     * minutes, keyed by IP. `skipSuccessfulRequests` means only failures count
+     * — and every 4xx counted, including the 401 a panel gets when its token
+     * has simply expired.
+     *
+     * The router it guards (`/api/v1/auth`) holds `/me`, `/logout` and
+     * `/health`, and NOT ONE of them checks a credential. Measured on a running
+     * server:
+     *
+     *     four unauthenticated GET /me   →  /me, /logout AND /health all 429,
+     *                                       from that IP, for thirty minutes
+     *
+     * Which is exactly what a panel does when a token expires: it calls /me on
+     * each page load. After the fourth the user cannot read their profile or
+     * LOG OUT for half an hour, and is told they made too many failed login
+     * attempts — which they did not (§32 S13, and S14 on the message). The
+     * counter is keyed by IP, so one person on a shared connection does it to
+     * everyone behind it.
+     *
+     * The bound is UNCHANGED — still four, still thirty minutes, and every
+     * other failure still counts. What changed is that a rejected SESSION check
+     * on a path that verifies no credential no longer spends the budget meant
+     * for guessed passwords. The real doors are elsewhere and always were:
+     * `/api/admin/login` carries `adminAuthLimiter` and
+     * `/api/merchant/auth/login` `merchantAuthLimiter`, each with its own store.
+     */
+    requestWasSuccessful: (req, res) => res.statusCode < 400
+        || (res.statusCode === 401 && SESSION_PATHS.has(req.path)),
     // Custom handler for rate limit exceeded
     handler: (req, res) => {
         console.warn('⚠️ SECURITY: Rate limit exceeded', {
