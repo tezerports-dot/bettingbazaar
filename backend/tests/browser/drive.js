@@ -38,7 +38,7 @@
  */
 import { spawn } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { chromium } from 'playwright-core';
@@ -376,7 +376,26 @@ const actors = {
 };
 
 mkdirSync(SHOTS, { recursive: true });
-const report = { takenAt: new Date().toISOString(), pressed: [] };
+
+/**
+ * ── The report MERGES; it does not overwrite ──────────────────────────────
+ * A filtered run (`test:drive -- admin-panel /kyc`) used to replace the whole
+ * file, so every screen it did not touch silently became "NOT DRIVEN" — and the
+ * coverage report read that as work still to do. It nearly had me publish a
+ * table saying the merchant panel had never been driven, hours after driving
+ * all seven of its screens.
+ *
+ * So a run replaces only the screens it actually drove, and every screen
+ * carries its OWN timestamp. A re-run of one screen updates that screen and
+ * leaves the rest standing, and the report can say how old each result is
+ * rather than pretending they are all from one moment.
+ */
+const previous = (() => {
+  try { return JSON.parse(readFileSync(REPORT, 'utf8')); } catch { return { pressed: [] }; }
+})();
+const report = { takenAt: new Date().toISOString(), pressed: [...(previous.pressed ?? [])] };
+/** Screens this run drove, so their old results can be dropped. */
+const drovenow = new Set();
 const tally = {};
 const bump = (v) => { tally[v] = (tally[v] ?? 0) + 1; };
 
@@ -417,6 +436,16 @@ try {
       await settle(page);
 
       const controls = await collect(page).catch(() => []);
+      // This screen is being driven now, so whatever a previous run recorded
+      // for it is superseded rather than added to.
+      const key = `${panel}\u0000${screen}`;
+      if (!drovenow.has(key)) {
+        drovenow.add(key);
+        for (let i = report.pressed.length - 1; i >= 0; i--) {
+          const p = report.pressed[i];
+          if (p.panel === panel && p.screen === screen) report.pressed.splice(i, 1);
+        }
+      }
       const seen = new Set();
       const byName = new Map();
       const results = [];
@@ -433,7 +462,7 @@ try {
         }
         bump(r.verdict);
         results.push({ control: idOf(panel, screen, c), ...r });
-        report.pressed.push({ panel, screen, kind: c.kind, name: c.name, ordinal: c.ordinal, ...r });
+        report.pressed.push({ panel, screen, at: report.takenAt, kind: c.kind, name: c.name, ordinal: c.ordinal, ...r });
 
         // Go back when the press moved the screen STRUCTURALLY — a dialog
         // opened, the control count changed, or it navigated. The next

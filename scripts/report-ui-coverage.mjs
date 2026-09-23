@@ -73,7 +73,7 @@ for (const p of report.pressed ?? []) {
 const md = process.argv.includes('--md');
 const panels = [...new Set(manifest.screens.map((s) => s.panel))];
 
-const WIDTHS = [34, 9, 10, 6, 10, 12, 12];
+const WIDTHS = [34, 9, 10, 6, 10, 12, 22];
 const row = (cells) => (md
   ? `| ${cells.join(' | ')} |`
   : cells.map((c, i) => String(c).padEnd(WIDTHS[i])).join('  '));
@@ -109,8 +109,14 @@ for (const panel of panels) {
     grand.unreached += unreached;
     grand.broke += broke;
 
+    // Results can now come from different runs — a filtered re-run updates one
+    // screen and leaves the rest standing — so each row says how old it is.
+    const when = res.map((r) => r.at).filter(Boolean).sort().pop();
+    const age = when
+      ? `${Math.max(0, Math.round((Date.now() - Date.parse(when)) / 3600000))}h ago`
+      : 'unstamped';
     const verdict = broke ? 'BROKE' : unreached > 0 ? 'partial' : 'all pressed';
-    console.log(row([s.screen, have, exercised, inert, choice, unreached, verdict]));
+    console.log(row([s.screen, have, exercised, inert, choice, unreached, `${verdict} ${age}`]));
   }
 }
 
