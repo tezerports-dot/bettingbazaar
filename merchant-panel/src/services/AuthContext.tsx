@@ -20,6 +20,19 @@ interface AuthContextType {
   cancelTwoFactor: () => void;
   logout: () => void;
   refreshProfile: () => Promise<void>;
+  /**
+   * A session token is held, but the profile behind it could not be fetched
+   * and the server never said the credential was bad — a 429, a 502, a dropped
+   * connection.
+   *
+   * This exists because "no profile" and "not signed in" are different facts
+   * and the route guard was treating them as one. A merchant on a new device
+   * whose first profile call is rate-limited holds a perfectly valid session
+   * and was shown the SIGN-IN FORM, so the obvious thing to do was type their
+   * password — at a platform that already knew who they were and was merely
+   * busy. That is S14: a screen blaming the person for the platform's state.
+   */
+  unreachable: boolean;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -36,6 +49,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const [merchant, setMerchant] = useState<MerchantProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const [pendingChallenge, setPendingChallenge] = useState<string | null>(null);
+  const [unreachable, setUnreachable] = useState(false);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -95,6 +109,11 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             } else if (credentialRejected) {
               api.logout();
               setMerchant(null);
+            } else if (!cachedData) {
+              // The session is fine and there is nothing cached to show. Say
+              // that, rather than presenting a login form to somebody who is
+              // already signed in.
+              setUnreachable(true);
             }
             // Otherwise: keep the session and whatever profile was cached. A
             // stale token balance for a few seconds beats being signed out
@@ -183,13 +202,19 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     try {
       const freshData = await api.getMerchantProfile();
       setMerchant(freshData);
-    } catch (error) {
+      // Whatever was in the way has cleared. This is also the Try again button
+      // on the unreachable screen, so it has to be able to take it back down.
+      setUnreachable(false);
+    } catch (error: any) {
       console.error('Failed to refresh profile:', error);
+      const status = error?.status;
+      if (status === 401 || status === 403) { api.logout(); setMerchant(null); return; }
+      if (!merchant) setUnreachable(true);
     }
   };
 
   return (
-    <AuthContext.Provider value={{ merchant, loading, login, pendingChallenge, submitTwoFactor, cancelTwoFactor, logout, refreshProfile }}>
+    <AuthContext.Provider value={{ merchant, loading, login, pendingChallenge, submitTwoFactor, cancelTwoFactor, logout, refreshProfile, unreachable }}>
       {children}
     </AuthContext.Provider>
   );

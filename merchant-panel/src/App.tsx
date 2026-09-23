@@ -13,11 +13,25 @@ import HistoryViews from './pages/HistoryViews';
 import ProfileSettings from './pages/ProfileSettings';
 import Layout from './components/Layout';
 import { Spinner } from './components/ui';
+import { PlatformUnreachable } from './components/PlatformUnreachable';
 import { useOrders } from './hooks/useOrders';
 import { ROUTES } from './constants';
 
+/**
+ * ── "No profile" and "not signed in" are different facts ────────────────────
+ * This guard read them as one: no `merchant`, go to the login form. A merchant
+ * on a new device whose first profile call was refused — a 429 from the global
+ * limiter, which every merchant behind one office NAT shares, or a 502 while
+ * the gateway restarts — holds a perfectly VALID session and was shown the
+ * sign-in screen. The obvious thing to do there is type your password, at a
+ * platform that already knows who you are and is merely busy. S14.
+ *
+ * So the guard now asks which of the two it is. No token at all is a login. A
+ * token with no profile behind it is the platform being unreachable, and says
+ * so, with the one action that can help.
+ */
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { merchant, loading } = useAuth();
+  const { merchant, loading, unreachable, refreshProfile } = useAuth();
 
   if (loading) {
     return (
@@ -26,6 +40,8 @@ const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) =
       </div>
     );
   }
+
+  if (!merchant && unreachable) return <PlatformUnreachable onRetry={refreshProfile} />;
 
   if (!merchant) return <Navigate to={ROUTES.LOGIN} replace />;
   return <>{children}</>;

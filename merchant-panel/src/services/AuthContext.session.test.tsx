@@ -36,7 +36,7 @@ import { MemoryRouter } from 'react-router';
 
 const api = vi.hoisted(() => ({
   isAuthenticated: vi.fn(() => true),
-  getCurrentMerchant: vi.fn(() => ({ merchantId: 'm1', name: 'Test Merchant' })),
+  getCurrentMerchant: vi.fn((): { merchantId: string; username: string } | null => ({ merchantId: 'm1', username: 'Test Merchant' })),
   getMerchantProfile: vi.fn(),
   logout: vi.fn(),
   merchantLogin: vi.fn(),
@@ -47,8 +47,13 @@ vi.mock('./api', () => ({ api, default: api, ...api }));
 const { AuthProvider, useAuth } = await import('./AuthContext');
 
 const Probe = () => {
-  const { merchant } = useAuth();
-  return <div data-testid="who">{merchant ? merchant.name : 'SIGNED OUT'}</div>;
+  const { merchant, unreachable } = useAuth();
+  return (
+    <>
+      <div data-testid="who">{merchant ? merchant.username : 'SIGNED OUT'}</div>
+      <div data-testid="unreachable">{unreachable ? 'UNREACHABLE' : '-'}</div>
+    </>
+  );
 };
 
 const boot = async () => {
@@ -68,7 +73,7 @@ describe('a transient failure does not end a merchant session', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     api.isAuthenticated.mockReturnValue(true);
-    api.getCurrentMerchant.mockReturnValue({ merchantId: 'm1', name: 'Test Merchant' });
+    api.getCurrentMerchant.mockReturnValue({ merchantId: 'm1', username: 'Test Merchant' });
   });
 
   // The two that were wrong. Each one is a merchant thrown to the sign-in form
@@ -108,8 +113,39 @@ describe('a transient failure does not end a merchant session', () => {
     });
   }
 
+  /**
+   * ── A new device, and nothing cached to fall back to ────────────────────
+   * Keeping the token was only half of it. With no `merchantData` in
+   * localStorage the panel still had no profile, so the route guard sent the
+   * merchant to the SIGN-IN FORM — and they would type their password at a
+   * platform that already knew who they were and was merely busy (S14).
+   *
+   * Verified in a browser: valid token, no cache, profile call answered 429 →
+   * "Secure operator sign-in". The panel must say the platform is unreachable
+   * instead, and offer the one action that can help.
+   */
+  describe('a valid session with nothing cached', () => {
+    beforeEach(() => { api.getCurrentMerchant.mockReturnValue(null); });
+
+    for (const status of [429, 502, 503]) {
+      it(`reports the platform unreachable on ${status}, not a sign-in`, async () => {
+        api.getMerchantProfile.mockRejectedValue(refusal(status, 'busy'));
+        await boot();
+        expect(api.logout).not.toHaveBeenCalled();
+        await waitFor(() => expect(screen.getByTestId('unreachable').textContent).toBe('UNREACHABLE'));
+      });
+    }
+
+    it('does NOT claim unreachable when the credential was rejected', async () => {
+      api.getMerchantProfile.mockRejectedValue(refusal(401, 'Session expired'));
+      await boot();
+      await waitFor(() => expect(api.logout).toHaveBeenCalled());
+      expect(screen.getByTestId('unreachable').textContent).toBe('-');
+    });
+  });
+
   it('a successful refresh replaces the cached profile', async () => {
-    api.getMerchantProfile.mockResolvedValue({ merchantId: 'm1', name: 'Fresh Name' });
+    api.getMerchantProfile.mockResolvedValue({ merchantId: 'm1', username: 'Fresh Name' });
     await boot();
     expect(api.logout).not.toHaveBeenCalled();
     await waitFor(() => expect(screen.getByTestId('who').textContent).toBe('Fresh Name'));

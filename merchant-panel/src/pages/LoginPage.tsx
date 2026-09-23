@@ -12,13 +12,14 @@ import { useRetryCountdown } from '../hooks/useRetryCountdown';
 import { api } from '../services/api';
 import { APP_CONFIG, ROUTES } from '../constants';
 import { Button, Field, Logo, Spinner, inputStyle } from '../components/ui';
+import { PlatformUnreachable } from '../components/PlatformUnreachable';
 
 type Tab = 'login' | 'signup';
 
 const MIN_PASSWORD_LENGTH = 8; // backend: merchant.routes.js POST /auth/signup
 
 const LoginPage: React.FC = () => {
-  const { merchant, loading: authLoading, login, pendingChallenge, submitTwoFactor, cancelTwoFactor } = useAuth();
+  const { merchant, loading: authLoading, login, pendingChallenge, submitTwoFactor, cancelTwoFactor, unreachable, refreshProfile } = useAuth();
   const [tab, setTab] = useState<Tab>('login');
 
   const [mobile, setMobile] = useState('');
@@ -36,6 +37,16 @@ const LoginPage: React.FC = () => {
   const [applied, setApplied] = useState(false);
 
   if (!authLoading && merchant) return <Navigate to={ROUTES.DASHBOARD} replace />;
+  /**
+   * `ROUTES.LOGIN` is `/`, and it is the path a merchant lands on — so this
+   * screen, not `ProtectedRoute`, is where a held session with no profile
+   * behind it is actually seen. Guarding only the protected routes left the
+   * sign-in form showing to signed-in merchants, which a green unit test did
+   * not notice and a browser did.
+   */
+  if (!authLoading && !merchant && unreachable) {
+    return <PlatformUnreachable onRetry={refreshProfile} />;
+  }
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
