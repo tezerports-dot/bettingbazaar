@@ -57,7 +57,7 @@ const PANELS = {
   'user-panel':     { port: 5301, entry: (b) => `${b}/#/`,        router: 'hash',    key: 'auth_token',    wrap: (t) => t },
   'admin-panel':    { port: 5302, entry: (b) => `${b}/admin/#/`,  router: 'hash',    key: 'admin-auth',
     wrap: (t) => JSON.stringify({ state: { token: t, admin: null, isAuthenticated: true, mustEnroll2FA: false }, version: 0 }) },
-  'merchant-panel': { port: 5303, entry: (b) => `${b}/merchant/`, router: 'history', base: '/merchant', key: 'merchantToken', wrap: (t) => t },
+  'merchant-panel': { port: 5303, entry: (b) => `${b}/merchant/`, router: 'history', base: '/merchant', key: 'merchantToken', wrap: (t) => t, cacheKey: 'merchantData' },
 };
 
 /**
@@ -418,15 +418,26 @@ const onlyScreens = args.filter((a) => a.startsWith('/'));
 // harness concluded the server was down. The liveness endpoint exists for this.
 if (!await waitFor(`${API}/health/live`, 'the backend')) process.exit(1);
 
+// ₹5,000 — a real ATM denomination, so `/cash-links` renders its working
+// screen instead of the "not approved for the ATM cash rail" empty state.
+// Without it the whole CASH_ATM supply side is never opened by this pass.
+const theMerchant = await seedMerchant({
+  currency: 'INR', tokensPaise: 500000000, cashDenominationPaise: 500000,
+});
+
 const actors = {
   'user-panel':     playerToken(await seedPlayer({ balancePaise: 150000 })),
   'admin-panel':    adminToken(await seedAdmin()),
-  // ₹5,000 — a real ATM denomination, so `/cash-links` renders its working
-  // screen instead of the "not approved for the ATM cash rail" empty state.
-  // Without it the whole CASH_ATM supply side is never opened by this pass.
-  'merchant-panel': merchantToken(await seedMerchant({
-    currency: 'INR', tokensPaise: 500000000, cashDenominationPaise: 500000,
-  })),
+  'merchant-panel': merchantToken(theMerchant),
+};
+
+/** What each panel would have cached from this operator's last visit. */
+const cached = {
+  'merchant-panel': {
+    id: theMerchant.merchantId, merchantId: theMerchant.merchantId,
+    username: theMerchant.username, email: theMerchant.email, mobile: theMerchant.mobile,
+    isOnline: true, status: 'ACTIVE', acceptedCurrencies: ['INR'],
+  },
 };
 
 mkdirSync(SHOTS, { recursive: true });
@@ -468,9 +479,18 @@ try {
     }
 
     const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
-    await ctx.addInitScript(([k, v]) => {
-      try { localStorage.setItem(k, v); } catch { /* blocked */ }
-    }, [cfg.key, cfg.wrap(actors[panel])]);
+    await ctx.addInitScript(([k, v, extraKey, extraVal]) => {
+      try {
+        localStorage.setItem(k, v);
+        // A REAL returning operator has more than a token: the panel cached
+        // their profile last visit. Seeding only the token meant that the
+        // moment the profile call was refused — which it was, every full run,
+        // because this panel is driven last and the global limiter is 1,000
+        // req / 15 min per IP — the panel had nothing to fall back on and
+        // rendered its sign-in screen for all seven screens.
+        if (extraKey) localStorage.setItem(extraKey, extraVal);
+      } catch { /* blocked */ }
+    }, [cfg.key, cfg.wrap(actors[panel]), cfg.cacheKey ?? '', cfg.cacheKey ? JSON.stringify(cached[panel]) : '']);
     await ctx.addInitScript(PAGE_SCRIPT);
     // A confirm() that nobody answers blocks the page for ever. Auto-dismiss:
     // this pass never presses a control whose confirm it would want to accept.
@@ -512,6 +532,22 @@ try {
         const m = document.querySelector('main');
         return ((m || document.body).innerText || '').replace(/\s+/g, ' ').trim();
       }).catch(() => '');
+      /**
+       * ── Is this the screen we asked for, or the door? ──────────────────────
+       * A full run drives the merchant panel LAST, after ~1,700 presses have
+       * gone through one IP, so its profile call was 429'd and the panel fell
+       * back to its sign-in screen. The pass then collected the LOGIN FORM's
+       * five controls and filed them under `/dashboard`, `/orders`,
+       * `/cash-links` and the rest — seven screens' worth of results, every
+       * one of them measured on a screen nobody asked for, and reported as a
+       * note about a Login button being inert.
+       *
+       * Results attributed to the wrong screen are worse than no results: the
+       * coverage table counted them as pressed. So a screen that is not the
+       * screen is NOT VERIFIED, by name, and the run says why.
+       */
+      const atTheDoor = /sign[- ]?in|sign in securely|secure operator/i.test(said)
+        && !/^\/?(login|auth)/.test(screen);
       // This screen is being driven now, so whatever a previous run recorded
       // for it is superseded rather than added to.
       const key = `${panel}\u0000${screen}`;
@@ -587,6 +623,11 @@ try {
             `NOTHING TO PRESS — the platform answered 429 ${page.__bb429}x while this screen loaded, so it `
             + 'never rendered. NOT verified; re-run this screen on its own.', false,
             'the harness provoked the refusal; this says nothing about the product');
+        } else if (atTheDoor) {
+          check('DRIVE', panel, screen, 'this is the screen that was asked for',
+            'NOT VERIFIED — the panel showed its SIGN-IN screen instead. The session did not '
+            + 'survive to this screen; re-run this panel on its own.', false,
+            'read from <main> after the screen settled');
         } else if (said.length < EMPTY_STATE_MIN_CHARS) {
           // A shell. `<main>` rendered, and rendered nothing — the S21 shape,
           // and exactly what sixteen admin screens looked like earlier in this
@@ -605,6 +646,15 @@ try {
           note('DRIVE', panel, screen, 'nothing to press, and the screen says why',
             `0 controls — an empty state, not a shell`, said.slice(0, 220));
         }
+      } else if (atTheDoor) {
+        // Five controls were collected and every one of them belongs to the
+        // sign-in form. Reporting them under this screen's name is how seven
+        // merchant screens read as driven while none had been opened.
+        await page.screenshot({ path: join(SHOTS, `${panel}${screen.replace(/\//g, '_') || '_root'}.png`) }).catch(() => {});
+        check('DRIVE', panel, screen, 'this is the screen that was asked for',
+          `NOT VERIFIED — ${controls.length} controls were collected, but they belong to the panel's `
+          + 'SIGN-IN screen. The session did not survive to this screen; re-run this panel on its own.',
+          false, 'read from <main> after the screen settled');
       } else if (broke.length) {
         check('DRIVE', panel, screen, 'no control throws or 5xxes', 
           broke.map((b) => `${b.control} → ${b.verdict}: ${b.why}`).slice(0, 3).join('  ||  '), false,
