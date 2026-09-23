@@ -19,6 +19,7 @@ import { db } from '#db';
 import {
   authenticate, hasPermission, isAdmin, isAdminOrSubAdmin,
 } from '../domains/identity/auth.middleware.js';
+import { respondError } from '../shared/httpError.js';
 
 const router = express.Router();
 
@@ -103,8 +104,11 @@ router.put('/admin/fake-winners/:id', authenticate, isAdmin, async (req, res) =>
     if (!winner) return res.status(404).json({ success: false, message: 'Not found' });
     res.json({ success: true, winner });
   } catch (err) {
-    console.error('PUT /admin/fake-winners error:', err);
-    res.status(500).json({ success: false, message: 'Could not update that entry.' });
+    // `respondError`, not a hand-written 500. A malformed id is the CALLER's
+    // mistake and arrives carrying `status: 400` with a message naming itself;
+    // a hand-rolled 500 threw that away and told the operator the platform
+    // broke (§2: a handler may not phrase a 5xx itself).
+    return respondError(res, err, 'PUT /admin/fake-winners/:id');
   }
 });
 
@@ -121,8 +125,7 @@ router.delete('/admin/fake-winners/:id', authenticate, isAdmin, async (req, res)
     });
     res.json({ success: true });
   } catch (err) {
-    console.error('DELETE /admin/fake-winners error:', err);
-    res.status(500).json({ success: false, message: 'Could not delete that entry.' });
+    return respondError(res, err, 'DELETE /admin/fake-winners/:id');
   }
 });
 

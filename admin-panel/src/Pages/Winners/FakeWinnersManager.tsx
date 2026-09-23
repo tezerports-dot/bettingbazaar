@@ -39,6 +39,26 @@ const F = ({ label, value, onChange, type = 'text', ph = '' }: any) => {
   );
 };
 
+/**
+ * ── The id is `id`. The server has never sent an `_id` ─────────────────────
+ * `toFakeWinner` in `database/repositories/engagement.js` emits
+ * `id, displayName, profilePic, city, amount, game, badge, userId, isPublic,
+ * sortOrder, displayTime, createdBy, createdAt` — and this screen read `_id`
+ * on every one of them, so Edit, Delete and the visibility toggle all built
+ * `/api/admin/fake-winners/undefined`.
+ *
+ * That is not even a 404. The column is an INTEGER and `Number('undefined')`
+ * is NaN, so PostgreSQL refuses the parameter and the route answers **500** —
+ * which `serverError` answers with nothing (§2), so the operator gets a toast
+ * that says the platform broke and no way to tell that the id was the problem.
+ * Measured: `PUT .../undefined` -> 500, `PUT .../1` -> 200.
+ *
+ * Edit was the quiet one: `setEditId(undefined)` makes Save take the CREATE
+ * branch, so editing an entry added a second copy of it instead.
+ *
+ * §23's shape, for the third time in this panel (users, games, and here). The
+ * fix that finds every site is checking the mapper, not the interface.
+ */
 export const FakeWinnersManager: React.FC = () => {
   const [winners, setWinners] = useState<any[]>([]);
   const [form, setForm]       = useState<any>(EMPTY);
@@ -75,11 +95,11 @@ export const FakeWinnersManager: React.FC = () => {
     setForm({ displayName:w.displayName, profilePic:w.profilePic||'', city:w.city||'', amount:String(w.amount),
       game:w.game||'Delhi/Bombay', badge:w.badge||'', isPublic:w.isPublic, sortOrder:String(w.sortOrder||0),
       displayTime: w.displayTime ? new Date(w.displayTime).toISOString().slice(0,16) : '' });
-    setEditId(w._id); setShowForm(true);
+    setEditId(w.id); setShowForm(true);
   };
 
   const togglePublic = async (w:any) => {
-    await api.put(`/api/admin/fake-winners/${w._id}`, { isPublic: !w.isPublic });
+    await api.put(`/api/admin/fake-winners/${w.id}`, { isPublic: !w.isPublic });
     load();
   };
 
@@ -125,7 +145,7 @@ export const FakeWinnersManager: React.FC = () => {
       <div className="card">
         <div className="space-y-2">
           {winners.map(w => (
-            <div key={w._id} className={`flex items-center gap-3 p-3 rounded-xl border transition-all ${w.isPublic?'border-dark-600 bg-dark-700':'border-dark-700 bg-dark-800 opacity-50'}`}>
+            <div key={w.id} className={`flex items-center gap-3 p-3 rounded-xl border transition-all ${w.isPublic?'border-dark-600 bg-dark-700':'border-dark-700 bg-dark-800 opacity-50'}`}>
               <div className="relative">
                 {w.profilePic ? <img src={w.profilePic} alt="" className="w-10 h-10 rounded-full object-cover"/> : <div className="w-10 h-10 rounded-full bg-dark-600 flex items-center justify-center text-xl">🏆</div>}
               </div>
@@ -143,11 +163,16 @@ export const FakeWinnersManager: React.FC = () => {
                 </div>
               </div>
               <div className="flex items-center gap-2">
-                <button onClick={()=>togglePublic(w)} className={`p-1.5 rounded-sm ${w.isPublic?'text-green-400 hover:text-green-300':'text-gray-600 hover:text-gray-400'}`}>
+                <button onClick={()=>togglePublic(w)}
+                  title={w.isPublic ? `Hide ${w.displayName}` : `Show ${w.displayName}`}
+                  aria-label={w.isPublic ? `Hide ${w.displayName}` : `Show ${w.displayName}`}
+                  aria-pressed={w.isPublic}
+                  className={`p-1.5 rounded-sm ${w.isPublic?'text-green-400 hover:text-green-300':'text-gray-600 hover:text-gray-400'}`}>
                   {w.isPublic ? <Eye size={15}/> : <EyeOff size={15}/>}
                 </button>
-                <button onClick={()=>edit(w)} className="p-1.5 rounded-sm text-blue-400 hover:text-blue-300"><Edit2 size={15}/></button>
-                <button onClick={()=>del(w._id)} className="p-1.5 rounded-sm text-red-400 hover:text-red-300"><Trash2 size={15}/></button>
+                <button onClick={()=>edit(w)} title={`Edit ${w.displayName}`} aria-label={`Edit ${w.displayName}`}
+                  className="p-1.5 rounded-sm text-blue-400 hover:text-blue-300"><Edit2 size={15}/></button>
+                <button onClick={()=>del(w.id)} title={`Delete ${w.displayName}`} aria-label={`Delete ${w.displayName}`} className="p-1.5 rounded-sm text-red-400 hover:text-red-300"><Trash2 size={15}/></button>
               </div>
             </div>
           ))}

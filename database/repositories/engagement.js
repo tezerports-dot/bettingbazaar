@@ -353,13 +353,36 @@ export async function curatedWinners({ sinceHours = 24, limit = 50 } = {}) {
 }
 
 /** Edit a curated entry. Returns null for an id that does not exist. */
+/**
+ * A fake-winner id, or a refusal the CALLER can read.
+ *
+ * `Number('undefined')` is NaN, node-postgres sends NaN for an integer column,
+ * and PostgreSQL refuses the parameter — so a panel that had the id wrong got
+ * **500**, which `serverError` answers with nothing (§2). The operator is told
+ * the platform broke and cannot tell that the id was the problem. Measured
+ * before this existed: `PUT /api/admin/fake-winners/undefined` -> 500.
+ *
+ * A malformed id is the caller's mistake, so it carries `status: 400` at the
+ * throw (§21) and names itself.
+ */
+function fakeWinnerId(id) {
+  const n = Number(id);
+  if (!Number.isInteger(n) || n <= 0) {
+    throw Object.assign(
+      new Error(`"${id}" is not a winner id. Expected a positive whole number.`),
+      { status: 400, code: 'BAD_FAKE_WINNER_ID' },
+    );
+  }
+  return n;
+}
+
 export async function updateFakeWinner(id, patch = {}) {
   const COLUMN = {
     displayName: 'display_name', profilePic: 'profile_pic', city: 'city',
     game: 'game', badge: 'badge', isPublic: 'is_public',
     sortOrder: 'sort_order', displayTime: 'display_time',
   };
-  const sets = []; const params = [Number(id)];
+  const sets = []; const params = [fakeWinnerId(id)];
   for (const [key, column] of Object.entries(COLUMN)) {
     if (patch[key] === undefined) continue;
     params.push(column === 'sort_order' ? (Number(patch[key]) || 0)
@@ -371,7 +394,7 @@ export async function updateFakeWinner(id, patch = {}) {
     sets.push(`amount_paise = $${params.length}`);
   }
   if (!sets.length) {
-    const { rows } = await pgQuery('SELECT * FROM fake_winners WHERE id = $1', [Number(id)], 'fake_winner_get');
+    const { rows } = await pgQuery('SELECT * FROM fake_winners WHERE id = $1', [fakeWinnerId(id)], 'fake_winner_get');
     return toFakeWinner(rows[0]);
   }
   const { rows } = await pgQuery(
@@ -383,7 +406,7 @@ export async function updateFakeWinner(id, patch = {}) {
 
 export async function deleteFakeWinner(id) {
   const { rowCount } = await pgQuery(
-    'DELETE FROM fake_winners WHERE id = $1', [Number(id)], 'fake_winner_delete',
+    'DELETE FROM fake_winners WHERE id = $1', [fakeWinnerId(id)], 'fake_winner_delete',
   );
   return rowCount > 0;
 }
