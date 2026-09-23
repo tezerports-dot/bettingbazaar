@@ -73,11 +73,17 @@ export const Toolbar: React.FC<{
   <div style={{ display: 'flex', alignItems: 'center', gap: 11, marginBottom: 15, flexWrap: 'wrap' }}>
     {tabs && tabs.length > 0 && (
       <div style={{ display: 'flex', gap: 6, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 10, padding: 4 }}>
+        {/* A `<div onClick>` until now: the tab strip every list screen in
+            this panel uses, and no keyboard could reach any of it. Not in the
+            147 unnamed count, because the inventory collects real controls and
+            these were invisible to it. `aria-pressed` so which tab is selected
+            is announced, not just drawn. */}
         {tabs.map((t) => (
-          <div key={t.label} onClick={t.onClick} style={tabStyle(t.active)}>
+          <button key={t.label} type="button" onClick={t.onClick} aria-pressed={!!t.active}
+            style={{ ...tabStyle(t.active), border: 'none', font: 'inherit', cursor: 'pointer' }}>
             {t.label}
             {t.count != null && <span style={countStyle(t.active)}>{t.count}</span>}
-          </div>
+          </button>
         ))}
       </div>
     )}

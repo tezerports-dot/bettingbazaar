@@ -270,7 +270,7 @@ export const DisputeManager: React.FC = () => {
           <p className="text-gray-400 text-sm mt-1">Resolve payment order disputes — read full chat evidence before deciding</p>
         </div>
         <div className="flex items-center gap-3">
-          <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)} className="input text-sm">
+          <select aria-label="Filter disputes by status" value={filterStatus} onChange={e => setFilterStatus(e.target.value)} className="input text-sm">
             <option value="all">All Disputes</option>
             <option value="DISPUTED">Open</option>
             <option value="RESOLVED">Resolved</option>

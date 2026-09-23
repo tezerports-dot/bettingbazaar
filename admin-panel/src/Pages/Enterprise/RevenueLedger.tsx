@@ -165,7 +165,7 @@ export const RevenueLedger: React.FC = () => {
       <div className="card">
         <div className="flex items-center justify-between mb-3">
           <h3 className="text-lg font-semibold">Journal</h3>
-          <select className="input max-w-xs" value={eventType}
+          <select aria-label="Filter the journal by accounting event type" className="input max-w-xs" value={eventType}
             onChange={e => { setEventType(e.target.value); setPage(1); }}>
             <option value="">All event types</option>
             {EVENT_TYPES.map(t => <option key={t} value={t}>{t}</option>)}

@@ -358,6 +358,7 @@ export const SystemSettings: React.FC = () => {
           <label className="relative inline-flex items-center cursor-pointer">
             <input
               type="checkbox"
+              aria-label="Allow new registrations"
               checked={formData.registrationEnabled}
               onChange={(e) =>
                 setFormData({ ...formData, registrationEnabled: e.target.checked })
@@ -685,7 +686,8 @@ export const SystemSettings: React.FC = () => {
                 </p>
               </div>
               <label className="relative inline-flex items-center cursor-pointer">
-                <input type="checkbox" checked={formData.riskRules.enforceMultiplesOf10}
+                <input type="checkbox" aria-label="Enforce bet amounts in multiples of 10"
+                  checked={formData.riskRules.enforceMultiplesOf10}
                   onChange={(e) => setFormData({ ...formData, riskRules: { ...formData.riskRules, enforceMultiplesOf10: e.target.checked } })}
                   className="sr-only peer" />
                 <div className="w-11 h-6 bg-gray-700 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-gold-500"></div>
@@ -701,7 +703,8 @@ export const SystemSettings: React.FC = () => {
                 </p>
               </div>
               <label className="relative inline-flex items-center cursor-pointer">
-                <input type="checkbox" checked={formData.riskRules.blockOppositeSideBetting}
+                <input type="checkbox" aria-label="Block opposite-side betting in one cycle"
+                  checked={formData.riskRules.blockOppositeSideBetting}
                   onChange={(e) => setFormData({ ...formData, riskRules: { ...formData.riskRules, blockOppositeSideBetting: e.target.checked } })}
                   className="sr-only peer" />
                 <div className="w-11 h-6 bg-gray-700 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-gold-500"></div>
@@ -873,6 +876,7 @@ export const SystemSettings: React.FC = () => {
           <label className="flex items-center space-x-2 mb-2">
             <input
               type="checkbox"
+              aria-label="Load shedding"
               checked={formData.loadShedding.enabled}
               onChange={(e) => setFormData({ ...formData, loadShedding: { ...formData.loadShedding, enabled: e.target.checked } })}
             />
@@ -911,6 +915,7 @@ export const SystemSettings: React.FC = () => {
           <label className="flex items-center space-x-2 mb-2">
             <input
               type="checkbox"
+              aria-label="IP-rotation defence"
               checked={formData.ipDefense.enabled}
               onChange={(e) => setFormData({ ...formData, ipDefense: { ...formData.ipDefense, enabled: e.target.checked } })}
             />
@@ -1003,8 +1008,14 @@ export const SystemSettings: React.FC = () => {
             const usedElsewhere = formData.footerPages.filter((_, j) => j !== i);
             return (
               <div key={i}>
-                <label className="text-[10px] text-gray-500 uppercase font-bold block mb-1">Slot {i + 1}</label>
+                {/* The words "Slot 1" were on screen and attached to nothing —
+                    five identical comboboxes to a screen reader, on the control
+                    that decides the player's bottom navigation. S24. */}
+                <label htmlFor={`footer-slot-${i}`}
+                  className="text-[10px] text-gray-500 uppercase font-bold block mb-1">Slot {i + 1}</label>
                 <select
+                  id={`footer-slot-${i}`}
+                  aria-label={`Player footer navigation, slot ${i + 1}`}
                   className="input"
                   value={current}
                   onChange={(e) => {
@@ -1073,6 +1084,7 @@ export const SystemSettings: React.FC = () => {
               <label className="relative inline-flex items-center cursor-pointer">
                 <input
                   type="checkbox"
+                  aria-label={label}
                   checked={formData.tlsFingerprintDefense[field]}
                   onChange={(e) => setFormData({
                     ...formData,

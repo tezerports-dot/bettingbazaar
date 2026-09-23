@@ -205,6 +205,7 @@ export const BotFleet: React.FC<{ webhookBaseUrl?: string; onChanged?: () => voi
         <div>
           <label style={label}>Role <span style={{ color: 'var(--danger)' }}>*</span></label>
           <select
+            aria-label="What this bot is for"
             value={form.role}
             onChange={(e) => setForm({ ...form, role: e.target.value as FleetBot['role'] })}
             style={{ ...input, cursor: 'pointer' }}

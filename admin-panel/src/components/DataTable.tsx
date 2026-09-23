@@ -108,9 +108,17 @@ export function DataTable<T extends object>({
             Page {currentPage} of {totalPages}
           </p>
           <div className="flex items-center space-x-2">
+            {/* Two icon-only buttons in the one table component every list
+                screen uses, so a single pair of missing names was announced as
+                "button, button" on /users, /merchants, /transactions,
+                /cycle-history and /audit-logs alike. The page number is in the
+                name because "previous page" alone does not say where you are
+                going (§32 S24). */}
             <button
               onClick={() => onPageChange(currentPage - 1)}
               disabled={currentPage === 1}
+              title={`Previous page (${currentPage - 1} of ${totalPages})`}
+              aria-label={`Previous page (${currentPage - 1} of ${totalPages})`}
               className="btn-secondary disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <ChevronLeft size={16} />
@@ -118,6 +126,8 @@ export function DataTable<T extends object>({
             <button
               onClick={() => onPageChange(currentPage + 1)}
               disabled={currentPage === totalPages}
+              title={`Next page (${currentPage + 1} of ${totalPages})`}
+              aria-label={`Next page (${currentPage + 1} of ${totalPages})`}
               className="btn-secondary disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <ChevronRight size={16} />

@@ -151,7 +151,7 @@ export const AuditLogs: React.FC = () => {
       ]} />
 
       <Toolbar search={{ value: search, onChange: setSearch, placeholder: 'Search actor, action…' }} />
-      <DateRangePicker startDate={startDate} endDate={endDate} onStartDateChange={setStartDate} onEndDateChange={setEndDate} />
+      <DateRangePicker filters="audit entries" startDate={startDate} endDate={endDate} onStartDateChange={setStartDate} onEndDateChange={setEndDate} />
 
       {/* Table */}
       <div className="card">

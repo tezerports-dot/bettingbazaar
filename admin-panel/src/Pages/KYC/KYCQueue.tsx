@@ -156,14 +156,22 @@ export const KYCQueue: React.FC = () => {
             <div data-testid="kyc-queue-list" style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
               {pendingKYC.map((u, i) => {
                 const active = selected?.userId === u.userId;
+                // A `<div onClick>` until now, on the queue where a reviewer
+                // picks WHICH player to approve — and approving grants
+                // withdrawal access (§23). No keyboard could select a row, and
+                // a screen reader announced none of them as selectable.
+                // `aria-pressed` says which one is open.
                 return (
-                  <div key={u.userId} onClick={() => setSelectedId(u.userId)} style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '11px 12px', borderRadius: 11, cursor: 'pointer', border: `1px solid ${active ? 'var(--gold)' : 'transparent'}`, background: active ? 'var(--active)' : 'transparent' }}>
+                  <button key={u.userId} type="button" onClick={() => setSelectedId(u.userId)}
+                    aria-pressed={active}
+                    aria-label={`Review KYC for ${u.username}`}
+                    style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '11px 12px', borderRadius: 11, cursor: 'pointer', border: `1px solid ${active ? 'var(--gold)' : 'transparent'}`, background: active ? 'var(--active)' : 'transparent', width: '100%', font: 'inherit', color: 'inherit', textAlign: 'left' }}>
                     <div style={{ width: 34, height: 34, borderRadius: 9, flex: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, fontSize: 12, color: '#fff', background: AV[i % 5] }}>{initials(u.username)}</div>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontSize: 13, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{u.username}</div>
                       <div className="font-mono" style={{ fontSize: 10.5, color: 'var(--muted)' }}>{formatters.phone(u.mobile)}</div>
                     </div>
-                  </div>
+                  </button>
                 );
               })}
             </div>

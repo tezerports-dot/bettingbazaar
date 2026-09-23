@@ -285,15 +285,24 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
 
         {/* Collapse toggle */}
         <div style={{ padding: 12, borderTop: '1px solid var(--border)', flex: 'none' }}>
-          <div
+          {/* A `<div onClick>` until now, which is not a control: no keyboard
+              user could reach it (no tab stop, no Enter/Space) and no screen
+              reader announced it as anything. It is not in the 147 unnamed
+              count either, because the inventory collects real controls and
+              this was invisible to it — the quieter half of S24. */}
+          <button
+            type="button"
             onClick={toggleCollapsed}
-            style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '9px 10px', borderRadius: 9, cursor: 'pointer', color: 'var(--text-2)', justifyContent: collapsed ? 'center' : 'flex-start' }}
+            title={collapsed ? 'Expand the navigation' : 'Collapse the navigation'}
+            aria-label={collapsed ? 'Expand the navigation' : 'Collapse the navigation'}
+            aria-expanded={!collapsed}
+            style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '9px 10px', borderRadius: 9, cursor: 'pointer', color: 'var(--text-2)', justifyContent: collapsed ? 'center' : 'flex-start', width: '100%', background: 'transparent', border: 'none', font: 'inherit', textAlign: 'left' }}
             onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--hover)')}
             onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
           >
             {collapsed ? <ChevronRight size={17} /> : <ChevronLeft size={17} />}
             {!collapsed && <span style={{ fontSize: 12.5, fontWeight: 600, whiteSpace: 'nowrap' }}>Collapse</span>}
-          </div>
+          </button>
         </div>
       </aside>
 

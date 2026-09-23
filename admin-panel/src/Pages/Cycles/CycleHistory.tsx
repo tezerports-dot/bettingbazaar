@@ -220,7 +220,7 @@ export const CycleHistory: React.FC = () => {
         ]}
         search={{ value: search, onChange: setSearch, placeholder: 'Search cycle id…' }}
       />
-      <DateRangePicker startDate={startDate} endDate={endDate} onStartDateChange={setStartDate} onEndDateChange={setEndDate} />
+      <DateRangePicker filters="cycles" startDate={startDate} endDate={endDate} onStartDateChange={setStartDate} onEndDateChange={setEndDate} />
 
       {/* Revenue formula explanation */}
       <div className="bg-dark-800 border border-dark-600 rounded-lg p-4 text-sm">

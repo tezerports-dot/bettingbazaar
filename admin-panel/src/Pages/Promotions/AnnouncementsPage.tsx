@@ -65,8 +65,16 @@ export const AnnouncementsPage: React.FC = () => {
               <p className="text-xs text-gray-600 mt-1">{new Date(item.createdAt).toLocaleString()}{item.expiresAt&&` · Expires ${new Date(item.expiresAt).toLocaleString()}`}</p>
             </div>
             <div className="flex gap-2">
-              <button onClick={()=>startEdit(item)} className="text-blue-400 hover:text-blue-300"><Edit2 size={14}/></button>
-              <button onClick={()=>del(item._id)} className="text-red-400 hover:text-red-300"><Trash2 size={14}/></button>
+              {/* Two per row, 28 on this screen, and every one announced as
+                  just "button". An announcement is shown to every player, so
+                  the name has to say WHICH one is being edited or deleted —
+                  "Delete" repeated fourteen times identifies nothing. */}
+              <button onClick={()=>startEdit(item)} title={`Edit announcement "${item.title}"`}
+                aria-label={`Edit announcement "${item.title}"`}
+                className="text-blue-400 hover:text-blue-300"><Edit2 size={14}/></button>
+              <button onClick={()=>del(item._id)} title={`Delete announcement "${item.title}"`}
+                aria-label={`Delete announcement "${item.title}"`}
+                className="text-red-400 hover:text-red-300"><Trash2 size={14}/></button>
             </div>
           </div>
         ))}

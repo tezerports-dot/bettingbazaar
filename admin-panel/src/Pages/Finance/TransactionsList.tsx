@@ -182,7 +182,7 @@ export const TransactionsList: React.FC = () => {
             dropdown (Success / Pending / Failed) — a ledger row has no status,
             and the route never read the parameter, so it was a filter that
             looked applied and did nothing. */}
-        <select value={fieldFilter} onChange={(e) => setFieldFilter(e.target.value)} className="input" style={{ width: 180 }}>
+        <select aria-label="Filter transactions by wallet pocket" value={fieldFilter} onChange={(e) => setFieldFilter(e.target.value)} className="input" style={{ width: 180 }}>
           <option value="ALL">All pockets</option>
           <option value="depositBalance">Deposit</option>
           <option value="winningsBalance">Winnings</option>
@@ -190,7 +190,7 @@ export const TransactionsList: React.FC = () => {
           <option value="lockedBalance">Locked</option>
           <option value="tokenBalance">Tokens</option>
         </select>
-        <DateRangePicker startDate={startDate} endDate={endDate} onStartDateChange={setStartDate} onEndDateChange={setEndDate} />
+        <DateRangePicker filters="transactions" startDate={startDate} endDate={endDate} onStartDateChange={setStartDate} onEndDateChange={setEndDate} />
       </div>
 
       {/* Table */}

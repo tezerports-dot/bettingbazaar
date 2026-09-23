@@ -166,7 +166,8 @@ export const GameProviders: React.FC = () => {
           <div className="bg-dark-800 border border-dark-600 rounded-xl w-full max-w-lg p-6 space-y-4">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-bold">Add New Provider</h2>
-              <button onClick={() => setShowAdd(false)} className="text-gray-400 hover:text-white"><X size={20}/></button>
+              <button onClick={() => setShowAdd(false)} title="Close without adding a provider"
+                aria-label="Close without adding a provider" className="text-gray-400 hover:text-white"><X size={20}/></button>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <Field label="Provider Key (unique slug)" value={newProv.key}
@@ -232,14 +233,26 @@ export const GameProviders: React.FC = () => {
                       <p className="text-xs text-gray-500 mt-0.5">{p.description}</p>
                     </div>
                     <button onClick={() => set(p.key, 'enabled', !edit.enabled)}
+                      title={edit.enabled ? `Take ${p.name} off the lobby` : `Put ${p.name} live in the lobby`}
+                      aria-label={edit.enabled ? `Take ${p.name} off the lobby` : `Put ${p.name} live in the lobby`}
+                      aria-pressed={edit.enabled}
                       className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${edit.enabled ? 'border-green-500 bg-green-500/10 text-green-400' : 'border-dark-600 text-gray-500 hover:border-dark-500'}`}>
                       {edit.enabled ? <><ToggleRight size={14}/> ON</> : <><ToggleLeft size={14}/> OFF</>}
                     </button>
                     <button onClick={() => deleteProvider(p.key, p.name)} disabled={deleting === p.key}
-                      className="text-gray-600 hover:text-red-400 p-1 transition-colors" title="Delete provider">
+                      className="text-gray-600 hover:text-red-400 p-1 transition-colors"
+                      title={`Delete ${p.name}`} aria-label={`Delete ${p.name}`}>
                       <Trash2 size={16}/>
                     </button>
-                    <button onClick={() => setExpanded(isOpen ? null : p.key)} className="text-gray-400 hover:text-white p-1">
+                    {/* One of these per provider row — 48 on this screen, and
+                        every one announced as just "button" before. The name
+                        says which provider it opens, because "expand" repeated
+                        48 times identifies nothing. */}
+                    <button onClick={() => setExpanded(isOpen ? null : p.key)}
+                      title={isOpen ? `Hide ${p.name} settings` : `Edit ${p.name} settings`}
+                      aria-label={isOpen ? `Hide ${p.name} settings` : `Edit ${p.name} settings`}
+                      aria-expanded={isOpen}
+                      className="text-gray-400 hover:text-white p-1">
                       {isOpen ? <ChevronUp size={18}/> : <ChevronDown size={18}/>}
                     </button>
                   </div>

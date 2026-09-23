@@ -125,6 +125,7 @@ export const BotMessages: React.FC = () => {
               )}
 
               <textarea
+                aria-label={`Message the bot sends for ${t.key}`}
                 value={draft}
                 onChange={(e) => setDrafts({ ...drafts, [t.key]: e.target.value })}
                 rows={Math.min(12, Math.max(4, draft.split('\n').length + 1))}

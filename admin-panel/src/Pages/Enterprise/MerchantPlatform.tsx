@@ -346,7 +346,7 @@ export const MerchantPlatform: React.FC = () => {
           <h3 className="text-lg font-semibold flex items-center gap-2">
             <Trophy size={18} className="text-gold-500" /> Leaderboard
           </h3>
-          <select className="input max-w-[140px]" value={days} onChange={e => setDays(Number(e.target.value))}>
+          <select aria-label="Leaderboard period" className="input max-w-[140px]" value={days} onChange={e => setDays(Number(e.target.value))}>
             <option value={7}>Last 7 days</option>
             <option value={30}>Last 30 days</option>
             <option value={90}>Last 90 days</option>

@@ -129,12 +129,16 @@ export const FAQManager: React.FC = () => {
               });
               setShowModal(true);
             }}
+            title={`Edit FAQ: ${faq.question}`}
+            aria-label={`Edit FAQ: ${faq.question}`}
             className="p-2 hover:bg-dark-700 rounded-lg transition-colors"
           >
             <Edit size={16} />
           </button>
           <button
             onClick={() => setConfirmDelete(faq)}
+            title={`Delete FAQ: ${faq.question}`}
+            aria-label={`Delete FAQ: ${faq.question}`}
             className="p-2 hover:bg-red-600/20 rounded-lg transition-colors text-red-500"
           >
             <Trash2 size={16} />
