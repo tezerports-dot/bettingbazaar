@@ -48,6 +48,7 @@
     "test:forms": "node backend/tests/browser/forms.js",
     "test:wallet-buttons": "node backend/tests/browser/walletButtons.js",
     "test:bet-button": "node backend/tests/browser/betButton.js",
+    "test:mutate": "node backend/tests/browser/mutate.js",
     "report:ui-coverage": "node scripts/report-ui-coverage.mjs"
   },
   "dependencies": {
