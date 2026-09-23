@@ -454,6 +454,47 @@ async function reset(page, cfg, screen, base) {
   await settle(page, 8000);
 }
 
+/**
+ * Wait until the platform has budget for this screen.
+ *
+ * ── Why a pass that presses everything has to do this ──────────────────────
+ * `RATE_LIMIT_TIERS.global` is 1,000 requests per 15 minutes per IP. A full
+ * drive of 68 screens and ~1,700 controls makes several times that, so from
+ * some point onward every request is refused — and a screen whose data was
+ * refused still RENDERS, just empty. The pass then measures the empty version
+ * and reports it as coverage.
+ *
+ * That is exactly what the run before this one did. `/game-providers`
+ * collected 3 controls instead of 147, `/chat-management` reported a tidy
+ * "No support tickets yet" empty state, `/payment-control` rendered nothing at
+ * all — and the coverage table read 451 controls NOT REACHED against 177 in
+ * the run before, with nothing between them that touched a panel. Every one of
+ * those screens works; the platform had simply stopped answering us.
+ *
+ * The limiter is right, and it is production behaviour that must not be
+ * weakened to make a test pass (§29). So the pass does what any well-behaved
+ * client does: it reads the budget the server publishes and waits for the
+ * window to roll over before it starts a screen it could not finish.
+ *
+ * One request per screen to ask, which is cheaper than a screen's worth of
+ * results that describe nothing.
+ */
+const BUDGET_FLOOR = Number(process.env.BB_BUDGET_FLOOR ?? 120);
+async function awaitBudget(label) {
+  for (let attempt = 0; attempt < 6; attempt++) {
+    let left = null, resetIn = 15;
+    try {
+      const r = await fetch(`${API}/api/v1/system/config`, { method: 'GET' });
+      left = Number(r.headers.get('ratelimit-remaining'));
+      resetIn = Number(r.headers.get('ratelimit-reset') ?? 15);
+    } catch { return; }           // server unreachable is a different problem
+    if (!Number.isFinite(left) || left > BUDGET_FLOOR) return;
+    const wait = Math.min(Math.max(resetIn, 1), 900) + 2;
+    console.log(`   … ${label}: ${left} requests left in the window — waiting ${wait}s for it to roll over`);
+    await sleep(wait * 1000);
+  }
+}
+
 // ── Run ─────────────────────────────────────────────────────────────────────
 const args = process.argv.slice(2).filter((a) => !a.startsWith('-'));
 const onlyPanels  = args.filter((a) => a.endsWith('-panel'));
@@ -608,6 +649,8 @@ try {
 
     for (const screen of screens) {
       if (onlyScreens.length && !onlyScreens.includes(screen)) continue;
+      // Do not start a screen the platform has no budget to answer.
+      await awaitBudget(`${panel}${screen}`);
       await navigate(page, cfg, screen, base);
       await settle(page);
 
@@ -652,7 +695,29 @@ try {
         : location.pathname), cfg.router === 'hash').catch(() => null);
       const asked = cfg.router === 'hash' ? screen : `${cfg.base ?? ''}${screen}`;
       const norm = (x) => String(x ?? '').replace(/\/+$/, '') || '/';
-      const atTheDoor = where !== null && norm(where) !== norm(asked);
+      /**
+       * Two facts, and it takes both.
+       *
+       * A redirect on its own is not a failure — the merchant panel's `/` is
+       * its login route and sends a signed-in operator to `/dashboard`, which
+       * is the app working. The first version of this check failed that.
+       *
+       * Nor is the path enough to tell the two apart: with no session the
+       * merchant panel redirects TO `/`, which is itself a driven screen, so a
+       * rule about paths cleared the very case it exists for (checked — it
+       * did).
+       *
+       * What a sign-in screen HAS, and no other screen this pass drives shows
+       * while redirecting to it, is a password box. So: the panel went
+       * somewhere other than asked, AND there is a password field there. The
+       * first version of this check read PROSE and accused three working
+       * screens (`admin /settings` has 75 real settings controls and the words
+       * "sign in" among them); a control's type is not something a screen can
+       * talk its way into.
+       */
+      const atTheDoor = where !== null
+        && norm(where) !== norm(asked)
+        && controls.some((c) => c.kind === 'input:password');
       // This screen is being driven now, so whatever a previous run recorded
       // for it is superseded rather than added to.
       const key = `${panel}\u0000${screen}`;
