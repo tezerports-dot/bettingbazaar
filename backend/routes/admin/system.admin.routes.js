@@ -106,7 +106,7 @@ router.get('/system/config', authenticate, isAdmin, async (req, res) => {
         // `loadShedding` nor any of the eight `ipDefense` fields, so an admin
         // screen could not have shown them even if the PUT had taken them.
         //
-        // `minted` is stripped for the same reason the PUT skips it: it is the
+        // `transferred` is stripped for the same reason the PUT skips it: it is the
         // running issuance total, not a setting, and a number on a settings
         // page is a number somebody will type over (F-022).
         //
@@ -119,7 +119,9 @@ router.get('/system/config', authenticate, isAdmin, async (req, res) => {
         // for one declaration read by both consumers; a rebuild is a second
         // list that goes stale the next time a board is added.
         ...config,
-        adminTokenSupply: { cap: config.adminTokenSupply?.cap ?? 10000000000 }, // schema default: 10,000,000,000
+        // `total` is how many tokens EXIST — 20,000,000,000, all of them
+        // already created and held by the platform until they are transferred.
+        adminTokenSupply: { total: config.adminTokenSupply?.total ?? 20000000000 }, // schema default: 20,000,000,000
         // The legacy flat names the panels ask for, over the nested owners
         // above. These are aliases, not second owners — each one reads the
         // value it renames.
@@ -348,8 +350,8 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
     // no route at all — two of them under a comment that called them
     // "admin-editable". See F-022.
     //
-    // `internal` fields are skipped: `adminTokenSupply.minted` is the running
-    // issuance total checked against the 10B cap, and an operator who could set
+    // `internal` fields are skipped: `adminTokenSupply.transferred` is how much
+    // of the platform's own holding has been handed out, and an operator who could set
     // it to 0 could re-authorise the whole supply.
     //
     // The spec still validates every value and its bounds when the write is

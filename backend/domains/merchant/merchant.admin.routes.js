@@ -32,16 +32,16 @@ const router = express.Router();
  * Issuance goes through the double-entry treasury.
  *
  * It used to be a counter held inline in this file: a number incremented on
- * mint and decremented on issue, with nothing recording where the tokens went.
+ * transfer and decremented on failure, with nothing recording where they went.
  * The treasury posts both sides of every movement, so "how many tokens exist
  * and who holds them" is answerable from the ledger rather than from a total
  * nobody can reconstruct.
  *
  * ── The contract change ─────────────────────────────────────────────────────
- * Every mint carries a `movementId`, because the operation is not idempotent
- * without one: `reserveAdminMint(amount)` took an amount and nothing else, so
- * two deliveries of one admin request minted twice and nothing could tell that
- * from two legitimate top-ups. The key also ties the mint to the merchant
+ * Every transfer carries a `movementId`, because the operation is not idempotent
+ * without one: `reserveAdminTransfer(amount)` took an amount and nothing else, so
+ * two deliveries of one admin request transferred twice and nothing could tell
+ * that from two legitimate top-ups. The key also ties the transfer to the merchant
  * credit that follows it, so the pair can never half-apply.
  *
  * Where the key comes from differs by endpoint, and the difference is whether a
@@ -59,12 +59,12 @@ const router = express.Router();
  * See middleware/idempotencyKey.js for the shape rules and why a key that
  * reaches a UNIQUE column is validated rather than trusted.
  */
-async function reserveAdminMint(amount, opts) {
-  return issuance.reserveAdminMint({ amountTokens: Number(amount), ...opts });
+async function reserveAdminTransfer(amount, opts) {
+  return issuance.reserveAdminTransfer({ amountTokens: Number(amount), ...opts });
 }
 
-async function rollbackAdminMint(amount, opts) {
-  return issuance.rollbackAdminMint({ amountTokens: Number(amount), ...opts });
+async function rollbackAdminTransfer(amount, opts) {
+  return issuance.rollbackAdminTransfer({ amountTokens: Number(amount), ...opts });
 }
 
 
@@ -688,12 +688,21 @@ router.post('/merchants/:merchantId/fund', authenticate, isAdmin, async (req, re
       return res.status(400).json({ success: false, message: 'tokenAmount must be a positive number' });
     }
 
-    // Admin top-ups mint from the fixed treasury cap before crediting
-    // the merchant wallet. Roll back the supply reservation if the wallet
-    // write fails.
+    // An admin top-up moves tokens OUT OF THE PLATFORM'S OWN HOLDING and into
+    // the merchant's wallet — 20,000,000,000 exist and none are created here.
+    // Put them back if the wallet write fails.
     //
     // ── The key ────────────────────────────────────────────────────────────
-    // REQUIRED from the caller, and one id covers both the mint and the credit
+    // ── The `mint_` prefix stays, and that is deliberate ──────────────────
+    // The vocabulary around it changed — nothing is minted, tokens move out of
+    // the platform's holding — but this string is an IDEMPOTENCY KEY on the
+    // wire, not a description. Renaming it would mean a request made before the
+    // deploy and retried after it produces a DIFFERENT movement id under the
+    // same caller key, so the UNIQUE gate would not recognise the retry and the
+    // merchant would be funded twice. An opaque id is allowed to carry a name
+    // history; a double transfer is not.
+    //
+    // REQUIRED from the caller, and one id covers both the transfer and the credit
     // so they can never half-apply.
     //
     // What shipped was `mw_topup_${new ObjectId()}` — a fresh key per delivery,
@@ -703,13 +712,13 @@ router.post('/merchants/:merchantId/fund', authenticate, isAdmin, async (req, re
     // illusion, which is why there is no fallback: only the caller can
     // distinguish a retry from a deliberate second top-up, so an absent key is
     // a 400 rather than a guess.
-    const mintKey = requireIdempotencyKey(req);
+    const transferKey = requireIdempotencyKey(req);
 
     let supply;
     let creditResult;
     try {
-      supply = await reserveAdminMint(tokenAmountNum, {
-        movementId: `mint_${mintKey}`, merchantId: String(merchantId),
+      supply = await reserveAdminTransfer(tokenAmountNum, {
+        movementId: `mint_${transferKey}`, merchantId: String(merchantId),
         actor: String(req.user.userId), refModel: 'Merchant', refId: String(merchantId),
         reason: `Admin wallet top-up${note ? ` — ${note}` : ''}`,
       });
@@ -717,17 +726,17 @@ router.post('/merchants/:merchantId/fund', authenticate, isAdmin, async (req, re
         merchantId, amount: tokenAmountNum,
         reason: `Admin wallet top-up${note ? ` — ${note}` : ''}`,
         refModel: 'Merchant', refId: String(merchantId),
-        txId: `mw_topup_${mintKey}`,
+        txId: `mw_topup_${transferKey}`,
       });
-    } catch (mintErr) {
+    } catch (transferErr) {
       if (supply) {
-        await rollbackAdminMint(tokenAmountNum, {
-          movementId: `mint_${mintKey}`, actor: String(req.user.userId),
+        await rollbackAdminTransfer(tokenAmountNum, {
+          movementId: `mint_${transferKey}`, actor: String(req.user.userId),
           refModel: 'Merchant', refId: String(merchantId),
-          reason: 'Admin wallet top-up failed after minting',
-        }).catch((e) => console.error('[admin fund] mint rollback failed:', e.message));
+          reason: 'Admin wallet top-up failed after the transfer',
+        }).catch((e) => console.error('[admin fund] transfer rollback failed:', e.message));
       }
-      throw mintErr;
+      throw transferErr;
     }
     const { merchant } = creditResult;
 
@@ -743,7 +752,7 @@ router.post('/merchants/:merchantId/fund', authenticate, isAdmin, async (req, re
     await db.audit.recordDetailed({
       performedBy: req.user.userId, action: 'MERCHANT_FUNDED', category: 'TREASURY',
       targetType: 'Merchant', targetId: String(merchantId),
-      details: { tokenAmount: tokenAmountNum, note: note || null, movementId: `mint_${mintKey}` },
+      details: { tokenAmount: tokenAmountNum, note: note || null, movementId: `mint_${transferKey}` },
     });
 
     // From the WALLET, after the credit. The merchant record carries no
@@ -817,7 +826,7 @@ router.post('/merchant-token-orders/:orderId/approve', authenticate, isAdmin, as
 
     let supply;
     try {
-      supply = await reserveAdminMint(pending.tokenAmount, {
+      supply = await reserveAdminTransfer(pending.tokenAmount, {
         movementId: `mint_order_${orderId}`, merchantId: String(pending.merchantId),
         actor: String(req.user.userId), refModel: 'MerchantAdminTokenOrder', refId: String(orderId),
         reason: `Admin token purchase approved: ${orderId}`,
@@ -834,7 +843,7 @@ router.post('/merchant-token-orders/:orderId/approve', authenticate, isAdmin, as
       // The reservation is released because the credit did not happen. Keyed
       // on the same movement id, so releasing twice releases once.
       if (supply) {
-        await rollbackAdminMint(pending.tokenAmount, {
+        await rollbackAdminTransfer(pending.tokenAmount, {
           movementId: `mint_order_${orderId}`, actor: String(req.user.userId),
           refModel: 'MerchantAdminTokenOrder', refId: String(orderId),
           reason: `Admin token purchase ${orderId} failed after minting`,

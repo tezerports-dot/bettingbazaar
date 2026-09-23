@@ -175,9 +175,11 @@ export const MerchantTokenOrders: React.FC = () => {
         </div>
         <p className="text-xs text-gray-400 mb-3">
           A merchant pays the platform in USDT for the float they trade with.
-          Approving one <strong>mints supply and credits their wallet</strong> —
-          check the transaction landed before you do. One request per merchant
-          per day; a rejection needs a reason the merchant can act on.
+          Approving one <strong>transfers tokens out of the platform's holding
+          into their wallet</strong> — nothing is created; the platform simply
+          holds that many fewer. Check the payment landed before you do. One
+          request per merchant per day; a rejection needs a reason the merchant
+          can act on.
         </p>
 
         {pending.length > 0 && (
@@ -262,7 +264,7 @@ export const MerchantTokenOrders: React.FC = () => {
                             onClick={() => void approve(o)}
                             disabled={busyId === o.orderId}
                             className="p-1.5 rounded-lg bg-green-600/20 text-green-400 hover:bg-green-600/30 disabled:opacity-40"
-                            title="Approve — mints tokens and credits the merchant"
+                            title="Approve — transfers tokens from the platform's holding to the merchant"
                           >
                             <Check size={14} />
                           </button>

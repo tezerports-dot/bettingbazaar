@@ -53,7 +53,7 @@ import {
 import { getBalancesPaise } from '../repositories/wallets.core.js';
 import {
   ACCOUNTS, trialBalance, getTreasuryBalances,
-  mintToMerchantFloat, merchantDispensedToUser, userPaidMerchant,
+  transferToMerchantFloat, merchantDispensedToUser, userPaidMerchant,
   stakeLostToHouse, housePaidWinnings,
 } from '../repositories/treasury.js';
 import {
@@ -347,7 +347,7 @@ describePg('Cross-domain money conservation', () => {
     };
 
     // 1. Mint ₹10,000 into merchant float, and issue the same into the wallet.
-    await mintToMerchantFloat(1_000_000, { movementId: 'cb_mint', actor: 'admin-1' });
+    await transferToMerchantFloat(1_000_000, { movementId: 'cb_mint', actor: 'admin-1' });
     await adminIssueToMerchant({
       merchantId: MERCHANT, amountPaise: 1_000_000, txId: 'cb_issue', reason: 'Treasury issuance',
     });
@@ -411,7 +411,7 @@ describePg('Cross-domain money conservation', () => {
   it('catches a treasury posting that disagrees with the wallets it describes', async () => {
     // The failure mode the closed-books check exists for: both ledgers
     // internally consistent, telling different stories about the same money.
-    await mintToMerchantFloat(500_000, { movementId: 'dis_mint' });
+    await transferToMerchantFloat(500_000, { movementId: 'dis_mint' });
     await adminIssueToMerchant({ merchantId: MERCHANT, amountPaise: 500_000, txId: 'dis_issue' });
 
     // A dispense posted to the treasury that never happened in the wallets.

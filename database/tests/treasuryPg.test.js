@@ -14,7 +14,7 @@ import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { pgConfigured, pgQuery, applySchema, closePg } from '../client.js';
 import {
   ACCOUNTS, postMovement, getTreasuryBalances, trialBalance, circulatingSupplyPaise,
-  mintToMerchantFloat, burnFromMerchantFloat, merchantDispensedToUser, userPaidMerchant,
+  transferToMerchantFloat, burnFromMerchantFloat, merchantDispensedToUser, userPaidMerchant,
   stakeLostToHouse, housePaidWinnings, allocateFromHouse, poolPaidUser,
 } from '../repositories/treasury.js';
 
@@ -59,7 +59,7 @@ describePg('Admin treasury (PostgreSQL double entry)', () => {
     });
 
     it('keeps the ledger at zero across a long chain of movements', async () => {
-      await mintToMerchantFloat(1_000_000, { movementId: 'm1', actor: 'admin' });
+      await transferToMerchantFloat(1_000_000, { movementId: 'm1', actor: 'admin' });
       await merchantDispensedToUser(200_000, { movementId: 'm2' });
       await stakeLostToHouse(50_000, { movementId: 'm3' });
       await housePaidWinnings(80_000, { movementId: 'm4' });
@@ -79,7 +79,7 @@ describePg('Admin treasury (PostgreSQL double entry)', () => {
   // ── Supply ─────────────────────────────────────────────────────────────────
   describe('token supply', () => {
     it('makes minting a movement, not an appearance', async () => {
-      await mintToMerchantFloat(1_000_000, { movementId: 'sup_1', actor: 'admin-3' });
+      await transferToMerchantFloat(1_000_000, { movementId: 'sup_1', actor: 'admin-3' });
       const b = await getTreasuryBalances();
       // The tokens exist in the float; TOKEN_SUPPLY records that they were made.
       expect(b[ACCOUNTS.MERCHANT_FLOAT]).toBe(1_000_000);
@@ -89,7 +89,7 @@ describePg('Admin treasury (PostgreSQL double entry)', () => {
     });
 
     it('reduces supply on a burn, exactly inverting a mint', async () => {
-      await mintToMerchantFloat(500_000, { movementId: 'sup_2' });
+      await transferToMerchantFloat(500_000, { movementId: 'sup_2' });
       await burnFromMerchantFloat(500_000, { movementId: 'sup_3' });
       expect(await circulatingSupplyPaise()).toBe(0);
       expect((await getTreasuryBalances())[ACCOUNTS.MERCHANT_FLOAT]).toBe(0);
@@ -97,9 +97,9 @@ describePg('Admin treasury (PostgreSQL double entry)', () => {
 
     it('refuses a mint that would breach the cap, and writes nothing', async () => {
       const cap = 1_000_000;
-      await mintToMerchantFloat(900_000, { movementId: 'cap_1', supplyCapPaise: cap });
+      await transferToMerchantFloat(900_000, { movementId: 'cap_1', supplyCapPaise: cap });
 
-      const r = await mintToMerchantFloat(200_000, { movementId: 'cap_2', supplyCapPaise: cap });
+      const r = await transferToMerchantFloat(200_000, { movementId: 'cap_2', supplyCapPaise: cap });
       expect(r).toMatchObject({ ok: false, reason: 'supply_cap_exceeded' });
       expect(await circulatingSupplyPaise()).toBe(900_000);
       const { rows } = await pgQuery(`SELECT COUNT(*)::int n FROM treasury_entries WHERE movement_id = 'cap_2'`);
@@ -113,7 +113,7 @@ describePg('Admin treasury (PostgreSQL double entry)', () => {
       const cap = 1_000_000;
       const results = await Promise.all(
         Array.from({ length: 50 }, (_, i) =>
-          mintToMerchantFloat(100_000, { movementId: `race_${i}`, supplyCapPaise: cap })),
+          transferToMerchantFloat(100_000, { movementId: `race_${i}`, supplyCapPaise: cap })),
       );
 
       expect(results.filter((r) => r.ok && !r.idempotent)).toHaveLength(10);
@@ -126,8 +126,8 @@ describePg('Admin treasury (PostgreSQL double entry)', () => {
   // ── Idempotency ────────────────────────────────────────────────────────────
   describe('idempotency', () => {
     it('posts one movementId exactly once', async () => {
-      const first = await mintToMerchantFloat(300_000, { movementId: 'idem_1' });
-      const second = await mintToMerchantFloat(300_000, { movementId: 'idem_1' });
+      const first = await transferToMerchantFloat(300_000, { movementId: 'idem_1' });
+      const second = await transferToMerchantFloat(300_000, { movementId: 'idem_1' });
       expect(first.idempotent).toBe(false);
       expect(second).toMatchObject({ ok: true, idempotent: true });
       expect(await circulatingSupplyPaise()).toBe(300_000);
@@ -135,7 +135,7 @@ describePg('Admin treasury (PostgreSQL double entry)', () => {
 
     it('survives a 100-copy retry storm on one key', async () => {
       const results = await Promise.all(
-        Array.from({ length: 100 }, () => mintToMerchantFloat(70_000, { movementId: 'storm' })),
+        Array.from({ length: 100 }, () => transferToMerchantFloat(70_000, { movementId: 'storm' })),
       );
       expect(results.filter((r) => r.ok && !r.idempotent)).toHaveLength(1);
       expect(await circulatingSupplyPaise()).toBe(70_000);
@@ -157,7 +157,7 @@ describePg('Admin treasury (PostgreSQL double entry)', () => {
 
   // ── Concurrency across accounts ────────────────────────────────────────────
   it('does not deadlock when movements touch the same accounts in opposite orders', async () => {
-    await mintToMerchantFloat(10_000_000, { movementId: 'dl_seed' });
+    await transferToMerchantFloat(10_000_000, { movementId: 'dl_seed' });
     await merchantDispensedToUser(5_000_000, { movementId: 'dl_seed2' });
 
     // 100 movements alternating direction between the same two accounts.
@@ -175,7 +175,7 @@ describePg('Admin treasury (PostgreSQL double entry)', () => {
 
   // ── Append-only ────────────────────────────────────────────────────────────
   it('cannot have its entries edited or deleted, even by direct SQL', async () => {
-    await mintToMerchantFloat(100_000, { movementId: 'ap_1' });
+    await transferToMerchantFloat(100_000, { movementId: 'ap_1' });
     await expect(pgQuery(`UPDATE treasury_entries SET amount_paise = 1 WHERE movement_id = 'ap_1'`))
       .rejects.toThrow(/append-only/);
     await expect(pgQuery(`DELETE FROM treasury_entries WHERE movement_id = 'ap_1'`))
@@ -191,7 +191,7 @@ describePg('Admin treasury (PostgreSQL double entry)', () => {
   });
 
   it('detects a balance that moved without an entry', async () => {
-    await mintToMerchantFloat(100_000, { movementId: 'dr_1' });
+    await transferToMerchantFloat(100_000, { movementId: 'dr_1' });
     // MERCHANT_FLOAT, not HOUSE_RESERVE: only accounts a movement has touched
     // have rows, so nudging an untouched one updates nothing and proves nothing.
     await pgQuery(

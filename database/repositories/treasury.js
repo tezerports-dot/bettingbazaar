@@ -19,15 +19,19 @@
  *
  * ── The invariant ───────────────────────────────────────────────────────────
  * EVERY MOVEMENT'S LEGS SUM TO ZERO, therefore the entire ledger sums to zero,
- * always. Value is never created or destroyed here — it is moved between
- * accounts, and minting is no exception:
+ * always. Value is never created or destroyed here — it is only moved between
+ * accounts, and a merchant buying inventory is no exception:
  *
- *     mint ₹100  →  TOKEN_SUPPLY -10000, MERCHANT_FLOAT +10000
+ *     merchant buys ₹100  →  TOKEN_SUPPLY -10000, MERCHANT_FLOAT +10000
  *
- * TOKEN_SUPPLY is a contra account whose negation is the number of tokens in
- * existence. A mint makes it more negative; the tokens it created are visible
- * in the float account that received them. `trialBalance()` summing to anything
- * but zero means something wrote outside this module.
+ * TOKEN_SUPPLY is a contra account holding the platform's own tokens. All
+ * 20,000,000,000 start there; the negation of its balance is how many have
+ * been handed out, and what the platform still holds is the difference. A
+ * transfer moves tokens from it into the float account that received them —
+ * nothing is created, which is why the legs sum to zero.
+ *
+ * `trialBalance()` summing to anything but zero means something wrote outside
+ * this module.
  *
  * ── Signed amounts, unlike the wallet ledgers ───────────────────────────────
  * merchant_wallet_entries and wallet_ledger store a positive magnitude with the
@@ -37,11 +41,14 @@
  * and a magnitude-plus-direction encoding would make that sum express nothing.
  *
  * ── What a single counter cannot do ─────────────────────────────────────────
- * `SystemConfig.adminTokenSupply.minted` is one counter with a 10B cap,
- * incremented on mint and decremented by a blind, error-swallowing $inc on
- * rollback. It cannot say where tokens went, it is not idempotent (a retried
- * rollback decrements twice), and if its `.catch(() => {})` ever fires the
- * supply figure is permanently wrong with nothing to reconcile against.
+ * `SystemConfig.adminTokenSupply.transferred` is one counter, incremented on a
+ * transfer out and decremented by a blind, error-swallowing $inc on rollback.
+ * It cannot say where tokens went, it is not idempotent (a retried rollback
+ * decrements twice), and if its `.catch(() => {})` ever fires the figure is
+ * permanently wrong with nothing to reconcile against. These accounts can say
+ * where every token is, which is what makes the conservation invariant —
+ * platform holding + every merchant wallet + every player wallet = 20B —
+ * something the books prove rather than something a counter asserts.
  */
 import { getPool, pgQuery, connectGuarded } from '../client.js';
 
@@ -59,11 +66,15 @@ export const ACCOUNTS = Object.freeze({
 const ALL_ACCOUNTS = Object.freeze(Object.values(ACCOUNTS));
 
 /**
- * The supply ceiling, in paise. The cap is 10,000,000,000 tokens
- * so the two agree during the migration; overridable for testing and for the
- * day the business changes it.
+ * Every token that exists, in paise. **20,000,000,000 tokens** (owner,
+ * 2026-09-23), and none are ever created: the platform starts holding all of
+ * them and everything after is a transfer.
+ *
+ * Overridable for testing, and for the day the business changes the figure —
+ * which is a decision, not an accident, so it is a configured number
+ * (`SystemConfig.adminTokenSupply.total`) with this as the fallback.
  */
-export const DEFAULT_SUPPLY_CAP_PAISE = 10_000_000_000 * 100;
+export const TOTAL_SUPPLY_PAISE = 20_000_000_000 * 100;
 
 const toPaise = (v) => Number(v ?? 0);
 
@@ -130,7 +141,7 @@ function requireAccount(account) {
 export async function postMovement({
   movementId, operation, legs,
   actor = null, reason = null, refModel = null, refId = null, correlationId = null,
-  supplyCapPaise = DEFAULT_SUPPLY_CAP_PAISE,
+  supplyCapPaise = TOTAL_SUPPLY_PAISE,
 }) {
   if (!movementId) throw new Error('postMovement requires a movementId (idempotency key)');
   if (!operation) throw new Error('postMovement requires an operation');
@@ -253,7 +264,7 @@ const move = (from, to) => (amountPaise, args) => {
 };
 
 /** Admin mints tokens into merchant float. The only way supply increases. */
-export const mintToMerchantFloat = (amountPaise, args = {}) =>
+export const transferToMerchantFloat = (amountPaise, args = {}) =>
   move(ACCOUNTS.TOKEN_SUPPLY, ACCOUNTS.MERCHANT_FLOAT)(amountPaise, { operation: 'MINT', ...args });
 
 /** Tokens destroyed — supply decreases. The exact inverse of a mint. */

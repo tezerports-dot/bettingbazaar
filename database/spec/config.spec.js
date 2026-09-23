@@ -73,9 +73,9 @@ const group = (fields) => ({ type: 'group', fields });
  * that a setting is editable the moment it is declared and nobody has to
  * remember to wire it (CLAUDE.md §2). `internal` is the other half of that:
  * without it, deriving would have handed an operator a text box for
- * `adminTokenSupply.minted` — the running total of tokens ever issued, checked
- * against a 10-billion cap. Setting it back to 0 does not correct a count; it
- * re-authorises minting the entire supply again.
+ * `adminTokenSupply.transferred` — how much of the platform's own holding has
+ * been handed out. Setting it back to 0 does not correct a count; it tells the
+ * platform it still holds tokens it has already given away.
  *
  * So the rule is a property of the DECLARATION, not of any route's memory: a
  * counter the platform maintains is marked here, and every derived accept list
@@ -160,7 +160,23 @@ export const SYSTEM_CONFIG_SPEC = group({
   // `cap` is a policy an operator sets. `minted` is the running total the
   // issuance path maintains — see `internal` above for why it must not be a
   // text box on a settings screen.
-  adminTokenSupply: group({ cap: n(10000000000, 0), minted: internal(n(0, 0)) }),
+  // ── The platform's entire token supply ───────────────────────────────────
+  // **20,000,000,000 tokens exist. None are ever created.** (Owner, 2026-09-23.)
+  //
+  // `total` is how many there are, full stop — not a ceiling on how many may be
+  // made. The platform starts holding all of them and every movement after that
+  // is a TRANSFER: platform → merchant when a merchant buys inventory, merchant
+  // → player when a player buys, and back the other way when they sell. So
+  //
+  //     platform holding + every merchant wallet + every player wallet = total
+  //
+  // always, and that is an invariant the books can prove rather than a promise.
+  //
+  // `transferred` is what has left the platform's own holding, maintained by
+  // the transfer path — marked `internal` because setting it back to 0 does not
+  // correct a count, it re-authorises handing out the whole supply a second
+  // time. What the platform still holds is `total - transferred`.
+  adminTokenSupply: group({ total: n(20000000000, 0), transferred: internal(n(0, 0)) }),
 
   // Platform defaults for per-type merchant concurrency; a merchant's own
   // override lives on the merchant row.

@@ -163,22 +163,22 @@ describePg('every declared merchantOrderLimits field is admin-editable', () => {
   });
 
   it('does NOT offer the running issuance total as a setting', async () => {
-    // `adminTokenSupply.minted` is the count of tokens ever issued, checked
+    // `adminTokenSupply.transferred` is the count of tokens ever issued, checked
     // against a 10-billion cap. Setting it back to 0 does not correct a count —
     // it re-authorises minting the entire supply again. It is marked `internal`
     // in the spec, which is what keeps it out of BOTH derived lists; this
     // asserts the marker is doing its job rather than that somebody remembered.
     const { getSystemConfig } = await import('#db/repositories/config.js');
-    const was = (await getSystemConfig()).adminTokenSupply?.minted ?? 0;
+    const was = (await getSystemConfig()).adminTokenSupply?.transferred ?? 0;
 
     const seed = await as(app, admin).get('/system/config');
-    expect(seed.body.config.adminTokenSupply?.minted, 'minted is served as an editable field').toBeUndefined();
+    expect(seed.body.config.adminTokenSupply?.transferred, 'minted is served as an editable field').toBeUndefined();
 
     await as(app, admin).put('/system/config')
-      .send({ adminTokenSupply: { minted: was + 1234, cap: 10000000000 } });
+      .send({ adminTokenSupply: { transferred: was + 1234, cap: 10000000000 } });
 
     expect(
-      (await getSystemConfig()).adminTokenSupply?.minted ?? 0,
+      (await getSystemConfig()).adminTokenSupply?.transferred ?? 0,
       'an admin PUT moved the issuance counter',
     ).toBe(was);
   });

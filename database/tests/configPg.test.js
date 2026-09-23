@@ -244,17 +244,17 @@ describePg('the configuration store', () => {
     // a ceiling. The arithmetic and the check are one statement.
     await applyConfig({
       scope: 'system', docKey: KEY,
-      patch: { adminTokenSupply: { cap: 1000, minted: 0 } },
+      patch: { adminTokenSupply: { total: 1000, transferred: 0 } },
     });
 
     const mints = await Promise.all(Array.from({ length: 20 }, () => bumpConfigCounter({
-      scope: 'system', docKey: KEY, path: 'adminTokenSupply.minted', by: 100, cap: 1000,
+      scope: 'system', docKey: KEY, path: 'adminTokenSupply.transferred', by: 100, cap: 1000,
     })));
     expect(mints.filter((m) => m.ok)).toHaveLength(10);
     expect(mints.filter((m) => !m.ok).every((m) => m.reason === 'CAP_EXCEEDED')).toBe(true);
 
     const cfg = await getConfig('system', { docKey: KEY, fresh: true });
-    expect(cfg.adminTokenSupply.minted).toBe(1000);
+    expect(cfg.adminTokenSupply.transferred).toBe(1000);
   });
 
   // ── Other scopes ──────────────────────────────────────────────────────────

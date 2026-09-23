@@ -8,10 +8,10 @@
  * port that reproduced them in a better database would be worthless. Each one
  * gets a test that FAILS if the defect comes back:
  *
- *   1. `reserveAdminMint(amount)` has NO idempotency key. Two deliveries of one
+ *   1. `reserveAdminTransfer(amount)` has NO idempotency key. Two deliveries of one
  *      admin request mint twice, and nothing in the system can distinguish that
  *      from two legitimate top-ups.
- *   2. Its rollback is `$inc: { minted: -amount }` under `.catch(() => {})`. A
+ *   2. Its rollback is `$inc: { transferred: -amount }` under `.catch(() => {})`. A
  *      retried rollback invents headroom under the cap; a swallowed failure
  *      leaves the supply figure permanently wrong with nothing to check it
  *      against.
@@ -29,7 +29,7 @@ import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vites
 const { pgConfigured, pgQuery, applySchema, closePg, getPool } = await import('../client.js');
 const { ACCOUNTS, getTreasuryBalances, trialBalance } = await import('../repositories/treasury.js');
 const {
-  reserveAdminMint, rollbackAdminMint, adminTokenSupply, DEFAULT_CAP_TOKENS,
+  reserveAdminTransfer, rollbackAdminTransfer, adminTokenSupply, TOTAL_TOKEN_SUPPLY,
 } = await import('../repositories/adminIssuance.js');
 const {
   applySystemConfig, invalidateConfigCache,
@@ -47,8 +47,8 @@ const {
  * and a test that set a value and then read the previous one would pass or fail
  * on timing.
  */
-async function setCapTokens(cap) {
-  await applySystemConfig({ adminTokenSupply: { cap } }, { actor: 'test' });
+async function setTotalTokens(total) {
+  await applySystemConfig({ adminTokenSupply: { total } }, { actor: 'test' });
   invalidateConfigCache();
 }
 
@@ -69,14 +69,14 @@ async function setCapTokens(cap) {
  *     defaults in one place.
  */
 async function clearCap() {
-  await setCapTokens(DEFAULT_CAP_TOKENS);
+  await setTotalTokens(TOTAL_TOKEN_SUPPLY);
 }
 
 const hasPg = pgConfigured();
 const describePg = hasPg ? describe : describe.skip;
 
 const mint = (amountTokens, movementId, extra = {}) =>
-  reserveAdminMint({ amountTokens, movementId, merchantId: 'm1', actor: 'admin1', ...extra });
+  reserveAdminTransfer({ amountTokens, movementId, merchantId: 'm1', actor: 'admin1', ...extra });
 
 const entriesFor = async (movementId) => {
   const { rows } = await pgQuery(
@@ -100,7 +100,7 @@ describePg('Admin token issuance (PostgreSQL)', () => {
     it('mints, and reports the {cap, minted} shape in tokens', async () => {
       const r = await mint(5_000, 'mv1');
 
-      expect(r).toMatchObject({ minted: 5_000, cap: DEFAULT_CAP_TOKENS, idempotent: false, store: 'postgres' });
+      expect(r).toMatchObject({ transferred: 5_000, total: TOTAL_TOKEN_SUPPLY, idempotent: false, store: 'postgres' });
       // Minting is TOKEN_SUPPLY going negative, not value appearing from
       // nowhere. The tokens it created are visible in the float that received
       // them, and the two legs cancel.
@@ -114,9 +114,9 @@ describePg('Admin token issuance (PostgreSQL)', () => {
       await mint(5_000, 'mv_replay');
       const again = await mint(5_000, 'mv_replay');
 
-      expect(again).toMatchObject({ idempotent: true, minted: 5_000 });
+      expect(again).toMatchObject({ idempotent: true, transferred: 5_000 });
       // The whole defect, in one number: 5,000 and not 10,000.
-      expect(await adminTokenSupply()).toMatchObject({ minted: 5_000 });
+      expect(await adminTokenSupply()).toMatchObject({ transferred: 5_000 });
       expect(await entriesFor('mv_replay')).toHaveLength(2);
     });
 
@@ -125,11 +125,11 @@ describePg('Admin token issuance (PostgreSQL)', () => {
       await mint(3_000, 'mv_b');
       // The distinction the counter could never make. Idempotency must not
       // collapse deliberate repeats — only redeliveries of the same request.
-      expect(await adminTokenSupply()).toMatchObject({ minted: 8_000 });
+      expect(await adminTokenSupply()).toMatchObject({ transferred: 8_000 });
     });
 
     it('refuses a mint with no key at all — the original signature is unusable here', async () => {
-      await expect(reserveAdminMint({ amountTokens: 100 })).rejects.toThrow(/movementId/);
+      await expect(reserveAdminTransfer({ amountTokens: 100 })).rejects.toThrow(/movementId/);
     });
   });
 
@@ -137,10 +137,10 @@ describePg('Admin token issuance (PostgreSQL)', () => {
   describe('a rollback is a burn, not an erasure', () => {
     it('returns the supply to where it was, and leaves BOTH movements behind', async () => {
       await mint(5_000, 'mv_roll');
-      const back = await rollbackAdminMint({ amountTokens: 5_000, movementId: 'mv_roll', actor: 'admin1' });
+      const back = await rollbackAdminTransfer({ amountTokens: 5_000, movementId: 'mv_roll', actor: 'admin1' });
 
       expect(back).toMatchObject({ ok: true, store: 'postgres' });
-      expect(await adminTokenSupply()).toMatchObject({ minted: 0 });
+      expect(await adminTokenSupply()).toMatchObject({ transferred: 0 });
 
       // The difference from a decrement. An admin investigating a discrepancy
       // can see that a mint happened AND was reversed — the counter version
@@ -153,20 +153,20 @@ describePg('Admin token issuance (PostgreSQL)', () => {
 
     it('a retried rollback does not invent headroom under the cap', async () => {
       await mint(5_000, 'mv_twice');
-      await rollbackAdminMint({ amountTokens: 5_000, movementId: 'mv_twice' });
-      const again = await rollbackAdminMint({ amountTokens: 5_000, movementId: 'mv_twice' });
+      await rollbackAdminTransfer({ amountTokens: 5_000, movementId: 'mv_twice' });
+      const again = await rollbackAdminTransfer({ amountTokens: 5_000, movementId: 'mv_twice' });
 
       expect(again).toMatchObject({ ok: true, idempotent: true });
       // A blind decrement would be at -5,000 here: headroom released
       // twice for one mint, and a supply figure that says fewer tokens exist
       // than actually do.
-      expect(await adminTokenSupply()).toMatchObject({ minted: 0 });
+      expect(await adminTokenSupply()).toMatchObject({ transferred: 0 });
       expect(await trialBalance()).toMatchObject({ ok: true });
     });
 
     it('the books still close after a mint/rollback pair', async () => {
       await mint(1_234, 'mv_close');
-      await rollbackAdminMint({ amountTokens: 1_234, movementId: 'mv_close' });
+      await rollbackAdminTransfer({ amountTokens: 1_234, movementId: 'mv_close' });
       const tb = await trialBalance();
       expect(tb.ok).toBe(true);
       expect(tb.grandTotalPaise).toBe(0);
@@ -189,28 +189,28 @@ describePg('Admin token issuance (PostgreSQL)', () => {
   // ── The cap ───────────────────────────────────────────────────────────────
   describe('the supply ceiling', () => {
     it('refuses a mint that would breach it, with the shape the routes turn into a 400', async () => {
-      await setCapTokens(10_000);
+      await setTotalTokens(10_000);
       await mint(9_000, 'mv_cap1');
 
       const err = await mint(2_000, 'mv_cap2').catch((e) => e);
       expect(err.status).toBe(400);
-      expect(err.message).toBe('Admin token supply cap exceeded');
+      expect(err.message).toBe('The platform does not hold enough tokens left to transfer');
       // Detail a single counter never had: what the ceiling is, how much is out,
       // and what was asked for.
       expect(err.detail).toEqual({ capTokens: 10_000, circulatingTokens: 9_000, requestedTokens: 2_000 });
-      expect(await adminTokenSupply()).toMatchObject({ minted: 9_000 });
+      expect(await adminTokenSupply()).toMatchObject({ transferred: 9_000 });
     });
 
     it('enforces the cap an ADMIN configured, not a constant compiled in', async () => {
-      await setCapTokens(1_000);
-      await expect(mint(1_001, 'mv_cap3')).rejects.toThrow(/cap exceeded/);
-      await setCapTokens(2_000);
-      await expect(mint(1_001, 'mv_cap4')).resolves.toMatchObject({ minted: 1_001 });
+      await setTotalTokens(1_000);
+      await expect(mint(1_001, 'mv_cap3')).rejects.toThrow(/does not hold enough tokens/);
+      await setTotalTokens(2_000);
+      await expect(mint(1_001, 'mv_cap4')).resolves.toMatchObject({ transferred: 1_001 });
     });
 
     it('falls back to the built-in ceiling when SystemConfig has never been written', async () => {
       await clearCap();
-      expect(await mint(100, 'mv_cap5')).toMatchObject({ cap: DEFAULT_CAP_TOKENS });
+      expect(await mint(100, 'mv_cap5')).toMatchObject({ total: TOTAL_TOKEN_SUPPLY });
     });
   });
 
@@ -227,22 +227,22 @@ describePg('Admin token issuance (PostgreSQL)', () => {
       // Two mints of DIFFERENT sizes, because after one mint the total and the
       // amount are the same number and an off-by-a-delta bug is invisible.
       await mint(5_000, 'mv_supply_a');
-      expect(await adminTokenSupply()).toMatchObject({ minted: 5_000, cap: DEFAULT_CAP_TOKENS });
+      expect(await adminTokenSupply()).toMatchObject({ transferred: 5_000, total: TOTAL_TOKEN_SUPPLY });
 
       await mint(3_000, 'mv_supply_b');
-      expect(await adminTokenSupply()).toMatchObject({ minted: 8_000, cap: DEFAULT_CAP_TOKENS });
+      expect(await adminTokenSupply()).toMatchObject({ transferred: 8_000, total: TOTAL_TOKEN_SUPPLY });
 
       // The burn returns the headroom without erasing either movement.
-      await rollbackAdminMint({ amountTokens: 3_000, movementId: 'mv_supply_b' });
-      expect(await adminTokenSupply()).toMatchObject({ minted: 5_000, cap: DEFAULT_CAP_TOKENS });
+      await rollbackAdminTransfer({ amountTokens: 3_000, movementId: 'mv_supply_b' });
+      expect(await adminTokenSupply()).toMatchObject({ transferred: 5_000, total: TOTAL_TOKEN_SUPPLY });
     });
 
     it('is unchanged when the ceiling refused the mint', async () => {
-      await setCapTokens(100);
+      await setTotalTokens(100);
       await mint(100, 'mv_ok');
 
       await mint(1, 'mv_refused').catch(() => {});
-      expect(await adminTokenSupply()).toMatchObject({ minted: 100 });
+      expect(await adminTokenSupply()).toMatchObject({ transferred: 100 });
     });
   });
 
@@ -256,12 +256,12 @@ describePg('Admin token issuance (PostgreSQL)', () => {
       const applied = results.filter((r) => r?.idempotent === false);
       expect(applied).toHaveLength(1);
       expect(results.filter((r) => r instanceof Error)).toHaveLength(0);
-      expect(await adminTokenSupply()).toMatchObject({ minted: 500 });
+      expect(await adminTokenSupply()).toMatchObject({ transferred: 500 });
       expect(await entriesFor('mv_storm')).toHaveLength(2);
     });
 
     it('50 concurrent mints against a cap that fits 10 admit exactly 10', async () => {
-      await setCapTokens(1_000);
+      await setTotalTokens(1_000);
       const results = await Promise.all(
         Array.from({ length: 50 }, (_, i) => mint(100, `mv_cap_race_${i}`).catch((e) => e)),
       );
@@ -271,7 +271,7 @@ describePg('Admin token issuance (PostgreSQL)', () => {
       // pass before any of them writes.
       expect(results.filter((r) => !(r instanceof Error))).toHaveLength(10);
       expect(results.filter((r) => r instanceof Error).every((e) => e.status === 400)).toBe(true);
-      expect(await adminTokenSupply()).toMatchObject({ minted: 1_000 });
+      expect(await adminTokenSupply()).toMatchObject({ transferred: 1_000 });
       expect(await trialBalance()).toMatchObject({ ok: true });
     });
 
@@ -287,7 +287,7 @@ describePg('Admin token issuance (PostgreSQL)', () => {
       await Promise.all(Array.from({ length: 40 }, (_, i) =>
         i % 2
           ? mint(100, `mv_mix2_${i}`)
-          : rollbackAdminMint({ amountTokens: 100, movementId: `mv_mix_${i}` })));
+          : rollbackAdminTransfer({ amountTokens: 100, movementId: `mv_mix_${i}` })));
 
       expect(pool.waitingCount).toBe(0);
       expect(pool.idleCount).toBe(pool.totalCount);

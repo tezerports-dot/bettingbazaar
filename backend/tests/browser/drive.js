@@ -89,7 +89,18 @@ const DEFER = [
     test: (c) => /^(save|publish|apply|update|submit|activate|deactivate|switch)\b/i.test(bare(c.name)) },
   { why: 'a file picker cannot be driven from here', test: (c) => c.kind === 'input:file' },
 ];
-const deferred = (c) => DEFER.find((d) => d.test(c));
+/**
+ * Kinds that can DO something. A deferral rule reads a name, and a name is not
+ * a promise about what the control is: `/settings` carries a number field
+ * called "Payout Multiplier (×)", which matched the `^payout` rule and was
+ * deferred as if typing in it could pay somebody. Typing into a field cannot
+ * release, refund, delete or publish anything — only the button underneath it
+ * can — so the action rules apply to actions.
+ *
+ * The file-picker rule is exempt: it is ABOUT a field, not about a name.
+ */
+const ACTS = new Set(['button', 'link', 'role-button', 'input:submit', 'input:button', 'input:image']);
+const deferred = (c) => DEFER.find((d, i) => (i === DEFER.length - 1 || ACTS.has(c.kind)) && d.test(c));
 
 /** A control that only READS is safe to press anywhere. */
 const FIELDS = ['text', 'controls', 'dialogs', 'hash', 'path', 'toast',
