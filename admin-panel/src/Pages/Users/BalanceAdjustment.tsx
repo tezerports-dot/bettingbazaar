@@ -96,7 +96,7 @@ export const BalanceAdjustment: React.FC = () => {
               <option value="tokenBalance">Token Balance</option>
             </select>
           </div>
-          <div><label className="text-xs text-gray-400 mb-1 block" htmlFor="amount">Amount (₹)</label><input id="amount" type="number" value={form.amount} onChange={e=>setForm(f=>({...f,amount:e.target.value}))} className="input w-full" placeholder="500"/></div>
+          <div><label className="text-xs text-gray-400 mb-1 block" htmlFor="amount">Amount (₹)</label><input id="amount" type="number" min={1} step={1} value={form.amount} onChange={e=>setForm(f=>({...f,amount:e.target.value}))} className="input w-full" placeholder="500"/></div>
           <div><label className="text-xs text-gray-400 mb-1 block" htmlFor="reason">Reason</label><input id="reason" value={form.reason} onChange={e=>setForm(f=>({...f,reason:e.target.value}))} className="input w-full" placeholder="Compensation for issue #123"/></div>
         </div>
         <button onClick={submit} disabled={processing} className="btn-primary w-full">{processing?'Processing…':'Apply Adjustment'}</button>

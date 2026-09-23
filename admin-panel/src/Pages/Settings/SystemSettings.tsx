@@ -58,10 +58,16 @@ export const SystemSettings: React.FC = () => {
     maintenanceMode: false,
     maintenanceMessage: '',
     registrationEnabled: true,
-    minDeposit: 500,  // schema default: 500
-    minWithdrawal: 100,
-    minBet: 10,
-    maxBet: 50000,
+    minDeposit: 500,      // schema default: 500
+    maxDeposit: 50000,    // schema default: 50000
+    // Was 100. §2: the buy floor and the sell floor are ONE policy — "both 500
+    // tokens, the same rule read from either end" — and 100 is the drifted
+    // value that rule was written to remove. A fallback that disagrees with
+    // the schema default is §4, and `||` means a legitimate 0 becomes it.
+    minWithdrawal: 500,   // schema default: 500
+    maxWithdrawal: 50000, // schema default: 50000
+    minBet: 10,           // schema default: 10
+    maxBet: 100000,       // schema default: 100000 (was 50000 here — §4 drift)
     max30MinBet: 50000,
     maxFullDayBet: 100000,
     maxWinningsWithdrawal: 500000,
@@ -140,10 +146,14 @@ export const SystemSettings: React.FC = () => {
           maintenanceMode: response.data.maintenanceMode || false,
           maintenanceMessage: response.data.maintenanceMessage || '',
           registrationEnabled: response.data.registrationEnabled !== false,
-          minDeposit: response.data.minDeposit || 500,  // schema default: 500
-          minWithdrawal: response.data.minWithdrawal || 100,
-          minBet: response.data.minBet || 10,
-          maxBet: response.data.maxBet || 50000,
+          // `??` rather than `||` throughout: 0 is a value an operator may
+          // legitimately set, and `||` silently replaces it with the default.
+          minDeposit: response.data.minDeposit ?? 500,        // schema default: 500
+          maxDeposit: response.data.maxDeposit ?? 50000,      // schema default: 50000
+          minWithdrawal: response.data.minWithdrawal ?? 500,  // schema default: 500
+          maxWithdrawal: response.data.maxWithdrawal ?? 50000,// schema default: 50000
+          minBet: response.data.minBet ?? 10,                 // schema default: 10
+          maxBet: response.data.maxBet ?? 100000,             // schema default: 100000
           max30MinBet: response.data.max30MinBet || 50000,
           maxFullDayBet: response.data.maxFullDayBet || 100000,
           maxWinningsWithdrawal: response.data.maxWinningsWithdrawal || 500000,
@@ -382,14 +392,41 @@ export const SystemSettings: React.FC = () => {
       {/* Transaction Limits */}
       <div className="card">
         <h3 className="text-lg font-semibold mb-4">Transaction Limits</h3>
+        {/*
+          ── The ceilings are here because an operator could not reach them ──
+          `maxDeposit` and `maxWithdrawal` are declared settings, the GET has
+          always served them, and this screen rendered no input for either —
+          so a floor could be raised with no way to raise the roof above it.
+
+          And every bound below is the PAIRED FIELD'S OWN VALUE, not a number
+          invented for the panel. That keeps one owner (§2): the client refuses
+          exactly what the server refuses —
+
+              config: 'minDeposit' (999999999) cannot be above 'maxDeposit' (50000)
+
+          which, before this, was answered 200 and closed the deposit rail for
+          every player.
+        */}
         <div className="grid grid-cols-2 gap-4">
           <div>
             <label className="label" htmlFor="min-deposit-amount-rs">Min Deposit Amount (Rs.)</label>
             <input id="min-deposit-amount-rs"
-              type="number"
+              type="number" min={0} max={formData.maxDeposit}
               value={formData.minDeposit}
               onChange={(e) =>
                 setFormData({ ...formData, minDeposit: (Number(e.target.value) || 0) })
+              }
+              className="input"
+            />
+            <p className="text-xs text-gray-500 mt-1">Cannot exceed the maximum beside it.</p>
+          </div>
+          <div>
+            <label className="label" htmlFor="max-deposit-amount-rs">Max Deposit Amount (Rs.)</label>
+            <input id="max-deposit-amount-rs"
+              type="number" min={formData.minDeposit}
+              value={formData.maxDeposit}
+              onChange={(e) =>
+                setFormData({ ...formData, maxDeposit: (Number(e.target.value) || 0) })
               }
               className="input"
             />
@@ -397,15 +434,52 @@ export const SystemSettings: React.FC = () => {
           <div>
             <label className="label" htmlFor="min-withdrawal-amount-rs">Min Withdrawal Amount (Rs.)</label>
             <input id="min-withdrawal-amount-rs"
-              type="number"
+              type="number" min={0} max={formData.maxWithdrawal}
               value={formData.minWithdrawal}
               onChange={(e) =>
                 setFormData({ ...formData, minWithdrawal: (Number(e.target.value) || 0) })
               }
               className="input"
             />
+            <p className="text-xs text-gray-500 mt-1">Cannot exceed the maximum beside it.</p>
+          </div>
+          <div>
+            <label className="label" htmlFor="max-withdrawal-amount-rs">Max Withdrawal Amount (Rs.)</label>
+            <input id="max-withdrawal-amount-rs"
+              type="number" min={formData.minWithdrawal}
+              value={formData.maxWithdrawal}
+              onChange={(e) =>
+                setFormData({ ...formData, maxWithdrawal: (Number(e.target.value) || 0) })
+              }
+              className="input"
+            />
           </div>
         </div>
+
+        {/*
+          Said out loud, the way the bet limits already do it. An input's `min`
+          and `max` stop the arrows and the browser's own validation, but a
+          typed or pasted value still lands — so the warning names the pair and
+          the Save button below refuses until it is resolved.
+        */}
+        {formData.minDeposit > formData.maxDeposit && (
+          <div className="mt-3 flex items-center space-x-2 p-3 bg-red-500/10 border border-red-500/30 rounded-lg">
+            <AlertTriangle className="text-red-500 shrink-0" size={16} />
+            <p className="text-sm text-red-400">
+              Minimum deposit ({formData.minDeposit}) is above the maximum ({formData.maxDeposit}) —
+              saving this would refuse every deposit on the platform.
+            </p>
+          </div>
+        )}
+        {formData.minWithdrawal > formData.maxWithdrawal && (
+          <div className="mt-3 flex items-center space-x-2 p-3 bg-red-500/10 border border-red-500/30 rounded-lg">
+            <AlertTriangle className="text-red-500 shrink-0" size={16} />
+            <p className="text-sm text-red-400">
+              Minimum withdrawal ({formData.minWithdrawal}) is above the maximum ({formData.maxWithdrawal}) —
+              saving this would strand every balance on the platform.
+            </p>
+          </div>
+        )}
       </div>
 
       {/* Betting Limits */}
@@ -1199,7 +1273,10 @@ export const SystemSettings: React.FC = () => {
       {/* Save Button */}
       <button
         onClick={handleSave}
-        disabled={isSaving || (formData.minBet > formData.maxBet)}
+        disabled={isSaving
+          || (formData.minBet > formData.maxBet)
+          || (formData.minDeposit > formData.maxDeposit)
+          || (formData.minWithdrawal > formData.maxWithdrawal)}
         className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed flex items-center"
       >
         {isSaving ? (
