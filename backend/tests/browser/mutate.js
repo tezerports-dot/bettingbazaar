@@ -88,9 +88,21 @@ async function go(page, cfg, base, screen) {
   // REMOUNTS rather than being handed back with the previous case's search box
   // still filled in.
   await page.keyboard.press('Escape').catch(() => {});
-  await page.evaluate(() => { window.location.hash = '/__mutate_reset__'; });
+  // The merchant panel is a HISTORY router under /merchant — setting the hash
+  // moves nothing there, so the case would measure whatever screen happened to
+  // be up. Each router is navigated the way it actually navigates.
+  const move = async (to) => {
+    if (cfg.router === 'hash') await page.evaluate((t) => { window.location.hash = t; }, to);
+    else {
+      await page.evaluate(([b, t]) => {
+        window.history.pushState({}, '', `${b}${t}`);
+        window.dispatchEvent(new PopStateEvent('popstate'));
+      }, [cfg.base ?? '', to]);
+    }
+  };
+  await move('/__mutate_reset__');
   await sleep(200);
-  await page.evaluate((s) => { window.location.hash = s; }, screen);
+  await move(screen);
   await settle(page, 12000);
   if (process.env.BB_DIAG) {
     console.log(`   [diag] ${screen} → hash ${await page.evaluate(() => location.hash)} · `
@@ -187,7 +199,15 @@ async function confirmWith(page, verb) {
 /** Fill a field, bounded, saying which one when it cannot be filled. */
 async function fill(page, selector, value) {
   const field = page.locator(selector).first();
-  if (await field.count() === 0) return { ok: false, why: `no ${selector} on screen` };
+  if (await field.count() === 0) {
+    // Say what IS there. "no #foo on screen" is true of a screen that never
+    // rendered and of one that renders a different field, and those need
+    // different fixes — naming the inputs present separates them in one line.
+    const present = await page.locator('input, textarea, select').evaluateAll(
+      (els) => els.slice(0, 12).map((e) => e.id || e.getAttribute('placeholder') || e.type || 'input'),
+    ).catch(() => []);
+    return { ok: false, why: `no ${selector} on screen — it offers [${present.join(', ') || 'no fields at all'}]` };
+  }
   try { await field.fill(String(value), { timeout: 8000 }); return { ok: true }; }
   catch (err) { return { ok: false, why: `${selector} would not accept input (${err.message.split('\n')[0].slice(0, 60)})` }; }
 }
@@ -240,6 +260,39 @@ const chatCount = async () => {
   const { rows } = await pgQuery('SELECT COUNT(*)::int AS n FROM public_chat_messages WHERE NOT is_deleted');
   return Number(rows[0]?.n ?? 0);
 };
+/** What the referral programme has actually paid out, in paise. */
+const referralPaidPaise = async () => {
+  const { rows } = await pgQuery(
+    // `disbursed_at`, not `paid_at` — the column names the BATCH that paid it.
+    `SELECT COALESCE(SUM(amount_paise), 0)::BIGINT AS paid
+       FROM referral_earnings WHERE disbursed_at IS NOT NULL`).catch(() => ({ rows: [] }));
+  return Number(rows[0]?.paid ?? 0);
+};
+/** The ACTIVE bot generation — §2: a channel change bumps it, a bot swap does not. */
+const telegramGeneration = async () => {
+  const { rows } = await pgQuery(
+    `SELECT generation, channel_username FROM telegram_configs
+      ORDER BY generation DESC LIMIT 1`).catch(() => ({ rows: [] }));
+  return rows[0] ?? null;
+};
+const cdnImageExists = async (id) => {
+  const { rows } = await pgQuery('SELECT 1 FROM cdn_images WHERE image_id = $1', [String(id)]);
+  return rows.length > 0;
+};
+/**
+ * What "preferences" actually are on a merchant: two booleans on the row.
+ *
+ * `PUT /merchant/preferences` accepts `acceptsDeposits` and
+ * `acceptsWithdrawals` and nothing else — there is no notification_preferences
+ * column, so reading one would have compared undefined to undefined and passed
+ * on a save that did nothing.
+ */
+const merchantPrefs = async (merchantId) => {
+  const { rows } = await pgQuery(
+    'SELECT accepts_deposits, accepts_withdrawals FROM merchants WHERE merchant_id = $1',
+    [String(merchantId)]);
+  return rows[0] ?? null;
+};
 const providerExists = async (key) => {
   const { rows } = await pgQuery('SELECT 1 FROM game_providers WHERE provider_key = $1', [String(key)]);
   return rows.length > 0;
@@ -261,7 +314,7 @@ const balances = (userId) => db.wallets.getBalances(userId);
  * cases rewrite the platform's live rules and a restore that only runs on the
  * happy path is the one that matters least (trap 10).
  */
-function configSave({ id, screen, selector, button, scope, key, value, label }) {
+function configSave({ id, screen, selector, button, scope, key, value, label, also = [], confirm = null }) {
   return {
     id,
     panel: 'admin-panel',
@@ -273,6 +326,15 @@ function configSave({ id, screen, selector, button, scope, key, value, label }) 
         await go(page, cfg, base, screen);
         const typed = await fill(page, selector, value);
         if (!typed.ok) return ['NOT DRIVEN', typed.why];
+        // Some screens will not ARM their Save until a second field is filled —
+        // the settlement rail wants the justification recorded against the
+        // version, and the button stays disabled without it. A case that only
+        // typed the value reported "Save is disabled with a valid value", which
+        // blames the screen for a field it was never given.
+        for (const extra of also) {
+          const more = await fill(page, extra.selector, extra.value);
+          if (!more.ok) return ['NOT DRIVEN', more.why];
+        }
         await settle(page, 1500);
 
         const save = page.getByRole('button', { name: new RegExp(`^\\s*${button}\\s*$`, 'i') }).first();
@@ -280,6 +342,11 @@ function configSave({ id, screen, selector, button, scope, key, value, label }) 
         if (await save.isDisabled()) return ['NOT DRIVEN', `"${button}" is disabled with a valid value`];
         await save.click({ timeout: 8000 });
         await settle(page, 8000);
+        if (confirm) {
+          const answered = await confirmWith(page, confirm);
+          if (answered === 'stuck') return ['FAILED', `the "${confirm}" confirmation could not be pressed`];
+          if (answered === 'none') return ['FAILED', `pressing ${button} raised no "${confirm}" confirmation`];
+        }
 
         // The DOCUMENT, freshly, not the form: a screen that keeps its own copy
         // of what it just sent is not evidence anything was stored (§32 S25).
@@ -827,6 +894,423 @@ const CASES = [
     },
   },
 
+
+  // ── The other half of each money decision ────────────────────────────────
+  {
+    id: 'admin/merchant-token-orders/reject',
+    panel: 'admin-panel',
+    what: 'Reject a merchant token purchase',
+    async run(page, cfg, base) {
+      const target = await seedMerchant({ currency: 'USDT', tokensPaise: 0 });
+      const orderId = rid('TOR');
+      await pgQuery(
+        `INSERT INTO merchant_admin_token_orders
+           (order_id, merchant_id, token_paise, usdt_rate, usdt_amount, usdt_tx_hash, status)
+         VALUES ($1, $2, 900000, 90, 100, $3, 'PENDING')`,
+        [orderId, target.merchantId, `0xREJ${orderId}`],
+      );
+
+      await go(page, cfg, base, '/merchant-token-orders');
+      const row = await rowFor(page, target.merchantId) ?? await rowFor(page, target.name);
+      if (!row) return ['NOT DRIVEN', `seeded PENDING order for ${target.name} never appeared`];
+      const hit = await pressInRow(row, 'Reject — needs a reason');
+      if (!hit.ok) return ['NOT DRIVEN', hit.why];
+      await settle(page, 4000);
+
+      // A rejection with no reason is refused by the platform on purpose — the
+      // merchant is shown it — so the case supplies one rather than pressing a
+      // button that was always going to decline.
+      const typed = await fill(page, '#reason', 'mutating drive: no transaction at that hash');
+      if (!typed.ok) return ['NOT DRIVEN', `the reject modal never opened — ${typed.why}`];
+      // "Reject request" — the row's control says "Reject", the modal's says
+      // something else again. Three screens, three vocabularies for one verb.
+      const said = await confirmWith(page, 'Reject request');
+      if (said === 'stuck') return ['FAILED', 'the Reject request button could not be pressed'];
+      if (said === 'none') return ['FAILED', 'the reject modal offered no Reject request button'];
+
+      const state = await orderStatus(orderId);
+      const held = await db.merchantWallets.getMerchantTokenBalance(target.merchantId);
+      if (state !== 'REJECTED') return ['FAILED', `the order is ${state}, not REJECTED`];
+      // The decisive assertion: a rejection must move NO tokens.
+      if (Number(held) !== 0) return ['FAILED', `a REJECTED purchase credited ${held} tokens`];
+      return ['DROVE', `order REJECTED and not one token moved`];
+    },
+  },
+
+  {
+    id: 'admin/payment-control/refund',
+    panel: 'admin-panel',
+    what: 'Refund a disputed deposit to the merchant',
+    async run(page, cfg, base) {
+      const player = await seedPlayer({ balancePaise: 0 });
+      const merchant = await seedMerchant({ currency: 'INR', tokensPaise: 100000000 });
+      const mine = rid('DISP');
+      await pgQuery(
+        `INSERT INTO order_states
+           (order_id, user_id, merchant_id, order_type, state, token_amount_paise, fiat_amount_paise)
+         VALUES ($1, $2, $3, 'DEPOSIT', 'DISPUTED', 50000, 50000)`,
+        [mine, player.userId, merchant.merchantId],
+      );
+
+      await go(page, cfg, base, '/payment-control');
+      const card = page.locator('div')
+        .filter({ hasText: mine })
+        .filter({ has: page.getByRole('button', { name: /Refund to Merchant/i }) })
+        .last();
+      if (await card.count() === 0) {
+        const routed = await page.locator('main').innerText().catch(() => '(no <main>)');
+        return ['NOT DRIVEN', `no card for ${mine} — routed region: ${routed.replace(/\s+/g, ' ').slice(0, 180)}`];
+      }
+      const refund = card.getByRole('button', { name: /Refund to Merchant/i }).first();
+
+      const before = await balances(player.userId);
+      page.__bbAccept = 'mutating drive: refunded';
+      try {
+        await refund.click({ timeout: 8000 });
+        await settle(page, 10000);
+      } finally { page.__bbAccept = false; }
+
+      const after = await balances(player.userId);
+      const state = await orderState(mine);
+      // The opposite outcome from a release, and the assertion is its mirror:
+      // the player must NOT be credited on a refund.
+      if ((after.depositBalance ?? 0) !== (before.depositBalance ?? 0)) {
+        return ['FAILED', `a REFUND credited the player ₹${after.depositBalance}`];
+      }
+      if (!['CANCELLED', 'FAILED', 'REJECTED', 'COMPLETED'].includes(String(state))) {
+        return ['FAILED', `the order is ${state}; the refund left it undecided`];
+      }
+      return ['DROVE', `order ${state}, the player correctly not credited`];
+    },
+  },
+
+  {
+    id: 'admin/kyc/reject',
+    panel: 'admin-panel',
+    what: 'Reject a KYC submission',
+    async run(page, cfg, base) {
+      const target = await seedPlayer({ kycStatus: 'PENDING_APPROVAL' });
+      await pgQuery(
+        `INSERT INTO user_kyc (user_id, kyc_status, submitted_at)
+         VALUES ($1, 'PENDING_APPROVAL', now())
+         ON CONFLICT (user_id) DO UPDATE SET kyc_status = 'PENDING_APPROVAL'`, [target.userId],
+      );
+
+      await go(page, cfg, base, '/kyc');
+      const review = page
+        .getByRole('button', { name: new RegExp(`Review KYC for ${target.userId}`, 'i') }).first();
+      if (await review.count() === 0) return ['NOT DRIVEN', `${target.userId} is not on the queue`];
+      await review.click({ timeout: 8000 });
+      await settle(page, 6000);
+
+      const reject = page.getByRole('button', { name: /^\s*Reject\s*$/i }).last();
+      if (await reject.count() === 0) return ['NOT DRIVEN', 'the review panel offered no Reject'];
+      await reject.click({ timeout: 8000 });
+      await settle(page, 4000);
+
+      const typed = await fill(page, '#rejection-reason', 'mutating drive: unreadable submission');
+      if (!typed.ok) return ['NOT DRIVEN', `the reject modal never opened — ${typed.why}`];
+      const said = await confirmWith(page, 'Reject KYC');
+      if (said === 'stuck') return ['FAILED', 'the Reject KYC button could not be pressed'];
+      if (said === 'none') return ['FAILED', 'the reject modal offered no Reject KYC button'];
+
+      const after = await kycStatus(target.userId);
+      if (after !== 'REJECTED') return ['FAILED', `KYC is ${after}, not REJECTED`];
+      // The reason is what the player is shown — a rejection without one is the
+      // defect the transition module exists to refuse.
+      const { rows } = await pgQuery(
+        'SELECT rejection_reason FROM user_kyc WHERE user_id = $1', [target.userId]);
+      if (!String(rows[0]?.rejection_reason ?? '').trim()) {
+        return ['FAILED', 'REJECTED with no reason stored — the player is told nothing'];
+      }
+      return ['DROVE', `REJECTED, and the reason was stored for the player to read`];
+    },
+  },
+
+  // ── Config saves, each through the one declared factory ──────────────────
+  // ── Not a config document, so not the factory ────────────────────────────
+  // The rail's timers live in `payment_mode_policies` — one ACTIVE version,
+  // APPEND-ONLY and justified (§2) — not in `config_documents`. Putting it
+  // through configSave would have read the wrong owner and reported a save that
+  // worked as a save that vanished. A different owner is a different case.
+  //
+  // There is deliberately no restore: the table is append-only by design, so
+  // "putting it back" means writing a THIRD version, which is a worse record of
+  // what happened than leaving the two. This runs on its own database.
+  {
+    id: 'admin/settlement-rail/save-timers',
+    panel: 'admin-panel',
+    what: 'Save the settlement rail timers',
+    async run(page, cfg, base) {
+      const before = await db.paymentModePolicy.getActivePolicy();
+      const was = Number(before?.assignmentWaitSeconds ?? 0);
+      const target = was === 91 ? 92 : 91;
+
+      await go(page, cfg, base, '/business-policy/settlement-rail');
+      const typed = await fill(page, '#timer-assignmentWaitSeconds', String(target));
+      if (!typed.ok) return ['NOT DRIVEN', typed.why];
+      // The Save stays DISABLED until the justification is filled — it is
+      // recorded against the version, and the screen says so. A case that typed
+      // only the number reported "Save is disabled with a valid value", which
+      // blames the screen for a field it was never given.
+      const why = await fill(page, '#rail-justification', 'mutating drive: timer check');
+      if (!why.ok) return ['NOT DRIVEN', why.why];
+      await settle(page, 1500);
+
+      const save = page.getByRole('button', { name: /^\s*Save timers\s*$/i }).first();
+      if (await save.count() === 0) return ['NOT DRIVEN', 'no "Save timers" button'];
+      if (await save.isDisabled()) return ['NOT DRIVEN', 'Save timers is still disabled with both fields filled'];
+      await save.click({ timeout: 8000 });
+      await settle(page, 6000);
+      const answered = await confirmWith(page, 'Save');
+      if (answered === 'stuck') return ['FAILED', 'the Save confirmation could not be pressed'];
+      if (answered === 'none') return ['FAILED', 'pressing Save timers raised no confirmation'];
+
+      const after = await db.paymentModePolicy.getActivePolicy();
+      if (Number(after?.assignmentWaitSeconds) !== target) {
+        return ['FAILED', `assignmentWaitSeconds is ${after?.assignmentWaitSeconds}, expected ${target}`
+          + ` — screen said: ${(await words(page)).slice(-140)}`];
+      }
+      // A new ACTIVE version, not an edit of the old one — that is what
+      // append-only means, and a save that mutated v1 in place would be wrong
+      // in a way the value alone cannot show.
+      if (Number(after?.version) <= Number(before?.version ?? 0)) {
+        return ['FAILED', `the policy stayed at v${after?.version}; the timers were edited in place`];
+      }
+      return ['DROVE', `assignmentWaitSeconds ${was} → ${target} as v${after.version} (was v${before?.version})`];
+    },
+  },
+
+
+  // ── A commission policy version, which is also append-only ───────────────
+  {
+    id: 'admin/merchant-platform/save-policy',
+    panel: 'admin-panel',
+    what: 'Publish a new merchant commission policy version',
+    async run(page, cfg, base) {
+      const before = await db.merchantCommissionPolicy.getActivePolicy().catch(() => null);
+      const wasVersion = Number(before?.version ?? 0);
+      const wasFloor = Number(before?.minMatchedVolumePaise ?? before?.minMatchedVolume ?? 0);
+
+      await go(page, cfg, base, '/merchant-platform');
+      const typed = await fill(page, '#min-matched-volume', String(wasFloor === 1234 ? 1235 : 1234));
+      if (!typed.ok) return ['NOT DRIVEN', typed.why];
+      // Same shape as the settlement rail: the version is JUSTIFIED, and the
+      // route refuses without one ("Business justification required").
+      const why = await fill(page, '#justification-required', 'mutating drive: floor check');
+      if (!why.ok) return ['NOT DRIVEN', why.why];
+      await settle(page, 1500);
+
+      const save = page.getByRole('button', { name: /^\s*Save New Policy Version\s*$/i }).first();
+      if (await save.count() === 0) return ['NOT DRIVEN', 'no "Save New Policy Version" button'];
+      if (await save.isDisabled()) return ['NOT DRIVEN', 'Save New Policy Version is disabled with both fields filled'];
+      await save.click({ timeout: 8000 });
+      await settle(page, 8000);
+      await confirmWith(page, 'Save');
+
+      const after = await db.merchantCommissionPolicy.getActivePolicy().catch(() => null);
+      if (!after) return ['FAILED', 'no active commission policy after the save'];
+      if (Number(after.version) <= wasVersion) {
+        return ['FAILED', `the policy stayed at v${after.version} — a version was not published`
+          + ` — screen said: ${(await words(page)).slice(-140)}`];
+      }
+      return ['DROVE', `published v${after.version} (was v${wasVersion || 'none'})`];
+    },
+  },
+
+  // ── Deleting a branding asset ────────────────────────────────────────────
+  {
+    id: 'admin/content/cdn/delete',
+    panel: 'admin-panel',
+    what: 'Remove an image from the CDN library',
+    async run(page, cfg, base) {
+      const mine = rid('cdnimg');
+      const neighbour = rid('cdnimg');
+      for (const id of [mine, neighbour]) {
+        await pgQuery(
+          `INSERT INTO cdn_images (image_id, url, category, title)
+           VALUES ($1, $2, 'GENERAL', $1)`,
+          [id, `https://cdn.example.test/${id}.png`],
+        );
+      }
+
+      await go(page, cfg, base, '/content/cdn');
+      const card = page.locator('div')
+        .filter({ hasText: mine })
+        .filter({ has: page.getByTitle('Delete') })
+        .last();
+      if (await card.count() === 0) {
+        const n = await page.getByTitle('Delete').count();
+        await pgQuery('DELETE FROM cdn_images WHERE image_id = ANY($1::text[])', [[mine, neighbour]]);
+        return ['NOT DRIVEN', `${mine} is not among the ${n} images offering a Delete`];
+      }
+      await card.getByTitle('Delete').first().click({ timeout: 8000 });
+      await settle(page, 4000);
+      // ConfirmDialog with confirmText="Remove", under the title
+      // "Remove from CDN Library" — not "Delete", which the row's control says.
+      const said = await confirmWith(page, 'Remove');
+
+      const goneTarget = !(await cdnImageExists(mine));
+      const keptOther = await cdnImageExists(neighbour);
+      await pgQuery('DELETE FROM cdn_images WHERE image_id = ANY($1::text[])', [[mine, neighbour]]);
+      if (said === 'stuck') return ['FAILED', 'the Remove confirmation could not be pressed'];
+      if (said === 'none') return ['FAILED', 'pressing Delete raised no Remove confirmation'];
+      if (!goneTarget) return ['FAILED', `${mine} is still in the library`];
+      if (!keptOther) return ['FAILED', 'the BYSTANDER image was removed too'];
+      return ['DROVE', `${mine} removed, the neighbour image kept`];
+    },
+  },
+
+  // ── The merchant's own panel ─────────────────────────────────────────────
+  {
+    id: 'merchant/profile/save-preferences',
+    panel: 'merchant-panel',
+    what: 'Save merchant notification preferences',
+    async run(page, cfg, base) {
+      await go(page, cfg, base, '/profile');
+      const save = page.getByRole('button', { name: /^\s*Save preferences\s*$/i }).first();
+      if (await save.count() === 0) {
+        const routed = await page.locator('main').innerText().catch(() => '(no <main>)');
+        return ['NOT DRIVEN', `no "Save preferences" — routed region: ${routed.replace(/\s+/g, ' ').slice(0, 160)}`];
+      }
+      // Flip a switch first, or the save publishes what was already stored and
+      // proves nothing about whether the press carried anything.
+      const toggle = page.locator('[role="switch"], input[type="checkbox"]').first();
+      const flipped = await toggle.count() > 0;
+      if (flipped) await toggle.click({ timeout: 8000 }).catch(() => {});
+      await settle(page, 1500);
+
+      const before = await merchantPrefs(page.__bbMerchantId);
+      await save.click({ timeout: 8000 });
+      await settle(page, 8000);
+      const after = await merchantPrefs(page.__bbMerchantId);
+      const said = await words(page);
+
+      if (JSON.stringify(after) !== JSON.stringify(before)) {
+        return ['DROVE', `preferences written: ${JSON.stringify(after).slice(0, 80)}`];
+      }
+      if (!flipped && /saved|updated|success/i.test(said)) {
+        return ['DROVE', 'saved with nothing changed — the screen confirmed it (no switch to flip)'];
+      }
+      return ['FAILED', `pressed Save preferences and the stored preferences did not move`
+        + ` — screen said: ${said.slice(-140)}`];
+    },
+  },
+
+
+  // ── Money: paying referral rewards out to players ────────────────────────
+  {
+    id: 'admin/referrals/disburse',
+    panel: 'admin-panel',
+    what: 'Disburse referral rewards',
+    async run(page, cfg, base) {
+      await go(page, cfg, base, '/referrals');
+      const typed = await fill(page, '#pool-amount', '100');
+      if (!typed.ok) return ['NOT DRIVEN', typed.why];
+      await settle(page, 1500);
+
+      const open = page.getByRole('button', { name: /^\s*Disburse\s*$/i }).first();
+      if (await open.count() === 0) return ['NOT DRIVEN', 'no Disburse button on /referrals'];
+      if (await open.isDisabled()) return ['NOT DRIVEN', 'Disburse is disabled with an amount entered'];
+      await open.click({ timeout: 8000 });
+      await settle(page, 2000);
+
+      // An INLINE two-step, not a dialog: pressing Disburse swaps the button
+      // for "Yes, pay out" beside a warning. `confirmWith` is dialog-only by
+      // design, so this screen's own second press is made here.
+      const yes = page.getByRole('button', { name: /^\s*Yes, pay out\s*$/i }).first();
+      if (await yes.count() === 0) return ['NOT DRIVEN', 'pressing Disburse raised no "Yes, pay out"'];
+
+      const before = await referralPaidPaise();
+      // ── Read the ANSWER, not the toast ───────────────────────────────────
+      // Both outcomes raise a toast and both fade. Reading the page ten seconds
+      // later found neither and reported "the screen said nothing" over a
+      // button that had been answered properly. The response is the durable
+      // record of what the platform decided.
+      const answered = page.waitForResponse(
+        (r) => /\/referral/i.test(r.url()) && r.request().method() === 'POST',
+        { timeout: 15000 },
+      ).catch(() => null);
+      await yes.click({ timeout: 8000 });
+      const reply = await answered;
+      await settle(page, 8000);
+      const after = await referralPaidPaise();
+      const body = reply ? await reply.text().catch(() => '') : '';
+
+      if (after > before) return ['DROVE', `referral payouts ${before} → ${after} paise`];
+      if (!reply) return ['FAILED', 'pressing "Yes, pay out" sent no request at all'];
+      // With no budget and nobody verified there is nothing to pay, and saying
+      // so is the platform working, not a broken button (§32 S19).
+      if (reply.status() < 500) {
+        return ['DROVE', `answered ${reply.status()}, nothing owed — ${body.replace(/\s+/g, ' ').slice(0, 110)}`];
+      }
+      return ['FAILED', `"Yes, pay out" answered ${reply.status()} — ${body.slice(0, 140)}`];
+    },
+  },
+
+  // ── The bot generation that owns the official channel ────────────────────
+  {
+    id: 'admin/telegram/activate',
+    panel: 'admin-panel',
+    what: 'Activate a new Telegram generation',
+    async run(page, cfg, base) {
+      const before = await telegramGeneration();
+
+      await go(page, cfg, base, '/telegram');
+      const channel = `drive_${Math.random().toString(36).slice(2, 8)}`;
+      // ── Addressed by PLACEHOLDER, and that is a finding ───────────────────
+      // "Bot token" and "Channel id" are the two REQUIRED fields — Activate
+      // stays disabled without them — and each is a bare <label> with no
+      // `htmlFor` and no `id` on the input. §32 S24: the text is on screen so
+      // it looks labelled, but nothing associates the two, so a screen reader
+      // (and `getByLabel`) cannot address either. On the screen that owns the
+      // platform's official channel.
+      const token = await fill(page, 'input[placeholder^="123456789"]', '123456789:AAdrive-pass-token');
+      if (!token.ok) return ['NOT DRIVEN', `bot token field: ${token.why}`];
+      const chan = await fill(page, 'input[placeholder^="-100"]', '-1001234567890');
+      if (!chan.ok) return ['NOT DRIVEN', `channel id field: ${chan.why}`];
+      await fill(page, '#channel-username', channel);
+      await fill(page, '#channel-invite-link', `https://t.me/${channel}`);
+      await fill(page, '#reason', 'mutating drive: generation check');
+      await settle(page, 1500);
+
+      const activate = page.getByRole('button', { name: /^\s*Activate\s*$/i }).first();
+      if (await activate.count() === 0) return ['NOT DRIVEN', 'no Activate button on /telegram'];
+      if (await activate.isDisabled()) return ['NOT DRIVEN', 'Activate is disabled with the form filled'];
+
+      // ── The ANSWER, never the page text ──────────────────────────────────
+      // A first draft looked for /token|invalid|…/ in the body to decide whether
+      // the platform had refused by name. The nav carries a "Token Flow" link,
+      // so it matched on every run and reported a refusal the server never made
+      // — a check measuring nothing that reads exactly like a pass (§32 S8).
+      const answered = page.waitForResponse(
+        (r) => /\/telegram/i.test(r.url()) && r.request().method() !== 'GET',
+        { timeout: 20000 },
+      ).catch(() => null);
+      await activate.click({ timeout: 8000 });
+      await settle(page, 4000);
+      await confirmWith(page, 'Activate');
+      const reply = await answered;
+      await settle(page, 8000);
+
+      const after = await telegramGeneration();
+      // §2: a CHANNEL change bumps the generation; a bot swap does not. So the
+      // assertion is the generation, not merely "something saved".
+      if (Number(after?.generation ?? 0) > Number(before?.generation ?? 0)) {
+        return ['DROVE', `generation ${before?.generation ?? 'none'} → ${after.generation}, channel ${after.channel_username}`];
+      }
+      if (!reply) return ['FAILED', 'pressing Activate sent no request at all'];
+      const body = (await reply.text().catch(() => '')).replace(/\s+/g, ' ');
+      // A refusal is legitimate and expected here: the route validates the bot
+      // token WITH TELEGRAM, which this container cannot reach. What matters is
+      // that the platform said so rather than half-applying.
+      if (reply.status() >= 400 && reply.status() < 500) {
+        return ['DROVE', `refused ${reply.status()}, generation unchanged — ${body.slice(0, 110)}`];
+      }
+      return ['FAILED', `Activate answered ${reply.status()} and the generation did not move — ${body.slice(0, 140)}`];
+    },
+  },
+
   configSave({
     id: 'admin/content/support/save',
     screen: '/content/support',
@@ -907,9 +1391,54 @@ async function main() {
   if (!cases.length) { console.error('no case matched', only); process.exit(1); }
 
   const panels = [...new Set(cases.map((c) => c.panel))];
-  const tokens = {
-    'admin-panel': adminToken(await seedAdmin()),
-  };
+  const tokens = { 'admin-panel': adminToken(await seedAdmin()) };
+  const cached = {};
+  let driveMerchant = null;
+  if (panels.includes('merchant-panel')) {
+    // `cashDenominationPaise` makes it a CASH merchant so its screens render
+    // their working state rather than the "not approved for the ATM rail"
+    // empty one — the same seeding stack.js documents for the drive pass.
+    driveMerchant = await seedMerchant({
+      currency: 'INR', tokensPaise: 500000000, cashDenominationPaise: 500000,
+    });
+    tokens['merchant-panel'] = merchantToken(driveMerchant);
+    // A RETURNING merchant has a cached profile besides a token; seeding only
+    // the token means one refused profile call renders the sign-in screen.
+    cached['merchant-panel'] = {
+      id: driveMerchant.merchantId, merchantId: driveMerchant.merchantId,
+      username: driveMerchant.username, email: driveMerchant.email,
+      mobile: driveMerchant.mobile, isOnline: true, status: 'ACTIVE',
+      acceptedCurrencies: ['INR'],
+    };
+  }
+
+  // ── Refuse to run behind a tripped login limiter ─────────────────────────
+  // Every page entry calls `/api/v1/auth/me`, and enough runs trip the login
+  // tier. The panel answers a 429 by logging out, so EVERY case then reports
+  // its control as missing — nineteen "NOT DRIVEN" lines that look like
+  // nineteen broken screens and are one exhausted counter. Measured: it cost
+  // two full debugging rounds before anyone asked the server.
+  //
+  // The limiter is right and must not be weakened (§29). The pass just says so,
+  // and says what to do: the counter is in memory, so a restart clears it.
+  //
+  // The probe carries the admin token deliberately. `authLimiter` sets
+  // `skipSuccessfulRequests`, so an authenticated 200 costs nothing — while an
+  // UNAUTHENTICATED probe is a 401, which counts, so a guard that asked
+  // anonymously would spend a quarter of the budget it exists to protect on
+  // every run, and eventually cause the very lockout it reports.
+  try {
+    const probe = await fetch(`${API}/api/v1/auth/me`, {
+      headers: { Authorization: `Bearer ${tokens['admin-panel']}` },
+    });
+    if (probe.status === 429) {
+      console.error(`\n  The login limiter is tripped on ${API} — every screen would render`
+        + ' its sign-in form and every case would report a missing control.\n'
+        + '  Restart the backend (the counter is in memory) and run again.');
+      stopAll();
+      process.exit(1);
+    }
+  } catch { /* unreachable is a different problem, and waitFor above covers it */ }
 
   const pages = {};
   const browser = await chromium.launch({ executablePath: EXECUTABLE, args: ['--no-sandbox'] });
@@ -922,10 +1451,15 @@ async function main() {
       stopAll(); process.exit(1);
     }
     const ctx = await browser.newContext({ viewport: { width: 1400, height: 1000 } });
-    await ctx.addInitScript(([k, v]) => {
-      try { localStorage.setItem(k, v); } catch { /* private mode */ }
-    }, [cfg.key, cfg.wrap(tokens[panel])]);
+    await ctx.addInitScript(([k, v, ck, cv]) => {
+      try {
+        localStorage.setItem(k, v);
+        if (ck) localStorage.setItem(ck, cv);
+      } catch { /* private mode */ }
+    }, [cfg.key, cfg.wrap(tokens[panel]), cfg.cacheKey ?? '',
+        cfg.cacheKey && cached[panel] ? JSON.stringify(cached[panel]) : '']);
     const page = await ctx.newPage();
+    if (panel === 'merchant-panel') page.__bbMerchantId = driveMerchant.merchantId;
     // A confirm nobody answers blocks the page for ever. Cases that WANT one
     // register their own `page.once('dialog')` first, which wins.
     // A confirm nobody answers blocks the page for ever, so the default is to
