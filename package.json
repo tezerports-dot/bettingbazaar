@@ -44,6 +44,7 @@
     "report:branding": "node scripts/report-branding-literals.mjs",
     "test:browser": "node backend/tests/browser/run.js",
     "test:drive": "node backend/tests/browser/drive.js",
+    "test:forms": "node backend/tests/browser/forms.js",
     "report:ui-coverage": "node scripts/report-ui-coverage.mjs"
   },
   "dependencies": {

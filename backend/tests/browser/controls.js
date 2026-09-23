@@ -101,6 +101,14 @@ window.__bb = (() => {
         href: el.tagName === 'A' ? (el.getAttribute('href') || '') : '',
         options: el.tagName === 'SELECT' ? [...el.options].map((o) => o.value).slice(0, 40) : undefined,
         unnamed: name.length === 0,
+        // What the field says about itself, so a form pass can push a value
+        // PAST its own declared bound rather than guessing one. A field with
+        // no bounds is its own finding: nothing on the client stops a typo.
+        min: el.getAttribute('min'),
+        max: el.getAttribute('max'),
+        step: el.getAttribute('step'),
+        maxLength: el.getAttribute('maxlength'),
+        required: el.hasAttribute('required'),
       };
     });
   };
