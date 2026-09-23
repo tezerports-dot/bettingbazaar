@@ -126,6 +126,60 @@ function validatePatch(node, patch, path = []) {
   return flat;
 }
 
+/**
+ * Settings that come in pairs, where the floor may never rise above the ceiling.
+ *
+ * ── Why a per-field `max` could not do this ────────────────────────────────
+ * `SYSTEM_CONFIG_SPEC` declares `minDeposit: n(500, 0)` — a floor of 0 and no
+ * ceiling — and the same for `minWithdrawal` and every bet limit. Measured
+ * against the live route:
+ *
+ *     PUT minDeposit = -5           ->  400  "must be >= 0, got -5"
+ *     PUT minDeposit = 999999999    ->  200  "System config updated"
+ *
+ * So one extra digit in the Min Deposit box sets the platform's minimum
+ * deposit to ₹999,999,999 and NO PLAYER CAN DEPOSIT AGAIN. The save succeeds,
+ * the screen says "System config updated", and nothing anywhere objects.
+ *
+ * An arbitrary per-field ceiling would be a number nobody chose. The real
+ * invariant is that a floor must stay under its own ceiling, which needs BOTH
+ * values — and a patch may set only one of them, so it is checked against the
+ * merged document rather than against the patch.
+ */
+const PAIRED_BOUNDS = Object.freeze([
+  { scope: 'system', min: 'minDeposit',           max: 'maxDeposit' },
+  { scope: 'system', min: 'minWithdrawal',        max: 'maxWithdrawal' },
+  { scope: 'system', min: 'betLimits.oneMin.min', max: 'betLimits.oneMin.max' },
+  { scope: 'system', min: 'betLimits.thirtyMin.min', max: 'betLimits.thirtyMin.max' },
+  { scope: 'system', min: 'betLimits.fullDay.min', max: 'betLimits.fullDay.max' },
+]);
+
+/** Read a dotted path out of a plain object. */
+const readPath = (obj, dotted) => dotted.split('.').reduce((o, k) => (o == null ? o : o[k]), obj);
+
+/**
+ * Refuse a document whose floor sits above its own ceiling.
+ *
+ * Runs on the MERGED document, inside the transaction, before anything is
+ * written — so changing one half of a pair is checked against the half already
+ * stored. The message names both fields and both values, because "invalid
+ * config" tells an operator nothing about what to type instead (§14).
+ */
+function checkPairedBounds(scope, settings) {
+  for (const pair of PAIRED_BOUNDS) {
+    if (pair.scope !== scope) continue;
+    const lo = Number(readPath(settings, pair.min));
+    const hi = Number(readPath(settings, pair.max));
+    if (!Number.isFinite(lo) || !Number.isFinite(hi)) continue;
+    if (lo > hi) {
+      throw invalidConfig(
+        `config: '${pair.min}' (${lo}) cannot be above '${pair.max}' (${hi})`
+        + ` — that would refuse every order on this rail`,
+      );
+    }
+  }
+}
+
 function coerce(field, value, path) {
   switch (field.type) {
     case 'number': {
@@ -281,6 +335,9 @@ export async function applyConfig({
 
     const settings = JSON.parse(JSON.stringify(current.settings ?? {}));
     for (const [dotted, value] of Object.entries(flat)) setPath(settings, dotted, value);
+    // Against the merged document, so half a pair is checked against the half
+    // already stored. Throws before any write — the transaction unwinds below.
+    checkPairedBounds(scope, withDefaults(spec, settings));
 
     // ── THE COUNTER IS MONOTONIC AGAINST THE HISTORY, NOT THE DOCUMENT ──────
     // Taking `currentVersion + 1` alone assumes the document's counter is
