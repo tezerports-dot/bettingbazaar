@@ -238,6 +238,49 @@ const EMPTY_STATE_MIN_CHARS = 40;
 /** How long to stand back when the platform says we are asking too fast. */
 const THROTTLE_PAUSE_MS = Number(process.env.BB_THROTTLE_PAUSE_MS ?? 20000);
 
+/**
+ * Click a control, re-resolving it if the page re-rendered underneath.
+ *
+ * ── Why this is not just `el.click()` ──────────────────────────────────────
+ * `find()` hands back a handle to a LIVE DOM node, and React replaces nodes on
+ * every render. The player panel re-renders on each cycle tick — once a second
+ * — so between collecting a control and clicking it, the node it points at can
+ * be detached. Playwright then waits for a node that will never again be
+ * visible and times out after 4s, and the pass reports UNREACHABLE for a
+ * control a person can click without trouble.
+ *
+ * Measured: the same five player controls — the four game cards and Dismiss
+ * announcement — came back UNREACHABLE on all 17 user screens, 172 verdicts in
+ * one run against 8 in the run before, with nothing between the two runs that
+ * touched the panel. Checked in a browser: not moving, not covered, every one
+ * clicks first time. The pass was wrong, and it was wrong by a different
+ * amount each run, which is the worst kind of number to put in a table.
+ *
+ * So the handle is re-resolved on each attempt, and the two reasons a click
+ * can fail are kept apart. A node that vanished from under us is OURS. A node
+ * that something is covering is the SCREEN'S, and still reported.
+ */
+async function clickLive(page, c, first, opts = {}) {
+  let el = first, last = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (!el) return { ok: false, why: 'the control is no longer on the screen' };
+    try {
+      await el.click({ timeout: 4000, ...opts });
+      return { ok: true };
+    } catch (e) {
+      last = e;
+      // Something is genuinely on top of it. That is the screen's business,
+      // not a re-render race, so stop and report it.
+      if (/intercepts pointer events/i.test(e.message)) break;
+      const connected = await el.evaluate((n) => n.isConnected).catch(() => false);
+      if (connected) break;          // still in the document — a real failure
+      await sleep(200);
+      el = await find(page, c);      // it was replaced; take the new one
+    }
+  }
+  return { ok: false, why: last ? last.message.split('\n')[0].slice(0, 160) : 'unknown' };
+}
+
 async function press(page, panel, screen, c, seen, byName) {
   const id = idOf(panel, screen, c);
   if (seen.has(id)) return { verdict: 'DUPLICATE' };
@@ -293,7 +336,8 @@ async function press(page, panel, screen, c, seen, byName) {
       // not about the harness's choice of alphabet.
       const digitsFirst = c.kind !== 'input:text'
         || /amount|qty|quantity|number|mobile|phone|pin|otp|tokens|price|rate|limit|min|max|₹|e\.g\. \d/i.test(c.name);
-      await el.click({ timeout: 4000 });
+      const r0 = await clickLive(page, c, el);
+      if (!r0.ok) throw new Error(r0.why);
       await el.fill('');
       await page.keyboard.type(digitsFirst ? '500' : 'bb', { delay: 40 });
       let held = await el.inputValue().catch(() => '');
@@ -308,11 +352,13 @@ async function press(page, panel, screen, c, seen, byName) {
       if (!opts.length) { acted = 'no options to choose'; }
       else { await el.selectOption(opts[opts.length - 1], { timeout: 4000 }); acted = 'chose an option in'; }
     } else if (c.kind === 'textarea') {
-      await el.click({ timeout: 4000 });
+      const r1 = await clickLive(page, c, el);
+      if (!r1.ok) throw new Error(r1.why);
       await page.keyboard.type('bb', { delay: 40 });
       acted = 'typed into';
     } else {
-      await el.click({ timeout: 4000 });
+      const r2 = await clickLive(page, c, el);
+      if (!r2.ok) throw new Error(r2.why);
     }
   } catch (e) {
     // Almost always an overlay left open by an earlier press. Close it and try
@@ -323,7 +369,8 @@ async function press(page, panel, screen, c, seen, byName) {
     try {
       const again = await find(page, c);
       if (!again) throw e;
-      await again.click({ timeout: 4000 });
+      const r3 = await clickLive(page, c, again);
+      if (!r3.ok) throw new Error(r3.why);
     } catch {
       page.off('pageerror', onErr); page.off('response', onRes); page.off('request', onReq);
       return { verdict: 'UNREACHABLE', why: e.message.split('\n')[0].slice(0, 120) };
@@ -538,16 +585,33 @@ try {
        * gone through one IP, so its profile call was 429'd and the panel fell
        * back to its sign-in screen. The pass then collected the LOGIN FORM's
        * five controls and filed them under `/dashboard`, `/orders`,
-       * `/cash-links` and the rest — seven screens' worth of results, every
-       * one of them measured on a screen nobody asked for, and reported as a
-       * note about a Login button being inert.
+       * `/cash-links` and the rest — seven screens' worth of results, every one
+       * measured on a screen nobody asked for. Results attributed to the wrong
+       * screen are worse than no results, because the coverage table counts
+       * them as pressed.
        *
-       * Results attributed to the wrong screen are worse than no results: the
-       * coverage table counted them as pressed. So a screen that is not the
-       * screen is NOT VERIFIED, by name, and the run says why.
+       * ── The first version of this check read PROSE, and accused three
+       * working screens ───────────────────────────────────────────────────────
+       * It matched /sign[- ]?in|secure operator/ against `<main>`'s text, and
+       * on its first full run failed `admin /settings` (75 real settings
+       * controls), `admin /telegram` (28 real config controls) and
+       * `user /referrals` — none of which is a login screen; they merely
+       * contain those words, which is what a settings screen full of sign-in
+       * options WOULD contain. A gate that reads prose will eventually read it
+       * wrong (trap 11), and a false failure is how a gate loses its authority
+       * and gets switched off (§28).
+       *
+       * So it asks the ROUTER instead, which is the thing that actually decides
+       * which screen is mounted. If the panel bounced us somewhere else, its
+       * own location says so — no wording involved, and a screen cannot talk
+       * its way into or out of the verdict.
        */
-      const atTheDoor = /sign[- ]?in|sign in securely|secure operator/i.test(said)
-        && !/^\/?(login|auth)/.test(screen);
+      const where = await page.evaluate((isHash) => (isHash
+        ? (location.hash || '').replace(/^#/, '')
+        : location.pathname), cfg.router === 'hash').catch(() => null);
+      const asked = cfg.router === 'hash' ? screen : `${cfg.base ?? ''}${screen}`;
+      const norm = (x) => String(x ?? '').replace(/\/+$/, '') || '/';
+      const atTheDoor = where !== null && norm(where) !== norm(asked);
       // This screen is being driven now, so whatever a previous run recorded
       // for it is superseded rather than added to.
       const key = `${panel}\u0000${screen}`;
@@ -625,9 +689,9 @@ try {
             'the harness provoked the refusal; this says nothing about the product');
         } else if (atTheDoor) {
           check('DRIVE', panel, screen, 'this is the screen that was asked for',
-            'NOT VERIFIED — the panel showed its SIGN-IN screen instead. The session did not '
-            + 'survive to this screen; re-run this panel on its own.', false,
-            'read from <main> after the screen settled');
+            `NOT VERIFIED — the panel routed to ${JSON.stringify(where)} instead of `
+            + `${JSON.stringify(asked)}, so nothing here describes the screen that was asked for.`,
+            false, 'read from the panel\'s own router after the screen settled');
         } else if (said.length < EMPTY_STATE_MIN_CHARS) {
           // A shell. `<main>` rendered, and rendered nothing — the S21 shape,
           // and exactly what sixteen admin screens looked like earlier in this
@@ -652,9 +716,9 @@ try {
         // merchant screens read as driven while none had been opened.
         await page.screenshot({ path: join(SHOTS, `${panel}${screen.replace(/\//g, '_') || '_root'}.png`) }).catch(() => {});
         check('DRIVE', panel, screen, 'this is the screen that was asked for',
-          `NOT VERIFIED — ${controls.length} controls were collected, but they belong to the panel's `
-          + 'SIGN-IN screen. The session did not survive to this screen; re-run this panel on its own.',
-          false, 'read from <main> after the screen settled');
+          `NOT VERIFIED — ${controls.length} controls were collected, but the panel routed to `
+          + `${JSON.stringify(where)} instead of ${JSON.stringify(asked)}. They describe that screen, not this one.`,
+          false, 'read from the panel\'s own router after the screen settled');
       } else if (broke.length) {
         check('DRIVE', panel, screen, 'no control throws or 5xxes', 
           broke.map((b) => `${b.control} → ${b.verdict}: ${b.why}`).slice(0, 3).join('  ||  '), false,

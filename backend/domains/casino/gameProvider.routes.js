@@ -80,19 +80,34 @@ const DEFAULT_PROVIDERS = [
 ];
 
 /**
- * Register the providers the platform knows about.
+ * Register the providers the platform ships with, ONCE, creating only what is
+ * missing.
  *
- * The upsert deliberately does NOT carry credentials, and `upsertProvider`
- * treats a null credential as "unchanged" — so running this on every request,
- * as the routes below do, cannot wipe an API key an admin configured.
+ * Two things were wrong with the version this replaces, and they compounded.
+ *
+ * It went through `upsertProvider`, whose `ON CONFLICT DO UPDATE` assigns
+ * `enabled` and `api_url` from the row being inserted — and the seed passes
+ * neither, so both took their defaults, `false` and `null`. Every call
+ * therefore switched off every shipped provider and wiped the URL an operator
+ * had entered. It is now `seedProviderIfMissing`, which does nothing at all to
+ * a provider that already exists.
+ *
+ * And it ran on EVERY request to two routes, one of them public and
+ * unauthenticated, so any visitor triggered it. Defaults only change on a
+ * deploy, so it runs once per process and every later caller awaits the same
+ * promise — which also takes three writes per page load off a public route.
  */
+let seeded = null;
 async function seedProviders() {
-  for (const p of DEFAULT_PROVIDERS) {
-    await db.games.upsertProvider({
-      providerKey: p.key, name: p.name, category: p.category,
-      description: p.description, logoUrl: p.logoUrl,
-    });
-  }
+  seeded ??= (async () => {
+    for (const p of DEFAULT_PROVIDERS) {
+      await db.games.seedProviderIfMissing({
+        providerKey: p.key, name: p.name, category: p.category,
+        description: p.description, logoUrl: p.logoUrl,
+      });
+    }
+  })().catch((err) => { seeded = null; throw err; });
+  return seeded;
 }
 
 // ── PUBLIC: what providers are active for each category ─────────────────────

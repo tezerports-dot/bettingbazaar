@@ -16,6 +16,7 @@
 import React, { createContext, useContext, useMemo, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router';
 import { useGame, spendableBalance } from '../services/GameContext';
+import { useGameProviders } from '../services/GameProviderContext';
 import { useTheme } from './ThemeContext';
 import { useViewport } from './useViewport';
 import { fmt } from './format';
@@ -47,11 +48,39 @@ function resolveLogo(): string {
   return '/app-assets/logo-header.png';
 }
 
-const CATEGORIES = [
+/**
+ * ── A card is only shown when its destination has something behind it ──────
+ * `needs` names the provider category the card leads to, and it is read from
+ * the SAME owner the destination page reads (`useGameProviders`). That is the
+ * whole point: this list and those pages were two halves of one decision and
+ * neither knew about the other.
+ *
+ * `CrashPage` and `SportsPage` each end with
+ *
+ *     useEffect(() => { if (!anyCrash) navigate('/', { replace: true }); }, …)
+ *
+ * which is right — an empty category should not have a page. But this row went
+ * on offering the cards regardless, so with no crash or sports provider
+ * configured a player tapped a prominent card and was silently returned to the
+ * screen they were already on. Measured in a browser, at phone width:
+ *
+ *     taps "CASH OR CRASH"     ->  hash #/ stays #/   (nothing happened)
+ *     taps "SPORTS Bet anytime" ->  hash #/ stays #/   (nothing happened)
+ *     taps "CASINO Play to win" ->  hash #/ -> #/casino (works)
+ *
+ * S22, in the shape CLAUDE.md already records for the Profile rows: two halves
+ * of a hole, each looking like the other half's job. Nothing fails, so nothing
+ * reports — the redirect is `replace: true`, so it does not even leave a back
+ * entry a player could notice.
+ *
+ * DELHI BAZAAR is the platform's own board and has no provider, so it has no
+ * `needs` and is always offered.
+ */
+const CATEGORIES: { title: string; sub: string; icon: string; accent: string; path: string; needs?: 'casino' | 'crash' | 'sports' }[] = [
   { title: 'DELHI BAZAAR', sub: 'vs Bombay', icon: '🎯', accent: 'var(--gold)', path: '/' },
-  { title: 'CASH OR CRASH', sub: 'Take the flight', icon: '✈️', accent: '#60a5fa', path: '/crash' },
-  { title: 'CASINO', sub: 'Play to win big', icon: '🃏', accent: '#a78bfa', path: '/casino' },
-  { title: 'SPORTS', sub: 'Bet anytime', icon: '🏇', accent: '#34d399', path: '/sports' },
+  { title: 'CASH OR CRASH', sub: 'Take the flight', icon: '✈️', accent: '#60a5fa', path: '/crash', needs: 'crash' },
+  { title: 'CASINO', sub: 'Play to win big', icon: '🃏', accent: '#a78bfa', path: '/casino', needs: 'casino' },
+  { title: 'SPORTS', sub: 'Bet anytime', icon: '🏇', accent: '#34d399', path: '/sports', needs: 'sports' },
 ];
 
 const TABS = [
@@ -129,6 +158,16 @@ const RedesignShell: React.FC<React.PropsWithChildren<{}>> = ({ children }) => {
   const ctx = useMemo<ShellContextValue>(() => ({ isAuthenticated, openAuth, openMenu }), [isAuthenticated]);
 
   const go = (path: string) => { navigate(path); setMenuOpen(false); };
+
+  // Only the categories that have somewhere to go. Same owner the destination
+  // pages read, so the row and the page cannot disagree about whether a
+  // category exists (§2, §5).
+  const { anyCasino, anyCrash, anySports } = useGameProviders();
+  const liveCategories = useMemo(
+    () => CATEGORIES.filter((c) => !c.needs
+      || (c.needs === 'casino' ? anyCasino : c.needs === 'crash' ? anyCrash : anySports)),
+    [anyCasino, anyCrash, anySports],
+  );
   const isActive = (path: string) => (path === '/' ? location.pathname === '/' : location.pathname.startsWith(path));
 
   const iconBtn: React.CSSProperties = {
@@ -245,7 +284,7 @@ const RedesignShell: React.FC<React.PropsWithChildren<{}>> = ({ children }) => {
             flex: 'none', display: 'flex', gap: 10, padding: '8px 14px', overflowX: 'auto',
             background: 'color-mix(in srgb, var(--bg) 55%, transparent)', borderBottom: '1px solid var(--line)',
           }}>
-            {CATEGORIES.map(cat => {
+            {liveCategories.map(cat => {
               const active = isActive(cat.path);
               return (
                 <button key={cat.path} onClick={() => go(cat.path)}

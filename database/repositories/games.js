@@ -27,6 +27,56 @@ const toProvider = (r) => (r ? {
   updatedBy: r.updated_by, updatedAt: r.updated_at, createdAt: r.created_at,
 } : null);
 
+/**
+ * Register a provider the platform ships with, WITHOUT touching one that is
+ * already there.
+ *
+ * ── Why this is not `upsertProvider` ───────────────────────────────────────
+ * `seedProviders()` ran on every `GET /api/game/providers` — a public,
+ * unauthenticated route the player panel calls on page load — through
+ * `upsertProvider`, passing only the key, name, category, description and
+ * logo. So `enabled` defaulted to `false` and `apiUrl` to `null`, and the
+ * `ON CONFLICT DO UPDATE` assigned both:
+ *
+ *     enabled = EXCLUDED.enabled     -- false
+ *     api_url = EXCLUDED.api_url     -- null
+ *
+ * Every page load therefore switched off every shipped provider and wiped the
+ * URL an operator had entered. Measured against the live server:
+ *
+ *     after the operator enables them   betby: enabled=true  url=https://betby.example.test
+ *                                       spribe: enabled=true url=https://aviator.example.test
+ *     after ONE player loads the page   betby: enabled=false url=null
+ *                                       spribe: enabled=false url=null
+ *
+ * An operator could not turn on a crash or sports provider at all: they
+ * switched it on, a visitor switched it off, and the admin screen showed it
+ * off again on the next reload. The URL going too made it worse than a flag
+ * flip, because the `game_providers_enabled_has_url` CHECK refuses an enabled
+ * provider with no URL — so the configuration had to be retyped every time.
+ *
+ * The comment that guarded this reasoned that credentials are `COALESCE`d and
+ * concluded the seed was safe on every request. That is true of the three
+ * credential columns and of nothing else; `enabled` and `api_url` are exactly
+ * what an operator sets. A proof that covers the wrong columns is why nobody
+ * looked again (§0.5 question 2).
+ *
+ * A seed CREATES what is missing. Editing a provider is the admin route's job,
+ * through `updateProvider` — one owner per value (§2).
+ */
+export async function seedProviderIfMissing({
+  providerKey, name, category = 'SLOTS', logoUrl = null, description = '',
+}) {
+  if (!providerKey || !name) throw new Error('seedProviderIfMissing requires a providerKey and a name');
+  await pgQuery(
+    `INSERT INTO game_providers (provider_key, name, category, enabled, logo_url, description)
+     VALUES ($1,$2,$3,FALSE,$4,$5)
+     ON CONFLICT (provider_key) DO NOTHING`,
+    [String(providerKey), String(name), String(category), logoUrl, String(description)],
+    'provider_seed',
+  );
+}
+
 export async function upsertProvider({
   providerKey, name, category = 'SLOTS', enabled = false, apiUrl = null,
   apiKeyEncrypted = null, apiSecretEncrypted = null, webhookSecretEncrypted = null,
