@@ -260,7 +260,46 @@ async function press(page, panel, screen, c, seen, byName) {
 
   let acted = 'clicked';
   try {
-    if (c.kind.startsWith('input:') && !/checkbox|radio|file|submit|button|range|color/.test(c.kind)) {
+    // ── A field only takes the kind of value it is FOR ──────────────────
+    // The typing branch below tries letters and then digits, which is right
+    // for text and number fields and wrong for every field with a FORMAT. A
+    // date input rejects "500" and "bb" exactly as it should, so the pass
+    // recorded "typed into (it accepted nothing)", nothing changed, and
+    // eleven date filters came back INERT — the S22 shape, reported against
+    // correct behaviour.
+    //
+    // `/cycle-history` re-queries on `[page, debouncedSearch, typeFilter,
+    // startDate, endDate]`, so those filters DO call a route when they are
+    // given a date. The pass was never giving them one.
+    //
+    // This is the same lesson the alphabet comment below already records, one
+    // step further: the verdict must be about the FIELD, not about the
+    // harness's choice of value.
+    const FORMATTED = {
+      'input:date': new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10),
+      'input:month': new Date().toISOString().slice(0, 7),
+      'input:time': '09:30',
+      'input:datetime-local': `${new Date().toISOString().slice(0, 10)}T09:30`,
+      'input:week': `${new Date().getFullYear()}-W02`,
+      'input:color': '#3366cc',
+      'input:range': null,   // handled by its own min/max below
+    };
+    if (FORMATTED[c.kind] !== undefined && FORMATTED[c.kind] !== null) {
+      const want = FORMATTED[c.kind];
+      // `fill` rather than keystrokes: a date input types per SEGMENT, so a
+      // typed string lands in whichever segment has focus and the field ends
+      // up holding something nobody asked for.
+      await el.fill(want).catch(() => {});
+      const held = await el.inputValue().catch(() => '');
+      acted = held ? `set ${JSON.stringify(held)} on` : `set ${JSON.stringify(want)} on (it held nothing)`;
+    } else if (c.kind === 'input:range') {
+      const before = await el.inputValue().catch(() => '');
+      const [min, max] = await el.evaluate((n) => [n.min || '0', n.max || '100']).catch(() => ['0', '100']);
+      const want = String(Math.round((Number(min) + Number(max)) / 2) === Number(before)
+        ? Number(max) : Math.round((Number(min) + Number(max)) / 2));
+      await el.fill(want).catch(() => {});
+      acted = `set ${want} on`;
+    } else if (c.kind.startsWith('input:') && !/checkbox|radio|file|submit|button|range|color/.test(c.kind)) {
       // ── Type what the field is FOR ────────────────────────────────────
       // A text or number field is exercised by TYPING into it, and by more
       // than one character — one keystroke passes on a form that throws the

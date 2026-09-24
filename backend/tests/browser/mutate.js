@@ -2015,6 +2015,105 @@ const CASES = [
     },
   },
 
+  {
+    id: 'admin/game-providers/delete-a-later-row',
+    panel: 'admin-panel',
+    what: 'Delete a provider from a row that is NOT the first',
+    async run(page, cfg, base) {
+      const mine = [];
+      for (let i = 0; i < 4; i++) mine.push(rid('driverow').toLowerCase());
+      for (const key of mine) {
+        await pgQuery(
+          `INSERT INTO game_providers (provider_key, name, enabled)
+           VALUES ($1, $1, FALSE) ON CONFLICT (provider_key) DO NOTHING`, [key],
+        );
+      }
+      try {
+        await go(page, cfg, base, '/game-providers');
+        await settle(page, 8000);
+
+        const order = await page.evaluate((keys) => {
+          const btns = [...document.querySelectorAll('button')]
+            .map((b) => b.getAttribute('aria-label') || b.title || b.innerText || '');
+          return keys.map((k) => btns.findIndex((t) => new RegExp(`Delete\\s+${k}`, 'i').test(t)));
+        }, mine);
+
+        const present = order.filter((i) => i >= 0);
+        if (present.length < 2) {
+          return ['NOT DRIVEN', `only ${present.length} of the seeded providers rendered a Delete control`];
+        }
+        const first = Math.min(...present);
+        let index = -1; let target = null;
+        for (let i = 0; i < mine.length; i++) {
+          if (order[i] > first && order[i] > index) { index = order[i]; target = mine[i]; }
+        }
+        if (!target) return ['NOT DRIVEN', `the seeded providers did not render as separate rows (${order.join(', ')})`];
+
+        const button = page.getByRole('button', { name: new RegExp(`Delete\\s+${target}`, 'i') }).first();
+        page.__bbAccept = true;
+        try {
+          await clickThrough(button, { timeout: 8000 });
+          await settle(page, 6000);
+          const said = await confirmWith(page, 'Delete');
+          if (String(said).startsWith('unanswered')) return ['FAILED', `the confirmation was not answered — ${said}`];
+        } finally { page.__bbAccept = false; }
+
+        const still = await Promise.all(mine.map((k) => providerExists(k)));
+        const gone = mine.filter((k, i) => !still[i]);
+        if (gone.length === 0) return ['FAILED', 'pressed a later Delete and every provider is still there'];
+        if (gone.length > 1) return ['FAILED', `ONE Delete and ${gone.length} providers went: ${gone.join(', ')}`];
+        if (gone[0] !== target) {
+          return ['FAILED', `pressed Delete for ${target} and ${gone[0]} was deleted instead (§23)`];
+        }
+        return ['DROVE', `a later Delete removed ${target} and left the other ${mine.length - 1} alone`];
+      } finally {
+        await pgQuery('DELETE FROM game_providers WHERE provider_key = ANY($1::text[])', [mine]).catch(() => {});
+      }
+    },
+  },
+
+  // ── The last control the drive still ASKS about ──────────────────────────
+  {
+    id: 'admin/support-assistant/re-ingest',
+    panel: 'admin-panel',
+    what: "Re-ingest the platform's own knowledge base",
+    async run(page, cfg, base) {
+      await go(page, cfg, base, '/support-assistant');
+      const button = page.getByRole('button', { name: /Re-ingest/i }).first();
+      if (await button.count() === 0) return ['NOT DRIVEN', 'no Re-ingest control on /support-assistant'];
+
+      // This is the one the drive leaves as ASKED: it raises a confirm, and a
+      // pass that answers a question it has not read is worse than one that
+      // declines. Here it is read and answered.
+      page.__bbAccept = true;
+      let answered = 'none';
+      try {
+        await clickThrough(button, { timeout: 8000 });
+        await settle(page, 4000);
+        answered = await confirmWith(page, 'Re-ingest');
+      } finally { page.__bbAccept = false; }
+      if (String(answered).startsWith('unanswered')) {
+        return ['FAILED', `the confirmation could not be answered — ${answered}`];
+      }
+      await settle(page, 10000);
+
+      // ── Either outcome is correct, and SILENCE is not ────────────────────
+      // pgvector is optional on this server (`applySchema` warns when it is
+      // absent), so the honest answers are "ingested N passages" or a refusal
+      // that NAMES the missing extension — §25's rule. What must not happen is
+      // a press that reports nothing either way.
+      const said = await words(page);
+      const tail = said.slice(-500);
+      if (/pgvector|extension|not available|unavailable/i.test(tail)) {
+        return ['DROVE', 'refused by name — the screen explains pgvector is missing and what to install'];
+      }
+      if (/ingest|passage|document|indexed|updated|success/i.test(tail)) {
+        return ['DROVE', `re-ingest ran and the screen reported it — "${tail.replace(/\s+/g, ' ').slice(-110)}"`];
+      }
+      return ['FAILED', `pressed Re-ingest and the screen said neither a count nor a reason: ${tail.slice(-140)}`];
+    },
+  },
+
   // ══════════════════════════════════════════════════════════════════════
   // DISABLED ON ARRIVAL — fifteen of them, and each is disabled for a reason.
   //
