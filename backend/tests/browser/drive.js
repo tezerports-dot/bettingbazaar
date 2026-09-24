@@ -186,10 +186,6 @@ const THROTTLE_PAUSE_MS = Number(process.env.BB_THROTTLE_PAUSE_MS ?? 20000);
  */
 async function clickableProxy(page, el) {
   return el.evaluateHandle((n) => {
-    const hidden = !n.getClientRects().length
-      || getComputedStyle(n).visibility === 'hidden'
-      || getComputedStyle(n).opacity === '0';
-    if (!hidden) return null;
     const byFor = n.id ? document.querySelector(`label[for="${CSS.escape(n.id)}"]`) : null;
     return byFor ?? n.closest('label');
   }).then((h) => h.asElement()).catch(() => null);
@@ -203,13 +199,24 @@ async function clickLive(page, c, first, opts = {}) {
       await el.click({ timeout: 4000, ...opts });
       return { ok: true };
     } catch (e) {
-      // Invisible, but a person has something to click for it.
-      const proxy = await clickableProxy(page, el);
-      if (proxy) {
-        try {
-          await proxy.click({ timeout: 4000, ...opts });
-          return { ok: true, via: 'its label' };
-        } catch { /* the label is no better; fall through to the normal rules */ }
+      // ── Invisible, but a person has something to click for it ───────────
+      // Only on a TIMEOUT, and never on an interception. "Something is on top
+      // of this" is the SCREEN's business and a real finding; reaching round it
+      // by clicking the label would hide exactly the defect worth having.
+      //
+      // And no attempt is made to decide in advance whether the control is
+      // visible — the first draft did, with `getClientRects()`, and Tailwind's
+      // `sr-only` keeps a 1x1 rect, so it judged all seven toggles visible and
+      // the fallback never ran. The click ALREADY FAILED; that is the only
+      // evidence needed to go looking for what a person clicks instead.
+      if (/Timeout .* exceeded/i.test(e.message)) {
+        const proxy = await clickableProxy(page, el);
+        if (proxy) {
+          try {
+            await proxy.click({ timeout: 4000, ...opts });
+            return { ok: true, via: 'its label' };
+          } catch { /* the label is no better; fall through to the normal rules */ }
+        }
       }
       last = e;
       // Something is genuinely on top of it. That is the screen's business,
