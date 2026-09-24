@@ -409,7 +409,7 @@ try {
         // rendered its sign-in screen for all seven screens.
         if (extraKey) localStorage.setItem(extraKey, extraVal);
       } catch { /* blocked */ }
-    }, [cfg.key, cfg.wrap(actors[panel]), cfg.cacheKey ?? '', cfg.cacheKey ? JSON.stringify(cached[panel]) : '']);
+    }, [cfg.key, cfg.wrap(actors[panel], cached[panel]), cfg.cacheKey ?? '', cfg.cacheKey ? JSON.stringify(cached[panel]) : '']);
     await ctx.addInitScript(PAGE_SCRIPT);
     // A confirm() that nobody answers blocks the page for ever. Auto-dismiss:
     // this pass never presses a control whose confirm it would want to accept.
@@ -434,13 +434,13 @@ try {
       if (r.status() === 429) page.__bb429 = (page.__bb429 ?? 0) + 1;
     });
 
-    const { signedOut } = await boot(page, cfg, base, panel);
+    const { signedOut, seen } = await boot(page, cfg, base, panel);
     if (signedOut) {
       // Refusing beats reporting. A pass that drives a sign-in screen for 44
       // screens produces false findings about every one of them.
       check('DRIVE', panel, 'boots with its session', 'the panel, signed in',
-        'a SIGN-IN screen — a password field is in the routed region, so the token did not survive '
-        + 'the boot (most often the global limiter refusing the session check). '
+        `a SIGN-IN screen — a password field is in the routed region. Heading: "${seen.heading}". `
+        + `First words: "${seen.text.replace(/\s+/g, ' ').slice(0, 120)}". `
         + 'Nothing was measured; re-run this panel once the window has rolled over.',
         false);
       await ctx.close();

@@ -29,8 +29,23 @@ export const EXECUTABLE = process.env.BB_CHROMIUM ?? '/opt/pw-browsers/chromium-
 
 export const PANELS = {
   'user-panel':     { port: 5301, entry: (b) => `${b}/#/`,        router: 'hash',    key: 'auth_token',    wrap: (t) => t },
+  // ── `admin` is NOT null, and that is the whole difference ───────────────
+  // `AdminOnly` and `PermRoute` in the admin panel's App.tsx ask two questions
+  // — `isAuthenticated`, then `admin?.isAdmin` — and a null `admin` fails the
+  // second, so the guard fires `<Navigate to="/login" replace>` on the FIRST
+  // paint. `verifySession()` fills `admin` a moment later and nothing
+  // navigates back, so the pass sat on the sign-in screen for all 44 screens
+  // while localStorage plainly said `isAuthenticated: true` with a live token.
+  //
+  // MEASURED 5 out of 5 boots. The seeded envelope described a state the
+  // product cannot produce (§32 S16): a real admin gets `admin` at login and
+  // it is persisted by `partialize`, so on reload it is never null. Seeding
+  // only the token was the merchant panel's `cacheKey` lesson — "a REAL
+  // returning operator has more than a token" — left unapplied to this panel.
   'admin-panel':    { port: 5302, entry: (b) => `${b}/admin/#/`,  router: 'hash',    key: 'admin-auth',
-    wrap: (t) => JSON.stringify({ state: { token: t, admin: null, isAuthenticated: true, mustEnroll2FA: false }, version: 0 }) },
+    wrap: (t, who) => JSON.stringify({
+      state: { token: t, admin: who ?? null, isAuthenticated: true, mustEnroll2FA: false }, version: 0,
+    }) },
   'merchant-panel': { port: 5303, entry: (b) => `${b}/merchant/`, router: 'history', base: '/merchant', key: 'merchantToken', wrap: (t) => t, cacheKey: 'merchantData' },
 };
 
@@ -162,11 +177,18 @@ export async function boot(page, cfg, base, panel) {
   await awaitBudget(`${panel} boot`);
   await page.goto(cfg.entry(base), { waitUntil: 'domcontentloaded', timeout: 60000 });
   await settle(page, 30000);
-  const signedOut = await page.evaluate(() => {
+  // WHAT it is showing, not just whether. A refusal nobody can see is a
+  // refusal nobody can act on — and a guard that reports the wrong thing is
+  // how a gate loses its authority and gets switched off (§28).
+  const seen = await page.evaluate(() => {
     const root = document.querySelector('main') ?? document.body;
-    return Boolean(root?.querySelector('input[type="password"]'));
-  }).catch(() => false);
-  return { signedOut };
+    return {
+      password: Boolean(root?.querySelector('input[type="password"]')),
+      heading: document.querySelector('h1, h2')?.textContent?.trim().slice(0, 80) ?? '',
+      text: root?.innerText?.trim().slice(0, 200) ?? '',
+    };
+  }).catch(() => ({ password: false, heading: '', text: '' }));
+  return { signedOut: seen.password, seen };
 }
 
 export const IGNORE = [/favicon\.ico/i, /\/@vite\/client/, /\[vite\]/, /Download the React DevTools/i];
@@ -308,10 +330,16 @@ export async function configureTelegram(audiences = ['PLAYER', 'STAFF', 'MERCHAN
     // Identities first: they carry the generation, and a row pointing at a
     // configuration that no longer exists is the stale membership §33.7 says
     // must be unrepresentable rather than merely unlikely.
-    await pgQuery('DELETE FROM telegram_identities WHERE channel_generation = ANY($1) OR linked_generation = ANY($1)',
+    // `::bigint[]` is not decoration. Without the cast node-postgres sends the
+    // JS numbers as text and neither DELETE matched a single row — the bots
+    // (a text array) went, the configs and identities stayed, and the next run
+    // met three ACTIVE channels with no bots behind them. Verified by reading
+    // the table back: 3 configs and 3 identities survived a restore that
+    // reported no error at all (trap 10, in the cleanup meant to prevent it).
+    await pgQuery('DELETE FROM telegram_identities WHERE channel_generation = ANY($1::bigint[]) OR linked_generation = ANY($1::bigint[])',
       [generations], 'drive_tg_restore_identities');
-    await pgQuery('DELETE FROM telegram_configs WHERE generation = ANY($1)', [generations], 'drive_tg_restore_configs');
-    await pgQuery('DELETE FROM telegram_bots WHERE bot_id = ANY($1)', [bots], 'drive_tg_restore_bots');
+    await pgQuery('DELETE FROM telegram_configs WHERE generation = ANY($1::bigint[])', [generations], 'drive_tg_restore_configs');
+    await pgQuery('DELETE FROM telegram_bots WHERE bot_id = ANY($1::text[])', [bots], 'drive_tg_restore_bots');
     for (const r of before.rows) {
       await pgQuery('UPDATE telegram_configs SET active = TRUE WHERE generation = $1',
         [r.generation], 'drive_tg_restore_active');
@@ -346,14 +374,23 @@ export async function seedActors() {
   const theMerchant = await seedMerchant({
     currency: 'INR', tokensPaise: 500000000, cashDenominationPaise: 500000,
   });
+  const theAdmin = await seedAdmin();
   return {
     restore: restoreTelegram,
     actors: {
       'user-panel':     playerToken(await seedPlayer({ balancePaise: 150000 })),
-      'admin-panel':    adminToken(await seedAdmin()),
+      'admin-panel':    adminToken(theAdmin),
       'merchant-panel': merchantToken(theMerchant),
     },
     cached: {
+      // What `/api/v1/auth/me` hands the admin panel, which `partialize`
+      // persists — so a returning admin has it before the first paint, and
+      // the route guards do not bounce them to the sign-in screen.
+      'admin-panel': {
+        id: theAdmin.userId, _id: theAdmin.userId, userId: theAdmin.userId,
+        username: theAdmin.username ?? theAdmin.userId, mobile: theAdmin.mobile,
+        isAdmin: true, isSubAdmin: false, isQueueManager: true, permissions: {},
+      },
       'merchant-panel': {
         id: theMerchant.merchantId, merchantId: theMerchant.merchantId,
         username: theMerchant.username, email: theMerchant.email, mobile: theMerchant.mobile,

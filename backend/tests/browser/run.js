@@ -290,7 +290,7 @@ try {
         // sign-in screen — which this pass would inventory as a real screen.
         if (extraKey) localStorage.setItem(extraKey, extraVal);
       } catch { /* blocked storage */ }
-    }, [cfg.key, cfg.wrap(actors[panel]), cfg.cacheKey ?? '', cfg.cacheKey ? JSON.stringify(cached[panel]) : '']);
+    }, [cfg.key, cfg.wrap(actors[panel], cached[panel]), cfg.cacheKey ?? '', cfg.cacheKey ? JSON.stringify(cached[panel]) : '']);
     // The control bridge, installed before any page script runs so it survives
     // every navigation the pass makes.
     await ctx.addInitScript(PAGE_SCRIPT);
@@ -299,10 +299,11 @@ try {
     // Boot once and let the session verify before anything is measured — and
     // refuse a panel that booted logged out, because the inventory it would
     // produce is of a sign-in screen (see `boot` in stack.js).
-    const { signedOut } = await boot(page, cfg, base, panel);
+    const { signedOut, seen } = await boot(page, cfg, base, panel);
     if (signedOut) {
       check('BROWSER', panel, 'boots with its session', 'the panel, signed in',
-        'a SIGN-IN screen — a password field is in the routed region, so nothing below '
+        `a SIGN-IN screen — a password field is in the routed region. Heading: "${seen.heading}". `
+        + `First words: "${seen.text.replace(/\s+/g, ' ').slice(0, 120)}". Nothing below `
         + 'describes this panel. Re-run it once the rate-limit window has rolled over.', false);
       await ctx.close();
       continue;
