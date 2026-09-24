@@ -8,21 +8,35 @@
 >
 > Rules live in `CLAUDE.md`. This file is status only.
 
-**Last updated:** 2026-09-09, on the single-store branch (PR #184).
+**Last updated:** 2026-09-24, on the single-store branch (PR #184).
 
 ---
 
 ## 1. Where the project actually is
 
+Every number below was printed by the command beside it on 2026-09-24, not
+recalled (§29 — a claim about readiness is a claim about evidence).
+
 | | State | Evidence |
 |---|---|---|
-| Datastore migration | **Complete** | `npm run check:no-mongo` — all eight counts zero |
-| Structural gates | **12 of 12 green** | see the command table in `CLAUDE.md` |
-| Unit suite | 760 passing | `npm run test:unit` |
-| Money-path suite | 1283 passing | `npm run test:pg` against a real PostgreSQL |
+| Datastore migration | **Complete** | `npm run check:no-mongo` — "All checks report zero", 186 references removed |
+| Unit suite | **853 passing** in 83 files | `npm run test:unit` |
+| Money-path suite | **1537 passing** in 101 files | `npm run test:pg` against a real PostgreSQL |
+| Control inventory | **1246** controls across 67 screens, 0 FAIL | `npm run test:browser` |
 | Panel suites | 81 admin, plus merchant and user | per-panel `vitest` |
 | CI | green on every check | PR #184 |
 | Capability registry | 74 tracked: 47 full · 9 partial · 7 architecture-ready · 7 absent · 4 decision | `npm run verify:capabilities` |
+
+**What the 2026-09-24 browser work found, because none of it was visible
+below a browser.** The three panels were gated per-audience (`CLAUDE.md`
+§33.7), and driving them found that `IDENTITY_COLUMNS` mapped `audience`
+without ever SELECTing it — so the gate blocked every player and every
+merchant out of the whole app on a fully configured platform, while every API
+tier stayed green (the server's channel gate fails open; the screen fails
+closed). §32 S36. Three harness defects came out of the same pass: an
+inventory that had drifted from the drive it is the denominator for, a boot
+that was never rate-limit-guarded, and an admin fixture with `admin: null`
+that bounced the pass to a sign-in screen for all 44 screens.
 
 **The datastore migration — the thing `CLAUDE.md` §1 is about — is mechanically
 finished.** Everything below is either the payment-rail feature work or

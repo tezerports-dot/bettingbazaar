@@ -51,7 +51,22 @@ export const PANELS = {
 
 
 export const children = [];
-export const stopAll = () => { for (const c of children) { try { c.kill('SIGTERM'); } catch { /* gone */ } } };
+/**
+ * Stop every dev server this pass started — and mean it.
+ *
+ * SIGTERM is not enough and that was measured: after a full inventory exited 0,
+ * all three vite servers were still listening more than two minutes later.
+ * Vite's dev server holds open HMR websockets and takes its time; the pass is
+ * already gone by then.
+ *
+ * The consequence is not untidiness. `--strictPort` means the NEXT pass's own
+ * vite fails to bind, `waitFor` is answered by the survivor, and the pass
+ * measures a dev server it did not start — §32 S33, moved to the front end.
+ *
+ * SIGKILL, therefore. A dev server has no state to flush, and the guarantee
+ * this function exists to make is worth more than a graceful close.
+ */
+export const stopAll = () => { for (const c of children) { try { c.kill('SIGKILL'); } catch { /* gone */ } } };
 process.on('exit', stopAll);
 process.on('SIGINT', () => { stopAll(); process.exit(130); });
 
@@ -64,8 +79,27 @@ export async function waitFor(url, label, tries = 120) {
   return false;
 }
 
+/**
+ * Start the panel's dev server — and be able to STOP it again.
+ *
+ * ── Why the panel's own binary, and not `npx vite` ────────────────────────
+ * `npx vite` is three processes: npx, an `sh -c`, and the node that actually
+ * binds the port. `stopAll` SIGTERMs the one it spawned — npx — and the
+ * grandchild that holds the socket survives. Measured: dev servers 17 and 19
+ * MINUTES old were still listening on 5301 and 5303 after the passes that
+ * started them had exited.
+ *
+ * That is not untidiness, it is §32 S33 moved to the front end. `--strictPort`
+ * means the NEXT pass's own vite fails to bind, `waitFor` is answered by the
+ * survivor, and the pass measures a dev server it did not start — serving
+ * whatever source tree that older process had loaded.
+ *
+ * Spawning `<panel>/node_modules/.bin/vite` removes both wrapper layers, so
+ * the child this function returns IS the server, and killing it kills it.
+ */
 export function startVite(panel, port) {
-  const child = spawn('npx', ['vite', '--port', String(port), '--strictPort', '--host', '127.0.0.1'], {
+  const child = spawn(join(ROOT, panel, 'node_modules/.bin/vite'),
+    ['--port', String(port), '--strictPort', '--host', '127.0.0.1'], {
     cwd: join(ROOT, panel),
     env: { ...process.env, VITE_API_URL: API },
     stdio: ['ignore', 'pipe', 'pipe'],
