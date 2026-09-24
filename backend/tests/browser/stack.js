@@ -134,6 +134,41 @@ export async function settle(page, ms = 15000) {
 }
 
 
+/**
+ * Boot the panel, and REFUSE to measure one that booted logged out.
+ *
+ * ── Why the boot is the one moment that must not be refused ───────────────
+ * `awaitBudget` guarded each SCREEN and not the boot, which is backwards: a
+ * screen refused mid-pass renders empty and is reported empty, but the BOOT is
+ * where every panel decides whether it still has a session. Refuse that one
+ * request and the panel renders its sign-in screen — and the pass never boots
+ * again, so every screen after it is the sign-in screen too.
+ *
+ * MEASURED, and it is why this exists: a drive of the 44 admin screens started
+ * straight after the inventory had spent the window (`RATE_LIMIT_TIERS.global`
+ * is 1,000 requests / 15 min per IP). It ran eleven minutes, pressed SIX
+ * controls on ONE screen — `/login` — and reported nine screens as
+ * "NOTHING TO PRESS and <main> says NOTHING", against an inventory taken four
+ * minutes earlier that had found 1,053 controls across all 44. Every one of
+ * those findings was false, specific and confident, which is §29's own
+ * warning and §28's "a gate whose failure mode is silence reports the author".
+ *
+ * So: wait for budget BEFORE the boot, and then check the thing that actually
+ * went wrong rather than trusting that it did not. A password field in the
+ * routed region means this pass is looking at a sign-in screen, whatever the
+ * token said, and nothing measured after that describes the product.
+ */
+export async function boot(page, cfg, base, panel) {
+  await awaitBudget(`${panel} boot`);
+  await page.goto(cfg.entry(base), { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await settle(page, 30000);
+  const signedOut = await page.evaluate(() => {
+    const root = document.querySelector('main') ?? document.body;
+    return Boolean(root?.querySelector('input[type="password"]'));
+  }).catch(() => false);
+  return { signedOut };
+}
+
 export const IGNORE = [/favicon\.ico/i, /\/@vite\/client/, /\[vite\]/, /Download the React DevTools/i];
 export const ignored = (s) => IGNORE.some((re) => re.test(String(s)));
 

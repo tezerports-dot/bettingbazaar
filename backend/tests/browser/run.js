@@ -54,7 +54,7 @@ import { check, note, summary } from '../e2e/harness.js';
 // assembled twice.
 import {
   ROOT, API, EXECUTABLE, PANELS, stopAll, waitFor, startVite,
-  navigate, settle, awaitBudget, seedActors, enableGameProviders,
+  navigate, settle, awaitBudget, boot, seedActors, enableGameProviders,
 } from './stack.js';
 
 const SHOTS = join(ROOT, 'backend', 'tests', 'browser', 'screenshots');
@@ -296,9 +296,17 @@ try {
     await ctx.addInitScript(PAGE_SCRIPT);
 
     const page = await ctx.newPage();
-    // Boot once and let the session verify before anything is measured.
-    await page.goto(cfg.entry(base), { waitUntil: 'domcontentloaded', timeout: 60000 });
-    await settle(page, 30000);
+    // Boot once and let the session verify before anything is measured — and
+    // refuse a panel that booted logged out, because the inventory it would
+    // produce is of a sign-in screen (see `boot` in stack.js).
+    const { signedOut } = await boot(page, cfg, base, panel);
+    if (signedOut) {
+      check('BROWSER', panel, 'boots with its session', 'the panel, signed in',
+        'a SIGN-IN screen — a password field is in the routed region, so nothing below '
+        + 'describes this panel. Re-run it once the rate-limit window has rolled over.', false);
+      await ctx.close();
+      continue;
+    }
 
     // The shell is the same links on every screen of a panel, so it is
     // inventoried once here rather than 44 times.

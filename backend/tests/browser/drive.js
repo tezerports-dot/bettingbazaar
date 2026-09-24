@@ -46,7 +46,7 @@ import { check, note, summary } from '../e2e/harness.js';
 // Everything below the question this pass asks lives in one place (§5).
 import {
   ROOT, API, EXECUTABLE, PANELS, stopAll, waitFor, startVite, navigate, settle,
-  ignored, reset, awaitBudget, seedActors, enableGameProviders,
+  ignored, reset, awaitBudget, boot, seedActors, enableGameProviders,
 } from './stack.js';
 
 const SHOTS = join(ROOT, 'backend', 'tests', 'browser', 'screenshots', 'drive');
@@ -434,8 +434,18 @@ try {
       if (r.status() === 429) page.__bb429 = (page.__bb429 ?? 0) + 1;
     });
 
-    await page.goto(cfg.entry(base), { waitUntil: 'domcontentloaded', timeout: 60000 });
-    await settle(page, 30000);
+    const { signedOut } = await boot(page, cfg, base, panel);
+    if (signedOut) {
+      // Refusing beats reporting. A pass that drives a sign-in screen for 44
+      // screens produces false findings about every one of them.
+      check('DRIVE', panel, 'boots with its session', 'the panel, signed in',
+        'a SIGN-IN screen — a password field is in the routed region, so the token did not survive '
+        + 'the boot (most often the global limiter refusing the session check). '
+        + 'Nothing was measured; re-run this panel once the window has rolled over.',
+        false);
+      await ctx.close();
+      continue;
+    }
 
     for (const screen of screens) {
       if (onlyScreens.length && !onlyScreens.includes(screen)) continue;
