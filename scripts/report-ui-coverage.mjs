@@ -171,7 +171,7 @@ const row = (cells) => (md
   ? `| ${cells.join(' | ')} |`
   : cells.map((c, i) => String(c).padEnd(WIDTHS[i])).join('  '));
 
-const grand = { have: 0, exercised: 0, choice: 0, unreached: 0, broke: 0 };
+const grand = { have: 0, exercised: 0, choice: 0, unreached: 0, broke: 0, revealed: 0 };
 
 for (const panel of panels) {
   const screens = manifest.screens.filter((s) => s.panel === panel);
@@ -194,13 +194,32 @@ for (const panel of panels) {
     const inert = by((v) => v === 'INERT');
     const choice = by((v) => BY_CHOICE.has(v));
     const broke = by((v) => v === 'THREW' || v === 'FIVE_HUNDRED');
-    const unreached = Math.max(0, have - exercised - choice - broke);
+
+    // ── When the drive pressed MORE than the inventory found ──────────────
+    // `Math.max(0, …)` used to swallow this: a screen printed "15 controls,
+    // 17 exercised, 0 not reached" and nothing said the numbers do not add up.
+    // Both causes are real and both matter.
+    //
+    //   The two halves were taken under different platform configurations —
+    //   which was live for weeks and is what `stack.js` now prevents.
+    //
+    //   Or the screen GROWS when you press it: `/settings` draws the load
+    //   shedding and IP-defence sub-switches only once their parent toggle is
+    //   on, so the drive legitimately reaches controls an inventory taken at
+    //   rest can never see.
+    //
+    // The first is a defect and the second is worth knowing, and a silent
+    // clamp reports neither. So it is counted and named.
+    const accounted = exercised + choice + broke;
+    const revealed = Math.max(0, accounted - have);
+    const unreached = Math.max(0, have - accounted);
 
     grand.have += have;
     grand.exercised += exercised;
     grand.choice += choice;
     grand.unreached += unreached;
     grand.broke += broke;
+    grand.revealed += revealed;
 
     // Results can now come from different runs — a filtered re-run updates one
     // screen and leaves the rest standing — so each row says how old it is.
@@ -208,7 +227,9 @@ for (const panel of panels) {
     const age = when
       ? `${Math.max(0, Math.round((Date.now() - Date.parse(when)) / 3600000))}h ago`
       : 'unstamped';
-    const verdict = broke ? 'BROKE' : unreached > 0 ? 'partial' : 'all pressed';
+    const verdict = broke ? 'BROKE'
+      : revealed > 0 ? `all pressed, +${revealed} only a press reveals`
+      : unreached > 0 ? 'partial' : 'all pressed';
     console.log(row([s.screen, have, exercised, inert, choice, unreached, `${verdict} ${age}`]));
   }
 }
@@ -239,4 +260,7 @@ console.log(`  ${String(grand.exercised).padStart(5)}  ${pct(grand.exercised).pa
 console.log(`  ${String(grand.choice).padStart(5)}  ${pct(grand.choice).padStart(6)}  not pressed BY CHOICE (destructive, disabled, or a repeat)`);
 console.log(`  ${String(grand.unreached).padStart(5)}  ${pct(grand.unreached).padStart(6)}  NOT REACHED - this is the number that is left`);
 console.log(`  ${String(grand.broke).padStart(5)}  ${pct(grand.broke).padStart(6)}  threw or 5xx'd`);
+if (grand.revealed) {
+  console.log(`  ${String(grand.revealed).padStart(5)}          controls only a PRESS reveals — not in the inventory, which is taken at rest`);
+}
 console.log(`\nmanifest ${manifest.takenAt}  ·  drive ${report.takenAt}`);
