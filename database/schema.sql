@@ -3905,3 +3905,176 @@ CREATE SEQUENCE IF NOT EXISTS telegram_signin_rotation;
 -- the link is made only when they are the same number, which is what makes the
 -- Telegram step a VERIFICATION of the form rather than a second signup.
 CREATE INDEX IF NOT EXISTS telegram_identities_phone_idx ON telegram_identities (phone);
+
+-- ── `signin` became a FLEET: rebuild live_slot on a database that predates it ─
+--
+-- The table above is `CREATE TABLE IF NOT EXISTS`, so an existing database
+-- keeps the OLD generated column — the one that names `signin` as a singular
+-- role — and the partial unique index then refuses the SECOND live sign-in bot
+-- with "duplicate key value violates one_live_bot_per_singular_role".
+--
+-- That failure is worse than it looks: it arrives on the operator's second bot,
+-- which is the moment the fleet starts being a fleet, and its message describes
+-- a rule the platform no longer has. Measured on a developer database, which is
+-- exactly where it would have been met.
+--
+-- Guarded on the column's own EXPRESSION rather than on a version marker, so it
+-- runs once and is a no-op every time after — including on a database created
+-- fresh from this file, where the column is already right.
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+      FROM pg_attrdef d
+      JOIN pg_class     c ON c.oid = d.adrelid
+      JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = d.adnum
+     WHERE c.relname = 'telegram_bots'
+       AND a.attname = 'live_slot'
+       AND pg_get_expr(d.adbin, d.adrelid) LIKE '%signin%'
+  ) THEN
+    -- The index depends on the column, so it goes first and comes back after.
+    DROP INDEX IF EXISTS one_live_bot_per_singular_role;
+    ALTER TABLE telegram_bots DROP COLUMN live_slot;
+    ALTER TABLE telegram_bots ADD COLUMN live_slot TEXT GENERATED ALWAYS AS (
+      CASE WHEN status = 'ACTIVE' AND role = 'recovery' THEN role END
+    ) STORED;
+    CREATE UNIQUE INDEX one_live_bot_per_singular_role
+      ON telegram_bots (live_slot) WHERE live_slot IS NOT NULL;
+    RAISE NOTICE 'telegram_bots.live_slot rebuilt: signin is a fleet, recovery stays singular';
+  END IF;
+END $$;
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Three separate entities: player, staff, merchant (owner, 2026-09-24)
+-- ═══════════════════════════════════════════════════════════════════════════
+-- One person may hold a PLAYER account and a STAFF account, with DIFFERENT
+-- passwords, and the credentials for one must not work on the other.
+--
+-- Merchants were already separate — their own table, their own login, their own
+-- token shape. Players and staff were not: they share `users`, distinguished by
+-- `is_admin` / `is_sub_admin`, and `mobile` was globally UNIQUE. So the same
+-- person could not have both, and the door between them was a role check on a
+-- row either door could read.
+--
+-- ── Why a type column rather than a second table ──────────────────────────
+-- The separation that matters is the one the LOGIN performs, and a column makes
+-- that a predicate in the SELECT: the staff door reads only STAFF rows and the
+-- player door only PLAYER rows. A row can therefore never be admitted at the
+-- wrong door even if somebody flips `is_admin` on it — which a role check made
+-- after the read cannot promise. A second table would say the same thing more
+-- loudly and move every admin route, the 2FA enrolment and the audit trail with
+-- it; the owner chose the column (2026-09-24).
+--
+-- ── The uniqueness rule moves, it does not go away ────────────────────────
+-- `UNIQUE (mobile)` becomes `UNIQUE (mobile, account_type)`. One mobile still
+-- holds at most one PLAYER account and at most one STAFF account. Dropping the
+-- old constraint is the load-bearing half: leaving it would make the new one
+-- decorative and the second account impossible with a message naming neither.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS account_type TEXT NOT NULL DEFAULT 'PLAYER';
+-- DROP then ADD, not "add if it is missing".
+--
+-- A guarded `ADD CONSTRAINT ... EXCEPTION WHEN duplicate_object` is idempotent
+-- but NOT convergent: when the constraint already exists it does nothing, and
+-- "does nothing" is wrong the moment the DEFINITION changes. Measured — this
+-- CHECK was widened from (PLAYER, STAFF) to include MERCHANT, the guard skipped
+-- it because a constraint of that name existed, and every merchant signup then
+-- failed with `violates check constraint "users_account_type_check"` on a value
+-- the file plainly allows.
+--
+-- The rule for this file: a constraint whose DEFINITION may change is dropped
+-- and re-added. A guard is only safe for one whose definition is fixed forever.
+ALTER TABLE users DROP CONSTRAINT IF EXISTS users_account_type_check;
+ALTER TABLE users ADD CONSTRAINT users_account_type_check
+  CHECK (account_type IN ('PLAYER', 'STAFF', 'MERCHANT'));
+
+-- ── MERCHANT is here too, and that was not obvious ────────────────────────
+-- A merchant signup writes a `users` row as well as a `merchants` row — the
+-- merchant's own table holds the trading identity, and `users` holds the login.
+-- So merchants are NOT a separate population by virtue of living elsewhere:
+-- without a type of their own they default to PLAYER, and the player login door
+-- would then admit a merchant using their merchant password. Measured while
+-- adding this column.
+--
+-- Existing rows predate the column and default to PLAYER, which would put staff
+-- behind the player door and lock every admin out. Classified from what the row
+-- already says it is — the role flags for staff, the `roles` array for
+-- merchants, both of which are written at creation.
+UPDATE users SET account_type = 'STAFF'
+ WHERE account_type = 'PLAYER'
+   AND (is_admin OR is_sub_admin OR is_queue_manager OR is_mediator);
+UPDATE users SET account_type = 'MERCHANT'
+ WHERE account_type = 'PLAYER' AND roles @> ARRAY['merchant'];
+
+DO $$ BEGIN
+  ALTER TABLE users DROP CONSTRAINT users_mobile_key;
+EXCEPTION WHEN undefined_object THEN NULL; END $$;
+
+-- Guarded on EXISTENCE, not by catching one error code.
+--
+-- `ADD CONSTRAINT ... UNIQUE` creates an INDEX of the same name, so a re-run
+-- can raise `duplicate_table` (42P07) rather than `duplicate_object` (42710) —
+-- whenever the index outlives the constraint, which is what a half-applied run
+-- or a hand-dropped constraint leaves behind. An `EXCEPTION WHEN
+-- duplicate_object` guard looks idempotent and is not: it re-raises, and the
+-- schema apply stops THERE, leaving every statement after it unapplied.
+--
+-- Found exactly that way: the apply died here, `sessions_valid_from` below was
+-- never created, and the server booted against a table missing a column its own
+-- projection names.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conrelid = 'users'::regclass AND conname = 'users_mobile_per_account_type'
+  ) THEN
+    -- The orphaned index, if one is what is in the way.
+    DROP INDEX IF EXISTS users_mobile_per_account_type;
+    ALTER TABLE users ADD CONSTRAINT users_mobile_per_account_type UNIQUE (mobile, account_type);
+  END IF;
+END $$;
+
+-- ── The bot's password reset ──────────────────────────────────────────────
+-- A player who has forgotten their password opens a bot, shares their contact,
+-- and — if that number matches an account — is sent a link that lets them SET a
+-- new one. There is no email on this platform, so the number Telegram has
+-- already verified is the only channel a reset can travel on.
+--
+-- ── What the link does NOT do ─────────────────────────────────────────────
+-- It does not sign anybody in (owner, 2026-09-24). The whole point of deleting
+-- `telegram_login_tokens` was that a fleet of hundreds of bot tokens must not
+-- be able to mint a session; a reset that logged somebody in would put that
+-- back under a different name. It grants the right to choose a password, and
+-- then they log in like anybody else — and setting it REVOKES existing
+-- sessions, because the reason somebody resets is often that a session is not
+-- theirs.
+--
+-- Stored as a SHA-256 hash, like every other bearer credential here, so a
+-- database dump yields nothing usable. Bound to the Telegram account that asked
+-- for it, single-use (`consumed_at` set in the SAME atomic UPDATE that reads
+-- it), and short-lived. Expiry is enforced by the READS — every query filters
+-- on it — so a sweep that has not run cannot make a stale link usable.
+CREATE TABLE IF NOT EXISTS password_resets (
+  token_hash       TEXT PRIMARY KEY,
+  user_id          TEXT NOT NULL REFERENCES users (user_id) ON DELETE CASCADE,
+  telegram_user_id TEXT NOT NULL,
+  consumed_at      TIMESTAMPTZ,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at       TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS password_resets_user_idx ON password_resets (user_id);
+CREATE INDEX IF NOT EXISTS password_resets_expiry_idx ON password_resets (expires_at);
+
+-- ── Sessions issued before this instant are dead ────────────────────────────
+-- The revocation list is keyed by the TOKEN, so it can retire a token somebody
+-- hands it — a sign-out — and cannot answer "retire every session this account
+-- has". Sessions are stateless PASETO; nothing anywhere holds a list of them.
+--
+-- A password reset that leaves the attacker's session alive is a reset in name
+-- only, and the commonest reason somebody resets is that a session they did not
+-- open is holding their account. So the account carries a CUTOFF, `authenticate`
+-- refuses any token whose `iat` predates it, and a reset moves it to now.
+--
+-- One column, one comparison on a path that already reads the user row. The
+-- alternative — recording every issued token — is a write per login and a table
+-- that grows with traffic, to answer a question this answers exactly.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS sessions_valid_from TIMESTAMPTZ;

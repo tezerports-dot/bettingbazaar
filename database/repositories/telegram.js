@@ -778,13 +778,15 @@ export async function deleteRecoverySession(telegramUserId) {
  * crash mid-pass loses the number permanently.
  */
 export async function sweepExpired() {
-  // One table left. Three others (pending links, login tokens, login codes)
-  // were swept here and no longer exist — a sweep naming a dropped table
-  // throws 42P01 on every pass, which would take the whole retention job down
-  // rather than just this line.
+  // Two tables. Three others (pending links, login tokens, login codes) were
+  // swept here and no longer exist — a sweep naming a dropped table throws
+  // 42P01 on every pass, which would take the whole retention job down rather
+  // than just this line.
   const recovery = await pgQuery(
     `DELETE FROM telegram_recovery_sessions WHERE expires_at <= now()`, [], 'tg_sweep_recovery');
-  return { recoverySessions: recovery.rowCount ?? 0 };
+  const resets = await pgQuery(
+    `DELETE FROM password_resets WHERE expires_at <= now()`, [], 'tg_sweep_resets');
+  return { recoverySessions: recovery.rowCount ?? 0, passwordResets: resets.rowCount ?? 0 };
 }
 
 /** Run `fn` in a transaction — for the two swaps that must be all-or-nothing. */
@@ -843,8 +845,22 @@ export async function linkTelegramToAccount({
       // The account must already exist. This is the whole difference from what
       // this replaced: a contact that matches nothing is a person who has not
       // filled the form yet, and the answer is to send them to it.
+      //
+      // ── PLAYER, and the filter is load-bearing ─────────────────────────
+      // A mobile can hold a PLAYER account and a STAFF account (2026-09-24),
+      // and without `account_type` this matched whichever the planner reached
+      // first. MEASURED: a player sharing their contact linked the STAFF row on
+      // the same number — and the bot's password-reset button then issued a
+      // reset link for an ADMIN account to somebody who had proved nothing but
+      // possession of the phone. A privilege escalation out of an unfiltered
+      // SELECT.
+      //
+      // Staff do not verify through Telegram and have no identity to link, so
+      // the filter removes nothing real. It is here because a query that CAN
+      // match two populations will eventually match the wrong one.
       const { rows: userRows } = await client.query(
-        `SELECT user_id FROM users WHERE mobile = $1 AND status <> 'DELETED'`, [number],
+        `SELECT user_id FROM users
+          WHERE mobile = $1 AND account_type = 'PLAYER' AND status <> 'DELETED'`, [number],
       );
       if (!userRows[0]) return { ok: false, reason: 'no_account' };
       const userId = userRows[0].user_id;
@@ -995,4 +1011,64 @@ export async function signinBotLoads() {
   return rows.map((r) => ({
     botId: r.bot_id, username: r.username, label: r.label, assigned: Number(r.assigned),
   }));
+}
+
+// ── Password resets, issued by a bot to a number Telegram has verified ──────
+
+/**
+ * Issue a single-use reset token.
+ *
+ * ── What this is, stated plainly ───────────────────────────────────────────
+ * A bearer credential, travelling through a chat, for the minutes it lives. It
+ * is deliberately narrower than the login link it does NOT resurrect: it grants
+ * the right to CHOOSE A PASSWORD and nothing else (owner, 2026-09-24), so a
+ * compromised bot cannot sign anybody in — it can at most force somebody to
+ * notice that their password changed.
+ *
+ * Stored as a SHA-256 hash, so a database dump yields nothing usable: the
+ * plaintext exists only in the message Telegram delivered.
+ *
+ * ── One live token per account ────────────────────────────────────────────
+ * Asking again INVALIDATES the previous one, in the same statement. Without
+ * that, every request a nervous person makes leaves another live credential in
+ * their chat history — and the one they eventually use is not necessarily the
+ * newest. The delete is not a sweep: it is part of issuing.
+ */
+export async function issuePasswordReset({ tokenHash, userId, telegramUserId, ttlSeconds = 900 }) {
+  return withTelegramTransaction(async (client) => {
+    await client.query(
+      `DELETE FROM password_resets WHERE user_id = $1 AND consumed_at IS NULL`,
+      [String(userId)],
+    );
+    const { rows } = await client.query(
+      `INSERT INTO password_resets (token_hash, user_id, telegram_user_id, expires_at)
+       VALUES ($1, $2, $3, now() + ($4 || ' seconds')::interval)
+       RETURNING expires_at`,
+      [String(tokenHash), String(userId), String(telegramUserId), Number(ttlSeconds)],
+    );
+    return { expiresAt: rows[0].expires_at };
+  });
+}
+
+/**
+ * Redeem it — ONCE.
+ *
+ * `consumed_at` is set in the SAME atomic UPDATE that reads the row, so twenty
+ * racing redemptions produce exactly one winner and nineteen nulls. A read
+ * followed by a write is a token two requests can both spend, which on this
+ * path means two people setting a password on one account.
+ *
+ * Expiry is in the WHERE, not in a caller's comparison: a sweep that has not
+ * run must never make a stale link usable.
+ */
+export async function consumePasswordReset(tokenHash) {
+  const { rows } = await pgQuery(
+    `UPDATE password_resets
+        SET consumed_at = now()
+      WHERE token_hash = $1 AND consumed_at IS NULL AND expires_at > now()
+      RETURNING user_id, telegram_user_id`,
+    [String(tokenHash)], 'pw_reset_consume',
+  );
+  const r = rows[0];
+  return r ? { userId: r.user_id, telegramUserId: r.telegram_user_id } : null;
 }

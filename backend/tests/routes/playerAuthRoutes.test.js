@@ -102,7 +102,7 @@ describePg('POST /api/v1/auth/register — the signup form', () => {
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
 
-    const user = await getUserByMobile(f.mobile);
+    const user = await getUserByMobile(f.mobile, 'PLAYER');
     expect(user).not.toBeNull();
     expect(user.kycStatus).toBe('PENDING_APPROVAL');
     // The Aadhaar is queued, hashed. Looked up through the candidate hashes so
@@ -113,7 +113,7 @@ describePg('POST /api/v1/auth/register — the signup form', () => {
   it('stores a VERIFIABLE hash, not the password', async () => {
     const f = form();
     await post('/register', f);
-    const user = await getUserByMobile(f.mobile);
+    const user = await getUserByMobile(f.mobile, 'PLAYER');
     const creds = await getUserCredentials(user.userId);
     expect(creds.passwordHash).not.toContain(f.password);
     // The real assertion: the login path can verify what signup wrote. A hash
@@ -154,7 +154,7 @@ describePg('POST /api/v1/auth/register — the signup form', () => {
   it('writes NOTHING when a refusal fires', async () => {
     const f = form({ confirmPassword: 'different' });
     await post('/register', f);
-    expect(await getUserByMobile(f.mobile)).toBeNull();
+    expect(await getUserByMobile(f.mobile, 'PLAYER')).toBeNull();
   });
 
   it('refuses a second account on one mobile, and says to log in', async () => {
@@ -176,7 +176,7 @@ describePg('POST /api/v1/auth/register — the signup form', () => {
   it('attributes a referral, and REFUSES a code that matches nobody', async () => {
     const referrer = form();
     await post('/register', referrer);
-    const inviter = await getUserByMobile(referrer.mobile);
+    const inviter = await getUserByMobile(referrer.mobile, 'PLAYER');
 
     // Refused, not silently dropped. The path this replaced looked the code up
     // at contact-share time and wrote null on a miss: the signup succeeded, the
@@ -189,7 +189,7 @@ describePg('POST /api/v1/auth/register — the signup form', () => {
     // Lower case on purpose: codes are generated upper case and looked up by
     // exact match, so an un-normalised code matches nothing and costs the
     // referrer their earning with no error anywhere.
-    expect((await getUserByMobile(invited.mobile)).referredBy).toBe(inviter.userId);
+    expect((await getUserByMobile(invited.mobile, 'PLAYER')).referredBy).toBe(inviter.userId);
   });
 });
 
@@ -200,7 +200,7 @@ describePg('GET /api/v1/auth/invite/:code', () => {
   it('confirms a real code and names who it belongs to', async () => {
     const f = form();
     await post('/register', f);
-    const inviter = await getUserByMobile(f.mobile);
+    const inviter = await getUserByMobile(f.mobile, 'PLAYER');
     const res = await request(app).get(`/api/v1/auth/invite/${inviter.referralCode}`)
       .set('X-Forwarded-For', from());
     expect(res.body).toMatchObject({ valid: true, invitedBy: inviter.username });
@@ -219,7 +219,7 @@ describePg('GET /api/v1/auth/invite/:code', () => {
   it('leaks nothing beyond the username for a code somebody already holds', async () => {
     const f = form();
     await post('/register', f);
-    const inviter = await getUserByMobile(f.mobile);
+    const inviter = await getUserByMobile(f.mobile, 'PLAYER');
     const res = await request(app).get(`/api/v1/auth/invite/${inviter.referralCode}`)
       .set('X-Forwarded-For', from());
     const body = JSON.stringify(res.body);
@@ -253,42 +253,52 @@ describePg('POST /api/v1/auth/login — the login form', () => {
     expect(wrong.body.message).toBe(unknown.body.message);
   });
 
-  it('refuses a STAFF account at the player door, and says where to go', async () => {
-    // Built by signing an ordinary player up and then PROMOTING them, so the
-    // password hash is a real one this route produced. Setting a role on a
-    // harness actor would leave no hash at all, and the 403 would then be
-    // reachable without ever passing the password check — which is the ordering
-    // property the next test but one depends on.
-    const f = form();
-    await post('/register', f);
-    const user = await getUserByMobile(f.mobile);
-    await pgQuery(`UPDATE users SET is_admin = true WHERE user_id = $1`, [user.userId]);
-
-    const res = await post('/login', { mobile: f.mobile, password: f.password });
-    expect(res.status).toBe(403);
-    // §32 S14: a refusal the reader cannot act on is a support ticket.
-    expect(res.body.message).toMatch(/admin panel/i);
-
-    // And the 403 is only reachable WITH the right password, or this endpoint
-    // becomes a way to sort phone numbers into staff and non-staff.
+  it('cannot SEE a staff account at the player door at all', async () => {
+    // ── This got STRONGER, and the test had to change with it ────────────
+    // It used to sign a player up, flip `is_admin`, and assert the 403 that the
+    // door's role check produced. The door now scopes its READ by
+    // `account_type`, so a PLAYER row with `is_admin` set is still a player and
+    // is admitted — correctly. The separation is no longer a check that can be
+    // got wrong afterwards; it is a predicate in the query.
     //
-    // A SECOND promoted account, not a second attempt on the first. The pace
-    // limiter keys on `req.body.mobile` rather than the IP — which is the right
-    // choice, because it paces per ACCOUNT rather than per address — so two
-    // logins for one number inside ten seconds are answered by the pace and the
-    // assertion would measure a 429 instead of the ordering it is about.
-    const g = form();
-    await post('/register', g);
-    const other = await getUserByMobile(g.mobile);
-    await pgQuery(`UPDATE users SET is_admin = true WHERE user_id = $1`, [other.userId]);
-    const guessing = await post('/login', { mobile: g.mobile, password: 'not-the-password' });
-    expect(guessing.status).toBe(401);
+    // So what is asserted is the real property: a STAFF account on a mobile is
+    // INVISIBLE to the player door, and its password does not work there.
+    const f = form();
+    await post('/register', f);                      // the PLAYER on that mobile
+    const { createUser, newUserId, setRoles } = await import('#db/repositories/users.js');
+    const { hashPassword } = await import('../../domains/identity/password.util.js');
+    const staff = await createUser({
+      userId: newUserId(), username: 'staff twin', mobile: f.mobile,
+      passwordHash: await hashPassword('the-staff-only-passphrase'),
+      status: 'ACTIVE', kycStatus: 'APPROVED', isAdmin: true, accountType: 'STAFF',
+    });
+    expect(staff.created, 'a STAFF account on the same mobile').toBe(true);
+    await setRoles(staff.user.userId, ['admin']);
+
+    // The staff password, at the player door.
+    const wrongDoor = await post('/login', { mobile: f.mobile, password: 'the-staff-only-passphrase' });
+    expect(wrongDoor.status).toBe(401);
+
+    // And it is answered exactly as an unknown number is — a door that
+    // distinguished them would let anybody map which mobiles hold staff
+    // accounts, one request at a time.
+    // A mobile no other test in this file has touched. The pace limiter keys
+    // on `req.body.mobile`, not the address, so reusing a number another case
+    // already probed measures the PACE instead of the door.
+    const unknown = await post('/login', { mobile: form().mobile, password: 'the-staff-only-passphrase' });
+    expect(wrongDoor.body.message).toBe(unknown.body.message);
+
+    // That the player's OWN password works on their own door is asserted by
+    // "signs a player in with the password the form set" above, on its own
+    // mobile. Repeating it here would be a second attempt on THIS mobile inside
+    // ten seconds, which the pace limiter answers — so the assertion would
+    // measure the pace, not the door (it did: 429).
   });
 
   it('refuses a BLOCKED account with a reason a person can act on', async () => {
     const f = form();
     await post('/register', f);
-    const user = await getUserByMobile(f.mobile);
+    const user = await getUserByMobile(f.mobile, 'PLAYER');
     await pgQuery(`UPDATE users SET is_blocked = true, block_reason = 'x', blocked_at = now()
                     WHERE user_id = $1`, [user.userId]);
     const res = await post('/login', { mobile: f.mobile, password: f.password });
@@ -299,7 +309,7 @@ describePg('POST /api/v1/auth/login — the login form', () => {
   it('issues a 2FA CHALLENGE instead of a session for an enrolled account', async () => {
     const f = form();
     await post('/register', f);
-    const user = await getUserByMobile(f.mobile);
+    const user = await getUserByMobile(f.mobile, 'PLAYER');
     await pgQuery(`UPDATE users SET two_factor_enabled = true WHERE user_id = $1`, [user.userId]);
     const res = await post('/login', { mobile: f.mobile, password: f.password });
     // Deliberately NOT a logged-in success: a challenge is issued INSTEAD of a

@@ -89,7 +89,7 @@ describePg('sub-admin routes', () => {
     const second = await as(app, admin).post('/sub-admins')
       .send({ username: 'Dup B', mobile, password: 'a-long-enough-password-123' });
     expect(second.status).toBe(400);
-    expect(second.body.message).toMatch(/already exists/i);
+    expect(second.body.message).toMatch(/already has a staff account/i);
   });
 
   it('requires a mobile and a password', async () => {

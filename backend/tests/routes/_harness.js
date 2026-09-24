@@ -114,10 +114,22 @@ export async function actor({
   // So the insert is checked. A collision is retried with a fresh number, and
   // running out of attempts throws HERE, naming the cause, rather than
   // producing a mystery failure somewhere downstream.
+  // ── The account TYPE, derived from what the actor IS ──────────────────
+  // A staff actor written as a PLAYER is a fixture the platform cannot produce
+  // (§32 S16): the staff login door scopes its read by `account_type`, so such
+  // a row exists, looks correct in every listing, and cannot sign in. Derived
+  // from the roles rather than passed, so a test that adds a role gets the
+  // right row without knowing this rule exists.
+  const accountType = (isAdmin || isSubAdmin || isQueueManager
+    || roles.some((r) => ['admin', 'subadmin', 'queue_manager', 'mediator'].includes(r)))
+    ? 'STAFF' : 'PLAYER';
+
   let mobile = null;
   for (let attempt = 1; attempt <= 5; attempt += 1) {
     const candidate = uniqueMobile('9');
-    const { created } = await createUser({ userId: id, username: id, mobile: candidate, kycStatus });
+    const { created } = await createUser({
+      userId: id, username: id, mobile: candidate, kycStatus, accountType,
+    });
     if (created) { mobile = candidate; break; }
   }
   if (!mobile) {

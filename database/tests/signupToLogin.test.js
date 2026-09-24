@@ -71,7 +71,7 @@ describePg('signup → login, end to end on one store', () => {
 
   it('the login lookup finds it by mobile', async () => {
     await signUp();
-    expect((await getUserByMobile('9995550001')).username).toBe('newplayer');
+    expect((await getUserByMobile('9995550001', 'PLAYER')).username).toBe('newplayer');
   });
 
   it('the credential lookup returns the hash the form stored', async () => {

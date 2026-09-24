@@ -32,6 +32,7 @@ import { isTokenRevoked, revokeToken } from '#db/repositories/identity.js';
 import { issueChallenge, verifyChallenge, CHALLENGE_AUDIENCE } from './domains/identity/twoFactorChallenge.js';
 import { verifySecondFactor, SECOND_FACTOR_RESULT } from './domains/identity/verifySecondFactor.js';
 import { requires2FA } from './domains/identity/twoFactor.routes.js';
+import { sessionSuperseded, refuseSupersededSession } from './domains/identity/auth.middleware.js';
 
 const router = express.Router();
 
@@ -87,16 +88,28 @@ function isStaffAccount(user) {
 export const LOGIN_DOOR = {
   STAFF: {
     name: 'staff',
+    // ── The separation is a PREDICATE, not a check ───────────────────────
+    // `accountType` is what the row IS, and it is in the `WHERE` of the read —
+    // so the staff door never loads a player row at all. The role check below
+    // then decides what that staff member may reach.
+    //
+    // This replaced a check made AFTER the read, on `is_admin`. That version
+    // was correct and one flipped boolean away from not being: a player row
+    // with `is_admin` set would have been admitted at the staff door, and
+    // nothing in the read said the row belonged to a different population.
+    // A predicate cannot be got wrong afterwards.
+    accountType: 'STAFF',
     admits: isStaffAccount,
-    // Refuses a legacy or player row that carries a password hash. Without it a
-    // caller could post `loginType: 'user'` here and walk in on one — none of
-    // the three role checks below would fire, because each only tests the role
-    // it names.
     refusal: 'This account is not a staff account. Sign in on the player app.',
   },
   PLAYER: {
     name: 'player',
-    admits: (user) => !isStaffAccount(user),
+    accountType: 'PLAYER',
+    // Nothing further to admit on: a PLAYER row is a player by construction.
+    // The refusal below is therefore unreachable in practice and is kept
+    // because a door that cannot say who it turns away is a door somebody will
+    // widen without noticing.
+    admits: () => true,
     refusal: 'This is a staff account. Sign in through the admin panel.',
   },
 };
@@ -110,7 +123,13 @@ export async function loginHandler(req, res) {
     if (!mobile || !password)
       return res.status(400).json({ success: false, message: 'Mobile and password are required' });
 
-    const user = await db.users.getUserByMobile(String(mobile));
+    // The door is resolved BEFORE the read, because it decides which population
+    // the read looks in. Defaults to STAFF: this handler's only unmounted
+    // caller would be a test, and a default of "anyone" is the wrong way for
+    // that to fail.
+    const door = req.loginDoor || LOGIN_DOOR.STAFF;
+
+    const user = await db.users.getUserByMobile(String(mobile), door.accountType);
     if (!user)
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
 
@@ -141,11 +160,8 @@ export async function loginHandler(req, res) {
 
     // Checked AFTER the password, so a wrong password and an account that
     // belongs at the other door are indistinguishable to a caller probing for
-    // which numbers are staff.
-    //
-    // The door defaults to STAFF: this handler's only unmounted caller would be
-    // a test, and a default of "anyone" is the wrong way for that to fail.
-    const door = req.loginDoor || LOGIN_DOOR.STAFF;
+    // which numbers are staff. The door already scoped the READ by account
+    // type; this is the ROLE question on top of it.
     if (!door.admits(user)) {
       console.warn(`[auth] ${door.name} login refused for account ${user.userId}`);
       return res.status(403).json({ success: false, message: door.refusal });
@@ -290,13 +306,16 @@ export async function loginTwoFactorHandler(req, res) {
     // between the two requests.
     if (user.status === 'BLOCKED' || user.isBlocked)
       return res.status(403).json({ success: false, message: 'Account blocked. Contact support.' });
-    // The SAME door the password leg applied. A challenge minted at one door
-    // and redeemed at the other is the shape this re-check exists to refuse:
-    // without it a player's valid challenge, posted to the staff endpoint,
-    // would be redeemed by the staff handler — and the guest list would have
-    // been enforced on only one of the two legs.
+    // The SAME door the password leg applied, on the account type AND the role.
+    // A challenge minted at one door and redeemed at the other is the shape
+    // this re-check exists to refuse: without it a player's valid challenge,
+    // posted to the staff endpoint, would be redeemed by the staff handler —
+    // and the separation would have been enforced on only one of the two legs.
+    //
+    // The type is checked explicitly here because this leg reads by USER ID,
+    // not by mobile, so the door's predicate never touched the query.
     const door = req.loginDoor || LOGIN_DOOR.STAFF;
-    if (!door.admits(user))
+    if (user.accountType !== door.accountType || !door.admits(user))
       return res.status(403).json({ success: false, message: door.refusal });
 
     const t = challenge.loginType;
@@ -359,6 +378,14 @@ router.get('/me', async (req, res) => {
     // session-check endpoint hands the panel a zero wallet on every page load.
     const user = await db.users.getUser(decoded.userId);
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+    // The SAME check `authenticate` applies, from the same function. This
+    // endpoint does not go through that middleware — it verifies the token
+    // inline, above — so a copy here is not optional and a second
+    // implementation would be the thing that drifts. Measured before it
+    // existed: a password reset left the pre-reset session answering 200 here,
+    // on the endpoint every page load calls to restore a session.
+    if (sessionSuperseded(user, decoded)) return refuseSupersededSession(res);
 
     if (user.isBlocked || user.status === 'BLOCKED')
       return res.status(403).json({ success: false, message: 'Account blocked' });

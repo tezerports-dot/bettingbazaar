@@ -29,6 +29,9 @@ import HistoryPage from './pages/HistoryPage';
 import ResultsPage from './pages/ResultsPage';
 import PromoPage   from './pages/PromoPage';
 import RulesPage   from './pages/RulesPage';
+// Where the bot's password-reset link lands. Lazy, because nobody who is not
+// holding a reset link ever renders it.
+const ResetPasswordPage = React.lazy(() => import('./pages/ResetPasswordPage'));
 import FaqPage     from './pages/FaqPage';
 import MyBetsPage  from './pages/MyBetsPage';
 import SupportPage from './pages/SupportPage';
@@ -237,6 +240,10 @@ const App: React.FC = () => (
                           <Route path="/results"         element={<ResultsPage />} />
                           <Route path="/promo"           element={<PromoPage />} />
                           <Route path="/rules"           element={<RulesPage />} />
+                          {/* A HASH route, because the token rides in the
+                              fragment and a fragment is never sent to a server
+                              — no access log, no proxy log, no Referer. */}
+                          <Route path="/reset/:token"    element={lazy(<ResetPasswordPage />)} />
                           <Route path="/faq"             element={<FaqPage />} />
                           <Route path="/support"         element={<SupportPage />} />
 

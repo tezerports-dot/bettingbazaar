@@ -94,6 +94,15 @@ export interface Backend {
    */
   getVerification(opts?: { verify?: boolean }): Promise<VerificationState>;
 
+  /**
+   * Redeem a reset link the bot sent and SET a password.
+   *
+   * It does not sign anybody in — see `passwordReset.service.js`. The panel
+   * sends them to the login form afterwards.
+   */
+  resetPassword(token: string, password: string, confirmPassword: string): Promise<{
+    success: boolean; message?: string }>;
+
   /** A REJECTED player submits a corrected Aadhaar, from the panel. */
   resubmitAadhaar(aadhaar: string): Promise<{ success: boolean; message?: string; last4?: string }>;
 

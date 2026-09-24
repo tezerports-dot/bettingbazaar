@@ -76,6 +76,42 @@ import { serverError } from '../../shared/httpError.js';
  * A caller that genuinely cannot tolerate a 401 on a database blip should be
  * fixing the blip, not weakening the check.
  */
+/**
+ * Was this token issued BEFORE the account said all its sessions were dead?
+ *
+ * ── Why this is a function and not two copies of an `if` ──────────────────
+ * It has to run on every authenticated path, and there are TWO: this
+ * middleware, and `GET /api/v1/auth/me`, which verifies the token inline in
+ * routes.js and never calls `authenticate`.
+ *
+ * It was written in the middleware only. Measured on a running server: a
+ * password reset changed the password, refused the old one at the login form,
+ * and the session held from BEFORE the reset kept answering 200 on `/me` — the
+ * single most-used authenticated endpoint on the platform, and the one a panel
+ * restores a session from on every page load. So the reset changed a password
+ * and evicted nobody, which is the whole thing it exists to do. §5, on a
+ * security check.
+ *
+ * `iat` is stamped by the signer on every token. A token that somehow carries
+ * none is treated as older than any cutoff — refused, not admitted: the failure
+ * mode of "cannot tell how old this is" must be the safe one.
+ */
+export function sessionSuperseded(user, decoded) {
+  if (!user?.sessionsValidFrom) return false;
+  const issued = decoded?.iat ? Date.parse(decoded.iat) : NaN;
+  return !Number.isFinite(issued)
+    || issued < new Date(user.sessionsValidFrom).getTime();
+}
+
+/** One refusal, so both callers say the same thing to the same panel. */
+export function refuseSupersededSession(res) {
+  return res.status(401).json({
+    success: false,
+    code: 'SESSION_SUPERSEDED',
+    message: 'Your password was changed. Please sign in again.',
+  });
+}
+
 export async function isTokenRevoked(token) {
   try {
     return await pgIsTokenRevoked(token);
@@ -198,6 +234,8 @@ const makeAuthenticate = ({ allowUnenrolledStaff = false } = {}) => async (req, 
         message: 'User not found. Token may be invalid.' 
       });
     }
+
+    if (sessionSuperseded(user, decoded)) return refuseSupersededSession(res);
 
     // Check if user account is active
     if (user.isBlocked) {

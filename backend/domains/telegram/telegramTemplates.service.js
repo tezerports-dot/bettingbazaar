@@ -73,6 +73,16 @@ export const DEFAULT_TEMPLATES = {
     + 'Create your account on the app or website first — you will need your Aadhaar '
     + 'number and this mobile number — then come back here and share your contact.',
 
+  // The ONE message on this platform that carries a credential. It says what
+  // the link does and what it does NOT do, because somebody who expects to be
+  // signed in and is asked for a password instead assumes the link is broken.
+  password_reset:
+    '🔑 <a href="{{resetUrl}}">Tap here to choose a new password</a>\n\n'
+    + 'The link works once and expires in {{minutes}} minutes. It does not sign you in — '
+    + 'you will pick a password and then log in with it.\n\n'
+    + 'Did not ask for this? Ignore it. Nothing changes until somebody sets a password, '
+    + 'and only this Telegram account can open the link.',
+
   recovery_welcome:
     '<b>Account recovery</b>\n\n'
     + 'Use this only if you have lost the Telegram account you signed up with, '
@@ -89,6 +99,7 @@ export const TEMPLATE_VARIABLES = {
   contact_confirmed: ['firstName', 'inviteLink', 'channelUsername'],
   verified:          ['firstName'],
   not_registered:    ['firstName'],
+  password_reset:    ['resetUrl', 'minutes', 'firstName'],
   recovery_welcome:  ['firstName'],
 };
 

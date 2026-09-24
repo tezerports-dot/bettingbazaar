@@ -73,9 +73,9 @@ describePg('accounts (PostgreSQL)', () => {
   describe('lookups', () => {
     it('finds by mobile and by referral code, and returns null for neither', async () => {
       await createUser(mk({ referralCode: 'ALICE1' }));
-      expect((await getUserByMobile('9990000001')).userId).toBe('u-1');
+      expect((await getUserByMobile('9990000001', 'PLAYER')).userId).toBe('u-1');
       expect((await getUserByReferralCode('ALICE1')).userId).toBe('u-1');
-      expect(await getUserByMobile('0000000000')).toBeNull();
+      expect(await getUserByMobile('0000000000', 'PLAYER')).toBeNull();
       expect(await getUserByReferralCode('NOPE')).toBeNull();
       expect(await getUser(null)).toBeNull();
     });

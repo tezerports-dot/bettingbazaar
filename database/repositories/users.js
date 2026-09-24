@@ -59,7 +59,8 @@ const COLUMNS = `
   two_factor_enabled, two_factor_secret, two_factor_pending_secret,
   two_factor_last_counter, two_factor_enrolled_at,
   is_blocked, block_reason, blocked_at, blocked_by,
-  bank_details, last_login, roles, deleted_at, deleted_by, joined_at, updated_at`;
+  bank_details, last_login, roles, deleted_at, deleted_by, joined_at, updated_at,
+  account_type, sessions_valid_from`;
 
 /**
  * The columns a caller may set through `updateUser`.
@@ -86,6 +87,10 @@ const UPDATABLE = Object.freeze(new Set([
   'two_factor_last_counter', 'two_factor_enrolled_at', 'backup_codes',
   'is_blocked', 'block_reason', 'blocked_at', 'blocked_by',
   'bank_details', 'last_login', 'roles',
+  // Moved to `now()` by a password reset, which kills every session issued
+  // before it. Writable because that is the ONLY way to kill them — sessions
+  // are stateless and nothing holds a list of the ones outstanding.
+  'sessions_valid_from',
 ]));
 
 /** camelCase → column, derived from the allowlist so the two cannot drift. */
@@ -132,6 +137,15 @@ function toUser(row) {
     userId: row.user_id,
     username: row.username,
     mobile: row.mobile,
+    // WHICH population this row belongs to. Projected because the login path
+    // asserts on it and the admin panel renders it — a row that does not carry
+    // its own type forces every reader to infer it from the role flags, which
+    // is the inference this column exists to replace.
+    accountType: row.account_type,
+    // Sessions issued before this instant are dead. Read by `authenticate` on
+    // every request, so it has to be on the projection the middleware already
+    // takes — a second read to answer it would double the cost of the check.
+    sessionsValidFrom: row.sessions_valid_from,
     joiningNumber: toInt(row.joining_number),
     referralCode: row.referral_code,
     referralClicks: toInt(row.referral_clicks),
@@ -185,11 +199,49 @@ export async function getUser(userId) {
   return toUser(rows[0]);
 }
 
-/** One account by mobile, or null. The mobile is unique and never mutable. */
-export async function getUserByMobile(mobile) {
+/**
+ * The three populations a `users` row can belong to.
+ *
+ * Derived from nothing and duplicated nowhere: the schema's CHECK names the
+ * same three, and `threeSeparateEntities.test.js` asserts a row of each exists
+ * on one mobile. A fourth would be added HERE and in the CHECK together.
+ *
+ * MERCHANT is in this list and it is the one that surprises people: a merchant
+ * signup writes a `users` row (the login) as well as a `merchants` row (the
+ * trading identity), so merchants living in their own table does NOT make their
+ * login separate. Without a type of their own that row defaults to PLAYER and
+ * the player door admits a merchant's merchant password.
+ */
+export const ACCOUNT_TYPES = Object.freeze(['PLAYER', 'STAFF', 'MERCHANT']);
+
+/**
+ * One account by mobile AND ACCOUNT TYPE, or null.
+ *
+ * ── Why the type is required, with no default ─────────────────────────────
+ * A mobile is no longer unique on its own: one person may hold a player, a
+ * staff and a merchant account with different passwords (owner, 2026-09-24), so
+ * `WHERE mobile = $1` can match three rows and returns whichever the planner
+ * reaches first. That is the login path. A default of 'PLAYER' would have made
+ * every un-updated caller silently correct for players and silently wrong for
+ * the other two — the worst of the options, because it fails only on the
+ * accounts that move money.
+ *
+ * So it THROWS. Every call site names the population it means, and a caller
+ * that does not know which it means has found a real question rather than a
+ * missing argument.
+ *
+ * @param {'PLAYER'|'STAFF'|'MERCHANT'} accountType
+ */
+export async function getUserByMobile(mobile, accountType) {
   if (!mobile) return null;
+  if (!ACCOUNT_TYPES.includes(accountType)) {
+    throw new Error(
+      `getUserByMobile requires an accountType of ${ACCOUNT_TYPES.join(', ')} — a mobile `
+      + 'can hold one of each, so a lookup without it is ambiguous by construction');
+  }
   const { rows } = await pgQuery(
-    `SELECT ${COLUMNS} FROM users WHERE mobile = $1`, [String(mobile)], 'user_get_mobile',
+    `SELECT ${COLUMNS} FROM users WHERE mobile = $1 AND account_type = $2`,
+    [String(mobile), accountType], 'user_get_mobile',
   );
   return toUser(rows[0]);
 }
@@ -306,6 +358,11 @@ export async function createUser({
   userId, username, mobile, passwordHash = null, referralCode = null,
   referredBy = null, status = 'ACTIVE', isAdmin = false,
   kycStatus = 'PENDING_SUBMISSION', kycSubmissionCount = 0, client = null,
+  // PLAYER unless a caller says otherwise. The default is safe here in a way it
+  // is not on the READ: creating a player by accident is refused by the unique
+  // index the moment that mobile already holds one, whereas READING the wrong
+  // population returns somebody else's account and says nothing.
+  accountType = 'PLAYER',
 }) {
   if (!userId) throw new Error('createUser requires a userId');
   if (!mobile) throw new Error('createUser requires a mobile');
@@ -319,16 +376,20 @@ export async function createUser({
 
   const { rows } = await run(
     `INSERT INTO users (user_id, username, mobile, password_hash, referral_code,
-                        referred_by, status, is_admin, kyc_status, kyc_submission_count)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-     ON CONFLICT (mobile) DO NOTHING
+                        referred_by, status, is_admin, kyc_status, kyc_submission_count,
+                        account_type)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+     ON CONFLICT (mobile, account_type) DO NOTHING
      RETURNING ${COLUMNS}`,
     [String(userId), username ?? '', String(mobile), passwordHash, referralCode,
      referredBy ? String(referredBy) : null, status, isAdmin,
-     kycStatus, kycSubmissionCount],
+     kycStatus, kycSubmissionCount, accountType],
   );
   if (rows[0]) return { user: toUser(rows[0]), created: true };
-  return { user: await getUserByMobile(mobile), created: false };
+  // The row that won the race — of the SAME type. Reading by mobile alone would
+  // hand back the staff account when a player signup lost, which is an account
+  // the caller has no business seeing and would then be seated as.
+  return { user: await getUserByMobile(mobile, accountType), created: false };
 }
 
 /**

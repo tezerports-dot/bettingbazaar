@@ -524,7 +524,7 @@ describePg('the Telegram sign-in surface (PostgreSQL)', () => {
       // TTL is expired by the next run, and the count came back 16.
       await sweepExpired();
 
-      // ONE table now. Three others (pending links, login tokens, login codes)
+      // TWO tables now. Three others (pending links, login tokens, login codes)
       // were swept here until 2026-09-23 and no longer exist — and the shape
       // assertion below is exactly what made that safe to do: a sweep still
       // naming a dropped table throws 42P01 on every pass and takes the whole
@@ -534,11 +534,15 @@ describePg('the Telegram sign-in surface (PostgreSQL)', () => {
       await pgQuery(`UPDATE telegram_recovery_sessions SET expires_at = now() - interval '1 s'
                       WHERE telegram_user_id = 't-rec-dead'`);
 
-      expect(await sweepExpired()).toEqual({ recoverySessions: 1 });
+      // Exact SHAPE, not just the count — and it earned that this run: adding
+      // `password_resets` to the sweep changed the object, and this assertion
+      // is what said so. A new expiring table reclaimed silently would make
+      // "how much did we delete" quietly stop describing the sweep.
+      expect(await sweepExpired()).toEqual({ recoverySessions: 1, passwordResets: 0 });
       expect(await getRecoverySession('t-rec-live')).not.toBeNull();
       // Reconstructed per pass: a second pass finds nothing, rather than
       // reporting a total it accumulated (trap 6).
-      expect(await sweepExpired()).toEqual({ recoverySessions: 0 });
+      expect(await sweepExpired()).toEqual({ recoverySessions: 0, passwordResets: 0 });
 
       // The live row this test made is removed rather than left to expire: see
       // the drain above for why a leftover here comes back as somebody else's

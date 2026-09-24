@@ -66,7 +66,10 @@ export async function attemptRecovery({ newTelegramUserId, phone, contactUserId,
   const candidates = Array.isArray(aadhaarHashes) ? aadhaarHashes.filter(Boolean) : [];
   if (!candidates.length) return { ok: false, reason: 'invalid_aadhaar' };
 
-  const user = await db.users.getUserByMobile(mobile);
+  // PLAYER. Recovery moves a player's Telegram link; a staff account has no
+  // Telegram identity to move, and reading by mobile alone would hand back the
+  // staff row for anybody who holds both.
+  const user = await db.users.getUserByMobile(mobile, 'PLAYER');
 
   // FACTOR 2. Checked against the account the PHONE resolved to — not used as a
   // search key. Looking an account up BY Aadhaar would turn this bot into the

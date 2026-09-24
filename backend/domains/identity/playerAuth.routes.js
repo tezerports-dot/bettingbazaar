@@ -52,6 +52,7 @@ import {
 import { respondError } from '../../shared/httpError.js';
 import { assignSigninBot, verificationStateFor } from './signupVerification.service.js';
 import { resubmitAadhaar, MAX_KYC_SUBMISSIONS } from './aadhaarResubmission.service.js';
+import { redeemResetLink } from './passwordReset.service.js';
 import { authenticate } from './auth.middleware.js';
 import { authLimiter, loginPaceLimiter, twoFactorLimiter, signupLimiter } from '../../middleware/security.js';
 import { requireCaptcha } from '../../middleware/captcha.js';
@@ -168,7 +169,7 @@ router.post('/register', ...signupChain('player-register'), async (req, res) => 
     // both pass a read. These exist to produce the RIGHT SENTENCE, and
     // `createAccountFromSignup` reads the violated constraint by name and
     // returns the same two reasons when the race is lost.
-    if (await db.users.getUserByMobile(number)) {
+    if (await db.users.getUserByMobile(number, 'PLAYER')) {
       throw refuse('An account already exists for that mobile number. Log in instead.', 409);
     }
     // Checked across every candidate hash: the HMAC secret is rotatable, so a
@@ -391,6 +392,49 @@ router.post('/kyc/resubmit', authenticate, async (req, res) => {
   } catch (err) {
     return respondError(res, err, 'auth/kyc-resubmit',
       { message: 'Could not submit that Aadhaar number. Please try again.' });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// POST /api/v1/auth/password/reset — redeem a link the bot sent
+// ═══════════════════════════════════════════════════════════════════════════
+/**
+ * Unauthenticated by necessity: the whole point is that they cannot sign in.
+ *
+ * The TOKEN is the credential, so this carries the credential chain — the
+ * pace, the failure budget, the subnet limiter and the captcha. A 256-bit
+ * single-use token is not brute-forceable, and that is not the reason for the
+ * limiters: they are what stops this endpoint being used to grind the password
+ * POLICY, and what bounds the damage if a token ever leaks into a place that
+ * can be scraped.
+ *
+ * It does NOT sign them in. It answers "done, now log in" and the panel sends
+ * them to the login form — see passwordReset.service.js for why that is the
+ * point rather than an omission.
+ */
+router.post('/password/reset', ...credentialChain('password-reset'), async (req, res) => {
+  try {
+    const result = await redeemResetLink({
+      token: req.body?.token,
+      password: req.body?.password,
+      confirmPassword: req.body?.confirmPassword,
+    });
+    if (result.ok) {
+      return res.json({
+        success: true,
+        message: 'Your password has been changed. Sign in with it now.',
+      });
+    }
+    // `invalid` covers unknown, already used and expired, with one sentence —
+    // a caller that can tell them apart can map which tokens were ever live.
+    // The other two carry the service's own wording, because "too short" and
+    // "they do not match" are the only refusals a person can act on.
+    throw refuse(result.message
+      || 'This reset link is no longer valid. Share your contact with the bot again for a new one.',
+      400);
+  } catch (err) {
+    return respondError(res, err, 'auth/password-reset',
+      { message: 'Could not change your password. Please try again.' });
   }
 });
 

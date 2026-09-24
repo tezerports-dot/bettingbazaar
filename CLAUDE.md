@@ -232,7 +232,10 @@ wrong owner gets working code deleted by the next reader.
 | The live bot and official channel | `telegram_configs` (the active generation, owning the channel) plus the bot registry, composed by `activeConfig()` in `domains/telegram/telegramClient.js`. **The registry wins over a generation's embedded credentials.** A bot swap does NOT bump the generation; only a channel change does. The 30s cache in `activeConfig` is the only permitted cache. |
 | **How many sign-in bots there are, and which one a player gets** | `telegram_bots` (role `signin`, any number ACTIVE) + `assignSigninBot` in `database/repositories/telegram.js`, wrapped by `domains/identity/signupVerification.service.js`. **`signin` is a FLEET; `recovery` is singular** — the generated `live_slot` column names recovery only, and the partial unique index enforces one live recovery bot. The rotation cursor is the SEQUENCE `telegram_signin_rotation`: `nextval - 1` modulo the live count, over the fleet ordered `added_at, bot_id`. The assignment is STORED on `users.telegram_bot_id` because the player is TOLD which bot to open, and re-resolved on every read so a retired bot's players move on their own. Retiring the LAST live sign-in bot is refused **in the statement**, by counting what would be left. |
 | **Whether a player may use the app at all** | `domains/identity/signupVerification.service.js` — `verificationStateFor()`, served by `GET /api/v1/auth/verification`. It answers the contact share and the channel membership together and hands back ONE `reason` naming the one thing to do next. **Not `kycStatus`** (that is the admin's bulk Aadhaar verification, on its own clock) and **not two endpoints** — the panel reads `reason` and nothing else, because a screen deriving that from four booleans derives it differently from the next screen that tries. |
-| **Which door a password login arrived at** | `LOGIN_DOOR` in `backend/routes.js`, set by the MOUNT. One `loginHandler` serves both `/api/admin/login` (staff) and `/api/v1/auth/login` (players); they differ only in who they admit, and every other thing they do — reading the hash from the one function that returns it, the blocked refusal, the argon2 upgrade, issuing a challenge INSTEAD of a session — is identical and must stay identical. The door is checked on BOTH legs, so a challenge minted at one cannot be redeemed at the other. |
+| **Which POPULATION a `users` row belongs to** | `users.account_type` — `PLAYER`, `STAFF` or `MERCHANT`, declared in `ACCOUNT_TYPES` (`database/repositories/users.js`) and enforced by `users_account_type_check`. **A mobile is unique PER TYPE** (`users_mobile_per_account_type`), so one person may hold all three with three different passwords, and the credentials for one do not work at another door (owner, 2026-09-24). `getUserByMobile` REQUIRES the type and throws without it: a default would have made every un-updated caller silently correct for players and silently wrong for the other two — failing only on the accounts that move money. **MERCHANT is in this column and that surprises people**: a merchant signup writes a `users` row (the login) as well as a `merchants` row (the trading identity), so merchants living in their own table does NOT make their login separate — without a type of their own that row defaulted to PLAYER and the player door admitted a merchant's merchant password. |
+| **Whether a session issued earlier is still valid** | `users.sessions_valid_from` + `sessionSuperseded()` in `domains/identity/auth.middleware.js`. Sessions are stateless PASETO and nothing holds a list of the ones outstanding, so this cutoff is the ONLY way to evict them; a password reset moves it to `now()` in the same statement that writes the hash. **Both authenticated paths check it** — `authenticate` and `GET /api/v1/auth/me`, which verifies its token inline and never calls the middleware. It was in one, and the pre-reset session kept answering 200 on the endpoint every page load uses to restore a session. |
+| **A password reset link** | `password_resets` + `domains/identity/passwordReset.service.js`. Issued by a bot to a number Telegram has verified, because there is no player email. It grants the right to CHOOSE A PASSWORD and **never a session** (owner, 2026-09-24) — a fleet of hundreds of bot tokens must not be able to sign anybody in. SHA-256 at rest, single-use (`consumed_at` set in the same UPDATE that reads it), expiry in the WHERE, one live token per account, and the token rides in the URL **fragment** so it never reaches an access log or a `Referer`. PLAYER accounts only, refused twice over. |
+| **Which door a password login arrived at** | `LOGIN_DOOR` in `backend/routes.js`, set by the MOUNT. One `loginHandler` serves both `/api/admin/login` (staff) and `/api/v1/auth/login` (players); they differ only in who they admit, and every other thing they do — reading the hash from the one function that returns it, the blocked refusal, the argon2 upgrade, issuing a challenge INSTEAD of a session — is identical and must stay identical. **The door scopes the READ by `account_type`**, so the separation is a predicate rather than a check made afterwards: the staff door never loads a player row at all, and a flipped `is_admin` cannot admit one. Checked on BOTH legs, so a challenge minted at one cannot be redeemed at the other — and on the 2FA leg the type is compared explicitly, because that leg reads by user id and the predicate never touched its query. |
 | What the bot says | `TelegramTemplate` rows via `telegramTemplates.service.js`, with `DEFAULT_TEMPLATES` as fallback. A blank row means the shipped default, never silence. Do not hardcode a player-facing sentence in a route. **Which BOT sends it is a separate question** — `sendTemplate({ bot })`, always, on the sign-in fleet: a bot may only message somebody who has opened a chat with IT, so a reply from any other bot is refused by Telegram and reads to the player as a conversation that simply stopped. |
 | What a valid Aadhaar, mobile or referral code LOOKS like | `backend/domains/identity/signupFields.js`. Both ends import it — the form that takes what a person typed, and the contact share that takes what Telegram verified — because if they normalise a phone number differently the match fails for a player who did nothing wrong, silently. The user panel keeps a §5 MIRROR (`indianMobile` in `AuthModal.tsx`) because §15 forbids importing from `backend/`; change them in the same commit. |
 | What a password may be | `backend/domains/identity/passwordPolicy.js` — `assertStaffPassword` (12) and `assertPlayerPassword` (8), ONE implementation with two floors. The floor is set by BLAST RADIUS: a staff password reads the whole player base and the ledger; a player's reaches one wallet. Everything above the floor is identical, deliberately — a second copy is where the degenerate-run check quietly stops being applied to players. |
@@ -1236,6 +1239,9 @@ these are the specific ones this codebase has actually produced.
 | S27 | A limiter counting a REJECTED SESSION as a failed credential | Does the path it guards check a credential at all? A 401 from an expired token is not a guess. |
 | S28 | A limiter on a router PREFIX rather than on the route | What ELSE does that prefix serve? A poll and a page load are not credential attempts. |
 | S29 | An input that normalises to something plausible but WRONG | Type the thing people actually type. Does what lands equal what they meant? |
+| S30 | A query that can match two POPULATIONS | Can this `WHERE` match a row of another kind? Which one does the planner hand back? |
+| S31 | A migration guard that is idempotent but not CONVERGENT | Run it twice, then change the definition and run it again. Does the database end up saying what the file says? |
+| S32 | The same security check in one of the two paths that need it | Which OTHER path reaches this without the middleware? |
 
 **S22 through S25 all came out of pressing controls rather than opening
 screens, and each was invisible to every tier below a browser.**
@@ -1251,6 +1257,25 @@ where a /24 is thousands of people. One person reloading a page would have
 signed the rest of them out. **A limiter belongs on the route that submits the
 credential, never on a prefix that also carries session and status paths** —
 and the question that finds it is what ELSE that prefix serves.
+
+**S30, S31 and S32 all came out of splitting one account into three**, and
+each was invisible to every tier that was green at the time. §33.5 and §33.6
+tell the whole story; the short forms are:
+
+- **S30** — `linkTelegramToAccount` matched a user by mobile alone. Once a
+  mobile could hold a player AND a staff account, a player's contact share
+  linked the STAFF row and the bot's reset button offered an ADMIN's password to
+  whoever held the phone. The fix is a predicate in the `WHERE`; the second
+  refusal in the service is there because one place was not enough.
+- **S31** — `DO $$ … EXCEPTION WHEN duplicate_object` does nothing when the
+  constraint exists, which is wrong when its DEFINITION changed. The apply then
+  stops at the failure, so statements BELOW it never run and the next boot meets
+  a table missing a column. Drop and re-add anything whose definition can move.
+- **S32** — the session cutoff was written into `authenticate` only.
+  `GET /api/v1/auth/me` verifies its token inline and never calls that
+  middleware, so a password reset changed the password and evicted nobody from
+  the endpoint every page load uses to restore a session. One function, both
+  callers.
 
 **S29 was found by typing `+91 98765 43210` into a box with `+91` printed next
 to it.** The handler was `digits(v, 10)`, which strips non-digits and truncates:
@@ -1461,6 +1486,59 @@ network"* to somebody who had not yet submitted one valid form.
 **The rule, stated for the next limiter:** before mounting one, name the
 credential the path checks. If you cannot, it is the wrong limiter — or the
 right limiter on the wrong mount.
+
+### 33.5 Three entities, one column, and a forgotten password
+
+Owner, 2026-09-24. **A player account, a staff account and a merchant account
+are three separate things**, and one person may hold all three on one mobile
+with three different passwords. Credentials for one panel do not work at
+another. `users.account_type` is the owner (§2) and the doors read through it.
+
+Three things this cost, all found by running it:
+
+1. **Merchants were not as separate as they looked.** A merchant signup writes
+   a `users` row for the login as well as a `merchants` row for the trading
+   identity. Living in their own table made them look separate; without a type
+   of their own that login row defaulted to `PLAYER` and the player door would
+   have admitted a merchant's merchant password.
+2. **A query that CAN match two populations eventually matches the wrong one.**
+   `linkTelegramToAccount` matched by mobile alone. Measured: a player sharing
+   their contact linked the STAFF row on the same number, and the bot's reset
+   button then offered an ADMIN a password-reset link to somebody who had
+   proved nothing but possession of the phone. The fix is a predicate in the
+   `WHERE`, plus a second refusal in the service — one rule, two places,
+   deliberately, because the consequence of being wrong is an account takeover.
+3. **"Add the constraint if it is missing" is idempotent, not CONVERGENT.** A
+   `DO $$ … EXCEPTION WHEN duplicate_object` guard does NOTHING when a
+   constraint of that name exists — which is wrong the moment its DEFINITION
+   changes. Widening the `account_type` CHECK to include `MERCHANT` was skipped
+   for exactly that reason, every merchant signup then failed on a value the
+   schema file plainly allows, and the apply stopped at that statement so a
+   column further down was never created and the server booted against a table
+   missing a column its own projection names. **A constraint whose definition
+   may change is DROPPED and re-added.** A guard is only safe for one whose
+   definition is fixed forever. The `UNIQUE` variant has a second mouth: it
+   creates an INDEX of the same name, so a re-run can raise `duplicate_table`
+   rather than `duplicate_object` and a guard catching one code re-raises.
+
+### 33.6 A forgotten password
+
+There is no player email, so the reset travels the only verified channel there
+is: a bot, a contact share, and a link. It grants the right to **choose a
+password** and never a session — see §2 and `passwordReset.service.js`.
+
+- **It is offered, not sent.** A contact share is also the VERIFICATION step, so
+  sending a link automatically would put a live credential in the chat of every
+  player who was merely finishing their signup.
+- **Setting it evicts every existing session**, in the same statement that
+  writes the hash. The commonest reason somebody resets is that a session they
+  did not open is holding their account, so a reset that leaves those alive is a
+  gesture. See `sessions_valid_from` in §2 — and note that the check has to be
+  in BOTH authenticated paths, because `/me` verifies its token inline.
+- **The token is consumed before the password is validated.** A weak password
+  therefore costs them the link, which is the right way round — a token that
+  survives a failed attempt is one an attacker can grind a password policy
+  against — and the message says so rather than leaving them to discover it.
 
 ---
 

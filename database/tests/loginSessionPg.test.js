@@ -53,7 +53,7 @@ describePg('the session a login hands back', () => {
     await fund('winningsBalance', 75_50, 'f2');
 
     const { res, captured } = recorder();
-    await issueSession(await getUserByMobile('9990001111'), res);
+    await issueSession(await getUserByMobile('9990001111', 'PLAYER'), res);
 
     expect(captured.user.depositBalance).toBe(250);
     expect(captured.user.winningsBalance).toBe(75.5);
@@ -67,7 +67,7 @@ describePg('the session a login hands back', () => {
     await fund('reserveBalance', 500_00, 'f2');
 
     const { res, captured } = recorder();
-    await issueSession(await getUserByMobile('9990001111'), res);
+    await issueSession(await getUserByMobile('9990001111', 'PLAYER'), res);
 
     // The reserve is NOT freely spendable — only a percentage of a stake may
     // come from it — so folding it into "available" is what made players try
@@ -81,7 +81,7 @@ describePg('the session a login hands back', () => {
     await fund('lockedBalance', 40_00, 'f2');
 
     const { res, captured } = recorder();
-    await issueSession(await getUserByMobile('9990001111'), res);
+    await issueSession(await getUserByMobile('9990001111', 'PLAYER'), res);
 
     expect(captured.user.lockedBalance).toBe(40);
     expect(captured.user.walletBalance).toBe(100);
@@ -89,14 +89,14 @@ describePg('the session a login hands back', () => {
 
   it('shows zero for an account that genuinely has nothing', async () => {
     const { res, captured } = recorder();
-    await issueSession(await getUserByMobile('9990001111'), res);
+    await issueSession(await getUserByMobile('9990001111', 'PLAYER'), res);
     // Zero is the right answer here — the bug was that it was the ONLY answer.
     expect(captured.user.walletBalance).toBe(0);
   });
 
   it('records the login against the account', async () => {
     const { res, captured } = recorder();
-    await issueSession(await getUserByMobile('9990001111'), res);
+    await issueSession(await getUserByMobile('9990001111', 'PLAYER'), res);
 
     // Written to the ROW. The version this replaced assigned `lastLogin` to a
     // plain object and called `.save()` on it — a TypeError, so no login has
@@ -107,7 +107,7 @@ describePg('the session a login hands back', () => {
 
   it('identifies the account by its real id', async () => {
     const { res, captured } = recorder();
-    await issueSession(await getUserByMobile('9990001111'), res);
+    await issueSession(await getUserByMobile('9990001111', 'PLAYER'), res);
     expect(captured.user.id).toBe('u1');
     expect(captured.user._id).toBe('u1');
     expect(captured.token).toBeTruthy();

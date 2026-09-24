@@ -84,8 +84,10 @@ export async function seedAdminAccount() {
 
     // `createUser` returns the EXISTING account on a mobile conflict rather
     // than throwing, so two instances booting together seed ONE admin — the
-    // UNIQUE constraint on `mobile` decides, not a prior existence check that a
-    // concurrent boot fits between.
+    // UNIQUE constraint on `(mobile, account_type)` decides, not a prior
+    // existence check that a concurrent boot fits between. The conflict is now
+    // scoped to STAFF, so an admin mobile that also holds a PLAYER account is
+    // still seeded rather than silently resolving to the player.
     // `{ user, created }`, not a user: the `created` flag distinguishes "this
     // boot made the admin" from "another instance got there first", which the
     // log below reports honestly rather than claiming a seed either way.
@@ -97,6 +99,10 @@ export async function seedAdminAccount() {
       status: 'ACTIVE',
       kycStatus: 'APPROVED',
       isAdmin: true,
+      // STAFF. Without it the seeded admin is written as a PLAYER and the staff
+      // door — which scopes its read by account type — cannot find it: the
+      // platform boots, reports the admin seeded, and nobody can sign in.
+      accountType: 'STAFF',
     });
     // `roles` is set through `setRoles`, which DERIVES the authorisation flags
     // from it in the same statement — so the array and the flags every

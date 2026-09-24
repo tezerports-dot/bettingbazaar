@@ -49,7 +49,8 @@
     "test:wallet-buttons": "node backend/tests/browser/walletButtons.js",
     "test:bet-button": "node backend/tests/browser/betButton.js",
     "test:mutate": "node backend/tests/browser/mutate.js",
-    "report:ui-coverage": "node scripts/report-ui-coverage.mjs"
+    "report:ui-coverage": "node scripts/report-ui-coverage.mjs",
+    "test:signup": "node backend/tests/browser/signupJourney.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.122.0",

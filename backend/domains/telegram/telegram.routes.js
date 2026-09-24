@@ -47,11 +47,12 @@ import express from 'express';
 import { db } from '#db';
 import crypto from 'crypto';
 import {
-  activeConfig, sendAs, approveJoinRequest, sendRecoveryMessage, liveBot,
+  activeConfig, sendAs, approveJoinRequest, sendRecoveryMessage, liveBot, callApi,
 } from './telegramClient.js';
 import { decryptField } from '../identity/fieldCrypto.util.js';
 import { applyMemberUpdate, isJoinedStatus, joinPrompt, membershipFor } from './telegramMembership.js';
 import { completeVerification, noteContactChange } from '../identity/signupVerification.service.js';
+import { issueResetLink } from '../identity/passwordReset.service.js';
 import { normalisePhone, isValidAadhaar } from '../identity/signupFields.js';
 import { sendTemplate } from './telegramTemplates.service.js';
 import { hashAadhaarCandidates } from '../identity/aadhaarHash.util.js';
@@ -77,6 +78,25 @@ const contactKeyboard = {
   keyboard: [[{ text: '📱 Share my contact', request_contact: true }]],
   resize_keyboard: true,
   one_time_keyboard: true,
+};
+
+/**
+ * The reset offer, shown to somebody whose contact just matched an account.
+ *
+ * ── Why a BUTTON and not an automatic link ────────────────────────────────
+ * A contact share is also the VERIFICATION step, so the same tap means two
+ * different things depending on who is doing it. Sending a reset link
+ * automatically would put a live credential in the chat of every player who was
+ * merely finishing their signup — and they never asked for one.
+ *
+ * So it is offered and they press it. `callback_data` rather than a URL,
+ * because the link does not exist until somebody asks: a URL button would have
+ * to carry a token minted in advance, which is a credential sitting in a
+ * message whether or not it is ever wanted.
+ */
+const RESET_CALLBACK = 'bb:reset';
+const resetOffer = {
+  inline_keyboard: [[{ text: '🔑 I forgot my password', callback_data: RESET_CALLBACK }]],
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -126,6 +146,8 @@ router.post('/webhook/:botId', async (req, res) => {
 
 async function handleUpdate(update, bot) {
   if (update?.message) return handleMessage(update.message, bot);
+  // The reset offer, pressed.
+  if (update?.callback_query) return handleCallback(update.callback_query, bot);
   // The channel is PRIVATE and admits on a join request, so this is the update
   // that actually lets somebody in.
   if (update?.chat_join_request) return handleJoinRequest(update.chat_join_request, bot);
@@ -181,7 +203,14 @@ async function handleMessage(message, bot) {
 async function replyWithChannelState({ bot, chatId, identity, firstName }) {
   const verdict = await membershipFor(identity, { refresh: false });
   if (verdict.joined || verdict.unconfigured) {
-    return sendTemplate({ bot, chatId, key: 'verified', vars: { firstName } });
+    // The reset offer rides on the "you are all set" message, because that is
+    // the one a player who has come back for their password will see: they are
+    // already verified, so nothing else is asked of them and this is the only
+    // thing the conversation has left to offer.
+    return sendTemplate({
+      bot, chatId, key: 'verified', vars: { firstName },
+      extra: { reply_markup: resetOffer },
+    });
   }
   const prompt = await joinPrompt();
   return sendTemplate({
@@ -192,6 +221,59 @@ async function replyWithChannelState({ bot, chatId, identity, firstName }) {
       channelUsername: prompt?.channelUsername || '',
     },
     extra: { reply_markup: { remove_keyboard: true } },
+  });
+}
+
+/**
+ * "I forgot my password", pressed.
+ *
+ * ── What proves they may have it ──────────────────────────────────────────
+ * The LINK, not the press. A `callback_query` carries the Telegram user id, and
+ * that id is linked to exactly one account by a contact share Telegram itself
+ * verified — so pressing this from a Telegram account that is not linked
+ * reaches no account at all. There is nothing to guess and nothing to enumerate:
+ * the button is only ever shown to somebody whose contact already matched.
+ *
+ * `answerCallbackQuery` is not optional. Telegram shows a spinner on the button
+ * until it is answered, and a button that spins forever is a button people press
+ * again — which on this path means another token and another live credential.
+ */
+async function handleCallback(query, bot) {
+  const telegramUserId = String(query.from?.id || '');
+  const chatId = query.message?.chat?.id ?? telegramUserId;
+  const ack = (text) => callApi(bot.token, 'answerCallbackQuery', {
+    callback_query_id: query.id, ...(text ? { text, show_alert: false } : {}),
+  }).catch(() => {});
+
+  if (query.data !== RESET_CALLBACK || !telegramUserId) return ack();
+
+  const identity = await db.telegram.getIdentityByTelegramId(telegramUserId);
+  if (!identity || !identity.contactActive) {
+    await ack();
+    return sendAs(bot, chatId,
+      'Share your contact first — that is how we know which account to reset.',
+      { reply_markup: contactKeyboard });
+  }
+
+  const issued = await issueResetLink({
+    userId: identity.userId,
+    telegramUserId,
+    baseUrl: process.env.PUBLIC_APP_ORIGIN,
+  });
+
+  if (!issued.ok) {
+    await ack();
+    const copy = {
+      blocked: 'This account is blocked, so a password reset would not restore access. '
+        + 'Please contact support.',
+    }[issued.reason] || 'We could not start a password reset just now. Please try again shortly.';
+    return sendAs(bot, chatId, copy);
+  }
+
+  await ack('Link sent');
+  return sendTemplate({
+    bot, chatId, key: 'password_reset',
+    vars: { resetUrl: issued.url, minutes: issued.minutes, firstName: identity.firstName || '' },
   });
 }
 
@@ -416,7 +498,39 @@ router.post('/recovery/webhook', async (req, res) => {
     if (message.contact) {
       const held = await db.telegram.getRecoverySession(telegramUserId);
       if (!held) {
-        return sendRecoveryMessage(chatId, 'Please send your 12-digit Aadhaar number first.');
+        // ── No Aadhaar held: this is the PASSWORD path, not the recovery one ──
+        // Somebody who has lost their password and opened the recovery bot has
+        // done a reasonable thing, and telling them to send an Aadhaar number
+        // sends them down a flow that ends in "we could not verify these
+        // details" — for a problem that is one link away. So a contact share
+        // with no Aadhaar behind it is read as what it almost always is, and
+        // answered from the LINK that already exists (owner, 2026-09-24: both
+        // bots issue a reset).
+        //
+        // It grants nothing this bot could not already do: the identity is the
+        // one a verified contact share created, and an unlinked Telegram
+        // account reaches no account at all.
+        const phone = normalisePhone(message.contact.phone_number);
+        const linked = phone
+          ? await db.telegram.getIdentityByTelegramId(telegramUserId)
+          : null;
+        if (linked?.contactActive && String(linked.phone) === phone) {
+          const issued = await issueResetLink({
+            userId: linked.userId, telegramUserId, baseUrl: process.env.PUBLIC_APP_ORIGIN,
+          });
+          if (issued.ok) {
+            return sendTemplate({
+              chatId, key: 'password_reset', role: 'recovery',
+              vars: { resetUrl: issued.url, minutes: issued.minutes, firstName: message.from?.first_name || '' },
+              extra: { reply_markup: { remove_keyboard: true } },
+            });
+          }
+        }
+        return sendRecoveryMessage(chatId,
+          'To move your account to this Telegram account, send your 12-digit Aadhaar number first.\n\n'
+          + 'If you only need a new PASSWORD, share your contact from the Telegram account you '
+          + 'already verified with and we will send you a reset link.',
+          { reply_markup: { remove_keyboard: true } });
       }
       const result = await attemptRecovery({
         newTelegramUserId: telegramUserId,

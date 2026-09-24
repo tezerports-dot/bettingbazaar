@@ -1167,9 +1167,11 @@ export async function createMerchantAccount({
   try {
     await client.query('BEGIN');
 
-    // The account. `ON CONFLICT DO NOTHING` on the mobile, so a second
-    // application on a registered number is REFUSED by the index rather than
-    // by a prior lookup two applicants can both pass.
+    // The account. `ON CONFLICT DO NOTHING` on (mobile, account_type), so a
+    // second MERCHANT application on a registered number is REFUSED by the
+    // index rather than by a prior lookup two applicants can both pass — and a
+    // number that already holds a player or staff account is no longer a reason
+    // to refuse a merchant one.
     // NO `email` column here. `users.email` was removed with the player email
     // (CLAUDE.md §2: "there are none beyond the mobile"), and this INSERT kept
     // naming it — so EVERY merchant signup threw `column "email" of relation
@@ -1179,10 +1181,23 @@ export async function createMerchantAccount({
     //
     // The merchant's own email is a different thing and still stored, on
     // `merchants` — §2 says so explicitly, and `createMerchant` below takes it.
+    //
+    // ── 'MERCHANT', and the conflict target moved with it ─────────────────
+    // A mobile is unique PER ACCOUNT TYPE now (2026-09-24), so `ON CONFLICT
+    // (mobile)` matches no constraint at all and this INSERT throws — which the
+    // catch below turns into "Signup failed. Please try again." for every
+    // applicant, exactly the way the `email` column did before it.
+    //
+    // The type itself is the load-bearing half. Without it this row is written
+    // as a PLAYER, and the player login door — which scopes its read by type —
+    // would admit a merchant signing in with their merchant password. The three
+    // panels are separate accounts by the owner's decision; this is where the
+    // merchant one says so.
     const account = await client.query(
-      `INSERT INTO users (user_id, username, mobile, password_hash, status, kyc_status, roles)
-       VALUES ($1, $2, $3, $4, 'ACTIVE', 'PENDING_SUBMISSION', ARRAY['merchant'])
-       ON CONFLICT (mobile) DO NOTHING
+      `INSERT INTO users (user_id, username, mobile, password_hash, status, kyc_status,
+                          roles, account_type)
+       VALUES ($1, $2, $3, $4, 'ACTIVE', 'PENDING_SUBMISSION', ARRAY['merchant'], 'MERCHANT')
+       ON CONFLICT (mobile, account_type) DO NOTHING
        RETURNING user_id`,
       [String(userId), username ?? '', String(mobile), passwordHash],
     );

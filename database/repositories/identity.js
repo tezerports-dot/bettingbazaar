@@ -477,10 +477,15 @@ export async function createAccountFromSignup({
       const id = String(userId);
 
       const { rows } = await client.query(
+        // 'PLAYER', stated rather than defaulted. This is the one writer of a
+        // player account and the type decides which door can ever read it back
+        // — a row written with the wrong one is an account its owner cannot
+        // sign into, and nothing about it looks wrong.
         `INSERT INTO users (user_id, username, mobile, password_hash, referral_code,
-                            referred_by, status, kyc_status, kyc_submission_count)
-         VALUES ($1, $2, $3, $4, $5, $6, 'ACTIVE', 'PENDING_APPROVAL', 1)
-         ON CONFLICT (mobile) DO NOTHING
+                            referred_by, status, kyc_status, kyc_submission_count,
+                            account_type)
+         VALUES ($1, $2, $3, $4, $5, $6, 'ACTIVE', 'PENDING_APPROVAL', 1, 'PLAYER')
+         ON CONFLICT (mobile, account_type) DO NOTHING
          RETURNING user_id`,
         [id, username || `player${String(mobile).slice(-4)}`, String(mobile),
          String(passwordHash), referralCode, referredBy ? String(referredBy) : null],
@@ -502,7 +507,10 @@ export async function createAccountFromSignup({
   } catch (e) {
     if (e?.code === '23505') {
       if (e.constraint === 'kyc_verifications_aadhaar_hash_key') return { ok: false, reason: 'aadhaar_taken' };
-      if (e.constraint === 'users_mobile_key') return { ok: false, reason: 'mobile_taken' };
+      // Renamed with the constraint (2026-09-24): a mobile is unique PER
+      // ACCOUNT TYPE now, so this fires only when that number already holds a
+      // PLAYER account — which is exactly the case this message is for.
+      if (e.constraint === 'users_mobile_per_account_type') return { ok: false, reason: 'mobile_taken' };
       return { ok: false, reason: 'duplicate' };
     }
     throw e;

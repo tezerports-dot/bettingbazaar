@@ -2445,8 +2445,8 @@ exists.
 
 | Measure | Count |
 |---|---|
-| Route declarations in `backend/**` | 310 |
-| Reachable with **no auth middleware** | 41 |
+| Route declarations in `backend/**` | 311 |
+| Reachable with **no auth middleware** | 42 |
 | Gated `isAdminOrSubAdmin` with **no permission key** | 2 |
 | — of those, **writes** (non-GET) | 0 |
 | Carrying an explicit permission key | 56 |
@@ -2493,6 +2493,7 @@ new route and decide. Each of the three questions is defined in §2.
 - `POST /login  (backend/domains/identity/playerAuth.routes.js)`
 - `POST /login/2fa  (backend/domains/identity/playerAuth.routes.js)`
 - `POST /logout  (backend/routes.js)`
+- `POST /password/reset  (backend/domains/identity/playerAuth.routes.js)`
 - `POST /recovery/webhook  (backend/domains/telegram/telegram.routes.js)`
 - `POST /register  (backend/domains/identity/playerAuth.routes.js)`
 - `POST /wallet/:providerKey  (backend/domains/casino/gameProvider.routes.js)`
@@ -2510,15 +2511,15 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 407 |
-| Parameters only (safe by construction) | 259 |
+| `pgQuery` call sites | 409 |
+| Parameters only (safe by construction) | 261 |
 | Interpolating into statement text (each needs a reading) | 148 |
 
 ### Panel injection sinks
 
 | Panel | .ts/.tsx files | `dangerouslySetInnerHTML` | `.innerHTML =` |
 |---|---|---|---|
-| `user-panel` | 79 | 0 | 0 |
+| `user-panel` | 78 | 0 | 0 |
 | `admin-panel` | 97 | 0 | 0 |
 | `merchant-panel` | 40 | 0 | 0 |
 

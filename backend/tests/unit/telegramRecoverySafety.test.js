@@ -27,7 +27,12 @@ describe('recovery requires two independent factors', () => {
     // Aadhaar have an account here" — the exact flaw removed from the old
     // recovery route. The Aadhaar is only ever compared to the account the
     // phone already resolved to.
-    expect(svc).toMatch(/getUserByMobile\(mobile\)/);
+    // Scoped to PLAYER since 2026-09-24: a mobile can hold a player, a staff
+    // and a merchant account, and recovery moves a PLAYER's Telegram link. An
+    // unscoped read here would resolve to whichever row the planner reached
+    // first — which is how a contact share came to link the STAFF account on a
+    // shared number.
+    expect(svc).toMatch(/getUserByMobile\(mobile, 'PLAYER'\)/);
     // No lookup anywhere takes an Aadhaar as its search key. Asserted over the
     // whole file rather than one expression, so a future read added below is
     // covered too.
