@@ -1225,45 +1225,65 @@ const CASES = [
     panel: 'merchant-panel',
     what: 'Save merchant notification preferences',
     async run(page, cfg, base) {
-      await go(page, cfg, base, '/profile');
-      const save = page.getByRole('button', { name: /^\s*Save preferences\s*$/i }).first();
-      if (await save.count() === 0) {
-        const routed = await page.locator('main').innerText().catch(() => '(no <main>)');
-        return ['NOT DRIVEN', `no "Save preferences" — routed region: ${routed.replace(/\s+/g, ' ').slice(0, 160)}`];
-      }
-      // Flip a switch first, or the save publishes what was already stored and
-      // proves nothing about whether the press carried anything.
-      // The switch is `sr-only` inside its label, so a direct click times out
-      // and — because the click was swallowed — nothing changed, Save stayed
-      // DISABLED, and this case failed on the SAVE while the real cause was
-      // the switch above it. `clickThrough` presses what a person presses.
-      const toggle = page.locator('[role="switch"], input[type="checkbox"]').first();
-      let flipped = false;
-      if (await toggle.count() > 0) {
-        const hit = await clickThrough(toggle.first(), { timeout: 8000 });
-        flipped = hit.ok;
-        if (!hit.ok) return ['NOT DRIVEN', `the preference switch could not be pressed: ${hit.why}`];
-      }
-      await settle(page, 1500);
+      // ── PUT THE TRADING FLAGS BACK. Trap 10, on a ROW and not a config ───
+      // This flips whatever switch is first on the screen, and the first
+      // switch is "accept buy orders". It left the drive merchant with
+      // `accepts_deposits = false` for every case that ran after it, and the
+      // order-row case below then failed on "Merchant is not enabled for buy
+      // orders." — the platform refusing exactly as it should, reported as a
+      // defect. The restore is a `finally`, so it runs on the failing path
+      // too: a restore that only runs when the case passed is the one that
+      // matters least.
+      const flagsBefore = (await pgQuery(
+        'SELECT accepts_deposits AS d, accepts_withdrawals AS w FROM merchants WHERE merchant_id = $1',
+        [page.__bbMerchantId],
+      )).rows[0];
+      try {
+        await go(page, cfg, base, '/profile');
+        const save = page.getByRole('button', { name: /^\s*Save preferences\s*$/i }).first();
+        if (await save.count() === 0) {
+          const routed = await page.locator('main').innerText().catch(() => '(no <main>)');
+          return ['NOT DRIVEN', `no "Save preferences" — routed region: ${routed.replace(/\s+/g, ' ').slice(0, 160)}`];
+        }
+        // Flip a switch first, or the save publishes what was already stored and
+        // proves nothing about whether the press carried anything.
+        // The switch is `sr-only` inside its label, so a direct click times out
+        // and — because the click was swallowed — nothing changed, Save stayed
+        // DISABLED, and this case failed on the SAVE while the real cause was
+        // the switch above it. `clickThrough` presses what a person presses.
+        const toggle = page.locator('[role="switch"], input[type="checkbox"]').first();
+        let flipped = false;
+        if (await toggle.count() > 0) {
+          const hit = await clickThrough(toggle.first(), { timeout: 8000 });
+          flipped = hit.ok;
+          if (!hit.ok) return ['NOT DRIVEN', `the preference switch could not be pressed: ${hit.why}`];
+        }
+        await settle(page, 1500);
 
-      const before = await merchantPrefs(page.__bbMerchantId);
-      if (await save.isDisabled()) {
-        return ['FAILED', 'a preference was flipped and Save preferences stayed disabled'];
-      }
-      const hit = await clickThrough(save, { timeout: 8000 });
-      if (!hit.ok) return ['FAILED', `Save preferences could not be pressed: ${hit.why}`];
-      await settle(page, 8000);
-      const after = await merchantPrefs(page.__bbMerchantId);
-      const said = await words(page);
+        const before = await merchantPrefs(page.__bbMerchantId);
+        if (await save.isDisabled()) {
+          return ['FAILED', 'a preference was flipped and Save preferences stayed disabled'];
+        }
+        const hit = await clickThrough(save, { timeout: 8000 });
+        if (!hit.ok) return ['FAILED', `Save preferences could not be pressed: ${hit.why}`];
+        await settle(page, 8000);
+        const after = await merchantPrefs(page.__bbMerchantId);
+        const said = await words(page);
 
-      if (JSON.stringify(after) !== JSON.stringify(before)) {
-        return ['DROVE', `preferences written: ${JSON.stringify(after).slice(0, 80)}`];
+        if (JSON.stringify(after) !== JSON.stringify(before)) {
+          return ['DROVE', `preferences written: ${JSON.stringify(after).slice(0, 80)}`];
+        }
+        if (!flipped && /saved|updated|success/i.test(said)) {
+          return ['DROVE', 'saved with nothing changed — the screen confirmed it (no switch to flip)'];
+        }
+        return ['FAILED', `pressed Save preferences and the stored preferences did not move`
+          + ` — screen said: ${said.slice(-140)}`];
+      } finally {
+        await pgQuery(
+          'UPDATE merchants SET accepts_deposits = $2, accepts_withdrawals = $3 WHERE merchant_id = $1',
+          [page.__bbMerchantId, flagsBefore?.d ?? true, flagsBefore?.w ?? true],
+        ).catch(() => {});
       }
-      if (!flipped && /saved|updated|success/i.test(said)) {
-        return ['DROVE', 'saved with nothing changed — the screen confirmed it (no switch to flip)'];
-      }
-      return ['FAILED', `pressed Save preferences and the stored preferences did not move`
-        + ` — screen said: ${said.slice(-140)}`];
     },
   },
 
@@ -2111,6 +2131,113 @@ const CASES = [
         return ['DROVE', `re-ingest ran and the screen reported it — "${tail.replace(/\s+/g, ' ').slice(-110)}"`];
       }
       return ['FAILED', `pressed Re-ingest and the screen said neither a count nor a reason: ${tail.slice(-140)}`];
+    },
+  },
+
+  {
+    id: 'merchant/orders/accept-a-later-card',
+    panel: 'merchant-panel',
+    what: 'Accept an order from a card that is NOT the first — the merchant side of §23',
+    async run(page, cfg, base) {
+      // ── THREE ASSIGNED orders has to be a state the platform can produce ──
+      // It refused the first version by name — "Merchant has reached DEPOSIT
+      // active order limit (1)" — which is the ceiling working, and a fixture
+      // of three ASSIGNED deposits under a cap of 1 is §32 S16: a row
+      // assignment itself would never create. So the case raises the cap the
+      // way the platform supports raising it, per merchant, and puts it back.
+      //
+      // It also switches buy orders back ON for itself rather than trusting
+      // that the preferences case put them back: a case that needs a state
+      // ESTABLISHES it (§32 S19), or it is reading whatever the run before it
+      // happened to leave.
+      const before = (await pgQuery(
+        `SELECT max_concurrent_deposit_orders AS c, accepts_deposits AS d
+           FROM merchants WHERE merchant_id = $1`,
+        [page.__bbMerchantId],
+      )).rows[0] ?? {};
+      await pgQuery(
+        `UPDATE merchants SET max_concurrent_deposit_orders = 3, accepts_deposits = true
+           WHERE merchant_id = $1`,
+        [page.__bbMerchantId],
+      );
+
+      // Several ASSIGNED orders on one merchant's queue, so "a later card" is
+      // a real position rather than the only card on screen.
+      const made = [];
+      for (let i = 0; i < 3; i++) {
+        const player = await seedPlayer({ balancePaise: 100000 });
+        const orderId = rid('mrow');
+        await pgQuery(
+          `INSERT INTO order_states
+             (order_id, user_id, merchant_id, order_type, state, token_amount_paise, fiat_amount_paise)
+           VALUES ($1, $2, $3, 'DEPOSIT', 'ASSIGNED', 50000, 50000)`,
+          [orderId, player.userId, page.__bbMerchantId],
+        );
+        made.push(orderId);
+      }
+      try {
+        await go(page, cfg, base, '/orders');
+        await settle(page, 8000);
+
+        // Where each of mine rendered, by the order id printed on its card.
+        const order = await page.evaluate((ids) => {
+          const text = document.body.innerText || '';
+          return ids.map((id) => text.indexOf(id));
+        }, made);
+        const present = order.filter((i) => i >= 0);
+        if (present.length < 2) {
+          return ['NOT DRIVEN', `only ${present.length} of the 3 seeded orders are on the queue`];
+        }
+        const first = Math.min(...present);
+        let at = -1; let target = null;
+        for (let i = 0; i < made.length; i++) {
+          if (order[i] > first && order[i] > at) { at = order[i]; target = made[i]; }
+        }
+        if (!target) return ['NOT DRIVEN', 'the seeded orders did not render as separate cards'];
+
+        // The card that HOLDS my order id, not merely an element mentioning it.
+        const card = page.locator('div', { hasText: target })
+          .filter({ has: page.getByRole('button', { name: /Accept order/i }) }).last();
+        if (await card.count() === 0) {
+          const n = await page.getByRole('button', { name: /Accept order/i }).count();
+          return ['NOT DRIVEN', `${target} has no card with an Accept among the ${n} on screen`];
+        }
+        const accept = card.getByRole('button', { name: /Accept order/i }).first();
+        // Read the ANSWER, not the toast — `run()` raises one and it fades.
+        const answered = page.waitForResponse(
+          (r) => /accept/i.test(r.url()) && r.request().method() !== 'GET',
+          { timeout: 15000 },
+        ).catch(() => null);
+        const hit = await clickThrough(accept, { timeout: 8000 });
+        if (!hit.ok) return ['NOT DRIVEN', `Accept could not be pressed: ${hit.why}`];
+        const reply = await answered;
+        await settle(page, 8000);
+        await confirmWith(page, 'Accept');
+        const said = reply
+          ? `${reply.status()} ${(await reply.text().catch(() => '')).replace(/\s+/g, ' ').slice(0, 140)}`
+          : 'no request left the panel';
+
+        const after = await Promise.all(made.map((id) => orderState(id)));
+        const moved = made.filter((id, i) => after[i] !== 'ASSIGNED');
+        if (moved.length === 0) {
+          return ['FAILED', `pressed Accept on a later card and every order is still ASSIGNED — ${said}`];
+        }
+        if (moved.length > 1) {
+          return ['FAILED', `ONE Accept and ${moved.length} orders moved: ${moved.join(', ')}`];
+        }
+        if (moved[0] !== target) {
+          return ['FAILED', `pressed Accept on ${target}'s card and ${moved[0]} was accepted instead (§23)`
+            + ' — a merchant would have taken on an order they did not choose'];
+        }
+        return ['DROVE', `a later card accepted ${target} (now ${after[made.indexOf(target)]}) and left the other 2 ASSIGNED`];
+      } finally {
+        await pgQuery('DELETE FROM order_states WHERE order_id = ANY($1::text[])', [made]).catch(() => {});
+        await pgQuery(
+          `UPDATE merchants SET max_concurrent_deposit_orders = $2, accepts_deposits = $3
+             WHERE merchant_id = $1`,
+          [page.__bbMerchantId, before.c ?? null, before.d ?? true],
+        ).catch(() => {});
+      }
     },
   },
 
