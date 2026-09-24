@@ -28,6 +28,29 @@ listed below, which hold **data and history, never rules**.
 | **Every defect SHAPE found so far, how wide you must search to see it, and what actually found it** | `docs/audit/SECURITY_AUDIT_MAP.md` **§4.0 — the shape index. Read it before auditing anything.** |
 | **What every change must REPORT, as a table, before it is done** | **§31 — the completeness contract** |
 | **The twenty-five shapes that keep shipping here, each with the question that finds it** | **§32 — ask these of the change in front of you** |
+| **How a player signs up, signs in, and is verified** | **§33 — the form, the bot fleet, the gate, and which limiter guards what** |
+
+---
+
+## 0.0 This platform is NOT DEPLOYED. There are no users.
+
+**Development, pre-deployment. Zero live accounts, zero live money, zero live
+merchants.** Nothing in this repository has ever served a real person.
+
+So there is no migration to plan, no back-compatibility to preserve, and no
+"existing users" to think about. **Build the target state and delete what it
+replaces** — that is §30's "do not accommodate; remove", stated as a fact about
+where this platform is rather than as a preference.
+
+This is written down because it has been raised, and answered, repeatedly: an
+agent reads a schema change and starts designing a migration path for accounts
+that do not exist, or softens a replacement into a parallel code path so the old
+one keeps working for nobody. Both cost real work and leave the second
+implementation §2 exists to prevent.
+
+When this changes — when the platform takes its first real deposit — this
+section is the one that has to be rewritten first, and §29 already says what
+readiness requires before that day.
 
 ---
 
@@ -203,11 +226,16 @@ wrong owner gets working code deleted by the next reader.
 | Referral reward, budget, member cap | `REFERRAL_REWARD_PAISE` in `domains/referral/referralRewards.js` (flat ₹25) and `referral_programmes`. A flat one-off per verified signup, two tiers, from a bounded pool — never a share of anyone's losses and never attached to settlement. |
 | Referral earnings ledger and payout order | `domains/referral/referral.service.js` exclusively. Append-only, unique on `(sourceUserId, level)`; eligibility evaluated at payout. Pays strictly in joining-number order through `creditWinnings`. |
 | Player contact details | **There are none beyond the mobile.** No player email exists; the bot never asks for one. `SupportLinks.email` and `merchants.email` are different things and stay. |
-| Aadhaar mutability | An APPROVED Aadhaar is immutable. A REJECTED one may be replaced through the bot up to `MAX_KYC_SUBMISSIONS`. A FAILED submission's row is DELETED, because `aadhaar_hash` is unique and a typo would otherwise park a stranger's Aadhaar in that index and lock its owner out forever. `users.mobile` is never mutable. |
+| Aadhaar mutability | An APPROVED Aadhaar is immutable. A REJECTED one may be replaced **on the panel** (`POST /api/v1/auth/kyc/resubmit` → `domains/identity/aadhaarResubmission.service.js`) up to `MAX_KYC_SUBMISSIONS`. A FAILED submission's row is DELETED, because `aadhaar_hash` is unique and a typo would otherwise park a stranger's Aadhaar in that index and lock its owner out forever. `users.mobile` is never mutable — which is why the signup form normalises `+91` and a leading `0` off the number BEFORE it is written (§33). |
 | Identity documents | **None are collected, stored or accepted.** KYC is a 12-digit Aadhaar number held as an HMAC plus AES-256-GCM ciphertext. Do not add an upload path for one. |
 | Upload categories that DO exist | `services/cdn.service.js` — P2P chat attachments, payment proofs, admin branding assets, CDM receipts. Nothing else. "No KYC documents, so remove the upload routes" would break deposits and disputes. |
 | The live bot and official channel | `telegram_configs` (the active generation, owning the channel) plus the bot registry, composed by `activeConfig()` in `domains/telegram/telegramClient.js`. **The registry wins over a generation's embedded credentials.** A bot swap does NOT bump the generation; only a channel change does. The 30s cache in `activeConfig` is the only permitted cache. |
-| What the bot says | `TelegramTemplate` rows via `telegramTemplates.service.js`, with `DEFAULT_TEMPLATES` as fallback. A blank row means the shipped default, never silence. Do not hardcode a player-facing sentence in a route. |
+| **How many sign-in bots there are, and which one a player gets** | `telegram_bots` (role `signin`, any number ACTIVE) + `assignSigninBot` in `database/repositories/telegram.js`, wrapped by `domains/identity/signupVerification.service.js`. **`signin` is a FLEET; `recovery` is singular** — the generated `live_slot` column names recovery only, and the partial unique index enforces one live recovery bot. The rotation cursor is the SEQUENCE `telegram_signin_rotation`: `nextval - 1` modulo the live count, over the fleet ordered `added_at, bot_id`. The assignment is STORED on `users.telegram_bot_id` because the player is TOLD which bot to open, and re-resolved on every read so a retired bot's players move on their own. Retiring the LAST live sign-in bot is refused **in the statement**, by counting what would be left. |
+| **Whether a player may use the app at all** | `domains/identity/signupVerification.service.js` — `verificationStateFor()`, served by `GET /api/v1/auth/verification`. It answers the contact share and the channel membership together and hands back ONE `reason` naming the one thing to do next. **Not `kycStatus`** (that is the admin's bulk Aadhaar verification, on its own clock) and **not two endpoints** — the panel reads `reason` and nothing else, because a screen deriving that from four booleans derives it differently from the next screen that tries. |
+| **Which door a password login arrived at** | `LOGIN_DOOR` in `backend/routes.js`, set by the MOUNT. One `loginHandler` serves both `/api/admin/login` (staff) and `/api/v1/auth/login` (players); they differ only in who they admit, and every other thing they do — reading the hash from the one function that returns it, the blocked refusal, the argon2 upgrade, issuing a challenge INSTEAD of a session — is identical and must stay identical. The door is checked on BOTH legs, so a challenge minted at one cannot be redeemed at the other. |
+| What the bot says | `TelegramTemplate` rows via `telegramTemplates.service.js`, with `DEFAULT_TEMPLATES` as fallback. A blank row means the shipped default, never silence. Do not hardcode a player-facing sentence in a route. **Which BOT sends it is a separate question** — `sendTemplate({ bot })`, always, on the sign-in fleet: a bot may only message somebody who has opened a chat with IT, so a reply from any other bot is refused by Telegram and reads to the player as a conversation that simply stopped. |
+| What a valid Aadhaar, mobile or referral code LOOKS like | `backend/domains/identity/signupFields.js`. Both ends import it — the form that takes what a person typed, and the contact share that takes what Telegram verified — because if they normalise a phone number differently the match fails for a player who did nothing wrong, silently. The user panel keeps a §5 MIRROR (`indianMobile` in `AuthModal.tsx`) because §15 forbids importing from `backend/`; change them in the same commit. |
+| What a password may be | `backend/domains/identity/passwordPolicy.js` — `assertStaffPassword` (12) and `assertPlayerPassword` (8), ONE implementation with two floors. The floor is set by BLAST RADIUS: a staff password reads the whole player base and the ledger; a player's reaches one wallet. Everything above the floor is identical, deliberately — a second copy is where the degenerate-run check quietly stops being applied to players. |
 | Notifications, all channels | `domains/communication/communication.service.js` `notify()`. Never write a notification row directly. |
 | Transaction/bet validation and operational rules | `domains/risk/riskValidation.service.js` — the only place this logic lives. Configurable numbers stay in `SystemConfig`. |
 | Cycle timing | `domains/markets/cycleGenerator.service.js` computes; `GAME_CORE.ts` mirrors for display math only. |
@@ -1206,9 +1234,43 @@ these are the specific ones this codebase has actually produced.
 | S25 | A panel keeping its own list of a document's fields | Which list does the SERVER agree with? Every other copy will drift, in both directions. |
 | S26 | A button calling the RIGHT route with a request that route refuses | `check:ui-coverage` proves the path and the method resolve. Does the call carry what the handler REQUIRES — a header, a required field? Press it and read the toast. |
 | S27 | A limiter counting a REJECTED SESSION as a failed credential | Does the path it guards check a credential at all? A 401 from an expired token is not a guess. |
+| S28 | A limiter on a router PREFIX rather than on the route | What ELSE does that prefix serve? A poll and a page load are not credential attempts. |
+| S29 | An input that normalises to something plausible but WRONG | Type the thing people actually type. Does what lands equal what they meant? |
 
 **S22 through S25 all came out of pressing controls rather than opening
 screens, and each was invisible to every tier below a browser.**
+
+**S28 is S27 one layer up, and it was live on every page load.** `authLimiter`
+was moved off the session router because it counted an expired-token `GET /me`
+as a failed login (S27). The SUBNET limiter beside it was left where it was — on
+the `/api/v1/auth` prefix — and it is worse, because it counts every request,
+success included: 4 × 8 = 32 per /24 per 30 minutes. Measured on a running
+server: `GET /me` answered **429** from an address that had submitted no
+credential at all, and most Indian mobile traffic sits behind carrier-grade NAT,
+where a /24 is thousands of people. One person reloading a page would have
+signed the rest of them out. **A limiter belongs on the route that submits the
+credential, never on a prefix that also carries session and status paths** —
+and the question that finds it is what ELSE that prefix serves.
+
+**S29 was found by typing `+91 98765 43210` into a box with `+91` printed next
+to it.** The handler was `digits(v, 10)`, which strips non-digits and truncates:
+the result is `9198765432` — ten digits, starting with a 9, indistinguishable
+from a real Indian mobile to every check on both sides. The account would be
+created on a number that is not the player's, the Telegram contact share would
+then match nothing FOREVER, and `users.mobile` is never mutable (§2), so support
+could not fix it either. The player sits at the verification gate permanently
+with no way to find out why.
+
+Two things made it invisible. The value was PLAUSIBLE, so no validator objected
+— `isValidMobile` passes it and so does the unique index. And the truncation
+happened progressively, one keystroke at a time, so the `91` was already gone
+before any normaliser could recognise it: the fix had to let the field hold
+twelve digits and reduce at the end, not cap at ten.
+
+**The question is not "is this input validated" but "does what lands equal what
+they meant".** Type the thing people actually type — the country code that is
+already printed beside the box, the leading zero, the spaces — and read the
+value back.
 
 **S27 locked users out of LOGGING OUT.** `authLimiter` — four FAILED attempts
 per thirty minutes, keyed by IP, answering "Too many failed login attempts" — is
@@ -1291,6 +1353,114 @@ test that stages an impossible row stops testing the handler and starts
 testing the absence of a guard. Two fixtures staged a PAID deposit with no
 payment reference — a row `mark-paid` cannot produce — and that is why nobody
 noticed for months that one of the two confirm routes never checked for one.
+
+---
+
+## 33. Signing up is a FORM. Telegram verifies; it does not authenticate.
+
+Owner decision, 2026-09-23. Signing up used to happen inside a Telegram bot —
+/start, type your Aadhaar to the bot, share your contact — and signing in was a
+six-digit code the same bot DMed. Every step depended on a third party that
+suspends gambling bots, rate-limits at roughly **thirty messages a second per
+bot**, and cannot message anybody who has not opened a chat with it first.
+
+### 33.1 The order, which is the whole design
+
+```
+FORM      → the account EXISTS, with a password        (playerAuth.routes.js)
+TELEGRAM  → contact share proves the number,
+            channel join is the membership rule        (telegram.routes.js)
+```
+
+The account exists **before** Telegram is involved. So the contact share is
+matched against a row that is already there (`linkTelegramToAccount`) rather
+than creating one, and a contact that matches nothing is somebody who has not
+filled the form yet — which is a sentence the bot can say.
+
+- **The signup form** takes the Aadhaar number, the Aadhaar-linked mobile, a
+  password, a confirmation, a captcha, and an invite code. The invite code is
+  **pre-filled and non-editable** when the player arrived by a referral link,
+  and the screen confirms whose it is: a code somebody retypes is a code that
+  can be mistyped, and a mistyped code silently costs the referrer their
+  earning.
+- **The login form** takes the mobile, the password, a captcha, and a second
+  factor where one is enrolled.
+- **Nothing the bot can do grants access.** `telegramLogin.service.js`,
+  `telegramOtp.service.js`, `telegram_login_tokens` and `telegram_login_codes`
+  are deleted, not unmounted. That is the security half: a fleet of hundreds of
+  tokens, any one of which could mint a session, is not a risk worth carrying
+  for a convenience a password already provides.
+
+### 33.2 The fleet, and why it is a fleet
+
+One bot is a throughput ceiling, not a design. An operator runs as many sign-in
+bots as they need — the owner's figure was 500 to 1,000 — added, replaced and
+removed from the admin panel. Each account is assigned one **in rotation**:
+"assign 1, assign 2, then 3rd, 4th, 5th and so on, and once it reaches all,
+again start from 1" (owner). See §2 for the owner of that assignment.
+
+Four things follow, and each was got wrong first:
+
+1. **`live_slot` names `recovery` only.** Left naming `signin`, the partial
+   unique index refuses the second live sign-in bot outright.
+2. **The webhook is per-bot** (`/api/telegram/webhook/:botId`). Every bot has
+   its own secret, and a shared path would check every delivery against the
+   first bot's secret: 401 on all of them, every player on that bot stuck, and
+   nothing anywhere saying why.
+3. **Every reply is sent by the bot the update ARRIVED ON** (`sendAs`,
+   `sendTemplate({ bot })`). Telegram refuses a message from a bot the player
+   has not opened a chat with.
+4. **`getLiveBot(role)` answers "give me A live bot"**, not "read the generated
+   column" — which for a fleet is always NULL and would report a working fleet
+   as "Telegram is not configured".
+
+### 33.3 The gate blocks; it does not wait to be refused
+
+`VerificationGateModal` ASKS on mount and on a timer, and blocks everything
+until both halves hold. It was reactive, which was correct while Telegram was
+also the signup — nobody could have an account without having been through the
+bot. A form-created account has verified nothing, so a reactive gate lets
+somebody wander the app until a tap fails. The owner's requirement is the
+opposite: *"if not joined they can't see any other window."*
+
+- **A channel replacement re-gates everyone, structurally.** Every cached
+  membership is stamped with the generation it was observed in, so bumping the
+  generation makes all of them stale at once. Nothing is swept and nothing is
+  migrated. Measured.
+- **A leave re-gates immediately**, from the `chat_member` webhook, same
+  mechanism.
+- **Two of the five reasons are the PLATFORM's state** (`no_bot`,
+  `no_channel`) and say so, with no button — telling somebody to open a bot that
+  does not exist is §32 S14 on the one screen they cannot get past, and a
+  "check again" button there is §32 S22.
+- **A contact CHANGE is detected only when evidence arrives**, and that is
+  stated honestly rather than implied: Telegram pushes no event when somebody
+  changes their number, so it becomes visible at the next contact share and
+  nowhere else. What happens then is automatic (stand the proof down, re-gate)
+  plus a human (`noteContactChange` alerts, and the player is told).
+
+### 33.4 A limiter must guard a path that checks a credential
+
+Twice now, measured on a running server, a limiter built for credential guesses
+was applied to a path that verifies nothing:
+
+| | what it did | what it cost |
+|---|---|---|
+| `authLimiter` on `/api/v1/auth` | counted an expired-token `GET /me` as a failed login | four page loads locked a player out of **logging out** (§32 S27) |
+| `createSubnetLimiter('auth')` on the `/api/v1/auth` PREFIX | counted **every** request, 4 × 8 = 32 per /24 per 30 min | `GET /me` answered **429** from an address that had submitted no credential; most Indian mobile traffic is behind carrier-grade NAT, so a /24 is thousands of people |
+
+Both now sit on the credential ROUTES, in `playerAuth.routes.js`. And signup
+gets neither, because **a registration submits no secret**: nobody learns
+anything by sending the form, so there is nothing to slow down. What is bounded
+instead is how many **accounts** an address ends up with — `signupLimiter` and
+`createSubnetLimiter('signup', { countOnly: 'successes' })`, both counting
+successes, so a typo never costs the next attempt (§32 S13). Measured before
+the split: three mistyped Aadhaar numbers answered *"too many attempts from your
+network"* to somebody who had not yet submitted one valid form.
+
+**The rule, stated for the next limiter:** before mounting one, name the
+credential the path checks. If you cannot, it is the wrong limiter — or the
+right limiter on the wrong mount.
 
 ---
 

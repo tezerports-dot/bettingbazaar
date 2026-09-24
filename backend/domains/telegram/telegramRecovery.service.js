@@ -37,7 +37,7 @@
 import { db } from '#db';
 import { hashAadhaarCandidates } from '../identity/aadhaarHash.util.js';
 import { activeConfig } from './telegramClient.js';
-import { normalisePhone } from './telegramOnboarding.service.js';
+import { normalisePhone } from '../identity/signupFields.js';
 import { sendAlert } from '../../services/alerting.service.js';
 
 /**

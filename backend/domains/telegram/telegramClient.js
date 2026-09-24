@@ -172,6 +172,61 @@ export async function sendMessage(chatId, text, extra = {}) {
   });
 }
 
+/**
+ * Reply from a SPECIFIC bot.
+ *
+ * ── Why the fleet needs this and `sendMessage` is not enough ───────────────
+ * A Telegram bot can only message somebody who has opened a chat with IT. With
+ * one sign-in bot that was invisible — every player was in a chat with the only
+ * bot there was. With a fleet of hundreds it is the central fact: a player
+ * assigned bot #47 has a conversation with bot #47 and with nothing else, and a
+ * reply sent from bot #1 is rejected by Telegram with "bot can't initiate
+ * conversation with a user" — no message, no error a player can see, a
+ * conversation that just stops.
+ *
+ * So every reply in the sign-in conversation is sent by the bot the update
+ * ARRIVED ON, which the webhook resolves from its own path. This function is
+ * how it does that, and `sendMessage`'s config-resolved token is reserved for
+ * the paths that genuinely have one bot.
+ *
+ * @param {{token: string, username?: string}} bot
+ */
+export async function sendAs(bot, chatId, text, extra = {}) {
+  if (!bot?.token) return { ok: false, error: 'no_bot' };
+  return callApi(bot.token, 'sendMessage', {
+    chat_id: chatId, text, parse_mode: 'HTML', disable_web_page_preview: true, ...extra,
+  });
+}
+
+/**
+ * Admit somebody who asked to join the channel.
+ *
+ * The official channel is PRIVATE and admits on a JOIN REQUEST (owner
+ * decision): a link opens a request rather than adding the person, and somebody
+ * has to approve it. That somebody is this platform, immediately — the request
+ * is the player doing exactly what they were told to do, and leaving it in a
+ * queue for a human would make signing up take as long as an admin's attention
+ * span.
+ *
+ * Any bot that administers the channel may approve, so the caller passes the
+ * one whose webhook the request arrived on.
+ *
+ * `USER_ALREADY_PARTICIPANT` and an already-handled request are SUCCESSES, not
+ * errors: Telegram redelivers an update it thinks failed, and a second approval
+ * of the same request must not be logged as a failure to admit somebody who is
+ * already in.
+ */
+export async function approveJoinRequest(bot, chatId, telegramUserId) {
+  const res = await callApi(bot?.token, 'approveChatJoinRequest', {
+    chat_id: chatId, user_id: Number(telegramUserId),
+  });
+  if (res.ok) return res;
+  if (/already|hide_requester_missing|participant/i.test(res.error || '')) {
+    return { ok: true, result: true, alreadyIn: true };
+  }
+  return res;
+}
+
 export async function sendRecoveryMessage(chatId, text, extra = {}) {
   const cfg = await activeConfig();
   if (!cfg?.recoveryBotToken) return { ok: false, error: 'recovery_not_configured' };

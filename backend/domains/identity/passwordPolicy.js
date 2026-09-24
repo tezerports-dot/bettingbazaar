@@ -1,6 +1,6 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * passwordPolicy.js — the one rule about what a STAFF password may be.
+ * passwordPolicy.js — the one rule about what a password may be.
  *
  * ── Why this exists ────────────────────────────────────────────────────────
  * There was no rule. `POST /api/admin/sub-admins` took whatever `password` the
@@ -38,10 +38,33 @@
  * already-accepted password to upgrade a legacy bcrypt hash to argon2id, and
  * running a floor there would lock out every existing account whose password
  * predates this file. Those two sites take the password as given, deliberately.
+ *
+ * ── Two floors, one implementation ─────────────────────────────────────────
+ * Players have passwords now — the signup form sets one — so this file governs
+ * two populations with very different blast radii. What differs between them is
+ * a NUMBER, and nothing else; see PLAYER_PASSWORD_MIN_LENGTH.
  */
 
 /** Staff hold float, read the player base, and move money. 12 is the floor. */
 export const STAFF_PASSWORD_MIN_LENGTH = 12;
+
+/**
+ * A player's floor. Eight, and the same rules above it.
+ *
+ * ── Why it is not twelve ───────────────────────────────────────────────────
+ * The floor is set by BLAST RADIUS, not by seniority. A staff password reads
+ * the whole player base, the revenue ledger and every merchant wallet; a
+ * player's password reaches one wallet — their own — behind a platform that
+ * already refuses a withdrawal to an unverified account. Eight is NIST SP
+ * 800-63B's minimum for a user-chosen secret, and it is typed on a phone
+ * keyboard by somebody who is signing up, not by somebody who was onboarded.
+ *
+ * Everything ELSE in this file applies to a player unchanged: the degenerate
+ * runs, the words attackers try first, and — the one that matters most here —
+ * the refusal to let the password BE the account's own mobile number, which is
+ * printed on the form directly above the password box.
+ */
+export const PLAYER_PASSWORD_MIN_LENGTH = 8;
 
 /**
  * Shapes that are weak at any length. Deliberately short: a blocklist is not a
@@ -86,11 +109,27 @@ function isDegenerate(value) {
  * @throws {PasswordPolicyError} status 400, code WEAK_PASSWORD
  */
 export function assertStaffPassword(password, context = {}, label = 'account') {
+  return assertPassword(password, context, label, STAFF_PASSWORD_MIN_LENGTH);
+}
+
+/**
+ * Validate a password being SET on a PLAYER account — the signup form, and any
+ * later change of it.
+ *
+ * Same function, a different floor. Written as one implementation rather than
+ * two because §5's rule is exactly this: the second copy is where the
+ * degenerate-run check quietly stops being applied to players.
+ */
+export function assertPlayerPassword(password, context = {}, label = 'account') {
+  return assertPassword(password, context, label, PLAYER_PASSWORD_MIN_LENGTH);
+}
+
+function assertPassword(password, context, label, minLength) {
   const value = String(password ?? '');
 
-  if (value.length < STAFF_PASSWORD_MIN_LENGTH) {
+  if (value.length < minLength) {
     throw new PasswordPolicyError(
-      `A ${label} password must be at least ${STAFF_PASSWORD_MIN_LENGTH} characters. ` +
+      `A ${label} password must be at least ${minLength} characters. ` +
       'Length is what makes a password hard to crack — a long phrase you can remember ' +
       'beats a short one with symbols in it.',
     );

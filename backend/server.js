@@ -77,6 +77,10 @@ import { registerFundingEventSubscribers } from './domains/funding/fundingEvents
 
 // ─── ROUTES ───────────────────────────────────────────────────────────────────
 import authRoutes, { loginHandler, loginTwoFactorHandler } from './routes.js';
+// The player's form signup and form login. Separate from `authRoutes` because
+// they submit a CREDENTIAL and it must carry the credential chain — see the
+// mount below, and §32 S27 for what happens when the two are confused.
+import playerAuthRoutes from './domains/identity/playerAuth.routes.js';
 import adminRoutes        from './routes/admin/index.js';      // ← new modular index
 import betRoutes          from './domains/markets/bet.routes.js';
 // Telegram bot webhook + the one-time-link session exchange. Public by design:
@@ -484,14 +488,29 @@ app.get('/api/v1/health', legacyHealth);
 // until an admin sets a ceiling) catches distributed rotation across subnets.
 if (runtime.acceptsHttpApi) {
 startIpDefenseConfigRefresh();
-// Session lifecycle only: /me, /logout, /health. No captcha here — every page
-// load calls /me to restore the session, so gating this router would 403 every
-// user on every load. The credential-submitting routes that captcha DID guard
-// (/login, /register) no longer exist for players; the staff password door is
-// mounted separately below and carries its own captcha.
-app.use('/api/v1/auth', authLimiter, createSubnetLimiter('auth'), globalSurgeBreaker('auth'), authRoutes);
-// Player signup and login are NOT here — they run through the Telegram bot
-// webhooks and the one-time-link exchange, mounted at /api/telegram below.
+// ── The player's form signup, form login and verification gate ───────────
+// Mounted BEFORE the session router so its own routes are matched first.
+//
+// The credential chain (pace → failure budget → subnet → captcha) is INSIDE
+// this router, per route, rather than on this mount — deliberately. The router
+// also carries `/verification`, which every gated player polls on a timer and
+// which checks no credential: putting the chain on the mount would make a poll
+// consume a login-failure budget and hand a captcha to a screen that has no
+// form on it. That is §32 S27 in the making, and S27 is on this file already.
+app.use('/api/v1/auth', playerAuthRoutes);
+// Session lifecycle: /me, /logout, /health. No captcha here — every page load
+// calls /me to restore the session, so gating this router would 403 every user
+// on every load.
+//
+// And no SUBNET limiter or surge breaker either, for the same reason and a
+// sharper one. Both counted every request, success included, at 4 x 8 = 32 per
+// /24 per 30 minutes — which is a handful of page loads. Measured on a running
+// server: `GET /me` answered 429 from an address that had submitted no
+// credential. Most Indian mobile traffic sits behind carrier-grade NAT, so a
+// /24 is thousands of people, and one of them reloading a page would have
+// signed the rest of them out. Both now sit on the credential ROUTES, in
+// playerAuth.routes.js, which is the only place either can do its job.
+app.use('/api/v1/auth', authLimiter, authRoutes);
 // 2FA enrolment and management (docs/PROJECT_STATUS.md §3.3). Mandatory for admin and
 // sub-admin roles; players do not have passwords and so have no second factor
 // to enrol. Enforcement at login lives in the auth handler, this router only

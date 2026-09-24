@@ -25,7 +25,7 @@
  *            Required by WinnersPage, FaqPage, SupportPage, and app-init branding fetch.
  */
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
-import { Backend } from './backend.interface';
+import { Backend, VerificationState } from './backend.interface';
 // L-01 fix: GAME_CORE.ts header requires realBackend.ts to import from it.
 import { PAYOUT, WINNER, PHASE } from '../GAME_CORE';
 import {
@@ -291,21 +291,19 @@ export class RealBackend implements Backend {
 
   // -- AUTH -----------------------------------------------------------------
   /**
-   * Trade a bot login link's one-time token for a session.
+   * Seat a player, and re-authenticate the socket as them.
    *
-   * This replaced login()/register()/loginTwoFactor(). Identity is proved
-   * inside Telegram — contact share for the phone, Aadhaar for KYC, channel
-   * membership for access — so by the time a token reaches here the only
-   * question left is whether the token itself is still good. The server
-   * answers that and sets the httpOnly session cookie; the returned token is
-   * kept solely as the WebSocket's auth fallback, same as every other path.
+   * ── One place, because it was three ────────────────────────────────────
+   * The three ways in (the link exchange, the OTP verify, and now the form)
+   * each did this token dance themselves. It is four statements and every copy
+   * got them right — but a second way of seating a player that forgot to
+   * re-auth the socket leaves somebody signed in with a live feed still
+   * authenticated as nobody, and that is invisible until a private event does
+   * not arrive. So there is one.
    */
-  async exchangeTelegramToken(token: string) {
-    const res = await this.request<{ success: boolean; token?: string; user?: User; message?: string }>(
-      '/telegram/exchange', { method: 'POST', body: JSON.stringify({ token }) });
-
+  private seat<T extends { success: boolean; token?: string }>(res: T): T {
     if (res.success && res.token) {
-      setToken(res.token); // single call site — populates in-memory cache + localStorage
+      setToken(res.token);   // single call site — in-memory cache + localStorage
       if (!this.socket) {
         this._connectWebSocket(res.token);
       } else {
@@ -318,37 +316,65 @@ export class RealBackend implements Backend {
   }
 
   /**
-   * "Send me a code." The response is deliberately uninformative — see the
-   * interface — so there is nothing to branch on here beyond the transport.
+   * The signup form.
+   *
+   * The captcha token is fetched HERE rather than by the form, so no screen can
+   * forget it and the one place it is obtained is the one place that knows
+   * which endpoints require it. `getCaptchaToken` resolves null — never rejects
+   * — when Turnstile is unconfigured or Cloudflare is unreachable; the server
+   * then decides, and its policy is to allow when its own verifier is down.
+   * Throwing on the client would turn somebody else's outage into a signup
+   * outage before the server ever got to apply that.
    */
-  async requestLoginCode(mobile: string) {
-    return this.request<{ success: boolean; message?: string }>(
-      '/telegram/otp/request', { method: 'POST', body: JSON.stringify({ mobile }) });
+  async register(form: {
+    aadhaar: string; mobile: string; password: string; confirmPassword: string;
+    referralCode?: string; captchaToken?: string;
+  }) {
+    const captchaToken = form.captchaToken ?? (await getCaptchaToken()) ?? undefined;
+    return this.seat(await this.request<{
+      success: boolean; token?: string; user?: User; message?: string }>(
+      '/v1/auth/register', { method: 'POST', body: JSON.stringify({ ...form, captchaToken }) }));
+  }
+
+  /** The login form. Same captcha posture as `register`. */
+  async login(mobile: string, password: string, captchaToken?: string) {
+    const token = captchaToken ?? (await getCaptchaToken()) ?? undefined;
+    return this.seat(await this.request<{
+      success: boolean; token?: string; user?: User; message?: string;
+      twoFactorRequired?: boolean; challengeToken?: string }>(
+      '/v1/auth/login', { method: 'POST', body: JSON.stringify({ mobile, password, captchaToken: token }) }));
+  }
+
+  /** The second leg, for an account with an authenticator enrolled. */
+  async verifySecondFactor(challengeToken: string, code: string) {
+    return this.seat(await this.request<{
+      success: boolean; token?: string; user?: User; message?: string }>(
+      '/v1/auth/login/2fa', { method: 'POST', body: JSON.stringify({ challengeToken, code }) }));
   }
 
   /**
-   * The code, traded for a session.
+   * Is this invite code real, and whose?
    *
-   * The token handling is IDENTICAL to `exchangeTelegramToken` on purpose: both
-   * paths end in the same session, and a second way of seating a player that
-   * forgot to re-auth the socket would leave them signed in with a live feed
-   * still authenticated as nobody.
+   * Asked because the signup form PRE-FILLS the code from a referral link and
+   * makes it non-editable in that case (owner decision). A field somebody
+   * cannot change had better be right, and "Invited by player3210" is the
+   * confirmation that the link worked.
    */
-  async verifyLoginCode(mobile: string, code: string) {
-    const res = await this.request<{ success: boolean; token?: string; user?: User; message?: string }>(
-      '/telegram/otp/verify', { method: 'POST', body: JSON.stringify({ mobile, code }) });
+  async checkInvite(code: string) {
+    return this.request<{ valid: boolean; code?: string; invitedBy?: string }>(
+      `/v1/auth/invite/${encodeURIComponent(code)}`);
+  }
 
-    if (res.success && res.token) {
-      setToken(res.token);
-      if (!this.socket) {
-        this._connectWebSocket(res.token);
-      } else {
-        (this.socket as any).auth = { token: res.token };
-        this.socket.disconnect();
-        this.socket.connect();
-      }
-    }
-    return res;
+  /** The verification gate's one question. */
+  async getVerification(opts: { verify?: boolean } = {}) {
+    return this.request<VerificationState>(
+      `/v1/auth/verification${opts.verify ? '?verify=1' : ''}`);
+  }
+
+  /** A rejected player submits a corrected Aadhaar. */
+  async resubmitAadhaar(aadhaar: string) {
+    return this.request<{ success: boolean; message?: string; last4?: string }>(
+      '/v1/auth/kyc/resubmit', { method: 'POST', body: JSON.stringify({ aadhaar }) });
   }
 
   // -- AI ANALYSIS ----------------------------------------------------------

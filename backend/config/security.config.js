@@ -139,6 +139,24 @@ export const RATE_LIMIT_TIERS = {
   // anyway, so the pace alone makes the guess uneconomic before the budget is
   // even consulted.
   loginPace:  { windowMs: 10 * 1000, max: 1 },
+  // ── SIGNUP is not a credential attempt, and must not be paced like one ────
+  // A registration submits no secret. Nobody learns anything by sending the
+  // form, so there is nothing to guess and nothing to slow down — what has to
+  // be bounded is how many ACCOUNTS one address can create, which is a
+  // completely different quantity.
+  //
+  // Measured, before this tier existed: with `loginPace` on /register, a person
+  // who mistyped their confirm-password was answered "try again in 10 seconds",
+  // and because that bucket is shared with every credential door, their typo
+  // also paced the LOGIN of everyone behind the same address. On shared wifi or
+  // in a cyber café — ordinary here — one person filling in a form throttles the
+  // room. §32 S13, exactly: a refusal that costs the user their next attempt.
+  //
+  // So this limiter counts SUCCESSES (`skipFailedRequests: true`): correct the
+  // form as many times as you like, but ten accounts per address per hour is
+  // the ceiling. The real anti-automation control on this route is the captcha,
+  // which prices the attempt itself; this bounds the damage if it is beaten.
+  signup:     { windowMs: 60 * 60 * 1000, max: 10 },
   // Second-factor submission, once the password is already correct. Separate
   // and tighter than the password tier: at this point an attacker is guessing
   // a 6-digit code, where 10 tries is 1-in-100,000 rather than 1-in-a-million.

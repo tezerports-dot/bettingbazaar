@@ -54,18 +54,52 @@ function extractToken(req) {
     || null;
 }
 
-/**
- * True for an account that is allowed to use the password door at all.
- *
- * Since players moved to Telegram this is the whole guest list. It matters more
- * than it looks: legacy player rows still carry a `passwordHash`, and without
- * this check a caller could post `loginType: 'user'` to /api/admin/login and
- * walk in on one of them — none of the three role checks below would fire,
- * because each only tests the role it names.
- */
+/** Admin, sub-admin, queue manager or mediator. */
 function isStaffAccount(user) {
   return Boolean(user?.isAdmin || user?.isSubAdmin || user?.isQueueManager || user?.isMediator);
 }
+
+/**
+ * WHICH DOOR a login arrived at, and who that door admits.
+ *
+ * ── Why the guest list is a parameter and not a constant ───────────────────
+ * There are two password doors now — the staff one at /api/admin/login and the
+ * player one at /api/v1/auth/login — and they differ in exactly one thing: who
+ * they let in. Everything else is identical, and identical in the places where
+ * a divergence would be a security defect rather than a cosmetic one: reading
+ * the credential hash from the one function that returns it, the blocked-account
+ * refusal, the argon2 upgrade, the order the second factor is decided in, and
+ * the fact that a 2FA challenge is issued INSTEAD of a session.
+ *
+ * Writing the second door as a second handler would have copied all of that,
+ * and §5's rule says what happens next: the copies drift, silently, and the one
+ * that stops challenging is the one nobody is watching. So one handler, and the
+ * MOUNT states the guest list.
+ *
+ * ── Why the player door refuses staff ──────────────────────────────────────
+ * Not because staff are untrusted, but because a staff session minted at a
+ * player door would bypass the admin panel's own enrolment routing and land an
+ * admin token in the player app's storage key. A person who is both plays on a
+ * separate account, which is the correct posture on a gambling platform anyway.
+ * They are TOLD where their door is rather than being refused as unknown — §32
+ * S14: a refusal the reader cannot act on is a support ticket.
+ */
+export const LOGIN_DOOR = {
+  STAFF: {
+    name: 'staff',
+    admits: isStaffAccount,
+    // Refuses a legacy or player row that carries a password hash. Without it a
+    // caller could post `loginType: 'user'` here and walk in on one — none of
+    // the three role checks below would fire, because each only tests the role
+    // it names.
+    refusal: 'This account is not a staff account. Sign in on the player app.',
+  },
+  PLAYER: {
+    name: 'player',
+    admits: (user) => !isStaffAccount(user),
+    refusal: 'This is a staff account. Sign in through the admin panel.',
+  },
+};
 
 // ── POST /api/admin/login (staff only) ───────────────────────────────────────
 export async function loginHandler(req, res) {
@@ -105,11 +139,16 @@ export async function loginHandler(req, res) {
       } catch { /* best-effort upgrade — never fail a valid login over it */ }
     }
 
-    // Checked AFTER the password, so a wrong password and a non-staff account
-    // are indistinguishable to a caller probing for which numbers are staff.
-    if (!isStaffAccount(user)) {
-      console.warn(`[auth] password login refused for non-staff account ${user.userId}`);
-      return res.status(403).json({ success: false, message: 'This account signs in through Telegram.' });
+    // Checked AFTER the password, so a wrong password and an account that
+    // belongs at the other door are indistinguishable to a caller probing for
+    // which numbers are staff.
+    //
+    // The door defaults to STAFF: this handler's only unmounted caller would be
+    // a test, and a default of "anyone" is the wrong way for that to fail.
+    const door = req.loginDoor || LOGIN_DOOR.STAFF;
+    if (!door.admits(user)) {
+      console.warn(`[auth] ${door.name} login refused for account ${user.userId}`);
+      return res.status(403).json({ success: false, message: door.refusal });
     }
 
     if (loginType === 'admin'         && !user.isAdmin)        return res.status(403).json({ success: false, message: 'Admin access required' });
@@ -251,8 +290,14 @@ export async function loginTwoFactorHandler(req, res) {
     // between the two requests.
     if (user.status === 'BLOCKED' || user.isBlocked)
       return res.status(403).json({ success: false, message: 'Account blocked. Contact support.' });
-    if (!isStaffAccount(user))
-      return res.status(403).json({ success: false, message: 'This account signs in through Telegram.' });
+    // The SAME door the password leg applied. A challenge minted at one door
+    // and redeemed at the other is the shape this re-check exists to refuse:
+    // without it a player's valid challenge, posted to the staff endpoint,
+    // would be redeemed by the staff handler — and the guest list would have
+    // been enforced on only one of the two legs.
+    const door = req.loginDoor || LOGIN_DOOR.STAFF;
+    if (!door.admits(user))
+      return res.status(403).json({ success: false, message: door.refusal });
 
     const t = challenge.loginType;
     if (t === 'admin'         && !user.isAdmin)        return res.status(403).json({ success: false, message: 'Admin access required' });

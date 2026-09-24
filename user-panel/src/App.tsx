@@ -40,7 +40,6 @@ const SportsPage          = React.lazy(() => import('./pages/SportsPage'));
 const WinnersPage         = React.lazy(() => import('./pages/WinnersPage'));
 const LeaderboardPage     = React.lazy(() => import('./pages/LeaderboardPage'));
 const WalletPage          = React.lazy(() => import('./pages/WalletPage'));
-const TelegramAuthPage = React.lazy(() => import('./pages/TelegramAuthPage'));
 const ReferralPage = React.lazy(() => import('./pages/ReferralPage'));
 import ErrorBoundary from './components/ui/ErrorBoundary';
 import { applyBranding, applyCachedBranding } from './services/branding';
@@ -223,7 +222,6 @@ const App: React.FC = () => (
 
                           {/* Where a bot login link lands. Recovery is no longer a
                               page in this app — it is a second Telegram bot. */}
-                          <Route path="/auth/telegram"   element={lazy(<TelegramAuthPage />)} />
 
                           {/* Referral earnings live HERE, not on the wallet:
                               only the disbursed part reaches the winnings

@@ -37,12 +37,28 @@ import { verifyBotToken, setWebhook, deleteWebhook, invalidateConfigCache } from
  * Telegram at an endpoint that can only drop what it receives.
  */
 const WEBHOOK_PATH = {
-  signin:   '/api/telegram/webhook',
-  recovery: '/api/telegram/recovery/webhook',
+  // Per-BOT, because sign-in is a fleet. Telegram delivers to whatever URL each
+  // bot was told, and the handler has to know WHICH bot's secret to compare the
+  // delivery against — a shared path would force a lookup keyed on the secret
+  // itself. The bot id is public (it is Telegram's own numeric id for a bot
+  // whose @username anybody can see): it identifies, the secret authenticates.
+  signin:   (bot) => `/api/telegram/webhook/${encodeURIComponent(bot.botId)}`,
+  // Singular role, one door, fixed path.
+  recovery: () => '/api/telegram/recovery/webhook',
 };
 
-export function webhookPathForRole(role) {
-  return WEBHOOK_PATH[role] || null;
+/**
+ * Where THIS bot's updates should arrive, or null for an outbound-only role.
+ *
+ * Takes the bot, not just the role. It was `webhookPathForRole(role)` and could
+ * not stay that way: with a fleet, every sign-in bot would have been told the
+ * same URL, and the second one registered would have had its updates answered
+ * by a secret check against the first one's secret — every update 401'd, no
+ * player on that bot able to verify, and nothing anywhere saying why.
+ */
+export function webhookPathFor(bot) {
+  const build = WEBHOOK_PATH[bot?.role];
+  return build ? build(bot) : null;
 }
 
 /**
@@ -185,7 +201,7 @@ export async function promote({ id, actorId, webhookBaseUrl }) {
     webhook: 'not_required',
   };
 
-  const path = webhookPathForRole(target.role);
+  const path = webhookPathFor(target);
   if (!path) return result;
 
   const base = String(webhookBaseUrl || process.env.PUBLIC_APP_ORIGIN || '').replace(/\/+$/, '');
@@ -244,7 +260,7 @@ export async function retryWebhook({ id, webhookBaseUrl }) {
   const secrets = await db.telegram.getBotSecrets(id);
   if (!secrets) throw Object.assign(new Error('No such bot'), { status: 404 });
 
-  const path = webhookPathForRole(secrets.role);
+  const path = webhookPathFor(secrets);
   if (!path) {
     throw Object.assign(
       new Error(`A ${secrets.role} bot receives no updates, so it has no webhook to register.`),
@@ -281,10 +297,20 @@ export async function retire({ id, actorId }) {
   const retired = await db.telegram.retireBot(id, { actor: actorId });
   if (!retired.ok) {
     if (retired.reason === 'IS_LIVE') {
+      // Two different refusals wearing one reason code, and they need different
+      // sentences because the operator's next action differs. A RECOVERY bot is
+      // singular, so the answer is "promote its replacement, which stands this
+      // one down in the same transaction". A SIGN-IN bot is one of a fleet and
+      // may be retired freely — unless it is the last live one, where the
+      // answer is "add another first". Telling a fleet operator to promote a
+      // replacement would send them looking for a step that does not apply.
       throw Object.assign(
         new Error(
-          'This is the live bot for its role. Promote its replacement instead — that stands '
-          + 'this one down in the same step, with no window where nobody can sign in.',
+          secrets.role === 'signin'
+            ? 'This is the last live sign-in bot. Register and promote another one first — '
+              + 'retiring this one would leave nobody able to verify their number.'
+            : 'This is the live bot for its role. Promote its replacement instead — that stands '
+              + 'this one down in the same step, with no window where nobody can sign in.',
         ),
         { status: 409 },
       );
@@ -295,7 +321,7 @@ export async function retire({ id, actorId }) {
 
   invalidateConfigCache();
 
-  if (webhookPathForRole(retired.bot.role)) {
+  if (webhookPathFor(retired.bot)) {
     try {
       await deleteWebhook(decryptField(secrets.tokenEncrypted));
     } catch { /* a dead bot cannot be told anything; the row is what matters */ }
@@ -317,4 +343,19 @@ export { liveBot } from './telegramClient.js';
 /** Every bot, with no secrets. */
 export async function listBots() {
   return (await db.telegram.listBots({})).map(publicView);
+}
+
+/**
+ * How many accounts each LIVE sign-in bot is carrying.
+ *
+ * The operator's reason for being on this screen at all. A fleet is a
+ * throughput decision — the Bot API allows roughly thirty messages a second per
+ * bot — and deciding whether to add more needs the LOAD, not a list of names.
+ *
+ * Keyed by bot id so the screen can merge it into the row it already has rather
+ * than rendering a second table that has to be read alongside the first.
+ */
+export async function signinLoads() {
+  const rows = await db.telegram.signinBotLoads();
+  return Object.fromEntries(rows.map((r) => [r.botId, r.assigned]));
 }

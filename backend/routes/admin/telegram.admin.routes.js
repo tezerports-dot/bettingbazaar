@@ -29,7 +29,7 @@ import {
   verifyBotToken, setWebhook, invalidateConfigCache, activeConfig, liveBot,
 } from '../../domains/telegram/telegramClient.js';
 import {
-  registerBot, promote, retire, retryWebhook, listBots,
+  registerBot, promote, retire, retryWebhook, listBots, signinLoads,
 } from '../../domains/telegram/telegramBots.service.js';
 import { listTemplates, saveTemplate } from '../../domains/telegram/telegramTemplates.service.js';
 import { buildExport, applyImport, kycStats } from '../../domains/identity/kycBulk.service.js';
@@ -254,10 +254,18 @@ router.post('/telegram/channel', authenticate, isAdmin, async (req, res) => {
 // BOT FLEET — spares registered before the incident, promoted during it
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** GET /api/admin/telegram/bots — every bot, no secrets. */
+/**
+ * GET /api/admin/telegram/bots — every bot, no secrets, with the sign-in load.
+ *
+ * ONE call, not two. The screen renders the load INTO the bot's own row, so
+ * fetching it separately would mean the table and the numbers beside it could
+ * be from different moments — and the moment that matters is the one where an
+ * operator decides whether to add bots.
+ */
 router.get('/telegram/bots', authenticate, isAdmin, async (req, res) => {
   try {
-    res.json({ success: true, bots: await listBots() });
+    const [bots, loads] = await Promise.all([listBots(), signinLoads()]);
+    res.json({ success: true, bots, loads });
   } catch (err) {
     return respondError(res, err, 'GET /admin/telegram/bots');
   }

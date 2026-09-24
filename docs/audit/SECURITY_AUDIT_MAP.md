@@ -2445,8 +2445,8 @@ exists.
 
 | Measure | Count |
 |---|---|
-| Route declarations in `backend/**` | 308 |
-| Reachable with **no auth middleware** | 40 |
+| Route declarations in `backend/**` | 310 |
+| Reachable with **no auth middleware** | 41 |
 | Gated `isAdminOrSubAdmin` with **no permission key** | 2 |
 | — of those, **writes** (non-GET) | 0 |
 | Carrying an explicit permission key | 56 |
@@ -2466,6 +2466,7 @@ new route and decide. Each of the three questions is defined in §2.
 - `GET /events  (backend/routes/sse.routes.js)`
 - `GET /games  (backend/domains/gameRegistry/gameRegistry.routes.js)`
 - `GET /health  (backend/routes.js)`
+- `GET /invite/:code  (backend/domains/identity/playerAuth.routes.js)`
 - `GET /leaderboard/:period  (backend/routes/retention.routes.js)`
 - `GET /me  (backend/routes.js)`
 - `GET /merchant/events  (backend/routes/sse.routes.js)`
@@ -2489,13 +2490,13 @@ new route and decide. Each of the three questions is defined in §2.
 - `POST /auth/login  (backend/domains/merchant/merchant.routes.js)`
 - `POST /auth/login/2fa  (backend/domains/merchant/merchant.routes.js)`
 - `POST /auth/signup  (backend/domains/merchant/merchant.routes.js)`
-- `POST /exchange  (backend/domains/telegram/telegram.routes.js)`
+- `POST /login  (backend/domains/identity/playerAuth.routes.js)`
+- `POST /login/2fa  (backend/domains/identity/playerAuth.routes.js)`
 - `POST /logout  (backend/routes.js)`
-- `POST /otp/request  (backend/domains/telegram/telegram.routes.js)`
-- `POST /otp/verify  (backend/domains/telegram/telegram.routes.js)`
 - `POST /recovery/webhook  (backend/domains/telegram/telegram.routes.js)`
+- `POST /register  (backend/domains/identity/playerAuth.routes.js)`
 - `POST /wallet/:providerKey  (backend/domains/casino/gameProvider.routes.js)`
-- `POST /webhook  (backend/domains/telegram/telegram.routes.js)`
+- `POST /webhook/:botId  (backend/domains/telegram/telegram.routes.js)`
 
 </details>
 
@@ -2509,15 +2510,15 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 416 |
-| Parameters only (safe by construction) | 267 |
-| Interpolating into statement text (each needs a reading) | 149 |
+| `pgQuery` call sites | 407 |
+| Parameters only (safe by construction) | 259 |
+| Interpolating into statement text (each needs a reading) | 148 |
 
 ### Panel injection sinks
 
 | Panel | .ts/.tsx files | `dangerouslySetInnerHTML` | `.innerHTML =` |
 |---|---|---|---|
-| `user-panel` | 80 | 0 | 0 |
+| `user-panel` | 79 | 0 | 0 |
 | `admin-panel` | 97 | 0 | 0 |
 | `merchant-panel` | 40 | 0 | 0 |
 

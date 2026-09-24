@@ -22,10 +22,11 @@ import toast from 'react-hot-toast';
 
 /** What each message is, said plainly enough to edit confidently. */
 const DESCRIPTIONS: Record<string, string> = {
-  welcome: 'Sent the moment somebody starts the bot. The first thing a new player ever reads — this is where the "same mobile as your Aadhaar" warning belongs.',
-  ask_contact: 'Sent after they send a valid Aadhaar number, alongside the "Share my contact" button.',
+  welcome: 'Sent the moment somebody starts the bot, with the "Share my contact" button. The first thing a new player reads here — they have already filled in the signup form, so this is about proving the number, not about signing up.',
+  ask_contact: 'Sent when they send anything other than a contact and still need to share one.',
   contact_confirmed: 'Sent once the phone number is proved. Carries the channel invite.',
-  login_link: 'Sent with the one-time sign-in link, both after signup and whenever an existing player sends /start.',
+  verified: 'Sent when BOTH steps are done — number proved and channel joined. Carries no link that signs anybody in: the player already has a session from the form, and a bot that can mint one is a bot whose compromise is an account takeover.',
+  not_registered: 'Sent when the shared number matches no account. Naming the signup form is the whole value of this message — without it the person has done exactly what they were asked and been told "no".',
   recovery_welcome: 'The recovery bot’s opening message, for someone who has lost their Telegram account but kept their number.',
 };
 

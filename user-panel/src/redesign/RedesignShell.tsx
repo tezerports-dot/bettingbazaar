@@ -24,7 +24,7 @@ import AuthModal from '../components/Modals/AuthModal';
 import NotificationBell from '../components/Layout/NotificationBell';
 import ShareModal from '../components/Modals/ShareModal';
 import AnnouncementBanner from '../components/AnnouncementBanner';
-import ChannelGateModal from '../components/Modals/ChannelGateModal';
+import VerificationGateModal from '../components/Modals/VerificationGateModal';
 
 interface ShellContextValue {
   isAuthenticated: boolean;
@@ -400,7 +400,7 @@ const RedesignShell: React.FC<React.PropsWithChildren<{}>> = ({ children }) => {
           channel can be replaced at any moment, and the refusal lands on
           whichever screen the player happens to be on.
         */}
-        <ChannelGateModal />
+        <VerificationGateModal />
       </div>
     </ShellContext.Provider>
   );

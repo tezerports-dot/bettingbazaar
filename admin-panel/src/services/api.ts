@@ -735,7 +735,15 @@ export interface FleetBot {
 export const telegramBots = {
   list: async () => {
     const res = await api.get<any>('/api/admin/telegram/bots');
-    return res.data as { success: boolean; bots?: FleetBot[]; message?: string };
+    // `loads` arrives with the listing rather than from a second call: the
+    // screen renders each figure INTO the bot's own row, and two fetches would
+    // let the table and the numbers beside it come from different moments.
+    return res.data as {
+      success: boolean; bots?: FleetBot[];
+      /** botId → accounts assigned. Live sign-in bots only. */
+      loads?: Record<string, number>;
+      message?: string;
+    };
   },
 
   register: async (body: { label: string; role: FleetBot['role']; token: string; notes?: string }) => {

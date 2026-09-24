@@ -1161,7 +1161,8 @@ somebody forgot to finish, or code to delete (§28).</p>
 <tr><td><code>components/Layout/Header.tsx</code></td><td><code>GET /app-assets/:name</code></td></tr>
 <tr><td><code>components/Layout/NotificationBell.tsx</code></td><td><code>GET /api/user/notifications</code><br><code>GET /api/user/notifications/unread-count</code><br><code>POST /api/user/notifications/read</code></td></tr>
 <tr><td><code>components/Modals/AuthModal.tsx</code></td><td><code>GET /api/telegram/public-config</code><br><code>GET /app-assets/:name</code></td></tr>
-<tr><td><code>components/Modals/ChannelGateModal.tsx</code></td><td><code>GET /api/telegram/membership</code></td></tr>
+<tr><td><code>components/Modals/VerificationGateModal.tsx</code></td><td><code>GET /api/v1/auth/verification</code></td></tr>
+<tr><td><code>components/Modals/AuthModal.tsx</code></td><td><code>GET /api/v1/auth/invite/:code</code></td></tr>
 <tr><td><code>components/Modals/ShareModal.tsx</code></td><td><code>GET /api/download/android</code><br><code>GET /api/download/ios</code><br><code>GET /app-assets/:name</code></td></tr>
 <tr><td><code>components/Modals/WalletModal.tsx</code></td><td><code>GET /api/payment/order/:orderId</code><br><code>GET /api/v1/user/profile</code><br><code>POST /api/payment/deposit/create</code><br><code>POST /api/payment/withdrawal/create</code></td></tr>
 <tr><td><code>components/UsdtBuyPanel.tsx</code></td><td><code>POST /api/payment/order/:orderId/mark-paid</code><br><code>POST /api/payment/usdt/deposit/create</code></td></tr>
@@ -1175,7 +1176,7 @@ somebody forgot to finish, or code to delete (§28).</p>
 <tr><td><code>pages/WalletPage.tsx</code></td><td><code>GET /api/payment/order/:orderId</code><br><code>GET /api/payment/order/:orderId/status</code><br><code>GET /api/user/bet-limits</code><br><code>GET /api/v1/system/config</code><br><code>GET /api/v1/user/profile</code><br><code>POST /api/payment/deposit/create</code><br><code>POST /api/payment/order/:orderId/dispute</code><br><code>POST /api/payment/order/:orderId/mark-paid</code><br><code>POST /api/payment/order/:orderId/retry</code><br><code>POST /api/payment/order/:orderId/status</code><br><code>POST /api/payment/order/:orderId/utr-grace</code><br><code>POST /api/payment/order/cancel</code><br><code>POST /api/payment/withdrawal/create</code></td></tr>
 <tr><td><code>redesign/RedesignShell.tsx</code></td><td><code>GET /app-assets/:name</code></td></tr>
 <tr><td><code>services/GameProviderContext.tsx</code></td><td><code>GET /api/game/providers</code></td></tr>
-<tr><td><code>services/realBackend.ts</code></td><td><code>GET /api/admin/system/config</code><br><code>GET /api/sse/events</code><br><code>GET /api/user/:userId/bets</code><br><code>GET /api/v1/content/ai-analysis</code><br><code>GET /api/v1/game/cycle/:type/:startTime</code><br><code>GET /api/v1/user/:id/data</code><br><code>POST /api/admin/manage-cycle</code><br><code>POST /api/bet/phantom</code><br><code>POST /api/bet/place</code><br><code>POST /api/telegram/exchange</code><br><code>POST /api/telegram/otp/request</code><br><code>POST /api/telegram/otp/verify</code><br><code>PUT /api/admin/system/config</code><br><code>PUT /api/user/:userId/profile</code></td></tr>
+<tr><td><code>services/realBackend.ts</code></td><td><code>GET /api/admin/system/config</code><br><code>GET /api/sse/events</code><br><code>GET /api/user/:userId/bets</code><br><code>GET /api/v1/content/ai-analysis</code><br><code>GET /api/v1/game/cycle/:type/:startTime</code><br><code>GET /api/v1/user/:id/data</code><br><code>POST /api/admin/manage-cycle</code><br><code>POST /api/bet/phantom</code><br><code>POST /api/bet/place</code><br><code>POST /api/v1/auth/register</code><br><code>POST /api/v1/auth/login</code><br><code>POST /api/v1/auth/login/2fa</code><br><code>POST /api/v1/auth/kyc/resubmit</code><br><code>GET /api/v1/auth/verification</code><br><code>PUT /api/admin/system/config</code><br><code>PUT /api/user/:userId/profile</code></td></tr>
 </tbody>
 </table></div>
 <h4>merchant — 28 files</h4>
@@ -1432,10 +1433,13 @@ somebody forgot to finish, or code to delete (§28).</p>
 <tr><td>GET</td><td><code>/api/support/tickets/:ticketId</code></td><td><code>authenticate</code></td><td>user</td></tr>
 <tr><td>POST</td><td><code>/api/support/tickets/:ticketId/reply</code></td><td><code>authenticate</code></td><td>user</td></tr>
 <tr class="filerow"><td colspan="4"><code>backend/domains/telegram/telegram.routes.js</code></td></tr>
-<tr><td>POST</td><td><code>/api/telegram/exchange</code></td><td><span class="nocall">none</span></td><td>user</td></tr>
-<tr><td>GET</td><td><code>/api/telegram/membership</code></td><td><code>authenticate</code></td><td>user</td></tr>
-<tr><td>POST</td><td><code>/api/telegram/otp/request</code></td><td><span class="nocall">none</span></td><td>user</td></tr>
-<tr><td>POST</td><td><code>/api/telegram/otp/verify</code></td><td><span class="nocall">none</span></td><td>user</td></tr>
+<tr><td>POST</td><td><code>/api/v1/auth/register</code></td><td><span class="nocall">none</span> + captcha, signup limiter</td><td>user</td></tr>
+<tr><td>POST</td><td><code>/api/v1/auth/login</code></td><td><span class="nocall">none</span> + captcha, pace/failure/subnet limiters</td><td>user</td></tr>
+<tr><td>POST</td><td><code>/api/v1/auth/login/2fa</code></td><td><span class="nocall">none</span> + pace, 2FA limiter</td><td>user</td></tr>
+<tr><td>GET</td><td><code>/api/v1/auth/invite/:code</code></td><td><span class="nocall">none</span></td><td>user</td></tr>
+<tr><td>GET</td><td><code>/api/v1/auth/verification</code></td><td><code>authenticate</code></td><td>user</td></tr>
+<tr><td>POST</td><td><code>/api/v1/auth/kyc/resubmit</code></td><td><code>authenticate</code></td><td>user</td></tr>
+<tr><td>POST</td><td><code>/api/telegram/webhook/:botId</code></td><td>per-bot secret token</td><td>telegram</td></tr>
 <tr><td>GET</td><td><code>/api/telegram/public-config</code></td><td><span class="nocall">none</span></td><td>user</td></tr>
 <tr><td>POST</td><td><code>/api/telegram/recovery/webhook</code></td><td><span class="nocall">none</span></td><td><span class="nocall">— no panel</span></td></tr>
 <tr><td>POST</td><td><code>/api/telegram/webhook</code></td><td><span class="nocall">none</span></td><td><span class="nocall">— no panel</span></td></tr>

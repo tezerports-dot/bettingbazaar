@@ -297,6 +297,32 @@ export function createLoginPaceLimiter(bucket = 'default') {
  */
 export const loginPaceLimiter = createLoginPaceLimiter('credential');
 
+/**
+ * How many ACCOUNTS one address may create. Not how many forms it may submit.
+ *
+ * `skipFailedRequests: true` is the whole design and it is the opposite of
+ * every other limiter in this file. Those guard a secret, so they count
+ * FAILURES — a wrong password is the thing worth bounding. This guards a
+ * creation, where the failures are typos and the successes are the cost, so it
+ * counts the other one. See RATE_LIMIT_TIERS.signup for what it cost to learn.
+ */
+export const signupLimiter = rateLimit({
+    store: createRateLimitStore('rl:signup:'),
+    ...RATE_LIMIT_TIERS.signup,
+    standardHeaders: true,
+    legacyHeaders: false,
+    skipFailedRequests: true,
+    keyGenerator: actorKey,
+    message: {
+        success: false,
+        // Names the real limit and the real wait. "Too many requests" would send
+        // somebody who mistyped their Aadhaar into a retry loop against a
+        // counter their typos never touched.
+        message: 'Too many accounts have been created from this connection. Please try again later.',
+        retryAfter: 3600,
+    },
+});
+
 export const twoFactorLimiter = rateLimit({
     store: createRateLimitStore('rl:2fa:'),
     ...RATE_LIMIT_TIERS.twoFactor, // 5 FAILED / 15 min

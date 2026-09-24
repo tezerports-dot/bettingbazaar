@@ -197,19 +197,41 @@ export async function listBots({ role = null, status = null } = {}) {
   return rows.map(toBot);
 }
 
-/** The live bot for a singular role, or null. Reads the generated column. */
+/**
+ * A live bot for a role, or null.
+ *
+ * ── Why this no longer reads `live_slot` ──────────────────────────────────
+ * It used to, because at most one bot per role could be live and the generated
+ * column enforced it. `signin` is a FLEET now, so its `live_slot` is always
+ * NULL and that query would answer null for every sign-in bot the operator
+ * has running — silently turning a working fleet into "Telegram is not
+ * configured".
+ *
+ * So the question this answers is stated as what it actually is: give me A live
+ * bot in this role. For `recovery` the partial unique index still guarantees
+ * there is at most one, so the answer is identical to what it always was. For
+ * `signin` it is the first of the fleet, deterministically, and WHICH one does
+ * not matter to any caller: this is read for channel questions (getChatMember)
+ * and for resolving a @username to show, never to decide who a player's
+ * conversation belongs to. That decision is the ROTATION's, and a player's
+ * replies are answered by the bot whose webhook they arrived on.
+ */
 export async function getLiveBot(role) {
   const { rows } = await pgQuery(
-    `SELECT ${BOT_PUBLIC} FROM telegram_bots WHERE live_slot = $1`, [role], 'tg_bot_live',
+    `SELECT ${BOT_PUBLIC} FROM telegram_bots
+      WHERE status = 'ACTIVE' AND role = $1
+      ORDER BY added_at, bot_id LIMIT 1`, [role], 'tg_bot_live',
   );
   return toBot(rows[0]);
 }
 
-/** The live bot's credentials, for the send and webhook-verify paths only. */
+/** A live bot's credentials, for the send and channel-read paths only. */
 export async function getLiveBotSecrets(role) {
   const { rows } = await pgQuery(
     `SELECT bot_id, username, token_encrypted, webhook_secret
-       FROM telegram_bots WHERE live_slot = $1`, [role], 'tg_bot_live_secrets',
+       FROM telegram_bots
+      WHERE status = 'ACTIVE' AND role = $1
+      ORDER BY added_at, bot_id LIMIT 1`, [role], 'tg_bot_live_secrets',
   );
   const r = rows[0];
   return r ? {
@@ -360,6 +382,17 @@ export async function retireBot(botId, { actor = null } = {}) {
     `UPDATE telegram_bots
         SET status = 'RETIRED', retired_at = now(), retired_by = $2
       WHERE bot_id = $1 AND live_slot IS NULL AND status <> 'RETIRED'
+        AND (
+          -- The signin role is a FLEET, so live_slot is always NULL for it and
+          -- the guard above cannot see it. An operator may retire any sign-in
+          -- bot they like EXCEPT the last live one, which is the same refusal
+          -- the generated column gives a singular role, expressed the only way
+          -- a fleet allows: by counting what would be left.
+          status <> 'ACTIVE' OR role <> 'signin'
+          OR EXISTS (SELECT 1 FROM telegram_bots sibling
+                      WHERE sibling.status = 'ACTIVE' AND sibling.role = 'signin'
+                        AND sibling.bot_id <> $1)
+        )
       RETURNING ${BOT_PUBLIC}`,
     [String(botId), actor ? String(actor) : null], 'tg_bot_retire',
   );
@@ -655,370 +688,24 @@ export async function deactivateContact(telegramUserId) {
   return toIdentity(rows[0]);
 }
 
-// ── Pending onboardings ──────────────────────────────────────────────────────
-
-const PENDING_COLUMNS = `
-  telegram_user_id, step, aadhaar_hash, aadhaar_last4, phone,
-  telegram_username, first_name, referral_code, generation, created_at, expires_at`;
-
-function toPending(row) {
-  if (!row) return null;
-  return {
-    telegramUserId: row.telegram_user_id,
-    step: row.step,
-    aadhaarHash: row.aadhaar_hash,
-    aadhaarLast4: row.aadhaar_last4,
-    phone: row.phone,
-    telegramUsername: row.telegram_username,
-    firstName: row.first_name,
-    referralCode: row.referral_code,
-    generation: toInt(row.generation),
-    createdAt: row.created_at,
-    expiresAt: row.expires_at,
-  };
-}
-
-/**
- * The live onboarding for a Telegram account, or null.
- *
- * Filters on `expires_at` rather than trusting the sweep. An expired row that
- * has not been swept yet is NOT a usable onboarding, and a caller that treated
- * it as one would resume a conversation whose Aadhaar hash is past its
- * retention window.
- */
-export async function getPendingLink(telegramUserId) {
-  if (!telegramUserId) return null;
-  const { rows } = await pgQuery(
-    `SELECT ${PENDING_COLUMNS} FROM telegram_pending_links
-      WHERE telegram_user_id = $1 AND expires_at > now()`,
-    [String(telegramUserId)], 'tg_pending_get',
-  );
-  return toPending(rows[0]);
-}
-
-/** The captured Aadhaar ciphertext, for the one step that promotes it. */
-export async function getPendingAadhaar(telegramUserId) {
-  const { rows } = await pgQuery(
-    `SELECT aadhaar_hash, aadhaar_encrypted, aadhaar_last4
-       FROM telegram_pending_links
-      WHERE telegram_user_id = $1 AND expires_at > now()`,
-    [String(telegramUserId)], 'tg_pending_aadhaar',
-  );
-  const r = rows[0];
-  return r ? {
-    aadhaarHash: r.aadhaar_hash,
-    aadhaarEncrypted: r.aadhaar_encrypted,
-    aadhaarLast4: r.aadhaar_last4,
-  } : null;
-}
-
-/**
- * Start or advance an onboarding.
- *
- * Upsert on the Telegram id: somebody who abandons a conversation and starts
- * again gets ONE row, and a restarted onboarding resets the expiry rather than
- * inheriting the abandoned one's.
- */
-export async function upsertPendingLink({
-  telegramUserId, step = 'AWAITING_AADHAAR', aadhaarHash = null,
-  aadhaarEncrypted = null, aadhaarLast4 = '', phone = null,
-  telegramUsername = '', firstName = '', referralCode = null, generation = 0,
-  ttlHours = 24,
-}) {
-  const { rows } = await pgQuery(
-    `INSERT INTO telegram_pending_links (
-       telegram_user_id, step, aadhaar_hash, aadhaar_encrypted, aadhaar_last4,
-       phone, telegram_username, first_name, referral_code, generation, expires_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10, now() + ($11 || ' hours')::interval)
-     ON CONFLICT (telegram_user_id) DO UPDATE SET
-       step = EXCLUDED.step,
-       -- COALESCE so advancing a step does not erase what an earlier one
-       -- captured: the contact step sends no Aadhaar, and overwriting with NULL
-       -- would lose the number the conversation already proved.
-       aadhaar_hash      = COALESCE(EXCLUDED.aadhaar_hash, telegram_pending_links.aadhaar_hash),
-       aadhaar_encrypted = COALESCE(EXCLUDED.aadhaar_encrypted, telegram_pending_links.aadhaar_encrypted),
-       aadhaar_last4     = COALESCE(NULLIF(EXCLUDED.aadhaar_last4, ''), telegram_pending_links.aadhaar_last4),
-       phone             = COALESCE(EXCLUDED.phone, telegram_pending_links.phone),
-       telegram_username = COALESCE(NULLIF(EXCLUDED.telegram_username, ''), telegram_pending_links.telegram_username),
-       first_name        = COALESCE(NULLIF(EXCLUDED.first_name, ''), telegram_pending_links.first_name),
-       referral_code     = COALESCE(telegram_pending_links.referral_code, EXCLUDED.referral_code),
-       generation        = EXCLUDED.generation,
-       expires_at        = EXCLUDED.expires_at
-     RETURNING ${PENDING_COLUMNS}`,
-    [String(telegramUserId), step, aadhaarHash, aadhaarEncrypted, aadhaarLast4,
-     phone, telegramUsername, firstName, referralCode, generation, String(ttlHours)],
-    'tg_pending_upsert',
-  );
-  return toPending(rows[0]);
-}
-
-/** Drop an onboarding once it has produced an identity. */
-export async function deletePendingLink(telegramUserId) {
-  await pgQuery(
-    `DELETE FROM telegram_pending_links WHERE telegram_user_id = $1`,
-    [String(telegramUserId)], 'tg_pending_delete',
-  );
-}
-
-/**
- * Turn a completed onboarding into an account.
- *
- * ONE transaction across three tables: the account, the Telegram identity that
- * drives it, and the Aadhaar queued for the next verification export. All three
- * or none — a half-created signup is an account nobody can sign into, or an
- * Aadhaar registered against a person who does not exist.
- *
- * ── Refusals are answers, not errors ─────────────────────────────────────────
- * Every refusal below is something the bot has to TELL somebody, so each comes
- * back as a reason rather than a thrown error. The unique indexes are what
- * decide — a courtesy check before the insert has a window a concurrent signup
- * fits through, and this path is reachable twice for the same person whenever
- * Telegram redelivers an update.
- *
- *   phone_already_linked  another live identity holds this number
- *   aadhaar_taken         this Aadhaar is registered to another account
- *   duplicate             the account already exists (a redelivered update)
- *
- * @returns {Promise<{ok:true,userId:string}|{ok:false,reason:string}>}
- */
-export async function createAccountFromOnboarding({
-  telegramUserId, mobile, username, aadhaarHash, aadhaarEncrypted, aadhaarLast4,
-  telegramUsername = '', firstName = '', referralCode = null, referredBy = null,
-  generation = 0, newUserId, kycStatus = 'PENDING_APPROVAL',
-}) {
-  if (!telegramUserId || !mobile) throw new Error('createAccountFromOnboarding requires telegramUserId and mobile');
-  if (!aadhaarHash || !aadhaarEncrypted) throw new Error('createAccountFromOnboarding requires the captured Aadhaar');
-
-  try {
-    return await withTelegramTransaction(async (client) => {
-      const userId = String(newUserId);
-
-      const { rows: userRows } = await client.query(
-        `INSERT INTO users (user_id, username, mobile, referral_code, referred_by,
-                            status, kyc_status, kyc_submission_count)
-         VALUES ($1, $2, $3, $4, $5, 'ACTIVE', $6, 1)
-         ON CONFLICT (mobile) DO NOTHING
-         RETURNING user_id`,
-        [userId, username || `player${String(mobile).slice(-4)}`, String(mobile),
-         referralCode, referredBy ? String(referredBy) : null, kycStatus],
-      );
-      // The signup IS submission one — counted here rather than in a second
-      // statement, so the reapply cap cannot silently allow one more attempt
-      // than it advertises.
-      if (!userRows[0]) return { ok: false, reason: 'duplicate' };
-
-      await client.query(
-        `INSERT INTO telegram_identities (
-           telegram_user_id, user_id, telegram_username, first_name, phone,
-           contact_shared_at, linked_generation, channel_generation)
-         VALUES ($1, $2, $3, $4, $5, now(), $6, $6)`,
-        [String(telegramUserId), userId, telegramUsername, firstName, String(mobile), generation],
-      );
-
-      await client.query(
-        `INSERT INTO kyc_verifications (user_id, aadhaar_hash, aadhaar_encrypted,
-                                        aadhaar_last4, phone)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [userId, String(aadhaarHash), String(aadhaarEncrypted),
-         String(aadhaarLast4 ?? ''), String(mobile)],
-      );
-
-      return { ok: true, userId };
-    });
-  } catch (e) {
-    // 23505 is a unique violation. WHICH index refused decides what the bot
-    // says, so the constraint name is read rather than reporting one message
-    // for every collision — "this number is already linked" and "this Aadhaar
-    // belongs to another account" send a person to different places.
-    if (e?.code === '23505') {
-      if (e.constraint === 'one_active_identity_per_phone') return { ok: false, reason: 'phone_already_linked' };
-      if (e.constraint === 'kyc_verifications_aadhaar_hash_key') return { ok: false, reason: 'aadhaar_taken' };
-      return { ok: false, reason: 'duplicate' };
-    }
-    throw e;
-  }
-}
-
-// ── Login tokens ─────────────────────────────────────────────────────────────
-
-/** Issue a one-time login token. Only the HASH is stored. */
-export async function issueLoginToken({ tokenHash, telegramUserId, userId, ttlSeconds = 300 }) {
-  const { rows } = await pgQuery(
-    `INSERT INTO telegram_login_tokens (token_hash, telegram_user_id, user_id, expires_at)
-     VALUES ($1, $2, $3, now() + ($4 || ' seconds')::interval)
-     RETURNING token_hash, user_id, expires_at`,
-    [String(tokenHash), String(telegramUserId), String(userId), String(ttlSeconds)],
-    'tg_login_issue',
-  );
-  return { tokenHash: rows[0].token_hash, userId: rows[0].user_id, expiresAt: rows[0].expires_at };
-}
-
-/**
- * Consume a login token, once.
- *
- * The read and the consume are ONE atomic UPDATE. Checking first and consuming
- * second is two statements, and a forwarded link redeemed twice fits between
- * them — which for a bearer credential means two sessions from one token.
- * `consumed_at IS NULL` in the WHERE clause is what makes exactly one of N
- * racing redemptions win.
- *
- * Expiry is checked HERE, not left to the sweep: a token whose row has not been
- * reclaimed yet is still expired.
- *
- * @returns {{userId: string}|null} null when unknown, already used, or expired —
- *   deliberately indistinguishable to the caller, so the endpoint cannot be
- *   used to tell a real token from a stale one.
- */
-export async function consumeLoginToken({ tokenHash, telegramUserId = null }) {
-  const { rows } = await pgQuery(
-    `UPDATE telegram_login_tokens
-        SET consumed_at = now()
-      WHERE token_hash = $1
-        AND consumed_at IS NULL
-        AND expires_at > now()
-        AND ($2::text IS NULL OR telegram_user_id = $2)
-      RETURNING user_id, telegram_user_id`,
-    [String(tokenHash), telegramUserId ? String(telegramUserId) : null],
-    'tg_login_consume',
-  );
-  return rows[0] ? { userId: rows[0].user_id, telegramUserId: rows[0].telegram_user_id } : null;
-}
-
-/**
- * Where a sign-in code goes for a given mobile — matched on the KYC number.
- *
- * ── The number typed is matched against the ACCOUNT, not against Telegram ───
- * Owner rule 2026-09-08, and it closes a real hole. `users.mobile` is the
- * number captured at signup and it is immutable — it is the account's identity
- * and the number the KYC is against. `telegram_identities.phone` is whatever
- * number the currently linked Telegram account carries, and `relinkIdentity`
- * overwrites it during an ACCOUNT RECOVERY without touching `users.mobile`.
- *
- * So the two diverge the moment somebody recovers their account onto a Telegram
- * account with a different number — and a lookup keyed on the identity's phone
- * would then let them sign in by typing a number that was never KYC'd, against
- * an account whose verified identity says something else. Matching on
- * `users.mobile` is what makes "you sign in with the number you gave us" true.
- *
- * DELIVERY still goes to the active identity, because that is the Telegram
- * account the person actually holds. `contact_active` is not optional: recovery
- * keeps the displaced row as history, and messaging the identity that just LOST
- * the account would send a sign-in code to the person it was taken back from.
- *
- * The JOIN is inner on purpose. An account with no live identity has nowhere to
- * receive a code, and the caller must treat that exactly like an unknown
- * number — see the route: every case answers identically.
- *
- * @returns {{userId, telegramUserId}|null}
- */
-export async function getLoginTargetByMobile(mobile) {
-  const digits = String(mobile || '').replace(/\D/g, '');
-  if (!digits) return null;
-  const { rows } = await pgQuery(
-    // Digits at both ends. The column is normalised at write time, but a legacy
-    // row stored with a country code would silently match nothing, and the
-    // symptom is "the code never came" with no error anywhere.
-    `SELECT u.user_id, i.telegram_user_id
-       FROM users u
-       JOIN telegram_identities i
-         ON i.user_id = u.user_id AND i.contact_active
-      WHERE regexp_replace(u.mobile, '\\D', '', 'g') = $1
-        AND u.status <> 'DELETED'
-        -- The identity's own number must STILL be the KYC number.
-        --
-        -- Today it always is: signup stamps both from the same shared contact,
-        -- and attemptRecovery only ever re-links with the number that just
-        -- matched getUserByMobile. So this clause changes no current
-        -- behaviour — it makes the invariant ENFORCED rather than assumed, and
-        -- a future writer that links an identity carrying some other number
-        -- gets a refused sign-in instead of a code delivered to a Telegram
-        -- account the platform has no verified claim about.
-        AND regexp_replace(i.phone, '\\D', '', 'g') = $1
-      LIMIT 1`,
-    [digits], 'tg_login_target_by_mobile',
-  );
-  return rows[0] ? { userId: rows[0].user_id, telegramUserId: rows[0].telegram_user_id } : null;
-}
-
-/**
- * Issue a sign-in code, replacing whatever was outstanding for that number.
- *
- * ── One live code per mobile, and the request is idempotent by construction ──
- * `ON CONFLICT DO UPDATE` rather than an insert beside the old row: a player
- * who taps "send code" twice must not end up with two valid codes, and the
- * second tap must invalidate the first rather than racing it. It also resets
- * `attempts`, because the new code has not been guessed at yet.
- *
- * Keyed on the MOBILE hash, not the user id, so the request path never has to
- * know whether the number belongs to anyone — see `getActiveIdentityByPhone`.
- */
-export async function issueLoginCode({ mobileHash, codeHash, userId, telegramUserId, ttlSeconds = 300 }) {
-  const { rows } = await pgQuery(
-    `INSERT INTO telegram_login_codes
-       (mobile_hash, code_hash, user_id, telegram_user_id, expires_at)
-     VALUES ($1, $2, $3, $4, now() + ($5 || ' seconds')::interval)
-     ON CONFLICT (mobile_hash) DO UPDATE
-       SET code_hash = EXCLUDED.code_hash,
-           user_id = EXCLUDED.user_id,
-           telegram_user_id = EXCLUDED.telegram_user_id,
-           attempts = 0,
-           consumed_at = NULL,
-           created_at = now(),
-           expires_at = EXCLUDED.expires_at
-     RETURNING expires_at`,
-    [String(mobileHash), String(codeHash), String(userId), String(telegramUserId), String(ttlSeconds)],
-    'tg_code_issue',
-  );
-  return { expiresAt: rows[0].expires_at };
-}
-
-/**
- * Redeem a sign-in code, exactly once.
- *
- * ── Why this is one statement ───────────────────────────────────────────────
- * Read-then-consume is two statements, and two requests carrying the same code
- * fit between them — which for a sign-in credential means two sessions. The
- * `consumed_at IS NULL` in the WHERE clause is what makes exactly one of N
- * racing redemptions win, and expiry is checked HERE rather than left to the
- * sweep: a row the sweep has not reclaimed is still expired.
- *
- * ── A wrong guess costs an attempt, and five burn the code ──────────────────
- * The second statement runs only when the first matched nothing, so it counts
- * WRONG guesses and not redemptions. Six digits is 10^6, which unbounded is
- * guessable; five attempts makes it 1-in-200000, and the row is consumed at the
- * cap rather than left alive until it expires.
- *
- * @returns {{userId, telegramUserId}|null} — null for wrong, unknown, expired,
- *   already used, or out of attempts, deliberately indistinguishable so the
- *   endpoint cannot be used to learn which of those it was.
- */
-export async function consumeLoginCode({ mobileHash, codeHash, maxAttempts = 5 }) {
-  const { rows } = await pgQuery(
-    `UPDATE telegram_login_codes
-        SET consumed_at = now()
-      WHERE mobile_hash = $1
-        AND code_hash = $2
-        AND consumed_at IS NULL
-        AND expires_at > now()
-        AND attempts < $3
-      RETURNING user_id, telegram_user_id`,
-    [String(mobileHash), String(codeHash), Number(maxAttempts)],
-    'tg_code_consume',
-  );
-  if (rows[0]) return { userId: rows[0].user_id, telegramUserId: rows[0].telegram_user_id };
-
-  // Wrong code (or nothing live). Charge the attempt against the row that IS
-  // live, and consume it outright at the cap so a burnt code cannot be guessed
-  // at for the rest of its lifetime.
-  await pgQuery(
-    `UPDATE telegram_login_codes
-        SET attempts = attempts + 1,
-            consumed_at = CASE WHEN attempts + 1 >= $2 THEN now() ELSE consumed_at END
-      WHERE mobile_hash = $1 AND consumed_at IS NULL AND expires_at > now()`,
-    [String(mobileHash), Number(maxAttempts)], 'tg_code_attempt',
-  );
-  return null;
-}
+// ── Pending onboardings, login tokens and login codes — REMOVED 2026-09-23 ──
+//
+// Ten functions went, across three tables that are gone from schema.sql:
+//
+//   getPendingLink · getPendingAadhaar · upsertPendingLink · deletePendingLink
+//   createAccountFromOnboarding
+//   issueLoginToken · consumeLoginToken
+//   getLoginTargetByMobile · issueLoginCode · consumeLoginCode
+//
+// The account is created by a FORM now (createAccountFromSignup, in
+// repositories/identity.js), so there is no half-finished conversation to
+// park; and players have passwords, so no bot mints a credential. The one
+// function that survived the change is `linkTelegramToAccount` at the bottom
+// of this file, which matches a contact share against an account that already
+// exists rather than creating one.
+//
+// Deleted rather than kept for a caller that might come back (§30: do not
+// accommodate; remove). Nothing imports them — check:dead-code proves it.
 
 // ── Recovery sessions ────────────────────────────────────────────────────────
 //
@@ -1091,20 +778,13 @@ export async function deleteRecoverySession(telegramUserId) {
  * crash mid-pass loses the number permanently.
  */
 export async function sweepExpired() {
-  const pending = await pgQuery(
-    `DELETE FROM telegram_pending_links WHERE expires_at <= now()`, [], 'tg_sweep_pending');
-  const tokens = await pgQuery(
-    `DELETE FROM telegram_login_tokens WHERE expires_at <= now()`, [], 'tg_sweep_tokens');
-  const codes = await pgQuery(
-    `DELETE FROM telegram_login_codes WHERE expires_at <= now()`, [], 'tg_sweep_codes');
+  // One table left. Three others (pending links, login tokens, login codes)
+  // were swept here and no longer exist — a sweep naming a dropped table
+  // throws 42P01 on every pass, which would take the whole retention job down
+  // rather than just this line.
   const recovery = await pgQuery(
     `DELETE FROM telegram_recovery_sessions WHERE expires_at <= now()`, [], 'tg_sweep_recovery');
-  return {
-    pendingLinks: pending.rowCount ?? 0,
-    loginTokens: tokens.rowCount ?? 0,
-    loginCodes: codes.rowCount ?? 0,
-    recoverySessions: recovery.rowCount ?? 0,
-  };
+  return { recoverySessions: recovery.rowCount ?? 0 };
 }
 
 /** Run `fn` in a transaction — for the two swaps that must be all-or-nothing. */
@@ -1122,4 +802,197 @@ export async function withTelegramTransaction(fn) {
   } finally {
     client.release();
   }
+}
+
+/**
+ * Link a Telegram account to a user who ALREADY EXISTS, by their phone number.
+ *
+ * ── The new shape of onboarding ────────────────────────────────────────────
+ * Identity is established by the signup FORM — Aadhaar, the mobile it is linked
+ * to, and a password. Telegram's job is no longer to create the account; it is
+ * to prove that the mobile typed into that form is a mobile the person actually
+ * holds, which is exactly what a shared contact is. So this matches, it does not
+ * create: no contact ever produces a user row.
+ *
+ * `reason` on a refusal is what the bot says next, and the three are different
+ * conversations:
+ *
+ *   no_account        — nobody signed up with that number. Send them to the site.
+ *   already_linked    — that Telegram account is already somebody's.
+ *   phone_taken       — that NUMBER is already proven by a different Telegram
+ *                       account, which is the one case worth a human looking at.
+ *
+ * ── A re-share from the same Telegram account is not an error ──────────────
+ * People tap the button twice, and a bot swap or a channel change sends them
+ * back through it. A repeat from the SAME telegram id against the SAME user is
+ * idempotent and refreshes what Telegram last told us about them, because the
+ * alternative — refusing — reads to the person as though their verification had
+ * failed.
+ */
+export async function linkTelegramToAccount({
+  telegramUserId, phone, telegramUsername = '', firstName = '', generation = 0,
+}) {
+  if (!telegramUserId || !phone) {
+    throw new Error('linkTelegramToAccount requires a telegramUserId and a phone');
+  }
+  const tgId = String(telegramUserId);
+  const number = String(phone);
+
+  try {
+    return await withTelegramTransaction(async (client) => {
+      // The account must already exist. This is the whole difference from what
+      // this replaced: a contact that matches nothing is a person who has not
+      // filled the form yet, and the answer is to send them to it.
+      const { rows: userRows } = await client.query(
+        `SELECT user_id FROM users WHERE mobile = $1 AND status <> 'DELETED'`, [number],
+      );
+      if (!userRows[0]) return { ok: false, reason: 'no_account' };
+      const userId = userRows[0].user_id;
+
+      const { rows: mine } = await client.query(
+        `SELECT user_id FROM telegram_identities WHERE telegram_user_id = $1`, [tgId],
+      );
+      if (mine[0]) {
+        if (String(mine[0].user_id) !== String(userId)) {
+          return { ok: false, reason: 'already_linked' };
+        }
+        // Same person, same account — refresh and move on.
+        await client.query(
+          `UPDATE telegram_identities
+              SET telegram_username = $2, first_name = $3, phone = $4,
+                  contact_active = TRUE, contact_shared_at = now(), last_seen_at = now()
+            WHERE telegram_user_id = $1`,
+          [tgId, telegramUsername, firstName, number],
+        );
+        return { ok: true, userId, relinked: true };
+      }
+
+      await client.query(
+        `INSERT INTO telegram_identities (
+           telegram_user_id, user_id, telegram_username, first_name, phone,
+           contact_shared_at, linked_generation, channel_generation)
+         VALUES ($1, $2, $3, $4, $5, now(), $6, $6)`,
+        [tgId, userId, telegramUsername, firstName, number, generation],
+      );
+      return { ok: true, userId, relinked: false };
+    });
+  } catch (e) {
+    if (e?.code === '23505') {
+      if (e.constraint === 'one_active_identity_per_phone') return { ok: false, reason: 'phone_taken' };
+      return { ok: false, reason: 'already_linked' };
+    }
+    throw e;
+  }
+}
+
+// ── The sign-in bot FLEET, and whose turn it is ─────────────────────────────
+
+/**
+ * Every live sign-in bot, in the rotation's own order.
+ *
+ * The order is `added_at, bot_id` — stable, and stable across a restart, which
+ * a rotation needs: an order that changed between two signups would hand the
+ * same position to two different bots.
+ */
+export async function listLiveSigninBots() {
+  const { rows } = await pgQuery(
+    `SELECT ${BOT_PUBLIC} FROM telegram_bots
+      WHERE status = 'ACTIVE' AND role = 'signin'
+      ORDER BY added_at, bot_id`, [], 'tg_signin_fleet',
+  );
+  return rows.map(toBot);
+}
+
+/**
+ * Which bot this account must open — assigned once, in rotation, and KEPT.
+ *
+ * ── The rotation, in the owner's words ─────────────────────────────────────
+ * "Assign 1, assign 2, then 3rd, 4th, 5th and so on, and once it reaches all,
+ * again start from 1." That is `nextval % (number of live bots)`, over the
+ * fleet ordered as `listLiveSigninBots` orders it.
+ *
+ * The cursor is a SEQUENCE, not a counter row and not a number in a process.
+ * Trap 6 forbids accumulating a counter in memory; a counter ROW would put
+ * every signup behind one lock. `nextval` is non-transactional by design, so
+ * two signups arriving together take two different positions without either
+ * waiting — and a rolled-back signup skips a number, which costs one bot one
+ * place in one cycle and is the right price for not serialising signups.
+ *
+ * ── Why the answer is STORED ───────────────────────────────────────────────
+ * The player is TOLD which bot to open, and they open it. Recomputing the
+ * answer on their next page load would send them to a different conversation
+ * while the one holding their contact share sat in the first bot. So the
+ * assignment is written to `users.telegram_bot_id` and re-read.
+ *
+ * ── Why it is also SELF-HEALING ────────────────────────────────────────────
+ * An admin may retire or replace any bot at any time. An assignment pointing at
+ * a bot that is no longer live is not an assignment, so this function re-reads
+ * it against the CURRENT fleet on every call: a player whose bot was retired is
+ * moved to a live one the next time they are asked to verify, with nothing to
+ * migrate and no sweep to run. `keep` is exactly that check, expressed as a
+ * join against the live fleet rather than as a status read the caller performs.
+ *
+ * All of it is ONE statement, so "keep the one they have, otherwise take the
+ * next turn" cannot be interleaved with a concurrent call to itself.
+ *
+ * @returns {Promise<string|null>} the bot id, or null when the operator has not
+ *   registered a live sign-in bot yet — a real state at launch, and one the
+ *   caller reports rather than treating as an error.
+ */
+export async function assignSigninBot(userId) {
+  const { rows } = await pgQuery(
+    `WITH tick AS (SELECT nextval('telegram_signin_rotation') - 1 AS n),
+          live AS (
+            SELECT bot_id,
+                   row_number() OVER (ORDER BY added_at, bot_id) - 1 AS pos,
+                   count(*)     OVER ()                              AS total
+              FROM telegram_bots
+             WHERE status = 'ACTIVE' AND role = 'signin'
+          ),
+          -- Whose turn it is. Evaluated once: tick is its own single-row CTE
+          -- because nextval written into this predicate directly would be
+          -- called once PER CANDIDATE ROW and burn a whole cycle per signup.
+          pick AS (
+            SELECT l.bot_id FROM live l, tick t WHERE l.pos = t.n % l.total
+          ),
+          -- The assignment they already hold, but only if it is still live.
+          keep AS (
+            SELECT u.telegram_bot_id AS bot_id
+              FROM users u JOIN live l ON l.bot_id = u.telegram_bot_id
+             WHERE u.user_id = $1
+          )
+     UPDATE users u
+        SET telegram_bot_id = COALESCE((SELECT bot_id FROM keep),
+                                       (SELECT bot_id FROM pick))
+      WHERE u.user_id = $1
+     RETURNING u.telegram_bot_id`,
+    [String(userId)], 'tg_assign_signin_bot',
+  );
+  return rows[0]?.telegram_bot_id ?? null;
+}
+
+/**
+ * How many accounts each live bot is currently carrying.
+ *
+ * The admin panel's reason for existing on this screen: a fleet is a throughput
+ * decision, and an operator deciding whether to add bots needs the load, not a
+ * list of names. LEFT JOIN so a bot carrying nobody is reported as 0 rather
+ * than missing — the row an operator is looking for when they have just added
+ * one.
+ */
+export async function signinBotLoads() {
+  const { rows } = await pgQuery(
+    `SELECT b.bot_id, b.username, b.label, count(u.user_id) AS assigned
+       FROM telegram_bots b
+       LEFT JOIN users u ON u.telegram_bot_id = b.bot_id
+      WHERE b.status = 'ACTIVE' AND b.role = 'signin'
+      GROUP BY b.bot_id, b.username, b.label
+      ORDER BY b.added_at, b.bot_id`, [], 'tg_signin_loads',
+  );
+  // `count(*)` is BIGINT and node-postgres hands BIGINT back as a STRING
+  // (trap 5). Uncast, `'900' >= 1000` is true and every comparison a caller
+  // makes on this figure is wrong. Cast at the boundary, once, here.
+  return rows.map((r) => ({
+    botId: r.bot_id, username: r.username, label: r.label, assigned: Number(r.assigned),
+  }));
 }

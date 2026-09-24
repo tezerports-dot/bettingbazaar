@@ -434,3 +434,77 @@ export async function withIdentityTransaction(fn) {
     client.release();
   }
 }
+
+/**
+ * Create an account from the SIGNUP FORM, before Telegram has met the person.
+ *
+ * ── What moved, and why ────────────────────────────────────────────────────
+ * This replaces `createAccountFromOnboarding`, which built the account at the
+ * moment Telegram vouched for a phone number — Aadhaar typed into a chat,
+ * account created on the "share contact" tap. Identity is now established by a
+ * form: Aadhaar, the mobile that Aadhaar is linked to, and a password the
+ * person chose. Telegram's job afterwards is to PROVE that the mobile on the
+ * form is a mobile they hold, and to keep them in the channel.
+ *
+ * So this writes the user and the KYC row together and NO telegram identity —
+ * that row appears later, when they share contact, and is what
+ * `linkTelegramToAccount` adds.
+ *
+ * ── One transaction, and the duplicates are refused by the database ────────
+ * Three unique constraints do the work: the mobile, the Aadhaar hash, and the
+ * user id. Every "is this taken?" read before this call is a courtesy that
+ * produces a friendly message; correctness comes from the write failing, so
+ * two signups racing on the same Aadhaar cannot both pass a prior check.
+ *
+ * WHICH constraint refused decides what the person is told — "that mobile is
+ * already registered" and "that Aadhaar belongs to another account" send them
+ * to different places — so the constraint name is read rather than collapsing
+ * every collision into one message.
+ */
+export async function createAccountFromSignup({
+  userId, username, mobile, passwordHash,
+  aadhaarHash, aadhaarEncrypted, aadhaarLast4,
+  referralCode = null, referredBy = null,
+}) {
+  if (!userId || !mobile) throw new Error('createAccountFromSignup requires a userId and a mobile');
+  if (!passwordHash) throw new Error('createAccountFromSignup requires a passwordHash — the form sets one');
+  if (!aadhaarHash || !aadhaarEncrypted) {
+    throw new Error('createAccountFromSignup requires the Aadhaar hash and ciphertext');
+  }
+
+  try {
+    return await withIdentityTransaction(async (client) => {
+      const id = String(userId);
+
+      const { rows } = await client.query(
+        `INSERT INTO users (user_id, username, mobile, password_hash, referral_code,
+                            referred_by, status, kyc_status, kyc_submission_count)
+         VALUES ($1, $2, $3, $4, $5, $6, 'ACTIVE', 'PENDING_APPROVAL', 1)
+         ON CONFLICT (mobile) DO NOTHING
+         RETURNING user_id`,
+        [id, username || `player${String(mobile).slice(-4)}`, String(mobile),
+         String(passwordHash), referralCode, referredBy ? String(referredBy) : null],
+      );
+      // The signup IS submission one — counted in the same statement, so the
+      // reapply cap cannot silently allow one more attempt than it advertises.
+      if (!rows[0]) return { ok: false, reason: 'mobile_taken' };
+
+      await client.query(
+        `INSERT INTO kyc_verifications (user_id, aadhaar_hash, aadhaar_encrypted,
+                                        aadhaar_last4, phone)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [id, String(aadhaarHash), String(aadhaarEncrypted),
+         String(aadhaarLast4 ?? ''), String(mobile)],
+      );
+
+      return { ok: true, userId: id };
+    });
+  } catch (e) {
+    if (e?.code === '23505') {
+      if (e.constraint === 'kyc_verifications_aadhaar_hash_key') return { ok: false, reason: 'aadhaar_taken' };
+      if (e.constraint === 'users_mobile_key') return { ok: false, reason: 'mobile_taken' };
+      return { ok: false, reason: 'duplicate' };
+    }
+    throw e;
+  }
+}

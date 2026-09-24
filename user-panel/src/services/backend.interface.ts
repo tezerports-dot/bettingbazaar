@@ -5,31 +5,97 @@ import {
   GameState, SystemConfigData, ChatMessage
 } from '../types';
 
+/**
+ * What the gate needs, from `GET /api/v1/auth/verification`.
+ *
+ * `reason` is the SINGLE value a screen reads — one name for the one thing to
+ * do next, in the order the player must do it in. A screen deriving that from
+ * four booleans would derive it differently from the next screen that tried
+ * (§5). Mirrors the object `signupVerification.service.js` returns; §2 names
+ * that module as the owner.
+ */
+export interface VerificationState {
+  verified: boolean;
+  /** null when verified. */
+  reason: 'no_bot' | 'no_channel' | 'share_contact' | 'contact_changed' | 'join_channel' | null;
+  contactShared: boolean;
+  channelJoined: boolean;
+  bot: { username: string } | null;
+  botLink: string;
+  channel: { inviteLink: string; username: string };
+  generation: number;
+  /** A live check was asked for and declined by the per-user floor. */
+  throttled?: boolean;
+}
+
 export interface Backend {
   // --- AUTH ---
-  /**
-   * The ONLY way a player gets a session. The bot verifies identity in Telegram
-   * and sends back a single-use link; this trades that link's token for a
-   * session. There is no register(), no login(), and no password — those were
-   * removed along with the endpoints behind them.
-   */
-  exchangeTelegramToken(token: string): Promise<{
-    success: boolean; token?: string; user?: User; message?: string }>;
+  //
+  // A FORM, and nothing else. The bot no longer signs anybody in: it proves a
+  // phone number and admits somebody to a channel, and the two credentials it
+  // used to mint — a one-time link and a six-digit code — are deleted along
+  // with the tables that held them (see telegram.routes.js). A compromised or
+  // suspended bot must not be an account takeover, and with a fleet of hundreds
+  // that stopped being a hypothetical.
 
   /**
-   * Ask the bot to DM a sign-in code. Signing UP still happens in the bot once
-   * — the contact share is what proves the number — but every login after that
-   * is on-site (owner decision 2026-09-08).
+   * Create an account from the SIGNUP FORM.
    *
-   * Always resolves the same way whether or not the number is registered: a
-   * login form that says "no such account" is a way to test whether a given
-   * person gambles here.
+   * Aadhaar, the Aadhaar-linked mobile, a password, and the invite code if the
+   * player arrived through a referral link. The captcha token rides along when
+   * Turnstile is configured; the server treats its absence as "not configured"
+   * rather than as a refusal, which is how every integration in this repo ships.
+   *
+   * Resolves with a SESSION on success: the very next thing the player sees is
+   * the Telegram verification gate, and the gate has to know who is standing at
+   * it. Sending them back to a login form to find that out is a step that
+   * exists only to be completed.
    */
-  requestLoginCode(mobile: string): Promise<{ success: boolean; message?: string }>;
+  register(form: {
+    aadhaar: string; mobile: string; password: string; confirmPassword: string;
+    referralCode?: string; captchaToken?: string;
+  }): Promise<{ success: boolean; token?: string; user?: User; message?: string }>;
 
-  /** Trade the code for a session. */
-  verifyLoginCode(mobile: string, code: string): Promise<{
+  /**
+   * Sign in with the mobile and password.
+   *
+   * A wrong password, an unknown number and a blocked account are deliberately
+   * NOT distinguishable from the two the server answers identically — a login
+   * form that says "no such account" is a way to test whether a given person
+   * gambles here.
+   *
+   * `twoFactorRequired` comes back INSTEAD of a session for an enrolled
+   * account, carrying a short-lived `challengeToken` that `verifySecondFactor`
+   * redeems. `success` is false in that case, deliberately: nothing downstream
+   * may mistake a challenge for a login.
+   */
+  login(mobile: string, password: string, captchaToken?: string): Promise<{
+    success: boolean; token?: string; user?: User; message?: string;
+    twoFactorRequired?: boolean; challengeToken?: string }>;
+
+  /** Redeem a 2FA challenge with the code from an authenticator app. */
+  verifySecondFactor(challengeToken: string, code: string): Promise<{
     success: boolean; token?: string; user?: User; message?: string }>;
+
+  /** Is this invite code real, and whose? Used to confirm a pre-filled code. */
+  checkInvite(code: string): Promise<{ valid: boolean; code?: string; invitedBy?: string }>;
+
+  /**
+   * The verification gate: may this player use the app, and if not, what next?
+   *
+   * ONE call, deliberately. The contact share and the channel membership are
+   * two halves of one question, and asking them separately means the screen has
+   * to decide between two answers that can disagree — which they do, the first
+   * time somebody's contact is stood down while their cached channel status
+   * still reads `member`.
+   *
+   * `verify: true` asks for a LIVE check and is what the "I've done it" button
+   * sends, once. The default is cache-only and costs nothing.
+   */
+  getVerification(opts?: { verify?: boolean }): Promise<VerificationState>;
+
+  /** A REJECTED player submits a corrected Aadhaar, from the panel. */
+  resubmitAadhaar(aadhaar: string): Promise<{ success: boolean; message?: string; last4?: string }>;
 
   // --- CORE SERVICES ---
   getServerTime(): Promise<{ unixtime: number }>;

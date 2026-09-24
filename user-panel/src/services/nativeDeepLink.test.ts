@@ -19,25 +19,25 @@ const ALLOWED = [APP, API];
 
 describe('routeFromDeepLink', () => {
   it('accepts the bot sign-in link and keeps the token in the fragment', () => {
-    const route = routeFromDeepLink(`${APP}/#/auth/telegram?token=abc123`, ALLOWED);
-    expect(route).toBe('#/auth/telegram?token=abc123');
+    const route = routeFromDeepLink(`${APP}/#/wallet?tab=deposit`, ALLOWED);
+    expect(route).toBe('#/wallet?tab=deposit');
   });
 
   it('preserves a base64url token verbatim', () => {
     // issueLoginToken mints base64url, which contains - and _ and no padding.
     const token = 'a-B_c9dEfGh-ijkLmn_opQRst0123456789ABCDEFGhij';
-    const route = routeFromDeepLink(`${APP}/#/auth/telegram?token=${token}`, ALLOWED);
-    expect(route).toBe(`#/auth/telegram?token=${token}`);
+    const route = routeFromDeepLink(`${APP}/#/wallet?tab=${token}`, ALLOWED);
+    expect(route).toBe(`#/wallet?tab=${token}`);
   });
 
   it('accepts a link on any origin the deployment serves', () => {
-    expect(routeFromDeepLink(`${API}/#/auth/telegram?token=x`, ALLOWED))
-      .toBe('#/auth/telegram?token=x');
+    expect(routeFromDeepLink(`${API}/#/wallet?tab=deposit`, ALLOWED))
+      .toBe('#/wallet?tab=deposit');
   });
 
   it('rejects a link from an origin this deployment does not serve', () => {
     // The shape a phishing app would send: a real-looking route, wrong origin.
-    expect(routeFromDeepLink('https://bettingbazaar.evil/#/auth/telegram?token=x', ALLOWED))
+    expect(routeFromDeepLink('https://bettingbazaar.evil/#/wallet?tab=deposit', ALLOWED))
       .toBeNull();
   });
 
@@ -71,7 +71,7 @@ describe('routeFromDeepLink', () => {
   });
 
   it('rejects a non-http scheme', () => {
-    expect(routeFromDeepLink('bettingbazaar://auth/telegram?token=x', ALLOWED)).toBeNull();
+    expect(routeFromDeepLink('bettingbazaar://wallet?tab=deposit', ALLOWED)).toBeNull();
   });
 
   it('rejects anything that is not a URL', () => {
@@ -81,6 +81,6 @@ describe('routeFromDeepLink', () => {
 
   it('trusts nothing when the allow-list is empty', () => {
     // A build that failed to supply VITE_APP_ORIGIN must not fall open.
-    expect(routeFromDeepLink(`${APP}/#/auth/telegram?token=x`, [])).toBeNull();
+    expect(routeFromDeepLink(`${APP}/#/wallet?tab=deposit`, [])).toBeNull();
   });
 });

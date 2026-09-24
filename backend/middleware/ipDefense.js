@@ -102,12 +102,30 @@ export function _setIpDefenseConfig(p) { cfg = { ...cfg, ...p }; } // tests only
  * live. When ipDefense.enabled is false it lets everything through (the per-IP
  * limiter still runs) by returning a very high max.
  *
- * @param {'auth'|'adminAuth'|'withdrawal'|'bet'} tierName  a RATE_LIMIT_TIERS key
+ * ── Scope it to the route that submits a credential, never to a PREFIX ────
+ * This counts EVERY request, success included — that is correct for a
+ * rotation backstop in front of a password box and catastrophic in front of
+ * anything else. Measured on a running server: mounted on the `/api/v1/auth`
+ * PREFIX it reached `GET /me`, which every page load calls, and the gate's
+ * verification poll, and 32 requests per /24 per 30 minutes is a handful of
+ * page loads — on the carrier-grade NAT that most Indian mobile traffic sits
+ * behind, one person reloading a page 429s a whole /24. `/me` answered 429,
+ * from an address that had submitted no credential at all.
+ *
+ * So: chain it on the route, beside the per-IP limiter it backs up. Not on a
+ * router that also carries session and status paths. §32 S27, one layer up.
+ *
+ * @param {'auth'|'adminAuth'|'withdrawal'|'bet'|'signup'} tierName  a RATE_LIMIT_TIERS key
+ * @param {{countOnly?: 'all'|'successes'}} [opts] `successes` counts only what
+ *   the request ACHIEVED, for a route where the failures are typos rather than
+ *   guesses (signup). Default counts everything, which is what a credential
+ *   backstop must do.
  */
-export function createSubnetLimiter(tierName) {
+export function createSubnetLimiter(tierName, { countOnly = 'all' } = {}) {
   const tier = RATE_LIMIT_TIERS[tierName];
   return rateLimit({
     store: createRateLimitStore(`rl:subnet:${tierName}:`),
+    skipFailedRequests: countOnly === 'successes',
     windowMs: tier.windowMs,
     max: () => (cfg.enabled ? Math.max(1, Math.round(tier.max * cfg.subnetMultiplier)) : 1e9),
     standardHeaders: true,

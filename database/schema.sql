@@ -925,8 +925,8 @@ CREATE TABLE IF NOT EXISTS telegram_bots (
   -- GENERATED, not maintained by application code.
   --
   -- This column exists only to be indexed: it holds the role for a LIVE bot in
-  -- a singular role and NULL otherwise, so the partial unique index below makes
-  -- "at most one live sign-in bot" a rule the database enforces.
+  -- a SINGULAR role and NULL otherwise, so the partial unique index below makes
+  -- "at most one live bot in that role" a rule the database enforces.
   --
   -- The document model derived it in a pre-validate hook, which meant a writer
   -- using an update operator instead of a document save bypassed the hook
@@ -934,8 +934,21 @@ CREATE TABLE IF NOT EXISTS telegram_bots (
   -- status without recomputing the slot would have been accepted. Generating it
   -- from the row removes the requirement to remember, and there is no writer
   -- that can get it wrong.
+  --
+  -- ── `signin` is a FLEET, and deliberately not in this list ────────────────
+  -- One bot is a throughput ceiling, not a design: the Bot API allows roughly
+  -- THIRTY messages a second per bot, and every signup sends several. An
+  -- operator runs as many sign-in bots as they need — the owner's figure was
+  -- 500 to 1,000 — and each account is assigned one of them in rotation
+  -- (`assignSigninBot`). They all do the same job, so which one a player gets
+  -- does not matter to the player; what matters is that no single one is the
+  -- whole platform's front door.
+  --
+  -- `recovery` stays singular. There is exactly one account-recovery
+  -- conversation and it is the one path that hands an account to a DIFFERENT
+  -- Telegram account, so it stays a single, watchable door.
   live_slot       TEXT GENERATED ALWAYS AS (
-                    CASE WHEN status = 'ACTIVE' AND role IN ('signin', 'recovery')
+                    CASE WHEN status = 'ACTIVE' AND role = 'recovery'
                          THEN role END
                   ) STORED,
 
@@ -1029,38 +1042,19 @@ CREATE UNIQUE INDEX IF NOT EXISTS one_active_identity_per_phone
 CREATE INDEX IF NOT EXISTS telegram_identities_channel_idx
   ON telegram_identities (channel_generation, channel_status);
 
--- ── Telegram: the half-finished conversation ─────────────────────────────────
+-- ── Telegram: the half-finished conversation — REMOVED 2026-09-23 ──────────
 --
--- Deliberately SEPARATE from telegram_identities: nothing here has proven
--- anything yet, and a half-finished signup must never be mistaken for an
--- account.
+-- `telegram_pending_links` held an onboarding conversation: the step, the
+-- Aadhaar hash and ciphertext captured over a chat, and the referral code from
+-- the deep link. None of those exist any more. The FORM creates the account
+-- (domains/identity/playerAuth.routes.js), so by the time anybody opens a bot
+-- there is a row in `users` to match a contact share against — which is what
+-- `linkTelegramToAccount` does, and why there is no half-finished state to
+-- park anywhere.
 --
--- EXPIRY IS NOT A TTL INDEX. PostgreSQL has none, so `expires_at` is enforced
--- by the READS — every query filters on it — and the sweep below only reclaims
--- space. That ordering matters: a sweep that has not run yet must never make an
--- abandoned onboarding usable, and code that trusts the sweep to have run is
--- code that trusts a cron job with an Aadhaar hash.
-CREATE TABLE IF NOT EXISTS telegram_pending_links (
-  telegram_user_id  TEXT PRIMARY KEY,
-  step              TEXT NOT NULL DEFAULT 'AWAITING_AADHAAR',
-  aadhaar_hash      TEXT,
-  aadhaar_encrypted TEXT,
-  aadhaar_last4     TEXT NOT NULL DEFAULT '',
-  phone             TEXT,
-  telegram_username TEXT NOT NULL DEFAULT '',
-  first_name        TEXT NOT NULL DEFAULT '',
-  -- Attribution is recorded HERE, at first contact, because that is the only
-  -- moment the deep-link payload exists. Carrying it forward to the created
-  -- account is what makes a referral link work at all.
-  referral_code     TEXT,
-  generation        BIGINT NOT NULL DEFAULT 0,
-  created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-  expires_at        TIMESTAMPTZ NOT NULL DEFAULT (now() + interval '24 hours'),
-
-  CONSTRAINT telegram_pending_links_step_check
-    CHECK (step IN ('AWAITING_AADHAAR','AWAITING_CONTACT','AWAITING_CHANNEL','COMPLETE'))
-);
-CREATE INDEX IF NOT EXISTS telegram_pending_links_expiry_idx ON telegram_pending_links (expires_at);
+-- Deleted rather than left standing: a table nothing writes is the next
+-- reader's false lead (§3, §22), and this one would read as though the
+-- platform still took Aadhaar numbers over Telegram.
 
 -- ── Telegram: a recovery in progress ─────────────────────────────────────────
 --
@@ -1100,51 +1094,22 @@ CREATE TABLE IF NOT EXISTS telegram_recovery_sessions (
 CREATE INDEX IF NOT EXISTS telegram_recovery_sessions_expiry_idx
   ON telegram_recovery_sessions (expires_at);
 
--- ── Telegram: the bridge from a chat to a browser session ────────────────────
+-- ── The bot can no longer sign anybody in — REMOVED 2026-09-23 ────────────
 --
--- A bearer credential for the seconds it lives, travelling through a chat the
--- player might forward. Deliberately hostile to reuse: single-use (consumed_at
--- is set in the SAME atomic UPDATE that reads it), short-lived, and bound to
--- the Telegram account it was issued to.
+-- Two tables went together, because they were two spellings of one thing: a
+-- credential a BOT could mint. `telegram_login_tokens` held the one-time link
+-- the bot DMed after signup; `telegram_login_codes` held the six-digit code it
+-- sent to a returning player.
 --
--- Stored as a SHA-256 hash, so a database dump yields nothing usable — the
--- plaintext exists only in the message Telegram delivered.
-CREATE TABLE IF NOT EXISTS telegram_login_tokens (
-  token_hash      TEXT PRIMARY KEY,
-  telegram_user_id TEXT NOT NULL,
-  user_id         TEXT NOT NULL REFERENCES users (user_id) ON DELETE CASCADE,
-  consumed_at     TIMESTAMPTZ,
-  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-  expires_at      TIMESTAMPTZ NOT NULL
-);
-CREATE INDEX IF NOT EXISTS telegram_login_tokens_user_idx ON telegram_login_tokens (user_id);
-CREATE INDEX IF NOT EXISTS telegram_login_tokens_expiry_idx ON telegram_login_tokens (expires_at);
-
--- ── Sign-in codes, delivered over Telegram ───────────────────────────────────
--- A returning player types their mobile on the site and the bot DMs them a six
--- digit code. No redirect, no app switch — the trip to Telegram happens once,
--- at signup, when the contact share is what proves the number.
+-- Players have passwords now (the signup form sets one), so both are replaced
+-- by `POST /api/v1/auth/login` — and that is the security half of the change,
+-- not a side effect. A compromised, suspended or impersonated bot could
+-- previously hand out sessions; the fleet makes that worse by multiplying the
+-- number of tokens that would do it. Nothing the bot can do now grants access:
+-- it proves a phone number and admits somebody to a channel.
 --
--- One live code per MOBILE, not per user: the request path must answer
--- identically whether or not the number is registered, so it cannot key on a
--- user_id it may not have. The mobile is stored hashed for the same reason the
--- code is — this table would otherwise be a list of every player's phone number
--- sitting beside a credential.
---
--- `attempts` is what makes six digits safe. Ten thousand guesses against a
--- 10^6 space is a 1-in-100 chance; five is 1-in-200000, and the row burns
--- itself at the cap rather than waiting for the clock.
-CREATE TABLE IF NOT EXISTS telegram_login_codes (
-  mobile_hash  TEXT PRIMARY KEY,
-  code_hash    TEXT NOT NULL,
-  user_id      TEXT NOT NULL REFERENCES users (user_id) ON DELETE CASCADE,
-  telegram_user_id TEXT NOT NULL,
-  attempts     INT NOT NULL DEFAULT 0 CHECK (attempts >= 0),
-  consumed_at  TIMESTAMPTZ,
-  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-  expires_at   TIMESTAMPTZ NOT NULL
-);
-CREATE INDEX IF NOT EXISTS telegram_login_codes_expiry_idx ON telegram_login_codes (expires_at);
+-- Deleted rather than left standing. A credential table nothing writes is
+-- still a credential table, and the next reader has no way to know it is dead.
 
 -- ── Revoked tokens ───────────────────────────────────────────────────────────
 -- Checked on every authenticated request, so it is a primary-key lookup and
@@ -3895,3 +3860,48 @@ DO $$ BEGIN
   ALTER TABLE merchants ADD CONSTRAINT merchants_consecutive_rejections_non_negative
     CHECK (consecutive_rejections >= 0);
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Form signup, and the sign-in bot FLEET (2026-09-23)
+-- ═══════════════════════════════════════════════════════════════════════════
+-- An account is now created by a FORM — Aadhaar, the Aadhaar-linked mobile, a
+-- password and a captcha — and Telegram is the VERIFICATION step that follows,
+-- not the thing that creates the account. Two consequences land in the schema.
+
+-- ── 1. Which bot this account was told to open ─────────────────────────────
+-- The fleet exists because one bot is a throughput ceiling (~30 messages a
+-- second, Bot API). The assignment is STORED rather than recomputed, because a
+-- player is TOLD which bot to open: recomputing it would send them to a
+-- different conversation on their next page load, and the one they had already
+-- started would be the one holding their contact share.
+--
+-- Nullable: an account created while the operator has registered no bot yet is
+-- a real state (it is exactly where a launch sits), and it is assigned the
+-- moment one exists rather than being refused at signup.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS telegram_bot_id TEXT;
+CREATE INDEX IF NOT EXISTS users_telegram_bot_idx ON users (telegram_bot_id)
+  WHERE telegram_bot_id IS NOT NULL;
+
+-- ── 2. The rotation cursor ─────────────────────────────────────────────────
+-- Round robin, in the owner's words: "assign 1, assign 2, then 3rd, 4th, 5th
+-- and so on, and once it reaches all, again start from 1."
+--
+-- A SEQUENCE, not a counter row and not a number held in a process. Trap 6
+-- forbids accumulating a counter in memory, and a counter row would have to be
+-- locked by every signup; `nextval` is non-transactional by design, so two
+-- signups arriving together get two different numbers without either waiting
+-- for the other. It is allowed to skip on a rollback — a skipped number costs
+-- one bot one position in a cycle, which is nothing, and is the correct trade
+-- against serialising every signup behind one row.
+--
+-- The list it indexes is read at assignment time, so adding, replacing or
+-- retiring a bot changes the cycle from the next signup onward with nothing to
+-- reset.
+CREATE SEQUENCE IF NOT EXISTS telegram_signin_rotation;
+
+-- ── 3. What a contact share is matched against ─────────────────────────────
+-- The form's mobile. `telegram_identities.phone` already holds Telegram's own
+-- verified number for the account, and `users.mobile` holds what was typed —
+-- the link is made only when they are the same number, which is what makes the
+-- Telegram step a VERIFICATION of the form rather than a second signup.
+CREATE INDEX IF NOT EXISTS telegram_identities_phone_idx ON telegram_identities (phone);

@@ -213,7 +213,7 @@ describe('a failed Aadhaar does not stay held', () => {
   });
 
   it('bounds how many Aadhaar numbers one account may submit', async () => {
-    const { MAX_KYC_SUBMISSIONS } = await import('../../domains/telegram/telegramOnboarding.service.js');
+    const { MAX_KYC_SUBMISSIONS } = await import('../../domains/identity/aadhaarResubmission.service.js');
     // "Submit a number, be told whether it is registered" is an enumeration
     // oracle if it can be repeated freely.
     expect(MAX_KYC_SUBMISSIONS).toBeGreaterThan(1);

@@ -61,20 +61,45 @@ const backend = getBackend();
 
 interface LiveStats { totalDelhi: number; totalBombay: number; }
 
+/**
+ * What the signup form submits.
+ *
+ * Declared here rather than inline so the form, the context and the backend
+ * agree on one shape — a screen that quietly stopped sending `confirmPassword`
+ * would be answered "the two passwords do not match" for a field it never
+ * filled in.
+ */
+export interface RegisterForm {
+  aadhaar: string;
+  mobile: string;
+  password: string;
+  confirmPassword: string;
+  /** Pre-filled and non-editable when the player arrived by a referral link. */
+  referralCode?: string;
+}
+
 interface GameContextType {
   user: User | null;
   isAuthenticated: boolean;
   isOnline: boolean;
   /**
-   * Redeem a bot login link. The single entry point to an authenticated
-   * session — there is no password login and no registration, because a
-   * player's identity is established inside Telegram before this is reached.
+   * Create an account from the signup form and adopt the session it grants.
+   *
+   * Throws with the server's own sentence on a refusal: every one of them names
+   * the FIELD that is wrong, and a screen that swallowed it would send the
+   * player back to guess which box to change.
    */
-  completeTelegramLogin: (token: string) => Promise<void>;
-  /** Ask the bot to DM a sign-in code. Says nothing about the number. */
-  requestLoginCode: (mobile: string) => Promise<void>;
-  /** Sign in with a code the bot DMed. Seats the player like a link does. */
-  signInWithCode: (mobile: string, code: string) => Promise<void>;
+  register: (form: RegisterForm) => Promise<void>;
+  /**
+   * Sign in with the mobile and password.
+   *
+   * Resolves `{ twoFactorRequired, challengeToken }` instead of seating anybody
+   * when the account has an authenticator enrolled — deliberately not a throw,
+   * because it is not a failure and the form has a second step to show.
+   */
+  signIn: (mobile: string, password: string) => Promise<{ twoFactorRequired?: boolean; challengeToken?: string }>;
+  /** Redeem a 2FA challenge and seat the player. */
+  signInWithSecondFactor: (challengeToken: string, code: string) => Promise<void>;
   logout: () => void;
   cycleType: CycleType;
   setCycleType: (type: CycleType) => void;
@@ -910,42 +935,64 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
    * Throws on failure so the calling screen can show why; every failure reason
    * comes back as one message on purpose, and the fix is always a fresh /start.
    */
-  const completeTelegramLogin = async (token: string): Promise<void> => {
-    const res = await backend.exchangeTelegramToken(token);
+  /**
+   * Take the seat a successful auth call grants.
+   *
+   * One function for all three doors. Two ways in that seat a player
+   * differently is how one of them ends up showing an empty wallet — which has
+   * happened here: `issueSession` once read balances off fields the account row
+   * does not have, so every login on the platform reported a wallet of zero.
+   */
+  const seat = (
+    res: { success: boolean; user?: User; message?: string;
+           code?: string; retryAfter?: number; retryAt?: string },
+    fallback: string,
+  ) => {
     if (!res.success || !res.user) {
-      throw new Error(res.message
-        || 'This sign-in link is no longer valid. Send /start to the bot for a new one.');
+      // The THROTTLE fields travel with the error, not just the sentence.
+      // `useRetryCountdown` reads `retryAt` to run a live countdown and disable
+      // the button; a bare `new Error(message)` drops them, and the screen then
+      // shows a refusal beside a button that still looks pressable — so the
+      // player presses it, extends the window, and the form looks broken rather
+      // than throttled.
+      throw Object.assign(new Error(res.message || fallback), {
+        code: res.code, retryAfter: res.retryAfter, retryAt: res.retryAt,
+      });
     }
-    const u = { ...res.user } as User;
-    setUser(u);
+    setUser({ ...res.user } as User);
   };
 
   /**
-   * Ask the bot to DM a sign-in code.
+   * The signup form.
    *
-   * Resolves the same way whether or not the number is registered — the server
-   * answers identically and there is deliberately nothing here to branch on. It
-   * throws only when the request could not be made at all.
+   * Seats the player straight away, deliberately: the next thing they see is
+   * the Telegram verification gate, and the gate has to know who is standing at
+   * it to say which bot to open. Sending them to a login form in between is a
+   * step that exists only to be completed.
    */
-  const requestLoginCode = async (mobile: string): Promise<void> => {
-    await backend.requestLoginCode(mobile);
+  const register = async (form: RegisterForm): Promise<void> => {
+    seat(await backend.register(form), 'Could not create your account. Please try again.');
   };
 
   /**
-   * Sign in with a code the bot sent, seating the player exactly as a link
-   * would.
+   * The login form.
    *
-   * Shares `setUser` and the same seated user shape with
-   * `completeTelegramLogin` rather than repeating them: two ways in that seat
-   * a player differently is how one of them ends up showing an empty wallet.
+   * A 2FA challenge is NOT a failure and must not throw: the form has a second
+   * step to show, and turning this into an error would put "Invalid
+   * credentials" in front of somebody whose password was correct.
    */
-  const signInWithCode = async (mobile: string, code: string): Promise<void> => {
-    const res = await backend.verifyLoginCode(mobile, code);
-    if (!res.success || !res.user) {
-      throw new Error(res.message || 'That code is not valid. Request a new one and try again.');
+  const signIn = async (mobile: string, password: string) => {
+    const res = await backend.login(mobile, password);
+    if (res.twoFactorRequired) {
+      return { twoFactorRequired: true, challengeToken: res.challengeToken };
     }
-    const u = { ...res.user } as User;
-    setUser(u);
+    seat(res, 'Could not sign you in. Please try again.');
+    return {};
+  };
+
+  const signInWithSecondFactor = async (challengeToken: string, code: string): Promise<void> => {
+    seat(await backend.verifySecondFactor(challengeToken, code),
+      'That code is not valid. Check your authenticator app and try again.');
   };
 
   const logout = () => {
@@ -1024,7 +1071,7 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
 
   return (
     <GameContext.Provider value={{
-      user, isAuthenticated: !!user, isOnline, completeTelegramLogin, requestLoginCode, signInWithCode, logout,
+      user, isAuthenticated: !!user, isOnline, register, signIn, signInWithSecondFactor, logout,
       cycleType, setCycleType, cycles, currentCycle: cycles[cycleType],
       pastCycles, loadCycleHistory, gameState: cycles[cycleType].status, serverTimeOffset,
       placeBet, placePhantomBet, userBets, history, triggerAdminAction, formatTime,
