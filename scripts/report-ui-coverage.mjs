@@ -173,6 +173,21 @@ const KIND = {
     says: 'it asked a confirm/prompt and this pass declines — answered in the mutating pass instead',
   },
   // The honest gap.
+  // ── A control the press REMOVES from every other screen ──────────────
+  // "Dismiss announcement" is one banner shown above all sixteen player
+  // screens. The inventory is taken AT REST and sees it on every one; the
+  // drive presses it on the first screen, the dismissal sticks, and it is
+  // legitimately absent from the other fourteen.
+  //
+  // Counting those fourteen as NOT REACHED overstates the gap by 14 and
+  // describes a control that was pressed twice and ACTED both times. This is
+  // the mirror of `revealed` — a screen that SHRINKS when you press it — and
+  // it is only claimed when the SAME kind and name ACTED elsewhere in this
+  // panel in this run, which is evidence rather than an excuse.
+  PRESSED_ON_ANOTHER_SCREEN: {
+    verdicts: [],
+    says: 'absent because an earlier press removed it platform-wide — the same control ACTED on another screen this run',
+  },
   NOT_REACHED: {
     verdicts: ['GONE', 'UNREACHABLE', 'THROTTLED'],
     says: 'NOT pressed and not by choice — this is the number that is left',
@@ -189,10 +204,13 @@ const UNCLASSIFIED = 'UNCLASSIFIED';
 // A separator that cannot occur in a panel name or a route.
 const SEP = '\u0000';
 const pressedBy = new Map();
+/** (panel, kind, name) that ACTED somewhere — evidence for the class above. */
+const actedSomewhere = new Set();
 for (const p of report.pressed ?? []) {
   const k = `${p.panel}${SEP}${p.screen}`;
   if (!pressedBy.has(k)) pressedBy.set(k, []);
   pressedBy.get(k).push(p);
+  if (p.verdict === 'ACTED') actedSomewhere.add(`${p.panel}${SEP}${p.kind}${SEP}${p.name}`);
 }
 
 const md = process.argv.includes('--md');
@@ -299,7 +317,17 @@ for (const panel of panels) {
     // clamp reports neither. So it is counted and named.
     const accounted = res.length - n.NOT_REACHED;
     const revealed = Math.max(0, accounted - have);
-    const notReached = Math.max(0, have - accounted) + n.NOT_REACHED;
+    let notReached = Math.max(0, have - accounted) + n.NOT_REACHED;
+
+    // Of the shortfall, how much is a control an earlier press removed?
+    if (notReached > 0) {
+      const here = new Set(res.map((r) => `${r.kind}${SEP}${r.name}${SEP}${r.ordinal}`));
+      const removed = s.controls.filter((c) => !here.has(`${c.kind}${SEP}${c.name}${SEP}${c.ordinal}`)
+        && actedSomewhere.has(`${panel}${SEP}${c.kind}${SEP}${c.name}`)).length;
+      const take = Math.min(removed, notReached);
+      n.PRESSED_ON_ANOTHER_SCREEN += take;
+      notReached -= take;
+    }
 
     grand.have += have;
     grand.revealed += revealed;
@@ -317,7 +345,8 @@ for (const panel of panels) {
       : revealed > 0 ? `+${revealed} only a press reveals`
       : notReached > 0 ? 'partial' : 'all pressed';
     console.log(row([s.screen, have, n.SCREEN_MOVED, n.ANSWERED, n.SAID, n.NO_OP_BY_DESIGN,
-                     n.INERT, n.DISABLED, n.REPEAT + n.DRIVEN_ELSEWHERE, n.ASKED, notReached,
+                     n.INERT, n.DISABLED,
+                     n.REPEAT + n.DRIVEN_ELSEWHERE + n.PRESSED_ON_ANOTHER_SCREEN, n.ASKED, notReached,
                      `${note} ${age}`]));
   }
 }

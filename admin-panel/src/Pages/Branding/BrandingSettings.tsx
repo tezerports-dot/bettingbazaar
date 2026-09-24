@@ -334,33 +334,21 @@ export const BrandingSettings: React.FC = () => {
             </div>
           </div>
 
-          {/* H-01: Brand Colours & CDN — previously missing from JSX */}
+          {/* ── CDN only. The three colours used to be repeated here ────────
+              This block arrived as "H-01: Brand Colours & CDN" to add the CDN
+              field, and brought a SECOND copy of Primary/Secondary/Accent with
+              it — so one screen offered six controls for three values, under
+              two different names each ("Primary (Gold)" above, "Primary
+              Colour" here), both carrying `name="primaryColor"`.
+
+              They wrote the same `formData` keys, so nothing drifted in state.
+              What it cost is the operator: two labels for one value on one
+              screen, with nothing saying which is authoritative — and §4 has
+              already recorded a branding drift that went unnoticed because the
+              secondary and accent had no single visible owner. §5 is about
+              exactly this shape, and the duplicate is the half to delete. */}
           <div className="space-y-4">
-            <h3 className="font-semibold text-white mb-3">Brand Colours &amp; CDN</h3>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div>
-                <label className="label" htmlFor="primaryColor">Primary Colour</label>
-                <input id="primaryColor" name="primaryColor" type="color"
-                  value={formData.primaryColor}
-                  onChange={e => set('primaryColor', e.target.value)}
-                  className="h-10 w-full rounded-sm border border-gray-600 bg-transparent cursor-pointer" />
-                <p className="text-xs text-gray-400 mt-1">e.g. gold accent — sets --brand-primary CSS var</p>
-              </div>
-              <div>
-                <label className="label" htmlFor="secondaryColor">Secondary Colour</label>
-                <input id="secondaryColor" name="secondaryColor" type="color"
-                  value={formData.secondaryColor}
-                  onChange={e => set('secondaryColor', e.target.value)}
-                  className="h-10 w-full rounded-sm border border-gray-600 bg-transparent cursor-pointer" />
-              </div>
-              <div>
-                <label className="label" htmlFor="accentColor">Accent Colour</label>
-                <input id="accentColor" name="accentColor" type="color"
-                  value={formData.accentColor}
-                  onChange={e => set('accentColor', e.target.value)}
-                  className="h-10 w-full rounded-sm border border-gray-600 bg-transparent cursor-pointer" />
-              </div>
-            </div>
+            <h3 className="font-semibold text-white mb-3">CDN</h3>
             <div>
               <label className="label" htmlFor="cdnBaseUrl">CDN Base URL</label>
               <input id="cdnBaseUrl" name="cdnBaseUrl" type="url"

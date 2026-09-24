@@ -3,8 +3,8 @@
 
 Two artefacts, both left behind by a real browser driving the real panels:
 
-* the control INVENTORY — every control each screen has — taken 2026-09-24T15:29:10.747Z
-* the DRIVE report — what happened when each was pressed — 2026-09-24T17:30:07.536Z
+* the control INVENTORY — every control each screen has — taken 2026-09-24T23:00:45.859Z
+* the DRIVE report — what happened when each was pressed — 2026-09-24T23:03:05.918Z
 
 ## How to read it, and what it does not say
 
@@ -27,83 +27,83 @@ would put the denominator in the thousands and bury the real work.
 
 | screen | controls | moved | answered | said | no-op | inert | disabled | elsewhere | asked | NOT reached | note |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| / | 17 | 15 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 2 | partial 5h ago |
-| /casino | 17 | 17 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 5h ago |
-| /crash | 9 | 2 | 0 | 0 | 1 | 0 | 0 | 0 | 5 | 1 | partial 5h ago |
-| /faq | 9 | 7 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 1 | partial 5h ago |
-| /history | 7 | 6 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | partial 5h ago |
-| /leaderboard | 9 | 7 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 1 | partial 5h ago |
-| /my-bets | 6 | 4 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 1 | partial 5h ago |
-| /profile | 9 | 5 | 0 | 0 | 0 | 1 | 0 | 2 | 0 | 1 | partial 5h ago |
-| /promo | 4 | 3 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | partial 5h ago |
-| /referrals | 4 | 3 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | partial 5h ago |
-| /results | 5 | 4 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | partial 5h ago |
-| /rules | 4 | 3 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | partial 5h ago |
-| /sports | 19 | 3 | 0 | 0 | 1 | 1 | 0 | 0 | 13 | 1 | partial 5h ago |
-| /support | 6 | 5 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | partial 5h ago |
-| /wallet | 11 | 7 | 0 | 0 | 0 | 2 | 1 | 0 | 0 | 1 | partial 5h ago |
-| /winners | 6 | 4 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 1 | partial 5h ago |
+| / | 17 | 15 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 2 | partial 0h ago |
+| /casino | 17 | 17 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
+| /crash | 9 | 2 | 0 | 5 | 1 | 0 | 0 | 1 | 0 | 0 | all pressed 0h ago |
+| /faq | 9 | 7 | 0 | 0 | 0 | 1 | 0 | 1 | 0 | 0 | all pressed 0h ago |
+| /history | 7 | 6 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | all pressed 0h ago |
+| /leaderboard | 9 | 7 | 0 | 0 | 0 | 1 | 0 | 1 | 0 | 0 | all pressed 0h ago |
+| /my-bets | 6 | 4 | 0 | 0 | 0 | 1 | 0 | 1 | 0 | 0 | all pressed 0h ago |
+| /profile | 9 | 5 | 0 | 0 | 0 | 1 | 0 | 3 | 0 | 0 | all pressed 0h ago |
+| /promo | 4 | 3 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | all pressed 0h ago |
+| /referrals | 4 | 3 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | all pressed 0h ago |
+| /results | 5 | 4 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | all pressed 0h ago |
+| /rules | 4 | 3 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | all pressed 0h ago |
+| /sports | 19 | 3 | 0 | 13 | 1 | 1 | 0 | 1 | 0 | 0 | all pressed 0h ago |
+| /support | 6 | 5 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | all pressed 0h ago |
+| /wallet | 11 | 7 | 0 | 0 | 0 | 2 | 1 | 1 | 0 | 0 | all pressed 0h ago |
+| /winners | 6 | 4 | 0 | 0 | 0 | 1 | 0 | 1 | 0 | 0 | all pressed 0h ago |
 
 ### admin-panel
 
 | screen | controls | moved | answered | said | no-op | inert | disabled | elsewhere | asked | NOT reached | note |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| / | 9 | 9 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 5h ago |
-| /app-assets | 5 | 0 | 1 | 0 | 0 | 0 | 0 | 4 | 0 | 0 | all pressed 5h ago |
-| /audit-logs | 3 | 1 | 0 | 0 | 0 | 2 | 0 | 0 | 0 | 0 | all pressed 5h ago |
-| /branding | 27 | 17 | 1 | 0 | 0 | 7 | 0 | 2 | 0 | 0 | all pressed 5h ago |
-| /business-policy/deposit | 3 | 2 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | all pressed 5h ago |
-| /business-policy/settlement-rail | 11 | 8 | 2 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | all pressed 5h ago |
-| /chat-management | 1 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | all pressed 5h ago |
-| /content/cdn | 10 | 9 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | all pressed 5h ago |
-| /content/faq | 5 | 3 | 0 | 0 | 0 | 0 | 0 | 2 | 0 | 0 | all pressed 5h ago |
-| /content/slides | 4 | 2 | 1 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | all pressed 5h ago |
-| /content/support | 13 | 12 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | all pressed 5h ago |
-| /cycle-history | 59 | 8 | 0 | 0 | 1 | 2 | 1 | 47 | 0 | 0 | all pressed 5h ago |
-| /disputes | 2 | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 5h ago |
-| /disputes/cdm-receipts | 4 | 2 | 1 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | all pressed 5h ago |
-| /disputes/stalled-withdrawals | 2 | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 5h ago |
-| /error-logs | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 5h ago |
-| /game-providers | 21 | 14 | 1 | 0 | 0 | 0 | 0 | 6 | 0 | 0 | all pressed 5h ago |
-| /games | 47 | 24 | 0 | 0 | 1 | 0 | 0 | 22 | 0 | 0 | all pressed 5h ago |
-| /kyc | 52 | 56 | 0 | 0 | 1 | 0 | 0 | 2 | 0 | 0 | +7 only a press reveals 5h ago |
-| /kyc/bulk | 2 | 0 | 0 | 0 | 0 | 0 | 1 | 1 | 0 | 0 | all pressed 5h ago |
-| /live-cycles | 4 | 10 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | +6 only a press reveals 5h ago |
-| /login | 6 | 5 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | all pressed 5h ago |
-| /merchant-platform | 28 | 20 | 1 | 0 | 0 | 0 | 0 | 7 | 0 | 0 | all pressed 5h ago |
-| /merchant-token-orders | 2 | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 5h ago |
-| /merchants | 211 | 15 | 1 | 0 | 1 | 0 | 1 | 195 | 0 | 0 | +2 only a press reveals 5h ago |
-| /operations | 5 | 3 | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | all pressed 5h ago |
-| /payment-control | 19 | 10 | 2 | 0 | 0 | 1 | 1 | 5 | 0 | 0 | all pressed 5h ago |
-| /profit-loss | 6 | 6 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 5h ago |
-| /promotions/announcements | 6 | 3 | 1 | 0 | 0 | 0 | 0 | 2 | 0 | 0 | all pressed 5h ago |
-| /queue-manager | 8 | 5 | 1 | 0 | 1 | 1 | 0 | 0 | 0 | 0 | all pressed 5h ago |
-| /referrals | 2 | 1 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | all pressed 5h ago |
-| /reports | 7 | 2 | 3 | 0 | 1 | 1 | 0 | 0 | 0 | 0 | all pressed 5h ago |
-| /revenue | 7 | 3 | 1 | 0 | 0 | 0 | 2 | 1 | 0 | 0 | all pressed 5h ago |
-| /settings | 77 | 73 | 0 | 0 | 0 | 3 | 0 | 1 | 0 | 0 | all pressed 5h ago |
-| /sub-admins | 3 | 2 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | all pressed 5h ago |
-| /support-assistant | 7 | 4 | 1 | 0 | 0 | 0 | 1 | 0 | 1 | 0 | all pressed 5h ago |
-| /telegram | 40 | 27 | 3 | 0 | 0 | 0 | 2 | 8 | 0 | 0 | all pressed 5h ago |
-| /token-flow | 4 | 1 | 0 | 0 | 0 | 2 | 0 | 1 | 0 | 0 | all pressed 5h ago |
-| /transactions | 7 | 4 | 0 | 0 | 1 | 2 | 0 | 0 | 0 | 0 | all pressed 5h ago |
-| /users | 358 | 21 | 0 | 0 | 1 | 0 | 1 | 335 | 0 | 0 | all pressed 5h ago |
-| /users/balance-adjust | 8 | 5 | 1 | 0 | 0 | 0 | 0 | 2 | 0 | 0 | all pressed 5h ago |
-| /users/flagged | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 5h ago |
-| /users/phantom-agents | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 5h ago |
-| /winners-manager | 2 | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 5h ago |
+| / | 9 | 9 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
+| /app-assets | 4 | 0 | 1 | 0 | 0 | 0 | 0 | 3 | 0 | 0 | all pressed 0h ago |
+| /audit-logs | 3 | 1 | 0 | 0 | 0 | 2 | 0 | 0 | 0 | 0 | all pressed 0h ago |
+| /branding | 27 | 17 | 1 | 0 | 0 | 7 | 0 | 2 | 0 | 0 | all pressed 0h ago |
+| /business-policy/deposit | 3 | 2 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
+| /business-policy/settlement-rail | 11 | 8 | 1 | 0 | 0 | 1 | 0 | 1 | 0 | 0 | all pressed 0h ago |
+| /chat-management | 1 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
+| /content/cdn | 10 | 9 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
+| /content/faq | 5 | 3 | 0 | 0 | 0 | 0 | 0 | 2 | 0 | 0 | all pressed 0h ago |
+| /content/slides | 4 | 2 | 1 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | all pressed 0h ago |
+| /content/support | 13 | 12 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | all pressed 0h ago |
+| /cycle-history | 59 | 8 | 0 | 0 | 1 | 2 | 1 | 47 | 0 | 0 | all pressed 0h ago |
+| /disputes | 2 | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
+| /disputes/cdm-receipts | 4 | 2 | 1 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | all pressed 0h ago |
+| /disputes/stalled-withdrawals | 2 | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
+| /error-logs | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
+| /game-providers | 21 | 14 | 1 | 0 | 0 | 0 | 0 | 6 | 0 | 0 | all pressed 0h ago |
+| /games | 47 | 24 | 0 | 0 | 1 | 0 | 0 | 22 | 0 | 0 | all pressed 0h ago |
+| /kyc | 60 | 58 | 0 | 0 | 1 | 0 | 0 | 2 | 0 | 0 | +1 only a press reveals 0h ago |
+| /kyc/bulk | 2 | 0 | 0 | 0 | 0 | 0 | 1 | 1 | 0 | 0 | all pressed 0h ago |
+| /live-cycles | 10 | 10 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
+| /login | 6 | 5 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | all pressed 0h ago |
+| /merchant-platform | 28 | 20 | 1 | 0 | 0 | 0 | 0 | 7 | 0 | 0 | all pressed 0h ago |
+| /merchant-token-orders | 2 | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
+| /merchants | 213 | 15 | 1 | 0 | 1 | 0 | 1 | 195 | 0 | 0 | all pressed 0h ago |
+| /operations | 5 | 3 | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
+| /payment-control | 19 | 10 | 2 | 0 | 0 | 1 | 1 | 5 | 0 | 0 | all pressed 0h ago |
+| /profit-loss | 6 | 6 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
+| /promotions/announcements | 6 | 3 | 1 | 0 | 0 | 0 | 0 | 2 | 0 | 0 | all pressed 0h ago |
+| /queue-manager | 8 | 5 | 1 | 0 | 1 | 1 | 0 | 0 | 0 | 0 | all pressed 0h ago |
+| /referrals | 2 | 1 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | all pressed 0h ago |
+| /reports | 7 | 2 | 2 | 0 | 1 | 2 | 0 | 0 | 0 | 0 | all pressed 0h ago |
+| /revenue | 7 | 3 | 1 | 0 | 0 | 0 | 2 | 1 | 0 | 0 | all pressed 0h ago |
+| /settings | 77 | 73 | 0 | 0 | 0 | 3 | 0 | 1 | 0 | 0 | all pressed 0h ago |
+| /sub-admins | 3 | 2 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | all pressed 0h ago |
+| /support-assistant | 7 | 4 | 1 | 0 | 0 | 0 | 1 | 0 | 1 | 0 | all pressed 0h ago |
+| /telegram | 40 | 27 | 3 | 0 | 0 | 0 | 2 | 8 | 0 | 0 | all pressed 0h ago |
+| /token-flow | 4 | 1 | 0 | 0 | 0 | 2 | 0 | 1 | 0 | 0 | all pressed 0h ago |
+| /transactions | 7 | 4 | 0 | 0 | 1 | 2 | 0 | 0 | 0 | 0 | all pressed 0h ago |
+| /users | 358 | 21 | 0 | 0 | 1 | 0 | 1 | 335 | 0 | 0 | all pressed 0h ago |
+| /users/balance-adjust | 8 | 5 | 1 | 0 | 0 | 0 | 0 | 2 | 0 | 0 | all pressed 0h ago |
+| /users/flagged | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
+| /users/phantom-agents | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
+| /winners-manager | 2 | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
 
 ### merchant-panel
 
 | screen | controls | moved | answered | said | no-op | inert | disabled | elsewhere | asked | NOT reached | note |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| / | 3 | 2 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 5h ago |
-| /cash-links | 3 | 1 | 1 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | all pressed 5h ago |
-| /dashboard | 3 | 2 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 5h ago |
-| /history | 4 | 2 | 0 | 0 | 1 | 0 | 0 | 1 | 0 | 0 | all pressed 5h ago |
-| /orders | 9 | 7 | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | all pressed 5h ago |
-| /profile | 9 | 7 | 0 | 0 | 0 | 0 | 0 | 2 | 0 | 0 | all pressed 5h ago |
-| /token-supply | 3 | 1 | 1 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | all pressed 5h ago |
+| / | 3 | 2 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
+| /cash-links | 3 | 1 | 1 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | all pressed 0h ago |
+| /dashboard | 3 | 2 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
+| /history | 4 | 2 | 0 | 0 | 1 | 0 | 0 | 1 | 0 | 0 | all pressed 0h ago |
+| /orders | 9 | 7 | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
+| /profile | 9 | 7 | 0 | 0 | 0 | 0 | 0 | 2 | 0 | 0 | all pressed 0h ago |
+| /token-supply | 3 | 1 | 1 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | all pressed 0h ago |
 
 ### Every control, by verdict
 
@@ -151,7 +151,7 @@ REPRESENTED (574) — a repeat of a control already pressed on this screen
    admin-panel/cycle-history  button:Detail[42]  — instance 43 of the same control
    ... and 534 more
 
-ACTED (514) — pressed, and the screen changed
+ACTED (516) — pressed, and the screen changed
    user-panel/auth/telegram  button:Dismiss announcement
    user-panel/auth/telegram  button:DELHI BAZAAR vs Bombay 🎯
    user-panel/auth/telegram  button:CASH OR CRASH Take the flight ✈️
@@ -188,13 +188,13 @@ ACTED (514) — pressed, and the screen changed
    user-panel/casino  button:270
    user-panel/casino  button:810
    user-panel/casino  input:number:Or type amount (min ₹10)
-   user-panel/casino  button:1M D B D D D D B D B B D D D D D B B D D D B D D D D D ANALYTICS ▲
+   user-panel/casino  button:1M B D D D D B B D B D D B D B B B B D B B B D B B D B ANALYTICS ▲
    user-panel/casino  button:FULL ANALYSIS
    user-panel/crash  button:DELHI BAZAAR vs Bombay 🎯
    user-panel/crash  button:SPORTS Bet anytime 🏇
-   ... and 474 more
+   ... and 476 more
 
-DEFERRED (77) — not pressed on purpose — destructive, or it leaves the app
+DEFERRED (76) — not pressed on purpose — destructive, or it leaves the app
    user-panel/profile  button:Switch theme  — publishes a platform-wide change from whatever the form happens to hold
    user-panel/profile  button:Log out  — ends the session for every screen after it
    admin-panel/users  button:Deduct  — destroys a row this run did not create — driven in the mutating pass, against its own rows
@@ -223,7 +223,6 @@ DEFERRED (77) — not pressed on purpose — destructive, or it leaves the app
    admin-panel/content/support  button:Save support links  — publishes a platform-wide change from whatever the form happens to hold
    admin-panel/branding  button:Save All  — publishes a platform-wide change from whatever the form happens to hold
    admin-panel/branding  button:Save Branding Settings  — publishes a platform-wide change from whatever the form happens to hold
-   admin-panel/app-assets  button:Delete the logo.png asset  — destroys a row this run did not create — driven in the mutating pass, against its own rows
    admin-panel/app-assets  button:Delete the logo-header.png asset  — destroys a row this run did not create — driven in the mutating pass, against its own rows
    admin-panel/app-assets  button:Delete the icon-192.png asset  — destroys a row this run did not create — driven in the mutating pass, against its own rows
    admin-panel/app-assets  button:Delete the icon-512.png asset  — destroys a row this run did not create — driven in the mutating pass, against its own rows
@@ -235,9 +234,10 @@ DEFERRED (77) — not pressed on purpose — destructive, or it leaves the app
    admin-panel/game-providers  button:Delete Evolution Gaming  — destroys a row this run did not create — driven in the mutating pass, against its own rows
    admin-panel/game-providers  button:Delete Ezugi Live Casino  — destroys a row this run did not create — driven in the mutating pass, against its own rows
    admin-panel/game-providers  button:Delete Pragmatic Play  — destroys a row this run did not create — driven in the mutating pass, against its own rows
-   ... and 37 more
+   admin-panel/game-providers  button:Delete Smartsoft — JetX  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   ... and 36 more
 
-INERT (32) — pressed, and it changed nothing AND called nothing (S22 — the shape worth hunting)
+INERT (34) — pressed, and it changed nothing AND called nothing (S22 — the shape worth hunting)
    user-panel/  button:INDIA GATE DELHI  — it changed nothing on screen AND called no route — nothing happened at all (S22)
    user-panel/sports  button:All  — it changed nothing on screen AND called no route — nothing happened at all (S22)
    user-panel/wallet  button:Exchange  — it changed nothing on screen AND called no route — nothing happened at all (S22)
@@ -263,7 +263,9 @@ INERT (32) — pressed, and it changed nothing AND called nothing (S22 — the s
    admin-panel/branding  input:color:Accent Colour  — it changed nothing on screen AND called no route — nothing happened at all (S22)
    admin-panel/token-flow  input:date:From  — it changed nothing on screen AND called no route — nothing happened at all (S22)
    admin-panel/token-flow  input:date:To  — it changed nothing on screen AND called no route — nothing happened at all (S22)
+   admin-panel/reports  input:date:From  — it changed nothing on screen AND called no route — nothing happened at all (S22)
    admin-panel/reports  input:date:To  — it changed nothing on screen AND called no route — nothing happened at all (S22)
+   admin-panel/business-policy/settlement-rail  input:radio:UPI settlement Buy orders are paid to your UPI and confirmed by UTR. Withdrawals  — it changed nothing on screen AND called no route — nothing happened at all (S22)
    admin-panel/settings  select:Player footer navigation, slot 3  — it changed nothing on screen AND called no route — nothing happened at all (S22)
    admin-panel/settings  select:Player footer navigation, slot 4  — it changed nothing on screen AND called no route — nothing happened at all (S22)
    admin-panel/settings  select:Player footer navigation, slot 5  — it changed nothing on screen AND called no route — nothing happened at all (S22)
@@ -271,7 +273,7 @@ INERT (32) — pressed, and it changed nothing AND called nothing (S22 — the s
    admin-panel/audit-logs  input:date:Show audit entries up to this date  — it changed nothing on screen AND called no route — nothing happened at all (S22)
    admin-panel/payment-control  button:P2P Merchant System Current active system All deposits and withdrawals are handl  — it changed nothing on screen AND called no route — nothing happened at all (S22)
 
-REFETCHED (31) — pressed; it called a route and got the same answer — a working Refresh
+REFETCHED (29) — pressed; it called a route and got the same answer — a working Refresh
    admin-panel/users/flagged  button:Refresh  — no visible change, but it called GET /api/admin/users/flagged?limit=100
    admin-panel/merchants  button:Refresh  — no visible change, but it called GET /api/admin/merchants?page=1&limit=50
    admin-panel/merchant-token-orders  button:Refresh  — no visible change, but it called GET /api/admin/merchant-token-orders
@@ -282,12 +284,10 @@ REFETCHED (31) — pressed; it called a route and got the same answer — a work
    admin-panel/app-assets  button:Refresh  — no visible change, but it called GET /api/admin/app-assets
    admin-panel/revenue  button:Refresh  — no visible change, but it called GET /api/admin/revenue/summary (+1 more)
    admin-panel/operations  button:Refresh  — no visible change, but it called GET /api/admin/operations/overview (+4 more)
-   admin-panel/reports  input:date:From  — no visible change, but it called GET /api/admin/verification
    admin-panel/reports  button:Run  — no visible change, but it called GET /api/admin/reports/financial (+2 more)
    admin-panel/reports  button:Regulatory export — one CSV row per journal posting  — no visible change, but it called GET /api/admin/reports/ledger-export?format=csv
    admin-panel/merchant-platform  button:Refresh  — no visible change, but it called GET /api/admin/merchant-commission-policy (+2 more)
    admin-panel/business-policy/settlement-rail  button:Reload  — no visible change, but it called GET /api/admin/payment-mode (+1 more)
-   admin-panel/business-policy/settlement-rail  input:radio:UPI settlement Buy orders are paid to your UPI and confirmed by UTR. Withdrawals  — no visible change, but it called GET /api/admin/verification
    admin-panel/error-logs  button:Refresh  — no visible change, but it called GET /api/admin/error-reports
    admin-panel/disputes  button:Reload the dispute queue  — no visible change, but it called GET /api/admin/dispute-orders?status=ESCALATED
    admin-panel/disputes/cdm-receipts  button:Refresh  — no visible change, but it called GET /api/admin/orders/cdm-receipts/missing?olderThanMinut
@@ -296,7 +296,7 @@ REFETCHED (31) — pressed; it called a route and got the same answer — a work
    admin-panel/game-providers  button:Refresh  — no visible change, but it called GET /api/game/admin/game-providers
    admin-panel/payment-control  button:Refresh  — no visible change, but it called GET /api/payment/admin/config
    admin-panel/payment-control  button:Refresh[1]  — no visible change, but it called GET /api/admin/dispute-orders?status=DISPUTED&limit=50
-   admin-panel/promotions/announcements  button:Refresh  — no visible change, but it called GET /api/admin/announcements
+   admin-panel/promotions/announcements  button:Refresh  — no visible change, but it called GET /api/admin/announcements (+1 more)
    admin-panel/users/balance-adjust  button:Search players  — no visible change, but it called GET /api/admin/users?search=500&limit=10
    merchant-panel/  button:Re-check the settlement rail  — no visible change, but it called GET /api/merchant/payment-mode
    merchant-panel/dashboard  button:Re-check the settlement rail  — no visible change, but it called GET /api/merchant/payment-mode
@@ -304,26 +304,25 @@ REFETCHED (31) — pressed; it called a route and got the same answer — a work
    merchant-panel/cash-links  button:Refresh  — no visible change, but it called GET /api/merchant/cash-links/current
    merchant-panel/token-supply  button:Refresh  — no visible change, but it called GET /api/merchant/admin-token-orders
 
-NEEDS_INPUT (19) — it asked a confirm/prompt and this pass declined — NOT a dead button
-   user-panel/crash  button:▶ Play  — it asked a confirm/prompt, which this pass declines
-   user-panel/crash  button:💣 Mines Strategy  — it asked a confirm/prompt, which this pass declines
-   user-panel/crash  button:🃏 Hi Lo Quick  — it asked a confirm/prompt, which this pass declines
-   user-panel/crash  button:🎲 Turbo Dice Fast  — it asked a confirm/prompt, which this pass declines
-   user-panel/crash  button:🔢 Keno Lottery  — it asked a confirm/prompt, which this pass declines
-   user-panel/sports  button:▶ Open All  — it asked a confirm/prompt, which this pass declines
-   user-panel/sports  button:🏏 Cricket 400+ markets  — it asked a confirm/prompt, which this pass declines
-   user-panel/sports  button:⚽ Football 800+ markets  — it asked a confirm/prompt, which this pass declines
-   user-panel/sports  button:🤼 Kabaddi 120+ markets  — it asked a confirm/prompt, which this pass declines
-   user-panel/sports  button:🏀 Basketball 300+ markets  — it asked a confirm/prompt, which this pass declines
-   user-panel/sports  button:🎾 Tennis 500+ markets  — it asked a confirm/prompt, which this pass declines
-   user-panel/sports  button:🎮 Esports 200+ markets  — it asked a confirm/prompt, which this pass declines
-   user-panel/sports  button:🏸 Badminton 80+ markets  — it asked a confirm/prompt, which this pass declines
-   user-panel/sports  button:🥊 Boxing 60+ markets  — it asked a confirm/prompt, which this pass declines
-   user-panel/sports  button:🏑 Hockey 90+ markets  — it asked a confirm/prompt, which this pass declines
-   user-panel/sports  button:🏎️ Formula 1 50+ markets  — it asked a confirm/prompt, which this pass declines
-   user-panel/sports  button:♟️ Chess 30+ markets  — it asked a confirm/prompt, which this pass declines
-   user-panel/sports  button:🏐 Volleyball 70+ markets  — it asked a confirm/prompt, which this pass declines
-   admin-panel/support-assistant  button:Re-ingest  — it asked a confirm/prompt, which this pass declines
+SAID (18) — pressed; the panel answered with an alert() — the message is in the verdict, and an alert is not a question
+   user-panel/crash  button:▶ Play  — alert: "Provider is not fully configured"
+   user-panel/crash  button:💣 Mines Strategy  — alert: "Provider is not fully configured"
+   user-panel/crash  button:🃏 Hi Lo Quick  — alert: "Provider is not fully configured"
+   user-panel/crash  button:🎲 Turbo Dice Fast  — alert: "Provider is not fully configured"
+   user-panel/crash  button:🔢 Keno Lottery  — alert: "Provider is not fully configured"
+   user-panel/sports  button:▶ Open All  — alert: "Provider is not fully configured"
+   user-panel/sports  button:🏏 Cricket 400+ markets  — alert: "Provider is not fully configured"
+   user-panel/sports  button:⚽ Football 800+ markets  — alert: "Provider is not fully configured"
+   user-panel/sports  button:🤼 Kabaddi 120+ markets  — alert: "Provider is not fully configured"
+   user-panel/sports  button:🏀 Basketball 300+ markets  — alert: "Provider is not fully configured"
+   user-panel/sports  button:🎾 Tennis 500+ markets  — alert: "Provider is not fully configured"
+   user-panel/sports  button:🎮 Esports 200+ markets  — alert: "Provider is not fully configured"
+   user-panel/sports  button:🏸 Badminton 80+ markets  — alert: "Provider is not fully configured"
+   user-panel/sports  button:🥊 Boxing 60+ markets  — alert: "Provider is not fully configured"
+   user-panel/sports  button:🏑 Hockey 90+ markets  — alert: "Provider is not fully configured"
+   user-panel/sports  button:🏎️ Formula 1 50+ markets  — alert: "Provider is not fully configured"
+   user-panel/sports  button:♟️ Chess 30+ markets  — alert: "Provider is not fully configured"
+   user-panel/sports  button:🏐 Volleyball 70+ markets  — alert: "Provider is not fully configured"
 
 ALREADY_ON (16) — pressed; it was already the selected segment, so nothing should change
    user-panel/crash  button:CASH OR CRASH Take the flight ✈️  — it was already the selected one — pressing it again correctly changes nothing
@@ -367,23 +366,27 @@ UPSTREAM (4) — pressed; an upstream the operator can fix refused, and the serv
    admin-panel/support-assistant  button:Reload the assistant's documents  — 503 GET /api/admin/support/documents — "The support assistant stores its passages with the
 
 GONE (1) — vanished before its turn — an earlier press removed it
-   user-panel/  button:30M B D D D D D D D B ANALYTICS ▲  — the control is no longer on the screen — an earlier press removed it
+   user-panel/  button:30M D B D D D D D D D B ANALYTICS ▲  — the control is no longer on the screen — an earlier press removed it
+
+NEEDS_INPUT (1) — it asked a confirm/prompt and this pass declined — NOT a dead button
+   admin-panel/support-assistant  button:Re-ingest  — it asked a confirm/prompt, which this pass declines
 
 ------------------------------------------------------------------------
-1276 controls across 67 screens
+1291 controls across 67 screens
 
-    508   39.8%  SCREEN_MOVED       pressed, and the routed region changed
-     35    2.7%  ANSWERED           pressed; it called a route and the server answered, including a refusal that names what to fix
-      0    0.0%  SAID               pressed; the panel answered with an alert() — informational, and NOT evidence of a mutation
-     16    1.3%  NO_OP_BY_DESIGN    pressed; it was already the selected segment, so no change is the correct outcome
-     32    2.5%  INERT              pressed; changed nothing AND called nothing — §32 S22 candidate, read the list
+    510   39.5%  SCREEN_MOVED       pressed, and the routed region changed
+     33    2.6%  ANSWERED           pressed; it called a route and the server answered, including a refusal that names what to fix
+     18    1.4%  SAID               pressed; the panel answered with an alert() — informational, and NOT evidence of a mutation
+     16    1.2%  NO_OP_BY_DESIGN    pressed; it was already the selected segment, so no change is the correct outcome
+     34    2.6%  INERT              pressed; changed nothing AND called nothing — §32 S22 candidate, read the list
      15    1.2%  DISABLED           disabled on arrival — correct state; the enable transition is a SEPARATE test
-    574   45.0%  REPEAT             a repeat of a name already pressed on this screen — covered ONLY IF the first instance is representative
-     77    6.0%  DRIVEN_ELSEWHERE   destructive — driven by `npm run test:mutate` against its own rows; check THAT output, this is a pointer not a proof
-     19    1.5%  ASKED              it asked a confirm/prompt and this pass declines — answered in the mutating pass instead
-     16    1.3%  NOT_REACHED        NOT pressed and not by choice — this is the number that is left
+    574   44.5%  REPEAT             a repeat of a name already pressed on this screen — covered ONLY IF the first instance is representative
+     76    5.9%  DRIVEN_ELSEWHERE   destructive — driven by `npm run test:mutate` against its own rows; check THAT output, this is a pointer not a proof
+      1    0.1%  ASKED              it asked a confirm/prompt and this pass declines — answered in the mutating pass instead
+     14    1.1%  PRESSED_ON_ANOTHER_SCREEN absent because an earlier press removed it platform-wide — the same control ACTED on another screen this run
+      2    0.2%  NOT_REACHED        NOT pressed and not by choice — this is the number that is left
       0    0.0%  BROKE              threw, or the server answered 5xx with nothing to act on
-     15          revealed           controls only a PRESS reveals — not in the inventory, which is taken at rest
+      1          revealed           controls only a PRESS reveals — not in the inventory, which is taken at rest
 
   STATE CHANGES are NOT counted here. This pass reads the SCREEN; it cannot
   tell a rendered change from a committed one. What proves a mutation is
@@ -391,4 +394,4 @@ GONE (1) — vanished before its turn — an earlier press removed it
   read its output beside this table, never instead of it.
 
 
-manifest 2026-09-24T15:29:10.747Z  ·  drive 2026-09-24T17:30:07.536Z
+manifest 2026-09-24T23:00:45.859Z  ·  drive 2026-09-24T23:03:05.918Z
