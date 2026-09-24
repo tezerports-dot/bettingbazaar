@@ -230,6 +230,10 @@ wrong owner gets working code deleted by the next reader.
 | Identity documents | **None are collected, stored or accepted.** KYC is a 12-digit Aadhaar number held as an HMAC plus AES-256-GCM ciphertext. Do not add an upload path for one. |
 | Upload categories that DO exist | `services/cdn.service.js` — P2P chat attachments, payment proofs, admin branding assets, CDM receipts. Nothing else. "No KYC documents, so remove the upload routes" would break deposits and disputes. |
 | The live bot and official channel | `telegram_configs` (the active generation, owning the channel) plus the bot registry, composed by `activeConfig()` in `domains/telegram/telegramClient.js`. **The registry wins over a generation's embedded credentials.** A bot swap does NOT bump the generation; only a channel change does. The 30s cache in `activeConfig` is the only permitted cache. |
+| **Which PANEL a bot, a channel or a Telegram link belongs to** | `audience` on `telegram_bots`, `telegram_configs`, `telegram_identities` and `telegram_recovery_sessions` — taking exactly the values `users.account_type` takes, so an account's TYPE **is** its audience and nothing else decides which bot serves whom (owner, 2026-09-24). Each panel gets its own sign-in FLEET and its own singular recovery bot: `live_slot` composes the audience in, or the one partial unique index refuses the second panel's recovery bot on the INSERT. Each gets its own channel, so `one_active_telegram_config` is unique on `(audience) WHERE active` — unscoped, activating the merchant channel deactivated the player one and re-gated every player. `telegram_identities` is keyed **(telegram_user_id, audience)**: one person opens all three bots from ONE Telegram account, which a bare key made impossible. Generations stay GLOBALLY unique across all three, which makes a cross-panel stale membership unrepresentable rather than merely unlikely. Every repository read that DECIDES something takes a required audience and THROWS without one, for the reason `getUserByMobile` does. |
+| **Where each panel lives, for a link the platform mints** | `panelOrigin()` in `backend/config/panelOrigins.js`. A staff password-reset link sent to the player app is a single-use token spent on the wrong door. `PUBLIC_APP_ORIGIN` is the player's and the fallback for the other two, which is right for the ordinary single-host deployment; `ADMIN_PANEL_ORIGIN` and `MERCHANT_PANEL_ORIGIN` are set when the hosts are genuinely split. |
+| **What each audience is CALLED on a screen** | `PANEL_NAME` / `PANEL_NOUN` in `domains/identity/audiences.js`. `ACCOUNT_TYPES` owns the VALUES; this owns the words — kept apart so a renamed label cannot move the database's vocabulary. It exists because the channel-replacement route answered "Every player will be asked to join the new channel" whatever panel had just been flipped, which on the merchant screen is the sentence that makes somebody flip it back. |
+| **Whether a STAFF account may pass its own gate before staff Telegram exists** | `verificationStateFor`'s `bootstrap`. STAFF only, and only while `no_bot` or `no_channel` — the screen that registers the staff bot is ON the admin panel, behind the gate that has nothing to check, so a literal reading of "all three panels gate" is a deadlock no account can break. It is RETURNED, never a silent pass, and the admin panel renders it as a standing banner naming the screen that closes it: an exemption nobody can see is one nobody removes. |
 | **How many sign-in bots there are, and which one a player gets** | `telegram_bots` (role `signin`, any number ACTIVE) + `assignSigninBot` in `database/repositories/telegram.js`, wrapped by `domains/identity/signupVerification.service.js`. **`signin` is a FLEET; `recovery` is singular** — the generated `live_slot` column names recovery only, and the partial unique index enforces one live recovery bot. The rotation cursor is the SEQUENCE `telegram_signin_rotation`: `nextval - 1` modulo the live count, over the fleet ordered `added_at, bot_id`. The assignment is STORED on `users.telegram_bot_id` because the player is TOLD which bot to open, and re-resolved on every read so a retired bot's players move on their own. Retiring the LAST live sign-in bot is refused **in the statement**, by counting what would be left. |
 | **Whether a player may use the app at all** | `domains/identity/signupVerification.service.js` — `verificationStateFor()`, served by `GET /api/v1/auth/verification`. It answers the contact share and the channel membership together and hands back ONE `reason` naming the one thing to do next. **Not `kycStatus`** (that is the admin's bulk Aadhaar verification, on its own clock) and **not two endpoints** — the panel reads `reason` and nothing else, because a screen deriving that from four booleans derives it differently from the next screen that tries. |
 | **Which POPULATION a `users` row belongs to** | `users.account_type` — `PLAYER`, `STAFF` or `MERCHANT`, declared in `ACCOUNT_TYPES` (`database/repositories/users.js`) and enforced by `users_account_type_check`. **A mobile is unique PER TYPE** (`users_mobile_per_account_type`), so one person may hold all three with three different passwords, and the credentials for one do not work at another door (owner, 2026-09-24). `getUserByMobile` REQUIRES the type and throws without it: a default would have made every un-updated caller silently correct for players and silently wrong for the other two — failing only on the accounts that move money. **MERCHANT is in this column and that surprises people**: a merchant signup writes a `users` row (the login) as well as a `merchants` row (the trading identity), so merchants living in their own table does NOT make their login separate — without a type of their own that row defaulted to PLAYER and the player door admitted a merchant's merchant password. |
@@ -1242,6 +1246,8 @@ these are the specific ones this codebase has actually produced.
 | S30 | A query that can match two POPULATIONS | Can this `WHERE` match a row of another kind? Which one does the planner hand back? |
 | S31 | A migration guard that is idempotent but not CONVERGENT | Run it twice, then change the definition and run it again. Does the database end up saying what the file says? |
 | S32 | The same security check in one of the two paths that need it | Which OTHER path reaches this without the middleware? |
+| S33 | A harness that measures a server it did not start | Did THIS run bring up the thing it is asking? Something already on the port answers the readiness check, and the suite then seeds one database while asserting against another. |
+| S34 | A tidy early return placed above the question it must not pre-empt | Does this guard clause change the ORDER of two questions? Refusing before the platform's own state is read is how a gate blames a person for an operator's unfinished setup. |
 
 **S22 through S25 all came out of pressing controls rather than opening
 screens, and each was invisible to every tier below a browser.**
@@ -1539,6 +1545,80 @@ password** and never a session — see §2 and `passwordReset.service.js`.
   therefore costs them the link, which is the right way round — a token that
   survives a failed attempt is one an attacker can grind a password policy
   against — and the message says so rather than leaving them to discover it.
+- **The floor is the ACCOUNT'S floor** — 12 for staff and merchants, 8 for
+  players — read off `account_type` rather than written here, or this becomes
+  the third place the rule lives and the quiet failure is an admin resetting to
+  an eight-character password their own signup form would have refused.
+
+### 33.7 Three panels, three bots, three channels
+
+Owner decision, 2026-09-24: *"two separate bots which handles merchant and
+admin panel ... one bot with its own channel for merchant and one bot with its
+own channel for admin thus it will be complete separate from user panel whether
+its signup or login or account recovery."*
+
+§33.5 made a player, a merchant and a staff account three separate ENTITIES on
+one mobile. This makes their Telegram halves separate too, **on the same axis
+and with the same vocabulary**: `audience` takes exactly the values
+`users.account_type` takes, so an account's type IS its audience and there is
+no second place where "which bot serves this person" is decided (§2).
+
+- **A fleet per panel, a recovery bot per panel.** `live_slot` composes the
+  audience into the slot value, so "exactly one live recovery bot" is a rule
+  about one panel. With the bare role in there the second panel's recovery bot
+  was refused on the INSERT, by a duplicate-key error naming an index whose
+  name says nothing about audiences.
+- **A webhook path per BOT, for recovery too.** It was one fixed path, which
+  was right while there was one recovery bot. Three bots on one path is §33.2's
+  defect exactly: every delivery checked against whichever secret resolved
+  first, 401 for two of the three, and nothing anywhere saying why.
+- **One channel active per panel.** Unscoped, activating the merchant channel
+  deactivated the player one — and because a cached membership is stamped with
+  the generation it was observed in, that silently re-gates the entire player
+  base at the moment an operator believed they were configuring something else.
+  Generations stay GLOBALLY unique, which makes a cross-panel stale answer
+  unrepresentable rather than merely unlikely.
+- **One Telegram account, one link per panel.** `telegram_identities` is keyed
+  `(telegram_user_id, audience)`. One person opens all three bots from the same
+  Telegram account — that is what a Telegram account IS — and a bare key made
+  the second share impossible, answering "this Telegram account is already
+  verifying a different account" and naming the link they had made minutes
+  earlier.
+- **The `'PLAYER'` literal in `linkTelegramToAccount` became the bot's own
+  audience**, which is strictly stronger: a contact arriving at the merchant bot
+  can only ever reach a MERCHANT account. §32 S30 stays dead, and the predicate
+  and the door now say the same thing.
+- **A reset link opens the panel it is for.** Sent to the player app, a staff
+  reset is a single-use token spent on the wrong door, and the screen it reaches
+  cannot say why.
+- **The admin bot's three jobs** (owner): password reset, verifying the mobile
+  on first login — which IS the gate — and carrying security alerts to the admin
+  channel. `sendAlert` has two independent sinks now; an operator running the
+  channel must not also have to stand up a webhook to receive anything.
+
+**The BOOTSTRAP EXEMPTION, and why it is exactly this wide.** A literal reading
+of "all three panels gate" deadlocks a fresh install: the screen that registers
+the staff bot is on the admin panel, behind the gate that has nothing to check.
+So staff — and only staff — pass while the staff surface is UNCONFIGURED, and
+the moment a staff bot and channel exist they gate like everybody else,
+including the admin who just configured it. It is returned as `bootstrap` and
+rendered as a standing banner naming the screen that closes it, never a silent
+pass: **an exemption nobody can see is a hole nobody removes.**
+
+**What running it found, that no tier below a live server would have.**
+
+| | what it was | what it cost |
+|---|---|---|
+| `seedAdmin` | wrote `is_admin = true` with no `account_type`, so the row sat in the PLAYER population | a browser pass opened the admin panel and was told to open the PLAYER fleet's bot. §32 S16 — a fixture describing an account the platform cannot produce |
+| `seedMerchant` | wrote a `merchants` row and no `users` row, leaving `merchants.user_id` NULL | `GET /api/merchant/verification` answered 401, the gate rendered NOTHING, and the pass reported an un-gated merchant panel. The panel was right; the fixture was |
+| `seedPlayer` | never linked Telegram | the e2e suite passed only on databases where nobody had configured a channel. Met one where somebody had, and four money scenarios answered 403. §32 S19 — reading whatever the database happened to hold |
+| `test:e2e` | asked whether SOMETHING answered on its port | a server already on 8099 answered, the runner's own spawn never bound, and the suite seeded one database while asserting against another: 26 failures, every one true of the server being asked and false of the platform. §32 S33 |
+
+A fifth was mine and caught in the same session: a tidy `if (!identity) return`
+placed ABOVE the config read reversed the order of two questions, so every
+unlinked player on an unconfigured platform was refused "link your Telegram
+account" — an instruction naming a bot that does not exist. **56 pg failures,
+every deposit and withdrawal route among them.** §32 S34.
 
 ---
 
@@ -1565,6 +1645,8 @@ password** and never a session — see §2 and `passwordReset.service.js`.
 | `npm run audit:map -- --check` | The security audit map's counts still match the code. |
 | `npm run test:e2e` | The whole server, over real HTTP, as all three actors. |
 | `npm run test:browser` | **Every screen in all three panels, opened in a real browser.** Needs a backend (`BB_BASE`) and starts the dev servers itself. |
+| `npm run test:panel-split` | **The three-panel Telegram split, against a live server.** Three accounts on one mobile, one Telegram account, three bots — each link landing on its own row, each reset link opening its own panel. |
+| `npm run test:panel-gates` | **The merchant and admin gates, opened in a real browser.** That they BLOCK, that Escape and the backdrop do not dismiss, that each names its own panel's bot, and that the staff bootstrap banner appears and then goes. |
 | `npm run test:drive` | **Every control on every screen, pressed.** Reports THREW, 5xx, or INERT — a control that left the screen byte-identical. Inert is triage, not failure: read the list. |
 | `npm run check:cors-headers` | Every header a panel SENDS is one CORS allows. A header the server has not agreed to is never sent — the browser cancels the request, so there is no status code and no log line for anything below a browser to see. |
 | `npm run test:wallet-buttons` | Top Up and Deduct, pressed in a browser, asserted against the wallet AND the money record. |

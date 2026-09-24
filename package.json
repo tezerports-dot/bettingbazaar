@@ -51,7 +51,8 @@
     "test:mutate": "node backend/tests/browser/mutate.js",
     "report:ui-coverage": "node scripts/report-ui-coverage.mjs",
     "test:signup": "node backend/tests/browser/signupJourney.js",
-    "test:panel-split": "node backend/tests/live/panelSplit.mjs"
+    "test:panel-split": "node backend/tests/live/panelSplit.mjs",
+    "test:panel-gates": "node backend/tests/browser/panelGates.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.122.0",

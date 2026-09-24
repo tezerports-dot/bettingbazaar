@@ -1,5 +1,6 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import { db } from '#db';
+import { pgQuery } from '#db/client.js';
 import { createMerchantWithWallet, approveMerchant, setOnline, updateMerchant } from '#db/repositories/merchants.js';
 import { creditMerchantTokens } from '../../domains/merchant/merchantWallet.service.js';
 import { rid } from './harness.js';
@@ -13,16 +14,57 @@ const B58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 export const trc20 = () => 'T' + Array.from({ length: 33 }, () => B58[Math.floor(Math.random() * B58.length)]).join('');
 export const bep20 = () => '0x' + Array.from({ length: 40 }, () => '0123456789abcdef'[Math.floor(Math.random() * 16)]).join('');
 
-export async function seedPlayer({ kycStatus = 'APPROVED', balancePaise = 0 } = {}) {
+export async function seedPlayer({ kycStatus = 'APPROVED', balancePaise = 0, verified = true } = {}) {
   const userId = rid('player');
+  // The number is held in a LOCAL, not read back off the projection. The
+  // identity insert below needs it and `phone` is NOT NULL, so a projection
+  // that ever stops carrying `mobile` would abort the whole suite mid-scenario
+  // with a constraint error naming a table the scenario never mentions — which
+  // is exactly what it did.
+  const mobile = mob();
   const user = await db.users.createUser({
-    userId, username: userId, mobile: mob(), status: 'ACTIVE', kycStatus,
+    userId, username: userId, mobile, status: 'ACTIVE', kycStatus,
   });
+
+  // ── The Telegram verification a real player cannot deposit without ──────
+  //
+  // §32 S19, and it cost a whole suite its meaning. Every money scenario here
+  // runs behind `requireChannelMembership`, which refuses an unlinked player
+  // with TELEGRAM_NOT_LINKED — but ONLY when a channel is configured. Nothing
+  // here configured one, so the suite passed on a database where nobody had,
+  // and answered 403 on four scenarios the moment it met a database where
+  // somebody had. It was reading whatever the database happened to hold.
+  //
+  // So the seed ESTABLISHES it, through the same rows the webhook writes: a
+  // contact share proving the mobile, and a channel membership stamped with
+  // the generation that is actually live. `verified: false` is available for a
+  // scenario that wants to test the gate itself.
+  //
+  // Skipped silently when no channel is configured — there is nothing to be a
+  // member of, and the gate admits (§31's owner decision, 2026-09-17).
+  if (verified) {
+    const active = await pgQuery(
+      `SELECT generation FROM telegram_configs WHERE active AND audience = 'PLAYER' LIMIT 1`,
+      [], 'e2e_active_player_generation',
+    );
+    if (active.rows[0]) {
+      await pgQuery(
+        `INSERT INTO telegram_identities (
+           telegram_user_id, audience, user_id, phone, contact_shared_at,
+           contact_active, channel_status, channel_checked_at,
+           channel_generation, linked_generation)
+         VALUES ($1, 'PLAYER', $2, $3, now(), TRUE, 'member', now(), $4, $4)
+         ON CONFLICT (telegram_user_id, audience) DO NOTHING`,
+        [`e2e-tg-${userId}`, userId, mobile, active.rows[0].generation],
+        'e2e_verify_player',
+      );
+    }
+  }
   if (balancePaise > 0) {
     const { creditDeposit } = await import('../../domains/wallet/walletAuthority.service.js');
     await creditDeposit(userId, balancePaise / 100, `${userId}_seed`);
   }
-  return { ...user, userId, mobile: user.mobile };
+  return { ...user, userId, mobile };
 }
 
 /**
@@ -55,6 +97,34 @@ export async function seedMerchant({
     usdtAddressTrc20, usdtAddressBep20,
   });
   const id = merchant._id ?? merchant.merchantId;
+
+  // ── The merchant's LOGIN row, and the LINK to it ────────────────────────
+  // A real merchant signup writes a `users` row (the login) as well as a
+  // `merchants` row (the trading identity), and points the second at the first
+  // — §33.5, and `createMerchantAccount` does all of it in one transaction.
+  // `createMerchantWithWallet` writes only the trading identity and leaves
+  // `merchants.user_id` NULL, so every seeded merchant was an account that
+  // cannot exist (§32 S16).
+  //
+  // It cost nothing until something looked a merchant up as an ACCOUNT. The
+  // verification gate does — `account_type` is what decides which bot and
+  // channel a merchant verifies through — and `merchantAuth` resolves it as
+  // `req.userId = merchant.userId`, which was NULL. So
+  // `GET /api/merchant/verification` answered 401, the gate rendered NOTHING,
+  // and a browser pass reported an un-gated merchant panel. The panel was
+  // right; the fixture was describing a merchant with no login.
+  const merchantUserId = rid('muser');
+  await pgQuery(
+    `INSERT INTO users (user_id, username, mobile, password_hash, status, kyc_status,
+                        roles, account_type)
+     VALUES ($1, $2, $3, $4, 'ACTIVE', 'PENDING_SUBMISSION', ARRAY['merchant'], 'MERCHANT')
+     ON CONFLICT (mobile, account_type) DO NOTHING`,
+    [merchantUserId, merchant.username ?? name, merchant.mobile, 'x'.repeat(60)],
+    'e2e_merchant_login',
+  );
+  await pgQuery(`UPDATE merchants SET user_id = $2 WHERE merchant_id = $1`,
+                [id, merchantUserId], 'e2e_merchant_link');
+
   if (cashDenominationPaise !== null) {
     await updateMerchant(id, { cashDenominationPaise: Number(cashDenominationPaise) });
   }
@@ -66,7 +136,7 @@ export async function seedMerchant({
       txId: `${id}_seed_float`, reason: 'e2e float',
     });
   }
-  return { ...merchant, _id: id, merchantId: id };
+  return { ...merchant, _id: id, merchantId: id, userId: merchantUserId };
 }
 
 // The admin 2FA guard (F-011) is ON, so an admin with no authenticator is
@@ -77,6 +147,19 @@ export async function seedAdmin({ enrol2fa = true } = {}) {
   const userId = rid('admin');
   const user = await db.users.createUser({
     userId, username: userId, mobile: mob(), status: 'ACTIVE',
+    // ── STAFF, and leaving it out was §32 S16 ────────────────────────────
+    // `account_type` defaults to PLAYER, so this seeded a row with
+    // `is_admin = true` sitting in the PLAYER population — a state the
+    // platform cannot produce: `/api/admin/sub-admins` writes STAFF, and the
+    // staff login door scopes its read by the type, so a real admin is never
+    // a PLAYER row.
+    //
+    // It cost nothing until something READ the column. The verification gate
+    // derives a person's Telegram audience from it (§33.5), so a browser pass
+    // opened the admin panel and was told to open @bb_player_signin — the
+    // PLAYER fleet's bot, for an admin. The gate was right; the fixture was
+    // describing an account that does not exist.
+    accountType: 'STAFF',
     kycStatus: 'APPROVED', isAdmin: true,
   });
   if (enrol2fa) {

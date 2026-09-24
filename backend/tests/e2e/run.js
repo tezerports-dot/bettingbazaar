@@ -55,6 +55,34 @@ async function waitForServer() {
   return false;
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// REFUSE TO RUN AGAINST A SERVER THIS RUNNER DID NOT START
+// ══════════════════════════════════════════════════════════════════════════
+// `waitForServer` below asks whether SOMETHING answers on the port. If a
+// server is already there, the spawn below fails to bind, that question is
+// answered YES by the incumbent, and the whole suite seeds into the database
+// this process is connected to while asserting against whatever database the
+// OTHER server is on.
+//
+// Measured, and it is not subtle in its consequences: a pristine database gave
+// 26 failures reading "User not found. Token may be invalid." — every one of
+// them true of the server being asked and false of the platform. `ss -tlnp`
+// reports nothing for these listeners in this sandbox, so nothing else would
+// have said so either.
+//
+// §32 S8: a gate measuring something other than what it claims. The fix is to
+// ask BEFORE spawning, and to refuse rather than to guess.
+try {
+  const squatter = await fetch(`${BASE}/health`, { signal: AbortSignal.timeout(2000) });
+  if (squatter.ok) {
+    console.error(
+      `Something is ALREADY serving ${BASE}, so this run would measure it instead of\n`
+      + `the server it is about to start — against a different database.\n\n`
+      + `Stop it, or set E2E_PORT to a free port.`);
+    process.exit(1);
+  }
+} catch { /* nothing there, which is what this run needs */ }
+
 const server = spawn(process.execPath, [join(ROOT, 'backend', 'server.js')], {
   cwd: ROOT,
   env: { ...process.env, PORT: String(PORT), NODE_ENV: process.env.NODE_ENV || 'development' },

@@ -59,7 +59,12 @@ async function run({ user, identity, verdict, prompt = null }) {
   return { res, next };
 }
 
-const PLAYER = { _id: 'u1' };
+// `accountType` because the gate now derives the AUDIENCE from it — a player
+// is checked against the player channel, a merchant against the merchant one
+// (§33.5). A fixture without it describes an account the platform cannot
+// produce (§32 S16), and here it would mean the gate silently had no channel
+// to ask about.
+const PLAYER = { _id: 'u1', accountType: 'PLAYER' };
 
 beforeEach(() => {
   identityFindOne.mockReset();
@@ -108,7 +113,13 @@ describe('when the platform has no Telegram channel configured', () => {
     // Ordering stated directly: membershipFor is consulted, and joinPrompt —
     // the "here is where to go" step — is never reached.
     await run({ user: PLAYER, identity: null, verdict: UNCONFIGURED });
-    expect(membershipFor).toHaveBeenCalledWith(null);
+    // The audience rides along as a FALLBACK for exactly this case: with no
+    // identity row there is nothing to read it from, and without it the gate
+    // cannot even tell whether a channel exists to be a member of. Asserted
+    // because leaving it out is how the first draft of the audience split
+    // refused every unlinked player on an unconfigured platform — 56 pg
+    // failures, every deposit and withdrawal route among them.
+    expect(membershipFor).toHaveBeenCalledWith(null, { audience: 'PLAYER' });
     expect(joinPrompt).not.toHaveBeenCalled();
   });
 });
