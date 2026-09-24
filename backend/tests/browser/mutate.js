@@ -1756,6 +1756,224 @@ const CASES = [
     },
   },
 
+  // ══════════════════════════════════════════════════════════════════════
+  // DISABLED ON ARRIVAL — fifteen of them, and each is disabled for a reason.
+  //
+  // "Disabled" is not coverage. A person cannot press it either, so the drive
+  // is right to record it and wrong to stop there: the question a disabled
+  // control raises is whether it ENABLES when it should, and whether it then
+  // works. Each case below establishes the precondition, asserts the control
+  // became enabled, and presses it. A control that stays disabled once its
+  // condition holds is a live defect nobody would ever see.
+  // ══════════════════════════════════════════════════════════════════════
+
+  {
+    id: 'admin/users/pagination-previous',
+    panel: 'admin-panel',
+    what: 'Previous page, once there IS a previous page',
+    async run(page, cfg, base) {
+      await go(page, cfg, base, '/users');
+      const prev = page.getByRole('button', { name: /^\s*Previous page/i }).first();
+      if (await prev.count() === 0) return ['NOT DRIVEN', 'no pagination on /users'];
+      if (!await prev.isDisabled()) return ['FAILED', 'Previous is enabled on the FIRST page'];
+
+      const next = page.getByRole('button', { name: /^\s*Next page/i }).first();
+      if (await next.count() === 0 || await next.isDisabled()) {
+        return ['NOT DRIVEN', 'only one page of users exists, so there is no previous to go back to'];
+      }
+      const hit = await clickThrough(next, { timeout: 8000 });
+      if (!hit.ok) return ['FAILED', `Next page could not be pressed: ${hit.why}`];
+      await settle(page, 6000);
+
+      if (await prev.isDisabled()) {
+        return ['FAILED', 'moved to page 2 and Previous page is STILL disabled — the way back is gone'];
+      }
+      const back = await clickThrough(prev, { timeout: 8000 });
+      if (!back.ok) return ['FAILED', `Previous page enabled but could not be pressed: ${back.why}`];
+      await settle(page, 6000);
+      if (!await prev.isDisabled()) {
+        return ['FAILED', 'back on page 1 and Previous page is still enabled'];
+      }
+      return ['DROVE', 'disabled on page 1, enabled on page 2, pressed, disabled again'];
+    },
+  },
+
+  {
+    id: 'merchant/token-supply/price-this-amount',
+    panel: 'merchant-panel',
+    what: 'Price this amount, once an amount is typed',
+    async run(page, cfg, base) {
+      await go(page, cfg, base, '/token-supply');
+      const button = page.getByRole('button', { name: /^\s*Price this amount\s*$/i }).first();
+      if (await button.count() === 0) return ['NOT DRIVEN', 'no "Price this amount" on /token-supply'];
+      if (!await button.isDisabled()) return ['FAILED', 'it is enabled with no amount entered'];
+
+      const field = page.locator('input[type="number"]').first();
+      if (await field.count() === 0) return ['NOT DRIVEN', 'no amount field beside it'];
+      await field.fill('100000');
+      await settle(page, 2000);
+
+      if (await button.isDisabled()) {
+        return ['FAILED', 'an amount was entered and "Price this amount" stayed disabled'];
+      }
+      const hit = await clickThrough(button, { timeout: 8000 });
+      if (!hit.ok) return ['FAILED', `enabled but could not be pressed: ${hit.why}`];
+      await settle(page, 8000);
+
+      const said = await words(page);
+      // Either it quotes, or it refuses BY NAME (§25 — a rail that cannot be
+      // priced says so rather than inventing a number). Both are the control
+      // working; silence is not.
+      if (!/₹|inr|usdt|rate|price|unavailable|not set|unable|cannot/i.test(said.slice(-400))) {
+        return ['FAILED', 'pressed it and the screen neither quoted nor refused — it said nothing'];
+      }
+      return ['DROVE', 'disabled empty, enabled with an amount, and it answered'];
+    },
+  },
+
+  {
+    id: 'merchant/cash-links/supply-link',
+    panel: 'merchant-panel',
+    what: 'Supply link, once a link is typed',
+    async run(page, cfg, base) {
+      await go(page, cfg, base, '/cash-links');
+      const button = page.getByRole('button', { name: /^\s*Supply link\s*$/i }).first();
+      if (await button.count() === 0) return ['NOT DRIVEN', 'no "Supply link" on /cash-links'];
+      if (!await button.isDisabled()) return ['FAILED', 'it is enabled with no link entered'];
+
+      const field = page.locator('input[type="text"], input:not([type])').first();
+      if (await field.count() === 0) return ['NOT DRIVEN', 'no payment-link field beside it'];
+      const link = `upi://pay?pa=drive-${rid('x')}@upi&am=500`;
+      await field.fill(link);
+      await settle(page, 2000);
+      // Recorded before the press, because the refusal below depends on it.
+      const rail = await db.paymentModePolicy.getActivePaymentMode();
+
+      if (await button.isDisabled()) {
+        return ['FAILED', 'a link was entered and "Supply link" stayed disabled'];
+      }
+      const before = Number((await pgQuery(
+        'SELECT count(*)::int AS n FROM cash_link_queue WHERE merchant_id = $1', [page.__bbMerchantId])).rows[0].n);
+      const hit = await clickThrough(button, { timeout: 8000 });
+      if (!hit.ok) return ['FAILED', `enabled but could not be pressed: ${hit.why}`];
+      await settle(page, 8000);
+      const after = Number((await pgQuery(
+        'SELECT count(*)::int AS n FROM cash_link_queue WHERE merchant_id = $1', [page.__bbMerchantId])).rows[0].n);
+
+      if (after === before) {
+        const said = await words(page);
+        // ── A refusal that names the platform's own state is the control ───
+        // WORKING, not failing. Measured: with the rail on P2P_UPI the screen
+        // answers "The platform is not on the ATM cash rail right now, so a
+        // cash link cannot be used" — which is §25's rule exactly, a refusal
+        // that names the rail's own choices instead of "invalid".
+        //
+        // A cash link supplied while the platform is on UPI would be inventory
+        // nobody can claim, so refusing is the correct behaviour and storing
+        // it would be the defect. What must NOT happen is silence.
+        if (rail !== 'CASH_ATM' && /cash rail|not on the ATM|cannot be used/i.test(said)) {
+          return ['DROVE', `enabled with a link, and correctly REFUSED on the ${rail} rail — "${said.slice(-110).trim()}"`];
+        }
+        return ['FAILED', `pressed Supply link on the ${rail} rail and cash_link_queue is still ${before}`
+          + ` — screen said: ${said.slice(-140)}`];
+      }
+      await pgQuery('DELETE FROM cash_link_queue WHERE merchant_id = $1 AND payment_link = $2',
+        [page.__bbMerchantId, link]).catch(() => {});
+      return ['DROVE', `disabled empty, enabled with a link, and cash_link_queue went ${before} → ${after}`];
+    },
+  },
+
+  {
+    id: 'admin/sub-admins/grant',
+    panel: 'admin-panel',
+    what: 'Grant, once a person is chosen',
+    async run(page, cfg, base) {
+      const target = await seedPlayer({ balancePaise: 0 });
+      await go(page, cfg, base, '/sub-admins');
+      const grant = page.getByRole('button', { name: /^\s*Grant\s*$/i }).first();
+      if (await grant.count() === 0) return ['NOT DRIVEN', 'no Grant control on /sub-admins'];
+      if (!await grant.isDisabled()) return ['FAILED', 'Grant is enabled with nobody chosen'];
+
+      // Not a search box — the screen takes the user id DIRECTLY, in a field
+      // whose placeholder says so. `search()` looks for the panel's general
+      // search input and there is none here, which is why the first version
+      // reported "no search box" as though the screen were broken.
+      const field = page.getByPlaceholder(/user id to grant/i).first();
+      if (await field.count() === 0) return ['NOT DRIVEN', 'no "User id to grant…" field on /sub-admins'];
+      await field.fill(target.userId);
+      await settle(page, 3000);
+
+      if (await grant.isDisabled()) {
+        return ['FAILED', 'a person was chosen and Grant stayed disabled'];
+      }
+      const hit = await clickThrough(grant, { timeout: 8000 });
+      if (!hit.ok) return ['FAILED', `Grant enabled but could not be pressed: ${hit.why}`];
+      await settle(page, 8000);
+      await confirmWith(page, 'Grant');
+
+      // ── QUEUE MANAGER, not sub-admin ───────────────────────────────────
+      // The button calls `toggleQueueManager(id, true)`. Asserting
+      // `is_sub_admin` reported "the player is still not a sub-admin" for a
+      // press that did exactly what it says on it — the wrong column, which is
+      // §23's shape in a test rather than in a type.
+      const granted = Boolean((await pgQuery(
+        'SELECT is_queue_manager FROM users WHERE user_id = $1', [target.userId],
+      )).rows[0]?.is_queue_manager);
+      if (!granted) return ['FAILED', 'pressed Grant and the player is still not a queue manager'];
+      await pgQuery('UPDATE users SET is_queue_manager = FALSE WHERE user_id = $1',
+        [target.userId]).catch(() => {});
+      return ['DROVE', `disabled with the field empty, enabled once filled, and ${target.userId} became a queue manager`];
+    },
+  },
+
+  {
+    id: 'admin/kyc/bulk/nothing-pending',
+    panel: 'admin-panel',
+    what: 'The bulk-KYC action, once something IS pending',
+    async run(page, cfg, base) {
+      await go(page, cfg, base, '/kyc/bulk');
+      const idle = page.getByRole('button', { name: /^\s*Nothing pending\s*$/i }).first();
+      if (await idle.count() === 0) {
+        return ['NOT DRIVEN', 'the screen is not in its "Nothing pending" state — something is already queued'];
+      }
+      if (!await idle.isDisabled()) return ['FAILED', '"Nothing pending" is offered as a pressable control'];
+
+      // ── PENDING_VERIFICATION, not PENDING_APPROVAL ─────────────────────
+      // `kycStats()` returns `pending: counts.PENDING_VERIFICATION`, counted
+      // off `kyc_verifications` — the queue an operator EXPORTS to an outside
+      // verifier. `users.kyc_status = 'PENDING_APPROVAL'` is the admin's own
+      // review and a different question entirely. Seeding the wrong one made
+      // the screen look wrong while it was reporting its own queue correctly,
+      // which is §32 S19: a precondition the case never established.
+      // Through the repository's own writer, not a hand-made row: every
+      // column here is NOT NULL and the Aadhaar is an HMAC plus ciphertext
+      // (§2), so an INSERT that invents them is a fixture the platform cannot
+      // produce (§32 S16).
+      const target = await seedPlayer({ kycStatus: 'PENDING_APPROVAL', balancePaise: 0 });
+      await db.identity.submitVerification({
+        userId: target.userId,
+        aadhaarHash: `drive-${rid('hash')}`,
+        aadhaarEncrypted: `drive-${rid('ct')}`,
+        aadhaarLast4: '9999',
+        phone: target.mobile,
+      });
+      await go(page, cfg, base, '/kyc/bulk');
+      await settle(page, 6000);
+
+      const still = page.getByRole('button', { name: /^\s*Nothing pending\s*$/i }).first();
+      if (await still.count() > 0) {
+        return ['FAILED', `${target.userId} is PENDING_APPROVAL and the screen still says "Nothing pending"`];
+      }
+      const action = page.locator('main').getByRole('button').filter({ hasNotText: /back|cancel|close/i }).first();
+      if (await action.count() === 0) return ['FAILED', 'the label changed and no pressable action appeared'];
+      if (await action.isDisabled()) {
+        return ['FAILED', 'a submission is pending and the bulk action is still disabled'];
+      }
+      await pgQuery('DELETE FROM kyc_verifications WHERE user_id = $1', [target.userId]).catch(() => {});
+      return ['DROVE', `"Nothing pending" while nothing was, and a live action once ${target.userId} was queued`];
+    },
+  },
+
   // ── Log out: the one control that ends the pass that presses it ─────────
   // `ownContext` is the whole point. Pressing this on the shared page would
   // sign out every case after it on that panel, which is why the drive

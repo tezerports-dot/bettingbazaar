@@ -216,6 +216,7 @@ async function press(page, panel, screen, c, seen, byName) {
 
   const before = await fingerprint(page);
   const asked = page.__bbAsked ?? 0;
+  page.__bbAlert = null;
   const errors = [], failed = [], upstream = [], throttled = [], calls = [];
   const onErr = (e) => errors.push(e.message);
   const onReq = (r) => {
@@ -341,6 +342,11 @@ async function press(page, panel, screen, c, seen, byName) {
     if (asked !== (page.__bbAsked ?? 0)) {
       return { verdict: 'NEEDS_INPUT', acted, why: 'it asked a confirm/prompt, which this pass declines' };
     }
+    // It told the user something. That IS what the press did, and the sentence
+    // is the evidence — so it is reported with the words in it.
+    if (page.__bbAlert) {
+      return { verdict: 'SAID', acted, why: `alert: "${page.__bbAlert}"` };
+    }
     /**
      * ── A Refresh button is not dead because the data did not change ───────
      * Nearly every screen here has a Refresh, and on a quiet database it
@@ -454,7 +460,26 @@ try {
     // are dismissed — and REMEMBERED, because a control that asked a question
     // and was told no did not do nothing, it was declined. Reporting that as
     // INERT would send somebody hunting a dead button that works.
-    page.on('dialog', (d) => { page.__bbAsked = (page.__bbAsked ?? 0) + 1; d.dismiss().catch(() => {}); });
+    // ── An ALERT is not a request for input ─────────────────────────────
+    // A `confirm` or a `prompt` ASKS, and this pass declines on purpose: it
+    // must not answer yes to a question it did not read. An `alert` TELLS —
+    // there is nothing to decline, the only button is OK, and the sentence in
+    // it is the OUTCOME of the press.
+    //
+    // Counting them the same reported 19 controls as NEEDS_INPUT, 18 of them
+    // the game tiles on /crash and /sports, whose handler ends
+    // `else alert(d.message || 'Could not launch')`. The press worked, the
+    // route answered, the panel said so — and the pass filed it as a control
+    // nobody could press. So the two are kept apart, and what the alert SAID
+    // is carried into the verdict.
+    page.on('dialog', (d) => {
+      if (d.type() === 'alert') {
+        page.__bbAlert = d.message().slice(0, 160);
+      } else {
+        page.__bbAsked = (page.__bbAsked ?? 0) + 1;
+      }
+      d.dismiss().catch(() => {});
+    });
     /**
      * ── A 429 during a screen's OWN load voids that screen ─────────────────
      * The merchant panel is driven last, after ~1,600 presses have gone
