@@ -46,6 +46,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { chromium } from 'playwright-core';
 import {
   API, EXECUTABLE, PANELS, children, stopAll, waitFor, startVite, settle, clickThrough,
+  configureTelegram,
 } from './stack.js';
 import { seedPlayer, seedMerchant, seedAdmin } from '../e2e/seed.js';
 import { playerToken, adminToken, merchantToken } from '../e2e/harness.js';
@@ -138,21 +139,37 @@ async function rowFor(page, text) {
  * readable line — and a harness that cannot say why it failed sends the reader
  * hunting a defect in the app that is really in the harness.
  */
-async function pressInRow(row, title, { timeout = 8000 } = {}) {
-  const control = row.getByTitle(title);
-  try {
-    await control.click({ timeout });
-    return { ok: true };
-  } catch (err) {
-    const titles = await row.locator('[title]').evaluateAll(
-      (els) => els.map((e) => e.getAttribute('title')),
-    ).catch(() => []);
-    return {
-      ok: false,
-      why: `no usable "${title}" in the row — it offers [${titles.join(', ') || 'nothing'}]`
-        + ` (${err.message.split('\n')[0].slice(0, 70)})`,
-    };
+async function pressInRow(row, what, { timeout = 8000 } = {}) {
+  // ── A title OR the words on the button ──────────────────────────────────
+  // This matched on `title` alone, which is right for the icon buttons
+  // (Details, Limits, Orders carry one) and wrong for every button that says
+  // what it does in text. Measured: the Approve and Reject cases reported
+  // "no usable Approve in the row — it offers [Details, Limits, Orders,
+  // Suspend]", which reads exactly like a missing feature, and the row was
+  // rendering both buttons the whole time. The server was sending
+  // `merchantApprovalStatus: 'PENDING'` and the panel was drawing them.
+  //
+  // That is §28's own warning pointed at this harness: a false failure is how
+  // a pass loses its authority. A person does not press a `title`; they press
+  // the thing that says the word.
+  const byTitle = row.getByTitle(what);
+  const byName = row.getByRole('button', { name: new RegExp(`^\\s*${what}\\s*$`, 'i') });
+  for (const control of [byTitle, byName]) {
+    if (await control.count().catch(() => 0) === 0) continue;
+    const hit = await clickThrough(control.first(), { timeout });
+    if (hit.ok) return { ok: true, via: hit.via };
   }
+  const titles = await row.locator('[title]').evaluateAll(
+    (els) => els.map((e) => e.getAttribute('title')),
+  ).catch(() => []);
+  const names = await row.locator('button').evaluateAll(
+    (els) => els.map((e) => (e.innerText || '').trim()).filter(Boolean),
+  ).catch(() => []);
+  return {
+    ok: false,
+    why: `no usable "${what}" in the row — titles [${titles.join(', ') || 'none'}],`
+      + ` buttons [${names.join(', ') || 'none'}]`,
+  };
 }
 
 /**
@@ -1895,6 +1912,23 @@ async function main() {
   if (!cases.length) { console.error('no case matched', only); process.exit(1); }
 
   const panels = [...new Set(cases.map((c) => c.panel))];
+
+  // ── A configured platform, because all three panels GATE on one ─────────
+  // §33.7 gates every panel on Telegram, and `VerificationGateModal` BLOCKS —
+  // with no bot and no channel it renders a modal with no button, over the
+  // whole screen, deliberately. Measured before this line existed: the two
+  // merchant cases timed out at THIRTY SECONDS on buttons that were behind
+  // that modal, and the preference switch could not be pressed for the same
+  // reason. Three "the control is broken" findings, none of them true.
+  //
+  // STAFF pass through the bootstrap exemption, which is why the admin cases
+  // were unaffected and the failure looked merchant-specific.
+  //
+  // Restored at the end, outside any assertion (trap 10): an active channel
+  // re-gates every player the moment its generation moves, so a leftover one
+  // is not a stale fixture, it is a platform running under rules nobody chose.
+  const restoreTelegram = await configureTelegram();
+
   const tokens = { 'admin-panel': adminToken(await seedAdmin()) };
   const cached = {};
   let driveMerchant = null;
@@ -2039,6 +2073,7 @@ async function main() {
   }
 
   await browser.close().catch(() => {});
+  await restoreTelegram().catch((e) => console.error('   ! could not restore telegram config:', e.message));
   stopAll();
 
   const drove = results.filter((r) => r.verdict === 'DROVE').length;
