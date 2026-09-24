@@ -258,9 +258,20 @@ const words = (page) => page.locator('body').innerText()
 
 // ── Server-side readers, each naming the ONE owner of what it reads ─────────
 
+// ── Scalars, like every other reader here ─────────────────────────────────
+// This one returned the ROW while `merchantStatus`, `kycStatus` and
+// `orderStatus` beside it return a string. A case that treated it like its
+// neighbours compared an OBJECT to 'ACTIVE' — true for every object — and
+// reported "pressed ONE Block on row 5 and 5 accounts changed". The database
+// said one. A finding that size cost a database read to disprove, and the
+// cause was one helper that did not match the idiom next to it (§5).
 const userStatus = async (userId) => {
-  const { rows } = await pgQuery('SELECT status, is_blocked FROM users WHERE user_id = $1', [userId]);
-  return rows[0] ?? null;
+  const { rows } = await pgQuery('SELECT status FROM users WHERE user_id = $1', [userId]);
+  return rows[0]?.status ?? null;
+};
+const userBlocked = async (userId) => {
+  const { rows } = await pgQuery('SELECT is_blocked FROM users WHERE user_id = $1', [userId]);
+  return rows[0]?.is_blocked === true;
 };
 const merchantStatus = async (merchantId) => {
   const { rows } = await pgQuery('SELECT status FROM merchants WHERE merchant_id = $1', [merchantId]);
@@ -445,14 +456,14 @@ const CASES = [
 
       const after = await userStatus(target.userId);
       const neighbour = await userStatus(bystander.userId);
-      if (after?.status !== 'BLOCKED') return ['FAILED', `status is ${after?.status}, not BLOCKED`];
-      if (neighbour?.status === 'BLOCKED') return ['FAILED', 'the BYSTANDER was blocked too'];
+      if (after !== 'BLOCKED') return ['FAILED', `status is ${after}, not BLOCKED`];
+      if (neighbour === 'BLOCKED') return ['FAILED', 'the BYSTANDER was blocked too'];
 
       // The screen, without a reload: a server that changed and a panel that
       // did not is half a feature.
       const said = await words(page);
       if (!/blocked/i.test(said)) return ['FAILED', 'server blocked them; the screen never said so'];
-      return ['DROVE', `${target.userId} BLOCKED, bystander still ${neighbour?.status}`];
+      return ['DROVE', `${target.userId} BLOCKED, bystander still ${neighbour}`];
     },
   },
 
@@ -1824,8 +1835,8 @@ const CASES = [
       // reported "pressed ONE Block on row 5 and 5 accounts changed" — a
       // finding that would have been enormous if it were real. The database
       // said one row was blocked. Read the COLUMN, not the object.
-      const after = await Promise.all(seeded.map((u) => userStatus(u.userId)));
-      const moved = seeded.filter((u, i) => after[i]?.is_blocked).map((u) => u.userId);
+      const after = await Promise.all(seeded.map((u) => userBlocked(u.userId)));
+      const moved = seeded.filter((u, i) => after[i]).map((u) => u.userId);
 
       if (moved.length === 0) {
         return ['FAILED', `pressed Block on row ${index + 1} and NOBODY is blocked`];
@@ -1903,6 +1914,104 @@ const CASES = [
           + ` and ${moved[0]} got withdrawal access instead — §23's exact defect`];
       }
       return ['DROVE', `queue position ${index + 1}: approved ${target.userId} and nobody else`];
+    },
+  },
+
+  {
+    id: 'admin/merchants/suspend-a-later-row',
+    panel: 'admin-panel',
+    what: 'Suspend from a row that is NOT the first',
+    async run(page, cfg, base) {
+      const seeded = [];
+      for (let i = 0; i < 4; i++) {
+        seeded.push(await seedMerchant({ currency: 'INR', approve: true, online: false }));
+      }
+      await go(page, cfg, base, '/merchants');
+      await settle(page, 8000);
+
+      const positions = await page.evaluate((names) => {
+        const trs = [...document.querySelectorAll('tbody tr')].map((tr) => tr.innerText || '');
+        return names.map((nm) => trs.findIndex((t) => t.includes(nm)));
+      }, seeded.map((m) => m.username));
+
+      let index = -1; let target = null;
+      for (let i = 0; i < seeded.length; i++) {
+        if (positions[i] > 0 && positions[i] > index) { index = positions[i]; target = seeded[i]; }
+      }
+      if (!target) return ['NOT DRIVEN', `no seeded merchant rendered below row 1 (positions ${positions.join(', ')})`];
+
+      const total = await page.locator('tbody tr').count();
+      const row = page.locator('tbody tr', { hasText: target.username }).first();
+      const hit = await pressInRow(row, 'Suspend');
+      if (!hit.ok) return ['NOT DRIVEN', hit.why];
+      await settle(page, 6000);
+      await confirmWith(page, 'Suspend');
+
+      const after = await Promise.all(seeded.map((m) => merchantStatus(m.merchantId)));
+      const moved = seeded.filter((m, i) => after[i] === 'SUSPENDED').map((m) => m.username);
+      if (moved.length === 0) return ['FAILED', `pressed Suspend on row ${index + 1} and nobody is SUSPENDED`];
+      if (moved.length > 1) return ['FAILED', `ONE Suspend and ${moved.length} merchants moved: ${moved.join(', ')}`];
+      if (moved[0] !== target.username) {
+        return ['FAILED', `pressed Suspend on row ${index + 1} (${target.username})`
+          + ` and it suspended ${moved[0]} instead — the row's control is not bound to its row (§23)`];
+      }
+      return ['DROVE', `row ${index + 1} of ${total}: suspended ${target.username} and nobody else`];
+    },
+  },
+
+  {
+    id: 'admin/games/delete-a-later-row',
+    panel: 'admin-panel',
+    what: 'Delete a game from a row that is NOT the first',
+    async run(page, cfg, base) {
+      // Named so they sort together and land next to each other in the list.
+      const mine = [];
+      for (let i = 0; i < 4; i++) mine.push(rid('DriveRow'));
+      for (const name of mine) {
+        await pgQuery(
+          `INSERT INTO games (slug, name, status, sort_order)
+           VALUES ($1, $1, 'INACTIVE', 999) ON CONFLICT (slug) DO NOTHING`, [name],
+        );
+      }
+      try {
+        await go(page, cfg, base, '/games');
+        await settle(page, 8000);
+
+        // Which of mine is rendered below the first of mine — the question is
+        // "does a later DELETE hit its own row", not "is it row 1 of the page".
+        const order = await page.evaluate((names) => {
+          const btns = [...document.querySelectorAll('button')]
+            .map((b) => b.getAttribute('aria-label') || b.title || '');
+          return names.map((nm) => btns.findIndex((t) => t.includes(`Delete ${nm}`)));
+        }, mine);
+
+        let index = -1; let target = null;
+        const first = Math.min(...order.filter((i) => i >= 0));
+        for (let i = 0; i < mine.length; i++) {
+          if (order[i] > first && order[i] > index) { index = order[i]; target = mine[i]; }
+        }
+        if (!target) return ['NOT DRIVEN', `the seeded games did not render as separate rows (${order.join(', ')})`];
+
+        const button = page.getByRole('button', { name: new RegExp(`Delete ${target}`, 'i') }).first();
+        page.__bbAccept = true;
+        try {
+          await clickThrough(button, { timeout: 8000 });
+          await settle(page, 6000);
+          const said = await confirmWith(page, 'Delete');
+          if (String(said).startsWith('unanswered')) return ['FAILED', `the confirmation was not answered — ${said}`];
+        } finally { page.__bbAccept = false; }
+
+        const still = await Promise.all(mine.map((n) => gameExists(n)));
+        const gone = mine.filter((n, i) => !still[i]);
+        if (gone.length === 0) return ['FAILED', `deleted the ${index}th Delete control and every game is still there`];
+        if (gone.length > 1) return ['FAILED', `ONE Delete and ${gone.length} games went: ${gone.join(', ')}`];
+        if (gone[0] !== target) {
+          return ['FAILED', `pressed Delete for ${target} and ${gone[0]} was deleted instead (§23)`];
+        }
+        return ['DROVE', `a later Delete removed ${target} and left the other ${mine.length - 1} alone`];
+      } finally {
+        await pgQuery('DELETE FROM games WHERE slug = ANY($1::text[])', [mine]).catch(() => {});
+      }
     },
   },
 
