@@ -1250,7 +1250,47 @@ these are the specific ones this codebase has actually produced.
 | S32 | The same security check in one of the two paths that need it | Which OTHER path reaches this without the middleware? |
 | S33 | A harness that measures a server it did not start | Did THIS run bring up the thing it is asking? Something already on the port answers the readiness check, and the suite then seeds one database while asserting against another. |
 | S34 | A tidy early return placed above the question it must not pre-empt | Does this guard clause change the ORDER of two questions? Refusing before the platform's own state is read is how a gate blames a person for an operator's unfinished setup. |
+| S36 | A projection whose MAPPER names a column the query never SELECTs | Read the column list, not the mapper. `toX` reading `row.foo` proves nothing; `foo` has to be in the `SELECT`. The field is `undefined` — no error, no type complaint, and the consumer takes the `undefined` branch. |
 | S35 | A caller's mistake thrown WITHOUT a `status`, so it leaves as a 5xx | Does the first thing this handler does with the input carry `status: 400`? `respondError` routes on the PRESENCE of `err.status` (§2), so a bare `TypeError` from a helper becomes "Something went wrong" — and the user is told the platform broke for a request that will never work. |
+
+**S36 shut the whole platform's front door, and it was one missing word.**
+`IDENTITY_COLUMNS` in `database/repositories/telegram.js` listed thirteen
+columns and not `audience` — while `toIdentity` mapped `audience: row.audience`
+faithfully. So every identity the repository has ever returned carried
+`audience: undefined`.
+
+`membershipFor` takes its scope from exactly that field (§2 — the row's
+audience is half its primary key and therefore the one true answer), got
+`undefined`, and returned `unconfigured`. The gate turns that into
+`no_channel` — the reason that renders as the PLATFORM's own fault WITH NO
+BUTTON, deliberately (§33.3). **MEASURED on a live server with all three
+channels active and all three actors linked and members: every player and
+every merchant was blocked out of the entire app, permanently, with nothing on
+the screen they could act on.**
+
+Three things hid it, and each is worth naming:
+
+- **No error anywhere.** A missing column in a `SELECT` is not a mistake in
+  SQL; the mapper simply reads `undefined` off a row that never had the key.
+- **Every tier below a browser was green.** The server's channel gate fails
+  OPEN on an unconfigured platform (the 2026-09-17 owner decision), so every
+  API test, every route test and the whole e2e suite kept passing while the
+  SCREEN was blocked. The two halves fail in OPPOSITE directions.
+- **The admin panel looked fine.** STAFF pass `no_channel` through the
+  bootstrap exemption (§33.7), so the one person who could have noticed was the
+  one person it did not affect.
+
+What found it: a browser drive reporting **168 of 176 controls UNREACHABLE**,
+every one `elementHandle.click: Timeout 4000ms exceeded`. Nothing was broken;
+a modal was over everything, correctly. The question that gets there is §0.5's
+first — *does anything CALL this* — pointed at a column rather than a function:
+**does the query actually FETCH what the mapper reads.**
+
+Swept (§0.15) across `database/repositories/**`: every other mapper field is
+either in its own file's `SELECT` list or comes off a `SELECT *`
+(`bonuses.core.js`, `casino.core.js`, `settlements.js`), and `wallets.core.js`'s
+`row.type`/`row.reason`/`row.refId` read a CALLER's object, not a database row.
+One instance, fixed, with a pg test that fails without it.
 
 **S22 through S25 all came out of pressing controls rather than opening
 screens, and each was invisible to every tier below a browser.**
@@ -1631,6 +1671,7 @@ pass: **an exemption nobody can see is a hole nobody removes.**
 | `seedAdmin` | wrote `is_admin = true` with no `account_type`, so the row sat in the PLAYER population | a browser pass opened the admin panel and was told to open the PLAYER fleet's bot. §32 S16 — a fixture describing an account the platform cannot produce |
 | `seedMerchant` | wrote a `merchants` row and no `users` row, leaving `merchants.user_id` NULL | `GET /api/merchant/verification` answered 401, the gate rendered NOTHING, and the pass reported an un-gated merchant panel. The panel was right; the fixture was |
 | `seedPlayer` | never linked Telegram | the e2e suite passed only on databases where nobody had configured a channel. Met one where somebody had, and four money scenarios answered 403. §32 S19 — reading whatever the database happened to hold |
+| `IDENTITY_COLUMNS` | mapped `audience` and never SELECTed it, so every identity read carried `audience: undefined` | `membershipFor` scoped on `undefined` and answered `unconfigured`, so the gate showed every player and merchant `no_channel` — the no-button reason — on a fully configured platform. §32 S36 |
 | `test:e2e` | asked whether SOMETHING answered on its port | a server already on 8099 answered, the runner's own spawn never bound, and the suite seeded one database while asserting against another: 26 failures, every one true of the server being asked and false of the platform. §32 S33 |
 
 A fifth was mine and caught in the same session: a tidy `if (!identity) return`

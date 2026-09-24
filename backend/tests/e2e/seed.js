@@ -14,6 +14,45 @@ const B58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 export const trc20 = () => 'T' + Array.from({ length: 33 }, () => B58[Math.floor(Math.random() * B58.length)]).join('');
 export const bep20 = () => '0x' + Array.from({ length: 40 }, () => '0123456789abcdef'[Math.floor(Math.random() * 16)]).join('');
 
+/**
+ * Give one actor the two rows a verified person HAS, for their own audience.
+ *
+ * ── Why this is one function and not three ────────────────────────────────
+ * §33.7 made the gate per-panel: a player verifies through the PLAYER fleet
+ * and channel, a merchant through the MERCHANT ones, an admin through STAFF.
+ * That is three near-identical inserts differing only in the audience, which
+ * is §5's shape — and the half that gets forgotten is always the one nobody
+ * was thinking about when they gated the next panel. The audience is a
+ * PARAMETER so there is nothing to forget.
+ *
+ * These are the rows the contact-share webhook and the membership check write.
+ * The harness writes them directly because `registerBot` verifies the token
+ * against Telegram itself, and there is no Telegram here — the same reason
+ * the KYC rows below are walked through the real transitions instead of being
+ * INSERTed, stated the other way round.
+ *
+ * Skipped when that audience has no channel: there is nothing to be a member
+ * of, and `configureTelegram()` is what arranges for there to be one.
+ */
+export async function verifyActor({ userId, mobile, audience }) {
+  const active = await pgQuery(
+    `SELECT generation FROM telegram_configs WHERE active AND audience = $1 LIMIT 1`,
+    [audience], 'e2e_active_generation',
+  );
+  if (!active.rows[0]) return false;
+  await pgQuery(
+    `INSERT INTO telegram_identities (
+       telegram_user_id, audience, user_id, phone, contact_shared_at,
+       contact_active, channel_status, channel_checked_at,
+       channel_generation, linked_generation)
+     VALUES ($1, $2, $3, $4, now(), TRUE, 'member', now(), $5, $5)
+     ON CONFLICT (telegram_user_id, audience) DO NOTHING`,
+    [`e2e-tg-${userId}`, audience, userId, mobile, active.rows[0].generation],
+    'e2e_verify_actor',
+  );
+  return true;
+}
+
 export async function seedPlayer({ kycStatus = 'APPROVED', balancePaise = 0, verified = true } = {}) {
   const userId = rid('player');
   // The number is held in a LOCAL, not read back off the projection. The
@@ -42,24 +81,7 @@ export async function seedPlayer({ kycStatus = 'APPROVED', balancePaise = 0, ver
   //
   // Skipped silently when no channel is configured — there is nothing to be a
   // member of, and the gate admits (§31's owner decision, 2026-09-17).
-  if (verified) {
-    const active = await pgQuery(
-      `SELECT generation FROM telegram_configs WHERE active AND audience = 'PLAYER' LIMIT 1`,
-      [], 'e2e_active_player_generation',
-    );
-    if (active.rows[0]) {
-      await pgQuery(
-        `INSERT INTO telegram_identities (
-           telegram_user_id, audience, user_id, phone, contact_shared_at,
-           contact_active, channel_status, channel_checked_at,
-           channel_generation, linked_generation)
-         VALUES ($1, 'PLAYER', $2, $3, now(), TRUE, 'member', now(), $4, $4)
-         ON CONFLICT (telegram_user_id, audience) DO NOTHING`,
-        [`e2e-tg-${userId}`, userId, mobile, active.rows[0].generation],
-        'e2e_verify_player',
-      );
-    }
-  }
+  if (verified) await verifyActor({ userId, mobile, audience: 'PLAYER' });
   // ── The KYC ROW a real submission writes ───────────────────────────────
   // §32 S16, a third instance in this file. `createUser` sets
   // `users.kyc_status` and nothing else, so a seeded player had a status and
@@ -115,10 +137,14 @@ export async function seedPlayer({ kycStatus = 'APPROVED', balancePaise = 0, ver
 export async function seedMerchant({
   currency = 'INR', approve = true, tokensPaise = 0, online = true,
   usdtAddressTrc20 = null, usdtAddressBep20 = null, cashDenominationPaise = null,
+  verified = true,
 } = {}) {
   const name = rid('merch');
+  // Held in a LOCAL for the same reason `seedPlayer` holds the player's: the
+  // identity row's `phone` is NOT NULL and a projection may not carry it.
+  const mobile = mob();
   const merchant = await createMerchantWithWallet({
-    name, username: name, mobile: mob(), email: `${name}@example.test`,
+    name, username: name, mobile, email: `${name}@example.test`,
     passwordHash: 'x'.repeat(60), currency, status: 'PENDING',
     bankDetails: currency === 'INR'
       ? { accountNumber: '000111222333', ifsc: 'HDFC0000001', accountHolder: name, upiId: `${name}@upi` }
@@ -148,9 +174,13 @@ export async function seedMerchant({
                         roles, account_type)
      VALUES ($1, $2, $3, $4, 'ACTIVE', 'PENDING_SUBMISSION', ARRAY['merchant'], 'MERCHANT')
      ON CONFLICT (mobile, account_type) DO NOTHING`,
-    [merchantUserId, merchant.username ?? name, merchant.mobile, 'x'.repeat(60)],
+    [merchantUserId, merchant.username ?? name, mobile, 'x'.repeat(60)],
     'e2e_merchant_login',
   );
+  // The MERCHANT panel gates too (§33.7), through the merchant fleet and the
+  // merchant channel — not the player's. Without this the panel is correct and
+  // every control behind its modal is unreachable.
+  if (verified) await verifyActor({ userId: merchantUserId, mobile, audience: 'MERCHANT' });
   await pgQuery(`UPDATE merchants SET user_id = $2 WHERE merchant_id = $1`,
                 [id, merchantUserId], 'e2e_merchant_link');
 
@@ -165,17 +195,18 @@ export async function seedMerchant({
       txId: `${id}_seed_float`, reason: 'e2e float',
     });
   }
-  return { ...merchant, _id: id, merchantId: id, userId: merchantUserId };
+  return { ...merchant, _id: id, merchantId: id, userId: merchantUserId, mobile };
 }
 
 // The admin 2FA guard (F-011) is ON, so an admin with no authenticator is
 // refused with TWO_FACTOR_ENROLMENT_REQUIRED before reaching any handler.
 // That is the product working; the driver enrols the seeded admin so the
 // scenarios past the door can run.
-export async function seedAdmin({ enrol2fa = true } = {}) {
+export async function seedAdmin({ enrol2fa = true, verified = true } = {}) {
   const userId = rid('admin');
+  const mobile = mob();
   const user = await db.users.createUser({
-    userId, username: userId, mobile: mob(), status: 'ACTIVE',
+    userId, username: userId, mobile, status: 'ACTIVE',
     // ── STAFF, and leaving it out was §32 S16 ────────────────────────────
     // `account_type` defaults to PLAYER, so this seeded a row with
     // `is_admin = true` sitting in the PLAYER population — a state the
@@ -200,5 +231,10 @@ export async function seedAdmin({ enrol2fa = true } = {}) {
       [userId, 'e2e-enrolled-secret'], 'e2e_enrol_admin',
     );
   }
-  return { ...user, userId };
+  // STAFF gates the moment a staff bot and channel exist — the bootstrap
+  // exemption (§2, §33.7) covers only `no_bot`/`no_channel`, and is
+  // deliberately that narrow. On a platform where somebody HAS configured the
+  // staff surface, an unlinked admin is blocked like anybody else.
+  if (verified) await verifyActor({ userId, mobile, audience: 'STAFF' });
+  return { ...user, userId, mobile };
 }

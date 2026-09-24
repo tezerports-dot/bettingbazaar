@@ -363,6 +363,29 @@ describePg('the Telegram sign-in surface (PostgreSQL)', () => {
       expect(await getIdentityByTelegramId('t-1', 'STAFF')).toBeNull();
     });
 
+    it('hands back the AUDIENCE on every read, because the gate runs on it', async () => {
+      // The projection named `audience` in its mapper and never SELECTed it,
+      // so every identity came back with `audience: undefined`. Nothing
+      // errored — `membershipFor` takes its scope from that field, got
+      // undefined, and reported `unconfigured` for accounts that were linked
+      // and members of a live channel. The verification gate turns that into
+      // `no_channel`: the reason that renders as the PLATFORM's fault with no
+      // button, so every player and merchant was blocked out of the whole app
+      // on a fully configured install, permanently, with nothing on the screen
+      // they could act on.
+      //
+      // Asserted on BOTH readers and on the history read, because they share
+      // one column list and a fix to one is a fix to all three — which is
+      // exactly why one omission took out all three.
+      await createUser({ userId: 'm-1', username: 'm', mobile: '9990000001', accountType: 'MERCHANT' });
+      await createIdentity({ audience: 'PLAYER', telegramUserId: 't-1', userId: 'u-1', phone: '9990000001' });
+      await createIdentity({ audience: 'MERCHANT', telegramUserId: 't-1', userId: 'm-1', phone: '9990000001' });
+
+      expect(await getIdentityByUserId('u-1')).toMatchObject({ audience: 'PLAYER', userId: 'u-1' });
+      expect(await getIdentityByTelegramId('t-1', 'MERCHANT')).toMatchObject({ audience: 'MERCHANT' });
+      expect((await listIdentitiesForUser('u-1')).map((i) => i.audience)).toEqual(['PLAYER']);
+    });
+
     it('still refuses a second Telegram account for one panel', async () => {
       // Widening the key must not widen the RULE. Within one audience the old
       // invariant is untouched.

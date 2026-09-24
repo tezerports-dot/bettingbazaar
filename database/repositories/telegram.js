@@ -559,8 +559,26 @@ export async function setTemplate({ key, body, updatedBy = null }) {
 
 // ── Identities ───────────────────────────────────────────────────────────────
 
+// `audience` is half the PRIMARY KEY and it has to be in here.
+//
+// `toIdentity` has always mapped it; this list did not SELECT it, so every
+// identity this repository returned carried `audience: undefined` — a mapper
+// naming a column its own query never fetched, which no type and no gate can
+// see (§32 S9's mirror: the projection omits what its consumer needs).
+//
+// MEASURED, on a fully configured platform with all three channels active and
+// all three actors linked and members: `membershipFor` takes its scope from
+// `identity.audience`, got `undefined`, and answered `unconfigured` for every
+// account. The verification gate turns that into `no_channel` — the reason
+// that renders as the platform's own fault WITH NO BUTTON — so every player
+// and every merchant was blocked out of the whole app, permanently, and the
+// screen could not tell them anything they could act on.
+//
+// It was invisible from the admin panel, which is the worst part: STAFF pass
+// `no_channel` through the bootstrap exemption (§33.7), so an operator saw a
+// working admin panel while the entire player base sat behind a modal.
 const IDENTITY_COLUMNS = `
-  telegram_user_id, user_id, telegram_username, first_name, phone,
+  telegram_user_id, audience, user_id, telegram_username, first_name, phone,
   contact_shared_at, contact_active, channel_status, channel_checked_at,
   channel_generation, linked_generation, created_at, last_seen_at`;
 

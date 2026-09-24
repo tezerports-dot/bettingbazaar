@@ -355,7 +355,7 @@ const onlyScreens = args.filter((a) => a.startsWith('/'));
 // harness concluded the server was down. The liveness endpoint exists for this.
 if (!await waitFor(`${API}/health/live`, 'the backend')) process.exit(1);
 
-const { actors, cached } = await seedActors();
+const { actors, cached, restore: restoreTelegram } = await seedActors();
 
 mkdirSync(SHOTS, { recursive: true });
 
@@ -642,6 +642,7 @@ try {
   stopAll();
   // Outside any assertion, so it runs whether the pass passed or not.
   await restoreProviders().catch((e) => console.error('could not restore game_providers:', e.message));
+  await restoreTelegram().catch((e) => console.error('could not restore telegram config:', e.message));
 }
 
 writeFileSync(REPORT, JSON.stringify(report, null, 2));

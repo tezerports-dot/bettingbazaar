@@ -242,7 +242,7 @@ if (!await waitFor(`${API}/health/live`, 'the backend')) process.exit(1);
 // here independently is what left the merchant a non-cash merchant, so
 // `/cash-links` was inventoried as its "not approved for the ATM cash rail"
 // empty state while the drive opened the working screen.
-const { actors, cached } = await seedActors();
+const { actors, cached, restore: restoreTelegram } = await seedActors();
 
 mkdirSync(SHOTS, { recursive: true });
 
@@ -326,6 +326,7 @@ try {
 } finally {
   await browser.close();
   await restoreProviders().catch(() => {});
+  await restoreTelegram().catch(() => {});
   stopAll();
 }
 
