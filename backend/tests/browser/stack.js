@@ -225,6 +225,50 @@ export async function boot(page, cfg, base, panel) {
   return { signedOut: seen.password, seen };
 }
 
+/**
+ * Click what a PERSON clicks, when the control itself cannot take a click.
+ *
+ * A styled toggle is an `<input type="checkbox" class="sr-only">` inside a
+ * `<label>`, with a `<div>` drawn as the switch. The input is a real control
+ * with a real accessible name and a real `onChange`, and it is also invisible,
+ * so a direct click waits for a node that will never be visible and times out.
+ *
+ * Two passes hit this independently — `drive.js` reported seven toggles
+ * UNREACHABLE, and `mutate.js` could not flip the merchant's notification
+ * switch, so its Save stayed disabled and the case failed on the SAVE while
+ * the real cause was the switch above it. One shape, two symptoms, so one
+ * owner (§5).
+ *
+ * Two rules it must keep:
+ *
+ *   Only on a TIMEOUT. "Something is on top of this" is the screen's business
+ *   and a real finding; reaching round it by clicking the label would hide
+ *   exactly the defect worth having.
+ *
+ *   No guess about visibility. The first draft tested `getClientRects()`, and
+ *   Tailwind's `sr-only` keeps a 1x1 rect — so it judged all seven toggles
+ *   visible and never ran. The failed click IS the evidence.
+ */
+export async function clickThrough(el, opts = {}) {
+  try {
+    await el.click({ timeout: 4000, ...opts });
+    return { ok: true };
+  } catch (e) {
+    if (!/Timeout .* exceeded/i.test(e.message)) return { ok: false, why: e.message.split('\n')[0] };
+    const proxy = await el.evaluateHandle((n) => {
+      const byFor = n.id ? document.querySelector(`label[for="${CSS.escape(n.id)}"]`) : null;
+      return byFor ?? n.closest('label');
+    }).then((h) => h.asElement()).catch(() => null);
+    if (!proxy) return { ok: false, why: e.message.split('\n')[0] };
+    try {
+      await proxy.click({ timeout: 4000, ...opts });
+      return { ok: true, via: 'its label' };
+    } catch (e2) {
+      return { ok: false, why: e2.message.split('\n')[0] };
+    }
+  }
+}
+
 export const IGNORE = [/favicon\.ico/i, /\/@vite\/client/, /\[vite\]/, /Download the React DevTools/i];
 export const ignored = (s) => IGNORE.some((re) => re.test(String(s)));
 

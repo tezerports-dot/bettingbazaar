@@ -46,7 +46,7 @@ import { check, note, summary } from '../e2e/harness.js';
 // Everything below the question this pass asks lives in one place (§5).
 import {
   ROOT, API, EXECUTABLE, PANELS, stopAll, waitFor, startVite, navigate, settle,
-  ignored, reset, awaitBudget, boot, seedActors, enableGameProviders,
+  ignored, reset, awaitBudget, boot, clickThrough, seedActors, enableGameProviders,
 } from './stack.js';
 
 const SHOTS = join(ROOT, 'backend', 'tests', 'browser', 'screenshots', 'drive');
@@ -165,39 +165,14 @@ const THROTTLE_PAUSE_MS = Number(process.env.BB_THROTTLE_PAUSE_MS ?? 20000);
  * can fail are kept apart. A node that vanished from under us is OURS. A node
  * that something is covering is the SCREEN'S, and still reported.
  */
-/**
- * The thing a PERSON clicks, when the control itself is not it.
- *
- * A styled toggle is an `<input type="checkbox" class="sr-only">` inside a
- * `<label>`, with a `<div>` drawn to look like the switch. The input is a real
- * control with a real accessible name and a real `onChange`, and it is also
- * invisible — so `el.click()` waits for a node that will never be visible and
- * times out, and the pass reports UNREACHABLE for a switch anybody can flip.
- *
- * Measured: SEVEN controls, six of them on `/settings` — "Allow new
- * registrations", "Enforce bet amounts in multiples", "Block opposite-side
- * betting", and all three `ipDefense` switches — on the screen where §21 says
- * an operator types the platform's business numbers.
- *
- * Clicking the LABEL is not a workaround for the harness's benefit; it is
- * literally what the person does, and it drives the input through the same
- * event the browser gives a human. Anything with no label to click stays
- * UNREACHABLE, which is the honest answer for a control nothing can reach.
- */
-async function clickableProxy(page, el) {
-  return el.evaluateHandle((n) => {
-    const byFor = n.id ? document.querySelector(`label[for="${CSS.escape(n.id)}"]`) : null;
-    return byFor ?? n.closest('label');
-  }).then((h) => h.asElement()).catch(() => null);
-}
-
 async function clickLive(page, c, first, opts = {}) {
   let el = first, last = null;
   for (let attempt = 0; attempt < 3; attempt++) {
     if (!el) return { ok: false, why: 'the control is no longer on the screen' };
     try {
-      await el.click({ timeout: 4000, ...opts });
-      return { ok: true };
+      const hit = await clickThrough(el, opts);
+      if (hit.ok) return hit;
+      throw new Error(hit.why);
     } catch (e) {
       // ── Invisible, but a person has something to click for it ───────────
       // Only on a TIMEOUT, and never on an interception. "Something is on top
@@ -209,15 +184,6 @@ async function clickLive(page, c, first, opts = {}) {
       // `sr-only` keeps a 1x1 rect, so it judged all seven toggles visible and
       // the fallback never ran. The click ALREADY FAILED; that is the only
       // evidence needed to go looking for what a person clicks instead.
-      if (/Timeout .* exceeded/i.test(e.message)) {
-        const proxy = await clickableProxy(page, el);
-        if (proxy) {
-          try {
-            await proxy.click({ timeout: 4000, ...opts });
-            return { ok: true, via: 'its label' };
-          } catch { /* the label is no better; fall through to the normal rules */ }
-        }
-      }
       last = e;
       // Something is genuinely on top of it. That is the screen's business,
       // not a re-render race, so stop and report it.

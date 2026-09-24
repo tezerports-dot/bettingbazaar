@@ -44,7 +44,9 @@
  */
 import { setTimeout as sleep } from 'node:timers/promises';
 import { chromium } from 'playwright-core';
-import { API, EXECUTABLE, PANELS, children, stopAll, waitFor, startVite, settle } from './stack.js';
+import {
+  API, EXECUTABLE, PANELS, children, stopAll, waitFor, startVite, settle, clickThrough,
+} from './stack.js';
 import { seedPlayer, seedMerchant, seedAdmin } from '../e2e/seed.js';
 import { playerToken, adminToken, merchantToken } from '../e2e/harness.js';
 import { db } from '#db';
@@ -1182,13 +1184,25 @@ const CASES = [
       }
       // Flip a switch first, or the save publishes what was already stored and
       // proves nothing about whether the press carried anything.
+      // The switch is `sr-only` inside its label, so a direct click times out
+      // and — because the click was swallowed — nothing changed, Save stayed
+      // DISABLED, and this case failed on the SAVE while the real cause was
+      // the switch above it. `clickThrough` presses what a person presses.
       const toggle = page.locator('[role="switch"], input[type="checkbox"]').first();
-      const flipped = await toggle.count() > 0;
-      if (flipped) await toggle.click({ timeout: 8000 }).catch(() => {});
+      let flipped = false;
+      if (await toggle.count() > 0) {
+        const hit = await clickThrough(toggle.first(), { timeout: 8000 });
+        flipped = hit.ok;
+        if (!hit.ok) return ['NOT DRIVEN', `the preference switch could not be pressed: ${hit.why}`];
+      }
       await settle(page, 1500);
 
       const before = await merchantPrefs(page.__bbMerchantId);
-      await save.click({ timeout: 8000 });
+      if (await save.isDisabled()) {
+        return ['FAILED', 'a preference was flipped and Save preferences stayed disabled'];
+      }
+      const hit = await clickThrough(save, { timeout: 8000 });
+      if (!hit.ok) return ['FAILED', `Save preferences could not be pressed: ${hit.why}`];
       await settle(page, 8000);
       const after = await merchantPrefs(page.__bbMerchantId);
       const said = await words(page);
@@ -1453,6 +1467,376 @@ const CASES = [
     label: 'Save the branding document',
   }),
 
+  // ══════════════════════════════════════════════════════════════════════
+  // The controls the drive deferred and this pass had no case for. Every one
+  // was in the DEFERRED list of a full three-panel run and therefore in the
+  // 53.7% nobody had pressed; a deferral is an admission, not a result.
+  // ══════════════════════════════════════════════════════════════════════
+
+  // ── A merchant's application, decided both ways ──────────────────────────
+  {
+    id: 'admin/merchants/approve',
+    panel: 'admin-panel',
+    what: 'Approve a pending merchant application',
+    async run(page, cfg, base) {
+      // `approve: false` leaves them PENDING, which is the state the button
+      // exists for. A merchant seeded APPROVED has no Approve button at all,
+      // and a case that reports NOT DRIVEN for its own fixture's sake is worse
+      // than no case.
+      const target = await seedMerchant({ currency: 'INR', approve: false, online: false });
+      const bystander = await seedMerchant({ currency: 'INR', approve: false, online: false });
+
+      await go(page, cfg, base, '/merchants');
+      await search(page, target.username);
+      const row = await rowFor(page, target.username);
+      if (!row) return ['NOT DRIVEN', `seeded merchant ${target.username} never appeared`];
+
+      const hit = await pressInRow(row, 'Approve');
+      if (!hit.ok) return ['NOT DRIVEN', hit.why];
+      await settle(page, 6000);
+      await confirmWith(page, 'Approve');
+
+      const mine = await merchantStatus(target.merchantId);
+      const neighbour = await merchantStatus(bystander.merchantId);
+      if (mine !== 'ACTIVE') return ['FAILED', `pressed Approve; the merchant is ${mine}`];
+      if (neighbour !== 'PENDING') return ['FAILED', `the BYSTANDER merchant moved to ${neighbour}`];
+      return ['DROVE', `${target.username} PENDING → ACTIVE, bystander still ${neighbour}`];
+    },
+  },
+
+  {
+    id: 'admin/merchants/reject',
+    panel: 'admin-panel',
+    what: 'Reject a pending merchant application',
+    async run(page, cfg, base) {
+      const target = await seedMerchant({ currency: 'INR', approve: false, online: false });
+      const bystander = await seedMerchant({ currency: 'INR', approve: false, online: false });
+
+      await go(page, cfg, base, '/merchants');
+      await search(page, target.username);
+      const row = await rowFor(page, target.username);
+      if (!row) return ['NOT DRIVEN', `seeded merchant ${target.username} never appeared`];
+
+      const hit = await pressInRow(row, 'Reject');
+      if (!hit.ok) return ['NOT DRIVEN', hit.why];
+      await settle(page, 6000);
+      await confirmWith(page, 'Reject');
+
+      const mine = await merchantStatus(target.merchantId);
+      const neighbour = await merchantStatus(bystander.merchantId);
+      if (mine === 'PENDING') return ['FAILED', 'pressed Reject; the merchant is still PENDING'];
+      if (neighbour !== 'PENDING') return ['FAILED', `the BYSTANDER merchant moved to ${neighbour}`];
+      return ['DROVE', `${target.username} PENDING → ${mine}, bystander still ${neighbour}`];
+    },
+  },
+
+  // ── Content rows, each deleted against a neighbour that must survive ─────
+  {
+    id: 'admin/content/faq/delete',
+    panel: 'admin-panel',
+    what: 'Delete an FAQ entry',
+    async run(page, cfg, base) {
+      const mine = rid('DriveFaq');
+      const neighbour = rid('KeepFaq');
+      for (const q of [mine, neighbour]) {
+        await pgQuery(
+          `INSERT INTO faqs (faq_id, question, answer, category, sort_order, is_published)
+           VALUES ($1, $1, 'seeded by the mutating pass', 'general', 999, TRUE)`, [q],
+        );
+      }
+
+      await go(page, cfg, base, '/content/faq');
+      const button = page.getByRole('button', { name: new RegExp(`Delete FAQ: ${mine}`, 'i') }).first();
+      if (await button.count() === 0) return ['NOT DRIVEN', `no "Delete FAQ: ${mine}" control found`];
+
+      page.__bbAccept = true;
+      try {
+        await button.click();
+        await settle(page, 6000);
+        await confirmWith(page, 'Delete');
+      } finally { page.__bbAccept = false; }
+
+      const count = async (id) => Number(
+        (await pgQuery('SELECT count(*)::int AS n FROM faqs WHERE faq_id = $1', [id])).rows[0].n);
+      const goneTarget = (await count(mine)) === 0;
+      const keptOther = (await count(neighbour)) === 1;
+      await pgQuery('DELETE FROM faqs WHERE faq_id = ANY($1::text[])', [[mine, neighbour]]);
+
+      if (!goneTarget) return ['FAILED', `${mine} is still in the FAQ list`];
+      if (!keptOther) return ['FAILED', 'the BYSTANDER FAQ was deleted too'];
+      return ['DROVE', `${mine} deleted, ${neighbour} untouched`];
+    },
+  },
+
+  {
+    id: 'admin/promotions/announcements/delete',
+    panel: 'admin-panel',
+    what: 'Delete an announcement',
+    async run(page, cfg, base) {
+      const mine = rid('DriveAnn');
+      const neighbour = rid('KeepAnn');
+      for (const t of [mine, neighbour]) {
+        await pgQuery(
+          `INSERT INTO announcements (announcement_id, title, body, kind, priority, is_active)
+           VALUES ($1, $1, 'seeded by the mutating pass', 'INFO', 1, TRUE)`, [t],
+        );
+      }
+
+      await go(page, cfg, base, '/promotions/announcements');
+      const button = page
+        .getByRole('button', { name: new RegExp(`Delete announcement "${mine}"`, 'i') }).first();
+      if (await button.count() === 0) return ['NOT DRIVEN', `no delete control for announcement ${mine}`];
+
+      page.__bbAccept = true;
+      try {
+        await button.click();
+        await settle(page, 6000);
+        await confirmWith(page, 'Delete');
+      } finally { page.__bbAccept = false; }
+
+      const count = async (id) => Number(
+        (await pgQuery('SELECT count(*)::int AS n FROM announcements WHERE announcement_id = $1', [id])).rows[0].n);
+      const goneTarget = (await count(mine)) === 0;
+      const keptOther = (await count(neighbour)) === 1;
+      await pgQuery('DELETE FROM announcements WHERE announcement_id = ANY($1::text[])', [[mine, neighbour]]);
+
+      if (!goneTarget) return ['FAILED', `announcement ${mine} is still listed`];
+      if (!keptOther) return ['FAILED', 'the BYSTANDER announcement was deleted too'];
+      return ['DROVE', `${mine} deleted, ${neighbour} untouched`];
+    },
+  },
+
+  // ── An app asset: a SLOT, so deleting it is a reset, and it goes back ────
+  {
+    id: 'admin/app-assets/delete',
+    panel: 'admin-panel',
+    what: 'Clear an uploaded app asset',
+    async run(page, cfg, base) {
+      // `app_assets` is keyed by SLOT, not by an id this pass can invent, so
+      // there is no "its own row" to make here — the row IS the platform's.
+      // The case therefore takes the whole row first and puts it back in a
+      // `finally`, which is the same rule a platform-wide Save obeys.
+      const slot = 'logo.png';
+      const before = (await pgQuery('SELECT * FROM app_assets WHERE slot = $1', [slot])).rows[0] ?? null;
+      const seeded = !before;
+      if (seeded) {
+        await pgQuery(
+          `INSERT INTO app_assets (slot, url, storage, content_type)
+           VALUES ($1, 'https://cdn.invalid/drive-logo.png', 'EXTERNAL', 'image/png')`, [slot],
+        );
+      }
+      try {
+        await go(page, cfg, base, '/app-assets');
+        const button = page.getByRole('button', { name: new RegExp(`Delete the ${slot} asset`, 'i') }).first();
+        if (await button.count() === 0) return ['NOT DRIVEN', `no "Delete the ${slot} asset" control`];
+
+        page.__bbAccept = true;
+        try {
+          await button.click();
+          await settle(page, 6000);
+          await confirmWith(page, 'Delete');
+        } finally { page.__bbAccept = false; }
+
+        const still = (await pgQuery('SELECT count(*)::int AS n FROM app_assets WHERE slot = $1', [slot])).rows[0].n;
+        if (Number(still) !== 0) return ['FAILED', `pressed Delete; the ${slot} slot still holds a row`];
+        return ['DROVE', `the ${slot} slot was cleared, and is restored`];
+      } finally {
+        if (before) {
+          await pgQuery(
+            `INSERT INTO app_assets (slot, url, storage, file_key, file_size, content_type, updated_by)
+             VALUES ($1,$2,$3,$4,$5,$6,$7)
+             ON CONFLICT (slot) DO UPDATE SET url = EXCLUDED.url, storage = EXCLUDED.storage,
+               file_key = EXCLUDED.file_key, file_size = EXCLUDED.file_size,
+               content_type = EXCLUDED.content_type`,
+            [before.slot, before.url, before.storage, before.file_key,
+             before.file_size, before.content_type, before.updated_by],
+          ).catch((e) => console.error('   ! could not restore the app asset:', e.message));
+        } else {
+          await pgQuery('DELETE FROM app_assets WHERE slot = $1', [slot]).catch(() => {});
+        }
+      }
+    },
+  },
+
+  // ── What the bot SAYS: a per-template Save, restored to the default ──────
+  {
+    id: 'admin/telegram/save-template',
+    panel: 'admin-panel',
+    what: "Save one of the bot's message templates",
+    async run(page, cfg, base) {
+      await go(page, cfg, base, '/telegram');
+      const box = page.locator('textarea[aria-label^="Message the bot sends for"]').first();
+      if (await box.count() === 0) return ['NOT DRIVEN', 'no template editor on /telegram'];
+
+      const key = (await box.getAttribute('aria-label') ?? '').replace(/^Message the bot sends for\s*/i, '').trim();
+      if (!key) return ['NOT DRIVEN', 'the template editor does not say which key it edits'];
+
+      const rows = await pgQuery('SELECT body FROM telegram_templates WHERE key = $1', [key]);
+      const before = rows.rows[0]?.body ?? null;    // null = never customised, i.e. the shipped default
+      const wrote = `drive pass ${rid('tpl')} — this text is restored in a finally`;
+      try {
+        await box.fill(wrote);
+        await settle(page, 1500);
+
+        // The Save is disabled until the draft differs, which is the screen
+        // telling the truth: there is nothing to save. Asserting that first
+        // means a failure here is about the SAVE, not about the fill.
+        const save = page.getByRole('button', { name: /^\s*Sav(e|ing)/i }).first();
+        if (await save.count() === 0) return ['NOT DRIVEN', 'no Save control beside the template'];
+        if (await save.isDisabled()) return ['FAILED', 'the text changed and Save stayed disabled'];
+        await save.click();
+        await settle(page, 8000);
+
+        const after = (await pgQuery('SELECT body FROM telegram_templates WHERE key = $1', [key])).rows[0]?.body ?? null;
+        if (after !== wrote) {
+          return ['FAILED', `pressed Save; telegram_templates.body for '${key}' is ${JSON.stringify(String(after).slice(0, 40))}`];
+        }
+        return ['DROVE', `template '${key}' written and restored`];
+      } finally {
+        // §2: a BLANK row means the shipped default, never silence — so the
+        // way back to "not customised" is a blank body, not a deleted row,
+        // unless there was no row to begin with.
+        if (before === null) {
+          await pgQuery('DELETE FROM telegram_templates WHERE key = $1', [key])
+            .catch((e) => console.error('   ! could not remove the template row:', e.message));
+        } else {
+          await pgQuery('UPDATE telegram_templates SET body = $2 WHERE key = $1', [key, before])
+            .catch((e) => console.error('   ! could not restore the template:', e.message));
+        }
+      }
+    },
+  },
+
+  // ── Log out: the one control that ends the pass that presses it ─────────
+  // `ownContext` is the whole point. Pressing this on the shared page would
+  // sign out every case after it on that panel, which is why the drive
+  // deferred it and why nobody had ever pressed it.
+  {
+    id: 'user/profile/logout',
+    panel: 'user-panel',
+    ownContext: true,
+    what: 'Log out of the player panel',
+    async run(page, cfg, base) {
+      await go(page, cfg, base, '/profile');
+      const button = page.getByRole('button', { name: /^\s*Log ?out\s*$/i }).first();
+      if (await button.count() === 0) return ['NOT DRIVEN', 'no Log out control on /profile'];
+
+      page.__bbAccept = true;
+      try {
+        await button.click();
+        await settle(page, 6000);
+      } finally { page.__bbAccept = false; }
+
+      // The ONLY assertion that matters is that the credential is gone from
+      // the browser. A screen that navigates to the sign-in page while the
+      // token is still in localStorage is a logout that logs nobody out — the
+      // next tab restores the session.
+      const token = await page.evaluate((k) => {
+        try { return localStorage.getItem(k); } catch { return 'UNREADABLE'; }
+      }, cfg.key);
+      if (token) return ['FAILED', `pressed Log out; ${cfg.key} still holds a token`];
+
+      const said = await words(page);
+      if (!/sign in|log ?in|welcome|get started|create account/i.test(said)) {
+        return ['FAILED', 'the token was cleared; the screen never showed a way back in'];
+      }
+      return ['DROVE', `${cfg.key} cleared and the panel offered a way back in`];
+    },
+  },
+
+  {
+    id: 'merchant/profile/logout',
+    panel: 'merchant-panel',
+    ownContext: true,
+    what: 'Log out of the merchant panel',
+    async run(page, cfg, base) {
+      await go(page, cfg, base, '/profile');
+      const button = page.getByRole('button', { name: /^\s*Log ?out\s*$/i }).first();
+      if (await button.count() === 0) return ['NOT DRIVEN', 'no Log out control on /profile'];
+
+      page.__bbAccept = true;
+      try {
+        await button.click();
+        await settle(page, 6000);
+      } finally { page.__bbAccept = false; }
+
+      const token = await page.evaluate((k) => {
+        try { return localStorage.getItem(k); } catch { return 'UNREADABLE'; }
+      }, cfg.key);
+      if (token) return ['FAILED', `pressed Log out; ${cfg.key} still holds a token`];
+
+      // A merchant panel caches its PROFILE beside the token, and a logout
+      // that leaves that behind leaves the next visitor a name and a mobile
+      // number belonging to somebody else on a shared machine.
+      const profile = cfg.cacheKey
+        ? await page.evaluate((k) => { try { return localStorage.getItem(k); } catch { return null; } }, cfg.cacheKey)
+        : null;
+      if (profile) return ['FAILED', `the token went; the cached profile in ${cfg.cacheKey} did NOT`];
+
+      return ['DROVE', `${cfg.key} cleared, cached profile cleared`];
+    },
+  },
+
+  // ── A file PICKER can be driven; Playwright sets the files directly ──────
+  {
+    id: 'admin/kyc/bulk/choose-csv',
+    panel: 'admin-panel',
+    what: 'Choose a CSV on the bulk KYC screen',
+    async run(page, cfg, base) {
+      await go(page, cfg, base, '/kyc/bulk');
+      const input = page.locator('input[type="file"]').first();
+      if (await input.count() === 0) return ['NOT DRIVEN', 'no file input on /kyc/bulk'];
+
+      // A REAL shape, not an empty file: the screen's job is to parse it and
+      // say what it found, and an empty upload cannot tell "parsed nothing"
+      // from "never parsed".
+      const before = await words(page);
+      await input.setInputFiles({
+        name: 'drive-bulk-kyc.csv',
+        mimeType: 'text/csv',
+        buffer: Buffer.from('mobile,aadhaar\n9876500001,111122223333\n9876500002,444455556666\n'),
+      });
+      await settle(page, 6000);
+      const after = await words(page);
+
+      if (after === before) {
+        return ['FAILED', 'a CSV was chosen and the screen said nothing — no count, no preview, no error'];
+      }
+      return ['DROVE', 'a 2-row CSV was accepted and the screen responded to it'];
+    },
+  },
+
+  // ── A DOWNLOAD can be driven too; the browser hands it over ──────────────
+  {
+    id: 'merchant/history/export-csv',
+    panel: 'merchant-panel',
+    what: 'Export the merchant history as CSV',
+    async run(page, cfg, base) {
+      await go(page, cfg, base, '/history');
+      const button = page.getByRole('button', { name: /^\s*Export CSV\s*$/i }).first();
+      if (await button.count() === 0) return ['NOT DRIVEN', 'no Export CSV control on /history'];
+
+      // The drive defers a download because it cannot hand the file back.
+      // Playwright can: `waitForEvent('download')` gives the real file, so the
+      // assertion is about the CONTENT, not about whether a click happened.
+      const [download] = await Promise.all([
+        page.waitForEvent('download', { timeout: 15000 }).catch(() => null),
+        button.click(),
+      ]);
+      if (!download) return ['FAILED', 'pressed Export CSV and the browser was offered no file'];
+
+      const path = await download.path();
+      const body = path ? await import('node:fs').then((fs) => fs.promises.readFile(path, 'utf8')) : '';
+      if (!body.trim()) return ['FAILED', `downloaded ${download.suggestedFilename()} and it is EMPTY`];
+
+      const firstLine = body.split(/\r?\n/)[0];
+      if (!/,/.test(firstLine)) {
+        return ['FAILED', `the file has no comma-separated header row: "${firstLine.slice(0, 80)}"`];
+      }
+      return ['DROVE', `${download.suggestedFilename()}, ${body.split(/\r?\n/).filter(Boolean).length} line(s), header "${firstLine.slice(0, 60)}"`];
+    },
+  },
+
   // ── A platform-wide document: snapshot, press, assert, put back ───────────
   {
     id: 'admin/settings/save',
@@ -1563,6 +1947,37 @@ async function main() {
   const pages = {};
   const browser = await chromium.launch({ executablePath: EXECUTABLE, args: ['--no-sandbox'] });
 
+  /**
+   * A fresh, signed-in page for one panel.
+   *
+   * ── Why a case may need its own ──────────────────────────────────────────
+   * Every case shares one page per panel, which is right: a browser pass that
+   * re-authenticated per control would spend its whole run booting. But LOG
+   * OUT ends that session, and the drive deferred it for exactly that reason —
+   * "ends the session for every screen after it". A deferral is an admission,
+   * so the harness grows the ability instead: a case marked `ownContext` gets
+   * a context of its own and it is closed afterwards, so what it destroys is
+   * its own session and nobody else's.
+   */
+  const newPanelPage = async (panel) => {
+    const cfg = PANELS[panel];
+    const ctx = await browser.newContext({ viewport: { width: 1400, height: 1000 } });
+    await ctx.addInitScript(([k, v, ck, cv]) => {
+      try {
+        localStorage.setItem(k, v);
+        if (ck) localStorage.setItem(ck, cv);
+      } catch { /* private mode */ }
+    }, [cfg.key, cfg.wrap(tokens[panel], cached[panel]), cfg.cacheKey ?? '',
+        cfg.cacheKey && cached[panel] ? JSON.stringify(cached[panel]) : '']);
+    const page = await ctx.newPage();
+    page.on('dialog', (d) => {
+      const want = page.__bbAccept;
+      if (want === undefined || want === false) return void d.dismiss().catch(() => {});
+      return void d.accept(typeof want === 'string' ? want : undefined).catch(() => {});
+    });
+    return { ctx, page, cfg, base: `http://127.0.0.1:${cfg.port}` };
+  };
+
   for (const panel of panels) {
     const cfg = PANELS[panel];
     children.push(startVite(panel, cfg.port));
@@ -1610,12 +2025,16 @@ async function main() {
   console.log(`\nDriving ${cases.length} mutating control(s) against their own rows.\n`);
 
   for (const c of cases) {
-    const { page, cfg, base } = pages[c.panel];
+    // A case that ENDS a session gets its own, so the damage is its own.
+    const own = c.ownContext ? await newPanelPage(c.panel) : null;
+    const { page, cfg, base } = own ?? pages[c.panel];
     try {
       const [verdict, detail] = await c.run(page, cfg, base);
       record(c.id, verdict, detail);
     } catch (err) {
       record(c.id, 'FAILED', `threw: ${err.message.split('\n')[0].slice(0, 140)}`);
+    } finally {
+      if (own) await own.ctx.close().catch(() => {});
     }
   }
 
