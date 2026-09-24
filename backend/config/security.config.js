@@ -102,10 +102,60 @@ export const CORS_SHAPE = {
   optionsSuccessStatus: 200,
 };
 
+/**
+ * TEMPORARY, AND OFF UNLESS ASKED FOR — see CLAUDE.md §34.
+ *
+ * A whole-stack browser pass presses ~1,300 controls across 67 screens. The
+ * global backstop is 1,000 requests per 15 minutes, so the pass spends most of
+ * its wall-clock WAITING for the window to roll over rather than pressing
+ * anything — measured in hours, not minutes, for one panel.
+ *
+ * `BB_RATE_LIMIT_RELAX` multiplies every tier's `max`. It is a development
+ * convenience for exactly that, and three things keep it from being a way to
+ * ship a weaker platform:
+ *
+ *   1. It defaults to 1, so nothing changes for anyone who does not set it.
+ *   2. It is REFUSED IN PRODUCTION — set it with `NODE_ENV=production` and the
+ *      server does not boot. A knob that silently weakens a live deployment is
+ *      exactly the thing §19 says must not be possible, so this one cannot be
+ *      turned in a place where it would matter.
+ *   3. It says so at boot, in one line nobody can miss, because §33.7's
+ *      bootstrap exemption already taught this codebase that an exemption
+ *      nobody can see is a hole nobody removes.
+ *
+ * WINDOWS ARE UNTOUCHED. Only the counts move — the shape of every limiter,
+ * and therefore what each one is FOR, is unchanged.
+ */
+const RELAX = (() => {
+  const raw = process.env.BB_RATE_LIMIT_RELAX;
+  if (!raw) return 1;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 1) {
+    throw new Error(`BB_RATE_LIMIT_RELAX must be a number >= 1; got ${JSON.stringify(raw)}`);
+  }
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error(
+      'BB_RATE_LIMIT_RELAX is a development convenience and is refused in production. '
+      + 'Unset it, or do not run this build as production.',
+    );
+  }
+  if (n !== 1) {
+    console.warn(
+      `\n!! RATE LIMITS RELAXED ${n}x — BB_RATE_LIMIT_RELAX is set. This is a development\n`
+      + '   convenience for browser passes (CLAUDE.md §34). Windows are unchanged; only the\n'
+      + '   counts are multiplied. This server is NOT enforcing production limits.\n',
+    );
+  }
+  return n;
+})();
+
+/** Apply the relaxation to one tier. Windows never move; only `max`. */
+const tier = (windowMs, max) => ({ windowMs, max: max * RELAX });
+
 // ── Rate-limit tiers (values unchanged from middleware/security.js + server.js)
 export const RATE_LIMIT_TIERS = {
   // Global backstop on /api/* (server.js)
-  global:     { windowMs: 15 * 60 * 1000, max: 1000 },
+  global: tier(15 * 60 * 1000, 1000),
   // ── Login tiers ───────────────────────────────────────────────────────────
   // IMPORTANT: every login limiter sets `skipSuccessfulRequests: true`, so
   // these count FAILED attempts only. "4 per 30 minutes" does not stop someone
@@ -114,13 +164,13 @@ export const RATE_LIMIT_TIERS = {
   // doing nothing extra against a brute-forcer (who is only ever failing).
   //
   // Player login — 4 failures / 30 min (2026-07-28, owner-set).
-  auth:       { windowMs: 30 * 60 * 1000, max: 4 },
+  auth: tier(30 * 60 * 1000, 4),
   // Admin and sub-admin login — 4 failures / hour. Privileged accounts move
   // money and, per §F, are the highest-value credential on the platform.
-  adminAuth:  { windowMs: 60 * 60 * 1000, max: 4 },
+  adminAuth: tier(60 * 60 * 1000, 4),
   // Merchant login — 4 failures / hour. Same tier as admin: a merchant account
   // settles real INR and USDT, so it is not a player-grade credential.
-  merchantAuth: { windowMs: 60 * 60 * 1000, max: 4 },
+  merchantAuth: tier(60 * 60 * 1000, 4),
   // ── PACING, not lockout (owner directive 2026-09-08) ─────────────────────
   // One credential submission per 10 seconds, per actor. This is a DIFFERENT
   // control from the failure budgets below and sits alongside them, because the
@@ -138,7 +188,7 @@ export const RATE_LIMIT_TIERS = {
   // sweep takes over three months, and each code is only valid for 30 seconds
   // anyway, so the pace alone makes the guess uneconomic before the budget is
   // even consulted.
-  loginPace:  { windowMs: 10 * 1000, max: 1 },
+  loginPace: tier(10 * 1000, 1),
   // ── SIGNUP is not a credential attempt, and must not be paced like one ────
   // A registration submits no secret. Nobody learns anything by sending the
   // form, so there is nothing to guess and nothing to slow down — what has to
@@ -156,15 +206,15 @@ export const RATE_LIMIT_TIERS = {
   // form as many times as you like, but ten accounts per address per hour is
   // the ceiling. The real anti-automation control on this route is the captcha,
   // which prices the attempt itself; this bounds the damage if it is beaten.
-  signup:     { windowMs: 60 * 60 * 1000, max: 10 },
+  signup: tier(60 * 60 * 1000, 10),
   // Second-factor submission, once the password is already correct. Separate
   // and tighter than the password tier: at this point an attacker is guessing
   // a 6-digit code, where 10 tries is 1-in-100,000 rather than 1-in-a-million.
-  twoFactor:  { windowMs: 15 * 60 * 1000, max: 5 },
+  twoFactor: tier(15 * 60 * 1000, 5),
   // Bet placement bursts
-  bet:        { windowMs: 1 * 60 * 1000,  max: 30 },
+  bet: tier(1 * 60 * 1000, 30),
   // Withdrawal creation
-  withdrawal: { windowMs: 60 * 60 * 1000, max: 5 },
+  withdrawal: tier(60 * 60 * 1000, 5),
   // Account recovery / Aadhaar lookup. These endpoints take a national ID and
   // are the one place the platform can be asked "does THIS person have an
   // account here?" — on a gambling site that answer is sensitive on its own,
@@ -194,23 +244,23 @@ export const RATE_LIMIT_TIERS = {
   // skips refusals, so a size that is not a denomination, a missing chain, or a
   // `USDT_RATE_UNSET` outage costs the player nothing. Raise this number if
   // that ever stops being true.
-  usdtDeposit: { windowMs: 60 * 60 * 1000, max: 5 },
+  usdtDeposit: tier(60 * 60 * 1000, 5),
   // A retry creates a NEW order, and on a sell it locks tokens in escrow. The
   // database refuses a second retry of the same order, so this bounds the rate
   // across DIFFERENT orders.
-  orderRetry:  { windowMs: 60 * 60 * 1000, max: 10 },
+  orderRetry: tier(60 * 60 * 1000, 10),
   // The grace claim extends an order's own deadline. It is once per order by
   // construction (`utr_grace_at IS NULL`), so this bounds how fast a caller can
   // sweep across orders looking for one that has not claimed it.
-  utrGrace:    { windowMs: 60 * 60 * 1000, max: 30 },
+  utrGrace: tier(60 * 60 * 1000, 30),
   // A merchant supplying cash links. One LIVE link per merchant is enforced by
   // a unique index; this stops a loop churning supply and demand broadcasts.
-  cashLinkSupply: { windowMs: 60 * 60 * 1000, max: 60 },
+  cashLinkSupply: tier(60 * 60 * 1000, 60),
   // A CDM receipt carries an uploaded image reference and is read only by an
   // admin. One per order, so this bounds the sweep.
-  cdmReceipt:  { windowMs: 60 * 60 * 1000, max: 30 },
+  cdmReceipt: tier(60 * 60 * 1000, 30),
   // General API tier used by security.js's apiLimiter
-  api:        { windowMs: 1 * 60 * 1000,  max: 100 },
+  api: tier(1 * 60 * 1000, 100),
 };
 
 // ── Global-limiter exemption for phantom (ghost) bet placement ──────────────

@@ -31,6 +31,7 @@ listed below, which hold **data and history, never rules**.
 | **What every change must REPORT, as a table, before it is done** | **§31 — the completeness contract** |
 | **The twenty-five shapes that keep shipping here, each with the question that finds it** | **§32 — ask these of the change in front of you** |
 | **How a player signs up, signs in, and is verified** | **§33 — the form, the bot fleet, the gate, and which limiter guards what** |
+| **A TEMPORARY switch that is in the tree right now, and when it must be deleted** | **§34 — `BB_RATE_LIMIT_RELAX`** |
 
 ---
 
@@ -1679,6 +1680,56 @@ placed ABOVE the config read reversed the order of two questions, so every
 unlinked player on an unconfigured platform was refused "link your Telegram
 account" — an instruction naming a bot that does not exist. **56 pg failures,
 every deposit and withdrawal route among them.** §32 S34.
+
+---
+
+## 34. TEMPORARY — `BB_RATE_LIMIT_RELAX`, and the date it must be gone
+
+**Added 2026-09-24 at the owner's request. This section is a countdown, not a
+feature.** It is here because §14 says no committed artifact may describe a
+pending state without saying so, and because the one thing that makes a
+temporary switch permanent is nobody writing down that it was temporary.
+
+**What it is.** `BB_RATE_LIMIT_RELAX=<n>` multiplies every `RATE_LIMIT_TIERS`
+count by `n`. **Windows are untouched** — only the counts move, so the SHAPE of
+every limiter, and therefore what each one is for, is unchanged.
+
+**Why it exists.** A whole-stack browser pass presses ~1,300 controls across 67
+screens. The global backstop is 1,000 requests per 15 minutes, so `awaitBudget`
+spends most of the pass's wall-clock waiting for the window to roll over rather
+than pressing anything — hours per panel, measured. The limiter is right and
+production behaviour must not be weakened to make a test pass (§29); what this
+does instead is let the DEVELOPMENT server answer a development pass.
+
+**Three things keep it from becoming a way to ship a weaker platform**, and all
+three are verified, not asserted:
+
+| | proven by running it |
+|---|---|
+| Defaults to 1 | with no env var: `global {max: 1000}`, `auth {max: 4}`, `loginPace {max: 1}` — the committed numbers |
+| **Refused in production** | `NODE_ENV=production BB_RATE_LIMIT_RELAX=200` → the server does not boot: *"a development convenience and is refused in production"* |
+| Refuses nonsense | `BB_RATE_LIMIT_RELAX=nope` → *"must be a number >= 1"* |
+
+It also prints a three-line warning at boot naming this section, for §33.7's
+reason: an exemption nobody can see is a hole nobody removes.
+
+**How it must be used.** Set it in the ENVIRONMENT of a development server
+only — never in a committed env file, a Dockerfile, a CI job or a deploy
+manifest. If you find it in one of those, that is the defect this section
+exists to catch.
+
+**When it goes.** This section and the `RELAX` block in
+`backend/config/security.config.js` are DELETED — together, in one commit —
+when the browser-pass work that needed it is finished. Until then this is the
+state of the platform and the next session is told so by reading this. The
+removal is not optional and it is not a backlog item: §0.0 says this platform
+takes no money yet, and §29 says it may not claim readiness while a switch like
+this is in the tree.
+
+**What it does NOT do**, so nobody looks for a second meaning: it does not
+touch a single limiter's window, its key, its mount, or `skipSuccessfulRequests`
+— so §32 S13, S27 and S28, which are all about WHAT a limiter counts and WHERE
+it sits, are untouched by it and stay exactly as they were.
 
 ---
 
