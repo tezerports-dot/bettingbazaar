@@ -25,85 +25,85 @@ would put the denominator in the thousands and bury the real work.
 
 ### user-panel
 
-| screen | controls | exercised | inert | by choice | not reached | verdict |
-|---|---|---|---|---|---|---|
-| / | 17 | 16 | 1 | 0 | 1 | partial 0h ago |
-| /casino | 17 | 17 | 0 | 0 | 0 | all pressed 0h ago |
-| /crash | 9 | 3 | 0 | 5 | 1 | partial 0h ago |
-| /faq | 9 | 8 | 1 | 0 | 1 | partial 0h ago |
-| /history | 7 | 6 | 0 | 0 | 1 | partial 0h ago |
-| /leaderboard | 9 | 8 | 1 | 0 | 1 | partial 0h ago |
-| /my-bets | 6 | 5 | 1 | 0 | 1 | partial 0h ago |
-| /profile | 9 | 6 | 1 | 2 | 1 | partial 0h ago |
-| /promo | 4 | 3 | 0 | 0 | 1 | partial 0h ago |
-| /referrals | 4 | 3 | 0 | 0 | 1 | partial 0h ago |
-| /results | 5 | 4 | 0 | 0 | 1 | partial 0h ago |
-| /rules | 4 | 3 | 0 | 0 | 1 | partial 0h ago |
-| /sports | 19 | 5 | 1 | 13 | 1 | partial 0h ago |
-| /support | 6 | 5 | 0 | 0 | 1 | partial 0h ago |
-| /wallet | 11 | 9 | 2 | 1 | 1 | partial 0h ago |
-| /winners | 6 | 5 | 1 | 0 | 1 | partial 0h ago |
+| screen | controls | moved | answered | said | no-op | inert | disabled | elsewhere | asked | NOT reached | note |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| / | 17 | 15 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 2 | partial 5h ago |
+| /casino | 17 | 17 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 5h ago |
+| /crash | 9 | 2 | 0 | 0 | 1 | 0 | 0 | 0 | 5 | 1 | partial 5h ago |
+| /faq | 9 | 7 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 1 | partial 5h ago |
+| /history | 7 | 6 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | partial 5h ago |
+| /leaderboard | 9 | 7 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 1 | partial 5h ago |
+| /my-bets | 6 | 4 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 1 | partial 5h ago |
+| /profile | 9 | 5 | 0 | 0 | 0 | 1 | 0 | 2 | 0 | 1 | partial 5h ago |
+| /promo | 4 | 3 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | partial 5h ago |
+| /referrals | 4 | 3 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | partial 5h ago |
+| /results | 5 | 4 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | partial 5h ago |
+| /rules | 4 | 3 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | partial 5h ago |
+| /sports | 19 | 3 | 0 | 0 | 1 | 1 | 0 | 0 | 13 | 1 | partial 5h ago |
+| /support | 6 | 5 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | partial 5h ago |
+| /wallet | 11 | 7 | 0 | 0 | 0 | 2 | 1 | 0 | 0 | 1 | partial 5h ago |
+| /winners | 6 | 4 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 1 | partial 5h ago |
 
 ### admin-panel
 
-| screen | controls | exercised | inert | by choice | not reached | verdict |
-|---|---|---|---|---|---|---|
-| / | 9 | 9 | 0 | 0 | 0 | all pressed 0h ago |
-| /app-assets | 5 | 1 | 0 | 4 | 0 | all pressed 0h ago |
-| /audit-logs | 3 | 3 | 2 | 0 | 0 | all pressed 0h ago |
-| /branding | 27 | 25 | 7 | 2 | 0 | all pressed 0h ago |
-| /business-policy/deposit | 3 | 3 | 0 | 0 | 0 | all pressed 0h ago |
-| /business-policy/settlement-rail | 11 | 10 | 0 | 1 | 0 | all pressed 0h ago |
-| /chat-management | 1 | 1 | 0 | 0 | 0 | all pressed 0h ago |
-| /content/cdn | 10 | 10 | 0 | 0 | 0 | all pressed 0h ago |
-| /content/faq | 5 | 3 | 0 | 2 | 0 | all pressed 0h ago |
-| /content/slides | 4 | 4 | 1 | 0 | 0 | all pressed 0h ago |
-| /content/support | 13 | 12 | 0 | 1 | 0 | all pressed 0h ago |
-| /cycle-history | 59 | 11 | 2 | 48 | 0 | all pressed 0h ago |
-| /disputes | 2 | 2 | 0 | 0 | 0 | all pressed 0h ago |
-| /disputes/cdm-receipts | 4 | 3 | 0 | 1 | 0 | all pressed 0h ago |
-| /disputes/stalled-withdrawals | 2 | 2 | 0 | 0 | 0 | all pressed 0h ago |
-| /error-logs | 1 | 1 | 0 | 0 | 0 | all pressed 0h ago |
-| /game-providers | 21 | 15 | 0 | 6 | 0 | all pressed 0h ago |
-| /games | 47 | 25 | 0 | 22 | 0 | all pressed 0h ago |
-| /kyc | 52 | 57 | 0 | 2 | 0 | all pressed, +7 only a press reveals 0h ago |
-| /kyc/bulk | 2 | 0 | 0 | 2 | 0 | all pressed 0h ago |
-| /live-cycles | 4 | 10 | 0 | 0 | 0 | all pressed, +6 only a press reveals 0h ago |
-| /login | 6 | 6 | 1 | 0 | 0 | all pressed 0h ago |
-| /merchant-platform | 28 | 21 | 0 | 7 | 0 | all pressed 0h ago |
-| /merchant-token-orders | 2 | 2 | 0 | 0 | 0 | all pressed 0h ago |
-| /merchants | 211 | 17 | 0 | 196 | 0 | all pressed, +2 only a press reveals 0h ago |
-| /operations | 5 | 5 | 0 | 0 | 0 | all pressed 0h ago |
-| /payment-control | 19 | 13 | 1 | 6 | 0 | all pressed 0h ago |
-| /profit-loss | 6 | 6 | 0 | 0 | 0 | all pressed 0h ago |
-| /promotions/announcements | 6 | 4 | 0 | 2 | 0 | all pressed 0h ago |
-| /queue-manager | 8 | 8 | 1 | 0 | 0 | all pressed 0h ago |
-| /referrals | 2 | 1 | 0 | 1 | 0 | all pressed 0h ago |
-| /reports | 7 | 7 | 1 | 0 | 0 | all pressed 0h ago |
-| /revenue | 7 | 4 | 0 | 3 | 0 | all pressed 0h ago |
-| /settings | 77 | 76 | 3 | 1 | 0 | all pressed 0h ago |
-| /sub-admins | 3 | 2 | 0 | 1 | 0 | all pressed 0h ago |
-| /support-assistant | 7 | 5 | 0 | 2 | 0 | all pressed 0h ago |
-| /telegram | 40 | 30 | 0 | 10 | 0 | all pressed 0h ago |
-| /token-flow | 4 | 3 | 2 | 1 | 0 | all pressed 0h ago |
-| /transactions | 7 | 7 | 2 | 0 | 0 | all pressed 0h ago |
-| /users | 358 | 22 | 0 | 336 | 0 | all pressed 0h ago |
-| /users/balance-adjust | 8 | 6 | 0 | 2 | 0 | all pressed 0h ago |
-| /users/flagged | 1 | 1 | 0 | 0 | 0 | all pressed 0h ago |
-| /users/phantom-agents | 1 | 1 | 0 | 0 | 0 | all pressed 0h ago |
-| /winners-manager | 2 | 2 | 0 | 0 | 0 | all pressed 0h ago |
+| screen | controls | moved | answered | said | no-op | inert | disabled | elsewhere | asked | NOT reached | note |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| / | 9 | 9 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 5h ago |
+| /app-assets | 5 | 0 | 1 | 0 | 0 | 0 | 0 | 4 | 0 | 0 | all pressed 5h ago |
+| /audit-logs | 3 | 1 | 0 | 0 | 0 | 2 | 0 | 0 | 0 | 0 | all pressed 5h ago |
+| /branding | 27 | 17 | 1 | 0 | 0 | 7 | 0 | 2 | 0 | 0 | all pressed 5h ago |
+| /business-policy/deposit | 3 | 2 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | all pressed 5h ago |
+| /business-policy/settlement-rail | 11 | 8 | 2 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | all pressed 5h ago |
+| /chat-management | 1 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | all pressed 5h ago |
+| /content/cdn | 10 | 9 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | all pressed 5h ago |
+| /content/faq | 5 | 3 | 0 | 0 | 0 | 0 | 0 | 2 | 0 | 0 | all pressed 5h ago |
+| /content/slides | 4 | 2 | 1 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | all pressed 5h ago |
+| /content/support | 13 | 12 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | all pressed 5h ago |
+| /cycle-history | 59 | 8 | 0 | 0 | 1 | 2 | 1 | 47 | 0 | 0 | all pressed 5h ago |
+| /disputes | 2 | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 5h ago |
+| /disputes/cdm-receipts | 4 | 2 | 1 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | all pressed 5h ago |
+| /disputes/stalled-withdrawals | 2 | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 5h ago |
+| /error-logs | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 5h ago |
+| /game-providers | 21 | 14 | 1 | 0 | 0 | 0 | 0 | 6 | 0 | 0 | all pressed 5h ago |
+| /games | 47 | 24 | 0 | 0 | 1 | 0 | 0 | 22 | 0 | 0 | all pressed 5h ago |
+| /kyc | 52 | 56 | 0 | 0 | 1 | 0 | 0 | 2 | 0 | 0 | +7 only a press reveals 5h ago |
+| /kyc/bulk | 2 | 0 | 0 | 0 | 0 | 0 | 1 | 1 | 0 | 0 | all pressed 5h ago |
+| /live-cycles | 4 | 10 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | +6 only a press reveals 5h ago |
+| /login | 6 | 5 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | all pressed 5h ago |
+| /merchant-platform | 28 | 20 | 1 | 0 | 0 | 0 | 0 | 7 | 0 | 0 | all pressed 5h ago |
+| /merchant-token-orders | 2 | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 5h ago |
+| /merchants | 211 | 15 | 1 | 0 | 1 | 0 | 1 | 195 | 0 | 0 | +2 only a press reveals 5h ago |
+| /operations | 5 | 3 | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | all pressed 5h ago |
+| /payment-control | 19 | 10 | 2 | 0 | 0 | 1 | 1 | 5 | 0 | 0 | all pressed 5h ago |
+| /profit-loss | 6 | 6 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 5h ago |
+| /promotions/announcements | 6 | 3 | 1 | 0 | 0 | 0 | 0 | 2 | 0 | 0 | all pressed 5h ago |
+| /queue-manager | 8 | 5 | 1 | 0 | 1 | 1 | 0 | 0 | 0 | 0 | all pressed 5h ago |
+| /referrals | 2 | 1 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | all pressed 5h ago |
+| /reports | 7 | 2 | 3 | 0 | 1 | 1 | 0 | 0 | 0 | 0 | all pressed 5h ago |
+| /revenue | 7 | 3 | 1 | 0 | 0 | 0 | 2 | 1 | 0 | 0 | all pressed 5h ago |
+| /settings | 77 | 73 | 0 | 0 | 0 | 3 | 0 | 1 | 0 | 0 | all pressed 5h ago |
+| /sub-admins | 3 | 2 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | all pressed 5h ago |
+| /support-assistant | 7 | 4 | 1 | 0 | 0 | 0 | 1 | 0 | 1 | 0 | all pressed 5h ago |
+| /telegram | 40 | 27 | 3 | 0 | 0 | 0 | 2 | 8 | 0 | 0 | all pressed 5h ago |
+| /token-flow | 4 | 1 | 0 | 0 | 0 | 2 | 0 | 1 | 0 | 0 | all pressed 5h ago |
+| /transactions | 7 | 4 | 0 | 0 | 1 | 2 | 0 | 0 | 0 | 0 | all pressed 5h ago |
+| /users | 358 | 21 | 0 | 0 | 1 | 0 | 1 | 335 | 0 | 0 | all pressed 5h ago |
+| /users/balance-adjust | 8 | 5 | 1 | 0 | 0 | 0 | 0 | 2 | 0 | 0 | all pressed 5h ago |
+| /users/flagged | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 5h ago |
+| /users/phantom-agents | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 5h ago |
+| /winners-manager | 2 | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 5h ago |
 
 ### merchant-panel
 
-| screen | controls | exercised | inert | by choice | not reached | verdict |
-|---|---|---|---|---|---|---|
-| / | 3 | 3 | 0 | 0 | 0 | all pressed 0h ago |
-| /cash-links | 3 | 2 | 0 | 1 | 0 | all pressed 0h ago |
-| /dashboard | 3 | 3 | 0 | 0 | 0 | all pressed 0h ago |
-| /history | 4 | 3 | 0 | 1 | 0 | all pressed 0h ago |
-| /orders | 9 | 9 | 0 | 0 | 0 | all pressed 0h ago |
-| /profile | 9 | 7 | 0 | 2 | 0 | all pressed 0h ago |
-| /token-supply | 3 | 2 | 0 | 1 | 0 | all pressed 0h ago |
+| screen | controls | moved | answered | said | no-op | inert | disabled | elsewhere | asked | NOT reached | note |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| / | 3 | 2 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 5h ago |
+| /cash-links | 3 | 1 | 1 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | all pressed 5h ago |
+| /dashboard | 3 | 2 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 5h ago |
+| /history | 4 | 2 | 0 | 0 | 1 | 0 | 0 | 1 | 0 | 0 | all pressed 5h ago |
+| /orders | 9 | 7 | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | all pressed 5h ago |
+| /profile | 9 | 7 | 0 | 0 | 0 | 0 | 0 | 2 | 0 | 0 | all pressed 5h ago |
+| /token-supply | 3 | 1 | 1 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | all pressed 5h ago |
 
 ### Every control, by verdict
 
@@ -371,10 +371,24 @@ GONE (1) — vanished before its turn — an earlier press removed it
 
 ------------------------------------------------------------------------
 1276 controls across 67 screens
-    591   46.3%  pressed, and the screen answered
-    685   53.7%  not pressed BY CHOICE (destructive, disabled, or a repeat)
-     15    1.2%  NOT REACHED - this is the number that is left
-      0    0.0%  threw or 5xx'd
-     15          controls only a PRESS reveals — not in the inventory, which is taken at rest
+
+    508   39.8%  SCREEN_MOVED       pressed, and the routed region changed
+     35    2.7%  ANSWERED           pressed; it called a route and the server answered, including a refusal that names what to fix
+      0    0.0%  SAID               pressed; the panel answered with an alert() — informational, and NOT evidence of a mutation
+     16    1.3%  NO_OP_BY_DESIGN    pressed; it was already the selected segment, so no change is the correct outcome
+     32    2.5%  INERT              pressed; changed nothing AND called nothing — §32 S22 candidate, read the list
+     15    1.2%  DISABLED           disabled on arrival — correct state; the enable transition is a SEPARATE test
+    574   45.0%  REPEAT             a repeat of a name already pressed on this screen — covered ONLY IF the first instance is representative
+     77    6.0%  DRIVEN_ELSEWHERE   destructive — driven by `npm run test:mutate` against its own rows; check THAT output, this is a pointer not a proof
+     19    1.5%  ASKED              it asked a confirm/prompt and this pass declines — answered in the mutating pass instead
+     16    1.3%  NOT_REACHED        NOT pressed and not by choice — this is the number that is left
+      0    0.0%  BROKE              threw, or the server answered 5xx with nothing to act on
+     15          revealed           controls only a PRESS reveals — not in the inventory, which is taken at rest
+
+  STATE CHANGES are NOT counted here. This pass reads the SCREEN; it cannot
+  tell a rendered change from a committed one. What proves a mutation is
+  `npm run test:mutate`, which asserts the database and a bystander row —
+  read its output beside this table, never instead of it.
+
 
 manifest 2026-09-24T15:29:10.747Z  ·  drive 2026-09-24T17:30:07.536Z

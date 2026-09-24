@@ -95,14 +95,96 @@ const MEANING = {
   DUPLICATE: 'the same control seen twice in one collection',
   NEEDS_INPUT: 'it asked a confirm/prompt and this pass declined — NOT a dead button',
 };
-/** Verdicts that mean "this control was genuinely exercised". */
-// UPSTREAM belongs here: the control was pressed, it called its route, and the
-// route answered with a refusal the OPERATOR can act on (§2 — `serverError`
-// answers with nothing, so a 5xx that carries a message is a handler that
-// chose to explain itself). That is the control working, not failing.
-const EXERCISED = new Set(['ACTED', 'REFETCHED', 'ALREADY_ON', 'INERT', 'UPSTREAM', 'SAID']);
-/** Verdicts that mean "deliberately not pressed, and that is a decision". */
-const BY_CHOICE = new Set(['DEFERRED', 'DISABLED', 'REPRESENTED', 'DUPLICATE', 'NEEDS_INPUT']);
+/**
+ * ── What KIND of evidence each verdict is ─────────────────────────────────
+ *
+ * These are not five ways of saying "covered". They are five different
+ * claims, and adding them together produces a number that means nothing —
+ * which is the trap this grouping exists to stop. Reclassifying an `alert()`
+ * from NEEDS_INPUT to SAID is a correct reading of what happened; it is NOT
+ * equivalent to proving a state change. A button correctly disabled is
+ * correct behaviour; it is NOT the feature behind it being tested.
+ *
+ * So the report keeps them apart and refuses to publish one headline
+ * percentage. The goal is not 100% of anything. The goal is:
+ *
+ *   every meaningful behaviour has an appropriate test, or a stated reason
+ *   why it cannot or should not have one.
+ *
+ * A category with a large number in it is a question, not an achievement:
+ * REPRESENTED at 574 asks "is the first instance really representative?",
+ * and STATE at 0 on a screen full of actions asks why nothing was asserted.
+ */
+const KIND = {
+  // The strongest evidence this pass can produce on its own: the press moved
+  // the screen. It is still WEAKER than a mutation case, which reads the
+  // database back — `drive.report.json` cannot tell a rendered change from a
+  // committed one, and does not claim to.
+  SCREEN_MOVED: { verdicts: ['ACTED'], says: 'pressed, and the routed region changed' },
+  // It called its route and the answer came back — a working read.
+  ANSWERED: {
+    verdicts: ['REFETCHED', 'UPSTREAM'],
+    says: 'pressed; it called a route and the server answered, including a refusal that names what to fix',
+  },
+  // It told the person something. An outcome, not a state change.
+  SAID: {
+    verdicts: ['SAID'],
+    says: 'pressed; the panel answered with an alert() — informational, and NOT evidence of a mutation',
+  },
+  // Nothing should have happened, and nothing did.
+  NO_OP_BY_DESIGN: {
+    verdicts: ['ALREADY_ON'],
+    says: 'pressed; it was already the selected segment, so no change is the correct outcome',
+  },
+  // Nothing happened and nothing was called. Triage, and the shape worth hunting.
+  INERT: {
+    verdicts: ['INERT'],
+    says: 'pressed; changed nothing AND called nothing — §32 S22 candidate, read the list',
+  },
+  // Correct state. Whether the ENABLE transition is covered is a separate
+  // question, answered by the mutating pass, and a disabled control here is
+  // not a claim that the feature behind it works.
+  DISABLED: {
+    verdicts: ['DISABLED'],
+    says: 'disabled on arrival — correct state; the enable transition is a SEPARATE test',
+  },
+  // ── Two DIFFERENT claims, kept apart ─────────────────────────────────
+  // Both mean "not pressed here", and that is where the similarity ends.
+  //
+  // REPEAT is an ASSUMPTION: the first instance of this name on this screen
+  // stood in for it. That is usually fair (fifty rows, fifty identical
+  // Delete buttons) and it is not free — row 40's button carries row 40's id,
+  // and the assumption is exactly what hides a per-row defect. A large number
+  // here is a question about the assumption, never a coverage figure.
+  REPEAT: {
+    verdicts: ['REPRESENTED', 'DUPLICATE'],
+    says: 'a repeat of a name already pressed on this screen — covered ONLY IF the first instance is representative',
+  },
+  // DRIVEN_ELSEWHERE is a CHECKABLE claim: the mutating pass has a case for
+  // it, and `npm run test:mutate` prints whether that case drove. A deferral
+  // whose case does not exist is not covered, it is unpressed with a reason.
+  DRIVEN_ELSEWHERE: {
+    verdicts: ['DEFERRED'],
+    says: 'destructive — driven by `npm run test:mutate` against its own rows; check THAT output, this is a pointer not a proof',
+  },
+  // Asked a question this pass will not answer blind.
+  ASKED: {
+    verdicts: ['NEEDS_INPUT'],
+    says: 'it asked a confirm/prompt and this pass declines — answered in the mutating pass instead',
+  },
+  // The honest gap.
+  NOT_REACHED: {
+    verdicts: ['GONE', 'UNREACHABLE', 'THROTTLED'],
+    says: 'NOT pressed and not by choice — this is the number that is left',
+  },
+  BROKE: { verdicts: ['THREW', 'FIVE_HUNDRED'], says: 'threw, or the server answered 5xx with nothing to act on' },
+};
+/** verdict → kind, derived so a new verdict cannot be silently uncounted. */
+const KIND_OF = new Map();
+for (const [kind, spec] of Object.entries(KIND)) {
+  for (const v of spec.verdicts) KIND_OF.set(v, kind);
+}
+const UNCLASSIFIED = 'UNCLASSIFIED';
 
 // A separator that cannot occur in a panel name or a route.
 const SEP = '\u0000';
@@ -177,7 +259,10 @@ const grand = { have: 0, exercised: 0, choice: 0, unreached: 0, broke: 0, reveal
 for (const panel of panels) {
   const screens = manifest.screens.filter((s) => s.panel === panel);
   console.log(md ? `\n### ${panel}\n` : `\n${panel}  ${'-'.repeat(Math.max(0, 60 - panel.length))}`);
-  const head = ['screen', 'controls', 'exercised', 'inert', 'by choice', 'not reached', 'verdict'];
+  // One column per KIND of evidence. There is deliberately no "exercised"
+  // column: summing these is the thing this table exists to stop.
+  const head = ['screen', 'controls', 'moved', 'answered', 'said', 'no-op',
+                'inert', 'disabled', 'elsewhere', 'asked', 'NOT reached', 'note'];
   console.log(row(head));
   if (md) console.log(`|${head.map(() => '---').join('|')}|`);
 
@@ -186,15 +271,16 @@ for (const panel of panels) {
     const res = pressedBy.get(`${panel}${SEP}${s.screen}`);
     if (!res) {
       grand.have += have;
-      grand.unreached += have;
-      console.log(row([s.screen, have, 0, 0, 0, have, 'NOT DRIVEN']));
+      grand.NOT_REACHED += have;
+      console.log(row([s.screen, have, 0, 0, 0, 0, 0, 0, 0, 0, have, 'NOT DRIVEN']));
       continue;
     }
-    const by = (f) => res.filter((r) => f(r.verdict)).length;
-    const exercised = by((v) => EXERCISED.has(v));
-    const inert = by((v) => v === 'INERT');
-    const choice = by((v) => BY_CHOICE.has(v));
-    const broke = by((v) => v === 'THREW' || v === 'FIVE_HUNDRED');
+    // Counted BY KIND, never summed. `UNCLASSIFIED` exists so a verdict
+    // nobody added to `KIND` shows up as a hole rather than vanishing.
+    const n = {};
+    for (const k of Object.keys(KIND)) n[k] = 0;
+    n[UNCLASSIFIED] = 0;
+    for (const r of res) n[KIND_OF.get(r.verdict) ?? UNCLASSIFIED] += 1;
 
     // ── When the drive pressed MORE than the inventory found ──────────────
     // `Math.max(0, …)` used to swallow this: a screen printed "15 controls,
@@ -211,16 +297,14 @@ for (const panel of panels) {
     //
     // The first is a defect and the second is worth knowing, and a silent
     // clamp reports neither. So it is counted and named.
-    const accounted = exercised + choice + broke;
+    const accounted = res.length - n.NOT_REACHED;
     const revealed = Math.max(0, accounted - have);
-    const unreached = Math.max(0, have - accounted);
+    const notReached = Math.max(0, have - accounted) + n.NOT_REACHED;
 
     grand.have += have;
-    grand.exercised += exercised;
-    grand.choice += choice;
-    grand.unreached += unreached;
-    grand.broke += broke;
     grand.revealed += revealed;
+    for (const k of Object.keys(n)) grand[k] = (grand[k] ?? 0) + n[k];
+    grand.NOT_REACHED = (grand.NOT_REACHED ?? 0) - n.NOT_REACHED + notReached;
 
     // Results can now come from different runs — a filtered re-run updates one
     // screen and leaves the rest standing — so each row says how old it is.
@@ -228,10 +312,13 @@ for (const panel of panels) {
     const age = when
       ? `${Math.max(0, Math.round((Date.now() - Date.parse(when)) / 3600000))}h ago`
       : 'unstamped';
-    const verdict = broke ? 'BROKE'
-      : revealed > 0 ? `all pressed, +${revealed} only a press reveals`
-      : unreached > 0 ? 'partial' : 'all pressed';
-    console.log(row([s.screen, have, exercised, inert, choice, unreached, `${verdict} ${age}`]));
+    const note = n.BROKE ? 'BROKE'
+      : n[UNCLASSIFIED] ? `${n[UNCLASSIFIED]} UNCLASSIFIED verdict(s)`
+      : revealed > 0 ? `+${revealed} only a press reveals`
+      : notReached > 0 ? 'partial' : 'all pressed';
+    console.log(row([s.screen, have, n.SCREEN_MOVED, n.ANSWERED, n.SAID, n.NO_OP_BY_DESIGN,
+                     n.INERT, n.DISABLED, n.REPEAT + n.DRIVEN_ELSEWHERE, n.ASKED, notReached,
+                     `${note} ${age}`]));
   }
 }
 
@@ -257,11 +344,29 @@ if (process.argv.includes('--controls')) {
 const pct = (n) => (grand.have ? `${((n / grand.have) * 100).toFixed(1)}%` : '-');
 console.log(`\n${'-'.repeat(72)}`);
 console.log(`${grand.have} controls across ${manifest.screens.length} screens`);
-console.log(`  ${String(grand.exercised).padStart(5)}  ${pct(grand.exercised).padStart(6)}  pressed, and the screen answered`);
-console.log(`  ${String(grand.choice).padStart(5)}  ${pct(grand.choice).padStart(6)}  not pressed BY CHOICE (destructive, disabled, or a repeat)`);
-console.log(`  ${String(grand.unreached).padStart(5)}  ${pct(grand.unreached).padStart(6)}  NOT REACHED - this is the number that is left`);
-console.log(`  ${String(grand.broke).padStart(5)}  ${pct(grand.broke).padStart(6)}  threw or 5xx'd`);
-if (grand.revealed) {
-  console.log(`  ${String(grand.revealed).padStart(5)}          controls only a PRESS reveals — not in the inventory, which is taken at rest`);
+console.log('');
+// ── No single "coverage" figure, on purpose ──────────────────────────────
+// Each line below is a DIFFERENT claim. Adding them gives a percentage that
+// answers no question anybody has: an alert() read correctly and a state
+// change asserted against the database are not the same evidence, and a
+// button correctly disabled is not the feature behind it being tested.
+//
+// The question this table is for is not "what is the number" but "does every
+// meaningful behaviour have an appropriate test, or a stated reason why not".
+for (const [kind, spec] of Object.entries(KIND)) {
+  const v = grand[kind] ?? 0;
+  console.log(`  ${String(v).padStart(5)}  ${pct(v).padStart(6)}  ${kind.padEnd(18)} ${spec.says}`);
 }
+if (grand[UNCLASSIFIED]) {
+  console.log(`  ${String(grand[UNCLASSIFIED]).padStart(5)}          UNCLASSIFIED       a verdict no KIND claims — add it to KIND, do not let it vanish`);
+}
+if (grand.revealed) {
+  console.log(`  ${String(grand.revealed).padStart(5)}          revealed           controls only a PRESS reveals — not in the inventory, which is taken at rest`);
+}
+console.log(`
+  STATE CHANGES are NOT counted here. This pass reads the SCREEN; it cannot
+  tell a rendered change from a committed one. What proves a mutation is
+  \`npm run test:mutate\`, which asserts the database and a bystander row —
+  read its output beside this table, never instead of it.
+`);
 console.log(`\nmanifest ${manifest.takenAt}  ·  drive ${report.takenAt}`);

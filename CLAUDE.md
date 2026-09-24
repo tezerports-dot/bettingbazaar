@@ -32,6 +32,7 @@ listed below, which hold **data and history, never rules**.
 | **The twenty-five shapes that keep shipping here, each with the question that finds it** | **§32 — ask these of the change in front of you** |
 | **How a player signs up, signs in, and is verified** | **§33 — the form, the bot fleet, the gate, and which limiter guards what** |
 | **A TEMPORARY switch that is in the tree right now, and when it must be deleted** | **§34 — `BB_RATE_LIMIT_RELAX`** |
+| **Why there is no single coverage percentage, and what each category actually claims** | **§35 — coverage is a set of different claims** |
 
 ---
 
@@ -1680,6 +1681,68 @@ placed ABOVE the config read reversed the order of two questions, so every
 unlinked player on an unconfigured platform was refused "link your Telegram
 account" — an instruction naming a bot that does not exist. **56 pg failures,
 every deposit and withdrawal route among them.** §32 S34.
+
+---
+
+## 35. Coverage is a set of DIFFERENT claims. Never add them up.
+
+Owner, 2026-09-24, correcting a session that was drifting: *"Don't let the
+percentage become the goal."*
+
+**The objective is: every meaningful behaviour has an appropriate test, or an
+explicit reason why it cannot or should not have one.** It is not "get the
+number to 100%".
+
+The difference is not pedantic, and this session produced both mistakes inside
+an hour:
+
+- An `alert()` was reclassified from NEEDS_INPUT to SAID. That is a CORRECT
+  reading of what happened — an alert tells, it does not ask — and it is **not
+  equivalent to testing a mutation.** Nothing about the platform's state was
+  proven by it.
+- A button correctly disabled was counted as covered. A disabled control is
+  **correct state**, and says nothing whatever about whether the feature
+  behind it works.
+
+Both were then folded into one `EXERCISED` bucket and divided by the total,
+which produced a percentage that answers no question anybody has.
+
+### 35.1 The categories, and what each one actually claims
+
+| Kind | The claim | What it is NOT |
+|---|---|---|
+| **MUTATION** | state changed, asserted against the database, with a BYSTANDER row checked | not "the screen changed" — only `npm run test:mutate` can make this claim |
+| **SCREEN_MOVED** | the press moved the routed region | not proof anything was written; a render is not a commit |
+| **ANSWERED** | it called a route and the server answered, including a refusal that names what to fix | not a state change |
+| **SAID** | the panel answered with an `alert()` — an informational outcome | **not evidence of a mutation** |
+| **NO_OP_BY_DESIGN** | nothing should have happened and nothing did | not coverage of anything else |
+| **INERT** | changed nothing AND called nothing — §32 S22 candidate | triage, read the list; never counted as pass or fail |
+| **DISABLED** | correct STATE on arrival | the ENABLE transition is a separate test, and a separate row |
+| **REPEAT** | a repeat of a name already pressed on this screen | an ASSUMPTION — true only if the first instance is representative. Row 40's button carries row 40's id |
+| **DRIVEN_ELSEWHERE** | a mutating case exists for it | a POINTER, not a proof. Read that pass's output; a deferral whose case does not exist is unpressed with a reason |
+| **NOT_REACHED** | not pressed, and not by choice | the honest number, and the only one worth driving down |
+
+### 35.2 What the report must therefore do
+
+`npm run report:controls` prints **one line per kind and no summed headline**,
+and says in the table itself that state changes are not counted there. A
+verdict belonging to no kind is printed as `UNCLASSIFIED` rather than
+disappearing — a category nobody assigned is a number nobody checked.
+
+**A large count is a question, not an achievement.** `REPEAT` at 574 (45%)
+asks whether one instance really stands for fifty; `SAID` at 0 on a screen
+full of informational paths asks whether anything was read at all.
+
+### 35.3 Stated as a rule for the next change
+
+Before reporting any control, feature or path as covered, name **which kind of
+evidence** you have. If the honest answer is "it rendered" or "it was
+correctly disabled" or "something else probably covers it", say that — those
+are real and useful findings and they are not the same as "it works".
+
+§29 already says a readiness claim is a claim about evidence. This is the same
+rule pointed at coverage: **a percentage is not evidence, it is an average of
+things that were never the same kind of claim.**
 
 ---
 
