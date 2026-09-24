@@ -204,15 +204,36 @@ async function confirmWith(page, verb) {
   const dialog = page.locator('[role="dialog"]').last();
   if (await dialog.count() === 0 || !(await dialog.isVisible().catch(() => false))) return 'none';
 
-  const button = dialog.getByRole('button', { name: new RegExp(`^\\s*${verb}\\s*$`, 'i') }).last();
-  if (await button.count() && await button.isVisible().catch(() => false)) {
+  // ── The caller's verb, then the words a dialog ACTUALLY uses ────────────
+  // `ConfirmDialog` takes a `confirmText` prop and DEFAULTS IT TO 'Confirm',
+  // and most callers pass nothing — so the FAQ dialog's affirmative button
+  // says "Confirm" while its title says "Delete FAQ". Asking only for the
+  // caller's verb found no button, this returned 'none', and the case
+  // reported "the FAQ is still in the list" — which reads as a broken delete
+  // route and was a dialog nobody answered.
+  //
+  // A person does not know the prop name. They read the dialog and press the
+  // affirmative button, so the verb is a PREFERENCE and these are the
+  // fallbacks. `Cancel`/`Close` are never among them, deliberately: a
+  // confirmation this cannot answer must be reported, never dismissed into
+  // looking like a pass.
+  const wanted = [verb, 'Confirm', 'Yes', 'OK', 'Continue', 'Proceed'];
+  for (const word of wanted) {
+    const button = dialog.getByRole('button', { name: new RegExp(`^\\s*${word}\\s*$`, 'i') }).last();
+    if (!(await button.count()) || !(await button.isVisible().catch(() => false))) continue;
     // Bounded, so a confirmation that cannot be pressed is REPORTED rather than
     // spending thirty seconds proving it.
     try { await button.click({ timeout: 8000 }); } catch { return 'stuck'; }
     await settle(page, 8000);
     return 'dialog';
   }
-  return 'none';
+  // A dialog is open and none of its buttons is an affirmative this knows.
+  // Saying so beats returning 'none', which reads as "there was nothing to
+  // confirm" — the opposite of what happened.
+  const offered = await dialog.locator('button').evaluateAll(
+    (els) => els.map((e) => (e.innerText || '').trim()).filter(Boolean),
+  ).catch(() => []);
+  return `unanswered:[${offered.join(', ') || 'no buttons'}]`;
 }
 
 /** Fill a field, bounded, saying which one when it cannot be filled. */
@@ -1534,10 +1555,17 @@ const CASES = [
       const row = await rowFor(page, target.username);
       if (!row) return ['NOT DRIVEN', `seeded merchant ${target.username} never appeared`];
 
-      const hit = await pressInRow(row, 'Reject');
-      if (!hit.ok) return ['NOT DRIVEN', hit.why];
-      await settle(page, 6000);
-      await confirmWith(page, 'Reject');
+      // `handleRejectMerchant` opens `prompt('Rejection reason (required):')`
+      // and returns on an empty one, so a dismissed dialog is a press that
+      // does nothing. `__bbAccept` as a STRING types into the prompt.
+      page.__bbAccept = 'rejected by the mutating pass';
+      let hit;
+      try {
+        hit = await pressInRow(row, 'Reject');
+        if (!hit.ok) return ['NOT DRIVEN', hit.why];
+        await settle(page, 6000);
+        await confirmWith(page, 'Reject');
+      } finally { page.__bbAccept = false; }
 
       const mine = await merchantStatus(target.merchantId);
       const neighbour = await merchantStatus(bystander.merchantId);
@@ -1567,11 +1595,15 @@ const CASES = [
       if (await button.count() === 0) return ['NOT DRIVEN', `no "Delete FAQ: ${mine}" control found`];
 
       page.__bbAccept = true;
+      let answered = 'none';
       try {
         await button.click();
         await settle(page, 6000);
-        await confirmWith(page, 'Delete');
+        answered = await confirmWith(page, 'Delete');
       } finally { page.__bbAccept = false; }
+      if (String(answered).startsWith('unanswered')) {
+        return ['FAILED', `the confirmation could not be answered — ${answered}`];
+      }
 
       const count = async (id) => Number(
         (await pgQuery('SELECT count(*)::int AS n FROM faqs WHERE faq_id = $1', [id])).rows[0].n);
@@ -1744,20 +1776,21 @@ const CASES = [
         await settle(page, 6000);
       } finally { page.__bbAccept = false; }
 
-      // The ONLY assertion that matters is that the credential is gone from
-      // the browser. A screen that navigates to the sign-in page while the
-      // token is still in localStorage is a logout that logs nobody out — the
-      // next tab restores the session.
-      const token = await page.evaluate((k) => {
-        try { return localStorage.getItem(k); } catch { return 'UNREADABLE'; }
-      }, cfg.key);
-      if (token) return ['FAILED', `pressed Log out; ${cfg.key} still holds a token`];
+      // The credential must be REMOVED. A screen that navigates to sign-in
+      // while the token is still stored is a logout that logs nobody out —
+      // the next tab restores the session.
+      const removed = await page.evaluate(() => {
+        try { return JSON.parse(sessionStorage.getItem('__bb_removed') || '[]'); } catch { return []; }
+      });
+      if (!removed.includes(cfg.key)) {
+        return ['FAILED', `pressed Log out and ${cfg.key} was never removed — saw [${removed.join(', ') || 'nothing'}]`];
+      }
 
       const said = await words(page);
       if (!/sign in|log ?in|welcome|get started|create account/i.test(said)) {
         return ['FAILED', 'the token was cleared; the screen never showed a way back in'];
       }
-      return ['DROVE', `${cfg.key} cleared and the panel offered a way back in`];
+      return ['DROVE', `${cfg.key} removed and the panel offered a way back in`];
     },
   },
 
@@ -1777,20 +1810,19 @@ const CASES = [
         await settle(page, 6000);
       } finally { page.__bbAccept = false; }
 
-      const token = await page.evaluate((k) => {
-        try { return localStorage.getItem(k); } catch { return 'UNREADABLE'; }
-      }, cfg.key);
-      if (token) return ['FAILED', `pressed Log out; ${cfg.key} still holds a token`];
-
+      const removed = await page.evaluate(() => {
+        try { return JSON.parse(sessionStorage.getItem('__bb_removed') || '[]'); } catch { return []; }
+      });
+      if (!removed.includes(cfg.key)) {
+        return ['FAILED', `pressed Log out and ${cfg.key} was never removed — saw [${removed.join(', ') || 'nothing'}]`];
+      }
       // A merchant panel caches its PROFILE beside the token, and a logout
       // that leaves that behind leaves the next visitor a name and a mobile
       // number belonging to somebody else on a shared machine.
-      const profile = cfg.cacheKey
-        ? await page.evaluate((k) => { try { return localStorage.getItem(k); } catch { return null; } }, cfg.cacheKey)
-        : null;
-      if (profile) return ['FAILED', `the token went; the cached profile in ${cfg.cacheKey} did NOT`];
-
-      return ['DROVE', `${cfg.key} cleared, cached profile cleared`];
+      if (cfg.cacheKey && !removed.includes(cfg.cacheKey)) {
+        return ['FAILED', `the token went; the cached profile in ${cfg.cacheKey} did NOT`];
+      }
+      return ['DROVE', `${cfg.key} and ${cfg.cacheKey ?? 'no cache'} both removed`];
     },
   },
 
@@ -1829,7 +1861,29 @@ const CASES = [
     panel: 'merchant-panel',
     what: 'Export the merchant history as CSV',
     async run(page, cfg, base) {
+      // ── The export needs something to export, and saying so is the point ──
+      // `exportCsv` returns early with "No completed orders to export yet"
+      // when the list is empty — correct behaviour, and it is why the first
+      // version of this case reported "the browser was offered no file" as
+      // though the button were broken. That is §32 S19 in a case of my own:
+      // asserting a precondition it never established. So it establishes it.
+      const player = await seedPlayer({ balancePaise: 100000 });
+      const orderId = rid('drive-hist');
+      await pgQuery(
+        `INSERT INTO order_states
+           (order_id, user_id, merchant_id, order_type, state, token_amount_paise,
+            fiat_amount_paise, completed_at)
+         VALUES ($1, $2, $3, 'DEPOSIT', 'COMPLETED', 50000, 50000, now())`,
+        [orderId, player.userId, page.__bbMerchantId],
+      );
+
       await go(page, cfg, base, '/history');
+      // The export reads the COMPLETED tab's list, so the tab has to be the
+      // one showing it — the button exports what the view holds, not what the
+      // database holds, and those are different claims.
+      const tab = page.getByRole('button', { name: /^\s*Completed\s*$/i }).first();
+      if (await tab.count() > 0) { await clickThrough(tab, { timeout: 8000 }); await settle(page, 4000); }
+
       const button = page.getByRole('button', { name: /^\s*Export CSV\s*$/i }).first();
       if (await button.count() === 0) return ['NOT DRIVEN', 'no Export CSV control on /history'];
 
@@ -1846,11 +1900,17 @@ const CASES = [
       const body = path ? await import('node:fs').then((fs) => fs.promises.readFile(path, 'utf8')) : '';
       if (!body.trim()) return ['FAILED', `downloaded ${download.suggestedFilename()} and it is EMPTY`];
 
-      const firstLine = body.split(/\r?\n/)[0];
+      const lines = body.split(/\r?\n/).filter(Boolean);
+      const firstLine = lines[0];
       if (!/,/.test(firstLine)) {
         return ['FAILED', `the file has no comma-separated header row: "${firstLine.slice(0, 80)}"`];
       }
-      return ['DROVE', `${download.suggestedFilename()}, ${body.split(/\r?\n/).filter(Boolean).length} line(s), header "${firstLine.slice(0, 60)}"`];
+      // The order this run created has to be IN it. A header with no rows is
+      // a file, and it is not an export.
+      if (!body.includes(orderId)) {
+        return ['FAILED', `the CSV has ${lines.length - 1} row(s) and none of them is ${orderId}`];
+      }
+      return ['DROVE', `${download.suggestedFilename()}, ${lines.length - 1} row(s), and ${orderId} is in it`];
     },
   },
 
@@ -2003,6 +2063,34 @@ async function main() {
       } catch { /* private mode */ }
     }, [cfg.key, cfg.wrap(tokens[panel], cached[panel]), cfg.cacheKey ?? '',
         cfg.cacheKey && cached[panel] ? JSON.stringify(cached[panel]) : '']);
+
+    // ── Watch the REMOVALS, because reading the key back cannot work ───────
+    // The seeding above is an init script: it runs on every new document. The
+    // merchant panel logs out with `window.location.href = '/merchant/'` — a
+    // full navigation — so the init script fires again and writes the token
+    // straight back. Reading `localStorage` afterwards therefore reports a
+    // token for a logout that worked perfectly, which is the harness
+    // describing itself (§28).
+    //
+    // What a logout must actually DO is call `removeItem` for the credential.
+    // So that is what is observed, into a key nothing else writes, and it
+    // survives the navigation the seeding does not.
+    await ctx.addInitScript(() => {
+      try {
+        const real = Storage.prototype.removeItem;
+        Storage.prototype.removeItem = function removeItem(k) {
+          try {
+            if (this === window.localStorage) {
+              const seen = JSON.parse(sessionStorage.getItem('__bb_removed') || '[]');
+              seen.push(k);
+              sessionStorage.setItem('__bb_removed', JSON.stringify(seen));
+            }
+          } catch { /* storage blocked */ }
+          return real.call(this, k);
+        };
+      } catch { /* nothing to wrap */ }
+    });
+
     const page = await ctx.newPage();
     page.on('dialog', (d) => {
       const want = page.__bbAccept;

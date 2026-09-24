@@ -98,6 +98,11 @@ const BROWSER_GLOBALS = new Set([
   // its authority and gets switched off — so the list grows rather than the
   // file being exempted.
   'CSS',
+  // `Storage` is the prototype a browser pass wraps to watch what a panel
+  // REMOVES from localStorage — the only way to see a logout that is
+  // followed by a full navigation. Same rule as `CSS` above: the list
+  // grows, the file is not exempted.
+  'Storage',
 ]);
 
 /** Playwright/Puppeteer calls whose function argument executes in the page. */
