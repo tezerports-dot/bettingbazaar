@@ -92,6 +92,12 @@ const BROWSER_GLOBALS = new Set([
   'PopStateEvent','CustomEvent','HTMLElement','Node','getComputedStyle','alert',
   'requestAnimationFrame','cancelAnimationFrame','matchMedia','IntersectionObserver',
   'MutationObserver','ResizeObserver','Image','DOMParser','EventSource','screen',
+  // `CSS.escape` is the correct way to put an id into a selector, and the
+  // gate flagged it the moment a pass used one. A browser global missing
+  // from this list is a FALSE failure, which §28 says is how a gate loses
+  // its authority and gets switched off — so the list grows rather than the
+  // file being exempted.
+  'CSS',
 ]);
 
 /** Playwright/Puppeteer calls whose function argument executes in the page. */

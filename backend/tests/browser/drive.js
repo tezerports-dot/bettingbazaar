@@ -165,6 +165,36 @@ const THROTTLE_PAUSE_MS = Number(process.env.BB_THROTTLE_PAUSE_MS ?? 20000);
  * can fail are kept apart. A node that vanished from under us is OURS. A node
  * that something is covering is the SCREEN'S, and still reported.
  */
+/**
+ * The thing a PERSON clicks, when the control itself is not it.
+ *
+ * A styled toggle is an `<input type="checkbox" class="sr-only">` inside a
+ * `<label>`, with a `<div>` drawn to look like the switch. The input is a real
+ * control with a real accessible name and a real `onChange`, and it is also
+ * invisible — so `el.click()` waits for a node that will never be visible and
+ * times out, and the pass reports UNREACHABLE for a switch anybody can flip.
+ *
+ * Measured: SEVEN controls, six of them on `/settings` — "Allow new
+ * registrations", "Enforce bet amounts in multiples", "Block opposite-side
+ * betting", and all three `ipDefense` switches — on the screen where §21 says
+ * an operator types the platform's business numbers.
+ *
+ * Clicking the LABEL is not a workaround for the harness's benefit; it is
+ * literally what the person does, and it drives the input through the same
+ * event the browser gives a human. Anything with no label to click stays
+ * UNREACHABLE, which is the honest answer for a control nothing can reach.
+ */
+async function clickableProxy(page, el) {
+  return el.evaluateHandle((n) => {
+    const hidden = !n.getClientRects().length
+      || getComputedStyle(n).visibility === 'hidden'
+      || getComputedStyle(n).opacity === '0';
+    if (!hidden) return null;
+    const byFor = n.id ? document.querySelector(`label[for="${CSS.escape(n.id)}"]`) : null;
+    return byFor ?? n.closest('label');
+  }).then((h) => h.asElement()).catch(() => null);
+}
+
 async function clickLive(page, c, first, opts = {}) {
   let el = first, last = null;
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -173,6 +203,14 @@ async function clickLive(page, c, first, opts = {}) {
       await el.click({ timeout: 4000, ...opts });
       return { ok: true };
     } catch (e) {
+      // Invisible, but a person has something to click for it.
+      const proxy = await clickableProxy(page, el);
+      if (proxy) {
+        try {
+          await proxy.click({ timeout: 4000, ...opts });
+          return { ok: true, via: 'its label' };
+        } catch { /* the label is no better; fall through to the normal rules */ }
+      }
       last = e;
       // Something is genuinely on top of it. That is the screen's business,
       // not a re-render race, so stop and report it.
@@ -205,7 +243,7 @@ async function press(page, panel, screen, c, seen, byName) {
 
   const before = await fingerprint(page);
   const asked = page.__bbAsked ?? 0;
-  const errors = [], failed = [], throttled = [], calls = [];
+  const errors = [], failed = [], upstream = [], throttled = [], calls = [];
   const onErr = (e) => errors.push(e.message);
   const onReq = (r) => {
     // What the control ASKED THE SERVER. See the INERT/REFETCHED split below.
@@ -214,10 +252,32 @@ async function press(page, panel, screen, c, seen, byName) {
       calls.push(`${r.method()} ${u.replace(/^https?:\/\/[^/]+/, '').slice(0, 80)}`);
     }
   };
+  // ── Not every 5xx is this pass's defect, and §2 says which is which ─────
+  // `serverError` logs in full and answers with NOTHING, by design — so a 5xx
+  // carrying no message is the platform breaking. A handler that chose to
+  // explain itself threw with a `status`, `respondError` kept its wording, and
+  // the operator was told something they can act on.
+  //
+  // Both kinds were live on the admin panel and the coarse bucket called them
+  // the same thing:
+  //
+  //   502 "Telegram refused: Unauthorized: invalid token specified"
+  //   503 "The support assistant stores its passages with the pgvector
+  //        extension, and this PostgreSQL server does not have it available.
+  //        Install pgvector on the server…"
+  //
+  // Both are correct — an upstream the operator can fix, named. Reporting them
+  // as defects is how a pass's failures become noise and the real 500 next to
+  // them stops being read (§28).
   const onRes = (r) => {
     if (r.status() === 429) { throttled.push(r.url()); return; }
     if (r.status() >= 500 && !ignored(r.url())) {
-      failed.push(`${r.status()} ${r.request().method()} ${r.url().replace(/^https?:\/\/[^/]+/, '')}`);
+      const where = `${r.status()} ${r.request().method()} ${r.url().replace(/^https?:\/\/[^/]+/, '')}`;
+      r.text().then((body) => {
+        let said = '';
+        try { said = JSON.parse(body)?.message ?? ''; } catch { said = ''; }
+        (said ? upstream : failed).push(said ? `${where} — "${said.slice(0, 140)}"` : where);
+      }).catch(() => failed.push(where));
     }
   };
   page.on('pageerror', onErr);
@@ -301,6 +361,9 @@ async function press(page, panel, screen, c, seen, byName) {
   }
   if (errors.length) return { verdict: 'THREW', why: errors[0].slice(0, 200), acted };
   if (failed.length) return { verdict: 'FIVE_HUNDRED', why: failed.join(' | ').slice(0, 200), acted };
+  if (upstream.length) {
+    return { verdict: 'UPSTREAM', why: upstream.join(' | ').slice(0, 300), acted };
+  }
   if (!changed(before, after)) {
     if (asked !== (page.__bbAsked ?? 0)) {
       return { verdict: 'NEEDS_INPUT', acted, why: 'it asked a confirm/prompt, which this pass declines' };

@@ -82,6 +82,7 @@ const MEANING = {
   REFETCHED: 'pressed; it called a route and got the same answer — a working Refresh',
   ALREADY_ON: 'pressed; it was already the selected segment, so nothing should change',
   INERT: 'pressed, and it changed nothing AND called nothing (S22 — the shape worth hunting)',
+  UPSTREAM: 'pressed; an upstream the operator can fix refused, and the server SAID SO — correct behaviour, not a defect',
   DEFERRED: 'not pressed on purpose — destructive, or it leaves the app',
   DISABLED: 'disabled on arrival, so there was nothing to press',
   REPRESENTED: 'a repeat of a control already pressed on this screen',
@@ -94,7 +95,11 @@ const MEANING = {
   NEEDS_INPUT: 'it asked a confirm/prompt and this pass declined — NOT a dead button',
 };
 /** Verdicts that mean "this control was genuinely exercised". */
-const EXERCISED = new Set(['ACTED', 'REFETCHED', 'ALREADY_ON', 'INERT']);
+// UPSTREAM belongs here: the control was pressed, it called its route, and the
+// route answered with a refusal the OPERATOR can act on (§2 — `serverError`
+// answers with nothing, so a 5xx that carries a message is a handler that
+// chose to explain itself). That is the control working, not failing.
+const EXERCISED = new Set(['ACTED', 'REFETCHED', 'ALREADY_ON', 'INERT', 'UPSTREAM']);
 /** Verdicts that mean "deliberately not pressed, and that is a decision". */
 const BY_CHOICE = new Set(['DEFERRED', 'DISABLED', 'REPRESENTED', 'DUPLICATE', 'NEEDS_INPUT']);
 
