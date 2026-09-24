@@ -53,16 +53,16 @@ describePg('telegram recovery sessions', () => {
     // The whole point. A Map is readable only by the process that wrote it;
     // these two calls stand in for two instances behind a load balancer.
     const id = tgId();
-    await putRecoverySession({ telegramUserId: id, aadhaarHashes: ['h1', 'h2'], ttlSeconds: 600 });
+    await putRecoverySession({ audience: 'PLAYER', telegramUserId: id, aadhaarHashes: ['h1', 'h2'], ttlSeconds: 600 });
 
-    const held = await getRecoverySession(id);
+    const held = await getRecoverySession(id, 'PLAYER');
     expect(held).toBeTruthy();
     expect(held.aadhaarHashes).toEqual(['h1', 'h2']);
   });
 
   it('keeps the HASHES and never the Aadhaar itself', async () => {
     const id = tgId();
-    await putRecoverySession({ telegramUserId: id, aadhaarHashes: ['abc123hash'], ttlSeconds: 600 });
+    await putRecoverySession({ audience: 'PLAYER', telegramUserId: id, aadhaarHashes: ['abc123hash'], ttlSeconds: 600 });
 
     const { rows } = await pgQuery(
       'SELECT * FROM telegram_recovery_sessions WHERE telegram_user_id = $1', [id],
@@ -77,23 +77,23 @@ describePg('telegram recovery sessions', () => {
     // Somebody who has already lost their account must not also be told to wait
     // out a TTL because they mistyped.
     const id = tgId();
-    await putRecoverySession({ telegramUserId: id, aadhaarHashes: ['first'], ttlSeconds: 600 });
-    await putRecoverySession({ telegramUserId: id, aadhaarHashes: ['second'], ttlSeconds: 600 });
+    await putRecoverySession({ audience: 'PLAYER', telegramUserId: id, aadhaarHashes: ['first'], ttlSeconds: 600 });
+    await putRecoverySession({ audience: 'PLAYER', telegramUserId: id, aadhaarHashes: ['second'], ttlSeconds: 600 });
 
-    expect((await getRecoverySession(id)).aadhaarHashes).toEqual(['second']);
+    expect((await getRecoverySession(id, 'PLAYER')).aadhaarHashes).toEqual(['second']);
   });
 
   it('an expired session reads as absent WITHOUT the sweep having run', async () => {
     // Expiry is in the statement. A sweep that is late, failed or never
     // scheduled must not make a stale session usable.
     const id = tgId();
-    await putRecoverySession({ telegramUserId: id, aadhaarHashes: ['stale'], ttlSeconds: 600 });
+    await putRecoverySession({ audience: 'PLAYER', telegramUserId: id, aadhaarHashes: ['stale'], ttlSeconds: 600 });
     await pgQuery(
       "UPDATE telegram_recovery_sessions SET expires_at = now() - interval '1 second' WHERE telegram_user_id = $1",
       [id],
     );
 
-    expect(await getRecoverySession(id)).toBeNull();
+    expect(await getRecoverySession(id, 'PLAYER')).toBeNull();
     // Still physically present — proving the read, not the sweep, refused it.
     const { rows } = await pgQuery(
       'SELECT 1 FROM telegram_recovery_sessions WHERE telegram_user_id = $1', [id],
@@ -102,31 +102,31 @@ describePg('telegram recovery sessions', () => {
     // Reclaimed here rather than left for the sweep: the retention counts in
     // telegramPg.test.js are exact, and a stray expired row from this file
     // would show up there as a deletion nothing in that test created.
-    await deleteRecoverySession(id);
+    await deleteRecoverySession(id, 'PLAYER');
   });
 
   it('is consumed on delete, so one send is one attempt', async () => {
     const id = tgId();
-    await putRecoverySession({ telegramUserId: id, aadhaarHashes: ['once'], ttlSeconds: 600 });
-    await deleteRecoverySession(id);
-    expect(await getRecoverySession(id)).toBeNull();
+    await putRecoverySession({ audience: 'PLAYER', telegramUserId: id, aadhaarHashes: ['once'], ttlSeconds: 600 });
+    await deleteRecoverySession(id, 'PLAYER');
+    expect(await getRecoverySession(id, 'PLAYER')).toBeNull();
   });
 
   it('deleting a session that is not there is not an error', async () => {
-    await expect(deleteRecoverySession(tgId())).resolves.toBeUndefined();
+    await expect(deleteRecoverySession(tgId(), 'PLAYER')).resolves.toBeUndefined();
   });
 
   it('refuses to store a session with no hashes', async () => {
     // A row with an empty array would read as a live session that can never
     // match, which is the shape most easily mistaken for a working one.
-    await expect(putRecoverySession({ telegramUserId: tgId(), aadhaarHashes: [], ttlSeconds: 600 }))
+    await expect(putRecoverySession({ audience: 'PLAYER', telegramUserId: tgId(), aadhaarHashes: [], ttlSeconds: 600 }))
       .rejects.toThrow(/aadhaar hash/i);
   });
 
   it('the retention sweep reclaims expired rows and reports its own count', async () => {
     // Counted from the DELETE's own row count, per trap 6 — never accumulated.
     const id = tgId();
-    await putRecoverySession({ telegramUserId: id, aadhaarHashes: ['sweepme'], ttlSeconds: 600 });
+    await putRecoverySession({ audience: 'PLAYER', telegramUserId: id, aadhaarHashes: ['sweepme'], ttlSeconds: 600 });
     await pgQuery(
       "UPDATE telegram_recovery_sessions SET expires_at = now() - interval '1 hour' WHERE telegram_user_id = $1",
       [id],

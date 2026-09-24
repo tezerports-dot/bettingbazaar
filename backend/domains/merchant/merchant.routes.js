@@ -12,6 +12,7 @@ import { creditDeposit, creditReserve, refundWithdrawal, releaseWithdrawal } fro
 import { signToken } from '../identity/jwt.util.js';
 import { hashPassword, verifyPassword } from '../identity/password.util.js';
 import { merchantAuth } from '../../middleware/merchantAuth.js';
+import { verificationEndpoint } from '../identity/verificationEndpoint.js';
 import { issueChallenge, verifyChallenge, CHALLENGE_AUDIENCE } from '../identity/twoFactorChallenge.js';
 import { verifySecondFactor, SECOND_FACTOR_RESULT } from '../identity/verifySecondFactor.js';
 import {
@@ -415,6 +416,22 @@ router.post('/auth/login/2fa', loginPaceLimiter, twoFactorLimiter, async (req, r
 // is User-only). Same two-step handshake for the same reason: a secret that
 // goes live before the merchant proves they scanned it locks them out of an
 // account that moves real settlement money.
+
+// ═══════════════════════════════════════════════════════════════════════════
+// GET /api/merchant/verification — the MERCHANT gate
+// ═══════════════════════════════════════════════════════════════════════════
+/**
+ * The same function the player and admin panels mount (§5).
+ *
+ * The one thing that differs is how the account is found. `merchantAuth` puts
+ * the MERCHANT on `req.merchant` and its owner's id on `req.userId`, and what
+ * the gate needs is the `users` row — because `account_type` is the column that
+ * decides which bot and which channel this answer is about, and a merchant row
+ * does not carry it. A merchant signup writes both (§33.5); this reads the one
+ * that holds the login.
+ */
+router.get('/verification', merchantAuth,
+  verificationEndpoint((req) => db.users.getUser(req.userId)));
 
 router.get('/2fa/status', merchantAuth, async (req, res) => {
     const m = req.merchant;

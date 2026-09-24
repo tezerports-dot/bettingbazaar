@@ -50,7 +50,7 @@ import { sendAlert } from '../../services/alerting.service.js';
  * @param {string[]} args.aadhaarHashes    HMAC candidates, hashed at the bot
  * @returns {Promise<{ok: boolean, reason?: string, userId?: string}>}
  */
-export async function attemptRecovery({ newTelegramUserId, phone, contactUserId, aadhaarHashes }) {
+export async function attemptRecovery({ newTelegramUserId, audience, phone, contactUserId, aadhaarHashes }) {
   // Same guard as signup: a forwarded contact card would let someone recover an
   // account using a number they do not hold.
   if (contactUserId && String(contactUserId) !== String(newTelegramUserId)) {
@@ -66,10 +66,15 @@ export async function attemptRecovery({ newTelegramUserId, phone, contactUserId,
   const candidates = Array.isArray(aadhaarHashes) ? aadhaarHashes.filter(Boolean) : [];
   if (!candidates.length) return { ok: false, reason: 'invalid_aadhaar' };
 
-  // PLAYER. Recovery moves a player's Telegram link; a staff account has no
-  // Telegram identity to move, and reading by mobile alone would hand back the
-  // staff row for anybody who holds both.
-  const user = await db.users.getUserByMobile(mobile, 'PLAYER');
+  // ── The AUDIENCE of the bot this arrived on ─────────────────────────────
+  // Reading by mobile alone would hand back whichever of the three accounts on
+  // that number the planner reached first (§32 S30). The recovery bot's own
+  // audience is the right predicate and it is stronger than the 'PLAYER'
+  // literal it replaces: recovery through the merchant bot can only ever move
+  // a MERCHANT link, so a merchant's Aadhaar cannot reach their player account
+  // and a player's cannot reach their merchant one — which is the whole point
+  // of the three accounts being separate entities (§33.5).
+  const user = await db.users.getUserByMobile(mobile, audience);
 
   // FACTOR 2. Checked against the account the PHONE resolved to — not used as a
   // search key. Looking an account up BY Aadhaar would turn this bot into the
@@ -91,7 +96,7 @@ export async function attemptRecovery({ newTelegramUserId, phone, contactUserId,
     return { ok: false, reason: 'blocked' };
   }
 
-  const cfg = await activeConfig();
+  const cfg = await activeConfig(audience);
 
   // ONE transaction, in the repository. Three unique constraints have to be
   // satisfied at once — the account's identity, the phone's active slot, and
@@ -101,6 +106,7 @@ export async function attemptRecovery({ newTelegramUserId, phone, contactUserId,
   // that is a refusal rather than a fault; the refusal is a return value now.
   const linked = await db.telegram.relinkIdentity({
     telegramUserId: newTelegramUserId,
+    audience,
     userId: user.userId,
     phone: mobile,
     generation: cfg?.generation ?? 0,
@@ -119,6 +125,7 @@ export async function attemptRecovery({ newTelegramUserId, phone, contactUserId,
   console.warn(`[recovery] GRANTED user=${user.userId} to telegram=${newTelegramUserId}`);
   sendAlert('account-recovered', 'An account was re-linked to a new Telegram identity', {
     userId: String(user.userId),
+    panel: audience,
     newTelegramUserId: String(newTelegramUserId),
     // The identity that LOST the account, which is the detail a takeover review
     // needs and which the alert did not previously carry.

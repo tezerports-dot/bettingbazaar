@@ -208,9 +208,16 @@ export async function bodyFor(key) {
  *   player as a conversation that simply stopped. `role` remains the fallback
  *   for the singular-bot paths (recovery).
  */
-export async function sendTemplate({ chatId, key, vars = {}, extra = {}, role = 'signin', bot: from = null }) {
+export async function sendTemplate({
+  chatId, key, vars = {}, extra = {}, role = 'signin', bot: from = null, audience = null,
+}) {
   const { body, custom } = await bodyFor(key);
-  const bot = from?.token ? from : await resolveSender(role);
+  // `from` is the bot the update ARRIVED on and is always preferred — §33.2,
+  // a bot may only message somebody who has opened a chat with IT. The
+  // fallback needs to know which panel it is resolving a bot FOR, and takes
+  // it from the arriving bot when one was passed: a caller that hands over a
+  // bot has already answered the question.
+  const bot = from?.token ? from : await resolveSender(role, audience || from?.audience);
   if (!bot?.token) return { ok: false, error: `no_live_${role}_bot` };
 
   const payload = (text) => ({
@@ -235,13 +242,18 @@ export async function sendTemplate({ chatId, key, vars = {}, extra = {}, role = 
  * reason it has its own token: a compromised primary must not be able to hand
  * out other people's accounts.
  */
-async function resolveSender(role) {
-  const registered = await liveBot(role);
+async function resolveSender(role, audience) {
+  // No audience means no answerable question — three panels have three live
+  // bots in every role. Refused rather than defaulted to PLAYER, which would
+  // send a merchant's recovery message from the player bot and have Telegram
+  // reject it as a conversation that was never opened.
+  if (!audience) return null;
+  const registered = await liveBot(role, audience);
   if (registered?.token) return registered;
 
   // Fall back to the credentials embedded in the active generation, so an
   // install that never registered a spare still sends.
-  const cfg = await activeConfig();
+  const cfg = await activeConfig(audience);
   if (!cfg) return null;
   if (role === 'recovery') return cfg.recoveryBotToken ? { token: cfg.recoveryBotToken } : null;
   return cfg.botToken ? { token: cfg.botToken } : null;

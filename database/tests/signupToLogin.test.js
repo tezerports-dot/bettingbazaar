@@ -103,7 +103,7 @@ describePg('signup → login, end to end on one store', () => {
     const userId = await signUp();
     // The seam the whole verification step rests on: Telegram's own verified
     // number, matched against what was typed on the form.
-    const linked = await linkTelegramToAccount({ telegramUserId: 't-1', phone: '9995550001' });
+    const linked = await linkTelegramToAccount({ audience: 'PLAYER', telegramUserId: 't-1', phone: '9995550001' });
     expect(linked).toMatchObject({ ok: true, userId });
     const identity = await getIdentityByUserId(userId);
     expect(identity.userId).toBe(userId);

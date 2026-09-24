@@ -36,8 +36,52 @@ import { buildExport, applyImport, kycStats } from '../../domains/identity/kycBu
 import { disburse, programmeStats } from '../../domains/referral/referral.service.js';
 import { rupeesToPaise, paiseToRupees } from '../../shared/money.js';
 import { serverError, respondError } from '../../shared/httpError.js';
+import { ACCOUNT_TYPES, PANEL_NAME, PANEL_NOUN } from '../../domains/identity/audiences.js';
+import { verificationEndpoint } from '../../domains/identity/verificationEndpoint.js';
 
 const router = express.Router();
+
+/**
+ * Which panel an admin is configuring.
+ *
+ * Every screen in this file is now three screens — a bot fleet and a channel
+ * for players, for merchants and for staff (owner, 2026-09-24). The audience
+ * arrives as a query parameter on the reads and in the body on the writes, and
+ * it is VALIDATED here rather than passed through: an unrecognised value would
+ * reach `assertAudience` deep in the repository and surface as a 500 with no
+ * message, where what the operator needs is the list of what they may pick.
+ *
+ * PLAYER is the default, and only for reads. It is the panel that existed
+ * before the split, so a screen that has not been updated keeps showing what it
+ * always showed rather than showing nothing. A WRITE takes no default —
+ * `registerBot` and the channel routes refuse without one, because activating
+ * the wrong panel's channel re-gates the wrong population.
+ */
+function audienceFromQuery(req) {
+  const asked = String(req.query.audience || 'PLAYER').toUpperCase();
+  if (!ACCOUNT_TYPES.includes(asked)) return null;
+  return asked;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// GET /api/admin/verification — the STAFF gate
+// ═══════════════════════════════════════════════════════════════════════════
+/**
+ * The same function the player panel mounts, and that is the point (§5).
+ *
+ * `authenticate` alone, deliberately — NOT `isAdmin`. Every staff account is
+ * gated, including a sub-admin, a queue manager and a mediator, and each of
+ * them has to be able to ask what is blocking them. Behind `isAdmin` this
+ * would answer 403 to the four roles that are not full admins, on the one
+ * screen that exists to tell somebody what to do next: §32 S14, on a wall they
+ * cannot get past.
+ *
+ * The BOOTSTRAP EXEMPTION lives in `verificationStateFor`, not here. It admits
+ * staff only while the staff bot and channel do not exist — otherwise the
+ * screen where an operator registers them sits behind the gate that has
+ * nothing to check, and nobody could ever configure it from any account.
+ */
+router.get('/verification', authenticate, verificationEndpoint((req) => req.user));
 
 // ═══════════════════════════════════════════════════════════════════════════
 // TELEGRAM CONFIG
@@ -46,10 +90,17 @@ const router = express.Router();
 /** GET /api/admin/telegram/config — the active generation, secrets omitted. */
 router.get('/telegram/config', authenticate, isAdmin, async (req, res) => {
   try {
-    const cfg = await activeConfig({ force: true });
+    const audience = audienceFromQuery(req);
+    if (!audience) {
+      return res.status(400).json({
+        success: false,
+        message: `audience must be one of ${ACCOUNT_TYPES.join(', ')}`,
+      });
+    }
+    const cfg = await activeConfig(audience, { force: true });
     // Public columns only. There is no read path for a bot token by design,
     // and a history that carried one would be exactly that.
-    const history = await db.telegram.listConfigHistory({ limit: 10 });
+    const history = await db.telegram.listConfigHistory({ limit: 10, audience });
 
     res.json({
       success: true,
@@ -95,6 +146,16 @@ router.post('/telegram/config', authenticate, isAdmin, async (req, res) => {
     if (!botToken || !channelId) {
       return res.status(400).json({ success: false, message: 'botToken and channelId are required' });
     }
+    // NO DEFAULT on a write. Activating a channel is what makes every cached
+    // membership for that panel stale, so guessing the panel would re-gate a
+    // population the operator was not thinking about.
+    const audience = String(req.body?.audience || '').toUpperCase();
+    if (!ACCOUNT_TYPES.includes(audience)) {
+      return res.status(400).json({
+        success: false,
+        message: `Choose which panel this channel is for: ${ACCOUNT_TYPES.join(', ')}.`,
+      });
+    }
 
     const probe = await verifyBotToken(botToken);
     if (!probe.ok) {
@@ -122,6 +183,7 @@ router.post('/telegram/config', authenticate, isAdmin, async (req, res) => {
     // same number, and the partial unique index refuses two active rows, so a
     // half-applied swap cannot leave the platform with none.
     const created = await db.telegram.activateConfig({
+      audience,
       botTokenEncrypted: encryptField(botToken),
       botUsername: probe.username || '',
       webhookSecret,
@@ -135,7 +197,7 @@ router.post('/telegram/config', authenticate, isAdmin, async (req, res) => {
       reason: reason || '',
     });
 
-    invalidateConfigCache();
+    invalidateConfigCache(audience);
 
     // Point Telegram at us. Failure here is reported but does NOT unwind the
     // config: the row is correct and an operator can retry the webhook, whereas
@@ -192,13 +254,20 @@ router.post('/telegram/channel', authenticate, isAdmin, async (req, res) => {
     if (!channelId) {
       return res.status(400).json({ success: false, message: 'channelId is required' });
     }
+    const audience = String(req.body?.audience || '').toUpperCase();
+    if (!ACCOUNT_TYPES.includes(audience)) {
+      return res.status(400).json({
+        success: false,
+        message: `Choose which panel's channel to replace: ${ACCOUNT_TYPES.join(', ')}.`,
+      });
+    }
 
     // A generation with no reachable bot would take signup and login down the
     // moment it activated. The credential may live in the registry OR on the
     // generation, so the invariant is checked HERE, where both sources are
     // visible — neither one alone can express it.
-    const current = await db.telegram.getActiveConfigWithSecrets();
-    const registrySignin = await liveBot('signin');
+    const current = await db.telegram.getActiveConfigWithSecrets(audience);
+    const registrySignin = await liveBot('signin', audience);
 
     if (!current && !registrySignin) {
       return res.status(400).json({
@@ -215,13 +284,14 @@ router.post('/telegram/channel', authenticate, isAdmin, async (req, res) => {
       botUsername: current.botUsername,
       webhookSecret: current.webhookSecret,
     };
-    const carryRecovery = (await liveBot('recovery')) ? {} : {
+    const carryRecovery = (await liveBot('recovery', audience)) ? {} : {
       recoveryBotTokenEncrypted: current?.recoveryBotTokenEncrypted,
       recoveryBotUsername: current?.recoveryBotUsername,
       recoveryWebhookSecret: current?.recoveryWebhookSecret,
     };
 
     const created = await db.telegram.activateConfig({
+      audience,
       ...carryBot,
       ...carryRecovery,
       channelId: String(channelId),
@@ -231,9 +301,9 @@ router.post('/telegram/channel', authenticate, isAdmin, async (req, res) => {
       reason: reason || 'channel replaced',
     });
 
-    invalidateConfigCache();
+    invalidateConfigCache(audience);
 
-    console.warn(`[admin/telegram] CHANNEL FLIP to generation ${created.generation} `
+    console.warn(`[admin/telegram] CHANNEL FLIP (${audience}) to generation ${created.generation} `
       + `(${channelUsername || channelId}) by admin ${req.user.userId}`);
 
     return res.json({
@@ -241,8 +311,12 @@ router.post('/telegram/channel', authenticate, isAdmin, async (req, res) => {
       generation: created.generation,
       channelId: created.channelId,
       channelUsername: created.channelUsername,
-      message: `Generation ${created.generation} is live. Every player will be asked to join the new channel `
-        + 'on their next action. Accounts, balances, KYC and referral positions are unchanged.',
+      audience,
+      // Names the population, because "every player" on the merchant screen is
+      // the sentence that makes an operator think they flipped the wrong one.
+      message: `Generation ${created.generation} is live for the ${PANEL_NAME[audience]} panel. `
+        + `Every ${PANEL_NOUN[audience]} will be asked to join the new channel on their next action. `
+        + 'Accounts, balances, KYC and referral positions are unchanged.',
     });
   } catch (err) {
     console.error('[admin/telegram] channel flip failed:', err.message);
@@ -264,8 +338,20 @@ router.post('/telegram/channel', authenticate, isAdmin, async (req, res) => {
  */
 router.get('/telegram/bots', authenticate, isAdmin, async (req, res) => {
   try {
-    const [bots, loads] = await Promise.all([listBots(), signinLoads()]);
-    res.json({ success: true, bots, loads });
+    // No audience filter by default: the screen shows all three fleets
+    // together, because the state an operator most needs to see is a panel
+    // with NO bot at all — and a filtered list cannot show an absence.
+    const audience = req.query.audience ? audienceFromQuery(req) : null;
+    if (req.query.audience && !audience) {
+      return res.status(400).json({
+        success: false,
+        message: `audience must be one of ${ACCOUNT_TYPES.join(', ')}`,
+      });
+    }
+    const [bots, loads] = await Promise.all([
+      listBots({ audience }), signinLoads({ audience }),
+    ]);
+    res.json({ success: true, bots, loads, audiences: ACCOUNT_TYPES });
   } catch (err) {
     return respondError(res, err, 'GET /admin/telegram/bots');
   }
@@ -274,9 +360,13 @@ router.get('/telegram/bots', authenticate, isAdmin, async (req, res) => {
 /** POST /api/admin/telegram/bots — register a bot, verified against Telegram. */
 router.post('/telegram/bots', authenticate, isAdmin, async (req, res) => {
   try {
-    const { label, role, token, notes } = req.body || {};
-    const bot = await registerBot({ label, role, token, notes, actorId: req.user.userId });
-    console.warn(`[admin/telegram] bot @${bot.username} registered as ${bot.role} by admin ${req.user.userId}`);
+    const { label, role, audience, token, notes } = req.body || {};
+    const bot = await registerBot({
+      label, role, audience: String(audience || '').toUpperCase(), token, notes,
+      actorId: req.user.userId,
+    });
+    console.warn(`[admin/telegram] bot @${bot.username} registered as ${bot.audience} ${bot.role} `
+      + `by admin ${req.user.userId}`);
     res.json({ success: true, bot, message: `@${bot.username} is registered and on standby.` });
   } catch (err) {
     return respondError(res, err, 'POST /admin/telegram/bots');

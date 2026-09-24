@@ -885,6 +885,16 @@ CREATE INDEX IF NOT EXISTS users_flagged_idx       ON users (payment_flagged_at 
 -- problem that never touched it.
 CREATE TABLE IF NOT EXISTS telegram_configs (
   generation           BIGINT PRIMARY KEY,
+  -- WHICH PANEL this channel belongs to. The three panels are three separate
+  -- entities (§33.5) and each has its own bot and its own channel, so "the
+  -- active config" is a question per audience, not a question per platform.
+  --
+  -- `generation` stays GLOBALLY unique — one counter across all three — which
+  -- is deliberate and load-bearing: a cached membership stamped with the
+  -- merchant channel's generation can then never compare equal to the player
+  -- channel's, so a cross-audience stale answer is unrepresentable rather than
+  -- merely unlikely.
+  audience             TEXT NOT NULL DEFAULT 'PLAYER',
   -- Ciphertext, always. Whoever holds a bot token can read every message sent
   -- to the bot and speak as the platform. Never returned to any panel.
   bot_token_encrypted  TEXT,
@@ -900,13 +910,21 @@ CREATE TABLE IF NOT EXISTS telegram_configs (
   activated_at         TIMESTAMPTZ,
   activated_by         TEXT,
   reason               TEXT NOT NULL DEFAULT '',
-  created_at           TIMESTAMPTZ NOT NULL DEFAULT now()
+  created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+  CONSTRAINT telegram_configs_audience_check
+    CHECK (audience IN ('PLAYER','STAFF','MERCHANT'))
 );
 -- At most one active generation, as the DATABASE's rule rather than something
 -- every writer has to remember: activating a new one must deactivate the old
 -- in the same transaction, or fail.
+-- On an existing database `CREATE TABLE IF NOT EXISTS` is a no-op, so the column
+-- the index below names has to be added here — before the index, not in a
+-- migration block at the end of the file, which is where the first draft put it
+-- and where it ran far too late to help.
+ALTER TABLE telegram_configs ADD COLUMN IF NOT EXISTS audience TEXT NOT NULL DEFAULT 'PLAYER';
 CREATE UNIQUE INDEX IF NOT EXISTS one_active_telegram_config
-  ON telegram_configs (active) WHERE active;
+  ON telegram_configs (audience) WHERE active;
 
 -- ── Telegram: the bot registry ───────────────────────────────────────────────
 --
@@ -917,6 +935,11 @@ CREATE TABLE IF NOT EXISTS telegram_bots (
   bot_id          TEXT PRIMARY KEY,   -- Telegram's numeric id: the real identity
   label           TEXT NOT NULL,
   role            TEXT NOT NULL,
+  -- WHICH PANEL this bot serves. One bot serves exactly one audience, which is
+  -- why this is a column on the row rather than a join: the whole point of the
+  -- split is that a merchant never opens the player bot and an admin never
+  -- opens either (owner, 2026-09-24).
+  audience        TEXT NOT NULL DEFAULT 'PLAYER',
   username        TEXT NOT NULL,
   token_encrypted TEXT NOT NULL,
   webhook_secret  TEXT NOT NULL,
@@ -947,9 +970,17 @@ CREATE TABLE IF NOT EXISTS telegram_bots (
   -- `recovery` stays singular. There is exactly one account-recovery
   -- conversation and it is the one path that hands an account to a DIFFERENT
   -- Telegram account, so it stays a single, watchable door.
+  --
+  -- ── The slot is per AUDIENCE ──────────────────────────────────────────────
+  -- "One live recovery bot" is a rule about one panel's recovery conversation,
+  -- not about the platform: the player, merchant and staff doors are three
+  -- separate doors and each gets exactly one. Composing the audience into the
+  -- slot value is what makes the single partial unique index below say that,
+  -- rather than refusing the second audience's recovery bot outright — which
+  -- is what a slot holding the bare role did, silently, on the second INSERT.
   live_slot       TEXT GENERATED ALWAYS AS (
                     CASE WHEN status = 'ACTIVE' AND role = 'recovery'
-                         THEN role END
+                         THEN audience || ':' || role END
                   ) STORED,
 
   webhook_url     TEXT NOT NULL DEFAULT '',
@@ -966,13 +997,17 @@ CREATE TABLE IF NOT EXISTS telegram_bots (
   CONSTRAINT telegram_bots_role_check
     CHECK (role IN ('signin','recovery','broadcast','moderation','generic')),
   CONSTRAINT telegram_bots_status_check
-    CHECK (status IN ('ACTIVE','STANDBY','RETIRED'))
+    CHECK (status IN ('ACTIVE','STANDBY','RETIRED')),
+  CONSTRAINT telegram_bots_audience_check
+    CHECK (audience IN ('PLAYER','STAFF','MERCHANT'))
 );
 -- Partial rather than sparse: rows with no live_slot are not indexed at all, so
 -- any number of standby, retired and outbound-only bots coexist.
+ALTER TABLE telegram_bots ADD COLUMN IF NOT EXISTS audience TEXT NOT NULL DEFAULT 'PLAYER';
 CREATE UNIQUE INDEX IF NOT EXISTS one_live_bot_per_singular_role
   ON telegram_bots (live_slot) WHERE live_slot IS NOT NULL;
-CREATE INDEX IF NOT EXISTS telegram_bots_role_status_idx ON telegram_bots (role, status);
+CREATE INDEX IF NOT EXISTS telegram_bots_role_status_idx
+  ON telegram_bots (audience, role, status);
 
 -- ── Telegram: what the bot says ──────────────────────────────────────────────
 -- A missing or blank row means THE SHIPPED DEFAULT, never silence: a player
@@ -986,7 +1021,17 @@ CREATE TABLE IF NOT EXISTS telegram_templates (
 
 -- ── Telegram: one Telegram account ↔ one platform account ────────────────────
 CREATE TABLE IF NOT EXISTS telegram_identities (
-  telegram_user_id  TEXT PRIMARY KEY,
+  telegram_user_id  TEXT NOT NULL,
+  -- WHICH PANEL this link is for, and why it is part of the KEY.
+  --
+  -- One person may hold a player account, a merchant account and a staff
+  -- account on one mobile (§33.5), and they will open all three bots from the
+  -- SAME Telegram account — that is what a Telegram account is. A bare
+  -- `telegram_user_id` primary key made the second one impossible: sharing a
+  -- contact with the merchant bot answered "this Telegram account is already
+  -- verifying a different account", naming the player link the person had made
+  -- minutes earlier, and there was no way past it from either side.
+  audience          TEXT NOT NULL DEFAULT 'PLAYER',
   -- One Telegram account cannot hold two platform accounts (the PRIMARY KEY),
   -- and one platform account cannot be driven by two ACTIVE Telegram accounts
   -- (`one_active_identity_per_user` below). That pair IS the
@@ -1015,8 +1060,12 @@ CREATE TABLE IF NOT EXISTS telegram_identities (
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
   last_seen_at      TIMESTAMPTZ,
 
+  PRIMARY KEY (telegram_user_id, audience),
+
   CONSTRAINT telegram_identities_channel_status_check
-    CHECK (channel_status IN ('member','administrator','creator','restricted','left','kicked','unknown'))
+    CHECK (channel_status IN ('member','administrator','creator','restricted','left','kicked','unknown')),
+  CONSTRAINT telegram_identities_audience_check
+    CHECK (audience IN ('PLAYER','STAFF','MERCHANT'))
 );
 -- The phone is an identity anchor: two Telegram accounts sharing one number
 -- must not become two platform accounts. Partial on contact_active so somebody
@@ -1031,14 +1080,18 @@ CREATE TABLE IF NOT EXISTS telegram_identities (
 -- hold it, which is the first thing a takeover review asks for — or point it at
 -- some placeholder account, which the foreign key refuses. Partial, the old row
 -- keeps its real user_id, goes inactive, and stays readable.
+ALTER TABLE telegram_identities ADD COLUMN IF NOT EXISTS audience TEXT NOT NULL DEFAULT 'PLAYER';
 CREATE UNIQUE INDEX IF NOT EXISTS one_active_identity_per_user
   ON telegram_identities (user_id) WHERE contact_active;
 DO $$ BEGIN
   ALTER TABLE telegram_identities DROP CONSTRAINT IF EXISTS telegram_identities_user_id_key;
 EXCEPTION WHEN undefined_object THEN NULL; END $$;
 
+-- Per AUDIENCE, for the reason the primary key is: one mobile legitimately
+-- holds one account on each panel, so the rule "two Telegram accounts sharing
+-- one number must not become two platform accounts" is a rule WITHIN a panel.
 CREATE UNIQUE INDEX IF NOT EXISTS one_active_identity_per_phone
-  ON telegram_identities (phone) WHERE contact_active;
+  ON telegram_identities (phone, audience) WHERE contact_active;
 CREATE INDEX IF NOT EXISTS telegram_identities_channel_idx
   ON telegram_identities (channel_generation, channel_status);
 
@@ -1082,13 +1135,24 @@ CREATE INDEX IF NOT EXISTS telegram_identities_channel_idx
 -- recovering from a fresh Telegram account could be onboarding on that same id,
 -- and one row cannot own two workflows (CLAUDE.md §7).
 CREATE TABLE IF NOT EXISTS telegram_recovery_sessions (
-  telegram_user_id TEXT PRIMARY KEY,
+  telegram_user_id TEXT NOT NULL,
+  -- Part of the key for the same reason it is part of `telegram_identities`'s:
+  -- one person opens all three recovery bots from ONE Telegram account, and a
+  -- half-finished merchant recovery must not overwrite a half-finished player
+  -- one — which, with a bare `telegram_user_id` key, is exactly what the
+  -- ON CONFLICT DO UPDATE in `putRecoverySession` would do.
+  audience         TEXT NOT NULL DEFAULT 'PLAYER',
   aadhaar_hashes   TEXT[] NOT NULL,
   created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
   expires_at       TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (telegram_user_id, audience),
   CONSTRAINT telegram_recovery_sessions_has_hashes
-    CHECK (cardinality(aadhaar_hashes) > 0)
+    CHECK (cardinality(aadhaar_hashes) > 0),
+  CONSTRAINT telegram_recovery_sessions_audience_check
+    CHECK (audience IN ('PLAYER','STAFF','MERCHANT'))
 );
+ALTER TABLE telegram_recovery_sessions
+  ADD COLUMN IF NOT EXISTS audience TEXT NOT NULL DEFAULT 'PLAYER';
 -- The reads all filter on it, so expiry is a property of the QUERY and never
 -- depends on the sweep having run (same posture as the login-code tables).
 CREATE INDEX IF NOT EXISTS telegram_recovery_sessions_expiry_idx
@@ -4078,3 +4142,128 @@ CREATE INDEX IF NOT EXISTS password_resets_expiry_idx ON password_resets (expire
 -- alternative — recording every issued token — is a write per login and a table
 -- that grows with traffic, to answer a question this answers exactly.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS sessions_valid_from TIMESTAMPTZ;
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Three panels, three bots, three channels — 2026-09-24 (owner)
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- "two separate bots which handles merchant and admin panel ... one bot with
+-- its own channel for merchant and one bot with its own channel for admin thus
+-- it will be complete separate from user panel whether its signup or login or
+-- account recovery" (owner, 2026-09-24).
+--
+-- §33.5 already made a player, a merchant and a staff account three separate
+-- ENTITIES on one mobile. This makes their Telegram halves three separate
+-- entities too, on the SAME axis and with the SAME vocabulary: `audience` here
+-- takes exactly the values `users.account_type` takes, so an account's type IS
+-- its audience and there is no second place where "which bot serves this
+-- person" gets decided (§2).
+--
+-- Every statement below is CONVERGENT, not merely idempotent (§32 S31): a
+-- definition that can move is DROPPED and re-added rather than skipped when an
+-- object of that name already exists. The `account_type` CHECK is what taught
+-- us the difference — a guard that skipped it left every merchant signup
+-- failing on a value the schema file plainly allowed, and because the apply
+-- stops at the failure a column further down was never created at all.
+
+-- ── telegram_configs: one active channel PER AUDIENCE ──────────────────────
+ALTER TABLE telegram_configs ADD COLUMN IF NOT EXISTS audience TEXT NOT NULL DEFAULT 'PLAYER';
+ALTER TABLE telegram_configs DROP CONSTRAINT IF EXISTS telegram_configs_audience_check;
+ALTER TABLE telegram_configs ADD CONSTRAINT telegram_configs_audience_check
+  CHECK (audience IN ('PLAYER','STAFF','MERCHANT'));
+-- The old index was UNIQUE on (active) WHERE active — "one active config on the
+-- whole platform". Left standing, activating the merchant channel would have
+-- deactivated the player channel and re-gated every player, which is the most
+-- expensive thing this schema can do by accident.
+DROP INDEX IF EXISTS one_active_telegram_config;
+CREATE UNIQUE INDEX one_active_telegram_config
+  ON telegram_configs (audience) WHERE active;
+
+-- ── telegram_bots: a bot serves exactly one panel ──────────────────────────
+ALTER TABLE telegram_bots ADD COLUMN IF NOT EXISTS audience TEXT NOT NULL DEFAULT 'PLAYER';
+ALTER TABLE telegram_bots DROP CONSTRAINT IF EXISTS telegram_bots_audience_check;
+ALTER TABLE telegram_bots ADD CONSTRAINT telegram_bots_audience_check
+  CHECK (audience IN ('PLAYER','STAFF','MERCHANT'));
+
+-- The generated slot must compose the audience in, or the single partial unique
+-- index refuses the SECOND panel's recovery bot — on the INSERT, with a
+-- duplicate-key error naming an index whose name says nothing about audiences.
+-- Guarded on the EXPRESSION rather than on the column's existence, because the
+-- column exists in both the old shape and the new one and only the expression
+-- tells them apart.
+DO $$ BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_attrdef d
+      JOIN pg_class c ON c.oid = d.adrelid
+      JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = d.adnum
+     WHERE c.relname = 'telegram_bots'
+       AND a.attname = 'live_slot'
+       AND pg_get_expr(d.adbin, d.adrelid) NOT LIKE '%audience%'
+  ) THEN
+    DROP INDEX IF EXISTS one_live_bot_per_singular_role;
+    ALTER TABLE telegram_bots DROP COLUMN live_slot;
+    ALTER TABLE telegram_bots ADD COLUMN live_slot TEXT GENERATED ALWAYS AS (
+      CASE WHEN status = 'ACTIVE' AND role = 'recovery'
+           THEN audience || ':' || role END
+    ) STORED;
+    CREATE UNIQUE INDEX one_live_bot_per_singular_role
+      ON telegram_bots (live_slot) WHERE live_slot IS NOT NULL;
+    RAISE NOTICE 'telegram_bots.live_slot rebuilt: one live recovery bot PER AUDIENCE';
+  END IF;
+END $$;
+
+DROP INDEX IF EXISTS telegram_bots_role_status_idx;
+CREATE INDEX telegram_bots_role_status_idx ON telegram_bots (audience, role, status);
+
+-- ── telegram_identities: one Telegram account, one link PER PANEL ──────────
+ALTER TABLE telegram_identities ADD COLUMN IF NOT EXISTS audience TEXT NOT NULL DEFAULT 'PLAYER';
+ALTER TABLE telegram_identities DROP CONSTRAINT IF EXISTS telegram_identities_audience_check;
+ALTER TABLE telegram_identities ADD CONSTRAINT telegram_identities_audience_check
+  CHECK (audience IN ('PLAYER','STAFF','MERCHANT'));
+
+-- An EXISTING row's audience is derivable — it is the account_type of the user
+-- it points at — so nothing has to be guessed. Runs before the key changes, so
+-- the rows are already in their right audiences when uniqueness is re-imposed.
+UPDATE telegram_identities ti
+   SET audience = u.account_type
+  FROM users u
+ WHERE u.user_id = ti.user_id
+   AND ti.audience <> u.account_type;
+
+-- The primary key, widened. Guarded on whether `audience` is already part of
+-- it, which is the only thing that distinguishes the two shapes.
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint con
+      JOIN pg_attribute a
+        ON a.attrelid = con.conrelid AND a.attnum = ANY (con.conkey)
+     WHERE con.conrelid = 'telegram_identities'::regclass
+       AND con.contype = 'p'
+       AND a.attname = 'audience'
+  ) THEN
+    ALTER TABLE telegram_identities DROP CONSTRAINT IF EXISTS telegram_identities_pkey;
+    ALTER TABLE telegram_identities ADD PRIMARY KEY (telegram_user_id, audience);
+    RAISE NOTICE 'telegram_identities primary key widened to (telegram_user_id, audience)';
+  END IF;
+END $$;
+
+DROP INDEX IF EXISTS one_active_identity_per_phone;
+CREATE UNIQUE INDEX one_active_identity_per_phone
+  ON telegram_identities (phone, audience) WHERE contact_active;
+
+-- ── telegram_recovery_sessions: one half-finished recovery PER PANEL ───────
+ALTER TABLE telegram_recovery_sessions DROP CONSTRAINT IF EXISTS telegram_recovery_sessions_audience_check;
+ALTER TABLE telegram_recovery_sessions ADD CONSTRAINT telegram_recovery_sessions_audience_check
+  CHECK (audience IN ('PLAYER','STAFF','MERCHANT'));
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint con
+      JOIN pg_attribute a
+        ON a.attrelid = con.conrelid AND a.attnum = ANY (con.conkey)
+     WHERE con.conrelid = 'telegram_recovery_sessions'::regclass
+       AND con.contype = 'p' AND a.attname = 'audience'
+  ) THEN
+    ALTER TABLE telegram_recovery_sessions DROP CONSTRAINT IF EXISTS telegram_recovery_sessions_pkey;
+    ALTER TABLE telegram_recovery_sessions ADD PRIMARY KEY (telegram_user_id, audience);
+  END IF;
+END $$;

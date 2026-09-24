@@ -57,6 +57,7 @@ import sseService from './services/sse';
 // The obligation gate. Wraps the whole route table rather than each guard —
 // see the file header for why four copies of one rule is the wrong shape.
 import MandatoryTwoFactor from './components/MandatoryTwoFactor';
+import VerificationGate from './components/VerificationGate';
 // Permission strings in PermRoute must exist in PERMISSION_KEYS (utils/permissions.ts) — GOVERNANCE.md M-1
 
 // ─── Route Guards ─────────────────────────────────────────────────────────────
@@ -169,6 +170,20 @@ const App: React.FC = () => {
         }}
       />
       <MandatoryTwoFactor>
+      {/* ── The staff verification gate ─────────────────────────────────────
+          INSIDE MandatoryTwoFactor, so the session is finished before the
+          account is asked about — a half-completed 2FA challenge cannot read
+          this endpoint anyway, and asking would answer 401 on a screen that is
+          already telling the operator what to do.
+
+          Mounted above <Routes> rather than on Layout, because it must also
+          cover the screens that render outside Layout, and because its other
+          job is the BOOTSTRAP BANNER: a standing reminder, shown to a VERIFIED
+          admin, that staff verification is not switched on yet. It renders
+          nothing at all once a staff bot and channel exist and this account has
+          verified. Signed out, the read 401s and it stays silent, so the login
+          screen is untouched. */}
+      <VerificationGate />
       <Routes>
         <Route path="/login" element={<Login />} />
 

@@ -27,8 +27,33 @@ const toInt = (v) => (v == null ? null : Number(v));
 
 // ── Configuration generations ────────────────────────────────────────────────
 
+// ── The audience, and why it is REQUIRED everywhere below ──────────────────
+//
+// A player, a merchant and a staff member are three separate entities (§33.5),
+// and as of 2026-09-24 each gets its own bot and its own channel: "one bot with
+// its own channel for merchant and one bot with its own channel for admin thus
+// it will be complete separate from user panel" (owner).
+//
+// The values are `ACCOUNT_TYPES` — IMPORTED, not re-declared. An account's type
+// IS its audience, so a second list here would be a second owner of the same
+// vocabulary (§5) and the drift would show up as a merchant who can never
+// verify.
+//
+// `assertAudience` THROWS rather than defaulting, for the reason
+// `getUserByMobile` does: a default would make every un-updated caller silently
+// correct for players and silently wrong for the other two — failing only on
+// the two populations that were added last and are tested least.
+import { ACCOUNT_TYPES } from './users.js';
+
+function assertAudience(audience, fn) {
+  if (!ACCOUNT_TYPES.includes(audience)) {
+    throw new Error(`${fn} requires an audience (one of ${ACCOUNT_TYPES.join(', ')}); got ${audience}`);
+  }
+  return audience;
+}
+
 const CONFIG_PUBLIC = `
-  generation, bot_username, recovery_bot_username,
+  generation, audience, bot_username, recovery_bot_username,
   channel_id, channel_username, channel_invite_link,
   active, activated_at, activated_by, reason, created_at`;
 
@@ -36,6 +61,7 @@ function toConfig(row) {
   if (!row) return null;
   return {
     generation: toInt(row.generation),
+    audience: row.audience,
     botUsername: row.bot_username,
     recoveryBotUsername: row.recovery_bot_username,
     channelId: row.channel_id,
@@ -49,10 +75,16 @@ function toConfig(row) {
   };
 }
 
-/** The live generation, or null when the platform has never been configured. */
-export async function getActiveConfig() {
+/**
+ * The live generation for ONE panel, or null when that panel has never been
+ * configured — which for STAFF is the state every install starts in and the
+ * state the bootstrap exemption exists to survive.
+ */
+export async function getActiveConfig(audience) {
+  assertAudience(audience, 'getActiveConfig');
   const { rows } = await pgQuery(
-    `SELECT ${CONFIG_PUBLIC} FROM telegram_configs WHERE active LIMIT 1`, [], 'tg_config_active',
+    `SELECT ${CONFIG_PUBLIC} FROM telegram_configs WHERE active AND audience = $1 LIMIT 1`,
+    [audience], 'tg_config_active',
   );
   return toConfig(rows[0]);
 }
@@ -65,11 +97,17 @@ export async function getActiveConfig() {
  * bot token would be a read path for a credential the platform deliberately
  * has none of.
  */
-export async function listConfigHistory({ limit = 10 } = {}) {
+export async function listConfigHistory({ limit = 10, audience = null } = {}) {
   const capped = Math.min(Math.max(Number(limit) || 10, 1), 100);
+  // Optional here, and only here: the history screen legitimately shows every
+  // panel's swaps side by side, and `audience` is a column on each row so a
+  // reader can tell them apart. Every other read below is scoped, because
+  // every other read is a DECISION about one person.
+  const params = audience ? [assertAudience(audience, 'listConfigHistory')] : [];
   const { rows } = await pgQuery(
     `SELECT ${CONFIG_PUBLIC} FROM telegram_configs
-      ORDER BY generation DESC LIMIT ${capped}`, [], 'tg_config_history',
+      ${audience ? 'WHERE audience = $1' : ''}
+      ORDER BY generation DESC LIMIT ${capped}`, params, 'tg_config_history',
   );
   return rows.map(toConfig);
 }
@@ -78,15 +116,18 @@ export async function listConfigHistory({ limit = 10 } = {}) {
  * The live generation's SECRETS. Separate function, deliberately: no route that
  * renders a config calls this one.
  */
-export async function getActiveConfigSecrets() {
+export async function getActiveConfigSecrets(audience) {
+  assertAudience(audience, 'getActiveConfigSecrets');
   const { rows } = await pgQuery(
-    `SELECT generation, bot_token_encrypted, webhook_secret,
+    `SELECT generation, audience, bot_token_encrypted, webhook_secret,
             recovery_bot_token_encrypted, recovery_webhook_secret
-       FROM telegram_configs WHERE active LIMIT 1`, [], 'tg_config_secrets',
+       FROM telegram_configs WHERE active AND audience = $1 LIMIT 1`,
+    [audience], 'tg_config_secrets',
   );
   const r = rows[0];
   return r ? {
     generation: toInt(r.generation),
+    audience: r.audience,
     botTokenEncrypted: r.bot_token_encrypted,
     webhookSecret: r.webhook_secret,
     recoveryBotTokenEncrypted: r.recovery_bot_token_encrypted,
@@ -108,12 +149,14 @@ export async function getActiveConfigSecrets() {
  * reason `getActiveConfigSecrets` is: a route that renders a config to a panel
  * calls the one that cannot return a token.
  */
-export async function getActiveConfigWithSecrets() {
+export async function getActiveConfigWithSecrets(audience) {
+  assertAudience(audience, 'getActiveConfigWithSecrets');
   const { rows } = await pgQuery(
     `SELECT ${CONFIG_PUBLIC},
             bot_token_encrypted, webhook_secret,
             recovery_bot_token_encrypted, recovery_webhook_secret
-       FROM telegram_configs WHERE active LIMIT 1`, [], 'tg_config_active_secrets',
+       FROM telegram_configs WHERE active AND audience = $1 LIMIT 1`,
+    [audience], 'tg_config_active_secrets',
   );
   const r = rows[0];
   if (!r) return null;
@@ -138,27 +181,36 @@ export async function getActiveConfigWithSecrets() {
  * count: two admins swapping at once must not compute the same next number.
  */
 export async function activateConfig({
+  audience,
   channelId, channelUsername = '', channelInviteLink = '',
   botTokenEncrypted = null, botUsername = '', webhookSecret = null,
   recoveryBotTokenEncrypted = null, recoveryBotUsername = '', recoveryWebhookSecret = null,
   activatedBy = null, reason = '',
 }) {
   if (!channelId) throw new Error('activateConfig requires a channelId');
+  assertAudience(audience, 'activateConfig');
   return withTelegramTransaction(async (client) => {
-    await client.query('UPDATE telegram_configs SET active = FALSE WHERE active');
+    // ── Scoped to the audience, and this line is the expensive one to get
+    // wrong. Unscoped, activating the merchant channel deactivates the PLAYER
+    // channel in the same transaction — which, because a cached membership is
+    // stamped with the generation it was observed in, silently re-gates the
+    // entire player base at the moment an operator thought they were
+    // configuring something else.
+    await client.query(
+      'UPDATE telegram_configs SET active = FALSE WHERE active AND audience = $1', [audience]);
     const { rows } = await client.query(
       `INSERT INTO telegram_configs (
-         generation, bot_token_encrypted, bot_username, webhook_secret,
+         generation, audience, bot_token_encrypted, bot_username, webhook_secret,
          recovery_bot_token_encrypted, recovery_bot_username, recovery_webhook_secret,
          channel_id, channel_username, channel_invite_link,
          active, activated_at, activated_by, reason)
        VALUES ((SELECT COALESCE(MAX(generation), 0) + 1 FROM telegram_configs),
-               $1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE, now(), $10, $11)
+               $12, $1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE, now(), $10, $11)
        RETURNING ${CONFIG_PUBLIC}`,
       [botTokenEncrypted, botUsername, webhookSecret,
        recoveryBotTokenEncrypted, recoveryBotUsername, recoveryWebhookSecret,
        String(channelId), channelUsername, channelInviteLink,
-       activatedBy ? String(activatedBy) : null, reason],
+       activatedBy ? String(activatedBy) : null, reason, audience],
     );
     return toConfig(rows[0]);
   });
@@ -167,14 +219,15 @@ export async function activateConfig({
 // ── The bot registry ─────────────────────────────────────────────────────────
 
 const BOT_PUBLIC = `
-  bot_id, label, role, username, status, live_slot, webhook_url,
+  bot_id, label, role, audience, username, status, live_slot, webhook_url,
   webhook_registered_at, last_error, added_by, added_at,
   activated_at, activated_by, retired_at, retired_by, notes`;
 
 function toBot(row) {
   if (!row) return null;
   return {
-    botId: row.bot_id, label: row.label, role: row.role, username: row.username,
+    botId: row.bot_id, label: row.label, role: row.role, audience: row.audience,
+    username: row.username,
     status: row.status, liveSlot: row.live_slot, webhookUrl: row.webhook_url,
     webhookRegisteredAt: row.webhook_registered_at, lastError: row.last_error,
     addedBy: row.added_by, addedAt: row.added_at,
@@ -184,15 +237,23 @@ function toBot(row) {
 }
 
 /** Every registered bot, live and reserve. Secrets excluded. */
-export async function listBots({ role = null, status = null } = {}) {
+export async function listBots({ role = null, status = null, audience = null } = {}) {
   const where = [];
   const params = [];
   if (role) { params.push(role); where.push(`role = $${params.length}`); }
   if (status) { params.push(status); where.push(`status = $${params.length}`); }
+  // Optional, like `listConfigHistory`'s: the Bot Fleet screen renders all
+  // three panels' fleets together and `audience` is on every row, so an
+  // operator sees at a glance that the merchant panel has no bot yet. A read
+  // that DECIDES something is scoped; a read that DISPLAYS may not be.
+  if (audience) {
+    params.push(assertAudience(audience, 'listBots'));
+    where.push(`audience = $${params.length}`);
+  }
   const { rows } = await pgQuery(
     `SELECT ${BOT_PUBLIC} FROM telegram_bots
       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-      ORDER BY role, status, added_at DESC`, params, 'tg_bot_list',
+      ORDER BY audience, role, status, added_at DESC`, params, 'tg_bot_list',
   );
   return rows.map(toBot);
 }
@@ -216,42 +277,45 @@ export async function listBots({ role = null, status = null } = {}) {
  * conversation belongs to. That decision is the ROTATION's, and a player's
  * replies are answered by the bot whose webhook they arrived on.
  */
-export async function getLiveBot(role) {
+export async function getLiveBot(role, audience) {
+  assertAudience(audience, 'getLiveBot');
   const { rows } = await pgQuery(
     `SELECT ${BOT_PUBLIC} FROM telegram_bots
-      WHERE status = 'ACTIVE' AND role = $1
-      ORDER BY added_at, bot_id LIMIT 1`, [role], 'tg_bot_live',
+      WHERE status = 'ACTIVE' AND role = $1 AND audience = $2
+      ORDER BY added_at, bot_id LIMIT 1`, [role, audience], 'tg_bot_live',
   );
   return toBot(rows[0]);
 }
 
 /** A live bot's credentials, for the send and channel-read paths only. */
-export async function getLiveBotSecrets(role) {
+export async function getLiveBotSecrets(role, audience) {
+  assertAudience(audience, 'getLiveBotSecrets');
   const { rows } = await pgQuery(
-    `SELECT bot_id, username, token_encrypted, webhook_secret
+    `SELECT bot_id, username, audience, token_encrypted, webhook_secret
        FROM telegram_bots
-      WHERE status = 'ACTIVE' AND role = $1
-      ORDER BY added_at, bot_id LIMIT 1`, [role], 'tg_bot_live_secrets',
+      WHERE status = 'ACTIVE' AND role = $1 AND audience = $2
+      ORDER BY added_at, bot_id LIMIT 1`, [role, audience], 'tg_bot_live_secrets',
   );
   const r = rows[0];
   return r ? {
-    botId: r.bot_id, username: r.username,
+    botId: r.bot_id, username: r.username, audience: r.audience,
     tokenEncrypted: r.token_encrypted, webhookSecret: r.webhook_secret,
   } : null;
 }
 
 /** Register a bot. Parked as STANDBY unless told otherwise — that is the point. */
 export async function addBot({
-  botId, label, role, username, tokenEncrypted, webhookSecret,
+  botId, label, role, audience, username, tokenEncrypted, webhookSecret,
   status = 'STANDBY', addedBy = null, notes = '',
 }) {
+  assertAudience(audience, 'addBot');
   const { rows } = await pgQuery(
-    `INSERT INTO telegram_bots (bot_id, label, role, username, token_encrypted,
+    `INSERT INTO telegram_bots (bot_id, label, role, audience, username, token_encrypted,
                                 webhook_secret, status, added_by, notes)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+     VALUES ($1,$2,$3,$10,$4,$5,$6,$7,$8,$9)
      RETURNING ${BOT_PUBLIC}`,
     [String(botId), label, role, username, tokenEncrypted, webhookSecret,
-     status, addedBy ? String(addedBy) : null, notes],
+     status, addedBy ? String(addedBy) : null, notes, audience],
     'tg_bot_add',
   );
   return toBot(rows[0]);
@@ -282,12 +346,23 @@ export async function addBot({
  */
 export async function promoteBot({ botId, role, actor = null }) {
   return withTelegramTransaction(async (client) => {
+    // ── The audience comes from the BOT'S OWN ROW, never from the caller ────
+    // A promotion is not a place to re-decide which panel a bot serves: the
+    // audience was fixed when it was registered, and taking it from an argument
+    // would let a mistyped field stand down the PLAYER recovery bot while
+    // promoting a merchant one — the incumbent of a door nobody meant to touch.
+    const { rows: subject } = await client.query(
+      'SELECT audience FROM telegram_bots WHERE bot_id = $1', [String(botId)],
+    );
+    if (!subject[0]) throw new Error(`promoteBot: no promotable bot ${botId} in role ${role}`);
+    const audience = subject[0].audience;
+
     const { rows: stoodDown } = await client.query(
       `UPDATE telegram_bots
           SET status = 'STANDBY', activated_at = NULL, activated_by = NULL
         WHERE live_slot = $1 AND bot_id <> $2
         RETURNING ${BOT_PUBLIC}, token_encrypted, webhook_secret`,
-      [role, String(botId)],
+      [`${audience}:${role}`, String(botId)],
     );
     const { rows } = await client.query(
       `UPDATE telegram_bots
@@ -339,13 +414,13 @@ export async function getBot(botId) {
  */
 export async function getBotSecrets(botId) {
   const { rows } = await pgQuery(
-    `SELECT bot_id, username, role, status, token_encrypted, webhook_secret
+    `SELECT bot_id, username, role, audience, status, token_encrypted, webhook_secret
        FROM telegram_bots WHERE bot_id = $1`,
     [String(botId)], 'tg_bot_secrets',
   );
   const r = rows[0];
   return r ? {
-    botId: r.bot_id, username: r.username, role: r.role, status: r.status,
+    botId: r.bot_id, username: r.username, role: r.role, audience: r.audience, status: r.status,
     tokenEncrypted: r.token_encrypted, webhookSecret: r.webhook_secret,
   } : null;
 }
@@ -388,9 +463,15 @@ export async function retireBot(botId, { actor = null } = {}) {
           -- bot they like EXCEPT the last live one, which is the same refusal
           -- the generated column gives a singular role, expressed the only way
           -- a fleet allows: by counting what would be left.
+          -- Scoped to the bot's OWN audience: the player fleet having spares
+          -- says nothing about whether retiring this merchant bot leaves the
+          -- merchant panel with no front door. Unscoped, it would have allowed
+          -- exactly that, and the first merchant to try verifying would meet a
+          -- gate with no bot to open.
           status <> 'ACTIVE' OR role <> 'signin'
           OR EXISTS (SELECT 1 FROM telegram_bots sibling
                       WHERE sibling.status = 'ACTIVE' AND sibling.role = 'signin'
+                        AND sibling.audience = telegram_bots.audience
                         AND sibling.bot_id <> $1)
         )
       RETURNING ${BOT_PUBLIC}`,
@@ -400,7 +481,7 @@ export async function retireBot(botId, { actor = null } = {}) {
   const current = await getBot(botId);
   if (!current) return { ok: false, reason: 'NOT_FOUND' };
   if (current.status === 'RETIRED') return { ok: false, reason: 'ALREADY_RETIRED' };
-  return { ok: false, reason: 'IS_LIVE', role: current.role };
+  return { ok: false, reason: 'IS_LIVE', role: current.role, audience: current.audience };
 }
 
 /** Record why a promotion or a send failed — the first thing an operator needs. */
@@ -487,6 +568,7 @@ function toIdentity(row) {
   if (!row) return null;
   return {
     telegramUserId: row.telegram_user_id,
+    audience: row.audience,
     userId: row.user_id,
     telegramUsername: row.telegram_username,
     firstName: row.first_name,
@@ -502,11 +584,22 @@ function toIdentity(row) {
   };
 }
 
-export async function getIdentityByTelegramId(telegramUserId) {
+/**
+ * One Telegram account's link FOR ONE PANEL.
+ *
+ * The audience is required and it is half the key. One person opens the player
+ * bot, the merchant bot and the staff bot from the SAME Telegram account —
+ * that is what a Telegram account is — so "which account does this Telegram
+ * user hold" has up to three answers and a caller that does not say which one
+ * it means is asking a question with no answer.
+ */
+export async function getIdentityByTelegramId(telegramUserId, audience) {
   if (!telegramUserId) return null;
+  assertAudience(audience, 'getIdentityByTelegramId');
   const { rows } = await pgQuery(
-    `SELECT ${IDENTITY_COLUMNS} FROM telegram_identities WHERE telegram_user_id = $1`,
-    [String(telegramUserId)], 'tg_identity_get',
+    `SELECT ${IDENTITY_COLUMNS} FROM telegram_identities
+      WHERE telegram_user_id = $1 AND audience = $2`,
+    [String(telegramUserId), audience], 'tg_identity_get',
   );
   return toIdentity(rows[0]);
 }
@@ -526,6 +619,11 @@ export async function getIdentityByTelegramId(telegramUserId) {
  * Returning its last known identity beats returning nothing, because the caller
  * can then say "this account was linked and is not any more".
  */
+// NOT audience-scoped, and deliberately: `user_id` already belongs to exactly
+// one `account_type`, so the row it finds is in that account's audience by
+// construction. Adding the parameter would invite a caller to pass one that
+// disagrees with the user — a second owner of a value the users table already
+// decides (§2).
 export async function getIdentityByUserId(userId, { activeOnly = true } = {}) {
   if (!userId) return null;
   const { rows } = await pgQuery(
@@ -550,17 +648,18 @@ export async function listIdentitiesForUser(userId) {
 
 /** Link a Telegram account to a platform account. */
 export async function createIdentity({
-  telegramUserId, userId, phone, contactSharedAt = new Date(),
+  telegramUserId, audience, userId, phone, contactSharedAt = new Date(),
   telegramUsername = '', firstName = '', linkedGeneration = 0,
 }) {
+  assertAudience(audience, 'createIdentity');
   const { rows } = await pgQuery(
     `INSERT INTO telegram_identities (
-       telegram_user_id, user_id, telegram_username, first_name, phone,
+       telegram_user_id, audience, user_id, telegram_username, first_name, phone,
        contact_shared_at, linked_generation, channel_generation)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$7)
+     VALUES ($1,$8,$2,$3,$4,$5,$6,$7,$7)
      RETURNING ${IDENTITY_COLUMNS}`,
     [String(telegramUserId), String(userId), telegramUsername, firstName,
-     String(phone), contactSharedAt, linkedGeneration],
+     String(phone), contactSharedAt, linkedGeneration, audience],
     'tg_identity_create',
   );
   return toIdentity(rows[0]);
@@ -596,16 +695,18 @@ export async function createIdentity({
  * message rather than a stack trace.
  */
 export async function relinkIdentity({
-  telegramUserId, userId, phone, generation = 0,
+  telegramUserId, audience, userId, phone, generation = 0,
   telegramUsername = '', firstName = '',
 }) {
+  assertAudience(audience, 'relinkIdentity');
   return withTelegramTransaction(async (client) => {
     // Whoever the new Telegram account is currently linked to. Read INSIDE the
     // transaction: a check outside it is a decision made against a state that
     // can change before the write lands.
     const { rows: holder } = await client.query(
-      'SELECT user_id FROM telegram_identities WHERE telegram_user_id = $1',
-      [String(telegramUserId)],
+      `SELECT user_id FROM telegram_identities
+        WHERE telegram_user_id = $1 AND audience = $2`,
+      [String(telegramUserId), audience],
     );
     if (holder[0] && String(holder[0].user_id) !== String(userId)) {
       return { ok: false, reason: 'TELEGRAM_ALREADY_LINKED' };
@@ -623,14 +724,18 @@ export async function relinkIdentity({
         RETURNING telegram_user_id`,
       [String(userId), String(telegramUserId)],
     );
+    // No audience filter on the stand-down above, and that is correct rather
+    // than an omission: `user_id` is already one account in one audience, so
+    // every row it matches is in this audience by construction. Filtering would
+    // read as though the account could have identities elsewhere.
 
     const { rows } = await client.query(
       `INSERT INTO telegram_identities (
          telegram_user_id, user_id, telegram_username, first_name, phone,
          contact_shared_at, contact_active, channel_status,
-         channel_generation, linked_generation)
-       VALUES ($1,$2,$3,$4,$5, now(), TRUE, 'unknown', $6, $6)
-       ON CONFLICT (telegram_user_id) DO UPDATE SET
+         channel_generation, linked_generation, audience)
+       VALUES ($1,$2,$3,$4,$5, now(), TRUE, 'unknown', $6, $6, $7)
+       ON CONFLICT (telegram_user_id, audience) DO UPDATE SET
          user_id = EXCLUDED.user_id, phone = EXCLUDED.phone,
          contact_shared_at = EXCLUDED.contact_shared_at,
          contact_active = TRUE, channel_status = 'unknown',
@@ -639,7 +744,7 @@ export async function relinkIdentity({
          last_seen_at = now()
        RETURNING ${IDENTITY_COLUMNS}`,
       [String(telegramUserId), String(userId), telegramUsername, firstName,
-       String(phone), generation],
+       String(phone), generation, audience],
     );
 
     return {
@@ -659,14 +764,15 @@ export async function relinkIdentity({
  * swapping the channel makes every cached answer stale by construction rather
  * than by a sweep somebody has to remember to run.
  */
-export async function setChannelStatus(telegramUserId, { status, generation }) {
+export async function setChannelStatus(telegramUserId, { status, generation, audience }) {
+  assertAudience(audience, 'setChannelStatus');
   const { rows } = await pgQuery(
     `UPDATE telegram_identities
         SET channel_status = $2, channel_generation = $3,
             channel_checked_at = now(), last_seen_at = now()
-      WHERE telegram_user_id = $1
+      WHERE telegram_user_id = $1 AND audience = $4
       RETURNING ${IDENTITY_COLUMNS}`,
-    [String(telegramUserId), status, generation], 'tg_identity_channel',
+    [String(telegramUserId), status, generation, audience], 'tg_identity_channel',
   );
   return toIdentity(rows[0]);
 }
@@ -679,11 +785,12 @@ export async function setChannelStatus(telegramUserId, { status, generation }) {
  * partial unique index only covers contact-active rows, so retiring one frees
  * the number for the person's new Telegram account.
  */
-export async function deactivateContact(telegramUserId) {
+export async function deactivateContact(telegramUserId, audience) {
+  assertAudience(audience, 'deactivateContact');
   const { rows } = await pgQuery(
     `UPDATE telegram_identities SET contact_active = FALSE
-      WHERE telegram_user_id = $1 RETURNING ${IDENTITY_COLUMNS}`,
-    [String(telegramUserId)], 'tg_identity_deactivate',
+      WHERE telegram_user_id = $1 AND audience = $2 RETURNING ${IDENTITY_COLUMNS}`,
+    [String(telegramUserId), audience], 'tg_identity_deactivate',
   );
   return toIdentity(rows[0]);
 }
@@ -721,20 +828,22 @@ export async function deactivateContact(telegramUserId) {
  * means correcting a typo, and a person who has already lost their account
  * should not also be told they must wait out a TTL to fix one.
  */
-export async function putRecoverySession({ telegramUserId, aadhaarHashes, ttlSeconds }) {
+export async function putRecoverySession({ telegramUserId, audience, aadhaarHashes, ttlSeconds }) {
   if (!telegramUserId) throw new Error('putRecoverySession requires a telegramUserId');
+  assertAudience(audience, 'putRecoverySession');
   if (!Array.isArray(aadhaarHashes) || !aadhaarHashes.length) {
     throw new Error('putRecoverySession requires at least one aadhaar hash');
   }
   const { rows } = await pgQuery(
-    `INSERT INTO telegram_recovery_sessions (telegram_user_id, aadhaar_hashes, expires_at)
-     VALUES ($1, $2, now() + ($3 || ' seconds')::interval)
-     ON CONFLICT (telegram_user_id) DO UPDATE
+    `INSERT INTO telegram_recovery_sessions (telegram_user_id, audience, aadhaar_hashes, expires_at)
+     VALUES ($1, $4, $2, now() + ($3 || ' seconds')::interval)
+     ON CONFLICT (telegram_user_id, audience) DO UPDATE
        SET aadhaar_hashes = EXCLUDED.aadhaar_hashes,
            created_at     = now(),
            expires_at     = EXCLUDED.expires_at
      RETURNING expires_at`,
-    [String(telegramUserId), aadhaarHashes.map(String), String(Math.max(Number(ttlSeconds) || 600, 1))],
+    [String(telegramUserId), aadhaarHashes.map(String),
+     String(Math.max(Number(ttlSeconds) || 600, 1)), audience],
     'tg_recovery_put',
   );
   return { expiresAt: rows[0].expires_at };
@@ -746,20 +855,22 @@ export async function putRecoverySession({ telegramUserId, aadhaarHashes, ttlSec
  * Expiry is in the STATEMENT, so a sweep that is late, failed or never
  * scheduled cannot make a stale session usable.
  */
-export async function getRecoverySession(telegramUserId) {
+export async function getRecoverySession(telegramUserId, audience) {
+  assertAudience(audience, 'getRecoverySession');
   const { rows } = await pgQuery(
     `SELECT aadhaar_hashes, expires_at FROM telegram_recovery_sessions
-      WHERE telegram_user_id = $1 AND expires_at > now()`,
-    [String(telegramUserId)], 'tg_recovery_get',
+      WHERE telegram_user_id = $1 AND audience = $2 AND expires_at > now()`,
+    [String(telegramUserId), audience], 'tg_recovery_get',
   );
   return rows[0] ? { aadhaarHashes: rows[0].aadhaar_hashes, expiresAt: rows[0].expires_at } : null;
 }
 
 /** Consume it. Called whether the attempt succeeded or failed — one try per send. */
-export async function deleteRecoverySession(telegramUserId) {
+export async function deleteRecoverySession(telegramUserId, audience) {
+  assertAudience(audience, 'deleteRecoverySession');
   await pgQuery(
-    'DELETE FROM telegram_recovery_sessions WHERE telegram_user_id = $1',
-    [String(telegramUserId)], 'tg_recovery_delete',
+    'DELETE FROM telegram_recovery_sessions WHERE telegram_user_id = $1 AND audience = $2',
+    [String(telegramUserId), audience], 'tg_recovery_delete',
   );
 }
 
@@ -832,11 +943,12 @@ export async function withTelegramTransaction(fn) {
  * failed.
  */
 export async function linkTelegramToAccount({
-  telegramUserId, phone, telegramUsername = '', firstName = '', generation = 0,
+  telegramUserId, audience, phone, telegramUsername = '', firstName = '', generation = 0,
 }) {
   if (!telegramUserId || !phone) {
     throw new Error('linkTelegramToAccount requires a telegramUserId and a phone');
   }
+  assertAudience(audience, 'linkTelegramToAccount');
   const tgId = String(telegramUserId);
   const number = String(phone);
 
@@ -846,27 +958,31 @@ export async function linkTelegramToAccount({
       // this replaced: a contact that matches nothing is a person who has not
       // filled the form yet, and the answer is to send them to it.
       //
-      // ── PLAYER, and the filter is load-bearing ─────────────────────────
-      // A mobile can hold a PLAYER account and a STAFF account (2026-09-24),
-      // and without `account_type` this matched whichever the planner reached
-      // first. MEASURED: a player sharing their contact linked the STAFF row on
-      // the same number — and the bot's password-reset button then issued a
-      // reset link for an ADMIN account to somebody who had proved nothing but
-      // possession of the phone. A privilege escalation out of an unfiltered
-      // SELECT.
+      // ── The account_type filter is load-bearing, and it is now the AUDIENCE
+      // ────────────────────────────────────────────────────────────────────
+      // A mobile can hold a PLAYER, a STAFF and a MERCHANT account (§33.5), and
+      // without this predicate the query matched whichever the planner reached
+      // first. MEASURED, before the fix: a player sharing their contact linked
+      // the STAFF row on the same number — and the bot's password-reset button
+      // then issued a reset link for an ADMIN account to somebody who had
+      // proved nothing but possession of the phone. A privilege escalation out
+      // of an unfiltered SELECT (§32 S30).
       //
-      // Staff do not verify through Telegram and have no identity to link, so
-      // the filter removes nothing real. It is here because a query that CAN
-      // match two populations will eventually match the wrong one.
+      // The literal 'PLAYER' that fixed it has become the bot's own audience,
+      // which is stronger rather than looser: the STAFF bot has its own token
+      // and its own webhook path, so a contact arriving there can only ever
+      // reach a STAFF row, and a contact arriving at a player bot still cannot
+      // reach anything else. The predicate and the door now say the same thing.
       const { rows: userRows } = await client.query(
         `SELECT user_id FROM users
-          WHERE mobile = $1 AND account_type = 'PLAYER' AND status <> 'DELETED'`, [number],
+          WHERE mobile = $1 AND account_type = $2 AND status <> 'DELETED'`, [number, audience],
       );
       if (!userRows[0]) return { ok: false, reason: 'no_account' };
       const userId = userRows[0].user_id;
 
       const { rows: mine } = await client.query(
-        `SELECT user_id FROM telegram_identities WHERE telegram_user_id = $1`, [tgId],
+        `SELECT user_id FROM telegram_identities
+          WHERE telegram_user_id = $1 AND audience = $2`, [tgId, audience],
       );
       if (mine[0]) {
         if (String(mine[0].user_id) !== String(userId)) {
@@ -877,18 +993,18 @@ export async function linkTelegramToAccount({
           `UPDATE telegram_identities
               SET telegram_username = $2, first_name = $3, phone = $4,
                   contact_active = TRUE, contact_shared_at = now(), last_seen_at = now()
-            WHERE telegram_user_id = $1`,
-          [tgId, telegramUsername, firstName, number],
+            WHERE telegram_user_id = $1 AND audience = $5`,
+          [tgId, telegramUsername, firstName, number, audience],
         );
         return { ok: true, userId, relinked: true };
       }
 
       await client.query(
         `INSERT INTO telegram_identities (
-           telegram_user_id, user_id, telegram_username, first_name, phone,
+           telegram_user_id, audience, user_id, telegram_username, first_name, phone,
            contact_shared_at, linked_generation, channel_generation)
-         VALUES ($1, $2, $3, $4, $5, now(), $6, $6)`,
-        [tgId, userId, telegramUsername, firstName, number, generation],
+         VALUES ($1, $7, $2, $3, $4, $5, now(), $6, $6)`,
+        [tgId, userId, telegramUsername, firstName, number, generation, audience],
       );
       return { ok: true, userId, relinked: false };
     });
@@ -910,11 +1026,12 @@ export async function linkTelegramToAccount({
  * a rotation needs: an order that changed between two signups would hand the
  * same position to two different bots.
  */
-export async function listLiveSigninBots() {
+export async function listLiveSigninBots(audience) {
+  assertAudience(audience, 'listLiveSigninBots');
   const { rows } = await pgQuery(
     `SELECT ${BOT_PUBLIC} FROM telegram_bots
-      WHERE status = 'ACTIVE' AND role = 'signin'
-      ORDER BY added_at, bot_id`, [], 'tg_signin_fleet',
+      WHERE status = 'ACTIVE' AND role = 'signin' AND audience = $1
+      ORDER BY added_at, bot_id`, [audience], 'tg_signin_fleet',
   );
   return rows.map(toBot);
 }
@@ -955,15 +1072,22 @@ export async function listLiveSigninBots() {
  *   registered a live sign-in bot yet — a real state at launch, and one the
  *   caller reports rather than treating as an error.
  */
-export async function assignSigninBot(userId) {
+export async function assignSigninBot(userId, audience) {
+  assertAudience(audience, 'assignSigninBot');
   const { rows } = await pgQuery(
     `WITH tick AS (SELECT nextval('telegram_signin_rotation') - 1 AS n),
+          -- The fleet is PER PANEL. One sequence still drives all three, which
+          -- is fine and deliberate: the modulo is taken over this audience's
+          -- own live count, so three fleets of different sizes each rotate
+          -- through their own bots. A shared cursor skips positions rather than
+          -- mis-assigning them, and a skipped position costs one bot one place
+          -- in one cycle.
           live AS (
             SELECT bot_id,
                    row_number() OVER (ORDER BY added_at, bot_id) - 1 AS pos,
                    count(*)     OVER ()                              AS total
               FROM telegram_bots
-             WHERE status = 'ACTIVE' AND role = 'signin'
+             WHERE status = 'ACTIVE' AND role = 'signin' AND audience = $2
           ),
           -- Whose turn it is. Evaluated once: tick is its own single-row CTE
           -- because nextval written into this predicate directly would be
@@ -982,7 +1106,7 @@ export async function assignSigninBot(userId) {
                                        (SELECT bot_id FROM pick))
       WHERE u.user_id = $1
      RETURNING u.telegram_bot_id`,
-    [String(userId)], 'tg_assign_signin_bot',
+    [String(userId), audience], 'tg_assign_signin_bot',
   );
   return rows[0]?.telegram_bot_id ?? null;
 }
@@ -996,20 +1120,23 @@ export async function assignSigninBot(userId) {
  * than missing — the row an operator is looking for when they have just added
  * one.
  */
-export async function signinBotLoads() {
+export async function signinBotLoads({ audience = null } = {}) {
+  const params = audience ? [assertAudience(audience, 'signinBotLoads')] : [];
   const { rows } = await pgQuery(
-    `SELECT b.bot_id, b.username, b.label, count(u.user_id) AS assigned
+    `SELECT b.bot_id, b.username, b.label, b.audience, count(u.user_id) AS assigned
        FROM telegram_bots b
        LEFT JOIN users u ON u.telegram_bot_id = b.bot_id
       WHERE b.status = 'ACTIVE' AND b.role = 'signin'
-      GROUP BY b.bot_id, b.username, b.label
-      ORDER BY b.added_at, b.bot_id`, [], 'tg_signin_loads',
+        ${audience ? 'AND b.audience = $1' : ''}
+      GROUP BY b.bot_id, b.username, b.label, b.audience
+      ORDER BY b.audience, b.added_at, b.bot_id`, params, 'tg_signin_loads',
   );
   // `count(*)` is BIGINT and node-postgres hands BIGINT back as a STRING
   // (trap 5). Uncast, `'900' >= 1000` is true and every comparison a caller
   // makes on this figure is wrong. Cast at the boundary, once, here.
   return rows.map((r) => ({
-    botId: r.bot_id, username: r.username, label: r.label, assigned: Number(r.assigned),
+    botId: r.bot_id, username: r.username, label: r.label,
+    audience: r.audience, assigned: Number(r.assigned),
   }));
 }
 

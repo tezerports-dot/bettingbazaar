@@ -16,6 +16,7 @@
  * safe answer (deny betting, keep the session) is a policy choice.
  */
 import { db } from '#db';
+import { ACCOUNT_TYPES } from '#db/repositories/users.js';
 import { decryptField } from '../identity/fieldCrypto.util.js';
 
 const API_ROOT = 'https://api.telegram.org';
@@ -23,11 +24,34 @@ const API_ROOT = 'https://api.telegram.org';
 /** How long the active config is reused before re-reading it. */
 const CONFIG_TTL_MS = Number(process.env.TELEGRAM_CONFIG_TTL_MS || 30_000);
 
-let _cache = { at: 0, config: null };
+/**
+ * ── One cache entry PER PANEL ──────────────────────────────────────────────
+ *
+ * It was a single slot, which with three audiences is not a cache but a race:
+ * a merchant's request caches the merchant config, and the player request
+ * arriving 200ms later reads it and gates that player on the MERCHANT channel.
+ * Keyed by audience the mistake is unrepresentable.
+ */
+const _cache = new Map();
 
-/** Drop the cached config — called after an admin activates a new generation. */
-export function invalidateConfigCache() {
-  _cache = { at: 0, config: null };
+/**
+ * Drop a cached config — called after an admin activates a new generation.
+ *
+ * With no argument it drops ALL THREE, which is what a caller that does not
+ * know which audience changed must do. That is the safe direction: an extra
+ * database read costs one round trip, whereas a stale config gates the wrong
+ * people against the wrong channel for up to CONFIG_TTL_MS.
+ */
+export function invalidateConfigCache(audience = null) {
+  if (audience) _cache.delete(audience); else _cache.clear();
+}
+
+/** Throws rather than defaulting — see the repository's `assertAudience`. */
+function assertAudience(audience, fn) {
+  if (!ACCOUNT_TYPES.includes(audience)) {
+    throw new Error(`${fn} requires an audience (one of ${ACCOUNT_TYPES.join(', ')}); got ${audience}`);
+  }
+  return audience;
 }
 
 /**
@@ -37,15 +61,17 @@ export function invalidateConfigCache() {
  * deployment starts in. Callers must treat that as "Telegram auth is not
  * available", never as an error to retry.
  */
-export async function activeConfig({ force = false } = {}) {
-  if (!force && _cache.config && Date.now() - _cache.at < CONFIG_TTL_MS) {
-    return _cache.config;
+export async function activeConfig(audience, { force = false } = {}) {
+  assertAudience(audience, 'activeConfig');
+  const hit = _cache.get(audience);
+  if (!force && hit?.config && Date.now() - hit.at < CONFIG_TTL_MS) {
+    return hit.config;
   }
   // One statement for the channel and the credentials together: read as two,
   // an admin's channel swap could land between them and compose a config whose
   // channel and token belong to different generations.
-  const doc = await db.telegram.getActiveConfigWithSecrets();
-  if (!doc) { _cache = { at: Date.now(), config: null }; return null; }
+  const doc = await db.telegram.getActiveConfigWithSecrets(audience);
+  if (!doc) { _cache.set(audience, { at: Date.now(), config: null }); return null; }
 
   // The bot REGISTRY wins over the credentials embedded in the generation.
   //
@@ -59,9 +85,12 @@ export async function activeConfig({ force = false } = {}) {
   // The embedded fields remain the fallback, which is what a deployment
   // configured through the activation form alone has. They are not dead code:
   // they are generation 1 of any install that never registered a spare.
-  const [signin, recovery] = await Promise.all([liveBot('signin'), liveBot('recovery')]);
+  const [signin, recovery] = await Promise.all([
+    liveBot('signin', audience), liveBot('recovery', audience),
+  ]);
 
   const config = {
+    audience,
     generation:        doc.generation,
     botUsername:       signin?.username || doc.botUsername,
     botToken:          signin ? signin.token : safeDecrypt(doc.botTokenEncrypted),
@@ -79,7 +108,7 @@ export async function activeConfig({ force = false } = {}) {
     channelUsername:   doc.channelUsername || '',
     channelInviteLink: doc.channelInviteLink || '',
   };
-  _cache = { at: Date.now(), config };
+  _cache.set(audience, { at: Date.now(), config });
   return config;
 }
 
@@ -94,16 +123,18 @@ export async function activeConfig({ force = false } = {}) {
  * CONFIG_TTL_MS and is what the request path calls; a second cache underneath
  * it would mean a promotion had two independent expiries to wait out.
  */
-export async function liveBot(role) {
+export async function liveBot(role, audience) {
+  assertAudience(audience, 'liveBot');
   // The live bot for a role is a UNIQUE row, not the newest of several: the
   // table has a partial unique index on the live slot. Sorting by activation
   // date and taking the first was the document store's way of coping with two
   // rows that both claimed to be live — a state that is now unrepresentable.
-  const doc = await db.telegram.getLiveBotSecrets(role);
+  const doc = await db.telegram.getLiveBotSecrets(role, audience);
   if (!doc) return null;
 
   return {
     role,
+    audience,
     botId: doc.botId,
     username: doc.username,
     token: safeDecrypt(doc.tokenEncrypted),
@@ -164,8 +195,8 @@ export async function callApi(token, method, payload = {}, { timeoutMs = 10_000 
 
 // ── Convenience wrappers, all resolving the active config per call ──────────
 
-export async function sendMessage(chatId, text, extra = {}) {
-  const cfg = await activeConfig();
+export async function sendMessage(audience, chatId, text, extra = {}) {
+  const cfg = await activeConfig(audience);
   if (!cfg) return { ok: false, error: 'not_configured' };
   return callApi(cfg.botToken, 'sendMessage', {
     chat_id: chatId, text, parse_mode: 'HTML', disable_web_page_preview: true, ...extra,
@@ -227,8 +258,8 @@ export async function approveJoinRequest(bot, chatId, telegramUserId) {
   return res;
 }
 
-export async function sendRecoveryMessage(chatId, text, extra = {}) {
-  const cfg = await activeConfig();
+export async function sendRecoveryMessage(audience, chatId, text, extra = {}) {
+  const cfg = await activeConfig(audience);
   if (!cfg?.recoveryBotToken) return { ok: false, error: 'recovery_not_configured' };
   return callApi(cfg.recoveryBotToken, 'sendMessage', {
     chat_id: chatId, text, parse_mode: 'HTML', disable_web_page_preview: true, ...extra,
@@ -244,8 +275,8 @@ export async function sendRecoveryMessage(chatId, text, extra = {}) {
  * is sized for, one getChatMember per request would exceed the Bot API's limits
  * long before it exceeded ours.
  */
-export async function fetchChatMemberStatus(telegramUserId) {
-  const cfg = await activeConfig();
+export async function fetchChatMemberStatus(telegramUserId, audience) {
+  const cfg = await activeConfig(audience);
   if (!cfg) return { ok: false, error: 'not_configured' };
   const res = await callApi(cfg.botToken, 'getChatMember', {
     chat_id: cfg.channelId, user_id: Number(telegramUserId),

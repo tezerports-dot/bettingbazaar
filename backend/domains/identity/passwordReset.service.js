@@ -36,7 +36,8 @@
 import crypto from 'crypto';
 import { db } from '#db';
 import { hashPassword } from './password.util.js';
-import { assertPlayerPassword } from './passwordPolicy.js';
+import { assertPlayerPassword, assertStaffPassword } from './passwordPolicy.js';
+import { panelOrigin } from '../../config/panelOrigins.js';
 
 /** Fifteen minutes. Long enough to read a message; short enough to matter. */
 const TTL_SECONDS = Number(process.env.PASSWORD_RESET_TTL_SECONDS || 900);
@@ -50,26 +51,35 @@ const hash = (token) => crypto.createHash('sha256').update(String(token)).digest
  *
  * @returns {Promise<{ok: true, url: string, minutes: number} | {ok: false, reason: string}>}
  */
-export async function issueResetLink({ userId, telegramUserId, baseUrl }) {
+export async function issueResetLink({ userId, telegramUserId, audience, baseUrl }) {
   const user = await db.users.getUser(userId);
   if (!user) return { ok: false, reason: 'no_user' };
 
-  // ── PLAYER only, checked again here ──────────────────────────────────────
-  // The identity this came from is already player-scoped, so this is a SECOND
-  // refusal for one rule — deliberately. It was one, and one was not enough:
-  // `linkTelegramToAccount` matched by mobile without the account type, a
-  // player's contact share linked the STAFF account on the same number, and
-  // this function then issued an admin a password-reset link to somebody who
-  // had proved nothing but possession of the phone. Measured on a running
-  // server.
+  // ══════════════════════════════════════════════════════════════════════════
+  // THE ACCOUNT'S TYPE MUST EQUAL THE BOT'S AUDIENCE — checked AGAIN, here
+  // ══════════════════════════════════════════════════════════════════════════
+  // This is a SECOND refusal for one rule, and it is deliberate. It was one,
+  // and one was not enough: `linkTelegramToAccount` matched by mobile without
+  // the account type, a player's contact share linked the STAFF account on the
+  // same number, and this function then issued an admin a password-reset link
+  // to somebody who had proved nothing but possession of the phone. Measured on
+  // a running server (§32 S30).
   //
-  // Staff do not recover through Telegram at all — they have no identity to
-  // link — so this refuses nothing a real person would ask for, and it is the
-  // difference between one query being wrong and an account being taken.
-  if (user.accountType !== 'PLAYER') {
-    console.error(`[password-reset] REFUSED for a ${user.accountType} account (${userId}) — `
-      + 'staff do not reset through Telegram, and reaching this means a lookup is not scoped');
-    return { ok: false, reason: 'not_a_player' };
+  // The rule used to be "PLAYER only", because only players recovered through
+  // Telegram. All three panels do now (owner, 2026-09-24), so the refusal is
+  // stated as the thing it was always protecting: the account this issues for
+  // must be of the same type as the bot that asked. A merchant bot cannot mint
+  // a staff reset; a player bot cannot mint a merchant one. The literal became
+  // a comparison, which is wider in what it permits and exactly as narrow in
+  // what it lets cross.
+  //
+  // `audience` is REQUIRED. Absent, there is no comparison to make, and a
+  // caller that has not said which door this came from is a caller that has
+  // not checked — so it refuses rather than assuming.
+  if (!audience || user.accountType !== audience) {
+    console.error(`[password-reset] REFUSED: a ${audience || 'unspecified'} bot asked for a `
+      + `${user.accountType} account (${userId}) — reaching this means a lookup is not scoped`);
+    return { ok: false, reason: 'wrong_audience' };
   }
   // A blocked account does not get a route back in. The refusal is here rather
   // than at redemption so the bot can say something true instead of handing
@@ -81,7 +91,13 @@ export async function issueResetLink({ userId, telegramUserId, baseUrl }) {
     tokenHash: hash(token), userId, telegramUserId, ttlSeconds: TTL_SECONDS,
   });
 
-  const root = String(baseUrl || process.env.PUBLIC_APP_ORIGIN || '').replace(/\/+$/, '');
+  // ── The link opens the RIGHT PANEL ──────────────────────────────────────
+  // A staff reset sent to the player app is a token spent on the wrong door,
+  // and it is single-use — so the one link they were given is gone and the
+  // screen they reached cannot tell them why. `panelOrigin` is the one owner
+  // of where each panel lives; an explicit `baseUrl` still wins, which is what
+  // a test passes.
+  const root = String(baseUrl || panelOrigin(audience) || '').replace(/\/+$/, '');
   return {
     ok: true,
     url: `${root}/#/reset/${token}`,
@@ -117,7 +133,20 @@ export async function redeemResetLink({ token, password, confirmPassword }) {
   if (!user) return { ok: false, reason: 'invalid' };
 
   try {
-    assertPlayerPassword(password, { mobile: user.mobile }, 'player');
+    // ── The floor is the ACCOUNT'S floor, derived not duplicated ──────────
+    // §2: one implementation, two floors, set by blast radius. A staff or
+    // merchant password reaches the player base, the float and the ledger, so
+    // it is 12; a player's reaches one wallet, so it is 8. Reading the floor
+    // off the account type here is what stops this path becoming the third
+    // place the rule is written — and the way it would have failed is the
+    // quiet one: an admin resetting through the bot could have set an
+    // eight-character password that the admin signup form would have refused.
+    const label = user.accountType === 'PLAYER' ? 'player' : user.accountType.toLowerCase();
+    if (user.accountType === 'PLAYER') {
+      assertPlayerPassword(password, { mobile: user.mobile }, label);
+    } else {
+      assertStaffPassword(password, { mobile: user.mobile }, label);
+    }
   } catch (err) {
     // ── The token is already SPENT at this point ──────────────────────────
     // Consuming before validating means a weak password costs them the link.

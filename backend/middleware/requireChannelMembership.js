@@ -81,7 +81,12 @@ export function requireChannelMembership({ action = 'continue' } = {}) {
       // is the exact state a fresh deployment sits in between deploying and
       // activating generation 1, and it made the gate blame the player for an
       // operator's unfinished setup.
-      const verdict = await membershipFor(identity);
+      // The audience is a FALLBACK for the unlinked case: with no row there is
+      // nothing to read it from, and without it the gate cannot even tell
+      // whether a channel exists to be a member of. When a row does exist its
+      // own audience wins, so a stale token claiming the wrong type cannot
+      // point this at another panel's channel.
+      const verdict = await membershipFor(identity, { audience: req.user.accountType });
 
       // No channel configured at all. That is an operator problem the player can
       // do nothing about, so the gate does not enforce a rule that does not yet
@@ -104,7 +109,7 @@ export function requireChannelMembership({ action = 'continue' } = {}) {
       // A channel DOES exist and this account is not linked to it. Now the
       // message is actionable, and `joinPrompt()` can name the bot to use.
       if (!identity) {
-        const prompt = await joinPrompt();
+        const prompt = await joinPrompt(req.user.accountType);
         return res.status(403).json({
           success: false,
           code: 'TELEGRAM_NOT_LINKED',
@@ -141,7 +146,10 @@ export function requireChannelMembership({ action = 'continue' } = {}) {
       // A definite "not a member" — or an unreachable Telegram with nothing
       // usable cached, which is treated the same way because the player CAN act
       // on it: joining the channel resolves both.
-      const prompt = await joinPrompt();
+      // The account's OWN audience, so a gate reached by a merchant names the
+      // merchant channel. `membershipFor` reads it off the identity row for the
+      // same reason; here there is no identity, so it comes from the user.
+      const prompt = await joinPrompt(req.user.accountType);
       return res.status(403).json({
         success: false,
         code: 'CHANNEL_MEMBERSHIP_REQUIRED',

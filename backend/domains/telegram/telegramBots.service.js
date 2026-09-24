@@ -25,6 +25,7 @@
  */
 import crypto from 'crypto';
 import { db } from '#db';
+import { ACCOUNT_TYPES } from '#db/repositories/users.js';
 import { encryptField, decryptField } from '../identity/fieldCrypto.util.js';
 import { verifyBotToken, setWebhook, deleteWebhook, invalidateConfigCache } from './telegramClient.js';
 
@@ -43,8 +44,13 @@ const WEBHOOK_PATH = {
   // itself. The bot id is public (it is Telegram's own numeric id for a bot
   // whose @username anybody can see): it identifies, the secret authenticates.
   signin:   (bot) => `/api/telegram/webhook/${encodeURIComponent(bot.botId)}`,
-  // Singular role, one door, fixed path.
-  recovery: () => '/api/telegram/recovery/webhook',
+  // ── Also per-BOT, as of 2026-09-24 ──────────────────────────────────────
+  // `recovery` is still SINGULAR, but singular PER PANEL: there are three
+  // recovery bots now, one each for players, merchants and staff. A fixed path
+  // is the same defect the sign-in fleet already taught us — three bots told
+  // one URL, every delivery checked against whichever secret resolved first,
+  // 401 for two of the three, and nothing anywhere saying why.
+  recovery: (bot) => `/api/telegram/recovery/webhook/${encodeURIComponent(bot.botId)}`,
 };
 
 /**
@@ -74,6 +80,11 @@ function publicView(bot) {
     id: bot.botId,
     label: bot.label,
     role: bot.role,
+    // Rendered on the Bot Fleet screen. Without it an operator sees three
+    // fleets as one undifferentiated list and cannot tell that the merchant
+    // panel has no bot at all — the exact state that leaves merchants at a
+    // gate with nothing to open.
+    audience: bot.audience,
     botId: bot.botId,
     username: bot.username,
     status: bot.status,
@@ -97,9 +108,19 @@ function publicView(bot) {
  * verified is worse than no standby at all, because it will be promoted under
  * pressure and fail then.
  */
-export async function registerBot({ label, role, token, notes = '', actorId }) {
+export async function registerBot({ label, role, audience, token, notes = '', actorId }) {
   if (!label || !role || !token) {
     throw Object.assign(new Error('label, role and token are required'), { status: 400 });
+  }
+  // ── Which panel this bot serves, refused rather than defaulted ──────────
+  // A caller-error (`status: 400`) so §21's rule holds and the operator is told
+  // what to pick, rather than `respondError` routing a spec violation to
+  // `serverError` — which logs in full and answers with nothing by design.
+  if (!ACCOUNT_TYPES.includes(audience)) {
+    throw Object.assign(
+      new Error(`Choose which panel this bot serves: ${ACCOUNT_TYPES.join(', ')}.`),
+      { status: 400 },
+    );
   }
 
   const probe = await verifyBotToken(token);
@@ -122,6 +143,7 @@ export async function registerBot({ label, role, token, notes = '', actorId }) {
     botId: String(probe.id),
     label: String(label).trim(),
     role,
+    audience,
     username: probe.username || '',
     tokenEncrypted: encryptField(token),
     // Minted now rather than at promotion: the secret is what authenticates
@@ -193,7 +215,10 @@ export async function promote({ id, actorId, webhookBaseUrl }) {
 
   // The client caches the resolved bot for 30s; a promotion must be visible
   // immediately or the first minute after a flip still uses the dead token.
-  invalidateConfigCache();
+  // The client caches per audience; this bot's own audience is the one that
+  // changed. Dropping only that entry is right and also the safe direction to
+  // get wrong — `invalidateConfigCache()` with no argument drops all three.
+  invalidateConfigCache(target.audience);
 
   const result = {
     bot: publicView(target),
@@ -341,8 +366,8 @@ export async function retire({ id, actorId }) {
 export { liveBot } from './telegramClient.js';
 
 /** Every bot, with no secrets. */
-export async function listBots() {
-  return (await db.telegram.listBots({})).map(publicView);
+export async function listBots({ audience = null } = {}) {
+  return (await db.telegram.listBots({ audience })).map(publicView);
 }
 
 /**
@@ -355,7 +380,7 @@ export async function listBots() {
  * Keyed by bot id so the screen can merge it into the row it already has rather
  * than rendering a second table that has to be read alongside the first.
  */
-export async function signinLoads() {
-  const rows = await db.telegram.signinBotLoads();
+export async function signinLoads({ audience = null } = {}) {
+  const rows = await db.telegram.signinBotLoads({ audience });
   return Object.fromEntries(rows.map((r) => [r.botId, r.assigned]));
 }

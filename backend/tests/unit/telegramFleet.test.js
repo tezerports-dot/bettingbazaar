@@ -56,8 +56,32 @@ describe('only the roles that receive updates have a webhook', () => {
     expect(webhookPathFor({ role: 'signin', botId: 'a/b' })).toBe('/api/telegram/webhook/a%2Fb');
   });
 
-  it('keeps recovery on one fixed path, because the role is singular', () => {
-    expect(webhookPathFor({ role: 'recovery', botId: '999' })).toBe('/api/telegram/recovery/webhook');
+  it('gives every recovery bot its own path too — singular is PER PANEL', () => {
+    // It was one fixed path, and that was right while there was one recovery
+    // bot. There are three now — players, merchants and staff each recover
+    // through their own (owner, 2026-09-24) — and a shared path is the same
+    // defect the sign-in fleet already paid for: three bots told one URL, every
+    // delivery checked against whichever secret resolved first, 401 for two of
+    // the three, and nothing anywhere saying why.
+    expect(webhookPathFor({ role: 'recovery', botId: '999' }))
+      .toBe('/api/telegram/recovery/webhook/999');
+    expect(webhookPathFor({ role: 'recovery', botId: '888' }))
+      .toBe('/api/telegram/recovery/webhook/888');
+  });
+
+  it('never gives two bots the same webhook path, in any role', () => {
+    // The invariant underneath both cases above, stated once so a future role
+    // cannot be added with a fixed path by accident. Two bots sharing a path is
+    // ALWAYS the 401 trap, whatever the role is called.
+    const paths = new Set();
+    for (const role of ['signin', 'recovery']) {
+      for (const botId of ['1', '2', '3']) {
+        const path = webhookPathFor({ role, botId });
+        expect(paths.has(path), `${role}/${botId} collides on ${path}`).toBe(false);
+        paths.add(path);
+      }
+    }
+    expect(paths.size).toBe(6);
   });
 
   it('gives outbound-only roles no webhook at all', () => {

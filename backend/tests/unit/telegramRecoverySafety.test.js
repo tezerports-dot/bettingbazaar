@@ -27,12 +27,24 @@ describe('recovery requires two independent factors', () => {
     // Aadhaar have an account here" — the exact flaw removed from the old
     // recovery route. The Aadhaar is only ever compared to the account the
     // phone already resolved to.
-    // Scoped to PLAYER since 2026-09-24: a mobile can hold a player, a staff
-    // and a merchant account, and recovery moves a PLAYER's Telegram link. An
-    // unscoped read here would resolve to whichever row the planner reached
-    // first — which is how a contact share came to link the STAFF account on a
-    // shared number.
-    expect(svc).toMatch(/getUserByMobile\(mobile, 'PLAYER'\)/);
+    // ── Scoped to the BOT'S OWN AUDIENCE ───────────────────────────────────
+    // A mobile can hold a player, a staff and a merchant account (§33.5), and
+    // an unscoped read resolves to whichever row the planner reached first —
+    // which is how a contact share came to link the STAFF account on a shared
+    // number and offer an admin's password to whoever held the phone.
+    //
+    // It was the literal 'PLAYER'. All three panels recover through their own
+    // bot now (owner, 2026-09-24), so the scope is the audience of the bot the
+    // update arrived on: strictly stronger, because recovery through the
+    // merchant bot can only ever move a MERCHANT link. What is asserted is that
+    // the read is SCOPED AT ALL — a bare `getUserByMobile(mobile)` is the
+    // defect, whatever the second argument is called.
+    expect(svc).toMatch(/getUserByMobile\(mobile, audience\)/);
+    expect(svc, 'the mobile lookup must never be unscoped')
+      .not.toMatch(/getUserByMobile\(\s*mobile\s*\)/);
+    // And the audience must come from the caller — the bot — rather than being
+    // decided in here, where nothing knows which door the person knocked on.
+    expect(svc).toMatch(/attemptRecovery\(\{[^}]*\baudience\b/);
     // No lookup anywhere takes an Aadhaar as its search key. Asserted over the
     // whole file rather than one expression, so a future read added below is
     // covered too.
@@ -127,9 +139,16 @@ describe('the recovery bot is isolated from the primary bot', () => {
     // thing that actually matters stays pinned: it must never be the PRIMARY
     // bot's secret, which would let a compromised sign-in bot drive account
     // recovery, the precise separation this whole second bot exists for.
-    const handler = routes.slice(routes.indexOf("'/recovery/webhook'"), routes.indexOf("'/public-config'"));
+    const handler = routes.slice(routes.indexOf("'/recovery/webhook/:botId'"), routes.indexOf("'/public-config'"));
+    expect(handler, 'the recovery handler must be locatable').not.toBe('');
     expect(handler, 'the recovery secret must be a recovery credential').toMatch(/recovery/i);
-    expect(handler).toMatch(/secretMatches\(req\.get\('X-Telegram-Bot-Api-Secret-Token'\)/);
+    // The comparison itself moved into `resolveDeliveringBot`, which the
+    // sign-in webhook already used and which now takes the role it will accept.
+    // That is the point of the change: ONE constant-time compare, against the
+    // secret of the bot named in the path, for both fleets. A recovery delivery
+    // that names a sign-in bot is refused by the role argument.
+    expect(handler).toMatch(/resolveDeliveringBot\(req, \{ role: 'recovery' \}\)/);
+    expect(routes).toMatch(/secretMatches\(req\.get\('X-Telegram-Bot-Api-Secret-Token'\)/);
     // The exact bypass: authenticating recovery against the primary's secret.
     // Asserted as "the primary secret is not named anywhere in this handler"
     // rather than as a pattern around the comparison — the argument list
@@ -141,9 +160,18 @@ describe('the recovery bot is isolated from the primary bot', () => {
   });
 
   it('replies through the recovery bot, not the primary one', () => {
-    const handler = routes.slice(routes.indexOf("'/recovery/webhook'"), routes.indexOf("'/exchange'"));
+    const handler = routes.slice(routes.indexOf("'/recovery/webhook/:botId'"));
+    expect(handler, 'the recovery handler must be locatable').not.toBe('');
     expect(handler).toMatch(/sendRecoveryMessage/);
     expect(handler).not.toMatch(/[^y]\bsendMessage\(/);
+    // Every recovery send names the audience it is for. Without it
+    // `resolveSender` cannot tell which of the three live recovery bots to use,
+    // and a merchant's message would go out from the player bot — which
+    // Telegram refuses as a conversation that was never opened, so the person
+    // sees nothing at all.
+    for (const call of handler.match(/sendRecoveryMessage\([^,]+/g) || []) {
+      expect(call, `${call} must pass the audience first`).toMatch(/sendRecoveryMessage\(audience/);
+    }
   });
 
   it('bounds the held recovery session', () => {

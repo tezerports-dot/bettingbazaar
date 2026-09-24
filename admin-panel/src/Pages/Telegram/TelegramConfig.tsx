@@ -27,7 +27,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Bot, RefreshCw, AlertTriangle, CheckCircle2, Radio } from 'lucide-react';
 import { Kpis } from '../../components/design';
 import { formatters } from '../../utils/formatters';
-import api from '../../services/api';
+import api, { type Audience, AUDIENCES, AUDIENCE_LABEL } from '../../services/api';
 import toast from 'react-hot-toast';
 import BotFleet from './BotFleet';
 import BotMessages from './BotMessages';
@@ -51,6 +51,19 @@ const EMPTY = {
 const EMPTY_CHANNEL = { channelId: '', channelUsername: '', channelInviteLink: '', reason: '' };
 
 export const TelegramConfig: React.FC = () => {
+  /**
+   * Which PANEL this screen is configuring (owner, 2026-09-24).
+   *
+   * Every panel has its own bot and its own channel, so this screen is three
+   * screens and the selector is what says which one is on show. It is state
+   * rather than a route because the two write actions below must ALWAYS carry
+   * the same value the reads did — a mismatch here is the expensive one:
+   * activating a channel makes every cached membership for that panel stale, so
+   * flipping the wrong one re-gates a population nobody was thinking about.
+   *
+   * PLAYER first because it is the panel that existed before the split.
+   */
+  const [audience, setAudience] = useState<Audience>('PLAYER');
   const [active, setActive] = useState<Active | null>(null);
   const [history, setHistory] = useState<HistoryRow[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -65,7 +78,7 @@ export const TelegramConfig: React.FC = () => {
   const load = useCallback(async () => {
     setIsLoading(true); setLoadError('');
     try {
-      const res = await api.telegram.getConfig();
+      const res = await api.telegram.getConfig(audience);
       if (res.success) {
         setActive(res.active || null);
         setHistory(res.history || []);
@@ -77,7 +90,10 @@ export const TelegramConfig: React.FC = () => {
     } finally {
       setIsLoading(false);
     }
-  }, []);
+    // Re-reads when the panel changes, which is the whole point of the
+    // dependency: without it the screen would keep showing the player channel
+    // while both forms wrote to the merchant one.
+  }, [audience]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -89,6 +105,7 @@ export const TelegramConfig: React.FC = () => {
     setIsSaving(true);
     try {
       const res = await api.telegram.activate({
+        audience,
         botToken: form.botToken.trim(),
         recoveryBotToken: form.recoveryBotToken.trim() || undefined,
         channelId: form.channelId.trim(),
@@ -124,6 +141,7 @@ export const TelegramConfig: React.FC = () => {
     setFlipping(true);
     try {
       const res = await api.telegram.replaceChannel({
+        audience,
         channelId: channelForm.channelId.trim(),
         channelUsername: channelForm.channelUsername.trim() || undefined,
         channelInviteLink: channelForm.channelInviteLink.trim() || undefined,
@@ -147,6 +165,28 @@ export const TelegramConfig: React.FC = () => {
 
   return (
     <div className="om-fade" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {/* ── Which panel this screen is about ────────────────────────────────
+          At the TOP, and stated in the heading of every card below it, because
+          the two actions on this screen are per-panel and both are expensive to
+          aim wrongly. A selector tucked beside one of the forms would leave the
+          other form looking unscoped. */}
+      <div className="card" style={{ padding: '14px 18px', display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+        <label htmlFor="config-audience" style={{ ...label, marginBottom: 0 }}>Panel</label>
+        <select
+          id="config-audience"
+          value={audience}
+          onChange={(e) => setAudience(e.target.value as Audience)}
+          style={{ ...input, width: 'auto', minWidth: 190, cursor: 'pointer' }}
+        >
+          {AUDIENCES.map(a => <option key={a} value={a}>{AUDIENCE_LABEL[a]}</option>)}
+        </select>
+        <div style={{ fontSize: 11.5, color: 'var(--muted)', lineHeight: 1.55, flex: 1, minWidth: 220 }}>
+          Each panel has its own bot and its own channel. Everything on this screen —
+          the generation, the bots, the channel and both actions below — applies to the{' '}
+          <strong>{AUDIENCE_LABEL[audience]}</strong> only, and changes nothing for the other two.
+        </div>
+      </div>
+
       <Kpis items={[
         { label: 'Active generation', value: active ? `#${active.generation}` : '—', tone: active ? 'var(--success)' : 'var(--danger)' },
         {
@@ -162,10 +202,21 @@ export const TelegramConfig: React.FC = () => {
         <div className="card" style={{ padding: '16px 18px', display: 'flex', gap: 12, borderColor: 'var(--danger)' }}>
           <AlertTriangle size={20} style={{ color: 'var(--danger)', flex: 'none', marginTop: 1 }} />
           <div>
-            <div style={{ fontSize: 13.5, fontWeight: 700 }}>No bot is configured</div>
+            <div style={{ fontSize: 13.5, fontWeight: 700 }}>
+              No bot is configured for the {AUDIENCE_LABEL[audience].toLowerCase()}
+            </div>
             <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 4, lineHeight: 1.6 }}>
-              Nobody can sign up or sign in until a generation is activated. The bot is the
-              only door players have.
+              {audience === 'STAFF'
+                ? 'Staff are signing in without verifying, because a gate with no bot and no '
+                  + 'channel has nothing to check — that is the bootstrap exemption, and it is '
+                  + 'the only reason you can see this screen. It closes the moment you activate '
+                  + 'a generation here, and every staff account, including yours, is then asked '
+                  + 'to verify.'
+                : audience === 'MERCHANT'
+                  ? 'No merchant can verify, so no merchant can accept orders or move tokens. '
+                    + 'The bot is the only door they have.'
+                  : 'Nobody can sign up or sign in until a generation is activated. The bot is '
+                    + 'the only door players have.'}
             </div>
           </div>
         </div>

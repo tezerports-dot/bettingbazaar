@@ -34,7 +34,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Bot, Plus, Zap, Link2, Archive, AlertTriangle, CheckCircle2 } from 'lucide-react';
 import { formatters } from '../../utils/formatters';
-import api, { type FleetBot } from '../../services/api';
+import api, { type FleetBot, type Audience, AUDIENCES, AUDIENCE_LABEL } from '../../services/api';
 import toast from 'react-hot-toast';
 
 const label: React.CSSProperties = {
@@ -73,7 +73,35 @@ const STATUS_TONE: Record<FleetBot['status'], string> = {
   RETIRED: 'var(--muted)',
 };
 
-const EMPTY = { label: '', role: 'signin' as FleetBot['role'], token: '', notes: '' };
+/**
+ * Which PANEL each bot serves (owner, 2026-09-24).
+ *
+ * "one bot with its own channel for merchant and one bot with its own channel
+ * for admin thus it will be complete separate from user panel whether its
+ * signup or login or account recovery."
+ *
+ * One bot serves exactly one panel, so this is a property of the bot and not a
+ * mode of the screen. The blurbs say what an operator is actually choosing
+ * between, because PLAYER / MERCHANT / STAFF on its own is the database's
+ * vocabulary, not theirs.
+ */
+const AUDIENCE_BLURB: Record<Audience, string> = {
+  PLAYER: 'Players signing up and verifying on the user panel. The biggest fleet by far.',
+  MERCHANT: 'Merchants verifying on the merchant panel. Separate bot, separate channel.',
+  STAFF: 'Admins and sub-admins verifying on this panel, and where security alerts are posted.',
+};
+
+/**
+ * PLAYER is the default because it is the fleet an operator adds to most, and
+ * because it is the panel that existed before the split — so the form behaves
+ * as it always did unless somebody changes it. The SERVER takes no default and
+ * refuses a registration with no audience, which is what stops a mistake here
+ * becoming a bot quietly registered against the wrong panel.
+ */
+const EMPTY = {
+  label: '', role: 'signin' as FleetBot['role'], audience: 'PLAYER' as Audience,
+  token: '', notes: '',
+};
 
 export const BotFleet: React.FC<{ webhookBaseUrl?: string; onChanged?: () => void }> = ({ webhookBaseUrl, onChanged }) => {
   const [bots, setBots] = useState<FleetBot[]>([]);
@@ -108,7 +136,7 @@ export const BotFleet: React.FC<{ webhookBaseUrl?: string; onChanged?: () => voi
     setBusy('register');
     try {
       const res = await api.telegramBots.register({
-        label: form.label.trim(), role: form.role,
+        label: form.label.trim(), role: form.role, audience: form.audience,
         token: form.token.trim(), notes: form.notes.trim() || undefined,
       });
       if (!res.success) { toast.error(res.message || 'Could not register that bot.'); return; }
@@ -261,6 +289,22 @@ export const BotFleet: React.FC<{ webhookBaseUrl?: string; onChanged?: () => voi
             {ROLES.find(r => r.value === form.role)?.blurb}
           </div>
         </div>
+        <div>
+          <label style={label} htmlFor="bot-audience">
+            Panel <span style={{ color: 'var(--danger)' }}>*</span>
+          </label>
+          <select
+            id="bot-audience"
+            value={form.audience}
+            onChange={(e) => setForm({ ...form, audience: e.target.value as Audience })}
+            style={{ ...input, cursor: 'pointer' }}
+          >
+            {AUDIENCES.map(a => <option key={a} value={a}>{AUDIENCE_LABEL[a]}</option>)}
+          </select>
+          <div style={{ fontSize: 10.5, color: 'var(--muted)', marginTop: 5, lineHeight: 1.5 }}>
+            {AUDIENCE_BLURB[form.audience]}
+          </div>
+        </div>
         <div style={{ gridColumn: '1 / -1' }}>
           <label style={label}>Bot token <span style={{ color: 'var(--danger)' }}>*</span></label>
           <input
@@ -296,6 +340,45 @@ export const BotFleet: React.FC<{ webhookBaseUrl?: string; onChanged?: () => voi
         <Plus size={15} />{busy === 'register' ? 'Verifying with Telegram…' : 'Register bot'}
       </button>
 
+      {/* ── Which panels have a live sign-in bot, and which do not ───────────
+          The one thing this screen exists to make un-missable. A panel with no
+          live sign-in bot cannot verify anybody: its gate has nothing to open,
+          and the people behind it see a wall with no button. Counting it here
+          turns "nobody mentioned the merchant panel" into a red line on the
+          screen where it is fixed. */}
+      {!isLoading && !loadError && (
+        <div style={{
+          display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(200px,1fr))',
+          gap: 10, marginBottom: 18,
+        }}>
+          {AUDIENCES.map((a) => {
+            const live = bots.filter(b => b.audience === a && b.role === 'signin' && b.live).length;
+            const recovery = bots.filter(b => b.audience === a && b.role === 'recovery' && b.live).length;
+            return (
+              <div key={a} style={{
+                padding: '11px 13px', borderRadius: 10,
+                border: `1px solid ${live ? 'var(--border)' : 'var(--danger)'}`,
+                background: 'var(--surface-2)',
+              }}>
+                <div style={{ fontSize: 11, fontWeight: 800, color: 'var(--text-2)' }}>
+                  {AUDIENCE_LABEL[a]}
+                </div>
+                <div style={{
+                  fontSize: 11.5, marginTop: 4, lineHeight: 1.5,
+                  color: live ? 'var(--muted)' : 'var(--danger)',
+                }}>
+                  {live
+                    ? `${live} live sign-in bot${live === 1 ? '' : 's'}`
+                    : 'No live sign-in bot — nobody on this panel can verify'}
+                  <br />
+                  {recovery ? '1 live recovery bot' : 'No recovery bot — no password resets here'}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       {/* ── The fleet ───────────────────────────────────────────────────── */}
       {isLoading ? (
         <div style={{ padding: '24px 0', textAlign: 'center', fontSize: 12.5, color: 'var(--muted)' }}>Loading…</div>
@@ -307,7 +390,7 @@ export const BotFleet: React.FC<{ webhookBaseUrl?: string; onChanged?: () => voi
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 760 }}>
             <thead>
-              <tr>{['Bot', 'Role', 'Status', 'Accounts', 'Added', 'Webhook', ''].map((h, i) => <th key={i} style={th}>{h}</th>)}</tr>
+              <tr>{['Bot', 'Panel', 'Role', 'Status', 'Accounts', 'Added', 'Webhook', ''].map((h, i) => <th key={i} style={th}>{h}</th>)}</tr>
             </thead>
             <tbody>
               {bots.map((b) => {
@@ -319,6 +402,11 @@ export const BotFleet: React.FC<{ webhookBaseUrl?: string; onChanged?: () => voi
                       <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 2 }}>{b.label}</div>
                       {b.notes && <div style={{ fontSize: 10.5, color: 'var(--muted)', marginTop: 2 }}>{b.notes}</div>}
                     </td>
+                    {/* Rendered per row rather than as three separate tables:
+                        the state an operator most needs to SEE is a panel with
+                        no bot at all, and an absence is exactly what a filtered
+                        list cannot show. The summary above counts it for them. */}
+                    <td style={td}>{AUDIENCE_LABEL[b.audience] || b.audience}</td>
                     <td style={td}>{ROLES.find(r => r.value === b.role)?.name || b.role}</td>
                     <td style={td}>
                       <span style={{ color: STATUS_TONE[b.status], fontWeight: 700, fontSize: 11.5 }}>

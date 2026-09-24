@@ -209,6 +209,47 @@ export const logout = (): void => {
   window.location.href = "/merchant/";
 };
 
+/**
+ * The answer to "may this merchant use the panel yet, and if not, what next?"
+ *
+ * The SAME shape the player and admin panels receive, because one server
+ * function is mounted on all three (§5). A merchant verifies through the
+ * MERCHANT bot and the MERCHANT channel — their own, never the player ones —
+ * and the server decides that from `users.account_type`, so nothing here has to
+ * name a panel.
+ */
+export interface MerchantVerification {
+  success: boolean;
+  verified: boolean;
+  bootstrap: boolean;
+  audience: 'PLAYER' | 'MERCHANT' | 'STAFF';
+  reason: string | null;
+  contactShared: boolean;
+  channelJoined: boolean;
+  bot: { username: string } | null;
+  botLink: string;
+  channel: { inviteLink: string; username: string };
+  generation: number;
+  throttled?: boolean;
+}
+
+/**
+ * Cache-only unless `verify` is passed.
+ *
+ * Joining a channel emits a `chat_member` update and the webhook writes the
+ * cache within about a second, so the poll costs one indexed row read and never
+ * touches Telegram. `verify` is what the "I've done it" button sends, once; the
+ * server floors it per account.
+ */
+export const getVerification = async (opts: { verify?: boolean } = {}): Promise<MerchantVerification> => {
+  // Two whole literals rather than one interpolated path — see the note on the
+  // admin panel's copy. `check:ui-coverage` follows the string at the call
+  // site, and a path it cannot read is a call it cannot prove reaches a route.
+  return opts.verify
+    ? request<MerchantVerification>('/api/merchant/verification?verify=1')
+    : request<MerchantVerification>('/api/merchant/verification');
+};
+
 export const getMerchantProfile = async (): Promise<MerchantProfile> => {
   const data = await request<any>(ENDPOINTS.AUTH.PROFILE);
   return data.merchant || data;
@@ -674,6 +715,7 @@ export const api = {
   merchantSignup,
   logout,
   getMerchantProfile,
+  getVerification,
   
   // Token supply
   getAdminTokenOrders,

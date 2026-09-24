@@ -644,9 +644,66 @@ export const kyc = {
  * and release national identity numbers, and admin 2FA is mandatory, so
  * "isAdmin" also means "proved a second factor".
  */
+/**
+ * Which panel a Telegram screen is configuring.
+ *
+ * §5 MIRROR of `ACCOUNT_TYPES` in database/repositories/users.js, which is the
+ * one owner of these values — an account's `account_type` IS its Telegram
+ * audience, which is what stops "which bot serves this person" acquiring a
+ * second answer. Change them in the same commit.
+ */
+export type Audience = 'PLAYER' | 'MERCHANT' | 'STAFF';
+export const AUDIENCES: Audience[] = ['PLAYER', 'MERCHANT', 'STAFF'];
+
+/** What the admin panel calls each one, so three screens say the same words. */
+export const AUDIENCE_LABEL: Record<Audience, string> = {
+  PLAYER: 'User panel',
+  MERCHANT: 'Merchant panel',
+  STAFF: 'Admin panel',
+};
+
+/**
+ * The answer to "may this staff account use the admin panel yet?"
+ *
+ * The SAME shape the player and merchant panels receive, because it is the same
+ * server function behind all three mounts (§5). `bootstrap` is the one field
+ * only this panel acts on — see the gate component.
+ */
+export interface StaffVerification {
+  success: boolean;
+  verified: boolean;
+  bootstrap: boolean;
+  audience: Audience;
+  reason: string | null;
+  contactShared: boolean;
+  channelJoined: boolean;
+  bot: { username: string } | null;
+  botLink: string;
+  channel: { inviteLink: string; username: string };
+  generation: number;
+  throttled?: boolean;
+}
+
 export const telegram = {
-  getConfig: async () => {
-    const res = await api.get<any>('/api/admin/telegram/config');
+  /**
+   * The staff gate's own read. Cache-only unless `verify` is passed, which the
+   * "I've done it" button sends once — the server floors it per account.
+   */
+  getVerification: async (opts: { verify?: boolean } = {}) => {
+    // Two whole literals rather than one interpolated path, deliberately:
+    // `check:ui-coverage` resolves a panel call by reading the string at the
+    // call site, and a path carrying `${…}` is one it cannot follow to a route.
+    // A gate that cannot see a call cannot tell a working button from a dead
+    // one (§28), and the fix is to write something it can read — not to exempt
+    // the file.
+    const res = opts.verify
+      ? await api.get<any>('/api/admin/verification?verify=1')
+      : await api.get<any>('/api/admin/verification');
+    return res.data as StaffVerification;
+  },
+
+  getConfig: async (audience: Audience = 'PLAYER') => {
+    const res = await api.get<any>(`/api/admin/telegram/config?audience=${audience}`);
     return res.data as {
       success: boolean;
       active?: {
@@ -675,6 +732,10 @@ export const telegram = {
    * config with a dead token takes signup and login down until someone notices.
    */
   activate: async (body: {
+    // REQUIRED, and with no default on purpose: activating a channel is what
+    // makes every cached membership for that panel stale, so a guessed audience
+    // re-gates a population the operator was not thinking about.
+    audience: Audience;
     botToken: string; recoveryBotToken?: string; channelId: string;
     channelUsername?: string; channelInviteLink?: string; webhookBaseUrl?: string; reason?: string;
   }) => {
@@ -697,6 +758,7 @@ export const telegram = {
    * action; nothing else about their account moves.
    */
   replaceChannel: async (body: {
+    audience: Audience;
     channelId: string; channelUsername?: string; channelInviteLink?: string; reason?: string;
   }) => {
     const res = await api.post<any>('/api/admin/telegram/channel', body);
@@ -712,6 +774,8 @@ export interface FleetBot {
   id: string;
   label: string;
   role: 'signin' | 'recovery' | 'broadcast' | 'moderation' | 'generic';
+  /** Which panel this bot serves. One bot serves exactly one. */
+  audience: Audience;
   botId: string;
   username: string;
   status: 'ACTIVE' | 'STANDBY' | 'RETIRED';
@@ -746,7 +810,9 @@ export const telegramBots = {
     };
   },
 
-  register: async (body: { label: string; role: FleetBot['role']; token: string; notes?: string }) => {
+  register: async (body: {
+    label: string; role: FleetBot['role']; audience: Audience; token: string; notes?: string;
+  }) => {
     const res = await api.post<any>('/api/admin/telegram/bots', body);
     return res.data as { success: boolean; bot?: FleetBot; message?: string };
   },

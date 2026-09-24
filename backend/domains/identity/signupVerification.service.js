@@ -55,8 +55,8 @@ import { sendAlert } from '../../services/alerting.service.js';
  *   operator has registered no live sign-in bot yet. A real state at launch,
  *   and one the caller REPORTS rather than blaming on the player.
  */
-export async function assignSigninBot(userId) {
-  const botId = await db.telegram.assignSigninBot(userId);
+export async function assignSigninBot(userId, audience) {
+  const botId = await db.telegram.assignSigninBot(userId, audience);
   if (!botId) return null;
   const bot = await db.telegram.getBot(botId);
   return bot ? { botId: bot.botId, username: bot.username } : null;
@@ -72,7 +72,15 @@ export async function assignSigninBot(userId) {
  *   only and never calls Telegram — what a high-frequency poll passes.
  */
 export async function verificationStateFor(user, { refresh = true } = {}) {
-  const cfg = await activeConfig();
+  // ── The audience is the ACCOUNT'S OWN TYPE ────────────────────────────────
+  // Not a parameter, not a panel's claim about itself, not a second column.
+  // `users.account_type` already says which of the three entities this row is
+  // (§33.5), so reading it here is what keeps "which bot serves this person"
+  // from acquiring a second owner (§2). A merchant's row says MERCHANT, so a
+  // merchant is gated on the merchant channel wherever this is called from —
+  // including from a handler that got the audience wrong.
+  const audience = user.accountType;
+  const cfg = await activeConfig(audience);
   // `activeOnly: false` deliberately. The default read returns only a LIVE
   // link, so a player whose contact was stood down would come back as though
   // they had never linked at all — and the gate would say "share your contact"
@@ -86,7 +94,7 @@ export async function verificationStateFor(user, { refresh = true } = {}) {
   // retire or replace any bot at any time, and a player still holding a retired
   // bot's @username would be sent to a conversation nobody is listening to.
   // `assignSigninBot` keeps a live assignment and replaces a dead one.
-  const bot = await assignSigninBot(user.userId);
+  const bot = await assignSigninBot(user.userId, audience);
 
   // ── Step 1: has a Telegram account proven this mobile? ───────────────────
   // `contact_active` is the stand-down flag: a share that arrived carrying a
@@ -100,10 +108,10 @@ export async function verificationStateFor(user, { refresh = true } = {}) {
     ? await membershipFor(identity, { refresh })
     : { joined: false, status: 'unlinked' };
 
-  const prompt = await joinPrompt();
+  const prompt = await joinPrompt(audience);
 
   // The reason is a SINGLE value naming the one thing to do next, in the order
-  // the player must do it in. A screen that had to work this out from four
+  // the person must do it in. A screen that had to work this out from four
   // booleans would work it out differently from the next screen that tried.
   let reason = null;
   if (!bot) reason = 'no_bot';
@@ -113,7 +121,42 @@ export async function verificationStateFor(user, { refresh = true } = {}) {
   else if (membership.unconfigured) reason = 'no_channel';
   else if (!membership.joined) reason = 'join_channel';
 
+  // ══════════════════════════════════════════════════════════════════════════
+  // THE BOOTSTRAP EXEMPTION — staff only, unconfigured only
+  // ══════════════════════════════════════════════════════════════════════════
+  // The owner's decision was that all three panels gate. Applied literally to
+  // a fresh install that has no staff bot and no staff channel, that is a
+  // DEADLOCK and not a strict reading: the screen where an operator registers
+  // the staff bot is on the admin panel, behind the very gate that has nothing
+  // to check. Nobody could ever configure it, from any account, including the
+  // seeded one.
+  //
+  // So the exemption is exactly as wide as the deadlock and not one step
+  // wider:
+  //
+  //   • STAFF only. A player or a merchant meeting an unconfigured panel is
+  //     not holding the tool that fixes it, so admitting them buys nothing and
+  //     costs the rule.
+  //   • Only while the staff surface is UNCONFIGURED — `no_bot` or
+  //     `no_channel`, which are the platform's own state and never anything a
+  //     person did. The moment an admin registers a staff bot and activates a
+  //     staff channel, staff gate exactly like everybody else, and a staff
+  //     member who has not shared their contact is stopped like everybody
+  //     else.
+  //
+  // `bootstrap` is returned rather than being a silent pass, because an
+  // exemption nobody can see is a hole nobody remembers: the admin panel
+  // renders it as a standing banner naming the screen that closes it. §3 in
+  // spirit — an exemption with no consumer is an exemption that becomes
+  // permanent.
+  const bootstrap = audience === 'STAFF' && (reason === 'no_bot' || reason === 'no_channel');
+  if (bootstrap) reason = null;
+
   return {
+    // True only while nothing is configured for staff; false the instant a
+    // staff bot and channel exist. A screen renders it; nothing gates on it.
+    bootstrap,
+    audience,
     // The gate's whole question. Note what it is NOT: it is not `kycStatus`.
     // KYC is the admin's bulk Aadhaar verification and runs on its own clock;
     // this is whether the player may use the app at all.
@@ -157,8 +200,8 @@ export async function verificationStateFor(user, { refresh = true } = {}) {
  * that must never happen is that their access quietly stops working and nothing
  * anywhere says why.
  */
-export async function noteContactChange({ userId, telegramUserId, wasPhone, nowPhone }) {
-  await db.telegram.deactivateContact(String(telegramUserId)).catch(() => {});
+export async function noteContactChange({ userId, telegramUserId, audience, wasPhone, nowPhone }) {
+  await db.telegram.deactivateContact(String(telegramUserId), audience).catch(() => {});
 
   await notify({
     userId,
@@ -179,6 +222,7 @@ export async function noteContactChange({ userId, telegramUserId, wasPhone, nowP
     'Telegram contact changed under an account',
     {
       account: userId,
+      panel: audience,
       verifiedOn: wasPhone,
       nowReports: nowPhone,
       action: 'link stood down; the player must verify again',
@@ -210,6 +254,28 @@ export async function completeVerification({ userId }) {
   // in the same few seconds — at the exact moment everyone is trying to get
   // back in, which is the worst moment to spend the Bot API's budget.
   const firstCompletion = !user.joiningNumber;
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // A JOINING NUMBER AND A REFERRAL EARNING ARE PLAYER THINGS
+  // ══════════════════════════════════════════════════════════════════════════
+  // This function now runs for three populations, and two of them have no
+  // business in either queue. `claimJoiningNumber` derives MAX + 1 across the
+  // whole `users` table, so a staff member joining the admin channel would take
+  // a number out of the PLAYER referral payout order — which pays strictly in
+  // joining-number order (§2) — and permanently insert a person who can never
+  // be paid ahead of players who can. `recordEarningsFor` would then look for
+  // their referrer and, for a merchant signed up under a referral code, book a
+  // ₹25 against a signup the referral programme is not for.
+  //
+  // Neither is a wrong calculation and neither would fail anything: the money
+  // just goes to a slightly different set of people, once, invisibly.
+  //
+  // So the completion for a non-player is the verification itself and nothing
+  // else. `firstCompletion` still means what the caller reads it for — "is
+  // this the join worth sending a message about" — which is true of all three.
+  if (user.accountType !== 'PLAYER') {
+    return { ok: true, firstCompletion, joiningNumber: null, earnings: null };
+  }
 
   /**
    * One statement, and the retry loop it replaces is gone.

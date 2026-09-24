@@ -50,7 +50,8 @@ import {
   normalisePhone, isValidMobile, isValidAadhaar, normaliseAadhaar, normaliseReferralCode,
 } from './signupFields.js';
 import { respondError } from '../../shared/httpError.js';
-import { assignSigninBot, verificationStateFor } from './signupVerification.service.js';
+import { assignSigninBot } from './signupVerification.service.js';
+import { verificationEndpoint } from './verificationEndpoint.js';
 import { resubmitAadhaar, MAX_KYC_SUBMISSIONS } from './aadhaarResubmission.service.js';
 import { redeemResetLink } from './passwordReset.service.js';
 import { authenticate } from './auth.middleware.js';
@@ -232,7 +233,7 @@ router.post('/register', ...signupChain('player-register'), async (req, res) => 
     // sign-in bot yet has an account that is created and cannot yet be verified,
     // which the gate REPORTS ("verification is not available right now") rather
     // than blaming on the player.
-    await assignSigninBot(created.userId).catch((e) => {
+    await assignSigninBot(created.userId, 'PLAYER').catch((e) => {
       console.error('[signup] could not assign a sign-in bot:', e.message);
     });
 
@@ -316,39 +317,12 @@ router.get('/invite/:code', async (req, res) => {
  * logged-in player at once. Without the floor, a flip would aim the entire
  * active user base at the Bot API in the same few seconds.
  */
-const lastLiveCheck = new Map();  // userId -> epoch ms
-const LIVE_CHECK_FLOOR_MS = 20_000;
-
-function mayCheckLive(userId) {
-  const now = Date.now();
-  // Bounded: a large logged-in population must not be able to grow this without
-  // limit. Clearing is safe — the only cost is one extra live check each.
-  if (lastLiveCheck.size > 50_000) lastLiveCheck.clear();
-  const last = lastLiveCheck.get(String(userId)) || 0;
-  if (now - last < LIVE_CHECK_FLOOR_MS) return false;
-  lastLiveCheck.set(String(userId), now);
-  return true;
-}
-
-router.get('/verification', authenticate, async (req, res) => {
-  try {
-    const wantsLive = req.query.verify === '1';
-    const refresh = wantsLive && mayCheckLive(req.user.userId);
-    const state = await verificationStateFor(req.user, { refresh });
-    return res.json({
-      success: true,
-      ...state,
-      // True when a live check was ASKED for and declined by the floor, so the
-      // screen can say "checking again shortly" instead of "you have not
-      // joined" — which is a different sentence and, for somebody who HAS just
-      // joined, the wrong one.
-      throttled: wantsLive && !refresh,
-    });
-  } catch (err) {
-    return respondError(res, err, 'auth/verification',
-      { message: 'Could not check your verification right now. Please try again shortly.' });
-  }
-});
+/**
+ * ONE implementation, three mounts — see `verificationEndpoint`. The player
+ * mount is here; the merchant and staff mounts are on their own routers, and
+ * they answer the same shape because they ARE the same function.
+ */
+router.get('/verification', authenticate, verificationEndpoint((req) => req.user));
 
 // ═══════════════════════════════════════════════════════════════════════════
 // POST /api/v1/auth/kyc/resubmit — a REJECTED player corrects their Aadhaar

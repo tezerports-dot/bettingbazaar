@@ -47,8 +47,9 @@ import express from 'express';
 import { db } from '#db';
 import crypto from 'crypto';
 import {
-  activeConfig, sendAs, approveJoinRequest, sendRecoveryMessage, liveBot, callApi,
+  activeConfig, sendAs, approveJoinRequest, sendRecoveryMessage, callApi,
 } from './telegramClient.js';
+import { ACCOUNT_TYPES } from '#db/repositories/users.js';
 import { decryptField } from '../identity/fieldCrypto.util.js';
 import { applyMemberUpdate, isJoinedStatus, joinPrompt, membershipFor } from './telegramMembership.js';
 import { completeVerification, noteContactChange } from '../identity/signupVerification.service.js';
@@ -112,9 +113,9 @@ const resetOffer = {
  * never something this platform may assume. The refusal here is what actually
  * stops it.
  */
-async function resolveDeliveringBot(req) {
+async function resolveDeliveringBot(req, { role = 'signin' } = {}) {
   const secrets = await db.telegram.getBotSecrets(String(req.params.botId || ''));
-  if (!secrets || secrets.role !== 'signin' || secrets.status === 'RETIRED') return null;
+  if (!secrets || secrets.role !== role || secrets.status === 'RETIRED') return null;
   if (!secretMatches(req.get('X-Telegram-Bot-Api-Secret-Token'), secrets.webhookSecret)) return null;
   let token = null;
   try { token = decryptField(secrets.tokenEncrypted); } catch { token = null; }
@@ -125,7 +126,18 @@ async function resolveDeliveringBot(req) {
     console.error(`[telegram] bot ${secrets.botId} token could not be decrypted — check IDENTITY_ENCRYPTION_KEY`);
     return null;
   }
-  return { botId: secrets.botId, username: secrets.username, token };
+  // ── The AUDIENCE travels with the bot, and it is the whole split ─────────
+  // Which panel this conversation belongs to is a property of the bot the
+  // update arrived on, not of anything in the update. So it is resolved once,
+  // here, from the row, and threaded through every handler — and every account
+  // lookup below is scoped by it. A contact shared with the merchant bot can
+  // therefore only ever reach a MERCHANT account, and no handler has to
+  // remember that: the parameter is required and the repository throws without
+  // one.
+  return {
+    botId: secrets.botId, username: secrets.username, token,
+    audience: secrets.audience, role: secrets.role,
+  };
 }
 
 router.post('/webhook/:botId', async (req, res) => {
@@ -176,7 +188,7 @@ async function handleMessage(message, bot) {
   // button, so "send /start to begin" and "that is not 12 digits" and the four
   // step-specific prompts all collapse into: tell them where they are, and show
   // the button if they still need it.
-  const identity = await db.telegram.getIdentityByTelegramId(telegramUserId);
+  const identity = await db.telegram.getIdentityByTelegramId(telegramUserId, bot.audience);
 
   if (!identity || !identity.contactActive) {
     return sendTemplate({
@@ -212,7 +224,7 @@ async function replyWithChannelState({ bot, chatId, identity, firstName }) {
       extra: { reply_markup: resetOffer },
     });
   }
-  const prompt = await joinPrompt();
+  const prompt = await joinPrompt(bot.audience);
   return sendTemplate({
     bot, chatId, key: 'contact_confirmed',
     vars: {
@@ -247,7 +259,7 @@ async function handleCallback(query, bot) {
 
   if (query.data !== RESET_CALLBACK || !telegramUserId) return ack();
 
-  const identity = await db.telegram.getIdentityByTelegramId(telegramUserId);
+  const identity = await db.telegram.getIdentityByTelegramId(telegramUserId, bot.audience);
   if (!identity || !identity.contactActive) {
     await ack();
     return sendAs(bot, chatId,
@@ -258,7 +270,9 @@ async function handleCallback(query, bot) {
   const issued = await issueResetLink({
     userId: identity.userId,
     telegramUserId,
-    baseUrl: process.env.PUBLIC_APP_ORIGIN,
+    // The bot's own audience, so the link opens the panel this conversation
+    // belongs to and the refusal below compares against the right account type.
+    audience: bot.audience,
   });
 
   if (!issued.ok) {
@@ -266,6 +280,11 @@ async function handleCallback(query, bot) {
     const copy = {
       blocked: 'This account is blocked, so a password reset would not restore access. '
         + 'Please contact support.',
+      // Reachable only if a lookup somewhere stopped being scoped, so it says
+      // something true and unhelpful-by-design rather than naming the account
+      // type it found — which would confirm that a different account exists on
+      // this number.
+      wrong_audience: 'We could not start a password reset for this account. Please contact support.',
     }[issued.reason] || 'We could not start a password reset just now. Please try again shortly.';
     return sendAs(bot, chatId, copy);
   }
@@ -309,11 +328,12 @@ async function handleContact({ message, telegramUserId, chatId, bot }) {
   // `linkTelegramToAccount` would answer `already_linked` here, which is true
   // and useless: it would tell somebody whose number moved that their own
   // account belongs to somebody else.
-  const existing = await db.telegram.getIdentityByTelegramId(telegramUserId);
+  const existing = await db.telegram.getIdentityByTelegramId(telegramUserId, bot.audience);
   if (existing && String(existing.phone) !== phone) {
     await noteContactChange({
       userId: existing.userId,
       telegramUserId,
+      audience: bot.audience,
       wasPhone: existing.phone,
       nowPhone: phone,
     });
@@ -325,9 +345,10 @@ async function handleContact({ message, telegramUserId, chatId, bot }) {
       { reply_markup: { remove_keyboard: true } });
   }
 
-  const cfg = await activeConfig();
+  const cfg = await activeConfig(bot.audience);
   const result = await db.telegram.linkTelegramToAccount({
     telegramUserId,
+    audience: bot.audience,
     phone,
     telegramUsername: message.from?.username || '',
     firstName,
@@ -354,7 +375,7 @@ async function handleContact({ message, telegramUserId, chatId, bot }) {
 
   // Verified. Now the channel — and they may already be in it, which happens on
   // a re-share and whenever somebody joined the channel before signing up.
-  const identity = await db.telegram.getIdentityByTelegramId(telegramUserId);
+  const identity = await db.telegram.getIdentityByTelegramId(telegramUserId, bot.audience);
   return replyWithChannelState({ bot, chatId, identity, firstName });
 }
 
@@ -374,7 +395,7 @@ async function handleContact({ message, telegramUserId, chatId, bot }) {
  * two would disagree the first time an approval succeeded and the join did not.
  */
 async function handleJoinRequest(request, bot) {
-  const cfg = await activeConfig();
+  const cfg = await activeConfig(bot.audience);
   if (!cfg?.channelId) return;
   if (String(request.chat?.id) !== String(cfg.channelId)) return;
 
@@ -394,7 +415,7 @@ async function handleJoinRequest(request, bot) {
 // ── chat_member: the membership cache's primary writer ─────────────────────
 
 async function handleChatMember(chatMember, bot) {
-  const cfg = await activeConfig();
+  const cfg = await activeConfig(bot.audience);
   // No channel configured: there is no membership to record. Checked explicitly
   // rather than relying on `String(null)` failing to match an id, which is true
   // but only by accident.
@@ -409,11 +430,13 @@ async function handleChatMember(chatMember, bot) {
   // Writes a LEAVE exactly as it writes a join. That is how "if they leave they
   // must be asked to join again" is enforced with no sweep and no timer: the
   // next authenticated request reads this row and the gate closes.
-  await applyMemberUpdate({ telegramUserId, status, generation: cfg.generation });
+  await applyMemberUpdate({
+    telegramUserId, status, generation: cfg.generation, audience: bot.audience,
+  });
 
   if (!isJoinedStatus(status)) return;
 
-  const identity = await db.telegram.getIdentityByTelegramId(telegramUserId);
+  const identity = await db.telegram.getIdentityByTelegramId(telegramUserId, bot.audience);
   if (!identity) return;
 
   // ── This is where a signup FINISHES ──────────────────────────────────────
@@ -437,13 +460,22 @@ async function handleChatMember(chatMember, bot) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// POST /api/telegram/recovery/webhook — the SECOND bot
+// POST /api/telegram/recovery/webhook/:botId — the SECOND bot, per panel
 // ═══════════════════════════════════════════════════════════════════════════
 /**
- * Separate token, separate secret, separate endpoint, and SINGULAR — there is
- * one recovery bot, enforced by the partial unique index on `live_slot`. A
- * compromised sign-in bot must not be able to hand out other people's accounts,
- * and one door is a door somebody can watch.
+ * Separate token, separate secret, separate endpoint, and SINGULAR PER PANEL —
+ * there is one recovery bot for players, one for merchants and one for staff,
+ * enforced by the partial unique index on `live_slot` (which composes the
+ * audience into the slot value). A compromised sign-in bot must not be able to
+ * hand out other people's accounts, and one door per panel is a door somebody
+ * can watch.
+ *
+ * ── Why this path names the bot, like the sign-in one ──────────────────────
+ * It did not, and with one recovery bot that was fine. With three it is the
+ * §33.2 defect exactly: each bot has its OWN secret, so a shared path would
+ * check every delivery against whichever secret was resolved first — 401 for
+ * the other two, every merchant and every admin stuck at recovery, and nothing
+ * anywhere saying why. The bot id identifies; the secret authenticates.
  *
  * ── What recovery is FOR, now that there are passwords ────────────────────
  * Not signing in. A player who has lost their Telegram account still has their
@@ -470,22 +502,22 @@ const RECOVERY_SESSION_SECONDS = 10 * 60;
 // It stores HASHES. `attemptRecovery` only ever compared, so it never needed
 // the number — the plaintext exists for the length of one function call and is
 // never stored, which is stronger than the ciphertext onboarding held.
-async function rememberRecovery(id, aadhaar) {
+async function rememberRecovery(id, audience, aadhaar) {
   const aadhaarHashes = hashAadhaarCandidates(aadhaar);
   if (!aadhaarHashes.length) return false;
   await db.telegram.putRecoverySession({
-    telegramUserId: String(id), aadhaarHashes, ttlSeconds: RECOVERY_SESSION_SECONDS,
+    telegramUserId: String(id), audience, aadhaarHashes, ttlSeconds: RECOVERY_SESSION_SECONDS,
   });
   return true;
 }
 
-router.post('/recovery/webhook', async (req, res) => {
-  const cfg = await activeConfig();
-  const secret = cfg?.recoveryWebhookSecret || (await liveBot('recovery'))?.webhookSecret;
-  if (!secret) return res.status(503).json({ ok: false });
-  if (!secretMatches(req.get('X-Telegram-Bot-Api-Secret-Token'), secret)) {
-    return res.status(401).json({ ok: false });
-  }
+router.post('/recovery/webhook/:botId', async (req, res) => {
+  const bot = await resolveDeliveringBot(req, { role: 'recovery' });
+  // Same terse refusal as the sign-in webhook, for the same reason: a probe
+  // learns neither which bot ids exist nor whether its secret was close.
+  if (!bot) return res.status(401).json({ ok: false });
+  const audience = bot.audience;
+
   res.json({ ok: true });
 
   try {
@@ -496,7 +528,7 @@ router.post('/recovery/webhook', async (req, res) => {
     const { attemptRecovery } = await import('./telegramRecovery.service.js');
 
     if (message.contact) {
-      const held = await db.telegram.getRecoverySession(telegramUserId);
+      const held = await db.telegram.getRecoverySession(telegramUserId, audience);
       if (!held) {
         // ── No Aadhaar held: this is the PASSWORD path, not the recovery one ──
         // Somebody who has lost their password and opened the recovery bot has
@@ -512,21 +544,21 @@ router.post('/recovery/webhook', async (req, res) => {
         // account reaches no account at all.
         const phone = normalisePhone(message.contact.phone_number);
         const linked = phone
-          ? await db.telegram.getIdentityByTelegramId(telegramUserId)
+          ? await db.telegram.getIdentityByTelegramId(telegramUserId, audience)
           : null;
         if (linked?.contactActive && String(linked.phone) === phone) {
           const issued = await issueResetLink({
-            userId: linked.userId, telegramUserId, baseUrl: process.env.PUBLIC_APP_ORIGIN,
+            userId: linked.userId, telegramUserId, audience,
           });
           if (issued.ok) {
             return sendTemplate({
-              chatId, key: 'password_reset', role: 'recovery',
+              bot, chatId, key: 'password_reset', role: 'recovery', audience,
               vars: { resetUrl: issued.url, minutes: issued.minutes, firstName: message.from?.first_name || '' },
               extra: { reply_markup: { remove_keyboard: true } },
             });
           }
         }
-        return sendRecoveryMessage(chatId,
+        return sendRecoveryMessage(audience, chatId,
           'To move your account to this Telegram account, send your 12-digit Aadhaar number first.\n\n'
           + 'If you only need a new PASSWORD, share your contact from the Telegram account you '
           + 'already verified with and we will send you a reset link.',
@@ -534,13 +566,14 @@ router.post('/recovery/webhook', async (req, res) => {
       }
       const result = await attemptRecovery({
         newTelegramUserId: telegramUserId,
+        audience,
         phone: message.contact.phone_number,
         contactUserId: message.contact.user_id,
         aadhaarHashes: held.aadhaarHashes,
       });
       // Consumed whether it succeeded or failed: one attempt per Aadhaar sent,
       // so a wrong contact share cannot be retried against a held Aadhaar.
-      await db.telegram.deleteRecoverySession(telegramUserId);
+      await db.telegram.deleteRecoverySession(telegramUserId, audience);
 
       if (!result.ok) {
         const copy = {
@@ -552,7 +585,7 @@ router.post('/recovery/webhook', async (req, res) => {
           no_match: 'We could not verify these details. The Aadhaar and the mobile number must both '
             + 'match the account exactly, and you must be messaging from the number the account uses.',
         }[result.reason] || 'We could not complete recovery. Please contact support.';
-        return sendRecoveryMessage(chatId, copy, { reply_markup: { remove_keyboard: true } });
+        return sendRecoveryMessage(audience, chatId, copy, { reply_markup: { remove_keyboard: true } });
       }
 
       // ── No link, and no session ──────────────────────────────────────────
@@ -561,8 +594,8 @@ router.post('/recovery/webhook', async (req, res) => {
       // LINK, and it just did. Sending them to the app to use the password they
       // already have is both the correct instruction and one fewer credential
       // this bot is able to mint.
-      const prompt = await joinPrompt();
-      return sendRecoveryMessage(chatId,
+      const prompt = await joinPrompt(audience);
+      return sendRecoveryMessage(audience, chatId,
         '✅ Your Telegram account is now linked again.\n\n'
         + 'Sign in to Betting Bazaar with your mobile number and password as usual. '
         + 'Your balance, history and referrals are unchanged.'
@@ -573,7 +606,7 @@ router.post('/recovery/webhook', async (req, res) => {
     const text = String(message.text || '').trim();
     if (text.startsWith('/start')) {
       return sendTemplate({
-        chatId, key: 'recovery_welcome', role: 'recovery',
+        bot, chatId, key: 'recovery_welcome', role: 'recovery', audience,
         vars: { firstName: message.from?.first_name || '' },
       });
     }
@@ -583,18 +616,19 @@ router.post('/recovery/webhook', async (req, res) => {
       // it — telling the person to share their contact before the write has
       // landed is a race whose loser is answered "send your Aadhaar first"
       // after doing exactly that.
-      const remembered = await rememberRecovery(telegramUserId, text);
+      const remembered = await rememberRecovery(telegramUserId, audience, text);
       if (!remembered) {
-        return sendRecoveryMessage(chatId,
+        return sendRecoveryMessage(audience, chatId,
           'We could not start recovery just now. Please send your Aadhaar number again in a moment.');
       }
-      return sendRecoveryMessage(chatId,
+      return sendRecoveryMessage(audience, chatId,
         'Now tap the button below to share the contact of <b>this</b> Telegram account. '
         + 'It must be the same mobile number your account uses.',
         { reply_markup: contactKeyboard });
     }
 
-    return sendRecoveryMessage(chatId, 'Please send your 12-digit Aadhaar number, or /start to begin again.');
+    return sendRecoveryMessage(audience, chatId,
+      'Please send your 12-digit Aadhaar number, or /start to begin again.');
   } catch (err) {
     console.error('[telegram] recovery handling failed:', err.message);
   }
@@ -619,12 +653,26 @@ router.post('/recovery/webhook', async (req, res) => {
  */
 router.get('/public-config', async (req, res) => {
   try {
-    const cfg = await activeConfig();
+    // ── Which PANEL is asking ────────────────────────────────────────────
+    // Each panel has its own channel and its own recovery bot, so "the public
+    // config" is three different answers. The merchant panel asks for
+    // MERCHANT, the admin panel for STAFF, and an absent or unrecognised value
+    // means PLAYER — which is both the commonest caller and the safest
+    // default, because a player's channel invite link is the one thing here
+    // that is genuinely meant to be public.
+    //
+    // Validated against the vocabulary rather than passed through: an
+    // unvalidated value would reach `assertAudience` and turn a query-string
+    // typo into a 500.
+    const asked = String(req.query.audience || '').toUpperCase();
+    const audience = ACCOUNT_TYPES.includes(asked) ? asked : 'PLAYER';
+    const cfg = await activeConfig(audience);
     // Short cache: a replacement should reach visitors in about a minute, but
     // this must not be a per-page-load database read at 10k DAU.
     res.setHeader('Cache-Control', 'public, max-age=60');
     return res.json({
       success: true,
+      audience,
       recoveryBotUsername: cfg?.recoveryBotUsername || '',
       channelInviteLink: cfg?.channelInviteLink || '',
       channelUsername: cfg?.channelUsername || '',

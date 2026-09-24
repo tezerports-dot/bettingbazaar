@@ -30,7 +30,7 @@ import {
 const describePg = pgConfigured() ? describe : describe.skip;
 
 const bot = (over = {}) => ({
-  botId: 'b1', label: 'primary', role: 'signin', username: '@bb_bot',
+  botId: 'b1', label: 'primary', role: 'signin', audience: 'PLAYER', username: '@bb_bot',
   tokenEncrypted: 'cipher', webhookSecret: 'secret', ...over,
 });
 
@@ -50,52 +50,52 @@ describePg('the Telegram sign-in surface (PostgreSQL)', () => {
 
   describe('configuration generations', () => {
     it('activates the first generation as number 1', async () => {
-      const cfg = await activateConfig({ channelId: '-100123', reason: 'launch' });
+      const cfg = await activateConfig({ audience: 'PLAYER', channelId: '-100123', reason: 'launch' });
       expect(cfg).toMatchObject({ generation: 1, channelId: '-100123', active: true });
-      expect((await getActiveConfig()).generation).toBe(1);
+      expect((await getActiveConfig('PLAYER')).generation).toBe(1);
     });
 
     it('a channel swap deactivates the old generation in the same transaction', async () => {
-      await activateConfig({ channelId: '-100123' });
-      const next = await activateConfig({ channelId: '-100456', reason: 'moved channel' });
+      await activateConfig({ audience: 'PLAYER', channelId: '-100123' });
+      const next = await activateConfig({ audience: 'PLAYER', channelId: '-100456', reason: 'moved channel' });
       expect(next.generation).toBe(2);
 
       // The partial unique index is what makes "at most one active" the
       // DATABASE's rule rather than something every writer must remember.
       const { rows } = await pgQuery('SELECT count(*)::int AS n FROM telegram_configs WHERE active');
       expect(rows[0].n).toBe(1);
-      expect((await getActiveConfig()).channelId).toBe('-100456');
+      expect((await getActiveConfig('PLAYER')).channelId).toBe('-100456');
     });
 
     it('refuses a second active row written behind the repository', async () => {
-      await activateConfig({ channelId: '-100123' });
+      await activateConfig({ audience: 'PLAYER', channelId: '-100123' });
       await expect(pgQuery(
         `INSERT INTO telegram_configs (generation, channel_id, active) VALUES (99, '-100999', TRUE)`,
       )).rejects.toThrow(/one_active_telegram_config/);
     });
 
     it('keeps bot secrets out of the ordinary read', async () => {
-      await activateConfig({
+      await activateConfig({ audience: 'PLAYER',
         channelId: '-100123', botTokenEncrypted: 'TOKENCIPHER', webhookSecret: 'HOOKSECRET',
       });
-      const cfg = await getActiveConfig();
+      const cfg = await getActiveConfig('PLAYER');
       expect(JSON.stringify(cfg)).not.toContain('TOKENCIPHER');
       expect(JSON.stringify(cfg)).not.toContain('HOOKSECRET');
       // Reachable only by asking for it by name.
-      expect(await getActiveConfigSecrets()).toMatchObject({
+      expect(await getActiveConfigSecrets('PLAYER')).toMatchObject({
         botTokenEncrypted: 'TOKENCIPHER', webhookSecret: 'HOOKSECRET',
       });
     });
 
     it('reads the channel and its credentials in ONE statement', async () => {
-      await activateConfig({
+      await activateConfig({ audience: 'PLAYER',
         channelId: '-100123', channelUsername: '@live', botUsername: 'bot',
         botTokenEncrypted: 'TOKENCIPHER', webhookSecret: 'HOOKSECRET',
       });
       // The send path needs both halves, and reading them as two queries would
       // let a channel swap land between them — composing a config whose channel
       // belongs to one generation and whose token belongs to another.
-      const cfg = await getActiveConfigWithSecrets();
+      const cfg = await getActiveConfigWithSecrets('PLAYER');
       expect(cfg).toMatchObject({
         generation: 1,
         channelId: '-100123',
@@ -109,13 +109,13 @@ describePg('the Telegram sign-in surface (PostgreSQL)', () => {
     it('answers null for the combined read before anything is configured', async () => {
       // The state a fresh deployment sits in. Callers must read it as "Telegram
       // auth is unavailable", never as an error to retry.
-      expect(await getActiveConfigWithSecrets()).toBeNull();
+      expect(await getActiveConfigWithSecrets('PLAYER')).toBeNull();
     });
 
     it('lists generations newest first, with no token among them', async () => {
-      await activateConfig({ channelId: '-1001', botTokenEncrypted: 'TOKENCIPHER' });
-      await activateConfig({ channelId: '-1002' });
-      await activateConfig({ channelId: '-1003' });
+      await activateConfig({ audience: 'PLAYER', channelId: '-1001', botTokenEncrypted: 'TOKENCIPHER' });
+      await activateConfig({ audience: 'PLAYER', channelId: '-1002' });
+      await activateConfig({ audience: 'PLAYER', channelId: '-1003' });
 
       const history = await listConfigHistory({ limit: 10 });
       expect(history.map((h) => h.generation)).toEqual([3, 2, 1]);
@@ -125,18 +125,63 @@ describePg('the Telegram sign-in surface (PostgreSQL)', () => {
     });
   });
 
+  describe('one active channel PER PANEL', () => {
+    it('activating one panel leaves the others alone', async () => {
+      // THE expensive mistake this scoping exists to stop. A cached membership
+      // is stamped with the generation it was observed in, so deactivating the
+      // player generation makes every player's cached answer stale at once —
+      // the entire user base re-gated, at the moment an operator believed they
+      // were configuring a different panel entirely.
+      const player = await activateConfig({ audience: 'PLAYER', channelId: '-100111' });
+      const merchant = await activateConfig({ audience: 'MERCHANT', channelId: '-100222' });
+      const staff = await activateConfig({ audience: 'STAFF', channelId: '-100333' });
+
+      expect((await getActiveConfig('PLAYER')).channelId).toBe('-100111');
+      expect((await getActiveConfig('MERCHANT')).channelId).toBe('-100222');
+      expect((await getActiveConfig('STAFF')).channelId).toBe('-100333');
+
+      // Generations stay GLOBALLY unique across the three, which is what makes
+      // a cross-panel stale answer unrepresentable rather than merely unlikely:
+      // a merchant's cached generation can never compare equal to the player
+      // channel's current one.
+      expect(new Set([player.generation, merchant.generation, staff.generation]).size).toBe(3);
+    });
+
+    it('replacing one panel’s channel re-gates only that panel', async () => {
+      await activateConfig({ audience: 'PLAYER', channelId: '-100111' });
+      const before = (await getActiveConfig('PLAYER')).generation;
+      await activateConfig({ audience: 'MERCHANT', channelId: '-100222' });
+      await activateConfig({ audience: 'MERCHANT', channelId: '-100999', reason: 'moved' });
+
+      // The player generation did not move, so no player is asked to re-join.
+      expect((await getActiveConfig('PLAYER')).generation).toBe(before);
+      expect((await getActiveConfig('MERCHANT')).channelId).toBe('-100999');
+    });
+
+    it('answers null for a panel nobody has configured', async () => {
+      // The state the STAFF bootstrap exemption exists for, asserted here as a
+      // plain fact about the store: a configured player channel says nothing
+      // about whether staff have one.
+      await activateConfig({ audience: 'PLAYER', channelId: '-100111' });
+      expect(await getActiveConfig('STAFF')).toBeNull();
+      expect(await getActiveConfigWithSecrets('STAFF')).toBeNull();
+    });
+  });
+
   describe('the bot registry', () => {
     it('parks a new bot as STANDBY, which is the point of the table', async () => {
       expect(await addBot(bot())).toMatchObject({ status: 'STANDBY', liveSlot: null });
-      expect(await getLiveBot('signin')).toBeNull();
+      expect(await getLiveBot('signin', 'PLAYER')).toBeNull();
     });
 
     it('leaves live_slot NULL for a sign-in bot, because the role is a FLEET', async () => {
       // Stated as its own assertion because it is the schema change the whole
       // fleet rests on, and it is invisible from any behaviour above.
       expect(await addBot(bot({ status: 'ACTIVE' }))).toMatchObject({ liveSlot: null });
+      // The slot composes the AUDIENCE in, which is what makes "one live
+      // recovery bot" a rule about one PANEL rather than about the platform.
       expect(await addBot(bot({ botId: 'r', role: 'recovery', status: 'ACTIVE' })))
-        .toMatchObject({ liveSlot: 'recovery' });
+        .toMatchObject({ liveSlot: 'PLAYER:recovery' });
     });
 
     it('derives live_slot from the row, so an UPDATE cannot dodge the rule', async () => {
@@ -146,7 +191,7 @@ describePg('the Telegram sign-in surface (PostgreSQL)', () => {
       // singular, and for a reason worth stating: it is the one path that hands
       // an account to a DIFFERENT Telegram account, so it stays one door.
       await addBot(bot({ botId: 'r1', role: 'recovery', status: 'ACTIVE' }));
-      expect((await getLiveBot('recovery')).botId).toBe('r1');
+      expect((await getLiveBot('recovery', 'PLAYER')).botId).toBe('r1');
 
       await addBot(bot({ botId: 'r2', role: 'recovery', label: 'spare' }));
       // The model this replaces maintained the slot in a pre-validate hook,
@@ -157,7 +202,7 @@ describePg('the Telegram sign-in surface (PostgreSQL)', () => {
     });
 
     it('serves A live sign-in bot for the channel questions, deterministically', async () => {
-      // `getLiveBot('signin')` no longer reads the generated column, because
+      // `getLiveBot('signin', 'PLAYER')` no longer reads the generated column, because
       // for a fleet that column is always NULL and the read would answer "not
       // configured" over a working fleet. It answers "give me one", ordered, and
       // which one does not matter: it is read to ask Telegram about the CHANNEL
@@ -165,8 +210,8 @@ describePg('the Telegram sign-in surface (PostgreSQL)', () => {
       await addBot(bot({ botId: 'z2', status: 'ACTIVE' }));
       await pgQuery(`UPDATE telegram_bots SET added_at = now() + interval '5 s' WHERE bot_id='z2'`);
       await addBot(bot({ botId: 'z1', status: 'ACTIVE' }));
-      expect((await getLiveBot('signin')).botId).toBe('z1');
-      expect((await getLiveBotSecrets('signin')).botId).toBe('z1');
+      expect((await getLiveBot('signin', 'PLAYER')).botId).toBe('z1');
+      expect((await getLiveBotSecrets('signin', 'PLAYER')).botId).toBe('z1');
     });
 
     it('allows any number of live OUTBOUND bots, which have no singular slot', async () => {
@@ -185,7 +230,7 @@ describePg('the Telegram sign-in surface (PostgreSQL)', () => {
       await addBot(bot({ botId: 'spare', role: 'recovery' }));
 
       const result = await promoteBot({ botId: 'spare', role: 'recovery', actor: 'admin-1' });
-      expect(result.bot).toMatchObject({ botId: 'spare', status: 'ACTIVE', liveSlot: 'recovery' });
+      expect(result.bot).toMatchObject({ botId: 'spare', status: 'ACTIVE', liveSlot: 'PLAYER:recovery' });
       // The displaced bot comes back with it: the caller has to revoke the old
       // webhook once the transaction has committed, and it cannot do that from
       // a bot it was never told about.
@@ -194,7 +239,7 @@ describePg('the Telegram sign-in surface (PostgreSQL)', () => {
 
       // Never zero live bots at any point a reader could observe — the window
       // between the stand-down and the promotion is inside one transaction.
-      expect(await getLiveBot('recovery')).toMatchObject({ botId: 'spare' });
+      expect(await getLiveBot('recovery', 'PLAYER')).toMatchObject({ botId: 'spare' });
     });
 
     it('promoting a sign-in bot displaces NOBODY, because they all serve', async () => {
@@ -221,7 +266,7 @@ describePg('the Telegram sign-in surface (PostgreSQL)', () => {
       // they had just displaced was gone for good.
       const back = await promoteBot({ botId: 'live', role: 'recovery', actor: 'admin-1' });
       expect(back.bot).toMatchObject({ botId: 'live', status: 'ACTIVE' });
-      expect(await getLiveBot('recovery')).toMatchObject({ botId: 'live' });
+      expect(await getLiveBot('recovery', 'PLAYER')).toMatchObject({ botId: 'live' });
     });
 
     it('refuses to promote a retired bot', async () => {
@@ -229,7 +274,7 @@ describePg('the Telegram sign-in surface (PostgreSQL)', () => {
       await addBot(bot({ botId: 'gone', status: 'RETIRED' }));
       await expect(promoteBot({ botId: 'gone', role: 'signin' }))
         .rejects.toThrow(/no promotable bot gone/);
-      expect(await getLiveBot('signin')).toMatchObject({ botId: 'live' });
+      expect(await getLiveBot('signin', 'PLAYER')).toMatchObject({ botId: 'live' });
     });
 
     it('leaves the incumbent live when the promotion target does not exist', async () => {
@@ -238,13 +283,13 @@ describePg('the Telegram sign-in surface (PostgreSQL)', () => {
         .rejects.toThrow(/no promotable bot ghost/);
       // The stand-down half must have rolled back with it, or the platform is
       // left with nobody answering the webhook.
-      expect(await getLiveBot('signin')).toMatchObject({ botId: 'live' });
+      expect(await getLiveBot('signin', 'PLAYER')).toMatchObject({ botId: 'live' });
     });
 
     it('keeps the token out of a listing and returns it only on request', async () => {
       await addBot(bot({ status: 'ACTIVE', tokenEncrypted: 'BOTCIPHER' }));
       expect(JSON.stringify(await listBots())).not.toContain('BOTCIPHER');
-      expect(await getLiveBotSecrets('signin')).toMatchObject({ tokenEncrypted: 'BOTCIPHER' });
+      expect(await getLiveBotSecrets('signin', 'PLAYER')).toMatchObject({ tokenEncrypted: 'BOTCIPHER' });
     });
 
     it('records why a promotion failed', async () => {
@@ -301,45 +346,84 @@ describePg('the Telegram sign-in surface (PostgreSQL)', () => {
       await createUser({ userId: 'u-2', username: 'b', mobile: '9990000002' });
     });
 
+    it('lets ONE Telegram account hold one link per panel', async () => {
+      // The thing a bare `telegram_user_id` primary key made impossible. One
+      // person opens all three bots from the same Telegram account — that is
+      // what a Telegram account IS — and before the key was widened the second
+      // share was refused with "this Telegram account is already verifying a
+      // different account", naming the link they had made minutes earlier.
+      await createUser({ userId: 'm-1', username: 'm', mobile: '9990000001', accountType: 'MERCHANT' });
+      await createIdentity({ audience: 'PLAYER', telegramUserId: 't-1', userId: 'u-1', phone: '9990000001' });
+      await createIdentity({ audience: 'MERCHANT', telegramUserId: 't-1', userId: 'm-1', phone: '9990000001' });
+
+      expect((await getIdentityByTelegramId('t-1', 'PLAYER')).userId).toBe('u-1');
+      expect((await getIdentityByTelegramId('t-1', 'MERCHANT')).userId).toBe('m-1');
+      // And the panel that was never linked still answers null, rather than
+      // handing back whichever of the two the planner reached first.
+      expect(await getIdentityByTelegramId('t-1', 'STAFF')).toBeNull();
+    });
+
+    it('still refuses a second Telegram account for one panel', async () => {
+      // Widening the key must not widen the RULE. Within one audience the old
+      // invariant is untouched.
+      await createIdentity({ audience: 'PLAYER', telegramUserId: 't-1', userId: 'u-1', phone: '9990000001' });
+      await expect(createIdentity({
+        audience: 'PLAYER', telegramUserId: 't-2', userId: 'u-1', phone: '9990000009',
+      })).rejects.toMatchObject({ code: '23505' });
+    });
+
+    it('lets one mobile be proven on each panel, and only once per panel', async () => {
+      await createUser({ userId: 'm-1', username: 'm', mobile: '9998887777', accountType: 'MERCHANT' });
+      await createUser({ userId: 'u-3', username: 'c', mobile: '9998887777' });
+      await createIdentity({ audience: 'PLAYER', telegramUserId: 't-1', userId: 'u-3', phone: '9998887777' });
+      // A different panel, same number: allowed, because they are different
+      // accounts (§33.5) and the person holds the phone for both.
+      await createIdentity({ audience: 'MERCHANT', telegramUserId: 't-2', userId: 'm-1', phone: '9998887777' });
+      // A second ACTIVE claim on the same number WITHIN a panel: still refused.
+      await expect(createIdentity({
+        audience: 'MERCHANT', telegramUserId: 't-3', userId: 'u-2', phone: '9998887777',
+      })).rejects.toMatchObject({ code: '23505' });
+    });
+
     it('links a Telegram account to a platform account', async () => {
-      await createIdentity({ telegramUserId: 't-1', userId: 'u-1', phone: '9990000001' });
-      expect((await getIdentityByTelegramId('t-1')).userId).toBe('u-1');
+      await createIdentity({ audience: 'PLAYER', telegramUserId: 't-1', userId: 'u-1', phone: '9990000001' });
+      expect((await getIdentityByTelegramId('t-1', 'PLAYER')).userId).toBe('u-1');
       expect((await getIdentityByUserId('u-1')).telegramUserId).toBe('t-1');
     });
 
     it('refuses a second platform account for one Telegram account', async () => {
-      await createIdentity({ telegramUserId: 't-1', userId: 'u-1', phone: '9990000001' });
-      await expect(createIdentity({ telegramUserId: 't-1', userId: 'u-2', phone: '9990000002' }))
+      await createIdentity({ audience: 'PLAYER', telegramUserId: 't-1', userId: 'u-1', phone: '9990000001' });
+      await expect(createIdentity({ audience: 'PLAYER', telegramUserId: 't-1', userId: 'u-2', phone: '9990000002' }))
         .rejects.toThrow(/telegram_identities_pkey/);
     });
 
     it('refuses a second Telegram account for one platform account', async () => {
-      await createIdentity({ telegramUserId: 't-1', userId: 'u-1', phone: '9990000001' });
-      await expect(createIdentity({ telegramUserId: 't-2', userId: 'u-1', phone: '9990000002' }))
+      await createIdentity({ audience: 'PLAYER', telegramUserId: 't-1', userId: 'u-1', phone: '9990000001' });
+      await expect(createIdentity({ audience: 'PLAYER', telegramUserId: 't-2', userId: 'u-1', phone: '9990000002' }))
         .rejects.toThrow(/one_active_identity_per_user/);
     });
 
     it('refuses two ACTIVE identities on one phone — the anchor rule', async () => {
-      await createIdentity({ telegramUserId: 't-1', userId: 'u-1', phone: '9998887777' });
-      await expect(createIdentity({ telegramUserId: 't-2', userId: 'u-2', phone: '9998887777' }))
+      await createIdentity({ audience: 'PLAYER', telegramUserId: 't-1', userId: 'u-1', phone: '9998887777' });
+      await expect(createIdentity({ audience: 'PLAYER', telegramUserId: 't-2', userId: 'u-2', phone: '9998887777' }))
         .rejects.toThrow(/one_active_identity_per_phone/);
     });
 
     it('frees the phone once the old claim is retired, for the recovery path', async () => {
-      await createIdentity({ telegramUserId: 't-1', userId: 'u-1', phone: '9998887777' });
+      await createIdentity({ audience: 'PLAYER', telegramUserId: 't-1', userId: 'u-1', phone: '9998887777' });
       // The row SURVIVES, marked: "was this number ever linked, and to whom?"
       // is what a recovery request asks.
-      const retired = await deactivateContact('t-1');
+      const retired = await deactivateContact('t-1', 'PLAYER');
       expect(retired.contactActive).toBe(false);
 
-      await createIdentity({ telegramUserId: 't-2', userId: 'u-2', phone: '9998887777' });
-      expect((await getIdentityByTelegramId('t-2')).userId).toBe('u-2');
-      expect(await getIdentityByTelegramId('t-1')).not.toBeNull();
+      await createIdentity({ audience: 'PLAYER', telegramUserId: 't-2', userId: 'u-2', phone: '9998887777' });
+      expect((await getIdentityByTelegramId('t-2', 'PLAYER')).userId).toBe('u-2');
+      expect(await getIdentityByTelegramId('t-1', 'PLAYER')).not.toBeNull();
     });
 
     it('stores the generation WITH the cached membership', async () => {
-      await createIdentity({ telegramUserId: 't-1', userId: 'u-1', phone: '9990000001' });
-      const seen = await setChannelStatus('t-1', { status: 'member', generation: 3 });
+      await createIdentity({ audience: 'PLAYER', telegramUserId: 't-1', userId: 'u-1', phone: '9990000001' });
+      const seen = await setChannelStatus('t-1', { audience: 'PLAYER', status: 'member', generation: 3 });
       expect(seen).toMatchObject({ channelStatus: 'member', channelGeneration: 3 });
       // A channel swap bumps the generation, which makes this observation stale
       // BY CONSTRUCTION rather than by a sweep somebody has to run.
@@ -347,8 +431,8 @@ describePg('the Telegram sign-in surface (PostgreSQL)', () => {
     });
 
     it('refuses a channel status the table does not recognise', async () => {
-      await createIdentity({ telegramUserId: 't-1', userId: 'u-1', phone: '9990000001' });
-      await expect(setChannelStatus('t-1', { status: 'vibing', generation: 1 }))
+      await createIdentity({ audience: 'PLAYER', telegramUserId: 't-1', userId: 'u-1', phone: '9990000001' });
+      await expect(setChannelStatus('t-1', { audience: 'PLAYER', status: 'vibing', generation: 1 }))
         .rejects.toThrow(/channel_status_check/);
     });
   });
@@ -366,6 +450,34 @@ describePg('the Telegram sign-in surface (PostgreSQL)', () => {
   // reassignment, the last-bot refusal) and `linking a Telegram account to an
   // account that ALREADY EXISTS`, which is the one thing the contact share now
   // does. `backend/tests/routes/playerAuthRoutes.test.js` covers the form.
+
+  describe('a contact share reaches ONLY the panel its bot serves', () => {
+    beforeEach(async () => {
+      // One mobile, three accounts — the shape §33.5 made legal and the shape
+      // §32 S30 says a query will eventually resolve wrongly.
+      await createUser({ userId: 'pl', username: 'pl', mobile: '9990004444' });
+      await createUser({ userId: 'me', username: 'me', mobile: '9990004444', accountType: 'MERCHANT' });
+      await createUser({ userId: 'st', username: 'st', mobile: '9990004444', accountType: 'STAFF' });
+    });
+
+    it('links the account of the BOT’S OWN type, not whichever row comes first', async () => {
+      expect(await linkTelegramToAccount({ audience: 'MERCHANT', telegramUserId: 't-m', phone: '9990004444' }))
+        .toMatchObject({ ok: true, userId: 'me' });
+      expect(await linkTelegramToAccount({ audience: 'STAFF', telegramUserId: 't-s', phone: '9990004444' }))
+        .toMatchObject({ ok: true, userId: 'st' });
+      expect(await linkTelegramToAccount({ audience: 'PLAYER', telegramUserId: 't-p', phone: '9990004444' }))
+        .toMatchObject({ ok: true, userId: 'pl' });
+    });
+
+    it('answers no_account when that panel has no account on the number', async () => {
+      // Not "already linked", and not somebody else's row. A merchant bot
+      // meeting a number that only has a player account must say the merchant
+      // form has not been filled in — which is a sentence the person can act on.
+      await pgQuery(`DELETE FROM users WHERE user_id IN ('me','st')`);
+      expect(await linkTelegramToAccount({ audience: 'MERCHANT', telegramUserId: 't-m', phone: '9990004444' }))
+        .toMatchObject({ ok: false, reason: 'no_account' });
+    });
+  });
 
   describe('the sign-in FLEET and whose turn it is', () => {
     const fleet = async (n) => {
@@ -397,7 +509,7 @@ describePg('the Telegram sign-in surface (PostgreSQL)', () => {
       await fleet(3);
       await players(7);
       const got = [];
-      for (let i = 1; i <= 7; i++) got.push(await assignSigninBot(`p${i}`));
+      for (let i = 1; i <= 7; i++) got.push(await assignSigninBot(`p${i}`, 'PLAYER'));
       // The owner's words: "assign 1, assign 2, then 3rd ... and once it
       // reaches all, again start from 1."
       const first = got[0];
@@ -410,25 +522,65 @@ describePg('the Telegram sign-in surface (PostgreSQL)', () => {
     it('KEEPS an assignment once made, so the player is not sent to a new chat', async () => {
       await fleet(3);
       await players(1);
-      const mine = await assignSigninBot('p1');
-      expect(await assignSigninBot('p1')).toBe(mine);
-      expect(await assignSigninBot('p1')).toBe(mine);
+      const mine = await assignSigninBot('p1', 'PLAYER');
+      expect(await assignSigninBot('p1', 'PLAYER')).toBe(mine);
+      expect(await assignSigninBot('p1', 'PLAYER')).toBe(mine);
     });
 
     it('MOVES a player whose bot was retired, with no sweep and no migration', async () => {
       await fleet(3);
       await players(6);
-      for (let i = 1; i <= 6; i++) await assignSigninBot(`p${i}`);
+      for (let i = 1; i <= 6; i++) await assignSigninBot(`p${i}`, 'PLAYER');
       const orphaned = (await pgQuery(
         `SELECT user_id FROM users WHERE telegram_bot_id = 'f2'`)).rows.map((r) => r.user_id);
       expect(orphaned.length).toBeGreaterThan(0);
 
       expect((await retireBot('f2', { actor: 'admin' })).ok).toBe(true);
       for (const id of orphaned) {
-        const now = await assignSigninBot(id);
+        const now = await assignSigninBot(id, 'PLAYER');
         expect(now).not.toBe('f2');
         expect(['f1', 'f3']).toContain(now);
       }
+    });
+
+    it('rotates each panel through its OWN fleet, independently', async () => {
+      // Three fleets of different sizes share one sequence, deliberately: the
+      // modulo is taken over each audience's own live count. What must NEVER
+      // happen is a merchant being handed a player bot — they have no
+      // conversation with it, so Telegram refuses the reply and the person sees
+      // a chat that simply stopped (§33.2).
+      await fleet(3);
+      await addBot(bot({ botId: 'm1', audience: 'MERCHANT', username: '@m1', status: 'ACTIVE' }));
+      await addBot(bot({ botId: 's1', audience: 'STAFF', username: '@s1', status: 'ACTIVE' }));
+
+      await createUser({ userId: 'pl', username: 'pl', mobile: '9990001111' });
+      await createUser({ userId: 'me', username: 'me', mobile: '9990002222', accountType: 'MERCHANT' });
+      await createUser({ userId: 'st', username: 'st', mobile: '9990003333', accountType: 'STAFF' });
+
+      expect(['f1', 'f2', 'f3']).toContain(await assignSigninBot('pl', 'PLAYER'));
+      expect(await assignSigninBot('me', 'MERCHANT')).toBe('m1');
+      expect(await assignSigninBot('st', 'STAFF')).toBe('s1');
+    });
+
+    it('answers null for a panel with no fleet, while another panel has one', async () => {
+      // The state a fresh install sits in for every panel but the one the
+      // operator set up first. It is a REAL state, not an error — the caller
+      // reports it rather than blaming the person — and a fleet existing
+      // somewhere else must not make it look configured.
+      await fleet(2);
+      await createUser({ userId: 'me', username: 'me', mobile: '9990002222', accountType: 'MERCHANT' });
+      expect(await assignSigninBot('me', 'MERCHANT')).toBeNull();
+    });
+
+    it('counts the last-live-bot refusal WITHIN a panel', async () => {
+      // The guard counts what would be left. Unscoped it counted the player
+      // fleet's spares as reasons the merchant panel would survive — so
+      // retiring the only merchant bot would have been allowed, and the first
+      // merchant to verify would have met a gate with no bot to open.
+      await fleet(3);
+      await addBot(bot({ botId: 'm1', audience: 'MERCHANT', username: '@m1', status: 'ACTIVE' }));
+      expect(await retireBot('m1', { actor: 'a' }))
+        .toMatchObject({ ok: false, reason: 'IS_LIVE', audience: 'MERCHANT' });
     });
 
     it('refuses to retire the LAST live sign-in bot', async () => {
@@ -444,15 +596,15 @@ describePg('the Telegram sign-in surface (PostgreSQL)', () => {
       // treating as an error — the account exists, it simply cannot be
       // verified yet.
       await players(1);
-      expect(await assignSigninBot('p1')).toBeNull();
+      expect(await assignSigninBot('p1', 'PLAYER')).toBeNull();
     });
 
     it('reports the load each live bot carries, including one carrying nobody', async () => {
       await fleet(3);
       await players(2);
-      await assignSigninBot('p1');
-      await assignSigninBot('p2');
-      const loads = await signinBotLoads();
+      await assignSigninBot('p1', 'PLAYER');
+      await assignSigninBot('p2', 'PLAYER');
+      const loads = await signinBotLoads({ audience: 'PLAYER' });
       expect(loads).toHaveLength(3);
       // count(*) is BIGINT and node-postgres returns BIGINT as a STRING
       // (trap 5). Uncast, every comparison an operator's screen makes on this
@@ -468,38 +620,38 @@ describePg('the Telegram sign-in surface (PostgreSQL)', () => {
     });
 
     it('matches the shared contact against users.mobile', async () => {
-      expect(await linkTelegramToAccount({ telegramUserId: 't-1', phone: '9990000001' }))
+      expect(await linkTelegramToAccount({ audience: 'PLAYER', telegramUserId: 't-1', phone: '9990000001' }))
         .toMatchObject({ ok: true, userId: 'u-1', relinked: false });
-      expect((await getIdentityByTelegramId('t-1')).userId).toBe('u-1');
+      expect((await getIdentityByTelegramId('t-1', 'PLAYER')).userId).toBe('u-1');
     });
 
     it('CREATES NOTHING when the number matches no account', async () => {
       // The difference from what this replaced, stated as a test. A contact
       // that matches nothing is somebody who has not filled the form yet.
-      expect(await linkTelegramToAccount({ telegramUserId: 't-9', phone: '9999999999' }))
+      expect(await linkTelegramToAccount({ audience: 'PLAYER', telegramUserId: 't-9', phone: '9999999999' }))
         .toMatchObject({ ok: false, reason: 'no_account' });
       const { rows } = await pgQuery('SELECT count(*)::int AS n FROM users');
       expect(rows[0].n).toBe(1);
     });
 
     it('is idempotent for a re-share from the same Telegram account', async () => {
-      await linkTelegramToAccount({ telegramUserId: 't-1', phone: '9990000001' });
+      await linkTelegramToAccount({ audience: 'PLAYER', telegramUserId: 't-1', phone: '9990000001' });
       // People tap the button twice, and a bot swap sends them back through it.
       // Refusing reads to the person as though verification had failed.
-      expect(await linkTelegramToAccount({ telegramUserId: 't-1', phone: '9990000001' }))
+      expect(await linkTelegramToAccount({ audience: 'PLAYER', telegramUserId: 't-1', phone: '9990000001' }))
         .toMatchObject({ ok: true, relinked: true });
     });
 
     it('refuses a SECOND Telegram account for one platform account', async () => {
-      await linkTelegramToAccount({ telegramUserId: 't-1', phone: '9990000001' });
-      expect(await linkTelegramToAccount({ telegramUserId: 't-2', phone: '9990000001' }))
+      await linkTelegramToAccount({ audience: 'PLAYER', telegramUserId: 't-1', phone: '9990000001' });
+      expect(await linkTelegramToAccount({ audience: 'PLAYER', telegramUserId: 't-2', phone: '9990000001' }))
         .toMatchObject({ ok: false });
     });
 
     it('refuses to point one Telegram account at a second platform account', async () => {
       await createUser({ userId: 'u-2', username: 'b', mobile: '9990000002' });
-      await linkTelegramToAccount({ telegramUserId: 't-1', phone: '9990000001' });
-      expect(await linkTelegramToAccount({ telegramUserId: 't-1', phone: '9990000002' }))
+      await linkTelegramToAccount({ audience: 'PLAYER', telegramUserId: 't-1', phone: '9990000001' });
+      expect(await linkTelegramToAccount({ audience: 'PLAYER', telegramUserId: 't-1', phone: '9990000002' }))
         .toMatchObject({ ok: false, reason: 'already_linked' });
     });
 
@@ -509,7 +661,7 @@ describePg('the Telegram sign-in surface (PostgreSQL)', () => {
       // why this is not a one-column UPDATE.
       await pgQuery(`UPDATE users SET status = 'DELETED', deleted_at = now(),
                                       deleted_by = 'admin-1' WHERE user_id = 'u-1'`);
-      expect(await linkTelegramToAccount({ telegramUserId: 't-1', phone: '9990000001' }))
+      expect(await linkTelegramToAccount({ audience: 'PLAYER', telegramUserId: 't-1', phone: '9990000001' }))
         .toMatchObject({ ok: false, reason: 'no_account' });
     });
   });
@@ -529,8 +681,8 @@ describePg('the Telegram sign-in surface (PostgreSQL)', () => {
       // assertion below is exactly what made that safe to do: a sweep still
       // naming a dropped table throws 42P01 on every pass and takes the whole
       // retention job down, and this test is what says so before deploy.
-      await putRecoverySession({ telegramUserId: 't-rec-live', aadhaarHashes: ['h'], ttlSeconds: 600 });
-      await putRecoverySession({ telegramUserId: 't-rec-dead', aadhaarHashes: ['h'], ttlSeconds: 600 });
+      await putRecoverySession({ audience: 'PLAYER', telegramUserId: 't-rec-live', aadhaarHashes: ['h'], ttlSeconds: 600 });
+      await putRecoverySession({ audience: 'PLAYER', telegramUserId: 't-rec-dead', aadhaarHashes: ['h'], ttlSeconds: 600 });
       await pgQuery(`UPDATE telegram_recovery_sessions SET expires_at = now() - interval '1 s'
                       WHERE telegram_user_id = 't-rec-dead'`);
 
@@ -539,7 +691,7 @@ describePg('the Telegram sign-in surface (PostgreSQL)', () => {
       // is what said so. A new expiring table reclaimed silently would make
       // "how much did we delete" quietly stop describing the sweep.
       expect(await sweepExpired()).toEqual({ recoverySessions: 1, passwordResets: 0 });
-      expect(await getRecoverySession('t-rec-live')).not.toBeNull();
+      expect(await getRecoverySession('t-rec-live', 'PLAYER')).not.toBeNull();
       // Reconstructed per pass: a second pass finds nothing, rather than
       // reporting a total it accumulated (trap 6).
       expect(await sweepExpired()).toEqual({ recoverySessions: 0, passwordResets: 0 });
@@ -702,9 +854,9 @@ describePg('recovering an account onto a new Telegram identity', () => {
   });
 
   it('moves the account to the new identity and stands the old one down', async () => {
-    await createIdentity({ telegramUserId: 't-old', userId: 'u-1', phone: '9990000001' });
+    await createIdentity({ audience: 'PLAYER', telegramUserId: 't-old', userId: 'u-1', phone: '9990000001' });
 
-    const result = await relinkIdentity({
+    const result = await relinkIdentity({ audience: 'PLAYER',
       telegramUserId: 't-new', userId: 'u-1', phone: '9990000001', generation: 3,
     });
 
@@ -721,7 +873,7 @@ describePg('recovering an account onto a new Telegram identity', () => {
 
     // The displaced row SURVIVES as history rather than being deleted. It is
     // the first thing a takeover review asks for.
-    const old = await getIdentityByTelegramId('t-old');
+    const old = await getIdentityByTelegramId('t-old', 'PLAYER');
     expect(old.contactActive).toBe(false);
     expect(old.channelStatus).toBe('left');
     expect(old.userId).toBe('u-1');
@@ -730,11 +882,11 @@ describePg('recovering an account onto a new Telegram identity', () => {
   });
 
   it('frees the phone slot, so the new identity can claim the same number', async () => {
-    await createIdentity({ telegramUserId: 't-old', userId: 'u-1', phone: '9990000001' });
+    await createIdentity({ audience: 'PLAYER', telegramUserId: 't-old', userId: 'u-1', phone: '9990000001' });
     // `one_active_identity_per_phone` is partial on contact_active. Two steps
     // would either be refused outright or leave the account with no active
     // identity between them.
-    const result = await relinkIdentity({
+    const result = await relinkIdentity({ audience: 'PLAYER',
       telegramUserId: 't-new', userId: 'u-1', phone: '9990000001',
     });
     expect(result.ok).toBe(true);
@@ -742,13 +894,13 @@ describePg('recovering an account onto a new Telegram identity', () => {
   });
 
   it('refuses to hand a second account to one Telegram identity', async () => {
-    await createIdentity({ telegramUserId: 't-1', userId: 'u-1', phone: '9990000001' });
-    await createIdentity({ telegramUserId: 't-2', userId: 'u-2', phone: '9990000002' });
+    await createIdentity({ audience: 'PLAYER', telegramUserId: 't-1', userId: 'u-1', phone: '9990000001' });
+    await createIdentity({ audience: 'PLAYER', telegramUserId: 't-2', userId: 'u-2', phone: '9990000002' });
 
     // t-2 already holds u-2. Giving it u-1 as well would create exactly the
     // duplicate the design exists to prevent — and it is a REFUSAL rather than
     // a thrown duplicate-key error, so the caller answers with a message.
-    const result = await relinkIdentity({
+    const result = await relinkIdentity({ audience: 'PLAYER',
       telegramUserId: 't-2', userId: 'u-1', phone: '9990000001',
     });
     expect(result).toEqual({ ok: false, reason: 'TELEGRAM_ALREADY_LINKED' });
@@ -759,8 +911,8 @@ describePg('recovering an account onto a new Telegram identity', () => {
   });
 
   it('is idempotent when the same identity asks twice', async () => {
-    await createIdentity({ telegramUserId: 't-1', userId: 'u-1', phone: '9990000001' });
-    const again = await relinkIdentity({
+    await createIdentity({ audience: 'PLAYER', telegramUserId: 't-1', userId: 'u-1', phone: '9990000001' });
+    const again = await relinkIdentity({ audience: 'PLAYER',
       telegramUserId: 't-1', userId: 'u-1', phone: '9990000001',
     });
     // The same Telegram account re-points its own row rather than colliding
@@ -771,7 +923,7 @@ describePg('recovering an account onto a new Telegram identity', () => {
   });
 
   it('links a first identity when the account has none', async () => {
-    const first = await relinkIdentity({
+    const first = await relinkIdentity({ audience: 'PLAYER',
       telegramUserId: 't-fresh', userId: 'u-9', phone: '9990000009',
     });
     expect(first.ok).toBe(true);

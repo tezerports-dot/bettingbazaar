@@ -13,6 +13,7 @@ import { Home, Package, History, User, LogOut, Power, Bell, Sun, Moon, Banknote,
 import toast from 'react-hot-toast';
 import { useAuth } from '../services/AuthContext';
 import { api } from '../services/api';
+import VerificationGate from './VerificationGate';
 import { ROUTES, SUCCESS_MESSAGES } from '../constants';
 import { useViewport } from '../hooks/useViewport';
 import { railOf, railCopy } from '../utils/rail';
@@ -86,6 +87,13 @@ const Layout: React.FC<LayoutProps> = ({ children, actionable = 0 }) => {
 
   return (
     <div style={{ minHeight: '100vh', background: 'var(--bg)' }}>
+      {/* ── The verification gate, mounted on the LAYOUT, not on a page ──────
+          Every authenticated merchant screen renders inside this component, so
+          mounting it here is the difference between gating the panel and gating
+          whichever pages somebody remembered. A per-page gate is §32 S32 in
+          waiting: the next screen added is the one without it. It renders
+          nothing at all once the merchant is verified. */}
+      <VerificationGate />
       {showSidebar && (
         <aside
           style={{
