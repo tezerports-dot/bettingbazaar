@@ -128,7 +128,7 @@ import { errorHandler }   from './middleware/errorHandler.js';
 import { requestContext } from './middleware/requestContext.js'; // X-6: correlation ids
 import { tlsFingerprintDefense, startTlsFingerprintDefenseConfigRefresh } from './middleware/tlsFingerprintDefense.js';
 import { rejectAmbiguousFraming } from './middleware/headerNormalization.js';
-import { authLimiter, adminAuthLimiter, merchantAuthLimiter, betLimiter, twoFactorLimiter, loginPaceLimiter, securityMonitor } from './middleware/security.js';
+import { authLimiter, adminAuthLimiter, merchantAuthLimiter, betLimiter, twoFactorLimiter, loginPaceLimiter, signupLimiter, securityMonitor } from './middleware/security.js';
 // Item 12 (2026-07-13): IP-rotation defense — per-subnet backstop + optional
 // global surge breaker on sensitive endpoints, on top of the per-IP limiters.
 import { createSubnetLimiter, globalSurgeBreaker, startIpDefenseConfigRefresh } from './middleware/ipDefense.js';
@@ -586,6 +586,32 @@ app.use('/api',           userRoutes);
 // entirely. A limiter that bans people for using the product correctly is a
 // worse outage than the brute-force it prevents.
 app.use('/api/merchant/auth/login', loginPaceLimiter, merchantAuthLimiter, requireCaptcha('merchant-login'));
+
+// ── Merchant SIGNUP, guarded the way player signup is ─────────────────────
+//
+// It had nothing. MEASURED on a running server with the captcha switched on: a
+// merchant registration carrying NO captcha token answered 200 "Application
+// submitted", while the player signup beside it answered 403 CAPTCHA_REQUIRED.
+// One form is scriptable and the other is not, and the difference was an
+// omission rather than a decision (§32 S32 — the same check on one of the two
+// paths that need it).
+//
+// The guards are the ones §33.4 settled for player signup, and for its reasons:
+//
+//   · NO pace limiter and NO auth limiter. A registration submits no secret —
+//     nobody learns anything by sending the form — so there is nothing to slow
+//     down, and pacing it punishes somebody correcting a typo.
+//   · `signupLimiter` and a subnet limiter counting SUCCESSES ONLY, because
+//     what has to be bounded is how many ACCOUNTS one address ends up with. A
+//     mistyped form must never cost the next attempt (§32 S13).
+//   · The captcha, which is what stops a script filling the admin approval
+//     queue with applications nobody submitted.
+app.use(
+  '/api/merchant/auth/signup',
+  signupLimiter,
+  createSubnetLimiter('signup', { countOnly: 'successes' }),
+  requireCaptcha('merchant-signup'),
+);
 app.use('/api/merchant',  merchantRoutes);
 app.use('/api/payment', paymentRoutes);
 app.use('/api/support',   supportRoutes); // CAP-71: RAG support assistant (dormant until keys set)

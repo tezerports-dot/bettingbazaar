@@ -52,7 +52,8 @@
     "report:ui-coverage": "node scripts/report-ui-coverage.mjs",
     "test:signup": "node backend/tests/browser/signupJourney.js",
     "test:panel-split": "node backend/tests/live/panelSplit.mjs",
-    "test:panel-gates": "node backend/tests/browser/panelGates.js"
+    "test:panel-gates": "node backend/tests/browser/panelGates.js",
+    "test:captcha-doors": "node backend/tests/live/captchaDoors.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.122.0",
