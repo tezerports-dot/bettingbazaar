@@ -83,7 +83,7 @@ export const BalanceAdjustment: React.FC = () => {
           <label className="text-xs text-gray-400 mb-1 block">Search User</label>
           <div className="flex gap-2">
             <input value={userSearch} onChange={e=>setUserSearch(e.target.value)} onKeyDown={e=>e.key==='Enter'&&searchUsers()} className="flex-1 input" placeholder="Username or mobile..."/>
-            <button onClick={searchUsers} className="btn-secondary"><Search size={14}/></button>
+            <button onClick={searchUsers} className="btn-secondary" aria-label="Search players"><Search size={14}/></button>
           </div>
           {selectedUser&&<div className="mt-2 p-2 bg-green-500/10 border border-green-500/30 rounded-sm text-sm text-green-400">Selected: {selectedUser.username} ({selectedUser.mobile})</div>}
           {users.length>0&&(
