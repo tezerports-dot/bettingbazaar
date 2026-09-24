@@ -1250,6 +1250,7 @@ these are the specific ones this codebase has actually produced.
 | S32 | The same security check in one of the two paths that need it | Which OTHER path reaches this without the middleware? |
 | S33 | A harness that measures a server it did not start | Did THIS run bring up the thing it is asking? Something already on the port answers the readiness check, and the suite then seeds one database while asserting against another. |
 | S34 | A tidy early return placed above the question it must not pre-empt | Does this guard clause change the ORDER of two questions? Refusing before the platform's own state is read is how a gate blames a person for an operator's unfinished setup. |
+| S35 | A caller's mistake thrown WITHOUT a `status`, so it leaves as a 5xx | Does the first thing this handler does with the input carry `status: 400`? `respondError` routes on the PRESENCE of `err.status` (§2), so a bare `TypeError` from a helper becomes "Something went wrong" — and the user is told the platform broke for a request that will never work. |
 
 **S22 through S25 all came out of pressing controls rather than opening
 screens, and each was invisible to every tier below a browser.**
@@ -1265,6 +1266,22 @@ where a /24 is thousands of people. One person reloading a page would have
 signed the rest of them out. **A limiter belongs on the route that submits the
 credential, never on a prefix that also carries session and status paths** —
 and the question that finds it is what ELSE that prefix serves.
+
+**S35 was found by getting a request body wrong.** `assertBuyIsLegal` passes its
+argument straight to `rupeesToPaise`, which throws a bare `TypeError` on a NaN
+— no `status`, so `respondError` routes it to `serverError`, which logs in full
+and answers with nothing by design. MEASURED: a deposit with the amount under
+any key but `tokenAmount` answered **500 "Something went wrong. Please try
+again."** Every other refusal on that path is a 400 that names what to do
+instead, exactly as §25 requires, and this one case skipped all of them.
+
+**Swept (§0.15), and the result recorded: the sell and bet paths do NOT have
+it.** Both reach `assertPositiveNumber`, which throws through `reject()` and so
+carries `status: 400` — measured, a withdrawal with no amount answers *"400
+Withdrawal amount must be a number."* The buy path was the only one, because
+`assertBuyIsLegal` runs BEFORE `validateTokenPurchase` and reached
+`rupeesToPaise` first. **The question is not "is the input validated" but
+"which check gets there first, and does IT carry a status".**
 
 **S30, S31 and S32 all came out of splitting one account into three**, and
 each was invisible to every tier that was green at the time. §33.5 and §33.6
