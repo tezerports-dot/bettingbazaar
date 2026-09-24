@@ -1757,6 +1757,156 @@ const CASES = [
   },
 
   // ══════════════════════════════════════════════════════════════════════
+  // IS THE FIRST INSTANCE REPRESENTATIVE?
+  //
+  // 574 controls come back REPEAT — a repeat of a name already pressed on
+  // that screen. Pressing all 574 is not the answer; the ASSUMPTION is, and
+  // the assumption is that row 40's button acts on row 40.
+  //
+  // §23 is this codebase's own record of that assumption failing: the KYC
+  // screen's `find(u => u._id === selectedId)` matched the FIRST row every
+  // time, so a reviewer clicking the fifth player read the first player's
+  // record — and approving grants withdrawal access. Every check was green.
+  //
+  // So these cases do the one thing that tests it: seed SEVERAL, do NOT
+  // search (searching narrows to one row and destroys the question), press a
+  // control on a row that is NOT the first, and assert the entity that moved
+  // is the one whose row was pressed — and that the first row did not move.
+  // ══════════════════════════════════════════════════════════════════════
+
+  {
+    id: 'admin/users/block-a-later-row',
+    panel: 'admin-panel',
+    what: 'Block from a row that is NOT the first — does the press hit its own row?',
+    async run(page, cfg, base) {
+      // Five, so "the last one" is unambiguously not "the first one".
+      const seeded = [];
+      for (let i = 0; i < 5; i++) seeded.push(await seedPlayer({ balancePaise: 10000 }));
+
+      await go(page, cfg, base, '/users');
+      await settle(page, 8000);
+
+      // No search. A filtered table has one row and cannot answer the
+      // question this case exists to ask.
+      const rows = page.locator('tbody tr');
+      const total = await rows.count();
+      if (total < 3) return ['NOT DRIVEN', `only ${total} row(s) rendered — too few to tell a later row from the first`];
+
+      // ── Which seeded player landed on a LATER row ───────────────────────
+      // The list sorts newest first, so the last one seeded renders as row 1 —
+      // picking it by seeding order asks the question of the wrong row. Read
+      // the actual positions and take one that is genuinely not first.
+      const positions = await page.evaluate((ids) => {
+        const trs = [...document.querySelectorAll('tbody tr')].map((tr) => tr.innerText || '');
+        return ids.map((id) => trs.findIndex((t) => t.includes(id)));
+      }, seeded.map((u) => u.userId));
+
+      let index = -1;
+      let target = null;
+      for (let i = 0; i < seeded.length; i++) {
+        if (positions[i] > 0 && (index === -1 || positions[i] > index)) {
+          index = positions[i]; target = seeded[i];
+        }
+      }
+      if (!target) {
+        return ['NOT DRIVEN', `none of the 5 seeded players rendered below row 1 (positions ${positions.join(', ')})`];
+      }
+      const row = page.locator('tbody tr', { hasText: target.userId }).first();
+      if (await row.count() === 0) return ['NOT DRIVEN', `${target.userId} left the table between reads`];
+
+      const hit = await pressInRow(row, 'Block');
+      if (!hit.ok) return ['NOT DRIVEN', hit.why];
+      await settle(page, 6000);
+      await confirmWith(page, 'Block');
+
+      // ── `userStatus` returns the ROW, not a string ──────────────────────
+      // Comparing it to 'ACTIVE' is true for every object, so the first draft
+      // reported "pressed ONE Block on row 5 and 5 accounts changed" — a
+      // finding that would have been enormous if it were real. The database
+      // said one row was blocked. Read the COLUMN, not the object.
+      const after = await Promise.all(seeded.map((u) => userStatus(u.userId)));
+      const moved = seeded.filter((u, i) => after[i]?.is_blocked).map((u) => u.userId);
+
+      if (moved.length === 0) {
+        return ['FAILED', `pressed Block on row ${index + 1} and NOBODY is blocked`];
+      }
+      if (moved.length > 1) {
+        return ['FAILED', `pressed ONE Block on row ${index + 1} and ${moved.length} accounts changed: ${moved.join(', ')}`];
+      }
+      if (moved[0] !== target.userId) {
+        return ['FAILED', `pressed Block on row ${index + 1} (${target.userId})`
+          + ` and it blocked ${moved[0]} instead — the row's control is not bound to its row (§23)`];
+      }
+      return ['DROVE', `row ${index + 1} of ${total}: blocked ${target.userId} and nobody else — the repeat assumption holds here`];
+    },
+  },
+
+  {
+    id: 'admin/kyc/approve-a-later-row',
+    panel: 'admin-panel',
+    what: 'Approve KYC from a row that is NOT the first — the screen §23 was found on',
+    async run(page, cfg, base) {
+      const seeded = [];
+      for (let i = 0; i < 4; i++) seeded.push(await seedPlayer({ kycStatus: 'PENDING_APPROVAL', balancePaise: 0 }));
+      const target = seeded[seeded.length - 1];
+
+      await go(page, cfg, base, '/kyc');
+      await settle(page, 8000);
+
+      const review = page.getByRole('button', { name: new RegExp(`Review KYC for ${target.userId}`, 'i') }).first();
+      if (await review.count() === 0) {
+        const n = await page.getByRole('button', { name: /Review KYC for/i }).count();
+        return ['NOT DRIVEN', `${target.userId} is not among the ${n} reviewable row(s) on screen`];
+      }
+      const index = await page.evaluate((id) => {
+        const btns = [...document.querySelectorAll('button')]
+          .filter((b) => /Review KYC for/i.test(b.getAttribute('aria-label') || b.title || ''));
+        return btns.findIndex((b) => (b.getAttribute('aria-label') || b.title || '').includes(id));
+      }, target.userId);
+      if (index <= 0) return ['NOT DRIVEN', `${target.userId} is queue position ${index + 1} — not a later row`];
+
+      await clickThrough(review, { timeout: 8000 });
+      await settle(page, 5000);
+
+      // ── The record on screen must be the one whose row was pressed ───────
+      // This is the half §23 says was silently wrong: the row highlighted and
+      // the record shown were different people, and the reviewer could not
+      // tell. Asserting the id is on screen BEFORE approving is the check.
+      const shown = await words(page);
+      if (!shown.includes(target.userId)) {
+        const other = seeded.find((u) => u.userId !== target.userId && shown.includes(u.userId));
+        return ['FAILED', `opened the review for queue position ${index + 1} (${target.userId})`
+          + (other ? ` and the screen is showing ${other.userId} — §23, exactly` : ' and their id is not on the screen')];
+      }
+
+      const approve = page.getByRole('button', { name: /^\s*Approve KYC\s*$/i }).last();
+      if (await approve.count() === 0) return ['NOT DRIVEN', 'no "Approve KYC" in the opened review'];
+      const hit = await clickThrough(approve, { timeout: 8000 });
+      if (!hit.ok) return ['FAILED', `Approve KYC could not be pressed: ${hit.why}`];
+      await settle(page, 4000);
+      // The dialog is given `confirmText="Approve KYC"` — both the panel's
+      // button and the confirmation read the same words, and an anchored
+      // /^Approve$/ matches neither. The working case already records this;
+      // asking for the wrong verb left the dialog open and reported the
+      // platform as failing to approve something it was never asked to.
+      const said = await confirmWith(page, 'Approve KYC');
+      if (said === 'stuck') return ['FAILED', 'the Approve KYC confirmation could not be pressed'];
+      if (String(said).startsWith('unanswered')) return ['FAILED', `the approve dialog was not answered — ${said}`];
+
+      const after = await Promise.all(seeded.map((u) => kycStatus(u.userId)));
+      const moved = seeded.filter((u, i) => after[i] === 'APPROVED').map((u) => u.userId);
+
+      if (moved.length === 0) return ['FAILED', `approved queue position ${index + 1} and nobody is APPROVED`];
+      if (moved.length > 1) return ['FAILED', `ONE approval and ${moved.length} accounts are APPROVED: ${moved.join(', ')}`];
+      if (moved[0] !== target.userId) {
+        return ['FAILED', `approved queue position ${index + 1} (${target.userId})`
+          + ` and ${moved[0]} got withdrawal access instead — §23's exact defect`];
+      }
+      return ['DROVE', `queue position ${index + 1}: approved ${target.userId} and nobody else`];
+    },
+  },
+
+  // ══════════════════════════════════════════════════════════════════════
   // DISABLED ON ARRIVAL — fifteen of them, and each is disabled for a reason.
   //
   // "Disabled" is not coverage. A person cannot press it either, so the drive
