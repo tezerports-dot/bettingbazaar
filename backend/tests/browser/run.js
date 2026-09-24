@@ -34,98 +34,31 @@
  *   npm run test:browser -- admin-panel  only that one
  *   BB_HEADED=1 npm run test:browser     watch it happen
  */
-import { spawn } from 'node:child_process';
-import { setTimeout as sleep } from 'node:timers/promises';
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { chromium } from 'playwright-core';
 import { panelScreens } from './routes.js';
 import { PAGE_SCRIPT, collect, shell, idOf } from './controls.js';
-import { seedPlayer, seedMerchant, seedAdmin } from '../e2e/seed.js';
-import { playerToken, merchantToken, adminToken, check, note, summary } from '../e2e/harness.js';
+import { check, note, summary } from '../e2e/harness.js';
+// ── The stack, shared with `drive.js` — NOT copied ─────────────────────────
+// This file had its own PANELS, navigate, settle, waitFor and startVite, and
+// its own actor seeding, because it was written before `stack.js` existed. They
+// had drifted, and the drift was invisible because both halves ran green: the
+// inventory (this file) is the DENOMINATOR the coverage report divides by, and
+// it was being taken under a DIFFERENT platform configuration from the drive
+// that divides into it. Four corrections `drive.js` had paid for were missing
+// here — the cached merchant profile, the cash denomination, the rate-limit
+// budget wait, and the enabled game providers — so this pass under-counted by
+// exactly the controls those arrange for, and the drive then pressed controls
+// the manifest did not know existed. §5, in the form §5 names: the same thing
+// assembled twice.
+import {
+  ROOT, API, EXECUTABLE, PANELS, stopAll, waitFor, startVite,
+  navigate, settle, awaitBudget, seedActors, enableGameProviders,
+} from './stack.js';
 
-const ROOT = fileURLToPath(new URL('../../..', import.meta.url));
 const SHOTS = join(ROOT, 'backend', 'tests', 'browser', 'screenshots');
 const MANIFEST = join(ROOT, 'backend', 'tests', 'browser', 'controls.manifest.json');
-const API = process.env.BB_BASE ?? 'http://127.0.0.1:8099';
-
-// The browser is pre-installed in this environment and must not be re-fetched.
-const EXECUTABLE = process.env.BB_CHROMIUM ?? '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
-
-/**
- * Each panel's dev server, its URL shape, and how it persists its token.
- *
- * The auth key is §2's ("one storage key per app") and the SHAPE is each
- * panel's own: the admin panel persists a Zustand envelope, the other two a
- * bare string. Getting that wrong does not error — the panel simply behaves as
- * logged out, and every screen renders its login redirect, which would read as
- * 44 clean screens.
- */
-const PANELS = {
-  'user-panel':     { port: 5301, entry: (b) => `${b}/#/`,          router: 'hash',    key: 'auth_token',    wrap: (t) => t },
-  'admin-panel':    { port: 5302, entry: (b) => `${b}/admin/#/`,    router: 'hash',    key: 'admin-auth',
-    wrap: (t) => JSON.stringify({ state: { token: t, admin: null, isAuthenticated: true, mustEnroll2FA: false }, version: 0 }) },
-  'merchant-panel': { port: 5303, entry: (b) => `${b}/merchant/`,   router: 'history', base: '/merchant', key: 'merchantToken', wrap: (t) => t },
-};
-
-/**
- * ── Drive the panel the way a person does: load it ONCE ─────────────────────
- * The first draft called `page.goto()` per screen, which boots the whole SPA
- * again every time. It reported SIXTEEN admin screens as empty, and every one
- * of them was a lie: the panel verifies its session on boot, and a cold load
- * renders the login screen (or the shell with a spinner) until that resolves —
- * so the measurement was racing the boot, not reading the screen. Warmed up and
- * navigated through its own router, `/settings` draws 11,125 characters.
- *
- * That is worth stating plainly because it is the failure mode this whole tier
- * exists to catch, pointed the other way: a check that measures the wrong
- * moment produces confident, specific, completely false findings, and sixteen
- * of them are more damaging than none. §29 — a claim is about evidence.
- */
-async function navigate(page, cfg, screen) {
-  if (cfg.router === 'hash') {
-    await page.evaluate((s) => { window.location.hash = s; }, screen);
-  } else {
-    await page.evaluate(([b, s]) => {
-      window.history.pushState({}, '', `${b}${s}`);
-      window.dispatchEvent(new PopStateEvent('popstate'));
-    }, [cfg.base ?? '', screen]);
-  }
-}
-
-/**
- * Wait for the routed region to stop changing, not for the network to go quiet.
- *
- * `networkidle` is the wrong signal for a panel that holds two open SSE streams
- * and polls — it either never fires or fires before React has rendered the
- * response. This reads what a person would read: the text in `<main>`, until it
- * is non-empty and the same twice running.
- */
-async function settle(page, ms = 15000) {
-  // Text AND control count, three consecutive identical readings, and a floor.
-  // Watching the text alone returns while a fetch is still in flight — the page
-  // heading is on screen immediately and can sit unchanged across two samples,
-  // which made the driver see one control on a screen that has 353. See the
-  // longer note in `drive.js`.
-  const read = () => page.evaluate(() => {
-    const m = document.querySelector('main') ?? document.body;
-    return {
-      text: m?.innerText?.trim().length ?? 0,
-      controls: m ? m.querySelectorAll('button, a[href], select, textarea, input, [role="button"]').length : 0,
-    };
-  }).catch(() => ({ text: 0, controls: 0 }));
-  const FLOOR = 1600;
-  let same = 0, last = null, waited = 0;
-  while (waited < ms) {
-    await sleep(400);
-    waited += 400;
-    const now = await read();
-    same = (last && now.text === last.text && now.controls === last.controls) ? same + 1 : 0;
-    last = now;
-    if (waited >= FLOOR && now.text > 40 && same >= 2) return;
-  }
-}
 
 /** Noise a browser makes that is not this platform's doing. */
 const IGNORE = [
@@ -160,35 +93,8 @@ const ENVIRONMENT = [
   (e, u) => /ERR_ABORTED/.test(e) && /\/api\/sse\//.test(u),
 ];
 
-const children = [];
-const stopAll = () => { for (const c of children) { try { c.kill('SIGTERM'); } catch { /* gone */ } } };
-process.on('exit', stopAll);
-process.on('SIGINT', () => { stopAll(); process.exit(130); });
-
-async function waitFor(url, label, tries = 120) {
-  for (let i = 0; i < tries; i++) {
-    try { if ((await fetch(url)).ok) return true; } catch { /* not up */ }
-    await sleep(500);
-  }
-  console.error(`${label} never answered at ${url}`);
-  return false;
-}
-
-function startVite(panel, port) {
-  const child = spawn('npx', ['vite', '--port', String(port), '--strictPort', '--host', '127.0.0.1'], {
-    cwd: join(ROOT, panel),
-    env: { ...process.env, VITE_API_URL: API },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  const log = [];
-  child.stdout.on('data', (d) => log.push(String(d)));
-  child.stderr.on('data', (d) => log.push(String(d)));
-  children.push(child);
-  return { child, log };
-}
-
 /** One screen, opened and watched. */
-async function visit(page, panel, screen, cfg) {
+async function visit(page, panel, screen, cfg, base) {
   const errors = [];   // uncaught exceptions
   const console_ = []; // console.error
   const failed = [];   // 4xx/5xx responses
@@ -222,7 +128,7 @@ async function visit(page, panel, screen, cfg) {
 
   let nav = 'ok';
   try {
-    await navigate(page, cfg, screen);
+    await navigate(page, cfg, screen, base);
     await settle(page);
   } catch (e) {
     nav = `NAV FAILED: ${e.message.split('\n')[0]}`;
@@ -331,12 +237,12 @@ const wanted = panelScreens().filter((p) => !only.length || only.includes(p.pane
 if (!await waitFor(`${API}/health/live`, 'the backend')) process.exit(1);
 
 // One actor per panel, seeded fresh, so a screen that shows "no data" is showing
-// this run's data and not a leftover (trap 10).
-const actors = {
-  'user-panel':     playerToken(await seedPlayer({ balancePaise: 150000 })),
-  'admin-panel':    adminToken(await seedAdmin()),
-  'merchant-panel': merchantToken(await seedMerchant({ currency: 'INR', tokensPaise: 500000000 })),
-};
+// this run's data and not a leftover (trap 10) — and seeded by the SAME
+// function the drive uses, so the two halves describe one platform. Seeding it
+// here independently is what left the merchant a non-cash merchant, so
+// `/cash-links` was inventoried as its "not approved for the ATM cash rail"
+// empty state while the drive opened the working screen.
+const { actors, cached } = await seedActors();
 
 mkdirSync(SHOTS, { recursive: true });
 
@@ -350,6 +256,15 @@ mkdirSync(SHOTS, { recursive: true });
  * not.
  */
 const manifest = { takenAt: new Date().toISOString(), shell: {}, screens: [] };
+
+// `/crash` and `/sports` redirect away when their category has no enabled
+// provider, and the player panel hides a category button for each. The drive
+// enables them; this pass did not, so the denominator was short by exactly
+// those controls on every user-panel screen — three per screen, uniformly —
+// and a reader comparing two manifests would have read that as deletion.
+// Restored in the `finally`, outside any assertion (trap 10).
+const restoreProviders = await enableGameProviders();
+
 const browser = await chromium.launch({ executablePath: EXECUTABLE, args: ['--no-sandbox'], headless: !process.env.BB_HEADED });
 
 try {
@@ -366,10 +281,16 @@ try {
       'derived from the panel router, so a new screen joins this pass without anybody remembering to add it');
 
     const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
-    const token = cfg.wrap(actors[panel]);
-    await ctx.addInitScript(([k, v]) => {
-      try { localStorage.setItem(k, v); } catch { /* blocked storage */ }
-    }, [cfg.key, token]);
+    await ctx.addInitScript(([k, v, extraKey, extraVal]) => {
+      try {
+        localStorage.setItem(k, v);
+        // A returning operator has more than a token: the panel cached their
+        // profile last visit. With only the token, the first refused profile
+        // call leaves the panel nothing to fall back on and it renders its
+        // sign-in screen — which this pass would inventory as a real screen.
+        if (extraKey) localStorage.setItem(extraKey, extraVal);
+      } catch { /* blocked storage */ }
+    }, [cfg.key, cfg.wrap(actors[panel]), cfg.cacheKey ?? '', cfg.cacheKey ? JSON.stringify(cached[panel]) : '']);
     // The control bridge, installed before any page script runs so it survives
     // every navigation the pass makes.
     await ctx.addInitScript(PAGE_SCRIPT);
@@ -384,7 +305,12 @@ try {
     manifest.shell[panel] = await shell(page).catch(() => []);
 
     for (const screen of screens) {
-      const controls = await visit(page, panel, screen, cfg);
+      // The global limiter is 1,000 requests / 15 min per IP and this pass
+      // opens 67 screens. Past the window a screen still RENDERS, just empty —
+      // and an empty screen inventoried as the denominator is the coverage
+      // report dividing by a number the platform was refusing to produce.
+      await awaitBudget(`${panel}${screen}`);
+      const controls = await visit(page, panel, screen, cfg, base);
       manifest.screens.push({ panel, screen, controls: controls ?? [] });
       await page.screenshot({ path: join(SHOTS, `${panel}${screen.replace(/\//g, '_') || '_root'}.png`) }).catch(() => {});
     }
@@ -399,6 +325,7 @@ try {
   }
 } finally {
   await browser.close();
+  await restoreProviders().catch(() => {});
   stopAll();
 }
 
