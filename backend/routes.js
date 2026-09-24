@@ -260,7 +260,7 @@ export async function issueSession(user, res, { secondFactorPresented = false } 
     // ceiling, computed by the same rule the bet route enforces.
     reserveBalance: balances.reserveBalance,
     walletBalance: dep + win, kycStatus: user.kycStatus,
-    kycData: buildPublicKycData(user),
+    kycData: await buildPublicKycData(user),
     bankDetails: user.bankDetails || null, profilePic: user.profilePic || '',
     status: user.status || 'ACTIVE', joinedAt: user.joinedAt || null,
     lastLogin: lastLogin?.lastLogin ?? new Date(),
@@ -402,7 +402,7 @@ router.get('/me', async (req, res) => {
         depositBalance: dep, winningsBalance: win, lockedBalance: balances.lockedBalance || 0,
         reserveBalance: balances.reserveBalance || 0,
         walletBalance: dep + win, kycStatus: user.kycStatus,
-        kycData: buildPublicKycData(user),
+        kycData: await buildPublicKycData(user),
         bankDetails: user.bankDetails || null, profilePic: user.profilePic || '',
         status: user.status || 'ACTIVE', joinedAt: user.joinedAt || null,
         lastLogin: user.lastLogin || null, phantomAccess: user.phantomAccess || 'NONE',

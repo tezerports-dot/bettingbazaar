@@ -58,12 +58,23 @@ export const playerToken   = (u) => signToken({ userId: u.userId, mobile: u.mobi
 export const merchantToken = (m) => signToken({ merchantId: m._id ?? m.merchantId, userId: m.userId ?? m._id ?? m.merchantId, mobile: m.mobile, isMerchant: true, isAdmin: false });
 export const adminToken    = (u) => signToken({ userId: u.userId, mobile: u.mobile, role: 'admin', isAdmin: true, isSubAdmin: false, isQueueManager: true, amr: ['pwd', 'otp'], permissions: {} });
 
-export async function api(token, method, path, body) {
+/**
+ * One request, as one of the three actors.
+ *
+ * ── `headers`, and why a harness that cannot send one is blind ────────────
+ * §32 S26 is the gap between "a button calls a route" and "the route accepts
+ * the call": `POST /admin/merchants/:id/deduct` requires an `Idempotency-Key`
+ * and answers 400 without one, and the admin panel's button had never once
+ * worked. A harness with no way to send a header cannot exercise either side
+ * of that — it can only ever confirm the 400.
+ */
+export async function api(token, method, path, body, headers = {}) {
   const res = await fetch(`${BASE}${path}`, {
     method,
     headers: {
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+      ...headers,
     },
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   });
@@ -71,7 +82,10 @@ export async function api(token, method, path, body) {
   let json; try { json = JSON.parse(text); } catch { json = { _raw: text.slice(0, 300) }; }
   return { status: res.status, body: json };
 }
-export const GET = (t, p) => api(t, 'GET', p);
-export const POST = (t, p, b) => api(t, 'POST', p, b ?? {});
-export const PUT = (t, p, b) => api(t, 'PUT', p, b ?? {});
-export const DEL = (t, p) => api(t, 'DELETE', p);
+export const GET = (t, p, h) => api(t, 'GET', p, undefined, h);
+export const POST = (t, p, b, h) => api(t, 'POST', p, b ?? {}, h);
+export const PUT = (t, p, b, h) => api(t, 'PUT', p, b ?? {}, h);
+export const DEL = (t, p, h) => api(t, 'DELETE', p, undefined, h);
+
+/** A fresh idempotency key, for the routes that require one and mean it. */
+export const idemKey = () => ({ 'Idempotency-Key': `e2e-${RUN}-${Math.random().toString(36).slice(2, 12)}` });

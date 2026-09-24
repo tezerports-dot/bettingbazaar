@@ -230,7 +230,7 @@ router.get('/v1/user/:id/data', authenticate, async (req, res) => {
     // history = last 20 cycle IDs the user bet in (for LiveTicker dots)
     const historyCycleIds = [...new Set(normalizedBets.map(b => b.cycleId))].slice(0, 20);
 
-    const publicKycData = buildPublicKycData(user);
+    const publicKycData = await buildPublicKycData(user);
 
     res.json({
       success: true,

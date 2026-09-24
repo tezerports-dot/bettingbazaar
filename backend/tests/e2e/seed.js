@@ -60,6 +60,35 @@ export async function seedPlayer({ kycStatus = 'APPROVED', balancePaise = 0, ver
       );
     }
   }
+  // ── The KYC ROW a real submission writes ───────────────────────────────
+  // §32 S16, a third instance in this file. `createUser` sets
+  // `users.kyc_status` and nothing else, so a seeded player had a status and
+  // no `user_kyc` row — a state the platform cannot produce, because every
+  // real status arrives through `transitionKyc`, which writes the row, the
+  // column and a `kyc_transitions` entry in ONE transaction.
+  //
+  // It cost nothing until something DECIDED on that row. `approveKyc` answered
+  // 409 "Cannot approve KYC from unknown status" for every seeded player, so no
+  // test could ever exercise an approval — the one decision that grants
+  // withdrawal access.
+  //
+  // Opened at PENDING_SUBMISSION and then walked forward through the real
+  // transitions, so the seed reaches its requested status the same way a person
+  // does and `KYC_ALLOWED_FROM` stays the only rule about what is reachable.
+  if (kycStatus && kycStatus !== 'PENDING_SUBMISSION') {
+    await db.kyc.openKyc({ userId });
+    await db.kyc.transitionKyc({ userId, to: 'PENDING_APPROVAL', actor: 'e2e' });
+    if (kycStatus === 'APPROVED') {
+      await db.kyc.transitionKyc({ userId, to: 'APPROVED', actor: 'e2e' });
+    } else if (kycStatus === 'REJECTED') {
+      await db.kyc.transitionKyc({
+        userId, to: 'REJECTED', actor: 'e2e', reason: 'e2e seeded rejection',
+      });
+    }
+  } else {
+    await db.kyc.openKyc({ userId });
+  }
+
   if (balancePaise > 0) {
     const { creditDeposit } = await import('../../domains/wallet/walletAuthority.service.js');
     await creditDeposit(userId, balancePaise / 100, `${userId}_seed`);

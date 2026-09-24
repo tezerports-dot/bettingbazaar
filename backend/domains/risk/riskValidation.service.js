@@ -383,6 +383,31 @@ export { getRiskRules };
  *    several merchants' entire capacity during a shortage.
  */
 async function assertBuyIsLegal({ userId, tokenAmount, paymentMode, currency }) {
+  // ── An amount that is not a number is the CALLER's mistake, not a fault ──
+  //
+  // `rupeesToPaise` throws a bare `TypeError` on a NaN, and a TypeError carries
+  // no `status` — so `respondError` routes it to `serverError`, which logs in
+  // full and answers "Something went wrong. Please try again." by design (§2).
+  //
+  // MEASURED: a deposit request with the amount under any key but `tokenAmount`
+  // answered **500**. Every refusal below this line is a 400 that names what to
+  // do instead, exactly as §25 requires — "a player told only 'invalid amount'
+  // tries again and again" — and this one case skipped all of them and told
+  // them the platform had broken.
+  //
+  // It is the first thing checked because it is the first thing used: every
+  // rule after this reads `paise`.
+  if (typeof tokenAmount !== 'number' || !Number.isFinite(tokenAmount) || tokenAmount <= 0) {
+    throw Object.assign(
+      // The sizes for THIS rail, in TOKENS — which is what a player buys on
+      // both of them (§25). Naming the other rail's sizes would send somebody
+      // to an amount their own rail refuses.
+      new Error(`Choose an amount to buy — ${(
+        currency === MERCHANT_CURRENCY.USDT ? USDT_BUY_DENOMINATIONS_PAISE : BUY_DENOMINATIONS_PAISE
+      ).map((p) => (p / 100).toLocaleString('en-IN')).join(', ')} tokens.`),
+      { status: 400, code: 'AMOUNT_REQUIRED' },
+    );
+  }
   const paise = rupeesToPaise(tokenAmount);
 
   // ── The USDT rail: three fixed sizes, in TOKENS ─────────────────────────
