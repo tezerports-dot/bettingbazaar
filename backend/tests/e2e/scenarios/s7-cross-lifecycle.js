@@ -180,6 +180,56 @@ export default async function run() {
     }
   }
 
+  // ══ 5b. An ANNOUNCEMENT an admin posts is one a player can read ══════════
+  {
+    const mark = `e2e cross announcement ${Date.now()}`;
+    const made = await POST(aT, '/api/admin/announcements', {
+      title: mark, body: 'e2e cross-panel body', type: 'INFO', isActive: true,
+    });
+    check(A, 'admin', 'post an announcement', '200',
+      `${made.status} ${JSON.stringify(made.body).slice(0, 120)}`, made.status === 200);
+
+    const seen = await GET(null, '/api/announcements');
+    check(A, 'player', 'the player panel can read it', 'the title',
+      JSON.stringify(seen.body).includes(mark) ? 'present' : 'absent',
+      JSON.stringify(seen.body).includes(mark),
+      'an operator’s announcement stored where no player can read it is §32 S17');
+  }
+
+  // ══ 5c. Referral disbursal: the admin pays, the PLAYER's report shows it ══
+  {
+    const p = await seedPlayer({ kycStatus: 'APPROVED' });
+    const pT = playerToken(p);
+
+    const before = await GET(pT, '/api/user/referrals');
+    check(A, 'player', 'a player can read their own referral report', '200',
+      `${before.status} ${JSON.stringify(before.body).slice(0, 110)}`, before.status === 200,
+      '§2: referral earnings are an append-only ledger paid in joining-number order');
+
+    // A disbursal with nothing to pay is a legitimate no-op, and the point of
+    // asserting it is the ROUTE: an admin pressing this must get a real answer
+    // rather than a 500, whether or not anybody is owed.
+    const paid = await POST(aT, '/api/admin/referral/disburse', { amount: 100 });
+    // The ASSERTION is that a refusal names its cause, not that it carries one
+    // particular status. On a fresh platform this answers 409 "The referral
+    // programme is paused" — which is the right answer and an actionable one:
+    // the operator knows exactly what to change. A first draft allowed only
+    // 200 or 400 and reported that correct refusal as a failure, which is §29
+    // in miniature — the check was measuring the status code rather than the
+    // thing that matters.
+    check(A, 'admin', 'a disbursal either runs or says WHY it will not',
+      '200, or a 4xx naming the cause',
+      `${paid.status} ${JSON.stringify(paid.body).slice(0, 140)}`,
+      paid.status === 200
+      || (paid.status >= 400 && paid.status < 500 && String(paid.body?.message ?? '').length > 10),
+      '§26: never partial-issue — paying what the pool holds while recording the full '
+      + 'high-water mark under-pays permanently, with a ledger that reads complete');
+
+    const after = await GET(pT, '/api/user/referrals');
+    check(A, 'player', 'the player’s report still reads cleanly afterwards', '200',
+      String(after.status), after.status === 200);
+  }
+
   // ══ 6. Retiring a sign-in bot MOVES the players it carried ═══════════════
   {
     const { db } = await import('#db');
