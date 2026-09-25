@@ -2175,7 +2175,31 @@ const CASES = [
         );
         made.push(orderId);
       }
+
+      // ── AND THE HOLD, because an ASSIGNED buy without one cannot exist ────
+      // Every route that attaches a merchant takes the escrow hold at
+      // attachment (§2), so three ASSIGNED deposits with nothing reserved is
+      // §32 S16 again — and this one was not theoretical: the escrow sweep in
+      // `test:operations --cron` reported exactly these rows as "UNHELD buy
+      // order … the player is promised tokens the merchant is free to spend
+      // elsewhere", which is the one thing that sweep exists to shout about.
+      const { holdForOrder } = await import('../../domains/merchant/depositEscrow.service.js');
+      const unheld = [];
+      for (const id of made) {
+        const rec = await db.orders.getOrderRecord(id);
+        const held = rec
+          ? await holdForOrder(rec, page.__bbMerchantId, { actor: 'drive-fixture' }).catch((e) => ({ ok: false, reason: e.message }))
+          : { ok: false, reason: 'the seeded order could not be read back' };
+        if (!held.ok) unheld.push(`${id}: ${held.reason}`);
+      }
       try {
+        // A refused hold means the merchant cannot fund three orders, and
+        // pressing on would be driving against the impossible row again rather
+        // than reporting it.
+        if (unheld.length) {
+          return ['NOT DRIVEN', `the escrow hold was refused, so the fixture is not one the platform`
+            + ` could produce — ${unheld.join('; ').slice(0, 160)}`];
+        }
         await go(page, cfg, base, '/orders');
         await settle(page, 8000);
 
@@ -2231,7 +2255,34 @@ const CASES = [
         }
         return ['DROVE', `a later card accepted ${target} (now ${after[made.indexOf(target)]}) and left the other 2 ASSIGNED`];
       } finally {
-        await pgQuery('DELETE FROM order_states WHERE order_id = ANY($1::text[])', [made]).catch(() => {});
+        // ── Putting these back is not a DELETE, and that is the point ──────
+        // `order_transitions` is append-only, enforced by `bb_forbid_change()`,
+        // and it holds a plain FK to `order_states` — so an order that has
+        // actually MOVED can never be deleted, and the `.catch(() => {})` that
+        // used to wrap this swallowed the refusal silently. So: release the
+        // hold through its one owner, take anything still live to a terminal
+        // state so no sweep is left holding it, and delete only the rows that
+        // never transitioned at all.
+        const { releaseForOrder } = await import('../../domains/merchant/depositEscrow.service.js');
+        for (const id of made) {
+          const rec = await db.orders.getOrderRecord(id).catch(() => null);
+          if (rec) {
+            await releaseForOrder(rec, { actor: 'drive-fixture', reason: 'harness cleanup' })
+              .catch(() => {});
+          }
+        }
+        await pgQuery(
+          `UPDATE order_states
+              SET state = 'CANCELLED', cancel_reason = 'HARNESS_CLEANUP', cancelled_at = now()
+            WHERE order_id = ANY($1::text[])
+              AND state NOT IN ('COMPLETED', 'CANCELLED', 'FAILED', 'REJECTED')`,
+          [made],
+        ).catch(() => {});
+        await pgQuery(
+          `DELETE FROM order_states o WHERE o.order_id = ANY($1::text[])
+             AND NOT EXISTS (SELECT 1 FROM order_transitions t WHERE t.order_id = o.order_id)`,
+          [made],
+        ).catch(() => {});
         await pgQuery(
           `UPDATE merchants SET max_concurrent_deposit_orders = $2, accepts_deposits = $3
              WHERE merchant_id = $1`,

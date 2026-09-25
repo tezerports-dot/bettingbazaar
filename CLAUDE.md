@@ -1253,6 +1253,7 @@ these are the specific ones this codebase has actually produced.
 | S33 | A harness that measures a server it did not start | Did THIS run bring up the thing it is asking? Something already on the port answers the readiness check, and the suite then seeds one database while asserting against another. |
 | S34 | A tidy early return placed above the question it must not pre-empt | Does this guard clause change the ORDER of two questions? Refusing before the platform's own state is read is how a gate blames a person for an operator's unfinished setup. |
 | S36 | A projection whose MAPPER names a column the query never SELECTs | Read the column list, not the mapper. `toX` reading `row.foo` proves nothing; `foo` has to be in the `SELECT`. The field is `undefined` — no error, no type complaint, and the consumer takes the `undefined` branch. |
+| S37 | A response STREAM behind middleware that BUFFERS it | Ask it as the client a browser actually is. `curl -N` sends no `Accept-Encoding` and every browser sends one — so the check everybody makes by hand is the one case that works. Does anything between the write and the socket hold bytes back? |
 | S35 | A caller's mistake thrown WITHOUT a `status`, so it leaves as a 5xx | Does the first thing this handler does with the input carry `status: 400`? `respondError` routes on the PRESENCE of `err.status` (§2), so a bare `TypeError` from a helper becomes "Something went wrong" — and the user is told the platform broke for a request that will never work. |
 
 **S36 shut the whole platform's front door, and it was one missing word.**
@@ -1293,6 +1294,45 @@ either in its own file's `SELECT` list or comes off a `SELECT *`
 (`bonuses.core.js`, `casino.core.js`, `settlements.js`), and `wallets.core.js`'s
 `row.type`/`row.reason`/`row.refId` read a CALLER's object, not a database row.
 One instance, fixed, with a pg test that fails without it.
+
+**S37 made every realtime stream on the platform silent in every browser, and
+the server logged them all as sent.** `app.use(compression())` had no filter.
+The `compressible` package says `text/*` is compressible, so `text/event-stream`
+was compressed — and zlib holds its output until roughly 16 KB has accumulated
+or somebody calls `res.flush()`. **Nothing on the SSE path calls it.**
+
+MEASURED three ways on a running server:
+
+| how it was asked | what came back |
+|---|---|
+| `curl -N` (no `Accept-Encoding`) | the `retry:` line and the cycle snapshot, instantly — a perfect stream |
+| `curl -N -H 'Accept-Encoding: gzip'` | **10 bytes in 12 seconds** — a gzip header and no member |
+| Chromium, `new EventSource('/api/sse/events')` | `readyState` 1, no error, and **zero events in 12 seconds** |
+
+So the player's live pools, the merchant's new-order push and the admin's
+dispute push were all dead in every browser, on every panel, for as long as
+`compression()` has been mounted. After the fix, the same browser receives
+`cycle_snapshot` and `cycle_history`, and 200 concurrent streams open with a
+p50 first frame of 211 ms while `/api/v1/health` still answers in 153 ms.
+
+Three things hid it, and each is the reason to write the shape down:
+
+- **The way a person checks an SSE endpoint is the one case that works.**
+  `curl -N` sends no `Accept-Encoding`; every browser sends one. The manual
+  check and the real client differ in exactly the header that breaks it.
+- **A silent stream is indistinguishable from an idle one.** No error, no
+  status code, `readyState` OPEN. The browser drive cannot see it, because a
+  stream with nothing to say looks the same.
+- **`res.flushHeaders()` is right there in the code and is a different thing.**
+  It flushes the HEADERS. The body sat in zlib.
+
+The fix is the compression FILTER, not a `res.flush()` after each write: there
+are five write sites, and adding a flush to each is §21's shape exactly — a
+second thing the author must remember, absent on the sixth. Swept (§0.15) for
+the shape across the whole backend: the only incrementally written HTTP
+responses are the SSE ones (`sseManager.service.js` and `sse.routes.js`, both
+covered by the one filter); `backup.service.js`'s stream is an upload to S3,
+not a response. One instance, one place, fixed.
 
 **S22 through S25 all came out of pressing controls rather than opening
 screens, and each was invisible to every tier below a browser.**
@@ -1828,4 +1868,6 @@ it sits, are untouched by it and stay exactly as they were.
 | `npm run check:cors-headers` | Every header a panel SENDS is one CORS allows. A header the server has not agreed to is never sent — the browser cancels the request, so there is no status code and no log line for anything below a browser to see. |
 | `npm run test:wallet-buttons` | Top Up and Deduct, pressed in a browser, asserted against the wallet AND the money record. |
 | `npm run test:bet-button` | The bet card, pressed in a browser, cross-origin — the pass that found the CORS block. |
+| `npm run test:operations -- --cron --restore --sse` | **The operational half of readiness, and it is three different claims (§35).** `--cron` runs every one of the 14 recurring jobs and, for the six whose trigger row can be seeded, asserts that row MOVED — the other eight are reported as RAN, which is weaker and says so. `--restore` dumps, destroys and restores through the platform's OWN `dumpToFile`/`restoreFromFile`, then checks every table's row count AND that the ledger still conserves in the restored copy. `--sse` holds N real streams open and asks whether the server is still serving — the pass that found S37. |
+| `npm run loadtest:scale -- --seed --queries` | **What the platform does when it is BIG.** Seeds a 100k-player database with millions of bets, orders and ledger events, then times the REAL repository calls the panels make against it (never a copied SQL string) and names every table being sequentially scanned. Refuses to run against any database but `bb_load`. |
 | `npm run test:mutate` | **Every control that CHANGES something, pressed against rows the run seeded.** Each case asserts the DATABASE and a BYSTANDER beside the target, and puts back anything platform-wide in a `finally`. Wants its own database (`bb_drive`) and a backend on it. |
