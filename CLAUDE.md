@@ -543,6 +543,70 @@ this file is not in the prompt.
    production must run exactly what CI tested.
 3. **Audit cadence.** The architecture comparison is re-run quarterly, or on any
    major-version EOL affecting the stack.
+
+### 17.1 Stay on latest, and keep upgrading cheap
+
+Owner, 2026-09-25: *"every version should be latest current so we dont face
+those version bump issues, and always upgrade version as much fast and as much
+easily as possible in a way that we dont need to rewrite entire code."*
+
+A dependency you never upgrade is not "stable" — it is untested against the
+last two years of its own fixes, and the migration debt compounds silently
+until a single bump is a rewrite. The rule is the opposite: **upgrade
+continuously, so no single upgrade is ever large.**
+
+1. **Latest is the target for everything.** Every runtime and every dependency
+   — root, backend and all three panels — tracks the latest current release.
+   "It still works" is not a reason to sit on an old major; falling behind IS
+   the version-bump problem this section exists to prevent.
+2. **Patch and minor: apply on sight, gated only by green.** Same-major bumps
+   are applied and kept whenever the full gate + test suite passes against them.
+   There is no waiting for a quarter and no held register for these.
+3. **A major is gated by the suite, not deferred.** Take the major, run every
+   gate and every test tier, and keep it if it is green. A major is HELD only
+   when adopting it would require rewriting working code (a removed API, a
+   changed default that touches many call sites) — never merely because it is a
+   major. A held major goes in the register below **with the exact reason and
+   the rewrite it would force**, so the hold is a decision somebody can see and
+   revisit, not a silence. "We're behind on X" with no register entry is the
+   defect.
+4. **Design so a bump touches one file, not many.** Where a third-party surface
+   is volatile (a build tool's config shape, an SDK's client constructor, a
+   crypto primitive), reach it through one thin adapter this repo owns, so the
+   next major is edited in that adapter and nowhere else. `manualChunks` moving
+   from an object to a function in one `vite.config.ts` is the shape to aim for;
+   the same change spread across thirty imports is the shape to design out. §2's
+   one-owner rule is the same rule pointed at an external dependency.
+5. **A bump is not done until the SUITE says so, and the §31 table names what
+   ran.** A build passing is not a bump verified — run `test:unit`, `test:pg`,
+   the gates, and a build AND typecheck of every panel, and record the numbers
+   (§29: absence of a failing check is not evidence). A bump reported on a green
+   `npm install` alone is the shape §31 exists to catch.
+6. **Re-measure the request path after a bump, do not assume.** S38 (a pure-JS
+   crypto primitive capping the platform at 30 req/s) was invisible to every
+   test that makes one request at a time and was found only by timing the
+   primitive. A dependency you upgrade is a dependency whose hot-path cost you
+   re-check, because a minor release can move it in either direction.
+
+**Held-major register** (update in the same change that adopts or re-holds one,
+§31.1). Each row names the packages held below their newest MAJOR and the
+rewrite adopting it would force — the hold is per package AND per panel, because
+the panels are not on the same versions (admin is on Tailwind 4; merchant and
+user are on 3). A row leaves this table the moment its blocker is gone — an
+entry that outlives its reason is §14's stale artifact. The bumped stable
+versions this pass took (Express 5, React 19, Vite 8, vitest 5, socket.io 4.8,
+and the rest) are NOT here: they were adopted and verified, not held.
+
+| Package | Held on | At major | Why held — the rewrite adopting the newer major would force |
+|---|---|---|---|
+| typescript | all 3 panels | 5.x | 7.x is the native ("Corsa") port, still preview — 5.9 is the latest STABLE and is what the panels run; revisit when 7.x ships stable |
+| eslint | admin | 8.x | 9.x/10.x is the flat-config migration — it replaces the panel's entire `.eslintrc` lint setup, not a version field |
+| tailwindcss | merchant, user | 3.x | v4's engine change is a stylesheet + config rewrite; admin already migrated, these two are authored against v3's `@tailwind` directives |
+| recharts | admin | 2.x | v3 renamed the chart-component prop surface every analytics screen passes |
+| framer-motion | admin, user | 11.x | v12+ renamed the package and moved the `motion` import path used across many components |
+| @hookform/resolvers | admin | 3.x | v4+ changed the resolver signature every form wires to |
+| date-fns | admin | 3.x | v4's `TZDate` change alters how the cycle-timing displays parse offsets |
+
 4. **Research artifacts are committed.** Any research, plan or numbered queue
    that gates implementation work is committed in the same session that produces
    it. Conversation context and session containers are ephemeral; the repository

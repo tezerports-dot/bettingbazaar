@@ -25,7 +25,7 @@ export default defineConfig({
   ],
   resolve: {
     alias: {
-      '@': path.resolve(__dirname, './src'),
+      '@': path.resolve(import.meta.dirname, './src'),
     },
   },
   base: '/',
@@ -77,9 +77,13 @@ export default defineConfig({
         // resolved out of the repository-root node_modules, so the build was
         // bundling a 3D library into the player app by accident. Removed with
         // the root dependency cleanup (2026-07-27).
-        manualChunks: {
-          'framer':       ['framer-motion'],
-          'react-vendor': ['react', 'react-dom', 'react-router'],
+        // Function form: Vite 8 / rolldown no longer accepts the object map
+        // (it threw "manualChunks is not a function" at build). Same split as
+        // before — framer-motion in its own chunk, the React runtime in a
+        // shared vendor chunk — expressed as a matcher over the module id.
+        manualChunks(id) {
+          if (id.includes('framer-motion')) return 'framer';
+          if (/node_modules\/(react|react-dom|react-router)\//.test(id)) return 'react-vendor';
         },
       },
     },
