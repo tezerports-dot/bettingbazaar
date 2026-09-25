@@ -199,20 +199,43 @@ export async function leaderboard({ since = null, limit = 50 } = {}) {
   const params = [];
   const where = ["b.status IN ('WON', 'LOST')"];
   if (since) { params.push(since); where.push(`b.settled_at >= $${params.length}`); }
+  // ── AGGREGATE FIRST, JOIN THE FIFTY SURVIVORS ────────────────────────────
+  // This used to `LEFT JOIN users` inside the aggregate and group by
+  // `(b.user_id, u.username)`. The result is identical — `user_id` is the
+  // users PK, so the username is functionally dependent on it and the join can
+  // only ever widen the group key, never split a group — but the plan is not:
+  // joining first put 100,000 hashed users on the input to a 2,000,000-row
+  // HashAggregate, and the wider key pushed it out of `work_mem`.
+  //
+  // MEASURED on 2,000,000 bets across 100,000 players (`npm run loadtest:scale`):
+  //   before  2875ms — HashAggregate, 65 batches, 126 MB spilled to disk
+  //   after   1284ms — parallel Finalize GroupAggregate, and the join runs on
+  //                    the 50 rows that survive the LIMIT
+  // Still a sequential scan of every settled bet, because an ALL-TIME
+  // leaderboard is O(table) by definition and no index changes that. It is
+  // cached (`leaderboard_cache`) and rebuilt on a 10-minute cron, so this is
+  // the cron's cost and not a player's wait — but it grows without bound, and
+  // that is the thing to watch rather than this query's constant factor.
   const { rows } = await pgQuery(
-    `SELECT b.user_id,
-            COALESCE(u.username, 'Player')                      AS username,
-            COUNT(*)::int                                       AS bets,
-            COUNT(*) FILTER (WHERE b.status = 'WON')::int       AS wins,
-            COALESCE(SUM(b.stake_paise), 0)                     AS staked,
-            COALESCE(SUM(b.payout_paise), 0)                    AS won,
-            COALESCE(SUM(b.payout_paise) - SUM(b.stake_paise), 0) AS net
-       FROM bets b
-       LEFT JOIN users u ON u.user_id = b.user_id
-      WHERE ${where.join(' AND ')}
-      GROUP BY b.user_id, u.username
-      ORDER BY net DESC, staked DESC
-      LIMIT ${Math.min(Math.max(Number(limit) || 50, 1), 500)}`,
+    `WITH agg AS (
+       SELECT b.user_id,
+              COUNT(*)::int                                       AS bets,
+              COUNT(*) FILTER (WHERE b.status = 'WON')::int       AS wins,
+              COALESCE(SUM(b.stake_paise), 0)                     AS staked,
+              COALESCE(SUM(b.payout_paise), 0)                    AS won,
+              COALESCE(SUM(b.payout_paise) - SUM(b.stake_paise), 0) AS net
+         FROM bets b
+        WHERE ${where.join(' AND ')}
+        GROUP BY b.user_id
+        ORDER BY net DESC, staked DESC
+        LIMIT ${Math.min(Math.max(Number(limit) || 50, 1), 500)}
+     )
+     SELECT a.user_id,
+            COALESCE(u.username, 'Player') AS username,
+            a.bets, a.wins, a.staked, a.won, a.net
+       FROM agg a
+       LEFT JOIN users u ON u.user_id = a.user_id
+      ORDER BY a.net DESC, a.staked DESC`,
     params, 'stats_leaderboard',
   );
   return rows.map((r, i) => ({

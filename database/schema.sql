@@ -2896,6 +2896,26 @@ ALTER TABLE bets ADD COLUMN IF NOT EXISTS phantom_manager_id TEXT;
 CREATE INDEX IF NOT EXISTS bets_user_history_idx
   ON bets (user_id, placed_at DESC, id DESC) WHERE NOT is_phantom;
 
+-- ── The recent-winners feed, which is PUBLIC and on the home screen ──────────
+--
+-- `realWinners` asks for WON bets settled in the last N hours, ordered by
+-- payout. With nothing to serve it, that is a Parallel Seq Scan of every bet
+-- ever placed — on an unauthenticated endpoint every player's home screen
+-- calls.
+--
+-- MEASURED on 2,000,000 bets (`npm run loadtest:scale`): the endpoint answered
+-- in 200ms while every other public path answered in 2-4ms, and it capped a
+-- concurrency ramp at ~40 req/s all by itself. With this index the query drops
+-- from 171ms to 40ms, and it is the SCAN that goes away — the remaining cost is
+-- reading the window, which is proportional to a day's play rather than to the
+-- table.
+--
+-- Partial, on the two facts the feed requires, so it holds only the rows the
+-- feed can ever return and does not grow with losing or unsettled bets.
+CREATE INDEX IF NOT EXISTS bets_recent_winners_idx
+  ON bets (settled_at DESC, payout_paise DESC)
+  WHERE status = 'WON' AND payout_paise > 0;
+
 -- ── Merchant performance bonus policy ────────────────────────────────────────
 --
 -- The ONLY place the merchant bonus percentage and its enablement live. The

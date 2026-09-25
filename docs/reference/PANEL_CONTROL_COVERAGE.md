@@ -3,8 +3,8 @@
 
 Two artefacts, both left behind by a real browser driving the real panels:
 
-* the control INVENTORY — every control each screen has — taken 2026-09-24T23:00:45.859Z
-* the DRIVE report — what happened when each was pressed — 2026-09-24T23:03:05.918Z
+* the control INVENTORY — every control each screen has — taken 2026-09-25T04:02:18.877Z
+* the DRIVE report — what happened when each was pressed — 2026-09-25T04:04:53.770Z
 
 ## How to read it, and what it does not say
 
@@ -28,9 +28,9 @@ would put the denominator in the thousands and bury the real work.
 | screen | controls | moved | answered | said | no-op | inert | disabled | elsewhere | asked | NOT reached | note |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | / | 17 | 15 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 2 | partial 0h ago |
-| /casino | 17 | 17 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
+| /casino | 17 | 16 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | all pressed 0h ago |
 | /crash | 9 | 2 | 0 | 5 | 1 | 0 | 0 | 1 | 0 | 0 | all pressed 0h ago |
-| /faq | 9 | 7 | 0 | 0 | 0 | 1 | 0 | 1 | 0 | 0 | all pressed 0h ago |
+| /faq | 9 | 7 | 1 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | all pressed 0h ago |
 | /history | 7 | 6 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | all pressed 0h ago |
 | /leaderboard | 9 | 7 | 0 | 0 | 0 | 1 | 0 | 1 | 0 | 0 | all pressed 0h ago |
 | /my-bets | 6 | 4 | 0 | 0 | 0 | 1 | 0 | 1 | 0 | 0 | all pressed 0h ago |
@@ -50,8 +50,8 @@ would put the denominator in the thousands and bury the real work.
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | / | 9 | 9 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
 | /app-assets | 4 | 0 | 1 | 0 | 0 | 0 | 0 | 3 | 0 | 0 | all pressed 0h ago |
-| /audit-logs | 3 | 1 | 0 | 0 | 0 | 2 | 0 | 0 | 0 | 0 | all pressed 0h ago |
-| /branding | 27 | 17 | 1 | 0 | 0 | 7 | 0 | 2 | 0 | 0 | all pressed 0h ago |
+| /audit-logs | 3 | 3 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
+| /branding | 24 | 20 | 1 | 0 | 0 | 1 | 0 | 2 | 0 | 0 | all pressed 0h ago |
 | /business-policy/deposit | 3 | 2 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
 | /business-policy/settlement-rail | 11 | 8 | 1 | 0 | 0 | 1 | 0 | 1 | 0 | 0 | all pressed 0h ago |
 | /chat-management | 1 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
@@ -59,16 +59,16 @@ would put the denominator in the thousands and bury the real work.
 | /content/faq | 5 | 3 | 0 | 0 | 0 | 0 | 0 | 2 | 0 | 0 | all pressed 0h ago |
 | /content/slides | 4 | 2 | 1 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | all pressed 0h ago |
 | /content/support | 13 | 12 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | all pressed 0h ago |
-| /cycle-history | 59 | 8 | 0 | 0 | 1 | 2 | 1 | 47 | 0 | 0 | all pressed 0h ago |
+| /cycle-history | 59 | 10 | 0 | 0 | 1 | 0 | 1 | 47 | 0 | 0 | all pressed 0h ago |
 | /disputes | 2 | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
 | /disputes/cdm-receipts | 4 | 2 | 1 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | all pressed 0h ago |
 | /disputes/stalled-withdrawals | 2 | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
 | /error-logs | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
 | /game-providers | 21 | 14 | 1 | 0 | 0 | 0 | 0 | 6 | 0 | 0 | all pressed 0h ago |
 | /games | 47 | 24 | 0 | 0 | 1 | 0 | 0 | 22 | 0 | 0 | all pressed 0h ago |
-| /kyc | 60 | 58 | 0 | 0 | 1 | 0 | 0 | 2 | 0 | 0 | +1 only a press reveals 0h ago |
+| /kyc | 64 | 62 | 0 | 0 | 1 | 0 | 0 | 2 | 0 | 0 | +1 only a press reveals 0h ago |
 | /kyc/bulk | 2 | 0 | 0 | 0 | 0 | 0 | 1 | 1 | 0 | 0 | all pressed 0h ago |
-| /live-cycles | 10 | 10 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
+| /live-cycles | 7 | 10 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | +3 only a press reveals 0h ago |
 | /login | 6 | 5 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | all pressed 0h ago |
 | /merchant-platform | 28 | 20 | 1 | 0 | 0 | 0 | 0 | 7 | 0 | 0 | all pressed 0h ago |
 | /merchant-token-orders | 2 | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
@@ -79,14 +79,14 @@ would put the denominator in the thousands and bury the real work.
 | /promotions/announcements | 6 | 3 | 1 | 0 | 0 | 0 | 0 | 2 | 0 | 0 | all pressed 0h ago |
 | /queue-manager | 8 | 5 | 1 | 0 | 1 | 1 | 0 | 0 | 0 | 0 | all pressed 0h ago |
 | /referrals | 2 | 1 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | all pressed 0h ago |
-| /reports | 7 | 2 | 2 | 0 | 1 | 2 | 0 | 0 | 0 | 0 | all pressed 0h ago |
+| /reports | 7 | 4 | 2 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
 | /revenue | 7 | 3 | 1 | 0 | 0 | 0 | 2 | 1 | 0 | 0 | all pressed 0h ago |
 | /settings | 77 | 73 | 0 | 0 | 0 | 3 | 0 | 1 | 0 | 0 | all pressed 0h ago |
 | /sub-admins | 3 | 2 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | all pressed 0h ago |
 | /support-assistant | 7 | 4 | 1 | 0 | 0 | 0 | 1 | 0 | 1 | 0 | all pressed 0h ago |
 | /telegram | 40 | 27 | 3 | 0 | 0 | 0 | 2 | 8 | 0 | 0 | all pressed 0h ago |
-| /token-flow | 4 | 1 | 0 | 0 | 0 | 2 | 0 | 1 | 0 | 0 | all pressed 0h ago |
-| /transactions | 7 | 4 | 0 | 0 | 1 | 2 | 0 | 0 | 0 | 0 | all pressed 0h ago |
+| /token-flow | 4 | 3 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | all pressed 0h ago |
+| /transactions | 9 | 7 | 0 | 0 | 1 | 0 | 1 | 0 | 0 | 0 | all pressed 0h ago |
 | /users | 358 | 21 | 0 | 0 | 1 | 0 | 1 | 335 | 0 | 0 | all pressed 0h ago |
 | /users/balance-adjust | 8 | 5 | 1 | 0 | 0 | 0 | 0 | 2 | 0 | 0 | all pressed 0h ago |
 | /users/flagged | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
@@ -151,7 +151,7 @@ REPRESENTED (574) — a repeat of a control already pressed on this screen
    admin-panel/cycle-history  button:Detail[42]  — instance 43 of the same control
    ... and 534 more
 
-ACTED (516) — pressed, and the screen changed
+ACTED (533) — pressed, and the screen changed
    user-panel/auth/telegram  button:Dismiss announcement
    user-panel/auth/telegram  button:DELHI BAZAAR vs Bombay 🎯
    user-panel/auth/telegram  button:CASH OR CRASH Take the flight ✈️
@@ -180,7 +180,6 @@ ACTED (516) — pressed, and the screen changed
    user-panel/casino  button:FULL DAY
    user-panel/casino  button:30 MIN
    user-panel/casino  button:1 MIN
-   user-panel/casino  button:INDIA GATE DELHI
    user-panel/casino  button:GATEWAY OF INDIA BOMBAY
    user-panel/casino  button:10
    user-panel/casino  button:30
@@ -188,11 +187,12 @@ ACTED (516) — pressed, and the screen changed
    user-panel/casino  button:270
    user-panel/casino  button:810
    user-panel/casino  input:number:Or type amount (min ₹10)
-   user-panel/casino  button:1M B D D D D B B D B D D B D B B B B D B B B D B B D B ANALYTICS ▲
+   user-panel/casino  button:1M B D D B B B B B D D B B B B B B B D D B D B B B D D ANALYTICS ▲
    user-panel/casino  button:FULL ANALYSIS
    user-panel/crash  button:DELHI BAZAAR vs Bombay 🎯
    user-panel/crash  button:SPORTS Bet anytime 🏇
-   ... and 476 more
+   user-panel/sports  button:DELHI BAZAAR vs Bombay 🎯
+   ... and 493 more
 
 DEFERRED (76) — not pressed on purpose — destructive, or it leaves the app
    user-panel/profile  button:Switch theme  — publishes a platform-wide change from whatever the form happens to hold
@@ -237,43 +237,8 @@ DEFERRED (76) — not pressed on purpose — destructive, or it leaves the app
    admin-panel/game-providers  button:Delete Smartsoft — JetX  — destroys a row this run did not create — driven in the mutating pass, against its own rows
    ... and 36 more
 
-INERT (34) — pressed, and it changed nothing AND called nothing (S22 — the shape worth hunting)
-   user-panel/  button:INDIA GATE DELHI  — it changed nothing on screen AND called no route — nothing happened at all (S22)
-   user-panel/sports  button:All  — it changed nothing on screen AND called no route — nothing happened at all (S22)
-   user-panel/wallet  button:Exchange  — it changed nothing on screen AND called no route — nothing happened at all (S22)
-   user-panel/wallet  button:⬇️ BUY TOKENS  — it changed nothing on screen AND called no route — nothing happened at all (S22)
-   user-panel/profile  button:E2  — it changed nothing on screen AND called no route — nothing happened at all (S22)
-   user-panel/my-bets  button:Active  — it changed nothing on screen AND called no route — nothing happened at all (S22)
-   user-panel/faq  button:ALL  — it changed nothing on screen AND called no route — nothing happened at all (S22)
-   user-panel/winners  button:Today  — it changed nothing on screen AND called no route — nothing happened at all (S22)
-   user-panel/leaderboard  button:Today  — it changed nothing on screen AND called no route — nothing happened at all (S22)
-   admin-panel/login  button:Super Admin  — it changed nothing on screen AND called no route — nothing happened at all (S22)
-   admin-panel/cycle-history  input:date:Show cycles from this date  — it changed nothing on screen AND called no route — nothing happened at all (S22)
-   admin-panel/cycle-history  input:date:Show cycles up to this date  — it changed nothing on screen AND called no route — nothing happened at all (S22)
-   admin-panel/transactions  input:date:Show transactions from this date  — it changed nothing on screen AND called no route — nothing happened at all (S22)
-   admin-panel/transactions  input:date:Show transactions up to this date  — it changed nothing on screen AND called no route — nothing happened at all (S22)
-   admin-panel/queue-manager  button:ALL  — it changed nothing on screen AND called no route — nothing happened at all (S22)
-   admin-panel/content/slides  button:Tips & Tricks  — it changed nothing on screen AND called no route — nothing happened at all (S22)
-   admin-panel/branding  button:Identity & Colors  — it changed nothing on screen AND called no route — nothing happened at all (S22)
-   admin-panel/branding  input:color:Primary (Gold)  — it changed nothing on screen AND called no route — nothing happened at all (S22)
-   admin-panel/branding  input:color:Secondary (Blue)  — it changed nothing on screen AND called no route — nothing happened at all (S22)
-   admin-panel/branding  input:color:Accent  — it changed nothing on screen AND called no route — nothing happened at all (S22)
-   admin-panel/branding  input:color:Primary Colour  — it changed nothing on screen AND called no route — nothing happened at all (S22)
-   admin-panel/branding  input:color:Secondary Colour  — it changed nothing on screen AND called no route — nothing happened at all (S22)
-   admin-panel/branding  input:color:Accent Colour  — it changed nothing on screen AND called no route — nothing happened at all (S22)
-   admin-panel/token-flow  input:date:From  — it changed nothing on screen AND called no route — nothing happened at all (S22)
-   admin-panel/token-flow  input:date:To  — it changed nothing on screen AND called no route — nothing happened at all (S22)
-   admin-panel/reports  input:date:From  — it changed nothing on screen AND called no route — nothing happened at all (S22)
-   admin-panel/reports  input:date:To  — it changed nothing on screen AND called no route — nothing happened at all (S22)
-   admin-panel/business-policy/settlement-rail  input:radio:UPI settlement Buy orders are paid to your UPI and confirmed by UTR. Withdrawals  — it changed nothing on screen AND called no route — nothing happened at all (S22)
-   admin-panel/settings  select:Player footer navigation, slot 3  — it changed nothing on screen AND called no route — nothing happened at all (S22)
-   admin-panel/settings  select:Player footer navigation, slot 4  — it changed nothing on screen AND called no route — nothing happened at all (S22)
-   admin-panel/settings  select:Player footer navigation, slot 5  — it changed nothing on screen AND called no route — nothing happened at all (S22)
-   admin-panel/audit-logs  input:date:Show audit entries from this date  — it changed nothing on screen AND called no route — nothing happened at all (S22)
-   admin-panel/audit-logs  input:date:Show audit entries up to this date  — it changed nothing on screen AND called no route — nothing happened at all (S22)
-   admin-panel/payment-control  button:P2P Merchant System Current active system All deposits and withdrawals are handl  — it changed nothing on screen AND called no route — nothing happened at all (S22)
-
-REFETCHED (29) — pressed; it called a route and got the same answer — a working Refresh
+REFETCHED (30) — pressed; it called a route and got the same answer — a working Refresh
+   user-panel/faq  button:ALL  — no visible change, but it called GET /api/user/notifications/unread-count (+1 more)
    admin-panel/users/flagged  button:Refresh  — no visible change, but it called GET /api/admin/users/flagged?limit=100
    admin-panel/merchants  button:Refresh  — no visible change, but it called GET /api/admin/merchants?page=1&limit=50
    admin-panel/merchant-token-orders  button:Refresh  — no visible change, but it called GET /api/admin/merchant-token-orders
@@ -284,25 +249,45 @@ REFETCHED (29) — pressed; it called a route and got the same answer — a work
    admin-panel/app-assets  button:Refresh  — no visible change, but it called GET /api/admin/app-assets
    admin-panel/revenue  button:Refresh  — no visible change, but it called GET /api/admin/revenue/summary (+1 more)
    admin-panel/operations  button:Refresh  — no visible change, but it called GET /api/admin/operations/overview (+4 more)
-   admin-panel/reports  button:Run  — no visible change, but it called GET /api/admin/reports/financial (+2 more)
-   admin-panel/reports  button:Regulatory export — one CSV row per journal posting  — no visible change, but it called GET /api/admin/reports/ledger-export?format=csv
+   admin-panel/reports  button:Run  — no visible change, but it called GET /api/admin/reports/financial?from=2026-09-18&to=2026-
+   admin-panel/reports  button:Regulatory export — one CSV row per journal posting  — no visible change, but it called GET /api/admin/reports/ledger-export?from=2026-09-18&to=2
    admin-panel/merchant-platform  button:Refresh  — no visible change, but it called GET /api/admin/merchant-commission-policy (+2 more)
    admin-panel/business-policy/settlement-rail  button:Reload  — no visible change, but it called GET /api/admin/payment-mode (+1 more)
    admin-panel/error-logs  button:Refresh  — no visible change, but it called GET /api/admin/error-reports
    admin-panel/disputes  button:Reload the dispute queue  — no visible change, but it called GET /api/admin/dispute-orders?status=ESCALATED
    admin-panel/disputes/cdm-receipts  button:Refresh  — no visible change, but it called GET /api/admin/orders/cdm-receipts/missing?olderThanMinut
    admin-panel/disputes/stalled-withdrawals  button:Refresh  — no visible change, but it called GET /api/admin/orders/stalled-withdrawals?olderThanMinute
-   admin-panel/winners-manager  button:Refresh  — no visible change, but it called GET /api/admin/fake-winners
+   admin-panel/winners-manager  button:Refresh  — no visible change, but it called GET /api/admin/fake-winners (+1 more)
    admin-panel/game-providers  button:Refresh  — no visible change, but it called GET /api/game/admin/game-providers
    admin-panel/payment-control  button:Refresh  — no visible change, but it called GET /api/payment/admin/config
    admin-panel/payment-control  button:Refresh[1]  — no visible change, but it called GET /api/admin/dispute-orders?status=DISPUTED&limit=50
-   admin-panel/promotions/announcements  button:Refresh  — no visible change, but it called GET /api/admin/announcements (+1 more)
+   admin-panel/promotions/announcements  button:Refresh  — no visible change, but it called GET /api/admin/announcements
    admin-panel/users/balance-adjust  button:Search players  — no visible change, but it called GET /api/admin/users?search=500&limit=10
    merchant-panel/  button:Re-check the settlement rail  — no visible change, but it called GET /api/merchant/payment-mode
    merchant-panel/dashboard  button:Re-check the settlement rail  — no visible change, but it called GET /api/merchant/payment-mode
    merchant-panel/orders  button:Refresh  — no visible change, but it called GET /api/merchant/orders?limit=50
    merchant-panel/cash-links  button:Refresh  — no visible change, but it called GET /api/merchant/cash-links/current
    merchant-panel/token-supply  button:Refresh  — no visible change, but it called GET /api/merchant/admin-token-orders
+
+INERT (18) — pressed, and it changed nothing AND called nothing (S22 — the shape worth hunting)
+   user-panel/  button:INDIA GATE DELHI  — it changed nothing on screen AND called no route — nothing happened at all (S22)
+   user-panel/casino  button:INDIA GATE DELHI  — it changed nothing on screen AND called no route — nothing happened at all (S22)
+   user-panel/sports  button:All  — it changed nothing on screen AND called no route — nothing happened at all (S22)
+   user-panel/wallet  button:Exchange  — it changed nothing on screen AND called no route — nothing happened at all (S22)
+   user-panel/wallet  button:⬇️ BUY TOKENS  — it changed nothing on screen AND called no route — nothing happened at all (S22)
+   user-panel/profile  button:E2  — it changed nothing on screen AND called no route — nothing happened at all (S22)
+   user-panel/my-bets  button:Active  — it changed nothing on screen AND called no route — nothing happened at all (S22)
+   user-panel/winners  button:Today  — it changed nothing on screen AND called no route — nothing happened at all (S22)
+   user-panel/leaderboard  button:Today  — it changed nothing on screen AND called no route — nothing happened at all (S22)
+   admin-panel/login  button:Super Admin  — it changed nothing on screen AND called no route — nothing happened at all (S22)
+   admin-panel/queue-manager  button:ALL  — it changed nothing on screen AND called no route — nothing happened at all (S22)
+   admin-panel/content/slides  button:Tips & Tricks  — it changed nothing on screen AND called no route — nothing happened at all (S22)
+   admin-panel/branding  button:Identity & Colors  — it changed nothing on screen AND called no route — nothing happened at all (S22)
+   admin-panel/business-policy/settlement-rail  input:radio:UPI settlement Buy orders are paid to your UPI and confirmed by UTR. Withdrawals  — it changed nothing on screen AND called no route — nothing happened at all (S22)
+   admin-panel/settings  select:Player footer navigation, slot 3  — it changed nothing on screen AND called no route — nothing happened at all (S22)
+   admin-panel/settings  select:Player footer navigation, slot 4  — it changed nothing on screen AND called no route — nothing happened at all (S22)
+   admin-panel/settings  select:Player footer navigation, slot 5  — it changed nothing on screen AND called no route — nothing happened at all (S22)
+   admin-panel/payment-control  button:P2P Merchant System Current active system All deposits and withdrawals are handl  — it changed nothing on screen AND called no route — nothing happened at all (S22)
 
 SAID (18) — pressed; the panel answered with an alert() — the message is in the verdict, and an alert is not a question
    user-panel/crash  button:▶ Play  — alert: "Provider is not fully configured"
@@ -342,14 +327,15 @@ ALREADY_ON (16) — pressed; it was already the selected segment, so nothing sho
    merchant-panel/orders  button:All  — it was already the selected one — pressing it again correctly changes nothing
    merchant-panel/history  button:Volume  — it was already the selected one — pressing it again correctly changes nothing
 
-DISABLED (15) — disabled on arrival, so there was nothing to press
+DISABLED (16) — disabled on arrival, so there was nothing to press
    user-panel/wallet  button:Continue to payment
-   admin-panel/cycle-history  button:Previous page (0 of 6)
+   admin-panel/cycle-history  button:Previous page (0 of 8)
    admin-panel/users  button:Previous page (0 of 3)
    admin-panel/merchants  button:Previous page (0 of 2)
    admin-panel/kyc/bulk  button:Nothing pending
    admin-panel/telegram  button:Replace channel
    admin-panel/telegram  button:Register bot
+   admin-panel/transactions  button:Previous page (0 of 2)
    admin-panel/revenue  button:Prev
    admin-panel/revenue  button:Next
    admin-panel/support-assistant  button:Ingest document
@@ -366,7 +352,7 @@ UPSTREAM (4) — pressed; an upstream the operator can fix refused, and the serv
    admin-panel/support-assistant  button:Reload the assistant's documents  — 503 GET /api/admin/support/documents — "The support assistant stores its passages with the
 
 GONE (1) — vanished before its turn — an earlier press removed it
-   user-panel/  button:30M D B D D D D D D D B ANALYTICS ▲  — the control is no longer on the screen — an earlier press removed it
+   user-panel/  button:30M B D D D B D D D D D D D B ANALYTICS ▲  — the control is no longer on the screen — an earlier press removed it
 
 NEEDS_INPUT (1) — it asked a confirm/prompt and this pass declined — NOT a dead button
    admin-panel/support-assistant  button:Re-ingest  — it asked a confirm/prompt, which this pass declines
@@ -374,19 +360,19 @@ NEEDS_INPUT (1) — it asked a confirm/prompt and this pass declined — NOT a d
 ------------------------------------------------------------------------
 1291 controls across 67 screens
 
-    510   39.5%  SCREEN_MOVED       pressed, and the routed region changed
-     33    2.6%  ANSWERED           pressed; it called a route and the server answered, including a refusal that names what to fix
+    527   40.8%  SCREEN_MOVED       pressed, and the routed region changed
+     34    2.6%  ANSWERED           pressed; it called a route and the server answered, including a refusal that names what to fix
      18    1.4%  SAID               pressed; the panel answered with an alert() — informational, and NOT evidence of a mutation
      16    1.2%  NO_OP_BY_DESIGN    pressed; it was already the selected segment, so no change is the correct outcome
-     34    2.6%  INERT              pressed; changed nothing AND called nothing — §32 S22 candidate, read the list
-     15    1.2%  DISABLED           disabled on arrival — correct state; the enable transition is a SEPARATE test
+     18    1.4%  INERT              pressed; changed nothing AND called nothing — §32 S22 candidate, read the list
+     16    1.2%  DISABLED           disabled on arrival — correct state; the enable transition is a SEPARATE test
     574   44.5%  REPEAT             a repeat of a name already pressed on this screen — covered ONLY IF the first instance is representative
      76    5.9%  DRIVEN_ELSEWHERE   destructive — driven by `npm run test:mutate` against its own rows; check THAT output, this is a pointer not a proof
       1    0.1%  ASKED              it asked a confirm/prompt and this pass declines — answered in the mutating pass instead
      14    1.1%  PRESSED_ON_ANOTHER_SCREEN absent because an earlier press removed it platform-wide — the same control ACTED on another screen this run
       2    0.2%  NOT_REACHED        NOT pressed and not by choice — this is the number that is left
       0    0.0%  BROKE              threw, or the server answered 5xx with nothing to act on
-      1          revealed           controls only a PRESS reveals — not in the inventory, which is taken at rest
+      4          revealed           controls only a PRESS reveals — not in the inventory, which is taken at rest
 
   STATE CHANGES are NOT counted here. This pass reads the SCREEN; it cannot
   tell a rendered change from a committed one. What proves a mutation is
@@ -394,4 +380,4 @@ NEEDS_INPUT (1) — it asked a confirm/prompt and this pass declined — NOT a d
   read its output beside this table, never instead of it.
 
 
-manifest 2026-09-24T23:00:45.859Z  ·  drive 2026-09-24T23:03:05.918Z
+manifest 2026-09-25T04:02:18.877Z  ·  drive 2026-09-25T04:04:53.770Z

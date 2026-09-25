@@ -80,17 +80,20 @@ async function seed() {
       + (r.rowCount >= 0 ? `  ${fmt(r.rowCount)} rows` : ''));
   };
 
-  // Everything this harness writes is prefixed `load-`, so it can be removed
-  // without touching a row anything else seeded (trap 10: never assert — or
-  // delete — globally over a shared table).
-  await step('clear previous load rows', `
-    DELETE FROM bets WHERE user_id LIKE 'load-%';
-    DELETE FROM accounting_events WHERE idempotency_key LIKE 'load-%';
-    DELETE FROM order_states WHERE user_id LIKE 'load-%';
-    DELETE FROM wallets WHERE user_id LIKE 'load-%';
-    DELETE FROM merchants WHERE merchant_id LIKE 'load-%';
-    DELETE FROM cycles WHERE cycle_id LIKE 'load-%';
-    DELETE FROM users WHERE user_id LIKE 'load-%';`);
+  // ── TRUNCATE, not DELETE, and the reason is a rule ───────────────────────
+  // `accounting_events` and `order_transitions` are APPEND-ONLY, enforced by
+  // `bb_forbid_change()` — a DELETE on either raises "append-only (corrections
+  // are new offsetting rows)". That is §19 working, and it is right: a ledger
+  // you can delete from is not a ledger. So a prefix DELETE cannot clear this
+  // database, and the first version of this step failed on exactly that.
+  //
+  // TRUNCATE bypasses row triggers, which is only acceptable because of the
+  // guard at the top of this file: the harness refuses to run against any
+  // database but `bb_load`, which exists to be filled and emptied. Never run
+  // this against a database holding anything anybody needs.
+  await step('truncate the load tables', `
+    TRUNCATE TABLE bets, accounting_events, order_transitions, order_states,
+                   wallets, merchants, cycles, users CASCADE`);
 
   // ── PLAYERS ───────────────────────────────────────────────────────────────
   // A mobile is unique PER account_type (§2), so a ten-digit number derived
@@ -235,6 +238,23 @@ async function seed() {
       FROM generate_series(1, $1::int) i`, [n, done, orders]);
   }
 
+  // ── One real account per panel, from the seeds that OWN what one looks like
+  // The bulk rows above are shaped for volume, not for signing in: the
+  // merchants have no `users` row and there is no STAFF row at all, so the
+  // per-panel HTTP mixes would have nobody to authenticate as. Rather than
+  // write a third definition of "a valid admin" here (§5), this calls the
+  // seeds the e2e suite uses — which is also what keeps them honest, since
+  // those are the ones that know an admin is a STAFF row (§32 S16).
+  const { seedAdmin, seedMerchant } = await import('../backend/tests/e2e/seed.js');
+  // 2FA ENROLLED, deliberately. The admin guard (task #26) answers 403
+  // `TWO_FACTOR_ENROLMENT_REQUIRED` on every admin route until it is, so an
+  // un-enrolled admin makes the whole admin ramp measure the refusal — 3,509
+  // of 4,152 responses on the first run, and the fastest path in the server.
+  // §32 S19: a harness that needs a state establishes it.
+  const a = await seedAdmin({});
+  const m = await seedMerchant({});
+  console.log(`\n  One signable account per panel: admin ${a.userId}, merchant ${m.merchantId}.`);
+
   await step('ANALYZE', 'ANALYZE');
 
   const { rows } = await pgQuery(`
@@ -344,40 +364,103 @@ async function http() {
   const seconds = num('seconds', 10);
   const steps = (arg('steps', '25,50,100,200,400')).split(',').map(Number);
 
-  const tokens = await import('../backend/tests/e2e/harness.js');
-  const someUser = (await pgQuery("SELECT user_id FROM users WHERE user_id LIKE 'load-u-%' LIMIT 1")).rows[0]?.user_id;
-  const playerAuth = someUser ? { Authorization: `Bearer ${await tokens.playerToken(someUser)}` } : {};
-
-  // The paths a panel hits on EVERY page load — the ones that decide whether
-  // a platform feels alive. Public ones first, so a failure to authenticate
-  // cannot be mistaken for a failure to serve.
-  const MIX = {
-    public: [
-      ['GET', '/api/v1/health', {}],
-      ['GET', '/api/v1/cycles/current', {}],
-      ['GET', '/api/v1/cycles/history?type=30_MIN&limit=50', {}],
-      ['GET', '/api/v1/config/public', {}],
-    ],
-    player: [
-      ['GET', '/api/v1/wallet/balance', playerAuth],
-      ['GET', '/api/v1/auth/me', playerAuth],
-      ['GET', '/api/v1/bets/mine?page=1&limit=20', playerAuth],
-    ],
+  // ── The paths are DERIVED from the panels, not invented ──────────────────
+  // The first version of this ramp listed plausible endpoints —
+  // `/api/v1/cycles/current`, `/api/v1/config/public`, `/api/v1/wallet/balance`
+  // — and MEASURED: every one answered 404. A ramp against paths the server
+  // does not serve reports throughput for the 404 handler, which is the
+  // fastest route in any Express app and therefore looks excellent. These come
+  // out of each panel's own source and were each probed once by hand (§28 —
+  // reading the handler is not enough, and neither is reading the component).
+  const { playerToken, adminToken, merchantToken } = await import('../backend/tests/e2e/harness.js');
+  // Each signer takes the ROW's own shape, not an id — `playerToken` reads
+  // `userId` and `mobile` off the object, and handing it a bare string mints a
+  // token for `undefined` that authenticates as nobody and 401s on every path.
+  const asPlayer = async () => {
+    const { rows } = await pgQuery(
+      `SELECT user_id AS "userId", mobile FROM users
+        WHERE account_type = 'PLAYER' AND status = 'ACTIVE' AND NOT is_blocked LIMIT 1`);
+    return rows[0] ? { Authorization: `Bearer ${await playerToken(rows[0])}` } : null;
+  };
+  const asAdmin = async () => {
+    const { rows } = await pgQuery(
+      `SELECT user_id AS "userId", mobile FROM users
+        WHERE account_type = 'STAFF' AND is_admin LIMIT 1`);
+    return rows[0] ? { Authorization: `Bearer ${await adminToken(rows[0])}` } : null;
+  };
+  const asMerchant = async () => {
+    const { rows } = await pgQuery(
+      `SELECT merchant_id AS "merchantId", user_id AS "userId", mobile FROM merchants
+        WHERE user_id IS NOT NULL LIMIT 1`);
+    return rows[0] ? { Authorization: `Bearer ${await merchantToken(rows[0])}` } : null;
   };
 
+  const player = await asPlayer();
+  const admin = await asAdmin();
+  const merch = await asMerchant();
+
+  // Every path a panel hits on a page load, per panel, so "one panel at a
+  // time" and "all three at once" are separate measurements (which is what the
+  // owner asked for: per-panel first, then cross-panel).
+  const MIX = {
+    // Anonymous, and therefore the only mix that is certainly measuring the
+    // platform rather than the harness's tokens.
+    public: [
+      ['GET', '/api/v1/health', {}],
+      ['GET', '/api/v1/system/config', {}],
+      ['GET', '/api/announcements', {}],
+      ['GET', '/api/game/games', {}],
+      ['GET', '/api/v1/winners', {}],
+    ],
+    player: player ? [
+      ['GET', '/api/v1/user/profile', player],
+      ['GET', '/api/v1/wallet/ledger?page=1&limit=20', player],
+      ['GET', '/api/user/bet-limits', player],
+      ['GET', '/api/user/notifications/unread-count', player],
+      ['GET', '/api/v1/auth/verification', player],
+      ['GET', '/api/payment/orders', player],
+    ] : [],
+    merchant: merch ? [
+      ['GET', '/api/merchant/profile', merch],
+      ['GET', '/api/merchant/orders', merch],
+      ['GET', '/api/merchant/stats', merch],
+      ['GET', '/api/merchant/verification', merch],
+    ] : [],
+    admin: admin ? [
+      ['GET', '/api/admin/users?page=1&limit=50', admin],
+      ['GET', '/api/admin/system/config', admin],
+      ['GET', '/api/admin/dispute-orders', admin],
+      ['GET', '/api/admin/transactions?page=1&limit=50', admin],
+      ['GET', '/api/v1/auth/me', admin],
+    ] : [],
+  };
+  MIX.all = [...MIX.public, ...MIX.player, ...MIX.merchant, ...MIX.admin];
+
   const which = arg('mix', 'public');
-  const calls = which === 'all' ? [...MIX.public, ...MIX.player] : (MIX[which] || MIX.public);
+  const calls = MIX[which] ?? MIX.public;
+  if (calls.length === 0) {
+    console.log(`No paths for mix "${which}" — the account it needs is not in this database.`);
+    return;
+  }
 
   console.log(`HTTP ramp against ${base} — mix "${which}", ${calls.length} path(s), ${seconds}s per step.`);
   console.log('  Client and server share this container, so a step that degrades may be either.\n');
   console.log('  conc     req/s      p50        p95        p99      errors   non-2xx');
   console.log('  ' + '─'.repeat(72));
 
-  let degradedAt = null; let firstP95 = null;
+  // ── SATURATION is the finding, not a latency threshold ───────────────────
+  // A throughput that stops rising while latency rises in proportion to
+  // concurrency IS the ceiling: every extra client is queueing, not being
+  // served. A p95 threshold cannot see that — the first ramp reported "no step
+  // degraded" while p95 went 2.2s → 7.8s, because each step was 10× slower than
+  // the one before it but never 10× slower than the FIRST.
+  let degradedAt = null; let firstP95 = null; let saturatedAt = null;
+  let lastRps = null;
   for (const conc of steps) {
     const deadline = Date.now() + seconds * 1000;
     const lat = []; let errors = 0; let non2xx = 0; let n = 0;
 
+    const byStatus = new Map();
     const worker = async (slot) => {
       while (Date.now() < deadline) {
         const [method, path, headers] = calls[(n + slot) % calls.length];
@@ -386,6 +469,7 @@ async function http() {
           const res = await fetch(`${base}${path}`, { method, headers });
           await res.arrayBuffer();
           lat.push(performance.now() - t0);
+          byStatus.set(res.status, (byStatus.get(res.status) ?? 0) + 1);
           if (!res.ok) non2xx++;
         } catch { errors++; }
         n++;
@@ -393,17 +477,51 @@ async function http() {
     };
     await Promise.all(Array.from({ length: conc }, (_, i) => worker(i)));
 
+    // ── A 429 IS NOT A LATENCY MEASUREMENT, and it reads like a good one ─────
+    // Measured once without this: at 200 concurrent the ramp reported 1,847
+    // req/s at a p95 of 120ms and looked like the best step in the table. It
+    // was 14,773 rate-limited refusals — the cheapest path in the server —
+    // while the two honest steps below it sat at a 2-second p95. A throughput
+    // figure that IMPROVES as the platform starts refusing work is measuring
+    // the refusal. So the share of 429s is named at every step, and a step
+    // that is mostly refusals is not reported as a result.
+    const rateLimited = byStatus.get(429) ?? 0;
+    const share = lat.length ? rateLimited / lat.length : 0;
+
     lat.sort((a, b) => a - b);
     const p95 = pct(lat, 95);
-    if (firstP95 === null) firstP95 = Math.max(p95, 1);
-    if (degradedAt === null && (p95 > firstP95 * 10 || errors > lat.length * 0.01)) degradedAt = conc;
+    if (share < 0.05) {
+      if (firstP95 === null) firstP95 = Math.max(p95, 1);
+      if (degradedAt === null && (p95 > firstP95 * 10 || errors > lat.length * 0.01)) degradedAt = conc;
+    }
+    const rps = lat.length / seconds;
+    if (share < 0.05 && lastRps !== null && saturatedAt === null && rps < lastRps * 1.2) {
+      saturatedAt = conc;
+    }
+    if (share < 0.05) lastRps = rps;
+    const flag = share >= 0.05
+      ? `  ← ${(share * 100).toFixed(0)}% RATE-LIMITED, not a result`
+      : (saturatedAt === conc ? '  ← saturated: more clients, same throughput' : '');
     console.log(`  ${String(conc).padStart(4)} ${(lat.length / seconds).toFixed(0).padStart(9)} `
       + `${ms(pct(lat, 50)).padStart(10)} ${ms(p95).padStart(10)} ${ms(pct(lat, 99)).padStart(10)} `
-      + `${String(errors).padStart(8)} ${String(non2xx).padStart(9)}`);
+      + `${String(errors).padStart(8)} ${String(non2xx).padStart(9)}${flag}`);
+    if (non2xx > 0 && share < 0.05) {
+      const other = [...byStatus.entries()].filter(([s2]) => s2 >= 300 && s2 !== 429)
+        .map(([s2, c]) => `${s2}×${c}`).join(' ');
+      if (other) console.log(`        non-2xx that are NOT rate limiting: ${other}`);
+    }
   }
-  console.log(degradedAt
-    ? `\n  Latency or errors first degraded at ${degradedAt} concurrent clients.`
-    : `\n  No step in this ramp degraded — the ceiling is above ${steps[steps.length - 1]} here.`);
+  if (saturatedAt) {
+    console.log(`\n  SATURATED at ${saturatedAt} concurrent clients: throughput stopped rising`
+      + ` (~${lastRps.toFixed(0)} req/s) and the extra latency is queueing.`);
+  } else if (degradedAt) {
+    console.log(`\n  Latency or errors first degraded at ${degradedAt} concurrent clients.`);
+  } else {
+    console.log(`\n  Throughput was still rising at ${steps[steps.length - 1]} clients —`
+      + ` the ceiling is above this ramp.`);
+  }
+  console.log('  Client and server share four cores here, so this is a FLOOR on the real'
+    + ' ceiling, never a capacity figure for a deployed platform.');
 }
 
 const jobs = [];

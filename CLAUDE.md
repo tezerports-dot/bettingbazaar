@@ -1254,6 +1254,7 @@ these are the specific ones this codebase has actually produced.
 | S34 | A tidy early return placed above the question it must not pre-empt | Does this guard clause change the ORDER of two questions? Refusing before the platform's own state is read is how a gate blames a person for an operator's unfinished setup. |
 | S36 | A projection whose MAPPER names a column the query never SELECTs | Read the column list, not the mapper. `toX` reading `row.foo` proves nothing; `foo` has to be in the `SELECT`. The field is `undefined` — no error, no type complaint, and the consumer takes the `undefined` branch. |
 | S37 | A response STREAM behind middleware that BUFFERS it | Ask it as the client a browser actually is. `curl -N` sends no `Accept-Encoding` and every browser sends one — so the check everybody makes by hand is the one case that works. Does anything between the write and the socket hold bytes back? |
+| S38 | A pure-JS crypto primitive on the REQUEST path | How many of these per second, on one thread? Time the primitive itself, not the endpoint. A signature check nobody has measured is a throughput ceiling nobody knows about, and it is invisible to every test that makes one request at a time. |
 | S35 | A caller's mistake thrown WITHOUT a `status`, so it leaves as a 5xx | Does the first thing this handler does with the input carry `status: 400`? `respondError` routes on the PRESENCE of `err.status` (§2), so a bare `TypeError` from a helper becomes "Something went wrong" — and the user is told the platform broke for a request that will never work. |
 
 **S36 shut the whole platform's front door, and it was one missing word.**
@@ -1333,6 +1334,64 @@ the shape across the whole backend: the only incrementally written HTTP
 responses are the SSE ones (`sseManager.service.js` and `sse.routes.js`, both
 covered by the one filter); `backup.service.js`'s stream is an upload to S3,
 not a response. One instance, one place, fixed.
+
+**S38 capped this platform at 30 authenticated requests a second, and every
+tier was green.** Token verification ran on tweetnacl's pure-JS Ed25519.
+MEASURED, 1,000 verifications of a real token on this container:
+
+| | per verification | per thread |
+|---|---|---|
+| tweetnacl (pure JS) | **39.3 ms** | 25/sec |
+| `node:crypto` (native) | **0.16 ms** | ~6,300/sec |
+
+39 ms of single-threaded CPU **per authenticated request, before any handler
+ran.** It is why every authenticated ramp saturated at the same place while the
+anonymous one did not — and the three numbers say it better than any argument:
+
+| mix | before | after |
+|---|---|---|
+| public (no token) | 305 req/s | 305 req/s |
+| player | 33 req/s | **588 req/s** |
+| merchant | 35 req/s | **536 req/s** |
+| admin | 31 req/s | **682 req/s** |
+
+The wire format did not change — same `v2.public.`, same Ed25519 over the same
+PAE encoding, same keys derived the same way — and that was VERIFIED in both
+directions: a token signed by the old code verifies under the new one, and
+tweetnacl verifies a token the new code signed. tweetnacl stays for the key
+derivation so the key material and the rotation list are byte-for-byte what
+they were; only sign and verify moved.
+
+Why nothing caught it: every route test, every e2e scenario and every browser
+pass makes requests ONE AT A TIME, where 39 ms is invisible. A load test is the
+only tier that can see a per-request CPU cost, and until this session there were
+no load numbers at all — only the harnesses, never run (§29: absence of a
+failing check is not evidence when no check covers the claim).
+
+**The same pass found the other half of the ceiling in one index.**
+`/api/v1/winners` — public, unauthenticated, on the player home screen —
+answered in **200 ms while every other public path answered in 2–4 ms**, and it
+held the whole public mix at ~40 req/s by itself. `realWinners` asks for WON
+bets settled in the last N hours ordered by payout, and nothing served it: a
+Parallel Seq Scan of every bet ever placed. One partial index
+(`bets_recent_winners_idx`) took the query from 171 ms to 40 ms, the endpoint
+from 200 ms to 24 ms, and the public mix from ~40 to **305 req/s**.
+
+And the admin leaderboard, on the 10-minute cron, was aggregating 2,000,000
+bets with a `LEFT JOIN users` INSIDE the aggregate: a HashAggregate spilling
+**126 MB to disk in 65 batches**, 2875 ms. Aggregating first and joining the
+fifty survivors is the same result — `user_id` is the users PK, so the username
+can only widen the group key, never split a group — and it parallelises: 1284 ms,
+no spill.
+
+**What the load pass does NOT say.** The client and the server share four cores
+here, so every figure above is a FLOOR on a real deployment's ceiling, never a
+capacity number. What IS transferable is the shape: after these three changes
+the authenticated paths saturate on CPU at ~500–680 req/s per process with
+p95 under 320 ms at 100 concurrent clients, the player-facing repository calls
+are all under 100 ms at p95 (most under 3 ms) against 100,000 players and
+2,000,000 bets, and what remains over 250 ms is admin analytics — full-table
+aggregates on screens a handful of operators read.
 
 **S22 through S25 all came out of pressing controls rather than opening
 screens, and each was invisible to every tier below a browser.**

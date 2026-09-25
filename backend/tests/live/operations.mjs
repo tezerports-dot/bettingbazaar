@@ -585,12 +585,200 @@ async function sse() {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+// CRASH
+// ════════════════════════════════════════════════════════════════════════════
+/**
+ * SIGKILL the server MID-SETTLEMENT and ask the only question that matters:
+ * was anybody paid twice.
+ *
+ * ── Why the lease is advanced by hand, and why that is not cheating ─────────
+ * A claimed cycle stays claimed for `SETTLEMENT_LEASE_MINUTES` (15), and both
+ * the tick and the 5-minute recovery sweep use the same claim query — so a
+ * worker killed mid-pass strands that cycle's REMAINING payouts for up to
+ * fifteen minutes. That is a deliberate trade-off with its reasoning written at
+ * the constant, and it is a real operational property worth knowing: the money
+ * is safe, and the players still owed wait.
+ *
+ * This drill does not sit through it. It moves `settlement_claimed_at` back
+ * sixteen minutes — exactly what the clock would do — and lets the restarted
+ * engine's own tick claim it. The resumption path under test is the real one;
+ * only the waiting is skipped, and the report says so.
+ */
+async function crash() {
+  const port = num('port', 8094);
+  const script = arg('server', '/tmp/claude-0/start-drive.sh');
+  const restart = arg('restart', '/tmp/claude-0/restart.sh');
+  const log = arg('server-log', '/tmp/claude-0/drive.log');
+  const probe = `http://127.0.0.1:${port}/api/v1/health`;
+  const bets = num('bets', 400);
+
+  const alive = await fetch(probe).then((r) => r.ok).catch(() => false);
+  if (!alive) { record('crash', 'crash/drill', 'SKIP', `nothing answering on ${probe}`); return; }
+  if (!fs.existsSync(restart) || !fs.existsSync(script)) {
+    record('crash', 'crash/drill', 'SKIP', `needs --server and --restart scripts (looked for ${script})`);
+    return;
+  }
+
+  const cycleId = rid('cycle');
+  const userIds = [];
+  try {
+    // ── A cycle the engine will claim, and bets it will pay ────────────────
+    // `claimSettleable` wants `winner IS NOT NULL AND NOT is_settled AND
+    // end_time <= now()`, which is the state a declared cycle is actually in.
+    await pgQuery(
+      `INSERT INTO cycles (cycle_id, cycle_type, start_time, end_time, status, winner,
+                           winner_determined_at, is_settled)
+       VALUES ($1, '30_MIN', now() - interval '31 minutes', now() - interval '1 minute',
+               'RESULT_DECLARED', 'DELHI', now() - interval '1 minute', false)`,
+      [cycleId],
+    );
+    for (let i = 0; i < bets; i++) {
+      const userId = rid('cu');
+      userIds.push(userId);
+      await pgQuery(
+        `INSERT INTO users (user_id, username, mobile, account_type, status, kyc_status)
+         VALUES ($1, $1, $2, 'PLAYER', 'ACTIVE', 'APPROVED')`,
+        [userId, String(6500000000 + Math.floor(Math.random() * 499999999))],
+      );
+      await pgQuery(
+        'INSERT INTO wallets (user_id, deposit_paise) VALUES ($1, 10000)', [userId]);
+      // ── THROUGH `placeBet`, not an INSERT, and this was the whole problem ──
+      // The first version inserted PENDING bets with raw SQL and set
+      // `locked_paise` by hand. `winBet` reconstructs the funding SLICES to
+      // return the stake, `requireSlices` throws without them, so every bet was
+      // refused and the drill reported "the engine settled nothing in 60s" over
+      // an engine that was working perfectly. §32 S16 once more: a PENDING bet
+      // with no stake lock behind it is not a bet this platform can produce.
+      const placed = await db.bets.placeBet({
+        betId: `${cycleId}-b${i}`, userId, cycleId, side: 'DELHI',
+        // The WRAPPER's slices are in RUPEES (`s.amount`) and it converts them
+        // to paise for the core; passing `amountPaise` answers "rupees must be a
+        // finite number, got undefined" from a helper three calls down, which
+        // names neither the field nor the layer. Rupees here, on purpose.
+        amount: 100,
+        slices: [{ field: 'depositBalance', amount: 100 }],
+        actor: 'ops-harness', reason: 'crash drill stake',
+      });
+      if (!placed.ok) throw new Error(`placeBet refused bet ${i}: ${placed.reason}`);
+    }
+
+    const settledCount = async () => Number((await pgQuery(
+      "SELECT count(*)::int AS n FROM bets WHERE cycle_id = $1 AND status <> 'PENDING'",
+      [cycleId])).rows[0].n);
+
+    // ── Kill it once it has started paying, not before ────────────────────
+    // A kill before the first payout proves nothing — there is no half-finished
+    // state to recover. This waits for real progress and then kills INTO it.
+    const started = Date.now();
+    let progressed = 0;
+    while (Date.now() - started < 60000) {
+      progressed = await settledCount();
+      if (progressed > 0 && progressed < bets) break;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    if (progressed === 0) {
+      record('crash', 'crash/mid-flight', 'FAIL',
+        `the engine settled nothing in 60s — the cycle was never claimed, so there is no crash to test`);
+      return;
+    }
+
+    // The server process is found by its PORT in /proc, the way restart.sh
+    // does it: `pkill -f <script>` matches this process's own command line.
+    const victims = [];
+    for (const pid of (await run('pgrep', ['-x', 'node']).then((r) => r.stdout.trim().split('\n')).catch(() => []))) {
+      if (!pid) continue;
+      const env = await fs.promises.readFile(`/proc/${pid}/environ`, 'utf8').catch(() => '');
+      if (env.split('\0').includes(`PORT=${port}`)) victims.push(pid);
+    }
+    if (victims.length === 0) {
+      record('crash', 'crash/kill', 'FAIL', `no node process holds PORT=${port}`);
+      return;
+    }
+    for (const pid of victims) process.kill(Number(pid), 'SIGKILL');
+    const atKill = await settledCount();
+    record('crash', 'crash/kill', 'PASS',
+      `SIGKILL sent to pid ${victims.join(',')} with ${atKill}/${bets} bet(s) settled — a genuinely half-finished pass`);
+
+    // ── CLAIM 1: nothing was double-paid by the interrupted pass ───────────
+    // ── COUNT THE PAYOUT, not "a positive row" ────────────────────────────
+    // `wallet_ledger.amount_paise` holds a MAGNITUDE and `tx_type` carries the
+    // direction, so a correctly settled winning bet has three positive rows:
+    // the stake debit, the lock release, and one payout credit. The first
+    // version of this check counted rows with `amount_paise > 0` per `ref_id`
+    // and reported "20 bets were paid more than once" on a run where every bet
+    // was paid exactly once — a false HIGH finding, caught only by reading the
+    // rows before believing the number.
+    const dupes = async () => Number((await pgQuery(
+      `SELECT count(*)::int AS n FROM (
+         SELECT ref_id FROM wallet_ledger
+          WHERE ref_id LIKE $1 || '%'
+            AND tx_type = 'CREDIT' AND field = 'winningsBalance'
+          GROUP BY ref_id HAVING count(*) > 1
+       ) s`, [cycleId])).rows[0].n);
+    const credited = async () => Number((await pgQuery(
+      `SELECT COALESCE(SUM(amount_paise), 0)::bigint AS n FROM wallet_ledger
+        WHERE ref_id LIKE $1 || '%' AND tx_type = 'CREDIT' AND field = 'winningsBalance'`,
+      [cycleId])).rows[0].n);
+    const afterKill = await dupes();
+    record('crash', 'crash/no-double-pay-mid-flight', afterKill === 0 ? 'PASS' : 'FAIL',
+      afterKill === 0
+        ? `every settled bet has exactly one credit after the kill`
+        : `${afterKill} bet(s) already carry more than one credit`);
+
+    // ── Advance the lease the 15 minutes, then bring it back ───────────────
+    await pgQuery(
+      "UPDATE cycles SET settlement_claimed_at = now() - interval '16 minutes' WHERE cycle_id = $1",
+      [cycleId]);
+    const up = await run(restart, [String(port), script, log, probe, '200']).catch((e) => ({ stdout: e.message }));
+    record('crash', 'crash/restart', /up on/.test(up.stdout) ? 'PASS' : 'FAIL', up.stdout.trim().slice(0, 120));
+
+    // ── CLAIM 2: it finishes, and pays each remaining bet exactly once ─────
+    const deadline = Date.now() + 120000;
+    let done = false;
+    while (Date.now() < deadline) {
+      const { rows } = await pgQuery('SELECT is_settled AS s FROM cycles WHERE cycle_id = $1', [cycleId]);
+      if (rows[0]?.s) { done = true; break; }
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    const finalSettled = await settledCount();
+    const finalDupes = await dupes();
+    const { rows: unpaid } = await pgQuery(
+      "SELECT count(*)::int AS n FROM bets WHERE cycle_id = $1 AND status = 'PENDING'", [cycleId]);
+
+    record('crash', 'crash/resumed', done && Number(unpaid[0].n) === 0 ? 'PASS' : 'FAIL',
+      done
+        ? `the restarted engine finished the cycle: ${finalSettled}/${bets} settled, ${unpaid[0].n} still PENDING`
+        : `the cycle was not settled within 120s of the restart (${finalSettled}/${bets} done)`);
+    const paid = await credited();
+    const payouts = Number((await pgQuery(
+      `SELECT count(*)::int AS n FROM wallet_ledger
+        WHERE ref_id LIKE $1 || '%' AND tx_type = 'CREDIT' AND field = 'winningsBalance'`,
+      [cycleId])).rows[0].n);
+    record('crash', 'crash/exactly-once', finalDupes === 0 && payouts === bets ? 'PASS' : 'FAIL',
+      finalDupes === 0 && payouts === bets
+        ? `${bets} bet(s) across a SIGKILL and a resume: ${payouts} payout credits, `
+          + `${paid} paise total, and not one bet carries two (§19)`
+        : `${finalDupes} bet(s) carry more than one payout, and ${payouts} credits were written for ${bets} bets`);
+  } catch (e) {
+    record('crash', 'crash/drill', 'FAIL', `${e.message.slice(0, 200)}\n         ${String(e.stack || '').split('\n').slice(1, 4).join('\n         ')}`);
+  } finally {
+    // The bets and the cycle can go; a settled bet writes no order_transitions.
+    await pgQuery('DELETE FROM bets WHERE cycle_id = $1', [cycleId]).catch(() => {});
+    await pgQuery('DELETE FROM cycles WHERE cycle_id = $1', [cycleId]).catch(() => {});
+    await pgQuery('DELETE FROM wallet_ledger WHERE user_id = ANY($1::text[])', [userIds]).catch(() => {});
+    await pgQuery('DELETE FROM wallets WHERE user_id = ANY($1::text[])', [userIds]).catch(() => {});
+    await pgQuery('DELETE FROM users WHERE user_id = ANY($1::text[])', [userIds]).catch(() => {});
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 const phases = [];
 if (has('cron')) phases.push(cron);
 if (has('restore')) phases.push(restore);
 if (has('sse')) phases.push(sse);
+if (has('crash')) phases.push(crash);
 if (phases.length === 0) {
-  console.log('Pick a phase: --cron, --restore, --sse. See the header.');
+  console.log('Pick a phase: --cron, --restore, --sse, --crash. See the header.');
   process.exit(1);
 }
 for (const phase of phases) { await phase(); console.log(''); }
