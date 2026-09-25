@@ -30,7 +30,7 @@ import { getBalancesPaise, applyDeltaPaise } from '../repositories/wallets.core.
 import {
   BET_STATUS, placeBet, winBet, loseBet, voidBet, refundBet,
   getBet, getBetHistory, reconcileUserStakes, findBetsMissingStakeMovement,
-  listSettleableBets,
+  listSettleableBets, listUserBets,
 } from '../repositories/bets.core.js';
 
 const hasPg = pgConfigured();
@@ -62,7 +62,7 @@ describePg('Bet lifecycle (PostgreSQL)', () => {
   beforeAll(async () => { await applySchema(); });
   afterAll(async () => { await closePg(); });
   beforeEach(async () => {
-    await pgQuery('TRUNCATE bet_transitions, bets, wallet_ledger, wallets RESTART IDENTITY CASCADE');
+    await pgQuery('TRUNCATE bet_transitions, bets, wallet_ledger, wallets, cycles RESTART IDENTITY CASCADE');
   });
 
   // ── Placement ─────────────────────────────────────────────────────────────
@@ -161,6 +161,34 @@ describePg('Bet lifecycle (PostgreSQL)', () => {
   });
 
   // ── Settlement ────────────────────────────────────────────────────────────
+  describe('the player bet-history list names the board', () => {
+    // §32 S4 — a consumer outliving its producer. `bets.cycle_type` exists and
+    // `placeBet` never writes it, so this list handed every bet `cycleType:
+    // null`. MEASURED first through the live route (one player, one bet on each
+    // of 1_MIN / 30_MIN / FULL_DAY, all three came back null); this is that
+    // finding as a pg test. It reads the board from the CYCLE the bet names,
+    // and it FAILS against the pre-fix code that selected the bet's own column.
+    it('reports each bet on the cycle_type of the cycle it belongs to', async () => {
+      await fund('depositBalance', 100000, 'fund-hist');
+      for (const [cid, ctype] of [['h1MIN', '1_MIN'], ['h30MIN', '30_MIN'], ['hFULL', 'FULL_DAY']]) {
+        await pgQuery(
+          `INSERT INTO cycles (cycle_id, cycle_type, start_time, end_time, status)
+           VALUES ($1, $2, now() - interval '1 minute', now() + interval '1 minute', 'OPEN')`,
+          [cid, ctype],
+        );
+        await placeBet({ betId: 'b-' + cid, userId: U, cycleId: cid, side: 'DELHI',
+          slices: [slice('depositBalance', 10000)] });
+      }
+      const { bets } = await listUserBets(U, { limit: 50 });
+      const byCycle = Object.fromEntries(bets.map((b) => [b.cycleId, b.cycleType]));
+      expect(byCycle.h1MIN).toBe('1_MIN');
+      expect(byCycle.h30MIN).toBe('30_MIN');
+      expect(byCycle.hFULL).toBe('FULL_DAY');
+      // and never the null the pre-fix reader returned
+      expect(bets.every((b) => b.cycleType !== null)).toBe(true);
+    });
+  });
+
   describe('settling', () => {
     const stake = [slice('depositBalance', 30_000)];
     beforeEach(async () => {
@@ -202,7 +230,7 @@ describePg('Bet lifecycle (PostgreSQL)', () => {
     });
 
     it('a refund returns a SPLIT stake to each source pocket separately', async () => {
-      await pgQuery('TRUNCATE bet_transitions, bets, wallet_ledger, wallets RESTART IDENTITY CASCADE');
+      await pgQuery('TRUNCATE bet_transitions, bets, wallet_ledger, wallets, cycles RESTART IDENTITY CASCADE');
       await fund('depositBalance', 50_000, 'g1');
       await fund('winningsBalance', 50_000, 'g2');
       const split = [slice('depositBalance', 20_000), slice('winningsBalance', 10_000)];

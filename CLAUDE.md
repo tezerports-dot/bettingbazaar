@@ -32,6 +32,7 @@ listed below, which hold **data and history, never rules**.
 | **The twenty-five shapes that keep shipping here, each with the question that finds it** | **§32 — ask these of the change in front of you** |
 | **How a player signs up, signs in, and is verified** | **§33 — the form, the bot fleet, the gate, and which limiter guards what** |
 | **A TEMPORARY switch that is in the tree right now, and when it must be deleted** | **§34 — `BB_RATE_LIMIT_RELAX`** |
+| **How this scales to many servers, and the two env vars an operator MUST set** | **§36 — horizontal scale + the pen-test result** |
 | **Why there is no single coverage percentage, and what each category actually claims** | **§35 — coverage is a set of different claims** |
 
 ---
@@ -1844,6 +1845,66 @@ rule pointed at coverage: **a percentage is not evidence, it is an average of
 things that were never the same kind of claim.**
 
 ---
+
+## 36. Horizontal scale is a config contract, not a code change
+
+The app runs as N identical stateless processes behind a load balancer, and
+everything that must be single-execution or cross-instance is already wired.
+MEASURED 2026-09-25: two instances (8201/8202) against one database with
+`REDIS_URL` set, plus a full authorized pen test of the live stack.
+
+**What holds across instances, proven by running it:**
+
+| Concern | Mechanism | Proof |
+|---|---|---|
+| Cron single-execution | `cron_locks` leader lock, one row per job, lease-expiring | 14 jobs, each held by exactly ONE of three instance ids |
+| Settlement not double-run | `claimSettleable` `UPDATE … WHERE … FOR UPDATE SKIP LOCKED` + lease | 10 cycles settled with two engines live: 0 bets paid twice, 0 left unsettled |
+| socket.io fan-out | `@socket.io/redis-adapter` (`realtimeBridge.js`) | a bet on 8202 reached an admin socket on 8201 |
+| SSE fan-out | `SSEManager.attachRedis` Redis relay | same bridge |
+| Rate-limit store | shared store when Redis is set | cross-instance, not per-process |
+| Double-spend | `SELECT … FOR UPDATE` on the wallet row (§19) | 8×₹200 racing on a ₹1000 wallet → exactly 5 landed |
+
+**The two things an operator MUST set, or scale silently degrades:**
+
+1. **`REDIS_URL`.** Without it every relay and the leader lock fall back to
+   single-instance. Two instances with no Redis is TWO settlement engines with
+   only the database lease between them — the lease still prevents double-pay
+   (proven), but realtime does not cross instances. Multi-instance REQUIRES
+   Redis.
+2. **`TRUST_PROXY`.** Fails closed (`network.config.js`): unset, `req.ip` is the
+   socket peer, which behind a load balancer is the BALANCER — so every user
+   shares one rate-limit bucket. Set it to the proxy hop count (e.g. `1` behind
+   one LB/Caddy). Failing closed is the right default — a spoofed
+   `X-Forwarded-For` cannot forge an identity when ignored (MEASURED) — but it
+   is WRONG left unset in production behind a proxy.
+
+**Pen test, 2026-09-25 — authorized, pre-deployment, against the local stack.
+Every finding VERIFIED live, in both directions where a gate was involved.**
+
+| Class | Probe | Result |
+|---|---|---|
+| Dependency audit | `npm audit` | 1 moderate, `colord`, dev-only; no runtime advisory |
+| Committed secrets | `git grep` + env templates | none |
+| IDOR player↔player | A's token on B's bets/data/transactions/profile/bank-details | all 403, victim unchanged |
+| Cross-panel escalation | player→admin, player→merchant, merchant→admin | all 403 |
+| IDOR merchant↔merchant | A confirms/rejects/red-flags/CDMs B's order | all 404 (trap 16), order byte-identical |
+| Token self-promotion | validly-signed player token with `isAdmin:true` forged in | 403 — authz reads the DB row, not the claim (F-001) |
+| Token integrity | tampered / garbage / empty / ghost-user | 401,401,401,404 |
+| Bad-amount abuse | negative, zero, fractional, NaN, over-balance, 1e9, 1e-3 | every one 400, named reason |
+| Double-spend race | 8×₹200 concurrent on a ₹1000 wallet | 5 landed, ₹1000 staked, no overspend |
+| SQL injection | OR-1=1, DROP TABLE, UNION SELECT password_hash in admin search | blocked; users table intact 628→628 |
+| Stored XSS | `<script>` into username | 400; field validates; React escapes on render |
+| Security headers | CSP, HSTS, X-Frame, nosniff, no X-Powered-By | present |
+| CORS | Origin evil.example.com + credentials | dev reflects (NODE_ENV-guarded); production REJECTS (verified both ways) |
+
+No HIGH or CRITICAL finding survived verification. The one code defect found
+this pass was not a security hole: the player bet-history list reported every
+bet's board as `null` (§32 S4) — fixed, with a pg test that fails without it.
+
+**What the pen test did NOT and COULD NOT cover, named per §29:** a real
+Turnstile round trip (no secret in the repo), a real Telegram bot (every token
+answered Unauthorized, correctly), real bank/UPI/USDT rails, and anything
+needing the platform actually deployed with TLS and a real proxy in front.
 
 ## 34. TEMPORARY — `BB_RATE_LIMIT_RELAX`, and the date it must be gone
 

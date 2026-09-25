@@ -202,7 +202,21 @@ export async function listUserBets(userId, {
 
   const size = Math.min(Math.max(Number(limit) || 50, 1), 200);
   const { rows } = await pgQuery(
-    `SELECT id, bet_id, user_id, cycle_id, cycle_type, side, stake_paise,
+    // ── `cycle_type` is read from the CYCLE, not the bet ─────────────────────
+    // `bets.cycle_type` exists and `placeBet` never writes it. MEASURED: one
+    // player, one real bet on each of 1_MIN, 30_MIN and FULL_DAY through
+    // `POST /api/bet/place`, and every row came back `cycle_type: NULL` — so
+    // this list handed the panel `cycleType: null` for every bet a player has
+    // ever placed. §32 S4, a consumer outliving its producer. The board a bet
+    // was on already has one owner (§2), `cycles.cycle_type`, which a bet's
+    // `cycle_id` names exactly; reading it from there is correct for every row
+    // whichever path wrote it, where stamping a second copy at placement would
+    // be one more writer to keep in step. A scalar subquery rather than a JOIN
+    // because the WHERE clauses above name `cycle_id` and `status` bare, and
+    // both columns exist on `cycles` too.
+    `SELECT id, bet_id, user_id, cycle_id,
+            (SELECT c.cycle_type FROM cycles c WHERE c.cycle_id = bets.cycle_id) AS cycle_type,
+            side, stake_paise,
             payout_paise, platform_fee_paise, status, placed_at, settled_at,
             COUNT(*) OVER () AS total_count
        FROM bets WHERE ${where.join(' AND ')}
