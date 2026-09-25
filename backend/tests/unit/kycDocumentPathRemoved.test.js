@@ -13,6 +13,11 @@
  * mounted next to it.
  */
 import { describe, it, expect } from 'vitest';
+// ONE stripper, in `sourceText.js`. This file carried its own copy with an
+// UNANCHORED block-comment pattern, which pairs an opener that is only prose
+// inside a line comment with the file's real closer and deletes everything
+// between — see sourceText.js for the measurement.
+import { stripComments } from './sourceText.js';
 import { readFileSync, existsSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
@@ -30,9 +35,7 @@ const at = (p) => join(here, p);
  */
 const USERS_TABLE_MARKER = ['CREATE', 'TABLE', 'IF', 'NOT', 'EXISTS', 'users', '('].join(' ');
 
-const read = (p) => readFileSync(at(p), 'utf8')
-  .replace(/\/\*[\s\S]*?\*\//g, '')
-  .split('\n').filter((l) => !/^\s*(\/\/|\*)/.test(l)).join('\n');
+const read = (p) => stripComments(readFileSync(at(p), 'utf8'));
 
 describe('the document store is gone, not merely unused', () => {
   it('has no kycDocuments service left to import', () => {

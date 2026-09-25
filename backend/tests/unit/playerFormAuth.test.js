@@ -29,43 +29,14 @@ import { dirname, join } from 'path';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const path = (p) => join(here, p);
-// ── The block-comment opener must be ANCHORED to a line, and here is why ────
-//
-// This stripped block comments with an unanchored `/\*[\s\S]*?\*\/`, and
-// `server.js` holds SIX such openers against ONE closer: five of the six are
-// prose inside a `//` comment or text inside a string literal like
-// '/admin/*splat'. So the greedy regex paired whichever opener it met first
-// with the file's one real closer and deleted everything between.
-//
-// Silent until somebody added a comment. One `//` block above
-// `app.use(compression(...))` moved which opener came first, the strip ate a
-// span of three hundred lines, and this suite reported
-// `app.use('/api/v1/auth', playerAuthRoutes)` MISSING — a mount plainly on
-// line 532. A failing test naming a defect that does not exist. That is
-// §24.6's shape ("blank comments before scanning"), already written down.
-//
-// MEASURED, and both of the obvious fixes are wrong:
-//   * swapping the two steps — drop `//` lines first, then blocks — breaks
-//     `routes.js` instead: removing `*`-prefixed lines destroys the CLOSERS of
-//     real JSDoc blocks, so the surviving openers pair with a later closer and
-//     take real code with them. `export const LOGIN_DOOR` disappeared.
-//   * stripping every trailing `//…` as well eats the inside of any regex
-//     literal holding two slashes, of which this codebase has many.
-// What works on both files is anchoring the OPENER to the start of a line,
-// which is where every real block comment here begins and where an opener
-// inside a string or a line comment never is.
-//
-// NOT DONE, and named rather than implied: seven other suites carry the
-// unanchored version (`kycDocumentPathRemoved`, `telegramRecoverySafety`,
-// `tokenRates`, `identitySurfaceRemoved`, `cyclePublicView`, `kycBulkSafety`,
-// `merchantEligibilityReads`). They pass today; they hold the same latent bug,
-// and the next comment added to a file one of them reads may be what surfaces
-// it. Fixing them is its own change, because several of their ABSENCE
-// assertions turn out to depend on the over-deletion — a §22-class weakness
-// that wants looking at, not a lexer chosen to keep them green.
-const read = (p) => readFileSync(path(p), 'utf8')
-  .replace(/^[ \t]*\/\*[\s\S]*?\*\/[ \t]*$/gm, '')
-  .split('\n').filter((l) => !/^\s*(\/\/|\*)/.test(l)).join('\n');
+// ONE stripper, in `sourceText.js`. This file is where the bug surfaced: an
+// unanchored block-comment pattern paired the opener in a line comment with
+// `server.js`'s one real closer and reported
+// `app.use('/api/v1/auth', playerAuthRoutes)` MISSING, a mount plainly on line
+// 532. Every suite that reads source now shares the fixed one.
+import { stripComments } from './sourceText.js';
+
+const read = (p) => stripComments(readFileSync(path(p), 'utf8'));
 
 const routes   = read('../../routes.js');
 const server   = read('../../server.js');

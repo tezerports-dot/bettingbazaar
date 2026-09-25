@@ -8,6 +8,11 @@
  * row per decision, nothing written to disk).
  */
 import { describe, it, expect } from 'vitest';
+// ONE stripper, in `sourceText.js`. This file carried its own copy with an
+// UNANCHORED block-comment pattern, which pairs an opener that is only prose
+// inside a line comment with the file's real closer and deletes everything
+// between — see sourceText.js for the measurement.
+import { stripComments } from './sourceText.js';
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
@@ -16,9 +21,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const src = readFileSync(join(here, '../../domains/identity/kycBulk.service.js'), 'utf8');
 
 /** Executable lines only — comments describe what the code no longer does. */
-const code = src
-  .replace(/\/\*[\s\S]*?\*\//g, '')
-  .split('\n').filter((l) => !/^\s*(\/\/|\*)/.test(l)).join('\n');
+const code = stripComments(src);
 
 describe('the export cannot be turned into a spreadsheet attack', () => {
   it('escapes cells that would execute as formulas', () => {

@@ -22,6 +22,11 @@
  * are mostly about that.
  */
 import { describe, it, expect } from 'vitest';
+// ONE stripper, in `sourceText.js`. `codeOnly` because this scan forbids a
+// SHAPE and a note quoting the removed shape must not read as a declaration
+// of it. The copy that lived here paired block-comment delimiters without
+// anchoring the opener — see sourceText.js for what that costs.
+import { codeOnly } from './sourceText.js';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -189,9 +194,7 @@ describe('the peg has one owner', () => {
       if (f.endsWith('domains/configuration/tokenRates.js')) continue;
       // Comments stripped: a note explaining a REMOVED route quotes the old
       // shape, and prose about a rule must not read as a declaration of it.
-      const src = readFileSync(f, 'utf8')
-        .replace(/\/\*[\s\S]*?\*\//g, '')
-        .replace(/\/\/[^\n]*/g, '');
+      const src = codeOnly(readFileSync(f, 'utf8'));
       if (/(?:tokenBuyRate|tokenSellRate|buyRate|sellRate|rateUsed)\s*:\s*1\b/.test(src)) {
         offenders.push(f.replace(repo, ''));
       }

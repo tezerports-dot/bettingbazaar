@@ -21,6 +21,10 @@
  *    protection for an identity document is not holding one.
  */
 import { describe, it, expect } from 'vitest';
+// ONE stripper, in `sourceText.js`. `codeOnly` because every assertion here
+// forbids a NAME, and a note saying the name was removed must not read as a
+// use. The copy that lived here did not anchor the block-comment opener.
+import { codeOnly } from './sourceText.js';
 import { readFileSync, readdirSync, statSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -56,9 +60,7 @@ const sources = [
 
 /** Source text with comments stripped — a removal NOTE must not read as a use. */
 function code(file) {
-  return readFileSync(file, 'utf8')
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/\/\/[^\n]*/g, '');
+  return codeOnly(readFileSync(file, 'utf8'));
 }
 
 describe('a player has no email', () => {
@@ -244,8 +246,39 @@ describe('the scan can actually fail', () => {
   });
 
   it('strips comments, so a removal note is not mistaken for a use', () => {
-    const withNote = '/* generateKYCUploadUrl was removed */\nconst x = 1;';
-    const stripped = withNote.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
-    expect(stripped).not.toContain('generateKYCUploadUrl');
+    // Asserted against the SHARED stripper, not a copy of it. This test used to
+    // inline the two replaces it was checking, so it could only ever agree with
+    // itself — it would have passed unchanged while every caller read something
+    // different (§8: a gate measuring a fraction, and §22: a test that is not a
+    // consumer of the thing it names).
+    expect(codeOnly('/* generateKYCUploadUrl was removed */\nconst x = 1;'))
+      .not.toContain('generateKYCUploadUrl');
+    expect(codeOnly('const x = 1; // generateKYCUploadUrl was removed'))
+      .not.toContain('generateKYCUploadUrl');
+  });
+
+  it('does NOT let an opener inside a line comment eat the code after it', () => {
+    // The regression this stripper exists for, stated as a test. An unanchored
+    // pattern pairs the opener in the note below with the closer of the real
+    // block further down and deletes `keepMe` — which is how a suite came to
+    // report a route mount MISSING that was plainly present.
+    const source = [
+      '// a note mentioning /* an opener */ in prose',
+      'const keepMe = 1;',
+      '/**',
+      ' * a real block comment',
+      ' */',
+      'const alsoKeepMe = 2;',
+    ].join('\n');
+    const stripped = codeOnly(source);
+    expect(stripped).toContain('const keepMe = 1;');
+    expect(stripped).toContain('const alsoKeepMe = 2;');
+    expect(stripped).not.toContain('a real block comment');
+  });
+
+  it('leaves a // that is inside a string alone', () => {
+    // The other direction: a stripper aggressive enough to satisfy the tests
+    // above must not eat a URL or a path. Measured — a first draft did.
+    expect(codeOnly("const u = 'https://example.test/a';")).toContain('https://example.test/a');
   });
 });

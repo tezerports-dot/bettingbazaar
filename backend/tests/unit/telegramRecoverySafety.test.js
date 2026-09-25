@@ -9,14 +9,17 @@
  * distinguishable — none of which a happy-path integration test would notice.
  */
 import { describe, it, expect } from 'vitest';
+// ONE stripper, in `sourceText.js`. This file carried its own copy with an
+// UNANCHORED block-comment pattern, which pairs an opener that is only prose
+// inside a line comment with the file's real closer and deletes everything
+// between — see sourceText.js for the measurement.
+import { stripComments } from './sourceText.js';
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const read = (p) => readFileSync(join(here, p), 'utf8')
-  .replace(/\/\*[\s\S]*?\*\//g, '')
-  .split('\n').filter((l) => !/^\s*(\/\/|\*)/.test(l)).join('\n');
+const read = (p) => stripComments(readFileSync(join(here, p), 'utf8'));
 
 const svc = read('../../domains/telegram/telegramRecovery.service.js');
 const routes = read('../../domains/telegram/telegram.routes.js');

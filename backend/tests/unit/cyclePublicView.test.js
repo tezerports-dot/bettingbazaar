@@ -15,6 +15,10 @@
  * winner to every client.
  */
 import { describe, it, expect } from 'vitest';
+// ONE stripper, in `sourceText.js` — this file had its own copy, with an
+// UNANCHORED block-comment pattern. Strip comments so a negative assertion
+// means "the code can't", not "doesn't mention".
+import { stripComments } from './sourceText.js';
 import { readFileSync } from 'node:fs';
 import {
   publicCycleView,
@@ -42,14 +46,6 @@ const rawCycle = () => ({
   isSettled: 'PENDING',
 });
 
-/** Strip comments so a negative assertion means "the code can't", not "doesn't mention". */
-function stripComments(text) {
-  return text
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .split('\n')
-    .filter((line) => !/^\s*(\/\/|\*)/.test(line))
-    .join('\n');
-}
 const src = (p) => stripComments(readFileSync(new URL(`../../${p}`, import.meta.url), 'utf8'));
 
 /**
