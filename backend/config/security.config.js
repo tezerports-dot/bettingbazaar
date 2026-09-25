@@ -103,54 +103,13 @@ export const CORS_SHAPE = {
 };
 
 /**
- * TEMPORARY, AND OFF UNLESS ASKED FOR — see CLAUDE.md §34.
- *
- * A whole-stack browser pass presses ~1,300 controls across 67 screens. The
- * global backstop is 1,000 requests per 15 minutes, so the pass spends most of
- * its wall-clock WAITING for the window to roll over rather than pressing
- * anything — measured in hours, not minutes, for one panel.
- *
- * `BB_RATE_LIMIT_RELAX` multiplies every tier's `max`. It is a development
- * convenience for exactly that, and three things keep it from being a way to
- * ship a weaker platform:
- *
- *   1. It defaults to 1, so nothing changes for anyone who does not set it.
- *   2. It is REFUSED IN PRODUCTION — set it with `NODE_ENV=production` and the
- *      server does not boot. A knob that silently weakens a live deployment is
- *      exactly the thing §19 says must not be possible, so this one cannot be
- *      turned in a place where it would matter.
- *   3. It says so at boot, in one line nobody can miss, because §33.7's
- *      bootstrap exemption already taught this codebase that an exemption
- *      nobody can see is a hole nobody removes.
- *
- * WINDOWS ARE UNTOUCHED. Only the counts move — the shape of every limiter,
- * and therefore what each one is FOR, is unchanged.
+ * One rate-limit tier: a window and a max count. The values below are the
+ * production limits, full stop — there is no multiplier and no env override.
+ * (A development-only relaxation switch, `BB_RATE_LIMIT_RELAX`, lived here and
+ * was removed 2026-09-25 once the browser-pass work that needed it was done;
+ * see the deleted CLAUDE.md §34 in git history.)
  */
-const RELAX = (() => {
-  const raw = process.env.BB_RATE_LIMIT_RELAX;
-  if (!raw) return 1;
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n < 1) {
-    throw new Error(`BB_RATE_LIMIT_RELAX must be a number >= 1; got ${JSON.stringify(raw)}`);
-  }
-  if (process.env.NODE_ENV === 'production') {
-    throw new Error(
-      'BB_RATE_LIMIT_RELAX is a development convenience and is refused in production. '
-      + 'Unset it, or do not run this build as production.',
-    );
-  }
-  if (n !== 1) {
-    console.warn(
-      `\n!! RATE LIMITS RELAXED ${n}x — BB_RATE_LIMIT_RELAX is set. This is a development\n`
-      + '   convenience for browser passes (CLAUDE.md §34). Windows are unchanged; only the\n'
-      + '   counts are multiplied. This server is NOT enforcing production limits.\n',
-    );
-  }
-  return n;
-})();
-
-/** Apply the relaxation to one tier. Windows never move; only `max`. */
-const tier = (windowMs, max) => ({ windowMs, max: max * RELAX });
+const tier = (windowMs, max) => ({ windowMs, max });
 
 // ── Rate-limit tiers (values unchanged from middleware/security.js + server.js)
 export const RATE_LIMIT_TIERS = {
