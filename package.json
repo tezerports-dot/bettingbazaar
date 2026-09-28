@@ -37,16 +37,16 @@
     "check:orphans": "node scripts/detect-orphan-refs.mjs"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.126.0",
-    "@aws-sdk/client-s3": "^3.1135.0",
-    "@aws-sdk/lib-storage": "^3.1135.0",
-    "@aws-sdk/s3-request-presigner": "^3.1135.0",
+    "@anthropic-ai/sdk": "^0.128.0",
+    "@aws-sdk/client-s3": "^3.1140.0",
+    "@aws-sdk/lib-storage": "^3.1140.0",
+    "@aws-sdk/s3-request-presigner": "^3.1140.0",
     "@socket.io/redis-adapter": "^8.3.0",
     "@types/three": "^0.186.0",
     "argon2": "^0.45.1",
     "bcryptjs": "^2.4.3",
     "body-parser": "^2.3.0",
-    "bullmq": "^6.3.7",
+    "bullmq": "^6.3.8",
     "compression": "^1.8.2",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
@@ -65,17 +65,17 @@
     "qrcode": "^1.5.4",
     "qs": "^6.15.3",
     "raw-body": "^3.0.2",
-    "socket.io": "^4.8.0",
+    "socket.io": "^4.8.4",
     "tweetnacl": "^1.0.3",
     "tweetnacl-util": "^0.15.1"
   },
   "devDependencies": {
     "@types/qrcode": "^1.5.6",
-    "dependency-cruiser": "^18.3.1",
+    "dependency-cruiser": "^18.4.0",
     "nodemon": "^3.1.14",
     "stylelint": "^17.15.0",
     "stylelint-config-standard": "^40.0.0",
-    "supertest": "^7.2.2",
+    "supertest": "^7.3.0",
     "vitest": "^4.1.11"
   },
   "engines": {
