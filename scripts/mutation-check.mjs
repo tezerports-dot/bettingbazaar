@@ -1310,6 +1310,22 @@ const MUTATIONS = [
     from: `if (!String(reason ?? '').trim()) return res.status(400).json({ success: false, message: 'Rejection reason is required' });`,
     to: `if (!reason) return res.status(400).json({ success: false, message: 'Rejection reason is required' });`,
   },
+  // ── A dispute that races the hold worker (review C3, 2026-09-30) ─────────
+  {
+    id: 'M177', file: 'backend/domains/payment/withdrawalHold.service.js', config: PG,
+    test: 'backend/tests/routes/disputeSettleRacePg.test.js',
+    why: 'the worker settles on a snapshot of the order: a dispute raised after the read is settled underneath, stake consumed and merchant credited',
+    from: `    orderStateIn: ['PAID'],
+  });`,
+    to: `  });`,
+  },
+  {
+    id: 'M178', file: 'database/repositories/orders.record.js', config: PG,
+    test: 'backend/tests/routes/disputeSettleRacePg.test.js',
+    why: 'the settlement mirror writes COMPLETED over a dispute raised after the settlement committed, taking it out of the queue with nobody told',
+    from: `state = CASE WHEN $4::text IS NOT NULL AND state = 'PAID' THEN $4 ELSE state END,`,
+    to: `state = COALESCE($4, state),`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

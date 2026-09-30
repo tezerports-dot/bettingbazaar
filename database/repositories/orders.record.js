@@ -1193,8 +1193,12 @@ export async function mirrorSettlementState(orderId, settlementStatus, {
     `UPDATE order_states SET
        merchant_credit_status = $2,
        escrow_locked = $3,
-       state = COALESCE($4, state),
-       completed_at = CASE WHEN $4 = 'COMPLETED' THEN now() ELSE completed_at END,
+       -- Only from PAID, the one state the hold worker settles from. A dispute
+       -- that lands after the settlement commits (it waits on the settlement's
+       -- lock, then moves PAID -> DISPUTED) must stay an open dispute; writing
+       -- COMPLETED over it took it out of the queue with nobody told (C3).
+       state = CASE WHEN $4::text IS NOT NULL AND state = 'PAID' THEN $4 ELSE state END,
+       completed_at = CASE WHEN $4 = 'COMPLETED' AND state = 'PAID' THEN now() ELSE completed_at END,
        merchant_credit_reversed_at = CASE
          WHEN $2 = 'REVERSED' THEN COALESCE(merchant_credit_reversed_at, now())
          ELSE merchant_credit_reversed_at END,
