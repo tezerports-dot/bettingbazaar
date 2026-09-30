@@ -31,7 +31,8 @@ listed below, which hold **data and history, never rules**.
 | **What every change must REPORT, as a table, before it is done** | **§31 — the completeness contract** |
 | **The twenty-five shapes that keep shipping here, each with the question that finds it** | **§32 — ask these of the change in front of you** |
 | **How a player signs up, signs in, and is verified** | **§33 — the form, the bot fleet, the gate, and which limiter guards what** |
-| **How this scales to many servers, and the two env vars an operator MUST set** | **§36 — horizontal scale + the pen-test result** |
+| **Relaxing rate limits for a test run, and where that is forbidden** | **§34 — `BB_RATE_LIMIT_RELAX`** |
+| **How this scales to many servers, and the three env vars an operator MUST set** | **§36 — horizontal scale + the pen-test result** |
 | **Why there is no single coverage percentage, and what each category actually claims** | **§35 — coverage is a set of different claims** |
 
 ---
@@ -1855,6 +1856,48 @@ placed ABOVE the config read reversed the order of two questions, so every
 unlinked player on an unconfigured platform was refused "link your Telegram
 account" — an instruction naming a bot that does not exist. **56 pg failures,
 every deposit and withdrawal route among them.** §32 S34.
+
+---
+
+## 34. `BB_RATE_LIMIT_RELAX` — a test facility, never a production setting
+
+Added 2026-09-24, removed 2026-09-25 when it was believed to be temporary, and
+restored 2026-09-30 at the owner's request as a standing facility for test
+runs. It lives in `backend/config/security.config.js`.
+
+**What it is.** `BB_RATE_LIMIT_RELAX=<n>` multiplies every `RATE_LIMIT_TIERS`
+count by `n`. **Windows are untouched**: only the counts move, so the shape of
+every limiter, and therefore what each one is for, is unchanged. It does not
+touch a limiter's window, key, mount or `skipSuccessfulRequests`, so §32 S13,
+S27 and S28 are unaffected by it.
+
+**Why it exists.** A whole-stack browser pass presses about 1,300 controls
+across 67 screens. The global backstop is 1,000 requests per 15 minutes, so
+without it the pass spends hours waiting for windows to roll over instead of
+pressing anything. Production behaviour must not be weakened to make a test
+fast (§29), so the development server that pass runs against is relaxed, not
+the limiter.
+
+**The four guards, each verified by running it:**
+
+| | proven by running it |
+|---|---|
+| Defaults to 1 | unset: `global` 1000, `auth` 4, `loginPace` 1, the committed numbers |
+| Refused in production | `NODE_ENV=production BB_RATE_LIMIT_RELAX=50` does not boot: *"a test facility and is refused in production"* |
+| Refuses nonsense | `BB_RATE_LIMIT_RELAX=nope`: *"must be a number >= 1"* |
+| Pinned OFF where limits are asserted | every vitest config sets it to 1 in `test.env`, and `backend/tests/e2e/run.js` sets it to 1 in the server it spawns. With `200` in the shell: the limiter suites still pass (5/5, 19/19) and the pen test still sees the login limiter trip on the second attempt |
+
+It prints a three-line warning at boot whenever it is above 1, because an
+exemption nobody can see is a hole nobody removes (§33.7).
+
+**How it must be used.** Set it in the environment of a DEVELOPMENT server
+that a throughput-bound pass (`test:browser`, `test:drive`, `test:mutate`,
+`test:forms`) runs against. Never in a committed env file, a Dockerfile, a CI
+job or a deploy manifest. Finding it in one of those is the defect this
+section exists to catch. Never set it on a server whose purpose is to measure
+the limits: the pen test (`s8-pentest.js`) and the limiter suites are exactly
+what it would make lie, which is why they pin it off themselves rather than
+trusting the caller.
 
 ---
 
