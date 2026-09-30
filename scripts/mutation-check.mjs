@@ -1373,6 +1373,42 @@ const MUTATIONS = [
     from: `        if (err?.code !== '23505') throw err;`,
     to: `        throw err;`,
   },
+  // ── The IP deny-list (F-030, rebuilt) ───────────────────────────────────
+  {
+    id: 'M183', file: 'backend/middleware/ipBlocklist.js', config: PG,
+    test: 'backend/tests/routes/ipBlocklistRoutesPg.test.js',
+    why: 'the enforcer serves every address, so a block an admin was told is in force refuses nobody',
+    from: `  if (!listCovers(list, req.ip)) return next();`,
+    to: `  return next();`,
+  },
+  {
+    id: 'M184', file: 'backend/routes/admin/ipBlocks.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/ipBlocklistRoutesPg.test.js',
+    why: 'an admin can block a range covering their own address; behind a misconfigured proxy that is the balancer, and everybody, the admin included, is locked out',
+    from: `  if (listCovers(probe, requesterIp)) {`,
+    to: `  if (false) {`,
+  },
+  {
+    id: 'M185', file: 'backend/routes/admin/ipBlocks.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/ipBlocklistRoutesPg.test.js',
+    why: 'a /8 is accepted; behind carrier NAT that blocks a region of players',
+    from: `  if (bits < MIN_PREFIX[family]) {`,
+    to: `  if (false) {`,
+  },
+  {
+    id: 'M186', file: 'database/repositories/ipBlocks.js', config: PG,
+    test: 'backend/tests/routes/ipBlocklistRoutesPg.test.js',
+    why: 'a temporary block never lapses, because the enforcer loads expired rows as live',
+    from: 'WHERE released_at IS NULL AND (expires_at IS NULL OR expires_at > now())`,',
+    to: 'WHERE released_at IS NULL`,',
+  },
+  {
+    id: 'M187', file: 'backend/middleware/ipBlocklist.js', config: UNIT,
+    test: 'backend/tests/unit/ipBlocklistRefresh.test.js',
+    why: 'a failed reload drops to an empty list, so a database blip unblocks every blocked client at once',
+    from: `    refreshIpBlocklistNow().catch((error) => {`,
+    to: `    refreshIpBlocklistNow().catch((error) => { list = new net.BlockList(); count = 0;`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

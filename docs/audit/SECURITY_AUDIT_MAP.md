@@ -2717,16 +2717,37 @@ committed stays DISPUTED with the credit status telling the truth.
   (moves no money). None other.
 
 ### F-030 — an IP deny-list three files said "runs on every request" had never run
-`REMOVED` · medium (a security control that did not exist) · §22, §32 S43 · found 2026-09-30 (review B2)
+`REBUILT` · medium (a security control that did not exist) · §22, §32 S43 · found 2026-09-30 (review B2)
 
 `ipBlocker` was mounted nowhere, `blockIP`/`unblockIP` had no caller, and no
 route or screen could block an address; the repository and table were reached
 only by their own test. `check:dead-code` reported it live because the comment
-claiming it ran was the only thing naming it. Deleted with its table
-(`DROP TABLE IF EXISTS blocked_ips`); the live per-address defence is
-`middleware/ipDefense.js`, mounted on every credential route. **Owner decision
-open:** the alternative is to build it (mount, admin routes, screen, tests).
+claiming it ran was the only thing naming it. It was deleted along with its table
+(`DROP TABLE IF EXISTS blocked_ips`). **Owner, 2026-09-30: build it properly.**
+It is rebuilt as one piece:
 
+- **Rows:** `ip_blocks` (CIDR, reason required, release kept rather than
+  deleted, one open row per range), owned by `database/repositories/ipBlocks.js`.
+  Expiry is decided by the database's clock in `liveBlocks()`, so no sweep is needed.
+- **Enforcer:** `middleware/ipBlocklist.js`, mounted in `server.js` after the
+  request logger and BEFORE `securityMonitor`, the load shedder and every
+  limiter. A blocked client costs one in-memory `net.BlockList` lookup, never
+  a database write. The list is loaded at boot (awaited, so a failure fails
+  startup), reloaded every 10 s and at once on the instance that changed it.
+  A failed reload keeps the last good list.
+- **Routes:** `GET/POST /api/admin/security/ip-blocks` and
+  `POST …/:blockId/release`, admin only, each audited (`IP_BLOCKED`,
+  `IP_UNBLOCKED`). They refuse with a 400 naming the problem: a range wider
+  than /16 (IPv4) or /48 (IPv6), loopback or unspecified, a range covering
+  the admin's own address (the TRUST_PROXY-misconfigured lockout), no reason,
+  and a nonsense expiry.
+- **Screen:** Admin › Blocked IPs, which shows the address the admin is
+  connecting from before they pick a range.
+- **Tests:** `ipBlocklistRoutesPg` (15, real middleware in front of a real
+  route, bystander checked), `BlockedIpsPage.test.tsx` (4, the body each
+  button sends), and e2e `s8` probe 18 against the real server (block → 403
+  inside, 200 outside, release → 200).
+- **Mutation-proved:** M183–M187 KILLED.
 - **Gate fixed:** `check:dead-code` blanks comments (planted a comment-only
   export and a commented-out import: both reported).
 
@@ -2773,7 +2794,7 @@ credentials — WebView cookie stores are per-app).
 
 | Measure | Count |
 |---|---|
-| Route declarations in `backend/**` | 320 |
+| Route declarations in `backend/**` | 323 |
 | Reachable with **no auth middleware** | 44 |
 | Gated `isAdminOrSubAdmin` with **no permission key** | 2 |
 | — of those, **writes** (non-GET) | 0 |
@@ -2841,9 +2862,9 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 466 |
+| `pgQuery` call sites | 470 |
 | Parameters only (safe by construction) | 314 |
-| Interpolating into statement text (each needs a reading) | 149 |
+| Interpolating into statement text (each needs a reading) | 153 |
 | Statement text built elsewhere and passed in (each needs a reading) | 3 |
 
 <details><summary>Call sites whose statement text is built elsewhere</summary>
@@ -2859,7 +2880,7 @@ new route and decide. Each of the three questions is defined in §2.
 | Panel | .ts/.tsx files | `dangerouslySetInnerHTML` | `.innerHTML =` |
 |---|---|---|---|
 | `user-panel` | 85 | 0 | 0 |
-| `admin-panel` | 97 | 0 | 0 |
+| `admin-panel` | 99 | 0 | 0 |
 | `merchant-panel` | 41 | 0 | 0 |
 
 <!-- END GENERATED -->

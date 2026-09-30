@@ -1257,13 +1257,46 @@ CREATE INDEX IF NOT EXISTS kyc_batches_kind_idx ON kyc_batches (kind, created_at
 -- swallowed it — so order chat never persisted and the admin adjustment audit
 -- row was never written. Nothing reported any of it.
 --
--- There was a third, `blocked_ips`, for an IP deny-list. It was given a table
--- and a repository and still never ran: nothing mounted its middleware, nothing
--- called its writer, and no screen could block an address — while this comment
--- said it "runs on every request". Removed 2026-09-30 (§30, §0.0). Behind
--- carrier-grade NAT one address is thousands of players; the live per-address
--- defence is `backend/middleware/ipDefense.js`.
+-- There was a third, `blocked_ips`, for an IP deny-list that was never mounted.
+-- It is dropped here and REBUILT below as `ip_blocks` (owner, 2026-09-30:
+-- "build it properly"). A new name rather than the old one, so a database that
+-- still holds the old shape converges on what this file says (§32 S31).
 DROP TABLE IF EXISTS blocked_ips;
+
+-- ── The IP deny-list ─────────────────────────────────────────────────────────
+--
+-- An admin blocks an address or a range; `middleware/ipBlocklist.js` refuses
+-- every request from it before the rate limiters, the audit writer or any route
+-- runs. The live list is held in memory (Node's `net.BlockList`) and reloaded
+-- from this table — so a blocked address costs one in-memory lookup, not a
+-- query per request.
+--
+-- A RANGE, because an abusive client rarely keeps one address; a `CIDR` column
+-- so the database, not a regex, decides what a valid range is. `network()` is
+-- applied on write, so 203.0.113.7/24 is stored as 203.0.113.0/24 and one
+-- range cannot be entered twice under two spellings.
+--
+-- Nothing is deleted. A release keeps the row, stamped — "was this address ever
+-- blocked, by whom, and why?" is what an appeal asks.
+CREATE TABLE IF NOT EXISTS ip_blocks (
+  block_id    TEXT PRIMARY KEY,
+  network     CIDR NOT NULL,
+  reason      TEXT NOT NULL,
+  blocked_by  TEXT NOT NULL,
+  blocked_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- A temporary block lapses by itself: the enforcer loads only rows whose
+  -- expiry is in the future, so a late sweep cannot keep a lapsed block alive.
+  expires_at  TIMESTAMPTZ,
+  released_at TIMESTAMPTZ,
+  released_by TEXT,
+  CONSTRAINT ip_blocks_reason_present CHECK (length(btrim(reason)) > 0),
+  CONSTRAINT ip_blocks_release_pair   CHECK ((released_at IS NULL) = (released_by IS NULL)),
+  CONSTRAINT ip_blocks_expiry_future  CHECK (expires_at IS NULL OR expires_at > blocked_at)
+);
+-- One unreleased row per range: blocking it again refreshes that row rather
+-- than stacking a second one that a release would leave behind.
+CREATE UNIQUE INDEX IF NOT EXISTS ip_blocks_one_open_per_network
+  ON ip_blocks (network) WHERE released_at IS NULL;
 
 -- ── Order chat ───────────────────────────────────────────────────────────────
 -- The conversation between a player and a merchant about one payment order.

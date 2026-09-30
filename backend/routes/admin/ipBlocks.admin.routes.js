@@ -1,0 +1,125 @@
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
+/**
+ * ipBlocks.admin.routes.js — Admin › Blocked IPs.
+ *
+ *   GET  /security/ip-blocks                    live blocks (?includeReleased=1 for history)
+ *   POST /security/ip-blocks                    { network, reason, expiresInMinutes? }
+ *   POST /security/ip-blocks/:blockId/release   lift one; the row is kept
+ *
+ * Admin only — this refuses every request from a range, players and merchants
+ * included, and it is not a permission to hand a sub-admin by default.
+ *
+ * ── The refusals, each for a mistake that locks the wrong people out ──────
+ *   - A range wider than /16 (IPv4) or /48 (IPv6). Most Indian mobile traffic
+ *     sits behind carrier-grade NAT, where one address is already many players;
+ *     a /8 is a region. A range that wide is a mistake more often than a defence.
+ *   - Loopback and the unspecified address: blocking them stops the platform's
+ *     own health checks and in-process callers.
+ *   - Any range that covers the requesting admin's OWN address. Without this an
+ *     admin behind a misconfigured proxy (TRUST_PROXY unset, so every request
+ *     appears to come from the balancer) blocks the balancer — everybody,
+ *     themselves included — and cannot reach this screen to undo it.
+ * Each refusal is a 400 naming the problem (§32 S35).
+ */
+import net from 'node:net';
+import { db } from '#db';
+import { express, authenticate, isAdmin } from './_adminShared.js';
+import { respondError } from '../../shared/httpError.js';
+import { buildBlockList, listCovers, refreshIpBlocklistNow, ipBlocklistStatus } from '../../middleware/ipBlocklist.js';
+
+const router = express.Router();
+
+const MIN_PREFIX = { ipv4: 16, ipv6: 48 };
+const MAX_EXPIRY_MINUTES = 60 * 24 * 365;
+
+const refuse = (message) => Object.assign(new Error(message), { status: 400 });
+
+/**
+ * Parse and judge a requested range. Returns the canonical text the database
+ * will store, or throws a 400 naming what is wrong with it.
+ */
+export function judgeNetwork(input, requesterIp) {
+  const text = String(input ?? '').trim();
+  if (!text) throw refuse('Enter an IP address or a range, e.g. 203.0.113.7 or 203.0.113.0/24.');
+  const [address, bitsText, extra] = text.split('/');
+  if (extra !== undefined || !net.isIP(address)) {
+    throw refuse(`"${text}" is not an IP address or a CIDR range. Use a form like 203.0.113.7 or 203.0.113.0/24.`);
+  }
+  const family = net.isIPv6(address) ? 'ipv6' : 'ipv4';
+  const max = family === 'ipv6' ? 128 : 32;
+  const bits = bitsText === undefined ? max : Number(bitsText);
+  if (!Number.isInteger(bits) || bits < 0 || bits > max) {
+    throw refuse(`The range size must be a whole number from 0 to ${max} for an ${family === 'ipv6' ? 'IPv6' : 'IPv4'} address.`);
+  }
+  if (bits < MIN_PREFIX[family]) {
+    throw refuse(`/${bits} is too broad to block. The widest allowed is /${MIN_PREFIX[family]} for ${family === 'ipv6' ? 'IPv6' : 'IPv4'}: behind mobile carrier NAT a single address is already many players.`);
+  }
+  const probe = buildBlockList([`${address}/${bits}`]);
+  if (['127.0.0.1', '::1', '0.0.0.0', '::'].some((a) => listCovers(probe, a))) {
+    throw refuse('Loopback and unspecified addresses cannot be blocked — that would stop the platform\'s own health checks.');
+  }
+  if (listCovers(probe, requesterIp)) {
+    throw refuse('This range includes the address you are using right now, so it would lock you out of this screen. If every request appears to come from one address, the server\'s TRUST_PROXY setting is probably wrong.');
+  }
+  return `${address}/${bits}`;
+}
+
+router.get('/security/ip-blocks', authenticate, isAdmin, async (req, res) => {
+  try {
+    const includeReleased = req.query.includeReleased === '1' || req.query.includeReleased === 'true';
+    const blocks = await db.ipBlocks.listBlocks({ includeReleased });
+    res.json({ success: true, blocks, enforcer: ipBlocklistStatus(), yourIp: req.ip ?? null });
+  } catch (error) {
+    return respondError(res, error, 'GET /admin/security/ip-blocks', { message: 'Failed to load blocked IPs' });
+  }
+});
+
+router.post('/security/ip-blocks', authenticate, isAdmin, async (req, res) => {
+  try {
+    const network = judgeNetwork(req.body?.network, req.ip);
+    const reason = String(req.body?.reason ?? '').trim();
+    if (!reason) throw refuse('A reason is required — it is what an appeal is answered from.');
+    if (reason.length > 500) throw refuse('Keep the reason under 500 characters.');
+    let expiresAt = null;
+    const minutes = req.body?.expiresInMinutes;
+    if (minutes !== undefined && minutes !== null && minutes !== '') {
+      const m = Number(minutes);
+      if (!Number.isInteger(m) || m < 1 || m > MAX_EXPIRY_MINUTES) {
+        throw refuse(`Expiry must be a whole number of minutes from 1 to ${MAX_EXPIRY_MINUTES}, or empty for a block that lasts until it is lifted.`);
+      }
+      expiresAt = new Date(Date.now() + m * 60_000);
+    }
+
+    const block = await db.ipBlocks.blockNetwork({ network, reason, actor: req.user.userId, expiresAt });
+    // This instance enforces it at once; the others within the refresh interval.
+    await refreshIpBlocklistNow().catch((e) => console.error('[ip-blocklist] immediate reload failed:', e.message));
+    await db.audit.recordDetailed({
+      performedBy: req.user.userId, action: 'IP_BLOCKED', category: 'SECURITY',
+      targetType: 'ip_block', targetId: block.blockId, targetName: block.network,
+      details: { network: block.network, reason, expiresAt },
+      ip: req.ip, method: req.method, endpoint: req.originalUrl,
+    });
+    res.status(201).json({ success: true, block });
+  } catch (error) {
+    return respondError(res, error, 'POST /admin/security/ip-blocks', { message: 'Failed to block that address' });
+  }
+});
+
+router.post('/security/ip-blocks/:blockId/release', authenticate, isAdmin, async (req, res) => {
+  try {
+    const block = await db.ipBlocks.releaseBlock({ blockId: req.params.blockId, actor: req.user.userId });
+    if (!block) return res.status(404).json({ success: false, message: 'That block does not exist.' });
+    await refreshIpBlocklistNow().catch((e) => console.error('[ip-blocklist] immediate reload failed:', e.message));
+    await db.audit.recordDetailed({
+      performedBy: req.user.userId, action: 'IP_UNBLOCKED', category: 'SECURITY',
+      targetType: 'ip_block', targetId: block.blockId, targetName: block.network,
+      details: { network: block.network },
+      ip: req.ip, method: req.method, endpoint: req.originalUrl,
+    });
+    res.json({ success: true, block });
+  } catch (error) {
+    return respondError(res, error, 'POST /admin/security/ip-blocks/:blockId/release', { message: 'Failed to lift that block' });
+  }
+});
+
+export default router;

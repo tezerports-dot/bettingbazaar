@@ -1541,3 +1541,29 @@ export default {
 };
 
 
+
+// ── Blocked IPs (Admin › Blocked IPs) ──────────────────────────────────────
+// Server: backend/routes/admin/ipBlocks.admin.routes.js. The shape mirrors
+// `toBlock` in database/repositories/ipBlocks.js (§5).
+export interface IpBlock {
+  blockId: string; network: string; reason: string; blockedBy: string; blockedAt: string;
+  expiresAt: string | null; releasedAt: string | null; releasedBy: string | null; live: boolean;
+}
+export interface IpBlocksResponse {
+  success: boolean; blocks: IpBlock[]; yourIp: string | null;
+  enforcer: { enforcing: boolean; blocks: number; loadedAt: string | null; refreshSeconds: number };
+}
+export const ipBlocks = {
+  list: async (includeReleased = false): Promise<IpBlocksResponse> => {
+    const res = await api.get<IpBlocksResponse>('/api/admin/security/ip-blocks', { params: includeReleased ? { includeReleased: 1 } : {} });
+    return res.data;
+  },
+  block: async (body: { network: string; reason: string; expiresInMinutes?: number }) => {
+    const res = await api.post<{ success: boolean; block: IpBlock }>('/api/admin/security/ip-blocks', body);
+    return res.data;
+  },
+  release: async (blockId: string) => {
+    const res = await api.post<{ success: boolean; block: IpBlock }>(`/api/admin/security/ip-blocks/${encodeURIComponent(blockId)}/release`, {});
+    return res.data;
+  },
+};

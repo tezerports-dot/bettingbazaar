@@ -369,7 +369,7 @@ names the test that failed before the fix and the mutation that proves it.
 
 | # | Step | Who | Estimate |
 |---|---|---|---|
-| R1 | ~~Decide B2~~ **owner, 2026-09-30: build it properly** — IN PROGRESS (Claude) | Claude | ~1 day |
+| R1 | ~~Decide B2~~ **owner, 2026-09-30: build it properly** — **DONE**: mounted, admin routes, Blocked IPs screen, route + page + e2e tests, M183–M187 (F-030 REBUILT) | Claude | ~1 day |
 | R2 | Merge this branch's PR | owner | 5 min |
 | R3 | ~~Full mutation run (all 135 entries)~~ **done** — CI on PR #198 (`ba2a861`): 135/135 killed. Its first run caught M171 surviving after C3; retargeted | — | — |
 | R4 | Browser passes (`test:browser`, `test:drive`, `test:mutate`, `test:forms`) — **owner: do it**; queued last so it covers everything below | Claude | ~2 hours |

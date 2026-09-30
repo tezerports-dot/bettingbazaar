@@ -58,6 +58,7 @@ export {
 import * as users from './repositories/users.js';
 import * as identity from './repositories/identity.js';
 import * as telegram from './repositories/telegram.js';
+import * as ipBlocks from './repositories/ipBlocks.js';
 import * as merchants from './repositories/merchants.js';
 import * as chat from './repositories/chat.js';
 import * as config from './repositories/config.js';
@@ -111,6 +112,7 @@ export const db = Object.freeze({
   // Identity and access
   users,
   identity,
+  ipBlocks,
   telegram,
 
   // Money
@@ -165,7 +167,7 @@ export const db = Object.freeze({
 export default db;
 
 // Named re-exports for the call sites that read better without the namespace.
-export { users, identity, telegram, merchants, chat, config };
+export { users, identity, ipBlocks, telegram, merchants, chat, config };
 export { treasury, settlements, merchantSettlements, adminIssuance, balanceAdjustments };
 export { adminTokenConsiderations };
 export { markets, games, content, androidReleases, engagement, social, referrals };
