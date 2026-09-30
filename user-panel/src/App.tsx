@@ -47,6 +47,8 @@ const ReferralPage = React.lazy(() => import('./pages/ReferralPage'));
 import ErrorBoundary from './components/ui/ErrorBoundary';
 import { applyBranding, applyCachedBranding } from './services/branding';
 import { getBackend } from './services/backend.service';
+import { startAppUpdate } from './services/appUpdate';
+import { isNativeShell } from './services/nativeLifecycle';
 const APP_VERSION = import.meta.env.VITE_APP_VERSION ?? '0.0.0';
 
 const backend = getBackend();
@@ -115,18 +117,13 @@ const UpdateRequiredScreen = ({ latest }: { latest: string }) => (
     <p className="text-sm mb-8 leading-relaxed max-w-xs mx-auto" style={{ color: 'var(--text2)' }}>
       Version <span className="text-[var(--brand-primary, #D4AF37)] font-bold">{latest}</span> is ready with critical security patches.
     </p>
+    {/* In the APK a reload re-runs the bundled, outdated assets, so the button
+        opens the new APK instead — services/appUpdate.ts says why. */}
     <button
-      onClick={() => {
-        if ('serviceWorker' in navigator) {
-          navigator.serviceWorker.getRegistrations().then(regs => {
-            for (const reg of regs) reg.unregister();
-            window.location.reload();
-          });
-        } else { window.location.reload(); }
-      }}
+      onClick={startAppUpdate}
       className="w-full max-w-xs bg-[var(--brand-primary, #D4AF37)] hover:bg-[var(--brand-accent, #F5C77A)] text-black font-black py-4 rounded-2xl shadow-xl transition-all active:scale-95"
     >
-      UPDATE & RESTART
+      {isNativeShell() ? 'DOWNLOAD UPDATE' : 'UPDATE & RESTART'}
     </button>
   </div>
 );

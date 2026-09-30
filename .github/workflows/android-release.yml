@@ -7,15 +7,19 @@
 # derived mechanically. Play permanently rejects a re-upload of a versionCode it
 # has already seen, and a hand-incremented number in a committed file is the
 # classic way to lose an hour on release day.
+#
+# The versionName is NOT an input. It is user-panel/package.json's version —
+# the one owner of the app version (CLAUDE.md §2) — because that is the number
+# the bundle inside the APK compares against the admin's `minVersion`. It used
+# to be typed into the run form, so the two could disagree: an APK labelled
+# 1.4.0 carrying a bundle that says 4.0.0 is told it is up to date forever,
+# and one carrying a LOWER number than the admin's minimum opens on "Update
+# required" the moment it is installed — every copy, with no way out. To
+# release a new version, bump user-panel/package.json and merge it.
 name: Android release
 
 on:
   workflow_dispatch:
-    inputs:
-      version_name:
-        description: 'Version name shown to users (e.g. 1.4.0)'
-        required: true
-        default: '1.0.0'
   push:
     tags: ['android-v*']
 
@@ -81,21 +85,21 @@ jobs:
         env:
           VITE_API_URL: ${{ vars.ANDROID_API_URL }}
           VITE_MERCHANT_PANEL_URL: ${{ vars.ANDROID_MERCHANT_PANEL_URL }}
-          # The public origin the bot builds sign-in links against. Its host is
-          # what the App Link filter claims, and player auth is Telegram-only —
-          # so an APK built without it is an APK nobody can sign in to.
+          # The public origin (the backend's PUBLIC_APP_ORIGIN). Its host is what
+          # the App Link filter claims, so a password-reset link from the bot
+          # opens the installed app rather than a browser.
           VITE_APP_ORIGIN: ${{ vars.ANDROID_APP_ORIGIN }}
 
       # The manifest placeholder is the App Link host, and it must be the same
       # host the web bundle was just told to trust. Deriving it here from the
       # one variable, rather than adding a second one to keep in step, is what
-      # stops the two halves of the sign-in fix from silently disagreeing.
+      # stops the manifest and the deep-link handler from silently disagreeing.
       - name: Resolve the App Link host
         env:
           O: ${{ vars.ANDROID_APP_ORIGIN }}
         run: |
           if [ -z "$O" ]; then
-            echo "::error::The ANDROID_APP_ORIGIN repository variable is not set. It is your public site origin (the same value as the backend's PUBLIC_APP_ORIGIN), e.g. https://yourdomain.com — its host is what the app claims so the bot's sign-in links open the app instead of a browser. Without it players cannot sign in to the APK at all. See docs/governance/ANDROID_RELEASE_SETUP.md section 2."
+            echo "::error::The ANDROID_APP_ORIGIN repository variable is not set. It is your public site origin (the same value as the backend's PUBLIC_APP_ORIGIN), e.g. https://yourdomain.com — its host is what the app claims, so the bot's password-reset links open the app instead of a browser. See docs/governance/ANDROID_RELEASE_SETUP.md section 2."
             exit 1
           fi
           if ! HOST=$(node -e 'process.stdout.write(new URL(process.env.O).hostname)' 2>/dev/null); then
@@ -123,9 +127,18 @@ jobs:
 
       - name: Resolve version
         run: |
-          NAME="${{ inputs.version_name }}"
-          if [ -z "$NAME" ]; then NAME="${GITHUB_REF_NAME#android-v}"; fi
+          # The bundle's own version, so the label and the number the app
+          # compares against minVersion are one fact (see the header).
+          NAME=$(node -p "require('./package.json').version")
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            TAG="${GITHUB_REF_NAME#android-v}"
+            if [ "$TAG" != "$NAME" ]; then
+              echo "::error::Tag $GITHUB_REF_NAME says $TAG but user-panel/package.json says $NAME. The APK's version is the package.json version — bump it there, merge, and tag android-v$NAME."
+              exit 1
+            fi
+          fi
           echo "VERSION_NAME=$NAME" >> "$GITHUB_ENV"
+          echo "Version: $NAME"
           # Monotonic across runs and never reused, which is Play's only hard
           # requirement. github.run_number is per-workflow and only increases.
           echo "VERSION_CODE=${{ github.run_number }}" >> "$GITHUB_ENV"
@@ -145,8 +158,9 @@ jobs:
 
       # An App Link that resolves to "localhost" is the build.gradle fallback,
       # which means ANDROID_APP_ORIGIN never reached Gradle. The APK would
-      # install, open, and quietly refuse every sign-in link — exactly the class
-      # of failure that only shows up on a handset, so it is caught here.
+      # install, open, and quietly let every reset link go to a browser —
+      # exactly the class of failure that only shows up on a handset, so it is
+      # caught here.
       - name: Verify the App Link host reached the manifest
         working-directory: user-panel/android
         run: |
@@ -158,7 +172,7 @@ jobs:
           fi
           echo "Checking $MANIFEST"
           if ! grep -q "android:host=\"$APP_LINK_HOST\"" "$MANIFEST"; then
-            echo "::error::The merged manifest does not claim $APP_LINK_HOST. Set the ANDROID_APP_ORIGIN repository variable — without it players cannot sign in to the app."
+            echo "::error::The merged manifest does not claim $APP_LINK_HOST. Set the ANDROID_APP_ORIGIN repository variable."
             grep -o 'android:host="[^"]*"' "$MANIFEST" || true
             exit 1
           fi

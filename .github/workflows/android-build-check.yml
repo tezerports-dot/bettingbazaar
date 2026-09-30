@@ -29,6 +29,8 @@ on:
       - 'user-panel/capacitor.config.ts'
       - 'user-panel/package.json'
       - 'user-panel/scripts/assert-native-env.mjs'
+      - 'user-panel/scripts/generate-icons.mjs'
+      - 'user-panel/public/manifest.json'
       - '.github/workflows/android-build-check.yml'
       - '.github/workflows/android-release.yml'
 

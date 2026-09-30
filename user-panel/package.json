@@ -10,7 +10,7 @@
     "build:native": "node scripts/assert-native-env.mjs && vite build",
     "android:sync": "npm run build:native && cap sync android",
     "android:open": "cap open android",
-    "icons:generate": "node scripts/generate-pwa-icons.mjs",
+    "icons:generate": "node scripts/generate-icons.mjs",
     "test": "vitest run"
   },
   "dependencies": {
