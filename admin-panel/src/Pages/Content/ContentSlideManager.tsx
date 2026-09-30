@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * ContentSlideManager.tsx
  *
@@ -202,7 +202,7 @@ export const ContentSlideManager: React.FC = () => {
               key={slide._id}
               className={`relative rounded-xl overflow-hidden border transition-all
                 ${slide.status === 'ACTIVE'
-                  ? 'border-gold-500/40 shadow-[0_0_12px_rgba(212,175,55,0.15)]'
+                  ? 'border-gold-500/40 shadow-[0_0_12px_rgba(var(--gold-rgb),0.15)]'
                   : 'border-dark-600 opacity-50 grayscale'}`}
             >
               {/* Image */}
@@ -311,8 +311,8 @@ export const ContentSlideManager: React.FC = () => {
 
             {form.urlMode ? (
               <div>
-                <label className="label">Image URL (CDN / S3 / direct link)</label>
-                <input
+                <label className="label" htmlFor="image-url-cdn-s3-direct-link">Image URL (CDN / S3 / direct link)</label>
+                <input id="image-url-cdn-s3-direct-link"
                   type="url"
                   value={form.fileUrl}
                   onChange={e => setForm(f => ({ ...f, fileUrl: e.target.value }))}
@@ -322,8 +322,8 @@ export const ContentSlideManager: React.FC = () => {
               </div>
             ) : (
               <div>
-                <label className="label">Image URL (after upload)</label>
-                <input
+                <label className="label" htmlFor="image-url-after-upload">Image URL (after upload)</label>
+                <input id="image-url-after-upload"
                   type="url"
                   value={form.fileUrl}
                   onChange={e => setForm(f => ({ ...f, fileUrl: e.target.value }))}
@@ -345,8 +345,8 @@ export const ContentSlideManager: React.FC = () => {
             )}
 
             <div>
-              <label className="label">Caption (optional)</label>
-              <input
+              <label className="label" htmlFor="caption-optional">Caption (optional)</label>
+              <input id="caption-optional"
                 type="text"
                 value={form.title}
                 onChange={e => setForm(f => ({ ...f, title: e.target.value }))}
@@ -356,8 +356,8 @@ export const ContentSlideManager: React.FC = () => {
             </div>
 
             <div>
-              <label className="label">Priority (higher = shown first)</label>
-              <input
+              <label className="label" htmlFor="priority-higher-shown-first">Priority (higher = shown first)</label>
+              <input id="priority-higher-shown-first"
                 type="number"
                 value={form.priority}
                 onChange={e => setForm(f => ({ ...f, priority: parseInt(e.target.value) || 0 }))}

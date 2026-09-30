@@ -1,10 +1,10 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * services/nativeDeepLink.ts — deliver a bot sign-in link to the installed app.
  *
  * ── The failure this exists to fix ─────────────────────────────────────────
  * Player auth is Telegram-only: the bot sends a one-time link,
- * `https://<PUBLIC_APP_ORIGIN>/#/auth/telegram?token=…`, and whichever context
+ * `https://<PUBLIC_APP_ORIGIN>/#/wallet?tab=deposit`, and whichever context
  * opens it redeems the token — once — into its own storage. The APK serves its
  * UI from `https://localhost` and, before the App Link filter in
  * AndroidManifest.xml, declared no interest in that URL. So the tap went to a
@@ -78,7 +78,7 @@ export function routeFromDeepLink(rawUrl: string, allowed: string[]): string | n
 
   if (!allowed.includes(url.origin)) return null;
 
-  // `#/auth/telegram?token=…` — a HashRouter route and nothing else. Anything
+  // `#/wallet?tab=deposit` — a HashRouter route and nothing else. Anything
   // that is not a hash route (an empty fragment from a bare tap on the site
   // root, `#javascript:…`, a protocol-relative `#//evil.example`) is not a
   // navigation this app performs.

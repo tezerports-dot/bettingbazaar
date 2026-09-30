@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import React, { useEffect, useState } from 'react';
 import { TrendingUp, TrendingDown, DollarSign, Download, Calendar } from 'lucide-react';
 import { formatters } from '../../utils/formatters';
@@ -73,8 +73,8 @@ export const ProfitLoss: React.FC = () => {
       <Toolbar tabs={PRESETS.map((p) => ({ label: p.label, active: preset === p.key, onClick: () => changePreset(p.key) }))} />
       {preset === 'custom' && (
         <div className="flex items-end gap-3">
-          <div><label className="text-xs text-gray-400 mb-1 block">From</label><input type="date" value={startDate} onChange={(e) => setStart(e.target.value)} className="input" style={{ width: 175 }} /></div>
-          <div><label className="text-xs text-gray-400 mb-1 block">To</label><input type="date" value={endDate} onChange={(e) => setEnd(e.target.value)} className="input" style={{ width: 175 }} /></div>
+          <div><label className="text-xs text-gray-400 mb-1 block" htmlFor="from">From</label><input id="from" type="date" value={startDate} onChange={(e) => setStart(e.target.value)} className="input" style={{ width: 175 }} /></div>
+          <div><label className="text-xs text-gray-400 mb-1 block" htmlFor="to">To</label><input id="to" type="date" value={endDate} onChange={(e) => setEnd(e.target.value)} className="input" style={{ width: 175 }} /></div>
           <button onClick={load} className="btn-primary text-xs">Apply</button>
         </div>
       )}

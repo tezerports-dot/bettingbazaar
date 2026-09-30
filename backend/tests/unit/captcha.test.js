@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file.
+// GOVERNANCE: Read CLAUDE.md before editing this file.
 /**
  * The captcha gate sits in front of every login on the platform, so the two
  * properties worth proving are the ones that take the whole platform down when

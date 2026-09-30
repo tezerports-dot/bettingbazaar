@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import { defineConfig } from 'vite';
 import { readFileSync, writeFileSync } from 'fs';
 import react from '@vitejs/plugin-react';
@@ -25,14 +25,34 @@ export default defineConfig({
   ],
   resolve: {
     alias: {
-      '@': path.resolve(__dirname, './src'),
+      '@': path.resolve(import.meta.dirname, './src'),
     },
   },
   base: '/',
   server: {
-    port: 5174,
+    // 5173 (vite's own default), not 5174 — the ADMIN panel declares 5174, and
+    // two panels claiming one port means whichever starts second silently gets
+    // a different one and every note about "the panel on 5174" is wrong half
+    // the time. One owner per value, applied to a port (§2).
+    port: 5173,
     proxy: {
+      // ── Mirror the Caddyfile, or dev is a different application ─────────
+      // Production is ONE origin: Caddy serves the three panels and proxies
+      // /api, /app-assets and /storage to the backend from the same host. The
+      // dev server proxied only /api, so every branding image, app-asset
+      // preview, CDM receipt and payment proof 404'd here and rendered fine in
+      // production — a divergence that makes a browser pass over dev say
+      // nothing about the thing that ships (§28: no path that only works on
+      // one machine, pointed at the dev server instead of a script).
       '/api': {
+        target: process.env.VITE_API_URL || 'http://localhost:8080',
+        changeOrigin: true,
+      },
+      '/app-assets': {
+        target: process.env.VITE_API_URL || 'http://localhost:8080',
+        changeOrigin: true,
+      },
+      '/storage': {
         target: process.env.VITE_API_URL || 'http://localhost:8080',
         changeOrigin: true,
       },
@@ -57,9 +77,13 @@ export default defineConfig({
         // resolved out of the repository-root node_modules, so the build was
         // bundling a 3D library into the player app by accident. Removed with
         // the root dependency cleanup (2026-07-27).
-        manualChunks: {
-          'framer':       ['framer-motion'],
-          'react-vendor': ['react', 'react-dom', 'react-router'],
+        // Function form: Vite 8 / rolldown no longer accepts the object map
+        // (it threw "manualChunks is not a function" at build). Same split as
+        // before — framer-motion in its own chunk, the React runtime in a
+        // shared vendor chunk — expressed as a matcher over the module id.
+        manualChunks(id) {
+          if (id.includes('framer-motion')) return 'framer';
+          if (/node_modules\/(react|react-dom|react-router)\//.test(id)) return 'react-vendor';
         },
       },
     },

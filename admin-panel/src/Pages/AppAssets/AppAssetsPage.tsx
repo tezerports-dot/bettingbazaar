@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 // APP-ASSETS-PAGE-V1
 /**
  * AppAssetsPage.tsx — Admin Panel › App Assets
@@ -54,6 +54,7 @@ const AssetCard: React.FC<{
         </div>
         {slot.uploaded && (
           <button onClick={() => onDelete(slot.name)} disabled={uploading}
+            title={`Delete the ${slot.name} asset`} aria-label={`Delete the ${slot.name} asset`}
             className="shrink-0 p-1.5 rounded-lg bg-red-900/30 hover:bg-red-900/50 text-red-400 transition-colors disabled:opacity-40">
             <Trash2 size={13} />
           </button>

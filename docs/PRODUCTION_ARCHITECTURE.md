@@ -5,7 +5,7 @@ Answers the sizing question that needs deciding before production:
 1. **What hardware does ~50,000 DAU need, and what does it cost?**
 
 Companion to `docs/GO_LIVE_RUNBOOK.md` (the ordered launch runbook —
-Shinjiru dedicated box) and `docs/governance/LAUNCH_READINESS.md` (what gates a
+Shinjiru dedicated box) and `docs/PROJECT_STATUS.md` (what gates a
 launch). The Hetzner figures below are sizing/cost *reference*; the current plan
 runs on a single Shinjiru dedicated box (`deploy/VPS_UBUNTU_SETUP.md`).
 
@@ -19,7 +19,7 @@ This document previously opened with a Part 1 that weighed two database engines,
 which weighed a permanent split of the data between two engines, listed which
 paths were implemented on each side, and sequenced a per-path cutover. **That
 question is closed and its machinery is deleted** — see `CLAUDE.md` and the
-2026-09-01 entry in `docs/governance/04-GOVERNANCE.md`. The platform is
+2026-09-01 entry in `CLAUDE.md`. The platform is
 pre-deployment, so there was nothing to migrate and nothing to split.
 
 What the deleted section got right is worth keeping in one paragraph, because it

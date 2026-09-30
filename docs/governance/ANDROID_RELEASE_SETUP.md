@@ -276,7 +276,7 @@ first upload.
 Separately: a real-money betting app will be reviewed against Play's gambling
 policy, which requires a licence in each target country and geo-restriction to
 those countries. That is the same §G licensing gate in
-`LAUNCH_READINESS.md`, arriving from a different direction.
+`docs/PROJECT_STATUS.md`, arriving from a different direction.
 
 > **Before you spend a day on store metadata, read
 > `NATIVE_APP_DISTRIBUTION_POLICY.md` §1.** India's Promotion and Regulation of

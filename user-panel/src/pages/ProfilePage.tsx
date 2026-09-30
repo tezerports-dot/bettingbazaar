@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * ProfilePage.tsx — 2026 "Bazaar" redesign.
  *
@@ -6,7 +6,7 @@
  * (net placed / winnings / win-rate / cycles), KYC status (KYCModal), bank/UPI
  * details (backend.updateBankDetails), theme appearance toggle, and logout.
  */
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { useGame } from '../services/GameContext';
 import { useTheme } from '../redesign/ThemeContext';
@@ -85,13 +85,41 @@ const ProfilePage: React.FC = () => {
     } catch (err: any) { alert(err?.message || 'Upload failed.'); }
   };
 
-  const settingsRows = [
-    { ic: '🔔', t: 'Notifications', v: 'On' },
-    { ic: '🌐', t: 'Language', v: 'English' },
-    { ic: '🔒', t: 'Security & PIN', v: '' },
-    { ic: '📄', t: 'Responsible Play', v: '' },
-    { ic: 'ℹ️', t: 'About & Terms', v: '' },
-  ];
+  /**
+   * ── These rows were five dead buttons ────────────────────────────────────
+   * `<button key={op.t} style={…}>` with NO `onClick`. Five rows, each ending
+   * in a `›` that promises a screen, and tapping any of them did nothing —
+   * found by pressing them in a browser, because there is no request to fail
+   * and no error to catch (§28: `check:ui-coverage` can only see a call that
+   * resolves to no route; it cannot see a control that calls nothing).
+   *
+   * Three of them named a feature this platform does not have — no
+   * notification settings, no i18n, no PIN — so they are gone. A control that
+   * promises what the product cannot do is worse than no control.
+   *
+   * The rest name PAGES, and the platform already had somewhere to get them:
+   * `SUPPORT_LINKS_SPEC` declares `helpCenterUrl`, `termsUrl` and `privacyUrl`,
+   * an admin can set them, and **nothing read them** — the same hole from the
+   * other side (§3: an admin-editable field with no consumer). So each row is
+   * now that link, and a row whose URL is unset is HIDDEN rather than shown
+   * dead: blank means the operator has not published that page, and a player
+   * should not be offered it.
+   */
+  const [pages, setPages] = useState<Record<string, string>>({});
+  useEffect(() => {
+    let alive = true;
+    (getBackend() as any).getSupportLinks?.()
+      .then((l: any) => { if (alive) setPages(l ?? {}); })
+      .catch(() => { /* a support document nobody has filled in is not an error */ });
+    return () => { alive = false; };
+  }, []);
+
+  const settingsRows = ([
+    { ic: '❓', t: 'Help Centre',        key: 'helpCenterUrl' },
+    { ic: '📄', t: 'Terms & Conditions', key: 'termsUrl' },
+    { ic: '🔐', t: 'Privacy Policy',     key: 'privacyUrl' },
+  ] as const).map(r => ({ ...r, href: (pages as any)[r.key] as string | undefined }))
+    .filter(r => !!r.href?.trim());
 
   return (
     <ScreenShell icon="👤" title="Profile" sub="Account, stats & preferences">
@@ -139,10 +167,14 @@ const ProfilePage: React.FC = () => {
           <button onClick={toggleTheme} style={{ padding: '6px 13px', borderRadius: 999, border: '1px solid var(--line2)', background: 'var(--surface3)', color: 'var(--gold-ink)', fontSize: 11, fontWeight: 800, cursor: 'pointer' }}>Switch theme</button>
         </div>
         {settingsRows.map(op => (
-          <button key={op.t} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 12, padding: '14px 15px', border: 'none', borderTop: '1px solid var(--line)', background: 'none', cursor: 'pointer', textAlign: 'left' }}>
+          // An anchor, not a button: it goes somewhere, and a player should get
+          // the browser's own affordances for that (open in a new tab, copy the
+          // address, and a middle click that works).
+          <a key={op.t} href={op.href} target="_blank" rel="noopener noreferrer"
+            style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 12, padding: '14px 15px', borderTop: '1px solid var(--line)', background: 'none', cursor: 'pointer', textAlign: 'left', textDecoration: 'none' }}>
             <span style={{ fontSize: 17 }}>{op.ic}</span><span style={{ flex: 1, fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{op.t}</span>
-            <span style={{ fontSize: 11, color: 'var(--text3)' }}>{op.v}</span><span style={{ fontSize: 14, color: 'var(--text3)' }}>›</span>
-          </button>
+            <span style={{ fontSize: 14, color: 'var(--text3)' }}>›</span>
+          </a>
         ))}
       </div>
 
@@ -155,13 +187,13 @@ const ProfilePage: React.FC = () => {
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}><span className="font-grotesk" style={{ fontWeight: 700, fontSize: 17, color: 'var(--text)' }}>Bank / UPI Details</span><button onClick={() => setBankOpen(false)} style={{ width: 30, height: 30, borderRadius: '50%', border: '1px solid var(--line)', background: 'var(--surface3)', color: 'var(--text2)', cursor: 'pointer', fontSize: 12 }}>✕</button></div>
             <p style={{ fontSize: 11, color: 'var(--text2)', margin: '0 0 14px' }}>Required to receive sell-order payouts. Stored securely.</p>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 11 }}>
-              <div><label style={fieldLabel}>UPI ID</label><input value={bank.upiId} onChange={e => setBank({ ...bank, upiId: e.target.value })} placeholder="yourname@okhdfc" style={inputStyle} /></div>
+              <div><label style={fieldLabel} htmlFor="upi-id">UPI ID</label><input id="upi-id" value={bank.upiId} onChange={e => setBank({ ...bank, upiId: e.target.value })} placeholder="yourname@okhdfc" style={inputStyle} /></div>
               <div style={{ textAlign: 'center', fontSize: 10, fontWeight: 800, letterSpacing: '.1em', color: 'var(--text3)' }}>— OR BANK ACCOUNT —</div>
-              <div><label style={fieldLabel}>Account holder name</label><input value={bank.accountHolderName} onChange={e => setBank({ ...bank, accountHolderName: e.target.value })} placeholder="Full name as per bank" style={inputStyle} /></div>
-              <div><label style={fieldLabel}>Account number</label><input value={bank.accountNumber} onChange={e => setBank({ ...bank, accountNumber: e.target.value })} inputMode="numeric" placeholder="0000 0000 0000" className="font-grotesk" style={inputStyle} /></div>
+              <div><label style={fieldLabel} htmlFor="account-holder-name">Account holder name</label><input id="account-holder-name" value={bank.accountHolderName} onChange={e => setBank({ ...bank, accountHolderName: e.target.value })} placeholder="Full name as per bank" style={inputStyle} /></div>
+              <div><label style={fieldLabel} htmlFor="account-number">Account number</label><input id="account-number" value={bank.accountNumber} onChange={e => setBank({ ...bank, accountNumber: e.target.value })} inputMode="numeric" placeholder="0000 0000 0000" className="font-grotesk" style={inputStyle} /></div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                <div><label style={fieldLabel}>IFSC</label><input value={bank.ifscCode} onChange={e => setBank({ ...bank, ifscCode: e.target.value.toUpperCase() })} placeholder="HDFC0001234" style={{ ...inputStyle, textTransform: 'uppercase' }} /></div>
-                <div><label style={fieldLabel}>Bank</label><input value={bank.bankName} onChange={e => setBank({ ...bank, bankName: e.target.value })} placeholder="HDFC Bank" style={inputStyle} /></div>
+                <div><label style={fieldLabel} htmlFor="ifsc">IFSC</label><input id="ifsc" value={bank.ifscCode} onChange={e => setBank({ ...bank, ifscCode: e.target.value.toUpperCase() })} placeholder="HDFC0001234" style={{ ...inputStyle, textTransform: 'uppercase' }} /></div>
+                <div><label style={fieldLabel} htmlFor="bank">Bank</label><input id="bank" value={bank.bankName} onChange={e => setBank({ ...bank, bankName: e.target.value })} placeholder="HDFC Bank" style={inputStyle} /></div>
               </div>
               <button onClick={saveBank} disabled={saving} style={{ ...goldButton, opacity: saving ? .6 : 1 }}>{saving ? 'Saving…' : 'Save details'}</button>
             </div>

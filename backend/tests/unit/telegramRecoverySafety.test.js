@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * Account recovery hands one person's account to a different Telegram identity.
  * That is the exact shape a successful takeover has, so the properties that
@@ -9,14 +9,17 @@
  * distinguishable — none of which a happy-path integration test would notice.
  */
 import { describe, it, expect } from 'vitest';
+// ONE stripper, in `sourceText.js`. This file carried its own copy with an
+// UNANCHORED block-comment pattern, which pairs an opener that is only prose
+// inside a line comment with the file's real closer and deletes everything
+// between — see sourceText.js for the measurement.
+import { stripComments } from './sourceText.js';
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const read = (p) => readFileSync(join(here, p), 'utf8')
-  .replace(/\/\*[\s\S]*?\*\//g, '')
-  .split('\n').filter((l) => !/^\s*(\/\/|\*)/.test(l)).join('\n');
+const read = (p) => stripComments(readFileSync(join(here, p), 'utf8'));
 
 const svc = read('../../domains/telegram/telegramRecovery.service.js');
 const routes = read('../../domains/telegram/telegram.routes.js');
@@ -27,7 +30,24 @@ describe('recovery requires two independent factors', () => {
     // Aadhaar have an account here" — the exact flaw removed from the old
     // recovery route. The Aadhaar is only ever compared to the account the
     // phone already resolved to.
-    expect(svc).toMatch(/getUserByMobile\(mobile\)/);
+    // ── Scoped to the BOT'S OWN AUDIENCE ───────────────────────────────────
+    // A mobile can hold a player, a staff and a merchant account (§33.5), and
+    // an unscoped read resolves to whichever row the planner reached first —
+    // which is how a contact share came to link the STAFF account on a shared
+    // number and offer an admin's password to whoever held the phone.
+    //
+    // It was the literal 'PLAYER'. All three panels recover through their own
+    // bot now (owner, 2026-09-24), so the scope is the audience of the bot the
+    // update arrived on: strictly stronger, because recovery through the
+    // merchant bot can only ever move a MERCHANT link. What is asserted is that
+    // the read is SCOPED AT ALL — a bare `getUserByMobile(mobile)` is the
+    // defect, whatever the second argument is called.
+    expect(svc).toMatch(/getUserByMobile\(mobile, audience\)/);
+    expect(svc, 'the mobile lookup must never be unscoped')
+      .not.toMatch(/getUserByMobile\(\s*mobile\s*\)/);
+    // And the audience must come from the caller — the bot — rather than being
+    // decided in here, where nothing knows which door the person knocked on.
+    expect(svc).toMatch(/attemptRecovery\(\{[^}]*\baudience\b/);
     // No lookup anywhere takes an Aadhaar as its search key. Asserted over the
     // whole file rather than one expression, so a future read added below is
     // covered too.
@@ -49,7 +69,17 @@ describe('recovery requires two independent factors', () => {
   it('honours HMAC rotation when comparing', () => {
     // hashAadhaarCandidates covers retired secrets, so a rotation does not lock
     // every existing player out of recovery.
-    expect(svc).toMatch(/hashAadhaarCandidates\(aadhaar\)/);
+    //
+    // The call site moved to the BOT BOUNDARY when the held session became a
+    // database row: the route hashes the Aadhaar the moment it arrives and the
+    // service receives candidates only, so the plaintext lives for one function
+    // call and is never stored. Both halves are pinned — the route must still
+    // produce every candidate, and the service must compare against all of them
+    // rather than picking one.
+    expect(routes).toMatch(/hashAadhaarCandidates\(aadhaar\)/);
+    expect(svc).not.toMatch(/aadhaar:/);
+    expect(svc).toMatch(/aadhaarHashes/);
+    expect(svc).toMatch(/candidates/);
   });
 
   it('rejects a forwarded contact card', () => {
@@ -112,9 +142,16 @@ describe('the recovery bot is isolated from the primary bot', () => {
     // thing that actually matters stays pinned: it must never be the PRIMARY
     // bot's secret, which would let a compromised sign-in bot drive account
     // recovery, the precise separation this whole second bot exists for.
-    const handler = routes.slice(routes.indexOf("'/recovery/webhook'"), routes.indexOf("'/public-config'"));
+    const handler = routes.slice(routes.indexOf("'/recovery/webhook/:botId'"), routes.indexOf("'/public-config'"));
+    expect(handler, 'the recovery handler must be locatable').not.toBe('');
     expect(handler, 'the recovery secret must be a recovery credential').toMatch(/recovery/i);
-    expect(handler).toMatch(/secretMatches\(req\.get\('X-Telegram-Bot-Api-Secret-Token'\)/);
+    // The comparison itself moved into `resolveDeliveringBot`, which the
+    // sign-in webhook already used and which now takes the role it will accept.
+    // That is the point of the change: ONE constant-time compare, against the
+    // secret of the bot named in the path, for both fleets. A recovery delivery
+    // that names a sign-in bot is refused by the role argument.
+    expect(handler).toMatch(/resolveDeliveringBot\(req, \{ role: 'recovery' \}\)/);
+    expect(routes).toMatch(/secretMatches\(req\.get\('X-Telegram-Bot-Api-Secret-Token'\)/);
     // The exact bypass: authenticating recovery against the primary's secret.
     // Asserted as "the primary secret is not named anywhere in this handler"
     // rather than as a pattern around the comparison — the argument list
@@ -126,15 +163,42 @@ describe('the recovery bot is isolated from the primary bot', () => {
   });
 
   it('replies through the recovery bot, not the primary one', () => {
-    const handler = routes.slice(routes.indexOf("'/recovery/webhook'"), routes.indexOf("'/exchange'"));
+    const handler = routes.slice(routes.indexOf("'/recovery/webhook/:botId'"));
+    expect(handler, 'the recovery handler must be locatable').not.toBe('');
     expect(handler).toMatch(/sendRecoveryMessage/);
     expect(handler).not.toMatch(/[^y]\bsendMessage\(/);
+    // Every recovery send names the audience it is for. Without it
+    // `resolveSender` cannot tell which of the three live recovery bots to use,
+    // and a merchant's message would go out from the player bot — which
+    // Telegram refuses as a conversation that was never opened, so the person
+    // sees nothing at all.
+    for (const call of handler.match(/sendRecoveryMessage\([^,]+/g) || []) {
+      expect(call, `${call} must pass the audience first`).toMatch(/sendRecoveryMessage\(audience/);
+    }
   });
 
-  it('bounds the in-memory conversation state', () => {
-    // An Aadhaar must not sit in memory indefinitely, and /start floods must
-    // not grow the map without limit.
-    expect(routes).toMatch(/RECOVERY_SESSION_MS/);
-    expect(routes).toMatch(/recoverySessions\.clear\(\)/);
+  it('bounds the held recovery session', () => {
+    // The held Aadhaar used to be an in-process Map, which is unbounded under a
+    // /start flood, lost on restart, and — with more than one API instance —
+    // wrong: the contact share can land on a different process than the Aadhaar
+    // did. It is a row with an expiry now, so the three properties that matter
+    // are pinned on the store rather than on a Map's housekeeping.
+    expect(routes).toMatch(/RECOVERY_SESSION_SECONDS/);
+    expect(routes).toMatch(/putRecoverySession/);
+    // Consumed on EVERY outcome, not just success: otherwise a wrong contact
+    // share could be retried against an Aadhaar the sender already proved.
+    expect(routes).toMatch(/deleteRecoverySession/);
+    // No process-local copy may survive alongside the row — that is the second
+    // owner the move exists to remove.
+    expect(routes).not.toMatch(/new Map\(\)[^\n]*recover|recoverySessions/i);
+  });
+
+  it('expires the held session in the statement, not on a sweep', () => {
+    // A sweep that is late, failed or never scheduled must not be able to make
+    // a stale Aadhaar usable. The read carries its own expiry predicate; the
+    // sweep only reclaims space.
+    const repo = read('../../../database/repositories/telegram.js');
+    const getter = repo.slice(repo.indexOf('export async function getRecoverySession'));
+    expect(getter.slice(0, 400)).toMatch(/expires_at > now\(\)/);
   });
 });

@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * subadmins.admin.routes.js — sub-admin accounts and their permissions.
  *
@@ -15,6 +15,7 @@ import { express, authenticate, isAdmin } from './_adminShared.js';
 import { db } from '#db';
 // AQ-8: hash via the password authority (argon2id).
 import { hashPassword } from '../../domains/identity/password.util.js';
+import { assertStaffPassword } from '../../domains/identity/passwordPolicy.js';
 
 const router = express.Router();
 
@@ -53,10 +54,19 @@ router.post('/sub-admins', authenticate, isAdmin, async (req, res) => {
       return res.status(400).json({ success: false, message: 'mobile and password are required' });
     }
 
+    // A sub-admin reads the player base and the ledger, and holds a session for
+    // 24 hours with no second factor required of it — so the password IS the
+    // credential. This took anything at all, including one character.
+    try {
+      assertStaffPassword(password, { mobile, username }, 'sub-admin');
+    } catch (e) {
+      return res.status(e.status || 400).json({ success: false, code: e.code, message: e.message });
+    }
+
     const passwordHash = await hashPassword(password); // AQ-8: argon2id (was bcrypt cost 12)
 
-    // The duplicate check is the INSERT's own conflict on the mobile's unique
-    // constraint, not a read followed by a write. Reading first leaves a window
+    // The duplicate check is the INSERT's own conflict on `(mobile,
+    // account_type)`, not a read followed by a write. Reading first leaves a window
     // two simultaneous creates both pass, and the second one then fails on the
     // constraint anyway — as a 500 rather than as this message.
     const { user, created } = await db.users.createUser({
@@ -69,9 +79,17 @@ router.post('/sub-admins', authenticate, isAdmin, async (req, res) => {
       // authenticate through Telegram at all — so the KYC gate is satisfied at
       // creation rather than left blocking a colleague on their first day.
       kycStatus: 'APPROVED',
+      // STAFF. A sub-admin written as a PLAYER cannot sign in at the admin door
+      // at all — the door scopes its read by account type — and the account
+      // would look perfectly correct in every listing.
+      accountType: 'STAFF',
     });
     if (!created) {
-      return res.status(400).json({ success: false, message: 'Mobile number already exists' });
+      // Scoped to STAFF by the unique constraint, so this now means "that
+      // number already has a staff account" rather than "that number is known
+      // to the platform". The same person holding a player account is no longer
+      // a reason to refuse them a colleague's login.
+      return res.status(400).json({ success: false, message: 'That mobile number already has a staff account' });
     }
 
     // The role and the permissions are a second write because they are not

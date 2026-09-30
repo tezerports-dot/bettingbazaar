@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * RulesPage.tsx — 2026 "Bazaar" redesign. How to play Delhi vs Bombay Bazaar,
  * plus any admin-published rule slides (location: RULES_PAGE).

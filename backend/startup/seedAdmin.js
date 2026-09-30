@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * startup/seedAdmin.js — the first admin account, on first boot.
  *
@@ -9,6 +9,7 @@
 import { db } from '#db';
 // Password hashing authority (argon2id, with a bcrypt verify-fallback).
 import { hashPassword, verifyPassword, isArgon2 } from '../domains/identity/password.util.js';
+import { assertStaffPassword } from '../domains/identity/passwordPolicy.js';
 
 export async function seedAdminAccount() {
   try {
@@ -18,6 +19,26 @@ export async function seedAdminAccount() {
     if (!adminMobile || !adminPassword) {
       console.warn('⚠️  Skipping admin seed — DEFAULT_ADMIN_MOBILE or DEFAULT_ADMIN_PASSWORD not set');
       return;
+    }
+
+    // ── The seeded admin is the account with the most to lose ──────────────
+    // It holds the whole platform, no second factor is required of it, and its
+    // password comes from an environment variable somebody set once — the
+    // likeliest place on this platform for `admin123` to live.
+    //
+    // WARNS rather than refuses, and that is deliberate. Refusing to boot on a
+    // weak seed password bricks a running deployment on the deploy that adds
+    // this rule, which is a worse outcome than a loud line in the log. The
+    // routes that CREATE staff accounts refuse; this one tells the operator to
+    // change what already exists.
+    try {
+      assertStaffPassword(adminPassword, { mobile: adminMobile }, 'admin');
+    } catch (e) {
+      console.warn(
+        `⚠️  DEFAULT_ADMIN_PASSWORD is weak: ${e.message}\n`
+        + '    This account has no second factor required of it and holds the entire\n'
+        + '    platform. Change it, and enrol 2FA on it.',
+      );
     }
 
     const { users: [existingAdmin] } = await db.users.listUsers({ isAdmin: true, limit: 1 });
@@ -63,8 +84,10 @@ export async function seedAdminAccount() {
 
     // `createUser` returns the EXISTING account on a mobile conflict rather
     // than throwing, so two instances booting together seed ONE admin — the
-    // UNIQUE constraint on `mobile` decides, not a prior existence check that a
-    // concurrent boot fits between.
+    // UNIQUE constraint on `(mobile, account_type)` decides, not a prior
+    // existence check that a concurrent boot fits between. The conflict is now
+    // scoped to STAFF, so an admin mobile that also holds a PLAYER account is
+    // still seeded rather than silently resolving to the player.
     // `{ user, created }`, not a user: the `created` flag distinguishes "this
     // boot made the admin" from "another instance got there first", which the
     // log below reports honestly rather than claiming a seed either way.
@@ -76,6 +99,10 @@ export async function seedAdminAccount() {
       status: 'ACTIVE',
       kycStatus: 'APPROVED',
       isAdmin: true,
+      // STAFF. Without it the seeded admin is written as a PLAYER and the staff
+      // door — which scopes its read by account type — cannot find it: the
+      // platform boots, reports the admin seeded, and nobody can sign in.
+      accountType: 'STAFF',
     });
     // `roles` is set through `setRoles`, which DERIVES the authorisation flags
     // from it in the same statement — so the array and the flags every

@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * Sub-admin management, over HTTP against a real database.
  *
@@ -89,7 +89,7 @@ describePg('sub-admin routes', () => {
     const second = await as(app, admin).post('/sub-admins')
       .send({ username: 'Dup B', mobile, password: 'a-long-enough-password-123' });
     expect(second.status).toBe(400);
-    expect(second.body.message).toMatch(/already exists/i);
+    expect(second.body.message).toMatch(/already has a staff account/i);
   });
 
   it('requires a mobile and a password', async () => {

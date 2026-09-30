@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 // Domain: Funding Platform (BBEPS Phase 009).
 //
 // FUNDING PROVIDER REGISTRY — the Provider/Adapter pattern confirmed in the
@@ -33,22 +33,37 @@ const manualP2PInr = {
   createWithdrawal: ({ userId, tokenAmount }) => createWithdrawalOrder(userId, tokenAmount),
 };
 
-// ── USDT_TRC20 — declared, inactive ──────────────────────────────────────────
-// Deposit-only USDT (TRC20) per the 2026-07 direction; config fields exist
-// on the platform already. Activating requires the USDT Treasury build
-// (address management, chain confirmation watching, INR-peg conversion at
-// the fixed 1:1 token rate) — tracked in docs/governance/04-GOVERNANCE.md. Until then the
-// adapter exists so the registry, not scattered route code, is where USDT
-// lands.
-const usdtTrc20 = {
-  code: 'USDT_TRC20',
-  label: 'USDT (TRC20)',
+// ── USDT — merchant-served, deposit only ────────────────────────────────────
+//
+// There is no payment processor in this rail and no webhook. A USDT buy is an
+// ORDINARY order assigned to a USDT merchant, exactly as an INR buy is assigned
+// to an INR merchant: the player is shown that merchant's wallet address on the
+// chain they chose, sends the USDT, and submits the transaction hash. The same
+// assignment, the same timers, the same dispute machinery.
+//
+// So this adapter delegates to `createDepositOrder` like the INR one. The
+// difference is the CURRENCY on the order, which is what routes it to a USDT
+// merchant and what makes the denomination and chain rules apply.
+//
+// Deposit-only, per the 2026-07 direction: a player buys tokens with USDT and
+// never sells back into it. `capabilities.withdrawal` is false AND the method
+// throws, so the rule is a property of the adapter rather than something every
+// caller has to remember.
+const usdt = {
+  code: 'USDT',
+  label: 'USDT (merchant)',
   currency: 'USDT',
-  kind: 'CRYPTO',
-  active: false,
+  kind: 'P2P',
+  active: true,
   capabilities: { deposit: true, withdrawal: false },
-  createDeposit:    () => { throw Object.assign(new Error('USDT deposits are not live yet.'), { status: 503 }); },
-  createWithdrawal: () => { throw Object.assign(new Error('USDT withdrawals are not supported.'), { status: 400 }); },
+  createDeposit:    ({ userId, tokenAmount, usdtChain }) =>
+    createDepositOrder(userId, tokenAmount, { currency: 'USDT', usdtChain }),
+  createWithdrawal: () => {
+    throw Object.assign(
+      new Error('USDT withdrawals are not supported. Withdraw in INR.'),
+      { status: 400, code: 'USDT_WITHDRAWAL_UNSUPPORTED' },
+    );
+  },
 };
 
 // ── PAYMENT_GATEWAY — declared, inactive ─────────────────────────────────────
@@ -68,7 +83,7 @@ const paymentGateway = {
 
 const PROVIDERS = Object.freeze({
   [manualP2PInr.code]: manualP2PInr,
-  [usdtTrc20.code]: usdtTrc20,
+  [usdt.code]: usdt,
   [paymentGateway.code]: paymentGateway,
 });
 

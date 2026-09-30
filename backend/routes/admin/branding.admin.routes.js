@@ -1,11 +1,14 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /** branding.admin.routes.js — Branding config, CDN images, app assets */
-import { express, authenticate, isAdmin, isAdminOrSubAdmin } from './_adminShared.js';
+import {
+  authenticate, express, hasPermission, isAdmin, isAdminOrSubAdmin,
+} from './_adminShared.js';
 import { db } from '#db';
 import { brandingPayload, broadcastBranding } from '../../domains/branding/brandingPayload.js';
-import { generateBrandingUploadUrl, isS3Configured, uploadBufferToS3, deleteFile } from '../../services/cdn.service.js';
+import { generateBrandingUploadUrl, isS3Configured, uploadBufferToS3, deleteFile, verifyUploadedObject } from '../../services/cdn.service.js';
 import path_node from 'path';
 import fs_node from 'fs';
+import { serverError } from '../../shared/httpError.js';
 
 const router = express.Router();
 
@@ -149,7 +152,7 @@ router.post('/branding/images', authenticate, isAdmin, async (req, res) => {
 // Read all CDN images from CDNImage model.  Previously read from
 // SystemConfig.cdnImages — a completely separate collection — so images saved
 // via confirm-upload (logo flow) never appeared here.  Now unified.
-router.get('/branding/images', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/branding/images', authenticate, hasPermission('canManageContent'), async (req, res) => {
   try {
     const { category } = req.query;
     const images = await db.content.listImages({ category: category || null });
@@ -247,8 +250,7 @@ router.post('/branding/upload-url', authenticate, isAdmin, async (req, res) => {
       expiresAt: result.expiresAt,
     });
   } catch (error) {
-    console.error('❌ Branding upload-url error:', error);
-    res.status(500).json({ success: false, message: error.message || 'Failed to generate upload URL' });
+    return serverError(res, error, 'POST /branding/upload-url', 'Failed to generate upload URL');
   }
 });
 
@@ -259,8 +261,28 @@ router.post('/branding/confirm-upload', authenticate, isAdmin, async (req, res) 
     if (!fileKey || !cdnUrl) {
       return res.status(400).json({ success: false, message: 'fileKey and cdnUrl are required' });
     }
+    // ── The URL recorded must be the object that was uploaded ─────────────
+    // Both values came from the request body and were stored unread, so this
+    // handler recorded whatever it was handed — a link to another site included
+    // — and branding renders in ALL THREE panels. `verifyUploadedObject` is the
+    // check that already existed for the profile-picture path and was simply
+    // not wired here: it re-derives the URL from the key and refuses a
+    // mismatch, confirms the object carries this admin's id and the right
+    // category prefix, and reads the first 8 KB to check the bytes are the type
+    // they claim to be.
+    let verified;
+    try {
+      // The key is `branding/<category>/…` (generateBrandingUploadUrl), so the
+      // prefix asserted is `branding` — the category inside it is the admin's
+      // own choice and not a trust boundary.
+      verified = await verifyUploadedObject({
+        fileKey, cdnUrl, expectedUserId: String(req.user.userId), expectedCategory: 'branding',
+      });
+    } catch (e) {
+      return res.status(400).json({ success: false, message: e.message });
+    }
     const image = await db.content.addImage({
-      url:        cdnUrl,
+      url:        verified.cdnUrl,
       title:      title || fileKey,
       category:   category || 'logo',
       fileSize:   fileSize || null,
@@ -281,8 +303,7 @@ router.post('/branding/confirm-upload', authenticate, isAdmin, async (req, res) 
     }
     res.json({ success: true, image, cdnUrl, fileKey });
   } catch (error) {
-    console.error('❌ Branding confirm-upload error:', error);
-    res.status(500).json({ success: false, message: error.message || 'Failed to confirm upload' });
+    return serverError(res, error, 'POST /branding/confirm-upload', 'Failed to confirm upload');
   }
 });
 

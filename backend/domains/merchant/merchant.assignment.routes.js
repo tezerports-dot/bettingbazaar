@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * domains/merchant/merchant.assignment.routes.js — who gets handed a player's
  * money.
@@ -21,43 +21,37 @@
  * enforced server-side in every assign and reassign endpoint here, not just in
  * the list the picker renders.
  */
-import { express, authenticate, isAdmin, isAdminOrSubAdmin, isAdminOrSubAdminOrQueueManager } from '../../routes/admin/_adminShared.js';
+import { express, authenticate, isAdmin, isAdminOrSubAdmin, isAdminOrSubAdminOrQueueManager, hasPermission } from '../../routes/admin/_adminShared.js';
 import { db } from '#db';
 // The order state machine — the expected state is in the update's filter, so
 // two admins assigning the same order produce one winner, not a silent overwrite.
 import { assignOrder, reassignOrder } from '../payment/orderLifecycle.service.js';
+// The ONE builder of a merchant snapshot, and the ONE way a merchant is named
+// to a player. Both used to be duplicated in this file.
+import { buildMerchantSnapshot, merchantDisplayRef } from '../payment/paymentProcessing.service.js';
+// The one shape a player receives — a payment link and an opaque reference.
+import { toPlayerOrderView } from '../payment/playerOrderView.js';
 import { emitAdminUpdate, emitMerchantUpdate, emitOrderUpdate } from '../notification/realtimeEmitters.js';
 // Inventory eligibility is a MONEY read, so it reads the wallet.
-import { getMerchantTokenBalance } from '#db/repositories/merchantWallets.js';
-import { getAvailablePaiseFor } from '#db/repositories/merchantWallets.core.js';
+import {
+  holdForOrder as holdDepositTokens,
+  releaseForOrder as releaseDepositHold,
+} from './depositEscrow.service.js';
+import { getAvailablePaiseFor, getSpendablePaiseFor } from '#db/repositories/merchantWallets.core.js';
 import { paiseToRupees } from '../../shared/money.js';
 import { getSystemConfig } from '#db/repositories/config.js';
 
 const router = express.Router();
 
-// ─── Helper: build merchantSnapshot from a merchant row ──────────────────────
-// PRIVACY FIX 2026-07-05: merchantName was `name || username`, which in this
-// data is literally the merchant's own mobile number — every user assigned an
-// order could see the merchant's real phone number. Replaced with a persisted,
-// non-identifying public reference.
-function merchantDisplayRef(merchant) {
-  return `Merchant #${merchant.publicRef}`;
-}
-
-function buildSnapshot(merchant, expiresAt) {
-  return {
-    merchantId:    merchant.merchantId,
-    merchantName:  merchantDisplayRef(merchant),
-    upiId:         merchant.bankDetails?.upiId              || '',
-    bankName:      merchant.bankDetails?.bankName           || '',
-    accountNo:     merchant.bankDetails?.accountNo          || '',
-    ifsc:          merchant.bankDetails?.ifsc               || '',
-    accountHolder: merchant.bankDetails?.accountHolderName  || '',
-    usdtAddress:   merchant.usdtWalletAddress               || '',
-    snapshotAt:    new Date(),
-    expiresAt,
-  };
-}
+/*
+ * ── The snapshot builder lived here TWICE ───────────────────────────────────
+ * A second `buildSnapshot` and a second `merchantDisplayRef` stood in this file
+ * beside the pair in `paymentProcessing.service.js`, and they had already
+ * drifted: this copy never wrote `merchantType`, so an order
+ * assigned by an admin carried a different snapshot from the same order
+ * assigned automatically. §1 — one owner per value. Both now come from the
+ * service that assigns orders on its own.
+ */
 
 /**
  * The manual-assignment pool guard, in one place.
@@ -94,14 +88,29 @@ async function poolRefusal(merchantId, action = 'assigning') {
  * a merchant handed an order they cannot fund leaves a player waiting for a
  * payment that will never arrive.
  */
-async function inventoryRefusal(merchantId, tokenAmount) {
-  const balance = await getMerchantTokenBalance(merchantId);
-  if (balance >= tokenAmount) return null;
+async function inventoryRefusal(order, merchantId, { actor = 'admin' } = {}) {
+  // A WITHDRAWAL moves tokens TOWARD the merchant. There is nothing of theirs
+  // to hold, so there is nothing to refuse on.
+  if (order.type !== 'DEPOSIT') return null;
+
+  // ── This no longer READS a balance; it TAKES the tokens ──────────────────
+  // It used to read a number and let the caller assign in a separate
+  // statement — a snapshot, and a queue manager assigning by hand is the one
+  // path with no concurrency query behind it. Taking the hold IS the check,
+  // and its refusal is in the reserve leg's own `UPDATE … WHERE` under the
+  // merchant's row lock, so two admins assigning at once cannot both win.
+  //
+  // The caller must release it if what follows fails. Every caller does, and
+  // `findUnheldDepositOrders` is the net under the one that some day will not.
+  const held = await holdDepositTokens(order, merchantId, { actor });
+  if (held.ok) return null;
   return {
     status: 400,
-    message: `Merchant has insufficient inventory (${balance} < ${tokenAmount}). Top up merchant inventory first.`,
-    merchantBalance: balance,
-    required: tokenAmount,
+    message: held.reason === 'held_by_another'
+      ? 'Another merchant already holds the tokens for this order. Release that assignment first.'
+      : `Merchant cannot hold ${order.tokenAmount} tokens for this order. `
+        + 'Top up their inventory, or wait for the buy orders they are already serving to finish.',
+    required: order.tokenAmount,
   };
 }
 
@@ -116,13 +125,17 @@ function announceAssignment(order, merchant, expiresAt) {
     expiresAt,
     server_ts:   Date.now(),
   });
+  // `payTo`, not the snapshot. This pushed the whole thing to the PLAYER's
+  // socket — the merchant's UPI handle, their QR image, their bank account
+  // number, IFSC and the name on it. A player reads a payment link and an
+  // opaque reference; who they are paying is not theirs to have.
   emitOrderUpdate(String(order.userId), 'order_assigned', {
-    orderId:          order.orderId,
-    _id:              order.orderId,
-    status:           'ASSIGNED',
-    merchantSnapshot: order.merchantSnapshot,  // user reads payment details from snapshot
+    orderId:   order.orderId,
+    _id:       order.orderId,
+    status:    'ASSIGNED',
+    payTo:     toPlayerOrderView(order).payTo ?? null,
     expiresAt,
-    server_ts:        Date.now(),
+    server_ts: Date.now(),
   });
   emitAdminUpdate('queue_order_update', { orderId: order.orderId, status: 'ASSIGNED' });
 }
@@ -173,9 +186,6 @@ router.post('/payment-orders/:id/reassign', authenticate, isAdminOrSubAdminOrQue
     const pooled = await poolRefusal(merchant.merchantId, 'reassigning');
     if (pooled) return res.status(pooled.status).json({ success: false, ...pooled });
 
-    const funded = await inventoryRefusal(merchant.merchantId, order.tokenAmount);
-    if (funded) return res.status(funded.status).json({ success: false, ...funded });
-
     const expiresAt = new Date(Date.now() + ASSIGN_WINDOW_MS);
 
     // Captured before the move, for the audit entry below: afterwards the row
@@ -184,17 +194,70 @@ router.post('/payment-orders/:id/reassign', authenticate, isAdminOrSubAdminOrQue
     const previousMerchantId = order.merchantId;
     const previousState = order.status;
 
+    // ── The hold has to CHANGE HANDS, and only one may exist at a time ──────
+    // `merchant_settlements_one_live_deposit` permits exactly one live hold per
+    // order, so taking the new merchant's before releasing the old one is
+    // refused outright — the whole point of the index. The old hold therefore
+    // comes off first, which opens a gap where the order is assigned to a
+    // merchant holding nothing.
+    //
+    // That gap is closed by COMPENSATION rather than by hoping: every failure
+    // after the release puts the previous merchant's hold back. A reassignment
+    // that is refused must leave the order exactly as it found it, funded by
+    // the merchant who still has it — an admin pressing a button that fails is
+    // the most ordinary thing on this screen, and it must not be the thing that
+    // strips a live order of its funding.
+    const restorePreviousHold = async (why) => {
+      if (order.type !== 'DEPOSIT' || !previousMerchantId) return;
+      const back = await holdDepositTokens(order, previousMerchantId, {
+        actor: `admin:${req.user.userId}`,
+      });
+      if (!back.ok) {
+        // Loud, because the order is now live with nobody's tokens behind it.
+        // `findUnheldDepositOrders` will also see it, but an operator watching
+        // this screen should not have to wait for a sweep to learn it.
+        console.error(
+          `[reassign] ${order.orderId}: ${why}, and the previous merchant's hold `
+          + `could not be restored (${back.reason}). The order is unfunded.`,
+        );
+      }
+    };
+
+    if (order.type === 'DEPOSIT' && previousMerchantId) {
+      await releaseDepositHold(order, {
+        actor: `admin:${req.user.userId}`,
+        reason: `Reassigned away from ${previousMerchantId}`,
+      });
+    }
+
+    const funded = await inventoryRefusal(order, merchant.merchantId, {
+      actor: `admin:${req.user.userId}`,
+    });
+    if (funded) {
+      await restorePreviousHold('the new merchant could not hold the tokens');
+      return res.status(funded.status).json({ success: false, ...funded });
+    }
+
     // An assignee change, not a lifecycle move — the order stays ASSIGNED.
     const moved = await reassignOrder(order.orderId, {
       set: {
         merchantId:       merchant.merchantId,
-        merchantSnapshot: buildSnapshot(merchant, expiresAt),   // overwrite old snapshot
+        merchantSnapshot: buildMerchantSnapshot(merchant, expiresAt, order),   // overwrite old snapshot
         assignedAt:       new Date(),
         assignedBy:       req.user.userId,
         expiresAt,
       },
     });
     if (!moved.ok) {
+      // The order did not move, so the NEW merchant's hold has nothing to hold
+      // for, and the OLD merchant still has the order. Both halves are undone.
+      if (order.type === 'DEPOSIT') {
+        await releaseDepositHold(order, {
+          actor: `admin:${req.user.userId}`,
+          reason: 'Reassignment did not take',
+        });
+        await restorePreviousHold('the reassignment transition was refused');
+      }
       return res.status(409).json({ success: false, message: `Order is ${moved.status ?? 'missing'}, cannot reassign` });
     }
     Object.assign(order, moved.order);
@@ -266,7 +329,13 @@ router.get('/queue/available-merchants', authenticate, isAdminOrSubAdminOrQueueM
     // The token figure comes from the WALLET, in one batched read, because this
     // list is what a queue manager assigns from — the number they see has to be
     // the number the transfer will find.
-    const availablePaise = await getAvailablePaiseFor(merchants.map((m) => m.merchantId));
+    //
+    // SPENDABLE, because the filter below GATES an assignment (§9): a merchant
+    // whose tokens are already promised to an open buy order must not be
+    // offered as able to take another. The raw pocket is kept beside it, so a
+    // queue manager can see WHY a merchant with a healthy balance is missing
+    // from the list rather than concluding the screen is broken.
+    const spendablePaise = await getSpendablePaiseFor(merchants.map((m) => m.merchantId));
 
     const rows = merchants
       .map((m) => ({
@@ -281,15 +350,22 @@ router.get('/queue/available-merchants', authenticate, isAdminOrSubAdminOrQueueM
         // The same figure twice, the second under a name that says where it
         // came from: the filter below gates an assignment, and a reader should
         // not have to trace back to see that it reads the wallet.
-        tokenBalance: paiseToRupees(availablePaise.get(String(m.merchantId)) ?? 0),
-        walletAvailableTokens: availablePaise.has(String(m.merchantId))
-          ? paiseToRupees(availablePaise.get(String(m.merchantId)))
+        tokenBalance: paiseToRupees(spendablePaise.get(String(m.merchantId))?.spendable ?? 0),
+        walletAvailableTokens: spendablePaise.has(String(m.merchantId))
+          ? paiseToRupees(spendablePaise.get(String(m.merchantId)).spendable)
+          : null,
+        // The two halves of the figure above, so a merchant absent from this
+        // list is explainable on the screen instead of only in the database.
+        walletHeldTokens: spendablePaise.has(String(m.merchantId))
+          ? paiseToRupees(spendablePaise.get(String(m.merchantId)).available)
+          : null,
+        walletCommittedTokens: spendablePaise.has(String(m.merchantId))
+          ? paiseToRupees(spendablePaise.get(String(m.merchantId)).committed)
           : null,
         merchantStats: {
           monthlyProcessed:     m.merchantStats?.monthlyProcessed     || 0,
           totalOrdersProcessed: m.merchantStats?.totalOrdersProcessed || 0,
         },
-        limits: { minOrder: m.minOrder || 0, maxOrder: m.maxOrder || 50000 },
       }))
       .filter((m) => {
         if (amount <= 0) return true;
@@ -297,10 +373,7 @@ router.get('/queue/available-merchants', authenticate, isAdminOrSubAdminOrQueueM
         // seen must not be offered for an assignment. `null` here is "no wallet
         // row", which is a different thing from a zero balance.
         if (m.walletAvailableTokens === null) return false;
-        if (m.walletAvailableTokens < amount) return false;
-        if (amount > m.limits.maxOrder) return false;
-        if (m.limits.minOrder > 0 && amount < m.limits.minOrder) return false;
-        return true;
+        return m.walletAvailableTokens >= amount;
       })
       .sort((a, b) => b.walletAvailableTokens - a.walletAvailableTokens);
 
@@ -501,7 +574,9 @@ router.post('/queue/assign/:orderId', authenticate, isAdminOrSubAdminOrQueueMana
     const pooled = await poolRefusal(merchant.merchantId, 'assigning');
     if (pooled) return res.status(pooled.status).json({ success: false, ...pooled });
 
-    const funded = await inventoryRefusal(merchant.merchantId, order.tokenAmount);
+    const funded = await inventoryRefusal(order, merchant.merchantId, {
+      actor: `admin:${req.user.userId}`,
+    });
     if (funded) return res.status(funded.status).json({ success: false, ...funded });
 
     const expiresAt = new Date(Date.now() + ASSIGN_WINDOW_MS);
@@ -509,13 +584,23 @@ router.post('/queue/assign/:orderId', authenticate, isAdminOrSubAdminOrQueueMana
     const assigned = await assignOrder(order.orderId, {
       set: {
         merchantId:       merchant.merchantId,
-        merchantSnapshot: buildSnapshot(merchant, expiresAt),
+        merchantSnapshot: buildMerchantSnapshot(merchant, expiresAt, order),
         assignedAt:       new Date(),
         assignedBy:       req.user.userId,
         expiresAt,
       },
     });
     if (!assigned.ok || assigned.idempotent) {
+      // The hold taken by `inventoryRefusal` above has nothing to hold for.
+      // Released here rather than left to the sweep: the tokens are wanted by
+      // whoever the order goes to instead, and the sweep is the net under the
+      // paths that forget, not the ordinary way a hold ends.
+      if (order.type === 'DEPOSIT') {
+        await releaseDepositHold(order, {
+          actor: `admin:${req.user.userId}`,
+          reason: 'Assignment did not take',
+        });
+      }
       return res.status(409).json({
         success: false,
         message: `Order status is ${assigned.status ?? 'missing'}, cannot assign`,
@@ -549,7 +634,13 @@ router.post('/queue/assign/:orderId', authenticate, isAdminOrSubAdminOrQueueMana
 });
 
 // ─── PUT /api/admin/merchants/:merchantId/scoring — admin sets maxConcurrentOrders ──
-router.put('/merchants/:merchantId/scoring', authenticate, isAdminOrSubAdmin, async (req, res) => {
+// `canManageMerchants`, not bare `isAdminOrSubAdmin`. These caps decide how many
+// orders a merchant may hold at once, which shapes WHERE A PLAYER'S MONEY IS
+// ROUTED — and the gate below asked only whether the caller was a sub-admin,
+// never which of the nine permission keys they hold. The admin panel gates the
+// Merchants screen on this key already; the server did not, so the model was a
+// client-side control for this route (audit F-001).
+router.put('/merchants/:merchantId/scoring', authenticate, hasPermission('canManageMerchants'), async (req, res) => {
   try {
     const { maxConcurrentOrders, maxConcurrentDepositOrders, maxConcurrentWithdrawalOrders } = req.body || {};
     const patch = {};

@@ -1,5 +1,5 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
-import React, { useEffect, useState } from 'react';
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
+import React, { useEffect, useId, useState } from 'react';
 import { Plus, Trash2, Edit2, RefreshCw, Trophy, Eye, EyeOff } from 'lucide-react';
 import api from '../../services/api';
 import { Toolbar } from '../../components/design';
@@ -7,6 +7,58 @@ import toast from 'react-hot-toast';
 
 const EMPTY = { displayName:'', profilePic:'', city:'', amount:'', game:'Delhi/Bombay', badge:'', isPublic:true, sortOrder:'0', displayTime:'' };
 
+/**
+ * ── This lives at module level, and that is the whole point ────────────────
+ * It used to be `const F = …` INSIDE `FakeWinnersManager`. A component
+ * declared inside another is a NEW COMPONENT TYPE on every parent render, so
+ * React cannot reconcile it — it unmounts the old `<input>` and mounts a fresh
+ * one. Typing calls `setForm`, which renders the parent, which remounts the
+ * field, which takes the caret with it.
+ *
+ * Measured in a real browser before this was touched: typing "Rahul" into
+ * Display Name left the field holding **"R"** with focus on `<body>`. Four of
+ * five keystrokes went nowhere. The same test on `/game-providers`, whose
+ * `Field` was already at module level, kept all five and kept focus — the
+ * control case, so the cause is this and not the environment.
+ *
+ * No test could have caught it: it renders correctly, it has no failing
+ * assertion to make, and every keystroke is "handled". It needs a browser and
+ * more than one character (§28).
+ */
+const F = ({ label, value, onChange, type = 'text', ph = '' }: any) => {
+  // Per instance, stable across renders — the labels here are the operator's
+  // only way to tell eight identical text boxes apart, and a screen reader
+  // needs the association to read them out at all.
+  const id = useId();
+  return (
+    <div>
+      <label htmlFor={id} className="text-xs text-gray-400 mb-1 block">{label}</label>
+      <input id={id} type={type} value={value || ''} onChange={(e) => onChange(e.target.value)}
+        placeholder={ph} className="input w-full text-sm"/>
+    </div>
+  );
+};
+
+/**
+ * ── The id is `id`. The server has never sent an `_id` ─────────────────────
+ * `toFakeWinner` in `database/repositories/engagement.js` emits
+ * `id, displayName, profilePic, city, amount, game, badge, userId, isPublic,
+ * sortOrder, displayTime, createdBy, createdAt` — and this screen read `_id`
+ * on every one of them, so Edit, Delete and the visibility toggle all built
+ * `/api/admin/fake-winners/undefined`.
+ *
+ * That is not even a 404. The column is an INTEGER and `Number('undefined')`
+ * is NaN, so PostgreSQL refuses the parameter and the route answers **500** —
+ * which `serverError` answers with nothing (§2), so the operator gets a toast
+ * that says the platform broke and no way to tell that the id was the problem.
+ * Measured: `PUT .../undefined` -> 500, `PUT .../1` -> 200.
+ *
+ * Edit was the quiet one: `setEditId(undefined)` makes Save take the CREATE
+ * branch, so editing an entry added a second copy of it instead.
+ *
+ * §23's shape, for the third time in this panel (users, games, and here). The
+ * fix that finds every site is checking the mapper, not the interface.
+ */
 export const FakeWinnersManager: React.FC = () => {
   const [winners, setWinners] = useState<any[]>([]);
   const [form, setForm]       = useState<any>(EMPTY);
@@ -43,21 +95,13 @@ export const FakeWinnersManager: React.FC = () => {
     setForm({ displayName:w.displayName, profilePic:w.profilePic||'', city:w.city||'', amount:String(w.amount),
       game:w.game||'Delhi/Bombay', badge:w.badge||'', isPublic:w.isPublic, sortOrder:String(w.sortOrder||0),
       displayTime: w.displayTime ? new Date(w.displayTime).toISOString().slice(0,16) : '' });
-    setEditId(w._id); setShowForm(true);
+    setEditId(w.id); setShowForm(true);
   };
 
   const togglePublic = async (w:any) => {
-    await api.put(`/api/admin/fake-winners/${w._id}`, { isPublic: !w.isPublic });
+    await api.put(`/api/admin/fake-winners/${w.id}`, { isPublic: !w.isPublic });
     load();
   };
-
-  const F = ({ label, k, type='text', ph='' }:any) => (
-    <div>
-      <label className="text-xs text-gray-400 mb-1 block">{label}</label>
-      <input type={type} value={form[k]||''} onChange={e=>setForm((f:any)=>({...f,[k]:e.target.value}))}
-        placeholder={ph} className="input w-full text-sm"/>
-    </div>
-  );
 
   return (
     <div className="om-fade space-y-6">
@@ -70,17 +114,17 @@ export const FakeWinnersManager: React.FC = () => {
         <div className="card border border-yellow-500/30 space-y-4">
           <h3 className="font-semibold">{editId ? 'Edit' : 'Add'} Winner Entry</h3>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-            <F label="Display Name" k="displayName" ph="Rahul K."/>
-            <F label="Amount Won (₹)" k="amount" type="number" ph="50000"/>
-            <F label="City" k="city" ph="Mumbai"/>
-            <F label="Game" k="game" ph="Delhi/Bombay"/>
-            <F label="Badge Text" k="badge" ph="Big Win 🔥"/>
-            <F label="Sort Order (lower = first)" k="sortOrder" type="number" ph="0"/>
+            <F label="Display Name" value={form.displayName} onChange={(v: string) => setForm((f: any) => ({ ...f, displayName: v }))} ph="Rahul K."/>
+            <F label="Amount Won (₹)" value={form.amount} onChange={(v: string) => setForm((f: any) => ({ ...f, amount: v }))} type="number" ph="50000"/>
+            <F label="City" value={form.city} onChange={(v: string) => setForm((f: any) => ({ ...f, city: v }))} ph="Mumbai"/>
+            <F label="Game" value={form.game} onChange={(v: string) => setForm((f: any) => ({ ...f, game: v }))} ph="Delhi/Bombay"/>
+            <F label="Badge Text" value={form.badge} onChange={(v: string) => setForm((f: any) => ({ ...f, badge: v }))} ph="Big Win 🔥"/>
+            <F label="Sort Order (lower = first)" value={form.sortOrder} onChange={(v: string) => setForm((f: any) => ({ ...f, sortOrder: v }))} type="number" ph="0"/>
             <div className="col-span-2">
-              <F label="Profile Picture URL (CDN/S3 link)" k="profilePic" ph="https://cdn.example.com/avatar.jpg"/>
+              <F label="Profile Picture URL (CDN/S3 link)" value={form.profilePic} onChange={(v: string) => setForm((f: any) => ({ ...f, profilePic: v }))} ph="https://cdn.example.com/avatar.jpg"/>
             </div>
             <div>
-              <F label="Display Time (shown to users)" k="displayTime" type="datetime-local"/>
+              <F label="Display Time (shown to users)" value={form.displayTime} onChange={(v: string) => setForm((f: any) => ({ ...f, displayTime: v }))} type="datetime-local"/>
             </div>
             <div className="flex items-center gap-3 pt-5">
               <label className="text-sm text-gray-300">Public:</label>
@@ -101,7 +145,7 @@ export const FakeWinnersManager: React.FC = () => {
       <div className="card">
         <div className="space-y-2">
           {winners.map(w => (
-            <div key={w._id} className={`flex items-center gap-3 p-3 rounded-xl border transition-all ${w.isPublic?'border-dark-600 bg-dark-700':'border-dark-700 bg-dark-800 opacity-50'}`}>
+            <div key={w.id} className={`flex items-center gap-3 p-3 rounded-xl border transition-all ${w.isPublic?'border-dark-600 bg-dark-700':'border-dark-700 bg-dark-800 opacity-50'}`}>
               <div className="relative">
                 {w.profilePic ? <img src={w.profilePic} alt="" className="w-10 h-10 rounded-full object-cover"/> : <div className="w-10 h-10 rounded-full bg-dark-600 flex items-center justify-center text-xl">🏆</div>}
               </div>
@@ -119,11 +163,16 @@ export const FakeWinnersManager: React.FC = () => {
                 </div>
               </div>
               <div className="flex items-center gap-2">
-                <button onClick={()=>togglePublic(w)} className={`p-1.5 rounded-sm ${w.isPublic?'text-green-400 hover:text-green-300':'text-gray-600 hover:text-gray-400'}`}>
+                <button onClick={()=>togglePublic(w)}
+                  title={w.isPublic ? `Hide ${w.displayName}` : `Show ${w.displayName}`}
+                  aria-label={w.isPublic ? `Hide ${w.displayName}` : `Show ${w.displayName}`}
+                  aria-pressed={w.isPublic}
+                  className={`p-1.5 rounded-sm ${w.isPublic?'text-green-400 hover:text-green-300':'text-gray-600 hover:text-gray-400'}`}>
                   {w.isPublic ? <Eye size={15}/> : <EyeOff size={15}/>}
                 </button>
-                <button onClick={()=>edit(w)} className="p-1.5 rounded-sm text-blue-400 hover:text-blue-300"><Edit2 size={15}/></button>
-                <button onClick={()=>del(w._id)} className="p-1.5 rounded-sm text-red-400 hover:text-red-300"><Trash2 size={15}/></button>
+                <button onClick={()=>edit(w)} title={`Edit ${w.displayName}`} aria-label={`Edit ${w.displayName}`}
+                  className="p-1.5 rounded-sm text-blue-400 hover:text-blue-300"><Edit2 size={15}/></button>
+                <button onClick={()=>del(w.id)} title={`Delete ${w.displayName}`} aria-label={`Delete ${w.displayName}`} className="p-1.5 rounded-sm text-red-400 hover:text-red-300"><Trash2 size={15}/></button>
               </div>
             </div>
           ))}

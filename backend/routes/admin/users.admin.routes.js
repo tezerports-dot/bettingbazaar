@@ -1,6 +1,8 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /** users.admin.routes.js — User management, balance adjust, block/unblock, phantom, queue managers */
-import { express, authenticate, isAdmin, isAdminOrSubAdmin } from './_adminShared.js';
+import {
+  authenticate, express, hasPermission, isAdmin, isAdminOrSubAdmin,
+} from './_adminShared.js';
 import { db } from '#db';
 // Cycle-type vocabulary — phantom access is scoped to one type, or BOTH.
 import { CYCLE_TYPE_VALUES } from '../../domains/markets/cycleTypes.js';
@@ -14,6 +16,7 @@ import { randomBytes } from 'node:crypto';
 // rejection now marks a flagged player for review; it is READ here, never
 // re-declared, so editing it in System Settings changes this screen.
 import { getRiskRules } from '../../domains/risk/riskValidation.service.js';
+import { notify } from '../../domains/communication/communication.service.js';
 
 const router = express.Router();
 
@@ -40,58 +43,38 @@ function parseCursor(raw) {
 }
 
 
-/**
- * POST /api/admin/users/:userId/adjust-balance
+/*
+ * POST /api/admin/users/:userId/adjust-balance was HERE, and is gone.
  *
- * The affordability check used to read `user[field]` off the account document
- * while the debit moved `wallets` — two different numbers, and the guard held
- * the one that was not going to change. It now happens inside `adminAdjustment`
- * against the locked wallet row, so what this route does is translate a signed
- * rupee amount into a CREDIT/DEBIT and render the answer.
+ * It was a SECOND admin route adjusting a player's balance, alongside
+ * `POST /api/admin/balance-adjust` in routes/retention.routes.js. Both were
+ * live and both were reachable from the admin panel — the Users screen's inline
+ * modal called this one, the dedicated Balance Adjustment screen calls the
+ * other — so the same decision took different paths depending on which screen
+ * the operator happened to be on.
  *
- * The balances echoed back are the ones the movement itself reported, not a
- * re-read: a re-read can pick up a later movement and attribute it to this one.
+ * The MONEY was never in doubt: both handed off to `adminAdjustment`, the one
+ * writer (§9). What differed was everything around it, and it differed
+ * silently:
+ *
+ *   reason        REQUIRED there; optional here, defaulting to the string
+ *                 "Admin adjustment" — so an audit row could record a money
+ *                 movement with nothing on it explaining why.
+ *   pockets       validated there against `ADJUSTABLE_FIELDS`, the writer's own
+ *                 list, under a comment saying exactly why it must not be
+ *                 copied. Here it was a hand-written ternary of two — a second
+ *                 copy, free to drift from the writer that decides.
+ *   bonus record  written there for a CREDIT, keyed on the adjustment id.
+ *                 Not written here at all, so a credit issued from the Users
+ *                 screen never appeared in engagement reporting and one issued
+ *                 from the Balance Adjustment screen did.
+ *
+ * §5, in the form that section says it keeps being violated: the same payload
+ * assembled in two places drifts, and it drifts silently. The surviving route
+ * takes the realtime emit this one had — that half was this route's own
+ * improvement and the reason it could not simply be deleted.
  */
-router.post('/users/:userId/adjust-balance', authenticate, isAdmin, async (req, res) => {
-  try {
-    const { amount, reason, walletType } = req.body;
-    const userId = req.params.userId;
-    if (!Number.isFinite(Number(amount)) || Number(amount) === 0) {
-      return res.status(400).json({ success: false, message: 'amount must be a non-zero number' });
-    }
-    const user = await getUser(userId);
-    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
-
-    const field = (walletType === 'winnings' || walletType === 'winningsBalance')
-      ? 'winningsBalance' : 'depositBalance';
-    const type = Number(amount) >= 0 ? 'CREDIT' : 'DEBIT';
-
-    const result = await adminAdjustment(
-      req.user.userId, userId, type, field, Math.abs(Number(amount)),
-      reason || 'Admin adjustment', randomBytes(12).toString('hex'),
-    );
-    if (!result.ok) {
-      return res.status(400).json({
-        success: false,
-        message: `Insufficient ${field}: have ₹${result.availableRupees}`,
-      });
-    }
-
-    const newBalance = {
-      depositBalance:  result.balances?.depositBalance  ?? 0,
-      winningsBalance: result.balances?.winningsBalance ?? 0,
-    };
-    if (global.io) {
-      global.io.to(`user-${userId}`).emit('user_update', { ...newBalance, server_ts: Date.now() });
-      global.io.to('admin-room').emit('admin_stats_delta', { type: 'BALANCE_ADJUSTED', server_ts: Date.now() });
-    }
-    res.json({ success: true, newBalance, adjustment: result.adjustment });
-  } catch (error) {
-    console.error('Adjust balance error:', error);
-    res.status(500).json({ success: false, message: 'Failed to adjust balance' });
-  }
-});
-router.get('/users', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/users', authenticate, hasPermission('canManageUsers'), async (req, res) => {
   try {
     const { status, kycStatus, search, page = 1, limit = 50, cursor } = req.query;
 
@@ -156,7 +139,7 @@ router.get('/users', authenticate, isAdminOrSubAdmin, async (req, res) => {
  * read from the risk rules, not duplicated, so the number an operator edits in
  * System Settings is the number this screen sorts by.
  */
-router.get('/users/flagged', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/users/flagged', authenticate, hasPermission('canManageUsers'), async (req, res) => {
   try {
     const [players, rules] = await Promise.all([
       db.users.listFlaggedPlayers({ limit: Math.min(Number(req.query.limit) || 100, 200) }),
@@ -218,7 +201,7 @@ router.post('/users/:userId/clear-flag', authenticate, isAdmin, async (req, res)
 });
 
 // Get single user
-router.get('/users/:userId', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/users/:userId', authenticate, hasPermission('canManageUsers'), async (req, res) => {
   try {
     const user = await db.users.getUser(req.params.userId);
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
@@ -317,6 +300,31 @@ router.put('/users/:userId/block', authenticate, isAdmin, async (req, res) => {
       details: { reason },
     });
 
+    // ── TELL THE PLAYER ────────────────────────────────────────────────────
+    // The audit row above is for the platform; it is not readable by the
+    // person it is about. Without this the player simply finds every screen
+    // answering 403 with no explanation anywhere, and the reason the admin was
+    // required to type reaches nobody.
+    //
+    // Two comments in this repository — on `GET /user/notifications` and in
+    // `NotificationBell` — already describe this exact event as the live
+    // writer into the inbox: "a player was blocked, the system carefully
+    // recorded the explanation meant for them, and they could never see it."
+    // The read side was then built and the bell mounted. But the write was
+    // never here: blocking wrote an audit row and nothing else, which a live
+    // run confirmed (zero notification rows for a freshly blocked account).
+    // Both halves believed the other one did it (§28).
+    //
+    // Failure is swallowed: an inbox write must not undo a block that has
+    // already committed (§21 — a write that follows a commit must not be able
+    // to fail).
+    await notify({
+      userId: String(user.userId),
+      type: 'ALERT',
+      title: 'Your account has been suspended',
+      message: `Reason: ${reason}. Contact support if you believe this is a mistake.`,
+    }).catch(() => {});
+
     res.json({ success: true, message: 'User blocked successfully' });
   } catch (error) {
     console.error('Block user error:', error);
@@ -361,6 +369,17 @@ router.put('/users/:userId/unblock', authenticate, isAdmin, async (req, res) => 
       targetType: 'User', targetId: String(user.userId),
       details: { resetWarnings },
     });
+
+    // The other half of the block notice. A player who was told their account
+    // was suspended has to be told when it is not, or the inbox leaves them
+    // reading a suspension that no longer applies. Swallowed for the same
+    // reason as the block's (§21).
+    await notify({
+      userId: String(user.userId),
+      type: 'INFO',
+      title: 'Your account has been restored',
+      message: 'Your account is active again. You can deposit, play and withdraw as before.',
+    }).catch(() => {});
 
     res.json({
       success: true,
@@ -597,7 +616,7 @@ router.post('/users/:userId/queue-manager', authenticate, isAdmin, async (req, r
  * TypeError — so this endpoint threw for every player who had ever placed a
  * funding order, which is every player who has ever deposited.
  */
-router.get('/users/:userId/transactions', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/users/:userId/transactions', authenticate, hasPermission('canManageUsers'), async (req, res) => {
   try {
     const { userId } = req.params;
     const { page = 1, limit = 50 } = req.query;

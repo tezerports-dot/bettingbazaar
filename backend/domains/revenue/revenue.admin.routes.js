@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * revenue.admin.routes.js — admin surface of the Revenue & Settlement Platform
  * (BBEPS Phase 007). Mounted at /api/admin via routes/admin/index.js.
@@ -8,7 +8,9 @@
  * balance, idempotency, the platform-funded-only bonus rule, the
  * distributable-revenue cap) is enforced in the service, never here.
  */
-import { express, authenticate, isAdmin, isAdminOrSubAdmin } from '../../routes/admin/_adminShared.js';
+import {
+  authenticate, express, hasPermission, isAdmin, isAdminOrSubAdmin,
+} from '../../routes/admin/_adminShared.js';
 import { db } from '#db';
 import {
   getTrialBalance,
@@ -23,7 +25,7 @@ const router = express.Router();
 
 // GET /api/admin/revenue/summary — trial balance, distributable revenue,
 // bonus pool balance, ledger integrity check.
-router.get('/revenue/summary', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/revenue/summary', authenticate, hasPermission('canViewAnalytics'), async (req, res) => {
   try {
     const [trial, distributableMinor, bonusPoolMinor] = await Promise.all([
       getTrialBalance(),
@@ -54,7 +56,7 @@ router.get('/revenue/summary', authenticate, isAdminOrSubAdmin, async (req, res)
 });
 
 // GET /api/admin/revenue/ledger?page=&limit=&eventType= — paginated journal.
-router.get('/revenue/ledger', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/revenue/ledger', authenticate, hasPermission('canViewAnalytics'), async (req, res) => {
   try {
     const page  = Math.max(1, parseInt(req.query.page) || 1);
     const limit = Math.min(200, Math.max(1, parseInt(req.query.limit) || 50));

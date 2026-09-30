@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file.
+// GOVERNANCE: Read CLAUDE.md before editing this file.
 /**
  * repositories/depositPolicy.js — how a deposit is split between the player's
  * spendable balance and the platform reserve.

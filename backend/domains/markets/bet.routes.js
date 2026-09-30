@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 
 
 import express from 'express';
@@ -488,6 +488,19 @@ router.post('/place', authenticate, requireLinkedKyc, requireChannelMembership({
       totalDelhi: realD + phantomD,
       totalBombay: realB + phantomB,
     };
+    // Named in THIS scope, because the broadcast below reads them as bare
+    // identifiers. It used to, without this line: `totalDelhi`, `totalBombay`
+    // and `realNow` existed only in the PHANTOM handler further down, and this
+    // block was written against that shape. Every real bet therefore threw
+    // `ReferenceError: totalDelhi is not defined` — AFTER the stake had been
+    // locked and committed.
+    //
+    // §21 exactly: a write that follows a commit and is allowed to fail. The
+    // money moved, the handler's catch answered "Failed to place bet", and the
+    // player watched ₹100 leave their balance while being told nothing had
+    // happened. The bet was real and settled normally; only the person who
+    // placed it did not know.
+    const { totalDelhi, totalBombay } = updatedCycle;
 
     {
       // PUBLIC pool update — coalesced. Instead of fanning a `bet_placed` out to
@@ -508,8 +521,8 @@ router.post('/place', authenticate, requireLinkedKyc, requireChannelMembership({
         side,
         amount,
         cycleType:        cycle.type,
-        newRealDelhi:     realNow.realDelhi,
-        newRealBombay:    realNow.realBombay,
+        newRealDelhi:     realD,
+        newRealBombay:    realB,
         newPhantomDelhi:  updatedCycle.phantomDelhi,
         newPhantomBombay: updatedCycle.phantomBombay,
         newTotalDelhi:    totalDelhi,

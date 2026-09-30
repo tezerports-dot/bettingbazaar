@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * routes/admin/index.js
  * Aggregates all admin domain sub-routers into a single Express router.
@@ -23,9 +23,10 @@ import cyclesRoutes     from './cycles.admin.routes.js';
 import systemRoutes     from './system.admin.routes.js';
 import auditRoutes      from './audit.admin.routes.js';
 import depositPolicyRoutes from '../../domains/configuration/depositPolicy.admin.routes.js';
-import merchantBonusPolicyRoutes from '../../domains/configuration/merchantBonusPolicy.admin.routes.js';
+import merchantCommissionPolicyRoutes from '../../domains/configuration/merchantCommissionPolicy.admin.routes.js';
 import revenueRoutes    from '../../domains/revenue/revenue.admin.routes.js';
 import merchantPlatformRoutes from '../../domains/merchant/merchantPlatform.admin.routes.js';
+import paymentModeRoutes from '../../domains/configuration/paymentMode.admin.routes.js';
 // Telegram config (replaceable bot/channel), bulk KYC, referral disbursal.
 import telegramAdminRoutes    from './telegram.admin.routes.js';
 import communicationRoutes from '../../domains/communication/communication.admin.routes.js';
@@ -56,9 +57,10 @@ router.use('/', cyclesRoutes);
 router.use('/', systemRoutes);
 router.use('/', auditRoutes);
 router.use('/', depositPolicyRoutes);
-router.use('/', merchantBonusPolicyRoutes);
+router.use('/', merchantCommissionPolicyRoutes);
 router.use('/', revenueRoutes);
 router.use('/', merchantPlatformRoutes);
+router.use('/', paymentModeRoutes);
 router.use('/', telegramAdminRoutes);
 router.use('/', communicationRoutes);
 router.use('/', operationsRoutes);

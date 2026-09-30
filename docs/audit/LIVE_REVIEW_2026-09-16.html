@@ -1,0 +1,971 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!--
+  GOVERNANCE: Read CLAUDE.md before editing this file.
+
+  A RECORD of one live review run, not a rule and not a spec. It states what was
+  driven against a real server on 2026-09-16, what the before/after values were,
+  and what was left untouched. CLAUDE.md §29 is the reason it exists in this
+  form: "answer with what was checked and what was NOT".
+
+  Do not update it to stay current — it is dated evidence. A later run writes a
+  later file.
+-->
+<title>BettingBazaar Live Review</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Source+Sans+3:ital,wght@0,400;0,600;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+  :root {
+    --ink:      #14171C;
+    --ink-2:    #4A5462;
+    --ink-3:    #77808E;
+    --paper:    #F4F6F8;
+    --surface:  #FFFFFF;
+    --surface-2:#EDF0F4;
+    --rule:     #D7DDE5;
+    --rule-2:   #C2CAD6;
+    --brass:    #7E6210;
+    --brass-bg: #F2EBD6;
+    --fixed:    #13613C;
+    --fixed-bg: #DDF0E5;
+    --open:     #8C520A;
+    --open-bg:  #F7E9D4;
+    --crit:     #9C1F1F;
+    --crit-bg:  #F7DEDE;
+    --none:     #3D5486;
+    --none-bg:  #E2E8F5;
+
+    --f-display: 'Archivo', 'Helvetica Neue', Arial, sans-serif;
+    --f-body:    'Source Sans 3', system-ui, -apple-system, sans-serif;
+    --f-mono:    'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ink:      #E4E8EE;
+      --ink-2:    #A3ADBB;
+      --ink-3:    #79838F;
+      --paper:    #0E1115;
+      --surface:  #161A20;
+      --surface-2:#1E242C;
+      --rule:     #2B323C;
+      --rule-2:   #3A434F;
+      --brass:    #D4AF37;
+      --brass-bg: #2E2712;
+      --fixed:    #56C08B;
+      --fixed-bg: #13291F;
+      --open:     #E0A244;
+      --open-bg:  #2E2313;
+      --crit:     #E8736B;
+      --crit-bg:  #2E1717;
+      --none:     #8FA7DC;
+      --none-bg:  #1A2133;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ink:      #E4E8EE;
+    --ink-2:    #A3ADBB;
+    --ink-3:    #79838F;
+    --paper:    #0E1115;
+    --surface:  #161A20;
+    --surface-2:#1E242C;
+    --rule:     #2B323C;
+    --rule-2:   #3A434F;
+    --brass:    #D4AF37;
+    --brass-bg: #2E2712;
+    --fixed:    #56C08B;
+    --fixed-bg: #13291F;
+    --open:     #E0A244;
+    --open-bg:  #2E2313;
+    --crit:     #E8736B;
+    --crit-bg:  #2E1717;
+    --none:     #8FA7DC;
+    --none-bg:  #1A2133;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--f-body);
+    font-size: 16px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding-inline: 20px; padding-block: 0 72px; }
+
+  /* ── Masthead ───────────────────────────────────────────────── */
+  header.mast {
+    border-bottom: 2px solid var(--ink);
+    padding-block: 40px 18px;
+    margin-bottom: 34px;
+  }
+  .eyebrow {
+    font-family: var(--f-mono);
+    font-size: 11px; font-weight: 600;
+    letter-spacing: .14em; text-transform: uppercase;
+    color: var(--brass);
+    margin-bottom: 12px;
+  }
+  h1 {
+    font-family: var(--f-display); font-weight: 700;
+    font-size: clamp(30px, 5.2vw, 46px); line-height: 1.06;
+    letter-spacing: -.02em; margin: 0 0 14px; text-wrap: balance;
+  }
+  .standfirst { font-size: 18px; color: var(--ink-2); max-width: 62ch; margin: 0; }
+  .runinfo {
+    display: flex; flex-wrap: wrap; gap: 6px 22px;
+    font-family: var(--f-mono); font-size: 11.5px; color: var(--ink-3);
+    margin-top: 18px;
+  }
+  .runinfo b { color: var(--ink-2); font-weight: 600; }
+
+  /* ── Sections ───────────────────────────────────────────────── */
+  section { margin-block: 46px; scroll-margin-top: 20px; }
+  h2 {
+    font-family: var(--f-display); font-weight: 700;
+    font-size: 24px; letter-spacing: -.01em;
+    margin: 0 0 6px; padding-bottom: 8px;
+    border-bottom: 1px solid var(--rule-2);
+    display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+  }
+  h2 .count {
+    font-family: var(--f-mono); font-size: 12px; font-weight: 400;
+    color: var(--ink-3); letter-spacing: 0;
+  }
+  .lede { color: var(--ink-2); max-width: 68ch; margin: 10px 0 22px; }
+  h3 {
+    font-family: var(--f-display); font-weight: 600; font-size: 17px;
+    margin: 30px 0 10px; letter-spacing: -.005em;
+  }
+
+  /* ── Verdict strip ──────────────────────────────────────────── */
+  .verdict {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 1px; background: var(--rule); border: 1px solid var(--rule);
+    margin-bottom: 8px;
+  }
+  .vcell { background: var(--surface); padding: 14px 16px; }
+  .vnum {
+    font-family: var(--f-mono); font-weight: 600;
+    font-size: 25px; line-height: 1.1; font-variant-numeric: tabular-nums;
+  }
+  .vlabel {
+    font-size: 12px; color: var(--ink-3); margin-top: 3px;
+    letter-spacing: .02em;
+  }
+  .vcell.ok   .vnum { color: var(--fixed); }
+  .vcell.warn .vnum { color: var(--open); }
+
+  /* ── Finding blocks ─────────────────────────────────────────── */
+  .finding {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-left: 4px solid var(--crit);
+    margin-bottom: 18px;
+  }
+  .finding.sev-high { border-left-color: var(--crit); }
+  .finding.sev-med  { border-left-color: var(--open); }
+  .finding.sev-low  { border-left-color: var(--none); }
+  .fhead { padding: 13px 18px 11px; border-bottom: 1px solid var(--rule); }
+  .ftitle {
+    font-family: var(--f-display); font-weight: 600; font-size: 16.5px;
+    margin: 0 0 5px; letter-spacing: -.005em;
+  }
+  .fmeta {
+    font-family: var(--f-mono); font-size: 11px; color: var(--ink-3);
+    display: flex; flex-wrap: wrap; gap: 4px 14px;
+  }
+  .fbody { padding: 0; }
+  .ba { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--rule); }
+  @media (max-width: 660px) { .ba { grid-template-columns: 1fr; } }
+  .ba > div { background: var(--surface); padding: 13px 18px 15px; }
+  .balabel {
+    font-family: var(--f-mono); font-size: 10.5px; font-weight: 600;
+    letter-spacing: .12em; text-transform: uppercase;
+    margin-bottom: 7px;
+  }
+  .was .balabel { color: var(--crit); }
+  .now .balabel { color: var(--fixed); }
+  .ba p { margin: 0 0 8px; font-size: 14.5px; color: var(--ink-2); }
+  .ba p:last-child { margin-bottom: 0; }
+  pre.ev {
+    font-family: var(--f-mono); font-size: 11.5px; line-height: 1.6;
+    background: var(--surface-2); border: 1px solid var(--rule);
+    padding: 9px 11px; margin: 0 0 8px; overflow-x: auto;
+    white-space: pre; color: var(--ink);
+  }
+  pre.ev:last-child { margin-bottom: 0; }
+  .impact {
+    padding: 11px 18px; background: var(--surface-2);
+    border-top: 1px solid var(--rule);
+    font-size: 14px; color: var(--ink-2);
+  }
+  .impact b { color: var(--ink); font-weight: 600; }
+
+  /* ── Tables ─────────────────────────────────────────────────── */
+  .tw { overflow-x: auto; border: 1px solid var(--rule); background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; min-width: 560px; font-size: 14px; }
+  th {
+    font-family: var(--f-mono); font-size: 10.5px; font-weight: 600;
+    letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3);
+    text-align: left; padding: 10px 14px;
+    border-bottom: 1px solid var(--rule-2); background: var(--surface-2);
+    white-space: nowrap;
+  }
+  td { padding: 9px 14px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  tr:last-child td { border-bottom: 0; }
+  td.mono, th.mono { font-family: var(--f-mono); font-size: 12px; font-variant-numeric: tabular-nums; }
+  td.num { text-align: right; font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+
+  .pill {
+    display: inline-block; font-family: var(--f-mono);
+    font-size: 10px; font-weight: 600; letter-spacing: .07em;
+    text-transform: uppercase; padding: 2.5px 7px; white-space: nowrap;
+    border: 1px solid transparent;
+  }
+  .p-fixed { color: var(--fixed); background: var(--fixed-bg); border-color: var(--fixed); }
+  .p-ok    { color: var(--none);  background: var(--none-bg);  border-color: var(--none); }
+  .p-open  { color: var(--open);  background: var(--open-bg);  border-color: var(--open); }
+  .p-env   { color: var(--ink-3); background: var(--surface-2); border-color: var(--rule-2); }
+  .p-crit  { color: var(--crit);  background: var(--crit-bg);  border-color: var(--crit); }
+
+  code {
+    font-family: var(--f-mono); font-size: .88em;
+    background: var(--surface-2); padding: 1px 4px; border: 1px solid var(--rule);
+  }
+  .gov {
+    font-family: var(--f-mono); font-size: 11px; color: var(--brass);
+    font-weight: 600; white-space: nowrap;
+  }
+  .note {
+    border-left: 3px solid var(--brass); background: var(--brass-bg);
+    padding: 12px 16px; margin: 18px 0; font-size: 14.5px; color: var(--ink-2);
+  }
+  .note b { color: var(--ink); }
+  ul.tight { margin: 8px 0 0; padding-left: 20px; }
+  ul.tight li { margin-bottom: 6px; color: var(--ink-2); }
+  footer {
+    margin-top: 54px; padding-top: 18px; border-top: 1px solid var(--rule-2);
+    font-family: var(--f-mono); font-size: 11.5px; color: var(--ink-3);
+  }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+
+<div class="wrap">
+
+<header class="mast">
+  <div class="eyebrow">Live review · run against a real server, real database, real browser</div>
+  <h1>Nine defects that every green check missed</h1>
+  <p class="standfirst">
+    The platform was driven end to end — merchant signup, admin 2FA, a buy order, a sell order,
+    a bet — and every screen in all three panels was opened in Chromium. Two of the money rails
+    could not complete at all. This is what was found, what changed, and what is still open.
+  </p>
+  <div class="runinfo">
+    <span><b>Branch</b> claude/remove-mongodb-postgres-only-kfuhe8</span>
+    <span><b>Commits</b> 7</span>
+    <span><b>Stack</b> PostgreSQL 16 · Node 22 · Chromium 1194</span>
+  </div>
+</header>
+
+<section>
+  <h2>Where it stands</h2>
+  <div class="verdict">
+    <div class="vcell ok"><div class="vnum">13/13</div><div class="vlabel">mechanical gates pass</div></div>
+    <div class="vcell ok"><div class="vnum">1,782</div><div class="vlabel">tests green, 0 failing</div></div>
+    <div class="vcell ok"><div class="vnum">65/65</div><div class="vlabel">panel screens render</div></div>
+    <div class="vcell warn"><div class="vnum">2</div><div class="vlabel">screens still degraded</div></div>
+    <div class="vcell warn"><div class="vnum">3</div><div class="vlabel">rails not yet driven live</div></div>
+  </div>
+  <p class="lede" style="margin-top:16px">
+    824 unit · 604 route-against-PostgreSQL · 354 panel. Screens: 16 player, 6 merchant, 43 admin.
+    Every fix below was found by running the thing, not by reading it — CI was green throughout,
+    because nothing was looking.
+  </p>
+
+  <div class="note">
+    <b>What this review does not cover.</b> The cash rail (<code>CASH_ATM</code>), the USDT rail and
+    dispute resolution were read but never driven end to end on a live server. Their handlers pass
+    their own tests; that is not the same claim. <span class="gov">§29</span>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<section>
+  <h2>Money paths that could not complete <span class="count">3 findings · all now verified end to end</span></h2>
+  <p class="lede">
+    Each of these is a total outage on a path real money travels. None of them showed up as a
+    failing test, because in every case the two halves passed their own tests and it was the
+    <em>pair</em> that was broken.
+  </p>
+
+  <div class="finding sev-high">
+    <div class="fhead">
+      <p class="ftitle">No deposit on the platform could ever be confirmed</p>
+      <div class="fmeta">
+        <span>backend/domains/merchant/merchant.routes.js</span>
+        <span class="gov">§28 · §21</span>
+        <span>efe3a2a</span>
+      </div>
+    </div>
+    <div class="ba">
+      <div class="was">
+        <div class="balabel">Was</div>
+        <p>Payment-proof collection had been removed platform-wide — the upload route deleted, no
+        player screen offering one. The merchant's confirm still demanded it.</p>
+        <pre class="ev">POST /api/merchant/confirm/DEP_8452ab…
+→ {"success": false,
+   "message": "Payment proof screenshot is required."}</pre>
+        <p>The panel pre-empted the refusal with its own toast: <em>"The user has not uploaded
+        payment proof yet"</em> — blaming the player for something nothing asks them for.</p>
+      </div>
+      <div class="now">
+        <div class="balabel">Now</div>
+        <p>The route reads the player's reference off the row and takes nothing from the body.</p>
+        <pre class="ev">POST /api/merchant/confirm/DEP_8452ab…   (no body)
+→ 200  state: COMPLETED
+
+merchant  available 4,900,000 → 4,800,000 paise
+          reserved    100,000 →         0
+player    deposit +90,000   reserve +10,000
+hold      RESERVED → SETTLED</pre>
+        <p>Tokens moved, not minted — both sides of the ledger checked, not the status.</p>
+      </div>
+    </div>
+    <div class="impact">
+      <b>What a player saw:</b> they sent real money, submitted their UTR, were told "Awaiting
+      merchant review" — and the order sat at PAID until a 30-minute sweep pushed it into the
+      dispute queue. Every UPI deposit, on both rails.
+    </div>
+  </div>
+
+  <div class="finding sev-high">
+    <div class="fhead">
+      <p class="ftitle">Every real bet threw — after the stake had been taken</p>
+      <div class="fmeta">
+        <span>backend/domains/markets/bet.routes.js:512</span>
+        <span class="gov">§21</span>
+        <span>96f16f4</span>
+      </div>
+    </div>
+    <div class="ba">
+      <div class="was">
+        <div class="balabel">Was</div>
+        <p>The broadcast block read <code>totalDelhi</code>, <code>totalBombay</code> and
+        <code>realNow</code> as bare names. All three exist only in the <em>phantom</em> handler
+        130 lines below — the block had been written against that shape.</p>
+        <pre class="ev">before   deposit 900  reserve 100  locked   0
+POST /api/bet/place {amount: 100, side: DELHI}
+→ {"success": false, "message": "Failed to place bet"}
+after    deposit 801  reserve  99  locked 100
+
+server log:
+  ReferenceError: totalDelhi is not defined</pre>
+      </div>
+      <div class="now">
+        <div class="balabel">Now</div>
+        <p>The values are named in the scope that reads them; the admin broadcast uses the figures
+        already in hand.</p>
+        <pre class="ev">POST /api/bet/place
+→ 200  bet placed, balance reported correctly</pre>
+        <p>And the gate that should have caught it now does — see <em>A gate that was lying</em>
+        below.</p>
+      </div>
+    </div>
+    <div class="impact">
+      <b>What a player saw:</b> "Failed to place bet", and ₹100 gone anyway. The bet was real and
+      settled normally; only the person who placed it did not know. The panel mints a fresh
+      idempotency key per click, so anyone who believed the error and clicked again placed a
+      <b>second</b> real bet.
+    </div>
+  </div>
+
+  <div class="finding sev-high">
+    <div class="fhead">
+      <p class="ftitle">No merchant could register</p>
+      <div class="fmeta">
+        <span>database/repositories/merchants.js:1167</span>
+        <span class="gov">§2</span>
+        <span>3490d01</span>
+      </div>
+    </div>
+    <div class="ba">
+      <div class="was">
+        <div class="balabel">Was</div>
+        <p><code>createMerchantAccount</code> inserted an <code>email</code> column into
+        <code>users</code>. That column was removed with the player email.</p>
+        <pre class="ev">POST /api/merchant/auth/signup
+→ "Signup failed. Please try again."
+
+server: column "email" of relation "users"
+        does not exist</pre>
+        <p>Nothing in the message told the applicant or support what had happened.</p>
+      </div>
+      <div class="now">
+        <div class="balabel">Now</div>
+        <pre class="ev">POST /api/merchant/auth/signup
+→ {"success": true,
+   "message": "Application submitted. An admin
+               will review and approve your account."}</pre>
+        <p>The merchant's own email is a different value and still stored, on <code>merchants</code>.</p>
+      </div>
+    </div>
+    <div class="impact">
+      <b>Closed the shape, not just the instance:</b> <code>check:coherence</code> only ever looked
+      at columns the code <em>reads</em>. An INSERT column list names columns without reading any,
+      so it was invisible. It now parses every INSERT in the repositories — and reports the three
+      runtime-built lists it cannot check, rather than passing them silently.
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<section>
+  <h2>Screens that took the panel down <span class="count">2 findings · found by clicking</span></h2>
+  <p class="lede">
+    A React render error is not confined to its screen: the admin panel does not recover by
+    navigating. Everything opened after a crash stayed blank until a full reload, so one broken
+    screen cost the operator the whole console for the rest of their session.
+  </p>
+
+  <div class="finding sev-high">
+    <div class="fhead">
+      <p class="ftitle">Operations — an object rendered as a React child</p>
+      <div class="fmeta">
+        <span>backend/domains/operations/operations.admin.routes.js</span>
+        <span class="gov">§5</span>
+        <span>49551aa</span>
+      </div>
+    </div>
+    <div class="ba">
+      <div class="was">
+        <div class="balabel">Was</div>
+        <pre class="ev">Error: Objects are not valid as a React child
+(found: object with keys {total, pending, active,
+ completed, disputed, flagged, awaitingReview,
+ completedValue})
+
+/operations        chars=0   [white screen]
+/payment-control   chars=0
+/profit-loss       chars=0
+…17 more, all blank</pre>
+        <p><code>Promise.all</code> destructured <b>eight</b> names from <b>seven</b> promises, so
+        <code>openDisputes</code> was <code>undefined</code> and <code>pendingOrders</code> got the
+        whole counts object.</p>
+      </div>
+      <div class="now">
+        <div class="balabel">Now</div>
+        <pre class="ev">/operations   chars=1,814   [ok]</pre>
+        <p>Both numbers the screen wants were already inside that one object — which is why the
+        second query had been dropped. Only the destructuring was never updated.</p>
+        <p>Its provider and channel rows also read <code>p.key || p.name</code> against a registry
+        that returns <code>{code, label}</code> — every row unkeyed <em>and</em> unlabelled, a stack
+        of entries reading "LIVE" with nothing saying which rail.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="finding sev-high">
+    <div class="fhead">
+      <p class="ftitle">Transactions — a type that lied about every field</p>
+      <div class="fmeta">
+        <span>admin-panel/src/types.ts</span>
+        <span class="gov">§23</span>
+        <span>49551aa</span>
+      </div>
+    </div>
+    <div class="ba">
+      <div class="was">
+        <div class="balabel">Was</div>
+        <pre class="ev">TypeError: Cannot read properties of undefined
+             (reading 'slice')      ← tx._id.slice(-10)</pre>
+        <p>The endpoint returns wallet <b>ledger</b> rows. The panel's <code>Transaction</code>
+        interface was a fossil of the document collection it replaced:</p>
+        <pre class="ev">declared      actually sent
+────────      ─────────────
+_id           (none — the id is txId)
+status        (a ledger row has no status)
+balanceType   field
+referenceId   refId
+description   reason
+timestamp     createdAt</pre>
+        <p>TypeScript could not catch any of it, because the interface <em>was</em> the thing that
+        was wrong.</p>
+      </div>
+      <div class="now">
+        <div class="balabel">Now</div>
+        <pre class="ev">/transactions   chars=12,439   [ok]</pre>
+        <p>Fixed the way <span class="gov">§23</span> prescribes: correct the interface, let
+        <code>tsc</code> enumerate the call sites. It listed <b>18</b>, all in one file.</p>
+        <p>The filters were fossils too, and failed <em>silently</em>: the type tabs sent
+        <code>DEPOSIT</code> where <code>tx_type</code> holds <code>CREDIT</code>, emptying the
+        table rather than erroring; the Status dropdown mapped to a parameter the route has never
+        read; and all three KPI tiles read ₹0 on every page of a busy ledger.</p>
+      </div>
+    </div>
+    <div class="impact">
+      <b>Same root, one level down:</b> <code>DataTable</code>'s <code>rowKey</code> tried
+      <code>userId</code> first. Right for the users table where it is the identity — wrong for any
+      row that merely <em>references</em> a user. One player owns many ledger movements, so the
+      whole page rendered with one key repeated down the table. Duplicate keys let React reuse the
+      wrong row across an update, on the screen an operator reconciles money from.
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<section>
+  <h2>Silent drift and dead ends <span class="count">4 findings</span></h2>
+
+  <div class="finding sev-med">
+    <div class="fhead">
+      <p class="ftitle">Two admin routes adjusted a player's balance, and they disagreed</p>
+      <div class="fmeta"><span>§5 · §9</span><span>aea169e</span></div>
+    </div>
+    <div class="ba">
+      <div class="was">
+        <div class="balabel">Was</div>
+        <p>Both live, both in the panel — the Users screen's inline modal called one, the Balance
+        Adjustment screen the other. The money was never in doubt (one writer). Everything around
+        it differed:</p>
+        <pre class="ev">                users screen   balance screen
+reason          optional       REQUIRED
+pocket check    hand-written   ADJUSTABLE_FIELDS
+bonus record    not written    written
+player's UI     updates        does not update</pre>
+        <p>And it took direction from the <em>sign</em> while ignoring <code>type</code> — its own
+        test pinned that as a hazard: "a caller sending <code>type:'DEBIT'</code> alongside a
+        positive amount … will be given money instead."</p>
+      </div>
+      <div class="now">
+        <div class="balabel">Now</div>
+        <p>One route, taking an explicit direction and a positive magnitude — so that shape cannot
+        be expressed. The signed-amount convenience stays in the client.</p>
+        <pre class="ev">POST /api/admin/balance-adjust
+  {type:'DEBIT', field:'depositBalance',
+   amount:100, reason:'clawback'}
+→ deposit 400_00 → 300_00
+
+11 new tests · mutation-proved
+routes served 318 → 317 · dead buttons 0</pre>
+        <p>The surviving route had <b>no tests at all</b>; consolidating onto it without them would
+        have traded one risk for another.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="finding sev-med">
+    <div class="fhead">
+      <p class="ftitle">The only button labelled "Sign in" did not sign anyone in</p>
+      <div class="fmeta"><span>user-panel/src/redesign/RedesignShell.tsx</span><span>96f16f4</span></div>
+    </div>
+    <div class="ba">
+      <div class="was">
+        <div class="balabel">Was</div>
+        <pre class="ev">onClick={() => go(isAuthenticated
+                    ? '/wallet'
+                    : '/wallet')}</pre>
+        <p>A ternary with two identical branches — the shape of an intention that never landed.
+        Clicking it logged out:</p>
+        <pre class="ev">401 GET /api/v1/user/profile
+[WalletPage] Session expired. Please log in again.
+→ bounced back to the landing page, no form</pre>
+      </div>
+      <div class="now">
+        <div class="balabel">Now</div>
+        <pre class="ev">click → mobile field on screen
+        URL unchanged, no 401</pre>
+        <p>The modal and <code>openAuth</code> were already there and already working — the drawer's
+        own Sign In has always called it. Only this button was wired to the wrong half.</p>
+        <p>Its hardcoded <code>#F5C77A</code>/<code>#D4AF37</code> gradient moved to the brand
+        tokens in the same change. <span class="gov">§4</span></p>
+      </div>
+    </div>
+  </div>
+
+  <div class="finding sev-med">
+    <div class="fhead">
+      <p class="ftitle">A merchant could overwrite the player's claimed payment reference</p>
+      <div class="fmeta"><span class="gov">§27</span><span>efe3a2a</span></div>
+    </div>
+    <div class="ba">
+      <div class="was">
+        <div class="balabel">Was</div>
+        <p>The confirm took <code>utrNumber</code> from the request body and wrote it over the
+        stored value. The reference is the player's — claimed against that order in
+        <code>utr_registry</code> for good.</p>
+        <pre class="ev">merchant posts {utrNumber: '999999999999'}
+→ order names a reference nothing ever claimed
+→ the claim still points at the player's original
+→ the merchant's string free to spend again</pre>
+        <p>The panel echoed the stored value back, so it never showed. A panel is not the guard.</p>
+      </div>
+      <div class="now">
+        <div class="balabel">Now</div>
+        <p>The route reads the row and refuses if the reference is not there. The body is not read
+        at all; <code>confirmPayment</code> sends none.</p>
+        <pre class="ev">merchant posts {utrNumber:'999999999999',
+                proof:'…forged.jpg'}
+→ 200, and the stored UTR is unchanged
+→ proofScreenshot still null</pre>
+      </div>
+    </div>
+  </div>
+
+  <div class="finding sev-med">
+    <div class="fhead">
+      <p class="ftitle">Referrals 500'd on every deployment that has never run one</p>
+      <div class="fmeta"><span>database/repositories/referrals.js</span><span class="gov">§21 · §6</span><span>49551aa</span></div>
+    </div>
+    <div class="ba">
+      <div class="was">
+        <div class="balabel">Was</div>
+        <pre class="ev">GET /api/admin/referral/stats → 500
+null value in column "budget_paise" of relation
+"referral_programmes" violates not-null constraint</pre>
+        <p>The row is created lazily with the key alone. The <code>ON CONFLICT</code> branch guarded
+        every column with COALESCE — the INSERT branch had no defence at all.</p>
+      </div>
+      <div class="now">
+        <div class="balabel">Now</div>
+        <p>Only supplied columns are named, so the rest take their <code>DEFAULT</code> from
+        <code>schema.sql</code> — the one place this table's defaults may live. Writing
+        <code>COALESCE($2, 0)</code> would have been a second owner.</p>
+        <pre class="ev">/referrals   chars=1,979   [ok]</pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<section>
+  <h2>A gate that was lying</h2>
+  <p class="lede">
+    <code>check:orphans</code> exists to catch exactly the bet-placement bug, and reported
+    <em>"No orphaned references"</em> over it. Its blind spot was documented in its own header —
+    and the cost turned out to be higher than the note anticipated.
+  </p>
+  <div class="finding sev-high">
+    <div class="fhead">
+      <p class="ftitle">scripts/detect-orphan-refs.mjs</p>
+      <div class="fmeta"><span class="gov">§28 — derive what a gate checks from the thing it is checking</span></div>
+    </div>
+    <div class="ba">
+      <div class="was">
+        <div class="balabel">Was</div>
+        <p>No scope analysis: every binding anywhere in a file counted as visible everywhere in it.
+        So the phantom handler's <code>totalDelhi</code> "covered" the real handler's use of the
+        name.</p>
+        <pre class="ev">$ npm run check:orphans
+No orphaned references: every identifier used is
+declared, imported or a parameter.
+$ echo $?
+0</pre>
+        <p>The reasoning was sound — "a false report costs a bug" — it just cost more than a later
+        run.</p>
+      </div>
+      <div class="now">
+        <div class="balabel">Now</div>
+        <p>A real scope chain: module, function and block scopes; <code>var</code> and function
+        declarations hoisted; declarations and references resolved in one pass so forward
+        references work without an ordering rule.</p>
+        <pre class="ev">   1  totalDelhi   [declared in a DIFFERENT scope]
+        bet.routes.js:512
+   1  totalBombay  [declared in a DIFFERENT scope]
+   1  realNow      [declared in a DIFFERENT scope]
+$ echo $?
+1</pre>
+      </div>
+    </div>
+    <div class="impact">
+      <b>The false-positive bar is kept, and met differently.</b> A file whose scoping is not
+      statically decidable is <em>skipped by name</em> in the output rather than guessed at, and the
+      two findings are reported separately — a name bound nowhere is a deleted import, a name bound
+      in another scope is a block copied between functions. Clean across
+      <code>backend/</code> and <code>database/</code>, so the sweep for this shape is now
+      mechanical rather than a one-off grep. <span class="gov">§0.13</span>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<section>
+  <h2>Verified and rejected <span class="count">4 suspicions that were not defects</span></h2>
+  <p class="lede">
+    Each looked like a finding and was checked before being reported. Recorded because a review that
+    only lists hits gives no sense of its own false-positive rate.
+  </p>
+  <div class="tw">
+    <table>
+      <thead><tr>
+        <th>Suspicion</th><th>How it was checked</th><th style="width:90px">Verdict</th>
+      </tr></thead>
+      <tbody>
+        <tr>
+          <td><code>userBankDetails</code> appearing on a player's deposit view looked like a leak</td>
+          <td>Read the allowlist: it is the player's <em>own</em> payout account, named with a stated reason, and NULL on a deposit anyway</td>
+          <td><span class="pill p-ok">no defect</span></td>
+        </tr>
+        <tr>
+          <td>All three merchant-login buttons report <code>type="submit"</code> — clicking a tab should submit the form</td>
+          <td>Clicked "Apply as Merchant" in the browser: <code>inForm: false</code>, zero POSTs, tab switched correctly</td>
+          <td><span class="pill p-ok">no defect</span></td>
+        </tr>
+        <tr>
+          <td>2FA activation appeared to return <b>0</b> recovery codes</td>
+          <td>The field is <code>backupCodes</code>; my probe read the wrong key. Both panels read it correctly</td>
+          <td><span class="pill p-ok">no defect</span></td>
+        </tr>
+        <tr>
+          <td>Withdrawal refused "add your bank account details" while the profile showed them — two spellings of <code>ifsc</code></td>
+          <td>Found the real writer: it stores <code>ifscCode</code>, matching the gate. <b>My own test fixture was malformed.</b> The other spellings belong to the merchant's separate record</td>
+          <td><span class="pill p-ok">no defect</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="note">
+    Two test failures were also traced to the environment rather than the product, and both were
+    still repaired so they cannot mislead the next person: <code>logger.test.js</code> failed its
+    redaction assertion because an ambient <code>LOG_LEVEL=warn</code> suppressed the log line it
+    spied on — which reads exactly like the redaction guard being broken. And
+    <code>depositEscrowPg</code> asserted that a row it had just created appears in a global,
+    <em>capped</em>, oldest-first query, so it fails on any long-lived database and passes forever
+    in CI. <span class="gov">trap 10 · trap 11</span>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<section>
+  <h2>Coverage — what was actually exercised</h2>
+  <p class="lede">
+    Driven in Chromium against the live stack, logged in through the real forms. A screen counts as
+    verified only if it rendered with no page error and no failed request.
+  </p>
+
+  <h3>Panels</h3>
+  <div class="tw">
+    <table>
+      <thead><tr>
+        <th>Panel</th><th class="mono">Screens</th><th>Auth path exercised</th><th>Result</th><th style="width:96px">Status</th>
+      </tr></thead>
+      <tbody>
+        <tr>
+          <td><b>Player</b> (user-panel)</td><td class="num">16</td>
+          <td>Sign-in modal opened; session seeded for the sweep</td>
+          <td>All 16 render. Referrals shows a 503 for the Telegram bot config, absent in this environment</td>
+          <td><span class="pill p-fixed">verified</span></td>
+        </tr>
+        <tr>
+          <td><b>Merchant</b></td><td class="num">6</td>
+          <td>Real signup → admin approval → password login through the form</td>
+          <td>All 6 render with live data. Empty states explain <em>why</em> — "not approved for the ATM cash rail" rather than a blank queue</td>
+          <td><span class="pill p-fixed">verified</span></td>
+        </tr>
+        <tr>
+          <td><b>Admin</b></td><td class="num">43</td>
+          <td>Password → TOTP challenge → session, through the real 2FA screen</td>
+          <td>41 clean. 2 degraded, both environmental — see below</td>
+          <td><span class="pill p-open">41 / 43</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Money paths</h3>
+  <div class="tw">
+    <table>
+      <thead><tr>
+        <th>Path</th><th>Driven</th><th>Evidence</th><th style="width:110px">Status</th>
+      </tr></thead>
+      <tbody>
+        <tr>
+          <td><b>Buy</b> — UPI deposit</td>
+          <td class="mono">create → assign → accept → mark-paid → confirm</td>
+          <td>Merchant −₹1,000; player +₹900 deposit +₹100 reserve; hold RESERVED→SETTLED; ledger carries both entries with before/after balances</td>
+          <td><span class="pill p-fixed">end to end</span></td>
+        </tr>
+        <tr>
+          <td><b>Sell</b> — UPI withdrawal</td>
+          <td class="mono">create → claim → accept → confirm → hold → settle</td>
+          <td>Winnings −₹500, locked +₹500; confirm reaches PAID/HELD with the stake still locked and the merchant's tokens not yet existing; <code>settleDueHolds</code> → COMPLETED, locked→0, merchant +₹500</td>
+          <td><span class="pill p-fixed">end to end</span></td>
+        </tr>
+        <tr>
+          <td><b>Bet</b> — stake and settle</td>
+          <td class="mono">place → lock → cycle settles</td>
+          <td>₹99 deposit + ₹1 reserve → ₹100 locked; idempotency key honoured on replay</td>
+          <td><span class="pill p-fixed">end to end</span></td>
+        </tr>
+        <tr>
+          <td><b>Admin balance adjustment</b></td>
+          <td class="mono">credit / debit / refuse</td>
+          <td>₹800 credited to winnings through the consolidated route; 11 tests incl. an unfundable debit moving nothing</td>
+          <td><span class="pill p-fixed">end to end</span></td>
+        </tr>
+        <tr>
+          <td><b>Cash rail</b> (<code>CASH_ATM</code>)</td>
+          <td>—</td>
+          <td>Link supply and claim covered by route tests only. Never driven on a live server</td>
+          <td><span class="pill p-open">not driven</span></td>
+        </tr>
+        <tr>
+          <td><b>USDT rail</b></td>
+          <td>—</td>
+          <td>Chain freezing and quote immutability covered by tests only</td>
+          <td><span class="pill p-open">not driven</span></td>
+        </tr>
+        <tr>
+          <td><b>Dispute resolution</b></td>
+          <td>—</td>
+          <td>Queue screen renders; release/refund never exercised against a real disputed order</td>
+          <td><span class="pill p-open">not driven</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Privacy, both directions <span class="gov" style="font-size:11px">§24</span></h3>
+  <div class="tw">
+    <table>
+      <thead><tr><th>Check</th><th>Observed on a live order</th><th style="width:96px">Status</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>A merchant may see the payout account and the name on it — nothing else identifying the player</td>
+          <td class="mono">userBankDetails present · keys mentioning phone/upi: []</td>
+          <td><span class="pill p-fixed">holds</span></td>
+        </tr>
+        <tr>
+          <td>A player sees where to pay and nothing about who they are paying</td>
+          <td class="mono">payTo.paymentLink + "Merchant #M480E051BCF" · no handle, QR, bank or address</td>
+          <td><span class="pill p-fixed">holds</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Mechanical gates</h3>
+  <div class="tw">
+    <table>
+      <thead><tr><th>Gate</th><th>Reads</th><th class="mono">Result</th></tr></thead>
+      <tbody>
+        <tr><td><code>check:no-mongo</code></td><td>The single-store rule — the definition of done</td><td class="mono">all eight counts zero</td></tr>
+        <tr><td><code>check:ui-coverage</code></td><td>Every panel call reaches a real route</td><td class="mono">317 served · 0 dead buttons</td></tr>
+        <tr><td><code>check:orphans</code></td><td>Every identifier resolves <b>in scope</b> — upgraded this run</td><td class="mono">clean</td></tr>
+        <tr><td><code>check:coherence</code></td><td>Every column read <b>and inserted</b> exists — upgraded this run</td><td class="mono">0 gap · 0 double · 0 insert</td></tr>
+        <tr><td><code>check:balance-reads</code></td><td>A number gating a transfer is read from the rows the write locks</td><td class="mono">clean</td></tr>
+        <tr><td><code>check:merchant-privacy</code> · <code>check:player-privacy</code></td><td>Both projections are allowlists</td><td class="mono">clean</td></tr>
+        <tr><td><code>check:payment-references</code></td><td>Every external reference claimed once, through one registry</td><td class="mono">clean</td></tr>
+        <tr><td>+ 6 more (<code>settable</code>, <code>dead-code</code>, <code>db-boundary</code>, <code>error-responses</code>, <code>deps</code>, <code>audit:map</code>)</td><td>—</td><td class="mono">pass</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════ -->
+<section>
+  <h2>Still open <span class="count">ordered by what it costs to leave</span></h2>
+  <div class="tw">
+    <table>
+      <thead><tr>
+        <th>Item</th><th>What it means today</th><th>What it needs</th><th style="width:104px">Kind</th>
+      </tr></thead>
+      <tbody>
+        <tr>
+          <td><b>Cash, USDT and dispute rails not driven live</b></td>
+          <td>Their handlers pass their own tests. So did the deposit confirm</td>
+          <td>The same treatment the buy and sell rails got</td>
+          <td><span class="pill p-open">work</span></td>
+        </tr>
+        <tr>
+          <td><b>Captcha still off</b></td>
+          <td>You asked for it on; I cannot supply the key</td>
+          <td>A Cloudflare Turnstile secret from you, then one config change</td>
+          <td><span class="pill p-crit">blocked on you</span></td>
+        </tr>
+        <tr>
+          <td><b>Telegram not configured</b></td>
+          <td><code>[channel-gate] no active Telegram config — membership cannot be enforced</code>. The gate <b>fails open</b></td>
+          <td>Confirm that is intended, or make it fail closed in production</td>
+          <td><span class="pill p-open">decision</span></td>
+        </tr>
+        <tr>
+          <td><b>pgvector absent</b></td>
+          <td>Support Assistant 500s. Now reported on the boot line instead of only in a log</td>
+          <td>Install the extension, or accept the screen is off</td>
+          <td><span class="pill p-env">environment</span></td>
+        </tr>
+        <tr>
+          <td><b>21 endpoints no screen calls</b></td>
+          <td>Webhooks and SSE belong on this list; anything else is unfinished work or code to delete</td>
+          <td>Triage the list once, then keep it at zero surprises</td>
+          <td><span class="pill p-open">work</span></td>
+        </tr>
+        <tr>
+          <td><b>89 hardcoded <code>#D4AF37</code></b> in the player panel</td>
+          <td>Branding cannot repaint them. Admin has 2; merchant is at zero</td>
+          <td>A mechanical sweep to the brand tokens</td>
+          <td><span class="pill p-open">work</span> <span class="gov">§4</span></td>
+        </tr>
+        <tr>
+          <td><b>Three panels fetch fonts from Google at runtime</b></td>
+          <td>A third-party request on every page load, and a blocked region gets fallback type</td>
+          <td>Self-host, or accept it and put it in the CSP deliberately</td>
+          <td><span class="pill p-open">decision</span></td>
+        </tr>
+        <tr>
+          <td><b>App Assets screen 404s its previews</b></td>
+          <td><code>logo.png</code>, <code>icon-192.png</code>, <code>icon-512.png</code> not present here</td>
+          <td>Upload them, or have the screen say "not uploaded" rather than showing broken images</td>
+          <td><span class="pill p-env">environment</span></td>
+        </tr>
+        <tr>
+          <td><b>Casino provider CSP</b></td>
+          <td>Not yet derived from the enabled providers</td>
+          <td>Build it from the admin Game Providers page you already have</td>
+          <td><span class="pill p-open">work</span></td>
+        </tr>
+        <tr>
+          <td><b>Player and admin panels both default to port 5174</b></td>
+          <td>They cannot run side by side in development</td>
+          <td>One line in a vite config</td>
+          <td><span class="pill p-open">minor</span></td>
+        </tr>
+        <tr>
+          <td><b>No <code>favicon.ico</code></b> on merchant or admin</td>
+          <td>A 404 on every page load, and a blank tab icon</td>
+          <td>Add the file</td>
+          <td><span class="pill p-open">minor</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section>
+  <h2>The honest answer to "is it ready"</h2>
+  <p class="lede">
+    No individual green check says so, and this run is why. Before today, CI was green while a
+    player could not deposit, could not bet without being told it failed, and could not sign in from
+    the button marked Sign in. What changed is not that the checks got greener — it is that three
+    money paths were driven from end to end by hand and now have their balances written down.
+  </p>
+  <p class="lede">
+    What I verified: the buy rail, the sell rail, bet placement, admin 2FA, merchant onboarding,
+    both privacy projections, and that 65 of 67 screens render clean in a real browser.
+    What I did not: the cash rail, the USDT rail, and dispute resolution — read, not run.
+    That gap is the next piece of work, and it is the same gap that hid every defect above.
+  </p>
+</section>
+
+<footer>
+  BettingBazaar · live review · 7 commits on claude/remove-mongodb-postgres-only-kfuhe8 ·
+  13 gates · 1,782 tests · PR #184
+</footer>
+
+</div>
+
+</body>
+</html>

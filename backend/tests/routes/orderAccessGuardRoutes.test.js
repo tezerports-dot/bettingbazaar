@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * Who may act on an order, and whether the order came from this system.
  *
@@ -164,7 +164,6 @@ describePg('order access guard', () => {
     const calls = [
       as(app, mallory).get(`/order/${orderId}/status`),
       as(app, mallory).post(`/order/${orderId}/dispute`).send({ reason: 'let me in' }),
-      as(app, mallory).post(`/order/${orderId}/status`).send({ status: 'DISPUTED' }),
       as(app, mallory).post(`/order/${orderId}/mark-paid`).send({ utrNumber: 'UTR123456789012' }),
     ];
     for (const call of calls) expect((await call).status).toBe(404);

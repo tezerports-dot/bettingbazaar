@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 //
 // Command Center sign-in — recreated from the design handoff. Auth flow
 // (mobile + password, role-based post-login redirect) is unchanged.
@@ -198,8 +198,8 @@ export const Login: React.FC = () => {
             </div>
 
             {/* Password */}
-            <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: 'var(--text-2)', marginBottom: 7 }}>Password</label>
-            <input
+            <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: 'var(--text-2)', marginBottom: 7 }} htmlFor="password">Password</label>
+            <input id="password"
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}

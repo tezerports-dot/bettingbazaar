@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 //
 // Chat & Support console — Command Center design (handoff "Betting Bazaar
 // Admin.dc.html"). Two-panel moderation + support desk over the public-chat and
@@ -110,25 +110,30 @@ export const ChatSupport: React.FC = () => {
           <div style={{ fontSize: 10.5, fontWeight: 800, color: 'var(--muted)', letterSpacing: '.08em', textTransform: 'uppercase', padding: '9px 9px 7px' }}>Conversations</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
             {/* Public room */}
-            <div onClick={() => setSelection({ type: 'public' })} style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '11px 12px', borderRadius: 11, cursor: 'pointer', border: `1px solid ${selection.type === 'public' ? 'var(--gold)' : 'transparent'}`, background: selection.type === 'public' ? 'var(--active)' : 'transparent' }}>
+            <button type="button" onClick={() => setSelection({ type: 'public' })}
+              aria-pressed={selection.type === 'public'} aria-label="Open the public chat room"
+              style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '11px 12px', borderRadius: 11, cursor: 'pointer', border: `1px solid ${selection.type === 'public' ? 'var(--gold)' : 'transparent'}`, background: selection.type === 'public' ? 'var(--active)' : 'transparent', width: '100%', font: 'inherit', color: 'inherit', textAlign: 'left' }}>
               <div style={{ width: 36, height: 36, borderRadius: 9, flex: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, color: '#fff', background: 'linear-gradient(140deg,#d4913a,#b8941f)' }}><Hash size={16} /></div>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 13, fontWeight: 700 }}>Public Chat</div>
                 <div style={{ fontSize: 11, color: 'var(--muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{publicMsgs.length} recent messages</div>
               </div>
-            </div>
+            </button>
             {/* Tickets */}
             {tickets.map((t, i) => {
               const active = selection.type === 'ticket' && selection.id === t._id;
               return (
-                <div key={t._id} onClick={() => setSelection({ type: 'ticket', id: t._id })} style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '11px 12px', borderRadius: 11, cursor: 'pointer', border: `1px solid ${active ? 'var(--gold)' : 'transparent'}`, background: active ? 'var(--active)' : 'transparent' }}>
+                <button key={t._id} type="button" onClick={() => setSelection({ type: 'ticket', id: t._id })}
+                  aria-pressed={active}
+                  aria-label={`Open support ticket from ${t.userId?.username || 'a player'}: ${t.subject}`}
+                  style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '11px 12px', borderRadius: 11, cursor: 'pointer', border: `1px solid ${active ? 'var(--gold)' : 'transparent'}`, background: active ? 'var(--active)' : 'transparent', width: '100%', font: 'inherit', color: 'inherit', textAlign: 'left' }}>
                   <div style={{ width: 36, height: 36, borderRadius: 9, flex: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, fontSize: 12, color: '#fff', background: AV[i % 5] }}>{initials(t.userId?.username)}</div>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 13, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{t.userId?.username || 'User'}</div>
                     <div style={{ fontSize: 11, color: 'var(--muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{t.subject}</div>
                   </div>
                   <span style={{ fontSize: 9.5, fontWeight: 700, color: 'var(--text-2)', background: 'var(--surface-2)', border: '1px solid var(--border)', padding: '2px 7px', borderRadius: 20 }}>{t.status}</span>
-                </div>
+                </button>
               );
             })}
             {tickets.length === 0 && (
@@ -207,8 +212,8 @@ export const ChatSupport: React.FC = () => {
           <div className="space-y-4">
             <p className="text-gray-400">Bans this user from public chat for 24 hours. Recorded in Audit Logs.</p>
             <div>
-              <label className="label">Reason *</label>
-              <textarea value={banReason} onChange={(e) => setBanReason(e.target.value)} className="input min-h-[90px]" placeholder="Reason for the ban…" required />
+              <label className="label" htmlFor="reason">Reason *</label>
+              <textarea id="reason" value={banReason} onChange={(e) => setBanReason(e.target.value)} className="input min-h-[90px]" placeholder="Reason for the ban…" required />
             </div>
             <div className="flex space-x-3">
               <button onClick={() => { setBanTarget(null); setBanReason(''); }} className="flex-1 btn-secondary">Cancel</button>

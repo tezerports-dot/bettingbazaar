@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * The bot fleet's invariants, and the message templates' safety net.
  *
@@ -25,7 +25,7 @@ import { describe, it, expect } from 'vitest';
 import {
   validateTemplate, render, escapeHtml, DEFAULT_TEMPLATES, TEMPLATE_KEYS, TEMPLATE_VARIABLES,
 } from '../../domains/telegram/telegramTemplates.service.js';
-import { webhookPathForRole } from '../../domains/telegram/telegramBots.service.js';
+import { webhookPathFor } from '../../domains/telegram/telegramBots.service.js';
 
 /**
  * The "at most one live bot per singular role" invariant is NOT tested here any
@@ -39,16 +39,56 @@ import { webhookPathForRole } from '../../domains/telegram/telegramBots.service.
  */
 
 describe('only the roles that receive updates have a webhook', () => {
-  it('routes sign-in and recovery to their own endpoints', () => {
-    expect(webhookPathForRole('signin')).toBe('/api/telegram/webhook');
-    expect(webhookPathForRole('recovery')).toBe('/api/telegram/recovery/webhook');
+  it('gives every sign-in bot its OWN endpoint', () => {
+    // The fleet's load-bearing detail. Every sign-in bot carries its own secret
+    // token, and the handler has to know WHICH secret to compare a delivery
+    // against — so the bot is named in the path. Told the same URL, the second
+    // bot registered would have had every update checked against the first
+    // one's secret: 401 on all of them, every player assigned to it stuck, and
+    // nothing anywhere saying why.
+    expect(webhookPathFor({ role: 'signin', botId: '111' })).toBe('/api/telegram/webhook/111');
+    expect(webhookPathFor({ role: 'signin', botId: '222' })).toBe('/api/telegram/webhook/222');
+  });
+
+  it('escapes the bot id rather than pasting it into a path', () => {
+    // It is Telegram's numeric id in practice. "In practice" is not a guarantee
+    // a URL builder may rely on.
+    expect(webhookPathFor({ role: 'signin', botId: 'a/b' })).toBe('/api/telegram/webhook/a%2Fb');
+  });
+
+  it('gives every recovery bot its own path too — singular is PER PANEL', () => {
+    // It was one fixed path, and that was right while there was one recovery
+    // bot. There are three now — players, merchants and staff each recover
+    // through their own (owner, 2026-09-24) — and a shared path is the same
+    // defect the sign-in fleet already paid for: three bots told one URL, every
+    // delivery checked against whichever secret resolved first, 401 for two of
+    // the three, and nothing anywhere saying why.
+    expect(webhookPathFor({ role: 'recovery', botId: '999' }))
+      .toBe('/api/telegram/recovery/webhook/999');
+    expect(webhookPathFor({ role: 'recovery', botId: '888' }))
+      .toBe('/api/telegram/recovery/webhook/888');
+  });
+
+  it('never gives two bots the same webhook path, in any role', () => {
+    // The invariant underneath both cases above, stated once so a future role
+    // cannot be added with a fixed path by accident. Two bots sharing a path is
+    // ALWAYS the 401 trap, whatever the role is called.
+    const paths = new Set();
+    for (const role of ['signin', 'recovery']) {
+      for (const botId of ['1', '2', '3']) {
+        const path = webhookPathFor({ role, botId });
+        expect(paths.has(path), `${role}/${botId} collides on ${path}`).toBe(false);
+        paths.add(path);
+      }
+    }
+    expect(paths.size).toBe(6);
   });
 
   it('gives outbound-only roles no webhook at all', () => {
     // Registering one would point Telegram at an endpoint with no handler for
     // the conversation — an endpoint that can only drop what it receives.
     for (const role of ['broadcast', 'moderation', 'generic']) {
-      expect(webhookPathForRole(role), role).toBeNull();
+      expect(webhookPathFor({ role, botId: '1' }), role).toBeNull();
     }
   });
 });

@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * postgres/userPg.js — the account: identity, roles, status, second factor.
  *
@@ -53,12 +53,14 @@ const COLUMNS = `
   joining_number, referral_code, referral_clicks, referred_by,
   status, kyc_status, kyc_submission_count, wallet_address, profile_pic, warning_count,
   payment_flagged, payment_flag_reason, payment_flagged_at, payment_flag_count,
+  consecutive_payment_failures, order_lock_until,
   is_admin, is_sub_admin, is_queue_manager, is_mediator,
   sub_admin_role, sub_admin_permissions, phantom_access,
   two_factor_enabled, two_factor_secret, two_factor_pending_secret,
   two_factor_last_counter, two_factor_enrolled_at,
   is_blocked, block_reason, blocked_at, blocked_by,
-  bank_details, last_login, roles, deleted_at, deleted_by, joined_at, updated_at`;
+  bank_details, last_login, roles, deleted_at, deleted_by, joined_at, updated_at,
+  account_type, sessions_valid_from`;
 
 /**
  * The columns a caller may set through `updateUser`.
@@ -78,12 +80,17 @@ const UPDATABLE = Object.freeze(new Set([
   'username', 'password_hash', 'referral_code', 'referral_clicks', 'referred_by',
   'status', 'kyc_status', 'wallet_address', 'profile_pic', 'warning_count',
   'payment_flagged', 'payment_flag_reason', 'payment_flagged_at', 'payment_flag_count',
+  'consecutive_payment_failures', 'order_lock_until',
   'is_admin', 'is_sub_admin', 'is_queue_manager', 'is_mediator',
   'sub_admin_role', 'sub_admin_permissions', 'phantom_access',
   'two_factor_enabled', 'two_factor_secret', 'two_factor_pending_secret',
   'two_factor_last_counter', 'two_factor_enrolled_at', 'backup_codes',
   'is_blocked', 'block_reason', 'blocked_at', 'blocked_by',
   'bank_details', 'last_login', 'roles',
+  // Moved to `now()` by a password reset, which kills every session issued
+  // before it. Writable because that is the ONLY way to kill them — sessions
+  // are stateless and nothing holds a list of the ones outstanding.
+  'sessions_valid_from',
 ]));
 
 /** camelCase → column, derived from the allowlist so the two cannot drift. */
@@ -130,6 +137,15 @@ function toUser(row) {
     userId: row.user_id,
     username: row.username,
     mobile: row.mobile,
+    // WHICH population this row belongs to. Projected because the login path
+    // asserts on it and the admin panel renders it — a row that does not carry
+    // its own type forces every reader to infer it from the role flags, which
+    // is the inference this column exists to replace.
+    accountType: row.account_type,
+    // Sessions issued before this instant are dead. Read by `authenticate` on
+    // every request, so it has to be on the projection the middleware already
+    // takes — a second read to answer it would double the cost of the check.
+    sessionsValidFrom: row.sessions_valid_from,
     joiningNumber: toInt(row.joining_number),
     referralCode: row.referral_code,
     referralClicks: toInt(row.referral_clicks),
@@ -144,6 +160,8 @@ function toUser(row) {
     paymentFlagReason: row.payment_flag_reason,
     paymentFlaggedAt: row.payment_flagged_at,
     paymentFlagCount: row.payment_flag_count,
+    consecutivePaymentFailures: row.consecutive_payment_failures,
+    orderLockUntil: row.order_lock_until,
     isAdmin: row.is_admin,
     isSubAdmin: row.is_sub_admin,
     isQueueManager: row.is_queue_manager,
@@ -181,11 +199,49 @@ export async function getUser(userId) {
   return toUser(rows[0]);
 }
 
-/** One account by mobile, or null. The mobile is unique and never mutable. */
-export async function getUserByMobile(mobile) {
+/**
+ * The three populations a `users` row can belong to.
+ *
+ * Derived from nothing and duplicated nowhere: the schema's CHECK names the
+ * same three, and `threeSeparateEntities.test.js` asserts a row of each exists
+ * on one mobile. A fourth would be added HERE and in the CHECK together.
+ *
+ * MERCHANT is in this list and it is the one that surprises people: a merchant
+ * signup writes a `users` row (the login) as well as a `merchants` row (the
+ * trading identity), so merchants living in their own table does NOT make their
+ * login separate. Without a type of their own that row defaults to PLAYER and
+ * the player door admits a merchant's merchant password.
+ */
+export const ACCOUNT_TYPES = Object.freeze(['PLAYER', 'STAFF', 'MERCHANT']);
+
+/**
+ * One account by mobile AND ACCOUNT TYPE, or null.
+ *
+ * ── Why the type is required, with no default ─────────────────────────────
+ * A mobile is no longer unique on its own: one person may hold a player, a
+ * staff and a merchant account with different passwords (owner, 2026-09-24), so
+ * `WHERE mobile = $1` can match three rows and returns whichever the planner
+ * reaches first. That is the login path. A default of 'PLAYER' would have made
+ * every un-updated caller silently correct for players and silently wrong for
+ * the other two — the worst of the options, because it fails only on the
+ * accounts that move money.
+ *
+ * So it THROWS. Every call site names the population it means, and a caller
+ * that does not know which it means has found a real question rather than a
+ * missing argument.
+ *
+ * @param {'PLAYER'|'STAFF'|'MERCHANT'} accountType
+ */
+export async function getUserByMobile(mobile, accountType) {
   if (!mobile) return null;
+  if (!ACCOUNT_TYPES.includes(accountType)) {
+    throw new Error(
+      `getUserByMobile requires an accountType of ${ACCOUNT_TYPES.join(', ')} — a mobile `
+      + 'can hold one of each, so a lookup without it is ambiguous by construction');
+  }
   const { rows } = await pgQuery(
-    `SELECT ${COLUMNS} FROM users WHERE mobile = $1`, [String(mobile)], 'user_get_mobile',
+    `SELECT ${COLUMNS} FROM users WHERE mobile = $1 AND account_type = $2`,
+    [String(mobile), accountType], 'user_get_mobile',
   );
   return toUser(rows[0]);
 }
@@ -302,6 +358,11 @@ export async function createUser({
   userId, username, mobile, passwordHash = null, referralCode = null,
   referredBy = null, status = 'ACTIVE', isAdmin = false,
   kycStatus = 'PENDING_SUBMISSION', kycSubmissionCount = 0, client = null,
+  // PLAYER unless a caller says otherwise. The default is safe here in a way it
+  // is not on the READ: creating a player by accident is refused by the unique
+  // index the moment that mobile already holds one, whereas READING the wrong
+  // population returns somebody else's account and says nothing.
+  accountType = 'PLAYER',
 }) {
   if (!userId) throw new Error('createUser requires a userId');
   if (!mobile) throw new Error('createUser requires a mobile');
@@ -315,16 +376,20 @@ export async function createUser({
 
   const { rows } = await run(
     `INSERT INTO users (user_id, username, mobile, password_hash, referral_code,
-                        referred_by, status, is_admin, kyc_status, kyc_submission_count)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-     ON CONFLICT (mobile) DO NOTHING
+                        referred_by, status, is_admin, kyc_status, kyc_submission_count,
+                        account_type)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+     ON CONFLICT (mobile, account_type) DO NOTHING
      RETURNING ${COLUMNS}`,
     [String(userId), username ?? '', String(mobile), passwordHash, referralCode,
      referredBy ? String(referredBy) : null, status, isAdmin,
-     kycStatus, kycSubmissionCount],
+     kycStatus, kycSubmissionCount, accountType],
   );
   if (rows[0]) return { user: toUser(rows[0]), created: true };
-  return { user: await getUserByMobile(mobile), created: false };
+  // The row that won the race — of the SAME type. Reading by mobile alone would
+  // hand back the staff account when a player signup lost, which is an account
+  // the caller has no business seeing and would then be seated as.
+  return { user: await getUserByMobile(mobile, accountType), created: false };
 }
 
 /**
@@ -391,6 +456,93 @@ export async function bumpReferralClicks(userId, by = 1) {
  * `maxWarnings = 0` means never auto-block, which is a real setting and not the
  * same as a threshold of zero.
  */
+/**
+ * A player did not pay for a buy order. Advance the streak and report it.
+ *
+ * ONE statement, and the streak is READ FROM THE ROW IT WRITES — the same shape
+ * as the merchant's `bumpConsecutiveRejections`. A read followed by a write
+ * would let two expiring orders in the same sweep both see 4 and both decide
+ * they were the fifth, or both see 4 and neither act.
+ */
+export async function bumpConsecutivePaymentFailures(userId) {
+  const { rows } = await pgQuery(
+    `UPDATE users SET consecutive_payment_failures = consecutive_payment_failures + 1,
+                      updated_at = now()
+      WHERE user_id = $1
+      RETURNING consecutive_payment_failures`,
+    [String(userId)], 'user_bump_payment_failures',
+  );
+  return rows.length ? Number(rows[0].consecutive_payment_failures) : 0;
+}
+
+/**
+ * A player paid. The streak goes back to zero, and so does any cool-off.
+ *
+ * Called from the deposit-credit path, which is the one place both confirm
+ * routes agree the money actually arrived — not from the order reaching PAID,
+ * which is only the player SAYING they paid.
+ *
+ * The LOCK is cleared with the streak, and that is the point of clearing it
+ * here rather than letting it run out: a player who was locked, waited, and
+ * then paid for a real order has answered the only question the lock asked.
+ * Leaving it to expire would keep them out for the rest of the hour after they
+ * had already put it right.
+ */
+export async function resetConsecutivePaymentFailures(userId) {
+  await pgQuery(
+    `UPDATE users SET consecutive_payment_failures = 0, order_lock_until = NULL,
+                      updated_at = now()
+      WHERE user_id = $1
+        AND (consecutive_payment_failures <> 0 OR order_lock_until IS NOT NULL)`,
+    [String(userId)], 'user_reset_payment_failures',
+  );
+}
+
+/**
+ * Stop this player opening new orders for a while.
+ *
+ * The deadline is computed BY THE DATABASE (`now() + interval`), not by the app
+ * server. Three instances with drifting clocks would each write a different
+ * deadline for the same cool-off, and the one that read it back would compare
+ * it against its own clock again — so a player could be locked for fifty
+ * minutes or seventy depending on which server answered.
+ *
+ * Extends rather than replaces: `GREATEST` keeps the later of the two, so a
+ * player who earns a second lock while serving the first does not have it
+ * shortened by the new one.
+ */
+export async function lockOrderCreation(userId, minutes) {
+  const mins = Math.max(Number(minutes) || 0, 0);
+  if (!mins) return null;
+  const { rows } = await pgQuery(
+    `UPDATE users
+        SET order_lock_until = GREATEST(
+              COALESCE(order_lock_until, now()), now() + make_interval(mins => $2)),
+            updated_at = now()
+      WHERE user_id = $1
+      RETURNING order_lock_until`,
+    [String(userId), mins], 'user_lock_order_creation',
+  );
+  return rows[0]?.order_lock_until ?? null;
+}
+
+/**
+ * Is this player in a cool-off, and until when?
+ *
+ * Compared against the DATABASE's clock for the same reason it was written with
+ * it. Returns the deadline when the lock is live and `null` when it is not, so
+ * a caller can tell the player the time rather than "try again later" — which
+ * is the difference between a rule and a brush-off.
+ */
+export async function orderLockFor(userId) {
+  const { rows } = await pgQuery(
+    `SELECT order_lock_until FROM users
+      WHERE user_id = $1 AND order_lock_until IS NOT NULL AND order_lock_until > now()`,
+    [String(userId)], 'user_order_lock',
+  );
+  return rows[0]?.order_lock_until ?? null;
+}
+
 export async function flagPaymentWarning(userId, { reason, maxWarnings = 0 }) {
   const { rows } = await pgQuery(
     `UPDATE users SET
@@ -620,7 +772,23 @@ export async function listUsers({
 } = {}) {
   const where = [];
   const params = [];
-  const add = (sql, value) => { params.push(value); where.push(sql.replace('$?', `$${params.length}`)); };
+  // `replaceAll`, not `replace`. A string pattern replaces the FIRST occurrence
+  // only, so a clause naming the same value twice —
+  //
+  //     add('(username ILIKE $? || \'%\' OR mobile LIKE $? || \'%\')', search)
+  //
+  // — left a literal `$?` in the SQL and PostgreSQL answered 42601, syntax
+  // error. That is every admin search for a player, 500ing since the search box
+  // was added: `serverError` answers with nothing (§2), so the screen showed an
+  // empty list and an admin read it as "no such player".
+  //
+  // CLAUDE.md trap 13 is this exact mistake, recorded against the mutation
+  // harness — "String.replace(string, …) changes the first occurrence only" —
+  // and it was made a second time in production SQL. Fixed in all six
+  // repositories that carry this helper, not just the one with a live caller
+  // (§0.15): the other five are one two-placeholder clause away from the same
+  // 500. One value, two references to the same $n, which is what Postgres wants.
+  const add = (sql, value) => { params.push(value); where.push(sql.replaceAll('$?', `$${params.length}`)); };
 
   if (status) add('status = $?', status);
   if (isAdmin !== null) add('is_admin = $?', Boolean(isAdmin));

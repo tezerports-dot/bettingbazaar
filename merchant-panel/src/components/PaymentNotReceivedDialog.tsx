@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * "The player says they paid and the money never arrived."
  *
@@ -63,10 +63,10 @@ export const PaymentNotReceivedDialog: React.FC<Props> = ({ open, orderRef, busy
           account. Repeated warnings can block them, so this needs evidence.
         </p>
 
-        <label style={{ display: 'block', marginTop: 16, fontSize: 10, fontWeight: 800, letterSpacing: '.07em', textTransform: 'uppercase', color: 'var(--muted, #9AA3B2)' }}>
+        <label style={{ display: 'block', marginTop: 16, fontSize: 10, fontWeight: 800, letterSpacing: '.07em', textTransform: 'uppercase', color: 'var(--muted, #9AA3B2)' }} htmlFor="what-happened-the-player-sees-this">
           What happened (the player sees this)
         </label>
-        <textarea
+        <textarea id="what-happened-the-player-sees-this"
           value={reason}
           onChange={(e) => setReason(e.target.value)}
           rows={3}

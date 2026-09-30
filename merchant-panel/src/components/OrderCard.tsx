@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 //
 // Order card — design handoff "BB Merchant Panel.dc.html".
 // One card per order in the merchant's queue: what it is, how much, who it is
@@ -10,7 +10,7 @@
 import React from 'react';
 import { ArrowDownLeft, ArrowUpRight, Check, Clock, Copy, ChevronRight, ShieldCheck } from 'lucide-react';
 import { OrderStatus, type MerchantProfile, type PaymentOrder } from '../types';
-import { counterpartyOf, formatMoney, railCopy, railOf, tokenColumn, truncateMiddle, type MerchantRail } from '../utils/rail';
+import { counterpartyOf, formatMoney, railCopy, railOf, receivingAddressFor, tokenColumn, truncateMiddle, type MerchantRail } from '../utils/rail';
 import { formatCountdown, secondsLeft, URGENT_SECONDS } from '../hooks/useCountdown';
 import { Banner, Button, CopyRow, StatusPill, cardStyle, copyText } from './ui';
 
@@ -23,7 +23,7 @@ export interface OrderActions {
   onRelease: (order: PaymentOrder) => void;
   /** Withdrawal: record that the payout has been sent. */
   onPayout: (order: PaymentOrder) => void;
-  onDispute: (order: PaymentOrder) => void;
+  onRedFlag: (order: PaymentOrder) => void;
   onOpen: (order: PaymentOrder) => void;
 }
 
@@ -39,18 +39,19 @@ export function paymentDestination(
   if (isDeposit) {
     // Money coming in — the merchant's own credentials, which the user pays to.
     if (rail === 'USDT') {
-      const address = merchant?.usdtWalletAddress || '';
-      return address ? { label: 'Your USDT address — user sends here', value: address, sub: copy.networkNote } : null;
+      // The address for THIS order's chain. A merchant may hold both, and
+      // showing the wrong one sends a player's tokens to a network where the
+      // address does not exist — unrecoverable.
+      const receiving = receivingAddressFor(merchant, order.usdtChain);
+      return receiving
+        ? { label: `Your ${receiving.label} address — user sends here`, value: receiving.address, sub: receiving.label }
+        : null;
     }
     const upi = merchant?.settlementDetails?.upiId || merchant?.bankDetails?.upiId || '';
     return upi ? { label: 'Your UPI — user pays here', value: upi } : null;
   }
 
   // Money going out — the user's payout destination, carried on the order.
-  if (rail === 'USDT') {
-    const address = order.userUsdtAddress || '';
-    return address ? { label: copy.payoutDestinationLabel, value: address, sub: copy.networkNote } : null;
-  }
   const bank = order.userBankDetails;
   if (bank?.accountNumber) {
     return {
@@ -59,7 +60,7 @@ export function paymentDestination(
       sub: [bank.bankName, bank.ifscCode].filter(Boolean).join(' · '),
     };
   }
-  return order.upiId ? { label: 'Send to user UPI', value: order.upiId } : null;
+  return null;
 }
 
 const OPEN_STATUSES: string[] = [OrderStatus.PENDING_QUEUE, OrderStatus.ASSIGNED, OrderStatus.PROCESSING];
@@ -87,7 +88,7 @@ export const OrderCard: React.FC<{
 
   const destination = OPEN_STATUSES.includes(order.status) ? paymentDestination(order, merchant, rail) : null;
   const token = tokenColumn(order, rail);
-  const reference = String(order.orderId || order.shortId || order._id || '');
+  const reference = String(order.orderId || order._id || '');
   const counterparty = counterpartyOf(order);
 
   return (
@@ -246,7 +247,7 @@ export const OrderCard: React.FC<{
         )}
         {order.status === OrderStatus.REJECTED && (
           <Banner tone="danger" title="Rejected" style={{ marginBottom: 13 }}>
-            {order.rejectionReason || order.disputeReason || 'This order was rejected.'}
+            {order.rejectedReason || order.disputeReason || 'This order was rejected.'}
           </Banner>
         )}
 
@@ -264,8 +265,8 @@ export const OrderCard: React.FC<{
             <Button tone="ok" onClick={() => actions.onRelease(order)} style={{ flex: 1 }}>
               <ShieldCheck size={16} /> Confirm &amp; release
             </Button>
-            <Button variant="outline" tone="dispute" title="Send to an admin to decide" onClick={() => actions.onDispute(order)}>
-              Dispute
+            <Button variant="outline" tone="dispute" title="Send to an admin to review" onClick={() => actions.onRedFlag(order)}>
+              Flag
             </Button>
           </div>
         )}
@@ -290,8 +291,8 @@ export const OrderCard: React.FC<{
             <Button tone="ok" onClick={() => actions.onPayout(order)} style={{ flex: 1 }}>
               <ArrowUpRight size={16} /> Mark payout sent
             </Button>
-            <Button variant="outline" tone="dispute" title="Cannot process" onClick={() => actions.onDispute(order)}>
-              Dispute
+            <Button variant="outline" tone="dispute" title="Cannot process — send to an admin" onClick={() => actions.onRedFlag(order)}>
+              Flag
             </Button>
           </div>
         )}

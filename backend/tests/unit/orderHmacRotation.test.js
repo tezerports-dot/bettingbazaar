@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 // Order integrity HMAC must survive ORDER_HMAC_SECRET rotation: orders signed
 // under the old secret must still verify (via ORDER_HMAC_PREVIOUS_SECRETS) so a
 // rotation never 403s in-flight payment orders — the same overlap the PASETO and

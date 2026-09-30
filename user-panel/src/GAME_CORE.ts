@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * ╔══════════════════════════════════════════════════════════════════════════╗
  * ║                        GAME_CORE.ts  — v1.0.0                          ║
@@ -16,11 +16,16 @@
  * ║    import { PHASE, WINNER, PAYOUT, CELEBRATION } from '../GAME_CORE';   ║
  * ║                                                                          ║
  * ║  Files that MUST import from here:                                       ║
- * ║    services/GameContext.tsx   — calculateStatus(), tick()               ║
- * ║    components/Game/CycleControl.tsx — status labels                     ║
- * ║    components/Game/BettingCard.tsx  — isLocked, celebration display     ║
- * ║    components/Game/WinnerCelebration.tsx — timing + display             ║
- * ║    services/realBackend.ts          — (reference only, server enforces) ║
+ * ║    services/GameContext.tsx   — calculateStatus(), tick()                ║
+ * ║    redesign/GameScreen.tsx    — phase labels, lock, celebration          ║
+ * ║    types.ts                   — the shared phase/winner unions           ║
+ * ║    services/realBackend.ts    — (reference only, server enforces)        ║
+ * ║                                                                          ║
+ * ║  This roster named components/Game/{CycleControl,BettingCard,            ║
+ * ║  WinnerCelebration}.tsx. None had been mounted since RedesignShell       ║
+ * ║  replaced Layout/Header, and that directory no longer exists. It is      ║
+ * ║  rebuilt from what actually imports this file (§14: no committed         ║
+ * ║  artifact describes something that is not there).                        ║
  * ║                                                                          ║
  * ║  DO NOT copy-paste these values into individual files.                  ║
  * ║  DO NOT override these values in GameContext or anywhere else.          ║

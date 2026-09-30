@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * The accounts table, against a REAL PostgreSQL (skipped when DATABASE_URL is
  * unset).
@@ -73,9 +73,9 @@ describePg('accounts (PostgreSQL)', () => {
   describe('lookups', () => {
     it('finds by mobile and by referral code, and returns null for neither', async () => {
       await createUser(mk({ referralCode: 'ALICE1' }));
-      expect((await getUserByMobile('9990000001')).userId).toBe('u-1');
+      expect((await getUserByMobile('9990000001', 'PLAYER')).userId).toBe('u-1');
       expect((await getUserByReferralCode('ALICE1')).userId).toBe('u-1');
-      expect(await getUserByMobile('0000000000')).toBeNull();
+      expect(await getUserByMobile('0000000000', 'PLAYER')).toBeNull();
       expect(await getUserByReferralCode('NOPE')).toBeNull();
       expect(await getUser(null)).toBeNull();
     });
@@ -308,6 +308,52 @@ describePg('accounts (PostgreSQL)', () => {
 
     it('returns no cursor on a partial page', async () => {
       expect((await listUsers({ limit: 100 })).nextCursor).toBeNull();
+    });
+
+    /**
+     * ── The admin search box 500'd on every keystroke ────────────────────
+     * The WHERE builder substituted its placeholder with
+     * `sql.replace('$?', …)`, and a string pattern replaces the FIRST
+     * occurrence only. The search clause names the value twice — username OR
+     * mobile — so a literal `$?` was left in the SQL and PostgreSQL answered
+     * 42601, syntax error. `serverError` answers with nothing (§2), so the
+     * screen drew an empty list and an admin read it as "no such player".
+     *
+     * CLAUDE.md trap 13 records this exact mistake against the mutation
+     * harness. It was made again here, in production SQL, and no test had ever
+     * passed `search` — which is why these assert BOTH sides of the OR: a fix
+     * that only repaired the username half would pass a test that only
+     * searched by name.
+     */
+    describe('search', () => {
+      it('matches a username prefix', async () => {
+        const found = await listUsers({ search: 'user3' });
+        expect(found.users.map((u) => u.userId)).toEqual(['u-3']);
+      });
+
+      it('matches a mobile prefix — the other half of the same OR', async () => {
+        const found = await listUsers({ search: '9770000004' });
+        expect(found.users.map((u) => u.userId)).toEqual(['u-4']);
+      });
+
+      it('a prefix nobody has returns nothing, rather than throwing', async () => {
+        const found = await listUsers({ search: 'zzzz-nobody' });
+        expect(found.users).toEqual([]);
+        expect(found.total).toBe(0);
+      });
+
+      it('is a PREFIX match, so the search box cannot scan every account', async () => {
+        // 'ser3' is inside 'user3' but not at the front: a leading wildcard
+        // would match it and make the index unusable.
+        expect((await listUsers({ search: 'ser3' })).users).toEqual([]);
+      });
+
+      it('combines with another filter instead of replacing it', async () => {
+        await updateUser('u-3', { status: 'SUSPENDED' });
+        expect((await listUsers({ search: 'user3', status: 'ACTIVE' })).users).toEqual([]);
+        expect((await listUsers({ search: 'user3', status: 'SUSPENDED' })).users
+          .map((u) => u.userId)).toEqual(['u-3']);
+      });
     });
 
     it('filters by status and by flag', async () => {

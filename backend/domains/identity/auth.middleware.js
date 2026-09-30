@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * ════════════════════════════════════════════════════════════════════════════
  * 🔐 AUTHENTICATION & AUTHORIZATION MIDDLEWARE
@@ -22,6 +22,9 @@
  */
 
 import { db } from '#db';
+// The KYC vocabulary has one owner, and it is not this file — the payment
+// service needs the same rule without booting the token layer to get it.
+import { isKycLinked, isKycApproved, kycRefusalFor } from './kycGates.js';
 import { isTokenRevoked as pgIsTokenRevoked } from '#db/repositories/identity.js';
 import { getUser } from '#db/repositories/users.js';
 import { setContextUser } from '../../middleware/requestContext.js'; // X-6
@@ -29,7 +32,11 @@ import { setContextUser } from '../../middleware/requestContext.js'; // X-6
 // Ed25519 signature verification, iss/aud stamped on sign. No raw token-library calls remain here.
 import { signToken, verifyJwt, JWT_SECRET, JWT_EXPIRES_IN } from './jwt.util.js';
 import { isChallengeToken } from './twoFactorChallenge.js';
+// WHO must hold a second factor — its own module, because importing the 2FA
+// ROUTES here would be a cycle: they import this file.
+import { requires2FA } from './twoFactorPolicy.js';
 import { getSystemConfig } from '#db/repositories/config.js';
+import { serverError } from '../../shared/httpError.js';
 
 // JWT_SECRET / JWT_EXPIRES_IN now come from jwt.util.js (imported above), which
 // fail-fasts on a missing secret and owns the 24h default. Re-exported at the
@@ -69,6 +76,42 @@ import { getSystemConfig } from '#db/repositories/config.js';
  * A caller that genuinely cannot tolerate a 401 on a database blip should be
  * fixing the blip, not weakening the check.
  */
+/**
+ * Was this token issued BEFORE the account said all its sessions were dead?
+ *
+ * ── Why this is a function and not two copies of an `if` ──────────────────
+ * It has to run on every authenticated path, and there are TWO: this
+ * middleware, and `GET /api/v1/auth/me`, which verifies the token inline in
+ * routes.js and never calls `authenticate`.
+ *
+ * It was written in the middleware only. Measured on a running server: a
+ * password reset changed the password, refused the old one at the login form,
+ * and the session held from BEFORE the reset kept answering 200 on `/me` — the
+ * single most-used authenticated endpoint on the platform, and the one a panel
+ * restores a session from on every page load. So the reset changed a password
+ * and evicted nobody, which is the whole thing it exists to do. §5, on a
+ * security check.
+ *
+ * `iat` is stamped by the signer on every token. A token that somehow carries
+ * none is treated as older than any cutoff — refused, not admitted: the failure
+ * mode of "cannot tell how old this is" must be the safe one.
+ */
+export function sessionSuperseded(user, decoded) {
+  if (!user?.sessionsValidFrom) return false;
+  const issued = decoded?.iat ? Date.parse(decoded.iat) : NaN;
+  return !Number.isFinite(issued)
+    || issued < new Date(user.sessionsValidFrom).getTime();
+}
+
+/** One refusal, so both callers say the same thing to the same panel. */
+export function refuseSupersededSession(res) {
+  return res.status(401).json({
+    success: false,
+    code: 'SESSION_SUPERSEDED',
+    message: 'Your password was changed. Please sign in again.',
+  });
+}
+
 export async function isTokenRevoked(token) {
   try {
     return await pgIsTokenRevoked(token);
@@ -78,7 +121,51 @@ export async function isTokenRevoked(token) {
   }
 }
 
-const authenticate = async (req, res, next) => {
+/**
+ * Staff who must hold a second factor, and have not enrolled one, reach the
+ * enrolment handshake and nothing else.
+ *
+ * ── What this closes ────────────────────────────────────────────────────────
+ * `requires2FA(user)` decides who must hold a factor. `loginHandler` branches
+ * on `user.twoFactorEnabled`, so the factor was demanded only of accounts that
+ * ALREADY enrolled — an admin who never did held a password-only session over
+ * the entire admin surface, permanently and silently, and `seedAdmin` puts the
+ * bootstrapped admin in exactly that state from the first boot. F-011.
+ *
+ * ── Why it is not a lockout ─────────────────────────────────────────────────
+ * The session is still ISSUED; what is refused is everything except enrolling.
+ * The admin panel routes an account carrying `mustEnroll2FA` straight to the
+ * enrolment screen, so an operator meets a form rather than a wall of 403s.
+ * That panel half had to ship first, and did — switching this on before it
+ * would have been a lockout with nothing on screen to explain it.
+ *
+ * The one way it can still bite is a missing TOTP_ENCRYPTION_KEY, without which
+ * enrolment itself throws. `server.js` says so loudly at startup rather than
+ * leaving the first admin to discover it.
+ *
+ * ── Why enrolment opts OUT by name instead of this file listing paths ───────
+ * A path allowlist here is a second place the enrolment handshake is defined,
+ * and it goes stale the first time a route moves or a step is added — the
+ * drift shape §5 names. Instead `authenticateForEnrolment` is a distinct
+ * export the enrolment routes use, so adding a step is a deliberate act at the
+ * route, and this module never has to know their URLs.
+ *
+ * `disable` deliberately does NOT opt out: an account that has not enrolled has
+ * nothing to disable, and the route already refuses it through `requires2FA`.
+ */
+function refuseUnenrolledStaff(req, res, user) {
+  if (!requires2FA(user) || user.twoFactorEnabled) return false;
+  res.status(403).json({
+    success: false,
+    code: 'TWO_FACTOR_ENROLMENT_REQUIRED',
+    mustEnroll2FA: true,
+    message: 'This account must be protected by two-factor authentication. '
+      + 'Set up an authenticator app to continue.',
+  });
+  return true;
+}
+
+const makeAuthenticate = ({ allowUnenrolledStaff = false } = {}) => async (req, res, next) => {
   try {
     // Accept token from httpOnly cookie (user panel) OR Authorization header (admin/merchant panels)
     let token = req.cookies?.auth_token;
@@ -148,6 +235,8 @@ const authenticate = async (req, res, next) => {
       });
     }
 
+    if (sessionSuperseded(user, decoded)) return refuseSupersededSession(res);
+
     // Check if user account is active
     if (user.isBlocked) {
       return res.status(403).json({ 
@@ -155,6 +244,10 @@ const authenticate = async (req, res, next) => {
         message: 'Your account has been blocked. Please contact support.' 
       });
     }
+
+    // Last of the refusals, and after `isBlocked`: a blocked account is told it
+    // is blocked rather than told to enrol in something it cannot use.
+    if (!allowUnenrolledStaff && refuseUnenrolledStaff(req, res, user)) return;
 
     // Attach user to request object for use in subsequent middleware/routes
     req.user = user;
@@ -185,6 +278,17 @@ const authenticate = async (req, res, next) => {
   }
 };
 
+/** Every authenticated route. Unenrolled staff are refused here. */
+const authenticate = makeAuthenticate();
+
+/**
+ * The enrolment handshake only — identical in every other respect.
+ *
+ * Used by `/api/2fa/status`, `/setup` and `/activate`, which are the three
+ * steps an unenrolled account has to reach in order to stop being one.
+ */
+const authenticateForEnrolment = makeAuthenticate({ allowUnenrolledStaff: true });
+
 
 /**
  * Betting and the money paths require an APPROVED Aadhaar.
@@ -201,17 +305,7 @@ const authenticate = async (req, res, next) => {
  * So each status says what is actually true and what, if anything, the player
  * can do about it. `code` stays stable for the client; only the sentence moves.
  */
-const KYC_REFUSAL = {
-  // Signed up through the bot: the Aadhaar is captured and queued. Nothing to do.
-  PENDING_APPROVAL: 'Your Aadhaar is being verified. This is done in batches and needs nothing '
-    + 'from you — you will be able to play as soon as it clears.',
-  // No Aadhaar was ever captured. This is the only status a player can act on,
-  // and the action is to finish signing up in the bot.
-  PENDING_SUBMISSION: 'Finish signing up in our Telegram bot — we still need your Aadhaar number '
-    + 'before you can play.',
-  REJECTED: 'Your Aadhaar could not be verified against the issuing authority. Please contact '
-    + 'support — this usually means a mismatch we can sort out for you.',
-};
+
 
 /**
  * The WEAKER gate: KYC details have been given, not necessarily cleared.
@@ -247,11 +341,11 @@ export async function requireLinkedKyc(req, res, next) {
     if (cfg?.kycRequired === false) return next();
 
     const status = req.user?.kycStatus || 'PENDING_SUBMISSION';
-    if (status === 'APPROVED' || status === 'PENDING_APPROVAL') return next();
+    if (isKycLinked(status)) return next();
 
     return res.status(403).json({
       success: false,
-      message: KYC_REFUSAL[status] || KYC_REFUSAL.PENDING_SUBMISSION,
+      message: kycRefusalFor(status),
       // A DIFFERENT code from the approved gate. A panel that cannot tell the
       // two apart shows "your Aadhaar is being verified" to someone who never
       // submitted one, and the button it offers leads nowhere.
@@ -268,12 +362,12 @@ export async function requireLinkedKyc(req, res, next) {
 export async function requireApprovedKyc(req, res, next) {
   try {
     const cfg = await getSystemConfig();
-    if (cfg?.kycRequired === false || req.user?.kycStatus === 'APPROVED') return next();
+    if (cfg?.kycRequired === false || isKycApproved(req.user?.kycStatus)) return next();
 
     const status = req.user?.kycStatus || 'PENDING_SUBMISSION';
     return res.status(403).json({
       success: false,
-      message: KYC_REFUSAL[status] || KYC_REFUSAL.PENDING_SUBMISSION,
+      message: kycRefusalFor(status),
       code: 'KYC_REQUIRED',
       kycStatus: status,
       // Whether the player can do anything at all. The panel uses this to
@@ -774,7 +868,7 @@ export const checkResourcePermission = (resource, action) => {
       
       next();
     } catch (error) {
-      res.status(500).json({ success: false, message: error.message });
+      return serverError(res, error, 'auth.middleware:checkResourcePermission');
     }
   };
 };
@@ -800,7 +894,7 @@ export const isMerchantApproved = async (req, res, next) => {
     // merchantAuth already verified status — just forward
     next();
   } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    return serverError(res, error, 'auth.middleware:isMerchantApproved');
   }
 };
 
@@ -815,6 +909,9 @@ export const isMerchantApproved = async (req, res, next) => {
 export {
   // Core authentication
   authenticate,
+  // The enrolment handshake only — see `makeAuthenticate`. Staff who owe a
+  // second factor reach these three steps and nothing else.
+  authenticateForEnrolment,
   optionalAuth,
   
   // Admin access control

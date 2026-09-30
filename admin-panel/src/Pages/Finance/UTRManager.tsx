@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * UTR Fraud Monitor — the bank-reference control, from the operator's side.
  *
@@ -404,8 +404,8 @@ export const UTRManager: React.FC = () => {
             </div>
 
             <div>
-              <label className="label">Review notes</label>
-              <textarea value={resolveNote} onChange={e => setResolveNote(e.target.value)} className="input resize-none" rows={3}
+              <label className="label" htmlFor="review-notes">Review notes</label>
+              <textarea id="review-notes" value={resolveNote} onChange={e => setResolveNote(e.target.value)} className="input resize-none" rows={3}
                 placeholder="Why are you approving or rejecting this?" />
               <p className="text-xs text-gray-500 mt-1">Required to reject — rejecting cancels the order.</p>
             </div>
@@ -431,8 +431,8 @@ export const UTRManager: React.FC = () => {
               This marks the reference, and does <strong>not</strong> reverse the order it belongs to — those are separate decisions.
             </p>
             <div>
-              <label className="label">Reason</label>
-              <textarea value={flagReason} onChange={e => setFlagReason(e.target.value)} className="input resize-none" rows={3}
+              <label className="label" htmlFor="reason">Reason</label>
+              <textarea id="reason" value={flagReason} onChange={e => setFlagReason(e.target.value)} className="input resize-none" rows={3}
                 placeholder="What makes this reference fraudulent?" />
               <p className="text-xs text-gray-500 mt-1">Required — this is what the player is shown if they appeal.</p>
             </div>

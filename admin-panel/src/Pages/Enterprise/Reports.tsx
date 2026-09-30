@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * Reports.tsx — Reporting Platform console (Phase 012 APIs, UI shipped
  * Phase C 2026-07-10). Financial / settlement / merchant reports with a
@@ -78,8 +78,8 @@ export const Reports: React.FC = () => {
         ]}
       />
       <div className="flex items-end gap-2 flex-wrap">
-        <div><label className="label">From</label><input type="date" className="input" style={{ width: 170 }} value={from} onChange={(e) => setFrom(e.target.value)} /></div>
-        <div><label className="label">To</label><input type="date" className="input" style={{ width: 170 }} value={to} onChange={(e) => setTo(e.target.value)} /></div>
+        <div><label className="label" htmlFor="from">From</label><input id="from" type="date" className="input" style={{ width: 170 }} value={from} onChange={(e) => setFrom(e.target.value)} /></div>
+        <div><label className="label" htmlFor="to">To</label><input id="to" type="date" className="input" style={{ width: 170 }} value={to} onChange={(e) => setTo(e.target.value)} /></div>
         <button onClick={load} className="btn-primary flex items-center h-10" disabled={loading}>
           <RefreshCw size={16} className={`mr-2 ${loading ? 'animate-spin' : ''}`} /> Run
         </button>

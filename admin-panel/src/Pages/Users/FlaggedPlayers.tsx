@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * Flagged Players — where a merchant's payment complaint gets decided.
  *
@@ -266,8 +266,8 @@ export const FlaggedPlayers: React.FC = () => {
             </span>
           </p>
           <div>
-            <label className="label">Reason (shown in the audit trail)</label>
-            <textarea value={blockReason} onChange={e => setBlockReason(e.target.value)}
+            <label className="label" htmlFor="reason-shown-in-the-audit-trail">Reason (shown in the audit trail)</label>
+            <textarea id="reason-shown-in-the-audit-trail" value={blockReason} onChange={e => setBlockReason(e.target.value)}
               className="input resize-none w-full" rows={3}
               placeholder="e.g. Third unverified payment claim; proof shows no credit on any of them." />
           </div>

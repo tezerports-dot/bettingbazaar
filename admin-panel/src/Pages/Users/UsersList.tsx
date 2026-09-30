@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import React, { useEffect, useState } from 'react';
 import { Users, Eye, Ban, CheckCircle, Plus, Minus, CreditCard, History, Ghost } from 'lucide-react';
 import { DataTable } from '../../components/DataTable';
@@ -341,8 +341,8 @@ export const UsersList: React.FC = () => {
               <p className="text-xs text-gray-500 mt-1">Current: {(phantomUser as any).phantomAccess || 'NONE'}</p>
             </div>
             <div>
-              <label className="label">Phantom Access Level</label>
-              <select value={phantomLevel} onChange={e => setPhantomLevel(e.target.value)} className="input">
+              <label className="label" htmlFor="phantom-access-level">Phantom Access Level</label>
+              <select id="phantom-access-level" value={phantomLevel} onChange={e => setPhantomLevel(e.target.value)} className="input">
                 <option value="NONE">NONE — No phantom betting</option>
                 <option value="1_MIN">1_MIN — 1-minute cycles only</option>
                 <option value="30_MIN">30_MIN — 30-minute cycles only</option>

@@ -1,4 +1,4 @@
-# GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file.
+# GOVERNANCE: Read CLAUDE.md before editing this file.
 # Auto-merge Dependabot version bumps — but ONLY the low-risk ones, and ONLY
 # after the full CI suite (tests, typecheck/build, npm audit, secret-scan) is
 # green. This kills the manual-PR churn for routine patch/minor updates without

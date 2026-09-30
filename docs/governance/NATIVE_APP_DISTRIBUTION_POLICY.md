@@ -34,7 +34,7 @@ definition: players stake money on a binary outcome and are paid from a pool.
 
 **Three consequences that the engineering plan has to absorb:**
 
-1. **There is no Indian licence to obtain.** `LAUNCH_READINESS.md` §G lists a
+1. **There is no Indian licence to obtain.** `docs/PROJECT_STATUS.md` §G lists a
    "gambling/gaming licence for each jurisdiction served" as a hard gate. For
    India that gate cannot be cleared by acquiring anything — the category is
    prohibited, not regulated. Only e-sports recognised under the National
@@ -137,7 +137,7 @@ Native shells call `GET /api/app/bootstrap` during startup and verify that
 endpoint also returns the compliance block (`geofenceRequired`, `kycRequired`,
 `hiddenProxyOrVpn: false`, `networkBypassSupported: false`).
 
-**No bundled VPN or proxy — recorded decision** (`04-GOVERNANCE.md` §20,
+**No bundled VPN or proxy — recorded decision** (`CLAUDE.md` §20,
 2026-07-28). Shipping a circumvention transport inside a real-money client
 would place bets from where the platform is not licensed to accept them. Under
 §1 that is no longer a store-policy problem; it is an offence.

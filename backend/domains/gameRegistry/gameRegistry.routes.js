@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * gameRegistry.routes.js — the Game Registry (Game Management) API.
  *
@@ -85,7 +85,7 @@ router.get('/categories', async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════
 // ADMIN — GAMES
 // ═══════════════════════════════════════════════════════════════════════════
-router.get('/admin/games', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/admin/games', authenticate, isAdmin, async (req, res) => {
   try {
     const { category, provider, status } = req.query;
     const games = await db.games.listGames({
@@ -195,7 +195,7 @@ router.delete('/admin/games/:id', authenticate, isAdmin, async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════
 // ADMIN — CATEGORIES
 // ═══════════════════════════════════════════════════════════════════════════
-router.get('/admin/categories', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/admin/categories', authenticate, isAdmin, async (req, res) => {
   try {
     res.json({ success: true, categories: await db.games.listCategoriesWithCounts({ enabledOnly: false }) });
   } catch (err) {

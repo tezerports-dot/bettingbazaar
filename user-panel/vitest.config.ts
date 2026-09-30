@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file.
+// GOVERNANCE: Read CLAUDE.md before editing this file.
 // Two tiers, in one config, because they differ only in whether they need a DOM.
 //
 //   *.test.ts   plain TypeScript panel logic — no DOM, no React. The

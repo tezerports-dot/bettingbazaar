@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * routes/retention.routes.js — leaderboard, announcements, bonus history, and
  * the manual balance adjustment.
@@ -22,7 +22,10 @@ import { db } from '#db';
 import {
   adminAdjustment, getBalanceAdjustments, ADJUSTABLE_FIELDS,
 } from '../domains/wallet/walletAuthority.service.js';
-import { authenticate, isAdmin, isAdminOrSubAdmin } from '../domains/identity/auth.middleware.js';
+import {
+  authenticate, hasPermission, isAdmin, isAdminOrSubAdmin,
+} from '../domains/identity/auth.middleware.js';
+import { publicLeaderboard } from '../domains/analytics/leaderboardPublicView.js';
 
 const router = express.Router();
 
@@ -50,7 +53,11 @@ router.get('/leaderboard/:period', async (req, res) => {
     const cache = await db.engagement.getLeaderboard(period);
     res.json({
       success: true,
-      entries: cache?.entries || [],
+      // Through the allowlist. This sent the cached rows WHOLE, and they carry
+      // `userId` — the id every user-scoped API takes — on an endpoint that
+      // needs no authentication. See leaderboardPublicView.js for why that is
+      // about identifier cost rather than about the leaderboard.
+      entries: publicLeaderboard(cache?.entries),
       generatedAt: cache?.generatedAt,
     });
   } catch (err) {
@@ -160,7 +167,7 @@ router.get('/announcements', async (req, res) => {
   }
 });
 
-router.get('/admin/announcements', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/admin/announcements', authenticate, hasPermission('canManageContent'), async (req, res) => {
   try {
     res.json({ success: true, announcements: await db.content.listAnnouncements({ limit: 200 }) });
   } catch (err) {
@@ -257,6 +264,21 @@ router.post('/admin/balance-adjust', authenticate, isAdmin, async (req, res) => 
     if (!(Number(amount) > 0)) {
       return res.status(400).json({ success: false, message: 'amount must be positive' });
     }
+    // ── The ceiling on one adjustment ──────────────────────────────────────
+    // This was bounded at `> 0` and nothing else. A DEBIT is capped by what
+    // the player holds (the `Insufficient` branch below), so the open end was
+    // a CREDIT: one admin, one click, any sum, with an audit row as the only
+    // record. `SystemConfig.maxBalanceAdjustment` is the one owner of the
+    // number — the panel reads the same value to bound its input, rather than
+    // repeating it (§2, §4).
+    const { maxBalanceAdjustment } = await db.config.getSystemConfig();
+    if (Number(amount) > Number(maxBalanceAdjustment)) {
+      return res.status(400).json({
+        success: false,
+        message: `amount must be at most ₹${Number(maxBalanceAdjustment).toLocaleString('en-IN')}`
+          + ' — raise the ceiling in System Settings if this is intended',
+      });
+    }
 
     const user = await db.users.getUser(userId);
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
@@ -289,6 +311,23 @@ router.post('/admin/balance-adjust', authenticate, isAdmin, async (req, res) => 
       }
     }
 
+    // ── Tell the player, and the admin room ────────────────────────────────
+    // Carried over from `/users/:userId/adjust-balance`, which this route
+    // absorbed. Without it an operator credits an account and the player goes on
+    // seeing the old number until something else makes them reload — and the
+    // two screens behaved differently depending on which one was used.
+    //
+    // The balances come from the movement itself, never a re-read: a re-read can
+    // pick up a LATER movement and attribute it to this one.
+    if (global.io) {
+      global.io.to(`user-${userId}`).emit('user_update', {
+        depositBalance:  result.balances?.depositBalance  ?? 0,
+        winningsBalance: result.balances?.winningsBalance ?? 0,
+        server_ts: Date.now(),
+      });
+      global.io.to('admin-room').emit('admin_stats_delta', { type: 'BALANCE_ADJUSTED', server_ts: Date.now() });
+    }
+
     res.json({
       success: true,
       message: `${type === 'CREDIT' ? 'Credited' : 'Debited'} ₹${amount} ${type === 'CREDIT' ? 'to' : 'from'} ${user.username}`,
@@ -302,7 +341,7 @@ router.post('/admin/balance-adjust', authenticate, isAdmin, async (req, res) => 
   }
 });
 
-router.get('/admin/balance-adjustments', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/admin/balance-adjustments', authenticate, hasPermission('canManageUsers'), async (req, res) => {
   try {
     const { userId, page = 1, limit = 30 } = req.query;
     const { adjustments, total } = await getBalanceAdjustments({ userId: userId || null, page, limit });

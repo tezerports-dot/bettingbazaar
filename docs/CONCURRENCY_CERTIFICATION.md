@@ -105,7 +105,7 @@ times to hit whatever window you believe remains.
 **Expected.** Zero unaudited movements, every time. A transaction either
 committed or it did not. **A non-zero count is a P1 bug**, not a tolerable
 window — it would mean something writes a balance outside the transaction that
-writes its ledger, which §7 of `04-GOVERNANCE.md` forbids.
+writes its ledger, which §7 of `CLAUDE.md` forbids.
 
 **Counters must be reconstructed from rows, not accumulated** while you measure:
 an accumulator counts passes, not rows, and the crash you are inducing is exactly

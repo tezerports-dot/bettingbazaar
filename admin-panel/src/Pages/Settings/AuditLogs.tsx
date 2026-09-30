@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * AuditLogs.tsx -- FIX A4: Field mapping corrected to match EnhancedAuditLog schema.
  *
@@ -151,7 +151,7 @@ export const AuditLogs: React.FC = () => {
       ]} />
 
       <Toolbar search={{ value: search, onChange: setSearch, placeholder: 'Search actor, action…' }} />
-      <DateRangePicker startDate={startDate} endDate={endDate} onStartDateChange={setStartDate} onEndDateChange={setEndDate} />
+      <DateRangePicker filters="audit entries" startDate={startDate} endDate={endDate} onStartDateChange={setStartDate} onEndDateChange={setEndDate} />
 
       {/* Table */}
       <div className="card">

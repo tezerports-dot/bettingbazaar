@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /** merchant.admin.routes.js — admin-facing merchant management. Domain: Merchant
  * (BBEPS Phase 003 §3.3). Moved from backend/routes/admin/merchants.admin.routes.js
  * on 2026-07-01 (BBEPS Phase 004 migration). */
@@ -9,6 +9,18 @@ import { creditMerchantTokens, debitMerchantTokens } from './merchantWallet.serv
 import { MERCHANT_CURRENCY, MERCHANT_CURRENCIES, merchantTypeOf } from './merchantCurrency.js';
 import * as issuance from '#db/repositories/adminIssuance.js';
 import { requireIdempotencyKey } from '../../middleware/idempotencyKey.js';
+import { CASH_DENOMINATIONS_PAISE, isCashDenomination } from './denominations.js';
+import { rupeesToPaise } from '../../shared/money.js';
+import { assertExternalHttpsUrl } from '../../shared/storedUrl.js';
+import { assertStaffPassword } from '../identity/passwordPolicy.js';
+import { serverError, respondError } from '../../shared/httpError.js';
+import { getSystemConfig } from '#db/repositories/config.js';
+import { adminToMerchantUsdtRate } from '../configuration/tokenRates.js';
+import {
+  DIRECTIONS as CONSIDERATION_DIRECTIONS,
+  CONSIDERATION_CURRENCIES,
+  assertRecordable as assertConsiderationRecordable,
+} from '#db/repositories/adminTokenConsiderations.js';
 
 const router = express.Router();
 
@@ -27,16 +39,16 @@ const router = express.Router();
  * Issuance goes through the double-entry treasury.
  *
  * It used to be a counter held inline in this file: a number incremented on
- * mint and decremented on issue, with nothing recording where the tokens went.
+ * transfer and decremented on failure, with nothing recording where they went.
  * The treasury posts both sides of every movement, so "how many tokens exist
  * and who holds them" is answerable from the ledger rather than from a total
  * nobody can reconstruct.
  *
  * ── The contract change ─────────────────────────────────────────────────────
- * Every mint carries a `movementId`, because the operation is not idempotent
- * without one: `reserveAdminMint(amount)` took an amount and nothing else, so
- * two deliveries of one admin request minted twice and nothing could tell that
- * from two legitimate top-ups. The key also ties the mint to the merchant
+ * Every transfer carries a `movementId`, because the operation is not idempotent
+ * without one: `reserveAdminTransfer(amount)` took an amount and nothing else, so
+ * two deliveries of one admin request transferred twice and nothing could tell
+ * that from two legitimate top-ups. The key also ties the transfer to the merchant
  * credit that follows it, so the pair can never half-apply.
  *
  * Where the key comes from differs by endpoint, and the difference is whether a
@@ -54,12 +66,12 @@ const router = express.Router();
  * See middleware/idempotencyKey.js for the shape rules and why a key that
  * reaches a UNIQUE column is validated rather than trusted.
  */
-async function reserveAdminMint(amount, opts) {
-  return issuance.reserveAdminMint({ amountTokens: Number(amount), ...opts });
+async function reserveAdminTransfer(amount, opts) {
+  return issuance.reserveAdminTransfer({ amountTokens: Number(amount), ...opts });
 }
 
-async function rollbackAdminMint(amount, opts) {
-  return issuance.rollbackAdminMint({ amountTokens: Number(amount), ...opts });
+async function rollbackAdminTransfer(amount, opts) {
+  return issuance.rollbackAdminTransfer({ amountTokens: Number(amount), ...opts });
 }
 
 
@@ -132,7 +144,7 @@ router.get('/merchants', authenticate, isAdmin, async (req, res) => {
  */
 
 // ✅ FIX #20: Audit log endpoint now uses EnhancedAuditLog model (defined in models/audit.model.js)
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 router.get('/merchants/:merchantId', authenticate, isAdmin, async (req, res) => {
   try {
     const { merchantId } = req.params;
@@ -199,31 +211,74 @@ router.put('/merchants/:merchantId/activate', authenticate, isAdmin, async (req,
 });
 
 /**
- * Set the order range an admin will route to this merchant.
+ * Set this merchant's concurrency cap and, on the cash rail, their tier.
  *
- * ── One owner for the value ─────────────────────────────────────────────────
- * This wrote `merchantLimits.perTransactionLimit` onto the ACCOUNT, while the
- * merchant record carried `minOrder`/`maxOrder` for the same thing — two
- * owners for one number, which the assignment service read from the merchant
- * and this route wrote to the account. Changing a limit here therefore changed
- * nothing about which orders the merchant was offered.
+ * ── The order RANGE is gone, and nothing replaced it ────────────────────────
+ * This route used to write `minOrder`/`maxOrder`. Two owners had already been
+ * collapsed into one here — `merchantLimits.perTransactionLimit` on the account
+ * versus the merchant row — and the surviving one turned out to gate nothing:
+ * `assignmentCandidates` never named either column, and the only filter on them
+ * was in the admin's available-merchants LIST, a screen. An admin could set a
+ * range, be told it saved, and the merchant would be offered exactly the same
+ * orders. §3: an admin-editable field with no consumer is a violation, so both
+ * are removed rather than given one.
  *
- * The merchant row owns it. That is the row assignment reads, and the row that
- * refuses a range excluding every amount.
+ * What they were reaching for has owners already. The CEILING is the tokens the
+ * merchant holds, and it is enforced rather than checked: the deposit escrow
+ * reserves them the moment an order becomes theirs (F-018). The FLOOR is the
+ * platform's — `SystemConfig.minDeposit` / `minWithdrawal`, 500 tokens, the
+ * same for everyone, because a small order still takes real inventory out of
+ * circulation for the length of its window.
  */
 router.put('/merchants/:merchantId/limits', authenticate, isAdmin, async (req, res) => {
   try {
     const { merchantId } = req.params;
-    const { minOrder, maxOrder, perTransactionLimit, minTransaction } = req.body;
+    const { cashDenomination } = req.body;
 
     // The panel sends either spelling. Both mean the same range.
     const patch = {};
-    const nextMax = maxOrder ?? perTransactionLimit;
-    const nextMin = minOrder ?? minTransaction;
-    if (nextMin !== undefined) patch.minOrder = Number(nextMin);
-    if (nextMax !== undefined) patch.maxOrder = Number(nextMax);
+
+    // ── The cash rail's amount: ONE denomination, or none ────────────────────
+    // The range above governs the UPI rail. On the cash rail a merchant stands
+    // at an ATM and the machine dispenses a fixed amount, so their capability
+    // is a single figure — and it is exactly one, which is why this is a
+    // column rather than a list. `null` withdraws cash-rail approval entirely.
+    if (cashDenomination !== undefined) {
+      if (cashDenomination === null) {
+        patch.cashDenominationPaise = null;
+      } else {
+        const paise = rupeesToPaise(cashDenomination);
+        if (!isCashDenomination(paise)) {
+          return res.status(400).json({
+            success: false,
+            message: `Not a cash denomination: ₹${cashDenomination}. An ATM dispenses ${
+              CASH_DENOMINATIONS_PAISE.map((v) => `₹${v / 100}`).join(', ')} and nothing else.`,
+          });
+        }
+        patch.cashDenominationPaise = paise;
+      }
+    }
+
     if (!Object.keys(patch).length) {
       return res.status(400).json({ success: false, message: 'No limit fields provided.' });
+    }
+
+    // Changing what a merchant serves while they are holding an order changes
+    // the amount they were assigned under. The same shape as the delete guard:
+    // refuse, name the orders, and let the admin wait or reassign.
+    if (patch.cashDenominationPaise !== undefined) {
+      // `getActiveOrderCounts` is already the one owner of this number, derived
+      // from `order_states` rather than accumulated — a second counter here
+      // would be a second answer waiting to disagree.
+      const counts = await db.merchants.getActiveOrderCounts([merchantId]);
+      const open = counts.get(String(merchantId))?.total ?? 0;
+      if (open > 0) {
+        return res.status(409).json({
+          success: false,
+          reason: 'MERCHANT_HAS_OPEN_ORDERS',
+          message: `This merchant is holding ${open} open order(s). Changing the denomination now would change the amount they were assigned under — wait for them to finish, or reassign first.`,
+        });
+      }
     }
 
     let merchant;
@@ -240,7 +295,9 @@ router.put('/merchants/:merchantId/limits', authenticate, isAdmin, async (req, r
     }
     if (!merchant) return res.status(404).json({ success: false, message: 'Merchant not found' });
 
-    const limits = { minOrder: merchant.minOrder, maxOrder: merchant.maxOrder };
+    const limits = {
+      cashDenomination: merchant.cashDenomination,
+    };
 
     await db.audit.recordDetailed({
       performedBy: req.user.userId, action: 'MERCHANT_LIMITS_UPDATED', category: 'MERCHANT',
@@ -276,7 +333,7 @@ router.put('/merchants/:merchantId/limits', authenticate, isAdmin, async (req, r
 router.put('/merchants/:merchantId/capabilities', authenticate, isAdmin, async (req, res) => {
   try {
     const { merchantId } = req.params;
-    const { acceptsDeposits, acceptsWithdrawals, acceptedCurrencies, merchantType, minOrder, maxOrder } = req.body;
+    const { acceptsDeposits, acceptsWithdrawals, acceptedCurrencies, merchantType } = req.body;
 
     const merchant = await db.merchants.getMerchant(merchantId);
     if (!merchant) return res.status(404).json({ success: false, message: 'Merchant not found' });
@@ -302,23 +359,14 @@ router.put('/merchants/:merchantId/capabilities', authenticate, isAdmin, async (
         if (nextRail === MERCHANT_CURRENCY.USDT) {
           patch.bankUpiId = null; patch.bankAccountNo = null;
           patch.bankIfsc = null; patch.bankAccountHolderName = null;
-          patch.qrCodeUrl = null;
         } else {
-          patch.usdtWalletAddress = null;
+          patch.usdtAddressTrc20 = null; patch.usdtAddressBep20 = null;
         }
       }
       patch.acceptedCurrencies = rails;
     }
     if (typeof acceptsDeposits === 'boolean')    patch.acceptsDeposits = acceptsDeposits;
     if (typeof acceptsWithdrawals === 'boolean') patch.acceptsWithdrawals = acceptsWithdrawals;
-    if (minOrder !== undefined) {
-      if (!(Number(minOrder) >= 0)) return res.status(400).json({ success: false, message: 'minOrder must be >= 0.' });
-      patch.minOrder = Number(minOrder);
-    }
-    if (maxOrder !== undefined) {
-      if (!(Number(maxOrder) > 0)) return res.status(400).json({ success: false, message: 'maxOrder must be > 0.' });
-      patch.maxOrder = Number(maxOrder);
-    }
 
     // The range and the rail are checked by the ROW as well. These messages
     // exist so an admin gets one they can act on rather than a constraint name.
@@ -337,7 +385,6 @@ router.put('/merchants/:merchantId/capabilities', authenticate, isAdmin, async (
     const capabilities = {
       acceptsDeposits: updated.acceptsDeposits, acceptsWithdrawals: updated.acceptsWithdrawals,
       merchantType: updated.merchantType, acceptedCurrencies: updated.acceptedCurrencies,
-      minOrder: updated.minOrder, maxOrder: updated.maxOrder,
     };
 
     // Not swallowed. This is the record of an admin changing which orders a
@@ -450,6 +497,65 @@ router.put('/merchants/:merchantId/approve', authenticate, isAdmin, async (req, 
   }
 });
 
+/**
+ * Lift an assignment pause after speaking to the merchant.
+ *
+ * The merchant was paused because three buy orders in a row expired with nobody
+ * paying — which says nothing about their honesty and quite a lot about whether
+ * anyone can actually pay them. There is no timer on it, deliberately: a clock
+ * cannot tell whether the QR was fixed, and an admin who has just had the
+ * conversation can.
+ *
+ * SEPARATE from approve/suspend, because it answers a different question (§7).
+ * `approveMerchant` is about whether this merchant is allowed to trade at all;
+ * this is about whether the platform currently believes they are reachable.
+ * Folding it into approve would mean lifting a pause required un-suspending a
+ * merchant nobody had suspended.
+ *
+ * The expiry streak is zeroed with it, in the same statement — left at three,
+ * the next ordinary expiry pauses them again and this decision lasts one order.
+ */
+router.put('/merchants/:merchantId/resume-assignment', authenticate, isAdmin, async (req, res) => {
+  try {
+    const { merchantId } = req.params;
+    const { note } = req.body ?? {};
+
+    const before = await db.merchants.getMerchant(merchantId);
+    if (!before) return res.status(404).json({ success: false, message: 'Merchant not found' });
+    if (!before.assignmentPausedAt) {
+      // 200, not an error: an admin clearing a pause that a completed order has
+      // already cleared has got what they wanted.
+      return res.json({ success: true, message: 'This merchant was not paused.', alreadyActive: true });
+    }
+
+    const merchant = await db.merchants.resumeAssignment(merchantId);
+
+    await db.audit.recordDetailed({
+      performedBy: req.user.userId, action: 'MERCHANT_ASSIGNMENT_RESUMED', category: 'MERCHANT',
+      targetType: 'Merchant', targetId: merchantId, targetName: merchant.name,
+      // What they were paused FOR travels into the record, because the row no
+      // longer carries it once the pause is lifted.
+      details: {
+        pausedAt: before.assignmentPausedAt,
+        pausedReason: before.assignmentPauseReason,
+        expiriesAtPause: before.consecutiveExpiries,
+        note: note ? String(note).slice(0, 500) : null,
+      },
+    });
+
+    if (global.sseManager) {
+      global.sseManager.broadcastToAdmins('merchant_assignment_resumed', {
+        merchantId, resumedAt: new Date(),
+      });
+    }
+
+    res.json({ success: true, message: 'Assignment resumed for this merchant.' });
+  } catch (error) {
+    console.error('Resume merchant assignment error:', error);
+    res.status(500).json({ success: false, message: 'Failed to resume assignment' });
+  }
+});
+
 // Reject merchant — FIX B6-b: new endpoint (previously missing)
 router.put('/merchants/:merchantId/reject', authenticate, isAdmin, async (req, res) => {
   try {
@@ -492,6 +598,15 @@ router.post('/merchants/create', authenticate, isAdmin, async (req, res) => {
     // fix as the self-signup path, and for the same reason: a failure on the
     // second write left an account flagged as a merchant with no merchant
     // record behind it, holding a mobile nobody could reuse.
+    // The same floor as merchant self-signup. An admin creating the account is
+    // not a reason for a weaker password — it is the same credential, on the
+    // same rail, holding the same float.
+    try {
+      assertStaffPassword(password, { mobile, username }, 'merchant');
+    } catch (e) {
+      return res.status(e.status || 400).json({ success: false, code: e.code, message: e.message });
+    }
+
     const created = await db.merchants.createMerchantAccount({
       userId: db.users.newUserId(),
       username, mobile, email: email || null,
@@ -568,6 +683,77 @@ router.get('/merchants/:merchantId/transactions', authenticate, isAdmin, async (
 
 // ✅ FIX #18: Missing endpoint — admin panel QueueDashboard calls this at startup
 // GET /api/admin/queue/available-merchants?type=DEPOSIT|WITHDRAWAL&orderAmount=5000
+
+// ─────────────────────────────────────────────────────────────────────────────
+// What the platform got, or gave, for the tokens — read off the request and
+// checked BEFORE anything moves.
+//
+// Both money routes below hand an admin's typed figure to the same function, so
+// the two cannot come to different conclusions about the same input (§5). It is
+// called at the TOP of each handler, before a single token moves, because the
+// row it prepares is written AFTER the movement commits: §21's shape, where
+// anything that can throw on the second write throws with the tokens already
+// gone. By the time the insert runs, every CHECK on the table is known to hold.
+//
+// `settlementAmount` arrives in the MAJOR unit — rupees, or whole USDT — the
+// way `tokenAmount` does, because that is what an admin types. It is stored in
+// hundredths, and `rupeesToPaise` is the same rounding every other money field
+// on this platform uses, so ₹0.1 + ₹0.2 cannot become ₹0.30000000000000004.
+//
+// The USDT rate is NOT typed. It is the admin's own configured buy rate read at
+// this moment and frozen on the row (§25): an operator editing that rate
+// tomorrow must not restate a trade that has already settled. When it is unset
+// the trade is REFUSED BY NAME rather than valued at the INR peg — a 500 USDT
+// receipt booked as ₹500 is trap 15, a hundredfold understatement in the exact
+// figure this feature exists to get right.
+// ─────────────────────────────────────────────────────────────────────────────
+async function resolveConsideration(body, direction) {
+  const currency = String(body?.settlementCurrency ?? 'INR').toUpperCase();
+  const raw      = body?.settlementAmount;
+
+  // Refused here rather than at the repository so the message names the field
+  // the operator can see, and carries 400 so respondError keeps its wording.
+  const refuse = (message) => { const e = new Error(message); e.status = 400; throw e; };
+
+  if (raw === null || raw === undefined || raw === '') {
+    refuse(
+      'Record what the platform '
+      + (direction === CONSIDERATION_DIRECTIONS.RECEIVED ? 'received' : 'paid')
+      + ' for these tokens. Enter 0 if no money changed hands.',
+    );
+  }
+  const major = Number(raw);
+  if (!Number.isFinite(major) || major < 0) {
+    refuse(`The settlement amount must be zero or more — got '${raw}'.`);
+  }
+  if (!CONSIDERATION_CURRENCIES.includes(currency)) {
+    refuse(`Settlement currency must be one of ${CONSIDERATION_CURRENCIES.join(', ')} — got '${currency}'.`);
+  }
+
+  let rateUsed = null;
+  if (currency === 'USDT') {
+    const cfg  = await getSystemConfig();
+    const rate = adminToMerchantUsdtRate(cfg);
+    // adminToMerchantUsdtRate falls back to 1 when unset, which is correct for
+    // quoting a purchase and wrong for valuing one: 1 means "1 USDT = ₹1".
+    if (!Number.isFinite(rate) || rate <= 1) {
+      refuse(
+        'The admin USDT buy rate is not set, so a USDT receipt cannot be valued in rupees. '
+        + 'Set it in System Settings → USDT Pricing, or record this settlement in INR.',
+      );
+    }
+    rateUsed = rate;
+  }
+
+  const consideration = {
+    direction,
+    currency,
+    fiatAmountMinor: rupeesToPaise(major),
+    rateUsed,
+  };
+  return consideration;
+}
+
 router.post('/merchants/:merchantId/fund', authenticate, isAdmin, async (req, res) => {
   // Logs a MERCHANT_TOPUP transaction — appears in merchant-funding dashboard only,
   // NEVER in user deposit/withdrawal dashboards.
@@ -580,12 +766,21 @@ router.post('/merchants/:merchantId/fund', authenticate, isAdmin, async (req, re
       return res.status(400).json({ success: false, message: 'tokenAmount must be a positive number' });
     }
 
-    // Admin top-ups mint from the fixed treasury cap before crediting
-    // the merchant wallet. Roll back the supply reservation if the wallet
-    // write fails.
+    // An admin top-up moves tokens OUT OF THE PLATFORM'S OWN HOLDING and into
+    // the merchant's wallet — 20,000,000,000 exist and none are created here.
+    // Put them back if the wallet write fails.
     //
     // ── The key ────────────────────────────────────────────────────────────
-    // REQUIRED from the caller, and one id covers both the mint and the credit
+    // ── The `mint_` prefix stays, and that is deliberate ──────────────────
+    // The vocabulary around it changed — nothing is minted, tokens move out of
+    // the platform's holding — but this string is an IDEMPOTENCY KEY on the
+    // wire, not a description. Renaming it would mean a request made before the
+    // deploy and retried after it produces a DIFFERENT movement id under the
+    // same caller key, so the UNIQUE gate would not recognise the retry and the
+    // merchant would be funded twice. An opaque id is allowed to carry a name
+    // history; a double transfer is not.
+    //
+    // REQUIRED from the caller, and one id covers both the transfer and the credit
     // so they can never half-apply.
     //
     // What shipped was `mw_topup_${new ObjectId()}` — a fresh key per delivery,
@@ -595,13 +790,41 @@ router.post('/merchants/:merchantId/fund', authenticate, isAdmin, async (req, re
     // illusion, which is why there is no fallback: only the caller can
     // distinguish a retry from a deliberate second top-up, so an absent key is
     // a 400 rather than a guess.
-    const mintKey = requireIdempotencyKey(req);
+    const transferKey = requireIdempotencyKey(req);
+    const movementId  = `mint_${transferKey}`;
+
+    // ── The recipient, BEFORE the tokens move (trap 19) ────────────────────
+    // This used to be read from the credit's own return value, AFTER the
+    // treasury transfer had committed: `creditMerchantTokens` answers
+    // `{ merchant: null }` for an id with no merchant row — it does not throw —
+    // and the handler returned 404 without unwinding. Measured on a live
+    // server: funding a merchant id that does not exist answered "Merchant not
+    // found" while 777 tokens left TOKEN_SUPPLY and landed in MERCHANT_FLOAT,
+    // credited to nobody. MERCHANT_FLOAT then claims tokens no merchant wallet
+    // holds, which is CLAUDE.md §2's conservation invariant — platform holding
+    // + every merchant wallet + every player wallet = the total — broken
+    // silently, by a typo in a URL, with the admin told nothing moved.
+    const recipient = await db.merchants.getMerchant(merchantId);
+    if (!recipient) {
+      return res.status(404).json({ success: false, message: 'Merchant not found' });
+    }
+
+    // ── What the platform got for them, checked before they move (§21) ─────
+    // The consideration row is written after the credit commits, so everything
+    // that can refuse it is refused here, while refusing still costs nothing.
+    const consideration = await resolveConsideration(req.body, CONSIDERATION_DIRECTIONS.RECEIVED);
+    assertConsiderationRecordable({
+      ...consideration,
+      movementId, merchantId: String(merchantId),
+      tokenAmountPaise: rupeesToPaise(tokenAmountNum),
+      recordedBy: String(req.user.userId),
+    });
 
     let supply;
     let creditResult;
     try {
-      supply = await reserveAdminMint(tokenAmountNum, {
-        movementId: `mint_${mintKey}`, merchantId: String(merchantId),
+      supply = await reserveAdminTransfer(tokenAmountNum, {
+        movementId, merchantId: String(merchantId),
         actor: String(req.user.userId), refModel: 'Merchant', refId: String(merchantId),
         reason: `Admin wallet top-up${note ? ` — ${note}` : ''}`,
       });
@@ -609,33 +832,59 @@ router.post('/merchants/:merchantId/fund', authenticate, isAdmin, async (req, re
         merchantId, amount: tokenAmountNum,
         reason: `Admin wallet top-up${note ? ` — ${note}` : ''}`,
         refModel: 'Merchant', refId: String(merchantId),
-        txId: `mw_topup_${mintKey}`,
+        txId: `mw_topup_${transferKey}`,
       });
-    } catch (mintErr) {
-      if (supply) {
-        await rollbackAdminMint(tokenAmountNum, {
-          movementId: `mint_${mintKey}`, actor: String(req.user.userId),
-          refModel: 'Merchant', refId: String(merchantId),
-          reason: 'Admin wallet top-up failed after minting',
-        }).catch((e) => console.error('[admin fund] mint rollback failed:', e.message));
+      // The pre-read above makes this unreachable in practice. It stays because
+      // a merchant deleted between the two statements would otherwise land back
+      // in exactly the hole the pre-read closes, and because a silent null is
+      // what made the original invisible: raising it turns the race into the
+      // rollback path below rather than a 404 over a broken invariant.
+      if (!creditResult?.merchant) {
+        const gone = new Error('Merchant disappeared between the check and the credit.');
+        gone.status = 409;
+        throw gone;
       }
-      throw mintErr;
+    } catch (transferErr) {
+      if (supply) {
+        await rollbackAdminTransfer(tokenAmountNum, {
+          movementId, actor: String(req.user.userId),
+          refModel: 'Merchant', refId: String(merchantId),
+          reason: 'Admin wallet top-up failed after the transfer',
+        }).catch((e) => console.error('[admin fund] transfer rollback failed:', e.message));
+      }
+      throw transferErr;
     }
     const { merchant } = creditResult;
-
-    if (!merchant) {
-      return res.status(404).json({ success: false, message: 'Merchant not found' });
-    }
 
     // No separate transaction row. The mint writes a treasury entry and the
     // credit writes a merchant-wallet entry, both append-only and both inside
     // their own movements — a third hand-written record here would be a copy
     // that can disagree with the two the money actually made, and it is those
     // that reconciliation is computed from. WHO did it is the audit entry.
+    // ── The money the platform got for them ───────────────────────────────
+    // Keyed by the SAME movement id as the transfer, so a redelivered request
+    // collides here exactly as it collides in the treasury: one row for one
+    // movement, whatever the network did. Every CHECK it must satisfy was
+    // proved before the tokens moved, so this cannot be the write that fails
+    // after the commit (§21).
+    const { consideration: recorded } = await db.adminTokenConsiderations.recordConsideration({
+      ...consideration,
+      movementId, merchantId: String(merchantId),
+      tokenAmountPaise: rupeesToPaise(tokenAmountNum),
+      recordedBy: String(req.user.userId),
+      note: note || null,
+    });
+
     await db.audit.recordDetailed({
       performedBy: req.user.userId, action: 'MERCHANT_FUNDED', category: 'TREASURY',
       targetType: 'Merchant', targetId: String(merchantId),
-      details: { tokenAmount: tokenAmountNum, note: note || null, movementId: `mint_${mintKey}` },
+      details: {
+        tokenAmount: tokenAmountNum, note: note || null, movementId,
+        settlementCurrency: recorded.currency,
+        settlementAmount:   paiseToRupees(recorded.fiatAmountMinor),
+        settlementInr:      paiseToRupees(recorded.inrEquivalentPaise),
+        rateUsed:           recorded.rateUsed,
+      },
     });
 
     // From the WALLET, after the credit. The merchant record carries no
@@ -648,11 +897,20 @@ router.post('/merchants/:merchantId/fund', authenticate, isAdmin, async (req, re
       merchantUserId:   merchantId,
       tokenAmountAdded: tokenAmountNum,
       newTokenBalance,
+      // Echoed so the screen can show the operator what was BOOKED rather than
+      // what they typed — the two differ when a USDT figure is valued in
+      // rupees, and the booked one is what the P&L will read.
+      settlement: {
+        currency:  recorded.currency,
+        amount:    paiseToRupees(recorded.fiatAmountMinor),
+        inrValue:  paiseToRupees(recorded.inrEquivalentPaise),
+        rateUsed:  recorded.rateUsed,
+      },
     });
 
   } catch (error) {
     console.error('❌ Admin fund merchant error:', error);
-    res.status(error.status || 500).json({ success: false, message: error.message || 'Failed to fund merchant wallet' });
+    return respondError(res, error, 'POST /admin/merchants/:merchantId/fund', { message: 'Failed to fund merchant wallet' });
   }
 });
 
@@ -709,7 +967,7 @@ router.post('/merchant-token-orders/:orderId/approve', authenticate, isAdmin, as
 
     let supply;
     try {
-      supply = await reserveAdminMint(pending.tokenAmount, {
+      supply = await reserveAdminTransfer(pending.tokenAmount, {
         movementId: `mint_order_${orderId}`, merchantId: String(pending.merchantId),
         actor: String(req.user.userId), refModel: 'MerchantAdminTokenOrder', refId: String(orderId),
         reason: `Admin token purchase approved: ${orderId}`,
@@ -726,7 +984,7 @@ router.post('/merchant-token-orders/:orderId/approve', authenticate, isAdmin, as
       // The reservation is released because the credit did not happen. Keyed
       // on the same movement id, so releasing twice releases once.
       if (supply) {
-        await rollbackAdminMint(pending.tokenAmount, {
+        await rollbackAdminTransfer(pending.tokenAmount, {
           movementId: `mint_order_${orderId}`, actor: String(req.user.userId),
           refModel: 'MerchantAdminTokenOrder', refId: String(orderId),
           reason: `Admin token purchase ${orderId} failed after minting`,
@@ -758,7 +1016,7 @@ router.post('/merchant-token-orders/:orderId/approve', authenticate, isAdmin, as
     });
   } catch (error) {
     console.error('POST /admin/merchant-token-orders/:orderId/approve error:', error);
-    res.status(error.status || 500).json({ success: false, message: error.message || 'Failed to approve merchant token order' });
+    return respondError(res, error, 'POST /admin/merchant-token-orders/:orderId/approve', { message: 'Failed to approve merchant token order' });
   }
 });
 
@@ -810,13 +1068,28 @@ router.post('/merchants/:merchantId/deduct', authenticate, isAdmin, async (req, 
     // tell them apart. A server-generated id — which is what this used —
     // is `random()`: the UNIQUE gate behind it could never fire, so every
     // redelivery deducted a second time while the code read as protected.
-    const deductKey = requireIdempotencyKey(req);
+    const deductKey  = requireIdempotencyKey(req);
+    const movementId = `mw_deduct_${deductKey}`;
+
+    // ── What the platform paid for them, checked before they move ─────────
+    // Same discipline as the top-up: the consideration row lands after the
+    // debit commits, so everything that can refuse it is refused first (§21).
+    // PAID is INR only — the platform buys its tokens back in rupees (owner,
+    // 2026-09-23) — and the repository's CHECK says so too, so the rule holds
+    // for the next route that writes here without reading this one.
+    const consideration = await resolveConsideration(req.body, CONSIDERATION_DIRECTIONS.PAID);
+    assertConsiderationRecordable({
+      ...consideration,
+      movementId, merchantId: String(merchantId),
+      tokenAmountPaise: rupeesToPaise(Number(tokenAmount)),
+      recordedBy: String(req.user.userId),
+    });
 
     const { merchant, idempotent } = await debitMerchantTokens({
       merchantId, amount: tokenAmount,
       reason: `Admin wallet deduction — ${String(reason).trim()}`,
       refModel: 'Merchant', refId: String(merchantId),
-      txId: `mw_deduct_${deductKey}`,
+      txId: movementId,
       // allowOverdraft deliberately NOT set — the strict guard applies.
     });
 
@@ -840,10 +1113,27 @@ router.post('/merchants/:merchantId/deduct', authenticate, isAdmin, async (req, 
 
     // The movement wrote its own append-only entry. What is recorded here is
     // WHO decided it and why — which the ledger row cannot say.
+    // The money that went back out for them, keyed by the same movement the
+    // debit used — one row per movement, and a redelivery collides rather than
+    // booking a second payout. Pre-validated above, so this cannot be the write
+    // that fails after the commit.
+    const { consideration: recorded } = await db.adminTokenConsiderations.recordConsideration({
+      ...consideration,
+      movementId, merchantId: String(merchantId),
+      tokenAmountPaise: rupeesToPaise(Number(tokenAmount)),
+      recordedBy: String(req.user.userId),
+      note: String(reason).trim(),
+    });
+
     await db.audit.recordDetailed({
       performedBy: req.user.userId, action: 'MERCHANT_TOKENS_DEDUCTED', category: 'TREASURY',
       targetType: 'Merchant', targetId: String(merchantId),
-      details: { tokenAmount, reason: String(reason).trim(), movementId: `mw_deduct_${deductKey}` },
+      details: {
+        tokenAmount, reason: String(reason).trim(), movementId,
+        settlementCurrency: recorded.currency,
+        settlementAmount:   paiseToRupees(recorded.fiatAmountMinor),
+        settlementInr:      paiseToRupees(recorded.inrEquivalentPaise),
+      },
     });
 
     const newTokenBalance = await db.merchantWallets.getMerchantTokenBalance(merchantId);
@@ -853,6 +1143,12 @@ router.post('/merchants/:merchantId/deduct', authenticate, isAdmin, async (req, 
       merchantUserId:     merchantId,
       tokenAmountRemoved: tokenAmount,
       newTokenBalance,
+      settlement: {
+        currency: recorded.currency,
+        amount:   paiseToRupees(recorded.fiatAmountMinor),
+        inrValue: paiseToRupees(recorded.inrEquivalentPaise),
+        rateUsed: recorded.rateUsed,
+      },
     });
 
   } catch (error) {
@@ -862,10 +1158,7 @@ router.post('/merchants/:merchantId/deduct', authenticate, isAdmin, async (req, 
     // Idempotency-Key — the one refusal that tells the caller exactly what to
     // do — into "the server broke", on a money route where a 500 also reads as
     // "it may have half-applied". Nothing had moved.
-    res.status(error.status || 500).json({
-      success: false,
-      message: error.status ? error.message : 'Failed to deduct merchant wallet',
-    });
+    return respondError(res, error, 'POST /admin/merchants/:merchantId/deduct');
   }
 });
 
@@ -883,7 +1176,14 @@ router.put('/merchants/:merchantId/panel-url', authenticate, isAdmin, async (req
 
     // The panel URL lives on the merchant record. It was written to the
     // account, which nothing reads.
-    const merchant = await db.merchants.updateMerchant(merchantId, { panelUrl: panelUrl || '' });
+    // Stored by an admin, followed by a merchant — the condition under which a
+    // downgrade to http is somebody else's problem. Empty clears it.
+    let safePanelUrl = '';
+    if (String(panelUrl ?? '').trim()) {
+      try { safePanelUrl = assertExternalHttpsUrl(panelUrl, 'panel URL'); }
+      catch (e) { return res.status(400).json({ success: false, message: e.message }); }
+    }
+    const merchant = await db.merchants.updateMerchant(merchantId, { panelUrl: safePanelUrl });
     if (!merchant) {
       return res.status(404).json({ success: false, message: 'Merchant not found' });
     }
@@ -963,6 +1263,16 @@ router.get('/merchants/:merchantId/profit-engine', authenticate, isAdmin, async 
     const roi         = fundingCost > 0 ? ((profit / fundingCost) * 100) : 0;
     const netUserVolume = revenue + withdrawalExposure;
 
+    // ── The PLATFORM's side of the same relationship ──────────────────────
+    // Everything above is the MERCHANT's trade: what they collected from
+    // players against what they paid out. It says nothing about what the
+    // platform itself made on this merchant, because until now nothing recorded
+    // it — tokens left the platform's holding and no figure said they had been
+    // sold. These are those figures, summed on the INR-equivalent column and
+    // never on the raw one, because a merchant who paid in USDT would otherwise
+    // read as having paid a hundredth of what they did (trap 15).
+    const platformTrade = await db.adminTokenConsiderations.merchantConsiderationTotals(merchant.merchantId);
+
     const statusMap = engine.orderStatus;
 
     res.json({
@@ -985,11 +1295,31 @@ router.get('/merchants/:merchantId/profit-engine', authenticate, isAdmin, async 
         buyRate,
         sellRate,
         orderStatus:         statusMap,
+
+        // What the PLATFORM took in and paid out for this merchant's tokens.
+        // Rupees throughout — `byCurrency` keeps the figures the merchant
+        // actually sent apart by currency, because those are the only ones that
+        // reconcile against a bank line or a chain explorer.
+        platformTokenTrade: {
+          receivedInr:      paiseToRupees(platformTrade.receivedInrPaise),
+          paidInr:          paiseToRupees(platformTrade.paidInrPaise),
+          netInr:           paiseToRupees(platformTrade.netInrPaise),
+          tokensSold:       paiseToRupees(platformTrade.tokensSoldPaise),
+          tokensBoughtBack: paiseToRupees(platformTrade.tokensBoughtBackPaise),
+          movements:        platformTrade.movements,
+          byCurrency:       Object.fromEntries(
+            Object.entries(platformTrade.byCurrency).map(([code, v]) => [code, {
+              received:  paiseToRupees(v.receivedMinor),
+              paid:      paiseToRupees(v.paidMinor),
+              movements: v.movements,
+            }]),
+          ),
+        },
       },
     });
   } catch (err) {
     console.error('[profit-engine]', err.message);
-    res.status(500).json({ success: false, message: err.message });
+    return serverError(res, err, 'GET /merchants/:merchantId/profit-engine');
   }
 });
 

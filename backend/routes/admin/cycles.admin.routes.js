@@ -1,13 +1,15 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /** cycles.admin.routes.js — Cycle phases, history, equalization, manage-cycle */
-import { express, authenticate, isAdmin, isAdminOrSubAdmin } from './_adminShared.js';
+import {
+  authenticate, express, hasPermission, isAdmin, isAdminOrSubAdmin,
+} from './_adminShared.js';
 import { db } from '#db';
 import { DEFAULT_CYCLE_PHASES, isCycleType, phasesFor } from '../../domains/markets/cycleTypes.js';
 import { getSystemConfig } from '#db/repositories/config.js';
 
 const router = express.Router();
 
-router.get('/cycles/phases', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/cycles/phases', authenticate, hasPermission('canViewAnalytics'), async (req, res) => {
   try {
     const now = Date.now();
     // Cycles AND their pools in one statement. Reading the pools per cycle was
@@ -95,7 +97,7 @@ router.get('/cycles/phases', authenticate, isAdminOrSubAdmin, async (req, res) =
 // Returns settled/completed cycles for the admin cycle history page.
 // Includes full real/phantom breakdown (admin-only data).
 // ─────────────────────────────────────────────────────────────────────────────
-router.get('/cycles/history', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/cycles/history', authenticate, hasPermission('canViewAnalytics'), async (req, res) => {
   try {
     const { page = 1, limit = 50, type } = req.query;
     // The page and its total come from one statement, so the pagination an

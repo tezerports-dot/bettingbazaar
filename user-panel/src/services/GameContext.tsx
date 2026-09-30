@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * ════════════════════════════════════════════════════════════════════════════
  * GAME CONTEXT — services/GameContext.tsx  v5.0.0
@@ -28,6 +28,7 @@ import React, { createContext, useContext, useState, useEffect, useRef, useCallb
 import { CycleType, GameState, User, Bet, BettingSide, GameCycle } from '../types';
 import { ANALYTICS_WINDOW } from '../constants';
 import { getBackend, setCdnBaseUrl } from './backend.service';
+import { applyBranding } from './branding';
 
 
 // All components that need minBet / minDeposit / tokenRates should read from here.
@@ -46,7 +47,8 @@ interface SysConfig {
 }
 const DEFAULT_SYS_CONFIG: SysConfig = {
   minBet: 10, maxBet: 100000, maxFullDayBet: 500000,
-  minDeposit: 100, maxDeposit: 50000,
+  // schema default: 500 (SystemConfig.minDeposit) — a loading placeholder only.
+  minDeposit: 500, maxDeposit: 50000,
   minWithdrawal: 100, maxWithdrawal: 50000,
   tokenBuyRate: 1, tokenSellRate: 1,
   footerPages: ['home', 'results', 'winners', 'promo', 'profile'], // schema default
@@ -59,20 +61,45 @@ const backend = getBackend();
 
 interface LiveStats { totalDelhi: number; totalBombay: number; }
 
+/**
+ * What the signup form submits.
+ *
+ * Declared here rather than inline so the form, the context and the backend
+ * agree on one shape — a screen that quietly stopped sending `confirmPassword`
+ * would be answered "the two passwords do not match" for a field it never
+ * filled in.
+ */
+export interface RegisterForm {
+  aadhaar: string;
+  mobile: string;
+  password: string;
+  confirmPassword: string;
+  /** Pre-filled and non-editable when the player arrived by a referral link. */
+  referralCode?: string;
+}
+
 interface GameContextType {
   user: User | null;
   isAuthenticated: boolean;
   isOnline: boolean;
   /**
-   * Redeem a bot login link. The single entry point to an authenticated
-   * session — there is no password login and no registration, because a
-   * player's identity is established inside Telegram before this is reached.
+   * Create an account from the signup form and adopt the session it grants.
+   *
+   * Throws with the server's own sentence on a refusal: every one of them names
+   * the FIELD that is wrong, and a screen that swallowed it would send the
+   * player back to guess which box to change.
    */
-  completeTelegramLogin: (token: string) => Promise<void>;
-  /** Ask the bot to DM a sign-in code. Says nothing about the number. */
-  requestLoginCode: (mobile: string) => Promise<void>;
-  /** Sign in with a code the bot DMed. Seats the player like a link does. */
-  signInWithCode: (mobile: string, code: string) => Promise<void>;
+  register: (form: RegisterForm) => Promise<void>;
+  /**
+   * Sign in with the mobile and password.
+   *
+   * Resolves `{ twoFactorRequired, challengeToken }` instead of seating anybody
+   * when the account has an authenticator enrolled — deliberately not a throw,
+   * because it is not a failure and the form has a second step to show.
+   */
+  signIn: (mobile: string, password: string) => Promise<{ twoFactorRequired?: boolean; challengeToken?: string }>;
+  /** Redeem a 2FA challenge and seat the player. */
+  signInWithSecondFactor: (challengeToken: string, code: string) => Promise<void>;
   logout: () => void;
   cycleType: CycleType;
   setCycleType: (type: CycleType) => void;
@@ -132,9 +159,59 @@ const getCycleTimes = (type: CycleType, refTimeMs: number) => {
   return { startTime: startMs, endTime: endMs };
 };
 
-/** Compute walletBalance from dual-balance fields for Header/ProfilePage */
-const computeWalletBalance = (user: Partial<User>): number =>
-  (user.depositBalance || 0) + (user.winningsBalance || 0);
+/**
+ * Merge a balance push into the user. FOUR pockets, not three.
+ *
+ * This was five hand-written merges, each naming depositBalance,
+ * winningsBalance and lockedBalance — and none of them reserveBalance, which
+ * `realtimeEmitters.js` has always sent. So the reserve share of every deposit
+ * (10% under the ACTIVE policy) never reached the user object, and the shell
+ * header, which totals what that object holds, showed a player 900 after a
+ * 1,000-token purchase while the wallet screen showed 1,000.
+ *
+ * One merge, so a sixth caller cannot reintroduce the omission — §5: the same
+ * payload assembled in several places drifts, and it drifts silently.
+ *
+ * `src` is either a socket payload (`depositBalance`…) or a bet result's
+ * `balance` (`deposit`…), so both spellings are read.
+ */
+type BalancePush = Partial<Record<
+  'depositBalance' | 'winningsBalance' | 'reserveBalance' | 'lockedBalance' |
+  'deposit' | 'winnings' | 'reserve' | 'locked', number>>;
+
+const applyBalances = (prev: User, src: BalancePush): User => ({
+  ...prev,
+  depositBalance:  src.depositBalance  ?? src.deposit  ?? prev.depositBalance,
+  winningsBalance: src.winningsBalance ?? src.winnings ?? prev.winningsBalance,
+  reserveBalance:  src.reserveBalance  ?? src.reserve  ?? prev.reserveBalance,
+  lockedBalance:   src.lockedBalance   ?? src.locked   ?? prev.lockedBalance,
+});
+
+/**
+ * The headline figure: deposit + winnings, and NOT the reserve.
+ *
+ * Two different totals exist for one player and both are correct:
+ *
+ *   spendableBalance   deposit + winnings. What the shell header shows.
+ *   `total` from /api/user/bet-limits
+ *                      + reserve as well. What `WalletPage` shows, beside a
+ *                      RESERVE tile that accounts for the difference.
+ *
+ * The reserve is NOT freely spendable — only `betReservePercent` of a stake
+ * may be drawn from it — and `backend/routes.js` records the consequence of
+ * folding it into a headline figure anyway: players attempted bets the engine
+ * then refused. A screen that shows the breakdown can show the larger number;
+ * a bare pill in a header cannot.
+ *
+ * `lockedBalance` is excluded from both: it is a stake already committed to an
+ * open bet and is carved OUT of the other pockets when the bet is placed, so
+ * adding it would count that money twice.
+ *
+ * This exists as a named export so the header is not an inline sum that reads
+ * like an omission. It was read as one.
+ */
+export const spendableBalance = (user: Partial<User> | null | undefined): number =>
+  (user?.depositBalance || 0) + (user?.winningsBalance || 0);
 
 // Read ?ref= from URL and persist for registration
 if (typeof window !== 'undefined') {
@@ -225,7 +302,6 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
         const res = await (backend as any).getMe?.();
         if (res?.success && res.user) {
           const u = { ...res.user };
-          u.walletBalance = computeWalletBalance(u);
           setUser(u);
 
           
@@ -247,7 +323,6 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
               setUser(prev => {
                 if (!prev) return null;
                 const updated = { ...prev, ...data.user };
-                updated.walletBalance = computeWalletBalance(updated);
                 return updated;
               });
             }
@@ -339,8 +414,6 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
         setUser(prev => {
           if (!prev) return null;
           const updated = { ...prev, ...data.user };
-          // BUG-U6 fix: always compute walletBalance
-          updated.walletBalance = computeWalletBalance(updated);
           return updated;
         });
       }
@@ -683,14 +756,7 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
       if (data.winningsBalance !== undefined) {
         setUser(prev => {
           if (!prev) return null;
-          const updated = {
-            ...prev,
-            winningsBalance: data.winningsBalance,
-            depositBalance:  data.depositBalance  ?? prev.depositBalance,
-            lockedBalance:   data.lockedBalance   ?? prev.lockedBalance,
-          };
-          updated.walletBalance = computeWalletBalance(updated);
-          return updated;
+          return applyBalances(prev, data);
         });
       }
       const amount = data.amount || data.payout || 0;
@@ -718,27 +784,18 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
     const handleUserBalanceUpdate = (data: any) => {
       setUser(prev => {
         if (!prev) return null;
-        const updated = {
-          ...prev,
-          depositBalance:  data.depositBalance  ?? prev.depositBalance,
-          winningsBalance: data.winningsBalance ?? prev.winningsBalance,
-          lockedBalance:   data.lockedBalance   ?? prev.lockedBalance,
-        };
-        updated.walletBalance = computeWalletBalance(updated);
-        return updated;
+        return applyBalances(prev, data);
       });
     };
 
     const handleBrandingUpdated = (data: any) => {
       if (!data?.branding) return;
       const b = data.branding;
-      localStorage.setItem('app_branding', JSON.stringify(b));
-      // Inject CSS variables so every component using var(--brand-*) updates instantly
-      const root = document.documentElement;
-      if (b.primaryColor)   root.style.setProperty('--brand-primary',   b.primaryColor);
-      if (b.secondaryColor) root.style.setProperty('--brand-secondary', b.secondaryColor);
-      if (b.accentColor)    root.style.setProperty('--brand-accent',    b.accentColor);
-      if (b.appName)        document.title = b.appName;
+      // ONE applier (services/branding.ts). This was a second copy, and it had
+      // already drifted: it titled the tab from `appName` while App.tsx used
+      // `userPanelName`, so which name the tab showed depended on which of the
+      // two fired last (§5, §13).
+      applyBranding(b);
       window.dispatchEvent(new CustomEvent('branding_updated', { detail: b }));
     };
 
@@ -848,14 +905,7 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
         if (data.depositBalance !== undefined || data.winningsBalance !== undefined) {
           setUser(prev => {
             if (!prev) return null;
-            const updated = {
-              ...prev,
-              depositBalance:  data.depositBalance  ?? prev.depositBalance,
-              winningsBalance: data.winningsBalance ?? prev.winningsBalance,
-              lockedBalance:   data.lockedBalance   ?? prev.lockedBalance,
-            };
-            updated.walletBalance = computeWalletBalance(updated);
-            return updated;
+            return applyBalances(prev, data);
           });
         }
         return;
@@ -864,14 +914,7 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
       if (data.depositBalance !== undefined || data.winningsBalance !== undefined) {
         setUser(prev => {
           if (!prev) return null;
-          const updated = {
-            ...prev,
-            depositBalance:  data.depositBalance  ?? prev.depositBalance,
-            winningsBalance: data.winningsBalance ?? prev.winningsBalance,
-            lockedBalance:   data.lockedBalance   ?? prev.lockedBalance,
-          };
-          updated.walletBalance = computeWalletBalance(updated);
-          return updated;
+          return applyBalances(prev, data);
         });
       }
     });
@@ -892,44 +935,64 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
    * Throws on failure so the calling screen can show why; every failure reason
    * comes back as one message on purpose, and the fix is always a fresh /start.
    */
-  const completeTelegramLogin = async (token: string): Promise<void> => {
-    const res = await backend.exchangeTelegramToken(token);
+  /**
+   * Take the seat a successful auth call grants.
+   *
+   * One function for all three doors. Two ways in that seat a player
+   * differently is how one of them ends up showing an empty wallet — which has
+   * happened here: `issueSession` once read balances off fields the account row
+   * does not have, so every login on the platform reported a wallet of zero.
+   */
+  const seat = (
+    res: { success: boolean; user?: User; message?: string;
+           code?: string; retryAfter?: number; retryAt?: string },
+    fallback: string,
+  ) => {
     if (!res.success || !res.user) {
-      throw new Error(res.message
-        || 'This sign-in link is no longer valid. Send /start to the bot for a new one.');
+      // The THROTTLE fields travel with the error, not just the sentence.
+      // `useRetryCountdown` reads `retryAt` to run a live countdown and disable
+      // the button; a bare `new Error(message)` drops them, and the screen then
+      // shows a refusal beside a button that still looks pressable — so the
+      // player presses it, extends the window, and the form looks broken rather
+      // than throttled.
+      throw Object.assign(new Error(res.message || fallback), {
+        code: res.code, retryAfter: res.retryAfter, retryAt: res.retryAt,
+      });
     }
-    const u = { ...res.user } as User;
-    u.walletBalance = computeWalletBalance(u);
-    setUser(u);
+    setUser({ ...res.user } as User);
   };
 
   /**
-   * Ask the bot to DM a sign-in code.
+   * The signup form.
    *
-   * Resolves the same way whether or not the number is registered — the server
-   * answers identically and there is deliberately nothing here to branch on. It
-   * throws only when the request could not be made at all.
+   * Seats the player straight away, deliberately: the next thing they see is
+   * the Telegram verification gate, and the gate has to know who is standing at
+   * it to say which bot to open. Sending them to a login form in between is a
+   * step that exists only to be completed.
    */
-  const requestLoginCode = async (mobile: string): Promise<void> => {
-    await backend.requestLoginCode(mobile);
+  const register = async (form: RegisterForm): Promise<void> => {
+    seat(await backend.register(form), 'Could not create your account. Please try again.');
   };
 
   /**
-   * Sign in with a code the bot sent, seating the player exactly as a link
-   * would.
+   * The login form.
    *
-   * Shares `computeWalletBalance` and `setUser` with `completeTelegramLogin`
-   * rather than repeating them: two ways in that seat a player differently is
-   * how one of them ends up showing an empty wallet.
+   * A 2FA challenge is NOT a failure and must not throw: the form has a second
+   * step to show, and turning this into an error would put "Invalid
+   * credentials" in front of somebody whose password was correct.
    */
-  const signInWithCode = async (mobile: string, code: string): Promise<void> => {
-    const res = await backend.verifyLoginCode(mobile, code);
-    if (!res.success || !res.user) {
-      throw new Error(res.message || 'That code is not valid. Request a new one and try again.');
+  const signIn = async (mobile: string, password: string) => {
+    const res = await backend.login(mobile, password);
+    if (res.twoFactorRequired) {
+      return { twoFactorRequired: true, challengeToken: res.challengeToken };
     }
-    const u = { ...res.user } as User;
-    u.walletBalance = computeWalletBalance(u);
-    setUser(u);
+    seat(res, 'Could not sign you in. Please try again.');
+    return {};
+  };
+
+  const signInWithSecondFactor = async (challengeToken: string, code: string): Promise<void> => {
+    seat(await backend.verifySecondFactor(challengeToken, code),
+      'That code is not valid. Check your authenticator app and try again.');
   };
 
   const logout = () => {
@@ -960,14 +1023,7 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
       // BUG-U4 fix: read result.balance.{deposit,winnings,locked} not result.newBalance
       setUser(prev => {
         if (!prev) return null;
-        const updated = {
-          ...prev,
-          depositBalance:  result.balance?.deposit  ?? prev.depositBalance,
-          winningsBalance: result.balance?.winnings ?? prev.winningsBalance,
-          lockedBalance:   result.balance?.locked   ?? prev.lockedBalance,
-        };
-        updated.walletBalance = computeWalletBalance(updated);
-        return updated;
+        return applyBalances(prev, result.balance ?? {});
       });
 
       setUserBets(prev => [result.bet, ...prev]);
@@ -988,7 +1044,6 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
     setUser(prev => {
       if (!prev) return null;
       const updated = { ...prev, ...updatedUser };
-      updated.walletBalance = computeWalletBalance(updated);
       return updated;
     });
   };
@@ -1016,7 +1071,7 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
 
   return (
     <GameContext.Provider value={{
-      user, isAuthenticated: !!user, isOnline, completeTelegramLogin, requestLoginCode, signInWithCode, logout,
+      user, isAuthenticated: !!user, isOnline, register, signIn, signInWithSecondFactor, logout,
       cycleType, setCycleType, cycles, currentCycle: cycles[cycleType],
       pastCycles, loadCycleHistory, gameState: cycles[cycleType].status, serverTimeOffset,
       placeBet, placePhantomBet, userBets, history, triggerAdminAction, formatTime,

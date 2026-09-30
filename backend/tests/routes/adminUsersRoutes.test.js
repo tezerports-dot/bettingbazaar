@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * The admin user routes, driven over HTTP against a real database.
  *
@@ -19,6 +19,7 @@ import { pgConfigured, applySchema, closePg } from '#db/client.js';
 import { getBalancesPaise, applyMovementPaise } from '#db/repositories/wallets.core.js';
 import { createOrderRecord } from '#db/repositories/orders.record.js';
 import { getUser, flagPaymentWarning, softDeleteUser } from '#db/repositories/users.js';
+import { listNotifications } from '#db/repositories/engagement.js';
 import { mountRouter, actor, as, request } from './_harness.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
@@ -43,7 +44,6 @@ describePg('admin user routes', () => {
   it('refuses every admin route without a token', async () => {
     for (const call of [
       () => request(app).get('/users'),
-      () => request(app).post('/users/whoever/adjust-balance').send({ amount: 1 }),
       () => request(app).put('/users/whoever/block').send({ reason: 'x' }),
     ]) {
       const res = await call();
@@ -58,87 +58,23 @@ describePg('admin user routes', () => {
     expect(res.status).toBe(403);
   });
 
-  // ── The money one ────────────────────────────────────────────────────────
-  it('adjusts a balance, and the money is really there afterwards', async () => {
-    plain = await subject();
-    const res = await as(app, admin)
-      .post(`/users/${plain.userId}/adjust-balance`)
-      // THE CONTRACT, which a first draft of this test got wrong: the
-      // direction comes from the SIGN of `amount` and the pocket from
-      // `walletType`. Sending `type`/`field` does nothing — they are ignored,
-      // so a caller that believes in them credits when it meant to debit.
-      .send({ amount: 250, walletType: 'deposit', reason: 'goodwill' });
-
-    expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(res.body.success).toBe(true);
-
-    // The response saying so is not the assertion — the wallet is.
-    const balances = await getBalancesPaise(plain.userId);
-    expect(balances.depositBalance).toBe(250_00);
-  });
-
-  it('refuses a debit the pocket cannot fund, and moves nothing', async () => {
-    plain = await subject();
-    await applyMovementPaise({
-      userId: plain.userId,
-      legs: [{ field: 'depositBalance', deltaPaise: 100_00 }],
-      ledger: [{ txId: `seed_${plain.userId}`, field: 'depositBalance', amountPaise: 100_00, type: 'CREDIT' }],
-    });
-
-    const res = await as(app, admin)
-      .post(`/users/${plain.userId}/adjust-balance`)
-      .send({ amount: -500, walletType: 'deposit', reason: 'clawback' });
-
-    expect(res.status, JSON.stringify(res.body)).toBe(400);
-    expect(res.body.success).toBe(false);
-    // The refusal names what they actually hold, taken from the locked read —
-    // never from a balance fetched separately, which is how a player was once
-    // told an available figure no wallet ever held.
-    expect(res.body.message).toMatch(/Insufficient/i);
-    expect((await getBalancesPaise(plain.userId)).depositBalance).toBe(100_00);
-  });
-
-  it('takes the direction from the SIGN of amount, not from a type field', async () => {
-    plain = await subject();
-    await applyMovementPaise({
-      userId: plain.userId,
-      legs: [{ field: 'depositBalance', deltaPaise: 400_00 }],
-      ledger: [{ txId: `seed2_${plain.userId}`, field: 'depositBalance', amountPaise: 400_00, type: 'CREDIT' }],
-    });
-
-    // A caller sending `type: 'DEBIT'` alongside a POSITIVE amount is asking to
-    // take money away and will be given money instead. Pinned because the field
-    // is silently ignored, which is the shape that costs real money.
-    const res = await as(app, admin)
-      .post(`/users/${plain.userId}/adjust-balance`)
-      .send({ amount: 100, type: 'DEBIT', walletType: 'deposit', reason: 'sign wins' });
-
-    expect(res.status).toBe(200);
-    expect((await getBalancesPaise(plain.userId)).depositBalance).toBe(500_00);
-  });
-
-  it('credits the winnings pocket when asked for it, not deposit', async () => {
-    plain = await subject();
-    const res = await as(app, admin)
-      .post(`/users/${plain.userId}/adjust-balance`)
-      .send({ amount: 75, walletType: 'winnings', reason: 'prize' });
-
-    expect(res.status, JSON.stringify(res.body)).toBe(200);
-    const b = await getBalancesPaise(plain.userId);
-    expect(b.winningsBalance).toBe(75_00);
-    expect(b.depositBalance).toBe(0);
-  });
-
-  it('refuses a zero or non-numeric amount before touching the wallet', async () => {
-    plain = await subject();
-    for (const amount of [0, 'abc', null]) {
-      const res = await as(app, admin)
-        .post(`/users/${plain.userId}/adjust-balance`)
-        .send({ amount, walletType: 'deposit', reason: 'nonsense' });
-      expect(res.status, `amount=${amount}`).toBe(400);
-    }
-    expect((await getBalancesPaise(plain.userId)).depositBalance).toBe(0);
-  });
+  // ── The money one moved out ──────────────────────────────────────────────
+  // Six tests here drove `POST /users/:userId/adjust-balance`. That route is
+  // gone: it was a SECOND admin path to a player's balance alongside
+  // `POST /api/admin/balance-adjust`, and both were reachable from the panel.
+  //
+  // Its contract is worth recording, because one of those tests existed to pin
+  // it as a hazard — "a caller sending `type: 'DEBIT'` alongside a POSITIVE
+  // amount is asking to take money away and will be given money instead …
+  // pinned because the field is silently ignored, which is the shape that costs
+  // real money." The surviving route takes an explicit direction and a positive
+  // magnitude, so that shape cannot be expressed on it at all.
+  //
+  // The behaviours those tests asserted — the money really moves, an unfundable
+  // debit is refused and moves nothing, the winnings pocket is honoured, a zero
+  // or non-numeric amount is refused before the wallet is touched — are all
+  // still required, and are now in adminBalanceAdjustRoutes.test.js against the
+  // route that survived. They were not deleted; they were rehomed.
 
   // ── The authority ones ───────────────────────────────────────────────────
   it('blocks an account, and the block is on the row', async () => {
@@ -151,6 +87,47 @@ describePg('admin user routes', () => {
     const after = await getUser(plain.userId);
     expect(after.isBlocked).toBe(true);
     expect(after.blockReason).toMatch(/fraud/i);
+  });
+
+  /**
+   * A block the player can READ.
+   *
+   * The reason is required by the route and recorded in `audit_logs`, which is
+   * a record for the platform, not for the person it is about. Without an inbox
+   * row the player meets a 403 on every screen and no explanation anywhere.
+   *
+   * This was asserted by two comments and by nothing else. `GET
+   * /user/notifications` and `NotificationBell` both describe an admin block as
+   * the live writer into the inbox — "a player was blocked, the system
+   * carefully recorded the explanation meant for them, and they could never
+   * see it" — the read side was built on the strength of it, and the write was
+   * never there. Confirmed against a live server: blocking a fresh account
+   * produced zero notification rows. Each half assumed the other did it (§28).
+   */
+  it('tells the blocked player why, in the inbox they can read', async () => {
+    const who = await subject();
+    const res = await as(app, admin)
+      .put(`/users/${who.userId}/block`)
+      .send({ reason: 'fraud review' });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+
+    const inbox = await listNotifications(who.userId, { limit: 10 });
+    const notice = inbox.find(n => /suspend/i.test(n.title));
+    expect(notice, 'a blocked player must be told').toBeTruthy();
+    // The reason the admin was REQUIRED to type has to be the one they read.
+    expect(notice.message).toMatch(/fraud review/i);
+  });
+
+  it('tells them again when the block is lifted', async () => {
+    // Otherwise the inbox leaves them reading a suspension that no longer
+    // applies, which is worse than silence.
+    const who = await subject();
+    await as(app, admin).put(`/users/${who.userId}/block`).send({ reason: 'mistake' });
+    await as(app, admin).put(`/users/${who.userId}/unblock`).send({});
+
+    const inbox = await listNotifications(who.userId, { limit: 10 });
+    expect(inbox.some(n => /suspend/i.test(n.title)), 'the block notice').toBe(true);
+    expect(inbox.some(n => /restored/i.test(n.title)), 'the restore notice').toBe(true);
   });
 
   it('unblocks an account it previously blocked', async () => {

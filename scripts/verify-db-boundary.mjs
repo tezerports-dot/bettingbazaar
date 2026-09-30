@@ -43,6 +43,7 @@ const SQL_EXEMPT = new Map([
   // enforcement tooling for the boundary, not code that crosses it.
   ['scripts/mutation-check.mjs', 'quotes repository SQL as mutation text; executes none of it'],
   ['scripts/verify-migration-coherence.mjs', 'parses schema.sql as text to find missing columns'],
+  ['scripts/verify-payment-references.mjs', 'names the write patterns it forbids: it refuses a SECOND payment-reference registry, and cannot look for one without saying what a write to one looks like'],
 ]);
 
 function walk(dir, acc = []) {
@@ -60,12 +61,44 @@ const FILES = [
   ...walk(join(ROOT, 'scripts')),
 ];
 
-// A statement, not the word: "select a merchant" in prose is not SQL.
-const RE_SQL = /\b(SELECT\s+[\w*(]|INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM|CREATE\s+(TABLE|INDEX)|ALTER\s+TABLE)\b/i;
+/*
+ * A statement, not the word: "select a merchant" in prose is not SQL.
+ *
+ * ── The trailing \b was measuring a fraction ────────────────────────────────
+ * This pattern ended `...|ALTER\s+TABLE)\b`, and that boundary applies to the
+ * WHOLE alternation — including `SELECT\s+[\w*(]`, whose last matched
+ * character is a word character. `SELECT COUNT(*)` matches through the `C` and
+ * then needs a boundary between `C` and `O`, which does not exist. So the most
+ * ordinary SELECT in the codebase was invisible, along with `SELECT *`.
+ *
+ * It caught `SELECT 1` and `SELECT b.id` — a single-character token followed by
+ * punctuation — which is why it never looked broken. §24.6's shape exactly: a
+ * check measuring almost nothing reads the same as a check passing.
+ *
+ * The boundary now sits on each alternative that needs one, and not on the
+ * SELECT branch, whose character class already did that job.
+ */
+const RE_SQL = /\b(SELECT\s+[\w*(]|INSERT\s+INTO\b|UPDATE\s+\w+\s+SET\b|DELETE\s+FROM\b|CREATE\s+(TABLE|INDEX)\b|ALTER\s+TABLE\b)/i;
+
+/**
+ * A test may speak SQL. The boundary protects what SHIPS.
+ *
+ * `#db` exists so a route cannot reach past the repositories — one place owns
+ * each table, and a query nobody can find is a query nobody can fix. A test
+ * that verifies a TRIGGER has the opposite need: the thing under test IS SQL,
+ * and it has to attempt the forbidden UPDATE to prove the database refuses it.
+ * Routing that through a repository would test the repository's restraint
+ * rather than the database's guard, which is the weaker of the two.
+ *
+ * So tests are counted and REPORTED rather than failed — visible, arguable,
+ * and not a silent hole. Correcting the regex above is what made them visible
+ * at all: eight statements in the route suites had never been counted.
+ */
+const isTest = (f) => /(^|\/)tests?\//.test(f) || /\.(test|spec)\.[jt]s$/.test(f);
 const RE_DRIVER = /from\s+'pg(-pool|-format)?'|require\(\s*'pg(-pool|-format)?'\s*\)/;
 const RE_RELATIVE_DB = /from\s+'(?:\.\.\/)+database\//;
 
-const findings = { sql: [], driver: [], relative: [] };
+const findings = { sql: [], testSql: [], driver: [], relative: [] };
 
 for (const file of FILES) {
   const src = readFileSync(join(ROOT, file), 'utf8');
@@ -75,7 +108,9 @@ for (const file of FILES) {
     const at = `${file}:${i + 1}`;
     // Comments are prose. A comment explaining a query is not a query.
     const code = line.replace(/^\s*(\/\/|\*|\/\*).*$/, '');
-    if (!SQL_EXEMPT.has(file) && RE_SQL.test(code)) findings.sql.push(`${at}  ${line.trim().slice(0, 90)}`);
+    if (!SQL_EXEMPT.has(file) && RE_SQL.test(code)) {
+      (isTest(file) ? findings.testSql : findings.sql).push(`${at}  ${line.trim().slice(0, 90)}`);
+    }
     if (RE_DRIVER.test(code)) findings.driver.push(`${at}  ${line.trim().slice(0, 90)}`);
     if (RE_RELATIVE_DB.test(code)) findings.relative.push(`${at}  ${line.trim().slice(0, 90)}`);
   });
@@ -90,8 +125,14 @@ const CHECKS = [
     "Import '#db/...' — a relative path breaks when either end moves."],
 ];
 
-console.log('\nData-layer boundary — nothing outside database/ touches the database\n');
+console.log('\nData-layer boundary — nothing that SHIPS touches the database directly\n');
 let failed = 0;
+if (findings.testSql.length) {
+  // Informational, and named so it cannot be mistaken for a pass. These were
+  // invisible until the regex above was corrected.
+  console.log(`NOTE  SQL inside tests: ${findings.testSql.length}  (permitted — see isTest)`);
+  if (LIST) for (const h of findings.testSql) console.log(`        ${h}`);
+}
 for (const [name, hits, remedy] of CHECKS) {
   if (!hits.length) { console.log(`PASS  ${name}: 0`); continue; }
   failed += 1;

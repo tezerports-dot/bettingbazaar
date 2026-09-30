@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 // §11: Public SSE events: system_config, branding, branding_updated
 // §11: Private merchant SSE events: merchant_orders_snapshot, new_order, order_update, merchant_stats
 //      (via /api/sse/merchant/events?token=<merchantToken>)
@@ -56,8 +56,17 @@ class SSEService {
       // GOVERNANCE §11, but no backend file emits that name — it was a dead
       // subscription (verified 2026-07-27). `merchant_score_update` is the one
       // the backend actually sends after a completed order.
+      // An event NOT in this list is never delivered: `addEventListener` is
+      // registered per name, so a subscriber for an unlisted event is a dead
+      // subscription that never fires and never errors — which is exactly the
+      // `merchant_stats` defect recorded above.
       const merchantEvents = [
         'merchant_orders_snapshot', 'new_order', 'order_update', 'merchant_score_update',
+        // Broadcast to every merchant when an admin switches the settlement
+        // rail, so a merchant mid-shift is not left on the old workflow.
+        'payment_mode_changed',
+        // Orders waiting for an ATM link at this merchant's denomination.
+        'cash_link_demand',
       ];
       for (const ev of merchantEvents) {
         this.merchantSse.addEventListener(ev, (e: MessageEvent) => {

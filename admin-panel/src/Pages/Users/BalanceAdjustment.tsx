@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import React, { useEffect, useState } from 'react';
 import { PlusCircle, MinusCircle, RefreshCw, Search } from 'lucide-react';
 import api from '../../services/api';
@@ -11,9 +11,21 @@ export const BalanceAdjustment: React.FC = () => {
   const [userSearch, setUserSearch] = useState('');
   const [users, setUsers] = useState<any[]>([]);
   const [selectedUser, setSelectedUser] = useState<any>(null);
+  /**
+   * The ceiling on one adjustment, read from the platform rather than repeated
+   * here. `SystemConfig.maxBalanceAdjustment` is the one owner (§2); the route
+   * refuses above it and this bounds the input to the same number, so the
+   * screen cannot drift from what the server will accept (§4).
+   */
+  const [maxAdjustment, setMaxAdjustment] = useState<number | null>(null);
 
   const loadHistory = async () => { try { const r = await api.get('/api/admin/balance-adjustments'); if(r.data.success) setHistory(r.data.adjustments); } catch{}; };
-  useEffect(() => { loadHistory(); }, []);
+  const loadCeiling = async () => {
+    // Left null if the platform cannot be reached: an input bounded by a
+    // guessed number is worse than one the server will judge.
+    try { const r = await api.get('/api/admin/system/config'); setMaxAdjustment(Number(r.data?.config?.maxBalanceAdjustment ?? r.data?.maxBalanceAdjustment) || null); } catch {}
+  };
+  useEffect(() => { loadHistory(); loadCeiling(); }, []);
 
   const searchUsers = async () => {
     if (!userSearch) return;
@@ -21,10 +33,40 @@ export const BalanceAdjustment: React.FC = () => {
     catch {}
   };
 
-  const selectUser = (u: any) => { setSelectedUser(u); setForm(f => ({...f, userId: u._id})); setUsers([]); setUserSearch(''); };
+  /**
+   * ── The id is `userId`. The users route has never sent an `_id` ───────────
+   * `GET /api/admin/users` returns
+   *   userId, username, mobile, joiningNumber, referralCode, … (38 keys)
+   * and not one of them is `_id`. This read `u._id`, so `form.userId` was
+   * `undefined` on every selection — and `submit` opens with
+   *
+   *     if (!form.userId || !form.amount || !form.reason)
+   *       return toast.error('All fields required');
+   *
+   * So the whole screen was inert, in the way that is hardest to report:
+   * measured in a browser, an admin searches, clicks the player, the screen
+   * confirms "Selected: e2e-player-… (9274754612)", they type an amount and a
+   * reason, press Apply Adjustment — and are told **"All fields required"**.
+   * Everything is filled in and the player is named on screen. They will try
+   * again, and again. No balance adjustment could ever be made here.
+   *
+   * §23's shape and §32's S14 together: a type that names a field the server
+   * never sends, producing a message that blames the operator for the
+   * platform's state. Swept the rest of this file against the live payloads —
+   * the history rows DO carry `_id` (aliased server-side), so `key={h._id}` is
+   * correct and stays.
+   */
+  const selectUser = (u: any) => { setSelectedUser(u); setForm(f => ({...f, userId: u.userId})); setUsers([]); setUserSearch(''); };
 
   const submit = async () => {
-    if (!form.userId || !form.amount || !form.reason) return toast.error('All fields required');
+    // Name what is missing. "All fields required" while every field is filled
+    // in is what made the `_id` defect above so hard to see from the outside.
+    if (!form.userId)  return toast.error('Search for a player and select them first');
+    if (!form.amount)  return toast.error('Enter an amount');
+    if (!form.reason)  return toast.error('Enter a reason — it is written to the audit log');
+    if (maxAdjustment !== null && Number(form.amount) > maxAdjustment) {
+      return toast.error(`The most one adjustment may move is ₹${maxAdjustment.toLocaleString('en-IN')}`);
+    }
     setProcessing(true);
     try {
       const r = await api.post('/api/admin/balance-adjust', form);
@@ -41,12 +83,12 @@ export const BalanceAdjustment: React.FC = () => {
           <label className="text-xs text-gray-400 mb-1 block">Search User</label>
           <div className="flex gap-2">
             <input value={userSearch} onChange={e=>setUserSearch(e.target.value)} onKeyDown={e=>e.key==='Enter'&&searchUsers()} className="flex-1 input" placeholder="Username or mobile..."/>
-            <button onClick={searchUsers} className="btn-secondary"><Search size={14}/></button>
+            <button onClick={searchUsers} className="btn-secondary" aria-label="Search players"><Search size={14}/></button>
           </div>
           {selectedUser&&<div className="mt-2 p-2 bg-green-500/10 border border-green-500/30 rounded-sm text-sm text-green-400">Selected: {selectedUser.username} ({selectedUser.mobile})</div>}
           {users.length>0&&(
             <div className="mt-2 bg-dark-700 rounded-lg border border-dark-600 overflow-hidden">
-              {users.map(u=><button key={u._id} onClick={()=>selectUser(u)} className="w-full text-left px-3 py-2 hover:bg-dark-600 text-sm border-b border-dark-600 last:border-0">{u.username} — {u.mobile} — Dep: ₹{u.depositBalance||0}</button>)}
+              {users.map(u=><button key={u.userId} onClick={()=>selectUser(u)} className="w-full text-left px-3 py-2 hover:bg-dark-600 text-sm border-b border-dark-600 last:border-0">{u.username} — {u.mobile} — Dep: ₹{u.depositBalance||0}</button>)}
             </div>
           )}
         </div>
@@ -62,15 +104,17 @@ export const BalanceAdjustment: React.FC = () => {
             </div>
           </div>
           <div>
-            <label className="text-xs text-gray-400 mb-1 block">Balance Field</label>
-            <select value={form.field} onChange={e=>setForm(f=>({...f,field:e.target.value}))} className="input w-full">
+            <label className="text-xs text-gray-400 mb-1 block" htmlFor="balance-field">Balance Field</label>
+            <select id="balance-field" value={form.field} onChange={e=>setForm(f=>({...f,field:e.target.value}))} className="input w-full">
               <option value="depositBalance">Deposit Balance</option>
               <option value="winningsBalance">Winnings Balance</option>
               <option value="tokenBalance">Token Balance</option>
             </select>
           </div>
-          <div><label className="text-xs text-gray-400 mb-1 block">Amount (₹)</label><input type="number" value={form.amount} onChange={e=>setForm(f=>({...f,amount:e.target.value}))} className="input w-full" placeholder="500"/></div>
-          <div><label className="text-xs text-gray-400 mb-1 block">Reason</label><input value={form.reason} onChange={e=>setForm(f=>({...f,reason:e.target.value}))} className="input w-full" placeholder="Compensation for issue #123"/></div>
+          <div><label className="text-xs text-gray-400 mb-1 block" htmlFor="amount">Amount (₹)</label><input id="amount" type="number" min={1} step={1} max={maxAdjustment ?? undefined} value={form.amount} onChange={e=>setForm(f=>({...f,amount:e.target.value}))} className="input w-full" placeholder="500"/>
+            {maxAdjustment !== null && <p className="text-[11px] text-gray-500 mt-1">Up to ₹{maxAdjustment.toLocaleString('en-IN')} per adjustment</p>}
+          </div>
+          <div><label className="text-xs text-gray-400 mb-1 block" htmlFor="reason">Reason</label><input id="reason" value={form.reason} onChange={e=>setForm(f=>({...f,reason:e.target.value}))} className="input w-full" placeholder="Compensation for issue #123"/></div>
         </div>
         <button onClick={submit} disabled={processing} className="btn-primary w-full">{processing?'Processing…':'Apply Adjustment'}</button>
       </div>

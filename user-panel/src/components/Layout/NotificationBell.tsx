@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * The inbox for notifications the platform was already writing.
  *
@@ -147,11 +147,11 @@ export const NotificationBell: React.FC<{ isAuthenticated: boolean }> = ({ isAut
       </button>
 
       {open && (
-        <div style={{ position: 'absolute', right: 0, top: '100%', marginTop: 8, width: 'min(92vw, 340px)', maxHeight: '70vh', overflowY: 'auto', background: '#1A1F2E', border: '1px solid rgba(212,175,55,0.3)', borderRadius: 14, boxShadow: '0 18px 40px -12px rgba(0,0,0,.7)', zIndex: 60 }}>
+        <div style={{ position: 'absolute', right: 0, top: '100%', marginTop: 8, width: 'min(92vw, 340px)', maxHeight: '70vh', overflowY: 'auto', background: '#1A1F2E', border: '1px solid rgba(var(--brand-primary-rgb), 0.3)', borderRadius: 14, boxShadow: '0 18px 40px -12px rgba(0,0,0,.7)', zIndex: 60 }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 14px', borderBottom: '1px solid rgba(255,255,255,.07)' }}>
             <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: '.08em', textTransform: 'uppercase', color: '#8A93A6' }}>Notifications</span>
             {notes.some((n) => !n.isRead) && (
-              <button onClick={markAll} style={{ background: 'none', border: 'none', color: '#D4AF37', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
+              <button onClick={markAll} style={{ background: 'none', border: 'none', color: 'var(--brand-primary, #D4AF37)', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
                 Mark all read
               </button>
             )}
@@ -169,7 +169,7 @@ export const NotificationBell: React.FC<{ isAuthenticated: boolean }> = ({ isAut
           {notes.map((n) => {
             const tone = toneOf(n.type);
             return (
-              <div key={n.id} style={{ display: 'flex', gap: 10, padding: '12px 14px', borderBottom: '1px solid rgba(255,255,255,.05)', background: n.isRead ? 'transparent' : 'rgba(212,175,55,0.06)' }}>
+              <div key={n.id} style={{ display: 'flex', gap: 10, padding: '12px 14px', borderBottom: '1px solid rgba(255,255,255,.05)', background: n.isRead ? 'transparent' : 'rgba(var(--brand-primary-rgb), 0.06)' }}>
                 <span style={{ flex: 'none', width: 7, height: 7, borderRadius: '50%', marginTop: 5, background: n.isRead ? 'transparent' : tone.dot, border: n.isRead ? '1px solid rgba(255,255,255,.18)' : 'none' }} />
                 <div style={{ minWidth: 0, flex: 1 }}>
                   <p style={{ margin: 0, fontSize: 12.5, fontWeight: n.isRead ? 600 : 800, color: n.isRead ? '#C7CCD6' : '#EAEAEA' }}>{n.title}</p>

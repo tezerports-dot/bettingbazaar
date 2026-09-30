@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 //
 // History — design handoff "BB Merchant Panel.dc.html": three totals, then one
 // of three tabs (Volume, Earnings, Completed) with a CSV export.
@@ -13,7 +13,7 @@ import { useAuth } from '../services/AuthContext';
 import { api } from '../services/api';
 import { useOrders } from '../hooks/useOrders';
 import { useViewport } from '../hooks/useViewport';
-import { counterpartyOf, formatMoney, formatMoneyCompact, railOf } from '../utils/rail';
+import { counterpartyOf, formatMoney, formatMoneyCompact, formatTokens, railOf } from '../utils/rail';
 import { OrderStatus, type PaymentOrder } from '../types';
 import { Button, Card, CardTitle, EmptyState, ErrorState, SegmentedControl, Skeleton, cardStyle } from '../components/ui';
 
@@ -58,6 +58,16 @@ const HistoryViews: React.FC = () => {
     [orders]
   );
 
+  // ── These stay in the ORDER's currency, and that is correct ──────────────
+  // They sum `order.fiatAmount`, which is what the PLAYER SENT — rupees on the
+  // INR rail, USDT on a USDT order — so `formatMoney(…, rail)` is the right
+  // formatter. Safe to add up only because a merchant settles on exactly one
+  // rail (§2), so every order in this list shares a currency; the same sum
+  // across merchants is trap 15 and is why the SERVER aggregates tokens.
+  //
+  // EARNINGS are the opposite: commission is credited to the merchant's wallet
+  // in platform TOKENS (§26), so those render through `formatTokens` however
+  // the player paid.
   const totals = useMemo(() => {
     let deposits = 0;
     let withdrawals = 0;
@@ -162,7 +172,7 @@ const HistoryViews: React.FC = () => {
         <div style={{ ...cardStyle, padding: 16 }}>
           <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--muted)' }}>Earnings (last 7 days)</div>
           <div className="bb-mono" style={{ fontSize: 22, fontWeight: 700, color: 'var(--dep)', letterSpacing: '-1px', marginTop: 3 }}>
-            {weekly === null ? '—' : formatMoneyCompact(earningsTotal, rail)}
+            {weekly === null ? '—' : formatTokens(earningsTotal)}
           </div>
           <div style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--muted)', marginTop: 2 }}>
             Per-order profit recorded on completed orders
@@ -228,7 +238,7 @@ const HistoryViews: React.FC = () => {
                 return (
                   <div key={point.date} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, height: '100%', justifyContent: 'flex-end' }}>
                     <div
-                      title={`${label}: ${formatMoney(point.earnings, rail)} · ${point.orders} orders`}
+                      title={`${label}: ${formatTokens(point.earnings)} · ${point.orders} orders`}
                       style={{
                         width: '100%', maxWidth: 52, height: `${Math.max(2, (point.earnings / earningsMax) * 100)}%`,
                         borderRadius: '7px 7px 3px 3px', background: last ? 'var(--dep)' : 'var(--dep-bg)', transition: 'height .4s ease',

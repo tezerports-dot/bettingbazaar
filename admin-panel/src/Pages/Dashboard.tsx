@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 //
 // Operations Command dashboard — Command Center design (handoff
 // "Betting Bazaar Admin.dc.html"). The layout matches the design; every figure
@@ -190,8 +190,10 @@ export const Dashboard: React.FC = () => {
               </div>
             </div>
             <div style={{ display: 'flex', gap: 3, background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 8, padding: 3 }}>
-              <div onClick={() => setChartMode('cashflow')} style={seg(chartMode === 'cashflow')}>Cashflow</div>
-              <div onClick={() => setChartMode('revenue')} style={seg(chartMode === 'revenue')}>Revenue vs Profit</div>
+              <button type="button" onClick={() => setChartMode('cashflow')} aria-pressed={chartMode === 'cashflow'}
+                style={{ ...seg(chartMode === 'cashflow'), border: 'none', font: 'inherit', cursor: 'pointer' }}>Cashflow</button>
+              <button type="button" onClick={() => setChartMode('revenue')} aria-pressed={chartMode === 'revenue'}
+                style={{ ...seg(chartMode === 'revenue'), border: 'none', font: 'inherit', cursor: 'pointer' }}>Revenue vs Profit</button>
             </div>
           </div>
           <div style={{ display: 'flex', gap: 16, margin: '2px 0 6px' }}>
@@ -261,9 +263,9 @@ export const Dashboard: React.FC = () => {
               <div style={{ fontSize: 12.5 }}>No open cycle right now</div>
             </div>
           )}
-          <div onClick={() => navigate('/live-cycles')} style={{ marginTop: 14, height: 38, borderRadius: 9, background: 'var(--surface-2)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7, fontSize: 12.5, fontWeight: 700, cursor: 'pointer', color: 'var(--text)' }}>
+          <button type="button" onClick={() => navigate('/live-cycles')} style={{ marginTop: 14, width: '100%', height: 38, borderRadius: 9, background: 'var(--surface-2)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7, fontSize: 12.5, fontWeight: 700, cursor: 'pointer', color: 'var(--text)', font: 'inherit' }}>
             Open Live Cycles <ArrowRight size={14} />
-          </div>
+          </button>
         </Card>
       </div>
 
@@ -279,11 +281,11 @@ export const Dashboard: React.FC = () => {
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 11 }}>
               {lane.rows.map((r) => (
-                <div key={r.label} onClick={() => navigate(r.go)} style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', padding: '2px 0' }}>
+                <button key={r.label} type="button" onClick={() => navigate(r.go)} style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', padding: '2px 0', width: '100%', background: 'transparent', border: 'none', font: 'inherit', color: 'inherit', textAlign: 'left' }}>
                   <span style={{ fontSize: 12.5, color: 'var(--text-2)', flex: 1 }}>{r.label}</span>
                   <span style={{ fontSize: 14, fontWeight: 800, fontFamily: "'JetBrains Mono',monospace", color: r.color }}>{r.value}</span>
                   <ArrowRight size={13} style={{ color: 'var(--muted)' }} />
-                </div>
+                </button>
               ))}
             </div>
           </Card>
@@ -343,7 +345,7 @@ export const Dashboard: React.FC = () => {
               <div key={f.label}><div style={{ fontSize: 11, color: 'var(--text-2)', fontWeight: 600 }}>{f.label}</div><div style={{ fontSize: 16, fontWeight: 800, fontFamily: "'JetBrains Mono',monospace", marginTop: 5, color: f.color }}>{f.value}</div></div>
             ))}
           </div>
-          <div style={{ marginTop: 15, padding: '13px 15px', borderRadius: 12, background: 'var(--warning-bg)', border: '1px solid rgba(212,175,55,.28)' }}>
+          <div style={{ marginTop: 15, padding: '13px 15px', borderRadius: 12, background: 'var(--warning-bg)', border: '1px solid rgba(var(--gold-rgb),.28)' }}>
             <div style={{ fontSize: 11.5, color: 'var(--text-2)', fontWeight: 600 }}>Net Revenue</div>
             <div style={{ fontSize: 26, fontWeight: 800, fontFamily: "'JetBrains Mono',monospace", color: 'var(--gold-ink)', marginTop: 2 }}>{inr(s?.finance.netProfit)}</div>
           </div>

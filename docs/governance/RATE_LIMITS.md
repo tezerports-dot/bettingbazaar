@@ -1,6 +1,6 @@
 # Rate limits — every throttle in the platform
 
-<!-- GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. -->
+<!-- GOVERNANCE: Read CLAUDE.md before editing this file. -->
 
 Single source of truth: `backend/config/security.config.js` → `RATE_LIMIT_TIERS`.
 Everything below is read from there; nothing hardcodes a number elsewhere.

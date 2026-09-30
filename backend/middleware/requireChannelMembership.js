@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * middleware/requireChannelMembership.js — betting, games and the wallet are
  * for members of the official Telegram channel.
@@ -31,6 +31,7 @@
  */
 import { db } from '#db';
 import { membershipFor, joinPrompt } from '../domains/telegram/telegramMembership.js';
+import { sendAlert } from '../services/alerting.service.js';
 
 /** How long a last-known membership is honoured while Telegram is unreachable. */
 const GRACE_MS = Number(process.env.TELEGRAM_MEMBERSHIP_GRACE_MS || 24 * 60 * 60 * 1000);
@@ -80,20 +81,35 @@ export function requireChannelMembership({ action = 'continue' } = {}) {
       // is the exact state a fresh deployment sits in between deploying and
       // activating generation 1, and it made the gate blame the player for an
       // operator's unfinished setup.
-      const verdict = await membershipFor(identity);
+      // The audience is a FALLBACK for the unlinked case: with no row there is
+      // nothing to read it from, and without it the gate cannot even tell
+      // whether a channel exists to be a member of. When a row does exist its
+      // own audience wins, so a stale token claiming the wrong type cannot
+      // point this at another panel's channel.
+      const verdict = await membershipFor(identity, { audience: req.user.accountType });
 
       // No channel configured at all. That is an operator problem the player can
       // do nothing about, so the gate does not enforce a rule that does not yet
       // exist. Loud, because it means membership is currently unenforced.
       if (verdict.unconfigured) {
         console.error('[channel-gate] no active Telegram config — membership cannot be enforced');
+        // ── The gate is OFF, and a console line is not a signal ─────────────
+        // This branch admits EVERY player to betting, games and the wallet. It
+        // is the right call — an operator's unfinished setup must not be
+        // blamed on a player — but "the membership requirement is currently
+        // not being applied" is not something anyone should learn from
+        // scrollback. `sendAlert` holds a per-key cooldown, so calling it on a
+        // gated request is a bounded number of alerts, not one per request.
+        sendAlert('channel-gate-unconfigured',
+          'Channel membership is UNENFORCED — no active Telegram config',
+          { path: req.path, action }).catch(() => {});
         return next();
       }
 
       // A channel DOES exist and this account is not linked to it. Now the
       // message is actionable, and `joinPrompt()` can name the bot to use.
       if (!identity) {
-        const prompt = await joinPrompt();
+        const prompt = await joinPrompt(req.user.accountType);
         return res.status(403).json({
           success: false,
           code: 'TELEGRAM_NOT_LINKED',
@@ -103,6 +119,17 @@ export function requireChannelMembership({ action = 'continue' } = {}) {
       }
 
       if (verdict.joined) {
+        // Telegram is unreachable and this player is being admitted on a
+        // last-known answer. That is the policy (see the header) and it is
+        // deliberate — but it is also the platform running with membership
+        // unverified, and the grace window is finite: when it expires these
+        // same players start getting 503s. An operator wants to know at the
+        // START of that window, not when the complaints arrive.
+        if (verdict.unreachable) {
+          sendAlert('channel-gate-telegram-unreachable',
+            'Telegram unreachable — channel membership is being honoured from cache',
+            { graceMs: GRACE_MS, path: req.path }).catch(() => {});
+        }
         // A stale "member" honoured during an outage is allowed only inside the
         // window. Outside it, the answer expires.
         if (verdict.unreachable && !withinGrace(identity)) {
@@ -119,7 +146,10 @@ export function requireChannelMembership({ action = 'continue' } = {}) {
       // A definite "not a member" — or an unreachable Telegram with nothing
       // usable cached, which is treated the same way because the player CAN act
       // on it: joining the channel resolves both.
-      const prompt = await joinPrompt();
+      // The account's OWN audience, so a gate reached by a merchant names the
+      // merchant channel. `membershipFor` reads it off the identity row for the
+      // same reason; here there is no identity, so it comes from the user.
+      const prompt = await joinPrompt(req.user.accountType);
       return res.status(403).json({
         success: false,
         code: 'CHANNEL_MEMBERSHIP_REQUIRED',

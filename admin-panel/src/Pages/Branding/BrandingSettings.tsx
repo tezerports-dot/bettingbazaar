@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import React, { useEffect, useState } from 'react';
 import { Save, Palette, Eye, RefreshCw, Image as ImageIcon } from 'lucide-react';
 import api from '../../services/api';
@@ -170,9 +170,15 @@ export const BrandingSettings: React.FC = () => {
     appName: 'Betting Bazaar',
     tagline: 'Bet Smart, Win Big',
     description: '',
-    primaryColor: '#D4AF37',
-    secondaryColor: '#0ea5e9',
-    accentColor: '#F5C77A',
+    // Loading placeholders only — line ~216 merges the server's document over
+    // these the moment it arrives (§4 permits a placeholder that EQUALS the
+    // schema default and cites it). These are
+    // `SYSTEM_CONFIG_SPEC.branding` in database/spec/config.spec.js, where the
+    // secondary read #0ea5e9 here and #8B5CF6 there while the panel rendered
+    // #B8860B — three numbers for one value, which is what §4 forbids.
+    primaryColor: '#D4AF37',    // schema default
+    secondaryColor: '#B8860B',  // schema default
+    accentColor: '#F5C77A',     // schema default
     contactEmail: '',
     contactPhone: '',
 
@@ -307,7 +313,11 @@ export const BrandingSettings: React.FC = () => {
                   <label htmlFor={c.id} className="label">{c.label}</label>
                   <div className="flex items-center gap-2">
                     <input id={c.id} name={c.name} type="color" value={(formData as any)[c.key]} onChange={(e) => set(c.key, e.target.value)} className="w-12 h-9 rounded-sm border border-dark-600 cursor-pointer bg-transparent" />
-                    <input type="text" value={(formData as any)[c.key]} onChange={(e) => set(c.key, e.target.value)} className="input font-mono flex-1" />
+                    {/* The swatch beside this carries the label; the hex box
+                        carried nothing, so a screen reader read the colour's
+                        name and then an anonymous text field. Three of them. */}
+                    <input type="text" aria-label={`${c.label} — hex value`}
+                      value={(formData as any)[c.key]} onChange={(e) => set(c.key, e.target.value)} className="input font-mono flex-1" />
                   </div>
                 </div>
               ))}
@@ -324,33 +334,21 @@ export const BrandingSettings: React.FC = () => {
             </div>
           </div>
 
-          {/* H-01: Brand Colours & CDN — previously missing from JSX */}
+          {/* ── CDN only. The three colours used to be repeated here ────────
+              This block arrived as "H-01: Brand Colours & CDN" to add the CDN
+              field, and brought a SECOND copy of Primary/Secondary/Accent with
+              it — so one screen offered six controls for three values, under
+              two different names each ("Primary (Gold)" above, "Primary
+              Colour" here), both carrying `name="primaryColor"`.
+
+              They wrote the same `formData` keys, so nothing drifted in state.
+              What it cost is the operator: two labels for one value on one
+              screen, with nothing saying which is authoritative — and §4 has
+              already recorded a branding drift that went unnoticed because the
+              secondary and accent had no single visible owner. §5 is about
+              exactly this shape, and the duplicate is the half to delete. */}
           <div className="space-y-4">
-            <h3 className="font-semibold text-white mb-3">Brand Colours &amp; CDN</h3>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div>
-                <label className="label" htmlFor="primaryColor">Primary Colour</label>
-                <input id="primaryColor" name="primaryColor" type="color"
-                  value={formData.primaryColor}
-                  onChange={e => set('primaryColor', e.target.value)}
-                  className="h-10 w-full rounded-sm border border-gray-600 bg-transparent cursor-pointer" />
-                <p className="text-xs text-gray-400 mt-1">e.g. gold accent — sets --brand-primary CSS var</p>
-              </div>
-              <div>
-                <label className="label" htmlFor="secondaryColor">Secondary Colour</label>
-                <input id="secondaryColor" name="secondaryColor" type="color"
-                  value={formData.secondaryColor}
-                  onChange={e => set('secondaryColor', e.target.value)}
-                  className="h-10 w-full rounded-sm border border-gray-600 bg-transparent cursor-pointer" />
-              </div>
-              <div>
-                <label className="label" htmlFor="accentColor">Accent Colour</label>
-                <input id="accentColor" name="accentColor" type="color"
-                  value={formData.accentColor}
-                  onChange={e => set('accentColor', e.target.value)}
-                  className="h-10 w-full rounded-sm border border-gray-600 bg-transparent cursor-pointer" />
-              </div>
-            </div>
+            <h3 className="font-semibold text-white mb-3">CDN</h3>
             <div>
               <label className="label" htmlFor="cdnBaseUrl">CDN Base URL</label>
               <input id="cdnBaseUrl" name="cdnBaseUrl" type="url"

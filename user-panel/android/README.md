@@ -1,6 +1,6 @@
 # Betting Bazaar — native Android app
 
-<!-- GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. -->
+<!-- GOVERNANCE: Read CLAUDE.md before editing this file. -->
 
 A Capacitor 8 shell around the user panel. The web assets are **bundled into the
 package** (`webDir: dist`), so the app opens without a network round-trip. Only
@@ -84,7 +84,7 @@ rejected at upload time, which is far too late to discover.
 
 ## No bundled VPN or proxy
 
-Deliberate, and recorded in `docs/governance/04-GOVERNANCE.md` §20. Resilience
+Deliberate, and recorded in `CLAUDE.md` §20. Resilience
 against a blocked or failing origin is handled where it belongs — multi-domain
 redundancy, an Anycast/CDN edge, and client-side domain failover — not by
 tunnelling user traffic from inside a real-money gambling client.

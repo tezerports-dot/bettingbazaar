@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * The global accounting ledger, read from PostgreSQL — domain 4.
  *
@@ -17,7 +17,7 @@ import {
   reconcileAgainstSubLedgers,
 } from '../repositories/ledger.core.js';
 import { EVENT_TYPES } from '../../backend/domains/revenue/chartOfAccounts.js';
-import { mintToMerchantFloat, merchantDispensedToUser } from '../repositories/treasury.js';
+import { transferToMerchantFloat, merchantDispensedToUser } from '../repositories/treasury.js';
 
 const hasPg = pgConfigured();
 const describePg = hasPg ? describe : describe.skip;
@@ -264,7 +264,7 @@ describePg('Accounting ledger (PostgreSQL)', () => {
     });
 
     it('compares the treasury floats against the wallets they summarise', async () => {
-      await mintToMerchantFloat(500_000, { movementId: 'rec_mint' });
+      await transferToMerchantFloat(500_000, { movementId: 'rec_mint' });
       await pgQuery(
         `INSERT INTO merchant_wallets (merchant_id, available_paise) VALUES ('m1', 500_000)`);
       await merchantDispensedToUser(100_000, { movementId: 'rec_disp' });

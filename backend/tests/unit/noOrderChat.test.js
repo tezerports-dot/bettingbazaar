@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * There is no merchant-to-user order chat, and the platform offers no way to
  * start one.
@@ -82,9 +82,24 @@ describe('no merchant-to-user order chat', () => {
     expect(read('database/repositories/chat.js')).toMatch(/export async function postSystemMessage/);
   });
 
-  it('keeps the merchant QR upload, which is not chat', () => {
-    // It uploads a merchant's own UPI QR for their profile. It sat next to the
-    // chat presigns and is unrelated to them.
-    expect(read('backend/routes/upload.routes.js')).toMatch(/merchant\/qr\/upload-url/);
+  it('the merchant QR upload is GONE, and stays gone', () => {
+    // This assertion used to be its inverse — it guarded the QR upload against
+    // being swept away with the chat presigns it sat next to, which was right
+    // at the time. The QR itself was removed on 2026-09-10 (F-016), so the
+    // guard is inverted rather than deleted: the reason it must not come back
+    // is worth keeping where somebody would look for it.
+    //
+    // A merchant supplies a UPI ID and nothing else on the INR rail.
+    // `upiPaymentLink()` builds a `upi://pay` intent per order with THAT
+    // order's amount already in it, so the player taps and their own UPI app
+    // opens filled in. A stored image cannot carry the amount, which is the
+    // whole point of it.
+    expect(read('backend/routes/upload.routes.js')).not.toMatch(/merchant\/qr\/upload-url/);
+    // And the remaining upload categories are untouched — this deletion was
+    // scoped to the QR, not to uploads.
+    const uploads = read('backend/routes/upload.routes.js');
+    expect(uploads).toMatch(/cdm-receipt/);
+    expect(uploads).toMatch(/order-reject-proof/);
+    expect(uploads).toMatch(/profile\/picture/);
   });
 });

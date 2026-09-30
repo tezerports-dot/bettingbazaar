@@ -1,4 +1,4 @@
-# GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file.
+# GOVERNANCE: Read CLAUDE.md before editing this file.
 # Reproducible self-host stack (plan item 41, 2026-07-13) — the whole platform
 # from scratch on any Docker host: app + PostgreSQL + Redis. Version-controlled
 # environment definition; see deploy/README.md for the IaC decision record.

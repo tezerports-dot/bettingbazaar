@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * winners.routes.js — the public winners feed, and the curated entries an
  * operator adds to it.
@@ -16,7 +16,10 @@
  */
 import express from 'express';
 import { db } from '#db';
-import { authenticate, isAdmin, isAdminOrSubAdmin } from '../domains/identity/auth.middleware.js';
+import {
+  authenticate, hasPermission, isAdmin, isAdminOrSubAdmin,
+} from '../domains/identity/auth.middleware.js';
+import { respondError } from '../shared/httpError.js';
 
 const router = express.Router();
 
@@ -51,7 +54,7 @@ router.get('/v1/winners', async (req, res) => {
 
 // ── ADMIN ─────────────────────────────────────────────────────────────────────
 
-router.get('/admin/fake-winners', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/admin/fake-winners', authenticate, hasPermission('canManageContent'), async (req, res) => {
   try {
     // Every entry, including the ones switched off — this is the editor, not
     // the feed.
@@ -101,8 +104,11 @@ router.put('/admin/fake-winners/:id', authenticate, isAdmin, async (req, res) =>
     if (!winner) return res.status(404).json({ success: false, message: 'Not found' });
     res.json({ success: true, winner });
   } catch (err) {
-    console.error('PUT /admin/fake-winners error:', err);
-    res.status(500).json({ success: false, message: 'Could not update that entry.' });
+    // `respondError`, not a hand-written 500. A malformed id is the CALLER's
+    // mistake and arrives carrying `status: 400` with a message naming itself;
+    // a hand-rolled 500 threw that away and told the operator the platform
+    // broke (§2: a handler may not phrase a 5xx itself).
+    return respondError(res, err, 'PUT /admin/fake-winners/:id');
   }
 });
 
@@ -119,8 +125,7 @@ router.delete('/admin/fake-winners/:id', authenticate, isAdmin, async (req, res)
     });
     res.json({ success: true });
   } catch (err) {
-    console.error('DELETE /admin/fake-winners error:', err);
-    res.status(500).json({ success: false, message: 'Could not delete that entry.' });
+    return respondError(res, err, 'DELETE /admin/fake-winners/:id');
   }
 });
 

@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 //
 // Dashboard — design handoff "BB Merchant Panel.dc.html": availability hero,
 // four KPI tiles, the weekly earnings bars, what is expiring soon, recent
@@ -18,9 +18,10 @@ import { useOrders, needsAction } from '../hooks/useOrders';
 import { useNow, formatCountdown, secondsLeft } from '../hooks/useCountdown';
 import { useViewport } from '../hooks/useViewport';
 import { ROUTES } from '../constants';
-import { counterpartyOf, formatMoney, formatMoneyCompact, formatWallet, railCopy, railOf } from '../utils/rail';
+import { counterpartyOf, formatMoney, formatTokens, formatWallet, railCopy, railOf } from '../utils/rail';
 import { OrderStatus, type Earnings, type PaymentOrder, type Stats } from '../types';
 import { Card, CardTitle, Skeleton, StatusPill, cardStyle } from '../components/ui';
+import { SettlementRailBanner } from '../components/SettlementRailBanner';
 
 interface WeeklyPoint { date: string; earnings: number; orders: number; }
 
@@ -92,20 +93,35 @@ const Dashboard: React.FC = () => {
   const splitColumns = isDesktop ? '1.35fr 1fr' : '1fr';
   const gap = isMobile ? 14 : 16;
 
-  const limits = merchant?.limits;
-  const depositRange = limits
-    ? `${formatMoneyCompact(limits.minDeposit, rail)} – ${formatMoneyCompact(limits.maxDeposit, rail)}`
-    : '—';
-  const withdrawRange = limits
-    ? `${formatMoneyCompact(limits.minWithdraw, rail)} – ${formatMoneyCompact(limits.maxWithdraw, rail)}`
-    : '—';
+  // ── The two range tiles that were here showed numbers nothing reads ──────
+  // `merchant.limits` is `min_deposit_paise` and its three siblings. Those
+  // columns are projected and written and READ BY NO DECISION anywhere — no
+  // query, no gate, no service. `merchant.routes.js` says so where they are
+  // saved: "a merchant could set their limits, be told it saved, and be
+  // offered exactly the same orders as before". They are the same defect as
+  // `merchants.min_order`/`max_order`, which §2 had already removed for
+  // exactly this reason, in four more columns nobody removed with them.
+  //
+  // Rendering them under "Live limits from your profile" made it worse than
+  // dead config: found on a working database, one merchant carried a
+  // `min_deposit_paise` of 10,050 — their panel told them ₹100.50 while the
+  // real refusal is the platform floor of 500 tokens.
+  //
+  // So the card shows what ACTUALLY governs (§2):
+  //   the CEILING is the tokens they hold, because the deposit escrow reserves
+  //   them the moment an order becomes theirs (F-018);
+  //   the FLOOR is the platform's and is the same for everyone, which is not
+  //   per-merchant information and does not belong on their profile card.
+  const servableNow = merchant?.tokenBalance;
 
   const kpis = [
     {
       label: "Today's earnings",
       icon: <Coins size={16} style={{ color: 'var(--dep)' }} />,
       iconBg: 'var(--dep-bg)',
-      value: earnings ? formatMoneyCompact(earnings.today, rail) : '—',
+      // Commission, credited to the merchant's wallet in platform TOKENS
+      // (§26) — never in the currency the player happened to pay with.
+      value: earnings ? formatTokens(earnings.today) : '—',
       sub: stats ? `${stats.completedToday ?? 0} orders completed` : 'Awaiting data',
       subTone: 'var(--dep)',
     },
@@ -139,6 +155,11 @@ const Dashboard: React.FC = () => {
 
   return (
     <div style={{ maxWidth: 1120, margin: '0 auto', display: 'flex', flexDirection: 'column', gap }}>
+      {/* Which settlement workflow is in force. Above the availability hero
+          deliberately: going online under the wrong workflow is the mistake
+          this is here to prevent. */}
+      <SettlementRailBanner rail={rail} />
+
       {/* Availability hero */}
       <div style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14, flexWrap: 'wrap',
@@ -205,7 +226,7 @@ const Dashboard: React.FC = () => {
         <Card>
           <CardTitle
             title="Weekly earnings"
-            sub={weekly ? `Last 7 days · ${formatMoney(weekTotal, rail)} total` : 'Last 7 days'}
+            sub={weekly ? `Last 7 days · ${formatTokens(weekTotal)} total` : 'Last 7 days'}
           />
           {weekly === null ? (
             <Skeleton height={130} />
@@ -218,7 +239,7 @@ const Dashboard: React.FC = () => {
                 return (
                   <div key={point.date} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 7, height: '100%', justifyContent: 'flex-end' }}>
                     <div
-                      title={`${label}: ${formatMoney(point.earnings, rail)} · ${point.orders} orders`}
+                      title={`${label}: ${formatTokens(point.earnings)} · ${point.orders} orders`}
                       style={{
                         width: '100%', maxWidth: 34, height, borderRadius: '7px 7px 3px 3px',
                         background: last ? 'var(--brand)' : 'var(--brand-bg)', transition: 'height .4s ease',
@@ -341,15 +362,16 @@ const Dashboard: React.FC = () => {
         </Card>
 
         <Card>
-          <CardTitle title="Order limits & capacity" sub="Live limits from your profile" />
+          <CardTitle title="Capacity" sub="What bounds the orders you are given" />
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 9 }}>
             <div style={{ background: 'var(--surface-2)', borderRadius: 11, padding: 11 }}>
-              <div style={{ fontSize: 10.5, fontWeight: 600, color: 'var(--muted)' }}>Min / Max deposit</div>
-              <div className="bb-mono" style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', marginTop: 2 }}>{depositRange}</div>
-            </div>
-            <div style={{ background: 'var(--surface-2)', borderRadius: 11, padding: 11 }}>
-              <div style={{ fontSize: 10.5, fontWeight: 600, color: 'var(--muted)' }}>Min / Max withdraw</div>
-              <div className="bb-mono" style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', marginTop: 2 }}>{withdrawRange}</div>
+              <div style={{ fontSize: 10.5, fontWeight: 600, color: 'var(--muted)' }}>Largest buy you can serve</div>
+              <div className="bb-mono" style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', marginTop: 2 }}>
+                {servableNow === undefined ? '—' : formatTokens(servableNow)}
+              </div>
+              <div style={{ fontSize: 9.5, color: 'var(--muted)', marginTop: 3 }}>
+                Your tokens, held the moment an order is yours
+              </div>
             </div>
             <div style={{ background: 'var(--surface-2)', borderRadius: 11, padding: 11 }}>
               <div style={{ fontSize: 10.5, fontWeight: 600, color: 'var(--muted)' }}>Dispute rate</div>

@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import { Backend } from './backend.interface';
 import { RealBackend } from './realBackend';
 
@@ -59,4 +59,3 @@ export const setCdnBaseUrl = (url: string) => {
     window.dispatchEvent(new CustomEvent('cdn_url_updated', { detail: clean }));
   }
 };
-export const getCdnBaseUrl = () => _cdnBaseUrl;

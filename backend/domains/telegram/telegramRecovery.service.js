@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * domains/telegram/telegramRecovery.service.js — regaining an account when the
  * Telegram account behind it is gone.
@@ -37,7 +37,7 @@
 import { db } from '#db';
 import { hashAadhaarCandidates } from '../identity/aadhaarHash.util.js';
 import { activeConfig } from './telegramClient.js';
-import { normalisePhone } from './telegramOnboarding.service.js';
+import { normalisePhone } from '../identity/signupFields.js';
 import { sendAlert } from '../../services/alerting.service.js';
 
 /**
@@ -47,10 +47,10 @@ import { sendAlert } from '../../services/alerting.service.js';
  * @param {string} args.newTelegramUserId the Telegram account asking for it
  * @param {string} args.phone             from the contact share
  * @param {string} args.contactUserId     Telegram's user_id ON that contact
- * @param {string} args.aadhaar           as typed into the recovery bot
+ * @param {string[]} args.aadhaarHashes    HMAC candidates, hashed at the bot
  * @returns {Promise<{ok: boolean, reason?: string, userId?: string}>}
  */
-export async function attemptRecovery({ newTelegramUserId, phone, contactUserId, aadhaar }) {
+export async function attemptRecovery({ newTelegramUserId, audience, phone, contactUserId, aadhaarHashes }) {
   // Same guard as signup: a forwarded contact card would let someone recover an
   // account using a number they do not hold.
   if (contactUserId && String(contactUserId) !== String(newTelegramUserId)) {
@@ -60,10 +60,21 @@ export async function attemptRecovery({ newTelegramUserId, phone, contactUserId,
   const mobile = normalisePhone(phone);
   if (!mobile) return { ok: false, reason: 'invalid_phone' };
 
-  const candidates = hashAadhaarCandidates(aadhaar);
+  // HASHES, not the number. It is hashed the moment the bot receives it and the
+  // plaintext is never stored or passed on — this function only ever compared,
+  // so it never needed it (audit F-002).
+  const candidates = Array.isArray(aadhaarHashes) ? aadhaarHashes.filter(Boolean) : [];
   if (!candidates.length) return { ok: false, reason: 'invalid_aadhaar' };
 
-  const user = await db.users.getUserByMobile(mobile);
+  // ── The AUDIENCE of the bot this arrived on ─────────────────────────────
+  // Reading by mobile alone would hand back whichever of the three accounts on
+  // that number the planner reached first (§32 S30). The recovery bot's own
+  // audience is the right predicate and it is stronger than the 'PLAYER'
+  // literal it replaces: recovery through the merchant bot can only ever move
+  // a MERCHANT link, so a merchant's Aadhaar cannot reach their player account
+  // and a player's cannot reach their merchant one — which is the whole point
+  // of the three accounts being separate entities (§33.5).
+  const user = await db.users.getUserByMobile(mobile, audience);
 
   // FACTOR 2. Checked against the account the PHONE resolved to — not used as a
   // search key. Looking an account up BY Aadhaar would turn this bot into the
@@ -85,7 +96,7 @@ export async function attemptRecovery({ newTelegramUserId, phone, contactUserId,
     return { ok: false, reason: 'blocked' };
   }
 
-  const cfg = await activeConfig();
+  const cfg = await activeConfig(audience);
 
   // ONE transaction, in the repository. Three unique constraints have to be
   // satisfied at once — the account's identity, the phone's active slot, and
@@ -95,6 +106,7 @@ export async function attemptRecovery({ newTelegramUserId, phone, contactUserId,
   // that is a refusal rather than a fault; the refusal is a return value now.
   const linked = await db.telegram.relinkIdentity({
     telegramUserId: newTelegramUserId,
+    audience,
     userId: user.userId,
     phone: mobile,
     generation: cfg?.generation ?? 0,
@@ -113,6 +125,7 @@ export async function attemptRecovery({ newTelegramUserId, phone, contactUserId,
   console.warn(`[recovery] GRANTED user=${user.userId} to telegram=${newTelegramUserId}`);
   sendAlert('account-recovered', 'An account was re-linked to a new Telegram identity', {
     userId: String(user.userId),
+    panel: audience,
     newTelegramUserId: String(newTelegramUserId),
     // The identity that LOST the account, which is the detail a takeover review
     // needs and which the alert did not previously carry.

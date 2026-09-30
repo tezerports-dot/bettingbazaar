@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import React, { useEffect } from 'react';
 import { Show } from './Show';
 
@@ -26,7 +26,7 @@ const Modal: React.FC<ModalProps> = ({ children, onClose, title }) => {
       ></div>
 
       {/* Content Container - Responsive */}
-      <div className="relative bg-[#1A1F2E] w-full max-w-md rounded-2xl border border-[#D4AF37]/30 shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-200 flex flex-col max-h-[90vh]">
+      <div className="relative bg-[#1A1F2E] w-full max-w-md rounded-2xl border border-[var(--brand-primary, #D4AF37)]/30 shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-200 flex flex-col max-h-[90vh]">
         
         {/* Header */}
         {title !== undefined && title !== null && title !== '' ? (

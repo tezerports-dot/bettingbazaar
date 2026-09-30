@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * analytics.admin.routes.js — the dashboard, financial analytics, token flow.
  *
@@ -7,10 +7,14 @@
  * called it, and two summaries of one platform are two answers waiting to
  * disagree. §1 — one owner per value.
  */
-import { express, authenticate, isAdmin, isAdminOrSubAdmin } from '../../routes/admin/_adminShared.js';
+import {
+  authenticate, express, hasPermission, isAdmin, isAdminOrSubAdmin,
+} from '../../routes/admin/_adminShared.js';
 import { db } from '#db';
 // Analytics Platform trends (Phase 012 — Enterprise Services tier)
 import { growthTrend, businessTrend, revenueTrend, riskTrend } from './analyticsPlatform.service.js';
+import { serverError } from '../../shared/httpError.js';
+import { paiseToRupees } from '../../shared/money.js';
 
 const router = express.Router();
 
@@ -37,7 +41,7 @@ async function tokenFlowFor(direction, query = {}) {
 // growth (signups, first-time depositors), business (betting + funding
 // volume), revenue (from the settlement ledger), risk (order failure/
 // dispute signals). All derived, read-only, day-bucketed.
-router.get('/analytics/trends', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/analytics/trends', authenticate, hasPermission('canViewAnalytics'), async (req, res) => {
   try {
     const days = Math.min(365, Math.max(1, parseInt(req.query.days) || 30));
     const [growth, business, revenue, risk] = await Promise.all([
@@ -62,7 +66,9 @@ router.get('/analytics/trends', authenticate, isAdminOrSubAdmin, async (req, res
  * Each panel below is now one statement over the rows that actually carry the
  * thing it counts, so the figures within a panel cannot contradict each other.
  */
-router.get('/analytics/dashboard', authenticate, isAdminOrSubAdmin, async (req, res) => {
+// The analytics group, every other route of which derives this from the
+// screens that show it.
+router.get('/analytics/dashboard', authenticate, hasPermission('canViewAnalytics'), async (req, res) => {
   try {
     const [core, finance, daily, counts] = await Promise.all([
       db.stats.dashboard(),
@@ -161,7 +167,7 @@ router.get('/analytics/financials', authenticate, isAdmin, async (req, res) => {
  */
 
 // ─────────────────────────────────────────────────────────────────────────────
-router.get('/analytics/deposit-dashboard', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/analytics/deposit-dashboard', authenticate, hasPermission('canViewAnalytics'), async (req, res) => {
   try {
     const flow = await tokenFlowFor('DEPOSIT', req.query);
     res.json({
@@ -176,7 +182,7 @@ router.get('/analytics/deposit-dashboard', authenticate, isAdminOrSubAdmin, asyn
     });
   } catch (err) {
     console.error('[deposit-dashboard]', err.message);
-    res.status(500).json({ success: false, message: err.message });
+    return serverError(res, err, 'GET /analytics/deposit-dashboard');
   }
 });
 
@@ -185,7 +191,7 @@ router.get('/analytics/deposit-dashboard', authenticate, isAdminOrSubAdmin, asyn
 // Shows ONLY TOKEN_REDEMPTION transactions (real user token→INR sells).
 // EXCLUDES merchant reserve/liquidity movements.
 // ─────────────────────────────────────────────────────────────────────────────
-router.get('/analytics/withdrawal-dashboard', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/analytics/withdrawal-dashboard', authenticate, hasPermission('canViewAnalytics'), async (req, res) => {
   try {
     const flow = await tokenFlowFor('WITHDRAWAL', req.query);
     res.json({
@@ -200,7 +206,7 @@ router.get('/analytics/withdrawal-dashboard', authenticate, isAdminOrSubAdmin, a
     });
   } catch (err) {
     console.error('[withdrawal-dashboard]', err.message);
-    res.status(500).json({ success: false, message: err.message });
+    return serverError(res, err, 'GET /analytics/withdrawal-dashboard');
   }
 });
 
@@ -209,16 +215,22 @@ router.get('/analytics/withdrawal-dashboard', authenticate, isAdminOrSubAdmin, a
 // Shows ONLY MERCHANT_TOPUP / MERCHANT_RESERVE / MERCHANT_LIQUIDITY.
 // Completely separate from user deposit/withdrawal dashboards.
 // ─────────────────────────────────────────────────────────────────────────────
-router.get('/analytics/merchant-funding', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/analytics/merchant-funding', authenticate, hasPermission('canViewAnalytics'), async (req, res) => {
   try {
     // Merchant funding is merchant WALLET movement, which is where it has
     // always actually been recorded. The aggregate this replaced grouped a
     // player transaction collection by three type strings that were never
     // written to it, so all three tiles read zero on a platform that had funded
     // merchants every day.
-    const [funding, merchants] = await Promise.all([
+    const [funding, merchants, trade] = await Promise.all([
       db.merchantWallets.fundingTotals(),
       db.stats.merchantStats(),
+      // The MONEY side of that same funding. The three tiles above count TOKENS
+      // handed to merchants; until the top-up and deduct forms captured a
+      // settlement figure, nothing anywhere recorded what the platform got for
+      // them, so this screen could say how much float was issued and not one
+      // thing about whether it had been paid for.
+      db.adminTokenConsiderations.platformConsiderationTotals(),
     ]);
     res.json({
       success: true,
@@ -227,11 +239,30 @@ router.get('/analytics/merchant-funding', authenticate, isAdminOrSubAdmin, async
         merchantReserve:   funding.reserve,
         merchantLiquidity: funding.liquidity,
         activeMerchants:   merchants.total,
+        // Rupees. `receivedInr` is the INR-EQUIVALENT across every settlement
+        // currency and is the only figure that may be added up; `byCurrency`
+        // keeps what merchants actually sent apart, because summing 500 USDT
+        // with 500 INR as 1,000 of anything is trap 15.
+        tokenTrade: {
+          receivedInr:      paiseToRupees(trade.receivedInrPaise),
+          paidInr:          paiseToRupees(trade.paidInrPaise),
+          netInr:           paiseToRupees(trade.netInrPaise),
+          tokensSold:       paiseToRupees(trade.tokensSoldPaise),
+          tokensBoughtBack: paiseToRupees(trade.tokensBoughtBackPaise),
+          movements:        trade.movements,
+          byCurrency:       Object.fromEntries(
+            Object.entries(trade.byCurrency).map(([code, v]) => [code, {
+              received:  paiseToRupees(v.receivedMinor),
+              paid:      paiseToRupees(v.paidMinor),
+              movements: v.movements,
+            }]),
+          ),
+        },
       },
     });
   } catch (err) {
     console.error('[merchant-funding]', err.message);
-    res.status(500).json({ success: false, message: err.message });
+    return serverError(res, err, 'GET /analytics/merchant-funding');
   }
 });
 

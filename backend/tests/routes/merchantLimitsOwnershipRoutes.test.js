@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * The admin sets a merchant's limits. The merchant cannot.
  *
@@ -11,14 +11,20 @@
  * ── The route that was there, and why it was worse than it looked ───────────
  * `PUT /api/merchant/limits` let a merchant set their own. It also wrote the
  * WRONG FIELDS: `limits.minDeposit`/`maxDeposit`/`minWithdraw`/`maxWithdraw`,
- * which nothing reads for any decision. Merchant assignment filters candidates
- * on `minOrder` and `maxOrder`, and only the admin route writes those. So a
- * merchant could raise their limits, be told it saved, and be offered exactly
- * the same orders as before — a control that was both wrong to offer and
- * inert.
+ * which nothing reads for any decision. So a merchant could raise their limits,
+ * be told it saved, and be offered exactly the same orders as before — a
+ * control that was both wrong to offer and inert.
  *
- * Asserted from both ends: the merchant route is gone, and the admin route
- * moves the number assignment actually reads.
+ * ── The order RANGE that replaced it was inert too ─────────────────────────
+ * This file used to assert that the admin route moved `minOrder`/`maxOrder`,
+ * "the number assignment actually reads". It did not: `assignmentCandidates`
+ * never named either column, and the only filter on them lived in an admin
+ * SCREEN. Both are gone now — a merchant's ceiling is the tokens they hold,
+ * enforced by the deposit escrow, and the floor is platform-wide.
+ *
+ * What is still worth asserting is the OWNERSHIP: a merchant cannot set their
+ * own caps, and the admin route that can is admin-only. The cap that survives
+ * and still means something is concurrency.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -53,37 +59,42 @@ describePg('who sets a merchant limit', () => {
     expect(src).not.toMatch(/router\.put\(\s*['"`]\/limits['"`]/);
   });
 
-  it('lets an admin set the range assignment reads', async () => {
+  it('lets an admin set the cash tier, which IS read', async () => {
+    // What this route still owns, and it is genuinely read: the claim query
+    // gates on `cash_denomination_paise` in its own WHERE, on both the supply
+    // and the claim side. The concurrency cap is set through the SCORING
+    // endpoint, not here — a detail worth stating, because a test asserting it
+    // against this route fails with "No limit fields provided" and reads like
+    // the route being broken.
     const admin = await actor({ isAdmin: true });
     const merchant = await merchantActor({});
 
     const res = await as(adminApp, admin)
       .put(`/merchants/${merchant.merchantId}/limits`)
-      .send({ minOrder: 1000, maxOrder: 25000 });
+      .send({ cashDenomination: 5000 });   // ₹5,000 — a real rung of the ladder
 
-    expect(res.status).toBe(200);
-    // The stored row, not the response — `minOrder`/`maxOrder` are what
-    // merchant.assignment.routes.js filters candidates on.
+    expect(res.status, res.body?.message).toBe(200);
     const row = await getMerchant(merchant.merchantId);
-    expect(Number(row.minOrder)).toBe(1000);
-    expect(Number(row.maxOrder)).toBe(25000);
+    expect(Number(row.cashDenominationPaise)).toBe(500_000);
   });
 
-  it('refuses a range that admits no amount', async () => {
-    // A minimum above the maximum excludes every order. The row's CHECK is what
-    // refuses it; this asserts the route reports that rather than 500ing.
+  it('no longer accepts an order range at all', async () => {
+    // Sent and ignored, not stored: `minOrder`/`maxOrder` have no columns and
+    // no consumer. Asserted so that removing them cannot be quietly undone by
+    // re-adding a field nothing reads (§3).
     const admin = await actor({ isAdmin: true });
     const merchant = await merchantActor({});
-    const before = await getMerchant(merchant.merchantId);
 
     const res = await as(adminApp, admin)
       .put(`/merchants/${merchant.merchantId}/limits`)
       .send({ minOrder: 90000, maxOrder: 100 });
 
+    // Refused as "no limit fields provided": the route does not merely ignore
+    // them, it does not recognise them at all.
     expect(res.status).toBe(400);
-    const after = await getMerchant(merchant.merchantId);
-    expect(Number(after.minOrder)).toBe(Number(before.minOrder));
-    expect(Number(after.maxOrder)).toBe(Number(before.maxOrder));
+    const row = await getMerchant(merchant.merchantId);
+    expect(row.minOrder, 'the order range came back').toBeUndefined();
+    expect(row.maxOrder, 'the order range came back').toBeUndefined();
   });
 
   it('refuses a non-admin', async () => {
@@ -91,7 +102,7 @@ describePg('who sets a merchant limit', () => {
     const merchant = await merchantActor({});
     const res = await as(adminApp, player)
       .put(`/merchants/${merchant.merchantId}/limits`)
-      .send({ minOrder: 1, maxOrder: 2 });
+      .send({ cashDenomination: 5000 });
     expect([401, 403]).toContain(res.status);
   });
 });

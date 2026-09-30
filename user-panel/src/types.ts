@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 // FIX (Audit #38) — Added depositBalance, winningsBalance fields to User interface
 // FIX (Audit #15) — GameState.CLOSED confirmed present (was already here, but calculateStatus didn't use it)
 
@@ -28,12 +28,23 @@ export interface User {
   id: string;
   mobile: string;
   username: string;
-  walletBalance: number;       
   lockedBalance: number;
 
-  // FIX (Audit #38): dual balance system fields — backend uses these, not walletBalance
+  // ── The player's pockets. All FOUR of them ────────────────────────────────
+  // `realtimeEmitters.js` has always pushed four, and this interface named
+  // three. `reserveBalance` was the missing one, so every merge in
+  // GameContext dropped it and the shell header — which totals what this
+  // object holds — showed 900 after a 1,000-token purchase, the reserve cut
+  // being 10% under the ACTIVE deposit policy. The wallet screen reads
+  // `/api/user/bet-limits`, which reports all four, and showed 1,000. Two
+  // totals for the same money in one session, and the smaller one sat under
+  // the word "Wallet".
+  //
+  // This is §23 in the omission direction: a type that does not name a field
+  // the server sends is as silent as one that names a field it does not.
   depositBalance: number;      // NON-WITHDRAWABLE: can only be used for betting
   winningsBalance: number;     // WITHDRAWABLE: from bet payouts, can be withdrawn
+  reserveBalance: number;      // NON-WITHDRAWABLE: the deposit policy's reserve share
 
   walletAddress: string;
   profilePic?: string;
@@ -196,7 +207,6 @@ export interface MerchantProfile {
     accountNo: string;
     ifsc: string;
   };
-  qrCodeUrl?: string;
   limits: {
     minDeposit: number;
     maxDeposit: number;
@@ -253,16 +263,24 @@ export type PaymentOrderStatus =
   | 'FAILED'
   | 'REJECTED';
 
-export interface MerchantSnapshot {
-  merchantId:    string;
-  merchantName:  string;
-  upiId:         string;
-  bankName:      string;
-  accountNo:     string;
-  ifsc:          string;
-  accountHolder: string;
-  snapshotAt:    string;
-  expiresAt:     string;
+/**
+ * Where to pay, and nothing about who is being paid.
+ *
+ * This was `MerchantSnapshot`, and it declared the merchant's `upiId`,
+ * `bankName`, `accountNo`, `ifsc` and `accountHolder`. A field the panel's type
+ * names is a field somebody will render — and these were rendered, with a Copy
+ * button on the handle.
+ *
+ * The server sends this instead: a per-order payment link, an opaque reference
+ * that names nobody, and the deadline. See
+ * backend/domains/payment/playerOrderView.js, which is the only shape of an
+ * order a player receives.
+ */
+export interface PayTo {
+  paymentLink?: string;
+  /** `Merchant #<publicRef>` — a label for support, identifying no one. */
+  merchantRef?: string;
+  expiresAt?: string;
 }
 
 export interface PaymentOrder {
@@ -270,27 +288,31 @@ export interface PaymentOrder {
   _id:                string;
   orderId:            string;
   userId:             string;
-  merchantId:         string | null;
   type:               'DEPOSIT' | 'WITHDRAWAL';
   tokenAmount:        number;
   fiatAmount:         number;
   rateUsed:           number;
-  merchantProfit:     number;
-  depositAllocation:  number;   // share of tokenAmount → depositBalance (DepositPolicy, admin-configurable)
-  reserveAllocation:  number;   // share of tokenAmount → reserveBalance (DepositPolicy, admin-configurable)
-  platformFeeRate:    number;   // 3% deducted on bet settlement
   status:             PaymentOrderStatus;
   escrowStatus:       'NONE' | 'LOCKED' | 'RELEASED' | 'REFUNDED';
   utrNumber?:         string;
   proofScreenshot?:   string;
-  requiresVideoKYC:   boolean;
-  merchantSnapshot?:  MerchantSnapshot;
-  utrWarning?:        string;
-  requiresReview:     boolean;
-  warningIssued:      boolean;
-  redFlagged:         boolean;
-  bulkPayoutDate?:    string;
-  bulkPayoutBatch?:   string;
+  // ── What this interface stopped declaring, and why ────────────────────────
+  // `merchantId`, `merchantSnapshot`, `merchantProfit`, `depositAllocation`,
+  // `reserveAllocation`, `platformFeeRate`, `requiresVideoKYC`,
+  // `requiresReview`, `warningIssued` and `redFlagged`. (`bulkPayoutDate` and
+  // `bulkPayoutBatch` were named here too, until the bulk-payout feature and
+  // its columns were removed on 2026-09-10.)
+  //
+  // None of them is sent to a player, and several must never be: the merchant's
+  // identity and credentials, the platform's own treasury split and fee, and the
+  // risk verdicts on the player themselves — a player told they are red-flagged
+  // is a player told to change behaviour before an investigation finishes.
+  //
+  // They were declared here anyway, which is the `User._id` failure exactly: the
+  // interface was the thing that was wrong, so every read typechecked and was
+  // `undefined` at runtime. `playerOrderView.js` is the authority for this shape
+  // and refuses all of them.
+  payTo?:             PayTo | null;
   expiresAt?:         string;
   createdAt:          number | string;
   paidAt?:            string;

@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * routes.js — session lifecycle, and the STAFF password login.
  *
@@ -31,6 +31,8 @@ import { buildPublicKycData } from './domains/user/kycPublicData.js';
 import { isTokenRevoked, revokeToken } from '#db/repositories/identity.js';
 import { issueChallenge, verifyChallenge, CHALLENGE_AUDIENCE } from './domains/identity/twoFactorChallenge.js';
 import { verifySecondFactor, SECOND_FACTOR_RESULT } from './domains/identity/verifySecondFactor.js';
+import { requires2FA } from './domains/identity/twoFactor.routes.js';
+import { sessionSuperseded, refuseSupersededSession } from './domains/identity/auth.middleware.js';
 
 const router = express.Router();
 
@@ -53,18 +55,64 @@ function extractToken(req) {
     || null;
 }
 
-/**
- * True for an account that is allowed to use the password door at all.
- *
- * Since players moved to Telegram this is the whole guest list. It matters more
- * than it looks: legacy player rows still carry a `passwordHash`, and without
- * this check a caller could post `loginType: 'user'` to /api/admin/login and
- * walk in on one of them — none of the three role checks below would fire,
- * because each only tests the role it names.
- */
+/** Admin, sub-admin, queue manager or mediator. */
 function isStaffAccount(user) {
   return Boolean(user?.isAdmin || user?.isSubAdmin || user?.isQueueManager || user?.isMediator);
 }
+
+/**
+ * WHICH DOOR a login arrived at, and who that door admits.
+ *
+ * ── Why the guest list is a parameter and not a constant ───────────────────
+ * There are two password doors now — the staff one at /api/admin/login and the
+ * player one at /api/v1/auth/login — and they differ in exactly one thing: who
+ * they let in. Everything else is identical, and identical in the places where
+ * a divergence would be a security defect rather than a cosmetic one: reading
+ * the credential hash from the one function that returns it, the blocked-account
+ * refusal, the argon2 upgrade, the order the second factor is decided in, and
+ * the fact that a 2FA challenge is issued INSTEAD of a session.
+ *
+ * Writing the second door as a second handler would have copied all of that,
+ * and §5's rule says what happens next: the copies drift, silently, and the one
+ * that stops challenging is the one nobody is watching. So one handler, and the
+ * MOUNT states the guest list.
+ *
+ * ── Why the player door refuses staff ──────────────────────────────────────
+ * Not because staff are untrusted, but because a staff session minted at a
+ * player door would bypass the admin panel's own enrolment routing and land an
+ * admin token in the player app's storage key. A person who is both plays on a
+ * separate account, which is the correct posture on a gambling platform anyway.
+ * They are TOLD where their door is rather than being refused as unknown — §32
+ * S14: a refusal the reader cannot act on is a support ticket.
+ */
+export const LOGIN_DOOR = {
+  STAFF: {
+    name: 'staff',
+    // ── The separation is a PREDICATE, not a check ───────────────────────
+    // `accountType` is what the row IS, and it is in the `WHERE` of the read —
+    // so the staff door never loads a player row at all. The role check below
+    // then decides what that staff member may reach.
+    //
+    // This replaced a check made AFTER the read, on `is_admin`. That version
+    // was correct and one flipped boolean away from not being: a player row
+    // with `is_admin` set would have been admitted at the staff door, and
+    // nothing in the read said the row belonged to a different population.
+    // A predicate cannot be got wrong afterwards.
+    accountType: 'STAFF',
+    admits: isStaffAccount,
+    refusal: 'This account is not a staff account. Sign in on the player app.',
+  },
+  PLAYER: {
+    name: 'player',
+    accountType: 'PLAYER',
+    // Nothing further to admit on: a PLAYER row is a player by construction.
+    // The refusal below is therefore unreachable in practice and is kept
+    // because a door that cannot say who it turns away is a door somebody will
+    // widen without noticing.
+    admits: () => true,
+    refusal: 'This is a staff account. Sign in through the admin panel.',
+  },
+};
 
 // ── POST /api/admin/login (staff only) ───────────────────────────────────────
 export async function loginHandler(req, res) {
@@ -75,7 +123,13 @@ export async function loginHandler(req, res) {
     if (!mobile || !password)
       return res.status(400).json({ success: false, message: 'Mobile and password are required' });
 
-    const user = await db.users.getUserByMobile(String(mobile));
+    // The door is resolved BEFORE the read, because it decides which population
+    // the read looks in. Defaults to STAFF: this handler's only unmounted
+    // caller would be a test, and a default of "anyone" is the wrong way for
+    // that to fail.
+    const door = req.loginDoor || LOGIN_DOOR.STAFF;
+
+    const user = await db.users.getUserByMobile(String(mobile), door.accountType);
     if (!user)
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
 
@@ -104,11 +158,13 @@ export async function loginHandler(req, res) {
       } catch { /* best-effort upgrade — never fail a valid login over it */ }
     }
 
-    // Checked AFTER the password, so a wrong password and a non-staff account
-    // are indistinguishable to a caller probing for which numbers are staff.
-    if (!isStaffAccount(user)) {
-      console.warn(`[auth] password login refused for non-staff account ${user.userId}`);
-      return res.status(403).json({ success: false, message: 'This account signs in through Telegram.' });
+    // Checked AFTER the password, so a wrong password and an account that
+    // belongs at the other door are indistinguishable to a caller probing for
+    // which numbers are staff. The door already scoped the READ by account
+    // type; this is the ROLE question on top of it.
+    if (!door.admits(user)) {
+      console.warn(`[auth] ${door.name} login refused for account ${user.userId}`);
+      return res.status(403).json({ success: false, message: door.refusal });
     }
 
     if (loginType === 'admin'         && !user.isAdmin)        return res.status(403).json({ success: false, message: 'Admin access required' });
@@ -150,17 +206,30 @@ export async function loginHandler(req, res) {
  * contains. Three copies of this would be a standing invitation for one door
  * to quietly grant claims the others refuse.
  */
-export async function issueSession(user, res) {
+export async function issueSession(user, res, { secondFactorPresented = false } = {}) {
   let role = 'user';
   if (user.isAdmin)          role = 'admin';
   else if (user.isSubAdmin)  role = 'subadmin';
   else if (user.isQueueManager) role = 'queue_manager';
   else if (user.isMediator)  role = 'mediator';
 
+  // ── Whether a second factor was actually presented, ON THE TOKEN ────────
+  // A CLAIM, not a lookup. `requires2FA()` says who must hold a factor, but
+  // nothing could previously ask "did THIS session prove one?" — the login
+  // handler challenged accounts that had already enrolled and issued a full
+  // session to everyone else, so a staff account that never enrolled was
+  // password-only over the whole admin surface, permanently and silently.
+  //
+  // Recording it here costs nothing to check later and cannot drift from the
+  // login path, because this is the only place a session is minted. It does not
+  // gate anything yet — the guard that refuses privilege without a factor is a
+  // separate, deliberate switch (F-011), because turning it on locks out any
+  // staff account that has not enrolled, the seeded admin first.
   const token = signToken(
     { userId: user.userId, mobile: user.mobile, role,
       isAdmin: user.isAdmin || false, isSubAdmin: user.isSubAdmin || false,
       isQueueManager: user.isQueueManager || false,
+      amr: secondFactorPresented ? ['pwd', 'otp'] : ['pwd'],
       permissions: user.subAdminPermissions || {} }
   );
 
@@ -191,7 +260,7 @@ export async function issueSession(user, res) {
     // ceiling, computed by the same rule the bet route enforces.
     reserveBalance: balances.reserveBalance,
     walletBalance: dep + win, kycStatus: user.kycStatus,
-    kycData: buildPublicKycData(user),
+    kycData: await buildPublicKycData(user),
     bankDetails: user.bankDetails || null, profilePic: user.profilePic || '',
     status: user.status || 'ACTIVE', joinedAt: user.joinedAt || null,
     lastLogin: lastLogin?.lastLogin ?? new Date(),
@@ -200,7 +269,13 @@ export async function issueSession(user, res) {
   };
 
   res.cookie('auth_token', token, COOKIE_OPTS);
-  return res.json({ success: true, token, user: userPayload });
+  return res.json({
+    success: true, token, user: userPayload,
+    // The merchant panel already routes on this; the admin panel had no
+    // equivalent, so an admin who never enrolled was never even asked. Computed
+    // from `requires2FA()` so the panel and the policy cannot disagree.
+    ...(requires2FA(user) && !user.twoFactorEnabled ? { mustEnroll2FA: true } : {}),
+  });
 }
 
 /**
@@ -231,8 +306,17 @@ export async function loginTwoFactorHandler(req, res) {
     // between the two requests.
     if (user.status === 'BLOCKED' || user.isBlocked)
       return res.status(403).json({ success: false, message: 'Account blocked. Contact support.' });
-    if (!isStaffAccount(user))
-      return res.status(403).json({ success: false, message: 'This account signs in through Telegram.' });
+    // The SAME door the password leg applied, on the account type AND the role.
+    // A challenge minted at one door and redeemed at the other is the shape
+    // this re-check exists to refuse: without it a player's valid challenge,
+    // posted to the staff endpoint, would be redeemed by the staff handler —
+    // and the separation would have been enforced on only one of the two legs.
+    //
+    // The type is checked explicitly here because this leg reads by USER ID,
+    // not by mobile, so the door's predicate never touched the query.
+    const door = req.loginDoor || LOGIN_DOOR.STAFF;
+    if (user.accountType !== door.accountType || !door.admits(user))
+      return res.status(403).json({ success: false, message: door.refusal });
 
     const t = challenge.loginType;
     if (t === 'admin'         && !user.isAdmin)        return res.status(403).json({ success: false, message: 'Admin access required' });
@@ -260,7 +344,8 @@ export async function loginTwoFactorHandler(req, res) {
     if (verdict.usedBackupCode) {
       console.warn(`🔐 Recovery code used for user ${user.userId} — ${verdict.backupCodesRemaining} remaining`);
     }
-    const response = await issueSession(user, res);
+    // A code (or a recovery code) was just verified — say so on the token.
+    const response = await issueSession(user, res, { secondFactorPresented: true });
     return response;
   } catch (e) {
     console.error('2FA login error:', e);
@@ -294,6 +379,14 @@ router.get('/me', async (req, res) => {
     const user = await db.users.getUser(decoded.userId);
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
+    // The SAME check `authenticate` applies, from the same function. This
+    // endpoint does not go through that middleware — it verifies the token
+    // inline, above — so a copy here is not optional and a second
+    // implementation would be the thing that drifts. Measured before it
+    // existed: a password reset left the pre-reset session answering 200 here,
+    // on the endpoint every page load calls to restore a session.
+    if (sessionSuperseded(user, decoded)) return refuseSupersededSession(res);
+
     if (user.isBlocked || user.status === 'BLOCKED')
       return res.status(403).json({ success: false, message: 'Account blocked' });
 
@@ -309,11 +402,25 @@ router.get('/me', async (req, res) => {
         depositBalance: dep, winningsBalance: win, lockedBalance: balances.lockedBalance || 0,
         reserveBalance: balances.reserveBalance || 0,
         walletBalance: dep + win, kycStatus: user.kycStatus,
-        kycData: buildPublicKycData(user),
+        kycData: await buildPublicKycData(user),
         bankDetails: user.bankDetails || null, profilePic: user.profilePic || '',
         status: user.status || 'ACTIVE', joinedAt: user.joinedAt || null,
         lastLogin: user.lastLogin || null, phantomAccess: user.phantomAccess || 'NONE',
-      }
+      },
+      // The same obligation the login response carries, from the same owner.
+      //
+      // It is here because login is not the only moment it can become true: an
+      // account PROMOTED to admin or sub-admin while holding a session owes a
+      // factor from that moment, and a flag established only at login would
+      // leave them on a password-only session over the whole admin surface
+      // until they next signed out. This endpoint is what every panel calls on
+      // load, so it is where a change of status is noticed.
+      //
+      // `requires2FA()` rather than a second reading of the flags, so the
+      // policy has one owner and this cannot disagree with the login response
+      // or with the route guards. False for a player, which is what makes the
+      // panel's gate a decision rather than a wall. F-011.
+      ...(requires2FA(user) && !user.twoFactorEnabled ? { mustEnroll2FA: true } : {}),
     });
   } catch (e) {
     console.error('Auth check error:', e);

@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import React from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 
@@ -28,11 +28,27 @@ interface DataTableProps<T> {
  * identify rows in URLs and in selection state.
  *
  * Orders and merchants DO send `_id` (their mappers alias it deliberately), so
- * both spellings are accepted and the first present one wins.
+ * every spelling is accepted and the first present one wins.
+ *
+ * ── The ORDER of those candidates is the whole thing ────────────────────────
+ * `userId` used to be tried FIRST. That is right for the users table, where it
+ * IS the row's identity — and wrong for every row that merely REFERENCES a
+ * user. A wallet-ledger row does: one player owns many movements, so the whole
+ * Transactions page rendered with one key repeated down the table, and React
+ * warned "Encountered two children with the same key".
+ *
+ * That is not cosmetic. Duplicate keys let React reuse the wrong row across an
+ * update, so a re-sort or a page change can leave a row showing one movement's
+ * amount beside another's reason — on the screen an operator reconciles money
+ * from. §23's lesson, one level down: the id a row carries is not automatically
+ * the id it IS.
+ *
+ * So: the row's OWN identity first, and `userId` only as the fallback for rows
+ * that have nothing else — which is exactly the users table.
  */
 function rowKey(item: unknown, index: number): string {
   const r = item as Record<string, unknown>;
-  const id = r?.userId ?? r?._id ?? r?.id;
+  const id = r?.txId ?? r?._id ?? r?.id ?? r?.orderId ?? r?.userId;
   return typeof id === 'string' || typeof id === 'number' ? String(id) : `row-${index}`;
 }
 
@@ -92,9 +108,17 @@ export function DataTable<T extends object>({
             Page {currentPage} of {totalPages}
           </p>
           <div className="flex items-center space-x-2">
+            {/* Two icon-only buttons in the one table component every list
+                screen uses, so a single pair of missing names was announced as
+                "button, button" on /users, /merchants, /transactions,
+                /cycle-history and /audit-logs alike. The page number is in the
+                name because "previous page" alone does not say where you are
+                going (§32 S24). */}
             <button
               onClick={() => onPageChange(currentPage - 1)}
               disabled={currentPage === 1}
+              title={`Previous page (${currentPage - 1} of ${totalPages})`}
+              aria-label={`Previous page (${currentPage - 1} of ${totalPages})`}
               className="btn-secondary disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <ChevronLeft size={16} />
@@ -102,6 +126,8 @@ export function DataTable<T extends object>({
             <button
               onClick={() => onPageChange(currentPage + 1)}
               disabled={currentPage === totalPages}
+              title={`Next page (${currentPage + 1} of ${totalPages})`}
+              aria-label={`Next page (${currentPage + 1} of ${totalPages})`}
               className="btn-secondary disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <ChevronRight size={16} />

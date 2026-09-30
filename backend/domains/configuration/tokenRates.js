@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * tokenRates.js — what one BB token is worth, and the ONE place that says so.
  *
@@ -60,16 +60,92 @@ export function adminToMerchantUsdtRate(config) {
 }
 
 /**
+ * The band a merchant→user USDT rate must fall in, in INR per USDT.
+ *
+ * ── Why a rate needs a bound at all ───────────────────────────────────────
+ * This single number prices EVERY USDT purchase, and the sizes are large: at
+ * the intended rate 500,000 tokens cost 5,000 USDT. A misplaced decimal —
+ * 10,000 typed for 100 — makes that same 500,000 tokens cost 50 USDT, and the
+ * first player to notice can drain the rail before anybody reads the config
+ * screen. The opposite slip charges a player a hundred times over.
+ *
+ * It is a SANITY band, not a market view: USDT has traded in the ₹60–₹95
+ * region, so an order of magnitude either side is far wider than any real rate
+ * and still catches a 100× fat finger. A guard tight enough to catch every
+ * typo would one day refuse a legitimate rate; this one refuses only figures
+ * that cannot be a price.
+ *
+ * Enforced in BOTH directions, deliberately: the admin route refuses to store
+ * one outside the band, and the reader below refuses to price with one — so a
+ * value that reached the row some other way (a direct UPDATE, a restore from
+ * an old backup) fails closed as "not set" rather than selling tokens at it.
+ */
+export const USDT_RATE_MIN_INR = 10;
+export const USDT_RATE_MAX_INR = 1_000;
+
+/** True when `rate` is a price this platform will actually trade at. */
+export function isSaneUsdtRate(rate) {
+  const n = Number(rate);
+  return Number.isFinite(n) && n >= USDT_RATE_MIN_INR && n <= USDT_RATE_MAX_INR;
+}
+
+/**
  * What a player pays a USDT merchant per token.
  *
- * Returns null when it has never been set. The schema default is 0, and 0 is
- * not a rate — pricing an order with it divides by zero, and quietly
- * substituting 1 would sell tokens at the INR peg to a merchant settling in
- * USDT. A caller that cannot price an order must refuse it, not guess.
+ * Returns null when it has never been set, and equally when what is stored is
+ * not a price at all. The schema default is 0, and 0 is not a rate — pricing
+ * an order with it divides by zero, and quietly substituting 1 would sell
+ * tokens at the INR peg to a merchant settling in USDT. A caller that cannot
+ * price an order must refuse it, not guess.
  */
 export function merchantToUserUsdtRate(config) {
   const rate = config?.usdtPricing?.userMerchantBuyInr;
-  return isUsableRate(rate) ? Number(rate) : null;
+  return isUsableRate(rate) && isSaneUsdtRate(rate) ? Number(rate) : null;
+}
+
+/**
+ * How many PLATFORM TOKENS one USDT buys.
+ *
+ * ── Why this is the same stored number, read differently ──────────────────
+ * `usdtPricing.userMerchantBuyInr` is "the INR price of one USDT". One token is
+ * one rupee (`INR_TOKEN_RATE`), so "₹100 per USDT" and "100 tokens per USDT"
+ * are the same fact and the admin sets it once. This function exists so the
+ * USDT rail can say what it actually means without a second stored field to
+ * drift against the first.
+ *
+ * The coupling is the peg, and it is worth naming: if the token ever stops
+ * being worth exactly ₹1, these become two different numbers and this function
+ * becomes wrong rather than merely differently-worded. `INR_TOKEN_RATE` is
+ * multiplied in here so that day is a failing test rather than a silent
+ * mispricing.
+ *
+ * Returns null when unset, for the reason `merchantToUserUsdtRate` does: 0 is
+ * the schema default and 0 is not a rate — dividing by it gives Infinity USDT,
+ * and substituting 1 would sell 50,000 tokens for 50,000 USDT.
+ */
+export function tokensPerUsdt(config) {
+  const inrPerUsdt = merchantToUserUsdtRate(config);
+  if (inrPerUsdt === null) return null;
+  return inrPerUsdt / INR_TOKEN_RATE;
+}
+
+/**
+ * What a player sends, in USDT, to receive `tokenAmount` platform tokens.
+ *
+ * Rounded UP to two decimals — never against the platform, and never a long
+ * float in a payment instruction. Two decimals rather than USDT's six because
+ * `fiat_amount_paise` is an integer of hundredths; the most that rounding can
+ * cost a player is one hundredth of a USDT.
+ *
+ * Returns null when the rate is unset, so a caller that cannot price a purchase
+ * refuses it rather than quoting a number it invented.
+ */
+export function usdtForTokens(tokenAmount, config) {
+  const rate = tokensPerUsdt(config);
+  if (rate === null) return null;
+  const raw = Number(tokenAmount) / rate;
+  if (!Number.isFinite(raw) || raw <= 0) return null;
+  return Math.ceil(raw * 100) / 100;
 }
 
 /**

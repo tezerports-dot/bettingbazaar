@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 // Domain: Risk Platform (BBEPS Phase 010).
 //
 // THE SINGLE AUTHORITY for operational rules and transaction validation
@@ -20,13 +20,20 @@
 //   - opposite-side betting restriction (config-gated)
 //   - funding-order velocity limit (config-gated)
 // Declared Risk Platform capabilities NOT yet implemented (no fake
-// placeholders — see docs/governance/04-GOVERNANCE.md): AML screening, fraud-signal
+// placeholders — see CLAUDE.md): AML screening, fraud-signal
 // scoring, device risk, behaviour analysis, responsible-gaming limits.
 
 import { db } from '#db';
 // Shared trading vocabulary (Phase 011) — canonical sides, no local strings.
 import { oppositeSide } from '../trading/tradingModels.js';
 import { getSystemConfig } from '#db/repositories/config.js';
+import { PAYMENT_MODES } from '#db/repositories/paymentModePolicy.js';
+import { MERCHANT_CURRENCY } from '../merchant/merchantCurrency.js';
+import {
+  BUY_DENOMINATIONS_PAISE, MAX_CASH_BUY_PAISE, isBuyDenomination,
+  USDT_BUY_DENOMINATIONS_PAISE, isUsdtBuyDenomination,
+} from '../merchant/denominations.js';
+import { rupeesToPaise } from '../../shared/money.js';
 
 function reject(message, code = 'RISK_VALIDATION') {
   return Object.assign(new Error(message), { status: 400, code });
@@ -128,7 +135,7 @@ export function computePayoutFeeMinor(tokenAmount, payoutFeePercent) {
  *   - Percent is owned by SystemConfig.betReservePercent (Business Policy);
  *     this function is only the arithmetic rule.
  *
- * Precision (decided 2026-07-10, see docs/governance/04-GOVERNANCE.md): PAISE.
+ * Precision (decided 2026-07-10, see CLAUDE.md): PAISE.
  * All arithmetic is integer paise with the percent in integer basis points,
  * so the three parts ALWAYS conserve the exact stake (reserve is floored,
  * remainder to main — same discipline as computeReserveSplit). Wallet
@@ -338,10 +345,154 @@ export { getRiskRules };
  * assessFundingOrder — full Risk gate for a deposit/withdrawal intent.
  * Called by paymentProcessing (behind the Funding Platform facade).
  */
-export async function assessFundingOrder({ userId, tokenAmount, type, min, max }) {
+/**
+ * What a player is allowed to buy, enforced on the SERVER.
+ *
+ * ── Why this is not a UI concern ───────────────────────────────────────────
+ * The player app ships as an Android build (`user-panel/capacitor.config.ts`),
+ * and a Capacitor APK contains the whole JavaScript bundle. Anyone who unzips
+ * it has the full API surface and can send whatever body they like. A rule that
+ * lives only in a picker component is not a rule — it is a suggestion the
+ * client is free to decline.
+ *
+ * Before this existed, `createDepositOrder` accepted any amount that passed
+ * min/max and multiples-of-ten, so a hand-made request could buy ₹7,777 on a
+ * rail where the only amounts an ATM dispenses are 500, 1,000, 5,000 and
+ * 10,000 — and no merchant could ever have served it.
+ *
+ * ── The three rules, and why each is here ──────────────────────────────────
+ *
+ * 1. **₹10,000 is the ceiling on a CASH buy**, and only on the cash rail. It is
+ *    the largest amount an ATM dispenses, derived from the denomination list
+ *    rather than written as its own number so the two cannot drift apart. It
+ *    used to apply to every INR buy including the UPI rail, where there is no
+ *    machine and nothing to dispense.
+ *
+ *    The USDT rail is separate and not a consequence of that ceiling: it serves
+ *    three fixed TOKEN counts — 50,000, 100,000 and 500,000 — for the reason
+ *    the cash amounts are fixed. A merchant sending tokens from their own
+ *    wallet knows what they are being asked for before they accept.
+ *
+ * 2. **On the cash rail the amount must BE a denomination.** Not "within a
+ *    range" — a cash machine dispenses one of a fixed set, so an amount between
+ *    them is unservable by construction.
+ *
+ * 3. **One open INR buy at a time.** The ceiling is about what a machine
+ *    dispenses, not about limiting the player, so they may place another as
+ *    soon as this one finishes — but two at once would let one player occupy
+ *    several merchants' entire capacity during a shortage.
+ */
+async function assertBuyIsLegal({ userId, tokenAmount, paymentMode, currency }) {
+  // ── An amount that is not a number is the CALLER's mistake, not a fault ──
+  //
+  // `rupeesToPaise` throws a bare `TypeError` on a NaN, and a TypeError carries
+  // no `status` — so `respondError` routes it to `serverError`, which logs in
+  // full and answers "Something went wrong. Please try again." by design (§2).
+  //
+  // MEASURED: a deposit request with the amount under any key but `tokenAmount`
+  // answered **500**. Every refusal below this line is a 400 that names what to
+  // do instead, exactly as §25 requires — "a player told only 'invalid amount'
+  // tries again and again" — and this one case skipped all of them and told
+  // them the platform had broken.
+  //
+  // It is the first thing checked because it is the first thing used: every
+  // rule after this reads `paise`.
+  if (typeof tokenAmount !== 'number' || !Number.isFinite(tokenAmount) || tokenAmount <= 0) {
+    throw Object.assign(
+      // The sizes for THIS rail, in TOKENS — which is what a player buys on
+      // both of them (§25). Naming the other rail's sizes would send somebody
+      // to an amount their own rail refuses.
+      new Error(`Choose an amount to buy — ${(
+        currency === MERCHANT_CURRENCY.USDT ? USDT_BUY_DENOMINATIONS_PAISE : BUY_DENOMINATIONS_PAISE
+      ).map((p) => (p / 100).toLocaleString('en-IN')).join(', ')} tokens.`),
+      { status: 400, code: 'AMOUNT_REQUIRED' },
+    );
+  }
+  const paise = rupeesToPaise(tokenAmount);
+
+  // ── The USDT rail: three fixed sizes, in TOKENS ─────────────────────────
+  // What a player receives is one of three token counts; what they SEND is
+  // derived from the admin's rate at creation. The concurrency rule is the same
+  // one applied per currency — a player may hold one open buy on each rail,
+  // because the two are served by different merchants out of different
+  // inventory.
+  if (currency === MERCHANT_CURRENCY.USDT) {
+    if (!isUsdtBuyDenomination(paise)) {
+      throw Object.assign(
+        // The sizes, in the unit the player is buying. Saying "₹50,000" here
+        // would describe a rupee amount nobody pays on this rail.
+        new Error(
+          'A USDT purchase is '
+          + `${USDT_BUY_DENOMINATIONS_PAISE.map((p) => (p / 100).toLocaleString('en-IN')).join(', ')} tokens.`,
+        ),
+        { status: 400, code: 'NOT_A_USDT_DENOMINATION' },
+      );
+    }
+    const openUsdt = await db.orders.countOpenDeposits(userId, { currency });
+    if (openUsdt > 0) {
+      throw Object.assign(
+        new Error('You already have a USDT purchase in progress. Finish or cancel it before starting another.'),
+        { status: 409, code: 'BUY_ALREADY_OPEN' },
+      );
+    }
+    return;
+  }
+
+  // ── The CASH rail's ceiling, on the cash rail only ──────────────────────
+  // ₹10,000 is the largest amount a machine dispenses, so it is the largest a
+  // merchant standing at one can serve. It is not a limit on buying: this
+  // refused ₹12,000 on the UPI rail too, where there is no machine and nothing
+  // to dispense — a rule enforced somewhere it does not apply.
+  //
+  // On the UPI rail a purchase is bounded by the configured min/max deposit,
+  // like any other.
+  if (paymentMode === PAYMENT_MODES.CASH_ATM && paise > MAX_CASH_BUY_PAISE) {
+    throw Object.assign(
+      new Error(`A cash purchase is capped at ₹${(MAX_CASH_BUY_PAISE / 100).toLocaleString('en-IN')} — a machine does not dispense more in one go.`),
+      { status: 400, code: 'CASH_BUY_CEILING' },
+    );
+  }
+
+  if (paymentMode === PAYMENT_MODES.CASH_ATM && !isBuyDenomination(paise)) {
+    throw Object.assign(
+      new Error(`Choose one of ₹${BUY_DENOMINATIONS_PAISE.map((p) => p / 100).join(', ₹')} — a cash machine does not dispense other amounts.`),
+      { status: 400, code: 'NOT_A_DENOMINATION' },
+    );
+  }
+
+  const open = await db.orders.countOpenDeposits(userId, { currency });
+  if (open > 0) {
+    throw Object.assign(
+      new Error('You already have a purchase in progress. Finish or cancel it before starting another.'),
+      { status: 409, code: 'BUY_ALREADY_OPEN' },
+    );
+  }
+}
+
+export async function assessFundingOrder({
+  userId, tokenAmount, type, min, max,
+  // The rail this order will be created on, and what it settles in. Both
+  // decide what amounts are legal, so both are gated HERE rather than in the
+  // handler: this is the single validation authority, and a rule enforced in a
+  // route is a rule the next route forgets.
+  paymentMode = null, currency = 'INR',
+}) {
   const rules = await getRiskRules();
 
   if (type === 'DEPOSIT') {
+    // The RAIL's own rule first, then the generic bounds.
+    //
+    // Both are true, and when both would refuse an amount the rail's answer is
+    // the useful one. A ₹30,000 USDT buy hit the generic minimum and was told
+    // "Minimum purchase is 50000 BB tokens" — a limit that does not govern that
+    // rail, and a sentence that does not tell the player what they CAN buy. It
+    // now says "₹50,000 or ₹100,000; for less, buy with UPI or cash up to
+    // ₹10,000". Same for a ₹7,777 cash order, which now names the
+    // denominations instead of the multiple-of-ten rule.
+    //
+    // Neither check is removed. The generic bounds still catch everything the
+    // rail rule does not speak to.
+    await assertBuyIsLegal({ userId, tokenAmount, paymentMode, currency });
     validateTokenPurchase({ amount: tokenAmount, min, max, enforceMultiples: rules.enforceMultiplesOf10 });
   } else {
     validateTokenSale({ amount: tokenAmount, min, max, enforceMultiples: rules.enforceMultiplesOf10 });

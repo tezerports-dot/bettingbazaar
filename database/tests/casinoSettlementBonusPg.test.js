@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * Domains 6, 7 and 8 — cycle settlement, casino callbacks, bonuses — against a
  * REAL PostgreSQL.
@@ -404,8 +404,8 @@ describePg('granting by record type', () => {
   it('REFUSES a record type with no pool behind it', async () => {
     // This used to answer `{ ok: true, applied: false }`, on the reasoning that
     // another store's credit path would handle it. There is no other store, so
-    // that told the caller a grant had succeeded while nothing moved — and the
-    // gift-code route goes on to write an audit row saying the player received
+    // that told the caller a grant had succeeded while nothing moved — and a
+    // promotion route goes on to write an audit row saying the player received
     // the money. An audit trail recording a payment the ledger never made is
     // worse than a failed promotion.
     const res = await grantByRecordType({
@@ -419,7 +419,7 @@ describePg('granting by record type', () => {
 
   it('REFUSES a non-positive amount rather than recording a zero grant', async () => {
     const res = await grantByRecordType({
-      grantId: 'g-zero-1', userId: 'u-zero', recordType: 'GIFT_CODE', amountRupees: 0,
+      grantId: 'g-zero-1', userId: 'u-zero', recordType: 'CHECK_IN', amountRupees: 0,
     });
     expect(res).toMatchObject({ ok: false, applied: false, reason: 'non_positive_amount' });
   });
@@ -428,6 +428,10 @@ describePg('granting by record type', () => {
     // A manual adjustment has no pool behind it. Inventing one would make the
     // treasury claim it financed something it did not.
     expect(KIND_FROM_RECORD_TYPE.ADMIN_CREDIT).toBeUndefined();
-    expect(KIND_FROM_RECORD_TYPE.GIFT_CODE).toBe('PROMO');
+    expect(KIND_FROM_RECORD_TYPE.CHECK_IN).toBe('PROMO');
+    // GIFT_CODE was the mapped example here until 2026-09-10. It is gone with
+    // the feature, and must stay gone: a record type with no route behind it is
+    // a pool the treasury can be asked to fund for a reason nobody can trigger.
+    expect(KIND_FROM_RECORD_TYPE.GIFT_CODE).toBeUndefined();
   });
 });

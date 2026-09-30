@@ -1,13 +1,12 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 
 
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import express      from 'express';
 import http         from 'http';
 import https        from 'https';
 import { Server as SocketIOServer } from 'socket.io';
 import cors         from 'cors';
-import helmet       from 'helmet';
 import compression  from 'compression';
 import rateLimit    from 'express-rate-limit';
 // AQ-6 (Express 5): the sanitizer package this replaced reassigned the now read-only
@@ -36,6 +35,32 @@ if (!process.env.DATABASE_URL) {
   process.exit(1);
 }
 
+// ── The one way the 2FA guard can become a real lockout ─────────────────────
+// Staff who have not enrolled a second factor reach the enrolment handshake and
+// nothing else (F-011 step 2). Enrolment stores the TOTP secret encrypted under
+// TOTP_ENCRYPTION_KEY, so WITHOUT that key an admin owes a factor they cannot
+// create: refused everywhere, and refused at the one door left open.
+//
+// That is worse than an outage because it is quiet. Players keep depositing
+// while nobody can approve KYC, resolve a dispute or release a payment, and the
+// first symptom is a support queue rather than an alarm.
+//
+// It does not exit: a missing key locks out STAFF, and turning that into a
+// refusal to boot would take the platform away from players too. It is loud
+// instead, and checked at startup rather than discovered by the first admin.
+if (!String(process.env.TOTP_ENCRYPTION_KEY || '').trim()) {
+  console.error(
+    '\n' + '='.repeat(72) + '\n'
+    + '❌ TOTP_ENCRYPTION_KEY IS NOT SET — NO STAFF MEMBER CAN SIGN IN.\n'
+    + '   Admin and sub-admin accounts must hold a second factor, and enrolling\n'
+    + '   one needs this key. Without it every staff account is locked out of\n'
+    + '   everything except an enrolment screen that cannot complete.\n'
+    + '   Set a base64 32-byte key and restart. Back it up like a signing key:\n'
+    + '   rotating it makes every stored 2FA secret undecryptable.\n'
+    + '='.repeat(72) + '\n',
+  );
+}
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 
@@ -52,6 +77,10 @@ import { registerFundingEventSubscribers } from './domains/funding/fundingEvents
 
 // ─── ROUTES ───────────────────────────────────────────────────────────────────
 import authRoutes, { loginHandler, loginTwoFactorHandler } from './routes.js';
+// The player's form signup and form login. Separate from `authRoutes` because
+// they submit a CREDENTIAL and it must carry the credential chain — see the
+// mount below, and §32 S27 for what happens when the two are confused.
+import playerAuthRoutes from './domains/identity/playerAuth.routes.js';
 import adminRoutes        from './routes/admin/index.js';      // ← new modular index
 import betRoutes          from './domains/markets/bet.routes.js';
 // Telegram bot webhook + the one-time-link session exchange. Public by design:
@@ -65,7 +94,6 @@ import paymentRoutes      from './domains/payment/payment.routes.js';
 import supportRoutes      from './domains/support/support.routes.js'; // CAP-71: RAG support assistant
 import uploadRoutes       from './routes/upload.routes.js';
 import paymentCfgRoutes   from './routes/payment-config.routes.js';
-import giftCodeRoutes     from './routes/giftcode.routes.js';
 import retentionRoutes, { rebuildLeaderboard } from './routes/retention.routes.js';
 import gameProviderRoutes from './domains/casino/gameProvider.routes.js';
 import gameRegistryRoutes from './domains/gameRegistry/gameRegistry.routes.js';
@@ -73,7 +101,9 @@ import { seedGameRegistry } from './domains/gameRegistry/gameRegistry.seed.js';
 import { httpMetrics, metricsHandler, setRealtimeStatsProvider } from './services/metrics.service.js';
 // Plan items 19/21/28/24/4/51 (2026-07-13): central security + network config,
 // OWASP filter, service registry, storage abstraction.
-import { HELMET_OPTIONS, CORS_SHAPE, RATE_LIMIT_TIERS, isPhantomBetPlacement } from './config/security.config.js';
+import { CORS_SHAPE, RATE_LIMIT_TIERS, isPhantomBetPlacement } from './config/security.config.js';
+import { refreshProviderFrameSources, startProviderFrameSourceRefresh } from './domains/casino/providerFrameSources.js';
+import { securityHeaders } from './middleware/cspMiddleware.js';
 import { network, canonicalRedirect } from './config/network.config.js';
 import {
   attachProxyProtocolRequestMetadata,
@@ -98,11 +128,11 @@ import { errorHandler }   from './middleware/errorHandler.js';
 import { requestContext } from './middleware/requestContext.js'; // X-6: correlation ids
 import { tlsFingerprintDefense, startTlsFingerprintDefenseConfigRefresh } from './middleware/tlsFingerprintDefense.js';
 import { rejectAmbiguousFraming } from './middleware/headerNormalization.js';
-import { authLimiter, adminAuthLimiter, merchantAuthLimiter, betLimiter, twoFactorLimiter, loginPaceLimiter, securityMonitor } from './middleware/security.js';
+import { authLimiter, adminAuthLimiter, merchantAuthLimiter, betLimiter, twoFactorLimiter, loginPaceLimiter, signupLimiter, securityMonitor } from './middleware/security.js';
 // Item 12 (2026-07-13): IP-rotation defense — per-subnet backstop + optional
 // global surge breaker on sensitive endpoints, on top of the per-IP limiters.
 import { createSubnetLimiter, globalSurgeBreaker, startIpDefenseConfigRefresh } from './middleware/ipDefense.js';
-// Bot-mitigation challenge on credential endpoints (LAUNCH_READINESS §F).
+// Bot-mitigation challenge on credential endpoints (docs/PROJECT_STATUS.md §3.3).
 // Pass-through until TURNSTILE_SECRET_KEY is set, like every other integration.
 import { requireCaptcha } from './middleware/captcha.js';
 import GameEngine         from './domains/markets/gameEngine.js';
@@ -176,8 +206,47 @@ const PORT = network.port; // item 28: single parse point in config/network.conf
 // identical to what was inline here before; edit THAT file to change policy.
 app.use(rejectAmbiguousFraming);
 app.use(attachProxyProtocolRequestMetadata);
-app.use(compression());
-app.use(helmet(HELMET_OPTIONS));
+// ── compression, MINUS the event streams ────────────────────────────────────
+// `compression()` with no filter compresses `text/event-stream` too, because
+// the `compressible` package says text/* is compressible — and zlib holds its
+// output until roughly 16 KB has accumulated or somebody calls `res.flush()`.
+// Nothing on the SSE path calls it, so every stream to a client that accepts
+// gzip — which is every browser — opened successfully and then delivered
+// NOTHING.
+//
+// MEASURED, on a running server: `curl -N` with no Accept-Encoding gets the
+// `retry:` line and the cycle snapshot immediately; the same request with
+// `Accept-Encoding: gzip` produced **10 bytes in 12 seconds** — a gzip header
+// and no member. In a real browser (Chromium, `new EventSource`): `readyState`
+// 1, no error, and **zero events in 12 seconds**. So the player's live pools,
+// the merchant's order push and the admin's dispute push were all silent in
+// every browser, on every panel, while the server logged them as sent.
+//
+// It hid because every tier below a browser is right: the route test never
+// negotiates an encoding, and `curl` without the header is the way anybody
+// checks an SSE endpoint by hand. And a stream that says nothing looks exactly
+// like a stream with nothing to say.
+//
+// The fix is HERE rather than a `res.flush()` after each write. There are five
+// write sites; adding a flush to each is §21's shape exactly — a second thing
+// the author must remember, absent on the sixth. Not compressing a stream is
+// one decision in one place, and it is the right one anyway: an event stream is
+// small, frequent messages, which is the shape compression helps least.
+app.use(compression({
+  filter(req, res) {
+    const type = String(res.getHeader('Content-Type') ?? '');
+    if (type.includes('text/event-stream')) return false;
+    return compression.filter(req, res);
+  },
+}));
+// The CSP's `frame-src` is read from `game_providers`, so the first read has to
+// happen before a response can need it, and it has to keep happening. Not
+// awaited: a database that is not up yet must not stop the server binding, and
+// an empty list is `default-src 'self'` — the behaviour that shipped — which
+// self-heals on the next refresh. See providerFrameSources.js, "Failing closed".
+refreshProviderFrameSources();
+startProviderFrameSourceRefresh();
+app.use(securityHeaders);
 // Item 29: optional canonical-host 301 (only when CANONICAL_HOST is set; keys
 // on the requested Host only — see network.config.js).
 app.use(canonicalRedirect);
@@ -198,7 +267,26 @@ const JSON_LIMIT = process.env.JSON_BODY_LIMIT || '1mb';
 const _tightJson = express.json({ limit: JSON_LIMIT });
 const _assetJson = express.json({ limit: process.env.ASSET_JSON_LIMIT || '8mb' });
 const _ASSET_UPLOAD_PATHS = new Set(['/api/admin/app-assets/upload']);
-app.use((req, res, next) => (_ASSET_UPLOAD_PATHS.has(req.path) ? _assetJson : _tightJson)(req, res, next));
+// ── The provider wallet callback needs the bytes it was signed over ────────
+// Its HMAC is computed over the request BODY, and a digest taken over a
+// re-serialisation of the parsed body only matches when our serialiser happens
+// to agree with the provider's — key order, whitespace, unicode escaping.
+// `verify` stashes the exact buffer so the signature can be checked against it
+// (webhookSignature.js accepts either, so nothing that verified before stops).
+//
+// SCOPED to that path on purpose. Keeping a raw copy of every request body
+// doubles what a 1 MB upload holds in memory, for a check only one route makes.
+// The Telegram webhooks do NOT need it — they authenticate with a secret HEADER,
+// not a body digest.
+const _RAW_BODY_PREFIX = '/api/game/wallet/';
+const _rawJson = express.json({
+  limit: JSON_LIMIT,
+  verify: (req, _res, buf) => { req.rawBody = buf; },
+});
+app.use((req, res, next) => {
+  if (req.path.startsWith(_RAW_BODY_PREFIX)) return _rawJson(req, res, next);
+  return (_ASSET_UPLOAD_PATHS.has(req.path) ? _assetJson : _tightJson)(req, res, next);
+});
 // NO urlencoded body parser — deliberately. This is CSRF defence, not cleanup.
 //
 // Auth cookies are issued with `sameSite: 'none'` in production (routes.js),
@@ -432,15 +520,30 @@ app.get('/api/v1/health', legacyHealth);
 // until an admin sets a ceiling) catches distributed rotation across subnets.
 if (runtime.acceptsHttpApi) {
 startIpDefenseConfigRefresh();
-// Session lifecycle only: /me, /logout, /health. No captcha here — every page
-// load calls /me to restore the session, so gating this router would 403 every
-// user on every load. The credential-submitting routes that captcha DID guard
-// (/login, /register) no longer exist for players; the staff password door is
-// mounted separately below and carries its own captcha.
-app.use('/api/v1/auth', authLimiter, createSubnetLimiter('auth'), globalSurgeBreaker('auth'), authRoutes);
-// Player signup and login are NOT here — they run through the Telegram bot
-// webhooks and the one-time-link exchange, mounted at /api/telegram below.
-// 2FA enrolment and management (LAUNCH_READINESS §F). Mandatory for admin and
+// ── The player's form signup, form login and verification gate ───────────
+// Mounted BEFORE the session router so its own routes are matched first.
+//
+// The credential chain (pace → failure budget → subnet → captcha) is INSIDE
+// this router, per route, rather than on this mount — deliberately. The router
+// also carries `/verification`, which every gated player polls on a timer and
+// which checks no credential: putting the chain on the mount would make a poll
+// consume a login-failure budget and hand a captcha to a screen that has no
+// form on it. That is §32 S27 in the making, and S27 is on this file already.
+app.use('/api/v1/auth', playerAuthRoutes);
+// Session lifecycle: /me, /logout, /health. No captcha here — every page load
+// calls /me to restore the session, so gating this router would 403 every user
+// on every load.
+//
+// And no SUBNET limiter or surge breaker either, for the same reason and a
+// sharper one. Both counted every request, success included, at 4 x 8 = 32 per
+// /24 per 30 minutes — which is a handful of page loads. Measured on a running
+// server: `GET /me` answered 429 from an address that had submitted no
+// credential. Most Indian mobile traffic sits behind carrier-grade NAT, so a
+// /24 is thousands of people, and one of them reloading a page would have
+// signed the rest of them out. Both now sit on the credential ROUTES, in
+// playerAuth.routes.js, which is the only place either can do its job.
+app.use('/api/v1/auth', authLimiter, authRoutes);
+// 2FA enrolment and management (docs/PROJECT_STATUS.md §3.3). Mandatory for admin and
 // sub-admin roles; players do not have passwords and so have no second factor
 // to enrol. Enforcement at login lives in the auth handler, this router only
 // manages enrolment.
@@ -457,7 +560,7 @@ app.post('/api/admin/login', loginPaceLimiter, adminAuthLimiter, createSubnetLim
   next();
 }, loginHandler);
 // Second leg of the admin login. 2FA is MANDATORY for admins and sub-admins
-// (LAUNCH_READINESS §F), so without this route an enrolled admin gets a
+// (docs/PROJECT_STATUS.md §3.3), so without this route an enrolled admin gets a
 // challenge token from the line above and has nowhere to redeem it. Rate
 // limited on the OTP tier, not the admin-password tier: six digits is a 10^6
 // space, so it warrants its own tighter budget.
@@ -515,11 +618,36 @@ app.use('/api',           userRoutes);
 // entirely. A limiter that bans people for using the product correctly is a
 // worse outage than the brute-force it prevents.
 app.use('/api/merchant/auth/login', loginPaceLimiter, merchantAuthLimiter, requireCaptcha('merchant-login'));
+
+// ── Merchant SIGNUP, guarded the way player signup is ─────────────────────
+//
+// It had nothing. MEASURED on a running server with the captcha switched on: a
+// merchant registration carrying NO captcha token answered 200 "Application
+// submitted", while the player signup beside it answered 403 CAPTCHA_REQUIRED.
+// One form is scriptable and the other is not, and the difference was an
+// omission rather than a decision (§32 S32 — the same check on one of the two
+// paths that need it).
+//
+// The guards are the ones §33.4 settled for player signup, and for its reasons:
+//
+//   · NO pace limiter and NO auth limiter. A registration submits no secret —
+//     nobody learns anything by sending the form — so there is nothing to slow
+//     down, and pacing it punishes somebody correcting a typo.
+//   · `signupLimiter` and a subnet limiter counting SUCCESSES ONLY, because
+//     what has to be bounded is how many ACCOUNTS one address ends up with. A
+//     mistyped form must never cost the next attempt (§32 S13).
+//   · The captcha, which is what stops a script filling the admin approval
+//     queue with applications nobody submitted.
+app.use(
+  '/api/merchant/auth/signup',
+  signupLimiter,
+  createSubnetLimiter('signup', { countOnly: 'successes' }),
+  requireCaptcha('merchant-signup'),
+);
 app.use('/api/merchant',  merchantRoutes);
 app.use('/api/payment', paymentRoutes);
 app.use('/api/support',   supportRoutes); // CAP-71: RAG support assistant (dormant until keys set)
 app.use('/api',           uploadRoutes);
-app.use('/api/giftcode',  giftCodeRoutes);
 app.use('/api/payment',   paymentCfgRoutes);
 app.use('/api',           retentionRoutes);
 // Referral and VIP were removed from the platform on 2026-07-30 (owner

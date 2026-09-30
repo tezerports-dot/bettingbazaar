@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 // Redis tests: the horizontal-scale properties that only a real Redis can
 // prove — rate-limit counters shared across instances, and SSE fan-out
 // crossing from one instance to another.

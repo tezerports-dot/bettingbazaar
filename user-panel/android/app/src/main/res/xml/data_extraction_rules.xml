@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file.
+  GOVERNANCE: Read CLAUDE.md before editing this file.
 
   Android 12+ counterpart to android:allowBackup="false". Both are set: the
   older attribute governs pre-12 devices, this file governs 12 and later, and a

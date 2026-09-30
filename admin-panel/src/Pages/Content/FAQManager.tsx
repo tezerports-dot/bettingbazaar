@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import React, { useEffect, useState } from 'react';
 import { HelpCircle, Plus, Edit, Trash2, Eye, EyeOff } from 'lucide-react';
 import { DataTable } from '../../components/DataTable';
@@ -129,12 +129,16 @@ export const FAQManager: React.FC = () => {
               });
               setShowModal(true);
             }}
+            title={`Edit FAQ: ${faq.question}`}
+            aria-label={`Edit FAQ: ${faq.question}`}
             className="p-2 hover:bg-dark-700 rounded-lg transition-colors"
           >
             <Edit size={16} />
           </button>
           <button
             onClick={() => setConfirmDelete(faq)}
+            title={`Delete FAQ: ${faq.question}`}
+            aria-label={`Delete FAQ: ${faq.question}`}
             className="p-2 hover:bg-red-600/20 rounded-lg transition-colors text-red-500"
           >
             <Trash2 size={16} />
@@ -176,8 +180,8 @@ export const FAQManager: React.FC = () => {
       >
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="label">Question</label>
-            <input
+            <label className="label" htmlFor="question">Question</label>
+            <input id="question"
               type="text"
               value={formData.question}
               onChange={(e) => setFormData({ ...formData, question: e.target.value })}
@@ -187,8 +191,8 @@ export const FAQManager: React.FC = () => {
           </div>
 
           <div>
-            <label className="label">Answer</label>
-            <textarea
+            <label className="label" htmlFor="answer">Answer</label>
+            <textarea id="answer"
               value={formData.answer}
               onChange={(e) => setFormData({ ...formData, answer: e.target.value })}
               className="input min-h-[150px]"
@@ -197,8 +201,8 @@ export const FAQManager: React.FC = () => {
           </div>
 
           <div>
-            <label className="label">Category</label>
-            <select
+            <label className="label" htmlFor="category">Category</label>
+            <select id="category"
               value={formData.category}
               onChange={(e) => setFormData({ ...formData, category: e.target.value as FAQ['category'] })}
               className="input"

@@ -63,7 +63,7 @@ All GET unless noted; all read-only:
   necessity (the caller is Telegram, not a session). Guarded by a constant-time
   check of the secret token Telegram echoes, done before any body parse or
   database read
-- `POST /api/telegram/exchange` — trades a one-time bot link for a session;
+- `POST /api/v1/auth/register` / `POST /api/v1/auth/login` — the player's form doors; unauthenticated by necessity, guarded by a captcha and (login only) the pace, failure-budget and subnet limiters. **Replaced `POST /api/telegram/exchange`, which traded a one-time bot link for a session** — deleted 2026-09-23 so that no bot can mint a credential (CLAUDE.md §33);
   single-use enforced inside the redeeming `findOneAndUpdate`
 - `GET /api/telegram/public-config` — the bot's `@username` and channel invite
   link, which are public the moment the bot exists. Carries no secret

@@ -1,5 +1,6 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import React, { useEffect, useState } from 'react';
+import { Link } from 'react-router';
 import { Save, Power, AlertTriangle } from 'lucide-react';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import api from '../../services/api';
@@ -8,6 +9,46 @@ import TwoFactorSetup from '../../components/TwoFactorSetup';
 
 // BB token buy/sell rates remain removed: internal token conversion is fixed 1:1.
 // USDT pricing below is buy-only: no user or merchant USDT sell rail exists.
+// §5 MIRROR — the operational half of `merchantOrderLimits`.
+// Backend owner: `SYSTEM_CONFIG_SPEC.fields.merchantOrderLimits.fields` in
+// `database/spec/config.spec.js`; served and accepted by
+// `backend/routes/admin/system.admin.routes.js`, both of which derive from that
+// spec so a field is editable the moment it is declared there.
+//
+// `min`/`max` repeat the spec's bounds so the input refuses out-of-range values
+// before the round trip; the server validates against the spec regardless, so
+// this is a convenience and never the authority. `fallback` is a LOADING
+// placeholder only (§4) and equals the spec default cited beside it — the GET
+// fills every key from the spec, so after load nothing here is read.
+const MERCHANT_ORDER_RULES: Array<{
+  key: string; label: string; min: number; max: number; fallback: number; help: string;
+}> = [
+  { key: 'maxConcurrentDepositOrders', label: 'Concurrent Buy Orders per Merchant',
+    min: 1, max: 10, fallback: 1,   // spec default: 1
+    help: 'How many buy (deposit) orders one merchant may hold at once. Each one holds their tokens for its whole window.' },
+  { key: 'maxConcurrentWithdrawalOrders', label: 'Concurrent Sell Orders per Merchant',
+    min: 1, max: 10, fallback: 1,   // spec default: 1
+    help: 'How many sell (withdrawal) orders one merchant may hold at once.' },
+  { key: 'maxConsecutiveRejections', label: 'Consecutive Refusals Before Suspension',
+    min: 1, max: 20, fallback: 3,   // spec default: 3
+    help: 'Declines and unanswered PAID buys in a row before the merchant is suspended. Any completed order resets the streak. Lifted by an admin, never by a timer.' },
+  { key: 'paidResponseMinutes', label: 'Merchant Response Window on a PAID Buy (minutes)',
+    min: 5, max: 1440, fallback: 30,   // spec default: 30
+    help: 'The player has already paid. After this long with no answer the order goes to the dispute queue for a human, and the silence counts as a refusal.' },
+  { key: 'maxConsecutivePlayerPaymentFailures', label: 'Player Unpaid Buys Before Cool-off',
+    min: 1, max: 50, fallback: 3,   // spec default: 3
+    help: 'Buy orders a player lets expire without paying, in a row, before they are flagged and cannot open a new order. Cleared when a payment actually arrives.' },
+  { key: 'playerOrderLockMinutes', label: 'Player Cool-off Length (minutes)',
+    min: 1, max: 1440, fallback: 60,   // spec default: 60
+    help: 'How long that player cannot open a new order, on BOTH rails. It lifts itself; no admin action is needed.' },
+  { key: 'maxConsecutiveMerchantExpiries', label: 'Expiries Before Assignment is Paused',
+    min: 1, max: 20, fallback: 3,   // spec default: 3
+    help: 'Buy orders sent to one merchant that expired unpaid, in a row. Most often it means that merchant cannot BE paid (dead QR, closed handle). NOT a suspension: they keep their orders, balance and standing, and an admin resumes them.' },
+  { key: 'minAdminTokenPurchase', label: 'Merchant Minimum Token Top-up (tokens)',
+    min: 1, max: Number.MAX_SAFE_INTEGER, fallback: 50000,   // spec default: 50000
+    help: 'Smallest quantity of platform tokens a merchant may buy from the admin in one order.' },
+];
+
 export const SystemSettings: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
@@ -17,10 +58,17 @@ export const SystemSettings: React.FC = () => {
     maintenanceMode: false,
     maintenanceMessage: '',
     registrationEnabled: true,
-    minDeposit: 100,
-    minWithdrawal: 100,
-    minBet: 10,
-    maxBet: 50000,
+    minDeposit: 500,      // schema default: 500
+    maxDeposit: 50000,    // schema default: 50000
+    // Was 100. §2: the buy floor and the sell floor are ONE policy — "both 500
+    // tokens, the same rule read from either end" — and 100 is the drifted
+    // value that rule was written to remove. A fallback that disagrees with
+    // the schema default is §4, and `||` means a legitimate 0 becomes it.
+    minWithdrawal: 500,   // schema default: 500
+    maxWithdrawal: 50000, // schema default: 50000
+    maxBalanceAdjustment: 1000000, // schema default: 1000000 (₹10,00,000)
+    minBet: 10,           // schema default: 10
+    maxBet: 100000,       // schema default: 100000 (was 50000 here — §4 drift)
     max30MinBet: 50000,
     maxFullDayBet: 100000,
     maxWinningsWithdrawal: 500000,
@@ -30,19 +78,43 @@ export const SystemSettings: React.FC = () => {
     winningsFeePercent: 1,     // schema default: 1
     payoutFeePercent: 0,       // schema default: 0
     usdtPricing: { userMerchantBuyInr: 0, merchantAdminBuyInr: 1 },
-    merchantOrderLimits: { minUserTokenPurchaseUsdt: 100, maxUserTokenPurchaseUsdt: 0, minAdminTokenPurchaseUsdt: 100, maxAdminTokenPurchaseUsdt: 0 },
+    // Every key the spec declares, so every one is sent back on save. The
+    // operational half is seeded from MERCHANT_ORDER_RULES rather than restated.
+    merchantOrderLimits: {
+      minUserTokenPurchaseUsdt: 100, maxUserTokenPurchaseUsdt: 0,
+      minAdminTokenPurchaseUsdt: 100, maxAdminTokenPurchaseUsdt: 0,
+      ...Object.fromEntries(MERCHANT_ORDER_RULES.map((r) => [r.key, r.fallback])),
+    } as Record<string, number>,
     cycleDurationMinutes: 30,  // schema default: 30 (Phase X X-5)
     // Business Config Audit (2026-07-11) — formerly-hardcoded business values
     payoutMultiplier: 2,       // schema default: 2 (2x)
-    orderExpiryMinutes: 15,    // schema default: 15
     cyclePhases: {
+      // The one-minute board is declared in the spec and run by the engine, and
+      // was missing from BOTH halves of this screen and from the route's own
+      // response — a board whose phase timings nobody could see or change.
+      oneMin:    { mergeBeforeEndSec: 12,  equalizerBeforeEndSec: 9,   closeBeforeEndSec: 5,  celebrateBeforeEndSec: 3 },  // schema defaults: 12/9/5/3
       thirtyMin: { mergeBeforeEndSec: 180, equalizerBeforeEndSec: 120, closeBeforeEndSec: 30, celebrateBeforeEndSec: 10 },
       fullDay:   { mergeBeforeEndSec: 300, equalizerBeforeEndSec: 120, closeBeforeEndSec: 30, celebrateBeforeEndSec: 10 },
+    },
+    // How long a withdrawal freezes before the worker settles it.
+    withdrawalHoldMinutes: 60,  // schema default: 60
+    // Overload ceilings — past either one the server answers 503 fast rather
+    // than admitting work into a queue that will never drain.
+    loadShedding: { enabled: true, maxInFlight: 300, maxEventLoopLagMs: 0 },  // schema defaults: true / 300 / 0
+    // IP-rotation defence. `max: 0` means that surge layer is off.
+    ipDefense: {
+      enabled: true, subnetMultiplier: 8,  // schema defaults: true / 8
+      surge: {
+        auth:       { windowSec: 60, max: 0 },  // schema defaults: 60 / 0
+        withdrawal: { windowSec: 60, max: 0 },  // schema defaults: 60 / 0
+        funding:    { windowSec: 60, max: 0 },  // schema defaults: 60 / 0
+      },
     },
     riskRules: {
       enforceMultiplesOf10: true,      // schema default: true
       blockOppositeSideBetting: false, // schema default: false
       maxFundingOrdersPerHour: 0,      // schema default: 0 (off)
+      maxDepositOrdersPerMinute: 1,    // schema default: 1 (0 = off)
       maxWarnings: 3,                  // schema default: 3 (0 = never mark for review)
     },
     // Footer navigation (2026-07-13) — schema default: the historical five tabs
@@ -75,10 +147,15 @@ export const SystemSettings: React.FC = () => {
           maintenanceMode: response.data.maintenanceMode || false,
           maintenanceMessage: response.data.maintenanceMessage || '',
           registrationEnabled: response.data.registrationEnabled !== false,
-          minDeposit: response.data.minDeposit || 100,
-          minWithdrawal: response.data.minWithdrawal || 100,
-          minBet: response.data.minBet || 10,
-          maxBet: response.data.maxBet || 50000,
+          // `??` rather than `||` throughout: 0 is a value an operator may
+          // legitimately set, and `||` silently replaces it with the default.
+          minDeposit: response.data.minDeposit ?? 500,        // schema default: 500
+          maxDeposit: response.data.maxDeposit ?? 50000,      // schema default: 50000
+          minWithdrawal: response.data.minWithdrawal ?? 500,  // schema default: 500
+          maxWithdrawal: response.data.maxWithdrawal ?? 50000,// schema default: 50000
+          maxBalanceAdjustment: response.data.maxBalanceAdjustment ?? 1000000, // schema default: 1000000
+          minBet: response.data.minBet ?? 10,                 // schema default: 10
+          maxBet: response.data.maxBet ?? 100000,             // schema default: 100000
           max30MinBet: response.data.max30MinBet || 50000,
           maxFullDayBet: response.data.maxFullDayBet || 100000,
           maxWinningsWithdrawal: response.data.maxWinningsWithdrawal || 500000,
@@ -89,16 +166,24 @@ export const SystemSettings: React.FC = () => {
             userMerchantBuyInr:  response.data.usdtPricing?.userMerchantBuyInr  ?? 0, // schema default: 0
             merchantAdminBuyInr: response.data.usdtPricing?.merchantAdminBuyInr ?? 1, // schema default: 1
           },
+          // The GET derives from the spec and fills EVERY key with its default,
+          // so the server's object is taken whole. The placeholders underneath
+          // it exist only for a response that predates a newly declared field.
           merchantOrderLimits: {
-            minUserTokenPurchaseUsdt:  response.data.merchantOrderLimits?.minUserTokenPurchaseUsdt  ?? 100,
-            maxUserTokenPurchaseUsdt:  response.data.merchantOrderLimits?.maxUserTokenPurchaseUsdt  ?? 0,
-            minAdminTokenPurchaseUsdt: response.data.merchantOrderLimits?.minAdminTokenPurchaseUsdt ?? 100,
-            maxAdminTokenPurchaseUsdt: response.data.merchantOrderLimits?.maxAdminTokenPurchaseUsdt ?? 0,
-          },
+            minUserTokenPurchaseUsdt: 100, maxUserTokenPurchaseUsdt: 0,
+            minAdminTokenPurchaseUsdt: 100, maxAdminTokenPurchaseUsdt: 0,
+            ...Object.fromEntries(MERCHANT_ORDER_RULES.map((r) => [r.key, r.fallback])),
+            ...(response.data.merchantOrderLimits ?? {}),
+          } as Record<string, number>,
           cycleDurationMinutes: response.data.cycleDurationMinutes ?? 30, // schema default: 30
           payoutMultiplier:   response.data.payoutMultiplier   ?? 2,  // schema default: 2
-          orderExpiryMinutes: response.data.orderExpiryMinutes ?? 15, // schema default: 15
           cyclePhases: {
+            oneMin: {
+              mergeBeforeEndSec:     response.data.cyclePhases?.oneMin?.mergeBeforeEndSec     ?? 12, // schema default: 12
+              equalizerBeforeEndSec: response.data.cyclePhases?.oneMin?.equalizerBeforeEndSec ?? 9,  // schema default: 9
+              closeBeforeEndSec:     response.data.cyclePhases?.oneMin?.closeBeforeEndSec     ?? 5,  // schema default: 5
+              celebrateBeforeEndSec: response.data.cyclePhases?.oneMin?.celebrateBeforeEndSec ?? 3,  // schema default: 3
+            },
             thirtyMin: {
               mergeBeforeEndSec:     response.data.cyclePhases?.thirtyMin?.mergeBeforeEndSec     ?? 180,
               equalizerBeforeEndSec: response.data.cyclePhases?.thirtyMin?.equalizerBeforeEndSec ?? 120,
@@ -116,7 +201,32 @@ export const SystemSettings: React.FC = () => {
             enforceMultiplesOf10:     response.data.riskRules?.enforceMultiplesOf10     ?? true,
             blockOppositeSideBetting: response.data.riskRules?.blockOppositeSideBetting ?? false,
             maxFundingOrdersPerHour:  response.data.riskRules?.maxFundingOrdersPerHour  ?? 0,
+            maxDepositOrdersPerMinute: response.data.riskRules?.maxDepositOrdersPerMinute ?? 1,
             maxWarnings:              response.data.riskRules?.maxWarnings              ?? 3,
+          },
+          withdrawalHoldMinutes: response.data.withdrawalHoldMinutes ?? 60, // schema default: 60
+          loadShedding: {
+            enabled:           response.data.loadShedding?.enabled           ?? true, // schema default: true
+            maxInFlight:       response.data.loadShedding?.maxInFlight       ?? 300,  // schema default: 300
+            maxEventLoopLagMs: response.data.loadShedding?.maxEventLoopLagMs ?? 0,    // schema default: 0
+          },
+          ipDefense: {
+            enabled:          response.data.ipDefense?.enabled          ?? true, // schema default: true
+            subnetMultiplier: response.data.ipDefense?.subnetMultiplier ?? 8,    // schema default: 8
+            surge: {
+              auth: {
+                windowSec: response.data.ipDefense?.surge?.auth?.windowSec ?? 60, // schema default: 60
+                max:       response.data.ipDefense?.surge?.auth?.max       ?? 0,  // schema default: 0
+              },
+              withdrawal: {
+                windowSec: response.data.ipDefense?.surge?.withdrawal?.windowSec ?? 60, // schema default: 60
+                max:       response.data.ipDefense?.surge?.withdrawal?.max       ?? 0,  // schema default: 0
+              },
+              funding: {
+                windowSec: response.data.ipDefense?.surge?.funding?.windowSec ?? 60, // schema default: 60
+                max:       response.data.ipDefense?.surge?.funding?.max       ?? 0,  // schema default: 0
+              },
+            },
           },
           footerPages: response.data.footerPages?.length ? response.data.footerPages : ['home', 'results', 'winners', 'promo', 'profile'],
           alertWebhookUrl: response.data.alertWebhookUrl || '',
@@ -184,7 +294,7 @@ export const SystemSettings: React.FC = () => {
       {/* Account security — THIS admin's own second factor, not a
           platform-wide setting. It sits first because an operator who has not
           enrolled is the single most valuable unprotected credential on the
-          platform (LAUNCH_READINESS §F). */}
+          platform (docs/PROJECT_STATUS.md §3.3). */}
       <TwoFactorSetup />
 
       {/* Maintenance Mode Warning */}
@@ -224,8 +334,8 @@ export const SystemSettings: React.FC = () => {
             </p>
             {formData.maintenanceMode && (
               <div className="mb-4">
-                <label className="label">Maintenance Message</label>
-                <textarea
+                <label className="label" htmlFor="maintenance-message">Maintenance Message</label>
+                <textarea id="maintenance-message"
                   value={formData.maintenanceMessage}
                   onChange={(e) =>
                     setFormData({ ...formData, maintenanceMessage: e.target.value })
@@ -260,6 +370,7 @@ export const SystemSettings: React.FC = () => {
           <label className="relative inline-flex items-center cursor-pointer">
             <input
               type="checkbox"
+              aria-label="Allow new registrations"
               checked={formData.registrationEnabled}
               onChange={(e) =>
                 setFormData({ ...formData, registrationEnabled: e.target.checked })
@@ -283,30 +394,112 @@ export const SystemSettings: React.FC = () => {
       {/* Transaction Limits */}
       <div className="card">
         <h3 className="text-lg font-semibold mb-4">Transaction Limits</h3>
+        {/*
+          ── The ceilings are here because an operator could not reach them ──
+          `maxDeposit` and `maxWithdrawal` are declared settings, the GET has
+          always served them, and this screen rendered no input for either —
+          so a floor could be raised with no way to raise the roof above it.
+
+          And every bound below is the PAIRED FIELD'S OWN VALUE, not a number
+          invented for the panel. That keeps one owner (§2): the client refuses
+          exactly what the server refuses —
+
+              config: 'minDeposit' (999999999) cannot be above 'maxDeposit' (50000)
+
+          which, before this, was answered 200 and closed the deposit rail for
+          every player.
+        */}
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <label className="label">Min Deposit Amount (Rs.)</label>
-            <input
-              type="number"
+            <label className="label" htmlFor="min-deposit-amount-rs">Min Deposit Amount (Rs.)</label>
+            <input id="min-deposit-amount-rs"
+              type="number" min={0} max={formData.maxDeposit}
               value={formData.minDeposit}
               onChange={(e) =>
                 setFormData({ ...formData, minDeposit: (Number(e.target.value) || 0) })
               }
               className="input"
             />
+            <p className="text-xs text-gray-500 mt-1">Cannot exceed the maximum beside it.</p>
           </div>
           <div>
-            <label className="label">Min Withdrawal Amount (Rs.)</label>
-            <input
-              type="number"
+            <label className="label" htmlFor="max-deposit-amount-rs">Max Deposit Amount (Rs.)</label>
+            <input id="max-deposit-amount-rs"
+              type="number" min={formData.minDeposit}
+              value={formData.maxDeposit}
+              onChange={(e) =>
+                setFormData({ ...formData, maxDeposit: (Number(e.target.value) || 0) })
+              }
+              className="input"
+            />
+          </div>
+          <div>
+            <label className="label" htmlFor="min-withdrawal-amount-rs">Min Withdrawal Amount (Rs.)</label>
+            <input id="min-withdrawal-amount-rs"
+              type="number" min={0} max={formData.maxWithdrawal}
               value={formData.minWithdrawal}
               onChange={(e) =>
                 setFormData({ ...formData, minWithdrawal: (Number(e.target.value) || 0) })
               }
               className="input"
             />
+            <p className="text-xs text-gray-500 mt-1">Cannot exceed the maximum beside it.</p>
+          </div>
+          <div>
+            <label className="label" htmlFor="max-withdrawal-amount-rs">Max Withdrawal Amount (Rs.)</label>
+            <input id="max-withdrawal-amount-rs"
+              type="number" min={formData.minWithdrawal}
+              value={formData.maxWithdrawal}
+              onChange={(e) =>
+                setFormData({ ...formData, maxWithdrawal: (Number(e.target.value) || 0) })
+              }
+              className="input"
+            />
           </div>
         </div>
+
+        {/*
+          Said out loud, the way the bet limits already do it. An input's `min`
+          and `max` stop the arrows and the browser's own validation, but a
+          typed or pasted value still lands — so the warning names the pair and
+          the Save button below refuses until it is resolved.
+        */}
+        {/* An admin adjustment moves money into or out of a player's balance in
+            one click. The ceiling is a setting rather than a constant so it is
+            an operator's decision, and it is rendered here because a setting
+            nobody can reach is §3. */}
+        <div className="mt-4">
+          <label className="label" htmlFor="max-balance-adjustment">Max Balance Adjustment (Rs., per adjustment)</label>
+          <input id="max-balance-adjustment"
+            type="number" min={0}
+            value={formData.maxBalanceAdjustment}
+            onChange={(e) => setFormData({ ...formData, maxBalanceAdjustment: (Number(e.target.value) || 0) })}
+            className="input"
+          />
+          <p className="text-xs text-gray-500 mt-1">
+            The most one admin may credit or debit in a single adjustment. A debit is
+            capped by the player's balance regardless.
+          </p>
+        </div>
+
+        {formData.minDeposit > formData.maxDeposit && (
+          <div className="mt-3 flex items-center space-x-2 p-3 bg-red-500/10 border border-red-500/30 rounded-lg">
+            <AlertTriangle className="text-red-500 shrink-0" size={16} />
+            <p className="text-sm text-red-400">
+              Minimum deposit ({formData.minDeposit}) is above the maximum ({formData.maxDeposit}) —
+              saving this would refuse every deposit on the platform.
+            </p>
+          </div>
+        )}
+        {formData.minWithdrawal > formData.maxWithdrawal && (
+          <div className="mt-3 flex items-center space-x-2 p-3 bg-red-500/10 border border-red-500/30 rounded-lg">
+            <AlertTriangle className="text-red-500 shrink-0" size={16} />
+            <p className="text-sm text-red-400">
+              Minimum withdrawal ({formData.minWithdrawal}) is above the maximum ({formData.maxWithdrawal}) —
+              saving this would strand every balance on the platform.
+            </p>
+          </div>
+        )}
       </div>
 
       {/* Betting Limits */}
@@ -314,8 +507,8 @@ export const SystemSettings: React.FC = () => {
         <h3 className="text-lg font-semibold mb-4">Betting Limits</h3>
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <label className="label">Min Bet Amount (Rs.)</label>
-            <input
+            <label className="label" htmlFor="min-bet-amount-rs">Min Bet Amount (Rs.)</label>
+            <input id="min-bet-amount-rs"
               type="number"
               value={formData.minBet}
               onChange={(e) =>
@@ -325,8 +518,8 @@ export const SystemSettings: React.FC = () => {
             />
           </div>
           <div>
-            <label className="label">Max Bet Amount (Rs.)</label>
-            <input
+            <label className="label" htmlFor="max-bet-amount-rs">Max Bet Amount (Rs.)</label>
+            <input id="max-bet-amount-rs"
               type="number"
               value={formData.maxBet}
               onChange={(e) =>
@@ -386,8 +579,8 @@ export const SystemSettings: React.FC = () => {
 
         <div className="space-y-5">
           <div>
-            <label className="label">Bet Reserve Percent (%)</label>
-            <input
+            <label className="label" htmlFor="bet-reserve-percent">Bet Reserve Percent (%)</label>
+            <input id="bet-reserve-percent"
               type="number" min={0} max={100} step={0.01}
               value={formData.betReservePercent}
               onChange={(e) => setFormData({ ...formData, betReservePercent: Number(e.target.value) })}
@@ -407,8 +600,8 @@ export const SystemSettings: React.FC = () => {
           </div>
 
           <div className="pt-4 border-t border-dark-700">
-            <label className="label">Payout Multiplier (×)</label>
-            <input
+            <label className="label" htmlFor="payout-multiplier">Payout Multiplier (×)</label>
+            <input id="payout-multiplier"
               type="number" min={1} max={10} step={1}
               value={formData.payoutMultiplier}
               onChange={(e) => setFormData({ ...formData, payoutMultiplier: Math.max(1, Math.min(10, Math.floor(Number(e.target.value) || 1))) })}
@@ -425,8 +618,8 @@ export const SystemSettings: React.FC = () => {
           </div>
 
           <div className="pt-4 border-t border-dark-700">
-            <label className="label">Winnings Platform Fee (%)</label>
-            <input
+            <label className="label" htmlFor="winnings-platform-fee">Winnings Platform Fee (%)</label>
+            <input id="winnings-platform-fee"
               type="number" min={0} max={100} step={0.01}
               value={formData.winningsFeePercent}
               onChange={(e) => setFormData({ ...formData, winningsFeePercent: Number(e.target.value) })}
@@ -446,8 +639,8 @@ export const SystemSettings: React.FC = () => {
           </div>
 
           <div className="pt-4 border-t border-dark-700">
-            <label className="label">USDT Buy Price: User ↔ Merchant (INR)</label>
-            <input
+            <label className="label" htmlFor="usdt-buy-price-user-merchant-inr">USDT Buy Price: User ↔ Merchant (INR)</label>
+            <input id="usdt-buy-price-user-merchant-inr"
               type="number" min={0} step={0.01}
               value={formData.usdtPricing.userMerchantBuyInr}
               onChange={(e) => setFormData({ ...formData, usdtPricing: { ...formData.usdtPricing, userMerchantBuyInr: Math.max(0, Number(e.target.value) || 0) } })}
@@ -460,8 +653,8 @@ export const SystemSettings: React.FC = () => {
           </div>
 
           <div className="pt-4 border-t border-dark-700">
-            <label className="label">USDT Buy Price: Merchant ↔ Admin (INR)</label>
-            <input
+            <label className="label" htmlFor="usdt-buy-price-merchant-admin-inr">USDT Buy Price: Merchant ↔ Admin (INR)</label>
+            <input id="usdt-buy-price-merchant-admin-inr"
               type="number" min={0.01} step={0.01}
               value={formData.usdtPricing.merchantAdminBuyInr}
               onChange={(e) => setFormData({ ...formData, usdtPricing: { ...formData.usdtPricing, merchantAdminBuyInr: Math.max(0.01, Number(e.target.value)) } })}
@@ -476,8 +669,8 @@ export const SystemSettings: React.FC = () => {
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-4 border-t border-dark-700">
             <div>
-              <label className="label">User Token Buy Min Order (USDT)</label>
-              <input
+              <label className="label" htmlFor="user-token-buy-min-order-usdt">User Token Buy Min Order (USDT)</label>
+              <input id="user-token-buy-min-order-usdt"
                 type="number" min={100} step={10}
                 value={formData.merchantOrderLimits.minUserTokenPurchaseUsdt}
                 onChange={(e) => setFormData({ ...formData, merchantOrderLimits: { ...formData.merchantOrderLimits, minUserTokenPurchaseUsdt: Math.max(100, Math.ceil((Number(e.target.value) || 100) / 10) * 10) } })}
@@ -486,8 +679,8 @@ export const SystemSettings: React.FC = () => {
               <p className="text-xs text-gray-500 mt-1">Minimum buy-only user USDT deposit to receive BB tokens from a merchant. Multiple of 10 USDT.</p>
             </div>
             <div>
-              <label className="label">User Token Buy Max Order (USDT)</label>
-              <input
+              <label className="label" htmlFor="user-token-buy-max-order-usdt">User Token Buy Max Order (USDT)</label>
+              <input id="user-token-buy-max-order-usdt"
                 type="number" min={0} step={10}
                 value={formData.merchantOrderLimits.maxUserTokenPurchaseUsdt}
                 onChange={(e) => setFormData({ ...formData, merchantOrderLimits: { ...formData.merchantOrderLimits, maxUserTokenPurchaseUsdt: Math.max(0, Math.ceil((Number(e.target.value) || 0) / 10) * 10) } })}
@@ -496,8 +689,8 @@ export const SystemSettings: React.FC = () => {
               <p className="text-xs text-gray-500 mt-1">Optional maximum buy-only user USDT deposit. Use 0 for unlimited; users cannot sell tokens for USDT.</p>
             </div>
             <div>
-              <label className="label">Merchant Admin Token Min Order (USDT)</label>
-              <input
+              <label className="label" htmlFor="merchant-admin-token-min-order-usdt">Merchant Admin Token Min Order (USDT)</label>
+              <input id="merchant-admin-token-min-order-usdt"
                 type="number" min={100} step={10}
                 value={formData.merchantOrderLimits.minAdminTokenPurchaseUsdt}
                 onChange={(e) => setFormData({ ...formData, merchantOrderLimits: { ...formData.merchantOrderLimits, minAdminTokenPurchaseUsdt: Math.max(100, Math.ceil((Number(e.target.value) || 100) / 10) * 10) } })}
@@ -506,8 +699,8 @@ export const SystemSettings: React.FC = () => {
               <p className="text-xs text-gray-500 mt-1">Minimum merchant admin-token purchase value. Multiple of 10 USDT and cannot be below 100 USDT.</p>
             </div>
             <div>
-              <label className="label">Merchant Admin Token Max Order (USDT)</label>
-              <input
+              <label className="label" htmlFor="merchant-admin-token-max-order-usdt">Merchant Admin Token Max Order (USDT)</label>
+              <input id="merchant-admin-token-max-order-usdt"
                 type="number" min={0} step={10}
                 value={formData.merchantOrderLimits.maxAdminTokenPurchaseUsdt}
                 onChange={(e) => setFormData({ ...formData, merchantOrderLimits: { ...formData.merchantOrderLimits, maxAdminTokenPurchaseUsdt: Math.max(0, Math.ceil((Number(e.target.value) || 0) / 10) * 10) } })}
@@ -517,9 +710,51 @@ export const SystemSettings: React.FC = () => {
             </div>
           </div>
 
+          {/* ── Merchant and player order rules ──────────────────────────────
+              Every operational limit the backend acts on, rendered from the
+              §5 mirror above. Adding a field to SYSTEM_CONFIG_SPEC and a row to
+              MERCHANT_ORDER_RULES is all it takes — no per-field wiring here.
+
+              None of these has a timer attached at the far end: a suspension
+              and an assignment pause are both lifted by an admin who has read
+              the reason (CLAUDE.md §2). The one clock that lifts itself is the
+              player cool-off, which the database's own timestamp expires. */}
           <div className="pt-4 border-t border-dark-700">
-            <label className="label">Withdrawal Payout Fee (%)</label>
-            <input
+            <h3 className="font-semibold mb-1">Merchant &amp; Player Order Rules</h3>
+            <p className="text-xs text-gray-500 mb-4">
+              These govern who may be handed the next order and what happens when one is not served.
+              A merchant&apos;s order CEILING is not here — it is the tokens they hold, reserved by the
+              deposit escrow at assignment. The FLOOR is Minimum Deposit / Minimum Withdrawal above.
+            </p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {MERCHANT_ORDER_RULES.map((rule) => (
+                <div key={rule.key}>
+                  <label className="label" htmlFor={`mol-${rule.key}`}>{rule.label}</label>
+                  <input
+                    id={`mol-${rule.key}`}
+                    type="number" min={rule.min} max={rule.max} step={1}
+                    value={formData.merchantOrderLimits[rule.key] ?? rule.fallback}
+                    onChange={(e) => setFormData({
+                      ...formData,
+                      merchantOrderLimits: {
+                        ...formData.merchantOrderLimits,
+                        [rule.key]: Math.min(
+                          rule.max,
+                          Math.max(rule.min, Math.floor(Number(e.target.value) || rule.min)),
+                        ),
+                      },
+                    })}
+                    className="input"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">{rule.help}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="pt-4 border-t border-dark-700">
+            <label className="label" htmlFor="withdrawal-payout-fee">Withdrawal Payout Fee (%)</label>
+            <input id="withdrawal-payout-fee"
               type="number" min={0} max={100} step={0.01}
               value={formData.payoutFeePercent}
               onChange={(e) => setFormData({ ...formData, payoutFeePercent: Number(e.target.value) })}
@@ -545,7 +780,8 @@ export const SystemSettings: React.FC = () => {
                 </p>
               </div>
               <label className="relative inline-flex items-center cursor-pointer">
-                <input type="checkbox" checked={formData.riskRules.enforceMultiplesOf10}
+                <input type="checkbox" aria-label="Enforce bet amounts in multiples of 10"
+                  checked={formData.riskRules.enforceMultiplesOf10}
                   onChange={(e) => setFormData({ ...formData, riskRules: { ...formData.riskRules, enforceMultiplesOf10: e.target.checked } })}
                   className="sr-only peer" />
                 <div className="w-11 h-6 bg-gray-700 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-gold-500"></div>
@@ -561,7 +797,8 @@ export const SystemSettings: React.FC = () => {
                 </p>
               </div>
               <label className="relative inline-flex items-center cursor-pointer">
-                <input type="checkbox" checked={formData.riskRules.blockOppositeSideBetting}
+                <input type="checkbox" aria-label="Block opposite-side betting in one cycle"
+                  checked={formData.riskRules.blockOppositeSideBetting}
                   onChange={(e) => setFormData({ ...formData, riskRules: { ...formData.riskRules, blockOppositeSideBetting: e.target.checked } })}
                   className="sr-only peer" />
                 <div className="w-11 h-6 bg-gray-700 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-gold-500"></div>
@@ -569,8 +806,8 @@ export const SystemSettings: React.FC = () => {
             </div>
 
             <div>
-              <label className="label">Funding Velocity Limit (orders per hour per user)</label>
-              <input
+              <label className="label" htmlFor="funding-velocity-limit-orders-per-hour-per-user">Funding Velocity Limit (orders per hour per user)</label>
+              <input id="funding-velocity-limit-orders-per-hour-per-user"
                 type="number" min={0} step={1}
                 value={formData.riskRules.maxFundingOrdersPerHour}
                 onChange={(e) => setFormData({ ...formData, riskRules: { ...formData.riskRules, maxFundingOrdersPerHour: Math.max(0, Math.floor(Number(e.target.value) || 0)) } })}
@@ -583,8 +820,23 @@ export const SystemSettings: React.FC = () => {
             </div>
 
             <div>
-              <label className="label">Flag For Review After N Payment Warnings</label>
-              <input
+              <label className="label" htmlFor="purchase-pace-new-buys-per-minute-per-user">Purchase Pace (new buys per minute per user)</label>
+              <input id="purchase-pace-new-buys-per-minute-per-user"
+                type="number" min={0} max={60} step={1}
+                value={formData.riskRules.maxDepositOrdersPerMinute}
+                onChange={(e) => setFormData({ ...formData, riskRules: { ...formData.riskRules, maxDepositOrdersPerMinute: Math.min(60, Math.max(0, Math.floor(Number(e.target.value) || 0))) } })}
+                className="input"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                How often one player may START a purchase. A player holds one open buy at a
+                time anyway, so a second attempt inside the same minute is a retry storm or a
+                script, not somebody buying twice. 0 = off. Takes effect immediately — no redeploy.
+              </p>
+            </div>
+
+            <div>
+              <label className="label" htmlFor="flag-for-review-after-n-payment-warnings">Flag For Review After N Payment Warnings</label>
+              <input id="flag-for-review-after-n-payment-warnings"
                 type="number" min={0} step={1}
                 value={formData.riskRules.maxWarnings}
                 onChange={(e) => setFormData({ ...formData, riskRules: { ...formData.riskRules, maxWarnings: Math.max(0, Math.floor(Number(e.target.value) || 0)) } })}
@@ -599,17 +851,17 @@ export const SystemSettings: React.FC = () => {
               </p>
             </div>
 
+            {/* The payment order window lives on the settlement rail now: the
+                two rails have different timelines by design and one global
+                number could not express that. Pointing at its new home rather
+                than deleting the field silently — an operator who came here to
+                change it needs to be told where it went. */}
             <div>
-              <label className="label">Payment Order Expiry (minutes)</label>
-              <input
-                type="number" min={1} max={1440} step={1}
-                value={formData.orderExpiryMinutes}
-                onChange={(e) => setFormData({ ...formData, orderExpiryMinutes: Math.max(1, Math.min(1440, Math.floor(Number(e.target.value) || 1))) })}
-                className="input"
-              />
+              <label className="label">Payment Order Expiry</label>
               <p className="text-xs text-gray-500 mt-1">
-                How long a user has to pay the assigned merchant before the order auto-expires
-                and any locked balance is refunded. Applies to new assignments only. 1–1440 min.
+                Moved to <Link to="/business-policy/settlement-rail" className="underline">Settlement Rail</Link>,
+                where it is set per rail: paying a merchant&rsquo;s UPI and drawing cash at an ATM
+                do not take the same time. Your existing value was carried over.
               </p>
             </div>
           </div>
@@ -624,8 +876,8 @@ export const SystemSettings: React.FC = () => {
           cycle the generator creates.
         </p>
         <div>
-          <label className="label">Short Cycle Duration</label>
-          <select
+          <label className="label" htmlFor="short-cycle-duration">Short Cycle Duration</label>
+          <select id="short-cycle-duration"
             className="input"
             value={formData.cycleDurationMinutes}
             onChange={(e) => setFormData({ ...formData, cycleDurationMinutes: Number(e.target.value) })}
@@ -648,7 +900,7 @@ export const SystemSettings: React.FC = () => {
             Values must strictly decrease: Merge &gt; Equalizer &gt; Close &gt; Celebrate.
             Takes effect within ~30 seconds.
           </p>
-          {([['thirtyMin', '30-Min Cycle'], ['fullDay', 'Full-Day Cycle']] as const).map(([key, label]) => (
+          {([['oneMin', '1-Min Cycle'], ['thirtyMin', '30-Min Cycle'], ['fullDay', 'Full-Day Cycle']] as const).map(([key, label]) => (
             <div key={key} className="mb-3">
               <p className="text-sm font-medium mb-1">{label}</p>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
@@ -659,8 +911,9 @@ export const SystemSettings: React.FC = () => {
                   ['celebrateBeforeEndSec', 'Celebrate'],
                 ] as const).map(([field, flabel]) => (
                   <div key={field}>
-                    <label className="text-xs text-gray-400">{flabel}</label>
+                    <label className="text-xs text-gray-400" htmlFor={`phase-${key}-${field}`}>{flabel}</label>
                     <input
+                      id={`phase-${key}-${field}`}
                       type="number" min={0} step={1}
                       value={formData.cyclePhases[key][field]}
                       onChange={(e) => setFormData({
@@ -677,6 +930,151 @@ export const SystemSettings: React.FC = () => {
                     />
                   </div>
                 ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* ── OPERATIONAL DEFENCES ─────────────────────────────────────────────
+          Every field here was DECLARED in the config spec and read by live
+          code, and reachable from no screen and no route: `withdrawalHoldMinutes`
+          by the withdrawal worker, `loadShedding` by the overload middleware,
+          `ipDefense` by the IP-rotation limiter — the last two under source
+          comments that called them "admin-editable" (F-022). Changing any of
+          them meant editing the spec and redeploying. */}
+      <div className="card">
+        <h3 className="text-lg font-semibold mb-1">Operational Defences</h3>
+        <p className="text-xs text-gray-400 mb-4">
+          Withdrawal timing and the two overload ceilings. These take effect within about 30 seconds
+          of saving — nothing here needs a restart.
+        </p>
+
+        <div>
+          <label className="label" htmlFor="withdrawal-hold-minutes">Withdrawal Hold (minutes)</label>
+          <input id="withdrawal-hold-minutes"
+            type="number" min={0} max={1440} step={1}
+            value={formData.withdrawalHoldMinutes}
+            onChange={(e) => setFormData({
+              ...formData,
+              withdrawalHoldMinutes: Math.min(1440, Math.max(0, Math.floor(Number(e.target.value) || 0))),
+            })}
+            className="input"
+          />
+          <p className="text-xs text-gray-500 mt-1">
+            How long a withdrawal is frozen on both sides before the worker settles it. 0 settles immediately.
+          </p>
+        </div>
+
+        <div className="pt-4 mt-4 border-t border-dark-700">
+          <label className="flex items-center space-x-2 mb-2">
+            <input
+              type="checkbox"
+              aria-label="Load shedding"
+              checked={formData.loadShedding.enabled}
+              onChange={(e) => setFormData({ ...formData, loadShedding: { ...formData.loadShedding, enabled: e.target.checked } })}
+            />
+            <span className="label mb-0">Load shedding</span>
+          </label>
+          <p className="text-xs text-gray-500 mb-3">
+            Past either ceiling the server answers 503 straight away rather than admitting work into a
+            queue that will never drain. Both default to values only genuine overload reaches — ordinary
+            traffic and settlement bursts never see one.
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="label" htmlFor="max-requests-in-flight">Max Requests In Flight</label>
+              <input id="max-requests-in-flight"
+                type="number" min={0} step={10}
+                value={formData.loadShedding.maxInFlight}
+                onChange={(e) => setFormData({ ...formData, loadShedding: { ...formData.loadShedding, maxInFlight: Math.max(0, Math.floor(Number(e.target.value) || 0)) } })}
+                className="input"
+              />
+              <p className="text-xs text-gray-500 mt-1">0 turns this ceiling off.</p>
+            </div>
+            <div>
+              <label className="label" htmlFor="max-event-loop-lag-ms">Max Event-Loop Lag (ms)</label>
+              <input id="max-event-loop-lag-ms"
+                type="number" min={0} step={10}
+                value={formData.loadShedding.maxEventLoopLagMs}
+                onChange={(e) => setFormData({ ...formData, loadShedding: { ...formData.loadShedding, maxEventLoopLagMs: Math.max(0, Math.floor(Number(e.target.value) || 0)) } })}
+                className="input"
+              />
+              <p className="text-xs text-gray-500 mt-1">0 turns this ceiling off.</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="pt-4 mt-4 border-t border-dark-700">
+          <label className="flex items-center space-x-2 mb-2">
+            <input
+              type="checkbox"
+              aria-label="IP-rotation defence"
+              checked={formData.ipDefense.enabled}
+              onChange={(e) => setFormData({ ...formData, ipDefense: { ...formData.ipDefense, enabled: e.target.checked } })}
+            />
+            <span className="label mb-0">IP-rotation defence</span>
+          </label>
+          <p className="text-xs text-gray-500 mb-3">
+            Sits on top of the per-IP limiters. Origin and traffic shape only — no geo or ISP lookups
+            and no third-party reputation. A surge <strong>Max of 0 means that layer is off</strong>.
+          </p>
+          <div className="mb-3">
+            <label className="label" htmlFor="subnet-multiplier">Subnet Multiplier</label>
+            <input id="subnet-multiplier"
+              type="number" min={1} step={1}
+              value={formData.ipDefense.subnetMultiplier}
+              onChange={(e) => setFormData({ ...formData, ipDefense: { ...formData.ipDefense, subnetMultiplier: Math.max(1, Math.floor(Number(e.target.value) || 1)) } })}
+              className="input"
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              How much more a whole /24 (or /64) may do than one address, before the subnet itself is limited.
+            </p>
+          </div>
+          {([
+            ['auth', 'Login & OTP'],
+            ['withdrawal', 'Withdrawals'],
+            ['funding', 'Deposits & funding'],
+          ] as const).map(([key, label]) => (
+            <div key={key} className="mb-3">
+              <p className="text-sm font-medium mb-1">{label}</p>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-xs text-gray-400" htmlFor="window-sec">Window (sec)</label>
+                  <input id="window-sec"
+                    type="number" min={1} step={1}
+                    value={formData.ipDefense.surge[key].windowSec}
+                    onChange={(e) => setFormData({
+                      ...formData,
+                      ipDefense: {
+                        ...formData.ipDefense,
+                        surge: {
+                          ...formData.ipDefense.surge,
+                          [key]: { ...formData.ipDefense.surge[key], windowSec: Math.max(1, Math.floor(Number(e.target.value) || 1)) },
+                        },
+                      },
+                    })}
+                    className="input"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-gray-400" htmlFor="max-in-window-0-off">Max in window (0 = off)</label>
+                  <input id="max-in-window-0-off"
+                    type="number" min={0} step={1}
+                    value={formData.ipDefense.surge[key].max}
+                    onChange={(e) => setFormData({
+                      ...formData,
+                      ipDefense: {
+                        ...formData.ipDefense,
+                        surge: {
+                          ...formData.ipDefense.surge,
+                          [key]: { ...formData.ipDefense.surge[key], max: Math.max(0, Math.floor(Number(e.target.value) || 0)) },
+                        },
+                      },
+                    })}
+                    className="input"
+                  />
+                </div>
               </div>
             </div>
           ))}
@@ -704,8 +1102,14 @@ export const SystemSettings: React.FC = () => {
             const usedElsewhere = formData.footerPages.filter((_, j) => j !== i);
             return (
               <div key={i}>
-                <label className="text-[10px] text-gray-500 uppercase font-bold block mb-1">Slot {i + 1}</label>
+                {/* The words "Slot 1" were on screen and attached to nothing —
+                    five identical comboboxes to a screen reader, on the control
+                    that decides the player's bottom navigation. S24. */}
+                <label htmlFor={`footer-slot-${i}`}
+                  className="text-[10px] text-gray-500 uppercase font-bold block mb-1">Slot {i + 1}</label>
                 <select
+                  id={`footer-slot-${i}`}
+                  aria-label={`Player footer navigation, slot ${i + 1}`}
                   className="input"
                   value={current}
                   onChange={(e) => {
@@ -737,8 +1141,8 @@ export const SystemSettings: React.FC = () => {
           format — Slack, Discord (with /slack suffix), Mattermost, or any HTTP
           collector works. Leave empty to disable.
         </p>
-        <label className="label">Alert Webhook URL</label>
-        <input
+        <label className="label" htmlFor="alert-webhook-url">Alert Webhook URL</label>
+        <input id="alert-webhook-url"
           type="url"
           value={formData.alertWebhookUrl}
           onChange={(e) => setFormData({ ...formData, alertWebhookUrl: e.target.value.trim() })}
@@ -774,6 +1178,7 @@ export const SystemSettings: React.FC = () => {
               <label className="relative inline-flex items-center cursor-pointer">
                 <input
                   type="checkbox"
+                  aria-label={label}
                   checked={formData.tlsFingerprintDefense[field]}
                   onChange={(e) => setFormData({
                     ...formData,
@@ -787,8 +1192,8 @@ export const SystemSettings: React.FC = () => {
           ))}
 
           <div>
-            <label className="label">Blocked JA3 Hashes</label>
-            <textarea
+            <label className="label" htmlFor="blocked-ja3-hashes">Blocked JA3 Hashes</label>
+            <textarea id="blocked-ja3-hashes"
               value={formData.tlsFingerprintDefense.blockJa3Hashes.join('\n')}
               onChange={(e) => setFormData({
                 ...formData,
@@ -818,8 +1223,8 @@ export const SystemSettings: React.FC = () => {
 
         <div className="space-y-4">
           <div>
-            <label className="label">Web App URL</label>
-            <input
+            <label className="label" htmlFor="web-app-url">Web App URL</label>
+            <input id="web-app-url"
               type="url"
               value={formData.webUrl}
               onChange={(e) => setFormData({ ...formData, webUrl: e.target.value })}
@@ -830,8 +1235,8 @@ export const SystemSettings: React.FC = () => {
           </div>
 
           <div>
-            <label className="label">Android APK URL</label>
-            <input
+            <label className="label" htmlFor="android-apk-url">Android APK URL</label>
+            <input id="android-apk-url"
               type="url"
               value={formData.androidUrl}
               onChange={(e) => setFormData({ ...formData, androidUrl: e.target.value })}
@@ -854,8 +1259,8 @@ export const SystemSettings: React.FC = () => {
 
           <div className="grid grid-cols-2 gap-4 pt-2 border-t border-dark-700">
             <div>
-              <label className="label">Minimum Version</label>
-              <input
+              <label className="label" htmlFor="minimum-version">Minimum Version</label>
+              <input id="minimum-version"
                 type="text"
                 value={formData.minVersion}
                 onChange={(e) => setFormData({ ...formData, minVersion: e.target.value })}
@@ -865,8 +1270,8 @@ export const SystemSettings: React.FC = () => {
               <p className="text-xs text-gray-500 mt-1">Users below this version see a forced update screen and cannot use the app until they refresh.</p>
             </div>
             <div>
-              <label className="label">Latest Version</label>
-              <input
+              <label className="label" htmlFor="latest-version">Latest Version</label>
+              <input id="latest-version"
                 type="text"
                 value={formData.latestVersion}
                 onChange={(e) => setFormData({ ...formData, latestVersion: e.target.value })}
@@ -888,7 +1293,10 @@ export const SystemSettings: React.FC = () => {
       {/* Save Button */}
       <button
         onClick={handleSave}
-        disabled={isSaving || (formData.minBet > formData.maxBet)}
+        disabled={isSaving
+          || (formData.minBet > formData.maxBet)
+          || (formData.minDeposit > formData.maxDeposit)
+          || (formData.minWithdrawal > formData.maxWithdrawal)}
         className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed flex items-center"
       >
         {isSaving ? (

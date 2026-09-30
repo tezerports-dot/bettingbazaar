@@ -1,5 +1,5 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
-import React, { useEffect, useState } from 'react';
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
+import React, { useEffect, useId, useState } from 'react';
 import { Save, TestTube, RefreshCw, ToggleLeft, ToggleRight, ChevronDown, ChevronUp,
          Gamepad2, Trophy, Zap, Activity, Plus, Trash2, X } from 'lucide-react';
 import api from '../../services/api';
@@ -15,17 +15,25 @@ const CATEGORY_META: Record<string, { label: string; icon: React.ReactNode; colo
 
 const CATEGORIES = ['casino', 'crash', 'sports', 'slots'];
 
-const Field = ({ label, value, onChange, type = 'text', placeholder = '', help = '' }: any) => (
+const Field = ({ label, value, onChange, type = 'text', placeholder = '', help = '' }: any) => {
+  // `useId` rather than a slug of the label: this component renders once per
+  // provider as well as once in the create form, so a label-derived id would
+  // collide and point three labels at one input. React guarantees this one is
+  // unique per instance and stable across renders.
+  const id = useId();
+  return (
   <div>
-    <label className="text-xs text-gray-400 mb-1 block">{label}</label>
+    <label className="text-xs text-gray-400 mb-1 block" htmlFor={id}>{label}</label>
     <input
+      id={id}
       type={type} value={value || ''} onChange={e => onChange(e.target.value)}
       placeholder={placeholder}
       className="w-full bg-dark-800 border border-dark-600 rounded-lg px-3 py-2 text-sm text-white focus:border-yellow-500/50 outline-hidden"
     />
     {help && <p className="text-[10px] text-gray-600 mt-0.5">{help}</p>}
   </div>
-);
+  );
+};
 
 const EMPTY_NEW = { key: '', name: '', category: 'casino', description: '', logoUrl: '',
                     apiUrl: '', apiKey: '', apiSecret: '', merchantId: '', webhookSecret: '' };
@@ -158,7 +166,8 @@ export const GameProviders: React.FC = () => {
           <div className="bg-dark-800 border border-dark-600 rounded-xl w-full max-w-lg p-6 space-y-4">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-bold">Add New Provider</h2>
-              <button onClick={() => setShowAdd(false)} className="text-gray-400 hover:text-white"><X size={20}/></button>
+              <button onClick={() => setShowAdd(false)} title="Close without adding a provider"
+                aria-label="Close without adding a provider" className="text-gray-400 hover:text-white"><X size={20}/></button>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <Field label="Provider Key (unique slug)" value={newProv.key}
@@ -167,8 +176,8 @@ export const GameProviders: React.FC = () => {
               <Field label="Display Name" value={newProv.name}
                 onChange={(v: string) => setNewProv(p => ({ ...p, name: v }))} placeholder="e.g. Evolution Gaming" />
               <div>
-                <label className="text-xs text-gray-400 mb-1 block">Category</label>
-                <select value={newProv.category}
+                <label className="text-xs text-gray-400 mb-1 block" htmlFor="category">Category</label>
+                <select id="category" value={newProv.category}
                   onChange={e => setNewProv(p => ({ ...p, category: e.target.value }))}
                   className="w-full bg-dark-700 border border-dark-600 rounded-lg px-3 py-2 text-sm text-white outline-hidden">
                   {CATEGORIES.map(c => <option key={c} value={c}>{CATEGORY_META[c]?.label || c}</option>)}
@@ -224,14 +233,26 @@ export const GameProviders: React.FC = () => {
                       <p className="text-xs text-gray-500 mt-0.5">{p.description}</p>
                     </div>
                     <button onClick={() => set(p.key, 'enabled', !edit.enabled)}
+                      title={edit.enabled ? `Take ${p.name} off the lobby` : `Put ${p.name} live in the lobby`}
+                      aria-label={edit.enabled ? `Take ${p.name} off the lobby` : `Put ${p.name} live in the lobby`}
+                      aria-pressed={edit.enabled}
                       className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${edit.enabled ? 'border-green-500 bg-green-500/10 text-green-400' : 'border-dark-600 text-gray-500 hover:border-dark-500'}`}>
                       {edit.enabled ? <><ToggleRight size={14}/> ON</> : <><ToggleLeft size={14}/> OFF</>}
                     </button>
                     <button onClick={() => deleteProvider(p.key, p.name)} disabled={deleting === p.key}
-                      className="text-gray-600 hover:text-red-400 p-1 transition-colors" title="Delete provider">
+                      className="text-gray-600 hover:text-red-400 p-1 transition-colors"
+                      title={`Delete ${p.name}`} aria-label={`Delete ${p.name}`}>
                       <Trash2 size={16}/>
                     </button>
-                    <button onClick={() => setExpanded(isOpen ? null : p.key)} className="text-gray-400 hover:text-white p-1">
+                    {/* One of these per provider row — 48 on this screen, and
+                        every one announced as just "button" before. The name
+                        says which provider it opens, because "expand" repeated
+                        48 times identifies nothing. */}
+                    <button onClick={() => setExpanded(isOpen ? null : p.key)}
+                      title={isOpen ? `Hide ${p.name} settings` : `Edit ${p.name} settings`}
+                      aria-label={isOpen ? `Hide ${p.name} settings` : `Edit ${p.name} settings`}
+                      aria-expanded={isOpen}
+                      className="text-gray-400 hover:text-white p-1">
                       {isOpen ? <ChevronUp size={18}/> : <ChevronDown size={18}/>}
                     </button>
                   </div>

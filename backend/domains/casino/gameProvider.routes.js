@@ -1,4 +1,4 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * game-providers.routes.js
  *
@@ -14,6 +14,12 @@
  *  4. Provider calls our webhook on every bet/win → we debit/credit user wallet
  */
 import express from 'express';
+// Enabling or disabling a provider changes which origins a game may be framed
+// from, so the CSP's frame-src is re-read here. This is an OPTIMISATION, not
+// the guarantee: `providerFrameSources` refreshes on its own timer, so a fourth
+// mutation path that forgets this call costs at most that window and never
+// correctness. A hook that has to be remembered in N places is §2's shape.
+import { refreshProviderFrameSources } from './providerFrameSources.js';
 // Balances go to a third-party provider. They come from the wallet.
 import { getBalances } from '../wallet/walletAuthority.service.js';
 import { db } from '#db';
@@ -23,6 +29,7 @@ import { networkClient } from '../../services/networkClient.js';
 import { verifyWebhookSignature } from './webhookSignature.js';
 // Credentials are ciphertext in the row; they become usable only here.
 import { sealCredential, openProviderSecrets } from './providerCredentials.js';
+import { serverError } from '../../shared/httpError.js';
 
 const router = express.Router();
 
@@ -73,19 +80,34 @@ const DEFAULT_PROVIDERS = [
 ];
 
 /**
- * Register the providers the platform knows about.
+ * Register the providers the platform ships with, ONCE, creating only what is
+ * missing.
  *
- * The upsert deliberately does NOT carry credentials, and `upsertProvider`
- * treats a null credential as "unchanged" — so running this on every request,
- * as the routes below do, cannot wipe an API key an admin configured.
+ * Two things were wrong with the version this replaces, and they compounded.
+ *
+ * It went through `upsertProvider`, whose `ON CONFLICT DO UPDATE` assigns
+ * `enabled` and `api_url` from the row being inserted — and the seed passes
+ * neither, so both took their defaults, `false` and `null`. Every call
+ * therefore switched off every shipped provider and wiped the URL an operator
+ * had entered. It is now `seedProviderIfMissing`, which does nothing at all to
+ * a provider that already exists.
+ *
+ * And it ran on EVERY request to two routes, one of them public and
+ * unauthenticated, so any visitor triggered it. Defaults only change on a
+ * deploy, so it runs once per process and every later caller awaits the same
+ * promise — which also takes three writes per page load off a public route.
  */
+let seeded = null;
 async function seedProviders() {
-  for (const p of DEFAULT_PROVIDERS) {
-    await db.games.upsertProvider({
-      providerKey: p.key, name: p.name, category: p.category,
-      description: p.description, logoUrl: p.logoUrl,
-    });
-  }
+  seeded ??= (async () => {
+    for (const p of DEFAULT_PROVIDERS) {
+      await db.games.seedProviderIfMissing({
+        providerKey: p.key, name: p.name, category: p.category,
+        description: p.description, logoUrl: p.logoUrl,
+      });
+    }
+  })().catch((err) => { seeded = null; throw err; });
+  return seeded;
 }
 
 // ── PUBLIC: what providers are active for each category ─────────────────────
@@ -106,7 +128,7 @@ router.get('/providers', async (req, res) => {
     }
     res.json({ success: true, providers: grouped });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    return serverError(res, err, 'GET /api/game/providers', 'Games are unavailable right now.');
   }
 });
 
@@ -244,7 +266,7 @@ router.post('/launch', authenticate, async (req, res) => {
     res.json({ success: true, launchUrl, sessionId });
   } catch (err) {
     console.error('Game launch error:', err);
-    res.status(500).json({ success: false, message: err.message });
+    return serverError(res, err, 'POST /launch');
   }
 });
 
@@ -273,7 +295,13 @@ router.post('/wallet/:providerKey', async (req, res) => {
     const secrets = await db.games.getProviderSecrets(providerKey);
     if (!secrets) return res.status(404).json({ success: false });
 
-    const verdict = verifyWebhookSignature(openProviderSecrets(secrets).webhookSecret, req.headers, req.body);
+    // `req.rawBody` is the exact buffer, stashed by the scoped parser in
+    // server.js. The verifier checks it first and the re-serialisation second,
+    // so a provider that signs the real bytes verifies and one whose serialiser
+    // happened to match ours keeps working.
+    const verdict = verifyWebhookSignature(
+      openProviderSecrets(secrets).webhookSecret, req.headers, req.body, req.rawBody,
+    );
     if (!verdict.ok) return res.status(verdict.status).json({ success: false, message: verdict.message });
 
     // Normalise the payload — every supplier spells these differently.
@@ -345,7 +373,7 @@ router.post('/wallet/:providerKey', async (req, res) => {
 // received, which is a stronger guarantee than masking one it did.
 
 // GET /api/admin/game-providers
-router.get('/admin/game-providers', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/admin/game-providers', authenticate, isAdmin, async (req, res) => {
   try {
     await seedProviders();
     res.json({ success: true, providers: await db.games.listProviders() });
@@ -379,6 +407,7 @@ router.put('/admin/game-providers/:key', authenticate, isAdmin, async (req, res)
 
     const provider = await db.games.updateProvider(req.params.key, patch, { updatedBy: req.user.userId });
     if (!provider) return res.status(404).json({ success: false, message: 'Provider not found' });
+    await refreshProviderFrameSources();
 
     // Who changed a payment-facing integration, and which fields — without the
     // values, because an audit log is not a place to put an API secret.
@@ -432,7 +461,7 @@ router.post('/admin/game-providers/:key/test', authenticate, isAdmin, async (req
 });
 
 // GET /api/admin/game-transactions — provider callback history
-router.get('/admin/game-transactions', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/admin/game-transactions', authenticate, isAdmin, async (req, res) => {
   try {
     const { providerKey, userId, txType, page = 1, limit = 30 } = req.query;
     // The page and its total come back from one query, so the footer count and
@@ -473,6 +502,7 @@ router.post('/admin/game-providers', authenticate, isAdmin, async (req, res) => 
       updatedBy: req.user.userId,
     });
     if (!provider) return res.status(409).json({ success: false, message: `Provider "${slug}" already exists` });
+    await refreshProviderFrameSources();
 
     await db.audit.recordDetailed({
       performedBy: req.user.userId, action: 'GAME_PROVIDER_CREATED', category: 'CONFIG',
@@ -505,6 +535,7 @@ router.delete('/admin/game-providers/:key', authenticate, isAdmin, async (req, r
         message: `${result.games} game${result.games === 1 ? '' : 's'} still use this provider. Remove or reassign them first.`,
       });
     }
+    await refreshProviderFrameSources();
     await db.audit.recordDetailed({
       performedBy: req.user.userId, action: 'GAME_PROVIDER_DELETED', category: 'CONFIG',
       targetType: 'GameProvider', targetId: req.params.key,

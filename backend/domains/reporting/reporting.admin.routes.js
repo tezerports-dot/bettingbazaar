@@ -1,16 +1,19 @@
-// GOVERNANCE: Read docs/governance/04-GOVERNANCE.md before editing this file. (See sec.0 for mandatory pre-edit checklist.)
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * reporting.admin.routes.js — Reporting Platform admin surface (BBEPS
  * Phase 012, Enterprise Services tier). All read-only; ?format=csv on the
  * export endpoint streams a regulatory CSV.
  * Mounted at /api/admin via routes/admin/index.js.
  */
-import { express, authenticate, isAdmin, isAdminOrSubAdmin } from '../../routes/admin/_adminShared.js';
+import {
+  authenticate, express, hasPermission, isAdmin, isAdminOrSubAdmin,
+} from '../../routes/admin/_adminShared.js';
 import { financialReport, settlementReport, merchantReport, regulatoryLedgerExport, toCsv } from './reporting.service.js';
 // Item 5: a large regulatory CSV is CPU-bound string work — offload it to a
 // worker thread so serializing it doesn't block the event loop (and every
 // concurrent request, money paths included). Small exports stay inline.
 import { runCpuTask, shouldOffloadCsv } from '../../services/workerPool.service.js';
+import { respondError } from '../../shared/httpError.js';
 
 const router = express.Router();
 
@@ -22,32 +25,32 @@ function period(req) {
 }
 
 // GET /api/admin/reports/financial?from=&to=
-router.get('/reports/financial', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/reports/financial', authenticate, hasPermission('canViewAnalytics'), async (req, res) => {
   try {
     const report = await financialReport(period(req));
     res.json({ success: true, report });
   } catch (error) {
-    res.status(error.status || 500).json({ success: false, message: error.status ? error.message : 'Failed to build financial report' });
+    return respondError(res, error, 'GET /admin/reports/financial', { message: 'Failed to build financial report' });
   }
 });
 
 // GET /api/admin/reports/settlement?from=&to=
-router.get('/reports/settlement', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/reports/settlement', authenticate, hasPermission('canViewAnalytics'), async (req, res) => {
   try {
     const days = await settlementReport(period(req));
     res.json({ success: true, days });
   } catch (error) {
-    res.status(error.status || 500).json({ success: false, message: error.status ? error.message : 'Failed to build settlement report' });
+    return respondError(res, error, 'GET /admin/reports/settlement', { message: 'Failed to build settlement report' });
   }
 });
 
 // GET /api/admin/reports/merchants?from=&to=
-router.get('/reports/merchants', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/reports/merchants', authenticate, hasPermission('canViewAnalytics'), async (req, res) => {
   try {
     const merchants = await merchantReport(period(req));
     res.json({ success: true, merchants });
   } catch (error) {
-    res.status(error.status || 500).json({ success: false, message: error.status ? error.message : 'Failed to build merchant report' });
+    return respondError(res, error, 'GET /admin/reports/merchants', { message: 'Failed to build merchant report' });
   }
 });
 
@@ -66,7 +69,7 @@ router.get('/reports/ledger-export', authenticate, isAdmin, async (req, res) => 
     }
     res.json({ success: true, rows });
   } catch (error) {
-    res.status(error.status || 500).json({ success: false, message: error.status ? error.message : 'Failed to build ledger export' });
+    return respondError(res, error, 'GET /admin/reports/regulatory-ledger', { message: 'Failed to build ledger export' });
   }
 });
 
