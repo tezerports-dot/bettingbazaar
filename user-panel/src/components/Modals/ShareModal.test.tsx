@@ -71,7 +71,7 @@ const shareButton = () => screen.getByRole('button', { name: /Share Link|Copied!
 const downloadButton = () => screen.getByRole('button', { name: /Download/i });
 
 beforeEach(() => {
-  config = { webUrl: 'https://bazaarclash.example', androidUrl: 'https://cdn.example/app-v9.apk' } as SystemConfigData;
+  config = { webUrl: 'https://bazaarclash.example' } as SystemConfigData;
   configFails = false;
   native = false;
   localStorage.clear();
@@ -96,7 +96,7 @@ describe('ShareModal — the APK link', () => {
   });
 
   it('goes through the redirect endpoint rather than the configured APK URL', async () => {
-    // /api/download/android 302s to whatever androidUrl an admin has set, so
+    // /api/download/android 302s to the newest published release, so
     // opening the endpoint keeps a swapped build live without a redeploy.
     // Baking the URL into the button would freeze it at page-load time.
     await show();
@@ -233,15 +233,18 @@ describe('ShareModal — chrome', () => {
     expect(screen.getByAltText('Share logo')).toHaveAttribute('src', 'https://other.example/l.png');
   });
 
-  it('falls back to the bundled logo only when branding has none', async () => {
+  it('falls back to the uploaded logo slot, fetched from the SERVER, when branding has none', async () => {
+    // Not the relative '/app-assets/logo.png' it used to be: inside the APK
+    // that resolves to the files bundled in the package, where no logo.png
+    // exists, so an admin's upload never appeared (services/brandAssets.ts).
     await show();
-    expect(screen.getByAltText('Share logo')).toHaveAttribute('src', '/app-assets/logo.png');
+    expect(screen.getByAltText('Share logo')).toHaveAttribute('src', `${API_ORIGIN}/app-assets/logo.png`);
   });
 
   it('does not go down on corrupt branding in localStorage', async () => {
     localStorage.setItem('app_branding', '{not json');
     await show();
-    expect(screen.getByAltText('Share logo')).toHaveAttribute('src', '/app-assets/logo.png');
+    expect(screen.getByAltText('Share logo')).toHaveAttribute('src', `${API_ORIGIN}/app-assets/logo.png`);
   });
 
   it('closes when asked', async () => {

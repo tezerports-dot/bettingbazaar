@@ -47,6 +47,10 @@ const ReferralPage = React.lazy(() => import('./pages/ReferralPage'));
 import ErrorBoundary from './components/ui/ErrorBoundary';
 import { applyBranding, applyCachedBranding } from './services/branding';
 import { getBackend } from './services/backend.service';
+import { startAppUpdate, webBundleOutdated } from './services/appUpdate';
+import { brandLogo, fallBackToMark, uploadedAsset } from './services/brandAssets';
+import NativeUpdateGate from './components/NativeUpdateGate';
+import { isNativeShell } from './services/nativeLifecycle';
 const APP_VERSION = import.meta.env.VITE_APP_VERSION ?? '0.0.0';
 
 const backend = getBackend();
@@ -76,19 +80,38 @@ const PageSkeleton: React.FC = () => (
   </div>
 );
 
-const LoadingScreen = () => (
-  <div className="flex flex-col items-center justify-center h-full text-[var(--brand-primary, #D4AF37)]" style={{ background: 'var(--app-bg, #0A0E17)' }}>
-    <img
-      src="/app-assets/logo.png"
-      alt="Betting Bazaar"
-      className="h-40 w-auto object-contain mb-6"
-      onError={(e) => { (e.target as HTMLImageElement).src = '/logo.png'; }}
-      style={{ filter: 'drop-shadow(0 4px 24px rgba(var(--brand-primary-rgb), 0.45))' }}
-    />
-    <div className="w-10 h-10 border-4 border-[var(--brand-primary, #D4AF37)]/20 border-t-[var(--brand-primary, #D4AF37)] rounded-full animate-spin mb-4" />
-    <div className="text-[10px] font-black tracking-[0.3em] uppercase opacity-70">Synchronizing...</div>
-  </div>
-);
+/**
+ * The first thing the app draws after the native splash hides — so it is the
+ * splash an operator controls. The logo (Branding, else the uploaded logo
+ * slot, else the generated mark) is always drawn; the admin's App Assets
+ * `splash.png`, when one is uploaded, fades in over it full-bleed. An image
+ * that is not there simply never appears — there is no broken state.
+ */
+const LoadingScreen = () => {
+  const [splashShown, setSplashShown] = useState(false);
+  return (
+    <div className="relative flex flex-col items-center justify-center h-full text-[var(--brand-primary, #D4AF37)]" style={{ background: 'var(--app-bg, #0A0E17)' }}>
+      <img
+        src={brandLogo('logo.png')}
+        alt="Betting Bazaar"
+        className="h-40 w-auto object-contain mb-6"
+        onError={fallBackToMark}
+        style={{ filter: 'drop-shadow(0 4px 24px rgba(var(--brand-primary-rgb), 0.45))' }}
+      />
+      <img
+        src={uploadedAsset('splash.png')}
+        alt=""
+        aria-hidden="true"
+        onLoad={() => setSplashShown(true)}
+        onError={(e) => { e.currentTarget.style.display = 'none'; }}
+        className="absolute inset-0 w-full h-full object-cover"
+        style={{ opacity: splashShown ? 1 : 0, transition: 'opacity 0.25s' }}
+      />
+      <div className="relative w-10 h-10 border-4 border-[var(--brand-primary, #D4AF37)]/20 border-t-[var(--brand-primary, #D4AF37)] rounded-full animate-spin mb-4" />
+      <div className="relative text-[10px] font-black tracking-[0.3em] uppercase opacity-70">Synchronizing...</div>
+    </div>
+  );
+};
 
 const MaintenanceScreen = ({ message }: { message?: string }) => (
   <div className="flex flex-col items-center justify-center h-full p-8 text-center" style={{ background: 'var(--app-bg, #0A0E17)', color: 'var(--text)' }}>
@@ -104,10 +127,10 @@ const MaintenanceScreen = ({ message }: { message?: string }) => (
 const UpdateRequiredScreen = ({ latest }: { latest: string }) => (
   <div className="flex flex-col items-center justify-center h-full p-8 text-center" style={{ background: 'var(--app-bg, #0A0E17)', color: 'var(--text)' }}>
     <img
-      src="/app-assets/logo.png"
+      src={brandLogo('logo.png')}
       alt="Betting Bazaar"
       className="h-40 w-auto object-contain mb-6"
-      onError={(e) => { (e.target as HTMLImageElement).src = '/logo.png'; }}
+      onError={fallBackToMark}
       style={{ filter: 'drop-shadow(0 4px 24px rgba(var(--brand-primary-rgb), 0.4))' }}
     />
     <div className="w-20 h-20 bg-[var(--brand-primary, #D4AF37)]/10 rounded-3xl flex items-center justify-center text-4xl mb-6 border border-[var(--brand-primary, #D4AF37)]/20 animate-bounce">🚀</div>
@@ -115,15 +138,9 @@ const UpdateRequiredScreen = ({ latest }: { latest: string }) => (
     <p className="text-sm mb-8 leading-relaxed max-w-xs mx-auto" style={{ color: 'var(--text2)' }}>
       Version <span className="text-[var(--brand-primary, #D4AF37)] font-bold">{latest}</span> is ready with critical security patches.
     </p>
+    {/* Web only: the APK's updates are NativeUpdateGate's (services/appUpdate.ts). */}
     <button
-      onClick={() => {
-        if ('serviceWorker' in navigator) {
-          navigator.serviceWorker.getRegistrations().then(regs => {
-            for (const reg of regs) reg.unregister();
-            window.location.reload();
-          });
-        } else { window.location.reload(); }
-      }}
+      onClick={startAppUpdate}
       className="w-full max-w-xs bg-[var(--brand-primary, #D4AF37)] hover:bg-[var(--brand-accent, #F5C77A)] text-black font-black py-4 rounded-2xl shadow-xl transition-all active:scale-95"
     >
       UPDATE & RESTART
@@ -157,8 +174,7 @@ const SystemGuard: React.FC<{ children: React.ReactElement }> = ({ children }) =
         return;
       }
       const minRequired = config.minVersion || APP_VERSION;
-      const isVersioned = APP_VERSION !== '0.0.0';
-      if (isVersioned && compareVersions(APP_VERSION, minRequired) < 0) {
+      if (webBundleOutdated(APP_VERSION, minRequired, isNativeShell(), compareVersions)) {
         setLatestVer(config.latestVersion || 'Unknown');
         setStatus('OUTDATED');
         return;
@@ -205,6 +221,9 @@ const lazy = (node: React.ReactNode) => <Suspense fallback={<PageSkeleton />}>{n
 const App: React.FC = () => (
   <ThemeProvider>
     <ErrorBoundary panel="user">
+      {/* Outside SystemGuard on purpose: a required update must show even
+          during maintenance or while the web gate is loading. */}
+      <NativeUpdateGate />
       <SystemGuard>
         <Suspense fallback={<LoadingScreen />}>
           <ToastProvider>

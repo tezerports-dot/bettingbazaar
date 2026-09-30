@@ -244,7 +244,6 @@ export interface SystemConfigData {
   minVersion: string;
   maintenanceMode: boolean;
   maintenanceMessage?: string;
-  androidUrl?: string;
   iosUrl?: string;
   webUrl?: string;
 }

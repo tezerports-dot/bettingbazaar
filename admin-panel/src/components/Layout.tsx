@@ -13,7 +13,7 @@ import {
   MessageCircle, Shield, History, Scale, Upload, Search, Sun, Moon, Bell,
   Zap, SlidersHorizontal, Trophy, Star, Gamepad2, Bot, FileSpreadsheet, Share2,
   type LucideIcon, ArrowLeftRight, BookOpenCheck, Flag, ToggleLeft, Banknote, Hourglass,
-  Coins, Ghost} from 'lucide-react';
+  Coins, Ghost, Smartphone} from 'lucide-react';
 import { useAuthStore } from '../services/auth';
 import { usePermissions } from '../hooks/usePermission';
 import { useThemeStore } from '../services/theme';
@@ -108,7 +108,8 @@ const NAV_GROUPS: MenuGroup[] = [
     { path: '/content/support', icon: MessageCircle, label: 'Support Links',    title: 'Support Links',   sub: 'Contact & social channels', permission: 'canManageContent' },
     { path: '/content/cdn',     icon: ImageIcon,     label: 'CDN Library',      title: 'CDN Library',     sub: 'Uploaded media assets', permission: 'canManageContent' },
     { path: '/branding',        icon: Palette,       label: 'Branding',         title: 'Branding',        sub: 'App name, logo, colours & tagline', permission: 'canManageContent' },
-    { path: '/app-assets',      icon: Upload,        label: 'App Assets (PWA)', title: 'App Assets (PWA)',sub: 'Icons, splash & install assets', adminOnly: true },
+    { path: '/app-assets',      icon: Upload,        label: 'App Assets',       title: 'App Assets',      sub: 'Logo, loading splash & icons — web and Android app', adminOnly: true },
+    { path: '/android-app',     icon: Smartphone,    label: 'Android App',      title: 'Android App',     sub: 'Upload, publish & force updates', adminOnly: true },
   ] },
   { key: 'admin', label: 'Admin', items: [
     { path: '/sub-admins',       icon: ShieldCheck, label: 'Sub-Admins',       title: 'Sub-Admins',       sub: 'Roles, permissions & access control', adminOnly: true },

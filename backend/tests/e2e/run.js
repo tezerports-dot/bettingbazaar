@@ -85,7 +85,9 @@ try {
 
 const server = spawn(process.execPath, [join(ROOT, 'backend', 'server.js')], {
   cwd: ROOT,
-  env: { ...process.env, PORT: String(PORT), NODE_ENV: process.env.NODE_ENV || 'development' },
+  // BB_RATE_LIMIT_RELAX is pinned OFF: the pen-test scenario asserts the login
+  // limiter trips, and a relaxed server would pass it wrongly (CLAUDE.md §34).
+  env: { ...process.env, PORT: String(PORT), NODE_ENV: process.env.NODE_ENV || 'development', BB_RATE_LIMIT_RELAX: '1' },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 const serverLog = [];

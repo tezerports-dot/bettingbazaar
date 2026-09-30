@@ -2445,8 +2445,8 @@ exists.
 
 | Measure | Count |
 |---|---|
-| Route declarations in `backend/**` | 313 |
-| Reachable with **no auth middleware** | 42 |
+| Route declarations in `backend/**` | 320 |
+| Reachable with **no auth middleware** | 44 |
 | Gated `isAdminOrSubAdmin` with **no permission key** | 2 |
 | — of those, **writes** (non-GET) | 0 |
 | Carrying an explicit permission key | 56 |
@@ -2458,11 +2458,13 @@ new route and decide. Each of the three questions is defined in §2.
 
 - `GET /admin/events  (backend/routes/sse.routes.js)`
 - `GET /announcements  (backend/routes/retention.routes.js)`
+- `GET /app/android/update  (backend/domains/distribution/androidRelease.routes.js)`
 - `GET /assetlinks.json  (backend/routes/wellKnown.routes.js)`
 - `GET /bootstrap  (backend/routes/app-bootstrap.routes.js)`
 - `GET /categories  (backend/domains/gameRegistry/gameRegistry.routes.js)`
 - `GET /cycles/:cycleId  (backend/domains/user/user.routes.js)`
 - `GET /cycles/active  (backend/domains/user/user.routes.js)`
+- `GET /download/android  (backend/domains/distribution/androidRelease.routes.js)`
 - `GET /events  (backend/routes/sse.routes.js)`
 - `GET /games  (backend/domains/gameRegistry/gameRegistry.routes.js)`
 - `GET /health  (backend/routes.js)`
@@ -2511,8 +2513,8 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 465 |
-| Parameters only (safe by construction) | 312 |
+| `pgQuery` call sites | 473 |
+| Parameters only (safe by construction) | 320 |
 | Interpolating into statement text (each needs a reading) | 150 |
 | Statement text built elsewhere and passed in (each needs a reading) | 3 |
 
@@ -2528,8 +2530,8 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Panel | .ts/.tsx files | `dangerouslySetInnerHTML` | `.innerHTML =` |
 |---|---|---|---|
-| `user-panel` | 78 | 0 | 0 |
-| `admin-panel` | 98 | 0 | 0 |
+| `user-panel` | 85 | 0 | 0 |
+| `admin-panel` | 99 | 0 | 0 |
 | `merchant-panel` | 41 | 0 | 0 |
 
 <!-- END GENERATED -->

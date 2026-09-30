@@ -1116,6 +1116,63 @@ const MUTATIONS = [
   }`,
     to: `  const view = { ...plain };`,
   },
+  {
+    id: 'M157', file: 'database/repositories/casino.js', config: PG,
+    test: 'database/tests/casinoSessionBindingPg.test.js',
+    why: 'a signed provider BET debits whichever player the payload names, with no session that player opened, so a forged or leaked launch token bets with somebody else\'s balance',
+    from: `  if (normalised === 'BET') {`,
+    to: `  if (false && normalised === 'BET') {`,
+  },
+  {
+    id: 'M158', file: 'backend/domains/identity/fieldCrypto.util.js', config: UNIT,
+    test: 'backend/tests/unit/fieldCryptoRotation.test.js',
+    why: 'identity decryption accepts a truncated GCM tag, so a forged Aadhaar/identity ciphertext needs ~2^32 tries instead of 2^128',
+    from: `Buffer.from(iv, 'base64'), GCM_TAG);`,
+    to: `Buffer.from(iv, 'base64'));`,
+  },
+  {
+    id: 'M159', file: 'backend/domains/identity/totp.service.js', config: UNIT,
+    test: 'backend/tests/unit/totp.service.test.js',
+    why: 'a stored 2FA secret decrypts under a truncated GCM tag, so the tag authenticates 4 bytes instead of 16',
+    from: `Buffer.from(iv, 'base64'), GCM_TAG);`,
+    to: `Buffer.from(iv, 'base64'));`,
+  },
+  // ── Android releases (2026-09-30) ───────────────────────────────────────────
+  {
+    id: 'M160', file: 'database/repositories/androidReleases.js', config: PG,
+    test: 'backend/tests/routes/androidReleaseRoutes.test.js',
+    why: 'a draft publishes below a release already published, so every phone is offered a DOWNGRADE Android refuses — an update screen that loops for ever',
+    from: `                             AND p.published_at IS NOT NULL AND p.version_code >= r.version_code)`,
+    to: `                             AND false)`,
+  },
+  {
+    id: 'M161', file: 'backend/domains/distribution/androidRelease.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/androidReleaseRoutes.test.js',
+    why: 'an APK signed with a different key than the installed app is accepted and published, and every phone refuses it as an update',
+    from: `if (latest && latest.signerSha256 !== info.signerSha256) {`,
+    to: `if (false && latest && latest.signerSha256 !== info.signerSha256) {`,
+  },
+  {
+    id: 'M162', file: 'backend/domains/distribution/androidRelease.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/androidReleaseRoutes.test.js',
+    why: 'a debug-signed build is published; no release install can ever update from it',
+    from: `if (info.debugSigned) {`,
+    to: `if (false && info.debugSigned) {`,
+  },
+  {
+    id: 'M163', file: 'backend/domains/distribution/androidRelease.shared.js', config: UNIT,
+    test: 'backend/tests/unit/androidUpdateStatus.test.js',
+    why: 'an install below a MANDATORY release is only offered the update, so an operator forcing a security fix blocks nobody',
+    from: `if (installedCode < policy.minRequiredVersionCode) return 'required';`,
+    to: `if (installedCode < policy.minRequiredVersionCode) return 'available';`,
+  },
+  {
+    id: 'M164', file: 'database/repositories/androidReleases.js', config: PG,
+    test: 'backend/tests/routes/androidReleaseRoutes.test.js',
+    why: 'a draft signed with a different key publishes — legal at upload while nothing was published — and every phone refuses the update',
+    from: `                             AND k.published_at IS NOT NULL AND k.signer_sha256 <> r.signer_sha256)`,
+    to: `                             AND false)`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

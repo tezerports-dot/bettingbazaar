@@ -66,6 +66,7 @@ import * as balanceAdjustments from './repositories/balanceAdjustments.js';
 import * as markets from './repositories/markets.js';
 import * as games from './repositories/games.js';
 import * as content from './repositories/content.js';
+import * as androidReleases from './repositories/androidReleases.js';
 import * as engagement from './repositories/engagement.js';
 import * as social from './repositories/social.js';
 import * as referrals from './repositories/referrals.js';
@@ -146,6 +147,7 @@ export const db = Object.freeze({
   // Catalogue and content
   games,
   content,
+  androidReleases,
 
   // Player-facing everything else
   engagement,
@@ -170,5 +172,5 @@ export default db;
 export { users, identity, security, telegram, merchants, chat, config };
 export { treasury, settlements, merchantSettlements, adminIssuance, balanceAdjustments };
 export { adminTokenConsiderations };
-export { markets, games, content, engagement, social, referrals };
+export { markets, games, content, androidReleases, engagement, social, referrals };
 export { audit, cashLinks, compliance, depositPolicy, merchantCommissionPolicy, paymentModePolicy, operations, paymentConfig, supportDocuments, stats, utr };

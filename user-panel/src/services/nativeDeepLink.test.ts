@@ -1,6 +1,6 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file.
 /**
- * The trust decision behind a bot sign-in link arriving at the native shell.
+ * The trust decision behind a link to the public site arriving at the native shell.
  *
  * `routeFromDeepLink` is the whole security boundary of the deep-link path, so
  * it is tested directly rather than through the plugin. MainActivity must be
@@ -18,7 +18,7 @@ const API = 'https://api.bettingbazaar.example';
 const ALLOWED = [APP, API];
 
 describe('routeFromDeepLink', () => {
-  it('accepts the bot sign-in link and keeps the token in the fragment', () => {
+  it('accepts a link to the public site and keeps the fragment intact', () => {
     const route = routeFromDeepLink(`${APP}/#/wallet?tab=deposit`, ALLOWED);
     expect(route).toBe('#/wallet?tab=deposit');
   });

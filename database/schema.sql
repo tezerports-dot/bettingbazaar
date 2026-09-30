@@ -2059,6 +2059,58 @@ CREATE TABLE IF NOT EXISTS app_assets (
   updated_by   TEXT
 );
 
+-- ── Android releases ────────────────────────────────────────────────────────
+-- One row per uploaded APK. The identity columns (package, version, signer,
+-- file hash) are READ FROM THE FILE by domains/distribution/apkInspector.js,
+-- never typed by the admin, and never change afterwards: an installed app
+-- downloads `file_url` and refuses to install anything whose SHA-256 is not
+-- `file_sha256`, so a row whose file could be swapped under it would be a
+-- row that lies to every phone.
+--
+-- `published_at` NULL is a draft nobody is offered. A published release is
+-- never deleted (it is the history of what players were sent); a newer one
+-- supersedes it. `mandatory` may be changed after publishing, because "this
+-- version must no longer be run" is a decision an operator makes later.
+--
+-- The app is told: the newest published release, and the highest MANDATORY
+-- published version_code. An install below that code is blocked until it
+-- updates; one below the newest but above it is offered the update.
+--
+-- Everything is PER PACKAGE. Android identifies an app by its package, so a
+-- release of another package id governs nothing an installed copy of this one
+-- would accept — and a deploy that changes ANDROID_PACKAGE_ID starts a new app
+-- with its own history rather than inheriting a floor it cannot meet. It also
+-- makes each test run hermetic: it uses a package of its own (trap 10).
+CREATE TABLE IF NOT EXISTS android_releases (
+  release_id     TEXT PRIMARY KEY,
+  package_name   TEXT NOT NULL,
+  version_code   INTEGER NOT NULL CHECK (version_code > 0),
+  version_name   TEXT NOT NULL,
+  min_sdk        INTEGER,
+  signer_sha256  TEXT NOT NULL CHECK (signer_sha256 ~ '^[0-9A-F]{64}$'),
+  file_sha256    TEXT NOT NULL CHECK (file_sha256 ~ '^[0-9a-f]{64}$'),
+  size_bytes     BIGINT NOT NULL CHECK (size_bytes > 0),
+  file_url       TEXT NOT NULL,
+  storage        TEXT NOT NULL CHECK (storage IN ('S3', 'LOCAL')),
+  file_key       TEXT NOT NULL,
+  release_notes  TEXT NOT NULL DEFAULT '' CHECK (length(release_notes) <= 4000),
+  mandatory      BOOLEAN NOT NULL DEFAULT false,
+  uploaded_by    TEXT,
+  uploaded_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  published_at   TIMESTAMPTZ,
+  published_by   TEXT
+);
+-- Convergent (§32 S31): the first definition made version_code unique across
+-- ALL packages. Drop that, then add the per-package key; its own definition is
+-- fixed, so the duplicate guard is safe for it.
+ALTER TABLE android_releases DROP CONSTRAINT IF EXISTS android_releases_version_code_key;
+DO $$ BEGIN
+  ALTER TABLE android_releases ADD CONSTRAINT android_releases_package_version UNIQUE (package_name, version_code);
+EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL; END $$;
+DROP INDEX IF EXISTS android_releases_published_idx;
+CREATE INDEX IF NOT EXISTS android_releases_published_pkg_idx
+  ON android_releases (package_name, version_code DESC) WHERE published_at IS NOT NULL;
+
 -- ═══════════════════════════════════════════════════════════════════════════
 -- ENGAGEMENT
 -- ═══════════════════════════════════════════════════════════════════════════

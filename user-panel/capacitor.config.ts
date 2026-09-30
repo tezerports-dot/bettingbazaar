@@ -21,10 +21,27 @@
  */
 import type { CapacitorConfig } from '@capacitor/cli';
 
+/**
+ * The app's dark ground, behind everything native draws before the bundle
+ * paints: the WebView itself, the splash and the status bar. A §5 mirror of
+ * `theme_color` in public/manifest.json, and of `BG` in
+ * scripts/generate-icons.mjs, which writes it into the Android colour
+ * resource. src/services/nativeBrand.test.ts fails if the three disagree —
+ * they had already (this said #0A0E17 while the manifest said #0B0E14).
+ *
+ * A native resource cannot read the admin's Branding at runtime, so this is
+ * §11's allowed exception: a build-time value, never used for anything the
+ * server decides.
+ */
+const BRAND_BACKGROUND = '#0B0E14';
+
 const config: CapacitorConfig = {
   appId: 'com.bettingbazaar.app',
   appName: 'Betting Bazaar',
   webDir: 'dist',
+  // The WebView's own background. Unset it is white, and it is what shows for
+  // the frames between the splash hiding and the first paint.
+  backgroundColor: BRAND_BACKGROUND,
 
   android: {
     // Every network call must be TLS. The API is HTTPS; nothing in this app has
@@ -50,14 +67,14 @@ const config: CapacitorConfig = {
     SplashScreen: {
       launchShowDuration: 1200,
       launchAutoHide: true,
-      backgroundColor: '#0A0E17',
+      backgroundColor: BRAND_BACKGROUND,
       androidSplashResourceName: 'splash',
       androidScaleType: 'CENTER_CROP',
       showSpinner: false,
     },
     StatusBar: {
       style: 'DARK',            // dark content style => light icons on the dark shell
-      backgroundColor: '#0A0E17',
+      backgroundColor: BRAND_BACKGROUND,
       overlaysWebView: false,
     },
   },

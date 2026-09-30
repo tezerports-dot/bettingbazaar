@@ -10,7 +10,7 @@
     "build:native": "node scripts/assert-native-env.mjs && vite build",
     "android:sync": "npm run build:native && cap sync android",
     "android:open": "cap open android",
-    "icons:generate": "node scripts/generate-pwa-icons.mjs",
+    "icons:generate": "node scripts/generate-icons.mjs",
     "test": "vitest run"
   },
   "dependencies": {
@@ -48,6 +48,9 @@
     "brace-expansion": "^5.0.9",
     "browserslist": "^4.28.8",
     "nanoid": "^3.3.17",
-    "@xmldom/xmldom": "^0.9.12"
+    "@xmldom/xmldom": "^0.9.12",
+    "xcode": {
+      "uuid": "^11.1.1"
+    }
   }
 }

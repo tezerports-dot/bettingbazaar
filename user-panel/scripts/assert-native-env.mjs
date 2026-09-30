@@ -53,19 +53,19 @@ if (!apiUrl) {
   }
 }
 
-// ── The public app origin — what makes the app signable-into ────────────────
-// Player auth is Telegram-only and the bot's one-time link is the only door.
-// It points at PUBLIC_APP_ORIGIN, arrives as an Android App Link, and is
-// matched against the host baked into AndroidManifest.xml at build time. Get
-// this wrong and the tap opens a browser, the browser spends the single-use
-// token, and the installed app stays signed out forever — the same shape of
-// silent failure as a wrong VITE_API_URL, and the reason this check is fatal
-// rather than a warning: an APK nobody can sign in to is not a release.
+// ── The public app origin — whose links this app opens ──────────────────────
+// Its HOST is baked into AndroidManifest.xml as the App Link the app claims,
+// and the deep-link handler trusts only links from it. The bot's password-reset
+// link points at it (`/#/reset/<token>`): with the right origin the tap opens
+// the reset screen in the installed app; with a wrong or missing one the tap
+// opens a browser and the App Link filter claims a host that no link uses. That
+// is a silent, build-time mistake that only shows on a handset, so it is caught
+// here rather than on release day. It costs one variable to set.
 const appOrigin = process.env.VITE_APP_ORIGIN;
 if (!appOrigin) {
   errors.push(
     'VITE_APP_ORIGIN is not set.\n' +
-    '      This is the public origin the bot builds sign-in links against\n' +
+    '      This is the public origin the bot builds reset links against\n' +
     '      (the backend\'s PUBLIC_APP_ORIGIN). The shell uses it to decide which\n' +
     '      incoming links to trust, and its HOST is what the App Link filter in\n' +
     '      AndroidManifest.xml claims.\n' +

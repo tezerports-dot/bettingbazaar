@@ -1362,6 +1362,52 @@ export const appAssets = {
   },
 };
 
+// --- ANDROID RELEASES ---------------------------------------------------------
+// The installed app downloads and installs what is PUBLISHED here
+// (backend/domains/distribution/androidRelease.routes.js).
+
+export interface AndroidRelease {
+  releaseId: string; packageName: string; versionCode: number; versionName: string;
+  minSdk: number | null; signerSha256: string; fileSha256: string; sizeBytes: number;
+  fileUrl: string; storage: 'S3' | 'LOCAL'; releaseNotes: string; mandatory: boolean;
+  uploadedAt: string; publishedAt: string | null; published: boolean;
+}
+export interface AndroidReleaseCheck { key: string; ok: boolean; label: string; why: string }
+export interface AndroidReleasesResponse {
+  success: boolean; releases: AndroidRelease[]; latestPublishedVersionCode: number | null;
+  minRequiredVersionCode: number; packageName: string; fingerprints: string[];
+  storage: 'S3' | 'LOCAL'; checks: AndroidReleaseCheck[];
+}
+
+export const androidReleases = {
+  list: async (): Promise<AndroidReleasesResponse> => {
+    const res = await api.get<AndroidReleasesResponse>('/api/admin/android/releases');
+    return res.data;
+  },
+  /** The body IS the APK — no base64 — so a 50 MB build is a 50 MB request. */
+  upload: async (file: File, onProgress?: (pct: number) => void) => {
+    const res = await api.post<{ success: boolean; release: AndroidRelease; message?: string }>(
+      '/api/admin/android/releases', file, {
+        headers: { 'Content-Type': 'application/vnd.android.package-archive' },
+        timeout: 10 * 60 * 1000,
+        onUploadProgress: (e) => { if (onProgress && e.total) onProgress(Math.round((e.loaded / e.total) * 100)); },
+      });
+    return res.data;
+  },
+  update: async (releaseId: string, patch: { releaseNotes?: string; mandatory?: boolean }) => {
+    const res = await api.patch<{ success: boolean; release: AndroidRelease }>(`/api/admin/android/releases/${releaseId}`, patch);
+    return res.data;
+  },
+  publish: async (releaseId: string) => {
+    const res = await api.post<{ success: boolean; release: AndroidRelease }>(`/api/admin/android/releases/${releaseId}/publish`);
+    return res.data;
+  },
+  remove: async (releaseId: string) => {
+    const res = await api.delete<{ success: boolean }>(`/api/admin/android/releases/${releaseId}`);
+    return res.data;
+  },
+};
+
   // ── Payment Order Actions (approve / reject / force-complete / video-KYC) ──────
 
 // Payment Order Actions — approve / reject / cancel / video-KYC

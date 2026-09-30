@@ -129,7 +129,6 @@ export const SystemSettings: React.FC = () => {
     },
     // App distribution
     webUrl:        '',
-    androidUrl:    '',
     iosUrl:        '',
     minVersion:    '1.0.0',
     latestVersion: '1.0.0',
@@ -237,7 +236,6 @@ export const SystemSettings: React.FC = () => {
             blockJa3Hashes: response.data.tlsFingerprintDefense?.blockJa3Hashes || [],
           },
           webUrl:        response.data.webUrl        || '',
-          androidUrl:    response.data.androidUrl    || '',
           iosUrl:        response.data.iosUrl        || '',
           minVersion:    response.data.minVersion    || '1.0.0',
           latestVersion: response.data.latestVersion || '1.0.0',
@@ -1234,16 +1232,9 @@ export const SystemSettings: React.FC = () => {
             <p className="text-xs text-gray-500 mt-1">The link users share via the "Share Link" button. Update here when your public domain changes.</p>
           </div>
 
-          <div>
-            <label className="label" htmlFor="android-apk-url">Android APK URL</label>
-            <input id="android-apk-url"
-              type="url"
-              value={formData.androidUrl}
-              onChange={(e) => setFormData({ ...formData, androidUrl: e.target.value })}
-              className="input"
-              placeholder="https://your-cdn.com/app-v1.0.0.apk"
-            />
-            <p className="text-xs text-gray-500 mt-1">Direct link to the APK file. Get this from PWABuilder after building. The Download button in the app points here.</p>
+          <div className="text-xs text-gray-400 rounded-lg border border-dark-700 p-3">
+            <span className="font-semibold text-gray-300">Android app:</span> uploaded, published and force-updated on the{' '}
+            <a href="#/android-app" className="underline">Android App</a> page. The download link in the player app always points at the newest published release.
           </div>
 
           <div>
@@ -1259,7 +1250,7 @@ export const SystemSettings: React.FC = () => {
 
           <div className="grid grid-cols-2 gap-4 pt-2 border-t border-dark-700">
             <div>
-              <label className="label" htmlFor="minimum-version">Minimum Version</label>
+              <label className="label" htmlFor="minimum-version">Minimum Web Version</label>
               <input id="minimum-version"
                 type="text"
                 value={formData.minVersion}
@@ -1267,10 +1258,10 @@ export const SystemSettings: React.FC = () => {
                 className="input font-mono"
                 placeholder="1.0.0"
               />
-              <p className="text-xs text-gray-500 mt-1">Users below this version see a forced update screen and cannot use the app until they refresh.</p>
+              <p className="text-xs text-gray-500 mt-1">Browser users on an older web bundle see a forced update screen until they refresh. Does not apply to the Android app.</p>
             </div>
             <div>
-              <label className="label" htmlFor="latest-version">Latest Version</label>
+              <label className="label" htmlFor="latest-version">Latest Web Version</label>
               <input id="latest-version"
                 type="text"
                 value={formData.latestVersion}
@@ -1278,13 +1269,13 @@ export const SystemSettings: React.FC = () => {
                 className="input font-mono"
                 placeholder="1.0.0"
               />
-              <p className="text-xs text-gray-500 mt-1">Shown to users on the update screen. Update this when you release a new APK.</p>
+              <p className="text-xs text-gray-500 mt-1">Shown to browser users on the web update screen.</p>
             </div>
           </div>
 
           <div className="bg-yellow-900/20 border border-yellow-500/30 rounded-lg p-3">
             <p className="text-xs text-yellow-300">
-              <strong>How forced updates work:</strong> Set Minimum Version to the new version number (e.g. 1.1.0). Any user whose app reports version 1.0.x will immediately see the "Update Available" screen and cannot proceed until they tap Update & Restart. This clears their cache and loads the latest code.
+              <strong>How forced updates work:</strong> On the <em>web</em>, set Minimum Web Version to the new version (e.g. 1.1.0): a browser still running 1.0.x sees the update screen until it taps Update &amp; Restart, which reloads the latest code. The <em>Android app</em> carries its code inside the APK, so a reload cannot update it — publish a release on the <a href="#/android-app" className="underline">Android App</a> page and mark it Mandatory instead; the app downloads and installs it itself.
             </p>
           </div>
         </div>

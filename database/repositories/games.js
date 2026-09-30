@@ -324,6 +324,27 @@ export async function openSession({
   return toSession(rows[0]);
 }
 
+/**
+ * Does this player hold a live session with this provider right now?
+ *
+ * The one fact that ties a provider's debit to the PLAYER rather than to
+ * whatever player id the provider's payload names. A session is opened only by
+ * `POST /api/game/launch`, behind the player's own login, so a provider — or
+ * anyone who has forged a launch token — cannot create one for somebody else.
+ * Expiry is in the WHERE, like every other expiry here: a late sweep must not
+ * leave a session usable.
+ */
+export async function hasLiveSession(userId, providerKey) {
+  const { rows } = await pgQuery(
+    `SELECT 1 FROM game_sessions
+      WHERE user_id = $1 AND provider_key = $2
+        AND status = 'ACTIVE' AND expires_at > now()
+      LIMIT 1`,
+    [String(userId), String(providerKey)], 'session_live',
+  );
+  return rows.length > 0;
+}
+
 
 
 
