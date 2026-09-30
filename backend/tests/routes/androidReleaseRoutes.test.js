@@ -4,15 +4,19 @@
  * database: upload → inspect → store → publish → what an installed app is told
  * → where the download goes.
  *
- * ── Why every version code here is relative ────────────────────────────────
- * `android_releases` is one shared table that survives between runs, and a
- * publish is only allowed ABOVE everything already published — which is the
- * rule under test. A run that used fixed codes would pass once and then be
- * refused by its own previous run (trap 10, §32 S19). So each run reads the
- * highest code on record and works above it, and asserts only on what it made.
+ * ── Why each run ships its OWN app ─────────────────────────────────────────
+ * `android_releases` survives between runs, and a publish pins both the
+ * version floor and the signing key for everything after it — which is the
+ * rule under test. The first version of this suite shared the platform's
+ * package and read "the highest code on record" as its baseline. Then a
+ * mutation run let a draft signed with a foreign key be PUBLISHED, published
+ * releases cannot be deleted, and every later run found a key it could not
+ * match and ran nothing (trap 10, measured 2026-09-30).
  *
- * The signer is one fixed test key for the same reason: a published release
- * pins the key every later upload must carry, exactly as a phone does.
+ * Releases are scoped per package (a release of another package governs
+ * nothing), so each run sets ANDROID_PACKAGE_ID to a package nobody else uses,
+ * starts from an empty history, and deletes everything it made in afterAll —
+ * published or not, outside any assertion.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { pgConfigured, applySchema, closePg, pgQuery } from '#db/client.js';
@@ -21,6 +25,7 @@ import { buildApk } from '../_fakeApk.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 const KEY = Buffer.from('CN=BettingBazaar route-test release key, O=BB, C=IN');
+const PKG = `com.bettingbazaar.rt${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 const APK = 'application/vnd.android.package-archive';
 
 describePg('Android releases', () => {
@@ -32,29 +37,28 @@ describePg('Android releases', () => {
   const savedEnv = {};
 
   const upload = (who, bytes) => as(adminApp, who).post('/android/releases').set('Content-Type', APK).send(bytes);
-  const apk = (offset, extra = {}) => buildApk({ versionCode: base + offset, versionName: `9.${base + offset}.0`, cert: KEY, ...extra });
+  const apk = (offset, extra = {}) => buildApk({
+    packageName: PKG, versionCode: base + offset, versionName: `9.${base + offset}.0`, cert: KEY, ...extra,
+  });
 
   beforeAll(async () => {
     await applySchema();
     for (const k of ['ANDROID_SHA256_CERT_FINGERPRINTS', 'ANDROID_PACKAGE_ID']) { savedEnv[k] = process.env[k]; delete process.env[k]; }
+    process.env.ANDROID_PACKAGE_ID = PKG;
     adminApp = mountRouter((await import('../../domains/distribution/androidRelease.admin.routes.js')).default);
     publicApp = mountRouter((await import('../../domains/distribution/androidRelease.routes.js')).default, { prefix: '/api' });
     admin = await actor({ isAdmin: true });
     player = await actor();
-    const { rows } = await pgQuery('SELECT COALESCE(max(version_code), 0) AS m FROM android_releases', []);
-    base = Number(rows[0].m) + 10;
-
-    // A previous run may have left a published release signed with a key this
-    // run does not use; publish nothing under a foreign key.
-    const { rows: top } = await pgQuery(
-      'SELECT signer_sha256 FROM android_releases WHERE published_at IS NOT NULL ORDER BY version_code DESC LIMIT 1', []);
-    if (top[0]) {
-      const { createHash } = await import('node:crypto');
-      expect(top[0].signer_sha256).toBe(createHash('sha256').update(KEY).digest('hex').toUpperCase());
-    }
+    base = 10;   // a fresh package has no history
   });
 
   afterAll(async () => {
+    // Everything this run made, published or not — and its files.
+    const { rows } = await pgQuery('DELETE FROM android_releases WHERE package_name = $1 RETURNING storage, file_key', [PKG]);
+    const { RELEASES_DIR } = await import('../../domains/distribution/androidRelease.shared.js');
+    const { unlinkSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    for (const r of rows) if (r.storage === 'LOCAL') { try { unlinkSync(join(RELEASES_DIR, r.file_key)); } catch { /* gone */ } }
     for (const [k, v] of Object.entries(savedEnv)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
     await closePg();
   });
@@ -69,7 +73,7 @@ describePg('Android releases', () => {
     const res = await upload(admin, bytes);
     expect(res.status).toBe(201);
     expect(res.body.release).toMatchObject({
-      packageName: 'com.bettingbazaar.app', versionCode: base + 1, versionName: `9.${base + 1}.0`,
+      packageName: PKG, versionCode: base + 1, versionName: `9.${base + 1}.0`,
       sizeBytes: bytes.length, published: false, mandatory: false, storage: 'LOCAL',
     });
     // Not offered to anyone until published.
@@ -78,7 +82,7 @@ describePg('Android releases', () => {
   });
 
   it.each([
-    ['another app', { packageName: 'com.example.other' }, /ships com\.bettingbazaar\.app/],
+    ['another app', { packageName: 'com.example.other' }, /but this platform ships/],
     ['a debug build', { cert: Buffer.from('CN=Android Debug, O=Android, C=US') }, /debug key/],
     ['a duplicate version code', {}, /already been uploaded/],
   ])('refuses %s, naming the mistake', async (_label, extra, message) => {
@@ -180,8 +184,8 @@ describePg('Android releases', () => {
       as(adminApp, admin).post(`/android/releases/${a.releaseId}/publish`),
     ]);
     const codes = await pgQuery(
-      'SELECT version_code, published_at FROM android_releases WHERE version_code IN ($1,$2) ORDER BY version_code',
-      [base + 6, base + 7]);
+      'SELECT version_code, published_at FROM android_releases WHERE package_name = $1 AND version_code IN ($2,$3) ORDER BY version_code',
+      [PKG, base + 6, base + 7]);
     const [low, high] = codes.rows;
     if (low.published_at && high.published_at) {
       expect(new Date(low.published_at).getTime()).toBeLessThanOrEqual(new Date(high.published_at).getTime());
@@ -203,9 +207,23 @@ describePg('Android releases', () => {
     expect(rows[0].published_at).toBeNull();
   });
 
+  it('refuses to PUBLISH a draft signed with another key, even though its upload was legal', async () => {
+    // Upload-time key checks are a read. Simulate the window they cannot see:
+    // a draft whose key differs from the published one, as two drafts uploaded
+    // before anything was published would be. Only the publish can refuse it.
+    const draft = (await upload(admin, apk(20))).body.release;
+    await pgQuery("UPDATE android_releases SET signer_sha256 = repeat('E', 64) WHERE release_id = $1", [draft.releaseId]);
+    const res = await as(adminApp, admin).post(`/android/releases/${draft.releaseId}/publish`);
+    expect(res.status).toBe(409);
+    expect(res.body.message).toMatch(/different key/);
+    const { rows } = await pgQuery('SELECT published_at FROM android_releases WHERE release_id = $1', [draft.releaseId]);
+    expect(rows[0].published_at).toBeNull();
+    await as(adminApp, admin).delete(`/android/releases/${draft.releaseId}`);
+  });
+
   it('shows the operator what is not configured yet', async () => {
     const { body } = await as(adminApp, admin).get('/android/releases');
-    expect(body.packageName).toBe('com.bettingbazaar.app');
+    expect(body.packageName).toBe(PKG);
     expect(body.checks.map((c) => c.key).sort()).toEqual(['allowed_origins', 'fingerprints', 'storage']);
   });
 });

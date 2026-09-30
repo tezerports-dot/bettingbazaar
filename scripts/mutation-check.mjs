@@ -1142,9 +1142,8 @@ const MUTATIONS = [
     id: 'M160', file: 'database/repositories/androidReleases.js', config: PG,
     test: 'backend/tests/routes/androidReleaseRoutes.test.js',
     why: 'a draft publishes below a release already published, so every phone is offered a DOWNGRADE Android refuses — an update screen that loops for ever',
-    from: `          AND NOT EXISTS (SELECT 1 FROM android_releases p
-                           WHERE p.published_at IS NOT NULL AND p.version_code >= r.version_code)`,
-    to: `          AND true`,
+    from: `                             AND p.published_at IS NOT NULL AND p.version_code >= r.version_code)`,
+    to: `                             AND false)`,
   },
   {
     id: 'M161', file: 'backend/domains/distribution/androidRelease.admin.routes.js', config: PG,
@@ -1166,6 +1165,13 @@ const MUTATIONS = [
     why: 'an install below a MANDATORY release is only offered the update, so an operator forcing a security fix blocks nobody',
     from: `if (installedCode < policy.minRequiredVersionCode) return 'required';`,
     to: `if (installedCode < policy.minRequiredVersionCode) return 'available';`,
+  },
+  {
+    id: 'M164', file: 'database/repositories/androidReleases.js', config: PG,
+    test: 'backend/tests/routes/androidReleaseRoutes.test.js',
+    why: 'a draft signed with a different key publishes — legal at upload while nothing was published — and every phone refuses the update',
+    from: `                             AND k.published_at IS NOT NULL AND k.signer_sha256 <> r.signer_sha256)`,
+    to: `                             AND false)`,
   },
 ];
 

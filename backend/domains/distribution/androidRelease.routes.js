@@ -11,14 +11,14 @@
 import express from 'express';
 import { db } from '#db';
 import { serverError } from '../../shared/httpError.js';
-import { publicRelease, refused, updateStatus } from './androidRelease.shared.js';
+import { expectedPackage, publicRelease, refused, updateStatus } from './androidRelease.shared.js';
 
 const router = express.Router();
 
 router.get('/app/android/update', async (req, res) => {
   try {
     const installed = Number(req.query.versionCode);
-    const policy = await db.androidReleases.getUpdatePolicy();
+    const policy = await db.androidReleases.getUpdatePolicy(expectedPackage());
     res.set('Cache-Control', 'no-store');
     res.json({
       success: true,
@@ -33,7 +33,7 @@ router.get('/app/android/update', async (req, res) => {
 
 router.get('/download/android', async (req, res) => {
   try {
-    const { latest } = await db.androidReleases.getUpdatePolicy();
+    const { latest } = await db.androidReleases.getUpdatePolicy(expectedPackage());
     if (!latest) return refused(res, 404, 'The Android app is not available yet.');
     return res.redirect(302, latest.fileUrl);
   } catch (err) {

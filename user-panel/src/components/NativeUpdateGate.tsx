@@ -27,12 +27,14 @@ import type { UpdateCheck } from '../services/nativeUpdater';
 type Phase = 'idle' | 'downloading' | 'installing' | 'permission' | 'launched' | 'error';
 type Updater = typeof import('../services/nativeUpdater');
 
+// §11: a UI cadence, not a business rule — how often an open app re-asks. The
+// server decides WHAT to do; nothing here is used for server-side validation.
 const RECHECK_MS = 30 * 60 * 1000;
 
 const BUTTON: React.CSSProperties = {
   width: '100%', height: 50, borderRadius: 14, border: 'none', fontWeight: 800,
   fontSize: 15, letterSpacing: '0.02em', cursor: 'pointer',
-  background: 'var(--brand-primary)', color: '#000',
+  background: 'var(--brand-primary)', color: 'black',   // the panel's black-on-brand (text-black)
 };
 const SECONDARY: React.CSSProperties = {
   ...BUTTON, background: 'transparent', color: 'var(--text2)', border: '1px solid var(--line2)', fontWeight: 700,
@@ -136,7 +138,7 @@ export default function NativeUpdateGate() {
       aria-modal="true"
       aria-labelledby="update-title"
       style={{
-        width: '100%', maxWidth: 420, background: 'var(--bg2, var(--app-bg))', color: 'var(--text)',
+        width: '100%', maxWidth: 420, background: required ? 'transparent' : 'var(--surface)', color: 'var(--text)',
         borderRadius: required ? 0 : '22px 22px 0 0', padding: '28px 22px calc(22px + env(safe-area-inset-bottom))',
         display: 'flex', flexDirection: 'column', gap: 16, alignItems: 'stretch',
         border: required ? 'none' : '1px solid var(--line2)',
@@ -196,7 +198,7 @@ export default function NativeUpdateGate() {
           Tap <strong>Install</strong> on the Android screen. The app reopens on the new version.
         </div>
       )}
-      {phase === 'error' && <div role="alert" style={{ fontSize: 14, color: 'var(--red, #ef4444)' }}>{error}</div>}
+      {phase === 'error' && <div role="alert" style={{ fontSize: 14, color: 'var(--red)' }}>{error}</div>}
 
       {phase === 'permission' ? (
         <>

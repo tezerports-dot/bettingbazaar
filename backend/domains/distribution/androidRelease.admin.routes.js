@@ -16,6 +16,7 @@ import express from 'express';
 import { db } from '#db';
 import { authenticate, isAdmin } from '../identity/auth.middleware.js';
 import { inspectApk } from './apkInspector.js';
+import { deleteFile } from '../../services/cdn.service.js';
 import { respondError, serverError } from '../../shared/httpError.js';
 import {
   MAX_APK_BYTES, RELEASES_DIR, callerFault, configuredFingerprints, expectedPackage,
@@ -26,7 +27,7 @@ const router = express.Router();
 
 router.get('/android/releases', authenticate, isAdmin, async (req, res) => {
   try {
-    const [releases, policy] = await Promise.all([db.androidReleases.listReleases(), db.androidReleases.getUpdatePolicy()]);
+    const [releases, policy] = await Promise.all([db.androidReleases.listReleases(expectedPackage()), db.androidReleases.getUpdatePolicy(expectedPackage())]);
     res.json({
       success: true,
       releases,
@@ -62,14 +63,14 @@ router.post('/android/releases',
       if (fps.length && !fps.includes(info.signerSha256)) {
         throw callerFault(`This APK is signed with a key (${info.signerSha256.slice(0, 16)}…) that ANDROID_SHA256_CERT_FINGERPRINTS does not list. Android would refuse it as an update.`);
       }
-      const { latest } = await db.androidReleases.getUpdatePolicy();
+      const { latest } = await db.androidReleases.getUpdatePolicy(expectedPackage());
       if (latest && latest.signerSha256 !== info.signerSha256) {
         throw callerFault(`This APK is signed with a different key than version ${latest.versionName}, which players have installed. Android refuses an update signed with a different key.`);
       }
       if (latest && info.versionCode <= latest.versionCode) {
         throw callerFault(`This APK's version code is ${info.versionCode}, but ${latest.versionCode} (${latest.versionName}) is already published. Android refuses a downgrade — build a newer version.`);
       }
-      if (await db.androidReleases.getReleaseByVersionCode(info.versionCode)) {
+      if (await db.androidReleases.getReleaseByVersionCode(info.packageName, info.versionCode)) {
         throw callerFault(`Version code ${info.versionCode} has already been uploaded. Delete that draft first, or build a newer version.`);
       }
 
@@ -130,6 +131,9 @@ router.post('/android/releases/:id/publish', authenticate, isAdmin, async (req, 
     const out = await db.androidReleases.publishRelease(req.params.id, req.user.userId);
     if (out.refused === 'not_found') return refused(res, 404, 'Release not found.');
     if (out.refused === 'already_published') return refused(res, 409, 'This release is already published.');
+    if (out.refused === 'different_key') {
+      return refused(res, 409, `This APK is signed with a different key than ${out.publishedVersionName}, which players have installed. Android refuses an update signed with a different key — delete this draft.`);
+    }
     if (out.refused === 'not_newest') {
       return refused(res, 409, `Version code ${out.publishedVersionCode} is already published. Only a newer version can be published — Android refuses a downgrade.`);
     }
@@ -156,8 +160,12 @@ router.delete('/android/releases/:id', authenticate, isAdmin, async (req, res) =
     }
     const gone = await db.androidReleases.deleteDraft(req.params.id);
     if (!gone) return refused(res, 409, 'This release was published while you were looking at it.');
+    // The row is gone either way; the bytes are best-effort. A leftover object
+    // is storage nobody links to, never a release anybody is offered.
     if (gone.storage === 'LOCAL') {
       try { fs.unlinkSync(path.join(RELEASES_DIR, path.basename(gone.fileKey))); } catch { /* already gone */ }
+    } else {
+      try { await deleteFile(gone.fileKey); } catch (e) { console.warn('[android release] draft object not deleted:', e.message); }
     }
     await db.audit.recordDetailed({
       performedBy: req.user.userId, performedByName: req.user.username, performedByRole: 'admin',

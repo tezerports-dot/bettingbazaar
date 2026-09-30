@@ -14,6 +14,13 @@
  * and acted on in another is §32 S6: two publishes at once both pass. So the
  * guard is in the UPDATE's own WHERE, under a transaction-scoped advisory lock
  * that every publish takes first; the second waits, then finds the first.
+ *
+ * The SIGNING KEY is guarded the same way, and for the same reason. The upload
+ * route checks a new APK's key against the published release, but that is a
+ * read at upload time: two drafts signed with different keys can both be
+ * uploaded while nothing is published yet, and publishing them in turn would
+ * send phones an update Android refuses. So the publish itself refuses a key
+ * that differs from any release already published.
  */
 import { pgQuery, withTransaction } from '../client.js';
 import { randomBytes } from 'node:crypto';
@@ -68,16 +75,23 @@ export async function getRelease(releaseId) {
   return toRelease(rows[0]);
 }
 
-export async function getReleaseByVersionCode(versionCode) {
+/** Every read that DECIDES something is scoped to one package, and requires it. */
+function pkg(packageName) {
+  if (!packageName) throw new Error('androidReleases: a packageName is required');
+  return String(packageName);
+}
+
+export async function getReleaseByVersionCode(packageName, versionCode) {
   const { rows } = await pgQuery(
-    'SELECT * FROM android_releases WHERE version_code = $1', [Number(versionCode)], 'android_release_by_code');
+    'SELECT * FROM android_releases WHERE package_name = $1 AND version_code = $2',
+    [pkg(packageName), Number(versionCode)], 'android_release_by_code');
   return toRelease(rows[0]);
 }
 
-export async function listReleases({ limit = 50 } = {}) {
+export async function listReleases(packageName, { limit = 50 } = {}) {
   const { rows } = await pgQuery(
-    'SELECT * FROM android_releases ORDER BY version_code DESC LIMIT $1',
-    [Math.min(Math.max(Number(limit) || 50, 1), 200)], 'android_release_list');
+    'SELECT * FROM android_releases WHERE package_name = $1 ORDER BY version_code DESC LIMIT $2',
+    [pkg(packageName), Math.min(Math.max(Number(limit) || 50, 1), 200)], 'android_release_list');
   return rows.map(toRelease);
 }
 
@@ -85,15 +99,15 @@ export async function listReleases({ limit = 50 } = {}) {
  * What an installed app is told: the newest published release, and the
  * highest mandatory published version code (0 when nothing is mandatory).
  */
-export async function getUpdatePolicy() {
+export async function getUpdatePolicy(packageName) {
   const { rows } = await pgQuery(
     `SELECT
        (SELECT row_to_json(r) FROM (
-          SELECT * FROM android_releases WHERE published_at IS NOT NULL
+          SELECT * FROM android_releases WHERE package_name = $1 AND published_at IS NOT NULL
            ORDER BY version_code DESC LIMIT 1) r)                          AS latest,
        COALESCE((SELECT max(version_code) FROM android_releases
-                  WHERE published_at IS NOT NULL AND mandatory), 0)       AS min_code`,
-    [], 'android_release_policy',
+                  WHERE package_name = $1 AND published_at IS NOT NULL AND mandatory), 0) AS min_code`,
+    [pkg(packageName)], 'android_release_policy',
   );
   return { latest: toRelease(rows[0].latest), minRequiredVersionCode: Number(rows[0].min_code) };
 }
@@ -114,7 +128,7 @@ export async function updateRelease(releaseId, { releaseNotes, mandatory }) {
 
 /**
  * Publish a draft. Returns { release } on success, or { refused } naming why:
- * 'not_found' | 'already_published' | 'not_newest' (with the blocking code).
+ * 'not_found' | 'already_published' | 'different_key' | 'not_newest'.
  */
 export async function publishRelease(releaseId, publishedBy) {
   return withTransaction(async (client) => {
@@ -125,7 +139,11 @@ export async function publishRelease(releaseId, publishedBy) {
         WHERE r.release_id = $1
           AND r.published_at IS NULL
           AND NOT EXISTS (SELECT 1 FROM android_releases p
-                           WHERE p.published_at IS NOT NULL AND p.version_code >= r.version_code)
+                           WHERE p.package_name = r.package_name
+                             AND p.published_at IS NOT NULL AND p.version_code >= r.version_code)
+          AND NOT EXISTS (SELECT 1 FROM android_releases k
+                           WHERE k.package_name = r.package_name
+                             AND k.published_at IS NOT NULL AND k.signer_sha256 <> r.signer_sha256)
         RETURNING *`,
       [String(releaseId), publishedBy ?? null],
     );
@@ -136,8 +154,14 @@ export async function publishRelease(releaseId, publishedBy) {
       'SELECT * FROM android_releases WHERE release_id = $1', [String(releaseId)]);
     if (!cur[0]) return { refused: 'not_found' };
     if (cur[0].published_at) return { refused: 'already_published' };
+    const { rows: key } = await client.query(
+      `SELECT version_name FROM android_releases
+        WHERE package_name = $1 AND published_at IS NOT NULL AND signer_sha256 <> $2
+        ORDER BY version_code DESC LIMIT 1`, [cur[0].package_name, cur[0].signer_sha256]);
+    if (key[0]) return { refused: 'different_key', publishedVersionName: key[0].version_name };
     const { rows: top } = await client.query(
-      'SELECT max(version_code) AS code FROM android_releases WHERE published_at IS NOT NULL');
+      'SELECT max(version_code) AS code FROM android_releases WHERE package_name = $1 AND published_at IS NOT NULL',
+      [cur[0].package_name]);
     return { refused: 'not_newest', publishedVersionCode: Number(top[0].code) };
   });
 }

@@ -2075,10 +2075,16 @@ CREATE TABLE IF NOT EXISTS app_assets (
 -- The app is told: the newest published release, and the highest MANDATORY
 -- published version_code. An install below that code is blocked until it
 -- updates; one below the newest but above it is offered the update.
+--
+-- Everything is PER PACKAGE. Android identifies an app by its package, so a
+-- release of another package id governs nothing an installed copy of this one
+-- would accept — and a deploy that changes ANDROID_PACKAGE_ID starts a new app
+-- with its own history rather than inheriting a floor it cannot meet. It also
+-- makes each test run hermetic: it uses a package of its own (trap 10).
 CREATE TABLE IF NOT EXISTS android_releases (
   release_id     TEXT PRIMARY KEY,
   package_name   TEXT NOT NULL,
-  version_code   INTEGER NOT NULL UNIQUE CHECK (version_code > 0),
+  version_code   INTEGER NOT NULL CHECK (version_code > 0),
   version_name   TEXT NOT NULL,
   min_sdk        INTEGER,
   signer_sha256  TEXT NOT NULL CHECK (signer_sha256 ~ '^[0-9A-F]{64}$'),
@@ -2094,8 +2100,16 @@ CREATE TABLE IF NOT EXISTS android_releases (
   published_at   TIMESTAMPTZ,
   published_by   TEXT
 );
-CREATE INDEX IF NOT EXISTS android_releases_published_idx
-  ON android_releases (version_code DESC) WHERE published_at IS NOT NULL;
+-- Convergent (§32 S31): the first definition made version_code unique across
+-- ALL packages. Drop that, then add the per-package key; its own definition is
+-- fixed, so the duplicate guard is safe for it.
+ALTER TABLE android_releases DROP CONSTRAINT IF EXISTS android_releases_version_code_key;
+DO $$ BEGIN
+  ALTER TABLE android_releases ADD CONSTRAINT android_releases_package_version UNIQUE (package_name, version_code);
+EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL; END $$;
+DROP INDEX IF EXISTS android_releases_published_idx;
+CREATE INDEX IF NOT EXISTS android_releases_published_pkg_idx
+  ON android_releases (package_name, version_code DESC) WHERE published_at IS NOT NULL;
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- ENGAGEMENT

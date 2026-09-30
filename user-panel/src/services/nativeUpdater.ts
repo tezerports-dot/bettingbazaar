@@ -86,6 +86,8 @@ export async function checkForUpdate(): Promise<UpdateCheck | null> {
 
 // ── Postponing an optional update ────────────────────────────────────────────
 const SNOOZE_KEY = 'bb_update_snoozed';
+// §11: how long "Later" lasts on this phone — a UI convenience. It can never
+// hide a REQUIRED update (shouldShow), which is the server's decision.
 export const SNOOZE_MS = 24 * 60 * 60 * 1000;
 
 /**
