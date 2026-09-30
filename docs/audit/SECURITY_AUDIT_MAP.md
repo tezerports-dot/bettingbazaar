@@ -2609,9 +2609,89 @@ order PAID. All five completion routes go through it, so none can forget.
   one caller (`moveDepositMoney`) and the `available` debit is reachable only
   through `noHold`. The withdrawal side has one owner (`settleHold` /
   `reverseHold`) except the hold-disabled confirm, recorded separately.
-- **Sweep for the vacuous-NaN shape** — see F-027's neighbour entry in the
-  open queue: every assertion comparing two NaNs passes; a guard in the test
-  setup is the mechanical answer.
+- **Sweep for the vacuous-NaN shape** — recorded as its own open item: every
+  assertion comparing two NaNs passes; a guard in the test setup is the
+  mechanical answer (§32 S40).
+
+### F-027 — an admin ending a withdrawal was wrong in ten of eleven cases
+`FIXED` · high (money created on refunds, merchants unpaid on releases) · no
+single owner for one decision (§2, §5); the same state reached by three routes
+with different handling (§32 S3) · found 2026-09-30 by the full-stack review
+
+**MEASURED against a real database** (`withdrawalResolutionPg.test.js`, 10 of 11
+red on the parent, plus the missing assertion added to
+`paymentOrderAdminActionRoutes`). A withdrawal's money is in one of three
+positions when an admin decides it — NOT YET CONFIRMED (stake locked, no
+settlement), HELD (stake locked, settlement RESERVED), SETTLED (stake consumed,
+merchant credited) — and three routes decide it: the admin queue action, the
+Payment Control Centre resolve and the Dispute Manager resolve.
+
+| Route | not yet confirmed | HELD |
+|---|---|---|
+| admin action REJECT/CANCEL | winnings credited, **lock left standing** | same, **settlement left RESERVED** |
+| admin action APPROVE | **nothing moved** | **nothing moved** |
+| PCC refund | lock left standing | lock left standing |
+| PCC release | **nothing moved** | **nothing moved**; settlement stranded (the sweep takes PAID orders only) |
+| DM cancel | lock left standing | money right, order **written back to DISPUTED** |
+| DM release | **nothing moved** | correct |
+
+A refund that credits winnings beside the lock gives the player the amount
+twice (the wallet read 4,000 from a 2,000 seed) and breaks the token total §2
+says always adds up. A release that moves nothing leaves the stake locked for
+good and never credits the merchant who paid the player. The DISPUTED write
+came from `mirrorSettlementState`, which writes `state` directly — a second,
+unguarded state writer behind the route's own transition.
+
+**Why green.** The admin suites asserted that winnings went UP and never that
+`locked` came DOWN; their fixtures built withdrawals without the escrow flag
+production always sets (§32 S16). The Dispute Manager's comment read "not
+HELD" as "already settled", and a withdrawal disputed before its merchant
+confirmed is neither.
+
+**Fixed with one owner.** `withdrawalHold.endWithdrawal(orderId, 'REFUND' |
+'RELEASE')` handles all three positions: a refund cancels a RESERVED settlement
+first, then returns the stake `locked → winnings` on the one canonical key
+(`refund_<id>`, shared with the player's cancel and the expiry sweep); a release
+opens the settlement if none exists and settles it through the same state
+machine the sweep uses; a SETTLED refund is the platform's compensation, said
+plainly with an alert. It never writes the order's state — `mirrorSettlementState`
+gained `keepState`, and the route's guarded transition stays the only writer. All
+three routes call it, replay it on a repeat click (every step is keyed, so a
+retry repairs a partial failure and pays nothing twice), and a cancelled BUY now
+releases its merchant hold instead of leaving it to the stranded-hold sweep.
+`reverseHold` lost its only caller and is deleted (§22).
+
+- **Tests:** `withdrawalResolutionPg` 12/12 (every cell above, plus the admin
+  APPROVE cells and F-028); the admin-action suite now asserts the lock and the
+  canonical key. Full `test:pg` 1590/1590, `test:unit` 874/874.
+- **Mutation-proved:** M169 (refund leaves the lock), M170 (release leaves the
+  stake), M171 (the mirror writes the state behind the route) — all KILLED.
+- **Sweep:** every `creditWinnings` call that returns a WITHDRAWAL's money
+  (three, all replaced) and every writer of `order_states.state` outside the
+  lifecycle module (`mirrorSettlementState` — now opt-out for routes; the sweep
+  still owns its transition there, which is the open-queue "state guard on
+  mirrorSettlement" item, still open).
+
+### F-028 — with the hold disabled, a withdrawal confirm settled after its commit
+`FIXED` · medium · §21 · found 2026-09-30 by the full-stack review
+
+`withdrawalHoldMinutes` is admin-editable down to 0. At 0 the merchant confirm
+completed the order FIRST and then called `releaseWithdrawal` (uncaught) and
+`creditMerchantTokens(...).catch(log)`. A failure in either left a COMPLETED
+order whose money had not moved, and every retry was answered "Order already
+confirmed" — the merchant who paid the player was never credited and the stake
+stayed locked. It also admitted only PROCESSING where the held path admits
+ASSIGNED too (§32 S3).
+
+**Fixed by removing the second path.** A hold of zero minutes is a HOLD whose
+window is already over: the same PAID + HELD transition, the settlement opened,
+and `settleHold` called inline — the function the sweep runs, which moves the
+money and only then marks the order COMPLETED. If it fails, the order is PAID
+and due, and the next sweep settles it.
+
+- **Tests:** `withdrawalResolutionPg` — "the merchant confirm with the hold
+  disabled settles both sides before the order reads COMPLETED".
+- **Mutation-proved:** M172 (no inline settlement) KILLED.
 
 ---
 

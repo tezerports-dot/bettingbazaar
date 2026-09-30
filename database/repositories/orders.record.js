@@ -1169,7 +1169,17 @@ export async function findDueHolds({ limit = 200 } = {}) {
  * settled order is a mirror that can leave `merchant_credit_status = RELEASED`
  * beside `state = ASSIGNED`.
  */
-export async function mirrorSettlementState(orderId, settlementStatus, { reason = null, actor = null } = {}) {
+export async function mirrorSettlementState(orderId, settlementStatus, {
+  reason = null, actor = null,
+  // ── Leave the order's STATE alone ────────────────────────────────────────
+  // For an admin's decision the ROUTE has already moved the order, through the
+  // lifecycle's guarded transition with its audit row. Writing `state` here as
+  // well is a second, unguarded writer — and it disagreed: a Dispute Manager
+  // refund of a held withdrawal was CANCELLED by the route and then written
+  // back to DISPUTED by this function, putting a resolved dispute back in the
+  // queue. The sweep, which moves no state itself, still passes `false`.
+  keepState = false,
+} = {}) {
   const OUTCOME = {
     SETTLED:   { credit: 'RELEASED', state: 'COMPLETED', escrow: false },
     CANCELLED: { credit: 'REVERSED', state: 'DISPUTED',  escrow: false },
@@ -1177,6 +1187,7 @@ export async function mirrorSettlementState(orderId, settlementStatus, { reason 
     RESERVED:  { credit: 'HELD',     state: null,        escrow: true  },
   }[String(settlementStatus).toUpperCase()];
   if (!OUTCOME) throw new Error(`mirrorSettlementState: unknown settlement status '${settlementStatus}'`);
+  if (keepState) OUTCOME.state = null;
 
   const { rows } = await pgQuery(
     `UPDATE order_states SET

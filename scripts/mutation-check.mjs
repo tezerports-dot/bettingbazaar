@@ -1160,6 +1160,47 @@ const MUTATIONS = [
     }`,
   },
 
+  // ── An admin ends a withdrawal through ONE owner ────────────────────────
+  // Ten of eleven route × money-position cells were wrong: refunds credited
+  // winnings and left the lock, releases moved nothing, a HELD settlement was
+  // stranded, and a refunded dispute was written back to DISPUTED.
+  {
+    id: 'M169', file: 'backend/domains/payment/withdrawalHold.service.js', config: PG,
+    test: 'backend/tests/routes/withdrawalResolutionPg.test.js',
+    why: 'an admin refund never takes the stake out of the lock, so the player holds the amount twice and the token total no longer adds up',
+    from: `  if (settlement || order.escrowLocked) {
+    await refundWithdrawal(order.userId, order.tokenAmount, order.orderId);
+  }`,
+    to: `  if (false) {
+    await refundWithdrawal(order.userId, order.tokenAmount, order.orderId);
+  }`,
+  },
+  {
+    id: 'M170', file: 'backend/domains/payment/withdrawalHold.service.js', config: PG,
+    test: 'backend/tests/routes/withdrawalResolutionPg.test.js',
+    why: 'an admin release credits the merchant while the stake stays locked for good — the player keeps what the merchant was paid for',
+    from: `      await releaseWithdrawal(order.userId, order.tokenAmount, order.orderId);
+    } catch (err) {
+      // The same compensation \`settleHold\` makes, for the same reason.`,
+    to: `      void 0;
+    } catch (err) {
+      // The same compensation \`settleHold\` makes, for the same reason.`,
+  },
+  {
+    id: 'M171', file: 'database/repositories/orders.record.js', config: PG,
+    test: 'backend/tests/routes/withdrawalResolutionPg.test.js',
+    why: 'the settlement mirror writes the order state behind the route, so a refunded dispute is written back to DISPUTED and returns to the queue',
+    from: `  if (keepState) OUTCOME.state = null;`,
+    to: `  if (false) OUTCOME.state = null;`,
+  },
+  {
+    id: 'M172', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
+    test: 'backend/tests/routes/withdrawalResolutionPg.test.js',
+    why: 'with the hold disabled the confirm never settles, so the merchant who paid is not credited until a sweep that may be minutes away',
+    from: `            if (holdFor === 0) {`,
+    to: `            if (false) {`,
+  },
+
   // ── A withdrawal's lock and its order commit together ───────────────────
   // They were two commits, and the second could be refused: a second retry of
   // one expired withdrawal collides on `retry_of_order_id` AT INSERT, after the

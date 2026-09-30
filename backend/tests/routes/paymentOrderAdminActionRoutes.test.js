@@ -158,6 +158,8 @@ describePg('admin force-action on a payment order', () => {
     await createOrderRecord({
       orderId, userId: player.userId, type: 'WITHDRAWAL',
       tokenAmountRupees: 2000, fiatAmountRupees: 2000, state: 'PENDING_QUEUE',
+      // As `createWithdrawalOrder` writes every withdrawal: the stake is locked.
+      escrowLocked: true, escrowStatus: 'LOCKED', escrowAmount: 2000,
     });
 
     const res = await as(app, await admin())
@@ -166,6 +168,12 @@ describePg('admin force-action on a payment order', () => {
     expect(res.status).toBe(200);
     const after = await getBalances(player.userId);
     expect(Number(after.winningsBalance) - Number(afterDebit.winningsBalance)).toBe(2000);
+    // …and it comes back OUT OF THE LOCK. Admission moved it winnings → locked,
+    // so returning it is locked → winnings. A credit to winnings alone leaves the
+    // same 2,000 in both pockets: the wallet reads 4,000 from a 2,000 seed and
+    // the token total no longer adds up. This assertion was missing, which is how
+    // the refund could credit winnings and never touch the lock.
+    expect(Number(after.lockedBalance)).toBe(Number(afterDebit.lockedBalance) - 2000);
     expect((await getOrderRecord(orderId)).status).toBe('CANCELLED');
   });
 
@@ -184,21 +192,30 @@ describePg('admin force-action on a payment order', () => {
     await createOrderRecord({
       orderId, userId: player.userId, type: 'WITHDRAWAL',
       tokenAmountRupees: 2000, fiatAmountRupees: 2000, state: 'PENDING_QUEUE',
+      // As `createWithdrawalOrder` writes every withdrawal: the stake is locked.
+      escrowLocked: true, escrowStatus: 'LOCKED', escrowAmount: 2000,
     });
 
     await as(app, await admin()).post(`/payment-orders/${orderId}/action`).send({ action: 'REJECT' });
 
+    // The ONE refund key every path returns a withdrawal's stake on —
+    // `refundWithdrawal`'s `refund_<id>`, shared with the player's own cancel
+    // and the expiry sweep. This route used its own (`wd_refund_`) on a credit
+    // that never left the lock, so the ledger could not have told the two
+    // refunds of one withdrawal apart (F-027).
     const { rows } = await pgQuery(
-      'SELECT tx_id, ref_id FROM wallet_ledger WHERE tx_id = $1', [`wd_refund_${orderId}`]);
+      'SELECT tx_id, ref_id FROM wallet_ledger WHERE tx_id = $1', [`refund_${orderId}`]);
     expect(rows).toHaveLength(1);
     // And the ledger row points back at the order, not at a sentence.
     expect(rows[0].ref_id).toBe(orderId);
 
-    // The repair replay: the same credit, again, on the same key. A no-op.
+    // The repair replay: the same refund, again, on the same key. A no-op.
+    const { refundWithdrawal } = await import('../../domains/wallet/walletAuthority.service.js');
     const before = await getBalances(player.userId);
-    await creditWinnings(player.userId, 2000, 'replay', 'PaymentOrder', orderId, `wd_refund_${orderId}`);
+    await refundWithdrawal(player.userId, 2000, orderId);
     const after = await getBalances(player.userId);
     expect(Number(after.winningsBalance)).toBe(Number(before.winningsBalance));
+    expect(Number(after.lockedBalance)).toBe(Number(before.lockedBalance));
   });
 
   it('refunds a rejected withdrawal exactly once', async () => {
@@ -210,6 +227,8 @@ describePg('admin force-action on a payment order', () => {
     await createOrderRecord({
       orderId, userId: player.userId, type: 'WITHDRAWAL',
       tokenAmountRupees: 2000, fiatAmountRupees: 2000, state: 'PENDING_QUEUE',
+      // As `createWithdrawalOrder` writes every withdrawal: the stake is locked.
+      escrowLocked: true, escrowStatus: 'LOCKED', escrowAmount: 2000,
     });
 
     await as(app, await admin()).post(`/payment-orders/${orderId}/action`).send({ action: 'REJECT' });
