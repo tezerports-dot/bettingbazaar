@@ -1,6 +1,7 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import { Backend } from './backend.interface';
 import { RealBackend } from './realBackend';
+import { apiUrl } from './apiUrl';
 
 // ── Singleton ──────────────────────────────────────────────────────────────────
 let backendInstance: Backend | null = null;
@@ -47,7 +48,10 @@ export const getAssetUrl = (path: string, fallbackUrl: string = '') => {
         return `${_cdnBaseUrl}/${finalFile}`;
     }
 
-    return fallbackUrl || `/${cleanFile}`;
+    // Resolved against the SERVER: inside the Android app a relative path would
+    // read the files bundled in the package (§32 S39). On a same-origin web
+    // deploy apiUrl returns the path unchanged.
+    return fallbackUrl || apiUrl(`/${cleanFile}`);
 };
 
 let _cdnBaseUrl = '';

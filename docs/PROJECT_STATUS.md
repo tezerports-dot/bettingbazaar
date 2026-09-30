@@ -250,7 +250,15 @@ Carried over from the retired `LAUNCH_READINESS.md`, because the items are real:
 **Owner/infra actions**
 
 - Key Cloudflare Turnstile — the captcha is built and inert until
-  `TURNSTILE_SECRET_KEY` and the panel site key are set.
+  `TURNSTILE_SECRET_KEY` and the panel site key are set. Add `localhost` to the
+  widget's hostnames too, or the Android app cannot pass it.
+- **The Android app** (built 2026-09-30, `docs/governance/ANDROID_RELEASE_SETUP.md`):
+  make the signing key with `scripts/android/create-signing-key.sh` in a
+  Codespace, set `ANDROID_PACKAGE_ID`, `ANDROID_SHA256_CERT_FINGERPRINTS` and
+  `https://localhost` in `ALLOWED_ORIGINS`, build with the Android release
+  workflow, publish on the admin Android App page. **Never yet run on a phone** —
+  the build machine has no emulator; §7 of that guide is the on-device check,
+  including the in-app update and its one-time install permission.
 - Managed clustered PostgreSQL (primary + streaming replica) and Redis.
 - Edge gateway / L7 load balancer, and a WAF in front.
 - Multi-region and DNS health-checked failover.

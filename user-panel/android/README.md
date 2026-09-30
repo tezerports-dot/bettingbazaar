@@ -36,41 +36,29 @@ installs, opens, renders the shell, and every request fails.
 build without an absolute `https` origin. It also rejects `localhost` and a
 trailing `/api` (which `realBackend.ts` appends itself, producing `/api/api/…`).
 
-## Releases
+## Releases, and how installed apps update
 
-Built by `.github/workflows/android-release.yml`, not locally — the signing key
-belongs in repository secrets, not on a laptop, and `versionCode` is derived
-from the workflow run number because Play permanently rejects a `versionCode` it
-has already accepted.
+The whole loop — the signing key (one script, in a Codespace), the server
+settings, building with the **Android release** workflow, publishing on the
+admin **Android App** page, and what players see — is in
+[`docs/governance/ANDROID_RELEASE_SETUP.md`](../../docs/governance/ANDROID_RELEASE_SETUP.md).
 
-Trigger with the **Android release** workflow (supply a version name) or by
-pushing an `android-v*` tag.
+In short: bump `user-panel/package.json`, run the workflow, upload
+`app-release.apk` on the admin page, publish. Installed apps find it on their
+own, download it inside the app, verify its SHA-256, and open Android's
+installer (`ApkUpdaterPlugin.java`). A release marked **mandatory** blocks every
+older install until it updates.
 
-### Required configuration
+The versionName is package.json's version and nothing else — it is the number
+the bundle reports — and the versionCode is the workflow run number, which
+only increases (Android refuses a lower one).
 
-| Kind | Name | Purpose |
-|---|---|---|
-| Secret | `ANDROID_KEYSTORE_BASE64` | Upload keystore, base64-encoded |
-| Secret | `ANDROID_KEYSTORE_PASSWORD` | Keystore password |
-| Secret | `ANDROID_KEY_ALIAS` | Key alias inside the keystore |
-| Secret | `ANDROID_KEY_PASSWORD` | Key password |
-| Variable | `ANDROID_API_URL` | Absolute API origin, e.g. `https://api.yourdomain.com` |
-| Variable | `ANDROID_MERCHANT_PANEL_URL` | Merchant panel origin, if separately deployed |
+## Icons and splash
 
-Create the upload keystore once and **back it up somewhere you will still have
-in five years**. Losing it means you can never ship an update to the installed
-app again — Play identifies an app by its signing key, and a new key is a new
-app. (Play App Signing mitigates this; enrol if you have not.)
-
-```bash
-keytool -genkeypair -v -keystore upload-keystore.jks \
-  -keyalg RSA -keysize 4096 -validity 10000 -alias upload
-base64 -w0 upload-keystore.jks   # → ANDROID_KEYSTORE_BASE64
-```
-
-The workflow verifies the finished APK carries this key and fails if it is
-debug-signed — a debug-signed build installs fine on a test handset and is only
-rejected at upload time, which is far too late to discover.
+Generated, never hand-edited: `npm run icons:generate` writes the launcher
+icons, the adaptive-icon foreground, every splash density and the brand
+background colour from the same mark the web app uses. `--check` (run by
+`nativeBrand.test.ts` on every CI run) fails if a committed file differs.
 
 ## Deliberate configuration
 
@@ -79,6 +67,7 @@ rejected at upload time, which is far too late to discover.
 | `allowBackup` / `dataExtractionRules` | disabled | The default copies WebView storage — holding the live session token — into the user's Google Drive, and clones a logged-in session on device transfer. |
 | `usesCleartextTraffic` + `network_security_config` | TLS only | Enforced by the OS, so app code cannot weaken it. |
 | `androidScheme` | `https` | A secure context is required for `crypto.subtle` and the storage APIs the auth layer uses. |
+| `REQUEST_INSTALL_PACKAGES` | declared | The in-app updater hands a verified APK to Android's installer. Google Play forbids it — a Play build removes it with the plugin. |
 | Service worker | not registered | `src/index.tsx` detects the native shell and skips it — the WebView already resolves these assets locally, and the app updates through the Play Store. |
 | R8 / `minifyEnabled` | **off** | Capacitor resolves plugins reflectively; shrinking needs exactly-right keep rules or the build compiles and fails on hardware. The payoff on a WebView app is small. Keep rules are written in `app/proguard-rules.pro` — turning it on is one line plus a **device smoke test**. |
 

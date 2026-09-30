@@ -104,11 +104,12 @@ not take a service fee on the wagers themselves, but it does gate the listing.
   suggestion that would get the app rejected.
 
 **Direct APK download.** No review, no per-country approval, and the channel
-the `/api/download/android` redirect and `SystemConfig.androidUrl` already
-support. It carries its own costs, and they are real: no automatic updates
-(so a version floor and an "update required" gate become load-bearing — see
-`FULL_STACK_AND_CLIENT_DELIVERY.md` §3.5), users must enable "install unknown
-apps", Play Protect warns on install, and there is no store-side integrity
+the platform is built for: releases are uploaded and published on the admin
+**Android App** page, `/api/download/android` redirects to the newest, and the
+installed app updates itself — with a mandatory floor that blocks older
+installs (2026-09-30; `ANDROID_RELEASE_SETUP.md`). Its remaining costs are
+real: users must enable "install unknown apps" for the browser that downloads
+it and once for the app's own updates, Play Protect warns on install, and there is no store-side integrity
 signal. It is the only channel that does not require a store's permission —
 but, per §1, that is not the same as requiring nobody's.
 
