@@ -1503,6 +1503,20 @@ const MUTATIONS = [
     why: 'a merchant whose password was reset keeps the live order feed',
     from: `            if (sessionSuperseded(await merchantLoginRow(merchant), decoded)) {`,
     to: `            if (false) {`,
+  },  // ── A contact proves a number only when it is the sender's own (R6) ──────
+  {
+    id: 'M201', file: 'backend/domains/telegram/telegram.routes.js', config: PG,
+    test: 'backend/tests/routes/telegramContactOwnershipPg.test.js',
+    why: 'an address-book card with no user_id links the sender to the account holding that number, and the reset button then hands it over',
+    from: `  if (!contactUserId || String(contactUserId) !== String(telegramUserId)) {`,
+    to: `  if (contactUserId && String(contactUserId) !== String(telegramUserId)) {`,
+  },
+  {
+    id: 'M202', file: 'backend/domains/telegram/telegramRecovery.service.js', config: UNIT,
+    test: 'backend/tests/unit/telegramRecoverySafety.test.js',
+    why: 'recovery accepts a contact card with no user_id, so a number the sender does not hold stands in for one they do',
+    from: `  if (!contactUserId || String(contactUserId) !== String(newTelegramUserId)) {`,
+    to: `  if (contactUserId && String(contactUserId) !== String(newTelegramUserId)) {`,
   },
 ];
 

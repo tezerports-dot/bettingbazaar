@@ -2950,6 +2950,33 @@ signed-out staff and merchant sessions kept their live feeds.
   on the old code.
 - **Mutation-proved:** M198, M199 KILLED.
 
+### F-039 — a contact card with no `user_id` verified a number the sender does not hold
+`FIXED` · critical (account takeover of any account not yet Telegram-verified) · §32 S6, §22.2 · found 2026-09-30 (R6 review)
+
+The contact-share handler refused a contact whose `user_id` differed from the
+sender's, and **skipped the check when `user_id` was absent**. A contact card
+from a phone's address book, for a number that is not a Telegram account,
+arrives with no `user_id`. So anybody could send a card carrying a victim's
+mobile and be linked as that account's verified Telegram. The bot then offers
+the password-reset button to exactly that link. **Measured:** the attacker's
+Telegram id was linked to the victim's account. `attemptRecovery` had the same
+guard, with the same hole. The unit test "rejects a forwarded contact card"
+asserted the guard's SOURCE TEXT with a regex, so it passed over the missing
+case (§22.2).
+
+- **Fix:** the contact must carry a `user_id` AND it must equal the sender's.
+  The `request_contact` button, the only way these bots ask, always carries it.
+- **Tests:** `telegramContactOwnershipPg` goes through the real webhook. A card
+  with no `user_id` and a forwarded card are both not linked; an own-contact
+  share is linked (positive control). The first fails on the old code. The
+  recovery case is now a behavioural unit test instead of a regex.
+- **Mutation-proved:** M201, M202 KILLED.
+- **Swept:** the three contact paths are sign-in, recovery by Aadhaar, and the
+  recovery bot's password path. The third reads the SENDER's existing link and
+  compares the number to it, so a foreign card reaches nothing. Join requests
+  are approved for anyone who asks; membership unlocks nothing without a
+  verified link, by design.
+
 ## 5. Derived coverage — regenerated, never typed
 
 <!-- BEGIN GENERATED: npm run audit:map -->

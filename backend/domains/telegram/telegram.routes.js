@@ -306,11 +306,15 @@ async function handleCallback(query, bot) {
 async function handleContact({ message, telegramUserId, chatId, bot }) {
   const firstName = message.from?.first_name || '';
 
-  // Telegram includes the owning user's id on a shared contact. If it is not
-  // the sender's own id, they forwarded somebody ELSE's contact card — which
-  // would register that person's number against this Telegram account.
+  // The contact must be the SENDER'S OWN: `user_id` present AND equal to the
+  // sender's id. The `request_contact` button — the only way this bot asks —
+  // always carries it. A card from an address book for a number that is not a
+  // Telegram account arrives with NO `user_id`, and this check used to skip
+  // itself when the field was absent: anybody could send a card carrying a
+  // victim's mobile, be linked as that account's verified Telegram, and then
+  // press the reset button the bot offers to exactly that link (R6, F-039).
   const contactUserId = message.contact.user_id;
-  if (contactUserId && String(contactUserId) !== String(telegramUserId)) {
+  if (!contactUserId || String(contactUserId) !== String(telegramUserId)) {
     return sendAs(bot, chatId,
       'Please share YOUR OWN contact using the button — a forwarded contact cannot be used.',
       { reply_markup: contactKeyboard });
