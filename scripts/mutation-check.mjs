@@ -1461,6 +1461,48 @@ const MUTATIONS = [
         AND EXISTS`,
     to: `      WHERE c.status = 'CLOSED'
         AND EXISTS`,
+  },  // ── Second-factor guesses are counted per ACCOUNT (R6) ──────────────────
+  {
+    id: 'M195', file: 'backend/middleware/security.js', config: UNIT,
+    test: 'backend/tests/unit/rateLimitKeys.test.js',
+    why: 'the 2FA budget is per challenge token, so each correct password buys five fresh guesses and the lockout never trips',
+    from: `    if (subject) return subject.audience === CHALLENGE_AUDIENCE.MERCHANT ? \`m:\${subject.id}\` : \`u:\${subject.id}\`;`,
+    to: `    if (false) return null;`,
+  },  // ── A merchant's password has one owner, and a reset evicts its sessions (R6)
+  {
+    id: 'M196', file: 'database/repositories/merchants.js', config: PG,
+    test: 'backend/tests/routes/merchantPasswordResetPg.test.js',
+    why: 'the merchant door reads a password the reset never writes, so a reset merchant is refused their new password',
+    from: `LEFT JOIN users u ON u.user_id = m.user_id AND u.account_type = 'MERCHANT'`,
+    to: `LEFT JOIN users u ON FALSE`,
+  },
+  {
+    id: 'M197', file: 'backend/middleware/merchantAuth.js', config: PG,
+    test: 'backend/tests/routes/merchantPasswordResetPg.test.js',
+    why: 'a password reset evicts no merchant session, so the session the reset was meant to end keeps working',
+    from: `    if (sessionSuperseded(login, decoded)) return refuseSupersededSession(res);`,
+    to: `    if (false) return refuseSupersededSession(res);`,
+  },  // ── A session is checked the same way on every path that accepts one (R6)
+  {
+    id: 'M198', file: 'backend/startup/socketHandlers.js', config: PG,
+    test: 'backend/tests/routes/sessionCutoffEverywherePg.test.js',
+    why: 'a signed-out or password-reset session still joins its player room and receives balance pushes',
+    from: `        if (!user || !(await sessionIsLive(token, decoded, user))) return;`,
+    to: `        if (!user) return;`,
+  },
+  {
+    id: 'M199', file: 'backend/domains/identity/auth.middleware.js', config: PG,
+    test: 'backend/tests/routes/sessionCutoffEverywherePg.test.js',
+    why: 'the shared session check ignores the reset cutoff, so every inline path honours a superseded session',
+    from: `  return !sessionSuperseded(login, decoded);`,
+    to: `  return true;`,
+  },
+  {
+    id: 'M200', file: 'backend/routes/sse.routes.js', config: PG,
+    test: 'backend/tests/routes/merchantPasswordResetPg.test.js',
+    why: 'a merchant whose password was reset keeps the live order feed',
+    from: `            if (sessionSuperseded(await merchantLoginRow(merchant), decoded)) {`,
+    to: `            if (false) {`,
   },
 ];
 

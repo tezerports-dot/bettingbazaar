@@ -1,6 +1,7 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import { rateLimit, ipKeyGenerator } from 'express-rate-limit';
 import { createHash } from 'node:crypto';
+import { challengeSubject, CHALLENGE_AUDIENCE } from '../domains/identity/twoFactorChallenge.js';
 import { db } from '#db';
 // F-3 (2026-07-10): counters shared across instances via Redis; graceful
 // per-instance fallback when Redis is absent/unreachable.
@@ -214,9 +215,16 @@ export const merchantAuthLimiter = rateLimit({
 export function actorKey(req) {
   if (req.user?.userId)   return `u:${req.user.userId}`;
   if (req.merchantId)     return `m:${req.merchantId}`;
-  // Hashed: a rate-limit key becomes a Redis key name and appears in logs, and
-  // a challenge token is a bearer credential for the rest of its short life.
   if (req.body?.challengeToken) {
+    // The ACCOUNT the challenge is for — never the token. A correct password
+    // mints a new token every time, so a key per token handed somebody who
+    // holds the password a fresh budget of second-factor guesses with each
+    // login, and the lockout never tripped (R6, 2026-09-30). The same key an
+    // authenticated request from that account gets, so the budgets are one.
+    const subject = challengeSubject(req.body.challengeToken);
+    if (subject) return subject.audience === CHALLENGE_AUDIENCE.MERCHANT ? `m:${subject.id}` : `u:${subject.id}`;
+    // Not a valid challenge: the handler refuses it. Hashed, because a
+    // rate-limit key becomes a Redis key name and appears in logs.
     return `c:${createHash('sha256').update(String(req.body.challengeToken)).digest('hex').slice(0, 32)}`;
   }
   if (req.body?.mobile)   return `p:${String(req.body.mobile)}`;
@@ -225,7 +233,8 @@ export function actorKey(req) {
 
 /** The account a security audit row should name, or null when unidentified. */
 export function actorAccount(req) {
-  return req.user?.userId ?? req.merchantId ?? req.body?.mobile ?? null;
+  return req.user?.userId ?? req.merchantId
+    ?? challengeSubject(req.body?.challengeToken)?.id ?? req.body?.mobile ?? null;
 }
 
 /**

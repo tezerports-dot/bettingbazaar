@@ -145,7 +145,7 @@ export async function seedMerchant({
   const mobile = mob();
   const merchant = await createMerchantWithWallet({
     name, username: name, mobile, email: `${name}@example.test`,
-    passwordHash: 'x'.repeat(60), currency, status: 'PENDING',
+    currency, status: 'PENDING',
     bankDetails: currency === 'INR'
       ? { accountNumber: '000111222333', ifsc: 'HDFC0000001', accountHolder: name, upiId: `${name}@upi` }
       : null,

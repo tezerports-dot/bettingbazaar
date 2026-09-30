@@ -23,9 +23,8 @@
  * That also means a query run against the database directly — by a report, a
  * console, or an attacker with read access — yields nothing usable.
  */
-import { encryptField, decryptField, configured } from '../identity/fieldCrypto.util.js';
+import { encryptField, decryptField } from '../identity/fieldCrypto.util.js';
 
-export { configured as credentialCryptoConfigured };
 
 /**
  * Seal a credential for storage.

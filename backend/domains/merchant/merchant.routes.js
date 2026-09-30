@@ -284,7 +284,8 @@ router.post('/auth/login', async (req, res) => {
         // been authenticated.
         if (pwNeedsRehash) {
             try {
-                await db.merchants.updateMerchant(merchant.merchantId, {
+                // The login row owns the password (§33.5), not `merchants`.
+                await db.users.updateUser(merchant.userId, {
                     passwordHash: await hashPassword(password),
                 });
             } catch (e) { console.error('[merchant-login] hash upgrade failed:', e.message); }

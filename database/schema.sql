@@ -1398,8 +1398,10 @@ CREATE TABLE IF NOT EXISTS merchants (
   username     TEXT,
   mobile       TEXT,
   email        TEXT,
-  -- Hashed. Never selected by the general reader — see `getMerchantCredentials`.
-  password_hash TEXT,
+  -- No password here. A merchant's login is its `users` row (§33.5), and the
+  -- password lives there, once. It was stored in both places: the reset
+  -- wrote `users`, the login door read this column, so a merchant who reset
+  -- was told it worked and was then refused the new password (R6, 2026-09-30).
 
   -- ── Second factor. Mandatory for merchants ────────────────────────────────
   -- Same column names as `users`, deliberately: the drift window, replay guard
@@ -1525,6 +1527,7 @@ CREATE TABLE IF NOT EXISTS merchants (
     AND (max_concurrent_deposit_orders    IS NULL OR max_concurrent_deposit_orders    > 0)
     AND (max_concurrent_withdrawal_orders IS NULL OR max_concurrent_withdrawal_orders > 0))
 );
+ALTER TABLE merchants DROP COLUMN IF EXISTS password_hash;
 
 -- Payment credentials are an IDENTITY, not a preference: two merchants sharing
 -- a UPI id or a bank account means money routed to one arrives at the other,

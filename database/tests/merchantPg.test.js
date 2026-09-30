@@ -45,6 +45,11 @@ describePg('the merchant record', () => {
   const BASE58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
   const trc20 = () => `T${Array.from({ length: 33 },
     () => BASE58[Math.floor(Math.random() * BASE58.length)]).join('')}`;
+  // A well-formed BEP-20 address, distinct per call for the same reason. These
+  // were fixed literals, so a second run of this file against the same
+  // database collided on the UNIQUE index with the first run's rows (trap 10).
+  const bep20addr = () => `0x${Array.from({ length: 40 },
+    () => '0123456789abcdef'[Math.floor(Math.random() * 16)]).join('')}`;
 
   const make = (over = {}) => createMerchant({
     merchantId: ID, name: `Merchant ${seq}`, status: 'ACTIVE', ...over,
@@ -111,8 +116,15 @@ describePg('the merchant record', () => {
   });
 
   // ── Credentials ───────────────────────────────────────────────────────────
-  it('keeps credentials OUT of the general reader', async () => {
-    await make({ passwordHash: 'hashed-secret' });
+  it('keeps credentials OUT of the general reader, and reads the password from the LOGIN row', async () => {
+    // A merchant's password lives on its `users` login row, once (§33.5). It
+    // used to be stored on `merchants` too, and the reset and the login door
+    // each used a different copy (R6, 2026-09-30).
+    const uid = `${ID}-login`;
+    await pgQuery(
+      `INSERT INTO users (user_id, username, mobile, password_hash, account_type)
+       VALUES ($1, $1, $2, 'hashed-secret', 'MERCHANT')`, [uid, `7${RUN}${seq}`.slice(0, 10)]);
+    await make({ userId: uid });
     const rendered = await getMerchant(ID);
     expect(JSON.stringify(rendered)).not.toContain('hashed-secret');
     expect(rendered.passwordHash).toBeUndefined();
@@ -179,7 +191,7 @@ describePg('the merchant record', () => {
     // are all rejected. Base58 is case-sensitive, so that last one is not a
     // cosmetic check.
     const valid = trc20();
-    const bep20 = `0x${'a'.repeat(40)}`;
+    const bep20 = bep20addr();
     for (const [i, bad] of ['0x1234', bep20, valid.slice(0, -1), valid.replace(/^T/, 't')].entries()) {
       await expect(createMerchant({
         merchantId: `${ID}-badt${i}`, name: 'Bad', currency: 'USDT', usdtAddressTrc20: bad,
@@ -203,7 +215,7 @@ describePg('the merchant record', () => {
     // An address is an IDENTITY, for the same reason a UPI id is: money routed
     // to either arrives at one, and no record afterwards says which was meant.
     const tron = trc20();
-    const bnb = `0x${'c'.repeat(39)}1`;
+    const bnb = bep20addr();
     await createMerchant({ merchantId: `${ID}-first`, name: 'First', currency: 'USDT',
       usdtAddressTrc20: tron, usdtAddressBep20: bnb });
 

@@ -93,6 +93,17 @@ for (const [f, src] of all) {
   const names = new Set();
   for (const m of src.matchAll(/^export\s+(?:async\s+)?function\s+(\w+)/gm)) names.add(m[1]);
   for (const m of src.matchAll(/^export\s+(?:const|let|class)\s+(\w+)/gm)) names.add(m[1]);
+  // An `export { a, b as c }` LIST (not a re-export `… from`). Scanning only
+  // declarations meant a module exporting through a list was never scanned at
+  // all: `auth.middleware.js` carried eight dead exports that way, one of them
+  // a merchant verifier that checked neither revocation nor the session cutoff
+  // (R6, 2026-09-30). The exported name is the one after `as`.
+  for (const m of src.matchAll(/^export\s*\{([^}]*)\}\s*(?!from)[;\n]/gm)) {
+    for (const part of m[1].split(',')) {
+      const name = part.trim().split(/\s+as\s+/).pop()?.trim();
+      if (name && /^\w+$/.test(name) && name !== 'default') names.add(name);
+    }
+  }
   for (const name of names) {
     if (ALLOW.has(name)) continue;
     const re = new RegExp(`\\b${name}\\b`, 'g');
@@ -110,9 +121,13 @@ for (const [f, src] of all) {
     if (prod > 0) continue;
     // Uses inside its own file. Only the DEFINITION line and bare re-export
     // entries are excluded — `export const x = thisName(...)` is a real use.
-    const defRe = new RegExp(`^export\\s+(?:async\\s+)?(?:function|const|let|class)\\s+${name}\\b`);
+    // A DEFINITION is not a use, exported or not — `const x = …` above an
+    // `export { x }` list is the same definition as `export const x = …`. Nor
+    // is the export list's own line.
+    const defRe = new RegExp(`^(?:export\\s+)?(?:async\\s+)?(?:function\\*?|const|let|class)\\s+${name}\\b`);
     const own = src.split('\n')
-      .filter((l) => !defRe.test(l) && !new RegExp(`^\\s*${name},?\\s*$`).test(l))
+      .filter((l) => !defRe.test(l) && !new RegExp(`^\\s*${name},?\\s*$`).test(l)
+        && !/^export\s*\{[^}]*\}\s*;?\s*$/.test(l))
       .join('\n');
     // `pg.debitForBet(…)` inside the file that defines `debitForBet` is a call
     // to the OTHER module's export, not a use of this one — a member access is

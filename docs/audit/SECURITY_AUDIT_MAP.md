@@ -2873,6 +2873,83 @@ have served anyway: it needed an open settlement run with a winning side.
   `reconcileSettlement` in `settlements.js` are still test-only: the engine
   settles through `winBet`/`loseBet` directly. They are recorded, not deleted.
 
+### F-036 — the 2FA lockout was per challenge, so holding the password bought unlimited guesses
+`FIXED` · high (a second factor weaker than it reads) · §32 S13 · found 2026-09-30 (R6 review)
+
+`twoFactorLimiter` ("5 failed codes per 15 minutes") keyed a pre-session
+attempt on the CHALLENGE TOKEN. Every correct password mints a new token, and
+the password limiters count only FAILURES, so someone who held the password got
+five fresh guesses per login, forever. Under the 1-per-10-seconds pace that is
+about 0.5 guesses a second. Against a ±1-step TOTP window, that is roughly a
+12% chance of a hit per day, where the lockout claims months. The test's own
+comment rested on the false premise that a token "cannot be re-minted without
+passing the password limiter again". It can: the password limiter does not count
+a correct password.
+
+- **Fix:** `challengeSubject()` reads the ACCOUNT a valid challenge is for, and
+  `actorKey` keys on it (`u:`/`m:`), which is the bucket an authenticated
+  request from that account already uses. The pace limiter on that leg shares
+  the key. An invalid token is still keyed on its hash.
+- **Trade-off, stated:** someone holding the password can now use up the real
+  owner's code attempts for 15 minutes. With the password already
+  compromised, a lockout is the right side to fail on.
+- **Tests:** `rateLimitKeys` (unit): two challenges for one account share one
+  key; a merchant challenge keys on the merchant. Three cases fail on the old
+  code.
+- **Mutation-proved:** M195 KILLED.
+
+### F-037 — a merchant password reset "succeeded" and changed nothing the merchant door reads
+`FIXED` · high (account recovery broken on one panel; sessions not evicted) · §2, §32 S4, S32 · found 2026-09-30 (R6 review)
+
+A merchant's password was stored twice: on the `users` login row a merchant
+signup writes (§33.5), and on `merchants.password_hash`. The reset wrote the
+first, and the merchant login door read the second. **Measured:** a reset
+answered 200, "Your password has been changed", and the new password was then
+refused with "Invalid credentials" while the old one still worked.
+`merchantAuth` also checked no session cutoff, so a working reset would have
+evicted nothing.
+
+- **Fix:** one owner. `getMerchantCredentials` reads the password from the
+  merchant's login row. The hash upgrade on login writes that row.
+  `merchants.password_hash` is dropped (§0.0: nothing to migrate).
+  `merchantAuth` refuses a session issued before the login row's
+  `sessions_valid_from`.
+- **Tests:** `merchantPasswordResetPg` drives the real reset route, the merchant
+  login and a `merchantAuth` read, and then the merchant SSE feed. The new
+  password is admitted, the old one refused, and the old session refused
+  everywhere. It fails on the old code.
+- **Mutation-proved:** M196, M197, M200 KILLED.
+- **Also fixed:** `merchantPg`'s two USDT-address tests used FIXED addresses on
+  a UNIQUE column, so a second run of the file against the same database
+  failed (trap 10). The addresses are random per run now.
+
+### F-038 — a reset or sign-out left sessions alive on every path that verified its own token
+`FIXED` · medium · §32 S32 · found 2026-09-30 (R6 review, sweeping F-037)
+
+`sessions_valid_from` was checked by `authenticate` and `/me` and nowhere else.
+The socket room joins (player, merchant, admin) and both private SSE streams
+verify tokens inline. None checked the cutoff, and the socket joins did not
+check the revocation list either. A player who reset because somebody else held
+a session left that session receiving their balance pushes, and reset or
+signed-out staff and merchant sessions kept their live feeds.
+
+- **Fix:** `sessionIsLive(token, decoded, login)` (not revoked, not superseded)
+  is the one question, and every inline path asks it.
+- **Removed, nothing called them:** `authenticateMerchant` (a second merchant
+  verifier that checked neither revocation nor the cutoff: the next route to
+  reach for it would have honoured a dead session), `optionalAuth`,
+  `generateToken`, `generateMerchantToken`, `verifyToken`, `auditLog`,
+  `checkResourcePermission`, `isMerchantApproved`, and the module's default
+  export object.
+- **Gate blind spot, recorded:** `check:dead-code` scans `export function` and
+  `export const` DECLARATIONS. A name exported through an `export { … }` list
+  is never scanned, which is how all of these stayed off the report.
+- **Tests:** `sessionCutoffEverywherePg` connects a socket to the real handlers
+  and asserts what it joined, for a player and an admin, live and then
+  superseded, plus a revoked token and the admin SSE stream. Four cases fail
+  on the old code.
+- **Mutation-proved:** M198, M199 KILLED.
+
 ## 5. Derived coverage — regenerated, never typed
 
 <!-- BEGIN GENERATED: npm run audit:map -->
@@ -2886,11 +2963,11 @@ have served anyway: it needed an open settlement run with a winning side.
 
 | Measure | Count |
 |---|---|
-| Route declarations in `backend/**` | 323 |
+| Route declarations in `backend/**` | 322 |
 | Reachable with **no auth middleware** | 44 |
 | Gated `isAdminOrSubAdmin` with **no permission key** | 2 |
 | — of those, **writes** (non-GET) | 0 |
-| Carrying an explicit permission key | 56 |
+| Carrying an explicit permission key | 55 |
 
 A count moving is not by itself a defect — it is a prompt to read the
 new route and decide. Each of the three questions is defined in §2.

@@ -30,17 +30,13 @@ import { getUser } from '#db/repositories/users.js';
 import { setContextUser } from '../../middleware/requestContext.js'; // X-6
 // AQ-2 (2026-07-13): every sign/verify goes through the single PASETO authority —
 // Ed25519 signature verification, iss/aud stamped on sign. No raw token-library calls remain here.
-import { signToken, verifyJwt, JWT_SECRET, JWT_EXPIRES_IN } from './jwt.util.js';
+import { verifyJwt } from './jwt.util.js';
 import { isChallengeToken } from './twoFactorChallenge.js';
 // WHO must hold a second factor — its own module, because importing the 2FA
 // ROUTES here would be a cycle: they import this file.
 import { requires2FA } from './twoFactorPolicy.js';
 import { getSystemConfig } from '#db/repositories/config.js';
-import { serverError } from '../../shared/httpError.js';
 
-// JWT_SECRET / JWT_EXPIRES_IN now come from jwt.util.js (imported above), which
-// fail-fasts on a missing secret and owns the 24h default. Re-exported at the
-// bottom of this file for backward compatibility with any importer.
 
 /**
  * ════════════════════════════════════════════════════════════════════════════
@@ -110,6 +106,33 @@ export function refuseSupersededSession(res) {
     code: 'SESSION_SUPERSEDED',
     message: 'Your password was changed. Please sign in again.',
   });
+}
+
+/**
+ * Is this session one the platform still honours?
+ *
+ * THE question every path that verifies a token asks after the signature:
+ * not revoked (a sign-out), and not issued before its account's
+ * `sessions_valid_from` (a password reset). It is one function because it was
+ * several copies, and the copies disagreed: `authenticate` and `/me` checked
+ * the cutoff, while the socket room joins, both private SSE streams and the
+ * merchant door checked it nowhere (R6, 2026-09-30) — so a reset evicted a
+ * session from the REST API and left it receiving the live order feed.
+ *
+ * @param {string} token    the raw token, for the revocation list
+ * @param {object} decoded  its verified claims
+ * @param {object|null} login the `users` row the session belongs to — for a
+ *                          merchant token, the merchant's LOGIN row
+ *                          (`merchantLoginRow`), not the trading identity
+ */
+export async function sessionIsLive(token, decoded, login) {
+  if (await isTokenRevoked(token)) return false;
+  return !sessionSuperseded(login, decoded);
+}
+
+/** The `users` row a merchant session belongs to (§33.5), or null. */
+export async function merchantLoginRow(merchant) {
+  return merchant?.userId ? getUser(merchant.userId) : null;
 }
 
 export async function isTokenRevoked(token) {
@@ -597,353 +620,20 @@ export const hasAnyPermission = (permissions) => {
 };
 
 /**
- * ════════════════════════════════════════════════════════════════════════════
- * 🏪 MERCHANT AUTHENTICATION
- * ════════════════════════════════════════════════════════════════════════════
+ * ── What used to be below, and why it is gone ────────────────────────────────
+ * A second merchant verifier (`authenticateMerchant`), `optionalAuth`,
+ * `generateToken`, `generateMerchantToken`, `verifyToken`, `auditLog`,
+ * `checkResourcePermission` and `isMerchantApproved` were exported here and
+ * called by nothing (R6, 2026-09-30). The merchant verifier was the dangerous
+ * one: it checked neither the revocation list nor the session cutoff, so the
+ * next route to reach for it would have honoured a signed-out or superseded
+ * session. `middleware/merchantAuth.js` is the one merchant door.
  */
-
-/**
- * Middleware for merchant authentication
- * Merchants use a different authentication flow than regular users
- * 
- * @param {Object} req - Express request object
- * @param {Object} res - Express response object
- * @param {Function} next - Express next middleware function
- * @returns {void}
- */
-const authenticateMerchant = async (req, res, next) => {
-  try {
-    const authHeader = req.headers.authorization;
-    
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({ 
-        success: false,
-        message: 'Merchant authentication required' 
-      });
-    }
-
-    const token = authHeader.substring(7);
-    
-    // Verify token
-    let decoded;
-    try {
-      decoded = verifyJwt(token);
-    } catch (jwtError) {
-      return res.status(401).json({ 
-        success: false,
-        message: 'Invalid or expired merchant token' 
-      });
-    }
-
-    // The merchant, by the id the token carries. This read `MerchantModel`,
-    // which was deleted with the ODM — so every merchant-authenticated request
-    // died with a ReferenceError inside the catch below and answered 500. The
-    // merchant panel was entirely unreachable.
-    const merchant = await db.merchants.getMerchant(decoded.merchantId);
-
-    if (!merchant) {
-      return res.status(401).json({ 
-        success: false,
-        message: 'Merchant not found' 
-      });
-    }
-
-    // One column decides, rather than two booleans that could disagree.
-    // `isBlocked || isSuspended` was two fields the row does not have, so a
-    // suspended merchant would have passed this guard even once the lookup was
-    // fixed. `status` is a CHECKed vocabulary: anything but ACTIVE is refused.
-    if (merchant.status !== 'ACTIVE') {
-      return res.status(403).json({ 
-        success: false,
-        message: merchant.status === 'SUSPENDED'
-          ? `Merchant account is suspended${merchant.suspensionReason ? `: ${merchant.suspensionReason}` : ''}`
-          : 'Merchant account is not active',
-      });
-    }
-
-    // Approval is separate from status: an applicant is ACTIVE and not yet
-    // approved, and must not be able to take orders.
-    if (merchant.merchantApprovalStatus !== 'APPROVED') {
-      return res.status(403).json({ 
-        success: false,
-        message: 'Merchant account is awaiting approval',
-      });
-    }
-
-    // Attach merchant to request
-    req.merchant = merchant;
-    req.merchantId = merchant._id;
-
-    next();
-
-  } catch (error) {
-    console.error('Merchant Authentication Error:', error);
-    return res.status(500).json({ 
-      success: false,
-      message: 'Merchant authentication failed' 
-    });
-  }
-};
-
-/**
- * ════════════════════════════════════════════════════════════════════════════
- * 🛠️ UTILITY FUNCTIONS
- * ════════════════════════════════════════════════════════════════════════════
- */
-
-/**
- * Generate PASETO token for user
- * 
- * @param {Object} user - User object from database
- * @param {Object} options - Additional options (expiresIn, etc.)
- * @returns {string} PASETO token
- */
-const generateToken = (user, options = {}) => {
-  const payload = {
-    userId: user.userId,
-    mobile: user.mobile,
-    isAdmin: user.isAdmin || false,
-    isSubAdmin: user.isSubAdmin || false,
-    roles: user.roles || []
-  };
-
-  const tokenOptions = {
-    expiresIn: options.expiresIn || JWT_EXPIRES_IN
-  };
-
-  return signToken(payload, tokenOptions);
-};
-
-/**
- * Generate PASETO token for merchant
- * 
- * @param {Object} merchant - Merchant object from database
- * @param {Object} options - Additional options
- * @returns {string} PASETO token
- */
-const generateMerchantToken = (merchant, options = {}) => {
-  const payload = {
-    merchantId: merchant._id,
-    userId: merchant._id,
-    mobile: merchant.mobile,
-    roles: ['merchant']
-  };
-
-  const tokenOptions = {
-    expiresIn: options.expiresIn || JWT_EXPIRES_IN
-  };
-
-  return signToken(payload, tokenOptions);
-};
-
-/**
- * Verify token without attaching to request (useful for API calls)
- * 
- * @param {string} token - PASETO token string
- * @returns {Object|null} Decoded token payload or null if invalid
- */
-const verifyToken = (token) => {
-  try {
-    return verifyJwt(token);
-  } catch (error) {
-    return null;
-  }
-};
-
-/**
- * Optional middleware - doesn't fail if no auth token
- * Useful for routes that work with or without authentication
- * 
- * @param {Object} req - Express request object
- * @param {Object} res - Express response object
- * @param {Function} next - Express next middleware function
- * @returns {void}
- */
-const optionalAuth = async (req, res, next) => {
-  try {
-    const authHeader = req.headers.authorization;
-    
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      // No token provided, continue without user
-      return next();
-    }
-
-    const token = authHeader.substring(7);
-    
-    try {
-      const decoded = verifyJwt(token);
-      const user = await getUser(decoded.userId);
-
-      if (user && !user.isBlocked) {
-        req.user = user;
-        req.userId = user.userId;
-      }
-    } catch (jwtError) {
-      // Invalid token, but we don't fail - just continue without user
-      console.log('Optional auth token invalid:', jwtError.message);
-    }
-
-    next();
-  } catch (error) {
-    console.error('Optional Auth Error:', error);
-    // Even on error, we continue without user
-    next();
-  }
-};
-
-/**
- * ════════════════════════════════════════════════════════════════════════════
- * 📊 AUDIT LOG HELPER (for tracking admin actions)
- * ════════════════════════════════════════════════════════════════════════════
- */
-
-/**
- * Middleware to log admin actions to audit trail
- * Should be used on sensitive routes
- * 
- * @param {string} action - Action description (e.g., 'USER_DELETED', 'KYC_APPROVED')
- * @returns {Function} Express middleware function
- */
-const auditLog = (action) => {
-  return async (req, res, next) => {
-    // Store audit info in request for later logging
-    req.auditAction = {
-      action,
-      performedBy: req.user?._id,
-      performedByName: req.user?.name || req.user?.mobile,
-      isAdmin: req.user?.isAdmin,
-      isSubAdmin: req.user?.isSubAdmin,
-      timestamp: new Date(),
-      ip: req.ip,
-      userAgent: req.headers['user-agent']
-    };
-
-    // Store original res.json to capture response
-    const originalJson = res.json.bind(res);
-    res.json = function(data) {
-      req.auditAction.success = !data.error && data.success !== false;
-      req.auditAction.response = data;
-      
-      // Log to database (implement AuditLog model if needed)
-      // Example: db.audit.record(req.auditAction).catch(err => console.error('Audit log failed:', err));
-      
-      return originalJson(data);
-    };
-
-    next();
-  };
-};
-
-/**
- * NEW: Granular permission checking (resource-based)
- * Usage: router.post('/kyc/:id/approve', authenticate, checkResourcePermission('kyc', 'approve'), handler)
- * Note: This is a newer granular version. The main hasPermission is defined above.
- */
-export const checkResourcePermission = (resource, action) => {
-  return async (req, res, next) => {
-    try {
-      // Super admin bypasses all checks
-      if (req.user.isAdmin) {
-        return next();
-      }
-      
-      // Check if sub-admin
-      if (!req.user.isSubAdmin) {
-        return res.status(403).json({
-          success: false,
-          message: 'Access denied. Admin privileges required.'
-        });
-      }
-      
-      // Check specific permission
-      const permissions = req.user.subAdminPermissions || {};
-      const resourcePermissions = permissions[resource];
-      
-      if (!resourcePermissions || !resourcePermissions[action]) {
-        return res.status(403).json({
-          success: false,
-          message: `Permission denied. Requires ${resource}.${action} permission.`
-        });
-      }
-      
-      next();
-    } catch (error) {
-      return serverError(res, error, 'auth.middleware:checkResourcePermission');
-    }
-  };
-};
-
-/**
-/**
- * isMerchantApproved — guards routes that require a confirmed merchant session.
- * Must be used AFTER merchantAuth (which already verifies the Merchant PASETO and
- * checks merchantApprovalStatus === 'APPROVED'). This is therefore just a
- * safety check that merchantAuth ran first.
- *
- * NOTE: isMerchant is a PASETO *claim* in the Merchant PASETO, NOT a User schema field.
- * Never read req.user.isMerchant — the User model has no such field.
- */
-export const isMerchantApproved = async (req, res, next) => {
-  try {
-    if (!req.merchant) {
-      return res.status(403).json({
-        success: false,
-        message: 'Merchant authentication required. Use POST /api/merchant/auth/login.',
-      });
-    }
-    // merchantAuth already verified status — just forward
-    next();
-  } catch (error) {
-    return serverError(res, error, 'auth.middleware:isMerchantApproved');
-  }
-};
-
-
-
-/**
- * ════════════════════════════════════════════════════════════════════════════
- * 📤 EXPORTS
- * ════════════════════════════════════════════════════════════════════════════
- */
-
 export {
-  // Core authentication
   authenticate,
   // The enrolment handshake only — see `makeAuthenticate`. Staff who owe a
   // second factor reach these three steps and nothing else.
   authenticateForEnrolment,
-  optionalAuth,
-  
-  // Admin access control
   isAdmin,
   isAdminOrSubAdmin,
-  
-  // Merchant authentication
-  authenticateMerchant,
-  
-  // Token utilities
-  generateToken,
-  generateMerchantToken,
-  verifyToken,
-  
-  // Audit logging
-  auditLog,
-  
-  // Constants
-  JWT_SECRET,
-  JWT_EXPIRES_IN
-};
-
-export default {
-  authenticate,
-  optionalAuth,
-  isAdmin,
-  isAdminOrSubAdmin,
-  authenticateMerchant,
-  generateToken,
-  generateMerchantToken,
-  verifyToken,
-  auditLog,
-  JWT_SECRET,
-  JWT_EXPIRES_IN
 };

@@ -20,7 +20,7 @@
 // AQ-2: verify via the single PASETO authority (Ed25519 signature + iss/aud stamped).
 import { verifyJwt } from '../domains/identity/jwt.util.js';
 import { db } from '#db';
-import { isTokenRevoked } from '../domains/identity/auth.middleware.js';
+import { isTokenRevoked, sessionSuperseded, refuseSupersededSession, merchantLoginRow } from '../domains/identity/auth.middleware.js';
 import { isChallengeToken } from '../domains/identity/twoFactorChallenge.js';
 
 /**
@@ -77,6 +77,13 @@ export const merchantAuth = async (req, res, next) => {
     if (statusMsgs[merchant.status] || merchant.merchantApprovalStatus !== 'APPROVED')
       return res.status(403).json({ success: false,
         message: statusMsgs[merchant.status] || 'Account not approved.' });
+
+    // A password reset moves the login row's `sessions_valid_from`; every
+    // session issued before it is dead, on this door as on the other two. It
+    // was checked on the player and staff doors only, so a reset evicted no
+    // merchant session (R6, 2026-09-30).
+    const login = await merchantLoginRow(merchant);
+    if (sessionSuperseded(login, decoded)) return refuseSupersededSession(res);
 
     req.merchant   = merchant;
     req.merchantId = merchant._id;

@@ -29,6 +29,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { actorKey, actorAccount } from '../../middleware/security.js';
+import { issueChallenge, CHALLENGE_AUDIENCE } from '../../domains/identity/twoFactorChallenge.js';
 
 const req = (over = {}) => ({ ip: '203.0.113.7', body: {}, ...over });
 
@@ -60,23 +61,40 @@ describe('actorKey — who a limiter counts against', () => {
     expect(actorKey(req({ merchantId: 'mrc-9' }))).toBe('m:mrc-9');
   });
 
-  it('keys a pre-session 2FA attempt on the challenge, not the caller', () => {
-    // One challenge token is one login attempt for one account, and it cannot
-    // be re-minted without passing the password limiter again — so cycling IPs
-    // buys an attacker nothing.
+  it('keys a pre-session 2FA attempt on the ACCOUNT the challenge is for, not the token', () => {
+    // Every correct password mints a NEW challenge, and the password limiters
+    // count only failures — so a key per TOKEN handed somebody who holds the
+    // password a fresh budget of five guesses with each login, and the
+    // "5 failures per 15 minutes" lockout never tripped (R6, 2026-09-30).
+    const first = issueChallenge({ id: 'u-77', audience: CHALLENGE_AUDIENCE.USER });
+    const second = issueChallenge({ id: 'u-77', audience: CHALLENGE_AUDIENCE.USER });
+    expect(first).not.toBe(second);
+    const one = { ip: '203.0.113.7', body: { challengeToken: first, code: '000000' } };
+    const other = { ip: '198.51.100.9', body: { challengeToken: second, code: '111111' } };
+    expect(actorKey(one)).toBe('u:u-77');
+    expect(actorKey(other)).toBe('u:u-77');
+    // The same bucket an authenticated request from that account gets.
+    expect(actorKey(req({ user: { userId: 'u-77' } }))).toBe(actorKey(one));
+  });
+
+  it('keys a merchant challenge on the merchant', () => {
+    const token = issueChallenge({ id: 'mrc-9', audience: CHALLENGE_AUDIENCE.MERCHANT });
+    expect(actorKey({ ip: '203.0.113.7', body: { challengeToken: token } })).toBe('m:mrc-9');
+  });
+
+  it('separates two accounts\' challenges', () => {
+    const a = actorKey({ ip: '203.0.113.7', body: { challengeToken: issueChallenge({ id: 'u-1', audience: CHALLENGE_AUDIENCE.USER }) } });
+    const b = actorKey({ ip: '203.0.113.7', body: { challengeToken: issueChallenge({ id: 'u-2', audience: CHALLENGE_AUDIENCE.USER }) } });
+    expect(a).not.toBe(b);
+  });
+
+  it('keys a token that is not a valid challenge on its hash, never on its text', () => {
+    // The handler refuses it; the limiter still counts it somewhere stable.
     const one = { ip: '203.0.113.7', body: { challengeToken: 'tok-abc', code: '000000' } };
     const other = { ip: '198.51.100.9', body: { challengeToken: 'tok-abc', code: '111111' } };
     expect(actorKey(one)).toBe(actorKey(other));
     expect(actorKey(one)).toMatch(/^c:[0-9a-f]{32}$/);
-    // The token itself never becomes a Redis key name or a log line: it is a
-    // bearer credential for the rest of its short life.
     expect(actorKey(one)).not.toContain('tok-abc');
-  });
-
-  it('separates two different challenges', () => {
-    const a = actorKey({ ip: '203.0.113.7', body: { challengeToken: 'tok-a' } });
-    const b = actorKey({ ip: '203.0.113.7', body: { challengeToken: 'tok-b' } });
-    expect(a).not.toBe(b);
   });
 
   it('falls back to the mobile, then the IP, and only then', () => {
@@ -112,5 +130,10 @@ describe('actorAccount — what a security audit row names', () => {
     // Not the challenge token: it is a credential, and an audit row is read by
     // people.
     expect(actorAccount(req({ body: { challengeToken: 'tok-abc' } }))).toBeNull();
+  });
+
+  it('names the account a valid challenge is for — never the token', () => {
+    const token = issueChallenge({ id: 'u-42', audience: CHALLENGE_AUDIENCE.USER });
+    expect(actorAccount(req({ body: { challengeToken: token } }))).toBe('u-42');
   });
 });
