@@ -21,7 +21,7 @@
  * enforced server-side in every assign and reassign endpoint here, not just in
  * the list the picker renders.
  */
-import { express, authenticate, isAdmin, isAdminOrSubAdmin, isAdminOrSubAdminOrQueueManager, hasPermission } from '../../routes/admin/_adminShared.js';
+import { express, authenticate, isAdmin, isAdminOrSubAdmin, isAdminOrSubAdminOrQueueManager, hasPermission, queueManagerOrPermission } from '../../routes/admin/_adminShared.js';
 import { db } from '#db';
 // The order state machine — the expected state is in the update's filter, so
 // two admins assigning the same order produce one winner, not a silent overwrite.
@@ -166,7 +166,7 @@ const ASSIGN_WINDOW_MS = 10 * 60 * 1000;
 // ─── POST /api/admin/payment-orders/:id/reassign ─────────────────────────────
 // Reassign to a different merchant. New snapshot, reset timer.
 // Spec Section 11.3 / 16.1
-router.post('/payment-orders/:id/reassign', authenticate, isAdminOrSubAdminOrQueueManager, async (req, res) => {
+router.post('/payment-orders/:id/reassign', authenticate, queueManagerOrPermission('canManageMerchants'), async (req, res) => {
   try {
     const { merchantId } = req.body || {};
     if (!merchantId) return res.status(400).json({ success: false, message: 'merchantId is required' });
@@ -432,7 +432,7 @@ router.get('/queue/merchant-pool', authenticate, isAdminOrSubAdminOrQueueManager
 // unique, existing, ACTIVE + APPROVED merchant IDs. Same role gate as manual
 // assignment itself (admin, sub-admin, or queue_manager) since curating the
 // pool is part of the queue manager's job per business direction.
-router.put('/queue/merchant-pool', authenticate, isAdminOrSubAdminOrQueueManager, async (req, res) => {
+router.put('/queue/merchant-pool', authenticate, queueManagerOrPermission('canManageMerchants'), async (req, res) => {
   try {
     const { merchantIds } = req.body;
     if (!Array.isArray(merchantIds) || merchantIds.length < 1) {
@@ -552,7 +552,7 @@ router.get('/queue/pending-orders', authenticate, isAdminOrSubAdminOrQueueManage
 });
 
 // ─── POST /api/admin/queue/assign/:orderId (queue manager) ────────────────────
-router.post('/queue/assign/:orderId', authenticate, isAdminOrSubAdminOrQueueManager, async (req, res) => {
+router.post('/queue/assign/:orderId', authenticate, queueManagerOrPermission('canManageMerchants'), async (req, res) => {
   if (!req.user.isQueueManager && !req.user.isAdmin) {
     return res.status(403).json({ success: false, message: 'Queue manager access required' });
   }

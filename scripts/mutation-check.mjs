@@ -1546,6 +1546,13 @@ const MUTATIONS = [
     why: 'the cron and the admin run-now overlap, both reading the pool before either writes',
     from: `    if (!rows[0].got) return { locked: false };`,
     to: `    if (false) return { locked: false };`,
+  },  // ── Queue writes are gated on a permission, not a tier (R6) ──────────────
+  {
+    id: 'M207', file: 'backend/routes/admin/_adminShared.js', config: PG,
+    test: 'backend/tests/routes/queueWritePermissionPg.test.js',
+    why: 'any sub-admin, whatever they hold, can reassign a player\'s order to any merchant or edit the merchant pool',
+    from: `    return byPermission(req, res, next);`,
+    to: `    return next();`,
   },
 ];
 

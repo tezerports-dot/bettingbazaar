@@ -3033,6 +3033,47 @@ both pool checks are reads.
   It only works because the pg tier runs files one at a time. Recorded as a
   trap-10 hazard; running that tier in parallel would break other suites.
 
+### F-042 — any sub-admin could reassign an order or edit the merchant pool
+`FIXED` · high (money routing open to every staff role) · F-001's shape, §32 S8 · found 2026-09-30 (R6 review)
+
+`POST /payment-orders/:id/reassign` and `PUT /queue/merchant-pool` carried
+`isAdminOrSubAdminOrQueueManager`, a TIER check. A sub-admin holding nothing
+but `canModerateChatPublic` could send any player's order to any merchant,
+and choose which merchants the queue may use. `audit:map` counted only the
+exact name `isAdminOrSubAdmin`, so it reported 2 sub-admin routes with no
+permission key while 9 existed, 2 of them money-routing writes: a gate
+measuring a fraction. F-001 gated every such write on 2026-09-10 and could not
+see these two.
+
+- **Fix:** `queueManagerOrPermission('canManageMerchants')` on the three queue
+  writes. Admins and queue managers are unchanged. A sub-admin needs the key
+  that already gates merchant scoring (F-001's precedent for "shapes where
+  money goes"). `POST /queue/assign` keeps its own stricter rule (queue
+  managers and admins only), unchanged. The admin sidebar hides Queue Manager
+  from a sub-admin without the key: it had shown it to every sub-admin by
+  falling through to its default, not by decision.
+- **Gate fixed:** `audit:map` counts both tier guards. It now reports 6
+  keyless sub-admin routes, all reads (2 payment-mode, 4 queue), and 0 writes.
+  The reads stay with the owner's read proposal
+  (`SUBADMIN-PERMISSION-PROPOSAL.md`), as F-001 decided.
+- **Tests:** `queueWritePermissionPg` (9). On the old routes the chat
+  moderator got past reassign and merchant-pool.
+- **Mutation-proved:** M207 KILLED.
+
+### R6 domains reviewed with no new defect, recorded so the absence is a finding
+- **USDT rail:** the quote is fixed at creation and rounded UP to hundredths,
+  and the rate and chain are frozen by trigger. The transaction hash is checked
+  against the ORDER's own chain (`referenceSpecFor`) before it is claimed.
+  `isUsdtTxHash` was a second, test-only copy of that rule; both reference
+  specs now call it (one owner, §5).
+- **Casino callback:** signatures are required and compared in constant time.
+  A BET is bound to the player's live session (fixed earlier today). A
+  rollback must prove a prior debit and cannot exceed it, backed by a CHECK.
+  **Open question for the owner, not changed:** a WIN on a round with no BET is
+  credited, and the round is created. Some providers legitimately send
+  WIN-only rounds (free spins, promotions), and no provider is configured
+  yet, so whether to require a prior BET is a business decision.
+
 ## 5. Derived coverage — regenerated, never typed
 
 <!-- BEGIN GENERATED: npm run audit:map -->
@@ -3048,9 +3089,9 @@ both pool checks are reads.
 |---|---|
 | Route declarations in `backend/**` | 322 |
 | Reachable with **no auth middleware** | 44 |
-| Gated `isAdminOrSubAdmin` with **no permission key** | 2 |
+| Gated `isAdminOrSubAdmin` with **no permission key** | 6 |
 | — of those, **writes** (non-GET) | 0 |
-| Carrying an explicit permission key | 55 |
+| Carrying an explicit permission key | 58 |
 
 A count moving is not by itself a defect — it is a prompt to read the
 new route and decide. Each of the three questions is defined in §2.

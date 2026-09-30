@@ -85,7 +85,7 @@ function routes() {
 const AUTH = new Set(['authenticate', 'merchantAuth', 'isAdmin', 'isAdminOrSubAdmin',
   'isAdminOrSubAdminOrQueueManager', 'hasPermission', 'hasAllPermissions', 'hasAnyPermission',
   'canManageSupport', 'orderAccessGuard', 'paymentActorAuth', 'checkResourcePermission',
-  'requireChannelMembership', 'optionalAuth']);
+  'requireChannelMembership', 'optionalAuth', 'queueManagerOrPermission']);
 
 /**
  * A VARIANT of a known guard counts as that guard.
@@ -107,7 +107,7 @@ const AUTH = new Set(['authenticate', 'merchantAuth', 'isAdmin', 'isAdminOrSubAd
  * rather than the code (CLAUDE.md §28).
  */
 const isAuthGuard = (name) => AUTH.has(name) || /^authenticate[A-Z]/.test(name);
-const PERM = /^(hasPermission|hasAnyPermission|hasAllPermissions|checkResourcePermission)$/;
+const PERM = /^(hasPermission|hasAnyPermission|hasAllPermissions|checkResourcePermission|queueManagerOrPermission)$/;
 
 // ── SQL: interpolation into statement text ──────────────────────────────────
 // A parameterised query is safe by construction. An interpolated one is safe
@@ -175,7 +175,11 @@ function panels() {
 function facts() {
   const all = routes();
   const unauth = all.filter((r) => !r.mw.some((m) => isAuthGuard(m)));
-  const subAdminNoKey = all.filter((r) => r.mw.includes('isAdminOrSubAdmin') && !r.mw.some((m) => PERM.test(m)));
+  // BOTH tier guards. Counting only the exact name `isAdminOrSubAdmin` hid
+  // seven routes on `isAdminOrSubAdminOrQueueManager`, three of them writes
+  // that route player money (F-042).
+  const TIER = new Set(['isAdminOrSubAdmin', 'isAdminOrSubAdminOrQueueManager']);
+  const subAdminNoKey = all.filter((r) => r.mw.some((m) => TIER.has(m)) && !r.mw.some((m) => PERM.test(m)));
   return {
     routes: {
       total: all.length,

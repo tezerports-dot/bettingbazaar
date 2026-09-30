@@ -75,7 +75,7 @@ const NAV_GROUPS: MenuGroup[] = [
     { path: '/referrals', icon: Share2,          label: 'Referrals',       title: 'Referral Programme',  sub: 'Fund the payout queue in joining order', adminOnly: true },
   ] },
   { key: 'payments', label: 'Payments & Queue', items: [
-    { path: '/queue-manager',   icon: Layers,   label: 'Queue Manager',  title: 'Queue Manager', sub: 'Live payment order queue & merchant assignment', queueManagerAccess: true, badge: 'queue' },
+    { path: '/queue-manager',   icon: Layers,   label: 'Queue Manager',  title: 'Queue Manager', sub: 'Live payment order queue & merchant assignment', queueManagerAccess: true, permission: 'canManageMerchants', badge: 'queue' },
     { path: '/transactions',    icon: FileText, label: 'Transactions',   title: 'Transactions',  sub: 'Ledger of deposits, withdrawals, bets & adjustments', permission: 'canViewTransactions' },
     { path: '/payment-control', icon: Zap,      label: 'Payment System', title: 'Payment System',sub: 'Gateways, limits & platform payment controls', adminOnly: true },
     { path: '/disputes',        icon: Scale,    label: 'Disputes',       title: 'Disputes',      sub: 'Payment order disputes & resolution', permission: 'canResolveDisputes' },
