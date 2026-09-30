@@ -1336,6 +1336,15 @@ const MUTATIONS = [
   if (rail?.activeMode !== PAYMENT_MODES.CASH_ATM) return { matched: 0, considered: 0 };
   const waiting = await db.orders.ordersAwaitingCashLink({ limit });`,
   },
+  // ── An order is stamped with the rail it was validated for (review C1) ───
+  {
+    id: 'M180', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
+    test: 'backend/tests/routes/railSnapshotPg.test.js',
+    why: 'the buy is stamped by a second read of the rail, so an admin switch in between births an order on a rail its amount was never checked for',
+    from: `    railPolicy:        railNow,
+`,
+    to: ``,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

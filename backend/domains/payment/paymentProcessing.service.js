@@ -764,6 +764,8 @@ export async function createDepositOrder(userId, tokenAmount, attempt = {}) {
   // zero allocation — visible to the assignment sweep in that state, and stuck
   // there for good if the process died in between.
   const order = await db.orders.createOrderRecord({
+    // Stamped with the rail the amount was judged against above, not re-read.
+    railPolicy:        railNow,
     orderId:           `DEP_${crypto.randomBytes(12).toString('hex')}`,
     userId:            user.userId,
     type:              'DEPOSIT',
@@ -973,6 +975,8 @@ export async function createWithdrawalOrder(userId, tokenAmount, attempt = {}) {
     // The order this part locks money FOR — prepared, not yet written. It is
     // written by the debit below, in the same transaction.
     const insertPart = await db.orders.prepareOrderRecord({
+      // The rail this withdrawal was split for, not a second read of it.
+      railPolicy:        rail,
       orderId:           partOrderId,
       userId:            user.userId,
       type:              'WITHDRAWAL',

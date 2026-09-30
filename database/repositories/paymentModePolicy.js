@@ -179,6 +179,18 @@ export async function stampForNewOrder(forcedMode = null) {
   };
 }
 
+/**
+ * The stamp for a policy the caller already holds — the one it validated the
+ * order against. Mode and version together, from the same row, so the version
+ * on an order always names a policy that put it on that rail.
+ */
+export function stampFromPolicy(policy) {
+  if (!KNOWN_MODES.includes(policy?.activeMode)) {
+    throw new Error(`stampFromPolicy: unknown payment mode '${policy?.activeMode}'`);
+  }
+  return { mode: policy.activeMode, version: policy.version ?? null };
+}
+
 export async function getPolicyHistory({ limit = 50 } = {}) {
   const capped = Math.min(Math.max(Number(limit) || 50, 1), 200);
   const { rows } = await pgQuery(
