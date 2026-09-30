@@ -344,9 +344,12 @@ export async function tryClaimCashLink(order) {
  * player, and one bad row must not hold up everybody behind it.
  */
 export async function matchWaitingOrdersToLinks({ limit = 100 } = {}) {
-  const rail = await getActivePaymentModePolicy();
-  if (rail?.activeMode !== PAYMENT_MODES.CASH_ATM) return { matched: 0, considered: 0 };
-
+  // No check on the rail in force. The query selects on each ORDER's own
+  // `payment_mode` (§2: a worker branches on the order, never the current
+  // policy). This returned early off the cash rail, so switching to UPI
+  // stranded every cash buy already waiting, and every link a merchant had
+  // already supplied for them, until both expired (review C2). The switch still
+  // stops NEW links: `supplyCashLink` refuses off the cash rail.
   const waiting = await db.orders.ordersAwaitingCashLink({ limit });
   let matched = 0;
   for (const order of waiting) {

@@ -1326,6 +1326,16 @@ const MUTATIONS = [
     from: `state = CASE WHEN $4::text IS NOT NULL AND state = 'PAID' THEN $4 ELSE state END,`,
     to: `state = COALESCE($4, state),`,
   },
+  // ── The cash matcher follows the ORDER's rail (review C2, 2026-09-30) ────
+  {
+    id: 'M179', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
+    test: 'backend/tests/routes/cashLinkRoutes.test.js',
+    why: 'the matcher branches on the rail in force, so a switch to UPI strands every cash buy already waiting and every link already supplied for them',
+    from: `  const waiting = await db.orders.ordersAwaitingCashLink({ limit });`,
+    to: `  const rail = await getActivePaymentModePolicy();
+  if (rail?.activeMode !== PAYMENT_MODES.CASH_ATM) return { matched: 0, considered: 0 };
+  const waiting = await db.orders.ordersAwaitingCashLink({ limit });`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

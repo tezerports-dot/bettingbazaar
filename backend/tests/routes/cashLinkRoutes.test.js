@@ -25,6 +25,8 @@ import {
   PAYMENT_MODES, getActivePolicy, publishPolicyVersion,
 } from '#db/repositories/paymentModePolicy.js';
 import { getLiveLinkFor } from '#db/repositories/cashLinks.js';
+import { getOrderRecord } from '#db/repositories/orders.record.js';
+import { matchWaitingOrdersToLinks } from '../../domains/payment/paymentProcessing.service.js';
 import { mountRouter, merchantActor, as, request } from './_harness.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
@@ -340,5 +342,42 @@ describePg('a merchant supplying an ATM cash link', () => {
       activeMode: PAYMENT_MODES.CASH_ATM,
       justification: 'Restoring the cash rail for the rest of the suite.', changedByName: 'test',
     });
+  });
+
+  it('still serves a CASH order that was waiting when the platform switched rails', async () => {
+    // §2: every worker branches on the ORDER's own rail, never the policy in
+    // force now. The matcher returned early unless the ACTIVE rail was cash, so
+    // an admin switching to UPI stranded every cash buy already waiting — and
+    // every link a merchant, standing at a machine, had already supplied for
+    // them — until both expired. The switch stops NEW links (supply is refused
+    // off the cash rail); it must not abandon the ones already in hand.
+    for (const orderId of created.splice(0)) {
+      await cancelOrder({ orderId, actor: 'test', reason: 'isolate the matcher' }).catch(() => {});
+    }
+    const m = await cashMerchant();
+    const supplied = await as(app, m).post('/cash-links').send({ paymentLink: 'upi://pay?pa=atm-switch@bank&am=40000' });
+    expect(supplied.status, supplied.body?.message).toBe(200);
+    const orderId = await waitingOrder();                     // stamped CASH_ATM
+    expect((await getOrderRecord(orderId)).paymentMode).toBe(PAYMENT_MODES.CASH_ATM);
+
+    await publishPolicyVersion({
+      activeMode: PAYMENT_MODES.P2P_UPI,
+      justification: 'Switch away mid-queue.', changedByName: 'test',
+    });
+    try {
+      const { matched } = await matchWaitingOrdersToLinks();
+      expect(matched, 'the waiting cash order was abandoned by the rail switch').toBeGreaterThanOrEqual(1);
+      const order = await getOrderRecord(orderId);
+      // Served by A link — the oldest live one at this denomination, which may
+      // be one an earlier case in this file left LIVE. Whose is not the point.
+      expect(order.state).toBe('ASSIGNED');
+      expect(order.cashLinkId).toBeTruthy();
+      expect(order.merchantId).toBeTruthy();
+    } finally {
+      await publishPolicyVersion({
+        activeMode: PAYMENT_MODES.CASH_ATM,
+        justification: 'Restoring the cash rail for the rest of the suite.', changedByName: 'test',
+      });
+    }
   });
 });
