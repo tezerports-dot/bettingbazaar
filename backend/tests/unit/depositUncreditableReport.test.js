@@ -29,10 +29,18 @@ const paidOrder = () => ({
   tokenAmount: 10_000, depositAllocation: 9_000, reserveAllocation: 1_000,
 });
 
-/** Movers whose merchant debit refuses, which is the whole scenario. */
+/**
+ * Movers whose merchant debit refuses, which is the whole scenario.
+ *
+ * `dispenseHold` answers `noHold`: an order nothing held for this merchant is
+ * the only one whose tokens come out of `available`, so it is the only one this
+ * refusal can happen to. A HELD order is paid out of its hold and cannot be
+ * short (see `depositConfirmConservationPg`).
+ */
 const refusingMovers = () => ({
   debitMerchantTokens: vi.fn(() => Promise.resolve({ merchant: null })),
   creditDeposit: vi.fn(), creditReserve: vi.fn(), releaseUTR: vi.fn(),
+  dispenseHold: vi.fn(() => Promise.resolve({ ok: true, noHold: true })),
 });
 
 describe('a paid deposit that cannot be credited', () => {
@@ -114,6 +122,7 @@ describe('a paid deposit that cannot be credited', () => {
     const movers = {
       debitMerchantTokens: vi.fn(() => Promise.resolve({ merchant: { merchantId: 'm-9' } })),
       creditDeposit: vi.fn(), creditReserve: vi.fn(), releaseUTR: vi.fn(),
+      dispenseHold: vi.fn(() => Promise.resolve({ ok: true, noHold: true })),
     };
     const result = await moveDepositMoney(paidOrder(), movers);
 

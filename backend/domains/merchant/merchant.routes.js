@@ -49,7 +49,6 @@ import { toPlayerOrderView } from '../payment/playerOrderView.js';
 import { moveDepositMoney } from '../payment/depositCredit.js';
 import {
   holdForOrder as holdDepositTokens,
-  dispenseForOrder as dispenseDepositHold,
   releaseForOrder as releaseDepositHold,
 } from './depositEscrow.service.js';
 import { debitMerchantTokens, creditMerchantTokens } from './merchantWallet.service.js';
@@ -1652,29 +1651,24 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
         // keys, plus `completeOrder`'s own idempotency below.
         let deposited = null;
         if (isDeposit) {
-            // ── The hold is CONSUMED here, before the wallet debit ──────────
-            // The tokens were moved `available → reserved` when this order
-            // became this merchant's. `moveDepositMoney` debits `available`,
-            // so with the hold still standing the merchant is charged twice:
-            // once by the hold they cannot spend and once by the debit. The
-            // dispense (`reserved -a`) is what turns the hold INTO the payment.
-            //
-            // Before the debit and not after, for the §21 reason: if the debit
-            // fails the order stays PAID and retryable with the tokens already
-            // out of `reserved` and back in `available`, which is where the
-            // retry needs them. The other order strands the retry against its
-            // own hold.
-            const dispensed = await dispenseDepositHold(order, { actor: `merchant:${req.merchantId}` });
-            if (!dispensed.ok) {
-                return res.status(409).json({
-                    success: false,
-                    message: 'This order\'s token hold could not be released for payment. Try again in a moment.',
-                });
-            }
+            // ── The hold IS the payment, and `moveDepositMoney` takes it ────
+            // This route used to dispense the hold here and then let
+            // `moveDepositMoney` debit `available` as well, believing the
+            // dispense put the tokens back in `available` first. It does not —
+            // it spends them — so every confirmed buy cost the merchant twice,
+            // and a merchant whose tokens were all held for this order was
+            // refused after the hold was already gone (F-026). The owner now
+            // takes the merchant's side exactly once, from the hold.
             deposited = await moveDepositMoney(order, {
                 debitMerchantTokens, creditDeposit, creditReserve, releaseUTR,
             });
             if (!deposited.ok) {
+                if (deposited.reason === 'hold_unavailable') {
+                    return res.status(409).json({
+                        success: false,
+                        message: 'This order\'s token hold could not be read. Nothing was charged — try again in a moment.',
+                    });
+                }
                 // Reported to the operator and to the player by
                 // `moveDepositMoney` itself (F-015). The order stays PAID, so it
                 // is retryable AND still disputable.

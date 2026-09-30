@@ -1136,6 +1136,30 @@ const MUTATIONS = [
     to: `    if (order.orderHmac ? !verifyOrderHmac(order.orderId, order.orderHmac) : false) {`,
   },
 
+  // ── A buy's merchant side is taken ONCE, from the hold ──────────────────
+  // The confirm route dispensed the hold (reserved -a) and `moveDepositMoney`
+  // debited `available -a` as well: every confirmed buy cost the merchant
+  // twice, and a merchant whose tokens were all held for the order was refused
+  // after the hold was spent. The four other completion doors never dispensed.
+  {
+    id: 'M159', file: 'backend/domains/payment/depositCredit.js', config: PG,
+    test: 'backend/tests/routes/depositConfirmConservationPg.test.js',
+    why: 'the buy charges `available` even when its hold already paid for it, so the merchant pays twice and a fully-held merchant can never confirm',
+    from: `  if (fromHold.noHold) {`,
+    to: `  if (true) {`,
+  },
+  {
+    id: 'M160', file: 'backend/domains/merchant/depositEscrow.service.js', config: PG,
+    test: 'backend/tests/routes/depositConfirmConservationPg.test.js',
+    why: 'a retried confirm reads a spent hold as "never held" and takes the tokens again from `available`',
+    from: `    if (await dispensedDepositSettlementFor(order.orderId, merchantId)) {
+      return { ok: true, alreadyTaken: true };
+    }`,
+    to: `    if (false) {
+      return { ok: true, alreadyTaken: true };
+    }`,
+  },
+
   // ── A withdrawal's lock and its order commit together ───────────────────
   // They were two commits, and the second could be refused: a second retry of
   // one expired withdrawal collides on `retry_of_order_id` AT INSERT, after the

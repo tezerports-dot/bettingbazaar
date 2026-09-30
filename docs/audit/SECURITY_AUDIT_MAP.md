@@ -2549,6 +2549,70 @@ closes the variant where an unknown field threw after the money moved.
   merchant side has two owners (the hold and an `available` debit) — which
   charges the merchant twice on the confirm route.
 
+### F-026 — every confirmed buy charged the merchant twice
+`FIXED` · **critical** (tokens destroyed on the platform's main money path;
+conservation broken on every buy) · two owners for one movement (§2, §5) ·
+found 2026-09-30 by the full-stack review
+
+**MEASURED against a real database** (`depositConfirmConservationPg.test.js`,
+red on the parent): a 1,000-token buy confirmed by its merchant cost the
+merchant **200,000 paise** while the player received **100,000**. A merchant
+whose tokens were all held for that one order was refused — *"Insufficient token
+inventory to confirm this deposit. Top up your merchant wallet."* — after the
+hold had already been spent, and every retry was refused again, so a buy the
+player had paid for could never complete.
+
+**The chain.** Every buy HOLDS the merchant's tokens at attachment (F-018):
+`available → reserved`. The confirm route then called `dispenseForOrder`
+(`complete`: `reserved −a`, the tokens leave — "spent, not moved") and THEN
+`moveDepositMoney`, which debited `available −a` as well. The route's comment
+shows the belief that made it look right: dispensing puts the tokens "back in
+`available`", where the debit takes them. The settlement table says otherwise,
+and so does `depositEscrowPg` ("a dispense SPENDS them — they do not come
+back"). The dispense's own doc comment said it ran "beside the wallet debit".
+The dispense was completed before the debit, so the stranded-hold sweep never
+saw it either: the double charge was permanent.
+
+**The four other doors** that complete a buy — the admin approve, both dispute
+releases, and `POST /api/payment/deposit/:id/confirm` (which no panel calls) —
+never dispensed at all. They debited `available` beside a live hold, so the
+merchant was charged twice until `sweepDepositHolds` released the hold on the
+now-COMPLETED order fifteen minutes later; the two without an overdraft refused
+a merchant whose tokens were all held for the order being completed.
+
+**Why every tier was green — a shape of its own.** `depositConfirmReachablePg`
+asserted `after.availablePaise` and `after.reservedPaise`. The balance object's
+keys are `available` and `reserved`: both reads were `undefined`,
+`Number(undefined)` is NaN, and vitest's `toBe` is `Object.is`, under which **NaN
+equals NaN** — so the two assertions that would have caught this passed for ANY
+balance. The admin-route suites built their buys with no hold, a state production
+cannot produce since F-018 (§32 S16), so they measured the one path that was right.
+
+**Fixed at the owner.** `moveDepositMoney` takes the merchant's side exactly once:
+it asks `dispenseForOrder` first — which completes a live hold of THIS merchant
+(`taken`), recognises one already spent (`alreadyTaken`, so a retry or a
+double-tap moves nothing), or answers `noHold` — and debits `available` only on
+`noHold`. An unknown answer (`hold_unavailable`) moves nothing and leaves the
+order PAID. All five completion routes go through it, so none can forget.
+
+- **Tests:** `depositConfirmConservationPg` — the merchant loses exactly what the
+  player gains; a fully-held merchant can confirm; a retry after the hold was
+  spent charges nothing more; the admin approve, the Payment Control Centre
+  release and the Dispute Manager release each take the tokens once, from the
+  hold. `depositConfirmReachablePg` reads the real pocket keys and asserts the
+  single charge. Full `test:pg` 1551/1552 (the one failure is F-027's new
+  assertion, a separate defect), `test:unit` 855/855.
+- **Mutation-proved:** M159 (debit `available` even when the hold paid) and M160
+  (a spent hold read as "never held") both KILLED.
+- **Sweep for the same shape** — one movement with two owners: `dispenseForOrder`
+  had one caller while `moveDepositMoney` had five; after the fix the dispense has
+  one caller (`moveDepositMoney`) and the `available` debit is reachable only
+  through `noHold`. The withdrawal side has one owner (`settleHold` /
+  `reverseHold`) except the hold-disabled confirm, recorded separately.
+- **Sweep for the vacuous-NaN shape** — see F-027's neighbour entry in the
+  open queue: every assertion comparing two NaNs passes; a guard in the test
+  setup is the mechanical answer.
+
 ---
 
 ## 5. Derived coverage — regenerated, never typed
@@ -2630,8 +2694,8 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 464 |
-| Parameters only (safe by construction) | 311 |
+| `pgQuery` call sites | 465 |
+| Parameters only (safe by construction) | 312 |
 | Interpolating into statement text (each needs a reading) | 150 |
 | Statement text built elsewhere and passed in (each needs a reading) | 3 |
 

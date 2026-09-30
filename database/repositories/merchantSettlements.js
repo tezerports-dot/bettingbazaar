@@ -519,6 +519,26 @@ export async function liveDepositSettlementFor(orderId) {
 }
 
 /**
+ * The hold THIS merchant already dispensed for this order, if any.
+ *
+ * The other half of "has the merchant paid for this buy yet?". A dispensed hold
+ * is no longer live, so `liveDepositSettlementFor` cannot see it — and a caller
+ * that read "no live hold" as "never held" would take the tokens a second time,
+ * from `available`, on every retry of a confirm that had already paid.
+ * Scoped to the merchant because an order can be attached to several over its
+ * life, and only the current one's payment settles it.
+ */
+export async function dispensedDepositSettlementFor(orderId, merchantId) {
+  const { rows } = await pgQuery(
+    `SELECT * FROM merchant_settlements
+      WHERE order_id = $1 AND merchant_id = $2 AND direction = 'DEPOSIT' AND state = 'SETTLED'
+      LIMIT 1`,
+    [String(orderId), String(merchantId)], 'merchant_settlement_dispensed_deposit',
+  );
+  return rowToSettlement(rows[0]);
+}
+
+/**
  * Deposit reservations still holding tokens for an order that has FINISHED.
  *
  * The safety net that makes this design survivable. Every terminal path
