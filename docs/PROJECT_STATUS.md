@@ -369,14 +369,14 @@ names the test that failed before the fix and the mutation that proves it.
 
 | # | Step | Who | Estimate |
 |---|---|---|---|
-| R1 | Decide B2: keep the deny-list deleted, or have it built (mount, routes, screen, tests) | owner | a decision; building is ~1 day |
+| R1 | ~~Decide B2~~ **owner, 2026-09-30: build it properly** — IN PROGRESS (Claude) | Claude | ~1 day |
 | R2 | Merge this branch's PR | owner | 5 min |
 | R3 | ~~Full mutation run (all 135 entries)~~ **done** — CI on PR #198 (`ba2a861`): 135/135 killed. Its first run caught M171 surviving after C3; retargeted | — | — |
-| R4 | Browser passes (`test:browser`, `test:drive`, `test:mutate`, `test:forms`) | Claude | ~2 hours |
+| R4 | Browser passes (`test:browser`, `test:drive`, `test:mutate`, `test:forms`) — **owner: do it**; queued last so it covers everything below | Claude | ~2 hours |
 | R5 | ~~PostgreSQL 18~~ **done** — CI on PR #198: pg tier 109/109 files green on PostgreSQL 18.6 | — | — |
-| R6 | Domains the review did not reach: bet placement/settlement engine, 2FA/reset, Telegram gates, referral payouts, commission engine, USDT rail, casino callback, sub-admin permissions | Claude, on request | ~1–2 days |
+| R6 | **owner: do it** — Domains the review did not reach: bet placement/settlement engine, 2FA/reset, Telegram gates, referral payouts, commission engine, USDT rail, casino callback, sub-admin permissions | Claude | ~1–2 days |
 | R7 | P197-1 real v2 signature verification, if wanted | Claude | ~half a day with a real signed APK fixture |
-| R8 | Force the race in M49 (`identityPg` concurrent exports) and check M122 (`utrGracePg`) — both kill via `Promise.all` overlap, the shape that let M182 read KILLED on one CI run and SURVIVED on the next | Claude | ~1 hour |
+| R8 | ~~Force the races behind M49 / M122~~ **done**: M49's export test now forces the overlap (a SHARE lock on `kyc_batches` parks export A holding its rows while B runs) — KILLED 3/3. M122 was already deterministic: the sequential 'second tap' test kills it | — | — |
 
 ## 4. How to pick this up
 
