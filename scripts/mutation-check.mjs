@@ -1116,6 +1116,27 @@ const MUTATIONS = [
   }`,
     to: `  const view = { ...plain };`,
   },
+  {
+    id: 'M157', file: 'database/repositories/casino.js', config: PG,
+    test: 'database/tests/casinoSessionBindingPg.test.js',
+    why: 'a signed provider BET debits whichever player the payload names, with no session that player opened, so a forged or leaked launch token bets with somebody else\'s balance',
+    from: `  if (normalised === 'BET') {`,
+    to: `  if (false && normalised === 'BET') {`,
+  },
+  {
+    id: 'M158', file: 'backend/domains/identity/fieldCrypto.util.js', config: UNIT,
+    test: 'backend/tests/unit/fieldCryptoRotation.test.js',
+    why: 'identity decryption accepts a truncated GCM tag, so a forged Aadhaar/identity ciphertext needs ~2^32 tries instead of 2^128',
+    from: `Buffer.from(iv, 'base64'), GCM_TAG);`,
+    to: `Buffer.from(iv, 'base64'));`,
+  },
+  {
+    id: 'M159', file: 'backend/domains/identity/totp.service.js', config: UNIT,
+    test: 'backend/tests/unit/totp.service.test.js',
+    why: 'a stored 2FA secret decrypts under a truncated GCM tag, so the tag authenticates 4 bytes instead of 16',
+    from: `Buffer.from(iv, 'base64'), GCM_TAG);`,
+    to: `Buffer.from(iv, 'base64'));`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

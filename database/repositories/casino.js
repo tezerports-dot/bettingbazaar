@@ -28,6 +28,7 @@
 import { rupeesToPaise } from '../../backend/shared/money.js';
 import { CASINO_TX, recordCallback, getRound } from './casino.core.js';
 import { getBalancesRupees } from './wallets.core.js';
+import { hasLiveSession } from './games.js';
 
 /** The provider's vocabulary, normalised. Anything else is not a money move. */
 export function normaliseType(raw) {
@@ -61,6 +62,25 @@ export async function applyProviderCallback({
   const amountPaise = rupeesToPaise(Number(amountRupees) || 0);
   if (!Number.isInteger(amountPaise) || amountPaise <= 0) {
     return { ok: false, reason: 'invalid_amount', amountRupees };
+  }
+  // ── A debit needs the PLAYER's own open session with THIS provider ────────
+  // The signature proves the callback came from the provider; it says nothing
+  // about whether the provider identified the player correctly. That rests on
+  // the launch token, which is only as strong as each provider's scheme. So a
+  // BET, the one callback that takes the player's money, must also match a
+  // session the player opened themselves, behind their own login
+  // (`POST /api/game/launch`). Without this, a forged or leaked launch token
+  // could bet with somebody else's balance (found 2026-09-30).
+  //
+  // Only BET. A win or a refund returns money, a refund already has to prove a
+  // prior debit, and a sports bet can legitimately settle days after its
+  // session expired. The check is outside the round lock deliberately: a
+  // session that expires in between leaves one debit made while it was live,
+  // which is correct.
+  if (normalised === 'BET') {
+    if (!providerKey || !(await hasLiveSession(userId, providerKey))) {
+      return { ok: false, reason: 'no_live_session', userId: String(userId), providerKey };
+    }
   }
 
   const result = await recordCallback({

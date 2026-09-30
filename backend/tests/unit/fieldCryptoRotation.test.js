@@ -31,6 +31,14 @@ afterEach(() => {
 });
 
 describe('field encryption', () => {
+  it('refuses a TRUNCATED auth tag, even one that is a correct prefix', () => {
+    // Without a pinned authTagLength, Node checks only the bytes supplied: the
+    // real tag cut to 4 bytes verified, and forging one needed ~2^32 tries.
+    const [v, iv, tag, data] = fieldCrypto.encryptField('123456789012').split(':');
+    const short = Buffer.from(tag, 'base64').subarray(0, 4).toString('base64');
+    expect(() => fieldCrypto.decryptField([v, iv, short, data].join(':'))).toThrow();
+  });
+
   it('round-trips a value', () => {
     const secret = '123456789012';
     expect(fieldCrypto.decryptField(fieldCrypto.encryptField(secret))).toBe(secret);

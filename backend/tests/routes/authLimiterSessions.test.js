@@ -55,9 +55,16 @@ function app() {
  * The limiter is keyed by IP and its store is shared across this process, so
  * two tests on one address would inherit each other's counter — the shared-state
  * trap of trap 10, in a limiter instead of a table. Each test gets its own.
+ *
+ * And fresh per RUN, not only per test. With REDIS_URL set the store is Redis,
+ * which outlives the process: a counter starting at 0 each run re-used the
+ * previous run's addresses, and a rerun inside the 30-minute window met a
+ * counter already at four and read 429 where it asserted 401 (measured
+ * 2026-09-30, §32 S19). A random start in 198.18.0.0/15, the range reserved for
+ * benchmarking, gives each run addresses no earlier run touched.
  */
-let n = 0;
-const freshIp = () => `203.0.113.${(n = (n + 1) % 250) + 1}`;
+let n = Math.floor(Math.random() * 130_000);
+const freshIp = () => { n += 1; return `198.${18 + (n >> 16 & 1)}.${n >> 8 & 255}.${n & 255}`; };
 
 describe('the auth limiter and an expired session', () => {
   let server, ip;
