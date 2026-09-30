@@ -106,8 +106,13 @@ describePg('a merchant supplying an ATM cash link', () => {
   //   · The claim needs an EXACT amount match — `claimLinkFor` computes
   //     `Math.round(order.tokenAmount * 100)` — so only a ₹40,000 cash
   //     deposit can take a ₹40,000 link. Not a rounding or a range.
-  //   · No other suite in the tier creates one. `retryAndMatchPg`, the only
-  //     other file that runs the matcher, works entirely at ₹5,000.
+  //   · [WRONG — corrected 2026-09-30] "No other suite in the tier creates
+  //     one." `database/tests/cashLinkQueuePg.test.js` did: its "runs out
+  //     rather than handing the same link to a fifth order" case left a
+  //     ₹40,000 CASH_ATM buy PENDING_QUEUE with no link, for good, and the
+  //     matcher this file triggers handed it the link. Found by reading the
+  //     claimant the diagnostic below printed. That suite now cancels what it
+  //     created.
   //   · Within this file the three ₹40,000 `waitingOrder()` fixtures are
   //     created AFTER these tests and cancelled in `afterAll`.
   //   · CI starts from a fresh database, so a previous run cannot be it
