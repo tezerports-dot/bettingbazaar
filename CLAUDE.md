@@ -562,6 +562,17 @@ continuously, so no single upgrade is ever large.**
 2. **Patch and minor: apply on sight, gated only by green.** Same-major bumps
    are applied and kept whenever the full gate + test suite passes against them.
    There is no waiting for a quarter and no held register for these.
+2a. **Nothing merges a dependency PR automatically. A person does.** Owner,
+   2026-09-30. Dependabot still OPENS the PRs (`.github/dependabot.yml`), which
+   is what keeps rule 1 cheap; merging one is a human pressing the button on a
+   green PR. The workflow that ran `gh pr merge --auto` on every patch and minor
+   bump was deleted. What it cost was measured on PR #184: each auto-merge
+   rewrote the same `package.json` files under an open branch. The branch
+   conflicted, GitHub runs no `pull_request` workflow on a PR it cannot merge,
+   and so CI never ran on #184 from 09-17 to 09-30. Two gates went red in that
+   window and nobody saw them. Green on its own PR says nothing about the PRs
+   it lands underneath. Do not reinstate auto-merge, and do not tick "enable
+   auto-merge" on a Dependabot PR.
 3. **A major is gated by the suite, not deferred.** Take the major, run every
    gate and every test tier, and keep it if it is green. A major is HELD only
    when adopting it would require rewriting working code (a removed API, a
