@@ -2838,6 +2838,41 @@ which nothing calls (S43).
   uses. That is why the `debitForBet` pair was never reported. A name in a
   string literal still counts; that remains a blind spot.
 
+### F-035 — cancelling a cycle locked every stake on it, for good
+`FIXED` · high (player money locked by an admin action, with no path back) · §32 S4, S14, S43, §22 · found 2026-09-30 (R6 review)
+
+The admin CANCEL moved the cycle's status and nothing else. `cancelCycle`'s
+comment said returning the stakes was "settlement's job". But settlement only
+claims a cycle WITH a winner, and `declareWinner` refuses a CANCELLED cycle.
+So no cancelled cycle was ever offered, and every real stake on one stayed in
+`lockedBalance` with nothing in the platform that would release it. The admin
+screen toasted **"Cycle cancelled — all bets refunded"**. `voidBet` and
+`voidSettlement` existed, and only tests called them. `voidSettlement` could not
+have served anyway: it needed an open settlement run with a winning side.
+
+- **Fix:** `voidCancelledCycle` returns each PENDING real bet's stake through
+  `voidBet` (the transition, the stake back to its own pockets, and the ledger
+  rows, in one transaction under the bet lock), and marks phantom bets VOID. The
+  CANCEL action calls it at once. A failure there is alerted and never a 500,
+  because the cancel has committed (§21). The engine's recovery sweep calls
+  `voidCancelledCycles` every 5 minutes, to finish what a crash interrupted. The
+  admin toast is now the server's own count. `voidSettlement` is replaced.
+- **Also:** the engine's comments named `findIncompleteSettlements` as "the
+  query that finds it later". Nothing ran it (S43). The recovery sweep runs it
+  now and pages on a hit.
+- **Tests:** `cycleCancelRefundPg`: two players' stakes are returned through the
+  real bet and admin routes, and a bet on another cycle is left alone (the
+  bystander). The sweep returns stakes a cancel left behind. A live cycle is
+  refused. The first case fails on the old route.
+- **Mutation-proved:** M192–M194 KILLED.
+- **Not covered by a test:** the engine's CALL to the sweep. A test that ran
+  the recovery task would claim other suites' stranded cycles on the shared
+  database (trap 10). It is covered by code read only.
+- **Swept:** `voidBet`/`refundBet` were the two money transitions with no
+  production caller; both are wired now (F-034, F-035). `settleBet` and
+  `reconcileSettlement` in `settlements.js` are still test-only: the engine
+  settles through `winBet`/`loseBet` directly. They are recorded, not deleted.
+
 ## 5. Derived coverage — regenerated, never typed
 
 <!-- BEGIN GENERATED: npm run audit:map -->
@@ -2919,8 +2954,8 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 469 |
-| Parameters only (safe by construction) | 313 |
+| `pgQuery` call sites | 471 |
+| Parameters only (safe by construction) | 315 |
 | Interpolating into statement text (each needs a reading) | 153 |
 | Statement text built elsewhere and passed in (each needs a reading) | 3 |
 

@@ -1438,6 +1438,29 @@ const MUTATIONS = [
     why: 'a phantom bet with a non-numeric amount reaches rupeesToPaise and answers 500',
     from: `    if (!Number.isFinite(amount) || amount < 1) {`,
     to: `    if (amount < 1) {`,
+  },  // ── Cancelled cycles return their stakes (R6) ────────────────────────────
+  {
+    id: 'M192', file: 'backend/routes/admin/cycles.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/cycleCancelRefundPg.test.js',
+    why: 'CANCEL moves the status and returns no stake, so every bet on the cycle stays locked',
+    from: 'const voiding = await voidCancelledCycle(cycleId, { actor: `admin:${req.user.userId}` })',
+    to: 'const voiding = await Promise.resolve({ ok: true, voided: 2, refused: [] })',
+  },
+  {
+    id: 'M193', file: 'database/repositories/settlements.js', config: PG,
+    test: 'backend/tests/routes/cycleCancelRefundPg.test.js',
+    why: 'a cycle still being played has its stakes handed back',
+    from: `  if (rows[0].status !== 'CANCELLED') return { ok: false, reason: 'not_cancelled', status: rows[0].status };`,
+    to: `  if (false) return { ok: false, reason: 'not_cancelled', status: rows[0].status };`,
+  },
+  {
+    id: 'M194', file: 'database/repositories/settlements.js', config: PG,
+    test: 'backend/tests/routes/cycleCancelRefundPg.test.js',
+    why: 'the recovery sweep never finds a cancelled cycle whose stakes were left locked',
+    from: `      WHERE c.status = 'CANCELLED'
+        AND EXISTS`,
+    to: `      WHERE c.status = 'CLOSED'
+        AND EXISTS`,
   },
 ];
 

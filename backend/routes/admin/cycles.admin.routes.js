@@ -6,6 +6,8 @@ import {
 import { db } from '#db';
 import { DEFAULT_CYCLE_PHASES, isCycleType, phasesFor } from '../../domains/markets/cycleTypes.js';
 import { getSystemConfig } from '#db/repositories/config.js';
+import { voidCancelledCycle } from '#db/repositories/settlements.js';
+import { sendAlert } from '../../services/alerting.service.js';
 
 const router = express.Router();
 
@@ -254,11 +256,23 @@ router.post('/manage-cycle', authenticate, isAdmin, async (req, res) => {
         });
         break;
 
-      case 'CANCEL':
+      case 'CANCEL': {
         result = await db.markets.cancelCycle(cycleId, { by: req.user.userId });
         if (!result.ok) return refuse(result);
         global.io?.emit('cycle_phase', { cycleId, phase: 'CANCELLED', message: 'Cycle cancelled by admin' });
+        // Return every stake NOW, so the players see their money back. The
+        // cancel has committed, so a failure here must not become a 500 (§21):
+        // the engine's recovery sweep finishes whatever this does not.
+        const voiding = await voidCancelledCycle(cycleId, { actor: `admin:${req.user.userId}` })
+          .catch((e) => ({ ok: false, reason: e.message }));
+        if (!voiding.ok || voiding.refused?.length) {
+          sendAlert('settlement-error', 'Stakes on a cancelled cycle were not all returned', {
+            cycleId, reason: voiding.reason ?? null, refused: voiding.refused?.slice(0, 10) ?? [],
+          }).catch(() => {});
+        }
+        result = { ...result, stakesReturned: voiding.voided ?? 0, stakesPending: !voiding.ok || voiding.refused?.length > 0 };
         break;
+      }
 
       case 'FORCE_RESULT': {
         const winner = payload?.winner;
@@ -287,8 +301,13 @@ router.post('/manage-cycle', authenticate, isAdmin, async (req, res) => {
 
     res.json({
       success: true,
-      message: `Action '${action}' applied to cycle ${cycleId}`,
+      message: result.stakesPending
+        ? `Cycle ${cycleId} cancelled. ${result.stakesReturned} stake(s) returned; the rest are still being returned and will be within 5 minutes.`
+        : result.stakesReturned !== undefined
+          ? `Cycle ${cycleId} cancelled. ${result.stakesReturned} stake(s) returned to players.`
+          : `Action '${action}' applied to cycle ${cycleId}`,
       cycle: result.cycle,
+      ...(result.stakesReturned !== undefined ? { stakesReturned: result.stakesReturned } : {}),
     });
   } catch (error) {
     console.error('Manage cycle error:', error);

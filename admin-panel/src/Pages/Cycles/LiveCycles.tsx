@@ -108,7 +108,9 @@ export const LiveCycles: React.FC = () => {
       if (type === 'equalizer') { await api.cycles.triggerEqualizer(cycleId); toast.success('Phantom equalizer triggered'); }
       else if (type === 'pause') { await api.cycles.pauseCycle(cycleId); toast.success('Cycle paused'); }
       else if (type === 'resume') { await api.cycles.resumeCycle(cycleId); toast.success('Cycle resumed'); }
-      else if (type === 'cancel') { await api.cycles.cancelCycle(cycleId, 'Cancelled by admin'); toast.success('Cycle cancelled — all bets refunded'); }
+      // The server says how many stakes it returned; this screen used to claim
+      // "all bets refunded" while none were (F-035).
+      else if (type === 'cancel') { const r = await api.cycles.cancelCycle(cycleId, 'Cancelled by admin'); toast.success(r?.message || 'Cycle cancelled'); }
       loadCycles();
     } catch (e: any) {
       toast.error(e.response?.data?.message || `Failed to ${type} cycle`);

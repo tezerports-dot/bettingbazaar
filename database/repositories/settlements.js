@@ -41,7 +41,7 @@ import { getPool, pgQuery, connectGuarded } from '../client.js';
 import { rupeesToPaise } from '../../backend/shared/money.js';
 import { moneyOperations } from '../../backend/services/metrics.service.js';
 import { MONEY_PATHS } from '../moneyPaths.js';
-import { BET_STATUS, winBet, loseBet, voidBet } from './bets.core.js';
+import { BET_STATUS, winBet, loseBet, voidBet, listSettleableBets } from './bets.core.js';
 
 export const SETTLEMENT_STATUS = Object.freeze({
   RUNNING:   'RUNNING',
@@ -187,48 +187,91 @@ export async function completeSettlement({ cycleId }) {
 }
 
 /**
- * RUNNING → VOIDED. The cycle is abandoned and every outstanding bet on it has
- * its stake returned.
+ * Return every outstanding stake on a CANCELLED cycle.
  *
- * Voiding is not a way to correct a declared result — a corrected result means
- * voiding and settling afresh, which leaves both runs in the history. Editing
- * `winning_side` in place would let a single run pay some bets on one result
- * and the rest on another.
+ * ── Why this exists ─────────────────────────────────────────────────────────
+ * An admin CANCEL moved the cycle's status and nothing else, under a comment
+ * saying returning the stakes was "settlement's job". Settlement only ever
+ * claims a cycle WITH a winner, and a cancelled cycle has none and can never
+ * be given one (`declareWinner` refuses CANCELLED). So every real stake on a
+ * cancelled cycle stayed locked for good, with nothing in the platform that
+ * would ever release it (R6, 2026-09-30).
+ *
+ * Each bet goes PENDING → VOID through `voidBet`: the transition, the stake
+ * back to the pockets it came from, and the ledger rows in one transaction
+ * under the bet lock. Idempotent per bet, so the CANCEL route (which calls this
+ * at once, so the player sees the money back) and the engine's recovery sweep
+ * (`voidCancelledCycles`, which finishes whatever a crash interrupted) can both
+ * run it safely.
+ *
+ * It replaced `voidSettlement`, which only tests called: it needed an open
+ * settlement RUN with a winning side, which a cancelled cycle cannot have.
+ *
+ * @returns {{ok:true, voided:number, refused:Array}} | {{ok:false, reason}}
  */
-export async function voidSettlement({ cycleId, bets = [], actor = 'settlement', reason = null }) {
+export async function voidCancelledCycle(cycleId, { actor = 'settlement', reason = null } = {}) {
   const { rows } = await pgQuery(
-    `UPDATE cycle_settlements
-        SET status = $2, completed_at = now(), updated_at = now()
-      WHERE cycle_id = $1 AND status = $3
-      RETURNING *`,
-    [String(cycleId), SETTLEMENT_STATUS.VOIDED, SETTLEMENT_STATUS.RUNNING],
-    'cycle_settlement_void',
+    `SELECT status FROM cycles WHERE cycle_id = $1`, [String(cycleId)], 'cycle_void_status',
+  );
+  if (!rows[0]) return { ok: false, reason: 'not_found' };
+  // Only a cancelled cycle. Voiding bets on a live or declared one would hand
+  // back stakes on a round that is still being played or has been won.
+  if (rows[0].status !== 'CANCELLED') return { ok: false, reason: 'not_cancelled', status: rows[0].status };
+
+  let voided = 0;
+  const refused = [];
+  for (;;) {
+    const batch = await listSettleableBets(cycleId, { limit: 500 });
+    if (!batch.length) break;
+    let progressed = false;
+    for (const bet of batch) {
+      const r = await voidBet({
+        betId: bet.betId, userId: bet.userId, slices: bet.slices,
+        actor, reason: reason || `Cycle ${cycleId} cancelled — stake returned`,
+      }).catch((e) => ({ ok: false, reason: e.message }));
+      if (r.ok) {
+        progressed = true;
+        if (!r.idempotent) voided += 1;
+      } else {
+        refused.push({ betId: bet.betId, userId: bet.userId, reason: r.reason });
+      }
+    }
+    // A page where nothing moved would be re-read forever; stop and report.
+    if (!progressed) break;
+  }
+
+  // Phantom bets moved no money. VOID, not LOST: the round did not happen.
+  await pgQuery(
+    `UPDATE bets SET status = 'VOID', settled_at = now(), updated_at = now()
+      WHERE cycle_id = $1 AND is_phantom AND status = 'PENDING'`,
+    [String(cycleId)], 'bets_void_phantom',
   );
 
-  const existing = rows.length ? rowToSettlement(rows[0]) : await getCycleSettlement(cycleId);
-  if (!existing) {
-    count('SETTLEMENT_VOID', 'not_found');
-    return { ok: false, reason: 'not_found' };
-  }
-  if (!rows.length && existing.status !== SETTLEMENT_STATUS.VOIDED) {
-    count('SETTLEMENT_VOID', 'invalid_transition');
-    return { ok: false, reason: 'invalid_transition', status: existing.status };
-  }
+  count('CYCLE_VOID', refused.length ? 'partial' : 'applied');
+  return { ok: true, voided, refused };
+}
 
-  // Return every outstanding stake. voidBet is idempotent per bet, so a
-  // re-voided run returns nothing further — which is what makes this safe to
-  // call again after a partial failure.
-  const returned = [];
-  for (const bet of bets) {
-    const r = await voidBet({
-      betId: bet.betId, userId: bet.userId, slices: bet.slices,
-      actor, reason: reason || `Cycle ${cycleId} voided`,
-    });
-    if (r.ok && !r.idempotent) returned.push(bet.betId);
+/**
+ * The sweep: every cancelled cycle still holding a PENDING real bet.
+ *
+ * Run by the engine's recovery task, so a CANCEL whose immediate void was
+ * interrupted (a crash, a timeout) still returns every stake. A cycle with
+ * nothing left to return is not listed, so there is no marker to maintain.
+ */
+export async function voidCancelledCycles({ limit = 5 } = {}) {
+  const { rows } = await pgQuery(
+    `SELECT c.cycle_id FROM cycles c
+      WHERE c.status = 'CANCELLED'
+        AND EXISTS (SELECT 1 FROM bets b
+                     WHERE b.cycle_id = c.cycle_id AND b.status = 'PENDING' AND NOT b.is_phantom)
+      LIMIT $1`,
+    [Math.min(Math.max(Number(limit) || 5, 1), 100)], 'cycles_to_void',
+  );
+  const results = [];
+  for (const { cycle_id: cycleId } of rows) {
+    results.push({ cycleId, ...(await voidCancelledCycle(cycleId)) });
   }
-
-  count('SETTLEMENT_VOID', rows.length ? 'applied' : 'idempotent');
-  return { ok: true, idempotent: !rows.length, settlement: existing, returned };
+  return results;
 }
 
 // ── Reconciliation ───────────────────────────────────────────────────────────
