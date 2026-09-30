@@ -1980,6 +1980,35 @@ Turnstile round trip (no secret in the repo), a real Telegram bot (every token
 answered Unauthorized, correctly), real bank/UPI/USDT rails, and anything
 needing the platform actually deployed with TLS and a real proxy in front.
 
+**The pen test is a scenario now, and it re-runs.** The 09-25 probes were
+typed by hand and never committed, so the next change could re-open any of
+them and nothing would notice. `backend/tests/e2e/scenarios/s8-pentest.js` runs
+them, and the 09-30 additions, on every `npm run test:e2e` (`node
+backend/tests/e2e/run.js s8` alone). Every probe that could move money or
+change an account asserts the DATABASE before and after, not only the status.
+A probe that could not reach the thing it tests is recorded as a NOTE saying
+so, never as a pass (§32 S8): on a server with no casino provider configured,
+the callback probes stop at 404 before any signature is checked.
+
+**Full-codebase security sweep, 2026-09-30.** Found and fixed:
+
+| Finding | Severity | Fix | Proof |
+|---|---|---|---|
+| A signed casino BET debited whichever player the payload named, with no session that player opened. Betby's launch token was unsigned base64 JSON; Pragmatic's was `md5(userId+secret)`, permanent | HIGH once a provider is live (none is configured) | BET requires the player's own live session with that provider; both tokens are now the random per-session id | casinoSessionBindingPg 8 cases, M157 |
+| GCM decryption accepted a truncated tag (identity data, 2FA secrets): 2^32 forgery, not 2^128 | LOW (needs DB write) | `authTagLength: 16` pinned | 2 unit cases, M158, M159 |
+| 28 admin-API methods shipped in the player bundle, one inventing a password client-side | LOW (server authorises every route) | deleted; `/admin/` paths in the player bundle 4 → 0 | tsc, 198 tests, bundle grep |
+| `uuid` < 11.1.1 via Capacitor's iOS tooling (Dependabot alert #32) | MODERATE, dev-only | npm `overrides` scoped to `xcode` | npm audit 0 in all 4 lockfiles |
+| The SQL audit gate saw 408 of 465 call sites | gate defect | classifies every call site | map 150/466, each new site read |
+
+Checked and clean: all 4 lockfiles audit at 0 (dev included) and pass
+`npm audit signatures`; gitleaks over all 788 commits and the tree found only
+test fixtures and placeholders; the 42 unauthenticated routes, both profile
+routes (explicit allowlists), the phantom-bet gate, both Telegram webhooks and
+the CSV export were read. semgrep (OWASP, node, react, jwt, typescript
+rulesets; 458 files) raised 23 findings: the three above and 20 false
+positives, each read. Not covered: the same four items listed above, plus
+semgrep only partially parsed 9 TSX files (a bare `&` in JSX text).
+
 ## Commands
 
 | Command | What it proves |
