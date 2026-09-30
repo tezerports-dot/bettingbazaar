@@ -30,7 +30,7 @@
  * actual sum of user wallets, and the merchant/treasury accounts against
  * theirs, is what makes it an audit rather than an assertion.
  */
-import { pgQuery } from '../client.js';
+import { pgQuery, getPool, connectGuarded } from '../client.js';
 import { ACCOUNTS, ACCOUNT_CODES, EVENT_TYPES } from '../../backend/domains/revenue/chartOfAccounts.js';
 
 /** pg returns BIGINT as a string; every amount crosses this boundary as paise. */
@@ -270,6 +270,66 @@ export async function accountBalancePaise(code) {
  * the payment idempotent — so the mark and the idempotency cannot disagree,
  * which a separate metadata field could.
  */
+/**
+ * Commission the LEDGER says was issued and the merchant's WALLET never got.
+ *
+ * The engine writes the ledger event first and the wallet credit second, on
+ * one key. The high-water mark is derived from the ledger event, so once the
+ * event exists the engine sees no new volume — and a wallet credit that failed
+ * after it was never tried again. The merchant was recorded as paid and was
+ * not, permanently (R6, F-041; trap 19's shape). This is the list of those, for
+ * the engine to deliver on the same key.
+ *
+ * `movement_id` is the caller's key on every merchant wallet movement.
+ */
+export async function undeliveredCommissions({ limit = 200 } = {}) {
+  const { rows } = await pgQuery(
+    `SELECT e.idempotency_key, e.ref_id AS merchant_id, e.amount_paise
+       FROM accounting_events e
+      WHERE e.event_type = 'MERCHANT_BONUS_ISSUED'
+        AND e.idempotency_key LIKE 'acct\\_commission\\_%~%~%'
+        AND NOT EXISTS (SELECT 1 FROM merchant_wallet_entries w
+                         WHERE w.movement_id = e.idempotency_key)
+      ORDER BY e.id
+      LIMIT $1`,
+    [Math.min(Math.max(Number(limit) || 200, 1), 1000)], 'ledger_commission_undelivered',
+  );
+  return rows.map((r) => ({
+    idempotencyKey: r.idempotency_key, merchantId: r.merchant_id, amountPaise: Number(r.amount_paise),
+  }));
+}
+
+/** An arbitrary constant, the commission engine's own advisory-lock id. */
+const COMMISSION_RUN_LOCK = 734_120_915;
+
+/**
+ * Run `fn` only if no other commission pass is running, on any instance.
+ *
+ * The cron has a leader lock; the admin's "run now" route did not, so the two
+ * could overlap — and the pool check is a read, which two passes can both pass.
+ * A session-level advisory lock on a dedicated connection, released in a
+ * `finally`, and a `try` lock rather than a wait: a second pass has nothing to
+ * add, and a caller told "already running" can act on that.
+ *
+ * @returns {{locked:false}} | {{locked:true, value:any}}
+ */
+export async function withCommissionRunLock(fn) {
+  const pool = await getPool();
+  if (!pool) throw new Error('Postgres not configured (DATABASE_URL unset)');
+  const client = await connectGuarded(pool);
+  try {
+    const { rows } = await client.query('SELECT pg_try_advisory_lock($1) AS got', [COMMISSION_RUN_LOCK]);
+    if (!rows[0].got) return { locked: false };
+    try {
+      return { locked: true, value: await fn() };
+    } finally {
+      await client.query('SELECT pg_advisory_unlock($1)', [COMMISSION_RUN_LOCK]).catch(() => {});
+    }
+  } finally {
+    client.release();
+  }
+}
+
 export async function commissionHighWaterMarks() {
   const { rows } = await pgQuery(
     `SELECT ref_id AS merchant_id,

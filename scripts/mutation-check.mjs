@@ -1531,6 +1531,21 @@ const MUTATIONS = [
     why: 'returning unspent budget can drive the drawn total below zero, inventing budget',
     from: `WHERE programme_key = $1 AND disbursed_paise - $2 >= 0`,
     to: `WHERE programme_key = $1`,
+  },  // ── Commission recorded is commission delivered; one pass at a time (R6) ─
+  {
+    id: 'M205', file: 'database/repositories/ledger.core.js', config: PG,
+    test: 'database/tests/merchantCommissionPg.test.js',
+    why: 'a commission the ledger recorded and the wallet never received is never delivered',
+    from: `        AND NOT EXISTS (SELECT 1 FROM merchant_wallet_entries w
+                         WHERE w.movement_id = e.idempotency_key)`,
+    to: `        AND FALSE`,
+  },
+  {
+    id: 'M206', file: 'database/repositories/ledger.core.js', config: PG,
+    test: 'database/tests/merchantCommissionPg.test.js',
+    why: 'the cron and the admin run-now overlap, both reading the pool before either writes',
+    from: `    if (!rows[0].got) return { locked: false };`,
+    to: `    if (false) return { locked: false };`,
   },
 ];
 

@@ -3005,6 +3005,34 @@ recording it.
   relies on are DB-tested.
 - **Mutation-proved:** M203, M204 KILLED.
 
+### F-041 — a commission the ledger recorded and the wallet never received was never delivered
+`FIXED` · high (money recorded as paid, not paid, never retried) · trap 19, §32 S18, S43 · found 2026-09-30 (R6 review)
+
+The engine writes the ledger event (pool → merchant) first and the wallet
+credit second, on one key. The high-water mark is DERIVED from the ledger event.
+So once the event existed, the next pass saw no new volume and never tried the
+credit again. A credit that threw after the event, or a crash between the two,
+left the merchant recorded as paid and unpaid, permanently. The code comment
+said a run that dies in between "heals on the next pass because both sides
+share the key", which was not true. Separately, the admin's "run now" route
+had no lock, while the cron had its leader lock. Two passes could overlap, and
+both pool checks are reads.
+
+- **Fix:** each pass first delivers every commission ledger event with no wallet
+  movement on its key (`undeliveredCommissions`), whatever the policy says:
+  owed is owed. Passes run under a session advisory try-lock
+  (`withCommissionRunLock`), and a second pass is told another is running. The
+  admin toast reports late deliveries.
+- **Tests:** `merchantCommissionPg`. A wallet failure is injected by a trigger
+  on the commission movement; the next pass delivers ₹500, and the pass after
+  that delivers nothing more. Three simultaneous passes give one that ran and
+  two told another is running. Both cases fail on the old engine.
+- **Mutation-proved:** M205, M206 KILLED.
+- **Also seen, not changed:** `merchantCommissionPg` TRUNCATEs `order_states`,
+  `accounting_events`, `merchants` and the merchant wallets before every case.
+  It only works because the pg tier runs files one at a time. Recorded as a
+  trap-10 hazard; running that tier in parallel would break other suites.
+
 ## 5. Derived coverage — regenerated, never typed
 
 <!-- BEGIN GENERATED: npm run audit:map -->
@@ -3086,8 +3114,8 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 472 |
-| Parameters only (safe by construction) | 316 |
+| `pgQuery` call sites | 473 |
+| Parameters only (safe by construction) | 317 |
 | Interpolating into statement text (each needs a reading) | 153 |
 | Statement text built elsewhere and passed in (each needs a reading) | 3 |
 

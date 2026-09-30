@@ -177,8 +177,12 @@ export const MerchantPlatform: React.FC = () => {
     try {
       const res = await api.post<any>('/api/admin/merchant-platform/commission-engine/run');
       if (res.data?.success) {
+        // Commission the ledger recorded on an earlier pass and the wallet never
+        // received is delivered first, whatever the policy says (F-041).
+        const late = (res.data.delivered || []).filter((d: any) => d.delivered).length;
+        const lateNote = late ? ` — ${late} earlier commission(s) delivered` : '';
         if (res.data.ran === false) {
-          toast(res.data.reason || 'Engine idle — no enabled policy.');
+          toast((res.data.reason || 'Engine idle — no enabled policy.') + lateNote);
         } else {
           const results = res.data.results || [];
           const issued = results.filter((r: any) => r.issued).length;
@@ -187,7 +191,7 @@ export const MerchantPlatform: React.FC = () => {
           const unpriced = results.filter((r: any) => !r.issued && /No rate is set/i.test(r.reason || '')).length;
           toast.success(
             `Engine ran (policy v${res.data.policyVersion}): ${issued} paid, ${results.length} variety-merchant pair(s) evaluated`
-            + (unpriced ? ` — ${unpriced} unpriced` : ''),
+            + (unpriced ? ` — ${unpriced} unpriced` : '') + lateNote,
           );
         }
         load();
