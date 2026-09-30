@@ -139,6 +139,8 @@ import GameEngine         from './domains/markets/gameEngine.js';
 import CycleGenerator     from './domains/markets/cycleGenerator.service.js';
 import SSEManager         from './domains/notification/sseManager.service.js';
 import { initSSERoutes }  from './routes/sse.routes.js';
+import androidPublicRoutes from './domains/distribution/androidRelease.routes.js';
+import { RELEASES_DIR, LOCAL_RELEASE_PATH } from './domains/distribution/androidRelease.shared.js';
 import { getSystemConfig } from '#db/repositories/config.js';
 import { db } from '#db';
 import { isDatabaseReachable } from '#db/client.js';
@@ -383,7 +385,13 @@ app.get('/app-assets/:name', async (req, res, next) => {
     // Only a LOCAL asset is served from this directory. One stored on the CDN
     // has its bytes somewhere else entirely, and sending a local file under its
     // content type would serve whatever happened to be left on this disk.
-    if (!asset || asset.storage !== 'LOCAL' || !asset.contentType) return next();
+    if (!asset) return next();
+    // Stored in the bucket: the bytes are not on this disk, so falling through
+    // answered 404 for every uploaded slot in production (S3 is mandatory
+    // there). Send the reader to where the bytes are. The URL is the one
+    // uploadBufferToS3 returned — derived by the server, never from a request.
+    if (asset.storage !== 'LOCAL') return res.redirect(302, asset.url);
+    if (!asset.contentType) return next();
     res.type(asset.contentType);
     return res.sendFile(filePath, (error) => {
       if (error?.code === 'ENOENT') return next();
@@ -397,6 +405,9 @@ app.use('/app-assets', express.static(appAssetsDir, { maxAge: '1h' }));
 // Item 51: local-disk StorageProvider serves from backend/storage/ (S3 deploys
 // never write here — the S3 provider returns CDN/S3 URLs instead).
 app.use('/storage', express.static(path.join(__dirname, 'storage'), { maxAge: '1h' }));
+// Development only: APKs uploaded while S3 is not configured. Each file name
+// carries its version and hash, so a long cache cannot serve a stale build.
+app.use(LOCAL_RELEASE_PATH, express.static(RELEASES_DIR, { maxAge: '7d', immutable: true }));
 
 // ─── SERVICE + PROVIDER REGISTRATION (items 4 + 51) ──────────────────────────
 // Storage: S3 when configured (multi-instance-safe), local disk otherwise.
@@ -585,13 +596,9 @@ app.post('/api/internal/error-report', errorReportLimiter, async (req, res) => {
   }
 });
 
-app.get('/api/download/android', async (req, res) => {
-  try {
-    const config = await getSystemConfig();
-    if (config?.androidUrl) return res.redirect(302, config.androidUrl);
-    res.status(404).json({ success: false, message: 'APK not yet available.' });
-  } catch { res.status(500).json({ success: false, message: 'Server error' }); }
-});
+// /api/download/android and /api/app/android/update — the uploaded, published
+// APK is the one owner of where the Android app lives (androidReleases, §2).
+app.use('/api', androidPublicRoutes);
 app.get('/api/download/ios', async (req, res) => {
   try {
     const config = await getSystemConfig();

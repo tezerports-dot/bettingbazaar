@@ -43,20 +43,13 @@ import { storedReferralCode } from '../../services/referralCapture';
 import { useGame } from '../../services/GameContext';
 import { getBackend } from '../../services/backend.service';
 import { useRetryCountdown } from '../../hooks/useRetryCountdown';
+import { brandLogo } from '../../services/brandAssets';
 
 interface AuthModalProps {
   onClose?: () => void;
   initialMode?: 'login' | 'register';
 }
 
-function resolveLogo(): string {
-  try {
-    const b = JSON.parse(localStorage.getItem('app_branding') || '{}');
-    const cdn = (b.cdnBaseUrl || '').replace(/\/+$/, '');
-    if (b.logo) return b.logo.startsWith('http') ? b.logo : cdn + '/' + String(b.logo).replace(/^\/+/, '');
-  } catch { /* ignore */ }
-  return '/app-assets/logo-header.png';
-}
 
 const FIELD: React.CSSProperties = {
   width: '100%', height: 48, borderRadius: 12, border: '1px solid var(--line2)',
@@ -307,7 +300,7 @@ const AuthModal: React.FC<AuthModalProps> = ({ onClose, initialMode }) => {
       <div className="bb-rise" style={{ position: 'relative', zIndex: 1, width: '100%', maxWidth: 400, background: 'var(--surface)', border: '1px solid var(--line2)', borderRadius: 22, padding: '26px 22px', boxShadow: 'var(--shadow)' }}>
         <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 14 }}>
           {!logoFailed
-            ? <img src={resolveLogo()} alt="Betting Bazaar" onError={() => setLogoFailed(true)} style={{ height: 34, width: 'auto', maxWidth: 220, objectFit: 'contain', filter: 'drop-shadow(0 2px 10px var(--glow))' }} />
+            ? <img src={brandLogo('logo-header.png')} alt="Betting Bazaar" onError={() => setLogoFailed(true)} style={{ height: 34, width: 'auto', maxWidth: 220, objectFit: 'contain', filter: 'drop-shadow(0 2px 10px var(--glow))' }} />
             : <span className="font-grotesk" style={{ color: 'var(--gold-ink)', fontWeight: 700, fontSize: 20, letterSpacing: '.14em' }}>BETTING BAZAAR</span>}
         </div>
 

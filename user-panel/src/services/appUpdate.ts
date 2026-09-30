@@ -1,38 +1,32 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * services/appUpdate.ts — what "Update" means, which depends on what is running.
+ * services/appUpdate.ts — the WEB bundle's version gate.
  *
- * `SystemGuard` (App.tsx) shows the update screen when the BUNDLED version is
- * below the admin's `minVersion`. On the web that is fixed by dropping the
+ * `SystemGuard` (App.tsx) shows "Update Available" when the running bundle is
+ * older than the admin's `minVersion`. On the web that is fixed by dropping the
  * service worker and reloading: the next load fetches the new bundle.
  *
- * In the Android APK the bundle is inside the package. A reload loads the SAME
- * old assets, compares the SAME old version, and shows the SAME screen — so a
- * player whose install an admin had just declared too old could not get out of
- * it from inside the app, and the only instruction on the screen was a button
- * that went round in a circle. The only thing that updates a native install is
- * a new APK, so there the button opens the download.
- *
- * `/api/download/android` 302s to whatever `androidUrl` the admin set, so the
- * link survives every release. It is opened with window.open: Capacitor serves
- * no second window, so the navigation reaches Bridge.launchIntent, which hands
- * any host other than the app's own to the system (an ACTION_VIEW intent) — the
- * browser downloads the file and the installer takes it from there.
+ * It does not apply inside the Android app, and must not. The APK's bundle is
+ * in the package, so a reload runs the same old assets, compares the same old
+ * version and shows the same screen — a loop with no exit. The APK is updated
+ * by installing a newer APK, which NativeUpdateGate does from the releases an
+ * admin publishes on the Android App page. One mechanism per install type, so
+ * there is never a question of which one is in charge (§2).
  */
-import { apiUrl } from './apiUrl';
-import { isNativeShell } from './nativeLifecycle';
 
-/** The native download path, resolved against the API origin. Exported for the test. */
-export function androidDownloadUrl(): string {
-  return apiUrl('/api/download/android');
+/** Whether the web gate should block. Never inside the native shell. */
+export function webBundleOutdated(
+  appVersion: string,
+  minVersion: string,
+  native: boolean,
+  compare: (a: string, b: string) => number,
+): boolean {
+  if (native) return false;
+  if (!appVersion || appVersion === '0.0.0') return false;   // an unversioned dev build
+  return compare(appVersion, minVersion) < 0;
 }
 
 export function startAppUpdate(): void {
-  if (isNativeShell()) {
-    window.open(androidDownloadUrl(), '_blank');
-    return;
-  }
-
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.getRegistrations().then((regs) => {
       for (const reg of regs) reg.unregister();

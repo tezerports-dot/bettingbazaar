@@ -35,6 +35,15 @@ describe('validateEnv', () => {
     expect(() => validateEnv({ ...noCaptcha, ALLOW_NO_CAPTCHA: 'true', NODE_ENV: 'production' }, true)).not.toThrow();
   });
 
+  it('refuses production that ships the Android app without its origin in CORS', () => {
+    const android = { ...full, NODE_ENV: 'production', ANDROID_PACKAGE_ID: 'com.bettingbazaar.app' };
+    expect(() => validateEnv(android, true)).toThrow(/https:\/\/localhost/);
+    const allowed = { ...android, ALLOWED_ORIGINS: `${full.ALLOWED_ORIGINS},https://localhost` };
+    expect(() => validateEnv(allowed, true)).not.toThrow();
+    // No Android app declared: nothing to require.
+    expect(() => validateEnv({ ...full, NODE_ENV: 'production' }, true)).not.toThrow();
+  });
+
   it('does not require either outside production', () => {
     const { TRUST_PROXY, TURNSTILE_SECRET_KEY, ...dev } = full;
     expect(() => validateEnv({ ...dev, NODE_ENV: 'development' }, false)).not.toThrow();

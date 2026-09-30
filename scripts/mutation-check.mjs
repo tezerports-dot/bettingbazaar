@@ -1137,6 +1137,36 @@ const MUTATIONS = [
     from: `Buffer.from(iv, 'base64'), GCM_TAG);`,
     to: `Buffer.from(iv, 'base64'));`,
   },
+  // ── Android releases (2026-09-30) ───────────────────────────────────────────
+  {
+    id: 'M160', file: 'database/repositories/androidReleases.js', config: PG,
+    test: 'backend/tests/routes/androidReleaseRoutes.test.js',
+    why: 'a draft publishes below a release already published, so every phone is offered a DOWNGRADE Android refuses — an update screen that loops for ever',
+    from: `          AND NOT EXISTS (SELECT 1 FROM android_releases p
+                           WHERE p.published_at IS NOT NULL AND p.version_code >= r.version_code)`,
+    to: `          AND true`,
+  },
+  {
+    id: 'M161', file: 'backend/domains/distribution/androidRelease.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/androidReleaseRoutes.test.js',
+    why: 'an APK signed with a different key than the installed app is accepted and published, and every phone refuses it as an update',
+    from: `if (latest && latest.signerSha256 !== info.signerSha256) {`,
+    to: `if (false && latest && latest.signerSha256 !== info.signerSha256) {`,
+  },
+  {
+    id: 'M162', file: 'backend/domains/distribution/androidRelease.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/androidReleaseRoutes.test.js',
+    why: 'a debug-signed build is published; no release install can ever update from it',
+    from: `if (info.debugSigned) {`,
+    to: `if (false && info.debugSigned) {`,
+  },
+  {
+    id: 'M163', file: 'backend/domains/distribution/androidRelease.shared.js', config: UNIT,
+    test: 'backend/tests/unit/androidUpdateStatus.test.js',
+    why: 'an install below a MANDATORY release is only offered the update, so an operator forcing a security fix blocks nobody',
+    from: `if (installedCode < policy.minRequiredVersionCode) return 'required';`,
+    to: `if (installedCode < policy.minRequiredVersionCode) return 'available';`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

@@ -3,15 +3,12 @@
  * `/.well-known/` — the association files the OS reads, not the app.
  *
  * ── Why this exists at all ─────────────────────────────────────────────────
- * Player sign-in is a one-time link the bot sends as
- * `${PUBLIC_APP_ORIGIN}/#/auth/telegram?token=…`. Before this file existed the
- * installed APK had only a MAIN/LAUNCHER intent-filter, so Android had no
- * reason to believe that URL belonged to the app: tapping it opened a browser,
- * the browser redeemed the single-use token into ITS OWN storage, and the app
- * the player had just installed stayed signed out with no way to recover —
- * every fresh link repeats the same journey. An Android App Link is the only
- * mechanism the platform offers to route that tap to the app instead, and
- * Digital Asset Links is how the platform decides the claim is genuine.
+ * The installed APK claims links to `${PUBLIC_APP_ORIGIN}` (an Android App
+ * Link), so the bot's password-reset link — `/#/reset/<token>` — opens the
+ * reset screen in the app rather than a browser. Android only honours that
+ * claim when the site vouches for the app's package and signing key, and this
+ * file is that vouching (Digital Asset Links). Without it the link still works,
+ * in a browser; with it, recovery happens where the player already is.
  *
  * ── Why it is generated rather than committed ──────────────────────────────
  * The file names the app's signing certificate. That fingerprint is a property

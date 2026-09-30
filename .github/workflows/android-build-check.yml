@@ -119,15 +119,18 @@ jobs:
       - name: Sync web assets into the Android project
         run: npx cap sync android
 
-      - name: Assemble debug APK
+      # testDebugUnitTest runs app/src/test — the in-app updater's refusals
+      # (UpdateVerifier: TLS only, the announced SHA-256 only, its own folder
+      # only). They are the checks between a download and Android's installer.
+      - name: Unit-test the native code and assemble a debug APK
         working-directory: user-panel/android
-        run: ./gradlew --no-daemon -PappLinkHost="$APP_LINK_HOST" assembleDebug
+        run: ./gradlew --no-daemon -PappLinkHost="$APP_LINK_HOST" testDebugUnitTest assembleDebug
 
       # ── The debug APK cannot verify an App Link on its own ─────────────────
       # Android matches the installed app's SIGNING CERTIFICATE against the
       # fingerprints in /.well-known/assetlinks.json. This APK is signed with
       # the debug key, whose fingerprint is not the upload key's — so on a
-      # handset the App Link silently fails to verify, the sign-in link opens a
+      # handset the App Link silently fails to verify, the reset link opens a
       # browser, and it looks exactly like the bug this whole change fixes.
       #
       # Worse, it cannot be looked up once and written down: a fresh runner has
@@ -156,7 +159,7 @@ jobs:
           echo "DEBUG_CERT_SHA256=$FP" >> "$GITHUB_ENV"
           echo "Debug signing SHA-256: $FP"
 
-      # The App Link filter is what makes the app signable-into at all, so a
+      # The App Link filter is what lets the bot's reset links open the app, so a
       # merge that dropped it is a release blocker, not a cosmetic regression.
       - name: Verify the App Link filter survived the manifest merge
         working-directory: user-panel/android
@@ -168,7 +171,7 @@ jobs:
           fi
           echo "Checking $MANIFEST"
           grep -q 'android.intent.action.VIEW' "$MANIFEST" \
-            || { echo "::error::No VIEW intent-filter in the merged manifest — sign-in links cannot reach the app."; exit 1; }
+            || { echo "::error::No VIEW intent-filter in the merged manifest — links to the site cannot reach the app."; exit 1; }
           grep -q 'android.intent.category.BROWSABLE' "$MANIFEST" \
             || { echo "::error::No BROWSABLE category in the merged manifest — the OS will not route web links here."; exit 1; }
           grep -q "android:host=\"$APP_LINK_HOST\"" "$MANIFEST" \
@@ -202,13 +205,13 @@ jobs:
             fi
 
             echo ""
-            echo "#### Before testing sign-in with this build"
+            echo "#### Before testing reset links with this build"
             echo ""
             if [ -n "$DEBUG_CERT_SHA256" ]; then
               echo "This APK is signed with the **debug** key, not your upload key. Android checks"
               echo "the installed app's signing certificate against \`/.well-known/assetlinks.json\`,"
               echo "so until this fingerprint is listed there the App Link will not verify — the"
-              echo "sign-in link will open a browser and it will look identical to the bug."
+              echo "reset link will open a browser instead of the app."
               echo ""
               echo "Add it to \`ANDROID_SHA256_CERT_FINGERPRINTS\` on the backend (comma-separated,"
               echo "alongside the upload/Play fingerprints — it is a list for exactly this reason):"

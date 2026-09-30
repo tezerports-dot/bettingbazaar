@@ -37,6 +37,7 @@ import { DisputeManager } from './Pages/Disputes/DisputeManager';
 import { CdmReceiptQueue } from './Pages/Disputes/CdmReceiptQueue';
 import { StalledWithdrawals } from './Pages/Disputes/StalledWithdrawals';
 import { AppAssetsPage } from './Pages/AppAssets/AppAssetsPage';
+import { AndroidAppPage } from './Pages/AndroidApp/AndroidAppPage';
 // UTR REMOVED: import { UTRManager } from './Pages/Finance/UTRManager';
 // ── NEW FEATURE PAGES ──────────────────────────────────────────────────────
 import { PaymentControlCenter } from './Pages/Payment/PaymentControlCenter';
@@ -305,6 +306,12 @@ const App: React.FC = () => {
         {/* App Assets — admin only */}
         <Route path="/app-assets" element={
           <AdminOnly><Layout><AppAssetsPage /></Layout></AdminOnly>
+        } />
+
+        {/* Android App — upload, publish and force updates. Admin only: a
+            release is code that runs on every player's phone. */}
+        <Route path="/android-app" element={
+          <AdminOnly><Layout><AndroidAppPage /></Layout></AdminOnly>
         } />
 
         {/* ── ENTERPRISE PLATFORM CONSOLES (Phase C) ── */}

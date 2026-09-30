@@ -167,7 +167,6 @@ router.get('/system/config', authenticate, isAdmin, async (req, res) => {
         // Operational alert webhook (2026-07-13) — '' = alerting off
         alertWebhookUrl:       config.alertWebhookUrl || '',
         webUrl:        config.webUrl        || '',
-        androidUrl:    config.androidUrl    || '',
         iosUrl:        config.iosUrl        || '',
         minVersion:    config.minVersion    || '1.0.0',
         latestVersion: config.latestVersion || '1.0.0',
@@ -189,7 +188,7 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
       kycRequired, registrationEnabled,
       maintenanceMode, maintenanceMessage,
       depositMethods, withdrawalMethods,
-      webUrl, androidUrl, iosUrl, minVersion, latestVersion,
+      webUrl, iosUrl, minVersion, latestVersion,
       payoutFeePercent, usdtPricing, merchantOrderLimits, riskRules, betReservePercent, winningsFeePercent,
       cycleDurationMinutes, retentionMonths,
       payoutMultiplier, cyclePhases,
@@ -385,7 +384,6 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
     if (depositMethods        !== undefined) fieldWrites.push(['SystemConfig', 'depositMethods', depositMethods]);
     if (withdrawalMethods     !== undefined) fieldWrites.push(['SystemConfig', 'withdrawalMethods', withdrawalMethods]);
     if (webUrl        !== undefined) fieldWrites.push(['SystemConfig', 'webUrl', webUrl]);
-    if (androidUrl    !== undefined) fieldWrites.push(['SystemConfig', 'androidUrl', androidUrl]);
     if (iosUrl        !== undefined) fieldWrites.push(['SystemConfig', 'iosUrl', iosUrl]);
     if (minVersion    !== undefined) fieldWrites.push(['SystemConfig', 'minVersion', minVersion]);
     if (latestVersion !== undefined) fieldWrites.push(['SystemConfig', 'latestVersion', latestVersion]);
@@ -495,7 +493,6 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
         tokenBuyRate:    INR_TOKEN_RATE,
         tokenSellRate:   INR_TOKEN_RATE,
         webUrl:        updatedConfig.webUrl        || '',
-        androidUrl:    updatedConfig.androidUrl    || '',
         iosUrl:        updatedConfig.iosUrl        || '',
         minVersion:    updatedConfig.minVersion    || '1.0.0',
         latestVersion: updatedConfig.latestVersion || '1.0.0',

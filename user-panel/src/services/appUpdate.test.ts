@@ -1,55 +1,45 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file.
 /**
- * "Update" must lead out of the update screen in BOTH places the app runs.
+ * The web version gate blocks outdated WEB bundles and nothing else.
  *
- * The native case is the one that was broken: the APK's assets are in the
- * package, so a reload shows the same outdated bundle and the same screen. It
- * has to open the APK download instead — and must NOT reload, or the player is
- * put straight back on the screen they were trying to leave.
+ * Inside the APK the bundle is in the package, so this gate would loop: reload,
+ * same old assets, same screen. The APK has its own gate (NativeUpdateGate,
+ * driven by published releases) — this one must stand aside there.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { webBundleOutdated, startAppUpdate } from './appUpdate';
 
-let native = false;
-vi.mock('./nativeLifecycle', () => ({ isNativeShell: () => native }));
-vi.mock('./originFailover', () => ({ currentOrigin: () => (native ? 'https://api.example.com' : '') }));
+const cmp = (a: string, b: string) => {
+  const [x, y] = [a, b].map((v) => v.split('.').map(Number));
+  for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) < (y[i] || 0) ? -1 : 1;
+  return 0;
+};
 
-import { startAppUpdate, androidDownloadUrl } from './appUpdate';
+describe('webBundleOutdated', () => {
+  it('blocks a web bundle older than the admin minimum', () => {
+    expect(webBundleOutdated('4.0.0', '4.1.0', false, cmp)).toBe(true);
+  });
+
+  it('never blocks inside the native shell, however old the bundle', () => {
+    expect(webBundleOutdated('1.0.0', '9.0.0', true, cmp)).toBe(false);
+  });
+
+  it('lets a current or unversioned bundle through', () => {
+    expect(webBundleOutdated('4.1.0', '4.1.0', false, cmp)).toBe(false);
+    expect(webBundleOutdated('0.0.0', '9.0.0', false, cmp)).toBe(false);
+  });
+});
 
 describe('startAppUpdate', () => {
-  const reload = vi.fn();
-  let open: ReturnType<typeof vi.spyOn>;
   const realLocation = window.location;
+  afterEach(() => { Object.defineProperty(window, 'location', { configurable: true, value: realLocation }); });
 
-  beforeEach(() => {
-    reload.mockReset();
-    open = vi.spyOn(window, 'open').mockImplementation(() => null);
+  it('reloads to fetch the new bundle', async () => {
+    const reload = vi.fn();
     Object.defineProperty(window, 'location', { configurable: true, value: { ...realLocation, reload } });
-  });
-  afterEach(() => {
-    open.mockRestore();
-    Object.defineProperty(window, 'location', { configurable: true, value: realLocation });
-  });
-
-  it('in the APK, opens the download at the API origin and does not reload', () => {
-    native = true;
-    startAppUpdate();
-    expect(open).toHaveBeenCalledWith('https://api.example.com/api/download/android', '_blank');
-    expect(reload).not.toHaveBeenCalled();
-  });
-
-  it('on the web, reloads and opens nothing', async () => {
-    native = false;
     startAppUpdate();
     await Promise.resolve();
     await Promise.resolve();
-    expect(open).not.toHaveBeenCalled();
     expect(reload).toHaveBeenCalledTimes(1);
-  });
-
-  it('never points the APK at its own origin', () => {
-    // A relative path inside the shell resolves against https://localhost —
-    // the handset — and downloads nothing.
-    native = true;
-    expect(androidDownloadUrl().startsWith('https://api.example.com/')).toBe(true);
   });
 });

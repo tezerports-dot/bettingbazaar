@@ -195,6 +195,16 @@ export function validateEnv(env = process.env, isProd = env.NODE_ENV === 'produc
     throw new Error('FATAL: TURNSTILE_SECRET_KEY is unset, so the captcha on signup and login would pass everything. Set it, or set ALLOW_NO_CAPTCHA=true to explicitly accept running without one.');
   }
 
+  // ANDROID_PACKAGE_ID says this deploy ships the Android app. The app runs at
+  // https://localhost inside the phone (Capacitor), so every request it makes
+  // is cross-origin from there — and with that origin missing from the CORS
+  // allow-list, every one is refused. Nothing on the server logs it as an
+  // error and the app simply shows nothing, so the pairing is enforced here.
+  if (isProd && String(env.ANDROID_PACKAGE_ID || '').trim()
+      && !csv(env.ALLOWED_ORIGINS).includes('https://localhost')) {
+    throw new Error('FATAL: ANDROID_PACKAGE_ID is set, so this deploy ships the Android app, but ALLOWED_ORIGINS does not include https://localhost — the origin the app runs at on the phone. Add it, or every request from the app is refused.');
+  }
+
   if (advisedMissing.length && isProd) {
     console.warn('⚠️  Advised (not fatal) environment variables unset for production:');
     for (const [k, why] of ADVISED) {

@@ -109,7 +109,9 @@ export const SYSTEM_CONFIG_SPEC = group({
   minVersion:    s('1.0.0'),
   maintenanceMode:    b(false),
   maintenanceMessage: s(''),
-  androidUrl: s(''), iosUrl: s(''), webUrl: s(''),
+  // No androidUrl: the Android app's location is the newest published row of
+  // android_releases (uploaded on the admin Android App page), not a typed link.
+  iosUrl: s(''), webUrl: s(''),
 
   // Support links used to be declared here TOO, beside the dedicated
   // `supportLinks` scope below. Both existed, so the admin page wrote one and

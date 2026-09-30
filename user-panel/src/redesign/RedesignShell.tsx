@@ -25,6 +25,7 @@ import NotificationBell from '../components/Layout/NotificationBell';
 import ShareModal from '../components/Modals/ShareModal';
 import AnnouncementBanner from '../components/AnnouncementBanner';
 import VerificationGateModal from '../components/Modals/VerificationGateModal';
+import { brandLogo } from '../services/brandAssets';
 
 interface ShellContextValue {
   isAuthenticated: boolean;
@@ -38,15 +39,6 @@ export const useShell = (): ShellContextValue => {
   return ctx;
 };
 
-// ── brand logo resolution (mirrors Header.tsx / GOVERNANCE §12) ────────────────
-function resolveLogo(): string {
-  try {
-    const b = JSON.parse(localStorage.getItem('app_branding') || '{}');
-    const cdn = (b.cdnBaseUrl || '').replace(/\/+$/, '');
-    if (b.logo) return b.logo.startsWith('http') ? b.logo : cdn + '/' + String(b.logo).replace(/^\/+/, '');
-  } catch { /* ignore */ }
-  return '/app-assets/logo-header.png';
-}
 
 /**
  * ── A card is only shown when its destination has something behind it ──────
@@ -109,7 +101,7 @@ const MENU_SECTIONS = [
     { label: 'Pro Tips', icon: '💡', path: '/promo' },
     { label: 'Refer & Earn', icon: '🎁', path: '/referrals' },
     // Opens a modal rather than navigating. It is the ONLY way a player can
-    // reach the app downloads: an admin sets `androidUrl`/`iosUrl` in system
+    // reach the app downloads: an admin publishes an Android release / sets `iosUrl` in system
     // config, `/api/download/android` and `/api/download/ios` 302 to them, and
     // before this entry existed nothing in the panel linked to either — the
     // fields were admin-editable with no consumer (§3) and the routes were a
@@ -136,7 +128,7 @@ const RedesignShell: React.FC<React.PropsWithChildren<{}>> = ({ children }) => {
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
   const [logoFailed, setLogoFailed] = useState(false);
 
-  const logoSrc = resolveLogo();
+  const logoSrc = brandLogo('logo-header.png');
   // ── DELIBERATELY deposit + winnings, and NOT the reserve ──────────────────
   // This pill is smaller than the total on the wallet screen, on purpose. The
   // reserve is not freely spendable — only `betReservePercent` of a stake may
