@@ -374,7 +374,7 @@ names the test that failed before the fix and the mutation that proves it.
 | R3 | ~~Full mutation run (all 135 entries)~~ **done** — CI on PR #198 (`ba2a861`): 135/135 killed. Its first run caught M171 surviving after C3; retargeted | — | — |
 | R4 | Browser passes (`test:browser`, `test:drive`, `test:mutate`, `test:forms`) — **owner: do it**; queued last so it covers everything below | Claude | ~2 hours |
 | R5 | ~~PostgreSQL 18~~ **done** — CI on PR #198: pg tier 109/109 files green on PostgreSQL 18.6 | — | — |
-| R6 | **owner: do it** — Domains the review did not reach: bet placement/settlement engine, 2FA/reset, Telegram gates, referral payouts, commission engine, USDT rail, casino callback, sub-admin permissions | Claude | ~1–2 days |
+| R6 | **owner: do it — IN PROGRESS.** Domains the review did not reach: ~~bet placement~~ (F-033, F-034 fixed), settlement engine, 2FA/reset, Telegram gates, referral payouts, commission engine, USDT rail, casino callback, sub-admin permissions | Claude | ~1–2 days |
 | R7 | P197-1 real v2 signature verification, if wanted | Claude | ~half a day with a real signed APK fixture |
 | R8 | ~~Force the races behind M49 / M122~~ **done**: M49's export test now forces the overlap (a SHARE lock on `kyc_batches` parks export A holding its rows while B runs) — KILLED 3/3. M122 was already deterministic: the sequential 'second tap' test kills it | — | — |
 

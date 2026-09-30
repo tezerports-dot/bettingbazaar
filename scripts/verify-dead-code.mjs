@@ -96,10 +96,15 @@ for (const [f, src] of all) {
   for (const name of names) {
     if (ALLOW.has(name)) continue;
     const re = new RegExp(`\\b${name}\\b`, 'g');
+    // Another module DEFINING an export of the same name is not a use of this
+    // one. `walletAuthority.debitForBet` wraps `wallets.debitForBet`; with the
+    // other file's definition line counted, each kept the other alive and
+    // neither was ever reported, though no route called either (R6).
+    const otherDefRe = new RegExp(`^export\\s+(?:async\\s+)?(?:function|const|let|class)\\s+${name}\\b.*$`, 'gm');
     let prod = 0, tests = 0;
     for (const [g, s] of all) {
       if (g === f) continue;
-      const n = (s.match(re) || []).length;
+      const n = (s.replace(otherDefRe, '').match(re) || []).length;
       if (isTest(g)) tests += n; else prod += n;
     }
     if (prod > 0) continue;
@@ -109,7 +114,12 @@ for (const [f, src] of all) {
     const own = src.split('\n')
       .filter((l) => !defRe.test(l) && !new RegExp(`^\\s*${name},?\\s*$`).test(l))
       .join('\n');
-    const self = (own.match(re) || []).length;
+    // `pg.debitForBet(…)` inside the file that defines `debitForBet` is a call
+    // to the OTHER module's export, not a use of this one — a member access is
+    // never a reference to a bare local name.
+    // A spread (`...name`) IS a use; only `x.name`, `).name`, `].name` and
+    // `?.name` are member accesses.
+    const self = (own.match(new RegExp(`(?<![\\w$])(?<![\\w$\\])?]\\.)${name}\\b`, 'g')) || []).length;
     const row = { file: f, name };
     if (self > 0) over.push(row);
     else if (tests > 0) testOnly.push(row);

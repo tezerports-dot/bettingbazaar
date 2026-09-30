@@ -31,7 +31,7 @@
 import { paiseToRupees, rupeesToPaise } from '../../backend/shared/money.js';
 import { pgQuery } from '../client.js';
 import {
-  applyMovementPaise, applyMovementWithin, debitSpendOrderPaise, getBalancesPaise, withWalletLock,
+  applyMovementPaise, applyMovementWithin, getBalancesPaise, withWalletLock,
 } from './wallets.core.js';
 
 /** Every balance a caller might read, in rupees. */
@@ -120,43 +120,6 @@ export async function refundOrder(userId, amount, orderId, field = 'depositBalan
 
 // ── Spending ────────────────────────────────────────────────────────────────
 
-/**
- * wallet.service.debitForBet — deposit first, winnings covers the shortfall.
- * Rows are keyed `<base>_dep` / `<base>_win`, one per pocket the stake drew
- * from, so a partially funded bet is reconstructable from the ledger alone.
- */
-export async function debitForBet(userId, amount, reason, refModel, refId, txId) {
-  if (!txId) throw new Error('debitForBet on Postgres requires a deterministic txId');
-  const amountPaise = rupeesToPaise(amount);
-  if (amountPaise <= 0) throw new Error(`Invalid debit amount: ${amount}`);
-
-  const result = await debitSpendOrderPaise({
-    userId, amountPaise, txId, refId, type: 'DEBIT',
-    pockets: [
-      { field: 'depositBalance',  suffix: '_dep', reason },
-      { field: 'winningsBalance', suffix: '_win', reason: `${reason} (winnings shortfall)` },
-    ],
-  });
-
-  if (result.idempotent) return { idempotent: true, txId };
-  if (!result.ok) {
-    // Callers match on this message and failure mode — do not reword it.
-    throw new Error(`Insufficient balance: have ₹${rupees(result.availablePaise ?? 0)}, need ₹${amount}`);
-  }
-
-  const after = result.balancesAfterPaise;
-  const fromDeposit  = rupees(result.split.depositBalance  || 0);
-  const fromWinnings = rupees(result.split.winningsBalance || 0);
-  return {
-    txId,
-    depositBefore:  rupees(after.depositBalance)  + fromDeposit,
-    winningsBefore: rupees(after.winningsBalance) + fromWinnings,
-    depositAfter:   rupees(after.depositBalance),
-    winningsAfter:  rupees(after.winningsBalance),
-    fromDeposit, fromWinnings,
-    balances: mapRupees(after),
-  };
-}
 
 /**
  * wallet.service.debitWinningsForWithdrawal — winnings → locked, ONE ledger row
@@ -365,39 +328,6 @@ export async function lockBetStake(userId, { amountPaise, txId, refId, slices })
     ledger: slices.map((s) => ({
       txId: `${txId}${s.suffix}`, field: s.field, amountPaise: -s.amountPaise,
       type: 'DEBIT', reason: s.reason, refId,
-    })),
-  });
-
-  if (result.idempotent) return { ok: true, idempotent: true, txId };
-  if (!result.ok) return { ok: false, insufficient: true, txId };
-  return { ok: true, idempotent: false, txId, balances: mapRupees(result.balancesAfterPaise) };
-}
-
-/**
- * walletAuthority.unlockBetStake — the exact reverse, for the compensating path
- * when the cycle closes between the debit and the pool commit. Atomic for the
- * same reason: a partial restore is worse than no bet.
- */
-export async function unlockBetStake(userId, { amountPaise, txId, refId, slices }) {
-  const provenance = {
-    depositBalance:  'lockedDepositAmount',
-    winningsBalance: 'lockedWinningsAmount',
-  };
-
-  const result = await applyMovementPaise({
-    userId,
-    legs: [
-      { field: 'lockedBalance', deltaPaise: -amountPaise },
-      ...slices.flatMap((s) => [
-        { field: s.field, deltaPaise: s.amountPaise },
-        ...(provenance[s.field]
-          ? [{ field: provenance[s.field], deltaPaise: -s.amountPaise, allowNegative: true }]
-          : []),
-      ]),
-    ],
-    ledger: slices.map((s) => ({
-      txId: `${txId}${s.suffix}`, field: s.field, amountPaise: s.amountPaise,
-      type: 'CREDIT', reason: s.reason, refId,
     })),
   });
 

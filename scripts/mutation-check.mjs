@@ -1408,6 +1408,36 @@ const MUTATIONS = [
     why: 'a failed reload drops to an empty list, so a database blip unblocks every blocked client at once',
     from: `    refreshIpBlocklistNow().catch((error) => {`,
     to: `    refreshIpBlocklistNow().catch((error) => { list = new net.BlockList(); count = 0;`,
+  },  // ── Bet placement (R6) ──────────────────────────────────────────────────
+  {
+    id: 'M188', file: 'backend/domains/markets/bet.routes.js', config: PG,
+    test: 'backend/tests/routes/betPlaceRoutesPg.test.js',
+    why: 'the stake limits come from the type the client SENDS, so a full-day bet goes under the full-day floor by claiming to be a 30-minute bet',
+    from: `const limitsKey = isCycleType(cycle.type) ? limitsKeyFor(cycle.type) : 'thirtyMin';`,
+    to: `const limitsKey = isCycleType(req.body.type) ? limitsKeyFor(req.body.type) : 'thirtyMin';`,
+  },
+  {
+    id: 'M189', file: 'database/repositories/bets.js', config: PG,
+    test: 'backend/tests/routes/betPlaceRoutesPg.test.js',
+    why: 'a bet whose cycle closed during placement is reported refunded while its stake stays locked',
+    from: `  return refundBet({
+    betId, userId: String(userId), reason,`,
+    to: `  return { ok: true }; ({
+    betId, userId: String(userId), reason,`,
+  },
+  {
+    id: 'M190', file: 'backend/domains/markets/bet.routes.js', config: PG,
+    test: 'backend/tests/routes/betPlaceRoutesPg.test.js',
+    why: 'a failed refund is swallowed and the player is told "fully restored" while the stake is still locked',
+    from: `      } catch (refundErr) {`,
+    to: `      } catch (refundErr) { return res.status(400).json({ success: false, message: 'Betting window just closed. Your balance has been fully restored.' });`,
+  },
+  {
+    id: 'M191', file: 'backend/domains/markets/bet.routes.js', config: PG,
+    test: 'backend/tests/routes/betPlaceRoutesPg.test.js',
+    why: 'a phantom bet with a non-numeric amount reaches rupeesToPaise and answers 500',
+    from: `    if (!Number.isFinite(amount) || amount < 1) {`,
+    to: `    if (amount < 1) {`,
   },
 ];
 

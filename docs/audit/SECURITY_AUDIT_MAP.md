@@ -2781,6 +2781,63 @@ credentials — WebView cookie stores are per-app).
 
 ---
 
+### F-033 — bet limits were chosen by the type the CLIENT sent
+`FIXED` · medium (a configured limit the platform did not enforce) · §3, §18.1 · found 2026-09-30 (R6 review)
+
+`POST /api/bet/place` keyed `betLimits` on `req.body.type`, not on the cycle it
+was placing into. A full-day bet (floor ₹100) went through at ₹10 by sending
+`type: "30_MIN"`, and a 30-minute bet reached the full-day ceiling (₹5,00,000)
+by sending `FULL_DAY`. **The player panel sends no `type` at all**, so on the real
+screen every bet on every board was held to the 30-minute limits, and
+`betLimits.fullDay` and `betLimits.oneMin` were admin-editable numbers nothing
+honoured. That is §3's shape, found from the request side.
+
+- **Fix:** the cycle is read first, and the limits are the cycle's own type's.
+  The body's `type` is no longer read for anything; the response reports
+  `cycle.type`.
+- **Tests:** `betPlaceRoutesPg`: under-floor full-day and over-ceiling
+  30-minute stakes are refused, and nothing is written (both 200 before the fix).
+- **Mutation-proved:** M188 KILLED.
+- **Swept:** the other money routes decide by the order's or cycle's own
+  stamped value (C1's rail snapshot; `order_states.payment_mode`). Phantom bets
+  take the cycle's type from the row. None other.
+
+### F-034 — a bet whose cycle closed during placement could not be refunded
+`FIXED` · medium (a stake held, a player told the platform failed) · §21, §32 S7, S43 · found 2026-09-30 (R6 review)
+
+When the cycle closed between the stake commit and the pool check, the route
+DELETEd the bet and then refunded the stake in a second transaction, whose
+failure was swallowed while the player was told "fully restored". The DELETE
+could never succeed: `bet_transitions` references the bet `ON DELETE RESTRICT`,
+and placement always writes a transition. **Every late close therefore
+answered 500 "could not confirm your bet"** and paged an operator, and the bet
+stayed PENDING on the closed cycle. Had the DELETE worked, a failed refund
+would have left the stake locked against a bet that no longer existed. The
+comment saying reconciliation would catch it named `reconcileUserStakes`,
+which nothing calls (S43).
+
+- **Fix:** PENDING → REFUNDED through the existing, previously uncalled
+  `refundBet`: the transition, the stake returned to the pockets it came from,
+  and the ledger rows, in one transaction under the bet lock settlement also
+  takes. A refund that fails leaves the bet PENDING with its stake behind it,
+  and the player is told the bet stays in the cycle rather than that it was
+  refunded.
+- **Tests:** `betPlaceRoutesPg` forces the close, with no timing luck: it holds
+  the wallet row, lets the request park on it, closes the cycle, then releases.
+  A second case injects a refund failure with a trigger scoped to one user.
+- **Mutation-proved:** M189, M190 KILLED.
+- **Also:** a phantom bet with a non-numeric (or numeric-string) amount answered
+  500 (S35); now a 400. M191 KILLED.
+- **Removed, nothing called them:** `claimPendingBetForRefund`,
+  `unlockBetStake` (both layers), `lockBetStake` (authority layer),
+  `debitForBet` (both layers; a bet debit that wrote no bet), and
+  `debitSpendOrderPaise` with its test, which `TRUNCATE`d `wallets` and
+  `wallet_ledger` before every case (trap 10).
+- **Gate fixed:** `check:dead-code` counted another module's same-named
+  DEFINITION, and a member access (`pg.debitForBet`) in the defining file, as
+  uses. That is why the `debitForBet` pair was never reported. A name in a
+  string literal still counts; that remains a blind spot.
+
 ## 5. Derived coverage — regenerated, never typed
 
 <!-- BEGIN GENERATED: npm run audit:map -->
@@ -2862,8 +2919,8 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 470 |
-| Parameters only (safe by construction) | 314 |
+| `pgQuery` call sites | 469 |
+| Parameters only (safe by construction) | 313 |
 | Interpolating into statement text (each needs a reading) | 153 |
 | Statement text built elsewhere and passed in (each needs a reading) | 3 |
 

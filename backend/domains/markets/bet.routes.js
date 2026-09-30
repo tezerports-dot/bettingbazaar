@@ -3,7 +3,7 @@
 
 import express from 'express';
 import { db } from '#db';
-import { creditWinnings, lockBetStake, unlockBetStake, getBalances } from '../wallet/walletAuthority.service.js'; // HIGH-03: atomicBet removed (never called; inline atomic pattern used instead)
+import { getBalances } from '../wallet/walletAuthority.service.js';
 import { authenticate, requireLinkedKyc } from '../identity/auth.middleware.js';
 import { betLimiter } from '../../middleware/security.js';
 // Betting is for members of the official Telegram channel. The gate serves a
@@ -123,34 +123,12 @@ router.post('/place', authenticate, requireLinkedKyc, requireChannelMembership({
       return res.json(await idempotentBetResponse(priorBet, userId, type));
     }
 
-    // ── FIX A: DB-driven limits ──────────────────────────────────────────────
-    // Old: const minBet = type === 'FULL_DAY' ? 100 : 10;  ← always hardcoded
-    // New: read betLimits from SystemConfig.betLimits; fall back to safe defaults.
-    // The limits key comes from the type registry rather than an isFullDay
-    // ternary. Under the ternary a type that was neither silently inherited the
-    // 30-minute bounds — which happens to be right for the 1-minute block and
-    // would have been wrong, invisibly, for the next type added.
-    const config    = await getSystemConfig();
-    const isFullDay = type === CYCLE_TYPES.FULL_DAY;
-    const limitsKey = isCycleType(type) ? limitsKeyFor(type) : 'thirtyMin';
-    const minBet    = config?.betLimits?.[limitsKey]?.min ?? (isFullDay ? 100  : 10);
-    const maxBet    = config?.betLimits?.[limitsKey]?.max ?? (isFullDay ? 500000 : 100000);
-
     if (!MARKET_SIDES.includes(side)) {
       return res.status(400).json({ success: false, message: 'Invalid side — must be DELHI or BOMBAY' });
     }
 
-    // ── Risk Platform gate (Phase 010) — the single validation authority ────
-    // positive/whole/multiples-of-10, min/max, and the config-gated
-    // opposite-side restriction. Replaces the inline checks this route
-    // previously ran itself.
-    try {
-      await assessBet({ userId, cycleId, side, amount, min: minBet, max: maxBet });
-    } catch (riskErr) {
-      return res.status(riskErr.status || 400).json({ success: false, message: riskErr.message, code: riskErr.code });
-    }
-
     // ── Cycle check ──────────────────────────────────────────────────────────
+    // Read BEFORE the limits, because the limits belong to the cycle.
     const cycle = await db.markets.getCycle(cycleId);
 
     if (!cycle) {
@@ -162,6 +140,27 @@ router.post('/place', authenticate, requireLinkedKyc, requireChannelMembership({
         success: false,
         message: `Betting closed. Cycle status: ${cycle.status}`
       });
+    }
+
+    // ── The stake limits are the CYCLE'S ─────────────────────────────────────
+    // Keyed on `cycle.type`, never on the `type` the client sent. They used to
+    // be read from the request body, so a full-day bet (floor ₹100) went
+    // through at ₹10 by claiming to be a 30-minute bet, and a 30-minute bet
+    // reached the full-day ceiling by claiming the opposite (R6, 2026-09-30).
+    // The body's `type` is now only echoed back in the response.
+    const config    = await getSystemConfig();
+    const isFullDay = cycle.type === CYCLE_TYPES.FULL_DAY;
+    const limitsKey = isCycleType(cycle.type) ? limitsKeyFor(cycle.type) : 'thirtyMin';
+    const minBet    = config?.betLimits?.[limitsKey]?.min ?? (isFullDay ? 100  : 10);      // schema default: 100 / 10
+    const maxBet    = config?.betLimits?.[limitsKey]?.max ?? (isFullDay ? 500000 : 100000); // schema default: 500000 / 100000
+
+    // ── Risk Platform gate (Phase 010) — the single validation authority ────
+    // positive/whole/multiples-of-10, min/max, and the config-gated
+    // opposite-side restriction.
+    try {
+      await assessBet({ userId, cycleId, side, amount, min: minBet, max: maxBet });
+    } catch (riskErr) {
+      return res.status(riskErr.status || 400).json({ success: false, message: riskErr.message, code: riskErr.code });
     }
 
     // ── Time backstop: betting closes on the CLOCK, not on a flag ────────────
@@ -394,57 +393,43 @@ router.post('/place', authenticate, requireLinkedKyc, requireChannelMembership({
     // doing the same, which is a 40P01 deadlock on the hottest path here.
     const cycleStillOpen = await db.markets.getAcceptingCycle(cycleId);
     if (!cycleStillOpen) {
-      // Cycle closed between the pre-check and the commit — restore the stake
-      // through the same authority that took it, so the compensating CREDIT
-      // rows and the balance move stay together (CRIT-03).
+      // Cycle closed between the pre-check and the commit. Return the stake.
       //
-      // Claim the bet BEFORE refunding, and only refund if the claim succeeded.
-      // Settlement selects on `status: 'PENDING'`, so it can legitimately have
-      // picked this row up in the window we are compensating for. If it did,
-      // it has already paid or consumed the stake — deleting and refunding on
-      // top of that pays the user twice. Conditioning the delete on PENDING
-      // makes the two paths race for the same row and lets exactly one win.
+      // PENDING → REFUNDED, the stake back to the pockets it came from, and the
+      // ledger rows: ONE transaction, under the bet lock settlement also takes
+      // (`refundPlacedBet`). So either this refund or settlement owns the bet,
+      // never both, and a refund that fails leaves the bet PENDING with its
+      // stake behind it, for settlement to resolve. Nothing is stranded.
       //
-      // This ordering also fixes the same latent double-refund on the default
-      // stored-pool path, where the delete was unconditional.
+      // It used to DELETE the bet and then refund in a second transaction whose
+      // failure was swallowed while the player was told "fully restored". The
+      // DELETE could never succeed (`bet_transitions` references the bet ON
+      // DELETE RESTRICT), so every late close answered 500 and paged an operator.
       //
-      // The claim has THREE outcomes, and collapsing the last two loses money.
-      // A `.catch(() => null)` here would make a thrown query indistinguishable
-      // from "no document matched", sending a transient database error down the
-      // settlement-owns-it branch — which deliberately does not refund. The
-      // stake would stay locked against a bet nobody settles, and the user would
-      // be told it settled, so they would not even report it. Reconciliation
-      // cannot recover it either: both stores agree the debit happened.
-      let claimed;
+      // Three outcomes:
+      //   ok                  → refunded (or already refunded by a replay)
+      //   invalid_transition  → settlement got there first; it owns the stake
+      //   a THROW             → unknown; page a human, tell the truth
+      let refund;
       try {
-        // `status = 'PENDING'` is in the DELETE's WHERE clause, so the database
-        // settles who owns this bet rather than a read either side could pass.
-        ({ claimed } = await db.bets.claimPendingBetForRefund(bet.betId ?? bet._id));
-      } catch (claimErr) {
-        // Ownership genuinely unknown. Refunding risks paying twice; not
-        // refunding risks locking the stake. Do neither silently — page the
-        // operator with the identifiers needed to resolve it by hand, and tell
-        // the user the truth rather than a comforting guess.
-        console.error(`Bet ${bet.betId ?? bet._id} compensation unresolved:`, claimErr.message);
+        refund = await betAuthority.refundPlacedBet({
+          betId: betTxBase, userId, slices: stakeSlices,
+          reason: `Bet refund — cycle closed during placement (₹${amount} on ${side})`,
+        });
+      } catch (refundErr) {
+        console.error(`Bet ${betTxBase} compensation unresolved:`, refundErr.message);
         sendAlert('bet-compensation-unresolved',
-          'Could not determine bet ownership while refunding a closed-cycle bet', {
-            betId: String(bet.betId ?? bet._id), userId: String(userId), cycleId, amount,
-            error: claimErr.message,
+          'Could not return the stake of a bet whose cycle closed during placement', {
+            betId: betTxBase, userId: String(userId), cycleId, amount,
+            error: refundErr.message,
           }).catch(() => { /* alerting must never mask the original failure */ });
         return res.status(500).json({
           success: false,
-          message: 'Betting closed and we could not confirm your bet. Support has been notified and your balance will be reconciled — please do not retry.',
+          message: 'Betting closed while your bet was being placed and we could not confirm it. It stays in this cycle and will settle with it — check My Bets. Please do not retry.',
         });
       }
 
-      if (claimed) {
-        await unlockBetStake(userId, {
-          amount, txId: `refund_bet_${bet.betId ?? bet._id}`, refId: String(bet.betId ?? bet._id),
-          slices: stakeSlices.map((s) => ({
-            ...s,
-            reason: `Bet refund — cycle closed during placement (${s.field.replace('Balance', '')} portion)`,
-          })),
-        }).catch(() => { /* restore failure is alerted by reconciliation, never blocks the response */ });
+      if (refund.ok) {
         return res.status(400).json({
           success: false,
           message: 'Betting window just closed. Your balance has been fully restored.'
@@ -539,7 +524,7 @@ router.post('/place', authenticate, requireLinkedKyc, requireChannelMembership({
         side,
         amount,
         status:   'PENDING',   // BettingCard filters userBets by status === 'PENDING' for "You: ₹X" badge
-        type,
+        type:     cycle.type,
         placedAt: bet.timestamp
       },
       balance: {
@@ -569,7 +554,8 @@ router.post('/place', authenticate, requireLinkedKyc, requireChannelMembership({
 // ─────────────────────────────────────────────────────────────────────────────
 router.post('/phantom', authenticate, async (req, res) => {
   try {
-    const { cycleId, side, amount } = req.body;
+    const { cycleId, side } = req.body;
+    const amount = Number(req.body.amount);
     const userId = req.user.userId;
 
     // ── Auth: only phantom agents may call this ────────────────────────────
@@ -590,8 +576,10 @@ router.post('/phantom', authenticate, async (req, res) => {
       });
     }
 
-    if (!amount || amount < 1) {
-      return res.status(400).json({ success: false, message: 'Invalid amount' });
+    // A number, at least ₹1. A non-number (or a numeric STRING) used to reach
+    // `rupeesToPaise`, throw a bare TypeError and answer 500 (§32 S35).
+    if (!Number.isFinite(amount) || amount < 1) {
+      return res.status(400).json({ success: false, message: 'Enter an amount of at least ₹1.' });
     }
     if (!MARKET_SIDES.includes(side)) {
       return res.status(400).json({ success: false, message: 'Invalid side' });

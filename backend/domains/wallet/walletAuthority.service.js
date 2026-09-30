@@ -20,7 +20,6 @@
  */
 
 import { sseBalancePush } from '../notification/realtimeEmitters.js';
-import { rupeesToPaise } from '../../shared/money.js';
 import * as pg from '#db/repositories/wallets.js';
 import { applyAdjustment, listAdjustments, ADJUSTABLE_FIELDS } from '#db/repositories/balanceAdjustments.js';
 
@@ -62,16 +61,6 @@ export async function getBalances(userId) {
 
 
 // ── PUBLIC API ────────────────────────────────────────────────────────────────
-
-/**
- * Debit bet stake from depositBalance (primary) then winningsBalance.
- * Idempotent via txId. Writes WalletLedger. Pushes SSE balance update.
- */
-export async function debitForBet(userId, amount, betId, cycleId, session) {
-  const reason = `Bet ₹${amount} on cycle ${cycleId}`;
-  const txId = `bet_${userId}_${cycleId}_${betId}`;
-  return pushBalances(userId, await pg.debitForBet(userId, amount, reason, 'Bet', betId, txId));
-}
 
 /**
  * Credit winnings to winningsBalance.
@@ -177,47 +166,6 @@ export async function releaseLockedStake(userId, { amount, fromDeposit = 0, from
   return pg.releaseLockedStake(userId, { amount, fromDeposit, fromWinnings, txId, reason });
 }
 
-/**
- * lockBetStake — bet placement: move the stake out of its pockets into
- * `locked`, recording which pocket each slice came from.
- *
- * THE sanctioned writer for a bet's stake lock (§7). This logic used to live
- * inline in domains/markets/bet.routes.js as a raw three-field `$inc`, which
- * meant balances had two writers and the money-authority switch could not
- * reach one of them — flipping the wallet path would have split the source of
- * truth mid-bet.
- *
- * @param {object} args
- * @param {number} args.amount  the full stake (locked gains exactly this)
- * @param {string} args.txId    base key; each slice's row is `${txId}${suffix}`
- * @param {Array<{field:string, suffix:string, amount:number, reason:string}>} args.slices
- *   must sum to `amount` — the pockets the stake is drawn from, already split
- *   by the risk domain's funding plan.
- * @returns {Promise<{ok, insufficient?, balances?}>}
- */
-export async function lockBetStake(userId, { amount, txId, refId, slices }) {
-  return pg.lockBetStake(userId, {
-    amountPaise: rupeesToPaise(amount), txId, refId,
-    slices: slices.map((s) => ({ ...s, amountPaise: rupeesToPaise(s.amount) })),
-  });
-}
-
-/**
- * unlockBetStake — the exact reverse, for the compensating path when the cycle
- * closes between the stake debit and the pool commit.
- */
-export async function unlockBetStake(userId, { amount, txId, refId, slices }) {
-  return pg.unlockBetStake(userId, {
-    amountPaise: rupeesToPaise(amount), txId, refId,
-    slices: slices.map((s) => ({ ...s, amountPaise: rupeesToPaise(s.amount) })),
-  });
-}
-
-/** Lock provenance counters, by the pocket they track. Reserve has none. */
-const LOCK_PROVENANCE = {
-  depositBalance:  'lockedDepositAmount',
-  winningsBalance: 'lockedWinningsAmount',
-};
 
 
 /**
