@@ -371,9 +371,9 @@ names the test that failed before the fix and the mutation that proves it.
 |---|---|---|---|
 | R1 | Decide B2: keep the deny-list deleted, or have it built (mount, routes, screen, tests) | owner | a decision; building is ~1 day |
 | R2 | Merge this branch's PR | owner | 5 min |
-| R3 | Full mutation run (all 135 entries) in a separate worktree | Claude | ~3–4 hours unattended |
+| R3 | ~~Full mutation run (all 135 entries)~~ **done** — CI on PR #198 (`ba2a861`): 135/135 killed. Its first run caught M171 surviving after C3; retargeted | — | — |
 | R4 | Browser passes (`test:browser`, `test:drive`, `test:mutate`, `test:forms`) | Claude | ~2 hours |
-| R5 | PostgreSQL 18 (everything here ran on 16; CI runs 18) | CI on the PR | automatic |
+| R5 | ~~PostgreSQL 18~~ **done** — CI on PR #198: pg tier 109/109 files green on PostgreSQL 18.6 | — | — |
 | R6 | Domains the review did not reach: bet placement/settlement engine, 2FA/reset, Telegram gates, referral payouts, commission engine, USDT rail, casino callback, sub-admin permissions | Claude, on request | ~1–2 days |
 | R7 | P197-1 real v2 signature verification, if wanted | Claude | ~half a day with a real signed APK fixture |
 
