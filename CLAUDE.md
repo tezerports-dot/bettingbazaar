@@ -30,7 +30,7 @@ listed below, which hold **data and history, never rules**.
 | **How this audit keeps missing things, and the four questions that find them** | `docs/audit/SECURITY_AUDIT_MAP.md` **§0.5 — read before trusting a green check** |
 | **Every defect SHAPE found so far, how wide you must search to see it, and what actually found it** | `docs/audit/SECURITY_AUDIT_MAP.md` **§4.0 — the shape index. Read it before auditing anything.** |
 | **What every change must REPORT, as a table, before it is done** | **§31 — the completeness contract** |
-| **The twenty-five shapes that keep shipping here, each with the question that finds it** | **§32 — ask these of the change in front of you** |
+| **Every shape that keeps shipping here (S1–S42), each with the question that finds it** | **§32 — ask these of the change in front of you** |
 | **How a player signs up, signs in, and is verified** | **§33 — the form, the bot fleet, the gate, and which limiter guards what** |
 | **Relaxing rate limits for a test run, and where that is forbidden** | **§34 — `BB_RATE_LIMIT_RELAX`** |
 | **How this scales to many servers, and the three env vars an operator MUST set** | **§36 — horizontal scale + the pen-test result** |
@@ -95,7 +95,7 @@ readiness requires before that day.
     every row, with `done` / `n/a` + reason / `NOT DONE`. The rows nobody fills
     in are where every defect in the 2026-09 review was living, and none of them
     was a wrong calculation.
-14. **Ask §32's twenty-five questions of what you just wrote.** They are the shapes
+14. **Ask every one of §32's questions of what you just wrote.** They are the shapes
     this codebase has actually produced, each with the question that finds it.
 15. **If it fixes a vulnerability, sweep for the same SHAPE across the whole
     codebase and record the result** — including "swept, none found". A fix that
@@ -226,6 +226,10 @@ wrong owner gets working code deleted by the next reader.
 | External payment references (UTR, chain tx hash, CDM slip) | `utr_registry` via `claimPaymentReference()`. One reference, one order, for good. See §27. |
 | What a failed request tells its caller | `backend/shared/httpError.js`. `serverError` logs in full and answers with nothing; `callerError` keeps a refusal's own wording; `respondError` routes a `catch` that holds either, on the PRESENCE of `err.status` and never its value. A handler may not phrase a 5xx itself. |
 | Order lifecycle state | `order_states.state` — `PENDING_QUEUE, ASSIGNED, PROCESSING, PAID, COMPLETED, DISPUTED, CANCELLED, FAILED, REJECTED`, enforced by CHECK. |
+| **Where an order is CREATED, and its tamper tag** | `createOrderRecord` in `database/repositories/orders.record.js` — THE creation path, and it writes `order_hmac` in the same INSERT. `prepareOrderRecord` is the same statement, run inside a transaction another writer holds. There was a second path (`openOrder`) that was the only writer of the tag and had no production caller, so every live order was untagged and `orderAccessGuard` — which then passed untagged orders — never refused anything (F-024). The guard now refuses a missing tag whenever a secret is configured. Do not add a second creation path. |
+| **A withdrawal's stake lock, and the order it is for** | ONE transaction: `debitWinningsForWithdrawal(…, { within: prepareOrderRecord(…) })` runs the order's INSERT under the wallet row lock after the movement. A lock with no order is money no expiry, cancel or refund can find — a second retry of one expired withdrawal locked the stake again and was refused only at the INSERT (F-025). |
+| **The merchant's side of a completed BUY** | `moveDepositMoney`, which takes it ONCE: from the order's hold via `dispenseForOrder` (`taken` / `alreadyTaken`), and from `available` only when nothing was held (`noHold`). Completing a hold SPENDS it — there is no second debit beside it (§32 S41, F-026). Every route that completes a buy goes through it; none dispenses on its own. |
+| **How an admin decision ends a withdrawal's money** | `withdrawalHold.endWithdrawal(orderId, 'REFUND' \| 'RELEASE')`, for every position the money can be in (not yet confirmed, HELD, settled). It moves money and the credit/escrow flags and NEVER the order's state — the route's guarded transition owns that. A withdrawal's stake is returned on ONE key, `refund_<orderId>` (`refundWithdrawal`), whichever path returns it; `creditWinnings` is never a refund of a stake (F-027). |
 | Which fields the lifecycle may write | `SETTABLE` in the order writer. See §21. |
 | Dispute resolution | `order_states` embedded dispute fields. There is no separate dispute table. |
 | Cash denominations and USDT sizes | `domains/merchant/denominations.js`. The SQL CHECKs duplicate the lists by necessity; `merchantDenominationsPg.test.js` asserts the database agrees. Not admin-editable. |
@@ -1336,6 +1340,9 @@ these are the specific ones this codebase has actually produced.
 | S38 | A pure-JS crypto primitive on the REQUEST path | How many of these per second, on one thread? Time the primitive itself, not the endpoint. A signature check nobody has measured is a throughput ceiling nobody knows about, and it is invisible to every test that makes one request at a time. |
 | S39 | A RELATIVE path inside the bundled native shell | Where does this resolve when the page is `https://localhost`? Inside the APK a relative URL reaches the files in the PACKAGE, not the server — so an admin's upload never appears, and nothing errors. |
 | S35 | A caller's mistake thrown WITHOUT a `status`, so it leaves as a 5xx | Does the first thing this handler does with the input carry `status: 400`? `respondError` routes on the PRESENCE of `err.status` (§2), so a bare `TypeError` from a helper becomes "Something went wrong" — and the user is told the platform broke for a request that will never work. |
+| S40 | An assertion that reads a key that does not exist, on BOTH sides | Is every number this assertion compares one you can see is finite? `Number(undefined)` is NaN, NaN minus anything is NaN, and vitest's `toBe` is `Object.is` — under which **NaN IS NaN**. The assertion passes for any value. `assertionGuards.setup.js` now refuses it in every vitest config; `toBeNaN()` states a genuine expectation. |
+| S41 | A second debit BESIDE a hold that already paid | Is this money already reserved somewhere — a hold, an escrow, a settlement — whose completion IS the payment? Completing a hold spends it; debiting `available` as well charges twice. One movement, one owner. |
+| S42 | "Not X" read as "therefore Y" | List every state the else-branch can actually be in. "Not HELD" was read as "already settled" while a withdrawal disputed before its merchant confirmed is neither — its stake is still locked. A branch on a status must name what it handles, not what it excludes. |
 
 **S36 shut the whole platform's front door, and it was one missing word.**
 `IDENTITY_COLUMNS` in `database/repositories/telegram.js` listed thirteen
@@ -1487,6 +1494,32 @@ which images come from the server and which ship in the build
 `apiUrl` (latent in production, where uploads are absolute CDN URLs). The
 download links already used `apiUrl`, and the bundled `/app-assets/icon-*.png`
 are meant to be local.
+
+**S41 destroyed the order's worth of tokens on every buy a merchant confirmed,
+and S40 is why nobody saw it** (F-026, 2026-09-30). Every buy HOLDS the
+merchant's tokens at attachment (`available → reserved`). The confirm route
+then dispensed that hold — `complete` SPENDS it, `reserved −a` — and
+`moveDepositMoney` debited `available −a` as well, on the belief that
+dispensing put the tokens back in `available` first. MEASURED: a 1,000-token buy
+cost the merchant 200,000 paise while the player received 100,000, and a
+merchant whose tokens were all held for the order was refused ("insufficient
+token inventory") after the hold was already spent, forever. The suite that
+should have caught it asserted `after.availablePaise` and `after.reservedPaise`
+— keys the balance object does not have — so both lines compared NaN with NaN
+and passed for any balance. The fix is one owner (`moveDepositMoney` takes the
+merchant side once, from the hold, via `dispenseForOrder`), and one gate
+(`backend/tests/assertionGuards.setup.js`, loaded by all three vitest configs,
+refuses a NaN-versus-NaN `toBe`/`toEqual`/`toStrictEqual`). Swept: with the
+guard on, all 2,471 unit/pg/redis tests pass — those two lines were the only
+instances.
+
+**S42 was ten wrong cells out of eleven** (F-027). Three admin routes end a
+withdrawal, and each read the money's position its own way: "not HELD" taken as
+"already settled", a release that only cleared a flag, a refund credited beside
+a lock that stayed. `withdrawalHold.endWithdrawal` now names all three positions
+(not yet confirmed, HELD, settled) and every route calls it. The question that
+finds S42 is mechanical to ask and was never asked: *what is actually in the
+else-branch?*
 
 **S22 through S25 all came out of pressing controls rather than opening
 screens, and each was invisible to every tier below a browser.**

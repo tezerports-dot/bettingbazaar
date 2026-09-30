@@ -28,7 +28,8 @@ export default defineConfig({
     // Route modules refuse to load without signing keys, so they are set
     // before any import runs. Repository tests do not need them and are
     // unaffected by their presence.
-    setupFiles: ['backend/tests/routes/setup.js'],
+    // …and a comparison of NaN with NaN proves nothing — refused (§32 S40).
+    setupFiles: ['backend/tests/routes/setup.js', 'backend/tests/assertionGuards.setup.js'],
     testTimeout: 30000,
     fileParallelism: false, // shared database
   },

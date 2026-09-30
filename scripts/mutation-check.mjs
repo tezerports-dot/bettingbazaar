@@ -1201,6 +1201,18 @@ const MUTATIONS = [
     to: `            if (false) {`,
   },
 
+  // ── An assertion comparing NaN with NaN is refused ──────────────────────
+  // Two such assertions (wrong keys, undefined → NaN, Object.is(NaN, NaN)) hid
+  // the buy double charge (F-026) for as long as they existed.
+  {
+    id: 'M173', file: 'backend/tests/assertionGuards.setup.js', config: UNIT,
+    test: 'backend/tests/unit/assertionGuards.test.js',
+    why: 'the test-setup guard stops refusing NaN-versus-NaN, so an assertion reading a key that does not exist passes for any value again',
+    from: `const bothNaN = (a, b) => typeof a === 'number' && typeof b === 'number'
+  && Number.isNaN(a) && Number.isNaN(b);`,
+    to: `const bothNaN = () => false;`,
+  },
+
   // ── A withdrawal's lock and its order commit together ───────────────────
   // They were two commits, and the second could be refused: a second retry of
   // one expired withdrawal collides on `retry_of_order_id` AT INSERT, after the

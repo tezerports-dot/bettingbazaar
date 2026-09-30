@@ -20,6 +20,8 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     include: ['backend/tests/redis/**/*.test.js'],
+    // A comparison of NaN with NaN proves nothing — refused (§32 S40).
+    setupFiles: ['backend/tests/assertionGuards.setup.js'],
     testTimeout: 30000,
     fileParallelism: false, // shared Redis
   },
