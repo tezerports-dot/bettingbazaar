@@ -2511,9 +2511,18 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 409 |
-| Parameters only (safe by construction) | 260 |
-| Interpolating into statement text (each needs a reading) | 149 |
+| `pgQuery` call sites | 465 |
+| Parameters only (safe by construction) | 312 |
+| Interpolating into statement text (each needs a reading) | 150 |
+| Statement text built elsewhere and passed in (each needs a reading) | 3 |
+
+<details><summary>Call sites whose statement text is built elsewhere</summary>
+
+- `database/client.js — sql`
+- `database/repositories/merchants.js — text`
+- `database/repositories/users.js — text`
+
+</details>
 
 ### Panel injection sinks
 

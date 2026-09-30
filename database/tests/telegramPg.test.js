@@ -25,6 +25,7 @@ import {
   setChannelStatus, deactivateContact,
   sweepExpired, putRecoverySession, getRecoverySession,
   retireBot, assignSigninBot, signinBotLoads, linkTelegramToAccount,
+  issuePasswordReset, consumePasswordReset,
 } from '../repositories/telegram.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
@@ -723,6 +724,47 @@ describePg('the Telegram sign-in surface (PostgreSQL)', () => {
       // the drain above for why a leftover here comes back as somebody else's
       // failure ten minutes later.
       await pgQuery("DELETE FROM telegram_recovery_sessions WHERE telegram_user_id = 't-rec-live'");
+    });
+  });
+
+  // ── The reset link is the only credential a bot still hands out ──────────
+  // §33.1 deleted bot sign-in; what a bot can issue now is the right to CHOOSE
+  // a password (§33.6). So single use, expiry-in-the-WHERE and one-live-token
+  // are the whole of what a leaked chat message is worth, and until 2026-09-30
+  // no CI tier asserted any of them — only the browser and live harnesses,
+  // which CI does not run. M47 mutates the single-use guard against this block.
+  describe('a password reset token is spent exactly once', () => {
+    beforeEach(async () => {
+      await pgQuery('DELETE FROM password_resets');
+      await createUser({ userId: 'r-1', username: 'r', mobile: '9990000071' });
+    });
+
+    it('redeems once, and the same token is refused the second time', async () => {
+      await issuePasswordReset({ tokenHash: 'h-once', userId: 'r-1', telegramUserId: 't-r1' });
+      expect(await consumePasswordReset('h-once')).toEqual({ userId: 'r-1', telegramUserId: 't-r1' });
+      expect(await consumePasswordReset('h-once')).toBeNull();
+    });
+
+    it('lets exactly one of twenty racing redemptions win', async () => {
+      await issuePasswordReset({ tokenHash: 'h-race', userId: 'r-1', telegramUserId: 't-r1' });
+      const results = await Promise.all(
+        Array.from({ length: 20 }, () => consumePasswordReset('h-race')),
+      );
+      expect(results.filter(Boolean)).toHaveLength(1);
+    });
+
+    it('refuses an expired token even though no sweep has removed it', async () => {
+      await issuePasswordReset({ tokenHash: 'h-old', userId: 'r-1', telegramUserId: 't-r1' });
+      await pgQuery(`UPDATE password_resets SET expires_at = now() - interval '1 s'
+                      WHERE token_hash = 'h-old'`);
+      expect(await consumePasswordReset('h-old')).toBeNull();
+    });
+
+    it('asking again invalidates the link already in the chat', async () => {
+      await issuePasswordReset({ tokenHash: 'h-first', userId: 'r-1', telegramUserId: 't-r1' });
+      await issuePasswordReset({ tokenHash: 'h-second', userId: 'r-1', telegramUserId: 't-r1' });
+      expect(await consumePasswordReset('h-first')).toBeNull();
+      expect(await consumePasswordReset('h-second')).not.toBeNull();
     });
   });
 

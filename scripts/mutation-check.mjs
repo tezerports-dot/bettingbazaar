@@ -150,24 +150,13 @@ const MUTATIONS = [
   {
     id: 'M47', file: 'database/repositories/telegram.js', config: PG,
     test: 'database/tests/telegramPg.test.js',
-    why: 'a forwarded login link can be redeemed twice, minting two sessions',
-    // Widened to name the login-TOKEN statement. `AND consumed_at IS NULL`
-    // alone appears three times in this file — the token, the code, and the
-    // attempt charge — so it mutated whichever came first and the verdict said
-    // nothing about which guard was covered.
-    from: `      WHERE token_hash = $1
-        AND consumed_at IS NULL\n`,
-    to: `      WHERE token_hash = $1\n`,
-  },
-  {
-    id: 'M156', file: 'database/repositories/telegram.js', config: PG,
-    test: 'database/tests/telegramPg.test.js',
-    why: 'a login CODE can be redeemed twice — the same six digits, read off a forwarded message, mints a second session on an account that is already signed in',
-    from: `      WHERE mobile_hash = $1
-        AND code_hash = $2
-        AND consumed_at IS NULL\n`,
-    to: `      WHERE mobile_hash = $1
-        AND code_hash = $2\n`,
+    why: 'a password-reset link can be spent twice, so a link read off a forwarded chat sets a second password on an account that was just reset',
+    // Repointed 2026-09-30. It guarded the login TOKEN, deleted with bot
+    // sign-in (§33.1); the reset token is the only single-use credential a bot
+    // still issues, and no CI tier covered it until this mutant's suite did.
+    // M156 (the login CODE) was deleted outright — `code_hash` no longer exists.
+    from: `WHERE token_hash = $1 AND consumed_at IS NULL AND expires_at > now()`,
+    to: `WHERE token_hash = $1 AND expires_at > now()`,
   },
   {
     id: 'M48', file: 'database/repositories/telegram.js', config: PG,
@@ -479,61 +468,17 @@ const MUTATIONS = [
     to: '',
   },
 
-  // ── The sign-in code is single-use, capped, and bound to one number ───────
-  {
-    id: 'M80', file: 'database/repositories/telegram.js', config: PG,
-    test: 'database/tests/telegramLoginCodePg.test.js',
-    why: 'a sign-in code can be redeemed twice, so one code is two sessions',
-    from: `        AND code_hash = $2
-        AND consumed_at IS NULL
-        AND expires_at > now()`,
-    to: `        AND code_hash = $2
-        AND expires_at > now()`,
-  },
-  {
-    id: 'M81', file: 'database/repositories/telegram.js', config: PG,
-    test: 'database/tests/telegramLoginCodePg.test.js',
-    why: 'wrong guesses stop being counted, so six digits are guessable again',
-    from: `        SET attempts = attempts + 1,`,
-    to: `        SET attempts = attempts + 0,`,
-  },
-  {
-    id: 'M82', file: 'database/repositories/telegram.js', config: PG,
-    test: 'database/tests/telegramLoginCodePg.test.js',
-    why: 'a retired identity answers again, so a code goes to whoever lost the account',
-    from: ` ON i.user_id = u.user_id AND i.contact_active`,
-    to: ` ON i.user_id = u.user_id`,
-  },
-  // ── The request endpoint must not reveal whether a number is registered ──
-  {
-    id: 'M83', file: 'backend/domains/telegram/telegram.routes.js', config: PG,
-    test: 'backend/tests/routes/telegramOtpLoginRoutes.test.js',
-    why: 'the code request answers differently for an unknown number, so the form becomes an oracle',
-    from: `    const { requestLoginCode } = await import('./telegramOtp.service.js');
-    await requestLoginCode(req.body?.mobile);`,
-    to: `    const { requestLoginCode } = await import('./telegramOtp.service.js');
-    const r = await requestLoginCode(req.body?.mobile);
-    if (!r.sent) return res.status(404).json({ success: false, message: 'No such number' });`,
-  },
-  // ── The number typed is the KYC number, never Telegram's own ─────────────
-  // `relinkIdentity` rewrites `telegram_identities.phone` during an account
-  // recovery and never touches the immutable `users.mobile`. Matching on the
-  // identity's phone would let somebody sign in with a number that was never
-  // verified against their Aadhaar.
-  {
-    id: 'M84', file: 'database/repositories/telegram.js', config: PG,
-    test: 'database/tests/telegramLoginCodePg.test.js',
-    why: 'sign-in matches the Telegram number again, not the KYC-linked mobile',
-    from: `(u.mobile, '`,
-    to: `(i.phone, '`,
-  },
-  {
-    id: 'M85', file: 'database/repositories/telegram.js', config: PG,
-    test: 'database/tests/telegramLoginCodePg.test.js',
-    why: 'the linked identity may carry a number that is not the KYC one and still receive the code',
-    from: `        AND regexp_replace(i.phone`,
-    to: `        AND $1 = $1 OR regexp_replace(i.phone`,
-  },
+  // M80-M85 were here — the Telegram sign-in-code mutants (single use, attempt
+  // cap, retired identity, number oracle, KYC-number match). Deleted 2026-09-30
+  // with the feature: §33.1 removed bot sign-in outright —
+  // `telegramOtp.service.js`, `telegram_login_codes` and both suites are gone,
+  // and `playerFormAuth.test.js` asserts the table stays gone. Nothing was
+  // repointed, because there is no successor: a bot can no longer sign anybody
+  // in, so the behaviour these guarded cannot occur. The harness refused to run
+  // while they named deleted files, which is how their removal surfaced.
+  //
+  // What carries over is covered elsewhere: the password login's pacing
+  // (M78-M79 above) and the reset token's single use (M47, repointed).
 
   // M86-M88 were here — the three bulk-payout mutants. Deleted 2026-09-10 with
   // the feature itself: the code they mutate and the suite that killed them are

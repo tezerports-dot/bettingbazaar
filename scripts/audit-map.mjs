@@ -116,22 +116,44 @@ const PERM = /^(hasPermission|hasAnyPermission|hasAllPermissions|checkResourcePe
 function sql() {
   const files = [...walk(join(ROOT, 'database'), ['.js'], ['tests']),
                  ...walk(join(ROOT, 'backend'), ['.js'], ['tests'])];
-  let interpolating = 0, paramsOnly = 0;
-  const sites = [];
+  // EVERY call site, classified by what its first argument actually is. This
+  // matched `pgQuery(` + at most one newline + a backtick, so it could not see
+  // (measured 2026-09-30, 57 of 465): a template literal with a COMMENT above
+  // it — one explaining a fix, added by the fix, took an interpolating query
+  // out of the count and turned CI red as a "stale map" — a plain quoted
+  // string, and SQL assembled in a variable elsewhere. The last is the one
+  // that matters: the statement text is built out of this gate's sight, so it
+  // is exactly the site that needs a reading and was the one it never listed.
+  // §32 S8, a gate measuring a fraction.
+  let interpolating = 0, paramsOnly = 0, prebuilt = 0;
+  const sites = [], prebuiltSites = [];
   for (const f of files) {
     const src = readFileSync(f, 'utf8');
-    for (const m of src.matchAll(/pgQuery\(\s*\n?\s*`/g)) {
-      const i = src.indexOf('`', m.index + m[0].length - 1);
+    for (const m of src.matchAll(/\bpgQuery\(/g)) {
+      if (/function\s+$/.test(src.slice(Math.max(0, m.index - 20), m.index))) continue; // the definition
+      let i = m.index + m[0].length;
+      for (;;) { // skip whitespace and comments before the first argument
+        while (/\s/.test(src[i] ?? '')) i++;
+        if (src.startsWith('//', i)) { i = src.indexOf('\n', i); if (i < 0) break; continue; }
+        if (src.startsWith('/*', i)) { i = src.indexOf('*/', i) + 2; if (i < 2) break; continue; }
+        break;
+      }
+      const line = src.slice(0, m.index).split('\n').length;
+      const q = src[i];
+      if (q === "'" || q === '"') { paramsOnly++; continue; } // a plain string cannot interpolate
+      if (q !== '`') { // keyed by file and argument, never line: a line number goes stale on any edit above it
+        prebuilt++; prebuiltSites.push(`${rel(f)} — ${src.slice(i).match(/^[\w.$]+/)?.[0] ?? '?'}`); continue;
+      }
       let j = i + 1;
       for (; j < src.length; j++) { if (src[j] === '\\') { j++; continue; } if (src[j] === '`') break; }
       const body = src.slice(i + 1, j);
-      const hits = [...body.matchAll(/\$\{([^}]*)\}/g)];
-      if (!hits.length) { paramsOnly++; continue; }
+      if (!/\$\{[^}]*\}/.test(body)) { paramsOnly++; continue; }
       interpolating++;
-      sites.push({ file: rel(f), line: src.slice(0, m.index).split('\n').length });
+      sites.push({ file: rel(f), line });
     }
   }
-  return { interpolating, paramsOnly, total: interpolating + paramsOnly, sites };
+  return { interpolating, paramsOnly, prebuilt, total: interpolating + paramsOnly + prebuilt,
+           sites, prebuiltSites };
 }
 
 // ── Panels: the client-side injection sinks ─────────────────────────────────
@@ -217,6 +239,14 @@ function block(f) {
   L.push(`| \`pgQuery\` call sites | ${f.sql.total} |`);
   L.push(`| Parameters only (safe by construction) | ${f.sql.paramsOnly} |`);
   L.push(`| Interpolating into statement text (each needs a reading) | ${f.sql.interpolating} |`);
+  L.push(`| Statement text built elsewhere and passed in (each needs a reading) | ${f.sql.prebuilt} |`);
+  L.push('');
+  L.push('<details><summary>Call sites whose statement text is built elsewhere</summary>');
+  L.push('');
+  if (!f.sql.prebuiltSites.length) L.push('- _none_');
+  for (const s of [...new Set(f.sql.prebuiltSites)].sort()) L.push(`- \`${s}\``);
+  L.push('');
+  L.push('</details>');
   L.push('');
   L.push('### Panel injection sinks');
   L.push('');
