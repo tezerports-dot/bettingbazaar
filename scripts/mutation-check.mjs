@@ -122,7 +122,10 @@ const MUTATIONS = [
     id: 'M43', file: 'database/repositories/users.js', config: PG,
     test: 'database/tests/userPg.test.js',
     why: 'a racing signup on one mobile creates two accounts',
-    from: `     ON CONFLICT (mobile) DO NOTHING\n`,
+    // Retargeted 2026-09-30: since §33.5 a mobile is unique PER ACCOUNT TYPE,
+    // so the conflict target became `(mobile, account_type)` and the old
+    // anchor matched nothing. Same guard, same race.
+    from: `     ON CONFLICT (mobile, account_type) DO NOTHING\n`,
     to: '',
   },
   {
@@ -161,11 +164,13 @@ const MUTATIONS = [
   {
     id: 'M48', file: 'database/repositories/telegram.js', config: PG,
     test: 'database/tests/telegramPg.test.js',
-    why: 'an expired onboarding stays readable until a sweep happens to run',
-    from: `      WHERE telegram_user_id = $1 AND expires_at > now()\`,
-    [String(telegramUserId)], 'tg_pending_get',`,
-    to: `      WHERE telegram_user_id = $1\`,
-    [String(telegramUserId)], 'tg_pending_get',`,
+    why: 'an expired reset link stays redeemable until a sweep happens to run',
+    // Repointed 2026-09-30. It guarded `telegram_pending_links` (onboarding),
+    // deleted with bot signup (§33.1). The property — expiry lives in the
+    // WHERE, so a late sweep cannot make a bearer credential usable — now
+    // matters on the reset token, which is the only one a bot still issues.
+    from: `WHERE token_hash = $1 AND consumed_at IS NULL AND expires_at > now()`,
+    to: `WHERE token_hash = $1 AND consumed_at IS NULL`,
   },
   {
     id: 'M49', file: 'database/repositories/identity.js', config: PG,
@@ -415,10 +420,14 @@ const MUTATIONS = [
     // (That the two exist at all, with different `expectFrom` and different
     // handling of the same field, is its own question — recorded, not fixed
     // here.)
-    from: `        disputeReason:   reason.trim(),
+    //
+    // Retargeted 2026-09-30: the second dispute route is gone and its 1,000-
+    // character cap was carried onto this one, so the anchor now names the
+    // only `set` block left. It is unique by construction, not by widening.
+    from: `        disputeReason:   reason.trim().slice(0, 1000),
         disputeRaisedAt: new Date(),
         disputeRaisedBy: 'user',`,
-    to: `        disputeReason:   reason.trim(),
+    to: `        disputeReason:   reason.trim().slice(0, 1000),
         disputeRaisedAt: new Date(),
         disputeRaisedBy: 'user',
         updatedAt:       new Date(),`,
