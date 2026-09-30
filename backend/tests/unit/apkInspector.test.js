@@ -69,6 +69,23 @@ describe('inspectApk', () => {
     }
   });
 
+  it('reads a DEFLATED manifest, the way build tools usually store it', () => {
+    const info = inspectApk(buildApk({ versionCode: 77, deflateManifest: true }));
+    expect(info.versionCode).toBe(77);
+  });
+
+  it('refuses a manifest that inflates past any real one, without inflating it', () => {
+    // A zip bomb on AndroidManifest.xml: kilobytes on the wire, 64 MB inflated.
+    // The upload is admin-only, but it is inflated inside the API process, so
+    // an unbounded inflate is a way to take that process down (review P197-2).
+    const bomb = buildApk({ manifest: Buffer.alloc(64 * 1024 * 1024), deflateManifest: true });
+    expect(bomb.length).toBeLessThan(1024 * 1024);
+    let err;
+    try { inspectApk(bomb); } catch (e) { err = e; }
+    expect(err?.status).toBe(400);
+    expect(err?.message).toMatch(/manifest is larger than any real one/);
+  });
+
   it('normalises a fingerprint however it was pasted', () => {
     expect(normaliseFingerprint('ab:cd:ef')).toBe('ABCDEF');
     expect(normaliseFingerprint(' AB CD EF ')).toBe('ABCDEF');

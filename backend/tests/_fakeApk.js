@@ -14,7 +14,7 @@
  * half: the bytes aapt2 actually produced for this app (UTF-8 pool), so the
  * parser is proven against both encodings Android emits.
  */
-import { crc32 } from 'node:zlib';
+import { crc32, deflateRawSync } from 'node:zlib';
 
 const u16 = (n) => { const b = Buffer.alloc(2); b.writeUInt16LE(n); return b; };
 const u32 = (n) => { const b = Buffer.alloc(4); b.writeUInt32LE(n >>> 0); return b; };
@@ -82,6 +82,8 @@ export function buildApk({
   packageName = 'com.bettingbazaar.app', versionCode = 1, versionName = '1.0.0', minSdk = 24,
   cert = Buffer.from('CN=Test Release Key, O=Test, C=IN'), manifest = null, signed = true,
   padding = 0,
+  // Store the manifest DEFLATED (method 8), as real build tools usually do.
+  deflateManifest = false,
 } = {}) {
   const files = [
     ['AndroidManifest.xml', manifest || buildManifest({ packageName, versionCode, versionName, minSdk })],
@@ -93,13 +95,16 @@ export function buildApk({
   for (const [name, data] of files) {
     const n = Buffer.from(name);
     const crc = crc32(data);
+    const deflate = deflateManifest && name === 'AndroidManifest.xml';
+    const stored = deflate ? deflateRawSync(data) : data;
+    const method = deflate ? 8 : 0;
     const local = Buffer.concat([
-      u32(0x04034b50), u16(20), u16(0), u16(0), u16(0), u16(0), u32(crc),
-      u32(data.length), u32(data.length), u16(n.length), u16(0), n, data,
+      u32(0x04034b50), u16(20), u16(0), u16(method), u16(0), u16(0), u32(crc),
+      u32(stored.length), u32(data.length), u16(n.length), u16(0), n, stored,
     ]);
     central.push(Buffer.concat([
-      u32(0x02014b50), u16(20), u16(20), u16(0), u16(0), u16(0), u16(0), u32(crc),
-      u32(data.length), u32(data.length), u16(n.length), u16(0), u16(0), u16(0), u16(0), u32(0),
+      u32(0x02014b50), u16(20), u16(20), u16(0), u16(method), u16(0), u16(0), u32(crc),
+      u32(stored.length), u32(data.length), u16(n.length), u16(0), u16(0), u16(0), u16(0), u32(0),
       u32(offset), n,
     ]));
     locals.push(local);

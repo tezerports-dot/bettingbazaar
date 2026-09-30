@@ -221,6 +221,26 @@ describePg('Android releases', () => {
     await as(adminApp, admin).delete(`/android/releases/${draft.releaseId}`);
   });
 
+  it('two uploads of one version code at once: one lands, the other is told why, and no file is orphaned', async () => {
+    // Both can pass the "already uploaded?" read — it is a read (§32 S6). The
+    // unique index decides, and the loser used to leave as a 500 with its
+    // stored file behind it (review P197-3). Different bytes, so two files.
+    const { RELEASES_DIR } = await import('../../domains/distribution/androidRelease.shared.js');
+    const { readdirSync } = await import('node:fs');
+    const code = base + 30;
+    const filesFor = () => { try { return readdirSync(RELEASES_DIR).filter((f) => f.startsWith(`${PKG}-`) && f.includes(`-${code}-`)); } catch { return []; } };
+    const [a, b] = await Promise.all([
+      upload(admin, apk(30, { padding: 1 })),
+      upload(admin, apk(30, { padding: 2 })),
+    ]);
+    const statuses = [a.status, b.status].sort();
+    expect(statuses[0]).toBe(201);
+    expect(statuses[1], JSON.stringify([a.body, b.body])).toBe(400);
+    expect((statuses[1] === a.status ? a : b).body.message).toMatch(/already been uploaded/);
+    // Exactly the winner's file is on disk; the loser's bytes are gone.
+    expect(filesFor()).toHaveLength(1);
+  });
+
   it('shows the operator what is not configured yet', async () => {
     const { body } = await as(adminApp, admin).get('/android/releases');
     expect(body.packageName).toBe(PKG);

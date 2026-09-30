@@ -77,13 +77,31 @@ function readZip(buf) {
   return { entries, cdOffset };
 }
 
+/**
+ * The most a MANIFEST may inflate to. A real binary AndroidManifest.xml is a
+ * few kilobytes; this app's is under 4 KB. The bound is what makes a zip bomb
+ * on that one entry — kilobytes uploaded, gigabytes inflated inside the API
+ * process — a refusal instead of an outage (review P197-2). The upload is
+ * admin-only; the process it would take down serves every player.
+ */
+const MAX_MANIFEST_BYTES = 4 * 1024 * 1024;
+
 function readEntry(buf, entry) {
   const at = entry.localOffset;
   if (buf.readUInt32LE(at) !== LOCAL_SIG) throw refuse('This APK is truncated or corrupt.');
   const start = at + 30 + buf.readUInt16LE(at + 26) + buf.readUInt16LE(at + 28);
   const raw = buf.subarray(start, start + entry.compSize);
   if (entry.method === 0) return raw;
-  if (entry.method === 8) return inflateRawSync(raw);
+  if (entry.method === 8) {
+    try {
+      return inflateRawSync(raw, { maxOutputLength: MAX_MANIFEST_BYTES });
+    } catch (err) {
+      if (err.code === 'ERR_BUFFER_TOO_LARGE' || err instanceof RangeError) {
+        throw refuse('This APK\'s manifest is larger than any real one. It is not a build this platform produced.');
+      }
+      throw err;
+    }
+  }
   throw refuse('This APK uses a compression method Android does not.');
 }
 

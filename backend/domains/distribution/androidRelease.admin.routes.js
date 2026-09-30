@@ -40,6 +40,19 @@ router.get('/android/releases', authenticate, isAdmin, async (req, res) => {
   }
 });
 
+/**
+ * Remove an APK's stored bytes, best-effort. Used for a draft being deleted and
+ * for an upload that lost the race for its version code; never for a file a
+ * release row still names.
+ */
+async function discardStored({ storage, fileKey }) {
+  if (storage === 'LOCAL') {
+    try { fs.unlinkSync(path.join(RELEASES_DIR, path.basename(fileKey))); } catch { /* already gone */ }
+  } else {
+    try { await deleteFile(fileKey); } catch (e) { console.warn('[android release] object not deleted:', e.message); }
+  }
+}
+
 // The body is the APK itself — no base64, no multipart parser. Scoped to this
 // one route so no other path accepts a 150 MB body.
 router.post('/android/releases',
@@ -75,17 +88,29 @@ router.post('/android/releases',
       }
 
       const stored = await storeApk(req.body, info);
-      const release = await db.androidReleases.createRelease({
-        packageName: info.packageName,
-        versionCode: info.versionCode,
-        versionName: info.versionName,
-        minSdk: info.minSdk,
-        signerSha256: info.signerSha256,
-        fileSha256: info.sha256,
-        sizeBytes: info.sizeBytes,
-        ...stored,
-        uploadedBy: req.user.userId,
-      });
+      let release;
+      try {
+        release = await db.androidReleases.createRelease({
+          packageName: info.packageName,
+          versionCode: info.versionCode,
+          versionName: info.versionName,
+          minSdk: info.minSdk,
+          signerSha256: info.signerSha256,
+          fileSha256: info.sha256,
+          sizeBytes: info.sizeBytes,
+          ...stored,
+          uploadedBy: req.user.userId,
+        });
+      } catch (err) {
+        if (err?.code !== '23505') throw err;
+        // Two uploads of one version code both passed the read above (§32 S6);
+        // the unique index decided and this one lost. It was a 500 and left its
+        // file behind (review P197-3). Remove the file — unless the winner's row
+        // names the same one, which identical bytes produce — then say why.
+        const winner = await db.androidReleases.getReleaseByVersionCode(info.packageName, info.versionCode);
+        if (winner?.fileKey !== stored.fileKey) await discardStored(stored);
+        throw callerFault(`Version code ${info.versionCode} has already been uploaded. Delete that draft first, or build a newer version.`);
+      }
       await db.audit.recordDetailed({
         performedBy: req.user.userId, performedByName: req.user.username, performedByRole: 'admin',
         action: 'ANDROID_RELEASE_UPLOADED', category: 'SYSTEM',
@@ -162,11 +187,7 @@ router.delete('/android/releases/:id', authenticate, isAdmin, async (req, res) =
     if (!gone) return refused(res, 409, 'This release was published while you were looking at it.');
     // The row is gone either way; the bytes are best-effort. A leftover object
     // is storage nobody links to, never a release anybody is offered.
-    if (gone.storage === 'LOCAL') {
-      try { fs.unlinkSync(path.join(RELEASES_DIR, path.basename(gone.fileKey))); } catch { /* already gone */ }
-    } else {
-      try { await deleteFile(gone.fileKey); } catch (e) { console.warn('[android release] draft object not deleted:', e.message); }
-    }
+    await discardStored(gone);
     await db.audit.recordDetailed({
       performedBy: req.user.userId, performedByName: req.user.username, performedByRole: 'admin',
       action: 'ANDROID_RELEASE_DELETED', category: 'SYSTEM',

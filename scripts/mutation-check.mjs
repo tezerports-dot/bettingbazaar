@@ -1345,6 +1345,21 @@ const MUTATIONS = [
 `,
     to: ``,
   },
+  // ── Android release uploads (review C4: P197-2, P197-3) ─────────────────
+  {
+    id: 'M181', file: 'backend/domains/distribution/apkInspector.js', config: UNIT,
+    test: 'backend/tests/unit/apkInspector.test.js',
+    why: 'the manifest is inflated without a bound, so a zip bomb on one entry inflates gigabytes inside the API process',
+    from: `return inflateRawSync(raw, { maxOutputLength: MAX_MANIFEST_BYTES });`,
+    to: `return inflateRawSync(raw);`,
+  },
+  {
+    id: 'M182', file: 'backend/domains/distribution/androidRelease.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/androidReleaseRoutes.test.js',
+    why: 'the upload that loses the race for a version code answers 500 and leaves its stored APK behind',
+    from: `        if (err?.code !== '23505') throw err;`,
+    to: `        throw err;`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that
