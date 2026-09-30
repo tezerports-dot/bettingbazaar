@@ -19,7 +19,7 @@ Generate every secret with: `openssl rand -base64 48`
 | `ORDER_HMAC_SECRET` | Dedicated payment-order integrity HMAC (separate from the auth key). |
 | `AADHAAR_HMAC_SECRET` | Dedicated Aadhaar dedup HMAC (prevents reversible document hashes). |
 | `REDIS_URL` | Cross-instance rate limits, realtime fan-out, job queue. Required at >1 replica. |
-| `ALLOWED_ORIGINS` | CORS allow-list — production must name trusted origins explicitly (comma-separated). |
+| `ALLOWED_ORIGINS` | CORS allow-list — production must name trusted origins explicitly (comma-separated). **Include `https://localhost` while shipping the Android app** — it is the origin the app runs at on the phone; production refuses to boot with `ANDROID_PACKAGE_ID` set and it missing. |
 | `S3_BUCKET_NAME` | Durable asset/upload storage (KYC, proofs, branding). Local disk is not production-safe. |
 | `S3_ACCESS_KEY` | S3 credential. Required: production refuses the local-disk fallback. |
 | `S3_SECRET_KEY` | S3 credential. Required: production refuses the local-disk fallback. |

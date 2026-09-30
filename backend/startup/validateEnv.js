@@ -152,6 +152,7 @@ export function validateEnv(env = process.env, isProd = env.NODE_ENV === 'produc
   if (insecurePgTls && isProd) {
     throw new Error('FATAL: PG_SSL=no-verify disables money-DB TLS certificate verification. Pin the provider CA via PG_CA_CERT, or set ALLOW_INSECURE_PG_TLS=true to explicitly accept the risk.');
   }
+
   if (weakAadhaarHmacSecret && !missing.includes('AADHAAR_HMAC_SECRET') && isProd) {
     throw new Error('FATAL: AADHAAR_HMAC_SECRET must be a non-placeholder secret of at least 32 characters');
   }
@@ -169,6 +170,39 @@ export function validateEnv(env = process.env, isProd = env.NODE_ENV === 'produc
     if (isProd) throw new Error(msg);
     // Non-prod: warn but let the process continue (dev/test provide their own).
     console.warn(`⚠️  ${msg}\n   (continuing because NODE_ENV=${env.NODE_ENV || 'unset'} — production would refuse to start)`);
+  }
+
+  // ── Two settings that are silently WRONG when forgotten, not loudly missing ─
+  // Checked AFTER the missing-variable report on purpose: an operator missing
+  // several things is told all of them at once, not these two first (§32 S34).
+  // Found 2026-09-30. Each has a safe-looking default that turns into a hole
+  // in production, so production must STATE a value rather than inherit one.
+  //
+  // TRUST_PROXY unset makes req.ip the socket peer. Behind a load balancer or
+  // Caddy that is the BALANCER, so every user shares one rate-limit bucket and
+  // one attacker's failed logins lock everybody out (§36). The default is
+  // right for a bare box and wrong behind any proxy, and only the operator
+  // knows which this is. 'false' is a valid answer; silence is not.
+  if (String(env.TRUST_PROXY ?? '').trim() === '' && isProd) {
+    throw new Error('FATAL: TRUST_PROXY is unset. Set it to the number of proxies in front of this process (1 behind one load balancer or Caddy), or to false if clients connect directly. Unset, every user behind a proxy shares one rate-limit bucket.');
+  }
+  // TURNSTILE_SECRET_KEY unset makes every captcha a pass-through, so signup
+  // and login face bots with only the limiters in the way. A deploy may run
+  // without it, but only as a stated decision, like PG_SSL above.
+  const captchaOff = String(env.TURNSTILE_SECRET_KEY || '').trim() === ''
+    && String(env.ALLOW_NO_CAPTCHA || '').trim().toLowerCase() !== 'true';
+  if (captchaOff && isProd) {
+    throw new Error('FATAL: TURNSTILE_SECRET_KEY is unset, so the captcha on signup and login would pass everything. Set it, or set ALLOW_NO_CAPTCHA=true to explicitly accept running without one.');
+  }
+
+  // ANDROID_PACKAGE_ID says this deploy ships the Android app. The app runs at
+  // https://localhost inside the phone (Capacitor), so every request it makes
+  // is cross-origin from there — and with that origin missing from the CORS
+  // allow-list, every one is refused. Nothing on the server logs it as an
+  // error and the app simply shows nothing, so the pairing is enforced here.
+  if (isProd && String(env.ANDROID_PACKAGE_ID || '').trim()
+      && !csv(env.ALLOWED_ORIGINS).includes('https://localhost')) {
+    throw new Error('FATAL: ANDROID_PACKAGE_ID is set, so this deploy ships the Android app, but ALLOWED_ORIGINS does not include https://localhost — the origin the app runs at on the phone. Add it, or every request from the app is refused.');
   }
 
   if (advisedMissing.length && isProd) {

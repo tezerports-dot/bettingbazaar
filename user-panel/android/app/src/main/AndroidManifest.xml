@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.) -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <!--
@@ -37,46 +38,39 @@
             </intent-filter>
 
             <!--
-              App Link for the sign-in journey — this is what makes the APK
-              usable at all, not a convenience.
+              App Link: a link to the public site opens THIS app, not a browser.
 
-              Players never type a password. The bot sends a one-time link,
-              `https://<host>/#/auth/telegram?token=…`, and whatever context
-              opens that link redeems the token into ITS OWN storage. With only
-              the MAIN/LAUNCHER filter above, Android had no reason to believe
-              the URL belonged to this app: the tap went to a browser, the
-              browser got the session, and the freshly installed app stayed
-              signed out with no route back — every new link repeating the same
-              trip. There was no way to sign in to the APK. This filter is the
-              only mechanism Android offers to change that.
+              What it carries today is the password-reset link. There is no
+              player email, so a forgotten password is recovered through the
+              bot, which sends `https://<host>/#/reset/<token>`
+              (passwordReset.service.js). With this filter the tap opens the
+              installed app on its reset screen; without it the reset still
+              works — in a browser — and the player then signs in to the app
+              with the new password. So this is the difference between a
+              smooth recovery and a detour, not between working and broken.
+              (Signing in itself is a form with a password; §33.)
 
               ── Why the path is exactly "/" ──────────────────────────────────
-              The token rides in the FRAGMENT, deliberately (it never reaches an
-              access log or a Referer header — see telegramLogin.service.js).
-              Intent filters cannot match a fragment; Android matches
-              Uri.getPath(), which for `https://host/#/auth/telegram?token=…`
-              is just "/". So "/" is the narrowest thing that can be matched,
-              and it is enough: it captures the site root and therefore every
-              HashRouter route, while leaving `/merchant`, `/admin`, `/api/…`
-              and the `/r/<code>` referral redirects to the browser — none of
-              which this package can render, since it serves the user panel's
-              bundled assets from https://localhost.
+              The token rides in the FRAGMENT, deliberately: it never reaches an
+              access log or a Referer header. Intent filters cannot match a
+              fragment; Android matches Uri.getPath(), which for
+              `https://host/#/reset/…` is just "/". So "/" is the narrowest
+              thing that can be matched, and it is enough: it captures the site
+              root and therefore every HashRouter route, while leaving
+              `/merchant`, `/admin`, `/api/…` and the `/r/<code>` referral
+              redirects to the browser — none of which this package renders.
 
               ── autoVerify ───────────────────────────────────────────────────
-              Makes this a VERIFIED App Link rather than a deep link: no
-              "open with" chooser, and no way for another installed app to
-              claim the same URL. It requires the origin to serve
-              /.well-known/assetlinks.json naming this package and its signing
-              certificate — backend/routes/wellKnown.routes.js does that from
-              ANDROID_PACKAGE_ID + ANDROID_SHA256_CERT_FINGERPRINTS. If either
-              is unset the file 404s, verification simply fails, and the app
-              falls back to not capturing links; nothing else breaks.
+              Makes this a VERIFIED App Link: no "open with" chooser, and no
+              other installed app can claim the URL. It requires the origin to
+              serve /.well-known/assetlinks.json naming this package and its
+              signing certificate — backend/routes/wellKnown.routes.js does that
+              from ANDROID_PACKAGE_ID + ANDROID_SHA256_CERT_FINGERPRINTS. Unset,
+              the file 404s, verification fails, and links open a browser.
 
               ── appLinkHost ─────────────────────────────────────────────────
-              Supplied at build time from ANDROID_APP_ORIGIN (see
-              app/build.gradle). It is the PUBLIC_APP_ORIGIN host — the origin
-              the bot builds its links against — which is deployment-specific
-              and therefore cannot be a literal here.
+              Supplied at build time from ANDROID_APP_ORIGIN (app/build.gradle):
+              the PUBLIC_APP_ORIGIN host the bot builds its links against.
             -->
             <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW" />
@@ -104,4 +98,14 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+
+    <!--
+      The in-app updater (ApkUpdaterPlugin) hands a downloaded, hash-verified
+      APK to Android's installer. Android still asks the player to confirm, and
+      the first time asks them to allow this app to install updates at all.
+      NOTE: Google Play forbids this permission for apps it distributes (Play
+      updates them itself). This APK is distributed directly; a Play build
+      would remove this line and the plugin together.
+    -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 </manifest>

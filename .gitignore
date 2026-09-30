@@ -42,3 +42,12 @@ backend/tests/browser/screenshots/
 backend/tests/browser/controls.manifest.json
 backend/tests/browser/drive.report.json
 backend/tests/browser/forms.report.json
+
+# Uploaded Android releases (local-disk fallback when S3 is not configured).
+# An APK is a build output, never a source file.
+backend/app-releases/
+
+# Android signing keys are never committed (scripts/android/create-signing-key.sh
+# makes them outside the repository; this is the second wall).
+*.jks
+*.keystore

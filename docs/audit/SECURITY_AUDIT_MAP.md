@@ -682,7 +682,7 @@ honest record of what surfaced it, and it is the column that should worry you:
 | A batch of writes applied one at a time, where one can be REFUSED | one handler, **plus the validator it calls** | driving the handler with one bad value among good ones | no — the §21 gate reads field names, not transaction boundaries | F-023 |
 | A test that WRITES the shared config row and leaves it | **the whole suite, in run order** | the next suite failing in code the change never touched | no | trap 10 |
 | A gate anchored on a string that also matches a DIFFERENT site | the gate's own file vs the file it measures | re-running the gate after moving the site | no — this is the meta-shape | F-018, trap 13 |
-| A guard READING a value that only a test-only path WRITES | **whole backend + the test tree**, by column: who writes it in production? | counting tagged rows a live server created | partial — M156/M157 hold this instance; the class needs `check:dead-code` to stop counting a test import as a consumer | F-024 |
+| A guard READING a value that only a test-only path WRITES | **whole backend + the test tree**, by column: who writes it in production? | counting tagged rows a live server created | partial — M156/M165 hold this instance; the class needs `check:dead-code` to stop counting a test import as a consumer | F-024 |
 
 **The last row is the one to take personally.** Three separate times a check
 went on passing while measuring something other than what it names:
@@ -2470,7 +2470,7 @@ a consumer — the open-queue item "triage the `testOnly` exports" is exactly th
 - **Tests:** `orderAccessGuardRoutes` gains *"writes a tag that verifies onto
   every order it creates"* (the missing assertion) and *"refuses an order whose
   tag was stripped"*.
-- **Mutation-proved:** M156 (the insert stops writing the tag) and M157 (the guard
+- **Mutation-proved:** M156 (the insert stops writing the tag) and M165 (the guard
   passes a stripped tag) are both KILLED; M92 retargeted from the deleted insert
   to `createOrderRecord` and KILLED.
 - **Sweep for the same shape** — a stored integrity value a guard READS, written
@@ -2529,7 +2529,7 @@ closes the variant where an unknown field threw after the money moved.
 - **Tests:** `withdrawalRetryPg.test.js` — a first retry locks once; a second is
   refused AND locks nothing; two concurrent retries create one withdrawal and
   lock once. Full `test:pg` 1546/1546, `test:unit` 855/855.
-- **Mutation-proved:** M158 restores the two-commit shape (the INSERT on a
+- **Mutation-proved:** M166 restores the two-commit shape (the INSERT on a
   separate connection after the lock commits) and is KILLED; M118 retargeted to
   the new call and KILLED.
 - **Sweep for the same shape** — a money movement committed in one transaction
@@ -2602,7 +2602,7 @@ order PAID. All five completion routes go through it, so none can forget.
   hold. `depositConfirmReachablePg` reads the real pocket keys and asserts the
   single charge. Full `test:pg` 1551/1552 (the one failure is F-027's new
   assertion, a separate defect), `test:unit` 855/855.
-- **Mutation-proved:** M159 (debit `available` even when the hold paid) and M160
+- **Mutation-proved:** M167 (debit `available` even when the hold paid) and M168
   (a spent hold read as "never held") both KILLED.
 - **Sweep for the same shape** — one movement with two owners: `dispenseForOrder`
   had one caller while `moveDepositMoney` had five; after the fix the dispense has
@@ -2628,8 +2628,8 @@ order PAID. All five completion routes go through it, so none can forget.
 
 | Measure | Count |
 |---|---|
-| Route declarations in `backend/**` | 313 |
-| Reachable with **no auth middleware** | 42 |
+| Route declarations in `backend/**` | 320 |
+| Reachable with **no auth middleware** | 44 |
 | Gated `isAdminOrSubAdmin` with **no permission key** | 2 |
 | — of those, **writes** (non-GET) | 0 |
 | Carrying an explicit permission key | 56 |
@@ -2641,11 +2641,13 @@ new route and decide. Each of the three questions is defined in §2.
 
 - `GET /admin/events  (backend/routes/sse.routes.js)`
 - `GET /announcements  (backend/routes/retention.routes.js)`
+- `GET /app/android/update  (backend/domains/distribution/androidRelease.routes.js)`
 - `GET /assetlinks.json  (backend/routes/wellKnown.routes.js)`
 - `GET /bootstrap  (backend/routes/app-bootstrap.routes.js)`
 - `GET /categories  (backend/domains/gameRegistry/gameRegistry.routes.js)`
 - `GET /cycles/:cycleId  (backend/domains/user/user.routes.js)`
 - `GET /cycles/active  (backend/domains/user/user.routes.js)`
+- `GET /download/android  (backend/domains/distribution/androidRelease.routes.js)`
 - `GET /events  (backend/routes/sse.routes.js)`
 - `GET /games  (backend/domains/gameRegistry/gameRegistry.routes.js)`
 - `GET /health  (backend/routes.js)`
@@ -2694,8 +2696,8 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 465 |
-| Parameters only (safe by construction) | 312 |
+| `pgQuery` call sites | 473 |
+| Parameters only (safe by construction) | 320 |
 | Interpolating into statement text (each needs a reading) | 150 |
 | Statement text built elsewhere and passed in (each needs a reading) | 3 |
 
@@ -2711,8 +2713,8 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Panel | .ts/.tsx files | `dangerouslySetInnerHTML` | `.innerHTML =` |
 |---|---|---|---|
-| `user-panel` | 78 | 0 | 0 |
-| `admin-panel` | 98 | 0 | 0 |
+| `user-panel` | 85 | 0 | 0 |
+| `admin-panel` | 99 | 0 | 0 |
 | `merchant-panel` | 41 | 0 | 0 |
 
 <!-- END GENERATED -->

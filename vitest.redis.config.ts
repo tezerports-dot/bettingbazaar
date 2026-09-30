@@ -14,6 +14,9 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
+    // Suites here ASSERT the rate limits, so BB_RATE_LIMIT_RELAX is pinned to 1
+    // (off) whatever the shell holds (CLAUDE.md §34).
+    env: { BB_RATE_LIMIT_RELAX: '1' },
     globals: true,
     environment: 'node',
     include: ['backend/tests/redis/**/*.test.js'],

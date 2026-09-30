@@ -142,6 +142,8 @@ done; echo ' up'
 #                         uploads, so placeholders are honest.
 docker run -d --name "$APPC" --network "$NET" -p 8080:8080 \
   -e NODE_ENV=production \
+  -e TRUST_PROXY=false \
+  -e ALLOW_NO_CAPTCHA=true \
   -e PORT=8080 \
   -e DATABASE_URL="postgresql://postgres:postgres@$PGC:5432/bb_verify" \
   -e PG_SSL=false \

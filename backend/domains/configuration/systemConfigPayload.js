@@ -7,7 +7,7 @@
  * push over Socket.IO on connect, once in `GET /api/v1/system/config` to answer
  * over HTTP. Copies drift, and these already had:
  *
- *   only the socket sent  webUrl, androidUrl, iosUrl
+ *   only the socket sent  webUrl, androidUrl (since removed), iosUrl
  *   only the HTTP route sent  kycRequired, registrationEnabled
  *
  * So the answer to "what is this platform configured to do" depended on which
@@ -113,7 +113,6 @@ export function systemConfigPayload(cfg, rail = null) {
 
     // Native-shell download targets. Only the socket used to carry these.
     webUrl:              cfg?.webUrl     ?? '',
-    androidUrl:          cfg?.androidUrl ?? '',
     iosUrl:              cfg?.iosUrl     ?? '',
 
     // Signup gating. Only the HTTP route used to carry these. `!== false` keeps

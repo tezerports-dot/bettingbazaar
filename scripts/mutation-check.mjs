@@ -1129,7 +1129,7 @@ const MUTATIONS = [
     to: `    stamp.mode, stamp.version, usdtChain, null];`,
   },
   {
-    id: 'M157', file: 'backend/middleware/order-crypto-access.js', config: PG,
+    id: 'M165', file: 'backend/middleware/order-crypto-access.js', config: PG,
     test: 'backend/tests/routes/orderAccessGuardRoutes.test.js',
     why: 'the guard passes an order whose tag was stripped, so a row inserted outside the system is served as if it were ours',
     from: `    if (order.orderHmac ? !verifyOrderHmac(order.orderId, order.orderHmac) : orderTaggingConfigured()) {`,
@@ -1142,14 +1142,14 @@ const MUTATIONS = [
   // twice, and a merchant whose tokens were all held for the order was refused
   // after the hold was spent. The four other completion doors never dispensed.
   {
-    id: 'M159', file: 'backend/domains/payment/depositCredit.js', config: PG,
+    id: 'M167', file: 'backend/domains/payment/depositCredit.js', config: PG,
     test: 'backend/tests/routes/depositConfirmConservationPg.test.js',
     why: 'the buy charges `available` even when its hold already paid for it, so the merchant pays twice and a fully-held merchant can never confirm',
     from: `  if (fromHold.noHold) {`,
     to: `  if (true) {`,
   },
   {
-    id: 'M160', file: 'backend/domains/merchant/depositEscrow.service.js', config: PG,
+    id: 'M168', file: 'backend/domains/merchant/depositEscrow.service.js', config: PG,
     test: 'backend/tests/routes/depositConfirmConservationPg.test.js',
     why: 'a retried confirm reads a spent hold as "never held" and takes the tokens again from `available`',
     from: `    if (await dispensedDepositSettlementFor(order.orderId, merchantId)) {
@@ -1166,7 +1166,7 @@ const MUTATIONS = [
   // winnings were already locked, stranding them against an order that never
   // existed. The INSERT now runs inside the debit's own transaction.
   {
-    id: 'M158', file: 'database/repositories/wallets.js', config: PG,
+    id: 'M166', file: 'database/repositories/wallets.js', config: PG,
     test: 'backend/tests/routes/withdrawalRetryPg.test.js',
     why: 'the withdrawal lock commits without waiting for its order, so a refused INSERT leaves winnings locked against an order that does not exist — and nothing ever releases them',
     // The mutant still writes the order — AFTER the lock has committed, on a
@@ -1188,6 +1188,63 @@ const MUTATIONS = [
   if (!result.ok) {
     // A refusal here is an EXPECTED answer, not a fault: the player asked for`],
     ],
+  },
+  {
+    id: 'M157', file: 'database/repositories/casino.js', config: PG,
+    test: 'database/tests/casinoSessionBindingPg.test.js',
+    why: 'a signed provider BET debits whichever player the payload names, with no session that player opened, so a forged or leaked launch token bets with somebody else\'s balance',
+    from: `  if (normalised === 'BET') {`,
+    to: `  if (false && normalised === 'BET') {`,
+  },
+  {
+    id: 'M158', file: 'backend/domains/identity/fieldCrypto.util.js', config: UNIT,
+    test: 'backend/tests/unit/fieldCryptoRotation.test.js',
+    why: 'identity decryption accepts a truncated GCM tag, so a forged Aadhaar/identity ciphertext needs ~2^32 tries instead of 2^128',
+    from: `Buffer.from(iv, 'base64'), GCM_TAG);`,
+    to: `Buffer.from(iv, 'base64'));`,
+  },
+  {
+    id: 'M159', file: 'backend/domains/identity/totp.service.js', config: UNIT,
+    test: 'backend/tests/unit/totp.service.test.js',
+    why: 'a stored 2FA secret decrypts under a truncated GCM tag, so the tag authenticates 4 bytes instead of 16',
+    from: `Buffer.from(iv, 'base64'), GCM_TAG);`,
+    to: `Buffer.from(iv, 'base64'));`,
+  },
+  // ── Android releases (2026-09-30) ───────────────────────────────────────────
+  {
+    id: 'M160', file: 'database/repositories/androidReleases.js', config: PG,
+    test: 'backend/tests/routes/androidReleaseRoutes.test.js',
+    why: 'a draft publishes below a release already published, so every phone is offered a DOWNGRADE Android refuses — an update screen that loops for ever',
+    from: `                             AND p.published_at IS NOT NULL AND p.version_code >= r.version_code)`,
+    to: `                             AND false)`,
+  },
+  {
+    id: 'M161', file: 'backend/domains/distribution/androidRelease.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/androidReleaseRoutes.test.js',
+    why: 'an APK signed with a different key than the installed app is accepted and published, and every phone refuses it as an update',
+    from: `if (latest && latest.signerSha256 !== info.signerSha256) {`,
+    to: `if (false && latest && latest.signerSha256 !== info.signerSha256) {`,
+  },
+  {
+    id: 'M162', file: 'backend/domains/distribution/androidRelease.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/androidReleaseRoutes.test.js',
+    why: 'a debug-signed build is published; no release install can ever update from it',
+    from: `if (info.debugSigned) {`,
+    to: `if (false && info.debugSigned) {`,
+  },
+  {
+    id: 'M163', file: 'backend/domains/distribution/androidRelease.shared.js', config: UNIT,
+    test: 'backend/tests/unit/androidUpdateStatus.test.js',
+    why: 'an install below a MANDATORY release is only offered the update, so an operator forcing a security fix blocks nobody',
+    from: `if (installedCode < policy.minRequiredVersionCode) return 'required';`,
+    to: `if (installedCode < policy.minRequiredVersionCode) return 'available';`,
+  },
+  {
+    id: 'M164', file: 'database/repositories/androidReleases.js', config: PG,
+    test: 'backend/tests/routes/androidReleaseRoutes.test.js',
+    why: 'a draft signed with a different key publishes — legal at upload while nothing was published — and every phone refuses the update',
+    from: `                             AND k.published_at IS NOT NULL AND k.signer_sha256 <> r.signer_sha256)`,
+    to: `                             AND false)`,
   },
 ];
 

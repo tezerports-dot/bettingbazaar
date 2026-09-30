@@ -1,20 +1,17 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * services/nativeDeepLink.ts — deliver a bot sign-in link to the installed app.
+ * services/nativeDeepLink.ts — open a link to the public site inside the app.
  *
- * ── The failure this exists to fix ─────────────────────────────────────────
- * Player auth is Telegram-only: the bot sends a one-time link,
- * `https://<PUBLIC_APP_ORIGIN>/#/wallet?tab=deposit`, and whichever context
- * opens it redeems the token — once — into its own storage. The APK serves its
- * UI from `https://localhost` and, before the App Link filter in
- * AndroidManifest.xml, declared no interest in that URL. So the tap went to a
- * browser, the browser got the session, and the app the player had just
- * installed stayed signed out. Asking the bot again produced another link that
- * took the same trip. There was no way in.
+ * ── What arrives here ──────────────────────────────────────────────────────
+ * The App Link filter in AndroidManifest.xml routes taps on
+ * `https://<PUBLIC_APP_ORIGIN>/#/…` to this app. The one the platform sends
+ * today is the bot's password-reset link, `/#/reset/<token>`: a player who
+ * forgot their password taps it in Telegram and lands on the reset screen in
+ * the app they already have, instead of a browser. (Sign-in itself is a form —
+ * CLAUDE.md §33 — so no link here grants a session.)
  *
- * The manifest half of the fix routes the tap to this app. This is the other
- * half: taking the URL Android hands us and putting the player on the sign-in
- * screen inside the app.
+ * The manifest routes the tap; this takes the URL Android hands over and
+ * turns it into a navigation inside the app.
  *
  * ── Why only the fragment is used, and never the URL ───────────────────────
  * The incoming URL names the PUBLIC origin; this WebView runs the bundled
@@ -40,7 +37,7 @@ import { originCandidates, readEnv } from './originFailover';
  * Origins whose links this app will act on.
  *
  * `VITE_APP_ORIGIN` is the panel's public origin — the one the backend's
- * `PUBLIC_APP_ORIGIN` builds sign-in links against, and the host the App Link
+ * `PUBLIC_APP_ORIGIN` builds reset links against, and the host the App Link
  * filter claims. The API origins are included because a single-service deploy
  * serves the panel and the API from the same host, and a multi-domain deploy
  * (`network.config.js` DOMAINS) serves the same app from every one of them.
@@ -107,7 +104,7 @@ function applyRoute(hash: string): void {
 let registered = false;
 
 /**
- * Start routing bot sign-in links into the app. No-op outside the native shell
+ * Start routing links to the public site into the app. No-op outside the native shell
  * and safe to call more than once.
  *
  * @returns a teardown function, or null when nothing was registered.
@@ -146,7 +143,7 @@ export async function registerNativeDeepLinks(): Promise<(() => void) | null> {
       registered = false;
     };
   } catch (error) {
-    // A missing plugin must never stop the app from running — sign-in falls
+    // A missing plugin must never stop the app from running — a link falls
     // back to whatever the OS does with the link, which is where it was before.
     console.warn('[native] deep-link listener unavailable:', error);
     registered = false;

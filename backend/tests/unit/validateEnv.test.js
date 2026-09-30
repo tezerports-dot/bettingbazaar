@@ -15,9 +15,40 @@ const full = {
   // bucket + access key + secret key + endpoint, not the bucket alone.
   S3_BUCKET_NAME: 'b', S3_ACCESS_KEY: 'ak', S3_SECRET_KEY: 'sk', S3_ENDPOINT: 'https://s3.example.test',
   PUBLIC_APP_ORIGIN: 'https://app.example.test', PUBLIC_APP_ALLOWED_ORIGINS: 'https://app.example.test',
+  // Both must be STATED in production (2026-09-30): see the two cases below.
+  TRUST_PROXY: '1', TURNSTILE_SECRET_KEY: 'a-turnstile-secret-for-tests',
 };
 
 describe('validateEnv', () => {
+  it('refuses production with TRUST_PROXY unstated, and accepts an explicit false', () => {
+    // Unset behind a proxy, req.ip is the balancer and every user shares one
+    // rate-limit bucket. The default is right on a bare box and only the
+    // operator knows which this is, so production must say.
+    const { TRUST_PROXY, ...unstated } = full;
+    expect(() => validateEnv({ ...unstated, NODE_ENV: 'production' }, true)).toThrow(/TRUST_PROXY/);
+    expect(() => validateEnv({ ...full, TRUST_PROXY: 'false', NODE_ENV: 'production' }, true)).not.toThrow();
+  });
+
+  it('refuses production with no captcha secret unless running without one is stated', () => {
+    const { TURNSTILE_SECRET_KEY, ...noCaptcha } = full;
+    expect(() => validateEnv({ ...noCaptcha, NODE_ENV: 'production' }, true)).toThrow(/TURNSTILE_SECRET_KEY/);
+    expect(() => validateEnv({ ...noCaptcha, ALLOW_NO_CAPTCHA: 'true', NODE_ENV: 'production' }, true)).not.toThrow();
+  });
+
+  it('refuses production that ships the Android app without its origin in CORS', () => {
+    const android = { ...full, NODE_ENV: 'production', ANDROID_PACKAGE_ID: 'com.bettingbazaar.app' };
+    expect(() => validateEnv(android, true)).toThrow(/https:\/\/localhost/);
+    const allowed = { ...android, ALLOWED_ORIGINS: `${full.ALLOWED_ORIGINS},https://localhost` };
+    expect(() => validateEnv(allowed, true)).not.toThrow();
+    // No Android app declared: nothing to require.
+    expect(() => validateEnv({ ...full, NODE_ENV: 'production' }, true)).not.toThrow();
+  });
+
+  it('does not require either outside production', () => {
+    const { TRUST_PROXY, TURNSTILE_SECRET_KEY, ...dev } = full;
+    expect(() => validateEnv({ ...dev, NODE_ENV: 'development' }, false)).not.toThrow();
+  });
+
   it('passes when all required vars are present', () => {
     const r = validateEnv({ ...full, NODE_ENV: 'production' }, true);
     expect(r.ok).toBe(true);

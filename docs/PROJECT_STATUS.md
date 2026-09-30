@@ -250,7 +250,15 @@ Carried over from the retired `LAUNCH_READINESS.md`, because the items are real:
 **Owner/infra actions**
 
 - Key Cloudflare Turnstile — the captcha is built and inert until
-  `TURNSTILE_SECRET_KEY` and the panel site key are set.
+  `TURNSTILE_SECRET_KEY` and the panel site key are set. Add `localhost` to the
+  widget's hostnames too, or the Android app cannot pass it.
+- **The Android app** (built 2026-09-30, `docs/governance/ANDROID_RELEASE_SETUP.md`):
+  make the signing key with `scripts/android/create-signing-key.sh` in a
+  Codespace, set `ANDROID_PACKAGE_ID`, `ANDROID_SHA256_CERT_FINGERPRINTS` and
+  `https://localhost` in `ALLOWED_ORIGINS`, build with the Android release
+  workflow, publish on the admin Android App page. **Never yet run on a phone** —
+  the build machine has no emulator; §7 of that guide is the on-device check,
+  including the in-app update and its one-time install permission.
 - Managed clustered PostgreSQL (primary + streaming replica) and Redis.
 - Edge gateway / L7 load balancer, and a WAF in front.
 - Multi-region and DNS health-checked failover.
@@ -276,6 +284,58 @@ From `platform/capabilities.yaml` — all infrastructure, none of it feature cod
   Kafka event backbone.
 
 ---
+
+## 3.5 Tracker — the Android app (as of 2026-09-30)
+
+Owner request: a native APK with in-app and mandatory updates, an admin page to
+ship it, and Codespace commands for the signing key. Status is evidence, not
+impression (CLAUDE.md §29): each "done" names what proved it.
+
+### Done — 11 of 11 engineering items
+
+| # | Item | Proof |
+|---|---|---|
+| 1 | Android project builds: debug and signed release | built locally on SDK 36; `apksigner` v2 verified |
+| 2 | Brand icon and splash (was Capacitor's placeholder) | `icons:generate --check`; `nativeBrand.test.ts` |
+| 3 | One owner for the app version (`package.json`) | `android-release.yml` refuses a disagreeing tag |
+| 4 | In-app download and install (native plugin) | JUnit 4/4; compiled into the APK |
+| 5 | Mandatory updates and the update screen | `NativeUpdateGate` 8/8; `updateStatus` tests; M163 |
+| 6 | Admin Android App page (upload, notes, mandatory, publish) | release routes 16/16; `check:ui-coverage` |
+| 7 | Upload refuses the wrong app, debug build, key or version | M161, M162; publish guards M160, M164 |
+| 8 | Admin logo and splash reach the app (§32 S39) | `ShareModal` tests; sweep recorded |
+| 9 | Server refuses to boot without `https://localhost` in CORS | `validateEnv` test |
+| 10 | Codespace key script | run against a stub `gh`; the real upload route accepted its APK (201) |
+| 11 | Docs: `ANDROID_RELEASE_SETUP.md`, env templates | — |
+
+Full suites after the last change: pg 1568, unit 874, user 214, admin 115,
+e2e 181 (0 fail); every repository gate exits 0.
+
+### Left — in order, and who does it
+
+| # | Step | Who | Estimate | Blocked by |
+|---|---|---|---|---|
+| L1 | PR #197 CI green on the latest commit | automatic (Claude fixes if red) | ~20 min | — |
+| L2 | Merge PR #197 | owner | 5 min | L1 |
+| L3 | Run `scripts/android/create-signing-key.sh` in a Codespace | owner | 15 min | L2 |
+| L4 | A deployed backend on HTTPS | owner + Claude | **not estimable here** | §3.3: jurisdiction; hosting; S3; domain |
+| L5 | Server env: `ANDROID_PACKAGE_ID`, fingerprint, `https://localhost` in `ALLOWED_ORIGINS`; Turnstile `localhost` | owner | 15 min | L3, L4 |
+| L6 | First build: Actions → Android release | owner (click) | 10 min | L3 |
+| L7 | Upload and publish on the admin Android App page | owner | 5 min | L4, L6 |
+| L8 | On-device checklist (`ANDROID_RELEASE_SETUP.md` §7) | owner with a phone | ~1 hour | L7 |
+| L9 | Fix whatever L8 finds | Claude | 0 to 1 day; unknown until L8 | L8 |
+
+**The honest critical path:** L1 to L3 and L6 take about an hour of your time.
+The app cannot be *used* until L4, because an APK needs a live HTTPS backend
+to talk to. The platform has never been deployed (CLAUDE.md §0.0), and §3.3's
+jurisdiction item gates that deploy. L9 cannot be sized before a phone has run
+the app, because no emulator is available here.
+
+### Not planned — say if you want any of these
+
+- Push notifications (needs Firebase; not requested).
+- An iOS app (not requested).
+- Over-the-air JS updates without a new APK (declined for now: an unsigned
+  code channel into a money app; see DECISION_LOG 2026-09-30).
 
 ## 4. How to pick this up
 

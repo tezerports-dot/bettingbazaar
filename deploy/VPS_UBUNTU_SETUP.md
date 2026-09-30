@@ -355,6 +355,21 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
+    # The one request that carries a large body: an admin uploading an Android
+    # release (the APK itself). The app caps it at 150 MB; without this block
+    # the 10m wall above answers 413 before the request reaches the app, and
+    # the admin panel can only report that the upload failed.
+    location = /api/admin/android/releases {
+        client_max_body_size 150m;
+        proxy_request_buffering off;
+        proxy_pass http://bb_api;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
     # WebSocket. proxy_read_timeout MUST be long: socket.io pings every 25s with
     # a 60s timeout, and NGINX's 60s default kills the connection right at the
     # boundary — producing intermittent drops that look like an app bug.

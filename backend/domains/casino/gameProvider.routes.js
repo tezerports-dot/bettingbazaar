@@ -21,7 +21,6 @@ import express from 'express';
 // correctness. A hook that has to be remembered in N places is §2's shape.
 import { refreshProviderFrameSources } from './providerFrameSources.js';
 // Balances go to a third-party provider. They come from the wallet.
-import { getBalances } from '../wallet/walletAuthority.service.js';
 import { db } from '#db';
 import crypto from 'crypto';
 import { authenticate, isAdmin, isAdminOrSubAdmin } from '../identity/auth.middleware.js';
@@ -158,13 +157,7 @@ router.post('/launch', authenticate, async (req, res) => {
     const player = await db.users.getUser(String(req.user.userId));
     if (!player) return res.status(404).json({ success: false, message: 'Account not found' });
 
-    // From the WALLET. This is the balance handed to a third-party provider as
-    // the player's starting figure — a zero here does not merely display
-    // wrong, it tells the provider the player cannot stake anything.
-    const balances = await getBalances(String(req.user.userId));
-    const balance = (balances.depositBalance || 0) + (balances.winningsBalance || 0);
     const sessionId = crypto.randomUUID();
-    const expiresAt = new Date(Date.now() + 4 * 3600000); // 4h
 
     let launchUrl = '';
 
@@ -219,22 +212,23 @@ router.post('/launch', authenticate, async (req, res) => {
 
     // ── Betby Sports launch ──────────────────────────────────────────────────
     else if (providerKey === 'betby') {
-      const token = Buffer.from(JSON.stringify({
-        userId: String(req.user.userId),
-        balance,
-        currency: 'INR',
-        sessionId,
-        ts: Date.now(),
-      })).toString('base64');
+      // The token is the session id: random, single-session, expiring with it.
+      // It was base64 of plain JSON naming the userId (and the balance), so
+      // anyone who knew a user id could write one: an unsigned claim is not a
+      // credential. The provider hands this string back to us opaquely, so an
+      // opaque value is what it should be (2026-09-30).
+      const token = sessionId;
       launchUrl = `${provider.apiUrl}/sportsbook?brandId=${provider.merchantId}&token=${token}&lang=en&currency=INR`;
     }
 
     // ── Pragmatic Play launch ────────────────────────────────────────────────
     else if (providerKey === 'pragmatic') {
-      const hash = crypto.createHash('md5')
-        .update(`${req.user.userId}${provider.apiSecret}`)
-        .digest('hex');
-      launchUrl = `${provider.apiUrl}/gs2c/do?token=${hash}&stylename=${provider.merchantId}&game=${gameId || 'vs20sugardance'}&jurisdiction=INR&lobby_url=${encodeURIComponent(process.env.APP_BASE_URL || '')}`;
+      // Per-session, like every other provider here. It was
+      // md5(userId + apiSecret): the SAME token on every launch, forever, so
+      // one launch URL seen in a log or a Referer was that player's account at
+      // this provider permanently (2026-09-30).
+      const token = sessionId;
+      launchUrl = `${provider.apiUrl}/gs2c/do?token=${token}&stylename=${provider.merchantId}&game=${gameId || 'vs20sugardance'}&jurisdiction=INR&lobby_url=${encodeURIComponent(process.env.APP_BASE_URL || '')}`;
     }
 
     // ── Ezugi launch ─────────────────────────────────────────────────────────
@@ -338,6 +332,7 @@ router.post('/wallet/:providerKey', async (req, res) => {
         insufficient:         'Insufficient balance',
         unknown_type:         'Unrecognised transaction type',
         invalid_amount:       'Invalid amount',
+        no_live_session:      'No open game session for this player with this provider',
       }[applied.reason] || `Callback refused: ${applied.reason}`;
       console.error(`[casino] refusing ${type} for round ${roundId}: ${applied.reason}`);
       // A refusal is 400 with the balance attached: suppliers reconcile against

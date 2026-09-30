@@ -121,7 +121,6 @@ export interface Backend {
 
   // SYSTEM CONFIG
   getSystemConfig(): Promise<SystemConfigData>;
-  updateSystemConfig(config: SystemConfigData, adminId: string): Promise<void>;
 
   // AI ANALYSIS
   getAIAnalysis(): Promise<{ text: string, cached: boolean }>;
@@ -130,7 +129,6 @@ export interface Backend {
   // uploadKYC removed 2026-08-25 with POST /api/user/:userId/kyc. The bot takes
   // the Aadhaar number before the account exists; there is nothing for a
   // signed-in player to submit.
-  approveKYC(adminId: string, userId: string, status: 'APPROVED' | 'REJECTED', reason?: string): Promise<void>;
   updateBankDetails(userId: string, details: User['bankDetails']): Promise<User>;
 
   placeBet(userId: string, cycleId: string, amount: number, side: BettingSide): Promise<{
@@ -164,17 +162,9 @@ export interface Backend {
   // Token conversion is fixed 1:1 (Phase 006 flattening, 2026-07-08) —
   // getTokenRates/updateTokenRates removed with the TokenRates model.
 
-  // Admin Ops for Merchants
-  addMerchant(profile: Partial<MerchantProfile>, adminId: string): Promise<MerchantProfile & { initialPassword?: string }>;
-  removeMerchant(merchantId: string, adminId: string): Promise<void>;
-  toggleMerchantOnline(merchantId: string, isOnline: boolean, adminId: string): Promise<void>;
-  updateMerchantLimits(merchantId: string, updates: Partial<MerchantProfile>, adminId: string): Promise<void>;
-  resetMerchantPassword(merchantId: string, adminId: string): Promise<string>;
-  
   // Merchant App Specific
   getMerchantProfile(merchantId?: string): Promise<MerchantProfile>;
   updateMerchantProfile(merchantId: string, updates: Partial<MerchantProfile>): Promise<MerchantProfile>;
-  getMerchantList(): Promise<MerchantProfile[]>;
   
   // Payment Order Flow
   // createPaymentOrder / getUserPaymentOrders / getAllPaymentOrders /
@@ -198,43 +188,12 @@ export interface Backend {
   // used to shadow it in this file had no callers and half of them lied about
   // succeeding.
 
-  logAudit(adminId: string, action: string, details: string, targetId?: string): Promise<void>;
-
-
-  getAdminDashboardData(): Promise<{
-    users: User[];
-    auditLogs: AuditLog[];
-    metrics: any;
-  }>;
-
-  getFinancialStats(): Promise<any>;
-  
-  getCycleAnalytics(): Promise<Array<{
-    id: string;
-    endTime: number;
-    type: CycleType;
-    realDelhi: number;
-    realBombay: number;
-    winner: BettingSide;
-    realPool: number;
-    payout: number;
-    netProfit: number;
-  }>>;
-
-  getUserDetails(adminId: string, targetUserId: string): Promise<{
-    user: User;
-    bets: Bet[];
-    transactions: Transaction[];
-  }>;
-
-  updateUserStatus(adminId: string, userId: string, status: User['status'], reason: string): Promise<void>;
-  deleteUser(adminId: string, userId: string): Promise<void>;
-  addUserBalance(adminId: string, userId: string, amount: number, type: 'WITHDRAWABLE' | 'LOCKED', reason: string): Promise<User>;
-  
-  setUserRole(adminId: string, userId: string, updates: Partial<User>): Promise<User>;
-
-
-  manageCycle(adminId: string, action: string, payload: any): Promise<void>;
+  // The admin calls that used to be declared here (dashboard, users, balances,
+  // merchants, cycle control, audit log, and a resetMerchantPassword that
+  // invented a password client-side for a route that does not exist) were
+  // deleted 2026-09-30. None had a caller, and the player app has no admin
+  // screen: every one shipped the admin API's shape to every player's device
+  // for nothing. The admin panel has its own API layer.
 
   /**
    * Force the realtime connection to rebuild. Optional: only the real backend

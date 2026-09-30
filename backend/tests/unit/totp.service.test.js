@@ -190,6 +190,14 @@ describe('TOTP service', () => {
       expect(decryptSecret(encryptSecret(secret))).toBe(secret);
     });
 
+    it('refuses a TRUNCATED auth tag, even one that is a correct prefix', () => {
+      // An unpinned authTagLength verifies only the bytes supplied, so the real
+      // tag cut to 4 bytes was accepted: ~2^32 tries to forge, not 2^128.
+      const [v, iv, tag, data] = encryptSecret(generateSecret()).split(':');
+      const short = Buffer.from(tag, 'base64').subarray(0, 4).toString('base64');
+      expect(() => decryptSecret(`${v}:${iv}:${short}:${data}`)).toThrow();
+    });
+
     it('never stores the secret in the clear', () => {
       const secret = generateSecret();
       expect(encryptSecret(secret)).not.toContain(secret);

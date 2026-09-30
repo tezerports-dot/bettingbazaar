@@ -6,6 +6,7 @@ import { getBackend, getAssetUrl } from '../../services/backend.service';
 import { apiUrl } from '../../services/apiUrl';
 import { currentOrigin } from '../../services/originFailover';
 import { isNativeShell } from '../../services/nativeLifecycle';
+import { brandLogo, fallBackToMark } from '../../services/brandAssets';
 import { SystemConfigData } from '../../types';
 
 const backend = getBackend();
@@ -65,8 +66,8 @@ const ShareModal: React.FC<ShareModalProps> = ({ onClose }) => {
   // origin on the web; in the shell that would hand out a link to the player's
   // own device, so the deployed API origin stands in for it there.
   const webUrl = config?.webUrl || (isNativeShell() ? currentOrigin() : window.location.origin);
-  // The APK. `/api/download/android` 302s to whatever androidUrl an admin has
-  // set, so the indirection survives every build; `apiUrl` resolves it against
+  // The APK. `/api/download/android` 302s to the newest release an admin
+  // published, so the indirection survives every build; `apiUrl` resolves it against
   // the API origin — byte-identical to the relative path on a same-origin web
   // deploy, and the real host in the shell.
   const androidUrl = apiUrl('/api/download/android');
@@ -77,14 +78,9 @@ const ShareModal: React.FC<ShareModalProps> = ({ onClose }) => {
   // Distribution all along with nothing reading it: an operator could fill it
   // in and no screen anywhere would change.
   const iosUrl = config?.iosUrl ? apiUrl('/api/download/ios') : '';
-  // H-06 fix: read logo from branding (GOVERNANCE §3: logos must originate from Branding).
-  // Falls back to /app-assets/logo.png only when branding.logo is empty.
-  const branding   = (() => { try { return JSON.parse(localStorage.getItem('app_branding') || '{}'); } catch { return {}; } })();
-  const cdnBase    = (branding.cdnBaseUrl || '').replace(/\/+$/, '');
-  const brandLogo  = branding.logo
-    ? (branding.logo.startsWith('http') ? branding.logo : cdnBase + '/' + branding.logo.replace(/^\/+/, ''))
-    : '';
-  const logoUrl = brandLogo || '/app-assets/logo.png';
+  // Branding's logo, else the uploaded slot — resolved against the server in
+  // the app, where a relative path would read the APK's own files (brandAssets.ts).
+  const logoUrl = brandLogo('logo.png');
 
   return (
     <Modal onClose={onClose} title="Invite & Play">
@@ -92,7 +88,7 @@ const ShareModal: React.FC<ShareModalProps> = ({ onClose }) => {
          <div className="flex justify-center mb-4">
             <div className="w-20 h-20 bg-gradient-to-br from-[#1E293B] to-[#0B0E14] rounded-2xl flex items-center justify-center border-2 border-[var(--brand-primary, #D4AF37)] shadow-[0_0_20px_rgba(var(--brand-primary-rgb), 0.3)]">
                 {logoUrl ? (
-            <img src={logoUrl} alt="Share logo" className="w-14 h-14 object-contain" />
+            <img src={logoUrl} alt="Share logo" className="w-14 h-14 object-contain" onError={fallBackToMark} />
           ) : <span className="text-3xl">🚀</span>}
             </div>
          </div>

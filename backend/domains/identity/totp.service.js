@@ -182,6 +182,12 @@ export function buildOtpauthUri({ secret, label, issuer = 'Betting Bazaar' }) {
 // ── Secret storage ──────────────────────────────────────────────────────────
 
 const ENC_ALGORITHM = 'aes-256-gcm';
+// The tag length is fixed, not inferred from the stored value. Without it Node
+// accepts a TRUNCATED tag, down to 4 bytes, so a forged ciphertext needs about
+// 2^32 attempts instead of 2^128. Everything ever written used the 16-byte
+// default, so pinning it refuses only a forgery (semgrep gcm-no-tag-length,
+// 2026-09-30).
+const GCM_TAG = Object.freeze({ authTagLength: 16 });
 
 /**
  * The key TOTP secrets are encrypted under. Separate from JWT_SECRET on
@@ -218,7 +224,7 @@ function encryptionKey() {
 /** Encrypt a secret for storage. Returns `v1:<iv>:<tag>:<ciphertext>`, base64. */
 export function encryptSecret(plainSecret) {
   const iv = crypto.randomBytes(12); // 96-bit nonce, the GCM standard
-  const cipher = crypto.createCipheriv(ENC_ALGORITHM, encryptionKey(), iv);
+  const cipher = crypto.createCipheriv(ENC_ALGORITHM, encryptionKey(), iv, GCM_TAG);
   const enc = Buffer.concat([cipher.update(String(plainSecret), 'utf8'), cipher.final()]);
   const tag = cipher.getAuthTag();
   return `v1:${iv.toString('base64')}:${tag.toString('base64')}:${enc.toString('base64')}`;
@@ -231,7 +237,7 @@ export function decryptSecret(stored) {
     throw new Error('Stored TOTP secret is not in the expected v1 format');
   }
   const [, iv, tag, data] = parts;
-  const decipher = crypto.createDecipheriv(ENC_ALGORITHM, encryptionKey(), Buffer.from(iv, 'base64'));
+  const decipher = crypto.createDecipheriv(ENC_ALGORITHM, encryptionKey(), Buffer.from(iv, 'base64'), GCM_TAG);
   decipher.setAuthTag(Buffer.from(tag, 'base64'));
   return Buffer.concat([
     decipher.update(Buffer.from(data, 'base64')),

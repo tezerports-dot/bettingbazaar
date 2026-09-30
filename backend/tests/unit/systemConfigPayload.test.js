@@ -35,7 +35,7 @@ describe('the system-config payload', () => {
     // Both transports render the same object, so a field added for one reaches
     // the other. The two used to differ by five fields.
     const keys = Object.keys(systemConfigPayload(null)).sort();
-    for (const gone of ['webUrl', 'androidUrl', 'iosUrl', 'kycRequired', 'registrationEnabled']) {
+    for (const gone of ['webUrl', 'iosUrl', 'kycRequired', 'registrationEnabled']) {
       expect(keys, `${gone} must be in the one payload, not one transport's copy`).toContain(gone);
     }
     expect(Object.keys(systemConfigFallback()).sort()).toEqual(keys);

@@ -103,13 +103,57 @@ export const CORS_SHAPE = {
 };
 
 /**
- * One rate-limit tier: a window and a max count. The values below are the
- * production limits, full stop — there is no multiplier and no env override.
- * (A development-only relaxation switch, `BB_RATE_LIMIT_RELAX`, lived here and
- * was removed 2026-09-25 once the browser-pass work that needed it was done;
- * see the deleted CLAUDE.md §34 in git history.)
+ * A TEST facility, OFF unless asked for — see CLAUDE.md §34.
+ *
+ * A whole-stack browser pass presses ~1,300 controls across 67 screens. The
+ * global backstop is 1,000 requests per 15 minutes, so the pass spends most of
+ * its wall-clock WAITING for the window to roll over rather than pressing
+ * anything — measured in hours, not minutes, for one panel.
+ *
+ * `BB_RATE_LIMIT_RELAX` multiplies every tier's `max`, for the server such a
+ * pass runs against. Removed 2026-09-25, restored 2026-09-30 at the owner's
+ * request as a standing test facility. Four things keep it from being a way to
+ * ship a weaker platform:
+ *
+ *   1. It defaults to 1, so nothing changes for anyone who does not set it.
+ *   2. It is REFUSED IN PRODUCTION — set it with `NODE_ENV=production` and the
+ *      server does not boot. A knob that silently weakens a live deployment is
+ *      exactly the thing §19 says must not be possible.
+ *   3. It says so at boot, in one line nobody can miss (§33.7: an exemption
+ *      nobody can see is a hole nobody removes).
+ *   4. The suites that ASSERT the limits pin it to 1 — every vitest config via
+ *      `test.env`, and the e2e runner (whose pen test probes the login limiter)
+ *      in the server it spawns — so a value left in a shell cannot make a
+ *      limiter test measure a weakened server and call it correct.
+ *
+ * WINDOWS ARE UNTOUCHED. Only the counts move — the shape of every limiter,
+ * and therefore what each one is FOR, is unchanged.
  */
-const tier = (windowMs, max) => ({ windowMs, max });
+const RELAX = (() => {
+  const raw = process.env.BB_RATE_LIMIT_RELAX;
+  if (!raw) return 1;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 1) {
+    throw new Error(`BB_RATE_LIMIT_RELAX must be a number >= 1; got ${JSON.stringify(raw)}`);
+  }
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error(
+      'BB_RATE_LIMIT_RELAX is a test facility and is refused in production. '
+      + 'Unset it, or do not run this build as production.',
+    );
+  }
+  if (n !== 1) {
+    console.warn(
+      `\n!! RATE LIMITS RELAXED ${n}x — BB_RATE_LIMIT_RELAX is set. This is a test\n`
+      + '   facility for browser passes (CLAUDE.md §34). Windows are unchanged; only the\n'
+      + '   counts are multiplied. This server is NOT enforcing production limits.\n',
+    );
+  }
+  return n;
+})();
+
+/** One rate-limit tier. Windows never move; only `max`, and only when relaxed. */
+const tier = (windowMs, max) => ({ windowMs, max: max * RELAX });
 
 // ── Rate-limit tiers (values unchanged from middleware/security.js + server.js)
 export const RATE_LIMIT_TIERS = {
