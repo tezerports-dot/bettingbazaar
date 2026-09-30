@@ -1283,6 +1283,33 @@ const MUTATIONS = [
     from: `                             AND k.published_at IS NOT NULL AND k.signer_sha256 <> r.signer_sha256)`,
     to: `                             AND false)`,
   },
+  // ── An undeclared config key is the CALLER's mistake (B3, 2026-09-30) ────
+  {
+    id: 'M174', file: 'database/repositories/config.js', config: PG,
+    test: 'backend/tests/routes/configRefusalRoutes.test.js',
+    why: 'the undeclared-key refusal loses its status, so an admin typo on the branding or support-links screen answers "Something went wrong" and hides the key it named',
+    from: `      throw invalidConfig(
+        \`config: refusing to write undeclared setting`,
+    to: `      throw new Error(
+        \`config: refusing to write undeclared setting`,
+  },
+  // ── A blank-looking reason is the admin's mistake (B3 sweep, 2026-09-30) ──
+  // Each route tested `!reason` while its writer requires `reason.trim()`, so a
+  // reason of spaces passed the route and the writer's bare Error became a 500.
+  {
+    id: 'M175', file: 'backend/routes/retention.routes.js', config: PG,
+    test: 'backend/tests/routes/adminBalanceAdjustRoutes.test.js',
+    why: 'a reason of spaces passes the balance-adjust route and the writer throws it back as a 500',
+    from: `if (!userId || !type || !field || !amount || !String(reason ?? '').trim()) {`,
+    to: `if (!userId || !type || !field || !amount || !reason) {`,
+  },
+  {
+    id: 'M176', file: 'backend/domains/merchant/merchant.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/merchantAdminRoutes.test.js',
+    why: 'a rejection reason of spaces passes the route and rejectMerchant throws it back as a 500',
+    from: `if (!String(reason ?? '').trim()) return res.status(400).json({ success: false, message: 'Rejection reason is required' });`,
+    to: `if (!reason) return res.status(400).json({ success: false, message: 'Rejection reason is required' });`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

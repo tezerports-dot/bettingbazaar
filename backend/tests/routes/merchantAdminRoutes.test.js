@@ -389,6 +389,16 @@ describePg('merchant admin routes', () => {
     expect((await getMerchant(m.merchantId)).status).toBe('ACTIVE');
   });
 
+  it('refuses a blank-looking rejection reason as the admin\'s mistake, not a 500', async () => {
+    // The route tested `!reason`; the writer requires `reason.trim()`. A reason
+    // of spaces passed the first and threw a bare Error from the second, which
+    // answered "Something went wrong" to a request that can never succeed.
+    const m = await merchantActor({});
+    const res = await as(app, admin).put(`/merchants/${m.merchantId}/reject`).send({ reason: '   ' });
+    expect(res.status, res.body.message).toBe(400);
+    expect((await getMerchant(m.merchantId)).status).toBe('ACTIVE');
+  });
+
   it('404s a lifecycle change on a merchant that does not exist', async () => {
     const res = await as(app, admin).put(`/merchants/ghost-${RUN}/suspend`).send({ reason: 'x' });
     expect(res.status).toBe(404);

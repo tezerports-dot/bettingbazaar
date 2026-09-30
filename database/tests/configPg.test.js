@@ -85,6 +85,19 @@ describePg('the configuration store', () => {
     })).rejects.toThrow(/refusing to write undeclared setting 'riskRules\.maxWarnigs'/);
   });
 
+  it('refuses an undeclared setting as the CALLER\'s mistake — status 400, like every sibling', async () => {
+    // It was a bare Error while every other refusal in the spec carries
+    // status 400. `respondError` routes on the presence of `status` (§2), so
+    // any caller not regex-matching the message turned an admin's typo into
+    // "Something went wrong" and swallowed the one sentence naming the field.
+    const err = await applyConfig({
+      scope: 'system', docKey: KEY, patch: { payoutFeePercnt: 5 },
+    }).catch((e) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.status).toBe(400);
+    expect(err.code).toBe('CONFIG_INVALID');
+  });
+
   it('ENFORCES bounds on every write — these feed money arithmetic', async () => {
     // The old model validated min/max on a save and skipped it on the update
     // operators the admin routes use, so all four of these were accepted.
