@@ -2487,6 +2487,68 @@ a consumer — the open-queue item "triage the `testOnly` exports" is exactly th
   needs `check:dead-code` to stop counting a test import as a consumer — still
   the open-queue item it was.
 
+### F-025 — a second retry of an expired withdrawal locked the player's winnings for good
+`FIXED` · high (player funds stranded, silently) · §21 shape across two commits ·
+found 2026-09-30 by the full-stack review
+
+**MEASURED against a real database** (`withdrawalRetryPg.test.js`, 2 of 3 red on
+the parent commit): a player with ₹2,000 of winnings retries an expired ₹1,000
+withdrawal. The first retry locks ₹1,000 and creates the order. A **second**
+retry — a double-tap, or tapping Retry again on the old order later — locked
+**another ₹1,000** and was refused. Two retries sent together locked **₹2,000
+for one withdrawal**. Either way ₹1,000 sat in `locked` against an order that did
+not exist.
+
+**The chain, stated upward (§0.5 Q4).** `createWithdrawalOrder` ran the escrow
+debit (winnings → locked, its own transaction) and THEN `createOrderRecord`. A
+duplicate retry is refused only by the partial UNIQUE on `retry_of_order_id` —
+at the INSERT, after the debit had committed. A BUY never reached that point,
+because the one-open-buy rule refuses it first; a SELL has no such rule (splits
+create several at once), so the index was its only guard. Every expiry, cancel
+and refund starts from an order, so nothing could ever find the lock again, and
+`reconcileUserStakes` reads a locked surplus as "a withdrawal hold, or a leak"
+without telling them apart. The route then mapped the 23505 to *"You have
+already retried this order"* — telling the player nothing had happened.
+
+**Why every tier was green.** All five retry tests retried a BUY. The module
+header stated the assumption outright — "a failed debit leaves nothing behind to
+undo" — and never asked the mirror question: what does the row say if the
+INSERT fails after the debit? That is §0.5 question 3, and §21 is that question
+written down.
+
+**Fixed at the cause, not the symptom.** A compensating refund on INSERT failure
+would itself fail in exactly the case (a database blip) that failed the INSERT.
+Instead the lock and its order are ONE commit: `prepareOrderRecord` validates the
+order and builds its INSERT before any money moves, and `debitWinningsForWithdrawal`
+runs it with `within`, on its own connection, inside the wallet row lock, after
+the movement — the composition `withWalletLock` + `applyMovementWithin` already
+used for bets (M-4) and balance adjustments. A refused INSERT unwinds the lock;
+a refused debit writes no order. Validation moving ahead of the debit also
+closes the variant where an unknown field threw after the money moved.
+
+- **Tests:** `withdrawalRetryPg.test.js` — a first retry locks once; a second is
+  refused AND locks nothing; two concurrent retries create one withdrawal and
+  lock once. Full `test:pg` 1546/1546, `test:unit` 855/855.
+- **Mutation-proved:** M158 restores the two-commit shape (the INSERT on a
+  separate connection after the lock commits) and is KILLED; M118 retargeted to
+  the new call and KILLED.
+- **Sweep for the same shape** — a money movement committed in one transaction
+  and the record that explains it written in another, where the second can be
+  refused: every money-movement call in `backend/domains` and `backend/routes`
+  (`grep -rnE "await (debit|lock|hold|reserve|creditMerchant|debitMerchant|
+  moveDepositMoney|creditDeposit|creditWinnings|lockBetStake)\w*\("`, 26 sites
+  in 10 files), each read with its caller. The merchant deposit hold is taken
+  before `assignOrderState` and released on every refusal path in both callers,
+  with `findStrandedDepositHolds` behind it; `moveDepositMoney`'s chain is
+  resumable because every caller leaves the order PAID until it has run; bet
+  placement composes in one transaction. **The withdrawal debit was the only
+  movement with no record to find it again.** The same sweep surfaced four
+  defects of OTHER shapes on the same call sites, recorded as their own entries:
+  the hold-disabled withdrawal confirm settles after its commit (§21), three
+  withdrawal refunds credit winnings without releasing the lock, and the buy's
+  merchant side has two owners (the hold and an `available` debit) — which
+  charges the merchant twice on the confirm route.
+
 ---
 
 ## 5. Derived coverage — regenerated, never typed

@@ -788,8 +788,8 @@ const MUTATIONS = [
     id: 'M118', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
     test: 'backend/tests/routes/splitWithdrawalPg.test.js',
     why: 'every part debits the WHOLE withdrawal instead of its own share, so a four-part payout locks four times what the player asked to withdraw',
-    from: `      debited = await debitWinningsForWithdrawal(String(user.userId), partTokens, partOrderId);`,
-    to: `      debited = await debitWinningsForWithdrawal(String(user.userId), tokenAmount, partOrderId);`,
+    from: `      debited = await debitWinningsForWithdrawal(String(user.userId), partTokens, partOrderId, { within: insertPart });`,
+    to: `      debited = await debitWinningsForWithdrawal(String(user.userId), tokenAmount, partOrderId, { within: insertPart });`,
   },
   {
     id: 'M119', file: 'backend/domains/merchant/denominations.js', config: PG,
@@ -1134,6 +1134,36 @@ const MUTATIONS = [
     why: 'the guard passes an order whose tag was stripped, so a row inserted outside the system is served as if it were ours',
     from: `    if (order.orderHmac ? !verifyOrderHmac(order.orderId, order.orderHmac) : orderTaggingConfigured()) {`,
     to: `    if (order.orderHmac ? !verifyOrderHmac(order.orderId, order.orderHmac) : false) {`,
+  },
+
+  // ── A withdrawal's lock and its order commit together ───────────────────
+  // They were two commits, and the second could be refused: a second retry of
+  // one expired withdrawal collides on `retry_of_order_id` AT INSERT, after the
+  // winnings were already locked, stranding them against an order that never
+  // existed. The INSERT now runs inside the debit's own transaction.
+  {
+    id: 'M158', file: 'database/repositories/wallets.js', config: PG,
+    test: 'backend/tests/routes/withdrawalRetryPg.test.js',
+    why: 'the withdrawal lock commits without waiting for its order, so a refused INSERT leaves winnings locked against an order that does not exist — and nothing ever releases them',
+    // The mutant still writes the order — AFTER the lock has committed, on a
+    // separate connection. That is exactly the two-commit shape this entry
+    // exists to catch, restored.
+    edits: [
+      [`    const record = within ? await within(ctx.client) : null;
+    return { commit: true, value: { ...moved, record } };`,
+       `    return { commit: true, value: { ...moved, record: null, pending: within } };`],
+      [`  if (result.idempotent) return { idempotent: true, txId };
+  if (!result.ok) {
+    // A refusal here is an EXPECTED answer, not a fault: the player asked for`,
+       `  if (result.idempotent) return { idempotent: true, txId };
+  if (result.ok && result.pending) {
+    const { getPool } = await import('../client.js');
+    const client = await (await getPool()).connect();
+    try { result.record = await result.pending(client); } finally { client.release(); }
+  }
+  if (!result.ok) {
+    // A refusal here is an EXPECTED answer, not a fault: the player asked for`],
+    ],
   },
 ];
 
