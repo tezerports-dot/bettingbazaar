@@ -119,7 +119,6 @@ interface GameContextType {
   history: string[];
   subscribeToVolume: (type: CycleType, callback: (data: LiveStats) => void) => () => void;
   getCurrentVolume: (type: CycleType) => LiveStats;
-  triggerAdminAction: (action: string, payload?: any) => void;
   formatTime: (seconds: number) => string;
   updateProfile: (updates: any) => Promise<void>;
   refreshUserWallet: () => Promise<void>;
@@ -1048,11 +1047,6 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
     });
   };
 
-  const triggerAdminAction = (action: string, payload?: any) => {
-    const targetType = (payload?.targetType as CycleType) || cycleType;
-    backend.manageCycle('ADMIN', action, { ...payload, cycleId: cycles[targetType].id });
-  };
-
   const toggleGhostMode = () => setIsGhostMode(prev => !prev);
 
   const formatTime = (seconds: number) => {
@@ -1074,7 +1068,7 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
       user, isAuthenticated: !!user, isOnline, register, signIn, signInWithSecondFactor, logout,
       cycleType, setCycleType, cycles, currentCycle: cycles[cycleType],
       pastCycles, loadCycleHistory, gameState: cycles[cycleType].status, serverTimeOffset,
-      placeBet, placePhantomBet, userBets, history, triggerAdminAction, formatTime,
+      placeBet, placePhantomBet, userBets, history, formatTime,
       updateProfile, subscribeToVolume, getCurrentVolume, refreshUserWallet,
       isGhostMode,
     toggleGhostMode,

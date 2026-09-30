@@ -419,9 +419,6 @@ export class RealBackend implements Backend {
       return defaults;
     }
   }
-  async updateSystemConfig(config: SystemConfigData, adminId: string) {
-    await this.request('/admin/system/config', { method: 'PUT', body: JSON.stringify({ config, adminId }) });
-  }
 
   // -- SUBSCRIPTIONS ---------------------------------------------------------
   subscribeToTicker(callback: (data: { id: string, text: string, side: 'DELHI' | 'BOMBAY', amount: number }) => void) {
@@ -502,9 +499,6 @@ export class RealBackend implements Backend {
     }
   }
 
-  async manageCycle(adminId: string, action: string, payload: any) {
-    await this.request('/admin/manage-cycle', { method: 'POST', body: JSON.stringify({ adminId, action, payload }) });
-  }
 
   // -- USER ------------------------------------------------------------------
   async getUserData(userId: string) {
@@ -561,12 +555,6 @@ export class RealBackend implements Backend {
   }
 
   // -- KYC & BANKING ----------------------------------------------------------
-  async approveKYC(adminId: string, userId: string, status: 'APPROVED' | 'REJECTED', reason?: string) {
-    const endpoint = status === 'APPROVED'
-      ? `/admin/kyc/${userId}/approve`
-      : `/admin/kyc/${userId}/reject`;
-    await this.request(endpoint, { method: 'POST', body: JSON.stringify({ adminId, reason }) });
-  }
   async updateBankDetails(userId: string, details: any) {
     return this.request<User>(`/user/${userId}/bank-details`, { method: 'PUT', body: JSON.stringify(details) });
   }
@@ -609,17 +597,6 @@ export class RealBackend implements Backend {
     }
   }
 
-  // -- ADMIN ------------------------------------------------------------------
-  async getDashboardStats() { return this.request<any>('/admin/analytics/dashboard'); }
-  async getUsers(filters?: any) { return this.request<User[]>('/admin/users', { method: 'GET' }); }
-  async getUser(userId: string) { return this.request<User>(`/admin/users/${userId}`); }
-  async updateUser(userId: string, updates: any) {
-    return this.request<User>(`/admin/users/${userId}`, { method: 'PUT', body: JSON.stringify(updates) });
-  }
-  async deleteUser(userId: string) { await this.request(`/admin/users/${userId}`, { method: 'DELETE' }); }
-  async adjustBalance(userId: string, amount: number, reason: string) {
-    await this.request(`/admin/users/${userId}/adjust-balance`, { method: 'POST', body: JSON.stringify({ amount, reason }) });
-  }
 
   // -- PROMO CONTENT ----------------------------------------------------------
   // BUG-U3 FIX: Both methods now unwrap { success, content:[] } before returning
@@ -645,15 +622,6 @@ export class RealBackend implements Backend {
   }
   async getPublicContent(location: PromoLocation): Promise<PromoContent[]> {
     return this.getPromoContent(location);
-  }
-  async createPromoContent(adminId: string, content: Partial<PromoContent>) {
-    return this.request<PromoContent>('/admin/promo', { method: 'POST', body: JSON.stringify({ adminId, content }) });
-  }
-  async updatePromoContent(adminId: string, contentId: string, updates: Partial<PromoContent>) {
-    return this.request<PromoContent>(`/admin/promo/${contentId}`, { method: 'PUT', body: JSON.stringify({ adminId, updates }) });
-  }
-  async deletePromoContent(adminId: string, contentId: string) {
-    await this.request(`/admin/promo/${contentId}`, { method: 'DELETE', body: JSON.stringify({ adminId }) });
   }
 
   // FE 4.3 FIX: all 4 methods were constructing non-existent URL patterns -> 404 on every call
@@ -690,14 +658,6 @@ export class RealBackend implements Backend {
   // `/order/:id/mark-paid`, `/order/cancel`). Keep it that way — a second client
   // surface for the same endpoints is what let these rot unnoticed.
 
-  // -- AUDIT -------------------------------------------------------------------
-  // FE 4.4 FIX: was sending POST to a GET route -> always 404
-  async getAuditLogs(filters?: any) {
-    const params = filters ? '?' + new URLSearchParams(
-      Object.fromEntries(Object.entries(filters).filter(([, v]) => v !== undefined && v !== '').map(([k, v]) => [k, String(v)]))
-    ).toString() : '';
-    return this.request<AuditLog[]>(`/admin/audit-logs${params}`);  // GET
-  }
 
   // -- TOKEN RATES --------------------------------------------------------------
   // Removed: token conversion is fixed 1:1 (Phase 006 flattening, 2026-07-08).
@@ -753,188 +713,15 @@ export class RealBackend implements Backend {
 
   async getServerTime() { return this.request<{ unixtime: number }>('/v1/system/time'); }
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // ADMIN PANEL SUPPORT METHODS
-  // These implement the Backend interface methods used by admin-panel/src/
-  // ═══════════════════════════════════════════════════════════════════════════
 
-  // Primary dashboard data
-  async getAdminDashboardData(): Promise<{ users: any[]; auditLogs: any[]; metrics: any }> {
-    try {
-      const [dashRes, usersRes, logsRes] = await Promise.allSettled([
-        this.request<any>('/admin/analytics/dashboard'),
-        this.request<any>('/admin/users?limit=100'),
-        this.request<any>('/admin/audit-logs?limit=50'),
-      ]);
-      const dash  = dashRes.status  === 'fulfilled' ? dashRes.value  : {};
-      const users = usersRes.status === 'fulfilled' ? (usersRes.value as any)?.users || [] : [];
-      const logs  = logsRes.status  === 'fulfilled' ? (logsRes.value as any)?.logs  || [] : [];
-      const m = (dash as any)?.metrics || {};
-      return {
-        users,
-        auditLogs: logs,
-        metrics: {
-          activeUsers:     m.users?.active           || 0,
-          totalVolume:     m.finance?.totalBets      || 0,
-          todaysRevenue:   m.finance?.today?.netProfit || 0,
-          activeBetsCount: m.cycles?.totalBets       || 0,
-          systemHealth:    'HEALTHY' as const,
-        },
-      };
-    } catch (e) {
-      console.error('[getAdminDashboardData]', e);
-      return { users: [], auditLogs: [], metrics: { activeUsers: 0, totalVolume: 0, todaysRevenue: 0, activeBetsCount: 0, systemHealth: 'HEALTHY' } };
-    }
-  }
 
-  async getFinancialStats(): Promise<any> {
-    try {
-      const res = await this.request<any>('/admin/analytics/financials');
-      const d = (res as any)?.data || {};
-      return {
-        platformFloat:      d.netProfit      || 0,
-        netProfit:          d.netProfit      || 0,
-        totalDeposits:      d.deposits?.amount     || 0,
-        totalWithdrawals:   d.withdrawals?.amount  || 0,
-        todaysNetProfit:    0,
-        todaysDeposits:     0,
-        todaysWithdrawals:  0,
-        trendData:          [],
-        transactions:       [],
-      };
-    } catch {
-      return { platformFloat: 0, netProfit: 0, totalDeposits: 0, totalWithdrawals: 0, todaysNetProfit: 0, todaysDeposits: 0, todaysWithdrawals: 0, trendData: [], transactions: [] };
-    }
-  }
 
-  async getMerchantList(): Promise<any[]> {
-    try {
-      const res = await this.request<any>('/admin/merchants?limit=100');
-      return (res as any)?.merchants || [];
-    } catch { return []; }
-  }
 
-  async getCycleAnalytics(): Promise<any[]> {
-    try {
-      const res = await this.request<any>('/admin/cycles/history?limit=50');
-      const cycles = (res as any)?.cycles || [];
-      return cycles.map((c: any) => ({
-        id:         c._id || c.cycleId,
-        endTime:    c.endTime   || 0,
-        type:       c.type,   // no '30_MIN' fallback — an untyped row reads as untyped, not as a 30-minute one
-        realDelhi:  c.realDelhi || 0,
-        realBombay: c.realBombay || 0,
-        winner:     c.winner    || 'DELHI',
-        realPool:   (c.realDelhi || 0) + (c.realBombay || 0),
-        payout:     c.totalPaidOut || 0,
-        netProfit:  c.netProfit    || 0,
-      }));
-    } catch { return []; }
-  }
 
-  async getUserDetails(adminId: string, userId: string): Promise<{ user: any; bets: any[]; transactions: any[] }> {
-    try {
-      const [userRes, txRes] = await Promise.allSettled([
-        this.request<any>(`/admin/users/${userId}`),
-        this.request<any>(`/admin/users/${userId}/transactions?limit=50`),
-      ]);
-      const user = userRes.status === 'fulfilled' ? (userRes.value as any)?.user || (userRes.value as any) : null;
-      const txData = txRes.status === 'fulfilled' ? (txRes.value as any) : {};
-      return {
-        user,
-        bets:         txData?.bets         || [],
-        transactions: txData?.transactions || [],
-      };
-    } catch { return { user: null, bets: [], transactions: [] }; }
-  }
 
-  async addUserBalance(adminId: string, userId: string, amount: number, type: 'WITHDRAWABLE' | 'LOCKED', reason: string): Promise<any> {
-    // WITHDRAWABLE → depositBalance, LOCKED → winningsBalance (matches backend)
-    const walletType = type === 'LOCKED' ? 'winnings' : 'deposit';
-    const res = await this.request<any>(`/admin/users/${userId}/adjust-balance`, {
-      method: 'POST',
-      body: JSON.stringify({ amount, reason, walletType }),
-    });
-    return (res as any)?.user || res;
-  }
 
-  async updateUserStatus(adminId: string, userId: string, status: string, reason: string): Promise<void> {
-    if (status === 'BLOCKED') {
-      await this.request(`/admin/users/${userId}/block`, { method: 'PUT', body: JSON.stringify({ reason }) });
-    } else if (status === 'ACTIVE') {
-      await this.request(`/admin/users/${userId}/unblock`, { method: 'PUT', body: '{}' });
-    } else if (status === 'DELETED') {
-      await this.request(`/admin/users/${userId}`, { method: 'DELETE' });
-    }
-  }
 
-  async setUserRole(adminId: string, userId: string, updates: any): Promise<any> {
-    const roles: string[] = [];
-    if (updates.isAdmin)        roles.push('admin');
-    if (updates.isSubAdmin)     roles.push('subadmin');
-    if (updates.isQueueManager) roles.push('queue_manager');
-    if (roles.length === 0)     roles.push('user');
-    const res = await this.request<any>(`/admin/users/${userId}/roles`, {
-      method: 'PUT', body: JSON.stringify({ roles }),
-    });
-    return (res as any)?.user || res;
-  }
 
-  async addMerchant(profile: any, adminId?: string): Promise<any> {
-    const res = await this.request<any>('/admin/merchants/create', {
-      method: 'POST',
-      body: JSON.stringify({
-        username: profile.name || profile.username,
-        mobile:   profile.mobile,
-        password: profile.password || 'Merchant@123',
-      }),
-    });
-    return res;
-  }
 
-  async removeMerchant(merchantId: string, adminId?: string): Promise<void> {
-    await this.request(`/admin/merchants/${merchantId}/suspend`, {
-      method: 'PUT', body: JSON.stringify({ reason: 'Removed by admin' }),
-    });
-  }
-
-  async toggleMerchantOnline(merchantId: string, isOnline: boolean, adminId?: string): Promise<void> {
-    const endpoint = isOnline
-      ? `/admin/merchants/${merchantId}/activate`
-      : `/admin/merchants/${merchantId}/suspend`;
-    await this.request(endpoint, {
-      method: 'PUT',
-      body: isOnline ? '{}' : JSON.stringify({ reason: 'Taken offline by admin' }),
-    });
-  }
-
-  async updateMerchantLimits(merchantId: string, updates: any, adminId?: string): Promise<void> {
-    await this.request(`/admin/merchants/${merchantId}/limits`, {
-      method: 'PUT', body: JSON.stringify(updates),
-    });
-  }
-
-  async resetMerchantPassword(merchantId: string, adminId?: string): Promise<string> {
-    // No dedicated backend route — return a generated password and log for now
-    const newPass = 'Merchant@' + Math.floor(100000 + Math.random() * 900000);
-    console.warn('[resetMerchantPassword] No backend route — generated password:', newPass);
-    return newPass;
-  }
-
-  async assignOrderToMerchant(orderId: string, merchantId: string, adminId?: string): Promise<any> {
-    return this.request<any>(`/admin/p2p-queue/${orderId}/assign`, {
-      method: 'POST', body: JSON.stringify({ merchantId }),
-    });
-  }
-
-  async logAudit(adminId: string, action: string, details: string, targetId?: string): Promise<void> {
-    // Best-effort — no dedicated write route; backend auto-logs on mutations
-    try {
-      await this.request('/admin/audit-logs', {
-        method: 'POST',
-        body: JSON.stringify({ adminId, action, details, targetId }),
-      });
-    } catch { /* silent — audit log write may 404 if route not present */ }
-  }
 
 }
