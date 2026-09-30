@@ -186,11 +186,26 @@ export async function reportUncreditableDeposit(order, total) {
  * The split above already had one owner. The movement it belongs to did not.
  * Now it does, and a third caller cannot invent a fourth arithmetic.
  *
+ * ── The merchant's side is taken ONCE, and from the HOLD ────────────────────
+ * Every buy HOLDS the merchant's tokens from the moment it becomes theirs
+ * (`depositEscrow.holdForOrder`, §2). That hold is the payment: completing it
+ * (`dispenseForOrder`) spends the tokens out of `reserved`. This function used
+ * to debit `available` as well, so the merchant paid twice — measured, 2,000
+ * for a 1,000-token buy on the confirm route — and a merchant whose tokens were
+ * all held for this order was refused after the hold had already been spent.
+ * The other four completion routes never dispensed at all and charged
+ * `available` beside a hold the sweep returned fifteen minutes later.
+ *
+ * So the hold is consumed FIRST and `available` is debited only when nothing
+ * was held for this merchant (`noHold`) — the one case where it is the right
+ * pocket. `alreadyTaken` (a retry, or a double-tap) moves nothing.
+ *
  * ── Ordering ────────────────────────────────────────────────────────────────
- * The merchant is debited FIRST, because refusing (a merchant confirming more
- * than they hold) is the ordinary case and must refuse before anything else
- * moves. Every movement is keyed on the order, so a failure part-way through
- * leaves a retryable position rather than something to unwind.
+ * The merchant's side comes FIRST, because refusing (a merchant confirming more
+ * than they hold, on an order nothing held) is the ordinary case and must
+ * refuse before anything else moves. Every movement is keyed on the order, so a
+ * failure part-way through leaves a retryable position rather than something to
+ * unwind.
  *
  * The caller applies the state transition AFTER this returns ok — money before
  * status, so a crash between them leaves a PAID order whose next confirm
@@ -216,19 +231,38 @@ export async function moveDepositMoney(order, {
    * negative is the correct outcome: they owe it.
    */
   allowOverdraft = false,
+  /**
+   * Takes the tokens out of the order's hold. Injected like the movers above so
+   * a caller can substitute it; defaults to the real one, so no caller can
+   * forget it — forgetting it is exactly how four routes charged twice.
+   */
+  dispenseHold = null,
 }) {
   const { depositCredit, reserveCredit, total } = depositCreditSplit(order);
 
-  const { merchant: debited } = await debitMerchantTokens({
-    merchantId: order.merchantId, amount: total,
-    reason: `Deposit ${order.orderId} confirmed — tokens dispensed to user`,
-    refModel: 'PaymentOrder', refId: order.orderId,
-    txId: `mw_dep_deduct_${order.orderId}`,
-    ...(allowOverdraft ? { allowOverdraft: true } : {}),
-  });
-  if (!debited) {
-    await reportUncreditableDeposit(order, total);
-    return { ok: false, reason: 'merchant_insufficient', depositCredit, reserveCredit, total };
+  const dispense = dispenseHold
+    ?? (await import('../merchant/depositEscrow.service.js')).dispenseForOrder;
+  const fromHold = await dispense(order, { actor: 'deposit-credit' });
+  if (!fromHold.ok) {
+    // Unknown, not refused: the settlement could not say whether it paid. Both
+    // guesses move money, so move none and leave the order PAID to retry.
+    return { ok: false, reason: 'hold_unavailable', depositCredit, reserveCredit, total };
+  }
+
+  if (fromHold.noHold) {
+    // Nothing was held for this merchant, so the tokens come out of what they
+    // can spend — the only case where `available` is the right pocket.
+    const { merchant: debited } = await debitMerchantTokens({
+      merchantId: order.merchantId, amount: total,
+      reason: `Deposit ${order.orderId} confirmed — tokens dispensed to user`,
+      refModel: 'PaymentOrder', refId: order.orderId,
+      txId: `mw_dep_deduct_${order.orderId}`,
+      ...(allowOverdraft ? { allowOverdraft: true } : {}),
+    });
+    if (!debited) {
+      await reportUncreditableDeposit(order, total);
+      return { ok: false, reason: 'merchant_insufficient', depositCredit, reserveCredit, total };
+    }
   }
 
   // Both keyed on the ORDER ID, not on a message. A sentence here would make a

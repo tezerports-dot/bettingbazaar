@@ -31,7 +31,7 @@
 import { paiseToRupees, rupeesToPaise } from '../../backend/shared/money.js';
 import { pgQuery } from '../client.js';
 import {
-  applyMovementPaise, debitSpendOrderPaise, getBalancesPaise,
+  applyMovementPaise, applyMovementWithin, debitSpendOrderPaise, getBalancesPaise, withWalletLock,
 } from './wallets.core.js';
 
 /** Every balance a caller might read, in rupees. */
@@ -161,22 +161,40 @@ export async function debitForBet(userId, amount, reason, refModel, refId, txId)
 /**
  * wallet.service.debitWinningsForWithdrawal — winnings → locked, ONE ledger row
  * keyed `wd_<orderId>`. Only winnings are withdrawable; deposit is never touched.
+ *
+ * ── `within`: the order the lock is FOR, committed with it ──────────────────
+ * A lock with no order behind it is money nothing will ever release — no
+ * expiry sweep, cancel or refund can find it, because they all start from the
+ * order. So the caller passes the order's INSERT (`prepareOrderRecord`) and it
+ * runs here, on this connection, under this row lock, after the movement. If
+ * the INSERT is refused the whole transaction unwinds and the winnings never
+ * left; if it lands, the lock and its order exist together.
+ *
+ * Without `within` it is the bare movement, for the suites that stage a locked
+ * balance to test release and refund against.
  */
-export async function debitWinningsForWithdrawal(userId, amount, orderId) {
+export async function debitWinningsForWithdrawal(userId, amount, orderId, { within = null } = {}) {
   const amountPaise = rupeesToPaise(amount);
   if (amountPaise <= 0) throw new Error(`Invalid withdrawal amount: ${amount}`);
   const txId = `wd_${orderId}`;
 
-  const result = await applyMovementPaise({
-    userId,
-    legs: [
-      { field: 'winningsBalance', deltaPaise: -amountPaise },
-      { field: 'lockedBalance',   deltaPaise:  amountPaise },
-    ],
-    ledger: [{
-      txId, field: 'winningsBalance', amountPaise: -amountPaise, type: 'DEBIT',
-      reason: `P2P withdrawal order ${orderId}`, refId: orderId,
-    }],
+  const result = await withWalletLock(userId, async (ctx) => {
+    const moved = await applyMovementWithin(ctx, {
+      legs: [
+        { field: 'winningsBalance', deltaPaise: -amountPaise },
+        { field: 'lockedBalance',   deltaPaise:  amountPaise },
+      ],
+      ledger: [{
+        txId, field: 'winningsBalance', amountPaise: -amountPaise, type: 'DEBIT',
+        reason: `P2P withdrawal order ${orderId}`, refId: orderId,
+      }],
+    });
+    // Refused, or already done: nothing further may be written. A replay that
+    // collided on the ledger key has also aborted this transaction, so it must
+    // unwind before anything else runs on the connection.
+    if (!moved.ok || moved.idempotent) return { commit: false, value: moved };
+    const record = within ? await within(ctx.client) : null;
+    return { commit: true, value: { ...moved, record } };
   });
 
   if (result.idempotent) return { idempotent: true, txId };
@@ -204,6 +222,8 @@ export async function debitWinningsForWithdrawal(userId, amount, orderId) {
     winningsAfter:  rupees(after.winningsBalance),
     lockedAfter:    rupees(after.lockedBalance),
     balances: mapRupees(after),
+    // What `within` wrote — the order — when there was one.
+    ...(within ? { record: result.record } : {}),
   };
 }
 

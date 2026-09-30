@@ -927,11 +927,21 @@ export async function createWithdrawalOrder(userId, tokenAmount, attempt = {}) {
   // under `SELECT … FOR UPDATE` on the wallet row, in one transaction with its
   // ledger entry, refusing what the row cannot fund. Idempotent on `wd_<id>`.
   //
-  // It runs BEFORE each order row exists. A failed debit therefore leaves
-  // nothing behind to undo — the alternative, writing the order first, means a
-  // refused debit needs a compensating delete that can itself fail, and a
-  // crash between the two leaves an escrow-flagged order holding money that
-  // was never taken.
+  // ── The lock and its order are ONE commit ───────────────────────────────
+  // They used to be two: the debit, then `createOrderRecord`, on the stated
+  // assumption that only the debit could fail. The INSERT can fail too — the
+  // partial UNIQUE on `retry_of_order_id` refuses a second retry of the same
+  // expired withdrawal there — and when it did, the winnings stayed locked
+  // against an order that was never written. No expiry, cancel or refund could
+  // ever find them, because every one of those starts from the order, and the
+  // player was told "you have already retried this order". Measured: a second
+  // retry and a concurrent double-tap each stranded the full amount.
+  //
+  // So the order is PREPARED first — every field validated, the rail stamped,
+  // the tag computed, all before any money moves — and its INSERT runs inside
+  // the debit's own transaction, under the wallet row lock. A refused INSERT
+  // unwinds the lock with it; a refused debit writes no order. Neither fact can
+  // exist without the other, and nothing needs compensating.
   //
   // The three checks that used to precede it are gone. See the module header:
   // they raced each other AND double-counted the escrow, so they admitted
@@ -957,39 +967,9 @@ export async function createWithdrawalOrder(userId, tokenAmount, attempt = {}) {
     const partTokens = paiseToRupees(part.tokenPaise);
     const partFiat   = paiseToRupees(part.fiatPaise);
 
-    let debited;
-    try {
-      debited = await debitWinningsForWithdrawal(String(user.userId), partTokens, partOrderId);
-    } catch (err) {
-      if (err.code === 'INSUFFICIENT_WITHDRAWABLE') {
-        // Nothing was taken for this part. If earlier parts succeeded they are
-        // real withdrawals and stay — reversing them would be a compensating
-        // action that can itself fail, over money the player is entitled to.
-        if (created.length) { refusal = err; break; }
-
-        // The figures come off the refusal, from the rows the debit locked —
-        // never from a record read separately, which is how a player was once
-        // told an available balance no wallet ever held.
-        const pending = await db.orders.pendingWithdrawalTotal(user.userId);
-        throw Object.assign(
-          new Error(
-            `Insufficient winnings balance. Available: ${err.availableWinnings} tokens`
-            + (pending > 0 ? ` (${pending} already committed to withdrawals in progress).` : '.'),
-          ),
-          {
-            status: 400,
-            balance: { winnings: err.availableWinnings, pending },
-          },
-        );
-      }
-      throw err;
-    }
-    // The LAST successful debit's balances are what the response reports, so
-    // the figure the player is shown is the one the wallet holds after
-    // everything this request did.
-    debitResult = debited;
-
-    const partOrder = await db.orders.createOrderRecord({
+    // The order this part locks money FOR — prepared, not yet written. It is
+    // written by the debit below, in the same transaction.
+    const insertPart = await db.orders.prepareOrderRecord({
       orderId:           partOrderId,
       userId:            user.userId,
       type:              'WITHDRAWAL',
@@ -1021,6 +1001,42 @@ export async function createWithdrawalOrder(userId, tokenAmount, attempt = {}) {
       },
       userPhone: user.mobile,
     });
+
+    let debited;
+    try {
+      debited = await debitWinningsForWithdrawal(String(user.userId), partTokens, partOrderId, { within: insertPart });
+    } catch (err) {
+      if (err.code === 'INSUFFICIENT_WITHDRAWABLE') {
+        // Nothing was taken for this part. If earlier parts succeeded they are
+        // real withdrawals and stay — reversing them would be a compensating
+        // action that can itself fail, over money the player is entitled to.
+        if (created.length) { refusal = err; break; }
+
+        // The figures come off the refusal, from the rows the debit locked —
+        // never from a record read separately, which is how a player was once
+        // told an available balance no wallet ever held.
+        const pending = await db.orders.pendingWithdrawalTotal(user.userId);
+        throw Object.assign(
+          new Error(
+            `Insufficient winnings balance. Available: ${err.availableWinnings} tokens`
+            + (pending > 0 ? ` (${pending} already committed to withdrawals in progress).` : '.'),
+          ),
+          {
+            status: 400,
+            balance: { winnings: err.availableWinnings, pending },
+          },
+        );
+      }
+      throw err;
+    }
+    // The LAST successful debit's balances are what the response reports, so
+    // the figure the player is shown is the one the wallet holds after
+    // everything this request did.
+    debitResult = debited;
+
+    // Written in the debit's own transaction. A replayed debit (same key)
+    // wrote nothing this time, and its order is the one written the first time.
+    const partOrder = debited.record ?? await db.orders.getOrderRecord(partOrderId);
 
     emitAdminUpdate('new_order', adminOrderPayload(partOrder, user));
 

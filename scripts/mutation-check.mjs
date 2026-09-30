@@ -531,9 +531,9 @@ const MUTATIONS = [
   // The platform runs one of two P2P rails and an admin switches between them.
   // The orders already in flight must not move with it.
   {
-    id: 'M92', file: 'database/repositories/orders.core.js', config: PG,
+    id: 'M92', file: 'database/repositories/orders.record.js', config: PG,
     test: 'backend/tests/routes/paymentModeSwitchPg.test.js',
-    why: 'the lifecycle insert stops stamping the rail, so half the orders silently take the column default',
+    why: 'the order insert stops stamping the rail, so every order silently takes the column default',
     from: `  const stamp = await stampForNewOrder(paymentMode);`,
     to: `  const stamp = { mode: 'P2P_UPI', version: null };`,
   },
@@ -788,8 +788,8 @@ const MUTATIONS = [
     id: 'M118', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
     test: 'backend/tests/routes/splitWithdrawalPg.test.js',
     why: 'every part debits the WHOLE withdrawal instead of its own share, so a four-part payout locks four times what the player asked to withdraw',
-    from: `      debited = await debitWinningsForWithdrawal(String(user.userId), partTokens, partOrderId);`,
-    to: `      debited = await debitWinningsForWithdrawal(String(user.userId), tokenAmount, partOrderId);`,
+    from: `      debited = await debitWinningsForWithdrawal(String(user.userId), partTokens, partOrderId, { within: insertPart });`,
+    to: `      debited = await debitWinningsForWithdrawal(String(user.userId), tokenAmount, partOrderId, { within: insertPart });`,
   },
   {
     id: 'M119', file: 'backend/domains/merchant/denominations.js', config: PG,
@@ -1115,6 +1115,132 @@ const MUTATIONS = [
     if (plain[key] !== undefined) view[key] = plain[key];
   }`,
     to: `  const view = { ...plain };`,
+  },
+
+  // ── The order tamper tag is written, and a missing one is refused ───────
+  // Both halves were missing at once: the only writer of `order_hmac` was a
+  // creation path production never called, and the guard waved an untagged
+  // order through. Every test of the tag produced its tag by WRITING one.
+  {
+    id: 'M156', file: 'database/repositories/orders.record.js', config: PG,
+    test: 'backend/tests/routes/orderAccessGuardRoutes.test.js',
+    why: 'the one order insert stops writing the tamper tag, so every live order is untagged and the guard mounted on every order route checks nothing',
+    from: `    stamp.mode, stamp.version, usdtChain, deriveOrderHmac(orderId)];`,
+    to: `    stamp.mode, stamp.version, usdtChain, null];`,
+  },
+  {
+    id: 'M165', file: 'backend/middleware/order-crypto-access.js', config: PG,
+    test: 'backend/tests/routes/orderAccessGuardRoutes.test.js',
+    why: 'the guard passes an order whose tag was stripped, so a row inserted outside the system is served as if it were ours',
+    from: `    if (order.orderHmac ? !verifyOrderHmac(order.orderId, order.orderHmac) : orderTaggingConfigured()) {`,
+    to: `    if (order.orderHmac ? !verifyOrderHmac(order.orderId, order.orderHmac) : false) {`,
+  },
+
+  // ── A buy's merchant side is taken ONCE, from the hold ──────────────────
+  // The confirm route dispensed the hold (reserved -a) and `moveDepositMoney`
+  // debited `available -a` as well: every confirmed buy cost the merchant
+  // twice, and a merchant whose tokens were all held for the order was refused
+  // after the hold was spent. The four other completion doors never dispensed.
+  {
+    id: 'M167', file: 'backend/domains/payment/depositCredit.js', config: PG,
+    test: 'backend/tests/routes/depositConfirmConservationPg.test.js',
+    why: 'the buy charges `available` even when its hold already paid for it, so the merchant pays twice and a fully-held merchant can never confirm',
+    from: `  if (fromHold.noHold) {`,
+    to: `  if (true) {`,
+  },
+  {
+    id: 'M168', file: 'backend/domains/merchant/depositEscrow.service.js', config: PG,
+    test: 'backend/tests/routes/depositConfirmConservationPg.test.js',
+    why: 'a retried confirm reads a spent hold as "never held" and takes the tokens again from `available`',
+    from: `    if (await dispensedDepositSettlementFor(order.orderId, merchantId)) {
+      return { ok: true, alreadyTaken: true };
+    }`,
+    to: `    if (false) {
+      return { ok: true, alreadyTaken: true };
+    }`,
+  },
+
+  // ── An admin ends a withdrawal through ONE owner ────────────────────────
+  // Ten of eleven route × money-position cells were wrong: refunds credited
+  // winnings and left the lock, releases moved nothing, a HELD settlement was
+  // stranded, and a refunded dispute was written back to DISPUTED.
+  {
+    id: 'M169', file: 'backend/domains/payment/withdrawalHold.service.js', config: PG,
+    test: 'backend/tests/routes/withdrawalResolutionPg.test.js',
+    why: 'an admin refund never takes the stake out of the lock, so the player holds the amount twice and the token total no longer adds up',
+    from: `  if (settlement || order.escrowLocked) {
+    await refundWithdrawal(order.userId, order.tokenAmount, order.orderId);
+  }`,
+    to: `  if (false) {
+    await refundWithdrawal(order.userId, order.tokenAmount, order.orderId);
+  }`,
+  },
+  {
+    id: 'M170', file: 'backend/domains/payment/withdrawalHold.service.js', config: PG,
+    test: 'backend/tests/routes/withdrawalResolutionPg.test.js',
+    why: 'an admin release credits the merchant while the stake stays locked for good — the player keeps what the merchant was paid for',
+    from: `      await releaseWithdrawal(order.userId, order.tokenAmount, order.orderId);
+    } catch (err) {
+      // The same compensation \`settleHold\` makes, for the same reason.`,
+    to: `      void 0;
+    } catch (err) {
+      // The same compensation \`settleHold\` makes, for the same reason.`,
+  },
+  {
+    id: 'M171', file: 'database/repositories/orders.record.js', config: PG,
+    test: 'backend/tests/routes/withdrawalResolutionPg.test.js',
+    why: 'the settlement mirror writes the order state behind the route, so a refunded dispute is written back to DISPUTED and returns to the queue',
+    from: `  if (keepState) OUTCOME.state = null;`,
+    to: `  if (false) OUTCOME.state = null;`,
+  },
+  {
+    id: 'M172', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
+    test: 'backend/tests/routes/withdrawalResolutionPg.test.js',
+    why: 'with the hold disabled the confirm never settles, so the merchant who paid is not credited until a sweep that may be minutes away',
+    from: `            if (holdFor === 0) {`,
+    to: `            if (false) {`,
+  },
+
+  // ── An assertion comparing NaN with NaN is refused ──────────────────────
+  // Two such assertions (wrong keys, undefined → NaN, Object.is(NaN, NaN)) hid
+  // the buy double charge (F-026) for as long as they existed.
+  {
+    id: 'M173', file: 'backend/tests/assertionGuards.setup.js', config: UNIT,
+    test: 'backend/tests/unit/assertionGuards.test.js',
+    why: 'the test-setup guard stops refusing NaN-versus-NaN, so an assertion reading a key that does not exist passes for any value again',
+    from: `const bothNaN = (a, b) => typeof a === 'number' && typeof b === 'number'
+  && Number.isNaN(a) && Number.isNaN(b);`,
+    to: `const bothNaN = () => false;`,
+  },
+
+  // ── A withdrawal's lock and its order commit together ───────────────────
+  // They were two commits, and the second could be refused: a second retry of
+  // one expired withdrawal collides on `retry_of_order_id` AT INSERT, after the
+  // winnings were already locked, stranding them against an order that never
+  // existed. The INSERT now runs inside the debit's own transaction.
+  {
+    id: 'M166', file: 'database/repositories/wallets.js', config: PG,
+    test: 'backend/tests/routes/withdrawalRetryPg.test.js',
+    why: 'the withdrawal lock commits without waiting for its order, so a refused INSERT leaves winnings locked against an order that does not exist — and nothing ever releases them',
+    // The mutant still writes the order — AFTER the lock has committed, on a
+    // separate connection. That is exactly the two-commit shape this entry
+    // exists to catch, restored.
+    edits: [
+      [`    const record = within ? await within(ctx.client) : null;
+    return { commit: true, value: { ...moved, record } };`,
+       `    return { commit: true, value: { ...moved, record: null, pending: within } };`],
+      [`  if (result.idempotent) return { idempotent: true, txId };
+  if (!result.ok) {
+    // A refusal here is an EXPECTED answer, not a fault: the player asked for`,
+       `  if (result.idempotent) return { idempotent: true, txId };
+  if (result.ok && result.pending) {
+    const { getPool } = await import('../client.js');
+    const client = await (await getPool()).connect();
+    try { result.record = await result.pending(client); } finally { client.release(); }
+  }
+  if (!result.ok) {
+    // A refusal here is an EXPECTED answer, not a fault: the player asked for`],
+    ],
   },
   {
     id: 'M157', file: 'database/repositories/casino.js', config: PG,

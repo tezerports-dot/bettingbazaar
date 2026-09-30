@@ -6,7 +6,7 @@
 import express   from 'express';
 import { randomBytes } from 'node:crypto';
 import { db } from '#db';
-import { creditDeposit, creditReserve, refundWithdrawal, releaseWithdrawal } from '../wallet/walletAuthority.service.js';
+import { creditDeposit, creditReserve, refundWithdrawal } from '../wallet/walletAuthority.service.js';
 // AQ-2/AQ-8: sign via the single JWT authority; hash via the password authority
 // (argon2id + bcrypt verify-fallback). No direct bcrypt use remains here.
 import { signToken } from '../identity/jwt.util.js';
@@ -41,7 +41,7 @@ import {
 } from '../payment/orderLifecycle.service.js';
 // Withdrawal settlement hold — confirm asserts payment, the worker settles it
 // once the dispute window passes. See withdrawalHold.service.js.
-import { holdMinutes } from '../payment/withdrawalHold.service.js';
+import { holdMinutes, settleHold } from '../payment/withdrawalHold.service.js';
 // A push to the PLAYER's socket goes through the player projection, like every
 // other thing a player receives.
 import { toPlayerOrderView } from '../payment/playerOrderView.js';
@@ -49,10 +49,9 @@ import { toPlayerOrderView } from '../payment/playerOrderView.js';
 import { moveDepositMoney } from '../payment/depositCredit.js';
 import {
   holdForOrder as holdDepositTokens,
-  dispenseForOrder as dispenseDepositHold,
   releaseForOrder as releaseDepositHold,
 } from './depositEscrow.service.js';
-import { debitMerchantTokens, creditMerchantTokens } from './merchantWallet.service.js';
+import { debitMerchantTokens } from './merchantWallet.service.js';
 // The merchant's own balance for a SCREEN. It lives in `merchant_wallets`, not
 // on the merchant row — `database/repositories/merchants.js` says so in its
 // header and means it, so a projection that reads `merchant.tokenBalance` gets
@@ -1652,29 +1651,24 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
         // keys, plus `completeOrder`'s own idempotency below.
         let deposited = null;
         if (isDeposit) {
-            // ── The hold is CONSUMED here, before the wallet debit ──────────
-            // The tokens were moved `available → reserved` when this order
-            // became this merchant's. `moveDepositMoney` debits `available`,
-            // so with the hold still standing the merchant is charged twice:
-            // once by the hold they cannot spend and once by the debit. The
-            // dispense (`reserved -a`) is what turns the hold INTO the payment.
-            //
-            // Before the debit and not after, for the §21 reason: if the debit
-            // fails the order stays PAID and retryable with the tokens already
-            // out of `reserved` and back in `available`, which is where the
-            // retry needs them. The other order strands the retry against its
-            // own hold.
-            const dispensed = await dispenseDepositHold(order, { actor: `merchant:${req.merchantId}` });
-            if (!dispensed.ok) {
-                return res.status(409).json({
-                    success: false,
-                    message: 'This order\'s token hold could not be released for payment. Try again in a moment.',
-                });
-            }
+            // ── The hold IS the payment, and `moveDepositMoney` takes it ────
+            // This route used to dispense the hold here and then let
+            // `moveDepositMoney` debit `available` as well, believing the
+            // dispense put the tokens back in `available` first. It does not —
+            // it spends them — so every confirmed buy cost the merchant twice,
+            // and a merchant whose tokens were all held for this order was
+            // refused after the hold was already gone (F-026). The owner now
+            // takes the merchant's side exactly once, from the hold.
             deposited = await moveDepositMoney(order, {
                 debitMerchantTokens, creditDeposit, creditReserve, releaseUTR,
             });
             if (!deposited.ok) {
+                if (deposited.reason === 'hold_unavailable') {
+                    return res.status(409).json({
+                        success: false,
+                        message: 'This order\'s token hold could not be read. Nothing was charged — try again in a moment.',
+                    });
+                }
                 // Reported to the operator and to the player by
                 // `moveDepositMoney` itself (F-015). The order stays PAID, so it
                 // is retryable AND still disputable.
@@ -1688,7 +1682,17 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
                 expectFrom: 'PAID',
                 set: { completedAt: new Date() },
             });
-        } else if (holdFor > 0) {
+        } else {
+            // ── A hold of zero minutes is still a HOLD ─────────────────────────
+            // With the hold disabled this completed the order FIRST and then
+            // released the stake and credited the merchant — a write after the
+            // commit (§21). If the release threw, the confirm answered 500 and
+            // every retry was told "already confirmed", so the merchant who paid
+            // the player was never credited and the stake stayed locked for good.
+            // It also admitted only PROCESSING where the held path admits
+            // ASSIGNED too (§32 S3). So both are the same transition now; a zero
+            // window is simply already due, and it is settled below by the same
+            // `settleHold` the sweep uses — money first, COMPLETED after.
             moved = await markOrderPaidState(order._id, {
                 expectFrom: ['PROCESSING', 'ASSIGNED'],
                 set: {
@@ -1696,15 +1700,6 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
                     merchantCreditStatus:    'HELD',
                     merchantCreditHoldUntil: new Date(Date.now() + holdFor * 60 * 1000),
                     escrowLocked:            true,
-                },
-            });
-        } else {
-            moved = await completeOrder(order._id, {
-                expectFrom: 'PROCESSING',
-                set: {
-                    ...(payoutReference ? { utrNumber: payoutReference } : {}),
-                    completedAt: new Date(),
-                    merchantCreditStatus: 'RELEASED', escrowLocked: false,
                 },
             });
         }
@@ -1740,41 +1735,37 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
             // Until it expires no value has moved: the player's stake stays
             // locked exactly as it has since order creation, and the merchant's
             // tokens do not exist. A dispute inside the window is a reversal of
-            // something still held (withdrawalHold.reverseHold), not a clawback.
-            // See domains/payment/withdrawalHold.service.js.
+            // something still held (withdrawalHold.endWithdrawal), not a
+            // clawback. See domains/payment/withdrawalHold.service.js.
             //
             // The status, the HELD marker and the hold deadline were written by
             // the transition above — this branch is now only the side effects
             // that follow it.
-            if (holdFor > 0) {
-                // Record what the platform now OWES this merchant, in a pocket
-                // they cannot spend. Without this row the tokens simply do not
-                // exist during the hold and nothing shows the liability;
-                // opening the settlement here makes it visible and gives the
-                // sweeper a real state machine to advance. Idempotent on the order's key, and
-                // fire-and-forget: the hold itself must not fail because the
-                // settlement could not be opened — settleHold opens it lazily.
-                // Unconditional. This was `if (settlementOnPostgres())`, and that
-                // resolver was deleted with the rest of the two-store machinery
-                // — so the guard threw a ReferenceError and the merchant's
-                // confirm 500'd after the withdrawal had already been held.
-                await openSettlement({
-                    settlementId: `ms_${order.orderId}`, merchantId: req.merchantId,
-                    orderId: order.orderId, direction: SETTLEMENT_DIRECTIONS.WITHDRAWAL,
-                    amountPaise: rupeesToPaise(order.tokenAmount),
-                    reason: `Withdrawal ${order.orderId} held pending settlement`,
-                }).catch(e => console.error('[Merchant confirm] settlement open failed:', e.message));
-            } else {
-                // Hold disabled by admin — settle inline, the pre-2026-07-30
-                // behaviour. Same canonical txIds, so an order can never be
-                // credited twice across the two paths.
-                await releaseWithdrawal(order.userId, order.tokenAmount, order.orderId);
-                await creditMerchantTokens({
-                    merchantId: req.merchantId, amount: order.tokenAmount,
-                    reason: `Withdrawal ${order.orderId} confirmed — tokens received from user`,
-                    refModel: 'PaymentOrder', refId: order.orderId,
-                    txId: `mw_wd_credit_${order.orderId}`,
-                }).catch(e => console.error('[Merchant confirm] WITHDRAWAL tokenBalance increment failed:', e.message));
+            //
+            // Record what the platform now OWES this merchant, in a pocket
+            // they cannot spend. Without this row the tokens simply do not
+            // exist during the hold and nothing shows the liability;
+            // opening the settlement here makes it visible and gives the
+            // sweeper a real state machine to advance. Idempotent on the order's key, and
+            // fire-and-forget: the hold itself must not fail because the
+            // settlement could not be opened — settleHold opens it lazily.
+            // Unconditional. This was `if (settlementOnPostgres())`, and that
+            // resolver was deleted with the rest of the two-store machinery
+            // — so the guard threw a ReferenceError and the merchant's
+            // confirm 500'd after the withdrawal had already been held.
+            await openSettlement({
+                settlementId: `ms_${order.orderId}`, merchantId: req.merchantId,
+                orderId: order.orderId, direction: SETTLEMENT_DIRECTIONS.WITHDRAWAL,
+                amountPaise: rupeesToPaise(order.tokenAmount),
+                reason: `Withdrawal ${order.orderId} held pending settlement`,
+            }).catch(e => console.error('[Merchant confirm] settlement open failed:', e.message));
+            if (holdFor === 0) {
+                // Hold disabled by admin: the window is already over, so settle
+                // now — through the same function the sweep runs, which moves the
+                // money and only then marks the order COMPLETED. If it fails the
+                // order stays PAID and due, and the next sweep settles it.
+                await settleHold(order.orderId)
+                    .catch(e => console.error('[Merchant confirm] immediate settlement failed; the sweep will retry:', e.message));
             }
 
             // Emit wallet update so user sees updated balance

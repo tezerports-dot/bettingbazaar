@@ -33,7 +33,7 @@
  * several instances, settles each order exactly once.
  */
 import { db } from '#db';
-import { releaseWithdrawal, refundWithdrawal } from '../wallet/walletAuthority.service.js';
+import { releaseWithdrawal, refundWithdrawal, creditWinnings } from '../wallet/walletAuthority.service.js';
 import { creditMerchantTokens } from '../merchant/merchantWallet.service.js';
 import { emitOrderUpdate, emitAdminUpdate } from '../notification/realtimeEmitters.js';
 import { sendAlert } from '../../services/alerting.service.js';
@@ -207,85 +207,133 @@ function mirrorSettlement(order, settlementStatus, extra = {}) {
 }
 
 /**
- * Reverse a held withdrawal: the merchant never sent the money, so the player
- * gets their stake back and the merchant is credited nothing.
+ * End a withdrawal the way an ADMIN decided it — REFUND it to the player, or
+ * RELEASE it to the merchant — whatever position its money is in.
  *
- * Only ever reachable while the order is HELD, which is precisely the window in
- * which no value has moved. After settlement this returns false and the dispute
- * becomes a clawback question for an admin — which is the outcome the hold
- * exists to make rare.
+ * ── THE one owner, because three routes each wrote their own subset ────────
+ * The admin queue action, the Payment Control Centre and the Dispute Manager
+ * all end withdrawals, and each was written for ONE position of the money:
  *
- * The RESERVED → CANCELLED guard is the gate, the mirror image of settleHold's.
- * Both outcomes of the same race are therefore decided by the same row, so a
- * dispute and a sweep cannot each believe they won.
+ *   NOT YET CONFIRMED  the stake is LOCKED and no settlement exists
+ *   HELD               the stake is LOCKED and a settlement is RESERVED
+ *   SETTLED            the stake was consumed and the merchant credited
  *
- * @returns {Promise<boolean>} true when THIS call reversed the order.
+ * Measured against a real database (`withdrawalResolutionPg`), ten of eleven
+ * route × position cells were wrong: refunds credited winnings and left the
+ * lock standing, so the wallet read double; releases moved nothing, so the
+ * stake stayed locked for good and the merchant who paid the player was never
+ * credited; a Payment Control Centre release left the settlement RESERVED on a
+ * COMPLETED order the sweep can no longer reach; and a Dispute Manager refund
+ * was written back to DISPUTED after the route had cancelled it.
+ *
+ * ── What it does and does not write ──────────────────────────────────────
+ * Money, the settlement's own state machine, and the order's credit/escrow
+ * flags. NEVER the order's state: the calling route has already moved it,
+ * through the lifecycle's guarded transition, and that is the gate that
+ * stops two admins deciding one withdrawal both ways.
+ *
+ * Every step is idempotent on its own key (the settlement id, `refund_<id>`,
+ * the release key), so calling this again for the same decision repairs a
+ * partial failure rather than paying twice — and the routes do call it again
+ * when their transition reports the decision was already made.
+ *
+ * @param {string} orderId
+ * @param {'REFUND'|'RELEASE'} decision
+ * @returns {Promise<{ok: boolean, reason?: string, refunded?: boolean,
+ *   released?: boolean, afterSettlement?: boolean, already?: boolean}>}
  */
-export async function reverseHold(orderId, opts = {}) {
-  const { reason = 'Dispute upheld — merchant payment not received', by = null } = opts;
-
+export async function endWithdrawal(orderId, decision, { reason = null, by = null } = {}) {
+  if (decision !== 'REFUND' && decision !== 'RELEASE') {
+    throw new Error(`endWithdrawal: unknown decision '${decision}'`);
+  }
   const order = await db.orders.getOrderRecord(orderId);
-  if (!order) return false;
+  if (!order || order.type !== 'WITHDRAWAL') return { ok: false, reason: 'not_a_withdrawal' };
 
   const settlementId = settlementIdFor(order);
-  let existing = await getSettlement(settlementId);
+  const actor = by ? String(by) : 'admin';
+  const settlement = await getSettlement(settlementId);
+  // Settled through a settlement — or released with no settlement row at all,
+  // which is what the hold-disabled confirm produced before it went through
+  // `settleHold`. Either way the stake was consumed and the merchant credited.
+  const alreadySettled = settlement?.state === 'SETTLED'
+    || (!settlement && order.merchantCreditStatus === 'RELEASED');
 
-  if (!existing) {
-    // No settlement row: the confirm that held this order failed to open one.
-    // Open it now so the state machine has something to refuse or grant —
-    // reversing without one would leave the merchant's reservation unaccounted.
-    if (order.merchantCreditStatus !== 'HELD') return false;
-    const opened = await openSettlement({
-      settlementId, merchantId: order.merchantId, orderId: order.orderId,
-      direction: DIRECTIONS.WITHDRAWAL, amountPaise: rupeesToPaise(order.tokenAmount),
-      actor: by ? String(by) : 'dispute',
-      reason: `Withdrawal ${order.orderId} reservation opened for reversal`,
-    });
-    if (!opened.ok) {
-      console.error(`[withdrawal-hold] settlement open failed for ${order.orderId}:`, opened.reason);
-      return false;
+  if (decision === 'RELEASE') {
+    if (alreadySettled) return { ok: true, already: true };
+    // A settlement already CANCELLED or REVERSED was refunded: the stake went
+    // back to the player, so paying the merchant now would pay out twice.
+    if (settlement && settlement.state !== 'RESERVED') {
+      return { ok: false, reason: `settlement_${String(settlement.state).toLowerCase()}` };
     }
-    existing = opened.settlement;
+    if (!settlement) {
+      // Not yet confirmed: nothing is reserved for the merchant. Open it now so
+      // the release goes through the same state machine as a held one.
+      const opened = await openSettlement({
+        settlementId, merchantId: order.merchantId, orderId: order.orderId,
+        direction: DIRECTIONS.WITHDRAWAL, amountPaise: rupeesToPaise(order.tokenAmount),
+        actor, reason: reason || `Withdrawal ${order.orderId} released by admin`,
+      });
+      if (!opened.ok) return { ok: false, reason: opened.reason };
+    }
+    const settled = await completeSettlement({
+      settlementId, merchantId: order.merchantId, actor,
+      reason: reason || `Withdrawal ${order.orderId} released by admin`,
+    });
+    // Refused by the settlement's own gate: a concurrent refund cancelled it.
+    if (!settled.ok) return { ok: false, reason: settled.reason };
+
+    try {
+      await releaseWithdrawal(order.userId, order.tokenAmount, order.orderId);
+    } catch (err) {
+      // The same compensation `settleHold` makes, for the same reason.
+      console.error(`[withdrawal] release failed for ${order.orderId}, reversing settlement:`, err.message);
+      const reversed = await reverseSettlement({
+        settlementId, merchantId: order.merchantId, actor,
+        reason: `Withdrawal ${order.orderId} release reversed — player stake release failed`,
+      }).catch((e) => ({ ok: false, reason: e.message }));
+      sendAlert('withdrawal-release-failed', 'Admin-released withdrawal could not release the player stake', {
+        orderId: order.orderId, userId: String(order.userId), amount: order.tokenAmount,
+        error: err.message, settlementReversed: reversed.ok === true,
+      }).catch(() => {});
+      if (reversed.ok) await mirrorSettlement(order, 'REVERSED', { keepState: true, reason, actor });
+      throw err;
+    }
+    await mirrorSettlement(order, 'SETTLED', { keepState: true, reason, actor });
+    return { ok: true, released: true };
   }
 
-  const cancelled = await cancelSettlement({
-    settlementId, merchantId: order.merchantId,
-    actor: by ? String(by) : 'dispute', reason: String(reason).slice(0, 500),
-  });
-  // Already SETTLED (the sweep won) or already CANCELLED. Either way this call
-  // did not reverse it, and the caller must not tell the player it did.
-  if (!cancelled.ok || cancelled.idempotent) return false;
-
-  // Mirror BEFORE refunding, the opposite of settleHold's ordering and for a
-  // reason worth stating. The refund is idempotent, so retrying it is free;
-  // leaving the order HELD is not. If the refund threw first, the next sweep
-  // would find the settlement already CANCELLED, be refused by the state
-  // machine, and hand the order straight back — held forever, player never
-  // refunded, and nothing in the loop escalating. Writing the state first makes
-  // the failure loud instead of circular.
-  await mirrorSettlement(order, 'CANCELLED', { reason, actor: by });
-
-  try {
-    await refundWithdrawal(order.userId, order.tokenAmount, order.orderId);
-  } catch (err) {
-    console.error(`[withdrawal-hold] refund failed for ${order.orderId}:`, err.message);
-    sendAlert('withdrawal-hold-refund-failed', 'Reversed withdrawal did not return the player stake', {
-      orderId: order.orderId, userId: String(order.userId), amount: order.tokenAmount, error: err.message,
+  // ── REFUND ─────────────────────────────────────────────────────────────
+  if (alreadySettled) {
+    // The stake was consumed and the merchant credited. A refund now is the
+    // platform compensating the player while the merchant is chased by hand —
+    // said plainly, rather than leaving the platform silently short.
+    await creditWinnings(
+      order.userId, order.tokenAmount,
+      `Dispute resolved — withdrawal refunded after settlement: ${order.orderId}`,
+      'PaymentOrder', order.orderId, `dispute_wd_refund_${order.orderId}`,
+    );
+    sendAlert('withdrawal-refund-after-settlement', 'A settled withdrawal was refunded — recover it from the merchant', {
+      orderId: order.orderId, merchantId: String(order.merchantId), amount: order.tokenAmount,
     }).catch(() => {});
-    throw err;
+    return { ok: true, refunded: true, afterSettlement: true };
   }
-
-  emitReversal(order);
-  return true;
-}
-
-function emitReversal(order) {
-  emitOrderUpdate(String(order.userId), 'order_update', {
-    orderId: order.orderId, _id: order.orderId, status: 'DISPUTED',
-    message: 'Your withdrawal was reversed and the amount returned to your balance.',
-    server_ts: Date.now(),
-  });
-  emitAdminUpdate('queue_order_update', { orderId: order.orderId, status: 'DISPUTED', server_ts: Date.now() });
+  if (settlement?.state === 'RESERVED') {
+    // Cancel FIRST: from here a concurrent release is refused by the
+    // settlement's own gate instead of paying the merchant for a refund.
+    const cancelled = await cancelSettlement({
+      settlementId, merchantId: order.merchantId, actor,
+      reason: String(reason || `Withdrawal ${order.orderId} refunded by admin`).slice(0, 500),
+    });
+    if (!cancelled.ok) return { ok: false, reason: cancelled.reason };
+  }
+  // The stake is still locked — admission moved it winnings -> locked, so
+  // returning it is locked -> winnings, on the one refund key every path uses.
+  if (settlement || order.escrowLocked) {
+    await refundWithdrawal(order.userId, order.tokenAmount, order.orderId);
+  }
+  if (settlement) await mirrorSettlement(order, 'CANCELLED', { keepState: true, reason, actor });
+  await db.orders.setOrderFields(order.orderId, { escrowLocked: false, escrowStatus: 'REFUNDED' });
+  return { ok: true, refunded: true };
 }
 
 /**

@@ -7,7 +7,11 @@
 
 import { express, authenticate, hasPermission } from '../../routes/admin/_adminShared.js';
 import { db } from '#db';
-import { creditDeposit, creditReserve, creditWinnings } from '../wallet/walletAuthority.service.js';
+import { creditDeposit, creditReserve } from '../wallet/walletAuthority.service.js';
+// The one owner of how an admin decision ends a withdrawal's money, and of a
+// cancelled buy's merchant hold. Both routes below end orders both ways.
+import { endWithdrawal } from './withdrawalHold.service.js';
+import { releaseForOrder } from '../merchant/depositEscrow.service.js';
 // The one owner of a confirmed deposit's money movement. The merchant confirm
 // route calls the same function; that is what keeps the two from disagreeing.
 import { moveDepositMoney } from './depositCredit.js';
@@ -111,25 +115,31 @@ router.post('/payment-orders/:orderId/action', authenticate, hasPermission('canR
       });
     }
 
-    // ── Returning a rejected withdrawal ─────────────────────────────────────
-    // The player's winnings were debited when the withdrawal was admitted, so
-    // cancelling without refunding is money taken and not returned.
+    // ── A withdrawal's money, through its one owner ──────────────────────
+    // Admission moved the player's winnings into `locked`. This credited
+    // winnings on a reject and left the lock standing — the wallet read the
+    // amount twice — and an APPROVE moved nothing at all: the stake stayed
+    // locked for good and the merchant who paid the player was never credited.
+    // A HELD withdrawal also kept its settlement RESERVED forever (F-027).
     //
-    // `creditWinnings` requires a deterministic txId as its SIXTH argument and
-    // throws without one; this passed three, so the throw landed AFTER the
-    // cancel had committed — the order read CANCELLED and the player never got
-    // their money back. The key is derived from the order, so a replayed
-    // delivery refunds exactly once.
-    //
-    // `idempotent` means a previous delivery already made this move, and the
-    // refund with it. Re-running would be a no-op on the same key; not running
-    // it is clearer about what actually happened.
-    if (!moved.idempotent && action !== 'APPROVE' && order.type === 'WITHDRAWAL') {
-      await creditWinnings(
-        order.userId, order.tokenAmount,
-        `Cancelled withdrawal refund: ${order.orderId}`,
-        'PaymentOrder', order.orderId, `wd_refund_${order.orderId}`,
-      );
+    // Run on a replay too (`idempotent`): every step is keyed, so a second
+    // click repairs a first that failed part-way instead of reporting success
+    // over money that never moved.
+    if (order.type === 'WITHDRAWAL') {
+      const ended = await endWithdrawal(order.orderId, action === 'APPROVE' ? 'RELEASE' : 'REFUND', {
+        reason: reason || `${action} by admin`, by: req.user.userId,
+      });
+      if (!ended.ok) {
+        return res.status(409).json({
+          success: false,
+          message: `The order is ${moved.status ?? 'updated'}, but its money could not be ${action === 'APPROVE' ? 'released to the merchant' : 'returned to the player'} (${ended.reason}). Nothing was paid twice — check the order before retrying.`,
+        });
+      }
+    } else if (action !== 'APPROVE') {
+      // A buy that will not be served gives its merchant's tokens back. The
+      // stranded-hold sweep would find it in fifteen minutes and log it as a
+      // path that forgot — this route was that path.
+      await releaseForOrder(order, { actor: `admin:${req.user.userId}`, reason: reason || `${action} by admin` });
     }
 
     const settled = moved.order ?? order;
@@ -202,7 +212,15 @@ router.post('/payment-orders/:orderId/resolve', authenticate, hasPermission('can
         message: `Can only resolve DISPUTED orders. Current: ${resolved.status ?? 'missing'}`,
       });
     }
+    // A withdrawal's money step is keyed end to end, so replaying it on a
+    // second click repairs a first that failed part-way and moves nothing when
+    // the first succeeded. Only the SAME decision reaches here: the opposite one
+    // was refused by the transition above.
+    const endWithdrawalAs = (decision) => endWithdrawal(order.orderId, decision, {
+      reason: reason.trim(), by: req.user.userId,
+    });
     if (resolved.idempotent) {
+      if (order.type === 'WITHDRAWAL') await endWithdrawalAs(resolution === 'release' ? 'RELEASE' : 'REFUND');
       return res.json({ success: true, message: 'Dispute already resolved', order: resolved.order ?? order });
     }
 
@@ -246,16 +264,16 @@ router.post('/payment-orders/:orderId/resolve', authenticate, hasPermission('can
           console.error(`[dispute resolve] ${order.orderId} released but money did not move:`, moved.reason);
         }
       } else {
-        // WITHDRAWAL release: the tokens were locked when the order was created
-        // and the escrow already debited them, so completing is all that is
-        // left — but the escrow flag has to be CLEARED IN THE DATABASE.
-        //
-        // The line this replaced assigned `order.escrowLocked = false` on a
-        // plain object and never wrote it back, so every released withdrawal
-        // dispute left the order still marked escrow-locked. The refund branch
-        // below reads that same flag, so a later refund on the same order would
-        // have credited the player a second time for money already released.
-        await db.orders.setOrderFields(order.orderId, { escrowLocked: false });
+        // WITHDRAWAL release: the merchant paid the player, so the stake leaves
+        // the player and the merchant is credited. This only cleared the escrow
+        // flag — "completing is all that is left" — and moved nothing: the stake
+        // stayed locked for good, the merchant was never credited, and a HELD
+        // settlement stayed RESERVED on an order the sweep can no longer reach
+        // (it takes PAID orders only). Through the one owner now (F-027).
+        const ended = await endWithdrawalAs('RELEASE');
+        if (!ended.ok) {
+          console.error(`[dispute resolve] ${order.orderId} released but money did not move:`, ended.reason);
+        }
         await emitWalletUpdate(order.userId);
       }
 
@@ -289,22 +307,19 @@ router.post('/payment-orders/:orderId/resolve', authenticate, hasPermission('can
         orderId: order.orderId, _id: order.orderId, status: 'COMPLETED', server_ts: Date.now(),
       });
     } else {
-      // Refund: cancel order, refund escrow/tokens
+      // Refund: cancel order, return what is held
       if (order.type === 'DEPOSIT') {
-        // No tokens were credited to user yet (was in DISPUTED before confirm) — nothing to refund
+        // No tokens were credited to the player yet, so none come back — but
+        // the merchant's tokens held for this buy do. This route released
+        // nothing, leaving them for the stranded-hold sweep.
+        await releaseForOrder(order, { actor: `admin:${req.user.userId}`, reason: reason.trim() });
       } else {
-        // WITHDRAWAL: refund escrow back to winningsBalance
-        if (order.escrowLocked) {
-          await creditWinnings(
-            order.userId, order.tokenAmount,
-            `Admin dispute refund: ${order.orderId}`,
-            'PaymentOrder', order.orderId, `dispute_refund_${order.orderId}`,
-          );
-          // Cleared in the DATABASE, and AFTER the credit — so a failure
-          // between them leaves an order that still says the escrow is held,
-          // which the keyed credit makes safe to retry. Clearing it first would
-          // leave money locked with nothing recording that it still is.
-          await db.orders.setOrderFields(order.orderId, { escrowLocked: false });
+        // WITHDRAWAL: the stake goes back OUT OF THE LOCK. This credited
+        // winnings and left the lock standing, so the wallet read the amount
+        // twice; on a HELD withdrawal it also left the settlement RESERVED.
+        const ended = await endWithdrawalAs('REFUND');
+        if (!ended.ok) {
+          console.error(`[dispute resolve] ${order.orderId} refunded but money did not move:`, ended.reason);
         }
       }
 

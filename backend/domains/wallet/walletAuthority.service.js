@@ -271,8 +271,13 @@ export async function creditReserve(userId, amount, orderId) {
 }
 
 
-export async function debitWinningsForWithdrawal(userId, amount, orderId) {
-  return pushBalances(userId, await pg.debitWinningsForWithdrawal(userId, amount, orderId));
+/**
+ * Lock winnings for a withdrawal. `within` is the order's prepared INSERT
+ * (`db.orders.prepareOrderRecord`): it commits in the SAME transaction as the
+ * lock, so the lock can never exist without the order that releases it.
+ */
+export async function debitWinningsForWithdrawal(userId, amount, orderId, { within = null } = {}) {
+  return pushBalances(userId, await pg.debitWinningsForWithdrawal(userId, amount, orderId, { within }));
 }
 
 /**

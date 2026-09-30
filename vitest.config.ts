@@ -12,5 +12,7 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     include: ['backend/tests/unit/**/*.test.js'],
+    // A comparison of NaN with NaN proves nothing — refused (§32 S40).
+    setupFiles: ['backend/tests/assertionGuards.setup.js'],
   },
 });

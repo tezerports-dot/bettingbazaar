@@ -52,6 +52,10 @@ import { seedPlayer, seedMerchant, seedAdmin } from '../e2e/seed.js';
 import { playerToken, adminToken, merchantToken } from '../e2e/harness.js';
 import { db } from '#db';
 import { pgQuery } from '#db/client.js';
+// Every order the platform writes carries its tamper tag, written with the row
+// (`createOrderRecord`). A fixture inserted without one is a row production
+// cannot produce (§32 S16) — and the player's order routes refuse it.
+import { deriveOrderHmac } from '../../middleware/order-crypto-access.js';
 
 const only = process.argv.slice(2).filter((a) => !a.startsWith('-'));
 const results = [];
@@ -825,9 +829,9 @@ const CASES = [
       for (const [orderId, u] of [[mine, player], [theirs, other]]) {
         await pgQuery(
           `INSERT INTO order_states
-             (order_id, user_id, merchant_id, order_type, state, token_amount_paise, fiat_amount_paise)
-           VALUES ($1, $2, $3, 'DEPOSIT', 'DISPUTED', 50000, 50000)`,
-          [orderId, u.userId, merchant.merchantId],
+             (order_id, user_id, merchant_id, order_type, state, token_amount_paise, fiat_amount_paise, order_hmac)
+           VALUES ($1, $2, $3, 'DEPOSIT', 'DISPUTED', 50000, 50000, $4)`,
+          [orderId, u.userId, merchant.merchantId, deriveOrderHmac(orderId)],
         );
       }
 
@@ -1005,9 +1009,9 @@ const CASES = [
       const mine = rid('DISP');
       await pgQuery(
         `INSERT INTO order_states
-           (order_id, user_id, merchant_id, order_type, state, token_amount_paise, fiat_amount_paise)
-         VALUES ($1, $2, $3, 'DEPOSIT', 'DISPUTED', 50000, 50000)`,
-        [mine, player.userId, merchant.merchantId],
+           (order_id, user_id, merchant_id, order_type, state, token_amount_paise, fiat_amount_paise, order_hmac)
+         VALUES ($1, $2, $3, 'DEPOSIT', 'DISPUTED', 50000, 50000, $4)`,
+        [mine, player.userId, merchant.merchantId, deriveOrderHmac(mine)],
       );
 
       await go(page, cfg, base, '/payment-control');
@@ -2169,9 +2173,9 @@ const CASES = [
         const orderId = rid('mrow');
         await pgQuery(
           `INSERT INTO order_states
-             (order_id, user_id, merchant_id, order_type, state, token_amount_paise, fiat_amount_paise)
-           VALUES ($1, $2, $3, 'DEPOSIT', 'ASSIGNED', 50000, 50000)`,
-          [orderId, player.userId, page.__bbMerchantId],
+             (order_id, user_id, merchant_id, order_type, state, token_amount_paise, fiat_amount_paise, order_hmac)
+           VALUES ($1, $2, $3, 'DEPOSIT', 'ASSIGNED', 50000, 50000, $4)`,
+          [orderId, player.userId, page.__bbMerchantId, deriveOrderHmac(orderId)],
         );
         made.push(orderId);
       }
@@ -2626,9 +2630,9 @@ const CASES = [
       await pgQuery(
         `INSERT INTO order_states
            (order_id, user_id, merchant_id, order_type, state, token_amount_paise,
-            fiat_amount_paise, completed_at)
-         VALUES ($1, $2, $3, 'DEPOSIT', 'COMPLETED', 50000, 50000, now())`,
-        [orderId, player.userId, page.__bbMerchantId],
+            fiat_amount_paise, completed_at, order_hmac)
+         VALUES ($1, $2, $3, 'DEPOSIT', 'COMPLETED', 50000, 50000, now(), $4)`,
+        [orderId, player.userId, page.__bbMerchantId, deriveOrderHmac(orderId)],
       );
 
       await go(page, cfg, base, '/history');

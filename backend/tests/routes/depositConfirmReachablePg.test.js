@@ -106,11 +106,21 @@ describePg('a merchant can release tokens on a paid deposit', () => {
 
     // ── The assertion the 400 was hiding ──────────────────────────────────
     // COMPLETED is not "the money moved" (trap 17). Both sides are checked.
+    //
+    // The keys are the POCKET names. These lines read `availablePaise` and
+    // `reservedPaise`, which do not exist: `Number(undefined)` is NaN, `toBe`
+    // is `Object.is`, and NaN is NaN — so both assertions passed for ANY
+    // balance, while the confirm was charging the merchant twice (F-026). The
+    // finite-number guard makes a wrong key a failure instead of a pass.
     const paise = tokensRupees * 100;
     const after = await getMerchantBalances(merchant.merchantId);
-    expect(Number(after.availablePaise)).toBe(Number(before.availablePaise) - paise);
-    // The hold was CONSUMED by the payment, not left standing beside it.
-    expect(Number(after.reservedPaise)).toBe(Number(before.reservedPaise) - paise);
+    for (const pocket of ['available', 'reserved']) {
+      expect(Number.isFinite(after[pocket]) && Number.isFinite(before[pocket]), `pocket ${pocket} unreadable`).toBe(true);
+    }
+    // The hold IS the payment: it is spent out of `reserved`, and `available`
+    // does not move. A debit of `available` beside it is the double charge.
+    expect(after.reserved).toBe(before.reserved - paise);
+    expect(after.available).toBe(before.available);
 
     // The player holds exactly what the merchant lost — moved, never minted.
     // `getBalances` answers in RUPEES; the split between the two pockets is
