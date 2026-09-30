@@ -1178,8 +1178,17 @@ const MUTATIONS = [
     id: 'M171', file: 'database/repositories/orders.record.js', config: PG,
     test: 'backend/tests/routes/withdrawalResolutionPg.test.js',
     why: 'the settlement mirror writes the order state behind the route, so a refunded dispute is written back to DISPUTED and returns to the queue',
-    from: `  if (keepState) OUTCOME.state = null;`,
-    to: `  if (false) OUTCOME.state = null;`,
+    // Two layered guards since review C3 (2026-09-30): `keepState` for the
+    // admin routes, and the UPDATE writing state only from PAID. Either alone
+    // keeps a route-moved order where the route put it, so removing ONE is
+    // unkillable by construction — CI reported this entry SURVIVED once C3
+    // landed. The property is lost only when both go; M178 covers the PAID
+    // guard on its own, through the race it exists for.
+    edits: [
+      [`  if (keepState) OUTCOME.state = null;`, `  if (false) OUTCOME.state = null;`],
+      [`state = CASE WHEN $4::text IS NOT NULL AND state = 'PAID' THEN $4 ELSE state END,`,
+       `state = COALESCE($4, state),`],
+    ],
   },
   {
     id: 'M172', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
