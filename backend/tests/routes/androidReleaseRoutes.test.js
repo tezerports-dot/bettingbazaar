@@ -19,7 +19,7 @@
  * published or not, outside any assertion.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { pgConfigured, applySchema, closePg, pgQuery } from '#db/client.js';
+import { pgConfigured, applySchema, closePg, pgQuery, withTransaction } from '#db/client.js';
 import { mountRouter, actor, as, request } from './_harness.js';
 import { buildApk } from '../_fakeApk.js';
 
@@ -229,10 +229,39 @@ describePg('Android releases', () => {
     const { readdirSync } = await import('node:fs');
     const code = base + 30;
     const filesFor = () => { try { return readdirSync(RELEASES_DIR).filter((f) => f.startsWith(`${PKG}-`) && f.includes(`-${code}-`)); } catch { return []; } };
-    const [a, b] = await Promise.all([
+    // The race is FORCED, not hoped for. Fired together, the two requests
+    // often ran one after the other, and the second was refused by the
+    // pre-read — so the test passed with the 23505 handling removed, and CI's
+    // mutation run reported M182 KILLED on one commit and SURVIVED on the next
+    // with no code change between them. A SHARE lock on the table blocks the
+    // INSERT and not the reads: both requests pass "already uploaded?", both
+    // park at the INSERT, and only then is the lock released.
+    let release;
+    const released = new Promise((r) => { release = r; });
+    let locked;
+    const isLocked = new Promise((r) => { locked = r; });
+    const holder = withTransaction(async (client) => {
+      await client.query('LOCK TABLE android_releases IN SHARE MODE');
+      locked();
+      await released;
+    });
+    await isLocked;
+    const racing = Promise.all([
       upload(admin, apk(30, { padding: 1 })),
       upload(admin, apk(30, { padding: 2 })),
     ]);
+    const deadline = Date.now() + 10_000;
+    for (;;) {
+      const { rows } = await pgQuery(
+        `SELECT count(*)::int AS n FROM pg_stat_activity
+          WHERE wait_event_type = 'Lock' AND query ILIKE 'INSERT INTO android_releases%'`, []);
+      if (rows[0].n >= 2) break;
+      if (Date.now() > deadline) { release(); await holder; throw new Error('both uploads never reached the INSERT together — the race was not forced'); }
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    release();
+    await holder;
+    const [a, b] = await racing;
     const statuses = [a.status, b.status].sort();
     expect(statuses[0]).toBe(201);
     expect(statuses[1], JSON.stringify([a.body, b.body])).toBe(400);
