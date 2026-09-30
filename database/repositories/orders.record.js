@@ -26,6 +26,7 @@
  */
 import { pgQuery } from '../client.js';
 import { rupeesToPaise, paiseToRupees } from '../../backend/shared/money.js';
+import { deriveOrderHmac } from '../../backend/middleware/order-crypto-access.js';
 import { stampForNewOrder } from './paymentModePolicy.js';
 
 const num = (v) => Number(v ?? 0);
@@ -112,9 +113,9 @@ export function toOrder(r) {
     warningIssued: r.warning_issued,
     paidAt: r.paid_at, completedAt: r.completed_at, expiresAt: r.expires_at,
 
-    // The tamper-evidence tag, READ-ONLY. It is written once by `openOrder`
-    // with the row and never updated, and `SETTABLE` below deliberately does
-    // not name it, so no caller can rewrite it.
+    // The tamper-evidence tag, READ-ONLY. It is written once by
+    // `createOrderRecord` with the row and never updated, and `SETTABLE` below
+    // deliberately does not name it, so no caller can rewrite it.
     //
     // This mapper omitted it while `orders.core.js`'s did, which meant
     // `orderAccessGuard` — reading the full record so handlers get every field
@@ -276,13 +277,24 @@ const SETTABLE = Object.freeze({
 });
 
 /**
- * Open an order WITH its detail, in one statement.
+ * Open an order WITH its detail, in one statement. THE creation path — there is
+ * no other.
  *
- * `openOrder` (the lifecycle module) writes the six columns the state machine
- * needs; everything else — allocations, escrow, the payer's bank details, the
- * fee — used to arrive in a second UPDATE. Between the two, the order existed
- * at PENDING_QUEUE with a zero allocation and no escrow flag, and the assignment
+ * Orders used to be opened with the six columns the state machine needs, and
+ * everything else — allocations, escrow, the payer's bank details, the fee —
+ * arrived in a second UPDATE. Between the two, the order existed at
+ * PENDING_QUEUE with a zero allocation and no escrow flag, and the assignment
  * sweep could pick it up there. A crash between them left it that way for good.
+ *
+ * ── The tamper tag is written HERE, with the row ────────────────────────────
+ * There used to be a second creation path, `openOrder`, and it was the only one
+ * that wrote `order_hmac`. Production never called it: every live order came
+ * through this function, untagged, while every test of the tag opened its order
+ * through the other door. `orderAccessGuard` passes an order with no tag, so
+ * the guard mounted on every order route had never once refused anything, and
+ * `ORDER_HMAC_SECRET` — a REQUIRED boot variable — signed nothing. Measured on
+ * a live server: six orders created, zero tagged. `openOrder` is deleted, so
+ * the tag and the row now have one writer and cannot drift apart again.
  *
  * `ON CONFLICT DO NOTHING` makes it retry-safe: the caller's generated order id
  * is the idempotency key, so a resubmitted create returns the existing order
@@ -331,9 +343,9 @@ export async function createOrderRecord({
   // switching rails mid-flight cannot change what this order is running under.
   const stamp = await stampForNewOrder(paymentMode);
   const columns = ['order_id', 'user_id', 'order_type', 'state', 'token_amount_paise', 'fiat_amount_paise',
-    'payment_mode', 'payment_mode_version', 'usdt_chain'];
+    'payment_mode', 'payment_mode_version', 'usdt_chain', 'order_hmac'];
   const params = [String(orderId), String(userId), type, state, tokenPaise, rupeesToPaise(fiatAmountRupees),
-    stamp.mode, stamp.version, usdtChain];
+    stamp.mode, stamp.version, usdtChain, deriveOrderHmac(orderId)];
 
   // The same allowlist `setOrderFields` uses, so a field this create accepts is
   // one an update accepts and vice versa — and an unknown one is refused here

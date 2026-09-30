@@ -34,7 +34,8 @@ import { pgConfigured, pgQuery, applySchema, closePg } from '../client.js';
 import { createUser, getUser } from '../repositories/users.js';
 import { getBalancesPaise, applyMovementPaise } from '../repositories/wallets.core.js';
 import { createMerchant, newMerchantId, generateMerchantPublicRef } from '../repositories/merchants.js';
-import { ORDER_STATES, openOrder, getOrder } from '../repositories/orders.core.js';
+import { ORDER_STATES, getOrder } from '../repositories/orders.core.js';
+import { createOrderRecord } from '../repositories/orders.record.js';
 import { transitionOrder } from '../repositories/orders.js';
 import { placeBet, winBet, loseBet, getBet, BET_STATUS, reconcileUserStakes } from '../repositories/bets.core.js';
 import { ensureCycle, declareWinner, closeCycle, getCycle } from '../repositories/markets.js';
@@ -136,8 +137,8 @@ describePg('the whole journey: signup to withdrawal', () => {
     const orderId = `wf-dep-${RUN}-${seq}`;
     const AMOUNT_PAISE = 500_00;
 
-    await openOrder({
-      orderId, userId: USER, type: 'DEPOSIT', tokenAmountPaise: AMOUNT_PAISE,
+    await createOrderRecord({
+      orderId, userId: USER, type: 'DEPOSIT', tokenAmountRupees: AMOUNT_PAISE / 100,
       state: ORDER_STATES.PENDING_QUEUE,
     });
 

@@ -428,10 +428,11 @@ router.get('/orders', authenticate, async (req, res) => {
  * on every `:orderId` route below.
  *
  * The two were doing the same job in two places. The guard also verifies the
- * order's tamper tag, which nothing did: `order_hmac` was written on every
- * order at creation, ORDER_HMAC_SECRET was a required boot variable, and no
- * request path ever read the tag back. The signature was kept and never
- * checked.
+ * order's tamper tag. For a while that check was itself decorative: the tag
+ * was written only by a creation path production never called, so every live
+ * order was untagged and the guard waved untagged orders through. The tag is
+ * now written with every row (`createOrderRecord`) and a missing one is
+ * refused — see `orderAccessGuard`.
  *
  * Handlers below read `req.p2pOrder`, which the guard sets once it has decided.
  * A route added without the guard has no order to read, so it fails loudly

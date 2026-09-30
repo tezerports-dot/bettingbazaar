@@ -531,9 +531,9 @@ const MUTATIONS = [
   // The platform runs one of two P2P rails and an admin switches between them.
   // The orders already in flight must not move with it.
   {
-    id: 'M92', file: 'database/repositories/orders.core.js', config: PG,
+    id: 'M92', file: 'database/repositories/orders.record.js', config: PG,
     test: 'backend/tests/routes/paymentModeSwitchPg.test.js',
-    why: 'the lifecycle insert stops stamping the rail, so half the orders silently take the column default',
+    why: 'the order insert stops stamping the rail, so every order silently takes the column default',
     from: `  const stamp = await stampForNewOrder(paymentMode);`,
     to: `  const stamp = { mode: 'P2P_UPI', version: null };`,
   },
@@ -1115,6 +1115,25 @@ const MUTATIONS = [
     if (plain[key] !== undefined) view[key] = plain[key];
   }`,
     to: `  const view = { ...plain };`,
+  },
+
+  // ── The order tamper tag is written, and a missing one is refused ───────
+  // Both halves were missing at once: the only writer of `order_hmac` was a
+  // creation path production never called, and the guard waved an untagged
+  // order through. Every test of the tag produced its tag by WRITING one.
+  {
+    id: 'M156', file: 'database/repositories/orders.record.js', config: PG,
+    test: 'backend/tests/routes/orderAccessGuardRoutes.test.js',
+    why: 'the one order insert stops writing the tamper tag, so every live order is untagged and the guard mounted on every order route checks nothing',
+    from: `    stamp.mode, stamp.version, usdtChain, deriveOrderHmac(orderId)];`,
+    to: `    stamp.mode, stamp.version, usdtChain, null];`,
+  },
+  {
+    id: 'M157', file: 'backend/middleware/order-crypto-access.js', config: PG,
+    test: 'backend/tests/routes/orderAccessGuardRoutes.test.js',
+    why: 'the guard passes an order whose tag was stripped, so a row inserted outside the system is served as if it were ours',
+    from: `    if (order.orderHmac ? !verifyOrderHmac(order.orderId, order.orderHmac) : orderTaggingConfigured()) {`,
+    to: `    if (order.orderHmac ? !verifyOrderHmac(order.orderId, order.orderHmac) : false) {`,
   },
 ];
 

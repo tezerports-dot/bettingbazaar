@@ -682,6 +682,7 @@ honest record of what surfaced it, and it is the column that should worry you:
 | A batch of writes applied one at a time, where one can be REFUSED | one handler, **plus the validator it calls** | driving the handler with one bad value among good ones | no — the §21 gate reads field names, not transaction boundaries | F-023 |
 | A test that WRITES the shared config row and leaves it | **the whole suite, in run order** | the next suite failing in code the change never touched | no | trap 10 |
 | A gate anchored on a string that also matches a DIFFERENT site | the gate's own file vs the file it measures | re-running the gate after moving the site | no — this is the meta-shape | F-018, trap 13 |
+| A guard READING a value that only a test-only path WRITES | **whole backend + the test tree**, by column: who writes it in production? | counting tagged rows a live server created | partial — M156/M157 hold this instance; the class needs `check:dead-code` to stop counting a test import as a consumer | F-024 |
 
 **The last row is the one to take personally.** Three separate times a check
 went on passing while measuring something other than what it names:
@@ -2430,6 +2431,62 @@ exists.
   where a partial send is not a partial commit. **Swept; this route was the only
   instance.**
 
+### F-024 — the order tamper tag was never written, so its guard never refused
+`FIXED` · medium · §32 S4 (a consumer outliving its producer), §22 · found
+2026-09-30 by the full-stack review
+
+**MEASURED on a live server:** the e2e tier created six orders through the real
+HTTP stack, and **zero** carried an `order_hmac`.
+
+`order_states` had two insert paths. `openOrder` (orders.core.js) wrote the tag
+with the row; `createOrderRecord` (orders.record.js) wrote the row and its
+detail and **no tag**. Every production caller used `createOrderRecord` — the
+deposit and the withdrawal creators both — and `openOrder` had **no production
+caller at all**: fifteen call sites, every one a test. `orderAccessGuard`, mounted
+on all nine player order routes, deliberately passed an order with no tag
+("orders created before the column existed have none"), so its refusal branch
+had never once run. `ORDER_HMAC_SECRET` is a REQUIRED boot variable and signed
+nothing; a comment in `payment.routes.js` stated the tag "was written on every
+order at creation", which was false.
+
+**Why every tier was green.** The tag was tested — on the door nobody used.
+`orderPg.test.js` proved `openOrder` signs its row; `orderAccessGuardRoutes`
+proved the guard refuses a WRONG tag by writing one with a fixture. Nothing
+asserted that an order the platform creates has one. That is F-017's shape (the
+tests on a dead route) and §32 S16 (a fixture in a state production cannot
+produce), and `check:dead-code` could not see it because a test import counts as
+a consumer — the open-queue item "triage the `testOnly` exports" is exactly this.
+
+**Fixed at the owner, and the second door removed.**
+- `createOrderRecord` writes `order_hmac` in the same INSERT. It is now THE
+  creation path; `openOrder` is deleted and its tests repointed, so the tag and
+  the row have one writer and cannot drift apart again.
+- The guard refuses a MISSING tag too, whenever tagging is configured (always in
+  production — `validateEnv` refuses to boot without the secrets). The legacy
+  exemption described rows that do not exist (CLAUDE.md §0.0).
+- Harness fixtures that insert orders by hand (`mutate.js`, `operations.mjs`) now
+  write the tag, so they describe rows the platform can produce.
+
+- **Tests:** `orderAccessGuardRoutes` gains *"writes a tag that verifies onto
+  every order it creates"* (the missing assertion) and *"refuses an order whose
+  tag was stripped"*.
+- **Mutation-proved:** M156 (the insert stops writing the tag) and M157 (the guard
+  passes a stripped tag) are both KILLED; M92 retargeted from the deleted insert
+  to `createOrderRecord` and KILLED.
+- **Sweep for the same shape** — a stored integrity value a guard READS, written
+  only by a path production does not call: every `*_hash`/`*hmac*`/signature
+  column in `schema.sql` (`password_hash` ×2, `aadhaar_hash`, `aadhaar_hashes`,
+  `viewer_hash`, `pan_hash`, `usdt_tx_hash`, `token_hash`, `order_hmac`) traced to
+  its writer; and `grep` for guards that refuse a WRONG value but pass an ABSENT
+  one (`&& !verify`, `? !verify`, `if (!sig…)`) across `backend/`. Both webhook
+  verifiers refuse a missing signature. **Swept; `order_hmac` was the only
+  instance.** The sweep turned up one neighbour of a different shape: `pan_hash`
+  has a writer (`registerPan`) that itself has no production caller — a whole
+  unused table, recorded separately.
+- **What no gate here can do:** notice a producer that only a test calls. That
+  needs `check:dead-code` to stop counting a test import as a consumer — still
+  the open-queue item it was.
+
 ---
 
 ## 5. Derived coverage — regenerated, never typed
@@ -2511,8 +2568,8 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 465 |
-| Parameters only (safe by construction) | 312 |
+| `pgQuery` call sites | 464 |
+| Parameters only (safe by construction) | 311 |
 | Interpolating into statement text (each needs a reading) | 150 |
 | Statement text built elsewhere and passed in (each needs a reading) | 3 |
 

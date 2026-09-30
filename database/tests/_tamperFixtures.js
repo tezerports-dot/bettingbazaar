@@ -5,9 +5,9 @@
  * ── Why these live here and not in a repository ─────────────────────────────
  * `orderAccessGuard` refuses an order whose tamper tag does not verify, and the
  * only way to test that is to produce such a row. There is deliberately no
- * production path that can: `openOrder` writes `order_hmac` once with the row,
- * and `setOrderFields`' allowlist does not name it, so no caller can rewrite a
- * tag. A repository function that could would hand an attacker the one thing
+ * production path that can: `createOrderRecord` writes `order_hmac` once with
+ * the row, and `setOrderFields`' allowlist does not name it, so no caller can
+ * rewrite a tag. A repository function that could would hand an attacker the one thing
  * the tag exists to prevent — re-signing a row they had edited.
  *
  * ── Why they live under database/ ───────────────────────────────────────────
@@ -26,7 +26,7 @@ export async function corruptOrderHmac(orderId, tag = 'deadbeef'.repeat(8)) {
     [String(orderId), String(tag)]);
 }
 
-/** Strip the tag, as on an order created before the column existed. */
+/** Strip the tag — a row whose tamper evidence was removed after the fact. */
 export async function clearOrderHmac(orderId) {
   await pgQuery('UPDATE order_states SET order_hmac = NULL WHERE order_id = $1', [String(orderId)]);
 }
