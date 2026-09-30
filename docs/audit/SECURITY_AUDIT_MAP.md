@@ -2977,6 +2977,34 @@ case (§22.2).
   are approved for anyone who asks; membership unlocks nothing without a
   verified link, by design.
 
+### F-040 — the referral budget was drawn AFTER paying, and its refusal was ignored
+`FIXED` · high (a hard money ceiling that could be crossed silently) · §21, §32 S6, S7, S18 · found 2026-09-30 (R6 review)
+
+`disburse` checked the remaining programme budget with a READ, paid the queue
+through `creditWinnings`, and only then called `drawFromProgramme`, without
+reading its answer. The draw's guard is correct (in the UPDATE's WHERE), but it
+ran after the money had moved. Two overlapping disbursals, or a pause mid-run,
+paid the players and had the draw refused, and the refusal was dropped. The
+programme then recorded less than it had paid, the next run saw budget that was
+already gone, and the ₹400 crore ceiling could be crossed with nothing
+recording it.
+
+- **Fix:** the whole pool is RESERVED from the programme before the first
+  credit, through the guarded statement. If the reservation is refused, nobody
+  is paid (409, which says to refresh). What was not spent is returned at the
+  end, in the failure path too, by `returnToProgramme`, which cannot go below
+  zero. If the return fails, the programme overstates what was drawn: the
+  ceiling errs conservative, and the batch row still records the true spend.
+- **Tests:** `referralDisbursalBudget` (unit): with the reservation refused, no
+  credit is made. The draw precedes the first credit, and the unspent part is
+  returned, including after a mid-run failure. All three fail on the old code.
+  `newDomains`: the return cannot go below zero, through a real database.
+- **Why the order test is a unit test:** a pg test of `disburse` pays the
+  GLOBAL queue head, which is every other suite's queued earnings on the shared
+  database (trap 10; 370 were queued when measured). Both guards the order
+  relies on are DB-tested.
+- **Mutation-proved:** M203, M204 KILLED.
+
 ## 5. Derived coverage — regenerated, never typed
 
 <!-- BEGIN GENERATED: npm run audit:map -->
@@ -3058,8 +3086,8 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 471 |
-| Parameters only (safe by construction) | 315 |
+| `pgQuery` call sites | 472 |
+| Parameters only (safe by construction) | 316 |
 | Interpolating into statement text (each needs a reading) | 153 |
 | Statement text built elsewhere and passed in (each needs a reading) | 3 |
 

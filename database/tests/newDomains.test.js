@@ -422,6 +422,17 @@ describePg('the domains written from scratch', () => {
       expect((await referrals.getProgramme(`pg-${ID}`)).remaining).toBe(0);
     });
 
+    it('gives back unspent budget, and never below nothing drawn', async () => {
+      // `disburse` reserves its whole pool up front and returns the unspent
+      // part (R6, F-040); the floor is in the statement.
+      await referrals.upsertProgramme({ key: `pr-${ID}`, budgetRupees: 100, memberCap: 2, active: true });
+      expect((await referrals.drawFromProgramme(`pr-${ID}`, 80)).ok).toBe(true);
+      expect((await referrals.returnToProgramme(`pr-${ID}`, 30)).ok).toBe(true);
+      expect((await referrals.getProgramme(`pr-${ID}`)).remaining).toBe(50);
+      expect((await referrals.returnToProgramme(`pr-${ID}`, 60)).ok).toBe(false);
+      expect((await referrals.getProgramme(`pr-${ID}`)).remaining).toBe(50);
+    });
+
     it('counts a click once per viewer, so a refresh loop cannot inflate it', async () => {
       for (let i = 0; i < 5; i += 1) {
         await referrals.recordClick({ code: `rc-${ID}`, viewerHash: 'same-viewer' });

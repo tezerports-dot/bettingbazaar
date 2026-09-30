@@ -1517,6 +1517,20 @@ const MUTATIONS = [
     why: 'recovery accepts a contact card with no user_id, so a number the sender does not hold stands in for one they do',
     from: `  if (!contactUserId || String(contactUserId) !== String(newTelegramUserId)) {`,
     to: `  if (contactUserId && String(contactUserId) !== String(newTelegramUserId)) {`,
+  },  // ── A referral disbursal reserves its budget before it pays (R6) ────────
+  {
+    id: 'M203', file: 'backend/domains/referral/referral.service.js', config: UNIT,
+    test: 'backend/tests/unit/referralDisbursalBudget.test.js',
+    why: 'a disbursal whose budget reservation was refused pays anyway, so the programme ceiling is crossed',
+    from: `  if (!reservation.ok) {`,
+    to: `  if (false) {`,
+  },
+  {
+    id: 'M204', file: 'database/repositories/referrals.js', config: PG,
+    test: 'database/tests/newDomains.test.js',
+    why: 'returning unspent budget can drive the drawn total below zero, inventing budget',
+    from: `WHERE programme_key = $1 AND disbursed_paise - $2 >= 0`,
+    to: `WHERE programme_key = $1`,
   },
 ];
 
