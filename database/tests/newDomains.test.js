@@ -17,7 +17,6 @@ import * as engagement from '../repositories/engagement.js';
 import * as social from '../repositories/social.js';
 import * as referrals from '../repositories/referrals.js';
 import * as audit from '../repositories/audit.js';
-import * as compliance from '../repositories/compliance.js';
 import * as operations from '../repositories/operations.js';
 import * as paymentConfig from '../repositories/paymentConfig.js';
 import * as depositPolicy from '../repositories/depositPolicy.js';
@@ -577,36 +576,6 @@ describePg('the domains written from scratch', () => {
       const second = await audit.search({ adminId: `page-${ID}`, limit: 2, cursor: first.nextCursor });
       const ids = new Set([...first.entries, ...second.entries].map((e) => e.id));
       expect(ids.size).toBe(4);
-    });
-  });
-
-  // ══════════════════════════════════════════════════════════════════════════
-  describe('compliance — one PAN, one account', () => {
-    it('refuses a second account on the same PAN, under a storm', async () => {
-      const attempts = await Promise.all(
-        Array.from({ length: 10 }, (_, i) => compliance.registerPan({
-          panHash: `pan-${ID}`, panLast4: '1234', userId: `u-${ID}-${i}`,
-        })));
-      expect(attempts.filter((a) => a.ok && !a.idempotent)).toHaveLength(1);
-      expect(attempts.filter((a) => a.reason === 'PAN_ALREADY_REGISTERED')).toHaveLength(9);
-    });
-
-    it('refuses a second PAN on the same account', async () => {
-      await compliance.registerPan({ panHash: `p1-${ID}`, panLast4: 'ABCD', userId: `u-${ID}` });
-      expect(await compliance.registerPan({ panHash: `p2-${ID}`, panLast4: 'EFGH', userId: `u-${ID}` }))
-        .toMatchObject({ ok: false, reason: 'ACCOUNT_ALREADY_HAS_PAN' });
-    });
-
-    it('treats the same account re-registering the same PAN as a retry', async () => {
-      await compliance.registerPan({ panHash: `pr-${ID}`, panLast4: 'WXYZ', userId: `u-${ID}` });
-      const again = await compliance.registerPan({ panHash: `pr-${ID}`, panLast4: 'WXYZ', userId: `u-${ID}` });
-      expect(again).toMatchObject({ ok: true, idempotent: true });
-    });
-
-    it('will not free a PAN for someone who only knows the hash', async () => {
-      await compliance.registerPan({ panHash: `pf-${ID}`, panLast4: 'QRST', userId: `u-${ID}` });
-      expect(await compliance.releasePan(`pf-${ID}`, 'not-the-owner')).toBe(false);
-      expect(await compliance.releasePan(`pf-${ID}`, `u-${ID}`)).toBe(true);
     });
   });
 

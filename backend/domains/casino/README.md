@@ -6,13 +6,13 @@ routes/game-providers.routes.js (git mv) — Product Platforms tier.
 
 | File | Role |
 |---|---|
-| `gameProvider.model.js` | Provider config + GameTransaction records |
 | `gameProvider.routes.js` | Admin provider config, user launch sessions, provider wallet webhooks (bet/win/rollback) |
 
 Core-platform consumption:
-- **Wallet authority**: every provider bet/win/rollback debits/credits via
-  `walletAuthority.service.js` (`debitForGameProviderBet` preserves the
-  provider-txId idempotency contract).
+- **Wallet**: every provider bet/win/rollback moves money through
+  `db.casino.applyProviderCallback`, which writes the balance movement and the
+  provider-transaction record in ONE transaction, keyed on the provider's own
+  transaction id for idempotency.
 - **Business Policy**: provider enablement/credentials are admin-configured
   documents, not hardcoded (`FLAGS.LIVE_CASINO` gates future expansion).
 - **Revenue & Settlement**: casino GGR accounting integration is queued

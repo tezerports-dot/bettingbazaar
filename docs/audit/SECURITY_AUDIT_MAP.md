@@ -2776,9 +2776,9 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 473 |
-| Parameters only (safe by construction) | 320 |
-| Interpolating into statement text (each needs a reading) | 150 |
+| `pgQuery` call sites | 466 |
+| Parameters only (safe by construction) | 314 |
+| Interpolating into statement text (each needs a reading) | 149 |
 | Statement text built elsewhere and passed in (each needs a reading) | 3 |
 
 <details><summary>Call sites whose statement text is built elsewhere</summary>
@@ -2794,7 +2794,7 @@ new route and decide. Each of the three questions is defined in §2.
 | Panel | .ts/.tsx files | `dangerouslySetInnerHTML` | `.innerHTML =` |
 |---|---|---|---|
 | `user-panel` | 85 | 0 | 0 |
-| `admin-panel` | 99 | 0 | 0 |
+| `admin-panel` | 97 | 0 | 0 |
 | `merchant-panel` | 41 | 0 | 0 |
 
 <!-- END GENERATED -->

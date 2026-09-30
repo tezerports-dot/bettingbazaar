@@ -28,16 +28,32 @@
  *               export is wider than it needs to be.
  *
  * ── What counts as a reference ──────────────────────────────────────────────
- * A textual mention of the name in any other file. Deliberately crude, and
- * therefore SAFE in the direction that matters: namespace access
+ * A textual mention of the name in any other file's CODE. Crude on purpose, and
+ * therefore safe in the direction that matters: namespace access
  * (`db.games.setProviderEnabled`) and re-export lists both contain the name, so
- * a live symbol is never called dead. The cost is the reverse — a name that
- * merely appears in a comment counts as used — which loses coverage rather than
- * inventing a failure.
+ * a live symbol is never called dead.
+ *
+ * COMMENTS ARE BLANKED FIRST (`blankComments`, the same scanner the privacy
+ * gates use), for exports, own-file uses, imports and path-loaded strings
+ * alike. This used to say a name in a comment counting as used "loses coverage
+ * rather than inventing a failure" — and it lost exactly the coverage that
+ * mattered. Measured 2026-09-30, the same gate with comments blanked went from
+ * 0 DEAD to 16 and from 0 test-only modules to 1: an IP deny-list three files
+ * said "runs on every request" and nothing mounted (the sentence was the only
+ * thing naming it), a second uncalled money path for casino bets, and an admin
+ * page kept alive by `// UTR REMOVED: import { UTRManager } …` — a
+ * commented-out import counted as an import. A sentence saying something is
+ * called is not a call (CLAUDE.md §22 item 3, §32 S43).
+ *
+ * The scanner does not model regex literals or JSX text, so a `//` inside one
+ * could blank real code and report a false DEAD. That fails LOUD rather than
+ * silent, and every DEAD row prints where its name survives only in comments,
+ * so the reader can tell the two apart before deleting anything.
  */
 import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { join, relative, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { blankComments } from './lib/privacyLists.mjs';
 
 // Derived from this file's own location. An absolute path baked in here once
 // shipped a verifier that ran only on its author's machine and died in CI at
@@ -67,7 +83,9 @@ function walk(dir, out = []) {
 
 const isTest = (f) => /[\\/]tests?[\\/]|\.test\.|\.spec\./.test(f);
 const files = ROOTS.flatMap((d) => walk(join(ROOT, d)));
-const all = files.map((f) => [relative(ROOT, f), readFileSync(f, 'utf8')]);
+const raw = new Map(files.map((f) => [relative(ROOT, f), readFileSync(f, 'utf8')]));
+// Every question below is asked of CODE: comments are blanked (see the header).
+const all = [...raw].map(([f, src]) => [f, blankComments(src)]);
 
 const dead = [], testOnly = [], over = [];
 for (const [f, src] of all) {
@@ -254,6 +272,27 @@ const testOnlyModules = all
     && !productionImports.has(f)
     && !pathLoaded.has(f));
 
+// A module ORPHAN_ALLOW declares deliberate carries its exports with it: the
+// stated reason (an extension point, a dormant seam) is about the whole surface.
+// Filtered here because ORPHAN_ALLOW is declared below the export scan.
+const deliberate = (row) => ORPHAN_ALLOW.some(([re]) => re.test(row.file));
+for (const list of [dead, testOnly, over]) {
+  for (let i = list.length - 1; i >= 0; i -= 1) if (deliberate(list[i])) list.splice(i, 1);
+}
+
+// Where a DEAD name still appears, it appears only in comments. Say where, so a
+// reader can see it is a sentence and not a caller — or spot a false DEAD from
+// a `//` the scanner blanked inside a regex literal.
+const commentMentions = (name, self) => {
+  const re = new RegExp(`\\b${name}\\b`);
+  const at = [];
+  for (const [g, src] of raw) {
+    if (g === self) continue;
+    src.split('\n').forEach((line, i) => { if (re.test(line)) at.push(`${g}:${i + 1}`); });
+  }
+  return at;
+};
+
 const group = (rows) => {
   const by = {};
   for (const r of rows) (by[r.file] ??= []).push(r.name);
@@ -281,6 +320,10 @@ if (process.argv.includes('--all')) {
 // first was the only way to discover the second — one round trip per finding.
 if (dead.length) {
   print('DEAD — referenced nowhere, not even a test', dead);
+  for (const r of dead) {
+    const at = commentMentions(r.name, r.file);
+    if (at.length) console.log(`   ${r.name} is named only in comments at ${at.slice(0, 5).join(', ')}${at.length > 5 ? ` (+${at.length - 5})` : ''}`);
+  }
   console.error('\n✗ Delete these, or wire them up. Code nothing calls cannot be right.');
   process.exitCode = 1;
 }

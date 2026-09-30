@@ -21,9 +21,9 @@
  * deployment where all three panels are served from one origin under different
  * paths — which is how this repository's own dev stack runs. Falling back
  * keeps that working. An install that genuinely splits the hosts sets the
- * variables, and `panelOriginsConfigured()` reports which are still defaults so
- * the admin panel can say so rather than leaving an operator to find out from a
- * reset link that opened the wrong app.
+ * variables. (A `panelOriginsConfigured()` that claimed to tell the admin panel
+ * which were still defaults was removed 2026-09-30: nothing called it, so the
+ * admin panel never said so.)
  */
 
 /** Trailing slashes are stripped once, here, so no caller has to remember. */
@@ -40,21 +40,4 @@ export function panelOrigin(audience) {
   if (audience === 'STAFF') return clean(process.env.ADMIN_PANEL_ORIGIN) || player;
   if (audience === 'MERCHANT') return clean(process.env.MERCHANT_PANEL_ORIGIN) || player;
   return player;
-}
-
-/**
- * Which panels have an origin of their own, for the admin panel to render.
- *
- * Not a gate and not a warning anybody has to act on: a single-host install is
- * a legitimate deployment and this reports `false` for it without implying a
- * fault. It exists so "the admin reset link opens the player app" is visible
- * BEFORE somebody meets it, rather than being a surprise on the one path a
- * person reaches because they are already locked out.
- */
-export function panelOriginsConfigured() {
-  return {
-    PLAYER: Boolean(clean(process.env.PUBLIC_APP_ORIGIN)),
-    STAFF: Boolean(clean(process.env.ADMIN_PANEL_ORIGIN)),
-    MERCHANT: Boolean(clean(process.env.MERCHANT_PANEL_ORIGIN)),
-  };
 }

@@ -256,24 +256,8 @@ const MUTATIONS = [
   const r = await credit({
     userId, field: 'depositBalance', amount,`,
   },
-  // ── The three controls that were defined nowhere ─────────────────────────
-  {
-    id: 'M57', file: 'database/repositories/security.js', config: PG,
-    test: 'database/tests/securityChatAdjustmentPg.test.js',
-    why: 'expiry is left to a sweep, so a lapsed temporary block still blocks',
-    from: `      WHERE ip = $1 AND active AND (expires_at IS NULL OR expires_at > now())`,
-    to: `      WHERE ip = $1 AND active`,
-  },
-  {
-    id: 'M58', file: 'database/repositories/security.js', config: PG,
-    test: 'database/tests/securityChatAdjustmentPg.test.js',
-    why: 'a new block waits out the cache TTL — slow to stop an attacker',
-    from: `  // Applied immediately, not at the next TTL: slow to stop an attacker is the
-  // expensive direction of this trade.
-  invalidateIpCache(ip);
-  return rows[0];`,
-    to: `  return rows[0];`,
-  },
+  // ── The controls that were defined nowhere ───────────────────────────────
+  // M57/M58 guarded the IP deny-list, removed 2026-09-30 (it never ran).
   {
     id: 'M59', file: 'database/repositories/balanceAdjustments.js', config: PG,
     test: 'database/tests/securityChatAdjustmentPg.test.js',

@@ -295,15 +295,3 @@ export async function refundOrder(userId, amount, orderId, field) {
 export async function getUserLedger(userId, page, limit) {
   return pg.getUserLedger(userId, page, limit);
 }
-
-/**
- * Debit deposit balance for a third-party game provider bet.
- * Preserves exact WalletLedger semantics of the original wallet.service call:
- *   refModel = 'GameTransaction', txId = raw provider txId (for idempotency).
- * Do NOT replace with debitForBet() — that function uses a different
- * refModel ('Bet') and a generated txId format which would break
- * existing ledger records and idempotency guards.
- */
-export async function debitForGameProviderBet(userId, amount, reason, txId) {
-  return pushBalances(userId, await pg.debitForBet(userId, amount, reason, 'GameTransaction', null, txId));
-}

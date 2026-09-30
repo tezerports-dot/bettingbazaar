@@ -20,7 +20,7 @@
  *
  * RESULT TIMING: Declared exactly at 00:00:10 (10 s before cycle end).
  *   • Backend fires completeCycle() at endTime − 10 000 ms.
- *   • Frontend GAME_CORE.getPhaseStatus() returns RESULT_DECLARED at ≤10 s.
+ *   • The phase arrives from the server (cycle_update); the client derives none of it.
  *   • CycleControl shows celebration display instead of countdown for those 10 s.
  */
 
@@ -55,7 +55,6 @@ const DEFAULT_SYS_CONFIG: SysConfig = {
 };
 import { logger } from './logging.service';
 import { useToast } from '../components/ui/Toast';
-// getPhaseStatus removed: phase/status is now 100% server-authoritative via cycle_update events.
 
 const backend = getBackend();
 

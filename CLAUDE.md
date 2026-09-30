@@ -30,7 +30,7 @@ listed below, which hold **data and history, never rules**.
 | **How this audit keeps missing things, and the four questions that find them** | `docs/audit/SECURITY_AUDIT_MAP.md` **§0.5 — read before trusting a green check** |
 | **Every defect SHAPE found so far, how wide you must search to see it, and what actually found it** | `docs/audit/SECURITY_AUDIT_MAP.md` **§4.0 — the shape index. Read it before auditing anything.** |
 | **What every change must REPORT, as a table, before it is done** | **§31 — the completeness contract** |
-| **Every shape that keeps shipping here (S1–S42), each with the question that finds it** | **§32 — ask these of the change in front of you** |
+| **Every shape that keeps shipping here (S1–S43), each with the question that finds it** | **§32 — ask these of the change in front of you** |
 | **How a player signs up, signs in, and is verified** | **§33 — the form, the bot fleet, the gate, and which limiter guards what** |
 | **Relaxing rate limits for a test run, and where that is forbidden** | **§34 — `BB_RATE_LIMIT_RELAX`** |
 | **How this scales to many servers, and the three env vars an operator MUST set** | **§36 — horizontal scale + the pen-test result** |
@@ -943,6 +943,16 @@ with a withdrawal still in escrow.
    money guard against unreachable code is worse than no assertion, because it
    reports the guard as present. When a test names a path, check that something
    *imports* that path.
+3. **A name in a comment is not a reference.** `check:dead-code` blanks
+   comments before it counts anything — exports, own-file uses, imports. It
+   used to count text, and a false sentence kept a security control reported
+   as live: `ipBlocker` was mounted nowhere, its writer had no caller and no
+   screen could block an address, and the only things naming it were comments
+   saying it "runs on every request". A commented-out
+   `// import { UTRManager } …` counted as an import and kept an unmounted admin
+   page, with its passing suite, off the report. Measured 2026-09-30: 0 DEAD
+   became 16, and 0 test-only modules became 1. Every one was deleted rather
+   than wired, because none of them was a feature anybody could reach (§30).
 
 ---
 
@@ -1343,6 +1353,7 @@ these are the specific ones this codebase has actually produced.
 | S40 | An assertion that reads a key that does not exist, on BOTH sides | Is every number this assertion compares one you can see is finite? `Number(undefined)` is NaN, NaN minus anything is NaN, and vitest's `toBe` is `Object.is` — under which **NaN IS NaN**. The assertion passes for any value. `assertionGuards.setup.js` now refuses it in every vitest config; `toBeNaN()` states a genuine expectation. |
 | S41 | A second debit BESIDE a hold that already paid | Is this money already reserved somewhere — a hold, an escrow, a settlement — whose completion IS the payment? Completing a hold spends it; debiting `available` as well charges twice. One movement, one owner. |
 | S42 | "Not X" read as "therefore Y" | List every state the else-branch can actually be in. "Not HELD" was read as "already settled" while a withdrawal disputed before its merchant confirmed is neither — its stake is still locked. A branch on a status must name what it handles, not what it excludes. |
+| S43 | A comment counted as a caller | Strip the comments. Does anything still NAME it? And is the thing that names it a real call, or a sentence saying there is one? A comment claiming code runs is the one reference no test can falsify. |
 
 **S36 shut the whole platform's front door, and it was one missing word.**
 `IDENTITY_COLUMNS` in `database/repositories/telegram.js` listed thirteen

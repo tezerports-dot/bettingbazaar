@@ -38,7 +38,6 @@ import { CdmReceiptQueue } from './Pages/Disputes/CdmReceiptQueue';
 import { StalledWithdrawals } from './Pages/Disputes/StalledWithdrawals';
 import { AppAssetsPage } from './Pages/AppAssets/AppAssetsPage';
 import { AndroidAppPage } from './Pages/AndroidApp/AndroidAppPage';
-// UTR REMOVED: import { UTRManager } from './Pages/Finance/UTRManager';
 // ── NEW FEATURE PAGES ──────────────────────────────────────────────────────
 import { PaymentControlCenter } from './Pages/Payment/PaymentControlCenter';
 import { AnnouncementsPage } from './Pages/Promotions/AnnouncementsPage';

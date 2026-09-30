@@ -1249,38 +1249,21 @@ CREATE TABLE IF NOT EXISTS kyc_batches (
 CREATE INDEX IF NOT EXISTS kyc_batches_kind_idx ON kyc_batches (kind, created_at DESC);
 
 -- ═══════════════════════════════════════════════════════════════════════════
--- THREE TABLES FOR CODE THAT WAS ALREADY DEAD
+-- TWO TABLES FOR CODE THAT WAS ALREADY DEAD
 -- ═══════════════════════════════════════════════════════════════════════════
 --
--- BlockedIP, ChatMessage and BalanceAdjustment were referenced through the
--- document store in five files and DEFINED NOWHERE. Every call raised
--- MissingSchemaError, and every call site swallowed it — so the IP block never
--- blocked, order chat never persisted, and the admin adjustment audit row was
--- never written. Nothing reported any of it.
-
--- ── The IP deny-list ─────────────────────────────────────────────────────────
+-- ChatMessage and BalanceAdjustment were referenced through the document store
+-- and DEFINED NOWHERE. Every call raised MissingSchemaError, and every call site
+-- swallowed it — so order chat never persisted and the admin adjustment audit
+-- row was never written. Nothing reported any of it.
 --
--- A REAL SECURITY CONTROL THAT HAS NEVER FUNCTIONED. `ipBlocker` runs on every
--- request, asked for a model that does not exist, threw, and hit a catch that
--- fails open with no log. `blockIP` did nothing at all: an operator blocking an
--- abusive address got a success message and no effect.
-CREATE TABLE IF NOT EXISTS blocked_ips (
-  ip          TEXT PRIMARY KEY,
-  reason      TEXT NOT NULL DEFAULT '',
-  active      BOOLEAN NOT NULL DEFAULT TRUE,
-  blocked_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-  blocked_by  TEXT,
-  -- An unblock keeps the row, marked. "Was this address ever blocked, and why?"
-  -- is what an appeal asks, and deleting the row destroys the answer.
-  unblocked_at TIMESTAMPTZ,
-  unblocked_by TEXT,
-  -- Optional expiry for a temporary block. NULL means indefinite. Enforced by
-  -- the READ, like every other expiry here — a sweep that is late must not let
-  -- a live block lapse.
-  expires_at  TIMESTAMPTZ,
-  notes       TEXT NOT NULL DEFAULT ''
-);
-CREATE INDEX IF NOT EXISTS blocked_ips_active_idx ON blocked_ips (ip) WHERE active;
+-- There was a third, `blocked_ips`, for an IP deny-list. It was given a table
+-- and a repository and still never ran: nothing mounted its middleware, nothing
+-- called its writer, and no screen could block an address — while this comment
+-- said it "runs on every request". Removed 2026-09-30 (§30, §0.0). Behind
+-- carrier-grade NAT one address is thousands of players; the live per-address
+-- defence is `backend/middleware/ipDefense.js`.
+DROP TABLE IF EXISTS blocked_ips;
 
 -- ── Order chat ───────────────────────────────────────────────────────────────
 -- The conversation between a player and a merchant about one payment order.
@@ -2493,21 +2476,11 @@ CREATE TABLE IF NOT EXISTS frontend_error_reports (
 CREATE INDEX IF NOT EXISTS frontend_error_reports_recent_idx ON frontend_error_reports (created_at DESC);
 
 -- ═══════════════════════════════════════════════════════════════════════════
--- COMPLIANCE — the PAN registry
+-- The PAN registry was removed 2026-09-30. Nothing in the product called it,
+-- and §2 says no identity document beyond the Aadhaar number is collected — a
+-- one-PAN-one-account table contradicted the rule it sat beside.
 -- ═══════════════════════════════════════════════════════════════════════════
---
--- One PAN, one account. The hash is the primary key, so the uniqueness is
--- STORAGE-ENFORCED: two accounts cannot claim one tax identity, and the index
--- decides rather than a pre-read two concurrent registrations both pass. The
--- number itself is never stored — only its hash and last four, which is what a
--- support agent needs to confirm an identity without holding the document.
-CREATE TABLE IF NOT EXISTS pan_registry (
-  pan_hash    TEXT PRIMARY KEY,
-  pan_last4   TEXT NOT NULL,
-  user_id     TEXT NOT NULL UNIQUE,
-  verified_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  CONSTRAINT pan_registry_last4_shape CHECK (pan_last4 ~ '^[0-9A-Z]{4}$')
-);
+DROP TABLE IF EXISTS pan_registry;
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- PAYMENTS — merchant token purchases from the platform
