@@ -1938,7 +1938,7 @@ MEASURED 2026-09-25: two instances (8201/8202) against one database with
 | Rate-limit store | shared store when Redis is set | cross-instance, not per-process |
 | Double-spend | `SELECT … FOR UPDATE` on the wallet row (§19) | 8×₹200 racing on a ₹1000 wallet → exactly 5 landed |
 
-**The two things an operator MUST set, or scale silently degrades:**
+**The three things an operator MUST set, or the platform silently degrades:**
 
 1. **`REDIS_URL`.** Without it every relay and the leader lock fall back to
    single-instance. Two instances with no Redis is TWO settlement engines with
@@ -1950,7 +1950,15 @@ MEASURED 2026-09-25: two instances (8201/8202) against one database with
    shares one rate-limit bucket. Set it to the proxy hop count (e.g. `1` behind
    one LB/Caddy). Failing closed is the right default — a spoofed
    `X-Forwarded-For` cannot forge an identity when ignored (MEASURED) — but it
-   is WRONG left unset in production behind a proxy.
+   is WRONG left unset in production behind a proxy. **Enforced since
+   2026-09-30:** production refuses to boot with `TRUST_PROXY` unset. `false` is
+   a valid answer and silence is not, because only the operator knows whether
+   a proxy is in front (`validateEnv.js`).
+3. **`TURNSTILE_SECRET_KEY`.** Unset, the captcha on signup and login passes
+   everything. Production refuses to boot without it unless
+   `ALLOW_NO_CAPTCHA=true` states that running without one is intended: the
+   same explicit-risk pattern as `ALLOW_INSECURE_PG_TLS`. A setting whose
+   forgotten default is a hole is made a stated decision, not a default.
 
 **Pen test, 2026-09-25 — authorized, pre-deployment, against the local stack.
 Every finding VERIFIED live, in both directions where a gate was involved.**
