@@ -2693,6 +2693,71 @@ and due, and the next sweep settles it.
   disabled settles both sides before the order reads COMPLETED".
 - **Mutation-proved:** M172 (no inline settlement) KILLED.
 
+### F-029 — a dispute raised while the hold worker settled was settled underneath
+`FIXED` · medium-high · §32 S6, trap 18 · found 2026-09-30 (review candidate C3, proven here)
+
+`settleHold` read "is this withdrawal disputed?" and then completed the
+settlement in another statement. A player's dispute landing between the two was
+settled anyway — stake consumed, merchant credited — and `mirrorSettlementState`
+(no expected-state guard) wrote COMPLETED over the open dispute, removing it
+from the admin queue. The radius is **plus the clock**: nothing in either
+function is wrong read alone.
+
+**Fixed where the race lands, twice.** `completeSettlement` takes
+`orderStateIn`, checked with `FOR SHARE` on the order row inside the
+settlement's own transaction (the worker passes `['PAID']`), and the mirror
+writes state only from PAID, so a dispute that lands after the settlement
+committed stays DISPUTED with the credit status telling the truth.
+
+- **Tests:** `disputeSettleRacePg` — both interleavings, made deterministic by
+  holding the lock the worker needs.
+- **Mutation-proved:** M177 (gate), M178 (mirror) KILLED.
+- **Swept:** money moved on a read of order state — deposit confirm (benign:
+  a dispute there asks for the credit the confirm makes), withdrawal confirm
+  (moves no money). None other.
+
+### F-030 — an IP deny-list three files said "runs on every request" had never run
+`REMOVED` · medium (a security control that did not exist) · §22, §32 S43 · found 2026-09-30 (review B2)
+
+`ipBlocker` was mounted nowhere, `blockIP`/`unblockIP` had no caller, and no
+route or screen could block an address; the repository and table were reached
+only by their own test. `check:dead-code` reported it live because the comment
+claiming it ran was the only thing naming it. Deleted with its table
+(`DROP TABLE IF EXISTS blocked_ips`); the live per-address defence is
+`middleware/ipDefense.js`, mounted on every credential route. **Owner decision
+open:** the alternative is to build it (mount, admin routes, screen, tests).
+
+- **Gate fixed:** `check:dead-code` blanks comments (planted a comment-only
+  export and a commented-out import: both reported).
+
+### F-031 — the rail was read twice, and the cash matcher read the wrong one
+`FIXED` · low (no money moves wrongly) · §2 · found 2026-09-30 (review candidates C1, C2, proven here)
+
+C1: a buy was judged against the rail in force and then stamped by a second
+read of it, so an admin switch between them produced an order on a rail its
+amount was never checked for. C2: the cash-link matcher returned early unless
+the LIVE rail was cash, stranding every waiting cash order and supplied link
+after a switch. Both are §2's "branch on the order's own value".
+
+- **Tests:** `railSnapshotPg`, `cashLinkRoutes` ("still serves a CASH order…").
+- **Mutation-proved:** M180 (C1), M179 (C2) KILLED; M92 retargeted, KILLED.
+- **Swept:** every other worker resolves the order's stamped policy version
+  first. None other.
+
+### F-032 — APK uploads: an unbounded inflate and a race that answered 500
+`FIXED` · low (admin-only surface; the process it could take down is shared) · §32 S6, S35 · found 2026-09-30 (review P197-2, P197-3)
+
+A manifest zip bomb was inflated in full in the API process; two uploads of one
+version code both passed the pre-read and the loser answered 500, leaving its
+file behind. Inflate bounded at 4 MB; the loser gets the same 400 as a
+sequential duplicate, and its file is removed unless the winner names the same
+one. **Not fixed, documented:** the inspector does not cryptographically verify
+the v2/v3 signature (P197-1); the release workflow's `apksigner verify` is the
+check. **Reviewed, not a defect:** P197-5 (`https://localhost` with
+credentials — WebView cookie stores are per-app).
+
+- **Mutation-proved:** M181, M182 KILLED.
+
 ---
 
 ## 5. Derived coverage — regenerated, never typed

@@ -314,8 +314,8 @@ e2e 181 (0 fail); every repository gate exits 0.
 
 | # | Step | Who | Estimate | Blocked by |
 |---|---|---|---|---|
-| L1 | PR #197 CI green on the latest commit | automatic (Claude fixes if red) | ~20 min | — |
-| L2 | Merge PR #197 | owner | 5 min | L1 |
+| L1 | ~~PR #197 CI green on the latest commit~~ **done** | automatic | — | — |
+| L2 | ~~Merge PR #197~~ **done 2026-09-30** | owner | — | — |
 | L3 | Run `scripts/android/create-signing-key.sh` in a Codespace | owner | 15 min | L2 |
 | L4 | A deployed backend on HTTPS | owner + Claude | **not estimable here** | §3.3: jurisdiction; hosting; S3; domain |
 | L5 | Server env: `ANDROID_PACKAGE_ID`, fingerprint, `https://localhost` in `ALLOWED_ORIGINS`; Turnstile `localhost` | owner | 15 min | L3, L4 |
@@ -336,6 +336,46 @@ the app, because no emulator is available here.
 - An iOS app (not requested).
 - Over-the-air JS updates without a new APK (declined for now: an unsigned
   code channel into a money app; see DECISION_LOG 2026-09-30).
+
+## 3.6 Tracker — the 2026-09-30 external review (as of 2026-09-30)
+
+An outside review handed over 14 items: A1–A7 fixed on its own branch, B1–B4
+confirmed and not fixed, C1–C4 unproven. Each item was reproduced FAILING
+first on this branch, not taken on trust. Status is evidence (§29): each "done"
+names the test that failed before the fix and the mutation that proves it.
+
+### Done — 14 of 14 items worked; 12 fixed, 1 not a defect, 1 documented
+
+| # | Item | Found on main | Fix | Proof |
+|---|---|---|---|---|
+| A1 | F-024 order tamper tag never written | stripped tag → 200 | tag written at INSERT; guard fails closed | M156, M165, M92 |
+| A2 | F-025 retry locked winnings with no order | 2,000 locked for one 1,000 withdrawal | lock + INSERT in one transaction | M166, M118 |
+| A3 | F-026 **every buy charged the merchant twice** | 200,000 paise for a 1,000-token buy | hold consumed once, via `moveDepositMoney` | M167, M168 |
+| A4 | F-027 admin withdrawal endings wrong in 10/11 cells | lock left standing; cancelled dispute back to DISPUTED | `endWithdrawal` one owner | M169–M171 |
+| A5 | F-028 hold=0 confirm settled after commit | (review) | always HELD + settle inline | M172 |
+| A6 | S40 NaN-vs-NaN assertion guard | (review) | vitest setupFiles guard | M173 |
+| B1 | `check:dead-code` counted comments | 0 DEAD → 12 + 1 module when blanked | gate blanks comments; 12 exports + UTRManager deleted | planted failures reported |
+| B2 | IP deny-list dead, claimed live | nothing mounted, called or screened it | **deleted** (owner may reverse) | gates |
+| B3 | undeclared config key had no status | `status` undefined | `invalidConfig`; + 2 whitespace-reason 500s found by the sweep | M174–M176 |
+| B4 | PAN registry dead | no caller | deleted; table dropped | gates |
+| C1 | order stamped on a rail it was not validated for | CASH_ATM-validated, P2P_UPI-stamped | stamp from the validated policy | M180 |
+| C2 | cash matcher branched on the live rail | waiting cash order abandoned (0 matched) | per-order rail | M179 |
+| C3 | **dispute raced by the hold worker** | dispute erased, money moved | order lock in the settlement; guarded mirror | M177, M178 |
+| C4 | Android: zip bomb (P197-2), upload race (P197-3) | 64 MB inflated; loser got 500 | inflate bound; race → 400, no orphan | M181, M182 |
+| C4 | P197-5 `https://localhost` + credentials | — | **not a defect**: WebView cookie jars are per-app | reasoning in commit |
+| C4 | P197-1 APK signature not verified | — | **documented residual risk** | release workflow runs `apksigner verify` |
+
+### Left — who does it
+
+| # | Step | Who | Estimate |
+|---|---|---|---|
+| R1 | Decide B2: keep the deny-list deleted, or have it built (mount, routes, screen, tests) | owner | a decision; building is ~1 day |
+| R2 | Merge this branch's PR | owner | 5 min |
+| R3 | Full mutation run (all 135 entries) in a separate worktree | Claude | ~3–4 hours unattended |
+| R4 | Browser passes (`test:browser`, `test:drive`, `test:mutate`, `test:forms`) | Claude | ~2 hours |
+| R5 | PostgreSQL 18 (everything here ran on 16; CI runs 18) | CI on the PR | automatic |
+| R6 | Domains the review did not reach: bet placement/settlement engine, 2FA/reset, Telegram gates, referral payouts, commission engine, USDT rail, casino callback, sub-admin permissions | Claude, on request | ~1–2 days |
+| R7 | P197-1 real v2 signature verification, if wanted | Claude | ~half a day with a real signed APK fixture |
 
 ## 4. How to pick this up
 

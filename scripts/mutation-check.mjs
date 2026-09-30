@@ -518,7 +518,11 @@ const MUTATIONS = [
     id: 'M92', file: 'database/repositories/orders.record.js', config: PG,
     test: 'backend/tests/routes/paymentModeSwitchPg.test.js',
     why: 'the order insert stops stamping the rail, so every order silently takes the column default',
-    from: `  const stamp = await stampForNewOrder(paymentMode);`,
+    // Retargeted 2026-09-30 (review C1): the stamp is now either the policy the
+    // caller validated against or a read of the live one. Both go.
+    from: `  const stamp = railPolicy
+    ? stampFromPolicy(railPolicy)
+    : await stampForNewOrder(paymentMode);`,
     to: `  const stamp = { mode: 'P2P_UPI', version: null };`,
   },
   {
