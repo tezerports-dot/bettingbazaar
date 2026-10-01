@@ -202,6 +202,14 @@ router.put('/admin/announcements/:id', authenticate, hasPermission('canManageCon
     const patch = normalizeAnnouncementBody(req.body, { partial: true });
     const announcement = await db.content.updateAnnouncement(req.params.id, patch);
     if (!announcement) return res.status(404).json({ success: false, message: 'Announcement not found' });
+    // Audited like the create and the delete. An edit can rewrite every word
+    // players are shown, and it was the one change to an announcement with no
+    // record of who made it (§32 S3).
+    await db.audit.recordDetailed({
+      performedBy: req.user.userId, action: 'ANNOUNCEMENT_UPDATED', category: 'CONTENT',
+      targetType: 'Announcement', targetId: announcement.announcementId,
+      details: { fields: Object.keys(patch) },
+    });
     res.json({ success: true, announcement });
   } catch (err) {
     if (err.status) return res.status(err.status).json({ success: false, message: err.message });
