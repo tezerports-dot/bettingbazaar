@@ -2,6 +2,9 @@
 
 
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
+// FIRST, before any router exists: when BB_ROUTE_COVERAGE is set (a test
+// facility, refused in production) it records which routes tests reach.
+import { writeRouteInventory } from './startup/routeCoverage.js';
 import express      from 'express';
 import http         from 'http';
 import https        from 'https';
@@ -765,6 +768,7 @@ activeListener = listenWithOptionalProxyProtocol(server, {
   trustedSubnets: network.proxyProtocolV2.trustedSubnets,
 }).on('listening', () => {
   console.log(`✅ Server listening on port ${PORT} (readiness pending until datastores attach)`);
+  writeRouteInventory(app);
 }).on('error', (error) => {
   // Without this listener a bind failure is an unhandled 'error' event, which
   // Node turns into a raw stack trace and a hard exit. Exiting IS correct — the
