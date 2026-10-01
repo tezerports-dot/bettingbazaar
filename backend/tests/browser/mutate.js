@@ -2729,7 +2729,7 @@ const CASES = [
     async run(page, cfg, base) {
       const cycleRow = async (type) => (await pgQuery(
         `SELECT cycle_id, status, is_paused FROM cycles
-          WHERE type = $1 AND status IN ('OPEN','PAUSED') AND end_time > now()
+          WHERE cycle_type = $1 AND status IN ('OPEN','PAUSED') AND end_time > now()
           ORDER BY start_time DESC LIMIT 1`, [type])).rows[0];
       const target = await cycleRow('FULL_DAY');
       if (!target) return ['NOT DRIVEN', 'no open FULL_DAY cycle on the board'];
@@ -2775,7 +2775,7 @@ const CASES = [
     async run(page, cfg, base) {
       const { rows: [target] } = await pgQuery(
         `SELECT cycle_id, phantom_delhi_paise::bigint AS d, phantom_bombay_paise::bigint AS b, phantom_balanced
-           FROM cycles WHERE type = 'FULL_DAY' AND status = 'OPEN' AND end_time > now()
+           FROM cycles WHERE cycle_type = 'FULL_DAY' AND status = 'OPEN' AND end_time > now()
           ORDER BY start_time DESC LIMIT 1`);
       if (!target) return ['NOT DRIVEN', 'no open FULL_DAY cycle on the board'];
       // The button is offered only while the book is unbalanced, so the case

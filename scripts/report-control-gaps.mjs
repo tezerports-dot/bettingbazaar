@@ -131,19 +131,33 @@ for (const { file, m } of profiles) {
     allOnlyHere.set(k, was);
   }
   const label = `${m.profile}${m.viewport === 'phone' ? ' (phone)' : ''}`;
-  summary.push({ label, panel: [...panels].join(', '), what: m.profileWhat ?? '', screens: m.screens.length, controls: mine.size, onlyHere: onlyHere.length, notShown: notShown.length, turned: turned.length });
+  const distinct = new Set(onlyHere.map(([, c]) => [c.panel, c.kind, norm(c.name)].join(SEP))).size;
+  summary.push({ label, panel: [...panels].join(', '), what: m.profileWhat ?? '', screens: m.screens.length, controls: mine.size, onlyHere: distinct, onlyHereSlots: onlyHere.length, notShown: notShown.length, turned: turned.length });
 
   const S = [];
   S.push(`### ${label}`);
   S.push('');
   S.push(`${m.profileWhat ?? ''} — ${[...panels].join(', ')}, ${m.viewport ?? 'desktop'}, taken ${m.takenAt}.`);
   S.push('');
-  S.push(`**Only here, never pressed by anything: ${onlyHere.length}.** Not shown to this account (the default sees them): ${notShown.length}. Screens that sent it elsewhere: ${turned.length}.`);
+  S.push(`**Only here, never pressed by anything: ${new Set(onlyHere.map(([, c]) => [c.panel, c.kind, norm(c.name)].join(SEP))).size} distinct control(s), on ${onlyHere.length} screen slot(s).** Not shown to this account (the default sees them): ${notShown.length}. Screens that sent it elsewhere: ${turned.length}.`);
   S.push('');
   if (onlyHere.length) {
-    S.push('| Screen | Kind | Control |');
+    // The same control on many screens (a shell link, the no-access screen's
+    // way out) is ONE control, listed once with the screens it is on.
+    const groups = new Map();
+    for (const [, c] of onlyHere) {
+      const k = [c.panel, c.kind, norm(c.name)].join(SEP);
+      const g = groups.get(k) ?? groups.set(k, { ...c, screens: [] }).get(k);
+      g.screens.push(c.screen);
+    }
+    S.push('| Screen(s) | Kind | Control |');
     S.push('|---|---|---|');
-    for (const [, c] of onlyHere.sort(([a], [b]) => a.localeCompare(b))) S.push(`| \`${c.screen}\` | ${c.kind} | ${cell(c.name || '«unnamed»')}${c.disabled ? ' *(disabled)*' : ''} |`);
+    for (const g of [...groups.values()].sort((a, b) => a.screens[0].localeCompare(b.screens[0]))) {
+      const where = g.screens.length > 3
+        ? `${g.screens.length} screens (${g.screens.slice(0, 3).map((x) => `\`${x}\``).join(', ')} …)`
+        : g.screens.map((x) => `\`${x}\``).join(', ');
+      S.push(`| ${where} | ${g.kind} | ${cell(g.name || '«unnamed»')}${g.disabled ? ' *(disabled)*' : ''} |`);
+    }
     S.push('');
   }
   if (turned.length) {
@@ -175,7 +189,8 @@ L.push('| Account | Panel | Screens | Controls seen | **Only here (never pressed
 L.push('|---|---|---|---|---|---|---|');
 for (const r of summary) L.push(`| ${r.label} | ${r.panel} | ${r.screens} | ${r.controls} | **${r.onlyHere}** | ${r.notShown} | ${r.turned} |`);
 L.push('');
-L.push(`Distinct controls that exist only for some non-default account, and that nothing has pressed: **${allOnlyHere.size}**.`);
+const allDistinct = new Set([...allOnlyHere.values()].map((c) => [c.panel, c.kind, norm(c.name)].join(SEP))).size;
+L.push(`Distinct controls that exist only for some non-default account or screen size, and that nothing has pressed: **${allDistinct}** (on ${allOnlyHere.size} screen slots).`);
 L.push('');
 L.push(`The default accounts: ${baseControls.size} controls inventoried; ${baseNever.length} never pressed by the drive at all (absent from its report, or DISABLED/GONE/UNREACHABLE), and ${baseOnlyElsewhere.length} deferred to a mutating case (DRIVEN_ELSEWHERE — a pointer, not a proof, §35.1).`);
 L.push('');
@@ -203,4 +218,4 @@ const doc = `${L.join('\n')}\n`;
 if (OUT) { writeFileSync(OUT, doc); console.log(`Wrote ${OUT}`); }
 console.log(`default: ${baseControls.size} controls, ${baseNever.length} never pressed by the drive`);
 for (const r of summary) console.log(`  ${r.label.padEnd(26)} ${String(r.controls).padStart(5)} seen  ${String(r.onlyHere).padStart(4)} ONLY HERE  ${String(r.notShown).padStart(5)} not shown  ${r.turned} turned away`);
-console.log(`distinct controls only some account has, never pressed: ${allOnlyHere.size}`);
+console.log(`distinct controls only some account has, never pressed: ${new Set([...allOnlyHere.values()].map((c) => [c.panel, c.kind, norm(c.name)].join(SEP))).size} (${allOnlyHere.size} screen slots)`);
