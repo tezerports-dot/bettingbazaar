@@ -660,6 +660,15 @@ CREATE TABLE IF NOT EXISTS casino_rounds (
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS casino_rounds_user_idx ON casino_rounds (user_id, created_at DESC);
+-- A round cannot pay out unless it took a stake (owner, 2026-10-01: winnings
+-- only where the player bet on that round). Dropped and re-added so the
+-- definition converges (CLAUDE.md §32 S31). NOT VALID because a development
+-- database can hold rounds the old code credited with no bet: validating them
+-- would stop the apply here and leave every statement below unrun. It still
+-- binds every INSERT and UPDATE from now on, which is what the rule is about.
+ALTER TABLE casino_rounds DROP CONSTRAINT IF EXISTS casino_rounds_win_needs_bet;
+ALTER TABLE casino_rounds ADD CONSTRAINT casino_rounds_win_needs_bet
+  CHECK (credited_paise = 0 OR debited_paise > 0) NOT VALID;
 
 CREATE TABLE IF NOT EXISTS casino_transactions (
   id            BIGSERIAL PRIMARY KEY,

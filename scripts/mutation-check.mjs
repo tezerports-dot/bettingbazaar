@@ -1554,6 +1554,27 @@ const MUTATIONS = [
     from: `    return byPermission(req, res, next);`,
     to: `    return next();`,
   },
+  {
+    id: 'M208', file: 'database/repositories/casino.core.js', config: PG,
+    test: 'database/tests/casinoWinNeedsBetPg.test.js',
+    why: 'a provider WIN pays a player on a round they never bet on, or whose bet was rolled back',
+    from: `      if (!ctx.round || ctx.round.debitedPaise <= ctx.round.refundedPaise) {`,
+    to: `      if (false) {`,
+  },
+  {
+    id: 'M209', file: 'database/repositories/casino.core.js', config: PG,
+    test: 'database/tests/casinoWinNeedsBetPg.test.js',
+    why: 'a WIN or ROLLBACK naming another player on someone else\'s round credits that other player',
+    from: `    if (ctx.round && ctx.round.userId !== ctx.uid) {`,
+    to: `    if (false) {`,
+  },
+  {
+    id: 'M210', file: 'database/repositories/casino.core.js', config: PG,
+    test: 'database/tests/casinoWinNeedsBetPg.test.js',
+    why: 'a WIN from one provider pays on a round bet at a different provider',
+    from: `    if (ctx.round && providerKey && ctx.round.providerKey !== providerKey) {`,
+    to: `    if (false) {`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

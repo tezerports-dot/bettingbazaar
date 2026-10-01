@@ -83,12 +83,17 @@ describePg('casino debits need the player\'s own live session (PostgreSQL)', () 
   });
 
   it('a WIN still lands with no live session: a sports bet settles after its session ends', async () => {
+    // The bet was placed while the session was live. A WIN on a round with no
+    // bet is refused (casinoWinNeedsBetPg); this used to stage exactly that.
+    await openSession({ sessionId: 's-sports', userId: VICTIM, providerKey: 'betby', ttlMinutes: 240 });
+    expect((await bet({ txId: 'tx-sb', roundId: 'r-win' })).ok).toBe(true);
+    await pgQuery(`UPDATE game_sessions SET expires_at = now() - interval '1 s' WHERE session_id = 's-sports'`);
     const r = await applyProviderCallback({
       txId: 'tx-win', roundId: 'r-win', userId: VICTIM, type: 'WIN', amountRupees: 50, providerKey: 'betby',
     });
     expect(r.ok).toBe(true);
     const w = await getBalancesPaise(VICTIM);
-    expect(w.depositBalance + w.winningsBalance).toBe(105_000);
+    expect(w.depositBalance + w.winningsBalance).toBe(100_000 - 10_000 + 5_000);
   });
 
   it('a refund of a bet made in a live session still lands after the session expired', async () => {

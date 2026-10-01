@@ -3069,10 +3069,42 @@ see these two.
 - **Casino callback:** signatures are required and compared in constant time.
   A BET is bound to the player's live session (fixed earlier today). A
   rollback must prove a prior debit and cannot exceed it, backed by a CHECK.
-  **Open question for the owner, not changed:** a WIN on a round with no BET is
-  credited, and the round is created. Some providers legitimately send
-  WIN-only rounds (free spins, promotions), and no provider is configured
-  yet, so whether to require a prior BET is a business decision.
+  A WIN on a round with no BET was left as a question for the owner. It
+  was answered on 2026-10-01 and fixed as F-043.
+
+### F-043 — a provider WIN paid without a bet, and to whichever player it named
+`FIXED` · high once a provider is live (none is configured) · §32 S18, S30 · found 2026-09-30, rule set by the owner 2026-10-01
+
+Owner: *"Winnings are only given on those where users place bets on rounds."*
+Board games already worked that way: a payout is the WON transition of a
+PENDING row in `bets`. The provider callback (casino, crash, sports) did not:
+
+- A **WIN on a round nobody bet on** created the round and credited the
+  player.
+- **No callback checked whose round it was.** A WIN or a ROLLBACK naming
+  player B on player A's round credited B, and a BET naming B advanced A's
+  stake. The round's totals were checked; its owner never was.
+- A WIN from one provider was accepted on a round bet at another.
+
+- **Fix:** `recordCallback` refuses, under the round lock and before the round
+  is materialised: any callback on a round owned by another player
+  (`round_not_this_player`) or another provider (`round_not_this_provider`);
+  a WIN with no standing stake, meaning no BET or one rolled back in full
+  (`no_prior_bet`). A WIN's amount stays unbounded, since a win may be many
+  times the stake. The route answers each with a 400 naming the reason.
+- **In the data:** `casino_rounds_win_needs_bet`,
+  `CHECK (credited_paise = 0 OR debited_paise > 0)`, added `NOT VALID` so a
+  development database holding rows the old code wrote does not stop the
+  schema apply. It binds every write from now on.
+- **Consequence, stated:** provider "free spin" or promotional wins on a round
+  with no stake are now refused. That is the rule as given.
+- **Swept:** every other winnings credit was read. Board payout is the bet
+  row's own transition, `refundWithdrawal` returns a withdrawal, and fake
+  winners are a display table that never touches a wallet. None found.
+- **Tests:** `casinoWinNeedsBetPg` (8). Seven failed on the old code, each
+  with money moved. `casinoSessionBindingPg`'s "WIN after the session ended"
+  staged a WIN with no BET (S16) and now bets first.
+- **Mutation-proved:** M208, M209, M210 KILLED.
 
 ## 5. Derived coverage — regenerated, never typed
 

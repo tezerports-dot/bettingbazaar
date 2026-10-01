@@ -168,6 +168,32 @@ export async function recordCallback({
   }
 
   const result = await withRoundLock(userId, roundId, async (ctx) => {
+    // ── A round belongs to one player, at one provider ──────────────────────
+    // Every callback after the first names a round that already exists, and
+    // the round says whose it is. Without this, a WIN or a ROLLBACK naming
+    // player B against player A's round credited B, and a BET by B advanced
+    // A's stake: the round's totals were checked, never its owner.
+    if (ctx.round && ctx.round.userId !== ctx.uid) {
+      return { commit: false, value: { ok: false, reason: 'round_not_this_player', roundId: ctx.rid } };
+    }
+    if (ctx.round && providerKey && ctx.round.providerKey !== providerKey) {
+      return { commit: false, value: { ok: false, reason: 'round_not_this_provider', roundId: ctx.rid } };
+    }
+
+    // ── A WIN pays only on a stake that is still standing ───────────────────
+    // Owner, 2026-10-01: winnings are only given where the player placed a bet
+    // on that round. A board payout is already the WON transition of a bet
+    // row; this is the same rule for casino, crash and sports. A bet rolled
+    // back in full is a bet that did not stand. Checked BEFORE the round is
+    // materialised, like the reversal rule below, so a refused WIN leaves no
+    // round behind. The amount is not bounded: a win may be many times the
+    // stake. `casino_rounds_win_needs_bet` states the rule in the data too.
+    if (type === CASINO_TX.WIN) {
+      if (!ctx.round || ctx.round.debitedPaise <= ctx.round.refundedPaise) {
+        return { commit: false, value: { ok: false, reason: 'no_prior_bet', roundId: ctx.rid } };
+      }
+    }
+
     // ── The rule the domain exists for ──────────────────────────────────────
     // A reversal must prove the debit it reverses. Checked BEFORE the round is
     // materialised, so a rollback for a round that never existed cannot bring
