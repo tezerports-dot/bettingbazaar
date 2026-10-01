@@ -27,6 +27,7 @@ import {
 } from '../domains/identity/auth.middleware.js';
 import { publicLeaderboard } from '../domains/analytics/leaderboardPublicView.js';
 import { emitToStaff } from '../domains/notification/staffEventAreas.js';
+import { getBalancesRupees } from '#db/repositories/wallets.core.js';
 
 const router = express.Router();
 
@@ -286,6 +287,15 @@ router.post('/admin/balance-adjust', authenticate, hasPermission('canAdjustBalan
 
     const user = await db.users.getUser(userId);
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+    // A PLAYER account only. Staff and merchant logins are separate accounts
+    // for their own panels (owner, 2026-10-01); money moved onto one sits in a
+    // wallet no player screen shows and nothing can play or withdraw from.
+    if (user.accountType !== 'PLAYER') {
+      return res.status(409).json({
+        success: false,
+        message: 'Only a player account can be adjusted. That id is a staff or merchant login.',
+      });
+    }
 
     // Held, not generated inline: the bonus record below is keyed on it, and a
     // second call to the generator would key the retry differently and pay the
@@ -342,6 +352,39 @@ router.post('/admin/balance-adjust', authenticate, hasPermission('canAdjustBalan
   } catch (err) {
     console.error('POST /admin/balance-adjust error:', err);
     res.status(500).json({ success: false, message: 'Could not apply that adjustment.' });
+  }
+});
+
+/**
+ * GET /api/admin/balance-adjust/players — this area's own player lookup.
+ *
+ * The Balance Adjust screen found players through `GET /api/admin/users` (the
+ * Users area) and read its ceiling from System Settings, so a sub-admin given
+ * balance adjustment alone could find nobody (check:staff-permissions, rule
+ * 5). This answers both from inside the area: PLAYERS only, each with the
+ * wallet the adjustment would move, and the one ceiling the POST enforces.
+ * With no search it lists nobody and still answers the ceiling.
+ */
+router.get('/admin/balance-adjust/players', authenticate, hasPermission('canAdjustBalances'), async (req, res) => {
+  try {
+    const search = String(req.query.search ?? '').trim();
+    const limit = Math.min(Math.max(Number(req.query.limit) || 10, 1), 25);
+    const { maxBalanceAdjustment } = await db.config.getSystemConfig();
+    let players = [];
+    if (search) {
+      const { users } = await db.users.listUsers({ search, accountType: 'PLAYER', limit });
+      players = await Promise.all(users.map(async (u) => {
+        const b = await getBalancesRupees(u.userId);
+        return {
+          userId: u.userId, username: u.username, mobile: u.mobile, status: u.status,
+          depositBalance: b.depositBalance ?? 0, winningsBalance: b.winningsBalance ?? 0,
+        };
+      }));
+    }
+    res.json({ success: true, players, maxBalanceAdjustment: Number(maxBalanceAdjustment) });
+  } catch (err) {
+    console.error('GET /admin/balance-adjust/players error:', err);
+    res.status(500).json({ success: false, message: 'Could not search players.' });
   }
 });
 

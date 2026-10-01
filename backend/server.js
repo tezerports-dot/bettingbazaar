@@ -680,10 +680,14 @@ const sseManager     = new SSEManager();
 const gameEngine     = new GameEngine(io);
 const cycleGenerator = new CycleGenerator(io, sseManager);
 
-if (runtime.runsSchedulers) {
-  gameEngine.start();
-  cycleGenerator.start();
-} else {
+// NOT started here. They start below, once the PostgreSQL chain has applied
+// the schema — beside the cron jobs, which always waited for it. Started at
+// module load they raced `applySchema()`: on a fresh database the generator's
+// first ticks hit `relation "cycles" does not exist`, and on an existing one
+// PostgreSQL logged a DEADLOCK between the generator's read and the schema
+// apply's AccessExclusiveLock (measured 2026-10-01). The settlement engine was
+// started the same way, against whatever half of the schema had landed.
+if (!runtime.runsSchedulers) {
   console.log(`⏸️ Runtime role ${runtime.role}: game engine and cycle scheduler are not started.`);
 }
 
@@ -801,6 +805,10 @@ Promise.allSettled([
   // error about a table that was never created.
   import('#db/client.js')
     .then((m) => m.applySchema())
+    // Once more now the tables exist. The call at the top of this file runs
+    // before the schema on a fresh database and fails closed (logged); without
+    // this the frame-src waited for the 60-second timer.
+    .then(() => refreshProviderFrameSources())
     .then(() => seedAdminAccount())
     .then(() => seedGameRegistry())
     .then(() => startTlsFingerprintDefenseConfigRefresh())
@@ -831,6 +839,8 @@ Promise.allSettled([
   }
   console.log('✅ DB services initialized');
   if (runtime.runsSchedulers) {
+    gameEngine.start();
+    cycleGenerator.start();
     registerCronJobs(rebuildLeaderboard);
   } else {
     console.log(`⏸️ Runtime role ${runtime.role}: cron jobs are not registered.`);

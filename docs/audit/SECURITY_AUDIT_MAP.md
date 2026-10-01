@@ -3379,9 +3379,9 @@ checked and is correct; the evidence is named.
 
 | Measure | Count |
 |---|---|
-| Route declarations in `backend/**` | 314 |
+| Route declarations in `backend/**` | 315 |
 | Reachable with **no auth middleware** | 41 |
-| Staff routes carrying an **area** (permission key) | 196 |
+| Staff routes carrying an **area** (permission key) | 197 |
 | Staff routes a sub-admin can **never** be given (full admin only) | 7 |
 
 A count moving is not by itself a defect — it is a prompt to read the
@@ -3467,7 +3467,7 @@ new route and decide. Each of the three questions is defined in §2.
 | Panel | .ts/.tsx files | `dangerouslySetInnerHTML` | `.innerHTML =` |
 |---|---|---|---|
 | `user-panel` | 87 | 0 | 0 |
-| `admin-panel` | 112 | 0 | 0 |
+| `admin-panel` | 113 | 0 | 0 |
 | `merchant-panel` | 44 | 0 | 0 |
 
 <!-- END GENERATED -->

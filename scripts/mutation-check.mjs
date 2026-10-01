@@ -1871,6 +1871,30 @@ const MUTATIONS = [
     from: `    if (accountClosed(user)) return refuseClosedAccount(res);`,
     to: ``,
   },
+  // ── Boot order, and the balance-adjust area (2026-10-01) ─────────────────
+  {
+    id: 'M250', file: 'backend/server.js', config: UNIT,
+    test: 'backend/tests/unit/schedulersWaitForSchema.test.js',
+    why: 'the settlement engine and cycle generator race the schema apply (deadlock measured)',
+    from: `    gameEngine.start();
+    cycleGenerator.start();
+    registerCronJobs(rebuildLeaderboard);`,
+    to: `    registerCronJobs(rebuildLeaderboard);`,
+  },
+  {
+    id: 'M251', file: 'backend/routes/retention.routes.js', config: PG,
+    test: 'backend/tests/routes/balanceAdjustAreaPg.test.js',
+    why: 'an admin credits money onto a staff or merchant login',
+    from: `if (user.accountType !== 'PLAYER') {`,
+    to: `if (false) {`,
+  },
+  {
+    id: 'M252', file: 'database/repositories/users.js', config: PG,
+    test: 'backend/tests/routes/balanceAdjustAreaPg.test.js',
+    why: "the balance-adjust lookup offers staff and merchant logins as players",
+    from: `if (accountType) add('account_type = $?', String(accountType));`,
+    to: ``,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

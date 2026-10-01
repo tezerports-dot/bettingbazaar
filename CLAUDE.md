@@ -2252,7 +2252,7 @@ when the §31 table's **Neighbours** row names:
 | `npm run check:settable` | Every order-lifecycle `set` names a column the writer accepts. |
 | `npm run check:db-boundary` | No SQL, driver or relative reach past `#db`. |
 | `npm run check:orphans` | Every identifier used is declared, imported or a parameter. |
-| `npm run check:staff-permissions` | Every staff route asks for an AREA an admin can grant (read off the live route stacks); full-admin-only routes are the listed, reasoned few; the admin panel names the same keys. |
+| `npm run check:staff-permissions` | Every staff route asks for an AREA an admin can grant (read off the live route stacks); full-admin-only routes are the listed, reasoned few; the admin panel names the same keys; and every gated SCREEN calls only its own area's routes or asks `can()` for the other one. |
 | `npm run check:balance-reads` | A number that GATES a transfer is read from the rows the write will lock. |
 | `npm run check:coherence` | Every column the repositories name exists, and no schema object is defined twice. |
 | `npm run check:merchant-privacy` | A merchant is told the payout account — never the player's phone or UPI ID. |

@@ -776,7 +776,7 @@ export async function softDeleteUser(userId, { actor }) {
 export async function listUsers({
   status = null, isAdmin = null, isSubAdmin = null, isQueueManager = null,
   kycStatus = null, blocked = null, flagged = null, search = null,
-  excludeRole = null, limit = 50, cursor = null, page = null,
+  excludeRole = null, accountType = null, limit = 50, cursor = null, page = null,
 } = {}) {
   const where = [];
   const params = [];
@@ -808,6 +808,9 @@ export async function listUsers({
   // Merchants are a separate entity with their own record and login; the
   // player list excludes them by the role they were created with.
   if (excludeRole) add('NOT ($? = ANY(roles))', String(excludeRole));
+  // One population — PLAYER, STAFF or MERCHANT (`users.account_type`). A lookup
+  // that is about players' money asks for players and nothing else (§32 S30).
+  if (accountType) add('account_type = $?', String(accountType));
   // Anchored prefix match, so the index is usable and the pattern cannot be
   // turned into a leading-wildcard scan of every account by the search box.
   if (search) add('(username ILIKE $? || \'%\' OR mobile LIKE $? || \'%\')', String(search));
