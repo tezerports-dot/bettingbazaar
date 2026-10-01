@@ -52,8 +52,11 @@ const base = read(DEFAULT);
 const drive = read(DRIVE);
 
 const SEP = '␟';
-const keyOf = (panel, screen, c) => [panel, screen, c.kind, c.name || '«unnamed»'].join(SEP);
-const shellKey = (panel, c) => [panel, '(shell)', c.kind, c.name || '«unnamed»'].join(SEP);
+// A name carries its control's STATE in some places — an accordion's ▲/▼, a
+// FAQ row's trailing "+" — and the same control open and closed is one control.
+const norm = (name) => String(name || '«unnamed»').replace(/[▲▼]/g, '').replace(/\s[+−]$/, '').replace(/\s+/g, ' ').trim();
+const keyOf = (panel, screen, c) => [panel, screen, c.kind, norm(c.name)].join(SEP);
+const shellKey = (panel, c) => [panel, '(shell)', c.kind, norm(c.name)].join(SEP);
 
 // What the drive did with each control, by identity. The strongest verdict wins
 // when one name appears in several rows: one PRESS is enough to say "pressed".

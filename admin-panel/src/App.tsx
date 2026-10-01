@@ -4,6 +4,7 @@ import { HashRouter as Router, Routes, Route, Navigate } from 'react-router';
 import { Toaster } from 'react-hot-toast';
 import { applyBranding, applyCachedBranding } from './services/branding';
 import { Layout, firstPermittedPath } from './components/Layout';
+import NoAccess from './components/NoAccess';
 import { Login } from './Pages/Login';
 import { Dashboard } from './Pages/Dashboard';
 import { UsersList } from './Pages/Users/UsersList';
@@ -70,7 +71,10 @@ import VerificationGate from './components/VerificationGate';
 const AdminOnly: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { isAuthenticated, admin } = useAuthStore();
   if (!isAuthenticated) return <Navigate to="/login" replace />;
-  if (!admin?.isAdmin) return <Navigate to="/login" replace />;
+  // Signed in but not a full admin: say so, rather than showing a sign-in
+  // form to somebody who is already signed in (NoAccess.tsx).
+  if (!admin) return <Navigate to="/login" replace />;
+  if (!admin.isAdmin) return <Layout><NoAccess adminOnly /></Layout>;
   return <>{children}</>;
 };
 
@@ -88,7 +92,7 @@ const PermRoute: React.FC<{ permission: PermissionKey | PermissionKey[]; childre
   const { canAny } = usePermissions();
   if (!isAuthenticated) return <Navigate to="/login" replace />;
   if (!admin) return <Navigate to="/login" replace />;
-  if (!canAny(Array.isArray(permission) ? permission : [permission])) return <Navigate to="/login" replace />;
+  if (!canAny(Array.isArray(permission) ? permission : [permission])) return <Layout><NoAccess /></Layout>;
   return <>{children}</>;
 };
 
@@ -102,7 +106,7 @@ const QueueRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { can } = usePermissions();
   if (!isAuthenticated) return <Navigate to="/login" replace />;
   if (!admin) return <Navigate to="/login" replace />;
-  if (!admin.isQueueManager && !can('canManageMerchants')) return <Navigate to="/login" replace />;
+  if (!admin.isQueueManager && !can('canManageMerchants')) return <Layout><NoAccess /></Layout>;
   return <>{children}</>;
 };
 

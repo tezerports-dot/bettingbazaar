@@ -490,14 +490,26 @@ export async function seedActors() {
  */
 export async function enableGameProviders(keys = ['spribe', 'betby']) {
   const { pgQuery } = await import('#db/client.js');
+  // ── The rows have to EXIST before they can be switched on ──────────────
+  // The server creates the provider rows lazily, on the first
+  // `GET /api/game/providers`. On a database nothing has asked yet, the
+  // UPDATE below matched no rows, said nothing, and every browser pass on a
+  // fresh database inventoried `/crash` and `/sports` as the board they
+  // redirect to — measured 2026-10-01, when a fresh `bb_drive` produced a
+  // default manifest with no crash or sports screen in it at all. So the pass
+  // asks the server first, and refuses to go on if a row still did not move.
+  await fetch(`${API}/api/game/providers`).catch(() => {});
   const { rows } = await pgQuery(
     'SELECT provider_key, enabled, api_url FROM game_providers WHERE provider_key = ANY($1)', [keys],
   );
   for (const key of keys) {
     // `game_providers_enabled_has_url` refuses an enabled provider with no URL,
     // so both columns move together.
-    await pgQuery('UPDATE game_providers SET enabled = TRUE, api_url = $2 WHERE provider_key = $1',
+    const { rowCount } = await pgQuery('UPDATE game_providers SET enabled = TRUE, api_url = $2 WHERE provider_key = $1',
       [key, `https://${key}.drive.invalid`]);
+    if (rowCount !== 1) {
+      throw new Error(`enableGameProviders: no game_providers row for "${key}" — the crash and sports screens would be inventoried as the board they redirect to`);
+    }
   }
   return async () => {
     for (const r of rows) {

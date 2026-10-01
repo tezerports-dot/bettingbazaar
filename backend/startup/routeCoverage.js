@@ -83,11 +83,19 @@ if (routeCoverageEnabled && !Router.prototype.__bbCoveragePatched) {
       req.__bbRoute = this.__bbId;
       const id = this.__bbId;
       const method = req.method;
-      res.on('finish', () => {
+      // `finish` for an ordinary response; `close` as well, because a STREAM
+      // (the SSE endpoints) never finishes — the client hangs up — and
+      // recording on `finish` alone reported every stream as never reached.
+      let written = false;
+      const write = () => {
+        if (written) return;
+        written = true;
         try {
           appendFileSync(FILE, `${JSON.stringify({ k: 'hit', id, m: method, s: res.statusCode })}\n`);
         } catch { /* coverage is best-effort; never fail a request over it */ }
-      });
+      };
+      res.on('finish', write);
+      res.on('close', write);
     }
     return originalDispatch.call(this, req, res, done);
   };

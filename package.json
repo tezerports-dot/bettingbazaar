@@ -49,6 +49,7 @@
     "test:forms": "node backend/tests/browser/forms.js",
     "test:wallet-buttons": "node backend/tests/browser/walletButtons.js",
     "test:bet-button": "node backend/tests/browser/betButton.js",
+    "test:ghost-mode": "node backend/tests/browser/ghostMode.js",
     "test:mutate": "node backend/tests/browser/mutate.js",
     "test:operations": "node backend/tests/live/operations.mjs",
     "loadtest:scale": "node loadtest/scale.mjs",
