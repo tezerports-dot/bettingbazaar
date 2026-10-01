@@ -12,6 +12,7 @@ import { useLocation, useNavigate } from 'react-router';
 import { Home, Package, History, User, LogOut, Power, Bell, Sun, Moon, Banknote, Coins } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useAuth } from '../services/AuthContext';
+import { availabilityOf } from '../utils/availability';
 import { api } from '../services/api';
 import VerificationGate from './VerificationGate';
 import { ROUTES, SUCCESS_MESSAGES } from '../constants';
@@ -144,7 +145,7 @@ const Layout: React.FC<LayoutProps> = ({ children, actionable = 0 }) => {
                     animation: online ? 'bb-pulse 2s ease infinite' : 'none',
                   }} />
                   <span style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--text)' }}>
-                    {online ? 'Available for orders' : 'Not accepting'}
+                    {availabilityOf(merchant).short}
                   </span>
                 </div>
                 <button

@@ -9,7 +9,6 @@
  * them. The profile never carried the pause, and the Dashboard had nowhere to
  * say it.
  */
-import React from 'react';
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';

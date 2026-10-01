@@ -22,6 +22,7 @@ import { counterpartyOf, formatMoney, formatTokens, formatWallet, railCopy, rail
 import { OrderStatus, type Earnings, type PaymentOrder, type Stats } from '../types';
 import { Card, CardTitle, Skeleton, StatusPill, cardStyle } from '../components/ui';
 import { SettlementRailBanner } from '../components/SettlementRailBanner';
+import { availabilityOf } from '../utils/availability';
 
 interface WeeklyPoint { date: string; earnings: number; orders: number; }
 
@@ -38,10 +39,10 @@ const Dashboard: React.FC = () => {
 
   const rail = railOf(merchant);
   const copy = railCopy(rail);
-  const online = !!merchant?.isOnline;
-  // The platform paused new buy orders to them (§2: three unpaid in a row).
-  // Online or not, nothing new arrives until support resumes it.
-  const paused = !!merchant?.assignmentPausedAt;
+  // Online, and whether the platform paused new buy orders to them (§2:
+  // three unpaid in a row) — one helper, shared with the sidebar (§5).
+  const availability = availabilityOf(merchant);
+  const { online, paused } = availability;
 
   const [stats, setStats] = useState<Stats | null>(null);
   const [earnings, setEarnings] = useState<Earnings | null>(null);
@@ -181,7 +182,7 @@ const Dashboard: React.FC = () => {
               Merchant status
             </div>
             <div style={{ fontSize: 20, fontWeight: 800, color: '#fff', letterSpacing: '-.3px' }}>
-              {online ? (paused ? 'Online · New orders paused' : 'Online · Accepting orders') : 'Offline · Not accepting'}
+              {availability.long}
             </div>
           </div>
         </div>

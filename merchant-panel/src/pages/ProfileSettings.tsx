@@ -13,6 +13,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Copy, Edit3, LogOut, Save, Wallet } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useAuth } from '../services/AuthContext';
+import { availabilityOf } from '../utils/availability';
 import { api } from '../services/api';
 import { useViewport } from '../hooks/useViewport';
 import TwoFactorEnrol from '../components/TwoFactorEnrol';
@@ -508,7 +509,7 @@ const ProfileSettings: React.FC = () => {
                   background: merchant?.isOnline ? 'var(--online)' : 'var(--offline)',
                   animation: merchant?.isOnline ? 'bb-pulse 2s ease infinite' : 'none',
                 }} />
-                {merchant?.isOnline ? 'Available for orders' : 'Not accepting'}
+                {availabilityOf(merchant).short}
               </span>
             </div>
             <div style={{ background: 'var(--surface-2)', borderRadius: 13, padding: '13px 14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
