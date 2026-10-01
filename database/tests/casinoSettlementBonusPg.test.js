@@ -65,7 +65,7 @@ describePg('Domains 6-8 (PostgreSQL)', () => {
       expect(r).toMatchObject({ ok: false, reason: 'no_prior_debit' });
       expect(await bal()).toMatchObject({ depositBalance: 0 });
       // And the refusal did not bring the round into being as a side effect.
-      expect(await getRound('round_ghost')).toBeNull();
+      expect(await getRound('round_ghost', { userId: U })).toBeNull();
     });
 
     it('refuses a rollback LARGER than the bet it reverses', async () => {
@@ -105,7 +105,7 @@ describePg('Domains 6-8 (PostgreSQL)', () => {
 
       expect(r.ok).toBe(true);
       expect(await bal()).toMatchObject({ depositBalance: 100_000 });
-      expect(await reconcileRound('r1')).toMatchObject({ ok: true });
+      expect(await reconcileRound('r1', { userId: U })).toMatchObject({ ok: true });
     });
 
     it('the database refuses an over-refund even with the guard bypassed', async () => {
@@ -127,14 +127,14 @@ describePg('Domains 6-8 (PostgreSQL)', () => {
       // Providers retry hard; duplicates are routine, not exceptional.
       expect(again).toMatchObject({ ok: true, idempotent: true });
       expect(await bal()).toMatchObject({ depositBalance: 70_000 });
-      expect(await getRoundTransactions('r1')).toHaveLength(1);
+      expect(await getRoundTransactions('r1', { userId: U })).toHaveLength(1);
     });
 
     it('refuses a BET the player cannot cover, and records nothing', async () => {
       await fund(10_000, 'f1');
       expect(await recordCallback({ txId: 'tx1', roundId: 'r1', userId: U, type: CASINO_TX.BET, amountPaise: 30_000 }))
         .toMatchObject({ ok: false, reason: 'insufficient' });
-      expect(await getRoundTransactions('r1')).toEqual([]);
+      expect(await getRoundTransactions('r1', { userId: U })).toEqual([]);
       expect(await bal()).toMatchObject({ depositBalance: 10_000 });
     });
 
@@ -161,7 +161,7 @@ describePg('Domains 6-8 (PostgreSQL)', () => {
       ]);
       expect([a.ok, b.ok].filter(Boolean)).toHaveLength(1);
       expect(await bal()).toMatchObject({ depositBalance: 100_000 });
-      expect((await getRound('r1')).refundedPaise).toBe(30_000);
+      expect((await getRound('r1', { userId: U })).refundedPaise).toBe(30_000);
     });
   });
 

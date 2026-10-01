@@ -115,6 +115,14 @@ describePg('the IP deny-list', () => {
     expect((await from('203.0.113.51').get('/probe')).status).toBe(200);
   });
 
+  it('accepts a narrow IPv4 range written in IPv6-mapped form, and enforces it on IPv4 clients', async () => {
+    // ::ffff:198.18.5.0/120 is IPv4 198.18.5.0/24 — inside the floor, so allowed.
+    const res = await block({ network: '::ffff:198.18.5.0/120', reason: 'Mapped spelling of a /24' });
+    expect(res.status, res.body?.message).toBe(201);
+    expect((await from('198.18.5.9').get('/probe')).status).toBe(403);
+    expect((await from('198.18.6.9').get('/probe')).status).toBe(200);
+  });
+
   it('stores a range with its host bits cleared, so one range has one spelling', async () => {
     const res = await block({ network: '203.0.113.77/28', reason: 'Normalised range' });
     expect(res.status).toBe(201);
@@ -144,6 +152,10 @@ describePg('the IP deny-list', () => {
 
   it.each([
     ['a range wider than /16', { network: '10.0.0.0/8', reason: 'x' }, /too broad/],
+    // The same /8, respelled as IPv6. It cleared the /48 IPv6 floor and Node's
+    // matcher applies it to plain IPv4 clients (2026-10-01).
+    ['an IPv4 /8 written in IPv6-mapped form', { network: '::ffff:10.0.0.0/104', reason: 'x' }, /covers an IPv4 \/8/],
+    ['an IPv6 range that contains all of IPv4', { network: '::ffff:1.2.3.4/80', reason: 'x' }, /too broad/],
     ['loopback', { network: '127.0.0.1', reason: 'x' }, /Loopback/],
     ['the admin\'s own address', { network: '198.51.100.0/24', reason: 'x' }, /lock you out/],
     ['something that is not an address', { network: 'evil.example.com', reason: 'x' }, /not an IP address/],

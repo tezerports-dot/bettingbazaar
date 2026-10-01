@@ -79,20 +79,42 @@ function rowToRound(row) {
   };
 }
 
-/** The round and its running totals, or null. */
-export async function getRound(roundId) {
+/**
+ * The provider a callback with no provider key is recorded under. One place, so
+ * the writer and every reader agree on it.
+ */
+const NO_PROVIDER = 'unknown';
+
+/**
+ * A round is ONE PLAYER's stake on ONE PROVIDER's round id — never the round id
+ * alone. A crash round or a live table is one round id shared by everybody at
+ * it, and two providers can number rounds the same way; keyed on the id alone,
+ * every player after the first was refused, and before that refusal their
+ * totals merged. So every reader names all three, and the player is REQUIRED:
+ * a default would read some other player's stake on the same table.
+ */
+function roundKey(roundId, { userId, providerKey } = {}) {
+  if (userId === undefined || userId === null || userId === '') {
+    throw new Error('A casino round is one player\'s stake: pass the userId it belongs to');
+  }
+  return [String(providerKey ?? NO_PROVIDER), String(userId), String(roundId)];
+}
+
+/** One player's stake on one provider round, with its running totals, or null. */
+export async function getRound(roundId, who) {
   const { rows } = await pgQuery(
-    `SELECT * FROM casino_rounds WHERE round_id = $1`, [String(roundId)], 'casino_round_read',
+    `SELECT * FROM casino_rounds WHERE provider_key = $1 AND user_id = $2 AND round_id = $3`,
+    roundKey(roundId, who), 'casino_round_read',
   );
   return rowToRound(rows[0]);
 }
 
-/** Every callback recorded against a round, oldest first. Append-only. */
-export async function getRoundTransactions(roundId) {
+/** Every callback recorded against one player's round, oldest first. Append-only. */
+export async function getRoundTransactions(roundId, who) {
   const { rows } = await pgQuery(
     `SELECT tx_id, tx_type, amount_paise, created_at FROM casino_transactions
-      WHERE round_id = $1 ORDER BY id`,
-    [String(roundId)], 'casino_round_history',
+      WHERE provider_key = $1 AND user_id = $2 AND round_id = $3 ORDER BY id`,
+    roundKey(roundId, who), 'casino_round_history',
   );
   return rows.map((r) => ({
     txId: r.tx_id, type: r.tx_type, amountPaise: toPaise(r.amount_paise), at: r.created_at,
@@ -107,9 +129,10 @@ export async function getRoundTransactions(roundId) {
  * concurrent callbacks for one player queue behind one lock rather than taking
  * two locks in opposite orders and deadlocking.
  */
-async function withRoundLock(userId, roundId, fn) {
+async function withRoundLock(userId, roundId, providerKey, fn) {
   const uid = String(userId);
   const rid = String(roundId);
+  const provider = String(providerKey ?? NO_PROVIDER);
   const pool = await getPool();
   if (!pool) throw new Error('Postgres not configured (DATABASE_URL unset)');
   const client = await connectGuarded(pool);
@@ -121,11 +144,15 @@ async function withRoundLock(userId, roundId, fn) {
       `INSERT INTO wallets (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`, [uid],
     );
     await client.query(`SELECT 1 FROM wallets WHERE user_id = $1 FOR UPDATE`, [uid]);
+    // THIS player's stake on THIS provider's round — the whole key. Another
+    // player's stake on the same table is a different row, and so is the same
+    // round id at another provider.
     const round = await client.query(
-      `SELECT * FROM casino_rounds WHERE round_id = $1 FOR UPDATE`, [rid],
+      `SELECT * FROM casino_rounds
+        WHERE provider_key = $1 AND user_id = $2 AND round_id = $3 FOR UPDATE`, [provider, uid, rid],
     );
 
-    const { commit, value } = await fn({ client, uid, rid, round: rowToRound(round.rows[0]) });
+    const { commit, value } = await fn({ client, uid, rid, provider, round: rowToRound(round.rows[0]) });
     await client.query(commit ? 'COMMIT' : 'ROLLBACK');
     return value;
   } catch (error) {
@@ -167,18 +194,14 @@ export async function recordCallback({
     throw new TypeError(`recordCallback: amountPaise must be a positive integer, got ${amountPaise}`);
   }
 
-  const result = await withRoundLock(userId, roundId, async (ctx) => {
-    // ── A round belongs to one player, at one provider ──────────────────────
-    // Every callback after the first names a round that already exists, and
-    // the round says whose it is. Without this, a WIN or a ROLLBACK naming
-    // player B against player A's round credited B, and a BET by B advanced
-    // A's stake: the round's totals were checked, never its owner.
-    if (ctx.round && ctx.round.userId !== ctx.uid) {
-      return { commit: false, value: { ok: false, reason: 'round_not_this_player', roundId: ctx.rid } };
-    }
-    if (ctx.round && providerKey && ctx.round.providerKey !== providerKey) {
-      return { commit: false, value: { ok: false, reason: 'round_not_this_provider', roundId: ctx.rid } };
-    }
+  const result = await withRoundLock(userId, roundId, providerKey, async (ctx) => {
+    // ── Whose round this is, is the KEY — not a check ───────────────────────
+    // `ctx.round` is this player's own stake on this provider's round, or
+    // null. A WIN or ROLLBACK naming player B on a table where only A staked
+    // therefore finds no stake of B's and is refused below, and B's BET opens
+    // B's own row instead of advancing A's. That replaces two refusals
+    // (`round_not_this_player`, `round_not_this_provider`) which also refused
+    // every LEGITIMATE second player on a shared crash or live-table round.
 
     // ── A WIN pays only on a stake that is still standing ───────────────────
     // Owner, 2026-10-01: winnings are only given where the player placed a bet
@@ -219,8 +242,8 @@ export async function recordCallback({
     if (!ctx.round) {
       await ctx.client.query(
         `INSERT INTO casino_rounds (round_id, user_id, provider_key, game_id)
-         VALUES ($1,$2,$3,$4) ON CONFLICT (round_id) DO NOTHING`,
-        [ctx.rid, ctx.uid, providerKey ?? 'unknown', gameId],
+         VALUES ($1,$2,$3,$4) ON CONFLICT (provider_key, user_id, round_id) DO NOTHING`,
+        [ctx.rid, ctx.uid, ctx.provider, gameId],
       );
     }
 
@@ -228,9 +251,9 @@ export async function recordCallback({
     // duplicate here is routine rather than exceptional.
     try {
       await ctx.client.query(
-        `INSERT INTO casino_transactions (tx_id, round_id, user_id, tx_type, amount_paise)
-         VALUES ($1,$2,$3,$4,$5)`,
-        [String(txId), ctx.rid, ctx.uid, type, amountPaise],
+        `INSERT INTO casino_transactions (tx_id, round_id, user_id, provider_key, tx_type, amount_paise)
+         VALUES ($1,$2,$3,$4,$5,$6)`,
+        [String(txId), ctx.rid, ctx.uid, ctx.provider, type, amountPaise],
       );
     } catch (error) {
       if (error.code !== '23505') throw error;
@@ -243,9 +266,9 @@ export async function recordCallback({
     // this function.
     const column = ROUND_COLUMN[type];
     const { rows: [updated] } = await ctx.client.query(
-      `UPDATE casino_rounds SET ${column} = ${column} + $2, updated_at = now()
-        WHERE round_id = $1 RETURNING *`,
-      [ctx.rid, amountPaise],
+      `UPDATE casino_rounds SET ${column} = ${column} + $4, updated_at = now()
+        WHERE provider_key = $1 AND user_id = $2 AND round_id = $3 RETURNING *`,
+      [ctx.provider, ctx.uid, ctx.rid, amountPaise],
     );
 
     const debiting = type === CASINO_TX.BET;
@@ -301,26 +324,27 @@ export async function recordCallback({
  */
 export async function findOverRefundedRounds() {
   const { rows } = await pgQuery(
-    `SELECT round_id, user_id, debited_paise, refunded_paise
+    `SELECT round_id, user_id, provider_key, debited_paise, refunded_paise
        FROM casino_rounds WHERE refunded_paise > debited_paise LIMIT 500`,
     [], 'casino_over_refunded',
   );
   return rows.map((r) => ({
-    roundId: r.round_id, userId: r.user_id,
+    roundId: r.round_id, userId: r.user_id, providerKey: r.provider_key,
     debitedPaise: toPaise(r.debited_paise), refundedPaise: toPaise(r.refunded_paise),
     excessPaise: toPaise(r.refunded_paise) - toPaise(r.debited_paise),
   }));
 }
 
-/** Do a round's recorded callbacks explain its running totals? */
-export async function reconcileRound(roundId) {
+/** Do one player's recorded callbacks on a round explain its running totals? */
+export async function reconcileRound(roundId, who) {
   const [{ rows: sums }, round] = await Promise.all([
     pgQuery(
       `SELECT tx_type, COALESCE(SUM(amount_paise), 0) AS total
-         FROM casino_transactions WHERE round_id = $1 GROUP BY tx_type`,
-      [String(roundId)], 'casino_round_reconcile',
+         FROM casino_transactions
+        WHERE provider_key = $1 AND user_id = $2 AND round_id = $3 GROUP BY tx_type`,
+      roundKey(roundId, who), 'casino_round_reconcile',
     ),
-    getRound(roundId),
+    getRound(roundId, who),
   ]);
   if (!round) return { ok: false, reason: 'not_found' };
 

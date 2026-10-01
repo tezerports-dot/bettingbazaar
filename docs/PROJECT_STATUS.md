@@ -379,6 +379,31 @@ names the test that failed before the fix and the mutation that proves it.
 | R9 | ~~Admin control of the APK~~ **done (owner, 2026-10-01).** (a) **Halt / Resume** a published release: it stops being offered, downloaded or required at once, phones go back to the newest release that is not halted, a mandatory block it set is lifted; the publish floor and the upload's early check still count it (the upload check had read the offered release and would have accepted a build below a halted one: caught by the new test before it shipped). (b) **Android-version safety**: the app reports its API level (new `sdkLevel` plugin method; older installs send nothing and behave as before); a phone is never offered, or blocked by, a release it cannot install, and below a mandatory one it cannot install it is told its Android is too old (`unsupported`, a new blocking screen) rather than looping. (c) The card shows required Android, verified signature schemes, uploader/publisher/halter, a Download APK button, and warns when a draft raises the Android floor. Tests: androidReleaseControlRoutes 9 (pg), AndroidAppPage 7, NativeUpdateGate +1, nativeUpdater 3; M214–M218 KILLED. Not verified here: the Java method compiles only in CI's Android build (this container has no Android SDK) | — | — |
 | R8 | ~~Force the races behind M49 / M122~~ **done**: M49's export test now forces the overlap (a SHARE lock on `kyc_batches` parks export A holding its rows while B runs) — KILLED 3/3. M122 was already deterministic: the sequential 'second tap' test kills it | — | — |
 
+## 3.7 Tracker — the 2026-10-01 review of PR #198 (as of 2026-10-01)
+
+PR #198's follow-up report was checked against main `bd2e721`, claim by claim,
+by re-running every tier and gate on a fresh database and reading all 30 new
+commits. **Every number in the report reproduced**: unit 896, pg 1645 (117
+files), player 220, admin 121, merchant 64, all 16 gates exit 0, audit map
+matching, 171 mutation entries with every anchor unique. A planted
+comment-only export was reported DEAD by the rebuilt gate, so B1 holds.
+
+Three new defects were found in the new code. All three are fixed, each
+reproduced failing on main first:
+
+| # | Defect | Found how | Fix | Proof |
+|---|---|---|---|---|
+| F-044 | **A shared provider round admitted only its first player**, after F-043. Before F-043 the rows merged. | Reading F-043's refusal against the schema: `round_id UNIQUE` | round keyed `(provider_key, user_id, round_id)`; ownership refusals gone | casinoWinNeedsBetPg 10 (6 fail on main); M209, M210 retargeted, KILLED |
+| F-045 | An IP-blocked address still opened a socket | §32 S32: which path skips the middleware? Then **measured live**: HTTP 403, socket connected | `realtimeAdmission` judges Express's own `req.ip` in `allowRequest` | ipBlocklistRealtime 2; live re-measure; M219, M220 KILLED |
+| F-046 | `::ffff:10.0.0.0/104` (an IPv4 /8) passed the /16 floor | probing `judgeNetwork` with the mapped spelling | IPv4 floor applied in IPv4 terms | ipBlocklistRoutesPg +3 (2 fail on main); M221 KILLED |
+
+After the fix, the branch measured: unit 898, pg 1650 (117 files), all 16
+gates exit 0, audit map matching, 174 mutation entries with every anchor
+unique.
+
+**Not done in this pass:** a full mutation run (only the six touched entries
+ran), a browser re-run (no screen changed), PostgreSQL 18 (CI runs it).
+
 ## 4. How to pick this up
 
 1. Read `CLAUDE.md` end to end. It is the only rules file.

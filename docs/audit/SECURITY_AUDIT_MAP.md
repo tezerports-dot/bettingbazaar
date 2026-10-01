@@ -3108,6 +3108,107 @@ PENDING row in `bets`. The provider callback (casino, crash, sports) did not:
   with money moved. `casinoSessionBindingPg`'s "WIN after the session ended"
   staged a WIN with no BET (S16) and now bets first.
 - **Mutation-proved:** M208, M209, M210 KILLED.
+- **Superseded in part (2026-10-01):** the two ownership refusals
+  (`round_not_this_player`, `round_not_this_provider`) also refused every
+  legitimate second player on a shared round. They were replaced by keying the
+  round per player and provider, which makes them unreachable. See F-044.
+
+### F-044 — a shared provider round admitted only its first player
+`FIXED` · high once a multiplayer provider is live (none is configured) · §32 S45 (new) · found 2026-10-01 in the review of PR #198
+
+`casino_rounds.round_id` was `UNIQUE` on its own. A crash round or a live table
+is ONE provider round id shared by everybody at it, and two providers can
+number their rounds the same way. So the key named fewer columns than the thing
+it identified, and that failed in both directions:
+
+- **Before F-043 the rows merged.** A rollback naming player B was bounded by,
+  and paid against, the stake player A had placed. This is the leak F-043
+  described.
+- **After F-043 the second player was refused.** Its ownership check refused
+  any callback on a round "owned" by another player or provider. That includes
+  every legitimate second bettor at the table, and the same round id at a
+  second provider. Main's own suite asserted it: "refuses a BET by another
+  player onto an existing round" passed, with that player holding a live
+  session.
+
+- **How it was found:** reading F-043's refusal against the schema. The round
+  was locked by `round_id` alone, and `casino_rounds.round_id` was `UNIQUE`.
+  The question was what a provider's round id actually identifies (§0.5 Q4: the
+  symptom or the cause). No tier could see it, because no provider is
+  configured and nothing multiplayer has ever called the webhook.
+- **Fix:** `casino_rounds_one_per_player` UNIQUE `(provider_key, user_id,
+  round_id)`. The lock, every read and every write name all three, and
+  `getRound(roundId, { userId, providerKey })` throws without the player.
+  `casino_transactions` gains `provider_key` and a composite foreign key. The
+  ownership refusals are gone, because they cannot be reached once the player is
+  part of the key. "A WIN needs this player's own standing bet" is unchanged and
+  is asked of the only row it could be about.
+- **Convergence (S31):** the old FK and the old UNIQUE are dropped before the
+  new ones are added. The new FK and `casino_transactions_provider_present` are
+  `NOT VALID`, because the table is append-only and old development rows cannot
+  be backfilled. Proven by applying twice to a fresh database and twice to a
+  database on main's schema holding merged legacy rows: both end with the
+  identical constraint and index set, and the legacy rows survive.
+- **Tests:** `casinoWinNeedsBetPg` (10). Two players stake on one shared round
+  on their own rows, and a WIN pays only on its winner's stake. The same round
+  id at two providers is two rounds. A second row for one player's stake is
+  refused by the database. Six cases fail on main. Two of them, the second
+  player and the second provider, are behaviour; four are the new refusal
+  reasons and constraint name. `casinoSettlementBonusPg` now names the player on
+  every read.
+- **Swept:** every query naming `casino_rounds` / `casino_transactions`
+  (`casino.core.js`, `casino.js`, the webhook's message map); no other table
+  keys a provider's id alone. `game_transactions` is keyed by the provider's tx
+  id, which IS unique per provider callback.
+- **Mutation-proved:** M209 and M210 retargeted to the lock's key (drop the
+  player, drop the provider), both KILLED. M208 is still KILLED.
+
+### F-045 — an address on the IP deny-list still opened a socket
+`FIXED` · medium · §32 S32 · found 2026-10-01 in the review of PR #198
+
+The rebuilt deny-list (F-030) is Express middleware. socket.io answers its
+upgrade before Express runs, and `allowRequest` checked only the runtime role.
+**Measured on main bd2e721** with `TRUST_PROXY=1` and `198.51.100.0/24`
+blocked:
+
+- HTTP from `198.51.100.7` answered `403 IP_BLOCKED`.
+- The websocket from the same address CONNECTED and received `branding`,
+  `system_config`, `cycle_snapshot` and `cycle_history`, the same as a
+  bystander. It can also request cycle history and promos, which are database
+  reads, on demand.
+
+- **How it was found:** asking §32 S32 of the new middleware: which OTHER path
+  reaches the server without passing through it?
+- **Fix:** `realtimeAdmission(app, acceptsRealtime)` in `ipBlocklist.js`. It
+  judges the address Express's own `req.ip` computes, using the same
+  trust-proxy rule, by giving the raw upgrade request the prototype Express
+  gives every request. There is no second copy of the X-Forwarded-For logic.
+  `server.js` uses it as `allowRequest`.
+- **Tests:** `ipBlocklistRealtime` drives a real socket.io server with real
+  websocket upgrades behind `trust proxy 1`: the blocked range is refused, a
+  bystander is admitted, and an instance that serves no realtime refuses all.
+  Re-measured live after the fix: the blocked range's upgrade is refused, and
+  the bystander connects and receives events.
+- **Mutation-proved:** M219 (ignore the list) and M220 (judge the balancer's
+  socket address instead of the client's) both KILLED.
+
+### F-046 — an IPv4 /8 passed the /16 floor when spelled as IPv6
+`FIXED` · low · §32 S29 · found 2026-10-01 in the review of PR #198
+
+`judgeNetwork` applied the /48 IPv6 floor to `::ffff:10.0.0.0/104`, which is
+IPv4 `10.0.0.0/8`. Node's `BlockList` applies an IPv4-mapped rule to plain IPv4
+clients, so the "never wider than /16" rule was one respelling away from
+blocking a region. On main the input was ACCEPTED. A wider mapped spelling
+(`::ffff:1.2.3.4/80`) was already refused, but by the loopback check, under a
+message that did not name the real problem.
+
+- **Fix:** any range that reaches the IPv4-mapped space is held to the IPv4
+  floor in IPv4 terms: its width past the 96-bit prefix, or all of IPv4 when it
+  contains the prefix.
+- **Tests:** `ipBlocklistRoutesPg` (+3). The mapped /8 is refused, the
+  all-of-IPv4 range is refused by name, and a mapped /24 is accepted and
+  enforced against plain IPv4 clients. Two fail on main.
+- **Mutation-proved:** M221 KILLED.
 
 ## 5. Derived coverage — regenerated, never typed
 

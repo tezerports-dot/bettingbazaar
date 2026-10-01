@@ -127,7 +127,7 @@ import { requestLogger }  from './middleware/requestLogger.js';
 import { errorHandler }   from './middleware/errorHandler.js';
 import { requestContext } from './middleware/requestContext.js'; // X-6: correlation ids
 import { tlsFingerprintDefense, startTlsFingerprintDefenseConfigRefresh } from './middleware/tlsFingerprintDefense.js';
-import { ipBlocklist, startIpBlocklistRefresh } from './middleware/ipBlocklist.js';
+import { ipBlocklist, startIpBlocklistRefresh, realtimeAdmission } from './middleware/ipBlocklist.js';
 import { rejectAmbiguousFraming } from './middleware/headerNormalization.js';
 import { authLimiter, adminAuthLimiter, merchantAuthLimiter, betLimiter, twoFactorLimiter, loginPaceLimiter, signupLimiter, securityMonitor } from './middleware/security.js';
 // Item 12 (2026-07-13): IP-rotation defense — per-subnet backstop + optional
@@ -187,7 +187,9 @@ const server = backendMtlsEnabled
     }, app)
   : http.createServer(app);
 const io = new SocketIOServer(server, {
-  allowRequest: (_req, callback) => callback(null, runtime.acceptsRealtime),
+  // The runtime role AND the IP deny-list: an address refused on every HTTP
+  // route must not open a socket either (realtimeAdmission explains).
+  allowRequest: realtimeAdmission(app, runtime.acceptsRealtime),
   cors: { origin: corsOriginCheck, methods: ['GET', 'POST'], credentials: false },
   transports: ['websocket'], allowUpgrades: false, perMessageDeflate: false,
   pingTimeout: 60000, pingInterval: 25000, connectTimeout: 45000, maxHttpBufferSize: 1e6,

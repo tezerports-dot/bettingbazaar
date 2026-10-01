@@ -30,6 +30,8 @@ import { buildBlockList, listCovers, refreshIpBlocklistNow, ipBlocklistStatus } 
 const router = express.Router();
 
 const MIN_PREFIX = { ipv4: 16, ipv6: 48 };
+/** ::ffff:0:0/96 — every IPv4 address, spelled as IPv6. */
+const MAPPED_SPACE = buildBlockList(['::ffff:0:0/96']);
 const MAX_EXPIRY_MINUTES = 60 * 24 * 365;
 
 const refuse = (message) => Object.assign(new Error(message), { status: 400 });
@@ -55,6 +57,21 @@ export function judgeNetwork(input, requesterIp) {
     throw refuse(`/${bits} is too broad to block. The widest allowed is /${MIN_PREFIX[family]} for ${family === 'ipv6' ? 'IPv6' : 'IPv4'}: behind mobile carrier NAT a single address is already many players.`);
   }
   const probe = buildBlockList([`${address}/${bits}`]);
+  // ── An IPv4 range in IPv6 spelling is an IPv4 range ────────────────────────
+  // `::ffff:10.0.0.0/104` is IPv4 10.0.0.0/8, and Node's matcher applies it to
+  // plain IPv4 clients too. Judged as IPv6 it cleared the /48 floor, so the
+  // /16 rule was one respelling away from blocking a region (2026-10-01). Any
+  // range that reaches the IPv4-mapped space is held to the IPv4 floor, in
+  // IPv4 terms: its own width past the 96-bit mapped prefix, or all of IPv4
+  // when it is wider than that prefix and contains it.
+  if (family === 'ipv6') {
+    const v4Bits = listCovers(MAPPED_SPACE, address) ? bits - 96
+      : bits < 96 && listCovers(probe, '::ffff:0:0') ? 0
+        : null;
+    if (v4Bits !== null && v4Bits < MIN_PREFIX.ipv4) {
+      throw refuse(`/${bits} written in IPv6 form covers an IPv4 /${Math.max(v4Bits, 0)}, which is too broad to block. The widest allowed is /${MIN_PREFIX.ipv4} for IPv4 (/${96 + MIN_PREFIX.ipv4} in the ::ffff: form): behind mobile carrier NAT a single address is already many players.`);
+    }
+  }
   if (['127.0.0.1', '::1', '0.0.0.0', '::'].some((a) => listCovers(probe, a))) {
     throw refuse('Loopback and unspecified addresses cannot be blocked — that would stop the platform\'s own health checks.');
   }

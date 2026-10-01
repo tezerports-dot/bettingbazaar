@@ -92,6 +92,37 @@ export function isBlocked(ip) {
   return listCovers(list, ip);
 }
 
+/**
+ * The same refusal for the request that never reaches Express: the socket.io
+ * upgrade, which the engine answers before the app's middleware runs.
+ *
+ * ── Why this exists ─────────────────────────────────────────────────────────
+ * `allowRequest` checked only the runtime role, so an address this list
+ * refused on every HTTP route still opened a websocket, received every
+ * broadcast, and could ask for cycle history and promos — database reads — on
+ * demand. Measured 2026-10-01: from a blocked range, HTTP answered 403
+ * IP_BLOCKED while the socket connected and got exactly what a bystander got.
+ *
+ * The address is computed by EXPRESS's own `req.ip` — the trust-proxy setting
+ * and X-Forwarded-For handling, unchanged — by giving the raw request the
+ * prototype Express gives every request it handles. A second copy of that rule
+ * here would be the next thing to drift (§5), and then the two transports
+ * would disagree about who is asking.
+ *
+ * @param {import('express').Express} app  the app whose trust-proxy rule applies
+ * @param {boolean} acceptsRealtime        whether this instance serves sockets at all
+ */
+export function realtimeAdmission(app, acceptsRealtime) {
+  return (raw, callback) => {
+    if (!acceptsRealtime) return callback(null, false);
+    const asExpressSees = Object.create(app.request, {
+      socket: { value: raw.socket },
+      headers: { value: raw.headers },
+    });
+    return callback(null, !listCovers(list, asExpressSees.ip));
+  };
+}
+
 export function ipBlocklist(req, res, next) {
   if (!listCovers(list, req.ip)) return next();
   // The address is not echoed back and the reason is not disclosed: the person
