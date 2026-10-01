@@ -54,11 +54,22 @@ import { check, note, summary } from '../e2e/harness.js';
 // assembled twice.
 import {
   ROOT, API, EXECUTABLE, PANELS, stopAll, waitFor, startVite,
-  navigate, settle, awaitBudget, boot, seedActors, enableGameProviders,
+  navigate, settle, awaitBudget, boot, seedActors, enableGameProviders, configureTelegram,
 } from './stack.js';
+import { PROFILES, seedProfile } from './profiles.js';
 
 const SHOTS = join(ROOT, 'backend', 'tests', 'browser', 'screenshots');
-const MANIFEST = join(ROOT, 'backend', 'tests', 'browser', 'controls.manifest.json');
+// ── As WHOM, and on what screen size ───────────────────────────────────────
+// `BB_PROFILE=<name>` opens ONE panel as one of the accounts in `profiles.js`
+// (a phantom agent, a limited sub-admin, a suspended merchant …) and writes
+// its own manifest beside the default one, so `report:control-gaps` can list
+// the controls that exist only for that account. `BB_VIEWPORT=phone` takes the
+// inventory at a phone's width — a control in a collapsed menu is a different
+// control to a person holding a phone.
+const PROFILE = process.env.BB_PROFILE || '';
+const PHONE = process.env.BB_VIEWPORT === 'phone';
+const SUFFIX = [PROFILE, PHONE ? 'phone' : ''].filter(Boolean).join('.');
+const MANIFEST = join(ROOT, 'backend', 'tests', 'browser', `controls.manifest${SUFFIX ? `.${SUFFIX}` : ''}.json`);
 
 /** Noise a browser makes that is not this platform's doing. */
 const IGNORE = [
@@ -164,6 +175,19 @@ async function visit(page, panel, screen, cfg, base) {
   // use to find it. This is the denominator: "every button tested" is a claim
   // about a number, and the number has to come from the screen itself (§29).
   const controls = await collect(page).catch(() => []);
+  // What the screen SHOWED, kept beside its controls. Under a profile this is
+  // the evidence for "a sub-admin without this area is turned away" or "a
+  // blocked player sees the sign-in screen" — a missing control means nothing
+  // without knowing what was there instead.
+  visit.lastSeen = await page.evaluate(() => {
+    const main = document.querySelector('main') ?? document.body;
+    return {
+      url: location.pathname + location.hash,
+      heading: (main?.querySelector('h1, h2')?.textContent ?? '').trim().slice(0, 80),
+      excerpt: (main?.innerText ?? '').replace(/\s+/g, ' ').trim().slice(0, 160),
+    };
+  }).catch(() => ({ url: '', heading: '', excerpt: '' }));
+  visit.lastSeen.refused = failed.slice(0, 3);
 
   const label = `${screen}`;
   const where = seen.scoped ? 'in <main>' : 'on the page';
@@ -228,7 +252,14 @@ async function visit(page, panel, screen, cfg, base) {
 
 // ── Run ─────────────────────────────────────────────────────────────────────
 const only = process.argv.slice(2).filter((a) => !a.startsWith('-'));
-const wanted = panelScreens().filter((p) => !only.length || only.includes(p.panel));
+// A profile is one account on one panel; the seeding happens below, after the
+// backend is up, but the panel it lives on is known now.
+const profilePanel = PROFILE ? PROFILES[PROFILE]?.panel : null;
+if (PROFILE && !PROFILES[PROFILE]) {
+  console.error(`Unknown BB_PROFILE "${PROFILE}". Known: ${Object.keys(PROFILES).join(', ')}`);
+  process.exit(1);
+}
+const wanted = panelScreens().filter((p) => (profilePanel ? p.panel === profilePanel : (!only.length || only.includes(p.panel))));
 
 // `/health/live`, not `/api/v1/system/config`. The config route is rate
 // limited — correctly — and a 500ms poll plus a pass that drives 1,700 controls
@@ -242,7 +273,12 @@ if (!await waitFor(`${API}/health/live`, 'the backend')) process.exit(1);
 // here independently is what left the merchant a non-cash merchant, so
 // `/cash-links` was inventoried as its "not approved for the ATM cash rail"
 // empty state while the drive opened the working screen.
-const { actors, cached, restore: restoreTelegram } = await seedActors();
+// Telegram FIRST for a profile too: a seed verifies its account against the
+// live generation, and one seeded before the channel exists is left behind a
+// gate modal that would be inventoried as the whole panel (see seedActors).
+const { actors, cached, restore: restoreTelegram } = PROFILE
+  ? await configureTelegram().then(async (restore) => ({ ...(await seedProfile(PROFILE)), restore }))
+  : await seedActors();
 
 mkdirSync(SHOTS, { recursive: true });
 
@@ -255,7 +291,11 @@ mkdirSync(SHOTS, { recursive: true });
  * that only appears once data is loaded is counted and one that was deleted is
  * not.
  */
-const manifest = { takenAt: new Date().toISOString(), shell: {}, screens: [] };
+const manifest = {
+  takenAt: new Date().toISOString(), profile: PROFILE || 'default',
+  profileWhat: PROFILE ? PROFILES[PROFILE].what : 'the accounts the drive and mutate passes press as',
+  viewport: PHONE ? 'phone' : 'desktop', shell: {}, screens: [],
+};
 
 // `/crash` and `/sports` redirect away when their category has no enabled
 // provider, and the player panel hides a category button for each. The drive
@@ -280,7 +320,9 @@ try {
       `${skipped.length} wildcard route(s) skipped: ${skipped.join(' ') || 'none'}`,
       'derived from the panel router, so a new screen joins this pass without anybody remembering to add it');
 
-    const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    const ctx = await browser.newContext(PHONE
+      ? { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 3 }
+      : { viewport: { width: 1440, height: 900 } });
     await ctx.addInitScript(([k, v, extraKey, extraVal]) => {
       try {
         localStorage.setItem(k, v);
@@ -320,7 +362,7 @@ try {
       // report dividing by a number the platform was refusing to produce.
       await awaitBudget(`${panel}${screen}`);
       const controls = await visit(page, panel, screen, cfg, base);
-      manifest.screens.push({ panel, screen, controls: controls ?? [] });
+      manifest.screens.push({ panel, screen, controls: controls ?? [], seen: visit.lastSeen });
       await page.screenshot({ path: join(SHOTS, `${panel}${screen.replace(/\//g, '_') || '_root'}.png`) }).catch(() => {});
     }
     await ctx.close();

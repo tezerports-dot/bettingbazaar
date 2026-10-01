@@ -58,7 +58,9 @@
     "test:panel-gates": "node backend/tests/browser/panelGates.js",
     "test:captcha-doors": "node backend/tests/live/captchaDoors.mjs",
     "report:workflows": "BB_E2E_MD=docs/reference/E2E_WORKFLOWS.md npm run test:e2e",
-    "report:controls": "node scripts/report-ui-coverage.mjs --md --controls --out docs/reference/PANEL_CONTROL_COVERAGE.md"
+    "report:controls": "node scripts/report-ui-coverage.mjs --md --controls --out docs/reference/PANEL_CONTROL_COVERAGE.md",
+    "report:routes": "node scripts/report-route-coverage.mjs --out docs/reference/ROUTE_COVERAGE.md",
+    "report:control-gaps": "node scripts/report-control-gaps.mjs --out docs/reference/CONTROL_COVERAGE_BY_ACCOUNT.md"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.128.0",
