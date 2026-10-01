@@ -14,7 +14,7 @@
  */
 import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
 
 const { get, put, post } = vi.hoisted(() => ({ get: vi.fn(), put: vi.fn(), post: vi.fn() }));
 vi.mock('../../services/api', () => ({ default: { get, put, post } }));
@@ -143,5 +143,88 @@ describe('merchant commission rate editor', () => {
 
     await waitFor(() => expect(put).toHaveBeenCalled());
     expect((put.mock.calls[0][1] as any).rates).toHaveLength(0);
+  });
+});
+
+/**
+ * One merchant, opened from the leaderboard (2026-10-01).
+ *
+ * `funding-stats` and `performance-history` had routes and no screen. Three
+ * things are asserted because none shows in a screenshot of the happy path: a
+ * USDT merchant's volume is labelled USDT (trap 15's display mouth), one read
+ * failing does not blank the others, and the Wallet column shows the balance
+ * the row now carries (it rendered 0 BB for every merchant, §32 S9).
+ */
+describe('a merchant opened from the leaderboard', () => {
+  const ROW = { merchantId: 'MRC-1', username: 'ravi', tokenBalance: 12345, completedOrders: 3, totalOrders: 4, completedVolume: 2200, isOnline: true };
+  const STATS = {
+    currency: 'INR', tokenBalance: 12345,
+    depositsCompleted: 2, depositVolume: 1500, withdrawalsCompleted: 1, withdrawalVolume: 700,
+    bonusesIssued: 1, bonusTotal: 15, adminTopups: 2, adminTopupTotal: 20000,
+    successRate: 0.875, avgResponseMinutes: 4.25,
+  };
+  const HISTORY_ROWS = [
+    { day: '2026-09-30', totalOrders: 0, totalVolume: 0, byType: [] },
+    { day: '2026-10-01', totalOrders: 3, totalVolume: 2200, byType: [] },
+  ];
+
+  const routes = (over: Record<string, () => Promise<unknown>> = {}) => (url: string) => {
+    for (const [frag, fn] of Object.entries(over)) if (url.includes(frag)) return fn();
+    if (url.includes('merchant-platform/leaderboard')) return Promise.resolve({ data: { success: true, leaderboard: [ROW] } });
+    if (url.includes('funding-stats')) return Promise.resolve({ data: { success: true, stats: STATS } });
+    if (url.includes('performance-history')) return Promise.resolve({ data: { success: true, days: 30, history: HISTORY_ROWS } });
+    if (url.includes('wallet-ledger')) return Promise.resolve({ data: { success: true, entries: [{ _id: 'e1', type: 'CREDIT', amount: 500, balanceAfter: 12345, reason: 'top-up', createdAt: '2026-10-01T09:00:00Z' }] } });
+    if (url.includes('merchant-commission-policy/history')) return Promise.resolve({ data: { success: true, history: [] } });
+    if (url.includes('merchant-commission-policy')) return Promise.resolve({ data: { success: true, policy: null, varieties: [] } });
+    return Promise.resolve({ data: { success: true } });
+  };
+
+  const open = async () => {
+    render(<MerchantPlatform />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Open ravi' }));
+    return screen.findByLabelText('Merchant ravi');
+  };
+
+  it("shows the Wallet column's real balance on the leaderboard", async () => {
+    get.mockImplementation(routes());
+    render(<MerchantPlatform />);
+    expect(await screen.findByText('12,345 BB')).toBeInTheDocument();
+  });
+
+  it('asks for the figures, the history for the selected period, and the ledger', async () => {
+    get.mockImplementation(routes());
+    const panel = await open();
+    await waitFor(() => {
+      expect(get).toHaveBeenCalledWith('/api/admin/merchant-platform/MRC-1/funding-stats');
+      expect(get).toHaveBeenCalledWith('/api/admin/merchant-platform/MRC-1/performance-history', { params: { days: 30 } });
+    });
+    const funding = await within(panel).findByLabelText('Funding');
+    expect(funding).toHaveTextContent('2 · ₹1,500');
+    expect(funding).toHaveTextContent('1 · ₹700');
+    expect(funding).toHaveTextContent('2 · 20,000 BB');
+    expect(funding).toHaveTextContent('88%');
+    const days = within(panel).getByLabelText('Daily completed orders');
+    expect(days).toHaveTextContent('2026-10-01');
+    expect(days).toHaveTextContent('3 orders');
+    // A day with nothing completed is not listed as a row of zeroes.
+    expect(days).not.toHaveTextContent('2026-09-30');
+  });
+
+  it('labels a USDT merchant’s volume in USDT, never in rupees', async () => {
+    get.mockImplementation(routes({
+      'funding-stats': () => Promise.resolve({ data: { success: true, stats: { ...STATS, currency: 'USDT', depositVolume: 555.56 } } }),
+    }));
+    const panel = await open();
+    const funding = await within(panel).findByLabelText('Funding');
+    await waitFor(() => expect(funding).toHaveTextContent('555.56 USDT'));
+    expect(funding).not.toHaveTextContent('₹555.56');
+  });
+
+  it('says the figures failed to load, and still shows the history and the ledger', async () => {
+    get.mockImplementation(routes({ 'funding-stats': () => Promise.reject(new Error('down')) }));
+    const panel = await open();
+    expect(await within(panel).findByRole('alert')).toHaveTextContent("Could not load this merchant's figures.");
+    expect(await within(panel).findByText('3 orders')).toBeInTheDocument();
+    expect(within(panel).getByText('top-up')).toBeInTheDocument();
   });
 });

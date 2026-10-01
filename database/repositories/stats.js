@@ -565,12 +565,18 @@ export async function merchantLeaderboard({ days = 30, limit = 20, sortBy = 'vol
             COALESCE(b.bonus_paise, 0) AS bonus_paise,
             COALESCE(m.username, m.name, 'unknown') AS username,
             COALESCE(m.is_online, FALSE) AS is_online,
+            -- What the merchant HOLDS, the figure \`getMerchantTokenBalance\`
+            -- shows everywhere else (the available pocket). The admin screen's
+            -- Wallet column read \`tokenBalance\` off these rows, which never
+            -- carried one, so every merchant showed 0 BB (§32 S9, 2026-10-01).
+            COALESCE(w.available_paise, 0) AS available_paise,
             CASE WHEN o.total_orders > 0
                  THEN ROUND((o.completed_orders::numeric / o.total_orders) * 100, 2)
                  ELSE 0 END AS success_rate
        FROM orders o
        LEFT JOIN bonuses b ON b.merchant_id = o.merchant_id
        LEFT JOIN merchants m ON m.merchant_id = o.merchant_id
+       LEFT JOIN merchant_wallets w ON w.merchant_id = o.merchant_id
       ORDER BY ${ORDER_BY}
       LIMIT ${Math.min(Math.max(Number(limit) || 20, 1), 200)}`,
     [since], 'stats_merchant_leaderboard',
@@ -586,6 +592,7 @@ export async function merchantLeaderboard({ days = 30, limit = 20, sortBy = 'vol
     completedVolume: rupees(r.completed_volume),
     successRate: Number(r.success_rate),
     bonusIssued: rupees(r.bonus_paise),
+    tokenBalance: rupees(r.available_paise),
   }));
 }
 

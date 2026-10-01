@@ -27,6 +27,7 @@ import {
 } from '../domains/identity/auth.middleware.js';
 import { publicLeaderboard } from '../domains/analytics/leaderboardPublicView.js';
 import { emitToStaff } from '../domains/notification/staffEventAreas.js';
+import { toPlayerBonus } from '../domains/wallet/playerLedgerView.js';
 import { getBalancesRupees } from '#db/repositories/wallets.core.js';
 
 const router = express.Router();
@@ -248,7 +249,9 @@ router.get('/bonuses/my', authenticatePlayer, async (req, res) => {
     // Page and total from one query, so a bonus credited between them cannot
     // make the footer disagree with the rows above it.
     const result = await db.engagement.pageBonuses({ userId: req.user.userId, page, limit });
-    res.json({ success: true, ...result });
+    // Never the record's description: for a support credit it is the admin's
+    // note for the audit trail (playerLedgerView.js).
+    res.json({ success: true, ...result, records: result.records.map(toPlayerBonus) });
   } catch (err) {
     console.error('GET /bonuses/my error:', err);
     res.status(500).json({ success: false, message: 'Could not load your bonus history.' });

@@ -1976,6 +1976,67 @@ const MUTATIONS = [
     from: `    emitMerchantUpdate(String(extended.merchantId), 'order_update', {`,
     to: `    emitMerchantUpdate(String(extended.merchantId), 'order_updated', {`,
   },
+  // ── Retention, from the Operations screen (2026-10-01) ──────────────────
+  {
+    id: 'M264', file: 'backend/domains/operations/operations.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/retentionRunRoutesPg.test.js',
+    why: 'a retention run that failed is answered success: true, and the screen reports a prune that never ran',
+    from: `    if (outcome.results?.error) {`,
+    to: `    if (false) {`,
+  },
+  {
+    id: 'M265', file: 'backend/domains/operations/operations.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/retentionRunRoutesPg.test.js',
+    why: 'a prune deletes rows for good and leaves no record of who ran it',
+    from: `    if (!dryRun) {
+      await db.audit.recordDetailed({`,
+    to: `    if (false) {
+      await db.audit.recordDetailed({`,
+  },
+  {
+    id: 'M266', file: 'backend/domains/operations/operations.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/retentionRunRoutesPg.test.js',
+    why: 'a request that does not say dryRun deletes instead of previewing',
+    from: `    const dryRun = req.body?.dryRun !== false; // default to a safe preview`,
+    to: `    const dryRun = req.body?.dryRun === true;`,
+  },
+  // ── A player is not shown the admin's note, or the staff id (2026-10-01) ─
+  {
+    id: 'M267', file: 'backend/domains/user/user.routes.js', config: PG,
+    test: 'backend/tests/routes/playerLedgerViewPg.test.js',
+    why: 'the player\'s wallet history shows "[Admin:<staff id>] <internal note>" as the title of every support adjustment',
+    from: `    res.json({ success: true, ...result, entries: result.entries.map(toPlayerLedgerEntry) });`,
+    to: `    res.json({ success: true, ...result });`,
+  },
+  {
+    id: 'M268', file: 'backend/routes/retention.routes.js', config: PG,
+    test: 'backend/tests/routes/playerLedgerViewPg.test.js',
+    why: 'the player\'s bonus history carries the admin\'s note for the audit trail',
+    from: `    res.json({ success: true, ...result, records: result.records.map(toPlayerBonus) });`,
+    to: `    res.json({ success: true, ...result });`,
+  },
+  {
+    id: 'M269', file: 'backend/domains/wallet/playerLedgerView.js', config: PG,
+    test: 'backend/tests/routes/playerLedgerViewPg.test.js',
+    why: 'an adjustment is not recognised, so its note passes through to the player',
+    from: `const isAdjustment = (entry) => String(entry?.txId ?? '').startsWith(ADJUSTMENT_TX_PREFIX);`,
+    to: `const isAdjustment = () => false;`,
+  },
+  // ── The Merchant Platform's per-merchant figures (2026-10-01) ───────────
+  {
+    id: 'M270', file: 'database/repositories/stats.js', config: PG,
+    test: 'backend/tests/routes/merchantPlatformStatsPg.test.js',
+    why: 'the leaderboard row carries no token balance, so the Wallet column shows 0 BB for every merchant',
+    from: `    tokenBalance: rupees(r.available_paise),`,
+    to: ``,
+  },
+  {
+    id: 'M271', file: 'backend/domains/merchant/merchantAnalytics.service.js', config: PG,
+    test: 'backend/tests/routes/merchantPlatformStatsPg.test.js',
+    why: 'a USDT merchant\'s volume is labelled as rupees on the admin screen',
+    from: `    currency: merchantTypeOf(merchant),`,
+    to: `    currency: 'INR',`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

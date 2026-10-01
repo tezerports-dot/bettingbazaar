@@ -6,7 +6,7 @@
  * configurable business value and where to edit it.
  */
 import React, { useCallback, useEffect, useState } from 'react';
-import { RefreshCw, Activity, BookOpenCheck, Radio, Megaphone, Trophy } from 'lucide-react';
+import { RefreshCw, Activity, BookOpenCheck, Radio, Megaphone, Trophy, Trash2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import api from '../../services/api';
 import { Toolbar } from '../../components/design';
@@ -16,6 +16,40 @@ const inr = (n: number) =>
   '₹' + (n ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
 
 type Tab = 'overview' | 'catalog' | 'audit' | 'channels';
+
+// Declared OUT here, not inside the screen: declared inside, each render made a
+// new component type and React remounted the whole section under it (§32 S23).
+const Section: React.FC<{ title: string; children: React.ReactNode }> = ({ title, children }) => (
+  <div className="card">
+    <p className="text-[11px] uppercase tracking-wider text-gray-500 mb-2">{title}</p>
+    {children}
+  </div>
+);
+
+const KV: React.FC<{ k: string; v: React.ReactNode }> = ({ k, v }) => (
+  <div className="flex justify-between gap-4 py-1 border-b border-dark-800 last:border-0 text-sm">
+    <span className="text-gray-400">{k}</span>
+    <span className="text-gray-100 font-medium text-right">{v}</span>
+  </div>
+);
+
+/**
+ * What retention prunes, in words. The keys are `PRUNABLE` in
+ * database/repositories/operations — a key not named here is shown as it is,
+ * so a table added there is never silently hidden from the operator.
+ */
+const RETENTION_LABEL: Record<string, string> = {
+  frontendErrors: 'Crash reports',
+  referralClicks: 'Expired referral clicks',
+  notifications: 'Expired notifications',
+};
+
+type RetentionOutcome = {
+  cutoff: string;
+  dryRun: boolean;
+  results: Record<string, number>;
+  totalDeleted: number;
+};
 
 export const OperationsOverview: React.FC = () => {
   const [tab, setTab] = useState<Tab>('overview');
@@ -28,6 +62,8 @@ export const OperationsOverview: React.FC = () => {
   const [channels, setChannels] = useState<Array<{ code: string; label: string; active: boolean }>>([]);
   const [adminActivity, setAdminActivity] = useState<any[]>([]);
   const [rebuilding, setRebuilding] = useState(false);
+  const [retention, setRetention] = useState<RetentionOutcome | null>(null);
+  const [retentionBusy, setRetentionBusy] = useState(false);
   const { can } = usePermissions();
   const canMaintain = can('canRunMaintenance');
   // Who did what is the audit trail (canViewAuditLogs), not analytics. Asked
@@ -79,19 +115,34 @@ export const OperationsOverview: React.FC = () => {
     } finally { setRebuilding(false); }
   };
 
-  const Section: React.FC<{ title: string; children: React.ReactNode }> = ({ title, children }) => (
-    <div className="card">
-      <p className="text-[11px] uppercase tracking-wider text-gray-500 mb-2">{title}</p>
-      {children}
-    </div>
-  );
-
-  const KV: React.FC<{ k: string; v: React.ReactNode }> = ({ k, v }) => (
-    <div className="flex justify-between gap-4 py-1 border-b border-dark-800 last:border-0 text-sm">
-      <span className="text-gray-400">{k}</span>
-      <span className="text-gray-100 font-medium text-right">{v}</span>
-    </div>
-  );
+  /**
+   * Retention: preview, then prune.
+   *
+   * The nightly job prunes old operational data on its own; this is the way to
+   * see what it would take and to run it now. The prune is offered only after a
+   * preview, and confirmed with the count and the cutoff the preview reported,
+   * because it deletes for good. The window is System Settings'
+   * `retentionMonths`; nothing younger than 30 days is ever deleted.
+   */
+  const runRetention = async (dryRun: boolean) => {
+    if (!dryRun) {
+      const total = retention?.totalDeleted ?? 0;
+      const before = retention ? new Date(retention.cutoff).toLocaleDateString('en-IN') : '';
+      if (!window.confirm(`Delete ${total} row(s) older than ${before}? This cannot be undone.`)) return;
+    }
+    setRetentionBusy(true);
+    try {
+      const r = await api.post<any>('/api/admin/operations/retention/run', { dryRun });
+      const outcome: RetentionOutcome = {
+        cutoff: r.data?.cutoff, dryRun: r.data?.dryRun !== false,
+        results: r.data?.results || {}, totalDeleted: Number(r.data?.totalDeleted ?? 0),
+      };
+      setRetention(outcome);
+      if (!outcome.dryRun) toast.success(`Retention pruned ${outcome.totalDeleted} row(s)`);
+    } catch (e: any) {
+      toast.error(e.response?.data?.message || 'Retention failed');
+    } finally { setRetentionBusy(false); }
+  };
 
   return (
     <div className="om-fade space-y-6">
@@ -274,6 +325,41 @@ export const OperationsOverview: React.FC = () => {
                 className="btn-secondary text-sm flex items-center gap-1.5 shrink-0 disabled:opacity-50">
                 <Trophy size={14} />{rebuilding ? 'Rebuilding…' : 'Rebuild leaderboard'}
               </button>
+            </div>
+
+            <div className="mt-4 pt-4 border-t border-dark-700 space-y-3">
+              <div className="flex items-center justify-between gap-4">
+                <p className="text-xs text-gray-400">
+                  Retention prunes old operational data every night: crash reports past the window set in
+                  System Settings, and expired referral clicks and notifications. Money, bets, the ledger and
+                  the audit trail are never touched, and nothing younger than 30 days is ever deleted.
+                </p>
+                <div className="flex gap-2 shrink-0">
+                  <button onClick={() => void runRetention(true)} disabled={retentionBusy}
+                    className="btn-secondary text-sm flex items-center gap-1.5 disabled:opacity-50">
+                    <Trash2 size={14} />{retentionBusy ? 'Working…' : 'Preview retention'}
+                  </button>
+                  {retention?.dryRun && (
+                    <button onClick={() => void runRetention(false)}
+                      disabled={retentionBusy || retention.totalDeleted === 0}
+                      className="btn-danger text-sm disabled:opacity-50">
+                      Prune now
+                    </button>
+                  )}
+                </div>
+              </div>
+              {retention && (
+                <div role="status" aria-label="Retention result" className="text-sm">
+                  <p className="text-gray-300 mb-1">
+                    {retention.dryRun ? 'Would delete' : 'Deleted'}{' '}
+                    <span className="font-semibold">{retention.totalDeleted}</span> row(s) older than{' '}
+                    {new Date(retention.cutoff).toLocaleDateString('en-IN')}
+                  </p>
+                  {Object.entries(retention.results).map(([key, n]) => (
+                    <KV key={key} k={RETENTION_LABEL[key] ?? key} v={Number(n).toLocaleString('en-IN')} />
+                  ))}
+                </div>
+              )}
             </div>
           </Section>)}
         </div>

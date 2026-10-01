@@ -32,7 +32,7 @@ listed below, which hold **data and history, never rules**.
 | **How this audit keeps missing things, and the four questions that find them** | `docs/audit/SECURITY_AUDIT_MAP.md` **§0.5 — read before trusting a green check** |
 | **Every defect SHAPE found so far, how wide you must search to see it, and what actually found it** | `docs/audit/SECURITY_AUDIT_MAP.md` **§4.0 — the shape index. Read it before auditing anything.** |
 | **What every change must REPORT, as a table, before it is done** | **§31 — the completeness contract** |
-| **Every shape that keeps shipping here (S1–S51), each with the question that finds it** | **§32 — ask these of the change in front of you** |
+| **Every shape that keeps shipping here (S1–S52), each with the question that finds it** | **§32 — ask these of the change in front of you** |
 | **How a player signs up, signs in, and is verified** | **§33 — the form, the bot fleet, the gate, and which limiter guards what** |
 | **Relaxing rate limits for a test run, and where that is forbidden** | **§34 — `BB_RATE_LIMIT_RELAX`** |
 | **How this scales to many servers, and the three env vars an operator MUST set** | **§36 — horizontal scale + the pen-test result** |
@@ -1035,7 +1035,10 @@ USDT address — on creation, fetch, dispute, assignment push and every status
 poll. A player could copy and keep a merchant's account number from one deposit.
 
 1. **Each projection is an allowlist in one file** —
-   `domains/merchant/merchantOrderView.js` and `domains/payment/playerOrderView.js`.
+   `domains/merchant/merchantOrderView.js` and `domains/payment/playerOrderView.js`,
+   and for a player's own wallet history `domains/wallet/playerLedgerView.js`
+   (an admin adjustment is "Credited/Debited by support"; the admin's note and
+   staff id stay in the audit trail, §32 S52).
    A denylist admits the next column added to `order_states` by default and the
    mistake is always "too much"; an allowlist fails closed and its symptom is a
    blank field somebody notices.
@@ -1395,6 +1398,7 @@ these are the specific ones this codebase has actually produced.
 | S49 | Authority read off a row whose POPULATION nobody checked | The door scoped the login by `account_type`; did anything scope the FLAG? A check that reads `isAdmin`/`isQueueManager` off the session's row grants it to whatever row holds it. A grant route taking a typed id is how a player's row came to hold one. State it in the data, then refuse it at the route with a sentence the admin can act on. |
 | S50 | A status nothing reads | Which reads, doors and session checks ask about this value? `DELETED` was written by the delete route and asked about by nothing: the login refused BLOCKED only, so a deleted player signed in as before. A terminal state is real only where every door and every session check refuses it. |
 | S51 | A door that scopes the LOGIN and not the SESSION | The login checked `account_type`; does the middleware every later request passes through? A token is signed by the same key whichever door minted it. Send a staff and a merchant session to every player route, and a player's to every staff route. Measured 2026-10-01: a merchant's session read a player's order and a staff session opened a deposit, both 200. |
+| S52 | A note written for the AUDIT, rendered to its SUBJECT | Who was this text written for? Follow the column to every screen that renders it. An admin adjustment's reason — `[Admin:<staff id>] <note>`, which the admin form says "is written to the audit log" — was the title of the entry on the PLAYER's wallet history. The player's projection is `playerLedgerView.js`; the admin's own screen keeps the note. |
 
 **S36 shut the whole platform's front door, and it was one missing word.**
 `IDENTITY_COLUMNS` in `database/repositories/telegram.js` listed thirteen

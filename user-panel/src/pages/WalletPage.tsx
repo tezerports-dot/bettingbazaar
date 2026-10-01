@@ -41,7 +41,12 @@ interface BetLimits {
   reserveLocked: number;
   total: number;
 }
-interface LedgerEntry { _id: string; type: string; field: string; amount: number; balanceBefore: number; balanceAfter: number; reason: string; createdAt: string; }
+// `txId`, which is what the server sends (backend/domains/wallet/playerLedgerView.js).
+// This named `_id`, which it never has, so every row's React key was undefined (§23).
+interface LedgerEntry { txId: string; type: string; field: string; amount: number; balanceBefore: number; balanceAfter: number; reason: string; createdAt: string; }
+// A credit the player received outside an order — today, a credit from support.
+// The shape is `toPlayerBonus` in playerLedgerView.js; the admin's note is never in it.
+interface BonusRecord { bonusId: string; type: string; label: string; amount: number; createdAt: string; }
 interface PaymentOrder {
   _id: string; orderId: string; type: 'DEPOSIT' | 'WITHDRAWAL'; status: string;
   tokenAmount: number; fiatAmount: number; rateUsed: number; createdAt: string;
@@ -73,7 +78,7 @@ interface UserProfile {
   id: string; username: string;
   bankDetails?: { upiId?: string; accountNumber?: string; ifscCode?: string; bankName?: string; accountHolderName?: string; };
 }
-type TabKey = 'exchange' | 'ledger' | 'payments';
+type TabKey = 'exchange' | 'ledger' | 'bonuses' | 'payments';
 type BuyStep = 'amount' | 'pay_now' | 'waiting';
 type SellStep = 'amount' | 'waiting';
 
@@ -441,6 +446,10 @@ const WalletPage: React.FC = () => {
   const [loading, setLoading]           = useState(true);
   const [ledgerPage, setLedgerPage]     = useState(1);
   const [hasMore, setHasMore]           = useState(true);
+  const [bonuses, setBonuses]           = useState<BonusRecord[]>([]);
+  const [bonusTotal, setBonusTotal]     = useState(0);
+  const [bonusPage, setBonusPage]       = useState(1);
+  const [bonusState, setBonusState]     = useState<'loading' | 'ready' | 'error'>('loading');
 
   const [buyStep, setBuyStep]           = useState<BuyStep>('amount');
   const [buyTokens, setBuyTokens]       = useState('');
@@ -548,8 +557,28 @@ const WalletPage: React.FC = () => {
     finally { setLoading(false); }
   }, []);
 
+  /**
+   * Credits from support, newest first (`GET /api/bonuses/my`). The route was
+   * built and no screen called it (route coverage, 2026-10-01). A failed load
+   * says so rather than showing "none", which would be a refusal read as a fact.
+   */
+  const loadBonuses = useCallback(async (pg: number, reset = false) => {
+    setBonusState('loading');
+    try {
+      const res: any = await apiClient.get(`/api/bonuses/my?page=${pg}&limit=25`);
+      const items: BonusRecord[] = Array.isArray(res?.records) ? res.records : [];
+      setBonuses(prev => reset ? items : [...prev, ...items]);
+      setBonusTotal(Number(res?.total ?? 0));
+      setBonusState('ready');
+    } catch (err: unknown) {
+      console.error('[WalletPage/loadBonuses]', err instanceof Error ? err.message : err);
+      setBonusState('error');
+    }
+  }, []);
+
   useEffect(() => { loadMeta(); loadOrders(); }, [loadMeta, loadOrders]);
   useEffect(() => { if (tab === 'ledger') { setLedgerPage(1); loadLedger(1, true); } }, [tab, loadLedger]);
+  useEffect(() => { if (tab === 'bonuses') { setBonusPage(1); loadBonuses(1, true); } }, [tab, loadBonuses]);
 
   useEffect(() => {
     const activeOrderId = activeBuyOrder?.orderId || activeSellOrder?.orderId;
@@ -725,6 +754,7 @@ const WalletPage: React.FC = () => {
       <div className="bb-noscroll" style={{ display: 'flex', gap: 8, margin: '14px 0', overflowX: 'auto' }}>
         {tabBtn('exchange', 'Exchange')}
         {tabBtn('ledger', 'History')}
+        {tabBtn('bonuses', 'Bonuses')}
         {tabBtn('payments', 'Payment Orders')}
       </div>
 
@@ -888,13 +918,39 @@ const WalletPage: React.FC = () => {
               {ledger.map(entry => {
                 const isCredit = entry.type === 'CREDIT';
                 return (
-                  <div key={entry._id} style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '12px 0', borderTop: '1px solid var(--line)' }}>
+                  <div key={entry.txId} style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '12px 0', borderTop: '1px solid var(--line)' }}>
                     <span style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}><span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)' }}>{entry.reason || entry.type}</span><span style={{ fontSize: 10, color: 'var(--text3)' }}>{fmtDate(entry.createdAt)} · {entry.field === 'depositBalance' ? 'Deposit' : 'Winnings'} wallet</span></span>
                     <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 13, color: isCredit ? 'var(--green)' : 'var(--red)' }}>{isCredit ? '+' : '−'}{fmtT(entry.amount)}</span>
                   </div>
                 );
               })}
               {hasMore && !loading && <button onClick={() => { const n = ledgerPage + 1; setLedgerPage(n); loadLedger(n); }} style={{ width: '100%', padding: 12, margin: '10px 0', background: 'var(--surface3)', borderRadius: 11, border: 'none', color: 'var(--text2)', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>Load more</button>}
+            </>
+          )}
+        </div>
+      )}
+
+      {/* BONUSES */}
+      {tab === 'bonuses' && (
+        <div style={{ ...card, padding: '6px 16px' }} aria-label="Bonuses">
+          {bonusState === 'loading' && bonuses.length === 0 ? (
+            Array.from({ length: 3 }).map((_, i) => <div key={i} className="bb-skel" style={{ height: 48, borderRadius: 10, background: 'var(--skel)', margin: '10px 0' }} />)
+          ) : bonusState === 'error' && bonuses.length === 0 ? (
+            <div role="alert" style={{ textAlign: 'center', padding: '40px 0', color: 'var(--text3)' }}>
+              Could not load your bonuses.{' '}
+              <button onClick={() => loadBonuses(1, true)} style={{ color: 'var(--gold-ink)', background: 'none', border: 'none', cursor: 'pointer', fontWeight: 700 }}>Try again</button>
+            </div>
+          ) : bonuses.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--text3)' }}><div style={{ fontSize: 30, marginBottom: 6 }}>🎁</div>No bonuses yet</div>
+          ) : (
+            <>
+              {bonuses.map(b => (
+                <div key={b.bonusId} style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '12px 0', borderTop: '1px solid var(--line)' }}>
+                  <span style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}><span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)' }}>{b.label}</span><span style={{ fontSize: 10, color: 'var(--text3)' }}>{fmtDate(b.createdAt)}</span></span>
+                  <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 13, color: 'var(--green)' }}>+{fmtT(b.amount)}</span>
+                </div>
+              ))}
+              {bonuses.length < bonusTotal && bonusState !== 'loading' && <button onClick={() => { const n = bonusPage + 1; setBonusPage(n); loadBonuses(n); }} style={{ width: '100%', padding: 12, margin: '10px 0', background: 'var(--surface3)', borderRadius: 11, border: 'none', color: 'var(--text2)', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>Load more</button>}
             </>
           )}
         </div>

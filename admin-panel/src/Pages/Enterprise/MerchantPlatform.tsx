@@ -21,6 +21,43 @@ import { Toolbar, type ToolbarAction } from '../../components/design';
 const inr = (n: number) =>
   '₹' + (n ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
 
+/** A token figure — a wallet, a top-up, a commission credited in tokens. */
+const bb = (n: number) => `${(n ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })} BB`;
+
+/**
+ * A volume in the MERCHANT's currency. Order volumes are summed in the order's
+ * currency, and a merchant is on exactly one rail (§2), so the server names it
+ * (`stats.currency`). A USDT merchant's 555.56 rendered as "₹555.56" is the
+ * same lie trap 15 records for an order.
+ */
+const inMerchantCurrency = (n: number, currency?: string) =>
+  currency === 'USDT'
+    ? `${(n ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })} USDT`
+    : inr(n);
+
+/** One merchant's funding picture, as `GET /merchant-platform/:id/funding-stats` sends it. */
+interface FundingStats {
+  currency: 'INR' | 'USDT';
+  tokenBalance: number;
+  depositsCompleted: number; depositVolume: number;
+  withdrawalsCompleted: number; withdrawalVolume: number;
+  bonusesIssued: number; bonusTotal: number;
+  adminTopups: number; adminTopupTotal: number;
+  successRate: number;        // 0..1, off the merchant row
+  avgResponseMinutes: number;
+}
+
+/** One day of `GET /merchant-platform/:id/performance-history`. */
+interface DayRow { day: string; totalOrders: number; totalVolume: number }
+
+// Out here, not inside the screen (§32 S23).
+const Figure: React.FC<{ label: string; value: React.ReactNode }> = ({ label, value }) => (
+  <div className="bg-dark-800 rounded-lg p-3">
+    <p className="text-[11px] uppercase tracking-wider text-gray-500">{label}</p>
+    <p className="text-sm text-gray-100 font-medium mt-0.5">{value}</p>
+  </div>
+);
+
 /** One priceable variety, as the server describes it. */
 interface Variety {
   currency: string;
@@ -60,7 +97,13 @@ export const MerchantPlatform: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [ledgerMerchant, setLedgerMerchant] = useState<any>(null);
+  // The merchant opened from the leaderboard, and its three reads — each kept
+  // apart, so one failing does not blank the other two.
+  const [opened, setOpened] = useState<any>(null);
+  const [stats, setStats] = useState<FundingStats | null>(null);
+  const [statsFailed, setStatsFailed] = useState(false);
+  const [daysRows, setDaysRows] = useState<DayRow[]>([]);
+  const [daysFailed, setDaysFailed] = useState(false);
   const [ledgerEntries, setLedgerEntries] = useState<any[]>([]);
 
   const [form, setForm] = useState<{
@@ -208,15 +251,31 @@ export const MerchantPlatform: React.FC = () => {
     }
   };
 
-  const openLedger = async (m: any) => {
-    setLedgerMerchant(m);
-    try {
-      const res = await api.get<any>(`/api/admin/merchant-platform/${m.merchantId}/wallet-ledger`, { params: { limit: 50 } });
-      if (res.data?.success) setLedgerEntries(res.data.entries || res.data.ledger || []);
-    } catch {
-      toast.error('Failed to load wallet ledger');
-    }
+  /**
+   * Open one merchant: funding figures, the daily history for the period the
+   * leaderboard is showing, and the wallet ledger. The first two had routes
+   * and no screen until 2026-10-01 (route coverage; owner: wire them).
+   */
+  const openMerchant = async (m: any) => {
+    setOpened(m);
+    setStats(null); setStatsFailed(false);
+    setDaysRows([]); setDaysFailed(false);
+    setLedgerEntries([]);
+    // Each path written out whole, so every call names its route (check:ui-coverage).
+    await Promise.all([
+      api.get<any>(`/api/admin/merchant-platform/${m.merchantId}/funding-stats`)
+        .then((res) => { if (res.data?.success) setStats(res.data.stats); else setStatsFailed(true); })
+        .catch(() => setStatsFailed(true)),
+      api.get<any>(`/api/admin/merchant-platform/${m.merchantId}/performance-history`, { params: { days } })
+        .then((res) => { if (res.data?.success) setDaysRows(res.data.history || []); else setDaysFailed(true); })
+        .catch(() => setDaysFailed(true)),
+      api.get<any>(`/api/admin/merchant-platform/${m.merchantId}/wallet-ledger`, { params: { limit: 50 } })
+        .then((res) => { if (res.data?.success) setLedgerEntries(res.data.entries || res.data.ledger || []); })
+        .catch(() => toast.error('Failed to load wallet ledger')),
+    ]);
   };
+
+  const activeDays = daysRows.filter((d) => d.totalOrders > 0);
 
   return (
     <div className="om-fade space-y-6">
@@ -383,10 +442,12 @@ export const MerchantPlatform: React.FC = () => {
                       calls it BB and the two must agree (§5). */}
                   <td className="py-2 pr-3 text-right font-mono">{(m.tokenBalance ?? 0).toLocaleString('en-IN')} BB</td>
                   <td className="py-2 pr-3 text-right">{m.completedOrders}/{m.totalOrders}</td>
-                  <td className="py-2 pr-3 text-right font-mono text-gold-400/90">{inr(m.completedVolume)}</td>
+                  {/* Tokens too: the query sums `token_amount_paise` so merchants on
+                      different rails rank on one scale (trap 15). */}
+                  <td className="py-2 pr-3 text-right font-mono text-gold-400/90">{bb(m.completedVolume)}</td>
                   <td className="py-2 pr-3 text-center">{m.isOnline ? '🟢' : '⚫'}</td>
                   <td className="py-2 text-right">
-                    <button onClick={() => openLedger(m)} className="text-gold-400 hover:underline text-xs flex items-center gap-1 ml-auto">
+                    <button onClick={() => void openMerchant(m)} aria-label={`Open ${m.username}`} className="text-gold-400 hover:underline text-xs flex items-center gap-1 ml-auto">
                       <ScrollText size={13} /> view
                     </button>
                   </td>
@@ -400,21 +461,62 @@ export const MerchantPlatform: React.FC = () => {
         </div>
       </div>
 
-      {ledgerMerchant && (
-        <div className="card border border-dark-600">
-          <div className="flex items-center justify-between mb-2">
-            <h3 className="font-semibold">Wallet ledger — {ledgerMerchant.username}</h3>
-            <button className="text-gray-400 text-sm hover:text-gray-200" onClick={() => setLedgerMerchant(null)}>close</button>
+      {opened && (
+        <div className="card border border-dark-600 space-y-4" aria-label={`Merchant ${opened.username}`}>
+          <div className="flex items-center justify-between">
+            <h3 className="font-semibold">{opened.username}</h3>
+            <button className="text-gray-400 text-sm hover:text-gray-200" onClick={() => setOpened(null)}>close</button>
           </div>
+
+          <section aria-label="Funding">
+            {statsFailed ? (
+              <p role="alert" className="text-sm text-red-400">Could not load this merchant's figures.</p>
+            ) : !stats ? (
+              <p className="text-sm text-gray-500">Loading…</p>
+            ) : (
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <Figure label="Wallet" value={bb(stats.tokenBalance)} />
+                <Figure label="Buys completed" value={`${stats.depositsCompleted} · ${inMerchantCurrency(stats.depositVolume, stats.currency)}`} />
+                <Figure label="Sells completed" value={`${stats.withdrawalsCompleted} · ${inMerchantCurrency(stats.withdrawalVolume, stats.currency)}`} />
+                <Figure label="Commission paid" value={`${stats.bonusesIssued} · ${bb(stats.bonusTotal)}`} />
+                <Figure label="Admin top-ups" value={`${stats.adminTopups} · ${bb(stats.adminTopupTotal)}`} />
+                <Figure label="Success rate" value={`${Math.round((stats.successRate ?? 0) * 100)}%`} />
+                <Figure label="Avg response" value={`${(stats.avgResponseMinutes ?? 0).toFixed(1)} min`} />
+                <Figure label="Rail" value={stats.currency} />
+              </div>
+            )}
+          </section>
+
+          <section aria-label="Daily completed orders">
+            <p className="text-[11px] uppercase tracking-wider text-gray-500 mb-1">Completed orders, last {days} days</p>
+            {daysFailed ? (
+              <p role="alert" className="text-sm text-red-400">Could not load the daily history.</p>
+            ) : activeDays.length === 0 ? (
+              <p className="text-sm text-gray-500">No completed orders in the last {days} days.</p>
+            ) : (
+              <div className="space-y-1 text-sm">
+                {activeDays.map((d) => (
+                  <div key={d.day} className="flex justify-between gap-3 border-b border-dark-800 py-1">
+                    <span className="text-gray-400 text-xs">{d.day}</span>
+                    <span className="text-xs text-gray-300">{d.totalOrders} order{d.totalOrders === 1 ? '' : 's'}</span>
+                    <span className="font-mono text-xs text-gold-400/90">{inMerchantCurrency(d.totalVolume, stats?.currency)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+
+          <p className="text-[11px] uppercase tracking-wider text-gray-500">Wallet ledger</p>
           <div className="space-y-1 text-sm max-h-80 overflow-y-auto">
             {ledgerEntries.map((e: any, i: number) => (
               <div key={e._id || i} className="flex justify-between gap-3 border-b border-dark-800 py-1">
                 <span className="text-gray-400 text-xs whitespace-nowrap">{new Date(e.createdAt).toLocaleString()}</span>
                 <span className="flex-1 text-xs text-gray-500 truncate" title={e.reason}>{e.reason}</span>
+                {/* Tokens, so BB — the Wallet column says BB and these are its movements (§5). */}
                 <span className={`font-mono text-xs ${e.type === 'CREDIT' ? 'text-green-400' : 'text-red-400'}`}>
-                  {e.type === 'CREDIT' ? '+' : '−'}{inr(e.amount)}
+                  {e.type === 'CREDIT' ? '+' : '−'}{bb(e.amount)}
                 </span>
-                <span className="font-mono text-xs text-gray-400">→ {inr(e.balanceAfter)}</span>
+                <span className="font-mono text-xs text-gray-400">→ {bb(e.balanceAfter)}</span>
               </div>
             ))}
             {ledgerEntries.length === 0 && <p className="text-gray-500 text-sm py-3 text-center">No ledger entries.</p>}

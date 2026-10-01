@@ -38,6 +38,7 @@
 import express from 'express';
 import { db } from '#db';
 import { authenticatePlayer } from '../identity/auth.middleware.js';
+import { toPlayerLedgerEntry } from '../wallet/playerLedgerView.js';
 import { getUserLedger, getBalances } from '../wallet/walletAuthority.service.js';
 // The withdrawal rate limiters (withdrawalLimiter, createSubnetLimiter,
 // globalSurgeBreaker) and the alerting import were removed with the withdrawal
@@ -482,7 +483,9 @@ router.get('/v1/wallet/ledger', authenticatePlayer, async (req, res) => { // pag
   try {
     const { page = 1, limit = 30 } = req.query;
     const result = await getUserLedger(req.user.userId, Number(page), Number(limit));
-    res.json({ success: true, ...result });
+    // The player's view of each entry: an admin adjustment's note and the
+    // staff id in it are for the audit trail, not the player (playerLedgerView).
+    res.json({ success: true, ...result, entries: result.entries.map(toPlayerLedgerEntry) });
   } catch (err) {
     return serverError(res, err, 'GET /v1/wallet/ledger');
   }
