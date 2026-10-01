@@ -184,14 +184,18 @@ router.post('/order/:orderId/retry', authenticate, orderRetryLimiter, orderAcces
     // A duplicate retry is refused by a unique index, which surfaces as a
     // driver error rather than one of ours. Said plainly, because the player's
     // second tap is an ordinary thing to do and the answer is "you already did".
-    const duplicate = err?.code === '23505';
-    res.status(duplicate ? 409 : (err.status || 500)).json({
-      success: false,
-      code: duplicate ? 'ALREADY_RETRIED' : err.code,
-      message: duplicate
-        ? 'You have already retried this order — look for the newer one in your list.'
-        : err.message,
-    });
+    if (err?.code === '23505') {
+      return res.status(409).json({
+        success: false,
+        code: 'ALREADY_RETRIED',
+        message: 'You have already retried this order — look for the newer one in your list.',
+      });
+    }
+    // A refusal keeps its own wording; anything else is logged in full and
+    // answered with nothing (§2, httpError.js). This used `err.status || 500`
+    // with `err.message`, so an unexpected failure handed the player the
+    // server's internal text.
+    return respondError(res, err, 'POST /payment/order/:orderId/retry');
   }
 });
 

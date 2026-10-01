@@ -1895,6 +1895,13 @@ const MUTATIONS = [
     from: `if (accountType) add('account_type = $?', String(accountType));`,
     to: ``,
   },
+  {
+    id: 'M253', file: 'backend/middleware/errorHandler.js', config: UNIT,
+    test: 'backend/tests/unit/globalErrorHandler.test.js',
+    why: 'any uncaught route error hands the caller the server\'s internal text',
+    from: `const decided = Boolean(err?.status || err?.statusCode);`,
+    to: `const decided = true;`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

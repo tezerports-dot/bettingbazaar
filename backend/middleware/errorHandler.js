@@ -6,24 +6,36 @@
 import { logger } from '../services/logger.js';
 
 export const errorHandler = (err, req, res, next) => {
-    const status = err.status || err.statusCode || 500;
-    const message = err.message || 'Internal Server Error';
+    if (res.headersSent) return next(err);
+
+    // ── What the caller is told is decided by the PRESENCE of a status ──────
+    // The same rule as `respondError` (shared/httpError.js, §2). A status was
+    // chosen by whoever threw — a body-parser 400, a 413, a refusal a handler
+    // wrote — and its wording is the feature. No status means nobody decided:
+    // a driver fault, a TypeError, a path. Before 2026-10-01 this handler sent
+    // `err.message` (and, in development, the STACK) for those too, so every
+    // route whose async handler threw past its own catch — Express 5 forwards
+    // all of them here — handed the caller the server's internal text.
+    const decided = Boolean(err?.status || err?.statusCode);
+    const status = decided ? (err.status || err.statusCode) : 500;
 
     // X-6: structured error log carrying the correlation id + request context.
-    logger.error(`Unhandled error: ${message}`, {
+    // Logged in full either way: the operator needs the real error.
+    logger.error(`Unhandled error: ${err?.message || err}`, {
         status,
         method: req.method,
         url: req.originalUrl,
-        code: err.code,
-        stack: err.stack,
+        code: err?.code,
+        stack: err?.stack,
     });
 
-    // Send error response — echo the correlation id so support/clients can
-    // quote it and it can be found in the logs.
+    // The correlation id is echoed so support/clients can quote it and it can
+    // be found in the logs — which is where the detail lives.
     res.status(status).json({
         success: false,
-        message: message,
+        message: decided && err.message
+            ? err.message
+            : 'Something went wrong. Please try again.',
         requestId: req.id,
-        ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
     });
 };
