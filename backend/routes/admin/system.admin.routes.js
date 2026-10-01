@@ -1,7 +1,7 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /** system.admin.routes.js — System config, token rates, withdrawal requests, error logs */
 import {
-  authenticate, express, hasPermission, isAdmin, isAdminOrSubAdmin,
+  authenticate, express, hasPermission,
 } from './_adminShared.js';
 import {
   INR_TOKEN_RATE, isSaneUsdtRate, USDT_RATE_MIN_INR, USDT_RATE_MAX_INR,
@@ -92,7 +92,7 @@ router.get('/transactions', authenticate, hasPermission('canViewTransactions'), 
 
 // Get merchant full profile — :merchantId is always Merchant._id.
 // The merchants list guarantees this. No User._id fallback.
-router.get('/system/config', authenticate, isAdmin, async (req, res) => {
+router.get('/system/config', authenticate, hasPermission('canManageSystemSettings'), async (req, res) => {
   try {
     const config = await getSystemConfig();
     res.json({
@@ -178,7 +178,7 @@ router.get('/system/config', authenticate, isAdmin, async (req, res) => {
   }
 });
 
-router.put('/system/config', authenticate, isAdmin, async (req, res) => {
+router.put('/system/config', authenticate, hasPermission('canManageSystemSettings'), async (req, res) => {
   try {
     const actor = { userId: req.user.userId, userName: req.user.username };
 
@@ -555,7 +555,7 @@ router.put('/system/config', authenticate, isAdmin, async (req, res) => {
 // non-exported getDashboardStats helper, so keeping it here created a latent
 // runtime failure if route order changed.
 
-router.get('/error-reports', authenticate, isAdmin, async (req, res) => {
+router.get('/error-reports', authenticate, hasPermission('canViewAuditLogs'), async (req, res) => {
   try {
     const reports = await db.operations.listFrontendErrors({ limit: 200 });
     res.json({ success: true, reports });
@@ -565,7 +565,7 @@ router.get('/error-reports', authenticate, isAdmin, async (req, res) => {
   }
 });
 
-router.delete('/error-reports', authenticate, isAdmin, async (req, res) => {
+router.delete('/error-reports', authenticate, hasPermission('canViewAuditLogs'), async (req, res) => {
   try {
     // The count is reported. "All error reports cleared" for a delete that
     // removed nothing looks the same as one that removed nine hundred, so an

@@ -6,7 +6,7 @@
  * Mounted at /api/admin via routes/admin/index.js (domain-owned admin route,
  * same pattern as merchant.admin.routes.js / content.admin.routes.js).
  */
-import { express, authenticate, isAdmin, isAdminOrSubAdmin } from '../../routes/admin/_adminShared.js';
+import { express, authenticate, hasPermission } from '../../routes/admin/_adminShared.js';
 import { db } from '#db';
 import {
   getActivePolicy,
@@ -52,7 +52,7 @@ function assertCurrency(req, res) {
 // GET /api/admin/deposit-policy/:currency — the currently active policy.
 // The deposit policy screen is AdminOnly (`admin-panel/src/App.tsx`), so no
 // sub-admin has ever been shown this. Tightened to match.
-router.get('/deposit-policy/:currency', authenticate, isAdmin, async (req, res) => {
+router.get('/deposit-policy/:currency', authenticate, hasPermission('canManageBusinessPolicy'), async (req, res) => {
   try {
     const currency = assertCurrency(req, res);
     if (!currency) return;
@@ -70,7 +70,7 @@ router.get('/deposit-policy/:currency', authenticate, isAdmin, async (req, res) 
 // GET /api/admin/deposit-policy/:currency/history — full audit trail.
 // The deposit policy screen is AdminOnly (`admin-panel/src/App.tsx`), so no
 // sub-admin has ever been shown this. Tightened to match.
-router.get('/deposit-policy/:currency/history', authenticate, isAdmin, async (req, res) => {
+router.get('/deposit-policy/:currency/history', authenticate, hasPermission('canManageBusinessPolicy'), async (req, res) => {
   try {
     const currency = assertCurrency(req, res);
     if (!currency) return;
@@ -85,7 +85,7 @@ router.get('/deposit-policy/:currency/history', authenticate, isAdmin, async (re
 // PUT /api/admin/deposit-policy/:currency — create a new version.
 // Body: { depositAllocationPercent, reserveAllocationPercent,
 //         reserveUsageRules, justification, effectiveAt, requireApproval }
-router.put('/deposit-policy/:currency', authenticate, isAdmin, async (req, res) => {
+router.put('/deposit-policy/:currency', authenticate, hasPermission('canManageBusinessPolicy'), async (req, res) => {
   try {
     const currency = assertCurrency(req, res);
     if (!currency) return;
@@ -146,7 +146,7 @@ router.put('/deposit-policy/:currency', authenticate, isAdmin, async (req, res) 
 });
 
 // POST /api/admin/deposit-policy/version/:versionId/approve — body: { approve: boolean }
-router.post('/deposit-policy/version/:versionId/approve', authenticate, isAdmin, async (req, res) => {
+router.post('/deposit-policy/version/:versionId/approve', authenticate, hasPermission('canManageBusinessPolicy'), async (req, res) => {
   try {
     const { approve = true } = req.body;
     const actor = { userId: req.user.userId, userName: req.user.username };
@@ -182,7 +182,7 @@ router.post('/deposit-policy/version/:versionId/approve', authenticate, isAdmin,
 });
 
 // POST /api/admin/deposit-policy/version/:versionId/rollback
-router.post('/deposit-policy/version/:versionId/rollback', authenticate, isAdmin, async (req, res) => {
+router.post('/deposit-policy/version/:versionId/rollback', authenticate, hasPermission('canManageBusinessPolicy'), async (req, res) => {
   try {
     const actor = { userId: req.user.userId, userName: req.user.username };
     let doc;

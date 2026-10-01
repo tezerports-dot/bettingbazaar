@@ -16,7 +16,7 @@
  */
 import express from 'express';
 import { db } from '#db';
-import { authenticate, isAdmin, isAdminOrSubAdmin } from '../identity/auth.middleware.js';
+import { authenticate, hasPermission } from '../identity/auth.middleware.js';
 
 const router = express.Router();
 
@@ -85,7 +85,7 @@ router.get('/categories', async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════
 // ADMIN — GAMES
 // ═══════════════════════════════════════════════════════════════════════════
-router.get('/admin/games', authenticate, isAdmin, async (req, res) => {
+router.get('/admin/games', authenticate, hasPermission('canManageGames'), async (req, res) => {
   try {
     const { category, provider, status } = req.query;
     const games = await db.games.listGames({
@@ -114,7 +114,7 @@ function pickGameFields(body) {
   return out;
 }
 
-router.post('/admin/games', authenticate, isAdmin, async (req, res) => {
+router.post('/admin/games', authenticate, hasPermission('canManageGames'), async (req, res) => {
   try {
     const data = pickGameFields(req.body);
     if (!data.name) return res.status(400).json({ success: false, message: 'name is required' });
@@ -150,7 +150,7 @@ router.post('/admin/games', authenticate, isAdmin, async (req, res) => {
   }
 });
 
-router.put('/admin/games/:id', authenticate, isAdmin, async (req, res) => {
+router.put('/admin/games/:id', authenticate, hasPermission('canManageGames'), async (req, res) => {
   try {
     const existing = await db.games.getGame(req.params.id);
     if (!existing) return res.status(404).json({ success: false, message: 'Game not found' });
@@ -180,7 +180,7 @@ router.put('/admin/games/:id', authenticate, isAdmin, async (req, res) => {
   }
 });
 
-router.delete('/admin/games/:id', authenticate, isAdmin, async (req, res) => {
+router.delete('/admin/games/:id', authenticate, hasPermission('canManageGames'), async (req, res) => {
   try {
     if (!await db.games.deleteGame(req.params.id)) {
       return res.status(404).json({ success: false, message: 'Game not found' });
@@ -195,7 +195,7 @@ router.delete('/admin/games/:id', authenticate, isAdmin, async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════
 // ADMIN — CATEGORIES
 // ═══════════════════════════════════════════════════════════════════════════
-router.get('/admin/categories', authenticate, isAdmin, async (req, res) => {
+router.get('/admin/categories', authenticate, hasPermission('canManageGames'), async (req, res) => {
   try {
     res.json({ success: true, categories: await db.games.listCategoriesWithCounts({ enabledOnly: false }) });
   } catch (err) {
@@ -204,7 +204,7 @@ router.get('/admin/categories', authenticate, isAdmin, async (req, res) => {
   }
 });
 
-router.post('/admin/categories', authenticate, isAdmin, async (req, res) => {
+router.post('/admin/categories', authenticate, hasPermission('canManageGames'), async (req, res) => {
   try {
     const { name, icon = '', order = 0, enabled = true } = req.body;
     if (!name) return res.status(400).json({ success: false, message: 'name is required' });
@@ -221,7 +221,7 @@ router.post('/admin/categories', authenticate, isAdmin, async (req, res) => {
   }
 });
 
-router.put('/admin/categories/:id', authenticate, isAdmin, async (req, res) => {
+router.put('/admin/categories/:id', authenticate, hasPermission('canManageGames'), async (req, res) => {
   try {
     const existing = (await db.games.listCategories({ enabledOnly: false }))
       .find((c) => c.slug === req.params.id);
@@ -239,7 +239,7 @@ router.put('/admin/categories/:id', authenticate, isAdmin, async (req, res) => {
   }
 });
 
-router.delete('/admin/categories/:id', authenticate, isAdmin, async (req, res) => {
+router.delete('/admin/categories/:id', authenticate, hasPermission('canManageGames'), async (req, res) => {
   try {
     // The refusal and the delete are ONE statement: a count followed by a
     // delete lets a game be assigned in between, and the games are then

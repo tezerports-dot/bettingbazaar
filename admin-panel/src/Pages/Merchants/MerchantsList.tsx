@@ -9,6 +9,7 @@ import { Kpis, Toolbar, AvatarCell } from '../../components/design';
 import { Modal } from '../../components/Modal';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { usePagination } from '../../hooks/usePagination';
+import { usePermissions } from '../../hooks/usePermission';
 import { useDebounce } from '../../hooks/useDebounce';
 import { formatters } from '../../utils/formatters';
 import api from '../../services/api';
@@ -56,6 +57,7 @@ export const MerchantsList: React.FC = () => {
   // Phase B (2026-07-10): admin token-deduction control (strict, audited)
   // `paid` is what the platform handed back for the tokens — INR only, because
   // the platform buys its tokens back in rupees (owner, 2026-09-23).
+  const canFund = usePermissions().can('canFundMerchants');
   const [deductForm, setDeductForm]   = useState({ amount: 0, reason: '', paid: '' });
   const [panelUrl, setPanelUrl]       = useState('');
   const [merchantEarnings, setMerchantEarnings] = useState<any>(null);
@@ -532,6 +534,9 @@ export const MerchantsList: React.FC = () => {
                 <p className="text-xs text-gray-500 mt-1">Merchant can only process orders up to this amount</p>
               </div>
 
+              {/* Moving tokens to or from a merchant is its own area
+                  (canFundMerchants): managing a merchant does not imply it. */}
+              {canFund && (<>
               <div className="space-y-3">
                 <p className="text-sm font-semibold text-gray-300">Top-Up Wallet</p>
                 <div>
@@ -677,6 +682,7 @@ export const MerchantsList: React.FC = () => {
                   Deductions never overdraft — if the merchant holds less than the amount, the request is refused.
                 </p>
               </div>
+              </>)}
 
               <div className="border-t border-dark-600 pt-4 space-y-4">
                 <p className="text-sm font-semibold text-gray-300">Order Limits</p>

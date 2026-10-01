@@ -74,25 +74,30 @@ const toLink = (r) => (r ? {
  * on rather than an unhandled 23505.
  */
 export async function supplyLink({
-  linkId, merchantId, denominationPaise, paymentLink, expiresAt,
+  linkId, merchantId, denominationPaise, paymentLink, expiresInMs,
 }) {
   if (!linkId) throw new Error('supplyLink requires a linkId');
   if (!merchantId) throw new Error('supplyLink requires a merchantId');
   if (!paymentLink || !String(paymentLink).trim()) {
     return { ok: false, reason: 'LINK_REQUIRED', message: 'A cash link cannot be empty — paste the link the ATM produced.' };
   }
-  if (!(expiresAt instanceof Date) || Number.isNaN(expiresAt.getTime())) {
-    throw new TypeError('supplyLink requires an expiresAt Date');
+  // A LIFETIME, dated by the database. It took an absolute `expiresAt` the
+  // service computed from the APP's clock, while `cash_link_expiry_after_creation`
+  // compares it with `created_at`, the DATABASE's `now()`: a server running
+  // behind the database refused every link as "expires in the past". One clock,
+  // one statement. A non-positive lifetime is still refused by that CHECK.
+  if (!Number.isFinite(expiresInMs)) {
+    throw new TypeError('supplyLink requires expiresInMs, a lifetime in milliseconds');
   }
 
   try {
     const { rows } = await pgQuery(
       `INSERT INTO cash_link_queue
          (link_id, merchant_id, denomination_paise, payment_link, status, expires_at)
-       VALUES ($1, $2, $3, $4, 'LIVE', $5)
+       VALUES ($1, $2, $3, $4, 'LIVE', now() + make_interval(secs => $5::numeric / 1000))
        RETURNING *`,
       [String(linkId), String(merchantId), Number(denominationPaise),
-       String(paymentLink).trim(), expiresAt],
+       String(paymentLink).trim(), expiresInMs],
       'cash_link_supply',
     );
     return { ok: true, link: toLink(rows[0]) };

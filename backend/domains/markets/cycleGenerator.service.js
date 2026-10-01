@@ -17,6 +17,7 @@ import {
   isCycleType, cycleMeta, cycleLabel, phasesFor,
 } from './cycleTypes.js';
 import { getSystemConfig } from '#db/repositories/config.js';
+import { emitToStaff } from '../notification/staffEventAreas.js';
 
 // ── CYCLE PHASE OFFSETS (Business Config Audit, 2026-07-11) ───────────────────
 // Seconds BEFORE a cycle's endTime that each phase fires. Previously hardcoded
@@ -195,7 +196,7 @@ class CycleGenerator {
 
     
     emitAdmin(event, data) {
-        this.io?.to('admin-room').emit(event, data);
+        emitToStaff(this.io, event, data);
     }
 
     

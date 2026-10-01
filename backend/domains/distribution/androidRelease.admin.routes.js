@@ -16,7 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import express from 'express';
 import { db } from '#db';
-import { authenticate, isAdmin } from '../identity/auth.middleware.js';
+import { authenticate, hasPermission } from '../identity/auth.middleware.js';
 import { inspectApk } from './apkInspector.js';
 import { deleteFile } from '../../services/cdn.service.js';
 import { respondError, serverError } from '../../shared/httpError.js';
@@ -39,7 +39,7 @@ function audit(req, action, release, details) {
 
 const router = express.Router();
 
-router.get('/android/releases', authenticate, isAdmin, async (req, res) => {
+router.get('/android/releases', authenticate, hasPermission('canManageAndroidApp'), async (req, res) => {
   try {
     const [releases, policy] = await Promise.all([db.androidReleases.listReleases(expectedPackage()), db.androidReleases.getUpdatePolicy(expectedPackage())]);
     res.json({
@@ -70,7 +70,7 @@ async function discardStored({ storage, fileKey }) {
 // The body is the APK itself — no base64, no multipart parser. Scoped to this
 // one route so no other path accepts a 150 MB body.
 router.post('/android/releases',
-  authenticate, isAdmin,
+  authenticate, hasPermission('canManageAndroidApp'),
   express.raw({ type: () => true, limit: MAX_APK_BYTES }),
   async (req, res) => {
     try {
@@ -143,7 +143,7 @@ router.post('/android/releases',
     }
   });
 
-router.patch('/android/releases/:id', authenticate, isAdmin, async (req, res) => {
+router.patch('/android/releases/:id', authenticate, hasPermission('canManageAndroidApp'), async (req, res) => {
   try {
     const { releaseNotes, mandatory } = req.body || {};
     if (releaseNotes !== undefined && (typeof releaseNotes !== 'string' || releaseNotes.length > 4000)) {
@@ -167,7 +167,7 @@ router.patch('/android/releases/:id', authenticate, isAdmin, async (req, res) =>
   }
 });
 
-router.post('/android/releases/:id/publish', authenticate, isAdmin, async (req, res) => {
+router.post('/android/releases/:id/publish', authenticate, hasPermission('canManageAndroidApp'), async (req, res) => {
   try {
     const out = await db.androidReleases.publishRelease(req.params.id, req.user.userId);
     if (out.refused === 'not_found') return refused(res, 404, 'Release not found.');
@@ -198,7 +198,7 @@ router.post('/android/releases/:id/publish', authenticate, isAdmin, async (req, 
 // phones are pointed back at the newest release that is not halted, and the
 // download link follows. Players who already installed it keep it until a
 // newer release reaches them; the screen says so.
-router.post('/android/releases/:id/halt', authenticate, isAdmin, async (req, res) => {
+router.post('/android/releases/:id/halt', authenticate, hasPermission('canManageAndroidApp'), async (req, res) => {
   try {
     const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : '';
     if (reason.length < 3 || reason.length > 500) {
@@ -222,7 +222,7 @@ router.post('/android/releases/:id/halt', authenticate, isAdmin, async (req, res
   }
 });
 
-router.post('/android/releases/:id/resume', authenticate, isAdmin, async (req, res) => {
+router.post('/android/releases/:id/resume', authenticate, hasPermission('canManageAndroidApp'), async (req, res) => {
   try {
     const out = await db.androidReleases.resumeRelease(req.params.id);
     if (out.refused === 'not_found') return refused(res, 404, 'Release not found.');
@@ -234,7 +234,7 @@ router.post('/android/releases/:id/resume', authenticate, isAdmin, async (req, r
   }
 });
 
-router.delete('/android/releases/:id', authenticate, isAdmin, async (req, res) => {
+router.delete('/android/releases/:id', authenticate, hasPermission('canManageAndroidApp'), async (req, res) => {
   try {
     const existing = await db.androidReleases.getRelease(req.params.id);
     if (!existing) return refused(res, 404, 'Release not found.');

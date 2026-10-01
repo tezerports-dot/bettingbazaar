@@ -17,7 +17,7 @@
  */
 import express from 'express';
 import { db } from '#db';
-import { authenticate, isAdmin, isAdminOrSubAdmin } from '../domains/identity/auth.middleware.js';
+import { authenticate, hasPermission } from '../domains/identity/auth.middleware.js';
 import { sealCredential } from '../domains/casino/providerCredentials.js';
 
 const router = express.Router();
@@ -44,7 +44,7 @@ const router = express.Router();
  */
 
 // Admin: the full settings, with credential PRESENCE but no credentials.
-router.get('/admin/config', authenticate, isAdmin, async (req, res) => {
+router.get('/admin/config', authenticate, hasPermission('canManagePaymentSystem'), async (req, res) => {
   try {
     res.json({ success: true, config: await db.paymentConfig.getGatewayConfigForAdmin() });
   } catch (err) {
@@ -53,7 +53,7 @@ router.get('/admin/config', authenticate, isAdmin, async (req, res) => {
   }
 });
 
-router.put('/admin/config', authenticate, isAdmin, async (req, res) => {
+router.put('/admin/config', authenticate, hasPermission('canManagePaymentSystem'), async (req, res) => {
   try {
     const b = req.body || {};
     const patch = {
@@ -107,7 +107,7 @@ router.put('/admin/config', authenticate, isAdmin, async (req, res) => {
  * The credentials are fetched by name and stay in this function. The response
  * says configured or not; it never echoes what it checked.
  */
-router.post('/admin/test-gateway', authenticate, isAdmin, async (req, res) => {
+router.post('/admin/test-gateway', authenticate, hasPermission('canManagePaymentSystem'), async (req, res) => {
   try {
     const [cfg, secrets] = await Promise.all([
       db.paymentConfig.getGatewayConfig(),

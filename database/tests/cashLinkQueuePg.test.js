@@ -37,7 +37,6 @@ const describePg = pgConfigured() ? describe : describe.skip;
 describePg('the ATM cash-link queue', () => {
   let seq = 0;
   const uid = (p) => `${p}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}-${seq += 1}`;
-  const inMinutes = (m) => new Date(Date.now() + m * 60_000);
 
   /**
    * A REAL, eligible merchant row.
@@ -131,13 +130,13 @@ describePg('the ATM cash-link queue', () => {
     const m = await merchant({ denominationPaise: 500_000 });
     const first = await supplyLink({
       linkId: uid('lnk'), merchantId: m, denominationPaise: 500_000,
-      paymentLink: 'upi://pay?am=5000', expiresAt: inMinutes(2),
+      paymentLink: 'upi://pay?am=5000', expiresInMs: 2 * 60_000,
     });
     expect(first.ok).toBe(true);
 
     const second = await supplyLink({
       linkId: uid('lnk'), merchantId: m, denominationPaise: 500_000,
-      paymentLink: 'upi://pay?am=5000', expiresAt: inMinutes(2),
+      paymentLink: 'upi://pay?am=5000', expiresInMs: 2 * 60_000,
     });
     expect(second.ok).toBe(false);
     expect(second.reason).toBe('LINK_ALREADY_LIVE');
@@ -146,7 +145,7 @@ describePg('the ATM cash-link queue', () => {
     await cancelLink(first.link.linkId, m);
     const third = await supplyLink({
       linkId: uid('lnk'), merchantId: m, denominationPaise: 500_000,
-      paymentLink: 'upi://pay?am=5000', expiresAt: inMinutes(2),
+      paymentLink: 'upi://pay?am=5000', expiresInMs: 2 * 60_000,
     });
     expect(third.ok).toBe(true);
 
@@ -178,7 +177,7 @@ describePg('the ATM cash-link queue', () => {
     for (const [who, size] of [[big, 4_000_000], [middle, 1_000_000]]) {
       const r = await supplyLink({
         linkId: uid('lnk'), merchantId: who, denominationPaise: size,
-        paymentLink: `upi://pay?am=${size / 100}`, expiresAt: inMinutes(5),
+        paymentLink: `upi://pay?am=${size / 100}`, expiresInMs: 5 * 60_000,
       });
       expect(r.ok).toBe(true);
       supplied.push([r.link.linkId, who]);
@@ -195,7 +194,7 @@ describePg('the ATM cash-link queue', () => {
     // being broken outright.
     const exact = await supplyLink({
       linkId: uid('lnk'), merchantId: await merchant({ denominationPaise: 500_000 }),
-      denominationPaise: 500_000, paymentLink: 'upi://pay?am=5000', expiresAt: inMinutes(5),
+      denominationPaise: 500_000, paymentLink: 'upi://pay?am=5000', expiresInMs: 5 * 60_000,
     });
     expect(exact.ok).toBe(true);
     const matched = await claimLinkForOrder({
@@ -225,7 +224,7 @@ describePg('the ATM cash-link queue', () => {
     for (let i = 0; i < 4; i += 1) {
       const r = await supplyLink({
         linkId: uid('lnk'), merchantId: await merchant({ denominationPaise: denomination }), denominationPaise: denomination,
-        paymentLink: `upi://pay?am=1000&i=${i}`, expiresAt: inMinutes(5),
+        paymentLink: `upi://pay?am=1000&i=${i}`, expiresInMs: 5 * 60_000,
       });
       expect(r.ok).toBe(true);
       links.push(r.link.linkId);
@@ -248,7 +247,7 @@ describePg('the ATM cash-link queue', () => {
     const denomination = 4_000_000;
     const r = await supplyLink({
       linkId: uid('lnk'), merchantId: await merchant({ denominationPaise: denomination }), denominationPaise: denomination,
-      paymentLink: 'upi://pay?am=40000', expiresAt: inMinutes(5),
+      paymentLink: 'upi://pay?am=40000', expiresInMs: 5 * 60_000,
     });
     expect(r.ok).toBe(true);
 
@@ -268,7 +267,7 @@ describePg('the ATM cash-link queue', () => {
     const denomination = 50_000;
     const supplied = await supplyLink({
       linkId: uid('lnk'), merchantId: await merchant({ denominationPaise: denomination }), denominationPaise: denomination,
-      paymentLink: 'upi://pay?am=500', expiresAt: inMinutes(5),
+      paymentLink: 'upi://pay?am=500', expiresInMs: 5 * 60_000,
     });
     const orderId = await orderAt(denomination);
     const claim = await claimLinkForOrder({ orderId, denominationPaise: denomination, minRemainingSeconds: 60 });
@@ -284,7 +283,7 @@ describePg('the ATM cash-link queue', () => {
     const denomination = 50_000;
     await supplyLink({
       linkId: uid('lnk'), merchantId: await merchant({ denominationPaise: denomination }), denominationPaise: denomination,
-      paymentLink: 'upi://pay?am=500', expiresAt: inMinutes(5),
+      paymentLink: 'upi://pay?am=500', expiresInMs: 5 * 60_000,
     });
     const orderId = await orderAt(denomination);
     expect((await claimLinkForOrder({ orderId, denominationPaise: denomination, minRemainingSeconds: 60 })).ok).toBe(true);
@@ -292,7 +291,7 @@ describePg('the ATM cash-link queue', () => {
     // A second link for the same order would send the player two places.
     const spare = await supplyLink({
       linkId: uid('lnk'), merchantId: await merchant({ denominationPaise: denomination }), denominationPaise: denomination,
-      paymentLink: 'upi://pay?am=500', expiresAt: inMinutes(5),
+      paymentLink: 'upi://pay?am=500', expiresInMs: 5 * 60_000,
     });
     const again = await claimLinkForOrder({ orderId, denominationPaise: denomination, minRemainingSeconds: 60 });
     expect(again.ok).toBe(false);
@@ -318,7 +317,7 @@ describePg('the ATM cash-link queue', () => {
     const denomination = 100_000;
     const supplied = await supplyLink({
       linkId: uid('lnk'), merchantId: await merchant({ denominationPaise: denomination }), denominationPaise: denomination,
-      paymentLink: 'upi://pay?am=1000', expiresAt: inMinutes(5),
+      paymentLink: 'upi://pay?am=1000', expiresInMs: 5 * 60_000,
     });
     expect(supplied.ok).toBe(true);
 
@@ -347,7 +346,7 @@ describePg('the ATM cash-link queue', () => {
     // Alive, but only 30 seconds left.
     await supplyLink({
       linkId: uid('lnk'), merchantId: await merchant({ denominationPaise: denomination }), denominationPaise: denomination,
-      paymentLink: 'upi://pay?am=10000', expiresAt: new Date(Date.now() + 30_000),
+      paymentLink: 'upi://pay?am=10000', expiresInMs: 30_000,
     });
 
     const tooLate = await claimLinkForOrder({
@@ -375,7 +374,7 @@ describePg('the ATM cash-link queue', () => {
     // survive a full-tier run earlier on this branch.
     const mine = await supplyLink({
       linkId: uid('lnk'), merchantId: await merchant({ denominationPaise: 100_000 }), denominationPaise: 100_000,
-      paymentLink: 'upi://pay?am=1000', expiresAt: inMinutes(5),
+      paymentLink: 'upi://pay?am=1000', expiresInMs: 5 * 60_000,
     });
     expect(mine.ok).toBe(true);
 
@@ -404,7 +403,7 @@ describePg('the ATM cash-link queue', () => {
     // and quietly promise a player four times what they paid for.
     const big = await supplyLink({
       linkId: uid('lnk'), merchantId: await merchant({ denominationPaise: 4_000_000 }), denominationPaise: 4_000_000,
-      paymentLink: 'upi://pay?am=40000', expiresAt: inMinutes(1),
+      paymentLink: 'upi://pay?am=40000', expiresInMs: 1 * 60_000,
     });
     expect(big.ok).toBe(true);
 
@@ -432,7 +431,7 @@ describePg('the ATM cash-link queue', () => {
     const m = await merchant({ denominationPaise: 50_000 });
     const stale = await supplyLink({
       linkId: uid('lnk'), merchantId: m, denominationPaise: 50_000,
-      paymentLink: 'upi://pay?am=500', expiresAt: new Date(Date.now() + 500),
+      paymentLink: 'upi://pay?am=500', expiresInMs: 500,
     });
     expect(stale.ok).toBe(true);
     await new Promise((r) => setTimeout(r, 900));
@@ -448,7 +447,7 @@ describePg('the ATM cash-link queue', () => {
     expect(await getLiveLinkFor(m)).toBeNull();
     const fresh = await supplyLink({
       linkId: uid('lnk'), merchantId: m, denominationPaise: 50_000,
-      paymentLink: 'upi://pay?am=500', expiresAt: inMinutes(2),
+      paymentLink: 'upi://pay?am=500', expiresInMs: 2 * 60_000,
     });
     expect(fresh.ok).toBe(true);
   });
@@ -485,7 +484,7 @@ describePg('the ATM cash-link queue', () => {
     const linkFrom = async (merchantId) => {
       const supplied = await supplyLink({
         linkId: uid('lnk'), merchantId, denominationPaise: DEN,
-        paymentLink: 'upi://pay?am=1000', expiresAt: inMinutes(5),
+        paymentLink: 'upi://pay?am=1000', expiresInMs: 5 * 60_000,
       });
       expect(supplied.ok, 'the link was not supplied — the test proves nothing').toBe(true);
       return supplied;
@@ -593,7 +592,7 @@ describePg('the ATM cash-link queue', () => {
     // The wasted merchant drove out and nobody took it.
     const dead = await supplyLink({
       linkId: uid('lnk'), merchantId: wasted, denominationPaise: denomination,
-      paymentLink: 'upi://pay?am=40000', expiresAt: new Date(Date.now() + 400),
+      paymentLink: 'upi://pay?am=40000', expiresInMs: 400,
     });
     expect(dead.ok).toBe(true);
     await new Promise((r) => setTimeout(r, 800));
@@ -603,11 +602,11 @@ describePg('the ATM cash-link queue', () => {
     // the priority the oldest-first rule would take theirs.
     const freshLink = await supplyLink({
       linkId: uid('lnk'), merchantId: fresh, denominationPaise: denomination,
-      paymentLink: 'upi://pay?am=40000', expiresAt: inMinutes(2),
+      paymentLink: 'upi://pay?am=40000', expiresInMs: 2 * 60_000,
     });
     const wastedLink = await supplyLink({
       linkId: uid('lnk'), merchantId: wasted, denominationPaise: denomination,
-      paymentLink: 'upi://pay?am=40000', expiresAt: inMinutes(9),
+      paymentLink: 'upi://pay?am=40000', expiresInMs: 9 * 60_000,
     });
     expect(freshLink.ok && wastedLink.ok).toBe(true);
 
@@ -623,7 +622,7 @@ describePg('the ATM cash-link queue', () => {
     // everybody forever.
     const secondWasted = await supplyLink({
       linkId: uid('lnk'), merchantId: wasted, denominationPaise: denomination,
-      paymentLink: 'upi://pay?am=40000', expiresAt: inMinutes(9),
+      paymentLink: 'upi://pay?am=40000', expiresInMs: 9 * 60_000,
     });
     expect(secondWasted.ok).toBe(true);
 
@@ -647,7 +646,7 @@ describePg('the ATM cash-link queue', () => {
     // merchant to an ATM for work that no longer exists.
     await supplyLink({
       linkId: uid('lnk'), merchantId: await merchant({ denominationPaise: denomination }), denominationPaise: denomination,
-      paymentLink: 'upi://pay?am=5000', expiresAt: inMinutes(5),
+      paymentLink: 'upi://pay?am=5000', expiresInMs: 5 * 60_000,
     });
     const claim = await claimLinkForOrder({
       orderId: await orderAt(denomination), denominationPaise: denomination, minRemainingSeconds: 60,
@@ -681,7 +680,7 @@ describePg('the ATM cash-link queue', () => {
     await orderAt(denomination);
     const supplied = await supplyLink({
       linkId: uid('lnk'), merchantId: await merchant({ denominationPaise: denomination }), denominationPaise: denomination,
-      paymentLink: 'upi://pay?am=10000', expiresAt: inMinutes(5),
+      paymentLink: 'upi://pay?am=10000', expiresInMs: 5 * 60_000,
     });
     expect(supplied.ok).toBe(true);
 
@@ -700,14 +699,14 @@ describePg('the ATM cash-link queue', () => {
     const m = await merchant({ denominationPaise: 50_000 });
     const empty = await supplyLink({
       linkId: uid('lnk'), merchantId: m, denominationPaise: 50_000,
-      paymentLink: '   ', expiresAt: inMinutes(2),
+      paymentLink: '   ', expiresInMs: 2 * 60_000,
     });
     expect(empty.ok).toBe(false);
     expect(empty.reason).toBe('LINK_REQUIRED');
 
     const past = await supplyLink({
       linkId: uid('lnk'), merchantId: m, denominationPaise: 50_000,
-      paymentLink: 'upi://pay?am=500', expiresAt: new Date(Date.now() - 60_000),
+      paymentLink: 'upi://pay?am=500', expiresInMs: -60_000,
     });
     expect(past.ok).toBe(false);
     expect(past.reason).toBe('ALREADY_EXPIRED');

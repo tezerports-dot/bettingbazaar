@@ -355,8 +355,9 @@ export async function loginTwoFactorHandler(req, res) {
 
 // The two handlers above are NOT registered on this router. They are mounted by
 // server.js at /api/admin/login and /api/admin/login/2fa, on the admin rate
-// limit tier. /api/v1/auth/login and /api/v1/auth/register used to exist here
-// for players and are gone: a player's only door is the Telegram bot.
+// limit tier. The PLAYER door mounts the same two handlers in
+// playerAuth.routes.js with `req.loginDoor = LOGIN_DOOR.PLAYER` (§33: signing
+// in is a form; Telegram verifies, it does not authenticate).
 
 // ── GET /me — session restore on every page load ─────────────────────────────
 router.get('/me', async (req, res) => {

@@ -9,15 +9,8 @@ import { formatters } from '../../utils/formatters';
 import api from '../../services/api';
 import type { User } from '../../types';
 import toast from 'react-hot-toast';
-import { PERMISSION_KEYS, DEFAULT_PERMISSIONS, PERMISSION_LABELS, PERMISSION_DESCRIPTIONS } from '../../utils/permissions'; // GOVERNANCE.md M-1
-
-
-// Derived from shared module — never define permission keys inline here
-const PERMISSIONS = PERMISSION_KEYS.map(key => ({
-  key,
-  label:       PERMISSION_LABELS[key],
-  description: PERMISSION_DESCRIPTIONS[key],
-}));
+import { DEFAULT_PERMISSIONS, type StaffPermissionCatalog } from '../../utils/permissions';
+import { PermissionPicker } from './PermissionPicker';
 
 
 export const SubAdminsList: React.FC = () => {
@@ -51,7 +44,20 @@ export const SubAdminsList: React.FC = () => {
     'NONE'
   );
 
-  useEffect(() => { loadSubAdmins(); loadQueueManagers(); }, []);
+  // The list an admin picks from is the SERVER's (staffPermissions.js): every
+  // area, its description, and whether it moves money.
+  const [catalog, setCatalog] = useState<StaffPermissionCatalog | null>(null);
+  const [catalogError, setCatalogError] = useState<string | null>(null);
+  const loadCatalog = async () => {
+    try {
+      setCatalog(await api.subAdmins.permissionCatalog());
+      setCatalogError(null);
+    } catch (e: any) {
+      setCatalogError(e.response?.data?.message || 'The permission list could not be loaded.');
+    }
+  };
+
+  useEffect(() => { loadSubAdmins(); loadQueueManagers(); loadCatalog(); }, []);
 
   /**
    * Queue-manager authority — a separate grant from sub-admin permissions.
@@ -151,8 +157,7 @@ export const SubAdminsList: React.FC = () => {
     setFormData({ username: '', mobile: '', password: '', permissions: { ...DEFAULT_PERMISSIONS } });
   };
 
-  const permLabel = (key: string) =>
-    PERMISSIONS.find((p) => p.key === key)?.label || key.replace('can', '').replace(/([A-Z])/g, ' $1').trim();
+  const permLabel = (key: string) => catalog?.permissions.find((p) => p.key === key)?.label ?? key;
 
   const columns = [
     {
@@ -170,7 +175,7 @@ export const SubAdminsList: React.FC = () => {
       label: 'Permissions',
       render: (user: User) => {
         const perms = user.subAdminPermissions || {};
-        const activePerms = PERMISSION_KEYS.filter((k) => perms[k as keyof typeof perms]);
+        const activePerms = Object.keys(perms).filter((k) => (perms as Record<string, boolean>)[k] === true);
         return (
           <div className="flex flex-wrap gap-1 max-w-xs">
             {activePerms.length === 0 ? (
@@ -298,18 +303,12 @@ export const SubAdminsList: React.FC = () => {
         )}
       </div>
 
-      {/* Permission Reference */}
-      <div className="bg-dark-800 border border-dark-600 rounded-lg p-4">
-        <p className="text-sm font-semibold text-gray-300 mb-3">Permission Reference</p>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-          {PERMISSIONS.map((p) => (
-            <div key={p.key} className="flex items-start gap-2 text-xs">
-              <span className="text-purple-400 font-medium whitespace-nowrap">{p.label}:</span>
-              <span className="text-gray-500">{p.description}</span>
-            </div>
-          ))}
+      {catalogError && (
+        <div role="alert" className="bg-red-500/10 border border-red-500/30 rounded-lg p-3 text-sm text-red-300 flex items-center justify-between gap-3">
+          <span>{catalogError} Sub-admins cannot be created or edited until it loads.</span>
+          <button type="button" className="btn-secondary text-xs" onClick={loadCatalog}>Try again</button>
         </div>
-      </div>
+      )}
 
       {/* Phantom Access Reference */}
       <div className="bg-orange-500/10 border border-orange-500/30 rounded-lg p-4 text-sm">
@@ -379,30 +378,15 @@ export const SubAdminsList: React.FC = () => {
             />
           </div>
           <div>
-            <label className="label mb-3">Initial Permissions</label>
-            <div className="space-y-3">
-              {PERMISSIONS.map((perm) => (
-                <label key={perm.key} className="flex items-start space-x-3 cursor-pointer p-2 hover:bg-dark-700 rounded-lg">
-                  <input
-                    type="checkbox"
-                    checked={(formData.permissions as any)[perm.key] || false}
-                    onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        permissions: { ...formData.permissions, [perm.key]: e.target.checked },
-                      })
-                    }
-                    className="w-4 h-4 mt-0.5 shrink-0"
-                  />
-                  <div>
-                    <p className="text-sm font-medium">{perm.label}</p>
-                    <p className="text-xs text-gray-500">{perm.description}</p>
-                  </div>
-                </label>
-              ))}
-            </div>
+            <p className="label mb-3">Permissions — the areas this sub-admin can work in</p>
+            <PermissionPicker
+              idPrefix="create-perm"
+              catalog={catalog}
+              value={formData.permissions}
+              onChange={(permissions) => setFormData({ ...formData, permissions })}
+            />
           </div>
-          <button type="submit" className="w-full btn-primary">
+          <button type="submit" className="w-full btn-primary disabled:opacity-50" disabled={!catalog}>
             Create Sub-Admin
           </button>
         </form>
@@ -417,33 +401,19 @@ export const SubAdminsList: React.FC = () => {
         >
           <div className="space-y-4">
             <p className="text-sm text-gray-400">
-              Toggle which admin panel features this sub-admin can access. Changes take effect on
-              their next login.
+              Tick the areas this sub-admin can work in. The server applies the change
+              immediately and closes their live feeds; their sidebar updates the next
+              time they load the panel.
             </p>
-            <div className="space-y-3">
-              {PERMISSIONS.map((perm) => (
-                <label
-                  key={perm.key}
-                  className="flex items-start space-x-3 cursor-pointer p-2 hover:bg-dark-700 rounded-lg"
-                >
-                  <input
-                    type="checkbox"
-                    checked={editPermissions[perm.key] || false}
-                    onChange={(e) =>
-                      setEditPermissions({ ...editPermissions, [perm.key]: e.target.checked })
-                    }
-                    className="w-4 h-4 mt-0.5 shrink-0 accent-purple-500"
-                  />
-                  <div>
-                    <p className="text-sm font-medium">{perm.label}</p>
-                    <p className="text-xs text-gray-500">{perm.description}</p>
-                  </div>
-                </label>
-              ))}
-            </div>
+            <PermissionPicker
+              idPrefix="edit-perm"
+              catalog={catalog}
+              value={editPermissions}
+              onChange={setEditPermissions}
+            />
             <button
               onClick={handleSavePermissions}
-              disabled={isSavingPermissions}
+              disabled={isSavingPermissions || !catalog}
               className="w-full btn-primary disabled:opacity-50"
             >
               {isSavingPermissions ? 'Saving…' : 'Save Permissions'}

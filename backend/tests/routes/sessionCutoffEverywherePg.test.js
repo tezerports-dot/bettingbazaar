@@ -30,7 +30,7 @@ async function connectSocket(token) {
   const socket = {
     id: 'rt-socket', handshake: { headers: {}, auth: { token } },
     on: (event, fn) => { handlers[event] = fn; },
-    emit: () => {}, join: (room) => joined.push(room), leave: () => {},
+    emit: () => {}, join: (room) => joined.push(...[room].flat()), leave: () => {},
   };
   let connect;
   attachSocketHandlers(
@@ -73,7 +73,9 @@ describePg('a superseded session is refused everywhere', () => {
     const admin = await actor({ isAdmin: true });
     const live = await connectSocket(admin.token);
     await live.handlers.join_admin_room({});
-    expect(live.joined).toEqual(['admin-room']);
+    // One room per area since 2026-10-01; a full admin's is the admin room,
+    // plus the personal room a permission change disconnects.
+    expect(live.joined).toEqual([`staff:${admin.userId}`, 'staff-area:admin']);
 
     await new Promise((r) => setTimeout(r, 1100));
     await supersede(admin.userId);

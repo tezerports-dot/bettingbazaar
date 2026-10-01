@@ -266,6 +266,9 @@ export interface MerchantProfile {
   walletBalance?: number;
   fiatBalance?: number;
   tokenBalance?: number;  // BB token wallet — funded by admin, shown on Dashboard
+  // Set when the platform stopped offering them new buy orders (three unpaid in
+  // a row); null otherwise. GET /api/merchant/profile, formatMerchant.
+  assignmentPausedAt?: string | null;
   
   // Limits (REAL from backend Merchant.limits)
   limits?: {

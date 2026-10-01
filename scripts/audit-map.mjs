@@ -82,9 +82,8 @@ function routes() {
   return out;
 }
 
-const AUTH = new Set(['authenticate', 'merchantAuth', 'isAdmin', 'isAdminOrSubAdmin',
-  'isAdminOrSubAdminOrQueueManager', 'hasPermission', 'hasAllPermissions', 'hasAnyPermission',
-  'canManageSupport', 'orderAccessGuard', 'paymentActorAuth', 'checkResourcePermission',
+const AUTH = new Set(['authenticate', 'merchantAuth', 'isAdmin', 'hasPermission',
+  'orderAccessGuard', 'orderAccessGuardOrAdmin', 'paymentActorAuth',
   'requireChannelMembership', 'optionalAuth', 'queueManagerOrPermission']);
 
 /**
@@ -107,7 +106,7 @@ const AUTH = new Set(['authenticate', 'merchantAuth', 'isAdmin', 'isAdminOrSubAd
  * rather than the code (CLAUDE.md §28).
  */
 const isAuthGuard = (name) => AUTH.has(name) || /^authenticate[A-Z]/.test(name);
-const PERM = /^(hasPermission|hasAnyPermission|hasAllPermissions|checkResourcePermission|queueManagerOrPermission)$/;
+const PERM = /^(hasPermission|queueManagerOrPermission)$/;
 
 // ── SQL: interpolation into statement text ──────────────────────────────────
 // A parameterised query is safe by construction. An interpolated one is safe
@@ -175,11 +174,12 @@ function panels() {
 function facts() {
   const all = routes();
   const unauth = all.filter((r) => !r.mw.some((m) => isAuthGuard(m)));
-  // BOTH tier guards. Counting only the exact name `isAdminOrSubAdmin` hid
-  // seven routes on `isAdminOrSubAdminOrQueueManager`, three of them writes
-  // that route player money (F-042).
-  const TIER = new Set(['isAdminOrSubAdmin', 'isAdminOrSubAdminOrQueueManager']);
-  const subAdminNoKey = all.filter((r) => r.mw.some((m) => TIER.has(m)) && !r.mw.some((m) => PERM.test(m)));
+  // Full-admin-only routes. Since 2026-10-01 there is no "any sub-admin" gate
+  // left to count (`isAdminOrSubAdmin` and its queue variant are deleted, and
+  // `check:staff-permissions` refuses a staff route that names no area), so the
+  // question the map still owes a reader is the other half: which areas are
+  // NOT delegable, each one a decision recorded in ADMIN_ONLY_AREAS.
+  const adminOnly = all.filter((r) => r.mw.includes('isAdmin') && !r.mw.some((m) => PERM.test(m)));
   return {
     routes: {
       total: all.length,
@@ -191,9 +191,7 @@ function facts() {
       // precisely the failure it exists to prevent. It fires when a route
       // APPEARS, VANISHES or CHANGES SHAPE, and not otherwise.
       unauthenticatedList: unauth.map((r) => `${r.method} ${r.path}  (${r.file})`).sort(),
-      subAdminNoPermissionKey: subAdminNoKey.length,
-      subAdminNoPermissionKeyWrites: subAdminNoKey.filter((r) => r.method !== 'GET')
-        .map((r) => `${r.method} ${r.path}  (${r.file})`).sort(),
+      adminOnly: adminOnly.map((r) => `${r.method} ${r.path}  (${r.file})`).sort(),
       withPermissionKey: all.filter((r) => r.mw.some((m) => PERM.test(m))).length,
     },
     sql: (({ sites, ...rest }) => rest)(sql()),
@@ -216,9 +214,8 @@ function block(f) {
   L.push('|---|---|');
   L.push(`| Route declarations in \`backend/**\` | ${f.routes.total} |`);
   L.push(`| Reachable with **no auth middleware** | ${f.routes.unauthenticated} |`);
-  L.push(`| Gated \`isAdminOrSubAdmin\` with **no permission key** | ${f.routes.subAdminNoPermissionKey} |`);
-  L.push(`| — of those, **writes** (non-GET) | ${f.routes.subAdminNoPermissionKeyWrites.length} |`);
-  L.push(`| Carrying an explicit permission key | ${f.routes.withPermissionKey} |`);
+  L.push(`| Staff routes carrying an **area** (permission key) | ${f.routes.withPermissionKey} |`);
+  L.push(`| Staff routes a sub-admin can **never** be given (full admin only) | ${f.routes.adminOnly.length} |`);
   L.push('');
   L.push('A count moving is not by itself a defect — it is a prompt to read the');
   L.push('new route and decide. Each of the three questions is defined in §2.');
@@ -229,10 +226,10 @@ function block(f) {
   L.push('');
   L.push('</details>');
   L.push('');
-  L.push('<details><summary>Writes any sub-admin can make without holding a permission key</summary>');
+  L.push('<details><summary>Staff routes only a full admin can use (each must be in ADMIN_ONLY_AREAS, with its reason)</summary>');
   L.push('');
-  if (!f.routes.subAdminNoPermissionKeyWrites.length) L.push('- _none_');
-  for (const r of f.routes.subAdminNoPermissionKeyWrites) L.push(`- \`${r}\``);
+  if (!f.routes.adminOnly.length) L.push('- _none_');
+  for (const r of f.routes.adminOnly) L.push(`- \`${r}\``);
   L.push('');
   L.push('</details>');
   L.push('');
@@ -288,7 +285,7 @@ if (argv.includes('--check')) {
   if (current === fresh) {
     console.log(`✅ ${rel(MAP)} matches the codebase.`);
     console.log(`   ${f.routes.total} routes · ${f.routes.unauthenticated} unauthenticated · ` +
-                `${f.routes.subAdminNoPermissionKey} sub-admin routes with no permission key · ` +
+                `${f.routes.withPermissionKey} staff routes by area, ${f.routes.adminOnly.length} admin-only · ` +
                 `${f.sql.interpolating}/${f.sql.total} SQL sites interpolating`);
     process.exit(0);
   }
@@ -309,5 +306,5 @@ if (argv.includes('--check')) {
 writeFileSync(MAP, doc.slice(0, i) + fresh + doc.slice(j + END.length));
 console.log(`✅ Rewrote the generated block in ${rel(MAP)}.`);
 console.log(`   ${f.routes.total} routes · ${f.routes.unauthenticated} unauthenticated · ` +
-            `${f.routes.subAdminNoPermissionKey} sub-admin routes with no permission key · ` +
+            `${f.routes.withPermissionKey} staff routes by area, ${f.routes.adminOnly.length} admin-only · ` +
             `${f.sql.interpolating}/${f.sql.total} SQL sites interpolating`);

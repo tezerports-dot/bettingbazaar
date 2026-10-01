@@ -392,7 +392,7 @@ describePg('a buy order HOLDS the merchant\'s tokens', () => {
       const supplied = await supplyLink({
         linkId: `esc-lnk-${RUN}-${seq}`, merchantId: m.merchantId,
         denominationPaise: DENOM, paymentLink: 'upi://pay?pa=atm@bank&am=40000',
-        expiresAt: new Date(Date.now() + 5 * 60_000),
+        expiresInMs: 5 * 60_000,
       });
       expect(supplied.ok, `link not supplied: ${supplied.reason}`).toBe(true);
 

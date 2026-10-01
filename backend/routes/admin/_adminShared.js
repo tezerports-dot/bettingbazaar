@@ -18,19 +18,17 @@
  * routes changed instead.
  */
 import express from 'express';
-import { authenticate, isAdmin, isAdminOrSubAdmin, hasPermission, hasAnyPermission } from '../../domains/identity/auth.middleware.js';
+import { authenticate, isAdmin, hasPermission } from '../../domains/identity/auth.middleware.js';
 
-export { express, authenticate, isAdmin, isAdminOrSubAdmin, hasPermission, hasAnyPermission };
-
-export const isAdminOrSubAdminOrQueueManager = (req, res, next) => {
-  if (!req.user || (!req.user.isAdmin && !req.user.isSubAdmin && !req.user.isQueueManager)) {
-    return res.status(403).json({ success: false, message: 'Access denied' });
-  }
-  next();
-};
+export { express, authenticate, isAdmin, hasPermission };
 
 /**
- * A queue WRITE: admins, queue managers, and sub-admins holding `permission`.
+ * The payment queue: admins, queue managers, and sub-admins holding `permission`.
+ *
+ * Every queue route, read and write, asks this — and only this. Three of them
+ * used to ask it AND then refuse any sub-admin inside the handler, so the
+ * Queue Manager screen the panel offered a sub-admin holding the key failed
+ * on load (2026-10-01). A role check after the gate is a second answer.
  *
  * `isAdminOrSubAdminOrQueueManager` is a TIER check, so on the three queue
  * writes (assign a queued order, reassign an order, edit the merchant pool) a
@@ -42,8 +40,11 @@ export const isAdminOrSubAdminOrQueueManager = (req, res, next) => {
  */
 export const queueManagerOrPermission = (permission) => {
   const byPermission = hasPermission(permission);
-  return (req, res, next) => {
-    if (req.user?.isQueueManager) return next();
+  const gate = (req, res, next) => {
+    if (req.user?.isQueueManager && !req.user?.isBlocked) return next();
     return byPermission(req, res, next);
   };
+  gate.permission = permission;
+  gate.queueManager = true;
+  return gate;
 };

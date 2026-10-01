@@ -600,11 +600,12 @@ describePg('payment routes', () => {
     expect(missing.status).toBe(404);
   });
 
-  it('lets an admin read any order', async () => {
+  it('keeps a player\'s order routes the player\'s: an admin reads orders through the admin routes', async () => {
+    // These routes admitted any staff account, so a sub-admin trusted with
+    // nothing but chat could read any player's order (2026-10-01). Staff work
+    // on orders through /api/admin, gated by area.
     const { orderId } = await depositOrder();
-    const res = await as(app, admin).get(`/order/${orderId}`);
-    expect(res.status).toBe(200);
-    expect(res.body.order.orderId).toBe(orderId);
+    expect((await as(app, admin).get(`/order/${orderId}`)).status).toBe(404);
   });
 
   // ── The polling endpoint ──────────────────────────────────────────────────

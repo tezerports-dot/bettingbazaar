@@ -4,6 +4,7 @@ import { Save, RefreshCw, TestTube, Zap, Server, CheckCircle, AlertCircle, Alert
 import api from '../../services/api';
 import toast from 'react-hot-toast';
 
+import { usePermissions } from '../../hooks/usePermission';
 // ── DisputeResolutionPanel (Section 5A) ───────────────────────────────────────
 // Pulls all DISPUTED orders, shows UTR / proof / parties, allows release or refund.
 const DisputeResolutionPanel: React.FC = () => {
@@ -130,6 +131,7 @@ const DisputeResolutionPanel: React.FC = () => {
 };
 
 export const PaymentControlCenter: React.FC = () => {
+  const canDisputes = usePermissions().can('canResolveDisputes');
   const [cfg, setCfg] = useState<any>(null);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -333,7 +335,8 @@ export const PaymentControlCenter: React.FC = () => {
       )}
 
       {/* Dispute Resolution Panel (Section 5A) */}
-      <DisputeResolutionPanel />
+      {/* The dispute queue is its own area; the payment system does not imply it. */}
+      {canDisputes && <DisputeResolutionPanel />}
     </div>
   );
 };

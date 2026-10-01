@@ -25,6 +25,7 @@ import { db } from '#db';
 // refused by the database rather than by whichever request finished last — and
 // the reason and reviewer land in the fields that are actually read.
 import { approveKyc, rejectKyc } from '../../domains/user/kycDecision.service.js';
+import { emitToStaff } from '../../domains/notification/staffEventAreas.js';
 
 const router = express.Router();
 
@@ -82,7 +83,7 @@ router.post('/kyc/:userId/approve', authenticate, hasPermission('canVerifyKYC'),
     // REALTIME: Notify admin room and user
     if (global.io) {
       const pendingCount = await db.kyc.countKycQueue();
-      global.io.to('admin-room').emit('kyc_update', {
+      emitToStaff(global.io, 'kyc_update', {
         userId: user.userId,
         newStatus: 'APPROVED',
         pendingCount,
@@ -148,7 +149,7 @@ router.post('/kyc/:userId/reject', authenticate, hasPermission('canVerifyKYC'), 
     // REALTIME: Notify admin room and user
     if (global.io) {
       const pendingCount = await db.kyc.countKycQueue();
-      global.io.to('admin-room').emit('kyc_update', {
+      emitToStaff(global.io, 'kyc_update', {
         userId: user.userId,
         newStatus: 'REJECTED',
         pendingCount,

@@ -317,16 +317,37 @@ export async function withCommissionRunLock(fn) {
   const pool = await getPool();
   if (!pool) throw new Error('Postgres not configured (DATABASE_URL unset)');
   const client = await connectGuarded(pool);
+  // ── The lock dies with the SESSION, so a doubtful session dies too ────────
+  // The unlock used to be best-effort (`.catch(() => {})`) and the connection
+  // went back to the pool either way. When the unlock failed, that pooled
+  // session kept the lock, and every later pass on any other connection was
+  // told "another pass is running" until the connection happened to be
+  // recycled: commission silently stopped being paid. Destroying the
+  // connection ends the session, and Postgres drops a session's advisory locks
+  // with it — so the lock is always released by one route or the other.
+  let destroy = false;
   try {
-    const { rows } = await client.query('SELECT pg_try_advisory_lock($1) AS got', [COMMISSION_RUN_LOCK]);
-    if (!rows[0].got) return { locked: false };
+    let got;
+    try {
+      ({ rows: [{ got }] } = await client.query('SELECT pg_try_advisory_lock($1) AS got', [COMMISSION_RUN_LOCK]));
+    } catch (error) {
+      // The lock request itself failed: whether this session holds the lock
+      // is unknown, so it is not pooled.
+      destroy = true;
+      throw error;
+    }
+    if (!got) return { locked: false };
     try {
       return { locked: true, value: await fn() };
     } finally {
-      await client.query('SELECT pg_advisory_unlock($1)', [COMMISSION_RUN_LOCK]).catch(() => {});
+      // `fn` runs on its own connections; whatever it did, this session's only
+      // job now is to give the lock back — confirmed, or the session goes.
+      const unlocked = await client.query('SELECT pg_advisory_unlock($1) AS released', [COMMISSION_RUN_LOCK])
+        .then((r) => r.rows[0]?.released === true, () => false);
+      if (!unlocked) destroy = true;
     }
   } finally {
-    client.release();
+    client.release(destroy);
   }
 }
 

@@ -6,8 +6,10 @@
  *
  * These collections were already modelled but had no admin surface — this file
  * adds the moderation + support-desk endpoints the "Chat & Support" console
- * needs. Gated by canManageSupport (a real sub-admin permission; full admins
- * always pass — see auth.middleware.hasPermission).
+ * needs. Two areas: chat moderation (`canModerateChat`) and support tickets
+ * (`canManageSupportTickets`). Every route here asked for `canManageSupport`
+ * while the screen was offered on `canModerateChatPublic`, so a sub-admin given
+ * the screen was refused by everything on it (2026-10-01).
  *
  * Scope note (GOVERNANCE §1): chat *rules/config* (cooldown, length, banned
  * words) are a single-owner authority — the ChatRoomConfig document — and are
@@ -19,7 +21,6 @@ import { express, hasPermission } from './_adminShared.js';
 import { db } from '#db';
 
 const router = express.Router();
-const canManageSupport = hasPermission('canManageSupport');
 
 /** Best-effort audit trail entry; never fails the request. */
 async function audit(req, { action, category, targetType, targetId, targetName, details }) {
@@ -42,7 +43,7 @@ async function audit(req, { action, category, targetType, targetId, targetName, 
 // ─── PUBLIC CHAT MODERATION ─────────────────────────────────────────────────
 
 // Recent public chat messages (newest first) for moderation.
-router.get('/chat/messages', canManageSupport, async (req, res) => {
+router.get('/chat/messages', hasPermission('canModerateChat'), async (req, res) => {
   try {
     const limit = Math.min(200, Math.max(1, parseInt(req.query.limit, 10) || 60));
     const messages = await db.social.moderationFeed({
@@ -57,7 +58,7 @@ router.get('/chat/messages', canManageSupport, async (req, res) => {
 });
 
 // Soft-delete a public chat message.
-router.post('/chat/messages/:id/delete', canManageSupport, async (req, res) => {
+router.post('/chat/messages/:id/delete', hasPermission('canModerateChat'), async (req, res) => {
   try {
     // One statement: the flag, the moderator and the timestamp cannot disagree,
     // and a message already deleted comes back false rather than being deleted
@@ -87,7 +88,7 @@ router.post('/chat/messages/:id/delete', canManageSupport, async (req, res) => {
  * and it lapsed — a list of only ACTIVE bans makes a repeat offender look like
  * a first-time one.
  */
-router.get('/chat/bans', canManageSupport, async (req, res) => {
+router.get('/chat/bans', hasPermission('canModerateChat'), async (req, res) => {
   try {
     const bans = await db.social.listChatBans();
     res.json({
@@ -102,7 +103,7 @@ router.get('/chat/bans', canManageSupport, async (req, res) => {
 });
 
 // Ban a user from public chat. `hours` omitted or 0 means permanent.
-router.post('/chat/ban', canManageSupport, async (req, res) => {
+router.post('/chat/ban', hasPermission('canModerateChat'), async (req, res) => {
   try {
     const { userId, reason, hours } = req.body || {};
     if (!userId) return res.status(400).json({ success: false, message: 'userId is required' });
@@ -133,7 +134,7 @@ router.post('/chat/ban', canManageSupport, async (req, res) => {
 });
 
 // Lift a chat ban.
-router.delete('/chat/ban/:userId', canManageSupport, async (req, res) => {
+router.delete('/chat/ban/:userId', hasPermission('canModerateChat'), async (req, res) => {
   try {
     // 404 rather than a silent success: this answered `{success:true}` whatever
     // came back, so lifting a ban that was never there looked identical to
@@ -163,7 +164,7 @@ router.delete('/chat/ban/:userId', canManageSupport, async (req, res) => {
  * Statuses are OPEN / ASSIGNED / WAITING_USER / RESOLVED / CLOSED. The filter
  * here passed lowercase, which the table's CHECK constraint refuses outright.
  */
-router.get('/support/tickets', canManageSupport, async (req, res) => {
+router.get('/support/tickets', hasPermission('canManageSupportTickets'), async (req, res) => {
   try {
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 50));
     const status = req.query.status ? String(req.query.status).toUpperCase() : null;
@@ -176,7 +177,7 @@ router.get('/support/tickets', canManageSupport, async (req, res) => {
 });
 
 // One ticket with its full message thread.
-router.get('/support/tickets/:id', canManageSupport, async (req, res) => {
+router.get('/support/tickets/:id', hasPermission('canManageSupportTickets'), async (req, res) => {
   try {
     const ticket = await db.social.getTicketWithUser(req.params.id);
     if (!ticket) return res.status(404).json({ success: false, message: 'Ticket not found' });
@@ -200,7 +201,7 @@ router.get('/support/tickets/:id', canManageSupport, async (req, res) => {
  * the save left a reply the player could see on a ticket that still looked
  * untouched.
  */
-router.post('/support/tickets/:id/reply', canManageSupport, async (req, res) => {
+router.post('/support/tickets/:id/reply', hasPermission('canManageSupportTickets'), async (req, res) => {
   try {
     const { content } = req.body || {};
     if (!String(content ?? '').trim()) {

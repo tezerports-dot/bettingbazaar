@@ -7,7 +7,7 @@
  * Mounted at /api/admin via routes/admin/index.js.
  */
 import {
-  authenticate, express, hasPermission, isAdmin, isAdminOrSubAdmin,
+  authenticate, express, hasPermission,
 } from '../../routes/admin/_adminShared.js';
 import { db } from '#db';
 import { listChannels } from './communication.service.js';
@@ -43,7 +43,7 @@ router.get('/communication/audit-feed', authenticate, hasPermission('canViewAnal
 
 // GET /api/admin/communication/admin-activity?hours=24
 // The Admin Activity Feed: what each admin actor did recently, grouped.
-router.get('/communication/admin-activity', authenticate, isAdmin, async (req, res) => {
+router.get('/communication/admin-activity', authenticate, hasPermission('canViewAuditLogs'), async (req, res) => {
   try {
     const hours = Math.min(24 * 30, Math.max(1, parseInt(req.query.hours) || 24));
     const since = new Date(Date.now() - hours * 60 * 60 * 1000);

@@ -97,7 +97,13 @@ router.post('/setup', authenticateForEnrolment, async (req, res) => {
     return res.status(409).json({
       success: false,
       code: '2FA_ALREADY_ENABLED',
-      message: 'Two-factor authentication is already active. Disable it first to re-enrol.',
+      // For a role where 2FA is mandatory, /disable refuses, so "disable it
+      // first" sent staff to a step that would refuse them (§32 S14). Players
+      // CAN disable, and are told so.
+      message: requires2FA(user)
+        ? 'Two-factor authentication is already active and is mandatory for your role. '
+          + 'If you have lost your authenticator, sign in with a recovery code, or ask an admin to re-enrol you.'
+        : 'Two-factor authentication is already active. Turn it off first if you want to set it up again.',
     });
   }
 

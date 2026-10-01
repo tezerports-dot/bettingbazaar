@@ -6,7 +6,7 @@
  * Mounted at /api/admin via routes/admin/index.js.
  */
 import {
-  authenticate, express, hasPermission, isAdmin, isAdminOrSubAdmin,
+  authenticate, express, hasPermission,
 } from '../../routes/admin/_adminShared.js';
 import { financialReport, settlementReport, merchantReport, regulatoryLedgerExport, toCsv } from './reporting.service.js';
 // Item 5: a large regulatory CSV is CPU-bound string work — offload it to a
@@ -56,7 +56,7 @@ router.get('/reports/merchants', authenticate, hasPermission('canViewAnalytics')
 
 // GET /api/admin/reports/ledger-export?from=&to=&format=csv|json
 // Regulatory export: one row per journal posting, admin-only.
-router.get('/reports/ledger-export', authenticate, isAdmin, async (req, res) => {
+router.get('/reports/ledger-export', authenticate, hasPermission('canExportLedger'), async (req, res) => {
   try {
     const rows = await regulatoryLedgerExport(period(req));
     if ((req.query.format || 'csv') === 'csv') {

@@ -325,7 +325,7 @@ const MUTATIONS = [
     // asks whether you hold the permission, not whether you are staff). The
     // mutation is unchanged in substance — take the path away.
     from: `router.get('/users/flagged', authenticate, hasPermission('canManageUsers'), async (req, res) => {`,
-    to: `router.get('/users/flagged-unreachable', authenticate, isAdminOrSubAdmin, async (req, res) => {`,
+    to: `router.get('/users/flagged-unreachable', authenticate, hasPermission('canManageUsers'), async (req, res) => {`,
   },
   // ── status and is_blocked cannot come apart ───────────────────────────────
   {
@@ -1544,7 +1544,8 @@ const MUTATIONS = [
     id: 'M206', file: 'database/repositories/ledger.core.js', config: PG,
     test: 'database/tests/merchantCommissionPg.test.js',
     why: 'the cron and the admin run-now overlap, both reading the pool before either writes',
-    from: `    if (!rows[0].got) return { locked: false };`,
+    // Retargeted 2026-10-01: F-048 reads the lock result into `got` first.
+    from: `    if (!got) return { locked: false };`,
     to: `    if (false) return { locked: false };`,
   },  // ── Queue writes are gated on a permission, not a tier (R6) ──────────────
   {
@@ -1658,6 +1659,161 @@ const MUTATIONS = [
     why: 'an IPv4 /8 respelled as ::ffff:10.0.0.0/104 clears the /16 floor and blocks a region',
     from: `    if (v4Bits !== null && v4Bits < MIN_PREFIX.ipv4) {`,
     to: `    if (false) {`,
+  },
+  // ── Staff permissions: every route an area (owner, 2026-10-01) ────────────
+  {
+    id: 'M222', file: 'backend/domains/identity/staffPermissions.js', config: PG,
+    test: 'backend/tests/routes/staffPermissionsPg.test.js',
+    why: 'a sub-admin passes every gate whatever they were given: the areas mean nothing',
+    from: `  return user.subAdminPermissions?.[key] === true;`,
+    to: `  return true;`,
+  },
+  {
+    id: 'M223', file: 'backend/domains/identity/staffPermissions.js', config: PG,
+    test: 'backend/tests/routes/adminSubadminsRoutes.test.js',
+    why: 'the string "false" is coerced and stored as granted, turning a revoked area back on',
+    from: `    if (notBoolean.length) throw refuse(`,
+    to: `    if (false) throw refuse(`,
+  },
+  {
+    id: 'M224', file: 'backend/routes/admin/subadmins.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/staffPermissionsPg.test.js',
+    why: 'a save with no `permissions` key is read as "revoke everything" — what the panel sent on every save',
+    from: `    if (!req.body || !Object.prototype.hasOwnProperty.call(req.body, 'permissions')) {`,
+    to: `    if (false) {`,
+  },
+  {
+    id: 'M225', file: 'backend/middleware/order-crypto-access.js', config: PG,
+    test: 'backend/tests/routes/orderAccessGuardRoutes.test.js',
+    why: 'any staff account acts as the player on the player\'s order: reads it, and raises a dispute recorded as the player\'s',
+    from: `    const isAdmin = admitAdmin && req.user?.isAdmin === true && req.user?.isBlocked !== true;`,
+    to: `    const isAdmin = req.user?.isAdmin === true || req.user?.isSubAdmin === true;`,
+  },
+  {
+    id: 'M226', file: 'backend/domains/notification/sseManager.service.js', config: UNIT,
+    test: 'backend/tests/unit/staffRealtimePermissions.test.js',
+    why: 'the admin stream sends every order, dispute and KYC event to every staff account, whatever its areas',
+    from: `            if (!staffMayReceive(viewer, event)) continue;`,
+    to: `            if (false) continue;`,
+  },
+  {
+    id: 'M227', file: 'backend/domains/notification/sseManager.service.js', config: UNIT,
+    test: 'backend/tests/unit/staffRealtimePermissions.test.js',
+    why: 'a sub-admin whose permissions were changed keeps receiving under the old grant',
+    from: `            if (String(viewer.userId) !== String(userId)) continue;`,
+    to: `            continue;`,
+  },
+  {
+    id: 'M228', file: 'backend/domains/notification/staffEventAreas.js', config: UNIT,
+    test: 'backend/tests/unit/staffRealtimePermissions.test.js',
+    why: 'a staff socket joins every area\'s room, so the socket admin room is open to every sub-admin',
+    from: `  else rooms.push(...keys.filter((k) => staffCan(viewer, k)).map(staffRoom));`,
+    to: `  else rooms.push(...keys.map(staffRoom));`,
+  },
+  {
+    id: 'M229', file: 'backend/routes/sse.routes.js', config: PG,
+    test: 'backend/tests/routes/adminStreamPermissionsPg.test.js',
+    why: 'the payment queue (every pending order and its player) goes to a sub-admin who only edits content',
+    from: `        if (!staffMayReceive(adminUser, 'queue_snapshot')) return;`,
+    to: `        if (false) return;`,
+  },
+  {
+    id: 'M230', file: 'backend/routes/admin/users.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/staffPermissionsPg.test.js',
+    why: 'an area is quietly made full-admin-only: a sub-admin holding it is refused, and the list says nothing',
+    from: `router.get('/phantom-agents', authenticate, hasPermission('canManagePhantomAgents'),`,
+    to: `router.get('/phantom-agents', authenticate, isAdmin,`,
+  },
+  // ── Point 3 of the PR #198 verification (2026-10-01) ─────────────────────
+  {
+    id: 'M231', file: 'database/repositories/ledger.core.js', config: PG,
+    test: 'database/tests/commissionRunLockPg.test.js',
+    why: 'a failed unlock returns the connection to the pool still holding the lock: every later pass is refused',
+    from: `      if (!unlocked) destroy = true;`,
+    to: `      if (false) destroy = true;`,
+  },
+  {
+    id: 'M232', file: 'database/repositories/ipBlocks.js', config: PG,
+    test: 'backend/tests/routes/ipBlocklistRoutesPg.test.js',
+    why: 'the expiry is dated by the APP clock again, so a server running behind the database refuses short blocks',
+    from: `CASE WHEN $5::int IS NULL THEN NULL ELSE now() + make_interval(mins => $5::int) END)`,
+    to: `CASE WHEN $5::int IS NULL THEN NULL ELSE to_timestamp(\${Date.now() / 1000} + $5::int * 60) END)`,
+  },
+  {
+    id: 'M233', file: 'database/repositories/cashLinks.js', config: PG,
+    test: 'backend/tests/routes/retryAndMatchPg.test.js',
+    why: 'a cash link is dated by the APP clock again, so a server behind the database refuses every link as already expired',
+    from: `'LIVE', now() + make_interval(secs => $5::numeric / 1000))`,
+    to: `'LIVE', to_timestamp(\${Date.now() / 1000} + $5::numeric / 1000))`,
+  },
+  // ── §37 neighbour pass over R7 (2026-10-01) ───────────────────────────────
+  {
+    id: 'M234', file: 'backend/domains/distribution/apkInspector.js', config: UNIT,
+    test: 'backend/tests/unit/apkInspector.test.js',
+    why: 'an APK whose v2 and v3 are signed by different keys is recorded under one; Android 7-8 phones see the other',
+    from: `  if (verified.some((v) => !v.cert.equals(der))) {`,
+    to: `  if (false) {`,
+  },
+  {
+    id: 'M235', file: 'backend/domains/distribution/apkInspector.js', config: UNIT,
+    test: 'backend/tests/unit/apkInspector.test.js',
+    why: 'a second signer rides in an APK under a key no publish check ever looked at',
+    from: `  if (signers.length > 1) {`,
+    to: `  if (false) {`,
+  },
+  {
+    id: 'M236', file: 'database/repositories/stats.js', config: PG,
+    test: 'backend/tests/routes/analyticsRoutesPg.test.js',
+    why: "the dashboard's bet count counts the house's phantom bets as player bets",
+    from: `     FROM bets
+    WHERE NOT is_phantom\`, [], 'stats_betting',`,
+    to: `     FROM bets\`, [], 'stats_betting',`,
+  },
+  {
+    id: 'M237', file: 'backend/routes.js', config: PG,
+    test: 'backend/tests/routes/loginSecondFactorPg.test.js',
+    why: "a player's 2FA challenge is redeemed at the STAFF door and mints a staff-door session",
+    from: `    if (user.accountType !== door.accountType || !door.admits(user))`,
+    to: `    if (false)`,
+  },
+  {
+    id: 'M238', file: 'backend/routes.js', config: PG,
+    test: 'backend/tests/routes/loginSecondFactorPg.test.js',
+    why: 'any six digits complete a staff or player login',
+    from: `    if (!verdict.ok) {`,
+    to: `    if (false) {`,
+  },
+  {
+    id: 'M239', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
+    test: 'backend/tests/routes/loginSecondFactorPg.test.js',
+    why: 'any six digits complete a merchant login',
+    from: `        if (!verdict.ok) {`,
+    to: `        if (false) {`,
+  },
+  {
+    id: 'M240', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
+    test: 'backend/tests/routes/merchantTwoFactorEnrolmentPg.test.js',
+    why: 'any six digits turn a merchant\'s pending secret into their live second factor',
+    from: `        if (!verdict.valid)
+            return res.status(400).json({ success: false, message: 'That code did not match.`,
+    to: `        if (false)
+            return res.status(400).json({ success: false, message: 'That code did not match.`,
+  },
+  {
+    id: 'M241', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
+    test: 'backend/tests/routes/merchantTwoFactorEnrolmentPg.test.js',
+    why: 'a session holder replaces an enrolled merchant\'s live authenticator by running setup again',
+    from: `        if (creds.twoFactorEnabled)
+            return res.status(400).json({ success: false,`,
+    to: `        if (false)
+            return res.status(400).json({ success: false,`,
+  },
+  {
+    id: 'M242', file: 'backend/domains/payment/paymentOrder.routes.js', config: PG,
+    test: 'backend/tests/routes/queueWritePermissionPg.test.js',
+    why: "a queue manager's one screen cannot load its own queue",
+    from: `router.get('/payment-queue', authenticate, queueManagerOrPermission('canManageMerchants'),`,
+    to: `router.get('/payment-queue', authenticate, hasPermission('canViewTransactions'),`,
   },
 ];
 

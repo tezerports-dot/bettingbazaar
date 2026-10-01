@@ -23,9 +23,10 @@ import {
   adminAdjustment, getBalanceAdjustments, ADJUSTABLE_FIELDS,
 } from '../domains/wallet/walletAuthority.service.js';
 import {
-  authenticate, hasPermission, isAdmin, isAdminOrSubAdmin,
+  authenticate, hasPermission,
 } from '../domains/identity/auth.middleware.js';
 import { publicLeaderboard } from '../domains/analytics/leaderboardPublicView.js';
+import { emitToStaff } from '../domains/notification/staffEventAreas.js';
 
 const router = express.Router();
 
@@ -66,7 +67,7 @@ router.get('/leaderboard/:period', async (req, res) => {
   }
 });
 
-router.post('/leaderboard/rebuild', authenticate, isAdmin, async (req, res) => {
+router.post('/leaderboard/rebuild', authenticate, hasPermission('canRunMaintenance'), async (req, res) => {
   try {
     const built = await rebuildLeaderboard();
     res.json({ success: true, message: 'Leaderboard rebuilt', periods: built });
@@ -176,7 +177,7 @@ router.get('/admin/announcements', authenticate, hasPermission('canManageContent
   }
 });
 
-router.post('/admin/announcements', authenticate, isAdmin, async (req, res) => {
+router.post('/admin/announcements', authenticate, hasPermission('canManageContent'), async (req, res) => {
   try {
     const fields = normalizeAnnouncementBody(req.body);
     const announcement = await db.content.createAnnouncement({
@@ -195,7 +196,7 @@ router.post('/admin/announcements', authenticate, isAdmin, async (req, res) => {
   }
 });
 
-router.put('/admin/announcements/:id', authenticate, isAdmin, async (req, res) => {
+router.put('/admin/announcements/:id', authenticate, hasPermission('canManageContent'), async (req, res) => {
   try {
     const patch = normalizeAnnouncementBody(req.body, { partial: true });
     const announcement = await db.content.updateAnnouncement(req.params.id, patch);
@@ -215,7 +216,7 @@ router.put('/admin/announcements/:id', authenticate, isAdmin, async (req, res) =
  * `findByIdAndDelete` and answered `{success:true}` whatever came back, so an
  * operator deleting the wrong id twice was told both times that it worked.
  */
-router.delete('/admin/announcements/:id', authenticate, isAdmin, async (req, res) => {
+router.delete('/admin/announcements/:id', authenticate, hasPermission('canManageContent'), async (req, res) => {
   try {
     const removed = await db.content.deleteAnnouncement(req.params.id);
     if (!removed) return res.status(404).json({ success: false, message: 'Announcement not found' });
@@ -247,7 +248,7 @@ router.get('/bonuses/my', authenticate, async (req, res) => {
 
 // ── ADMIN BALANCE ADJUSTMENT ─────────────────────────────────────────────────
 
-router.post('/admin/balance-adjust', authenticate, isAdmin, async (req, res) => {
+router.post('/admin/balance-adjust', authenticate, hasPermission('canAdjustBalances'), async (req, res) => {
   try {
     const { userId, type, field, amount, reason } = req.body || {};
     // The reason is tested as the writer tests it — trimmed. A reason of
@@ -328,7 +329,7 @@ router.post('/admin/balance-adjust', authenticate, isAdmin, async (req, res) => 
         winningsBalance: result.balances?.winningsBalance ?? 0,
         server_ts: Date.now(),
       });
-      global.io.to('admin-room').emit('admin_stats_delta', { type: 'BALANCE_ADJUSTED', server_ts: Date.now() });
+      emitToStaff(global.io, 'admin_stats_delta', { type: 'BALANCE_ADJUSTED', server_ts: Date.now() });
     }
 
     res.json({
@@ -344,7 +345,7 @@ router.post('/admin/balance-adjust', authenticate, isAdmin, async (req, res) => 
   }
 });
 
-router.get('/admin/balance-adjustments', authenticate, hasPermission('canManageUsers'), async (req, res) => {
+router.get('/admin/balance-adjustments', authenticate, hasPermission('canAdjustBalances'), async (req, res) => {
   try {
     const { userId, page = 1, limit = 30 } = req.query;
     const { adjustments, total } = await getBalanceAdjustments({ userId: userId || null, page, limit });

@@ -165,11 +165,55 @@ describePg('order access guard', () => {
     expect((await getOrderRecord(orderId)).status).toBe('PAID');
   });
 
-  it('lets an admin through', async () => {
+  // ── Staff on the PLAYER's order routes (2026-10-01) ─────────────────────
+  // These routes are the player's and the assigned merchant's. They admitted
+  // any staff account, so a sub-admin trusted with nothing but chat could read
+  // any player's order and raise a dispute recorded as raised by the player.
+  it('refuses a sub-admin, whatever they were given, on the player\'s order routes', async () => {
+    const alice = await actor({});
+    const orderId = await deposit(alice, null, { state: 'COMPLETED' });
+    const chatOnly = await actor({ isSubAdmin: true, permissions: { canModerateChat: true } });
+    const disputes = await actor({ isSubAdmin: true, permissions: { canResolveDisputes: true } });
+    for (const staff of [chatOnly, disputes]) {
+      expect((await as(app, staff).get(`/order/${orderId}`)).status).toBe(404);
+      const raised = await as(app, staff).post(`/order/${orderId}/dispute`).send({ reason: 'not mine to raise' });
+      expect(raised.status).toBe(404);
+    }
+    // The order is exactly as the player left it: nobody raised anything for them.
+    const after = await getOrderRecord(orderId);
+    expect(after.status).toBe('COMPLETED');
+    expect(after.disputeRaisedBy ?? null).toBeNull();
+  });
+
+  it('refuses a full admin too: an admin acts on orders through the admin routes', async () => {
     const alice = await actor({});
     const admin = await actor({ isAdmin: true });
-    const orderId = await deposit(alice, null);
-    expect((await as(app, admin).get(`/order/${orderId}`)).status).toBe(200);
+    const orderId = await deposit(alice, null, { state: 'COMPLETED' });
+    expect((await as(app, admin).get(`/order/${orderId}`)).status).toBe(404);
+    expect((await as(app, admin).post(`/order/${orderId}/dispute`).send({ reason: 'x' })).status).toBe(404);
+    expect((await getOrderRecord(orderId)).status).toBe('COMPLETED');
+  });
+
+  it('still lets the PLAYER raise their own dispute (the opposite behaviour, §37)', async () => {
+    const alice = await actor({});
+    const orderId = await deposit(alice, null, { state: 'COMPLETED' });
+    const res = await as(app, alice).post(`/order/${orderId}/dispute`).send({ reason: 'not credited' });
+    expect(res.status).toBe(200);
+    expect((await getOrderRecord(orderId)).status).toBe('DISPUTED');
+  });
+
+  it('on the deposit confirm, admits a full admin past the guard and refuses a sub-admin', async () => {
+    const alice = await actor({});
+    const merchant = await merchantActor({ tokensRupees: 10_000 });
+    const orderId = await deposit(alice, merchant, { state: 'ASSIGNED' });
+    const sub = await actor({ isSubAdmin: true, permissions: { canResolveDisputes: true } });
+    expect((await as(app, sub).post(`/deposit/${orderId}/confirm`).send({})).status).toBe(404);
+    // Past the guard, the handler answers on the ORDER (not paid yet), which a
+    // refused caller would never reach.
+    const admin = await actor({ isAdmin: true });
+    const res = await as(app, admin).post(`/deposit/${orderId}/confirm`).send({});
+    expect(res.status).not.toBe(404);
+    expect((await getOrderRecord(orderId)).status).toBe('ASSIGNED');
   });
 
   it('guards every :orderId route, not just the read', async () => {

@@ -131,7 +131,11 @@ export const Dashboard: React.FC = () => {
   if (isLoading) return <LoadingSpinner size="lg" />;
 
   const s = stats;
-  const margin = s ? pct(s.finance.netProfit, s.finance.totalBets) : 0;
+  // The KPI row is TODAY (IST, the chart's last bucket). It showed all-time
+  // net, payouts and bet count under "today" captions — and the bet count
+  // included the house's phantom bets (measured 2026-10-01).
+  const today = s?.finance.today;
+  const margin = today ? pct(today.netProfit, today.bets) : 0;
   const inflow = s ? (s.finance.tokenBuy ?? s.finance.totalDeposits ?? 0) : 0;
   const outflow = s ? (s.finance.tokenSell ?? s.finance.totalWithdrawals ?? 0) : 0;
 
@@ -168,9 +172,9 @@ export const Dashboard: React.FC = () => {
             <Kpi seed="users" label="Total Users" value={num(s.users.total)} badge={`${pct(s.users.active, s.users.total)}% active`} sub={`${num(s.users.active)} active`} />
             <Kpi seed="merchants" label="Active Merchants" value={num(s.merchants.online)} sub={`of ${num(s.merchants.total)} total`} />
             <Kpi seed="orders" label="Pending Orders" value={num(s.queue.pendingOrders)} tone="warning" badge={fmtWait(s.queue.avgWaitTime)} sub="avg wait" />
-            <Kpi seed="bets" label="Bets Today" value={num(s.cycles.totalBets)} sub={`${num(s.cycles.activeCount)} active cycles`} />
-            <Kpi seed="revenue" label="Net Revenue" value={inr(s.finance.netProfit)} gold badge={`${margin}% margin`} sub="today" />
-            <Kpi seed="payouts" label="Total Payouts" value={inr(s.finance.totalPayouts)} tone="warning" sub="today" />
+            <Kpi seed="bets" label="Bets Today" value={num(today?.betCount ?? 0)} sub={`${num(s.cycles.activeCount)} active cycles`} />
+            <Kpi seed="revenue" label="Net Revenue" value={inr(today?.netProfit ?? 0)} gold badge={`${margin}% margin`} sub="today" />
+            <Kpi seed="payouts" label="Total Payouts" value={inr(today?.payouts ?? 0)} tone="warning" sub="today" />
           </>
         ) : (
           <Card style={{ gridColumn: '1/-1' }}>
@@ -334,7 +338,7 @@ export const Dashboard: React.FC = () => {
       <div className="bb-grid" style={{ display: 'grid', gridTemplateColumns: '1.3fr 1fr', gap: 16 }}>
         <Card>
           <div style={{ fontSize: 13.5, fontWeight: 700 }}>Financial Overview</div>
-          <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 2, marginBottom: 15 }}>Net Revenue = Total Bets − Payouts − costs · today</div>
+          <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 2, marginBottom: 15 }}>Net Revenue = Total Bets − Payouts · all time</div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 12 }}>
             {[
               { label: 'Token Buy', value: inr(inflow), color: 'var(--success)' },

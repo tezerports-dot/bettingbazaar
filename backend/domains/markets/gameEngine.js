@@ -55,6 +55,7 @@ import { settlementRuns } from '../../services/metrics.service.js';
 import { beginSettlement, finishSettlement, voidCancelledCycles, findIncompleteSettlements } from '#db/repositories/settlements.js';
 // Balances come from the wallet. The accounts table has none.
 import { getBalances } from '../wallet/walletAuthority.service.js';
+import { emitToStaff } from '../notification/staffEventAreas.js';
 
 /** How many bets one enumeration pulls at a time. */
 const BATCH_SIZE = 500;
@@ -371,7 +372,7 @@ class GameEngine {
             totalPaidOut, netProfit, winners: totals.winners,
         });
 
-        this.io?.to('admin-room').emit('admin_stats_update', {
+        emitToStaff(this.io, 'admin_stats_update', {
             type: 'PAYOUT_COMPLETE',
             cycleId: cycle.cycleId,
             totalPaidOut, totalPlatformFees, netProfit,

@@ -14,7 +14,7 @@
  * is allowed by the dependency-cruiser boundary rules (same as the merchant
  * admin routes).
  */
-import { express, authenticate, isAdmin } from '../../routes/admin/_adminShared.js';
+import { express, authenticate, hasPermission } from '../../routes/admin/_adminShared.js';
 import {
   ragStatus, ingestKnowledgeBase, ingestDocument,
   listIngestedDocuments, removeDocument,
@@ -23,17 +23,17 @@ import { respondError } from '../../shared/httpError.js';
 
 const router = express.Router();
 
-router.get('/support/status', authenticate, isAdmin, async (req, res) => {
+router.get('/support/status', authenticate, hasPermission('canManageSupportAssistant'), async (req, res) => {
   try { res.json({ success: true, ...(await ragStatus()) }); }
   catch (e) { return respondError(res, e, 'GET /admin/support/status'); }
 });
 
-router.post('/support/ingest/knowledge-base', authenticate, isAdmin, async (req, res) => {
+router.post('/support/ingest/knowledge-base', authenticate, hasPermission('canManageSupportAssistant'), async (req, res) => {
   try { res.json({ success: true, ...(await ingestKnowledgeBase()) }); }
   catch (e) { return respondError(res, e, 'POST /admin/support/ingest/knowledge-base'); }
 });
 
-router.post('/support/ingest', authenticate, isAdmin, async (req, res) => {
+router.post('/support/ingest', authenticate, hasPermission('canManageSupportAssistant'), async (req, res) => {
   try {
     const { docId, title, source, category, text } = req.body || {};
     if (!docId || !String(docId).trim()) return res.status(400).json({ success: false, message: 'docId is required' });
@@ -51,12 +51,12 @@ router.post('/support/ingest', authenticate, isAdmin, async (req, res) => {
   }
 });
 
-router.get('/support/documents', authenticate, isAdmin, async (req, res) => {
+router.get('/support/documents', authenticate, hasPermission('canManageSupportAssistant'), async (req, res) => {
   try { res.json({ success: true, documents: await listIngestedDocuments() }); }
   catch (e) { return respondError(res, e, 'GET /admin/support/documents'); }
 });
 
-router.delete('/support/documents/:docId', authenticate, isAdmin, async (req, res) => {
+router.delete('/support/documents/:docId', authenticate, hasPermission('canManageSupportAssistant'), async (req, res) => {
   try {
     const removed = await removeDocument(String(req.params.docId));
     res.json({ success: true, removedChunks: removed });

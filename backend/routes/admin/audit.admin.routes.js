@@ -1,11 +1,11 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /** audit.admin.routes.js — Audit logs */
-import { express, authenticate, isAdmin } from './_adminShared.js';
+import { express, authenticate, hasPermission } from './_adminShared.js';
 import { db } from '#db';
 
 const router = express.Router();
 
-router.get('/audit-logs', authenticate, isAdmin, async (req, res) => {
+router.get('/audit-logs', authenticate, hasPermission('canViewAuditLogs'), async (req, res) => {
   try {
     const { page = 1, limit = 50, category, action, adminId, startDate, endDate } = req.query;
 

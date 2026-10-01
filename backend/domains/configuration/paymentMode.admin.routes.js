@@ -8,25 +8,18 @@
  * kind of thing: an admin-editable value that governs money, versioned so an
  * auditor can answer "what was in force at time T".
  *
- * ── Why the switch is isAdmin and not isAdminOrSubAdmin ─────────────────────
- * Reading the rail is operational. Changing it changes the workflow every
- * merchant on the platform performs and what every new order asks of a player.
- * Reads are open to sub-admins; the switch is not.
+ * ── The Business Policy area, read and switch alike ──────────────────────
+ * Changing the rail changes the workflow every merchant performs and what every
+ * new order asks of a player, so it belongs to `canManageBusinessPolicy`.
  *
- * ── A DELIBERATE exception to F-001 ────────────────────────────────────────
- * The F-001 sweep converts tier checks (`isAdminOrSubAdmin`) to permission
- * checks, because a tier check lets a sub-admin granted one capability reach
- * every other one. These two reads stay a tier check on purpose: which rail the
- * platform is on is context every operator needs to do their own job — a
- * disputes manager reading an order has to know whether it settles at a cash
- * machine — and gating it behind one capability would hide it from the others.
- *
- * The sweep derived `isAdmin` here, because the only SCREEN that reads the rail
- * is admin-only. That is the derivation's blind spot: it sees what screens call,
- * not what an operator needs. A stated decision beats an inference, and
- * `paymentModeRoutes.test.js` holds this one.
+ * The two READS used to be open to every sub-admin, as a deliberate exception
+ * to F-001, on the argument that every operator needs to know the rail. The
+ * owner's rule (2026-10-01) is that every staff route is permission-based, and
+ * the argument does not need the exception: an ORDER carries the rail it runs
+ * under (`order_states.payment_mode`, frozen by trigger), so a disputes manager
+ * reads it off the order they are looking at, never off this policy.
  */
-import { express, authenticate, isAdmin, isAdminOrSubAdmin } from '../../routes/admin/_adminShared.js';
+import { express, authenticate, hasPermission } from '../../routes/admin/_adminShared.js';
 import { db } from '#db';
 import {
   PAYMENT_MODES, getActivePolicy, getPolicyHistory, switchPaymentMode, modeCopy,
@@ -40,7 +33,7 @@ const MODE_OPTIONS = Object.values(PAYMENT_MODES).map((mode) => ({
 }));
 
 // GET /api/admin/payment-mode — the rail in force, and the rails available.
-router.get('/payment-mode', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/payment-mode', authenticate, hasPermission('canManageBusinessPolicy'), async (req, res) => {
   try {
     const policy = await getActivePolicy();
     res.json({ success: true, policy, modes: MODE_OPTIONS });
@@ -51,7 +44,7 @@ router.get('/payment-mode', authenticate, isAdminOrSubAdmin, async (req, res) =>
 });
 
 // GET /api/admin/payment-mode/history — every version, newest first.
-router.get('/payment-mode/history', authenticate, isAdminOrSubAdmin, async (req, res) => {
+router.get('/payment-mode/history', authenticate, hasPermission('canManageBusinessPolicy'), async (req, res) => {
   try {
     const limit = Math.min(200, Math.max(1, parseInt(req.query.limit, 10) || 50));
     const history = await getPolicyHistory({ limit });
@@ -70,7 +63,7 @@ router.get('/payment-mode/history', authenticate, isAdminOrSubAdmin, async (req,
  * zero", "no link would ever be assignable" — and a 500 tells the admin
  * nothing they can act on.
  */
-router.post('/payment-mode', authenticate, isAdmin, async (req, res) => {
+router.post('/payment-mode', authenticate, hasPermission('canManageBusinessPolicy'), async (req, res) => {
   try {
     const { activeMode, timers = {}, justification = '' } = req.body || {};
 

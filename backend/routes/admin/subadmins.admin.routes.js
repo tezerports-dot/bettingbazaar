@@ -16,22 +16,52 @@ import { db } from '#db';
 // AQ-8: hash via the password authority (argon2id).
 import { hashPassword } from '../../domains/identity/password.util.js';
 import { assertStaffPassword } from '../../domains/identity/passwordPolicy.js';
+import {
+  PERMISSION_GROUPS, STAFF_PERMISSIONS, ADMIN_ONLY_AREAS, normaliseGrant,
+} from '../../domains/identity/staffPermissions.js';
+import { personalStaffRoom } from '../../domains/notification/staffEventAreas.js';
 
 const router = express.Router();
 
 /**
- * The permission object a sub-admin carries.
- *
- * Normalised to booleans on write. A permission stored as the string "false" is
- * truthy everywhere it is read, which turns a revoked capability back on — and
- * a JSONB column will hold whatever it is handed.
+ * Answer a refused grant in the caller's terms: the unknown key, by name.
+ * A grant is validated against `staffPermissions.js` — the one list — so a key
+ * no route asks for can never be stored, and a value that is not a boolean is
+ * refused rather than coerced (the string "false" is truthy).
  */
-function normalisePermissions(input) {
-  if (!input || typeof input !== 'object' || Array.isArray(input)) return {};
-  return Object.fromEntries(
-    Object.entries(input).map(([key, value]) => [key, Boolean(value)]),
-  );
+function grantOrRefuse(res, input) {
+  try {
+    return normaliseGrant(input);
+  } catch (e) {
+    res.status(e.status || 400).json({ success: false, code: e.code, message: e.message });
+    return null;
+  }
 }
+
+/**
+ * End every live stream this account holds, on both transports and every
+ * instance. Its permissions just changed, so whatever it was sent under the old
+ * grant stops now and the panel reconnects under the new one (§32 S32: a
+ * permission that stops at the REST API is half a permission).
+ */
+function closeLiveStreams(userId) {
+  try { global.sseManager?.closeAdminClientsFor(userId); } catch { /* best effort */ }
+  try { global.io?.in(personalStaffRoom(userId)).disconnectSockets(true); } catch { /* best effort */ }
+}
+
+/**
+ * The list an admin picks from: every grantable area, grouped, with what each
+ * one opens, and the areas no sub-admin can be given and why. The panel renders
+ * its picker from THIS, so there is no second list to drift (§32 S25).
+ */
+router.get('/staff-permissions', authenticate, isAdmin, (req, res) => {
+  res.json({
+    success: true,
+    groups: PERMISSION_GROUPS,
+    permissions: STAFF_PERMISSIONS,
+    adminOnly: ADMIN_ONLY_AREAS,
+  });
+});
 
 router.get('/sub-admins', authenticate, isAdmin, async (req, res) => {
   try {
@@ -53,6 +83,10 @@ router.post('/sub-admins', authenticate, isAdmin, async (req, res) => {
     if (!mobile || !password) {
       return res.status(400).json({ success: false, message: 'mobile and password are required' });
     }
+    // Validated BEFORE the account exists, so a bad grant never leaves a
+    // half-made colleague behind it.
+    const grant = grantOrRefuse(res, permissions);
+    if (!grant) return;
 
     // A sub-admin reads the player base and the ledger, and holds a session for
     // 24 hours with no second factor required of it — so the password IS the
@@ -98,7 +132,7 @@ router.post('/sub-admins', authenticate, isAdmin, async (req, res) => {
     await db.users.setRoles(user.userId, ['subadmin']);
     const subAdmin = await db.users.updateUser(user.userId, {
       isSubAdmin: true,
-      subAdminPermissions: normalisePermissions(permissions),
+      subAdminPermissions: grant,
     });
 
     res.json({ success: true, subAdmin });
@@ -111,7 +145,17 @@ router.post('/sub-admins', authenticate, isAdmin, async (req, res) => {
 // Update sub-admin permissions
 router.put('/sub-admins/:subAdminId/permissions', authenticate, isAdmin, async (req, res) => {
   try {
-    const { permissions } = req.body || {};
+    // ABSENT is not EMPTY. A body without `permissions` is a client that sent
+    // the wrong shape — the panel did, and every save revoked everything — so
+    // it is refused. Revoking everything is `{ permissions: {} }`, said aloud.
+    if (!req.body || !Object.prototype.hasOwnProperty.call(req.body, 'permissions')) {
+      return res.status(400).json({
+        success: false, code: 'PERMISSIONS_REQUIRED',
+        message: 'Send the grant as { permissions: { key: true|false } }. Nothing was changed.',
+      });
+    }
+    const grant = grantOrRefuse(res, req.body.permissions);
+    if (!grant) return;
 
     const existing = await db.users.getUser(req.params.subAdminId);
     if (!existing || !existing.isSubAdmin) {
@@ -119,8 +163,17 @@ router.put('/sub-admins/:subAdminId/permissions', authenticate, isAdmin, async (
     }
 
     const subAdmin = await db.users.updateUser(req.params.subAdminId, {
-      subAdminPermissions: normalisePermissions(permissions),
+      subAdminPermissions: grant,
     });
+    await db.audit.recordDetailed({
+      performedBy: req.user.userId, performedByRole: 'admin',
+      action: 'SUBADMIN_PERMISSIONS_SET', category: 'USER',
+      targetType: 'User', targetId: String(req.params.subAdminId),
+      details: { granted: Object.keys(grant).filter((k) => grant[k]) },
+    });
+    // REST reads the row on every request, so the new grant already applies
+    // there; the live streams were opened under the old one.
+    closeLiveStreams(req.params.subAdminId);
 
     res.json({ success: true, subAdmin });
   } catch (error) {
@@ -154,6 +207,7 @@ router.delete('/sub-admins/:subAdminId', authenticate, isAdmin, async (req, res)
       isSubAdmin: false,
       subAdminPermissions: {},
     });
+    closeLiveStreams(req.params.subAdminId);
 
     res.json({ success: true, message: 'Sub-admin removed successfully' });
   } catch (error) {

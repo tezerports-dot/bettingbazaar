@@ -45,7 +45,7 @@ import { debitMerchantTokens } from '../merchant/merchantWallet.service.js';
 import { releaseUTR } from '../../middleware/utrValidation.js';
 // The one owner of order access: it verifies the tamper tag AND decides who
 // may act on the order, so a route cannot be added without both.
-import { orderAccessGuard } from '../../middleware/order-crypto-access.js';
+import { orderAccessGuard, orderAccessGuardOrAdmin } from '../../middleware/order-crypto-access.js';
 import { emitWalletUpdate, emitAdminUpdate, emitOrderUpdate } from '../notification/realtimeEmitters.js';
 import { serverError, respondError } from '../../shared/httpError.js';
 
@@ -289,7 +289,7 @@ router.post('/order/:orderId/mark-paid', authenticate, orderAccessGuard, async (
  * start a transaction and carried on WITHOUT one, so the atomicity it appeared
  * to provide was conditional on nobody looking.
  */
-router.post('/deposit/:orderId/confirm', paymentActorAuth, orderAccessGuard, async (req, res) => {
+router.post('/deposit/:orderId/confirm', paymentActorAuth, orderAccessGuardOrAdmin, async (req, res) => {
   const isMerchantActor = Boolean(req.merchantId);
   const isAdminActor = Boolean(req.user?.isAdmin);
   if (!isMerchantActor && !isAdminActor) {

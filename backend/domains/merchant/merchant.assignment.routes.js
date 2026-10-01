@@ -21,7 +21,7 @@
  * enforced server-side in every assign and reassign endpoint here, not just in
  * the list the picker renders.
  */
-import { express, authenticate, isAdmin, isAdminOrSubAdmin, isAdminOrSubAdminOrQueueManager, hasPermission, queueManagerOrPermission } from '../../routes/admin/_adminShared.js';
+import { express, authenticate, hasPermission, queueManagerOrPermission } from '../../routes/admin/_adminShared.js';
 import { db } from '#db';
 // The order state machine — the expected state is in the update's filter, so
 // two admins assigning the same order produce one winner, not a silent overwrite.
@@ -302,10 +302,7 @@ router.post('/payment-orders/:id/reassign', authenticate, queueManagerOrPermissi
 // which is what stops manual assignment competing with the automatic
 // assigner's candidate set. Pool membership is re-enforced server-side in every
 // assign endpoint above, so this filter is not merely cosmetic.
-router.get('/queue/available-merchants', authenticate, isAdminOrSubAdminOrQueueManager, async (req, res) => {
-  if (!req.user.isQueueManager && !req.user.isAdmin) {
-    return res.status(403).json({ success: false, message: 'Queue manager access required' });
-  }
+router.get('/queue/available-merchants', authenticate, queueManagerOrPermission('canManageMerchants'), async (req, res) => {
   try {
     const { type, orderAmount } = req.query;
     const amount = parseFloat(orderAmount) || 0;
@@ -387,7 +384,7 @@ router.get('/queue/available-merchants', authenticate, isAdminOrSubAdminOrQueueM
 // ─── GET /api/admin/queue/merchant-pool ───────────────────────────────────────
 // The full curated pool — including offline and currently-ineligible members,
 // unlike available-merchants above — so the settings UI can show and edit it.
-router.get('/queue/merchant-pool', authenticate, isAdminOrSubAdminOrQueueManager, async (req, res) => {
+router.get('/queue/merchant-pool', authenticate, queueManagerOrPermission('canManageMerchants'), async (req, res) => {
   try {
     const config = await getSystemConfig();
     const poolIds = config?.queueManagerPool || [];
@@ -500,7 +497,7 @@ router.put('/queue/merchant-pool', authenticate, queueManagerOrPermission('canMa
 // it's the full candidate list you choose the pool FROM). Deliberately minimal
 // fields and scoped to queue_manager's job (unlike /api/admin/merchants, which
 // is isAdmin-only and returns broader account data not needed here).
-router.get('/queue/eligible-merchants', authenticate, isAdminOrSubAdminOrQueueManager, async (req, res) => {
+router.get('/queue/eligible-merchants', authenticate, queueManagerOrPermission('canManageMerchants'), async (req, res) => {
   try {
     const merchants = await db.merchants.listPoolCandidates();
     // The balance comes from the WALLET here too. It read a stored
@@ -526,10 +523,7 @@ router.get('/queue/eligible-merchants', authenticate, isAdminOrSubAdminOrQueueMa
 });
 
 // ─── GET /api/admin/queue/pending-orders ──────────────────────────────────────
-router.get('/queue/pending-orders', authenticate, isAdminOrSubAdminOrQueueManager, async (req, res) => {
-  if (!req.user.isQueueManager && !req.user.isAdmin) {
-    return res.status(403).json({ success: false, message: 'Queue manager access required' });
-  }
+router.get('/queue/pending-orders', authenticate, queueManagerOrPermission('canManageMerchants'), async (req, res) => {
   try {
     // One query with the player joined, not a populate per page. A player who
     // has since been deleted comes back with null columns rather than a `null`
@@ -553,9 +547,6 @@ router.get('/queue/pending-orders', authenticate, isAdminOrSubAdminOrQueueManage
 
 // ─── POST /api/admin/queue/assign/:orderId (queue manager) ────────────────────
 router.post('/queue/assign/:orderId', authenticate, queueManagerOrPermission('canManageMerchants'), async (req, res) => {
-  if (!req.user.isQueueManager && !req.user.isAdmin) {
-    return res.status(403).json({ success: false, message: 'Queue manager access required' });
-  }
   try {
     const { merchantId } = req.body || {};
     if (!merchantId) return res.status(400).json({ success: false, message: 'merchantId is required' });

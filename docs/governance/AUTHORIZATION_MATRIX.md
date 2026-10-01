@@ -17,11 +17,19 @@ bodies. Re-run the scan commands in the appendix after adding any route.
 | Tier | Middleware | Ownership rule | Where |
 |---|---|---|---|
 | **Public** | none (some rate-limited) | n/a — read-only only | see list below |
-| **User** | `authenticate` | `resource.userId === req.user._id` (or `isAdmin`) | user/payment/bet/wallet routes |
-| **Merchant** | `merchantAuth` | `order.merchantId === req.merchantId` | `domains/merchant/*` (23 routes) |
-| **Queue manager** | `authenticate` + `isQueueManager`/admin | assignment scoped to queue pool | queue admin routes |
-| **Sub-admin** | `authenticate` + `isAdminOrSubAdmin` + permission key | per-permission (`utils/permissions`) | admin read + delegated routes |
-| **Admin** | `authenticate` + `isAdmin` | full | admin routes (121 total) |
+| **User** | `authenticate` | `resource.userId === req.user.userId` — the player's order routes admit the player and the assigned merchant ONLY (`orderAccessGuard`); a full admin only on the deposit confirm (`orderAccessGuardOrAdmin`) | user/payment/bet/wallet routes |
+| **Merchant** | `merchantAuth` | `order.merchantId === req.merchantId` | `domains/merchant/*` |
+| **Queue manager** | `authenticate` + `queueManagerOrPermission('canManageMerchants')` | the payment queue, nothing else | queue admin routes |
+| **Sub-admin** | `authenticate` + `hasPermission(<area>)` | exactly the areas an admin granted — one key per area, `backend/domains/identity/staffPermissions.js` | every staff route |
+| **Admin** | `authenticate` + `hasPermission(<area>)` (passes all) or `isAdmin` | full; `isAdmin` alone guards the 8 routes in `ADMIN_ONLY_AREAS` (granting authority) | every staff route |
+
+**Since 2026-10-01 this table is enforced, not described.** `npm run
+check:staff-permissions` reads the live route stacks and fails the build on a
+staff route that names no area, or a full-admin-only route not listed with its
+reason. `isAdminOrSubAdmin` (a sub-admin holding ANY permission) no longer
+exists. The summary above — "no authorization holes were found" — was written
+before F-001, F-042 and F-047 found three classes of them; it is kept as a
+dated claim, not a current one (see `docs/audit/SECURITY_AUDIT_MAP.md`).
 
 `req.merchantId`/`req.user` are set by the auth middleware only after JWT
 verification + account-status checks (blocked/suspended/approved).

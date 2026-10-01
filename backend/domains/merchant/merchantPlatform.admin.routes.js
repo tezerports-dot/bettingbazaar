@@ -7,7 +7,7 @@
  * Mounted at /api/admin via routes/admin/index.js.
  */
 import {
-  authenticate, express, hasPermission, isAdmin, isAdminOrSubAdmin,
+  authenticate, express, hasPermission,
 } from '../../routes/admin/_adminShared.js';
 import { getMerchantLeaderboard, getMerchantFundingStats, getMerchantPerformanceHistory } from './merchantAnalytics.service.js';
 import { getMerchantWalletLedger } from './merchantWallet.service.js';
@@ -72,7 +72,7 @@ router.get('/merchant-platform/:merchantId/wallet-ledger', authenticate, hasPerm
 
 // POST /api/admin/merchant-platform/commission-engine/run — on-demand pass of
 // the commission engine (same code the 10-min cron runs; idempotent, pool-capped).
-router.post('/merchant-platform/commission-engine/run', authenticate, isAdmin, async (req, res) => {
+router.post('/merchant-platform/commission-engine/run', authenticate, hasPermission('canManageCommission'), async (req, res) => {
   try {
     const outcome = await runCommissionEngine();
     res.json({ success: true, ...outcome });

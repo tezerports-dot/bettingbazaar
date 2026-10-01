@@ -718,7 +718,8 @@ sub-admin writes without a permission key.
 
 **The 47 reads are proposed, not shipped**, because the owner confirmed
 sub-admin accounts are IN USE: gating a read a colleague depends on blanks their
-screen mid-shift. The table is `docs/audit/SUBADMIN-PERMISSION-PROPOSAL.md`.
+screen mid-shift. **Superseded 2026-10-01 by F-047**: the owner decided every
+staff route is permission-based, and the proposal file was deleted.
 
 Its rows are not guesses. The admin panel's `NAV_GROUPS` already declares which
 key each screen requires, so where a route is reached from a screen the proposed
@@ -3058,7 +3059,7 @@ see these two.
 - **Gate fixed:** `audit:map` counts both tier guards. It now reports 6
   keyless sub-admin routes, all reads (2 payment-mode, 4 queue), and 0 writes.
   The reads stay with the owner's read proposal
-  (`SUBADMIN-PERMISSION-PROPOSAL.md`), as F-001 decided.
+  (since shipped as F-047), as F-001 decided.
 - **Tests:** `queueWritePermissionPg` (9). On the old routes the chat
   moderator got past reassign and merchant-pool.
 - **Mutation-proved:** M207 KILLED.
@@ -3210,6 +3211,161 @@ message that did not name the real problem.
   enforced against plain IPv4 clients. Two fail on main.
 - **Mutation-proved:** M221 KILLED.
 
+### F-047 — every staff route permission-based: the owner's decision, and what it found
+`FIXED` · decision + three defects · F-001's shape, closed as a CLASS · 2026-10-01
+
+**The decision** (owner): *"all sub admin read routes should be permission
+based … give them permission by selecting the permissions from the entire list
+of access and permission, the sub admin then can only do the work in those
+permissioned areas."* So every staff route now asks for exactly one AREA
+(`backend/domains/identity/staffPermissions.js`, 29 keys). A full admin holds
+all; a sub-admin holds what an admin ticked. 136 routes that were full-admin
+only, and the 6 reads open to any sub-admin, now each name their area. Only 8
+routes stay full-admin-only, each listed with its reason in `ADMIN_ONLY_AREAS`:
+granting sub-admins, staff roles, and the queue-manager role. A holder of any
+of those could grant themselves everything. `isAdminOrSubAdmin`, its queue
+variant and `hasAnyPermission` are deleted, and `npm run check:staff-permissions`
+reads the LIVE route stacks and fails the build on a staff route that names no
+area. F-001 and F-042 were each one such route, found after it shipped.
+
+**Defects found while doing it**, each failing first on main:
+
+1. **Any sub-admin acted as the PLAYER on the player's order routes**
+   (medium). `orderAccessGuard` admitted any staff account. A sub-admin given
+   nothing but chat could read any player's order, and raise a dispute on it
+   recorded as `disputeRaisedBy: 'user'`, a dispute the player never raised,
+   attributed to them. Now the player's routes are the player's and the
+   assigned merchant's. A full admin is admitted on the deposit confirm alone
+   (`orderAccessGuardOrAdmin`). Tests: `orderAccessGuardRoutes` (+4, 3 fail on
+   main). M225 KILLED.
+2. **"Save Permissions" revoked every permission the sub-admin had** (medium,
+   §32 S26). The panel sent the grant AS the body; the route read
+   `req.body.permissions`, found nothing, and stored an empty grant. The
+   client now sends `{ permissions }`, and the route REFUSES a body without the
+   key (absent is not empty). It also refuses an unknown key by name, and a
+   non-boolean: the old test asserted that the string `"false"` was stored as
+   TRUE. Tests: `staffPermissionsPg`, `adminSubadminsRoutes`,
+   `subAdminsApi.test.ts` (fails without the client fix). M223, M224 KILLED.
+3. **The admin live stream sent everything to every staff account** (medium,
+   §32 S32). The SSE admin stream (its `queue_snapshot` of every pending order
+   with its player, and every order, dispute and merchant event) and the
+   socket admin room (bets, KYC verdicts, cycle results) were delivered to any
+   sub-admin who connected. Each event now names the areas that may receive it
+   (`staffEventAreas.js`); the SSE stream filters per client, the socket joins
+   one room per area, and a permission change closes that account's streams on
+   every instance. Tests: `staffRealtimePermissions` (11),
+   `adminStreamPermissionsPg` (the content-only sub-admin received the queue on
+   main), redis bridge (+1). M226–M229 KILLED.
+
+And two lock-outs, the opposite failure: the Chat screen was offered on
+`canModerateChatPublic` while every chat route asked for `canManageSupport`;
+three queue routes let a `canManageMerchants` sub-admin past the gate and
+then refused them inside the handler. Both are now one key, asked once.
+
+- **Proof:** `staffPermissionsPg` walks every route the admin router mounts.
+  A sub-admin with no areas is refused by all of them, reads and writes alike.
+  A sub-admin holding exactly a read's area is let through every one (§37
+  step 6). 9 of its 11 named cases fail on main. M222, M230 KILLED.
+
+**A regression in this change, found by measuring (2026-10-01).** Re-gating
+every route by area gave `GET /api/admin/payment-queue` the
+`canViewTransactions` area. Its one caller is the Queue Manager screen, and a
+queue manager holds no areas, so the screen their role exists for answered
+403 and read "load error". No route test sent that GET as a queue manager;
+it was found by opening the admin panel AS each account type
+(`BB_PROFILE=queue-manager npm run test:browser`), then confirmed by a sweep
+of every admin screen for calls into another area. Fixed: the queue gate
+(`queueManagerOrPermission('canManageMerchants')`), as every other queue
+route has. Proof: `queueWritePermissionPg` +3, two FAIL on the previous gate;
+M242 KILLED. The same sweep found two screens offering controls from an area
+the viewer may lack (Users: Add/Deduct and Phantom Access; Queue Manager:
+approve/cancel/reject) — a refusal on press, not a hole; the server refuses
+them. Recorded under §0.5 question 1: "does anything CALL this" was asked of
+the route, never of the account the screen is for.
+
+### F-048 — a failed unlock parked the commission run lock in the pool
+`FIXED` · low (commission silently stops being paid) · §32 S7 · from the PR #198 verification, §7
+
+`withCommissionRunLock` takes a SESSION advisory lock on a pooled connection
+and unlocked best-effort (`.catch(() => {})`), returning the connection either
+way. When the unlock failed, the idle pooled session kept the lock, and every
+later pass on any other connection was told "another pass is running", until
+the connection was recycled. Reproduced by failing the unlock once, then
+asking from a separate session: on main the lock was still held.
+
+- **Fix:** the unlock must be CONFIRMED (`pg_advisory_unlock` returns true). If
+  it is not, or the lock request itself fails, the connection is destroyed, not
+  pooled (`release(true)`). Postgres drops a session's advisory locks with the
+  session, so the lock is always released one way or the other.
+- **Neighbours (§37):** a pass that throws still frees the lock; two concurrent
+  passes still exclude each other. Swept every advisory lock: the only other is
+  the Android publish lock, a transaction lock (`pg_advisory_xact_lock`), freed
+  by COMMIT/ROLLBACK by construction.
+- **Tests:** `commissionRunLockPg` (3; the unlock-failure case fails on main).
+  **Mutation-proved:** M231 KILLED.
+
+### F-049 — two clocks on one expiry: IP blocks and cash links
+`FIXED` · low (a valid request refused) · the `clock_timestamp()` shape again · from the PR #198 verification, §7, and its §37 sweep
+
+The IP block route computed `expires_at` from the APP's clock, and the CHECK
+`ip_blocks_expiry_future` compares it with `blocked_at`, the DATABASE's `now()`.
+With the app 2 minutes behind, a 1-minute block answered **500**. The §37 sweep
+for the shape found a sibling the review did not: `supplyCashLink` dated a cash
+link the same way against `cash_link_expiry_after_creation`, so a server behind
+the database by more than a link's lifetime refused **every** link a merchant
+supplied as "That link expires in the past".
+
+- **Fix:** both repositories take a DURATION and the database dates it
+  (`now() + make_interval(...)`), in the same statement as the CHECK's other
+  side, on a re-block too. The IP block's `live` flag is computed in SQL as well,
+  so the list and the enforcer cannot disagree about a block's last moments.
+- **Tests:** `ipBlocklistRoutesPg` (+2: skewed clock, and a re-block),
+  `retryAndMatchPg` (+1: skewed clock through the service). Each fails on main.
+  **Mutation-proved:** M232, M233 KILLED. Each mutant puts the app clock back.
+- **Swept, not fixed, recorded:** order and assignment expiries
+  (`paymentProcessing.service.js:435`, `merchant.assignment.routes.js:189,573`),
+  the merchant credit hold and chat bans are also dated by the app clock and
+  compared by the database. No CHECK refuses them, so skew does not cause a
+  failure. It moves the deadline by the size of the skew. With NTP on both
+  hosts that is milliseconds. Moving them needs the order writer to accept
+  durations, which is a change to the lifecycle writer (§21), so it is left
+  for a change of its own.
+
+### F-050 — an APK signed by one key for v2 and another for v3 was recorded under one
+`FIXED` · low (older phones see a different signer than the one pinned) · §37 neighbour pass over R7 · 2026-10-01
+
+Android 9+ installs by an APK's v3 signer and Android 7–8 by its v2 signer.
+The inspector verified both and reported the FIRST, so an APK whose schemes
+name different keys was pinned under the v3 key while older phones checked the
+v2 one — an install signed by it could not be updated there. It also recorded
+only the first of several signers in a scheme. Neither lets a forgery through
+(each signature still has to verify), so this is a consistency defect, found
+by asking R7's neighbours rather than its own case.
+
+- **Fix:** one signer per scheme, and every scheme signed by the same key;
+  either refusal names what to change.
+- **Tests:** `apkInspector` (+3; the builder now writes a real v3 scheme and
+  extra signers). The same-key v2+v3 APK is accepted — the opposite case — and
+  the two refusals fail on main. **Mutation-proved:** M234, M235 KILLED.
+
+### The §37 neighbour pass over the follow-up's fixes (2026-10-01)
+Each fix was asked the §37.1 pairs that apply. "held" means the neighbour was
+checked and is correct; the evidence is named.
+
+| Fix | Neighbour asked | Result |
+|---|---|---|
+| F-033 bet limits by cycle type | the phantom bet path; an unknown cycle type | held — phantom bets carry no stake limit by design and check access against `cycle.type`, whose values match `phantom_access`; an unknown type is unrepresentable (`cycles_type_known`) |
+| F-034 / F-035 cycle refunds and cancel | concurrent cancel vs declare, retry | not re-probed in this pass — the verification read both and their tests force the race; recorded as relying on that |
+| F-036 2FA lockout per account | every 2FA door (staff, player, merchant) | held — all three mount `twoFactorLimiter` keyed on the account (`server.js:586`, `playerAuth.routes.js`, `merchant.routes.js`) |
+| F-037 / F-038 session cutoff | every path that verifies a session token | held — all 9 `verifyJwt` call sites check the cutoff (3 socket joins, `merchantAuth`, `authenticate`, `/me`, 2 SSE streams; the 2FA-challenge verifier is not a session) |
+| F-039 own contact card | the recovery bot's contact path; all three audiences | held — `attemptRecovery` refuses a card without the sender's `user_id`; every panel's bots share these handlers |
+| F-040 referral budget | partial failure mid-batch; overlapping runs | held for money — the programme is always given back pool − actually paid; a credit followed by a failed `markPaid` is counted by the next run through its keyed credit. The batch row's own spend can overstate (the verification's cosmetic note), unchanged |
+| F-041 commission redelivery | a failed unlock of its run lock | **defect (found by the verification, §7) → F-048, fixed**; swept every other advisory lock: held |
+| F-042 queue writes | the queue READS; every other staff route | **superseded → F-047**: the class is closed and checked in CI |
+| B2 IP block expiry | the same two-clock shape elsewhere | the IP case was the verification's (§7); **this pass found the cash-link sibling → F-049, both fixed**; order expiries recorded, not fixed |
+| R7 APK signatures | v2/v3 by different keys; several signers | **defect → F-050, fixed** |
+| R9 halt / Android version | a halted release vs the download link; a phone misreporting its SDK; publishing past a halted release | held — `androidReleaseControlRoutes` covers each; a misreported SDK gets the blocking "too old" screen, not a bypass (verification §2) |
+
 ## 5. Derived coverage — regenerated, never typed
 
 <!-- BEGIN GENERATED: npm run audit:map -->
@@ -3223,11 +3379,10 @@ message that did not name the real problem.
 
 | Measure | Count |
 |---|---|
-| Route declarations in `backend/**` | 324 |
+| Route declarations in `backend/**` | 322 |
 | Reachable with **no auth middleware** | 44 |
-| Gated `isAdminOrSubAdmin` with **no permission key** | 6 |
-| — of those, **writes** (non-GET) | 0 |
-| Carrying an explicit permission key | 58 |
+| Staff routes carrying an **area** (permission key) | 198 |
+| Staff routes a sub-admin can **never** be given (full admin only) | 8 |
 
 A count moving is not by itself a defect — it is a prompt to read the
 new route and decide. Each of the three questions is defined in §2.
@@ -3281,9 +3436,16 @@ new route and decide. Each of the three questions is defined in §2.
 
 </details>
 
-<details><summary>Writes any sub-admin can make without holding a permission key</summary>
+<details><summary>Staff routes only a full admin can use (each must be in ADMIN_ONLY_AREAS, with its reason)</summary>
 
-- _none_
+- `DELETE /sub-admins/:subAdminId  (backend/routes/admin/subadmins.admin.routes.js)`
+- `GET /queue-managers  (backend/routes/admin/users.admin.routes.js)`
+- `GET /staff-permissions  (backend/routes/admin/subadmins.admin.routes.js)`
+- `GET /sub-admins  (backend/routes/admin/subadmins.admin.routes.js)`
+- `POST /sub-admins  (backend/routes/admin/subadmins.admin.routes.js)`
+- `POST /users/:userId/queue-manager  (backend/routes/admin/users.admin.routes.js)`
+- `PUT /sub-admins/:subAdminId/permissions  (backend/routes/admin/subadmins.admin.routes.js)`
+- `PUT /users/:userId/roles  (backend/routes/admin/users.admin.routes.js)`
 
 </details>
 
@@ -3309,8 +3471,8 @@ new route and decide. Each of the three questions is defined in §2.
 | Panel | .ts/.tsx files | `dangerouslySetInnerHTML` | `.innerHTML =` |
 |---|---|---|---|
 | `user-panel` | 87 | 0 | 0 |
-| `admin-panel` | 101 | 0 | 0 |
-| `merchant-panel` | 41 | 0 | 0 |
+| `admin-panel` | 110 | 0 | 0 |
+| `merchant-panel` | 44 | 0 | 0 |
 
 <!-- END GENERATED -->
 

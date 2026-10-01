@@ -23,3 +23,8 @@ const FIXED = {
 };
 
 for (const [key, value] of Object.entries(FIXED)) process.env[key] = value;
+
+// Route coverage (a test facility, off unless BB_ROUTE_COVERAGE is set): loaded
+// here, before any test file imports a router, so the hits a route test makes
+// are recorded against the route's file and line (`npm run report:routes`).
+await import('../../startup/routeCoverage.js');

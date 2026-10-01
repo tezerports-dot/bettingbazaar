@@ -1,7 +1,7 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /** content.admin.routes.js — FAQ, support links, promo, announcements */
 import {
-  authenticate, express, hasAnyPermission, hasPermission, isAdmin, isAdminOrSubAdmin,
+  authenticate, express, hasPermission,
 } from '../../routes/admin/_adminShared.js';
 import contentService from './content.service.js';
 import { generatePresignedUploadUrl } from '../../services/cdn.service.js';
@@ -91,7 +91,7 @@ router.get('/content/faq', authenticate, hasPermission('canManageContent'), asyn
 });
 
 // Add FAQ
-router.post('/content/faq', authenticate, isAdmin, async (req, res) => {
+router.post('/content/faq', authenticate, hasPermission('canManageContent'), async (req, res) => {
   try {
     const { question, answer, category } = req.body;
     
@@ -108,7 +108,7 @@ router.post('/content/faq', authenticate, isAdmin, async (req, res) => {
 });
 
 // Update FAQ
-router.put('/content/faq/:faqId', authenticate, isAdmin, async (req, res) => {
+router.put('/content/faq/:faqId', authenticate, hasPermission('canManageContent'), async (req, res) => {
   try {
     const { question, answer, category } = req.body;
     const faq = await contentService.updateFAQ(req.params.faqId, question, answer, category, req.user.userId);
@@ -121,7 +121,7 @@ router.put('/content/faq/:faqId', authenticate, isAdmin, async (req, res) => {
 });
 
 // Delete FAQ
-router.delete('/content/faq/:faqId', authenticate, isAdmin, async (req, res) => {
+router.delete('/content/faq/:faqId', authenticate, hasPermission('canManageContent'), async (req, res) => {
   try {
     const removed = await contentService.deleteFAQ(req.params.faqId, req.user.userId);
     if (!removed) return res.status(404).json({ success: false, message: 'FAQ not found' });
@@ -158,7 +158,7 @@ router.get('/content/support-links', authenticate, hasPermission('canManageConte
 });
 
 // Update support links
-router.put('/content/support-links', authenticate, isAdmin, async (req, res) => {
+router.put('/content/support-links', authenticate, hasPermission('canManageContent'), async (req, res) => {
   try {
     // A PATCH, not a read-modify-write. The old shape read the document,
     // mutated the fields present in the body and saved the whole thing back —
@@ -222,13 +222,11 @@ const promoStatus = (value) => PROMO_STATUS[String(value || '').toUpperCase()] ?
  * this category, and the extension blocklist independently refuses SVG and
  * HTML, which would otherwise be stored XSS served from the CDN origin.
  */
-// A promo slide is published to every player. Gated on the CONTENT key rather
-// than bare `isAdminOrSubAdmin`, which asked only whether the caller was a
-// sub-admin and never which of the nine keys they hold (audit F-001) — the
-// admin panel already gates its Content screens on this key, so the server was
-// the half that was missing. `canManageSupport` is accepted alongside it
-// because utils/permissions.ts documents it as a back-compat alias.
-router.post('/promo/upload-url', authenticate, hasAnyPermission(['canManageContent', 'canManageSupport']), async (req, res) => {
+// A promo slide is published to every player: the Content area, like every
+// other route in this file. `canManageSupport` used to be accepted alongside it
+// as a "back-compat alias" — a second key that opened the same door and that no
+// screen granted for this purpose. The list has one key per area now.
+router.post('/promo/upload-url', authenticate, hasPermission('canManageContent'), async (req, res) => {
   try {
     const { fileName, contentType, fileSize } = req.body || {};
     if (typeof fileName !== 'string' || !fileName.trim()
@@ -269,7 +267,7 @@ router.get('/promo', authenticate, hasPermission('canManageContent'), async (req
   }
 });
 
-router.post('/promo', authenticate, hasAnyPermission(['canManageContent', 'canManageSupport']), async (req, res) => {
+router.post('/promo', authenticate, hasPermission('canManageContent'), async (req, res) => {
   try {
     const { title, description, location, mediaType, fileUrl, priority, status } = req.body;
     const resolved = promoStatus(status) ?? 'DRAFT';
@@ -308,7 +306,7 @@ router.post('/promo', authenticate, hasAnyPermission(['canManageContent', 'canMa
   }
 });
 
-router.put('/promo/:id', authenticate, hasAnyPermission(['canManageContent', 'canManageSupport']), async (req, res) => {
+router.put('/promo/:id', authenticate, hasPermission('canManageContent'), async (req, res) => {
   try {
     const { title, description, location, mediaType, fileUrl, priority, status } = req.body;
     const patch = {};
@@ -343,7 +341,7 @@ router.put('/promo/:id', authenticate, hasAnyPermission(['canManageContent', 'ca
   }
 });
 
-router.delete('/promo/:id', authenticate, isAdmin, async (req, res) => {
+router.delete('/promo/:id', authenticate, hasPermission('canManageContent'), async (req, res) => {
   try {
     // 404 for an id that was not there: the old handler reported a successful
     // delete whether or not anything existed, so a mistyped id looked done.

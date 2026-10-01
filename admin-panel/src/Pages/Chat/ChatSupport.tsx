@@ -70,6 +70,18 @@ export const ChatSupport: React.FC = () => {
     } catch (e: any) { toast.error(e.response?.data?.message || 'Failed to ban user'); }
   };
 
+  // Lifting a ban. The route, the client method and the ban list all existed;
+  // nothing on this screen listed the bans or called unban, so a moderator who
+  // banned the wrong person could not undo it (measured: report:routes,
+  // "client methods no screen calls").
+  const liftBan = async (userId: string) => {
+    try {
+      await api.chat.unbanUser(userId);
+      toast.success('Chat ban lifted');
+      loadAll();
+    } catch (e: any) { toast.error(e.response?.data?.message || 'Failed to lift the ban'); }
+  };
+
   const sendReply = async () => {
     if (selection.type !== 'ticket' || !reply.trim()) return;
     const id = selection.id;
@@ -204,6 +216,30 @@ export const ChatSupport: React.FC = () => {
             </>
           )}
         </div>
+      </div>
+
+      {/* Active chat bans — who, why, until when, and the way to lift one */}
+      <div className="card" style={{ marginTop: 16, padding: '16px 18px' }}>
+        <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 10 }}>Chat bans</div>
+        {bans.length === 0 ? (
+          <div style={{ fontSize: 12.5, color: 'var(--muted)' }}>Nobody is banned from public chat.</div>
+        ) : (
+          <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: 8 }}>
+            {bans.map((b) => (
+              <li key={b.userId} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px', borderRadius: 10, border: '1px solid var(--border)', background: 'var(--surface-2)' }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div className="font-mono" style={{ fontSize: 12.5, fontWeight: 700 }}>{b.userId}</div>
+                  <div style={{ fontSize: 12, color: 'var(--text-2)', marginTop: 2 }}>
+                    {b.reason} · {b.banUntil ? `until ${new Date(b.banUntil).toLocaleString('en-IN')}` : 'permanent'}
+                  </div>
+                </div>
+                <button onClick={() => liftBan(String(b.userId))} className="btn-secondary" style={{ height: 34 }}>
+                  Lift ban
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
 
       {/* Ban modal */}

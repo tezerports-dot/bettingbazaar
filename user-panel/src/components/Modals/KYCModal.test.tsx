@@ -3,8 +3,9 @@
  * What a player is told about their verification.
  *
  * ── Why this is worth a test ────────────────────────────────────────────────
- * This modal has no form and submits nothing, so it looks like decoration. It
- * is not: it is the only place a player learns WHY they cannot withdraw, and
+ * For every status but one this modal submits nothing, so it looks like
+ * decoration. It is not: it is the only place a player learns WHY they cannot
+ * withdraw — and, when REJECTED, where they correct the number — and
  * the platform has already shipped the failure this guards against once — a
  * rejected player was told they were rejected and never told why, because the
  * reason was written to a field nothing read. They could not fix the
@@ -13,14 +14,19 @@
  * So the assertions are about what each status actually says, and about the
  * rejection reason surviving all the way to the screen.
  */
-import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 let mockUser: Record<string, unknown> | null = null;
-vi.mock('../../services/GameContext', () => ({
-  useGame: () => ({ user: mockUser }),
+const { resubmitAadhaar, refreshUserWallet } = vi.hoisted(() => ({
+  resubmitAadhaar: vi.fn(),
+  refreshUserWallet: vi.fn().mockResolvedValue(undefined),
 }));
+vi.mock('../../services/GameContext', () => ({
+  useGame: () => ({ user: mockUser, refreshUserWallet }),
+}));
+vi.mock('../../services/backend.service', () => ({ getBackend: () => ({ resubmitAadhaar }) }));
 
 const { default: KYCModal } = await import('./KYCModal');
 
@@ -69,8 +75,8 @@ describe('KYCModal', () => {
 
   it('treats an unknown or missing status as NOT STARTED rather than blank', () => {
     // A modal that renders nothing for an unrecognised status is a player
-    // staring at an empty dialog. The bot asks for the Aadhaar before the
-    // account exists, so this state is unusual and says so.
+    // staring at an empty dialog. The signup form asks for the Aadhaar before
+    // the account exists, so this state is unusual and says so.
     for (const user of [null, {}, { kycStatus: 'SOMETHING_NEW' }]) {
       const { unmount } = show(user as Record<string, unknown> | null);
       expect(screen.getByText('Not started')).toBeInTheDocument();
@@ -79,10 +85,10 @@ describe('KYCModal', () => {
     }
   });
 
-  it('offers no form — there is nothing here to submit', () => {
+  it('offers no form to a player who is not rejected', () => {
     // This used to take a name, an Aadhaar number and two photographs. None of
-    // that is collected any more, and a form nobody can submit would be worse
-    // than none.
+    // that is collected any more. The ONE input left is the corrected number a
+    // REJECTED player submits (below); nobody else has anything to submit.
     const { container } = show({ kycStatus: 'PENDING_APPROVAL' });
     expect(container.querySelector('form')).toBeNull();
     expect(container.querySelector('input')).toBeNull();
@@ -97,5 +103,54 @@ describe('KYCModal', () => {
 
     await userEvent.click(screen.getByRole('button', { name: /close/i }));
     expect(onClose).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ── The correction form ───────────────────────────────────────────────────
+// The resubmit route, its service and the client method all existed and no
+// screen called them: route coverage measured the route as never reached by
+// any tier, and a rejected player was told to contact support.
+const box = () => screen.getByLabelText('Correct Aadhaar number') as HTMLInputElement;
+const submit = () => screen.getByRole('button', { name: /Submit corrected number/i });
+
+describe('KYC resubmission on the panel', () => {
+  beforeEach(() => { resubmitAadhaar.mockReset(); refreshUserWallet.mockClear(); });
+
+  it('offers a rejected player the form, and sends the 12 digits they typed as printed', async () => {
+    resubmitAadhaar.mockResolvedValue({ success: true, last4: '9012', message: 'Received — Aadhaar ending 9012.' });
+    show({ kycStatus: 'REJECTED' });
+    expect(submit()).toBeDisabled();
+    // As it is printed on the card: groups of four.
+    fireEvent.change(box(), { target: { value: '1234 5678 9012' } });
+    expect(box().value).toBe('123456789012');
+    expect(submit()).toBeEnabled();
+    fireEvent.click(submit());
+    await waitFor(() => expect(resubmitAadhaar).toHaveBeenCalledWith('123456789012'));
+    expect(await screen.findByRole('status')).toHaveTextContent('Aadhaar ending 9012');
+    expect(refreshUserWallet).toHaveBeenCalled();
+    expect(screen.queryByLabelText('Correct Aadhaar number')).not.toBeInTheDocument();
+  });
+
+  it('shows the server\'s own words when it refuses, and keeps the form', async () => {
+    resubmitAadhaar.mockRejectedValue(new Error('That Aadhaar is already registered to another account. Each Aadhaar can hold one account.'));
+    show({ kycStatus: 'REJECTED' });
+    fireEvent.change(box(), { target: { value: '123456789012' } });
+    fireEvent.click(submit());
+    expect(await screen.findByRole('alert')).toHaveTextContent(/already registered to another account/);
+    expect(box()).toBeInTheDocument();
+    expect(refreshUserWallet).not.toHaveBeenCalled();
+  });
+
+  it('does not offer the form to anyone who is not rejected (the opposite case)', () => {
+    for (const status of ['APPROVED', 'PENDING_APPROVAL', 'PENDING_SUBMISSION']) {
+      const { unmount } = show({ kycStatus: status });
+      expect(screen.queryByLabelText('Correct Aadhaar number'), status).not.toBeInTheDocument();
+      unmount();
+    }
+  });
+
+  it('no longer tells anyone the BOT asks for the Aadhaar (signup is a form, §33)', () => {
+    show({ kycStatus: 'PENDING_SUBMISSION' });
+    expect(screen.queryByText(/bot asks/i)).not.toBeInTheDocument();
   });
 });

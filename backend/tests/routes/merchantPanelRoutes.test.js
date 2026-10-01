@@ -28,7 +28,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { pgConfigured, applySchema, closePg } from '#db/client.js';
 import { getBalancesPaise } from '#db/repositories/wallets.core.js';
 import { createOrderRecord, getOrderRecord, setOrderFields, getMerchantOrder } from '#db/repositories/orders.record.js';
-import { updateMerchant, getMerchant } from '#db/repositories/merchants.js';
+import { updateMerchant, getMerchant, pauseAssignment, resumeAssignment } from '#db/repositories/merchants.js';
 import { assignOrder } from '#db/repositories/orders.core.js';
 import { getMerchantTokenBalance } from '../../domains/merchant/merchantWallet.service.js';
 import { mountRouter, actor, merchantActor, as, request } from './_harness.js';
@@ -165,6 +165,25 @@ describePg('merchant panel routes', () => {
     const after = (await as(app, m).get('/profile')).body.merchant.tokenBalance;
     expect(after).toBe(await getMerchantTokenBalance(m.merchantId));
     expect(before - after, 'the hold did not show up in the merchant’s own figure').toBe(500);
+  });
+
+  // The platform stops sending a merchant buys after three unpaid in a row
+  // (§2). The Dashboard read "Online · Accepting orders" throughout, because the
+  // profile never said — found by opening the panel AS a paused merchant
+  // (browser profile `merchant-paused`).
+  it('tells a merchant their new buy orders are paused, and when that is lifted', async () => {
+    const m = await merchantActor({ tokensRupees: 5000 });
+    expect((await as(app, m).get('/profile')).body.merchant.assignmentPausedAt,
+      'a merchant who was never paused reads as paused').toBeNull();
+
+    await pauseAssignment(m.merchantId, '3 buy orders in a row expired with no payment.');
+    const paused = (await as(app, m).get('/profile')).body.merchant;
+    expect(paused.assignmentPausedAt, 'the pause never reached the merchant').toBeTruthy();
+    // The stored reason is worded for an admin; the merchant gets the panel's own words.
+    expect(paused).not.toHaveProperty('assignmentPauseReason');
+
+    await resumeAssignment(m.merchantId);
+    expect((await as(app, m).get('/profile')).body.merchant.assignmentPausedAt).toBeNull();
   });
 
   // ── Accepting an order ────────────────────────────────────────────────────

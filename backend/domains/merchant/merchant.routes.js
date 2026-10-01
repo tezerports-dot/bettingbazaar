@@ -162,6 +162,11 @@ const formatMerchant = async (merchant, user = null) => {
         usdtChains:           usdtChainsHeldBy(merchant),
         limits:               merchant.limits,
         tokenBalance:         await getMerchantTokenBalance(merchant._id),
+        // Whether the platform has stopped sending them new buy orders (three
+        // unpaid in a row, §2). A merchant was never told: the Dashboard read
+        // "Online · Accepting orders" while no order could reach them. Only the
+        // TIME is sent — the stored reason is written for an admin.
+        assignmentPausedAt:   merchant.assignmentPausedAt ?? null,
         earnings:             merchant.earnings,
         totalProcessedVolume: merchant.totalProcessedVolume,
         // Performance figures the panel's dashboard/profile show; all are
@@ -451,7 +456,10 @@ router.post('/2fa/setup', merchantAuth, twoFactorLimiter, async (req, res) => {
             return res.status(404).json({ success: false, message: 'Merchant not found' });
         if (creds.twoFactorEnabled)
             return res.status(400).json({ success: false,
-                message: 'Two-factor authentication is already active. Disable it first to re-enrol.' });
+                // There is no merchant disable route, deliberately (see below), so
+                // "disable it first" named a step nobody can take (§32 S14).
+                message: 'Two-factor authentication is already active. If you have lost your authenticator, '
+                    + 'sign in with a recovery code, or ask an admin to re-enrol you.' });
 
         const secret = generateSecret();
         // PENDING, not live: the secret only becomes the account's second factor

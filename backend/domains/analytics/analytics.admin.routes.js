@@ -8,7 +8,7 @@
  * disagree. §1 — one owner per value.
  */
 import {
-  authenticate, express, hasPermission, isAdmin, isAdminOrSubAdmin,
+  authenticate, express, hasPermission,
 } from '../../routes/admin/_adminShared.js';
 import { db } from '#db';
 // Analytics Platform trends (Phase 012 — Enterprise Services tier)
@@ -125,7 +125,7 @@ router.get('/analytics/dashboard', authenticate, hasPermission('canViewAnalytics
  * Infinity — the guard is kept from the original. The rest is derived from the
  * order and bet rows rather than from the abandoned transaction collection.
  */
-router.get('/analytics/financials', authenticate, isAdmin, async (req, res) => {
+router.get('/analytics/financials', authenticate, hasPermission('canViewAnalytics'), async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
     const from = startDate ? new Date(startDate) : null;

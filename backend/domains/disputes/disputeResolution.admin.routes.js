@@ -1,6 +1,6 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 
-import { express, authenticate, isAdmin, isAdminOrSubAdmin, hasPermission } from '../../routes/admin/_adminShared.js';
+import { express, authenticate, isAdmin, hasPermission } from '../../routes/admin/_adminShared.js';
 import { db } from '#db';
 import { creditDeposit, creditReserve } from '../wallet/walletAuthority.service.js';
 import { moveDepositMoney } from '../payment/depositCredit.js';
@@ -248,7 +248,7 @@ router.post('/dispute-orders/:orderId/chat', authenticate, hasPermission('canRes
 //     RELEASE_TO_USER     → refund locked tokens back to user (merchant did not release)
 //     RELEASE_TO_MERCHANT → complete withdrawal (merchant confirms payment was made)
 //     CANCEL_ORDER        → refund tokens to user (safe default)
-router.post('/dispute-orders/:orderId/resolve', authenticate, isAdmin, async (req, res) => {
+router.post('/dispute-orders/:orderId/resolve', authenticate, hasPermission('canResolveDisputes'), async (req, res) => {
   try {
     const { decision, resolution, penaltyUser, penaltyMerchant } = req.body;
     

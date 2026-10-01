@@ -19,16 +19,13 @@
  * canManageContent    → FAQ manager, support links, CDN images, branding
  * canManagePhantom    → phantom access assignment (set on sub-admin account itself)
  */
-export interface SubAdminPermissions {
-  canVerifyKYC: boolean;
-  canManageUsers: boolean;
-  canManageMerchants: boolean;
-  canResolveDisputes: boolean;
-  canViewTransactions: boolean;
-  canViewAnalytics: boolean;
-  canManageContent: boolean;
-  canManageSupport: boolean; // kept for back-compat — maps to canManageContent
-}
+/**
+ * A sub-admin's grant: every key in `utils/permissions.ts` (the server's list),
+ * true or false. Derived from that list rather than restated, so a new area is
+ * a new field here with nothing to edit — the interface it replaced named eight
+ * keys and had already fallen behind the routes.
+ */
+export type SubAdminPermissions = Partial<Record<import('./utils/permissions').PermissionKey, boolean>>;
 
 export interface Admin {
   _id: string;
@@ -480,7 +477,12 @@ export interface DashboardStats {
     netProfit: number;
     tokenBuy?: number;   // token purchase volume — present when backend returns it
     tokenSell?: number;  // token redemption volume — present when backend returns it
+    // Today in IST — the last bucket of the seven-day series the chart draws,
+    // so the tiles and the chart agree (analytics.admin.routes.js). Player
+    // bets only; phantom bets are house liquidity.
+    today?: { bets: number; betCount: number; payouts: number; deposits: number; netProfit: number };
   };
+  // `totalBets` is ALL-TIME player bets, not today's.
   cycles: { activeCount: number; todayCount: number; totalBets: number };
   queue: { pendingOrders: number; avgWaitTime: number };
 }

@@ -23,7 +23,7 @@
  */
 import net from 'node:net';
 import { db } from '#db';
-import { express, authenticate, isAdmin } from './_adminShared.js';
+import { express, authenticate, hasPermission } from './_adminShared.js';
 import { respondError } from '../../shared/httpError.js';
 import { buildBlockList, listCovers, refreshIpBlocklistNow, ipBlocklistStatus } from '../../middleware/ipBlocklist.js';
 
@@ -81,7 +81,7 @@ export function judgeNetwork(input, requesterIp) {
   return `${address}/${bits}`;
 }
 
-router.get('/security/ip-blocks', authenticate, isAdmin, async (req, res) => {
+router.get('/security/ip-blocks', authenticate, hasPermission('canManageIpBlocks'), async (req, res) => {
   try {
     const includeReleased = req.query.includeReleased === '1' || req.query.includeReleased === 'true';
     const blocks = await db.ipBlocks.listBlocks({ includeReleased });
@@ -91,29 +91,32 @@ router.get('/security/ip-blocks', authenticate, isAdmin, async (req, res) => {
   }
 });
 
-router.post('/security/ip-blocks', authenticate, isAdmin, async (req, res) => {
+router.post('/security/ip-blocks', authenticate, hasPermission('canManageIpBlocks'), async (req, res) => {
   try {
     const network = judgeNetwork(req.body?.network, req.ip);
     const reason = String(req.body?.reason ?? '').trim();
     if (!reason) throw refuse('A reason is required — it is what an appeal is answered from.');
     if (reason.length > 500) throw refuse('Keep the reason under 500 characters.');
-    let expiresAt = null;
+    // A DURATION, not a date: the database dates it, on the same clock its
+    // CHECK uses (see blockNetwork). This route used to add it to its own
+    // clock, and a server running behind the database refused short blocks.
+    let expiresInMinutes = null;
     const minutes = req.body?.expiresInMinutes;
     if (minutes !== undefined && minutes !== null && minutes !== '') {
       const m = Number(minutes);
       if (!Number.isInteger(m) || m < 1 || m > MAX_EXPIRY_MINUTES) {
         throw refuse(`Expiry must be a whole number of minutes from 1 to ${MAX_EXPIRY_MINUTES}, or empty for a block that lasts until it is lifted.`);
       }
-      expiresAt = new Date(Date.now() + m * 60_000);
+      expiresInMinutes = m;
     }
 
-    const block = await db.ipBlocks.blockNetwork({ network, reason, actor: req.user.userId, expiresAt });
+    const block = await db.ipBlocks.blockNetwork({ network, reason, actor: req.user.userId, expiresInMinutes });
     // This instance enforces it at once; the others within the refresh interval.
     await refreshIpBlocklistNow().catch((e) => console.error('[ip-blocklist] immediate reload failed:', e.message));
     await db.audit.recordDetailed({
       performedBy: req.user.userId, action: 'IP_BLOCKED', category: 'SECURITY',
       targetType: 'ip_block', targetId: block.blockId, targetName: block.network,
-      details: { network: block.network, reason, expiresAt },
+      details: { network: block.network, reason, expiresAt: block.expiresAt },
       ip: req.ip, method: req.method, endpoint: req.originalUrl,
     });
     res.status(201).json({ success: true, block });
@@ -122,7 +125,7 @@ router.post('/security/ip-blocks', authenticate, isAdmin, async (req, res) => {
   }
 });
 
-router.post('/security/ip-blocks/:blockId/release', authenticate, isAdmin, async (req, res) => {
+router.post('/security/ip-blocks/:blockId/release', authenticate, hasPermission('canManageIpBlocks'), async (req, res) => {
   try {
     const block = await db.ipBlocks.releaseBlock({ blockId: req.params.blockId, actor: req.user.userId });
     if (!block) return res.status(404).json({ success: false, message: 'That block does not exist.' });

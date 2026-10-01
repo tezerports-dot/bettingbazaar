@@ -35,6 +35,7 @@ import { cycleSnapshotPublisher } from './cycleSnapshotPublisher.js';
 // released — the one outcome no automated path can resolve on its own.
 import { sendAlert } from '../../services/alerting.service.js';
 import { getSystemConfig } from '#db/repositories/config.js';
+import { emitToStaff } from '../notification/staffEventAreas.js';
 
 const router = express.Router();
 
@@ -501,7 +502,7 @@ router.post('/place', authenticate, requireLinkedKyc, requireChannelMembership({
 
       // ADMINS get the full real/phantom breakdown, per bet, on admin-room only
       // (few admins — per-bet detail here is cheap and useful).
-      global.io?.to('admin-room').emit('admin_bet_placed', {
+      emitToStaff(global.io, 'admin_bet_placed', {
         cycleId,
         side,
         amount,
@@ -633,7 +634,7 @@ router.post('/phantom', authenticate, async (req, res) => {
       });
 
       // ADMINS see the phantom breakdown per bet on admin-room only.
-      global.io?.to('admin-room').emit('admin_bet_placed', {
+      emitToStaff(global.io, 'admin_bet_placed', {
         cycleId,
         side,
         amount,
