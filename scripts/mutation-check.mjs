@@ -1790,6 +1790,24 @@ const MUTATIONS = [
     from: `        if (!verdict.ok) {`,
     to: `        if (false) {`,
   },
+  {
+    id: 'M240', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
+    test: 'backend/tests/routes/merchantTwoFactorEnrolmentPg.test.js',
+    why: 'any six digits turn a merchant\'s pending secret into their live second factor',
+    from: `        if (!verdict.valid)
+            return res.status(400).json({ success: false, message: 'That code did not match.`,
+    to: `        if (false)
+            return res.status(400).json({ success: false, message: 'That code did not match.`,
+  },
+  {
+    id: 'M241', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
+    test: 'backend/tests/routes/merchantTwoFactorEnrolmentPg.test.js',
+    why: 'a session holder replaces an enrolled merchant\'s live authenticator by running setup again',
+    from: `        if (creds.twoFactorEnabled)
+            return res.status(400).json({ success: false,`,
+    to: `        if (false)
+            return res.status(400).json({ success: false,`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that
