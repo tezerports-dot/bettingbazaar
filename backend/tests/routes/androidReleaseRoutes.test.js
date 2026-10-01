@@ -275,4 +275,29 @@ describePg('Android releases', () => {
     expect(body.packageName).toBe(PKG);
     expect(body.checks.map((c) => c.key).sort()).toEqual(['allowed_origins', 'fingerprints', 'storage']);
   });
+
+  it('records the moment a publish WROTE, not the moment it started waiting for the lock', async () => {
+    // `now()` is the transaction's START. A publish that waited on the lock
+    // was stamped with the time it began waiting, so a release published
+    // after another could carry the earlier time, which the racing test
+    // above caught intermittently. Forced here: hold the lock, publish,
+    // release, and the stamp must be after the release.
+    const draft = (await upload(admin, apk(40))).body.release;
+    let release;
+    const released = new Promise((r) => { release = r; });
+    let releasedAt;
+    const holder = withTransaction(async (client) => {
+      await client.query('SELECT pg_advisory_xact_lock($1)', [0x41504b31]);
+      await released;
+      releasedAt = Date.now();
+    });
+    await new Promise((r) => setTimeout(r, 100));
+    const publishing = as(adminApp, admin).post(`/android/releases/${draft.releaseId}/publish`).then((r) => r);
+    await new Promise((r) => setTimeout(r, 300));
+    release();
+    await holder;
+    expect((await publishing).status).toBe(200);
+    const { rows } = await pgQuery('SELECT published_at FROM android_releases WHERE release_id = $1', [draft.releaseId]);
+    expect(new Date(rows[0].published_at).getTime()).toBeGreaterThanOrEqual(releasedAt - 50);
+  });
 });

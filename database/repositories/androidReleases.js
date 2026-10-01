@@ -133,9 +133,12 @@ export async function updateRelease(releaseId, { releaseNotes, mandatory }) {
 export async function publishRelease(releaseId, publishedBy) {
   return withTransaction(async (client) => {
     await client.query('SELECT pg_advisory_xact_lock($1)', [PUBLISH_LOCK]);
+    // clock_timestamp(), not now(): now() is when this transaction BEGAN, which
+    // is before it waited for the lock, so a publish that queued behind
+    // another was stamped earlier than the one it followed.
     const { rows } = await client.query(
       `UPDATE android_releases r
-          SET published_at = now(), published_by = $2
+          SET published_at = clock_timestamp(), published_by = $2
         WHERE r.release_id = $1
           AND r.published_at IS NULL
           AND NOT EXISTS (SELECT 1 FROM android_releases p
