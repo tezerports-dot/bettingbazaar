@@ -12,7 +12,7 @@ import {
   TrendingUp, ShieldCheck, HelpCircle, Image as ImageIcon,
   MessageCircle, Shield, History, Scale, Upload, Search, Sun, Moon, Bell,
   Zap, SlidersHorizontal, Trophy, Star, Gamepad2, Bot, FileSpreadsheet, Share2,
-  type LucideIcon, ArrowLeftRight, BookOpenCheck, Flag, ToggleLeft, Banknote, Hourglass,
+  type LucideIcon, ArrowLeftRight, BookOpenCheck, Flag, ToggleLeft, Banknote, Hourglass, Fingerprint,
   Coins, Ghost, Smartphone, ShieldBan} from 'lucide-react';
 import { useAuthStore } from '../services/auth';
 import { usePermissions } from '../hooks/usePermission';
@@ -81,6 +81,7 @@ const NAV_GROUPS: MenuGroup[] = [
     { path: '/disputes',        icon: Scale,    label: 'Disputes',       title: 'Disputes',      sub: 'Payment order disputes & resolution', permission: 'canResolveDisputes' },
     { path: '/disputes/cdm-receipts', icon: Banknote, label: 'CDM Slips', title: 'CDM Slips', sub: 'Cash payouts settled without evidence, and the only read of a slip', permission: 'canResolveDisputes' },
     { path: '/disputes/stalled-withdrawals', icon: Hourglass, label: 'Stalled Payouts', title: 'Stalled Withdrawals', sub: 'Payouts no merchant has taken, and the tokens locked behind them', permission: 'canResolveDisputes' },
+    { path: '/payment-references', icon: Fingerprint, label: 'Payment References', title: 'Payment References', sub: 'UTRs, chain hashes and CDM references: who claimed what, and who tried to reuse one', permission: 'canManageUtr' },
   ] },
   { key: 'policy', label: 'Business Policy', items: [
     { path: '/business-policy/deposit', icon: Landmark, label: 'Deposit Policy', title: 'Deposit Policy', sub: 'Versioned deposit / reserve allocation policy', permission: 'canManageBusinessPolicy' },

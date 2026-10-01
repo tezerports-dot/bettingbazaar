@@ -1212,21 +1212,47 @@ export const disputes = {
 };
 
 // ─── UTR MONITOR ───────────────────────────────────────────────────────────
+// The payment-reference registry (`canManageUtr`). A UTR, chain hash or CDM
+// slip reference belongs to exactly one order, for good (CLAUDE.md §27); this is
+// the operator's side of that rule: who claimed what, which references somebody
+// tried to REUSE, and the flag a human puts on one.
+//
+// `GET /utr/flagged` and `POST /utr/resolve/:orderId` are NOT here. They work
+// orders with `requires_review` set, and nothing on the platform sets it, so a
+// screen for them would be a queue that is permanently empty (§32 S4). The old
+// `resolve` here also sent `{ resolution }` to a route that requires
+// `{ action }`, so it could never have worked (S26).
 export const utr = {
-  getFlagged: async (type?: string, page = 1) => {
-    const res = await api.get<any>('/api/admin/utr/flagged', { params: { type, page } });
-    return res.data;
-  },
   getStats: async () => {
     const res = await api.get<any>('/api/admin/utr/stats');
     return res.data;
   },
-  resolve: async (orderId: string, resolution?: string) => {
-    const res = await api.post(`/api/admin/utr/resolve/${orderId}`, { resolution });
+  /** References somebody tried to reuse, or that an operator flagged — newest contest first. */
+  getContested: async (page = 1, limit = 50) => {
+    const res = await api.get<any>('/api/admin/utr/contested', { params: { page, limit } });
+    return res.data;
+  },
+  /** The whole registry, optionally one status (ACTIVE | RELEASED | FRAUD). */
+  getRegistry: async (status?: string, page = 1, limit = 50) => {
+    const res = await api.get<any>('/api/admin/utr-registry', { params: { status, page, limit } });
+    return res.data;
+  },
+  /** One reference, as typed — the server normalises case and spaces. */
+  lookup: async (reference: string) => {
+    const res = await api.get<any>(`/api/admin/utr-registry/${encodeURIComponent(reference)}`);
+    return res.data;
+  },
+  /** The reason is REQUIRED: it is what the player is shown if they appeal. */
+  flag: async (reference: string, reason: string) => {
+    const res = await api.put<any>(`/api/admin/utr-registry/${encodeURIComponent(reference)}/flag`, { reason });
+    return res.data;
+  },
+  clear: async (reference: string) => {
+    const res = await api.put<any>(`/api/admin/utr-registry/${encodeURIComponent(reference)}/clear`, {});
     return res.data;
   },
   getUserHistory: async (userId: string) => {
-    const res = await api.get<any>(`/api/admin/utr/user-history/${userId}`);
+    const res = await api.get<any>(`/api/admin/utr/user-history/${encodeURIComponent(userId)}`);
     return res.data;
   },
 };

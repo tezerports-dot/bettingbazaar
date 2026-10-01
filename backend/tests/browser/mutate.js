@@ -269,6 +269,36 @@ const words = (page) => page.locator('body').innerText()
 // reported "pressed ONE Block on row 5 and 5 accounts changed". The database
 // said one. A finding that size cost a database read to disprove, and the
 // cause was one helper that did not match the idiom next to it (§5).
+/**
+ * Two claimed references, each on a real PAID deposit with its tamper tag, and
+ * a REFUSED reuse of the first one from a second order — the signal the
+ * Payment References screen exists to show. Claimed through the one registry
+ * (`claimUtr`), so the rows are ones production can produce (§32 S16).
+ */
+async function seedReferences() {
+  const player = await seedPlayer({ balancePaise: 0 });
+  const merchant = await seedMerchant({ currency: 'INR', tokensPaise: 100000000 });
+  const mk = async () => {
+    const orderId = rid('UTRO');
+    await pgQuery(
+      `INSERT INTO order_states
+         (order_id, user_id, merchant_id, order_type, state, token_amount_paise, fiat_amount_paise, order_hmac)
+       VALUES ($1, $2, $3, 'DEPOSIT', 'PAID', 50000, 50000, $4)`,
+      [orderId, player.userId, merchant.merchantId, deriveOrderHmac(orderId)],
+    );
+    return orderId;
+  };
+  const digits = () => String(Math.floor(Math.random() * 1e12)).padStart(12, '7');
+  const ref = digits(); const bystanderRef = digits();
+  await db.utr.claimUtr({ utr: ref, orderId: await mk(), userId: player.userId, amountRupees: 500 });
+  await db.utr.claimUtr({ utr: bystanderRef, orderId: await mk(), userId: player.userId, amountRupees: 500 });
+  const reuse = await db.utr.claimUtr({ utr: ref, orderId: await mk(), userId: player.userId, amountRupees: 500 });
+  if (reuse.ok !== false) {
+    throw new Error(`seedReferences: the reuse of ${ref} was not refused (${JSON.stringify(reuse)})`);
+  }
+  return { ref, bystanderRef };
+}
+
 const userStatus = async (userId) => {
   const { rows } = await pgQuery('SELECT status FROM users WHERE user_id = $1', [userId]);
   return rows[0]?.status ?? null;
@@ -468,6 +498,101 @@ const CASES = [
       const said = await words(page);
       if (!/blocked/i.test(said)) return ['FAILED', 'server blocked them; the screen never said so'];
       return ['DROVE', `${target.userId} BLOCKED, bystander still ${neighbour}`];
+    },
+  },
+
+  // ── Closing an account (the Delete Account control, 2026-10-01) ───────────
+  {
+    id: 'admin/users/delete',
+    panel: 'admin-panel',
+    what: 'Close a player account from the users list',
+    async run(page, cfg, base) {
+      const target = await seedPlayer({ balancePaise: 0 });
+      const bystander = await seedPlayer({ balancePaise: 0 });
+
+      await go(page, cfg, base, '/users');
+      if (!await search(page, target.userId)) return ['NOT DRIVEN', 'no search box on /users'];
+      const row = await rowFor(page, target.userId);
+      if (!row) return ['NOT DRIVEN', `seeded player ${target.userId} never appeared in the table`];
+
+      const hit = await pressInRow(row, 'Delete Account');
+      if (!hit.ok) return ['NOT DRIVEN', hit.why];
+      await settle(page, 4000);
+      const answered = await confirmWith(page, 'Delete');
+      if (answered === 'stuck') return ['FAILED', 'the Delete confirmation could not be pressed'];
+      if (answered === 'none') return ['FAILED', 'Delete Account raised no confirmation'];
+
+      const after = await userStatus(target.userId);
+      const neighbour = await userStatus(bystander.userId);
+      if (after !== 'DELETED') return ['FAILED', `status is ${after}, not DELETED`];
+      if (neighbour === 'DELETED') return ['FAILED', 'the BYSTANDER was deleted too'];
+      // Closed means closed: the deleted player's own session is refused.
+      const me = await fetch(`${API}/api/v1/auth/me`, { headers: { Authorization: `Bearer ${playerToken(target)}` } });
+      if (me.status !== 403) return ['FAILED', `deleted, but their session still answers ${me.status} on /me`];
+      if (!/account closed/i.test(await words(page))) return ['FAILED', 'server closed it; the screen never said so'];
+      return ['DROVE', `${target.userId} DELETED and its session refused (403); bystander still ${neighbour}`];
+    },
+  },
+
+  // ── Payment references (the canManageUtr screen, 2026-10-01) ──────────────
+  {
+    id: 'admin/utr/flag',
+    panel: 'admin-panel',
+    what: 'Flag a reused payment reference as fraud',
+    async run(page, cfg, base) {
+      const { ref, bystanderRef } = await seedReferences();
+
+      await go(page, cfg, base, '/payment-references');
+      const typed = await fill(page, '#utr-lookup', ref.toLowerCase());
+      if (!typed.ok) return ['NOT DRIVEN', typed.why];
+      const look = page.getByRole('button', { name: /^\s*Look up\s*$/i }).first();
+      if (await look.count() === 0) return ['NOT DRIVEN', 'no Look up button'];
+      await look.click({ timeout: 8000 });
+      await settle(page, 6000);
+
+      const reason = await fill(page, '#utr-flag-reason', 'mutating drive: same slip quoted twice');
+      if (!reason.ok) return ['FAILED', `looked ${ref} up; no flag form appeared — ${reason.why}`];
+      const flag = page.getByRole('button', { name: /Flag as fraud/i }).first();
+      if (await flag.isDisabled()) return ['FAILED', 'Flag as fraud stayed disabled with a reason typed'];
+      await flag.click({ timeout: 8000 });
+      await settle(page, 6000);
+
+      const after = await db.utr.getUtr(ref);
+      const neighbour = await db.utr.getUtr(bystanderRef);
+      if (after?.status !== 'FRAUD') return ['FAILED', `status is ${after?.status}, not FRAUD`];
+      if (after.flagReason !== 'mutating drive: same slip quoted twice') return ['FAILED', `reason stored as '${after.flagReason}'`];
+      if (neighbour?.status !== 'ACTIVE') return ['FAILED', `the BYSTANDER reference is ${neighbour?.status}`];
+      if (await page.getByRole('button', { name: /Clear the flag/i }).count() === 0) {
+        return ['FAILED', 'server flagged it; the screen still offers Flag'];
+      }
+      return ['DROVE', `${ref} FRAUD with its reason, flagged by ${after.flaggedBy}; bystander ACTIVE`];
+    },
+  },
+  {
+    id: 'admin/utr/clear',
+    panel: 'admin-panel',
+    what: 'Clear a fraud flag on a payment reference',
+    async run(page, cfg, base) {
+      const { ref, bystanderRef } = await seedReferences();
+      await db.utr.flagFraud(ref, { actor: 'mutating-drive', reason: 'seeded flag' });
+      await db.utr.flagFraud(bystanderRef, { actor: 'mutating-drive', reason: 'seeded bystander flag' });
+
+      await go(page, cfg, base, '/payment-references');
+      const typed = await fill(page, '#utr-lookup', ref);
+      if (!typed.ok) return ['NOT DRIVEN', typed.why];
+      await page.getByRole('button', { name: /^\s*Look up\s*$/i }).first().click({ timeout: 8000 });
+      await settle(page, 6000);
+      const clear = page.getByRole('button', { name: /Clear the flag/i }).first();
+      if (await clear.count() === 0) return ['FAILED', `looked up a FRAUD reference; no Clear the flag button`];
+      await clear.click({ timeout: 8000 });
+      await settle(page, 6000);
+
+      const after = await db.utr.getUtr(ref);
+      const neighbour = await db.utr.getUtr(bystanderRef);
+      if (after?.status !== 'ACTIVE') return ['FAILED', `status is ${after?.status}, not ACTIVE`];
+      if (neighbour?.status !== 'FRAUD') return ['FAILED', `the BYSTANDER flag was lifted too (${neighbour?.status})`];
+      if (!/flag cleared/i.test(await words(page))) return ['FAILED', 'server cleared it; the screen never said so'];
+      return ['DROVE', `${ref} back to ACTIVE; bystander still FRAUD`];
     },
   },
 

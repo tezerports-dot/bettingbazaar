@@ -37,6 +37,7 @@ import ErrorLogs from './Pages/Settings/ErrorLogs';
 import { DisputeManager } from './Pages/Disputes/DisputeManager';
 import { CdmReceiptQueue } from './Pages/Disputes/CdmReceiptQueue';
 import { StalledWithdrawals } from './Pages/Disputes/StalledWithdrawals';
+import { UtrMonitor } from './Pages/Utr/UtrMonitor';
 import { AppAssetsPage } from './Pages/AppAssets/AppAssetsPage';
 import { AndroidAppPage } from './Pages/AndroidApp/AndroidAppPage';
 import { BlockedIpsPage } from './Pages/Security/BlockedIpsPage';
@@ -407,6 +408,13 @@ const App: React.FC = () => {
         <Route path="/disputes/stalled-withdrawals" element={
           <PermRoute permission="canResolveDisputes">
             <Layout><StalledWithdrawals /></Layout>
+          </PermRoute>
+        } />
+        {/* The payment-reference registry (§27). Its own area: a sub-admin can be
+            given references without the disputes desk, and the reverse. */}
+        <Route path="/payment-references" element={
+          <PermRoute permission="canManageUtr">
+            <Layout><UtrMonitor /></Layout>
           </PermRoute>
         } />
         {/* UTR REMOVED: route /utr-monitor stripped per product decision */}
