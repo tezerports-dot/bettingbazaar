@@ -2,19 +2,22 @@
 /**
  * KYCModal.tsx — where a player stands on verification.
  *
- * There is nothing to submit here any more. This used to take a name, an
- * Aadhaar number, a photograph of the card and a selfie, presign two uploads
- * into a private bucket and queue the lot for a human reviewer. All of that is
- * gone: the Telegram bot asks for the Aadhaar NUMBER before the account exists,
- * so verification is a precondition of signing up rather than a later step, and
- * checking happens in bulk against the issuing authority.
+ * The signup FORM takes the Aadhaar number before the account exists (§33),
+ * so verification is a precondition of signing up rather than a later step,
+ * and checking happens in bulk against the issuing authority. This shows the
+ * player where they stand, what it lets them do, and — when the number was
+ * REJECTED — takes the corrected one, through `POST /api/v1/auth/kyc/resubmit`.
  *
- * What is left is the half that still matters to the player — what their status
- * is, what it lets them do, and what to do about it if it went wrong. Showing
- * a form nobody can submit would be worse than showing nothing.
+ * ── The correction form, and why it is here ────────────────────────────────
+ * The route, its service and the client method all existed; no screen called
+ * the method. A rejected player was told to contact support, with no way to
+ * fix a mistyped digit themselves — found by measuring which routes any tier
+ * ever reached (`npm run report:routes`): the resubmit route, never. §2 says
+ * a rejected Aadhaar may be replaced ON THE PANEL; this is that panel.
  */
-import React from 'react';
+import React, { useState } from 'react';
 import { useGame } from '../../services/GameContext';
+import { getBackend } from '../../services/backend.service';
 
 interface KYCModalProps { onClose: () => void; }
 
@@ -36,21 +39,40 @@ const COPY: Record<Status, { tone: string; title: string; body: string; next?: s
     tone: '#FB8C00',
     title: 'Not started',
     body: 'We do not have an Aadhaar number on file for this account, which is unusual — '
-      + 'the bot asks for it before an account is created.',
+      + 'the signup form asks for it before an account is created.',
     next: 'Please contact support so we can sort it out.',
   },
   REJECTED: {
     tone: 'var(--red)',
     title: 'Verification failed',
     body: 'The Aadhaar number on this account could not be verified.',
-    next: 'Contact support with the correct number to hand. It is the fastest way to fix this, '
-      + 'and opening a second account will not work — one Aadhaar can hold one account.',
+    next: 'Enter the correct number below. Each account has a few attempts; if they run out, '
+      + 'contact support. Opening a second account will not work — one Aadhaar can hold one account.',
   },
 };
 
 const KYCModal: React.FC<KYCModalProps> = ({ onClose }) => {
-  const { user } = useGame();
+  const { user, refreshUserWallet } = useGame();
   const status = (user?.kycStatus as Status) || 'PENDING_SUBMISSION';
+  const [aadhaar, setAadhaar] = useState('');
+  const [sending, setSending] = useState(false);
+  const [refused, setRefused] = useState('');
+  const [accepted, setAccepted] = useState('');
+
+  const resubmit = async () => {
+    setSending(true); setRefused('');
+    try {
+      const r = await getBackend().resubmitAadhaar(aadhaar);
+      setAccepted(r.message || 'Received. It is queued for verification.');
+      setAadhaar('');
+      await refreshUserWallet();   // the status moves to "in progress"
+    } catch (err) {
+      // The server names every refusal (playerAuth.routes.js), so show its words.
+      setRefused(err instanceof Error ? err.message : 'Could not submit that number. Please try again.');
+    } finally {
+      setSending(false);
+    }
+  };
   const copy = COPY[status] || COPY.PENDING_SUBMISSION;
   const reason = (user as any)?.kycData?.rejectionReason || '';
 
@@ -78,7 +100,36 @@ const KYCModal: React.FC<KYCModalProps> = ({ onClose }) => {
           </div>
         )}
 
-        {copy.next && (
+        {status === 'REJECTED' && !accepted && (
+          <div style={{ marginBottom: 14 }}>
+            <label htmlFor="kyc-resubmit-aadhaar" style={{ display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--text2)', marginBottom: 6 }}>
+              Correct Aadhaar number
+            </label>
+            <input
+              id="kyc-resubmit-aadhaar" inputMode="numeric" autoComplete="off" placeholder="12 digits"
+              value={aadhaar}
+              // Spaces and dashes as printed on the card are dropped; anything
+              // past twelve digits is not an Aadhaar number.
+              onChange={(e) => setAadhaar(e.target.value.replace(/\D/g, '').slice(0, 12))}
+              style={{ width: '100%', height: 44, borderRadius: 12, border: '1px solid var(--line2)', background: 'var(--surface2)', color: 'var(--text)', padding: '0 12px', fontSize: 15, letterSpacing: '.08em' }}
+            />
+            {refused && (
+              <p role="alert" style={{ margin: '8px 0 0', fontSize: 12, color: 'var(--red)', lineHeight: 1.5 }}>{refused}</p>
+            )}
+            <button
+              onClick={resubmit} disabled={aadhaar.length !== 12 || sending}
+              style={{ marginTop: 10, width: '100%', height: 44, borderRadius: 12, border: '1px solid var(--line2)', cursor: aadhaar.length === 12 && !sending ? 'pointer' : 'not-allowed', fontWeight: 800, fontSize: 13, color: 'var(--text)', background: 'var(--surface3)', opacity: aadhaar.length === 12 && !sending ? 1 : .55 }}
+            >
+              {sending ? 'Submitting…' : 'Submit corrected number'}
+            </button>
+          </div>
+        )}
+
+        {accepted && (
+          <p role="status" style={{ margin: '0 0 14px', fontSize: 12, color: 'var(--green)', lineHeight: 1.6, textAlign: 'center' }}>{accepted}</p>
+        )}
+
+        {copy.next && !accepted && (
           <p style={{ margin: '0 0 18px', fontSize: 12, color: 'var(--text3)', lineHeight: 1.6, textAlign: 'center' }}>
             {copy.next}
           </p>
