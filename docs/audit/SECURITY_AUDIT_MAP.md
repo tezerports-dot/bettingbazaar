@@ -3315,6 +3315,41 @@ supplied as "That link expires in the past".
   durations, which is a change to the lifecycle writer (§21), so it is left
   for a change of its own.
 
+### F-050 — an APK signed by one key for v2 and another for v3 was recorded under one
+`FIXED` · low (older phones see a different signer than the one pinned) · §37 neighbour pass over R7 · 2026-10-01
+
+Android 9+ installs by an APK's v3 signer and Android 7–8 by its v2 signer.
+The inspector verified both and reported the FIRST, so an APK whose schemes
+name different keys was pinned under the v3 key while older phones checked the
+v2 one — an install signed by it could not be updated there. It also recorded
+only the first of several signers in a scheme. Neither lets a forgery through
+(each signature still has to verify), so this is a consistency defect, found
+by asking R7's neighbours rather than its own case.
+
+- **Fix:** one signer per scheme, and every scheme signed by the same key;
+  either refusal names what to change.
+- **Tests:** `apkInspector` (+3; the builder now writes a real v3 scheme and
+  extra signers). The same-key v2+v3 APK is accepted — the opposite case — and
+  the two refusals fail on main. **Mutation-proved:** M234, M235 KILLED.
+
+### The §37 neighbour pass over the follow-up's fixes (2026-10-01)
+Each fix was asked the §37.1 pairs that apply. "held" means the neighbour was
+checked and is correct; the evidence is named.
+
+| Fix | Neighbour asked | Result |
+|---|---|---|
+| F-033 bet limits by cycle type | the phantom bet path; an unknown cycle type | held — phantom bets carry no stake limit by design and check access against `cycle.type`, whose values match `phantom_access`; an unknown type is unrepresentable (`cycles_type_known`) |
+| F-034 / F-035 cycle refunds and cancel | concurrent cancel vs declare, retry | not re-probed in this pass — the verification read both and their tests force the race; recorded as relying on that |
+| F-036 2FA lockout per account | every 2FA door (staff, player, merchant) | held — all three mount `twoFactorLimiter` keyed on the account (`server.js:586`, `playerAuth.routes.js`, `merchant.routes.js`) |
+| F-037 / F-038 session cutoff | every path that verifies a session token | held — all 9 `verifyJwt` call sites check the cutoff (3 socket joins, `merchantAuth`, `authenticate`, `/me`, 2 SSE streams; the 2FA-challenge verifier is not a session) |
+| F-039 own contact card | the recovery bot's contact path; all three audiences | held — `attemptRecovery` refuses a card without the sender's `user_id`; every panel's bots share these handlers |
+| F-040 referral budget | partial failure mid-batch; overlapping runs | held for money — the programme is always given back pool − actually paid; a credit followed by a failed `markPaid` is counted by the next run through its keyed credit. The batch row's own spend can overstate (the verification's cosmetic note), unchanged |
+| F-041 commission redelivery | a failed unlock of its run lock | **defect (found by the verification, §7) → F-048, fixed**; swept every other advisory lock: held |
+| F-042 queue writes | the queue READS; every other staff route | **superseded → F-047**: the class is closed and checked in CI |
+| B2 IP block expiry | the same two-clock shape elsewhere | the IP case was the verification's (§7); **this pass found the cash-link sibling → F-049, both fixed**; order expiries recorded, not fixed |
+| R7 APK signatures | v2/v3 by different keys; several signers | **defect → F-050, fixed** |
+| R9 halt / Android version | a halted release vs the download link; a phone misreporting its SDK; publishing past a halted release | held — `androidReleaseControlRoutes` covers each; a misreported SDK gets the blocking "too old" screen, not a bypass (verification §2) |
+
 ## 5. Derived coverage — regenerated, never typed
 
 <!-- BEGIN GENERATED: npm run audit:map -->

@@ -1745,6 +1745,21 @@ const MUTATIONS = [
     from: `'LIVE', now() + make_interval(secs => $5::numeric / 1000))`,
     to: `'LIVE', to_timestamp(\${Date.now() / 1000} + $5::numeric / 1000))`,
   },
+  // ── §37 neighbour pass over R7 (2026-10-01) ───────────────────────────────
+  {
+    id: 'M234', file: 'backend/domains/distribution/apkInspector.js', config: UNIT,
+    test: 'backend/tests/unit/apkInspector.test.js',
+    why: 'an APK whose v2 and v3 are signed by different keys is recorded under one; Android 7-8 phones see the other',
+    from: `  if (verified.some((v) => !v.cert.equals(der))) {`,
+    to: `  if (false) {`,
+  },
+  {
+    id: 'M235', file: 'backend/domains/distribution/apkInspector.js', config: UNIT,
+    test: 'backend/tests/unit/apkInspector.test.js',
+    why: 'a second signer rides in an APK under a key no publish check ever looked at',
+    from: `  if (signers.length > 1) {`,
+    to: `  if (false) {`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

@@ -96,6 +96,29 @@ describe('inspectApk', () => {
     const real = (name) => readFileSync(fileURLToPath(new URL(`../fixtures/${name}`, import.meta.url)));
     const refusal = (bytes) => { try { inspectApk(bytes); } catch (e) { return e; } return null; };
 
+    // ── §37: the neighbours of "verified" (2026-10-01) ───────────────────
+    // Android 9+ installs by the v3 signer and Android 7–8 by the v2 one. The
+    // inspector reported only the FIRST scheme's signer, so an APK whose two
+    // schemes name different keys was recorded under one key while older
+    // phones saw the other — and could not update an install signed by it.
+    it('builds an APK carrying BOTH schemes from one key, and accepts it (the opposite case)', () => {
+      const info = inspectApk(buildApk({ signer: 'CN=Rel', v3Signer: 'CN=Rel' }));
+      expect(info.signatureSchemes).toEqual([2, 3]);
+      expect(info.signerSha256).toBe(createHash('sha256').update(certificateFor('CN=Rel')).digest('hex').toUpperCase());
+    });
+
+    it('refuses an APK whose v2 and v3 schemes are signed by different keys', () => {
+      const e = refusal(buildApk({ signer: 'CN=Old Key', v3Signer: 'CN=New Key' }));
+      expect(e?.status).toBe(400);
+      expect(e?.message).toMatch(/signed by different keys/);
+    });
+
+    it('refuses an APK with more than one signer in a scheme', () => {
+      const e = refusal(buildApk({ signer: 'CN=Rel', extraV2Signers: ['CN=Second'] }));
+      expect(e?.status).toBe(400);
+      expect(e?.message).toMatch(/more than one signer/);
+    });
+
     it.each([
       // What `apksigner verify --print-certs` printed for each fixture.
       ['apksigner-rsa-v2v3.apk', '1173F36A4971856E5A2120215D6C73D2EDB31E5D5CBB2F21BD671633EDBA9C87'],

@@ -122,18 +122,36 @@ function contentDigest(entries, cd, eocdWithBlockOffset) {
   return createHash('sha256').update(Buffer.concat([Buffer.from([0x5a]), u32(chunks.length), ...chunks])).digest();
 }
 
-/** A v2 APK Signing Block, really signed by `subject`'s key (ECDSA SHA-256, 0x0201). */
-function signingBlock(subject, digest, embedCertOf = subject) {
+/** One signer, really signed by `subject`'s key (ECDSA SHA-256, 0x0201), in scheme v2 or v3 layout. */
+function signerBytes(subject, digest, { embedCertOf = subject, scheme = 2 } = {}) {
   const { privateKey, spki } = signerFor(subject);
   const certDer = signerFor(embedCertOf).certDer;
   const digests = lp(Buffer.concat([u32(0x0201), lp(digest)]));
-  const signedData = Buffer.concat([lp(digests), lp(lp(certDer)), lp(Buffer.alloc(0))]);
+  // v3's signed data carries the SDK range the signer covers after the certs.
+  const sdkRange = scheme === 3 ? Buffer.concat([u32(24), u32(0x7fffffff)]) : Buffer.alloc(0);
+  const signedData = Buffer.concat([lp(digests), lp(lp(certDer)), sdkRange, lp(Buffer.alloc(0))]);
   const signature = lp(Buffer.concat([u32(0x0201), lp(signBytes('sha256', signedData, privateKey))]));
-  const signer = Buffer.concat([lp(signedData), lp(signature), lp(spki)]);
-  const value = lp(lp(signer));
-  const pair = Buffer.concat([u64(4 + value.length), u32(0x7109871a), value]);
-  const size = pair.length + 8 + 16;
-  return Buffer.concat([u64(size), pair, u64(size), Buffer.from('APK Sig Block 42', 'latin1')]);
+  return Buffer.concat([lp(signedData), scheme === 3 ? sdkRange : Buffer.alloc(0), lp(signature), lp(spki)]);
+}
+
+/**
+ * An APK Signing Block: a v2 scheme with `subject` (plus `extraV2Signers`), and
+ * a v3 scheme when `v3Signer` is given — so a test can build the case where
+ * the two schemes are signed by DIFFERENT keys.
+ */
+function signingBlock(subject, digest, embedCertOf = subject, { v3Signer = null, extraV2Signers = [] } = {}) {
+  const pairOf = (id, signers) => {
+    const value = lp(Buffer.concat(signers.map((x) => lp(x))));
+    return Buffer.concat([u64(4 + value.length), u32(id), value]);
+  };
+  const pairs = [pairOf(0x7109871a, [
+    signerBytes(subject, digest, { embedCertOf }),
+    ...extraV2Signers.map((extra) => signerBytes(extra, digest)),
+  ])];
+  if (v3Signer) pairs.push(pairOf(0xf05368c0, [signerBytes(v3Signer, digest, { scheme: 3 })]));
+  const body = Buffer.concat(pairs);
+  const size = body.length + 8 + 16;
+  return Buffer.concat([u64(size), body, u64(size), Buffer.from('APK Sig Block 42', 'latin1')]);
 }
 
 /**
@@ -151,6 +169,10 @@ export function buildApk({
   embedCertOf = signer,
   // Store the manifest DEFLATED (method 8), as real build tools usually do.
   deflateManifest = false,
+  // A v3 scheme signed by this subject, beside the v2 one; and further v2
+  // signers. Real releases have neither differing: these build the cases the
+  // inspector must REFUSE.
+  v3Signer = null, extraV2Signers = [],
 } = {}) {
   const files = [
     ['AndroidManifest.xml', manifest || buildManifest({ packageName, versionCode, versionName, minSdk })],
@@ -185,6 +207,6 @@ export function buildApk({
   ]);
   // The digest covers the EOCD with its offset pointed at the block's start,
   // so it is computed before the block exists — exactly as apksigner does.
-  const block = signed ? signingBlock(signer, contentDigest(entries, cd, eocdAt(offset)), embedCertOf) : Buffer.alloc(0);
+  const block = signed ? signingBlock(signer, contentDigest(entries, cd, eocdAt(offset)), embedCertOf, { v3Signer, extraV2Signers }) : Buffer.alloc(0);
   return Buffer.concat([entries, block, cd, eocdAt(offset + block.length)]);
 }

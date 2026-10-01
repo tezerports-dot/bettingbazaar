@@ -300,6 +300,12 @@ function signatureVerifies(algorithmId, publicKeyDer, signedData, signature) {
 function verifyScheme(scheme, value, layout, buf, digestCache) {
   const signers = sequence(lp(value, 0).body);
   if (!signers.length) throw refuse(`This APK's v${scheme} signature has no signer.`);
+  // ONE signer. Android treats an APK with several as signed by the SET, and
+  // this platform records and pins one key; a second signer would be a key
+  // no publish check ever looked at (§37, 2026-10-01).
+  if (signers.length > 1) {
+    throw refuse(`This APK's v${scheme} signature has more than one signer. Sign releases with the one release key.`);
+  }
   let firstCert = null;
 
   for (const signerBytes of signers) {
@@ -373,7 +379,14 @@ function readSigner(buf, zip) {
   if (!verified.length) {
     throw refuse('This APK has no v2/v3 signature. Build it with the release workflow, which signs with APK Signature Scheme v2.');
   }
+  // Every scheme by the SAME key. Android 9+ installs by the v3 signer and
+  // Android 7–8 by the v2 one, so an APK whose schemes disagree is one app to
+  // new phones and another to old ones — and this platform recorded only the
+  // first, so the publish guard pinned a key older phones never checked.
   const der = verified[0].cert;
+  if (verified.some((v) => !v.cert.equals(der))) {
+    throw refuse('This APK\'s v2 and v3 signatures are signed by different keys. Sign every scheme with the one release key.');
+  }
   return {
     scheme: verified[0].scheme,
     schemes: verified.map((v) => v.scheme).sort(),
