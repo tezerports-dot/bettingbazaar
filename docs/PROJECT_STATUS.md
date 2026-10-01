@@ -344,7 +344,7 @@ confirmed and not fixed, C1–C4 unproven. Each item was reproduced FAILING
 first on this branch, not taken on trust. Status is evidence (§29): each "done"
 names the test that failed before the fix and the mutation that proves it.
 
-### Done — 14 of 14 items worked; 12 fixed, 1 not a defect, 1 documented
+### Done — 14 of 14 items worked; 13 fixed (P197-1 later, as R7), 1 not a defect
 
 | # | Item | Found on main | Fix | Proof |
 |---|---|---|---|---|
@@ -355,7 +355,7 @@ names the test that failed before the fix and the mutation that proves it.
 | A5 | F-028 hold=0 confirm settled after commit | (review) | always HELD + settle inline | M172 |
 | A6 | S40 NaN-vs-NaN assertion guard | (review) | vitest setupFiles guard | M173 |
 | B1 | `check:dead-code` counted comments | 0 DEAD → 12 + 1 module when blanked | gate blanks comments; 12 exports + UTRManager deleted | planted failures reported |
-| B2 | IP deny-list dead, claimed live | nothing mounted, called or screened it | **deleted** (owner may reverse) | gates |
+| B2 | IP deny-list dead, claimed live | nothing mounted, called or screened it | first deleted; **rebuilt properly** on the owner's instruction (R1, F-030) | M183–M187 |
 | B3 | undeclared config key had no status | `status` undefined | `invalidConfig`; + 2 whitespace-reason 500s found by the sweep | M174–M176 |
 | B4 | PAN registry dead | no caller | deleted; table dropped | gates |
 | C1 | order stamped on a rail it was not validated for | CASH_ATM-validated, P2P_UPI-stamped | stamp from the validated policy | M180 |
