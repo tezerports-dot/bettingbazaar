@@ -1544,7 +1544,8 @@ const MUTATIONS = [
     id: 'M206', file: 'database/repositories/ledger.core.js', config: PG,
     test: 'database/tests/merchantCommissionPg.test.js',
     why: 'the cron and the admin run-now overlap, both reading the pool before either writes',
-    from: `    if (!rows[0].got) return { locked: false };`,
+    // Retargeted 2026-10-01: F-048 reads the lock result into `got` first.
+    from: `    if (!got) return { locked: false };`,
     to: `    if (false) return { locked: false };`,
   },  // ── Queue writes are gated on a permission, not a tier (R6) ──────────────
   {
