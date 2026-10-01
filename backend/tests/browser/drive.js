@@ -188,6 +188,15 @@ async function clickLive(page, c, first, opts = {}) {
       // Something is genuinely on top of it. That is the screen's business,
       // not a re-render race, so stop and report it.
       if (/intercepts pointer events/i.test(e.message)) break;
+      // Inside a collapsed <details> (the commission policy's version history)
+      // the control is hidden until its summary is pressed. A person presses
+      // the summary first, so the pass does too, and then tries again.
+      const opened = await el.evaluate((n) => {
+        let d = n.closest('details:not([open])'), any = false;
+        while (d) { d.querySelector(':scope > summary')?.click(); any = true; d = d.parentElement?.closest('details:not([open])'); }
+        return any;
+      }).catch(() => false);
+      if (opened) { await sleep(200); continue; }
       const connected = await el.evaluate((n) => n.isConnected).catch(() => false);
       if (connected) break;          // still in the document — a real failure
       await sleep(200);
@@ -213,6 +222,11 @@ async function press(page, panel, screen, c, seen, byName) {
 
   const el = await find(page, c);
   if (!el) return { verdict: 'GONE', why: 'the control is no longer on the screen — an earlier press removed it' };
+  // Disabled NOW, not only at collection: a one-minute board shuts its bet
+  // buttons for part of every cycle, and the inventory was taken minutes ago.
+  if (await el.evaluate((n) => n.disabled === true || n.getAttribute('aria-disabled') === 'true').catch(() => false)) {
+    return { verdict: 'DISABLED', why: 'disabled at the moment it was pressed' };
+  }
 
   const before = await fingerprint(page);
   const asked = page.__bbAsked ?? 0;
@@ -257,6 +271,13 @@ async function press(page, panel, screen, c, seen, byName) {
   page.on('pageerror', onErr);
   page.on('response', onRes);
   page.on('request', onReq);
+  // A control whose job is to open the OS file picker (a photo, an APK)
+  // changes nothing on the page and calls no route until a file is chosen,
+  // so it read as INERT. The picker opening is the evidence, and Playwright
+  // reports it; with a listener attached, no native dialog is shown.
+  let choseFile = false;
+  const onFile = () => { choseFile = true; };
+  page.on('filechooser', onFile);
 
   let acted = 'clicked';
   try {
@@ -326,7 +347,15 @@ async function press(page, panel, screen, c, seen, byName) {
       }
       acted = held ? `typed ${JSON.stringify(held)} into` : 'typed into (it accepted nothing)';
     } else if (c.kind === 'select') {
-      const opts = (c.options ?? []).filter(Boolean);
+      // An option OTHER than the one showing now: re-choosing the current
+      // value is a no-op, and filing it as INERT blames the control.
+      // Read LIVE: an earlier press can disable an option the collection saw
+      // as enabled (the footer slots disable a page taken by another slot).
+      const live = await el.evaluate((n) => ({
+        current: n.value,
+        opts: [...n.options].filter((o) => !o.disabled).map((o) => o.value),
+      })).catch(() => ({ current: '', opts: c.options ?? [] }));
+      const opts = live.opts.filter((o) => o && o !== live.current);
       if (!opts.length) { acted = 'no options to choose'; }
       else { await el.selectOption(opts[opts.length - 1], { timeout: 4000 }); acted = 'chose an option in'; }
     } else if (c.kind === 'textarea') {
@@ -350,7 +379,7 @@ async function press(page, panel, screen, c, seen, byName) {
       const r3 = await clickLive(page, c, again);
       if (!r3.ok) throw new Error(r3.why);
     } catch {
-      page.off('pageerror', onErr); page.off('response', onRes); page.off('request', onReq);
+      page.off('pageerror', onErr); page.off('response', onRes); page.off('request', onReq); page.off('filechooser', onFile);
       return { verdict: 'UNREACHABLE', why: e.message.split('\n')[0].slice(0, 120) };
     }
   }
@@ -360,6 +389,7 @@ async function press(page, panel, screen, c, seen, byName) {
   page.off('pageerror', onErr);
   page.off('response', onRes);
   page.off('request', onReq);
+  page.off('filechooser', onFile);
 
   // ── The platform's own rate limiter, correctly refusing us ──────────────
   // `RATE_LIMIT_TIERS.global` is 1,000 requests per 15 minutes per IP, and a
@@ -413,6 +443,9 @@ async function press(page, panel, screen, c, seen, byName) {
      * this share a cause: state a control does not publish is state nothing
      * can check.
      */
+    if (choseFile) {
+      return { verdict: 'ACTED', acted, moved: 'opened the file picker' };
+    }
     if (c.on) {
       return { verdict: 'ALREADY_ON', acted, why: 'it was already the selected one — pressing it again correctly changes nothing' };
     }

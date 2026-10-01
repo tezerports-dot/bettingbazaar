@@ -137,7 +137,7 @@ describe('merchant commission rate editor', () => {
 
     // Removing is how a variety goes unpriced. A rate of 0% would read as
     // priced and pay nothing, which is the shape the engine refuses.
-    fireEvent.click(await screen.findByTitle('Stop pricing this variety'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Stop pricing INR · UPI · any amount in range' }));
     fireEvent.change(screen.getByPlaceholderText('Why this change?'), { target: { value: 'stop paying UPI work' } });
     fireEvent.click(screen.getByRole('button', { name: /Save New Policy Version/ }));
 

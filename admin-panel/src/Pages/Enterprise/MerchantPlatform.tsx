@@ -290,7 +290,7 @@ export const MerchantPlatform: React.FC = () => {
                     <span className="text-[11px] font-mono text-gold-400/90 w-28 text-right">
                       {total}% → {inr((100000 * total) / 100)} per ₹1,00,000
                     </span>
-                    <button onClick={() => removeRate(id)} title="Stop pricing this variety"
+                    <button onClick={() => removeRate(id)} title={`Stop pricing ${label}`} aria-label={`Stop pricing ${label}`}
                       className="text-gray-500 hover:text-red-400 shrink-0">
                       <X size={14} />
                     </button>
@@ -333,6 +333,7 @@ export const MerchantPlatform: React.FC = () => {
                       <button
                         onClick={() => rollback(h)}
                         disabled={rollingBack !== null}
+                        aria-label={`Restore version ${h.version}`}
                         className="shrink-0 px-2.5 py-1 bg-dark-700 hover:bg-dark-600 rounded-md text-[11px] font-semibold disabled:opacity-50 flex items-center gap-1"
                       >
                         <RotateCcw size={11} />{rollingBack === h._id ? 'Restoring…' : 'Restore'}

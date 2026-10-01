@@ -268,7 +268,7 @@ export const BrandingSettings: React.FC = () => {
       {/* Tabs */}
       <div className="flex space-x-1 bg-dark-800 rounded-lg p-1">
         {TABS.map((tab) => (
-          <button key={tab.key} onClick={() => setActiveTab(tab.key)}
+          <button key={tab.key} onClick={() => setActiveTab(tab.key)} aria-pressed={activeTab === tab.key}
             className={`flex-1 py-2 px-3 rounded-md text-sm font-medium transition-colors ${activeTab === tab.key ? 'bg-dark-600 text-white' : 'text-gray-400 hover:text-white'}`}>
             {tab.label}
           </button>

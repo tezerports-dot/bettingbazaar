@@ -30,10 +30,17 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   return (
     <ToastContext.Provider value={{ addToast }}>
       {children}
-      <div className="fixed top-4 left-1/2 transform -translate-x-1/2 z-[100] flex flex-col gap-2 w-full max-w-xs px-4 pointer-events-none">
+      {/* A live region, so a refusal is ANNOUNCED. Without one, "You already
+          backed BOMBAY this cycle" was painted for three seconds and never
+          spoken: a player on a screen reader pressed the bet card and heard
+          nothing. An error interrupts (alert); anything else waits (status).
+          The browser drive found it the same way — it reads these roles, and
+          the bet card's refusals read as a button that did nothing. */}
+      <div aria-live="polite" className="fixed top-4 left-1/2 transform -translate-x-1/2 z-[100] flex flex-col gap-2 w-full max-w-xs px-4 pointer-events-none">
         {toasts.map(toast => (
-          <div 
+          <div
             key={toast.id}
+            role={toast.type === 'error' ? 'alert' : 'status'}
             className={`
               pointer-events-auto rounded-lg px-4 py-3 shadow-2xl border flex items-center justify-between animate-in fade-in slide-in-from-top-4
               ${toast.type === 'success' ? 'bg-[#0B0E14] border-green-500 text-green-400' : 

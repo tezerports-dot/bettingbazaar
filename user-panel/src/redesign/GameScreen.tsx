@@ -353,7 +353,7 @@ const GameScreen: React.FC = () => {
           <div style={{ position: 'relative', width: '100%', maxWidth: cardMaxW, height: cardH, borderRadius: 20, boxShadow: 'var(--shadow)' }}>
             <div className={isResult ? 'bb-pulse' : ''} style={{ position: 'absolute', inset: 0, borderRadius: 20, overflow: 'hidden', display: 'flex', border: '1.5px solid var(--line2)' }}>
               {/* Delhi */}
-              <button onClick={() => handleBet(BettingSide.DELHI)} style={sideStyle(BettingSide.DELHI)}>
+              <button onClick={() => handleBet(BettingSide.DELHI)} aria-disabled={isClosed || isResult} style={sideStyle(BettingSide.DELHI)}>
                 <div style={{ position: 'absolute', inset: 0, background: 'radial-gradient(120% 82% at 50% 128%, rgba(229,72,76,.55), transparent 62%)' }} />
                 <div style={{ position: 'absolute', inset: 0, background: 'repeating-linear-gradient(90deg, rgba(255,255,255,.045) 0 2px, transparent 2px 30px)', opacity: .5 }} />
                 {isResult && winner === BettingSide.DELHI && <div className="bb-shimmer" />}
@@ -363,7 +363,7 @@ const GameScreen: React.FC = () => {
               </button>
               <div style={{ width: 1.5, height: '100%', background: 'linear-gradient(180deg,transparent,var(--gold),transparent)', boxShadow: '0 0 12px var(--gold)', zIndex: 3 }} />
               {/* Bombay */}
-              <button onClick={() => handleBet(BettingSide.BOMBAY)} style={sideStyle(BettingSide.BOMBAY)}>
+              <button onClick={() => handleBet(BettingSide.BOMBAY)} aria-disabled={isClosed || isResult} style={sideStyle(BettingSide.BOMBAY)}>
                 <div style={{ position: 'absolute', inset: 0, background: 'radial-gradient(120% 82% at 50% 128%, rgba(46,134,222,.55), transparent 62%)' }} />
                 <div style={{ position: 'absolute', inset: 0, background: 'repeating-linear-gradient(90deg, rgba(255,255,255,.045) 0 2px, transparent 2px 30px)', opacity: .5 }} />
                 {isResult && winner === BettingSide.BOMBAY && <div className="bb-shimmer" />}

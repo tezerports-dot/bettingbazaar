@@ -26,7 +26,7 @@ const MyBetsPage: React.FC = () => {
 
   const tabBtn = (k: 'active' | 'settled', label: string) => {
     const on = tab === k;
-    return <button onClick={() => setTab(k)} style={{ padding: '9px 18px', borderRadius: 11, cursor: 'pointer', border: `1px solid ${on ? 'var(--line2)' : 'transparent'}`, background: on ? 'var(--surface3)' : 'transparent', color: on ? 'var(--text)' : 'var(--text3)', fontSize: 12, fontWeight: 800 }}>{label}</button>;
+    return <button onClick={() => setTab(k)} aria-pressed={on} style={{ padding: '9px 18px', borderRadius: 11, cursor: 'pointer', border: `1px solid ${on ? 'var(--line2)' : 'transparent'}`, background: on ? 'var(--surface3)' : 'transparent', color: on ? 'var(--text)' : 'var(--text3)', fontSize: 12, fontWeight: 800 }}>{label}</button>;
   };
 
   return (

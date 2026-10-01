@@ -1356,6 +1356,7 @@ these are the specific ones this codebase has actually produced.
 | S41 | A second debit BESIDE a hold that already paid | Is this money already reserved somewhere — a hold, an escrow, a settlement — whose completion IS the payment? Completing a hold spends it; debiting `available` as well charges twice. One movement, one owner. |
 | S42 | "Not X" read as "therefore Y" | List every state the else-branch can actually be in. "Not HELD" was read as "already settled" while a withdrawal disputed before its merchant confirmed is neither — its stake is still locked. A branch on a status must name what it handles, not what it excludes. |
 | S43 | A comment counted as a caller | Strip the comments. Does anything still NAME it? And is the thing that names it a real call, or a sentence saying there is one? A comment claiming code runs is the one reference no test can falsify. |
+| S44 | A refusal that is PAINTED but not ANNOUNCED | Does the message carry `role="alert"`/`"status"` or sit in an `aria-live` region? The player app's toasts did neither, so every bet-card refusal was silent to a screen reader, and the browser drive, which reads the same roles, filed the bet button as doing nothing. |
 
 **S36 shut the whole platform's front door, and it was one missing word.**
 `IDENTITY_COLUMNS` in `database/repositories/telegram.js` listed thirteen
