@@ -409,7 +409,7 @@ ran), a browser re-run (no screen changed), PostgreSQL 18 (CI runs it).
 The owner asked for coverage gaps to be **measured, not guessed**: every route
 nothing calls, and every control nothing pressed, per account type and state.
 This section is also the handoff. Work here stopped at a mergeable point on
-branch `claude/remove-mongodb-postgres-only-kfuhe8` (PR #200), so another
+branch of PR #200, so another
 session can pick it up.
 
 ### How the measurement works (rerun it before trusting any number below)
