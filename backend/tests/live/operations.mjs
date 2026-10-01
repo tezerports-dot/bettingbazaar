@@ -43,6 +43,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { pgQuery, closePg } from '#db/client.js';
 import { db } from '#db';
+import { deriveOrderHmac } from '../../middleware/order-crypto-access.js';
 
 const run = promisify(execFile);
 const has = (n) => process.argv.includes(`--${n}`);
@@ -112,9 +113,11 @@ async function cron() {
   };
   const order = async (fields) => {
     const id = rid('o');
+    // The tamper tag, as `createOrderRecord` writes it with every row — an
+    // untagged order is one production cannot produce (§32 S16).
     const cols = { order_id: id, order_type: 'DEPOSIT', state: 'PENDING_QUEUE',
       token_amount_paise: 50000, fiat_amount_paise: 50000, currency: 'INR',
-      payment_mode: 'P2P_UPI', ...fields };
+      payment_mode: 'P2P_UPI', order_hmac: deriveOrderHmac(id), ...fields };
     const keys = Object.keys(cols);
     await pgQuery(
       `INSERT INTO order_states (${keys.join(', ')}) VALUES (${keys.map((_, i) => `$${i + 1}`).join(', ')})`,

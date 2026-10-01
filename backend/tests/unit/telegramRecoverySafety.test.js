@@ -82,9 +82,16 @@ describe('recovery requires two independent factors', () => {
     expect(svc).toMatch(/candidates/);
   });
 
-  it('rejects a forwarded contact card', () => {
-    // Otherwise someone could recover an account using a number they do not hold.
-    expect(svc).toMatch(/contactUserId\) !== String\(newTelegramUserId\)/);
+  it('rejects a forwarded contact card — and one with NO user_id, run, not read', async () => {
+    // Otherwise someone could recover an account using a number they do not
+    // hold. The source-text assertion this replaced passed while the guard
+    // skipped itself when `user_id` was absent — an address-book card for a
+    // number that is not a Telegram account — which is the case that mattered
+    // (R6, F-039). Both refusals return before any database read.
+    const { attemptRecovery } = await import('../../domains/telegram/telegramRecovery.service.js');
+    const base = { newTelegramUserId: '111', audience: 'PLAYER', phone: '+919876543210', aadhaarHashes: ['x'] };
+    expect(await attemptRecovery({ ...base, contactUserId: '222' })).toMatchObject({ ok: false, reason: 'not_own_contact' });
+    expect(await attemptRecovery({ ...base, contactUserId: undefined })).toMatchObject({ ok: false, reason: 'not_own_contact' });
   });
 });
 

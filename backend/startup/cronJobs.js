@@ -181,8 +181,8 @@ export function registerCronJobs(rebuildLeaderboard) {
     } catch (e) { console.error('[scheduled-policy] cron error:', e.message); }
 
     // The scheduled-CONFIG sweep that sat here is gone. It swept for config
-    // versions marked SCHEDULED, and nothing could ever create one: the single
-    // caller of setConfigField passes no effectiveAt, no route exposed an
+    // versions marked SCHEDULED, and nothing could ever create one: no config
+    // write ever passed an effectiveAt, no route exposed an
     // approval endpoint, and no screen offered a future date. It ran every 60
     // seconds over rows that could not exist. The deposit-policy sweep above
     // is different — that one has a real scheduling surface.

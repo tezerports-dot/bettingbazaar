@@ -39,7 +39,7 @@ const FaqPage: React.FC = () => {
       {faqs.length > 0 && (
         <div className="bb-noscroll" style={{ display: 'flex', gap: 8, overflowX: 'auto', marginBottom: 12 }}>
           {categories.map(c => (
-            <button key={c} onClick={() => setCat(c)} style={{ flex: 'none', padding: '7px 14px', borderRadius: 999, fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.04em', cursor: 'pointer', border: `1px solid ${cat === c ? 'var(--gold)' : 'var(--line)'}`, background: cat === c ? 'var(--gold)' : 'var(--surface)', color: cat === c ? '#1a1200' : 'var(--text2)' }}>{c}</button>
+            <button key={c} onClick={() => setCat(c)} aria-pressed={cat === c} style={{ flex: 'none', padding: '7px 14px', borderRadius: 999, fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.04em', cursor: 'pointer', border: `1px solid ${cat === c ? 'var(--gold)' : 'var(--line)'}`, background: cat === c ? 'var(--gold)' : 'var(--surface)', color: cat === c ? '#1a1200' : 'var(--text2)' }}>{c}</button>
           ))}
         </div>
       )}
@@ -52,7 +52,7 @@ const FaqPage: React.FC = () => {
             const open = openId === f.id;
             return (
               <div key={f.id} style={{ ...card, padding: 0, overflow: 'hidden' }}>
-                <button onClick={() => setOpenId(open ? null : f.id)} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 12, padding: 15, border: 'none', background: 'none', cursor: 'pointer', textAlign: 'left' }}>
+                <button onClick={() => setOpenId(open ? null : f.id)} aria-expanded={open} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 12, padding: 15, border: 'none', background: 'none', cursor: 'pointer', textAlign: 'left' }}>
                   <span style={{ flex: 1, fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>{f.question}</span>
                   <span style={{ width: 24, height: 24, flex: 'none', borderRadius: 7, background: 'var(--surface3)', border: '1px solid var(--line)', color: 'var(--gold-ink)', fontSize: 15, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{open ? '−' : '+'}</span>
                 </button>

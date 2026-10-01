@@ -139,11 +139,11 @@ export function concurrencyCapFor(policy, merchant = null) {
 /**
  * The rail stamp a NEW order carries.
  *
- * `order_states` has two insert paths — `openOrder` (the lifecycle module,
- * which writes the six columns the state machine needs plus the tamper tag)
- * and `createOrderRecord` (which writes the row and its detail together). Two
- * writers each reading the policy their own way is how the same value comes to
- * be derived twice and drift; this is the one place that answers it.
+ * `order_states` has one insert path, `createOrderRecord`, which writes the
+ * row, its detail and its tamper tag together. There used to be a second
+ * (`openOrder`), and two writers each deriving a value their own way is how it
+ * drifts — the second writer was the only one writing the tag, and nothing in
+ * production called it. This stays the one place the rail stamp is answered.
  *
  * A caller may FORCE the rail — tests build orders on a rail other than the
  * live one — but nobody has to remember to, because the default is a read.
@@ -177,6 +177,18 @@ export async function stampForNewOrder(forcedMode = null) {
     mode: forcedMode,
     version: forcedMode === live ? (active?.version ?? null) : null,
   };
+}
+
+/**
+ * The stamp for a policy the caller already holds — the one it validated the
+ * order against. Mode and version together, from the same row, so the version
+ * on an order always names a policy that put it on that rail.
+ */
+export function stampFromPolicy(policy) {
+  if (!KNOWN_MODES.includes(policy?.activeMode)) {
+    throw new Error(`stampFromPolicy: unknown payment mode '${policy?.activeMode}'`);
+  }
+  return { mode: policy.activeMode, version: policy.version ?? null };
 }
 
 export async function getPolicyHistory({ limit = 50 } = {}) {

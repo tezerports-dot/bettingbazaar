@@ -5,9 +5,9 @@
  *
  * `POST /api/game/wallet/:providerKey` deliberately carries no `authenticate`
  * middleware: the caller is a game provider, not a logged-in user. That makes
- * the HMAC below the ONLY thing between the open internet and the
- * `debitForGameProviderBet()` / `creditWinnings()` / `refundOrder()` calls in
- * gameProvider.routes.js.
+ * the HMAC below the ONLY thing between the open internet and the wallet
+ * movement gameProvider.routes.js makes through `db.casino.applyProviderCallback`
+ * — the debit/credit and the provider-transaction record in one transaction.
  *
  * It lives in its own module, importing nothing but `crypto`, so the unit suite
  * can assert it directly. Importing gameProvider.routes.js instead would pull in

@@ -146,20 +146,30 @@ scheme, which does not apply). Confirm it on a phone as part of §7.
    artifact.
 3. **Publish:** admin panel → **Android App** → drop in `app-release.apk`.
    - The server reads the version and signing key **from the file** and
-     refuses, by name: a different app, a debug build, a different key than
-     the one players have installed, or a version not newer than what is
-     published.
+     **verifies the signature** (v2/v3, the same checks as `apksigner
+     verify`), then refuses, by name: a file changed after it was signed, a
+     different app, a debug build, a different key than the one players have
+     installed, or a version not newer than every published one (halted
+     releases included, because phones may run them).
+   - The card shows which **Android** the build needs, that its signature was
+     **verified** (v2, v3), who uploaded it, and a **Download APK** button for
+     trying it on a phone first. If it needs a newer Android than the release
+     phones get now, the card says so before you publish.
    - It is saved as a **draft**. Write *What's new*, tick **Mandatory** if older
      versions must stop working (security fixes, server changes the old app
      cannot handle), then **Publish**.
 
 ### What players see
 
+Releases that are **halted** (below) count for none of this. Each phone also
+reports its Android version, and is only offered a release it can install.
+
 | Installed version is… | The app shows |
 |---|---|
-| below the newest **mandatory** release | A full-screen **Update required**. Nothing else works until they update. |
-| below the newest release, but not below a mandatory one | **Update available** with *Later* (asked again after a day, or at once when a newer version is published) |
-| the newest | nothing |
+| below the newest **mandatory** release its Android can install | A full-screen **Update required**. Nothing else works until they update. |
+| below a **mandatory** release its Android is too old for | A full-screen **This phone's Android is too old**, naming the Android it needs. No update is offered, because none could install. |
+| below the newest release it can install, but not below a mandatory one | **Update available** with *Later* (asked again after a day, or at once when a newer version is published) |
+| the newest it can install | nothing |
 
 It checks when the app opens, every time it comes back to the foreground, and
 every 30 minutes. **Update now** downloads inside the app with a progress bar,
@@ -172,11 +182,22 @@ Android's installer.
 - **After that** it is one tap on Android's **Install**. No app can skip that
   tap on a phone it does not manage.
 
-A published release is never deleted, because players may have it. Fix a bad
-release by publishing a newer one.
+A published release is never deleted, because players may have it.
+
+### A bad release: Halt, then publish a fix
+
+**Halt** on a published release stops it being offered, downloaded or required
+at once (you give a reason, kept in the history). Phones are pointed back at
+the newest release that is not halted, and if the halted one was mandatory,
+its block is lifted. **Resume** offers it again.
+
+Halting cannot uninstall anything: players who already installed the bad build
+keep it until a newer release reaches them. So halt to stop the damage
+spreading, then publish a fixed build. It must be numbered above the halted
+one, and the upload says so if it is not.
 
 The **Share & Get the App** menu item and `/api/download/android` always point
-at the newest published release.
+at the newest published release that is not halted.
 
 ### The web app is separate
 

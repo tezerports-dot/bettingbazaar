@@ -87,7 +87,12 @@ const server = spawn(process.execPath, [join(ROOT, 'backend', 'server.js')], {
   cwd: ROOT,
   // BB_RATE_LIMIT_RELAX is pinned OFF: the pen-test scenario asserts the login
   // limiter trips, and a relaxed server would pass it wrongly (CLAUDE.md §34).
-  env: { ...process.env, PORT: String(PORT), NODE_ENV: process.env.NODE_ENV || 'development', BB_RATE_LIMIT_RELAX: '1' },
+  // TRUST_PROXY=1, as production runs it behind its balancer (§36, enforced
+  // at boot there). It is what lets a scenario speak from ANOTHER address via
+  // X-Forwarded-For — the IP deny-list probe (s8 §18) needs a blocked caller
+  // that is not the runner itself. A request with no such header is still
+  // keyed on the socket, so no other scenario sees a difference.
+  env: { ...process.env, PORT: String(PORT), NODE_ENV: process.env.NODE_ENV || 'development', BB_RATE_LIMIT_RELAX: '1', TRUST_PROXY: '1' },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 const serverLog = [];

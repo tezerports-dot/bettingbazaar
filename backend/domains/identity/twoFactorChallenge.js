@@ -92,6 +92,28 @@ export function verifyChallenge(token, audience) {
 }
 
 /**
+ * The ACCOUNT a valid challenge is for, whichever door it was minted at, or
+ * null for anything that is not a valid, unexpired challenge.
+ *
+ * For the rate limiter, which must count second-factor guesses per ACCOUNT.
+ * Keyed on the token instead, every correct password mints a fresh token and
+ * with it a fresh budget of guesses, so the lockout never trips for somebody
+ * who holds the password — the one attacker 2FA exists to stop (R6).
+ */
+export function challengeSubject(token) {
+  if (!token || typeof token !== 'string') return null;
+  let claims;
+  try {
+    claims = verifyJwt(token);
+  } catch {
+    return null;
+  }
+  if (claims.purpose !== CHALLENGE_PURPOSE || !claims.sub) return null;
+  if (!Object.values(CHALLENGE_AUDIENCE).includes(claims.aud2fa)) return null;
+  return { id: String(claims.sub), audience: claims.aud2fa };
+}
+
+/**
  * True when these claims belong to a challenge token.
  * Session middlewares call this to slam the door — see header property (1).
  */

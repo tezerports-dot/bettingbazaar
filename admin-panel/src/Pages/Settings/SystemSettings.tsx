@@ -506,7 +506,7 @@ export const SystemSettings: React.FC = () => {
         <div className="grid grid-cols-2 gap-4">
           <div>
             <label className="label" htmlFor="min-bet-amount-rs">Min Bet Amount (Rs.)</label>
-            <input id="min-bet-amount-rs"
+            <input id="min-bet-amount-rs" min="0"
               type="number"
               value={formData.minBet}
               onChange={(e) =>
@@ -517,7 +517,7 @@ export const SystemSettings: React.FC = () => {
           </div>
           <div>
             <label className="label" htmlFor="max-bet-amount-rs">Max Bet Amount (Rs.)</label>
-            <input id="max-bet-amount-rs"
+            <input id="max-bet-amount-rs" min="0"
               type="number"
               value={formData.maxBet}
               onChange={(e) =>

@@ -38,7 +38,7 @@ import NativeUpdateGate from './NativeUpdateGate';
 const release = (over = {}) => ({
   versionCode: 20, versionName: '4.2.0', downloadUrl: 'https://cdn.example.com/app-4.2.0.apk',
   sha256: 'a'.repeat(64), sizeBytes: 5 * 1024 * 1024, releaseNotes: 'Faster wallet', mandatory: false,
-  publishedAt: null, ...over,
+  minSdk: 24, publishedAt: null, ...over,
 });
 
 beforeEach(() => {
@@ -57,6 +57,15 @@ describe('NativeUpdateGate', () => {
     const { container } = render(<NativeUpdateGate />);
     await act(async () => { await Promise.resolve(); });
     expect(container.innerHTML).toBe('');
+  });
+
+  it('tells a phone too old for a mandatory release so, and offers no update it cannot install', async () => {
+    nextCheck = { status: 'unsupported', minRequiredVersionCode: 0, latest: null, installedVersionCode: 10, requiredAndroid: 'Android 11 (API 30)' };
+    render(<NativeUpdateGate />);
+    const dialog = await screen.findByRole('alertdialog');
+    expect(dialog.textContent).toMatch(/Android is too old/);
+    expect(dialog.textContent).toMatch(/Android 11 \(API 30\)/);
+    expect(screen.queryByRole('button')).toBeNull();
   });
 
   it('renders nothing when the install is current', async () => {

@@ -146,9 +146,46 @@ export const getCommissionHighWaterMarks = () => db.ledger.commissionHighWaterMa
  * never thrown: one merchant's problem must not stop everybody else's payment.
  */
 export async function runCommissionEngine() {
+  // One pass at a time, on any instance. The cron has its leader lock; the
+  // admin's "run now" route had none, and the pool check below is a read two
+  // overlapping passes can both pass (R6, F-041).
+  const run = await db.ledger.withCommissionRunLock(runPass);
+  if (!run.locked) {
+    return { ran: false, reason: 'Another commission pass is running right now. Try again in a minute.' };
+  }
+  return run.value;
+}
+
+/**
+ * Deliver commission the ledger recorded and the wallet never received.
+ *
+ * FIRST, and whatever the policy says: money already recorded as owed is owed
+ * whether or not the engine is currently enabled. The same key the original
+ * pass used, so a delivery that races a late original lands once.
+ */
+async function deliverUndeliveredCommissions() {
+  const delivered = [];
+  for (const owed of await db.ledger.undeliveredCommissions()) {
+    try {
+      await creditMerchantBonus({
+        merchantId: owed.merchantId,
+        amount: toRupees(owed.amountPaise),
+        txId: owed.idempotencyKey,
+        description: 'Merchant commission (delivered on a later pass)',
+      });
+      delivered.push({ merchantId: owed.merchantId, idempotencyKey: owed.idempotencyKey, delivered: true });
+    } catch (e) {
+      delivered.push({ merchantId: owed.merchantId, idempotencyKey: owed.idempotencyKey, delivered: false, error: e.message });
+    }
+  }
+  return delivered;
+}
+
+async function runPass() {
+  const delivered = await deliverUndeliveredCommissions();
   const policy = await getActiveCommissionPolicy();
   if (!policy || !policy.enabled || !(policy.rates?.length > 0)) {
-    return { ran: false, reason: 'No enabled merchant commission policy with any variety priced.' };
+    return { ran: false, reason: 'No enabled merchant commission policy with any variety priced.', delivered };
   }
 
   const [volumes, marks, legacyMerchants] = await Promise.all([
@@ -223,9 +260,12 @@ export async function runCommissionEngine() {
       // `order_states.merchant_id` carries no foreign key to `merchants`, so an
       // id with orders and no merchant row is reachable, not hypothetical.
       // Checking first means the ledger event is never written for a payment
-      // that cannot land, which keeps the crash-recovery property honest: after
-      // this point the credit either succeeds or throws, and a run that dies in
-      // between heals on the next pass because both sides share the key.
+      // that cannot land. After this point the credit either succeeds or
+      // throws; a run that dies in between is healed by
+      // `deliverUndeliveredCommissions` at the start of the next pass. It used
+      // to say the next pass healed it "because both sides share the key" —
+      // but the mark is derived from the ledger event, so the next pass saw no
+      // new volume and never tried the credit again (F-041).
       const merchant = await db.merchants.getMerchant(vol.merchantId);
       if (!merchant) {
         results.push({ merchantId: vol.merchantId, variety: key, issued: false,
@@ -264,5 +304,5 @@ export async function runCommissionEngine() {
       results.push({ merchantId: vol.merchantId, variety: key, issued: false, error: e.message });
     }
   }
-  return { ran: true, policyVersion: policy.version, results };
+  return { ran: true, policyVersion: policy.version, results, delivered };
 }

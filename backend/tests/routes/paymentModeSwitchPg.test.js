@@ -29,7 +29,7 @@ import {
   getPolicyHistory, getPolicyVersion, stampForNewOrder,
 } from '#db/repositories/paymentModePolicy.js';
 import { createOrderRecord, getOrderRecord, setOrderFields } from '#db/repositories/orders.record.js';
-import { openOrder, getOrder } from '#db/repositories/orders.core.js';
+import { getOrder } from '#db/repositories/orders.core.js';
 import {
   createMerchant, updateMerchant, newMerchantId, generateMerchantPublicRef,
 } from '#db/repositories/merchants.js';
@@ -235,30 +235,28 @@ describePg('the settlement rail, and the orders it must not disturb', () => {
     expect(res.reason).toBe('LINK_WINDOW_UNUSABLE');
   });
 
-  it('stamps a new order with the rail live at its creation, through BOTH insert paths', async () => {
+  it('stamps a new order with the rail live at its creation', async () => {
     await publishPolicyVersion({
       activeMode: PAYMENT_MODES.CASH_ATM,
       justification: 'Switching for the stamp test.', changedByName: 'Ops Lead',
     });
     const live = await getActivePolicy();
 
-    // order_states has two writers. A snapshot on one of them is a platform
-    // where half the orders are stamped and nothing says which half.
+    // order_states has ONE writer now. There used to be two, and this test
+    // checked the stamp through both; the second (`openOrder`) was the only one
+    // writing the tamper tag and nothing in production called it. Both readers
+    // are still asserted, because a mapper that drops the stamp is the same
+    // defect from the other side.
     const viaRecord = oid();
     await createOrderRecord({
       orderId: viaRecord, userId: 'pm-user-1', type: 'DEPOSIT',
       tokenAmountRupees: 500, fiatAmountRupees: 500,
     });
-    const viaLifecycle = oid();
-    await openOrder({
-      orderId: viaLifecycle, userId: 'pm-user-1', type: 'DEPOSIT',
-      tokenAmountPaise: 50_000,
-    });
 
     expect((await getOrderRecord(viaRecord)).paymentMode).toBe(PAYMENT_MODES.CASH_ATM);
     expect((await getOrderRecord(viaRecord)).paymentModeVersion).toBe(live.version);
-    expect((await getOrder(viaLifecycle)).paymentMode).toBe(PAYMENT_MODES.CASH_ATM);
-    expect((await getOrder(viaLifecycle)).paymentModeVersion).toBe(live.version);
+    expect((await getOrder(viaRecord)).paymentMode).toBe(PAYMENT_MODES.CASH_ATM);
+    expect((await getOrder(viaRecord)).paymentModeVersion).toBe(live.version);
   });
 
   it('leaves an in-flight order on the rail it was born on when the switch flips', async () => {

@@ -57,6 +57,16 @@ vi.mock('../../domains/merchant/merchantWallet.service.js', () => ({
   creditMerchantTokens: async ({ amount }) => { calls.merchantCredit.push(amount); return { merchant: { _id: 'm1' } }; },
 }));
 
+// An order nothing held for this merchant, so its tokens come out of
+// `available` — the debit these amounts are read from. A HELD order is paid out
+// of its hold instead, and moves no `available` at all; that path is proven
+// against a real database in `depositConfirmConservationPg`.
+vi.mock('../../domains/merchant/depositEscrow.service.js', () => ({
+  dispenseForOrder: async () => ({ ok: true, noHold: true }),
+  holdForOrder: async () => ({ ok: true }),
+  releaseForOrder: async () => ({ ok: true, noHold: true }),
+}));
+
 vi.mock('../../domains/payment/orderLifecycle.service.js', () => ({
   completeOrder: async () => ({ ok: true, idempotent: false, order: order.value }),
   disputeOrder: async () => ({ ok: true }),

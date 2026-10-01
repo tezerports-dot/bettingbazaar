@@ -151,7 +151,10 @@ describePg('admin balance adjustment — the single writer path', () => {
   // ── The three things the deleted route did not do ────────────────────────
   it('REQUIRES a reason — a money movement is not audited as "Admin adjustment"', async () => {
     const plain = await subject();
-    for (const reason of [undefined, '', null]) {
+    // '   ' included: the route tested `!reason` while the writer requires
+    // `reason.trim()`, so a blank-looking reason passed the route and left the
+    // writer as a bare 500 — the S35 shape (sweep of the B3 finding, 2026-09-30).
+    for (const reason of [undefined, '', null, '   ']) {
       const res = await adjust({
         userId: plain.userId, type: 'CREDIT', field: 'depositBalance', amount: 10, reason,
       });

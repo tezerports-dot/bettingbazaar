@@ -127,6 +127,7 @@ import { requestLogger }  from './middleware/requestLogger.js';
 import { errorHandler }   from './middleware/errorHandler.js';
 import { requestContext } from './middleware/requestContext.js'; // X-6: correlation ids
 import { tlsFingerprintDefense, startTlsFingerprintDefenseConfigRefresh } from './middleware/tlsFingerprintDefense.js';
+import { ipBlocklist, startIpBlocklistRefresh } from './middleware/ipBlocklist.js';
 import { rejectAmbiguousFraming } from './middleware/headerNormalization.js';
 import { authLimiter, adminAuthLimiter, merchantAuthLimiter, betLimiter, twoFactorLimiter, loginPaceLimiter, signupLimiter, securityMonitor } from './middleware/security.js';
 // Item 12 (2026-07-13): IP-rotation defense — per-subnet backstop + optional
@@ -326,6 +327,11 @@ app.use(cookieParser());
 app.use(requestContext); // X-6: correlation id (before the logger, so it's logged)
 app.use(tlsFingerprintDefense); // JA3/TLS fingerprint policy from admin-managed SystemConfig
 app.use(requestLogger);
+// The admin IP deny-list. BEFORE securityMonitor, the load shedder and every
+// limiter, so a blocked address costs one in-memory lookup and one log line —
+// mounted after securityMonitor, each refusal would become an audit ROW, and a
+// blocked client hammering the API would be turned into database writes.
+app.use(ipBlocklist);
 // Every 401 and 403 into the audit trail, with the attempted mobile on the
 // admin and login paths. It was written, exported and mounted NOWHERE, so a
 // burst of failed admin logins left no durable record anywhere — the one
@@ -791,7 +797,10 @@ Promise.allSettled([
     .then((m) => m.applySchema())
     .then(() => seedAdminAccount())
     .then(() => seedGameRegistry())
-    .then(() => startTlsFingerprintDefenseConfigRefresh()),
+    .then(() => startTlsFingerprintDefenseConfigRefresh())
+    // The deny-list loads here, awaited: a server that cannot read it fails
+    // startup rather than serving as if nothing were blocked.
+    .then(() => startIpBlocklistRefresh()),
   connectRedis().then(r => { global.redis = r; }),
   // CAP-71: RAG vector store. Apply the pgvector schema ONLY when RAG retrieval
   // is actually configured (DATABASE_URL + embedding provider key) — so a
@@ -808,7 +817,7 @@ Promise.allSettled([
     // close it — leaving it bound would keep the process alive and advertise a
     // port that will never become ready.
     // results[0] is the PostgreSQL chain: schema, admin seed, game registry,
-    // TLS policy. Any of them failing means this instance cannot serve.
+    // TLS policy, IP deny-list. Any of them failing means this instance cannot serve.
     console.error('❌ Startup failed while preparing PostgreSQL:', results[0].reason);
     process.exitCode = 1;
     try { activeListener?.close(); } catch { /* nothing to close */ }

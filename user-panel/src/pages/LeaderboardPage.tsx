@@ -67,7 +67,7 @@ export default function LeaderboardPage() {
 
       <div className="flex gap-2 px-4 mb-4">
         {PERIODS.map(p => (
-          <button key={p.key} onClick={() => setPeriod(p.key)}
+          <button key={p.key} onClick={() => setPeriod(p.key)} aria-pressed={period === p.key}
             className={`flex-1 py-2 rounded-lg text-xs font-medium transition-all ${period===p.key?'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30':'bg-dark-800 text-gray-400 border border-dark-700'}`}>
             {p.label}
           </button>

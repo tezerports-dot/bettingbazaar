@@ -13,7 +13,7 @@ import {
   MessageCircle, Shield, History, Scale, Upload, Search, Sun, Moon, Bell,
   Zap, SlidersHorizontal, Trophy, Star, Gamepad2, Bot, FileSpreadsheet, Share2,
   type LucideIcon, ArrowLeftRight, BookOpenCheck, Flag, ToggleLeft, Banknote, Hourglass,
-  Coins, Ghost, Smartphone} from 'lucide-react';
+  Coins, Ghost, Smartphone, ShieldBan} from 'lucide-react';
 import { useAuthStore } from '../services/auth';
 import { usePermissions } from '../hooks/usePermission';
 import { useThemeStore } from '../services/theme';
@@ -75,7 +75,7 @@ const NAV_GROUPS: MenuGroup[] = [
     { path: '/referrals', icon: Share2,          label: 'Referrals',       title: 'Referral Programme',  sub: 'Fund the payout queue in joining order', adminOnly: true },
   ] },
   { key: 'payments', label: 'Payments & Queue', items: [
-    { path: '/queue-manager',   icon: Layers,   label: 'Queue Manager',  title: 'Queue Manager', sub: 'Live payment order queue & merchant assignment', queueManagerAccess: true, badge: 'queue' },
+    { path: '/queue-manager',   icon: Layers,   label: 'Queue Manager',  title: 'Queue Manager', sub: 'Live payment order queue & merchant assignment', queueManagerAccess: true, permission: 'canManageMerchants', badge: 'queue' },
     { path: '/transactions',    icon: FileText, label: 'Transactions',   title: 'Transactions',  sub: 'Ledger of deposits, withdrawals, bets & adjustments', permission: 'canViewTransactions' },
     { path: '/payment-control', icon: Zap,      label: 'Payment System', title: 'Payment System',sub: 'Gateways, limits & platform payment controls', adminOnly: true },
     { path: '/disputes',        icon: Scale,    label: 'Disputes',       title: 'Disputes',      sub: 'Payment order disputes & resolution', permission: 'canResolveDisputes' },
@@ -115,6 +115,7 @@ const NAV_GROUPS: MenuGroup[] = [
     { path: '/sub-admins',       icon: ShieldCheck, label: 'Sub-Admins',       title: 'Sub-Admins',       sub: 'Roles, permissions & access control', adminOnly: true },
     { path: '/settings',         icon: Settings,    label: 'System Settings',  title: 'System Settings',  sub: 'Platform configuration', adminOnly: true },
     { path: '/audit-logs',       icon: Shield,      label: 'Audit Logs',       title: 'Audit Logs',       sub: 'Administrative action trail', adminOnly: true },
+    { path: '/blocked-ips',      icon: ShieldBan,   label: 'Blocked IPs',      title: 'Blocked IPs',      sub: 'Refuse every request from an address or range', adminOnly: true },
     { path: '/error-logs',       icon: Shield,      label: 'Error Logs',       title: 'Error Logs',       sub: 'Runtime errors & failed jobs', adminOnly: true },
   ] },
 ];

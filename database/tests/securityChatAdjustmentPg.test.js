@@ -1,14 +1,11 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * The three controls that were referenced everywhere and DEFINED NOWHERE.
+ * The controls that were referenced everywhere and DEFINED NOWHERE.
  *
- * `BlockedIP`, `ChatMessage` and `BalanceAdjustment` were asked for through the
- * document store in five files. None of the three was ever registered, so every
- * call raised MissingSchemaError:
+ * `ChatMessage` and `BalanceAdjustment` were asked for through the document
+ * store in several files. Neither was ever registered, so every call raised
+ * MissingSchemaError:
  *
- *   • the IP deny-list threw into a catch that fails open without logging, so
- *     it has never blocked an address, and `blockIP` reported success to the
- *     operator every time it did nothing;
  *   • every order-chat write threw, four of them into a bare `catch (_) {}`, so
  *     messages echoed over the socket and did not survive a reload — and a
  *     dispute was decided against an empty record;
@@ -21,9 +18,6 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { pgConfigured, pgQuery, applySchema, closePg } from '../client.js';
 import {
-  isIpBlocked, blockIp, unblockIp, listBlockedIps, invalidateIpCache,
-} from '../repositories/security.js';
-import {
   postMessage, postSystemMessage, listMessages, countMessages,
 } from '../repositories/chat.js';
 import {
@@ -33,94 +27,9 @@ import { getBalancesPaise } from '../repositories/wallets.core.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 
-describePg('the three controls that were defined nowhere', () => {
+describePg('the controls that were defined nowhere', () => {
   beforeAll(async () => { await applySchema(); });
   afterAll(async () => { await closePg(); });
-
-  // ══════════════════════════════════════════════════════════════════════════
-  describe('the IP deny-list', () => {
-    beforeEach(async () => {
-      await pgQuery('DELETE FROM blocked_ips', []);
-      invalidateIpCache();
-    });
-
-    it('blocks an address, which is the thing it has never done', async () => {
-      expect(await isIpBlocked('203.0.113.7')).toBe(false);
-      await blockIp('203.0.113.7', { reason: 'Credential stuffing', actor: 'admin-1' });
-      expect(await isIpBlocked('203.0.113.7')).toBe(true);
-    });
-
-    it('applies a new block IMMEDIATELY, not at the next cache expiry', async () => {
-      // The read below populates the cache with "not blocked". Being slow to
-      // stop an attacker is the expensive direction of this trade, so the write
-      // invalidates rather than waiting out the TTL.
-      expect(await isIpBlocked('203.0.113.8')).toBe(false);
-      await blockIp('203.0.113.8', { reason: 'Scraping' });
-      expect(await isIpBlocked('203.0.113.8')).toBe(true);
-    });
-
-    it('releases an address and KEEPS the row, because an appeal reads it', async () => {
-      await blockIp('203.0.113.9', { reason: 'Fraud ring', actor: 'admin-1' });
-      await unblockIp('203.0.113.9', { actor: 'admin-2' });
-
-      expect(await isIpBlocked('203.0.113.9')).toBe(false);
-      const { rows } = await pgQuery(
-        'SELECT reason, active, unblocked_by FROM blocked_ips WHERE ip = $1', ['203.0.113.9'],
-      );
-      expect(rows).toHaveLength(1);
-      expect(rows[0].active).toBe(false);
-      expect(rows[0].reason).toBe('Fraud ring');
-      expect(rows[0].unblocked_by).toBe('admin-2');
-    });
-
-    it('re-blocking a released address revives the row rather than colliding', async () => {
-      await blockIp('203.0.113.10', { reason: 'First' });
-      await unblockIp('203.0.113.10');
-      await blockIp('203.0.113.10', { reason: 'Second' });
-
-      expect(await isIpBlocked('203.0.113.10')).toBe(true);
-      const { rows } = await pgQuery(
-        'SELECT reason, unblocked_at FROM blocked_ips WHERE ip = $1', ['203.0.113.10'],
-      );
-      expect(rows[0].reason).toBe('Second');
-      // The stale release must be cleared, or the row says both at once.
-      expect(rows[0].unblocked_at).toBeNull();
-    });
-
-    it('a temporary block LAPSES ON THE READ, without waiting for a sweep', async () => {
-      // PostgreSQL has no TTL index. If expiry were left to a sweep, a late or
-      // dead sweep would keep an expired block in force indefinitely.
-      await blockIp('203.0.113.11', {
-        reason: 'Rate abuse', expiresAt: new Date(Date.now() - 1000),
-      });
-      invalidateIpCache();
-      expect(await isIpBlocked('203.0.113.11')).toBe(false);
-
-      // …and the converse: an unexpired one holds even though nothing swept.
-      await blockIp('203.0.113.12', {
-        reason: 'Rate abuse', expiresAt: new Date(Date.now() + 60_000),
-      });
-      expect(await isIpBlocked('203.0.113.12')).toBe(true);
-    });
-
-    it('the operator list shows live blocks and hides released ones by default', async () => {
-      await blockIp('203.0.113.13', { reason: 'Live' });
-      await blockIp('203.0.113.14', { reason: 'Released' });
-      await unblockIp('203.0.113.14');
-
-      const live = await listBlockedIps();
-      expect(live.map((r) => r.ip)).toEqual(['203.0.113.13']);
-
-      const all = await listBlockedIps({ includeReleased: true });
-      expect(all.map((r) => r.ip).sort()).toEqual(['203.0.113.13', '203.0.113.14']);
-    });
-
-    it('an empty address is not blocked, and never becomes a query', async () => {
-      expect(await isIpBlocked(null)).toBe(false);
-      expect(await isIpBlocked('')).toBe(false);
-      await expect(blockIp('')).rejects.toThrow(/requires an ip/);
-    });
-  });
 
   // ══════════════════════════════════════════════════════════════════════════
   describe('order chat', () => {

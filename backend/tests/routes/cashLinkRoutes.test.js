@@ -25,6 +25,8 @@ import {
   PAYMENT_MODES, getActivePolicy, publishPolicyVersion,
 } from '#db/repositories/paymentModePolicy.js';
 import { getLiveLinkFor } from '#db/repositories/cashLinks.js';
+import { getOrderRecord } from '#db/repositories/orders.record.js';
+import { matchWaitingOrdersToLinks } from '../../domains/payment/paymentProcessing.service.js';
 import { mountRouter, merchantActor, as, request } from './_harness.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
@@ -104,8 +106,13 @@ describePg('a merchant supplying an ATM cash link', () => {
   //   · The claim needs an EXACT amount match — `claimLinkFor` computes
   //     `Math.round(order.tokenAmount * 100)` — so only a ₹40,000 cash
   //     deposit can take a ₹40,000 link. Not a rounding or a range.
-  //   · No other suite in the tier creates one. `retryAndMatchPg`, the only
-  //     other file that runs the matcher, works entirely at ₹5,000.
+  //   · [WRONG — corrected 2026-09-30] "No other suite in the tier creates
+  //     one." `database/tests/cashLinkQueuePg.test.js` did: its "runs out
+  //     rather than handing the same link to a fifth order" case left a
+  //     ₹40,000 CASH_ATM buy PENDING_QUEUE with no link, for good, and the
+  //     matcher this file triggers handed it the link. Found by reading the
+  //     claimant the diagnostic below printed. That suite now cancels what it
+  //     created.
   //   · Within this file the three ₹40,000 `waitingOrder()` fixtures are
   //     created AFTER these tests and cancelled in `afterAll`.
   //   · CI starts from a fresh database, so a previous run cannot be it
@@ -340,5 +347,42 @@ describePg('a merchant supplying an ATM cash link', () => {
       activeMode: PAYMENT_MODES.CASH_ATM,
       justification: 'Restoring the cash rail for the rest of the suite.', changedByName: 'test',
     });
+  });
+
+  it('still serves a CASH order that was waiting when the platform switched rails', async () => {
+    // §2: every worker branches on the ORDER's own rail, never the policy in
+    // force now. The matcher returned early unless the ACTIVE rail was cash, so
+    // an admin switching to UPI stranded every cash buy already waiting — and
+    // every link a merchant, standing at a machine, had already supplied for
+    // them — until both expired. The switch stops NEW links (supply is refused
+    // off the cash rail); it must not abandon the ones already in hand.
+    for (const orderId of created.splice(0)) {
+      await cancelOrder({ orderId, actor: 'test', reason: 'isolate the matcher' }).catch(() => {});
+    }
+    const m = await cashMerchant();
+    const supplied = await as(app, m).post('/cash-links').send({ paymentLink: 'upi://pay?pa=atm-switch@bank&am=40000' });
+    expect(supplied.status, supplied.body?.message).toBe(200);
+    const orderId = await waitingOrder();                     // stamped CASH_ATM
+    expect((await getOrderRecord(orderId)).paymentMode).toBe(PAYMENT_MODES.CASH_ATM);
+
+    await publishPolicyVersion({
+      activeMode: PAYMENT_MODES.P2P_UPI,
+      justification: 'Switch away mid-queue.', changedByName: 'test',
+    });
+    try {
+      const { matched } = await matchWaitingOrdersToLinks();
+      expect(matched, 'the waiting cash order was abandoned by the rail switch').toBeGreaterThanOrEqual(1);
+      const order = await getOrderRecord(orderId);
+      // Served by A link — the oldest live one at this denomination, which may
+      // be one an earlier case in this file left LIVE. Whose is not the point.
+      expect(order.state).toBe('ASSIGNED');
+      expect(order.cashLinkId).toBeTruthy();
+      expect(order.merchantId).toBeTruthy();
+    } finally {
+      await publishPolicyVersion({
+        activeMode: PAYMENT_MODES.CASH_ATM,
+        justification: 'Restoring the cash rail for the rest of the suite.', changedByName: 'test',
+      });
+    }
   });
 });

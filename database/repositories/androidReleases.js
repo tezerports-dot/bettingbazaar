@@ -21,6 +21,19 @@
  * uploaded while nothing is published yet, and publishing them in turn would
  * send phones an update Android refuses. So the publish itself refuses a key
  * that differs from any release already published.
+ *
+ * ── Halting (R9) ──────────────────────────────────────────────────────────
+ * A published release can be HALTED: it stops being offered, downloaded or
+ * required, and phones are pointed back at the newest release that is not
+ * halted. It stays PUBLISHED, deliberately — phones may already run it, so the
+ * publish guards above keep counting it and the next release must still be
+ * above it. Halting cannot uninstall anything; it stops the damage spreading.
+ *
+ * ── Which phones a release is for ─────────────────────────────────────────
+ * A release that needs a newer Android than a phone has can never be
+ * installed on it. So the policy is asked FOR a phone's API level: such a
+ * release is neither offered to that phone nor allowed to set its floor —
+ * a floor it cannot reach would be an update screen it can never leave.
  */
 import { pgQuery, withTransaction } from '../client.js';
 import { randomBytes } from 'node:crypto';
@@ -49,21 +62,31 @@ function toRelease(row) {
     publishedAt: row.published_at,
     publishedBy: row.published_by,
     published: row.published_at != null,
+    haltedAt: row.halted_at ?? null,
+    haltedBy: row.halted_by ?? null,
+    haltReason: row.halt_reason ?? null,
+    halted: row.halted_at != null,
+    signatureSchemes: (row.signature_schemes ?? []).map(Number),
+    // Present only on the admin list, which joins the people's names.
+    uploadedByName: row.uploaded_by_name ?? null,
+    publishedByName: row.published_by_name ?? null,
+    haltedByName: row.halted_by_name ?? null,
   };
 }
 
 export async function createRelease({
   packageName, versionCode, versionName, minSdk = null, signerSha256, fileSha256,
-  sizeBytes, fileUrl, storage, fileKey, releaseNotes = '', uploadedBy = null,
+  sizeBytes, fileUrl, storage, fileKey, releaseNotes = '', uploadedBy = null, signatureSchemes = [],
 }) {
   const { rows } = await pgQuery(
     `INSERT INTO android_releases
        (release_id, package_name, version_code, version_name, min_sdk, signer_sha256,
-        file_sha256, size_bytes, file_url, storage, file_key, release_notes, uploaded_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+        file_sha256, size_bytes, file_url, storage, file_key, release_notes, uploaded_by,
+        signature_schemes)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
      RETURNING *`,
     [newId(), packageName, versionCode, versionName, minSdk, signerSha256, fileSha256,
-      sizeBytes, fileUrl, storage, fileKey, releaseNotes, uploadedBy],
+      sizeBytes, fileUrl, storage, fileKey, releaseNotes, uploadedBy, signatureSchemes.map(Number)],
     'android_release_create',
   );
   return toRelease(rows[0]);
@@ -90,26 +113,71 @@ export async function getReleaseByVersionCode(packageName, versionCode) {
 
 export async function listReleases(packageName, { limit = 50 } = {}) {
   const { rows } = await pgQuery(
-    'SELECT * FROM android_releases WHERE package_name = $1 ORDER BY version_code DESC LIMIT $2',
+    `SELECT r.*,
+            (SELECT username FROM users WHERE user_id = r.uploaded_by)  AS uploaded_by_name,
+            (SELECT username FROM users WHERE user_id = r.published_by) AS published_by_name,
+            (SELECT username FROM users WHERE user_id = r.halted_by)    AS halted_by_name
+       FROM android_releases r WHERE r.package_name = $1 ORDER BY r.version_code DESC LIMIT $2`,
     [pkg(packageName), Math.min(Math.max(Number(limit) || 50, 1), 200)], 'android_release_list');
   return rows.map(toRelease);
 }
 
 /**
- * What an installed app is told: the newest published release, and the
- * highest mandatory published version code (0 when nothing is mandatory).
+ * What an installed app is told, FOR the phone asking.
+ *
+ *   latest                 the newest published release that is not halted and
+ *                          that this phone's Android can install
+ *   minRequiredVersionCode the highest MANDATORY such release (0 when none)
+ *   unsupportedBelow       the highest mandatory release this phone can NOT
+ *                          install, when that is above minRequiredVersionCode:
+ *                          an install below it must not run and cannot update
+ *   unsupportedMinSdk      the Android API level that release needs
+ *
+ * `sdk` is the phone's API level; unknown (an older app, or a browser) means
+ * every release is treated as installable, which is how it behaved before.
+ * Halted releases are left out of all of it.
  */
-export async function getUpdatePolicy(packageName) {
+export async function getUpdatePolicy(packageName, { sdk = null } = {}) {
+  const level = Number.isInteger(sdk) && sdk > 0 ? sdk : null;
   const { rows } = await pgQuery(
-    `SELECT
-       (SELECT row_to_json(r) FROM (
-          SELECT * FROM android_releases WHERE package_name = $1 AND published_at IS NOT NULL
-           ORDER BY version_code DESC LIMIT 1) r)                          AS latest,
-       COALESCE((SELECT max(version_code) FROM android_releases
-                  WHERE package_name = $1 AND published_at IS NOT NULL AND mandatory), 0) AS min_code`,
-    [pkg(packageName)], 'android_release_policy',
+    `WITH live AS (
+       SELECT * FROM android_releases
+        WHERE package_name = $1 AND published_at IS NOT NULL AND halted_at IS NULL
+     ), fits AS (
+       SELECT * FROM live WHERE $2::int IS NULL OR min_sdk IS NULL OR min_sdk <= $2::int
+     )
+     SELECT
+       (SELECT row_to_json(r) FROM (SELECT * FROM fits ORDER BY version_code DESC LIMIT 1) r) AS latest,
+       COALESCE((SELECT max(version_code) FROM fits WHERE mandatory), 0) AS min_code,
+       (SELECT row_to_json(u) FROM (
+          SELECT version_code, min_sdk FROM live
+           WHERE mandatory AND NOT (version_code IN (SELECT version_code FROM fits))
+           ORDER BY version_code DESC LIMIT 1) u) AS beyond`,
+    [pkg(packageName), level], 'android_release_policy',
   );
-  return { latest: toRelease(rows[0].latest), minRequiredVersionCode: Number(rows[0].min_code) };
+  const minRequiredVersionCode = Number(rows[0].min_code);
+  const beyond = rows[0].beyond;
+  const unsupported = beyond && Number(beyond.version_code) > minRequiredVersionCode;
+  return {
+    latest: toRelease(rows[0].latest),
+    minRequiredVersionCode,
+    unsupportedBelow: unsupported ? Number(beyond.version_code) : 0,
+    unsupportedMinSdk: unsupported ? Number(beyond.min_sdk) : null,
+  };
+}
+
+/**
+ * The highest PUBLISHED release, halted or not. What the upload compares a new
+ * APK against: a halted build is no longer offered, but phones may run it,
+ * so a new build must still be above it and signed with its key. The publish
+ * itself enforces the same in its WHERE; this is the early, worded refusal.
+ */
+export async function getHighestPublished(packageName) {
+  const { rows } = await pgQuery(
+    `SELECT * FROM android_releases WHERE package_name = $1 AND published_at IS NOT NULL
+      ORDER BY version_code DESC LIMIT 1`,
+    [pkg(packageName)], 'android_release_highest_published');
+  return toRelease(rows[0]);
 }
 
 /** Notes and the mandatory flag are the only things that may change on a row. */
@@ -133,9 +201,12 @@ export async function updateRelease(releaseId, { releaseNotes, mandatory }) {
 export async function publishRelease(releaseId, publishedBy) {
   return withTransaction(async (client) => {
     await client.query('SELECT pg_advisory_xact_lock($1)', [PUBLISH_LOCK]);
+    // clock_timestamp(), not now(): now() is when this transaction BEGAN, which
+    // is before it waited for the lock, so a publish that queued behind
+    // another was stamped earlier than the one it followed.
     const { rows } = await client.query(
       `UPDATE android_releases r
-          SET published_at = now(), published_by = $2
+          SET published_at = clock_timestamp(), published_by = $2
         WHERE r.release_id = $1
           AND r.published_at IS NULL
           AND NOT EXISTS (SELECT 1 FROM android_releases p
@@ -172,4 +243,33 @@ export async function deleteDraft(releaseId) {
     'DELETE FROM android_releases WHERE release_id = $1 AND published_at IS NULL RETURNING *',
     [String(releaseId)], 'android_release_delete_draft');
   return toRelease(rows[0]);
+}
+
+/**
+ * Stop offering a published release. Refuses a draft and an already-halted
+ * release, IN the statement; returns { release } or { refused }.
+ */
+export async function haltRelease(releaseId, haltedBy, reason) {
+  const { rows } = await pgQuery(
+    `UPDATE android_releases
+        SET halted_at = clock_timestamp(), halted_by = $2, halt_reason = $3
+      WHERE release_id = $1 AND published_at IS NOT NULL AND halted_at IS NULL
+      RETURNING *`,
+    [String(releaseId), haltedBy ?? null, String(reason)], 'android_release_halt');
+  if (rows[0]) return { release: toRelease(rows[0]) };
+  const cur = await getRelease(releaseId);
+  if (!cur) return { refused: 'not_found' };
+  if (!cur.published) return { refused: 'not_published' };
+  return { refused: 'already_halted' };
+}
+
+/** Offer a halted release again. */
+export async function resumeRelease(releaseId) {
+  const { rows } = await pgQuery(
+    `UPDATE android_releases SET halted_at = NULL, halted_by = NULL, halt_reason = NULL
+      WHERE release_id = $1 AND halted_at IS NOT NULL
+      RETURNING *`,
+    [String(releaseId)], 'android_release_resume');
+  if (rows[0]) return { release: toRelease(rows[0]) };
+  return { refused: (await getRelease(releaseId)) ? 'not_halted' : 'not_found' };
 }

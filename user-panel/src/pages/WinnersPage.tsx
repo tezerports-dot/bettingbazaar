@@ -40,7 +40,7 @@ export default function WinnersPage() {
     <ScreenShell icon="🏆" title="Top Winners" sub="Biggest wins right now">
       <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
         {(['today', 'week'] as const).map(p => (
-          <button key={p} onClick={() => setPeriod(p)} style={{ padding: '7px 16px', borderRadius: 999, border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 800, background: period === p ? 'var(--gold)' : 'var(--surface3)', color: period === p ? '#1a1200' : 'var(--text2)' }}>{p === 'today' ? 'Today' : 'This Week'}</button>
+          <button key={p} onClick={() => setPeriod(p)} aria-pressed={period === p} style={{ padding: '7px 16px', borderRadius: 999, border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 800, background: period === p ? 'var(--gold)' : 'var(--surface3)', color: period === p ? '#1a1200' : 'var(--text2)' }}>{p === 'today' ? 'Today' : 'This Week'}</button>
         ))}
       </div>
 

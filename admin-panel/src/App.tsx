@@ -38,7 +38,7 @@ import { CdmReceiptQueue } from './Pages/Disputes/CdmReceiptQueue';
 import { StalledWithdrawals } from './Pages/Disputes/StalledWithdrawals';
 import { AppAssetsPage } from './Pages/AppAssets/AppAssetsPage';
 import { AndroidAppPage } from './Pages/AndroidApp/AndroidAppPage';
-// UTR REMOVED: import { UTRManager } from './Pages/Finance/UTRManager';
+import { BlockedIpsPage } from './Pages/Security/BlockedIpsPage';
 // ── NEW FEATURE PAGES ──────────────────────────────────────────────────────
 import { PaymentControlCenter } from './Pages/Payment/PaymentControlCenter';
 import { AnnouncementsPage } from './Pages/Promotions/AnnouncementsPage';
@@ -312,6 +312,12 @@ const App: React.FC = () => {
             release is code that runs on every player's phone. */}
         <Route path="/android-app" element={
           <AdminOnly><Layout><AndroidAppPage /></Layout></AdminOnly>
+        } />
+
+        {/* Blocked IPs — the deny-list. Admin only: a block refuses every request
+            from a range, players and merchants included. */}
+        <Route path="/blocked-ips" element={
+          <AdminOnly><Layout><BlockedIpsPage /></Layout></AdminOnly>
         } />
 
         {/* ── ENTERPRISE PLATFORM CONSOLES (Phase C) ── */}

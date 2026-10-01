@@ -169,6 +169,7 @@ export const Login: React.FC = () => {
                     key={r.id}
                     type="button"
                     onClick={() => setLoginType(r.id)}
+                    aria-pressed={loginType === r.id}
                     style={{
                       flex: 1, textAlign: 'center', padding: '11px 6px', borderRadius: 9, fontSize: 12,
                       fontWeight: 700, cursor: 'pointer', transition: 'all .15s',

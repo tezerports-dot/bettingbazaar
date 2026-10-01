@@ -12,5 +12,13 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     include: ['backend/tests/unit/**/*.test.js'],
+    // A comparison of NaN with NaN proves nothing — refused (§32 S40).
+    // The same fixed, fake secrets the pg tier uses — one list, not two. The
+    // signing module refuses to LOAD without a key (by design), and anything
+    // importing the rate limiters now loads it: the 2FA limiter keys on the
+    // VERIFIED account a challenge is for (F-036). CI's unit step sets no key,
+    // so without this three suites failed there while passing on any machine
+    // that happened to have one in its shell.
+    setupFiles: ['backend/tests/routes/setup.js', 'backend/tests/assertionGuards.setup.js'],
   },
 });

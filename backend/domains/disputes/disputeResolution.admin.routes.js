@@ -2,8 +2,12 @@
 
 import { express, authenticate, isAdmin, isAdminOrSubAdmin, hasPermission } from '../../routes/admin/_adminShared.js';
 import { db } from '#db';
-import { creditDeposit, creditReserve, creditWinnings } from '../wallet/walletAuthority.service.js';
+import { creditDeposit, creditReserve } from '../wallet/walletAuthority.service.js';
 import { moveDepositMoney } from '../payment/depositCredit.js';
+// The one owner of how an admin decision ends a withdrawal's money (F-027),
+// and of a cancelled buy's merchant hold.
+import { endWithdrawal } from '../payment/withdrawalHold.service.js';
+import { releaseForOrder } from '../merchant/depositEscrow.service.js';
 import { debitMerchantTokens } from '../merchant/merchantWallet.service.js';
 import { releaseUTR } from '../../middleware/utrValidation.js';
 // The order state machine. Resolving a dispute is a guarded transition, and it
@@ -304,7 +308,13 @@ router.post('/dispute-orders/:orderId/resolve', authenticate, isAdmin, async (re
         message: `Cannot resolve order in status: ${moved.status ?? 'missing'}`,
       });
     }
+    // A withdrawal's money step is keyed end to end: replaying it repairs a
+    // first click that failed part-way and moves nothing when it succeeded.
+    const withdrawalDecision = releasesToMerchant ? 'RELEASE' : 'REFUND';
     if (moved.idempotent) {
+      if (order.type === 'WITHDRAWAL') {
+        await endWithdrawal(order.orderId, withdrawalDecision, { reason: resolution, by: req.user.userId });
+      }
       return res.json({ success: true, message: 'Dispute already resolved', order: moved.order ?? order });
     }
 
@@ -357,71 +367,43 @@ router.post('/dispute-orders/:orderId/resolve', authenticate, isAdmin, async (re
           `${order.tokenAmount} tokens credited to user deposit balance.\n` +
           `Resolution: ${resolution}`;
       } else {
-        // RELEASE_TO_MERCHANT or CANCEL — user did not pay; no token movement
+        // RELEASE_TO_MERCHANT or CANCEL — the player did not pay, so nothing
+        // reaches them; the merchant's tokens held for this buy go back. This
+        // released nothing and left the hold to the stranded-hold sweep.
+        await releaseForOrder(order, { actor: `admin:${req.user.userId}`, reason: resolution });
         systemMessage = `❌ Admin Decision: DEPOSIT REJECTED\n` +
           `No payment confirmed. Order cancelled. No token movement.\n` +
           `Resolution: ${resolution}`;
       }
     } else {
-      // ── WITHDRAWAL ─────────────────────────────────────────────────────────
-      // Two worlds, and conflating them moves money twice or not at all.
-      //
-      // HELD — the merchant asserted payment but the hold window has not passed,
-      // so NOTHING has settled: the player's stake is still locked and the
-      // merchant's tokens do not exist. Resolution is therefore a decision about
-      // which way to settle something still frozen, and both directions are one
-      // idempotent call into the hold service. This is the case the hold exists
-      // to create, and it is the only one where nobody can lose.
-      //
-      // Not HELD — already settled (or the hold is disabled), so the player's
-      // stake is consumed and the merchant holds the tokens. Ruling for the
-      // player is a genuine clawback, which this route cannot perform against a
-      // merchant who has already spent them; it credits the player and flags the
-      // merchant balance for manual recovery rather than pretending otherwise.
-      const { settleHold, reverseHold } = await import('../payment/withdrawalHold.service.js');
-      const wasHeld = order.merchantCreditStatus === 'HELD';
-
-      if (decision === 'RELEASE_TO_MERCHANT') {
-        if (wasHeld) {
-          // Settles BOTH sides. The previous code set COMPLETED and moved no
-          // tokens at all, so an admin ruling for the merchant left the player's
-          // stake locked forever and the merchant never paid.
-          await settleHold(order._id);
-          systemMessage = `✅ Admin Decision: WITHDRAWAL COMPLETED\n` +
-            `Payment confirmed. ${order.tokenAmount} tokens released to the merchant.\n` +
-            `Resolution: ${resolution}`;
-        } else {
-          systemMessage = `✅ Admin Decision: WITHDRAWAL COMPLETED\n` +
-            `Merchant confirmed payment was sent. Already settled — no further token movement.\n` +
-            `Resolution: ${resolution}`;
-        }
-      } else if (wasHeld) {
-        // RELEASE_TO_USER / CANCEL inside the window — return the still-locked
-        // stake through the wallet authority's inverse of the original debit.
-        await reverseHold(order._id, {
-          reason: `Dispute resolved by ${adminName}: ${resolution}`,
-          by: req.user.userId,
-        });
-        systemMessage = `🔄 Admin Decision: WITHDRAWAL REVERSED\n` +
-          `Payment was not received. ${order.tokenAmount} tokens returned to your balance.\n` +
+      // ── WITHDRAWAL — through the one owner ─────────────────────────────────
+      // This branch read "not HELD" as "already settled", and it is not: a
+      // withdrawal disputed before its merchant confirmed is not HELD and its
+      // stake is still LOCKED. A refund there credited winnings beside the lock
+      // (the wallet read double) and a release moved nothing at all. On a HELD
+      // withdrawal the refund went through `reverseHold`, which wrote the order
+      // back to DISPUTED after this route had cancelled it — a resolved dispute
+      // back in the queue. `endWithdrawal` knows all three positions (F-027).
+      const ended = await endWithdrawal(order.orderId, withdrawalDecision, {
+        reason: `Dispute resolved by ${adminName}: ${resolution}`, by: req.user.userId,
+      });
+      if (!ended.ok) {
+        console.error(`[dispute resolve] ${order.orderId} resolved but money did not move:`, ended.reason);
+      }
+      if (withdrawalDecision === 'RELEASE') {
+        systemMessage = `✅ Admin Decision: WITHDRAWAL COMPLETED\n` +
+          `Payment confirmed. ${order.tokenAmount} tokens released to the merchant.\n` +
           `Resolution: ${resolution}`;
-      } else {
-        // Already settled — the merchant holds these tokens. Credit the player
-        // and say plainly that recovering them from the merchant is a separate
-        // manual action, rather than silently leaving the platform short.
-        //
-        // txId added: this ran with no idempotency key, so resolving the same
-        // dispute twice credited the player twice.
-        await creditWinnings(
-          order.userId, order.tokenAmount,
-          `Dispute resolved — withdrawal refunded: ${order.orderId}`,
-          'PaymentOrder', order._id, `dispute_wd_refund_${order._id}`,
-        );
+      } else if (ended.afterSettlement) {
         systemMessage = `🔄 Admin Decision: WITHDRAWAL REFUNDED\n` +
           `${order.tokenAmount} tokens returned to user winnings balance.\n` +
           `Resolution: ${resolution}`;
         console.warn(`[dispute] Withdrawal ${order.orderId} refunded AFTER settlement — ` +
           `merchant ${order.merchantId} was already credited ${order.tokenAmount}; manual recovery required.`);
+      } else {
+        systemMessage = `🔄 Admin Decision: WITHDRAWAL REVERSED\n` +
+          `Payment was not received. ${order.tokenAmount} tokens returned to your balance.\n` +
+          `Resolution: ${resolution}`;
       }
     }
 

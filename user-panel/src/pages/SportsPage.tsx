@@ -63,7 +63,7 @@ const SportsPage: React.FC = () => {
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 14 }}>
         <div style={{ display: 'flex', gap: 8 }}>
           {(['all', 'live'] as const).map(f => (
-            <button key={f} onClick={() => setFilter(f)} style={{ padding: '7px 14px', borderRadius: 999, fontSize: 12, fontWeight: 700, cursor: 'pointer', border: `1px solid ${filter === f ? 'var(--green)' : 'var(--line)'}`, background: filter === f ? 'var(--green)' : 'var(--surface)', color: filter === f ? '#fff' : 'var(--text2)' }}>{f === 'live' ? '🔴 LIVE' : 'All'}</button>
+            <button key={f} onClick={() => setFilter(f)} aria-pressed={filter === f} style={{ padding: '7px 14px', borderRadius: 999, fontSize: 12, fontWeight: 700, cursor: 'pointer', border: `1px solid ${filter === f ? 'var(--green)' : 'var(--line)'}`, background: filter === f ? 'var(--green)' : 'var(--surface)', color: filter === f ? '#fff' : 'var(--text2)' }}>{f === 'live' ? '🔴 LIVE' : 'All'}</button>
           ))}
         </div>
         <button onClick={() => openSportsbook()} disabled={launching} style={{ background: 'var(--green)', color: '#fff', fontWeight: 800, padding: '9px 16px', borderRadius: 12, fontSize: 12, border: 'none', cursor: 'pointer', opacity: launching ? .6 : 1 }}>{launching ? 'Opening…' : '▶ Open All'}</button>

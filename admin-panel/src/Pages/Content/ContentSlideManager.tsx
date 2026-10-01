@@ -167,6 +167,7 @@ export const ContentSlideManager: React.FC = () => {
           <button
             key={tab.key}
             onClick={() => setActiveTab(tab.key)}
+            aria-pressed={activeTab === tab.key}
             className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-colors
               ${activeTab === tab.key ? 'bg-dark-600 text-white' : 'text-gray-400 hover:text-white'}`}
           >

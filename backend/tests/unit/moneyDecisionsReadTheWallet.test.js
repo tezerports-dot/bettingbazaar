@@ -49,7 +49,10 @@ const SITES = [
     // amount against its own order id. The gate is unchanged in kind: the
     // wallet's row lock still decides, it is simply consulted once per
     // withdrawal being created, which is what one-withdrawal-per-part means.
-    gates: [/debited = await debitWinningsForWithdrawal\(String\(user\.userId\), partTokens, partOrderId\)/,
+    // The debit carries the part's prepared INSERT (`within`), so the lock and
+    // the order it is for commit together — a lock with no order is money no
+    // expiry or refund can ever find.
+    gates: [/debited = await debitWinningsForWithdrawal\(String\(user\.userId\), partTokens, partOrderId, \{ within: insertPart \}\)/,
             /err\.code === 'INSUFFICIENT_WITHDRAWABLE'/],
     // The figures in the refusal come off the refusal itself — from the rows
     // the debit locked — never from a record read separately.

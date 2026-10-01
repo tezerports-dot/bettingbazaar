@@ -9,6 +9,8 @@
  *           POST   /api/admin/android/releases          upload an APK (raw body)
  *           PATCH  /api/admin/android/releases/:id      notes / mandatory
  *           POST   /api/admin/android/releases/:id/publish
+ *           POST   /api/admin/android/releases/:id/halt     stop offering a published release
+ *           POST   /api/admin/android/releases/:id/resume   offer it again
  *           DELETE /api/admin/android/releases/:id      drafts only
  *   PUBLIC  GET    /api/app/android/update             what an installed app is told
  *           GET    /api/download/android               302 to the newest published APK
@@ -73,8 +75,30 @@ export function publicRelease(r) {
     sizeBytes: r.sizeBytes,
     releaseNotes: r.releaseNotes,
     mandatory: r.mandatory,
+    minSdk: r.minSdk,
     publishedAt: r.publishedAt,
   };
+}
+
+/**
+ * The Android release each API level first shipped in. The one place this
+ * mapping lives: the admin card and the phone's "too old" screen both get the
+ * words from the server rather than keeping a copy (§5).
+ */
+const ANDROID_RELEASE = {
+  21: '5.0', 22: '5.1', 23: '6', 24: '7.0', 25: '7.1', 26: '8.0', 27: '8.1', 28: '9',
+  29: '10', 30: '11', 31: '12', 32: '12L', 33: '13', 34: '14', 35: '15', 36: '16',
+};
+/** "Android 9 (API 28)", or null when the APK declared no minimum. */
+export function androidLabel(sdk) {
+  if (!Number.isInteger(sdk) || sdk < 1) return null;
+  return ANDROID_RELEASE[sdk] ? `Android ${ANDROID_RELEASE[sdk]} (API ${sdk})` : `Android API ${sdk}`;
+}
+
+/** The `sdk` a phone reported, or null when it is absent or not a plausible API level. */
+export function parseSdk(raw) {
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 1 && n <= 1000 ? n : null;
 }
 
 /**
@@ -124,14 +148,19 @@ export async function storeApk(buffer, info) {
 /**
  * `?versionCode=` is the installed build's own code; the answer is computed
  * here so no client carries its own copy of the rule:
- *   status 'required'  — below the highest mandatory release: block the app
- *   status 'available' — below the newest release: offer it
- *   status 'current'   — nothing to do
+ *   status 'required'    — below the highest mandatory release this phone can
+ *                          install: block the app until it updates
+ *   status 'unsupported' — below a mandatory release this phone's Android can
+ *                          NOT install: block, and say the phone is too old,
+ *                          rather than offer an update that can never install
+ *   status 'available'   — below the newest release it can install: offer it
+ *   status 'current'     — nothing to do
+ * Halted releases never appear in the policy (androidReleases.getUpdatePolicy).
  */
 export function updateStatus(installedCode, policy) {
-  const latest = policy.latest;
-  if (!latest || !Number.isInteger(installedCode) || installedCode < 1) return 'current';
+  if (!Number.isInteger(installedCode) || installedCode < 1) return 'current';
   if (installedCode < policy.minRequiredVersionCode) return 'required';
-  if (installedCode < latest.versionCode) return 'available';
+  if (policy.unsupportedBelow && installedCode < policy.unsupportedBelow) return 'unsupported';
+  if (policy.latest && installedCode < policy.latest.versionCode) return 'available';
   return 'current';
 }

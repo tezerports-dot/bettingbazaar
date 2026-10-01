@@ -47,7 +47,8 @@
  */
 import {
   openSettlement, completeSettlement, cancelSettlement,
-  liveDepositSettlementFor, findStrandedDepositHolds, findUnheldDepositOrders,
+  liveDepositSettlementFor, dispensedDepositSettlementFor,
+  findStrandedDepositHolds, findUnheldDepositOrders,
   DIRECTIONS,
 } from '#db/repositories/merchantSettlements.js';
 import { sendAlert } from '../../services/alerting.service.js';
@@ -142,15 +143,76 @@ export async function holdForOrder(order, merchantId, { actor = 'assignment' } =
 }
 
 /**
- * The tokens have gone to the player. RESERVED → SETTLED, `reserved -a`.
+ * The tokens have gone to the player: take them OUT OF THE HOLD.
+ * RESERVED → SETTLED, `reserved -a`.
  *
  * The merchant's inventory genuinely leaves the platform's merchant books here,
  * which is why `complete` has no second leg: it is not moved anywhere, it is
- * spent. Called from the deposit-completion path, beside the wallet debit.
+ * spent. **This IS the merchant's side of a completed buy. There is no second.**
+ *
+ * ── It was called "beside the wallet debit", and that was the defect ────────
+ * The confirm route dispensed the hold and then `moveDepositMoney` debited the
+ * same amount from `available`, on the belief that dispensing returned the
+ * tokens to `available` first. It does not — `complete` spends them. Measured
+ * on a real database: a 1,000-token buy cost the merchant 2,000, and a merchant
+ * whose tokens were all held for that one order was REFUSED ("insufficient
+ * token inventory") after the hold had already been spent, on every retry,
+ * forever. `depositConfirmReachablePg` asserted both pockets falling and stayed
+ * green because it read keys that do not exist: NaN compared to NaN.
+ *
+ * So `moveDepositMoney` calls this FIRST and debits `available` only when it
+ * answers `noHold` — an order nothing held for this merchant. The four other
+ * routes that complete a buy (the admin approve, both dispute releases, the
+ * API confirm) never dispensed at all and charged `available` beside a hold the
+ * stranded-hold sweep only gave back fifteen minutes later; they now go
+ * through the same owner and take the tokens once.
+ *
+ * ── Three answers, because a retry must not pay twice ──────────────────────
+ * `alreadyTaken` is the one that matters: a confirm whose credit failed after
+ * the dispense committed is retried with the hold already SETTLED, and reading
+ * "no live hold" as "never held" would charge `available` on the retry.
+ *
+ * @returns {Promise<
+ *   {ok: true, taken: true, amountPaise: number, merchantId: string}
+ *   | {ok: true, alreadyTaken: true}
+ *   | {ok: true, noHold: true}
+ *   | {ok: false, reason: string}>}
+ *   `ok:false` means the answer is unknown and the caller must leave the order
+ *   where it is — never guess, because both guesses move money.
  */
 export async function dispenseForOrder(order, { actor = 'confirm' } = {}) {
-  return finish(order, completeSettlement, actor,
-    `Buy order ${order.orderId} completed — tokens dispensed`, 'dispense');
+  const merchantId = String(order.merchantId ?? '');
+  try {
+    const live = await liveDepositSettlementFor(order.orderId);
+    // Only the CURRENT merchant's hold pays for this order. A live hold another
+    // merchant still has is one a reassignment forgot to release; spending it
+    // would charge the wrong merchant, and the stranded-hold sweep returns it.
+    if (live && String(live.merchantId) === merchantId) {
+      const done = await completeSettlement({
+        settlementId: live.settlementId, merchantId, actor,
+        reason: `Buy order ${order.orderId} completed — tokens dispensed`,
+      });
+      if (done.ok) {
+        return done.idempotent
+          ? { ok: true, alreadyTaken: true }
+          : { ok: true, taken: true, amountPaise: live.amountPaise, merchantId };
+      }
+      // `invalid_transition` is a concurrent release winning the settlement's
+      // own gate: the tokens are back in `available`, so fall through and
+      // answer from the rows as they now stand. Anything else is not known.
+      if (done.reason !== 'invalid_transition') {
+        console.error(`[deposit-escrow] dispense failed for ${order.orderId}: ${done.reason}`);
+        return { ok: false, reason: done.reason };
+      }
+    }
+    if (await dispensedDepositSettlementFor(order.orderId, merchantId)) {
+      return { ok: true, alreadyTaken: true };
+    }
+    return { ok: true, noHold: true };
+  } catch (error) {
+    console.error(`[deposit-escrow] dispense threw for ${order.orderId}:`, error);
+    return { ok: false, reason: 'error' };
+  }
 }
 
 /**

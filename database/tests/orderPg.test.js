@@ -15,18 +15,32 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { pgConfigured, pgQuery, applySchema, closePg, getPool } from '../client.js';
 import {
-  ORDER_STATES, ORDER_TYPES, REVISITABLE, openOrder, transition, getOrder, getOrderHistory,
+  ORDER_STATES, ORDER_TYPES, REVISITABLE, transition, getOrder, getOrderHistory,
   assignOrder, startOrder, markPaid, completeOrder, disputeOrder, cancelOrder, failOrder,
   reassign, findOrdersMissingLedgerEvents, findLedgerEventsMissingOrders,
 } from '../repositories/orders.core.js';
+import { createOrderRecord } from '../repositories/orders.record.js';
 import { trialBalance, accountBalancePaise, getEvent } from '../repositories/ledger.core.js';
 import { verifyOrderHmac } from '../../backend/middleware/order-crypto-access.js';
 
 const hasPg = pgConfigured();
 const describePg = hasPg ? describe : describe.skip;
 
-const open = (id, type = ORDER_TYPES.DEPOSIT, paise = 100_000) =>
-  openOrder({ orderId: id, userId: 'u1', merchantId: 'm1', type, tokenAmountPaise: paise });
+/**
+ * Open an order through THE creation path.
+ *
+ * These tests used to open theirs through `openOrder`, a second creation path
+ * production never called — and the only one that wrote the tamper tag. So the
+ * tag was proven here, on a door nobody used, while every live order was
+ * created untagged through `createOrderRecord`. `openOrder` is deleted; the
+ * lifecycle is now exercised on the rows production actually writes.
+ */
+const open = async (id, type = ORDER_TYPES.DEPOSIT, paise = 100_000, { merchantId = 'm1' } = {}) => ({
+  order: await createOrderRecord({
+    orderId: id, userId: 'u1', type, tokenAmountRupees: paise / 100,
+    ...(merchantId ? { merchantId } : {}),
+  }),
+});
 
 /** Walk an order to PAID, the usual pre-completion position. */
 async function toPaid(id, type = ORDER_TYPES.DEPOSIT, paise = 100_000) {
@@ -64,25 +78,27 @@ describePg('Payment orders (PostgreSQL state machine)', () => {
     it('opens idempotently — a retried creation is the same order', async () => {
       const first = await open('o2');
       const second = await open('o2');
-      expect(first.idempotent).toBe(false);
-      expect(second).toMatchObject({ ok: true, idempotent: true });
+      expect(second.order.orderId).toBe(first.order.orderId);
+      // The same row, not a second one re-signed: the tag is the one it was
+      // born with.
+      expect(second.order.orderHmac).toBe(first.order.orderHmac);
       const { rows } = await pgQuery('SELECT COUNT(*)::int n FROM order_states');
       expect(rows[0].n).toBe(1);
     });
 
     it('refuses a malformed order rather than storing one', async () => {
-      await expect(openOrder({ orderId: 'x', userId: 'u', type: 'SIDEWAYS', tokenAmountPaise: 1 }))
-        .rejects.toThrow(/Unknown order type/);
-      await expect(openOrder({ orderId: 'x', userId: 'u', type: 'DEPOSIT', tokenAmountPaise: 0 }))
-        .rejects.toThrow(/positive integer/);
-      await expect(openOrder({ orderId: 'x', userId: 'u', type: 'DEPOSIT', tokenAmountPaise: 10.5 }))
-        .rejects.toThrow(/positive integer/);
+      await expect(createOrderRecord({ orderId: 'x', userId: 'u', type: 'SIDEWAYS', tokenAmountRupees: 1 }))
+        .rejects.toThrow(/unknown order type/);
+      await expect(createOrderRecord({ orderId: 'x', userId: 'u', type: 'DEPOSIT', tokenAmountRupees: 0 }))
+        .rejects.toThrow(/must be positive/);
+      await expect(createOrderRecord({ orderId: 'x', userId: 'u', type: 'DEPOSIT', tokenAmountRupees: -5 }))
+        .rejects.toThrow(/must be positive/);
       const { rows } = await pgQuery('SELECT COUNT(*)::int n FROM order_states');
       expect(rows[0].n).toBe(0);
     });
 
     it('records the merchant on assignment', async () => {
-      await openOrder({ orderId: 'o3', userId: 'u1', type: ORDER_TYPES.DEPOSIT, tokenAmountPaise: 50_000 });
+      await open('o3', ORDER_TYPES.DEPOSIT, 50_000, { merchantId: null });
       expect((await getOrder('o3')).merchantId).toBeNull();
       await assignOrder({ orderId: 'o3', merchantId: 'm9', txId: 'o3_assign_1' });
       expect((await getOrder('o3')).merchantId).toBe('m9');
@@ -200,7 +216,7 @@ describePg('Payment orders (PostgreSQL state machine)', () => {
       });
 
       it('reassigns a rejected order to a different merchant', async () => {
-        await openOrder({ orderId: 'rq1', userId: 'u1', type: ORDER_TYPES.DEPOSIT, tokenAmountPaise: 50_000 });
+        await open('rq1', ORDER_TYPES.DEPOSIT, 50_000, { merchantId: null });
         await assignOrder({ orderId: 'rq1', merchantId: 'm1', txId: 'rq1_assign_1' });
         await transition({ orderId: 'rq1', to: ORDER_STATES.PENDING_QUEUE, txId: 'rq1_requeue_1', reason: 'declined' });
         expect((await getOrder('rq1')).state).toBe(ORDER_STATES.PENDING_QUEUE);
@@ -256,7 +272,7 @@ describePg('Payment orders (PostgreSQL state machine)', () => {
       });
 
       it('refuses a stale assignment replay that the state guard would re-admit', async () => {
-        await openOrder({ orderId: 'rq4', userId: 'u1', type: ORDER_TYPES.DEPOSIT, tokenAmountPaise: 50_000 });
+        await open('rq4', ORDER_TYPES.DEPOSIT, 50_000, { merchantId: null });
         await assignOrder({ orderId: 'rq4', merchantId: 'm1', txId: 'rq4_assign_1' });
         await transition({ orderId: 'rq4', to: ORDER_STATES.PENDING_QUEUE, txId: 'rq4_requeue_1' });
         await assignOrder({ orderId: 'rq4', merchantId: 'm2', txId: 'rq4_assign_2' });
@@ -274,7 +290,7 @@ describePg('Payment orders (PostgreSQL state machine)', () => {
       });
 
       it('still collapses a genuine replay of the same assignment', async () => {
-        await openOrder({ orderId: 'rq2', userId: 'u1', type: ORDER_TYPES.DEPOSIT, tokenAmountPaise: 50_000 });
+        await open('rq2', ORDER_TYPES.DEPOSIT, 50_000, { merchantId: null });
         await assignOrder({ orderId: 'rq2', merchantId: 'm1', txId: 'rq2_assign_1' });
         await transition({ orderId: 'rq2', to: ORDER_STATES.PENDING_QUEUE, txId: 'rq2_requeue_1' });
         await assignOrder({ orderId: 'rq2', merchantId: 'm2', txId: 'rq2_assign_2' });
@@ -288,7 +304,7 @@ describePg('Payment orders (PostgreSQL state machine)', () => {
       });
 
       it('survives a storm of one reassignment, applying it once', async () => {
-        await openOrder({ orderId: 'rq3', userId: 'u1', type: ORDER_TYPES.DEPOSIT, tokenAmountPaise: 50_000 });
+        await open('rq3', ORDER_TYPES.DEPOSIT, 50_000, { merchantId: null });
         await assignOrder({ orderId: 'rq3', merchantId: 'm1', txId: 'rq3_assign_1' });
         await transition({ orderId: 'rq3', to: ORDER_STATES.PENDING_QUEUE, txId: 'rq3_requeue_1' });
 
@@ -562,7 +578,7 @@ describePg('Payment orders (PostgreSQL state machine)', () => {
 // The admin payment queue, and the escrow flag a dispute resolution clears.
 // ─────────────────────────────────────────────────────────────────────────────
 import {
-  paymentQueue, setOrderFields, getOrderRecord, createOrderRecord,
+  paymentQueue, setOrderFields, getOrderRecord,
 } from '../repositories/orders.record.js';
 
 describePg('the payment queue an operator works', () => {

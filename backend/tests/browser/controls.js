@@ -97,9 +97,15 @@ window.__bb = (() => {
         // ARIA state, which is the same fact a screen reader announces.
         on: el.getAttribute('aria-pressed') === 'true'
           || el.getAttribute('aria-selected') === 'true'
-          || el.getAttribute('aria-current') === 'page',
+          || el.getAttribute('aria-current') === 'page'
+          // A checked radio pressed again stays checked: native state, and
+          // announced as such, so it is the same fact as aria-pressed.
+          || (el.type === 'radio' && el.checked === true),
         href: el.tagName === 'A' ? (el.getAttribute('href') || '') : '',
-        options: el.tagName === 'SELECT' ? [...el.options].map((o) => o.value).slice(0, 40) : undefined,
+        // Only the options a person could actually choose. A disabled option
+        // (the footer slots disable a page already used in another slot) is
+        // refused by the browser, and choosing it read as an INERT select.
+        options: el.tagName === 'SELECT' ? [...el.options].filter((o) => !o.disabled).map((o) => o.value).slice(0, 40) : undefined,
         unnamed: name.length === 0,
         // What the field says about itself, so a form pass can push a value
         // PAST its own declared bound rather than guessing one. A field with

@@ -112,7 +112,7 @@ function validatePatch(node, patch, path = []) {
     const child = node.fields?.[key];
     const here = [...path, key];
     if (!child) {
-      throw new Error(
+      throw invalidConfig(
         `config: refusing to write undeclared setting '${here.join('.')}'`
         + ` (known here: ${Object.keys(node.fields ?? {}).join(', ') || 'none'})`,
       );

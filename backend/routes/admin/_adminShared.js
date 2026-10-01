@@ -28,3 +28,22 @@ export const isAdminOrSubAdminOrQueueManager = (req, res, next) => {
   }
   next();
 };
+
+/**
+ * A queue WRITE: admins, queue managers, and sub-admins holding `permission`.
+ *
+ * `isAdminOrSubAdminOrQueueManager` is a TIER check, so on the three queue
+ * writes (assign a queued order, reassign an order, edit the merchant pool) a
+ * sub-admin holding nothing but `canModerateChatPublic` could send any
+ * player's order to any merchant. The audit gate counted only the exact name
+ * `isAdminOrSubAdmin` and never saw these (R6, F-042 — F-001's shape again).
+ * Queue managers keep the access the role exists for; `hasPermission` alone
+ * would refuse them, because it admits admins and sub-admins only.
+ */
+export const queueManagerOrPermission = (permission) => {
+  const byPermission = hasPermission(permission);
+  return (req, res, next) => {
+    if (req.user?.isQueueManager) return next();
+    return byPermission(req, res, next);
+  };
+};

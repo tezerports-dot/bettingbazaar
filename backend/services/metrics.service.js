@@ -117,7 +117,9 @@ export function setPoolStatsProvider(fn) { poolStatsProvider = typeof fn === 'fu
 // samples the live pool on each scrape — no interval, no state. `waiting > 0`
 // sustained = pool exhaustion (raise PG_POOL_SIZE or scale the DB). Dormant
 // (emits nothing) until pgClient registers a provider and the pool has opened.
-export const pgPoolConnections = new client.Gauge({
+// Not exported: `registers: [registry]` IS its consumer — it is served as
+// bb_pg_pool_connections on /metrics, and SRE_AND_OPERATIONS alerts on it.
+new client.Gauge({
   name: 'bb_pg_pool_connections',
   help: 'Postgres connection pool state by bucket (total|idle|waiting)',
   labelNames: ['state'],

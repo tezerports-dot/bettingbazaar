@@ -337,7 +337,23 @@ export const reverseSettlement = (args) =>
  * something that actually succeeded.
  */
 async function advance(
-  { settlementId, merchantId, actor = null, reason = null, correlationId = null },
+  {
+    settlementId, merchantId, actor = null, reason = null, correlationId = null,
+    /**
+     * The ORDER states this transition may happen in, checked under a lock in
+     * this same transaction. Omitted, the order is not consulted.
+     *
+     * The hold worker read "is this order disputed?" in one statement and
+     * completed the settlement in another — a snapshot (§32 S6). A player's
+     * dispute landing between the two was settled underneath: stake consumed,
+     * merchant credited, and the mirror wrote COMPLETED over the open dispute
+     * (proven in disputeSettleRacePg). `FOR SHARE` on the order row closes the
+     * gap in both directions: a dispute that committed first is SEEN here, and
+     * one arriving now waits for this transaction and then lands on an order
+     * whose money has moved — which the mirror no longer writes over.
+     */
+    orderStateIn = null,
+  },
   spec,
 ) {
   if (!settlementId) throw new Error(`${spec.transition}Settlement requires a settlementId`);
@@ -353,6 +369,13 @@ async function advance(
         commit: false,
         value: { ok: false, reason: 'invalid_transition', state: s.state, expected: spec.expect },
       };
+    }
+    if (orderStateIn) {
+      const { rows: [o] } = await ctx.client.query(
+        'SELECT state FROM order_states WHERE order_id = $1 FOR SHARE', [s.orderId]);
+      if (!o || !orderStateIn.includes(o.state)) {
+        return { commit: false, value: { ok: false, reason: 'order_state', orderState: o?.state ?? null } };
+      }
     }
 
     // The guard is in the WHERE clause, not in the check above: between reading
@@ -514,6 +537,26 @@ export async function liveDepositSettlementFor(orderId) {
     `SELECT * FROM merchant_settlements
       WHERE order_id = $1 AND direction = 'DEPOSIT' AND state = 'RESERVED'`,
     [String(orderId)], 'merchant_settlement_live_deposit',
+  );
+  return rowToSettlement(rows[0]);
+}
+
+/**
+ * The hold THIS merchant already dispensed for this order, if any.
+ *
+ * The other half of "has the merchant paid for this buy yet?". A dispensed hold
+ * is no longer live, so `liveDepositSettlementFor` cannot see it — and a caller
+ * that read "no live hold" as "never held" would take the tokens a second time,
+ * from `available`, on every retry of a confirm that had already paid.
+ * Scoped to the merchant because an order can be attached to several over its
+ * life, and only the current one's payment settles it.
+ */
+export async function dispensedDepositSettlementFor(orderId, merchantId) {
+  const { rows } = await pgQuery(
+    `SELECT * FROM merchant_settlements
+      WHERE order_id = $1 AND merchant_id = $2 AND direction = 'DEPOSIT' AND state = 'SETTLED'
+      LIMIT 1`,
+    [String(orderId), String(merchantId)], 'merchant_settlement_dispensed_deposit',
   );
   return rowToSettlement(rows[0]);
 }

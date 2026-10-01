@@ -125,7 +125,7 @@ const ProfilePage: React.FC = () => {
     <ScreenShell icon="👤" title="Profile" sub="Account, stats & preferences">
       {/* Identity card */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 15, background: 'linear-gradient(135deg,var(--surface2),var(--surface3))', border: '1px solid var(--line2)', borderRadius: 18, padding: 18, boxShadow: 'var(--shadow-sm)', marginBottom: 14 }}>
-        <button onClick={() => fileRef.current?.click()} style={{ width: 62, height: 62, flex: 'none', borderRadius: '50%', overflow: 'hidden', border: 'none', cursor: 'pointer', background: 'linear-gradient(135deg,var(--gold2),var(--gold))', color: '#1a1200', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <button onClick={() => fileRef.current?.click()} aria-label="Change profile photo" title="Change profile photo" style={{ width: 62, height: 62, flex: 'none', borderRadius: '50%', overflow: 'hidden', border: 'none', cursor: 'pointer', background: 'linear-gradient(135deg,var(--gold2),var(--gold))', color: '#1a1200', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           {(localPic || user?.profilePic) ? <img src={localPic || user?.profilePic} alt="Profile" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 24 }}>{initials}</span>}
           <input type="file" ref={fileRef} accept="image/*" style={{ display: 'none' }} onChange={onPicUpload} />
         </button>

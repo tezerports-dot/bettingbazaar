@@ -34,12 +34,12 @@ let warnedNoSecret = false;
 /**
  * The tag for an order id, or null when no secret is configured.
  *
- * NULL, not a throw. `openOrder` calls this for every funding order, so a
- * deployment that has set neither ORDER_HMAC_SECRET nor JWT_SECRET would have
- * had `createHmac` throw on the key — taking down order creation entirely, on
- * the money path, over an OPTIONAL tamper-evidence tag. An untagged order is
- * exactly what this platform had before the tag existed and the guard passes
- * it; a missing secret must degrade to that, loudly, not to a broken deposit.
+ * NULL, not a throw. `createOrderRecord` calls this for every funding order,
+ * so a deployment that has set neither ORDER_HMAC_SECRET nor JWT_SECRET would
+ * have had `createHmac` throw on the key — taking down order creation entirely,
+ * on the money path, over the tamper-evidence tag. A missing secret must
+ * degrade to an untagged order, loudly, not to a broken deposit. It cannot
+ * reach production: `validateEnv` refuses to boot one without both secrets.
  */
 export function deriveOrderHmac(orderId) {
   const secret = currentOrderSecret();
@@ -53,6 +53,9 @@ export function deriveOrderHmac(orderId) {
   }
   return orderHmacWith(secret, orderId);
 }
+
+/** Does this deployment tag its orders at all? Read at call time, like the secrets. */
+const orderTaggingConfigured = () => Boolean(currentOrderSecret());
 
 /**
  * Timing-safe match against the current OR any retained rotation secret.
@@ -85,10 +88,19 @@ export function verifyOrderHmac(orderId, stored) {
  * covered one of them. There is one identifier now, `order_id`, and it is the
  * one the tag is computed over.
  *
- * An order with NO tag is allowed through. Orders created before the column
- * existed have none, and refusing those would lock their owners out of their
- * own money; a tag that is present and wrong is the tamper signal, and that is
- * refused.
+ * ── An order with NO tag is refused too, whenever tagging is configured ────
+ * This used to wave an untagged order through, "because orders created before
+ * the column existed have none". There are none: this platform has never held
+ * a live order (CLAUDE.md §0.0). And the exemption was not hypothetical — the
+ * one production creation path never wrote the tag, so EVERY live order was
+ * untagged and the refusal below had never once run (see createOrderRecord).
+ *
+ * Every order this system writes now carries a tag, written with the row. A row
+ * without one did not come from this system — it was inserted, or its tag was
+ * stripped — which is the one thing the tag exists to detect. The single
+ * exception is a deployment with no secret at all, where nothing CAN be tagged:
+ * `deriveOrderHmac` warns at the first order and the guard degrades with it.
+ * Production cannot be that deployment; `validateEnv` refuses to boot it.
  */
 export async function orderAccessGuard(req, res, next) {
   try {
@@ -111,11 +123,12 @@ export async function orderAccessGuard(req, res, next) {
     const order = await db.orders.getOrderRecord(orderId);
     if (!order) return refuse();
 
-    // An order with NO tag is allowed through — see the note above. A tag that
-    // is PRESENT and wrong is the tamper signal, and it is an operational
-    // alarm, not an ordinary refusal: the row did not come from this system.
-    if (order.orderHmac && !verifyOrderHmac(order.orderId, order.orderHmac)) {
-      console.error(`[orderAccessGuard] HMAC MISMATCH orderId=${order.orderId} — this row was not written by this system`);
+    // A tag that is PRESENT and wrong, or ABSENT on a deployment that tags
+    // every order, is the tamper signal — see the note above. It is an
+    // operational alarm, not an ordinary refusal: the row did not come from
+    // this system.
+    if (order.orderHmac ? !verifyOrderHmac(order.orderId, order.orderHmac) : orderTaggingConfigured()) {
+      console.error(`[orderAccessGuard] HMAC ${order.orderHmac ? 'MISMATCH' : 'MISSING'} orderId=${order.orderId} — this row was not written by this system`);
       return refuse();
     }
 

@@ -52,7 +52,7 @@ import { sendAlert } from '../../services/alerting.service.js';
 import { settlementRuns } from '../../services/metrics.service.js';
 // The settlement RUN is a row with a UNIQUE cycle_id, opened before any payout
 // and closed after the last one — not a flag that can be written back.
-import { beginSettlement, finishSettlement } from '#db/repositories/settlements.js';
+import { beginSettlement, finishSettlement, voidCancelledCycles, findIncompleteSettlements } from '#db/repositories/settlements.js';
 // Balances come from the wallet. The accounts table has none.
 import { getBalances } from '../wallet/walletAuthority.service.js';
 
@@ -170,6 +170,35 @@ class GameEngine {
             }
         } catch (e) {
             console.error('[Recovery] sweep failed:', e.message);
+        }
+
+        // A CANCELLED cycle has no winner, so the claim above never offers it.
+        // Its stakes are returned by `voidCancelledCycle` at cancel time; this
+        // finishes any that a crash or a refusal left behind.
+        try {
+            for (const r of await voidCancelledCycles({ limit: 5 })) {
+                if (!r.ok || r.refused?.length) {
+                    sendAlert('settlement-error', 'Stakes on a cancelled cycle could not all be returned', {
+                        cycleId: r.cycleId, reason: r.reason ?? null, refused: r.refused?.slice(0, 10) ?? [],
+                    }).catch(() => {});
+                }
+            }
+        } catch (e) {
+            console.error('[Recovery] cancelled-cycle sweep failed:', e.message);
+        }
+
+        // A run marked COMPLETED with bets still PENDING is a stake locked with
+        // nothing coming to release it. The comments below name this query as
+        // the one that finds it; until 2026-09-30 nothing ran it.
+        try {
+            const incomplete = await findIncompleteSettlements();
+            if (incomplete.length) {
+                sendAlert('settlement-error', 'Settled cycles with bets still pending', {
+                    count: incomplete.length, sample: incomplete.slice(0, 10),
+                }).catch(() => {});
+            }
+        } catch (e) {
+            console.error('[Recovery] incomplete-settlement check failed:', e.message);
         }
     }
 

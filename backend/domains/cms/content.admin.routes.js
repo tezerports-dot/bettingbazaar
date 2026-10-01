@@ -7,7 +7,7 @@ import contentService from './content.service.js';
 import { generatePresignedUploadUrl } from '../../services/cdn.service.js';
 import { db } from '#db';
 import { assertCdnAssetUrl } from '../../shared/storedUrl.js';
-import { serverError } from '../../shared/httpError.js';
+import { serverError, respondError } from '../../shared/httpError.js';
 
 const router = express.Router();
 
@@ -186,13 +186,9 @@ router.put('/content/support-links', authenticate, isAdmin, async (req, res) => 
     });
   } catch (error) {
     // An undeclared key is the admin panel posting a field nobody consumes;
-    // the message names it, so it is a 400 the panel can show rather than a
-    // 500 the admin has to guess at.
-    if (/^config: /.test(error.message)) {
-      return res.status(400).json({ success: false, message: error.message });
-    }
-    console.error('Update support links error:', error);
-    res.status(500).json({ success: false, message: 'Failed to update support links' });
+    // the config store throws it with status 400 and a message naming it, so
+    // it is a refusal the panel can show rather than a 500 to guess at.
+    return respondError(res, error, 'PUT /content/support-links', { message: 'Failed to update support links' });
   }
 });
 

@@ -10,8 +10,22 @@ export const AnnouncementsPage: React.FC = () => {
   const [form, setForm] = useState({ title:'', body:'', type:'INFO', priority:'0', expiresAt:'' });
   const [editId, setEditId] = useState<string|null>(null);
   const [showForm, setShowForm] = useState(false);
+  // A failed load and an empty list are different facts. `catch {}` rendered
+  // both as "No announcements", which is the exact shape of the five dead
+  // buttons (§28): an operator could not tell "none yet" from "never loaded".
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState(false);
+  const reason = (e: any, fallback: string) => e?.response?.data?.message || e?.message || fallback;
 
-  const load = async () => { try { const r = await api.get('/api/admin/announcements'); if(r.data.success) setItems(r.data.announcements); } catch {} };
+  const load = async () => {
+    try {
+      const r = await api.get('/api/admin/announcements');
+      if (r.data.success) { setItems(r.data.announcements); setLoadError(null); }
+      else setLoadError(r.data.message || 'The server refused to list announcements.');
+    } catch (e) {
+      setLoadError(reason(e, 'Could not reach the server to list announcements.'));
+    } finally { setLoaded(true); }
+  };
   useEffect(() => { load(); }, []);
 
   const save = async () => {
@@ -21,10 +35,15 @@ export const AnnouncementsPage: React.FC = () => {
       else { await api.post('/api/admin/announcements', payload); toast.success('Created!'); }
       setShowForm(false); setEditId(null); setForm({title:'',body:'',type:'INFO',priority:'0',expiresAt:''});
       load();
-    } catch { toast.error('Error'); }
+    } catch (e) { toast.error(reason(e, 'Could not save the announcement.')); }
   };
 
-  const del = async (id: string) => { if(!confirm('Delete?')) return; await api.delete(`/api/admin/announcements/${id}`); load(); };
+  const del = async (id: string) => {
+    if (!confirm('Delete this announcement? Players stop seeing it at once.')) return;
+    try { await api.delete(`/api/admin/announcements/${id}`); toast.success('Deleted'); }
+    catch (e) { toast.error(reason(e, 'Could not delete the announcement.')); }
+    load();
+  };
 
   const startEdit = (item: any) => { setForm({title:item.title,body:item.body,type:item.type,priority:String(item.priority),expiresAt:item.expiresAt?new Date(item.expiresAt).toISOString().slice(0,16):''}); setEditId(item._id); setShowForm(true); };
 
@@ -78,7 +97,21 @@ export const AnnouncementsPage: React.FC = () => {
             </div>
           </div>
         ))}
-        {items.length===0&&<div className="text-center py-10 text-gray-500"><Bell size={40} className="mx-auto mb-2 opacity-30"/>No announcements</div>}
+        {loadError && (
+          <div role="alert" className="text-center py-10 text-red-300">
+            <Bell size={40} className="mx-auto mb-2 opacity-30"/>
+            <p className="font-semibold">Announcements could not be loaded.</p>
+            <p className="text-sm text-red-300/80 mt-1">{loadError}</p>
+            <p className="text-xs text-gray-500 mt-2">Press Refresh to try again. This is not the same as having none.</p>
+          </div>
+        )}
+        {loaded && !loadError && items.length===0 && (
+          <div className="text-center py-10 text-gray-500">
+            <Bell size={40} className="mx-auto mb-2 opacity-30"/>
+            <p className="font-semibold text-gray-300">No announcements yet</p>
+            <p className="text-sm mt-1">An announcement is a notice or popup every player sees in the app until it expires or you delete it. Press New to write one.</p>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -140,6 +140,18 @@ public class ApkUpdaterPlugin extends Plugin {
         });
     }
 
+    /**
+     * This phone's Android API level. The server needs it to offer only a
+     * release this phone can install, and to say "your Android is too old"
+     * instead of sending it round an update it can never complete.
+     */
+    @PluginMethod
+    public void sdkLevel(PluginCall call) {
+        JSObject ret = new JSObject();
+        ret.put("sdkInt", Build.VERSION.SDK_INT);
+        call.resolve(ret);
+    }
+
     @PluginMethod
     public void canInstall(PluginCall call) {
         JSObject ret = new JSObject();

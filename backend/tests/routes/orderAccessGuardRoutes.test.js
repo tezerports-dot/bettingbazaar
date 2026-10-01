@@ -3,10 +3,12 @@
  * Who may act on an order, and whether the order came from this system.
  *
  * ── Why this file exists ────────────────────────────────────────────────────
- * `order_hmac` is written on every order at creation, `ORDER_HMAC_SECRET` is a
- * REQUIRED boot variable, and until now no request path read the tag back. The
- * platform computed a signature for every order and never once checked one —
- * tamper evidence that evidenced nothing.
+ * `ORDER_HMAC_SECRET` is a REQUIRED boot variable, and for a long time no
+ * request path read the tag back. Then the guard below was mounted — and the
+ * tag was still decorative, because the one production creation path never
+ * WROTE it and the guard passed an untagged order. Tamper evidence that
+ * evidenced nothing, twice over. The first test below is the one that would
+ * have caught the second time.
  *
  * `orderAccessGuard` was written to check it and was mounted on nothing. Two
  * defects had therefore never been exercised, and both are asserted below
@@ -29,6 +31,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { pgConfigured, applySchema, closePg } from '#db/client.js';
 import { createOrderRecord, getOrderRecord } from '#db/repositories/orders.record.js';
+import { verifyOrderHmac } from '../../middleware/order-crypto-access.js';
 // Writing a row the application never would is a data-layer concern, so the
 // statement lives under database/ where check:db-boundary allows it — see the
 // note in that file for why no repository offers this.
@@ -113,14 +116,29 @@ describePg('order access guard', () => {
     expect(res.body.success).toBe(false);
   });
 
-  it('still serves an order that predates the tag', async () => {
-    // Orders written before the column existed carry none. Refusing those would
-    // lock their owners out of their own money.
+  it('writes a tag that verifies onto every order it creates', async () => {
+    // The assertion that was missing. Every test above produced its tag by
+    // WRITING one, so nothing checked that the platform ever did — and it did
+    // not: the one production creation path left `order_hmac` NULL, the guard
+    // waved untagged orders through, and its refusal had never run.
+    const alice = await actor({});
+    const orderId = await deposit(alice, null);
+    const order = await getOrderRecord(orderId);
+    expect(order.orderHmac).toMatch(/^[a-f0-9]{64}$/);
+    expect(verifyOrderHmac(orderId, order.orderHmac)).toBe(true);
+  });
+
+  it('refuses an order whose tag was stripped', async () => {
+    // There are no orders "from before the column existed" — this platform has
+    // never held a live one (CLAUDE.md §0.0) — so a row with no tag did not come
+    // from this system, exactly as a row with a wrong one did not.
     const alice = await actor({});
     const orderId = await deposit(alice, null);
     await clearOrderHmac(orderId);
 
-    expect((await as(app, alice).get(`/order/${orderId}`)).status).toBe(200);
+    const stripped = await as(app, alice).get(`/order/${orderId}`);
+    expect(stripped.status).toBe(404);
+    expect(stripped.body.success).toBe(false);
   });
 
   it('recognises the assigned merchant, who arrives with no req.user at all', async () => {

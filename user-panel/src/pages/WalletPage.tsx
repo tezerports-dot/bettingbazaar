@@ -676,7 +676,7 @@ const WalletPage: React.FC = () => {
   const reserveLocked = limits?.reserveLocked ?? 0;
 
   const tabBtn = (k: TabKey, label: string) => (
-    <button onClick={() => setTab(k)} style={{ flex: 'none', padding: '9px 16px', borderRadius: 11, border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 800, background: tab === k ? 'var(--gold)' : 'var(--surface3)', color: tab === k ? '#1a1200' : 'var(--text2)' }}>{label}</button>
+    <button onClick={() => setTab(k)} aria-pressed={tab === k} style={{ flex: 'none', padding: '9px 16px', borderRadius: 11, border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 800, background: tab === k ? 'var(--gold)' : 'var(--surface3)', color: tab === k ? '#1a1200' : 'var(--text2)' }}>{label}</button>
   );
 
   return (
@@ -733,8 +733,8 @@ const WalletPage: React.FC = () => {
         <>
           <div style={card}>
             <div style={{ display: 'flex', background: 'var(--surface2)', border: '1px solid var(--line)', borderRadius: 12, padding: 4, gap: 4, marginBottom: 16 }}>
-              <button onClick={() => { setSide('buy'); }} style={{ flex: 1, padding: 11, borderRadius: 9, border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 800, background: side === 'buy' ? 'linear-gradient(180deg,var(--gold2),var(--gold))' : 'transparent', color: side === 'buy' ? '#1a1200' : 'var(--text2)' }}>⬇️ BUY TOKENS</button>
-              <button onClick={() => { setSide('sell'); }} style={{ flex: 1, padding: 11, borderRadius: 9, border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 800, background: side === 'sell' ? 'linear-gradient(180deg,#8ff0b6,var(--green))' : 'transparent', color: side === 'sell' ? '#052018' : 'var(--text2)' }}>⬆️ SELL TOKENS</button>
+              <button onClick={() => { setSide('buy'); }} aria-pressed={side === 'buy'} style={{ flex: 1, padding: 11, borderRadius: 9, border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 800, background: side === 'buy' ? 'linear-gradient(180deg,var(--gold2),var(--gold))' : 'transparent', color: side === 'buy' ? '#1a1200' : 'var(--text2)' }}>⬇️ BUY TOKENS</button>
+              <button onClick={() => { setSide('sell'); }} aria-pressed={side === 'sell'} style={{ flex: 1, padding: 11, borderRadius: 9, border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 800, background: side === 'sell' ? 'linear-gradient(180deg,#8ff0b6,var(--green))' : 'transparent', color: side === 'sell' ? '#052018' : 'var(--text2)' }}>⬆️ SELL TOKENS</button>
             </div>
 
             {side === 'buy' ? (
