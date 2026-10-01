@@ -1723,6 +1723,28 @@ const MUTATIONS = [
     from: `router.get('/phantom-agents', authenticate, hasPermission('canManagePhantomAgents'),`,
     to: `router.get('/phantom-agents', authenticate, isAdmin,`,
   },
+  // ── Point 3 of the PR #198 verification (2026-10-01) ─────────────────────
+  {
+    id: 'M231', file: 'database/repositories/ledger.core.js', config: PG,
+    test: 'database/tests/commissionRunLockPg.test.js',
+    why: 'a failed unlock returns the connection to the pool still holding the lock: every later pass is refused',
+    from: `      if (!unlocked) destroy = true;`,
+    to: `      if (false) destroy = true;`,
+  },
+  {
+    id: 'M232', file: 'database/repositories/ipBlocks.js', config: PG,
+    test: 'backend/tests/routes/ipBlocklistRoutesPg.test.js',
+    why: 'the expiry is dated by the APP clock again, so a server running behind the database refuses short blocks',
+    from: `CASE WHEN $5::int IS NULL THEN NULL ELSE now() + make_interval(mins => $5::int) END)`,
+    to: `CASE WHEN $5::int IS NULL THEN NULL ELSE to_timestamp(\${Date.now() / 1000} + $5::int * 60) END)`,
+  },
+  {
+    id: 'M233', file: 'database/repositories/cashLinks.js', config: PG,
+    test: 'backend/tests/routes/retryAndMatchPg.test.js',
+    why: 'a cash link is dated by the APP clock again, so a server behind the database refuses every link as already expired',
+    from: `'LIVE', now() + make_interval(secs => $5::numeric / 1000))`,
+    to: `'LIVE', to_timestamp(\${Date.now() / 1000} + $5::numeric / 1000))`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

@@ -27,12 +27,16 @@ function toBlock(r) {
     expiresAt: r.expires_at,
     releasedAt: r.released_at,
     releasedBy: r.released_by,
-    live: r.released_at == null && (r.expires_at == null || new Date(r.expires_at) > new Date()),
+    // Decided by the DATABASE's clock, in the same SELECT, like `liveBlocks`:
+    // the app's clock deciding this beside the database's would let the list
+    // and the enforcer disagree about a block in its last moments.
+    live: r.live === true,
   };
 }
 
 const COLUMNS = `block_id, network::text AS network, reason, blocked_by, blocked_at,
-                 expires_at, released_at, released_by`;
+                 expires_at, released_at, released_by,
+                 (released_at IS NULL AND (expires_at IS NULL OR expires_at > now())) AS live`;
 
 /**
  * Every block in force right now — what the enforcer loads.
@@ -69,17 +73,27 @@ export async function listBlocks({ includeReleased = false, limit = 200 } = {}) 
  * Blocking a range that already has an open row REFRESHES that row — a re-block
  * is a correction of the reason or expiry, not a second block.
  */
-export async function blockNetwork({ network, reason, actor, expiresAt = null }) {
+export async function blockNetwork({ network, reason, actor, expiresInMinutes = null }) {
   if (!network) throw new Error('blockNetwork requires a network');
   if (!actor) throw new Error('blockNetwork requires an actor');
+  if (expiresInMinutes !== null && !(Number.isInteger(expiresInMinutes) && expiresInMinutes > 0)) {
+    throw new Error('blockNetwork: expiresInMinutes must be a positive whole number, or null');
+  }
+  // ── The expiry is a DURATION, dated by the database ────────────────────────
+  // It took an absolute `expiresAt` the route computed from the APP's clock,
+  // while `ip_blocks_expiry_future` checks it against `blocked_at`, which is the
+  // DATABASE's `now()`. An app clock a minute behind made every one-minute block
+  // "already expired" to the CHECK: a 500 for a valid request. Both ends now
+  // come from one clock, in one statement — on a re-block too.
   const { rows } = await pgQuery(
     `INSERT INTO ip_blocks (block_id, network, reason, blocked_by, expires_at)
-     VALUES ($1, network($2::inet)::cidr, $3, $4, $5)
+     VALUES ($1, network($2::inet)::cidr, $3, $4,
+             CASE WHEN $5::int IS NULL THEN NULL ELSE now() + make_interval(mins => $5::int) END)
      ON CONFLICT (network) WHERE released_at IS NULL DO UPDATE SET
        reason = EXCLUDED.reason, blocked_by = EXCLUDED.blocked_by,
        blocked_at = now(), expires_at = EXCLUDED.expires_at
      RETURNING ${COLUMNS}`,
-    [newBlockId(), String(network), String(reason), String(actor), expiresAt],
+    [newBlockId(), String(network), String(reason), String(actor), expiresInMinutes],
     'ip_blocks_block',
   );
   return toBlock(rows[0]);

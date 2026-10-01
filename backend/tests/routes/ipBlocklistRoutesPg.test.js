@@ -13,7 +13,7 @@
  * `req.ip` is set behind the production balancer. All of them are documentation
  * ranges (RFC 5737), so nothing here can collide with a real client.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import express from 'express';
 import cookieParser from 'cookie-parser';
 import { pgConfigured, applySchema, closePg, pgQuery } from '#db/client.js';
@@ -137,6 +137,46 @@ describePg('the IP deny-list', () => {
       `SELECT count(*)::int AS n FROM ip_blocks WHERE network = '203.0.113.128/25' AND released_at IS NULL`, []);
     expect(rows[0].n).toBe(1);
     expect(second.body.block.reason).toBe('corrected reason');
+  });
+
+  // ── Whose clock decides an expiry (verification of PR #198, §7) ─────────
+  // The route computed `expires_at` from the APP's clock while the CHECK that
+  // it lies after `blocked_at` ran on the DATABASE's. With the app two minutes
+  // behind, a one-minute block was "in the past" to the database: 500. Two
+  // clocks on one question is the shape the Android publish fix removed too.
+  it('takes a short block when the app clock runs behind the database, and dates it by the database', async () => {
+    const realNow = Date.now();
+    const behind = vi.spyOn(Date, 'now').mockReturnValue(realNow - 2 * 60_000);
+    let res;
+    try {
+      res = await block({ network: '192.0.2.64/26', reason: 'Clock skew', expiresInMinutes: 1 });
+    } finally {
+      behind.mockRestore();
+    }
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    const { rows: [row] } = await pgQuery(
+      `SELECT EXTRACT(EPOCH FROM (expires_at - blocked_at))::int AS secs FROM ip_blocks WHERE block_id = $1`,
+      [res.body.block.blockId]);
+    expect(row.secs).toBe(60);
+    await pgQuery(`UPDATE ip_blocks SET released_at = now(), released_by = 'test' WHERE block_id = $1`, [res.body.block.blockId]);
+  });
+
+  it('a re-block refreshes the expiry from the database clock too (the retry neighbour)', async () => {
+    const first = await block({ network: '192.0.2.192/26', reason: 'first', expiresInMinutes: 5 });
+    expect(first.status).toBe(201);
+    const behind = vi.spyOn(Date, 'now').mockReturnValue(Date.now() - 10 * 60_000);
+    let again;
+    try {
+      again = await block({ network: '192.0.2.192/26', reason: 'refreshed', expiresInMinutes: 1 });
+    } finally {
+      behind.mockRestore();
+    }
+    expect([200, 201]).toContain(again.status);
+    const { rows: [row] } = await pgQuery(
+      `SELECT EXTRACT(EPOCH FROM (expires_at - blocked_at))::int AS secs FROM ip_blocks WHERE block_id = $1`,
+      [first.body.block.blockId]);
+    expect(row.secs).toBe(60);
+    await pgQuery(`UPDATE ip_blocks SET released_at = now(), released_by = 'test' WHERE block_id = $1`, [first.body.block.blockId]);
   });
 
   it('lets a temporary block lapse on its own, with no sweep', async () => {

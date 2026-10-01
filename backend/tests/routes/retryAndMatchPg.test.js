@@ -17,7 +17,7 @@
  * that matters is the one where a retry created LATER is served BEFORE an older
  * first-time order, because that is the whole rule.
  */
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { pgConfigured, applySchema, closePg, pgQuery } from '#db/client.js';
 import {
   createOrderRecord, getOrderRecord, ordersAwaitingCashLink, setOrderFields,
@@ -177,6 +177,34 @@ describePg('a retry, and the link that arrives late', () => {
     expect(served.cashLinkId).toBeTruthy();
     expect(served.merchantId).toBe(String(merchant.merchantId));
     expect(served.status).toBe('ASSIGNED');
+  });
+
+  // ── Whose clock dates a link (the §37 sweep of the IP-block expiry fix) ───
+  // `supplyCashLink` computed `expires_at` from the APP's clock and the CHECK
+  // compares it with `created_at`, which the DATABASE stamps. A server running
+  // behind the database by more than a link's lifetime refused every link a
+  // merchant supplied as "That link expires in the past".
+  it('takes a link when the app clock runs behind the database, and dates it by the database', async () => {
+    const merchant = await cashMerchant();
+    const behind = vi.spyOn(Date, 'now').mockReturnValue(Date.now() - 6 * 60 * 60_000);
+    let supplied;
+    try {
+      supplied = await supplyCashLink({
+        merchantId: merchant.merchantId,
+        merchant: { cashDenominationPaise: DENOM_PAISE },
+        paymentLink: `upi://pay?pa=atm@bank&am=${DENOM_RUPEES}&tn=skew`,
+      });
+    } finally {
+      behind.mockRestore();
+    }
+    expect(supplied.ok, JSON.stringify(supplied)).toBe(true);
+    const { rows: [row] } = await pgQuery(
+      `SELECT expires_at > created_at AND expires_at > now() AS future FROM cash_link_queue WHERE link_id = $1`,
+      [supplied.link.linkId]);
+    // Taken back at once: a LIVE link left on the shared queue is claimed by
+    // the next test's waiting order (trap 10).
+    await cancelLink(supplied.link.linkId, merchant.merchantId);
+    expect(row.future).toBe(true);
   });
 
   it('serves a RETRY before an older first-time order', async () => {

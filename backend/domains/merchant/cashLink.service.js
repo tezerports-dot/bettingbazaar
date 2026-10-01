@@ -171,13 +171,12 @@ export async function supplyCashLink({ merchantId, merchant, paymentLink }) {
     }
   }
 
-  // The expiry comes from the policy, and it is computed HERE rather than sent
+  // The lifetime comes from the policy, and it is decided HERE rather than sent
   // by the merchant: a client-supplied lifetime is a client that can keep a
-  // link alive as long as it likes.
-  const expiresAt = new Date(Date.now() + policy.linkExpirySeconds * 1000);
-
+  // link alive as long as it likes. The database dates it (see supplyLink).
   const result = await db.cashLinks.supplyLink({
-    linkId: newLinkId(), merchantId, denominationPaise, paymentLink: link, expiresAt,
+    linkId: newLinkId(), merchantId, denominationPaise, paymentLink: link,
+    expiresInMs: policy.linkExpirySeconds * 1000,
   });
   if (!result.ok) return result;
 

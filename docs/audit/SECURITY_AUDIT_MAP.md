@@ -3267,6 +3267,54 @@ then refused them inside the handler. Both are now one key, asked once.
   A sub-admin holding exactly a read's area is let through every one (§37
   step 6). 9 of its 11 named cases fail on main. M222, M230 KILLED.
 
+### F-048 — a failed unlock parked the commission run lock in the pool
+`FIXED` · low (commission silently stops being paid) · §32 S7 · from the PR #198 verification, §7
+
+`withCommissionRunLock` takes a SESSION advisory lock on a pooled connection
+and unlocked best-effort (`.catch(() => {})`), returning the connection either
+way. When the unlock failed, the idle pooled session kept the lock, and every
+later pass on any other connection was told "another pass is running", until
+the connection was recycled. Reproduced by failing the unlock once, then
+asking from a separate session: on main the lock was still held.
+
+- **Fix:** the unlock must be CONFIRMED (`pg_advisory_unlock` returns true). If
+  it is not, or the lock request itself fails, the connection is destroyed, not
+  pooled (`release(true)`). Postgres drops a session's advisory locks with the
+  session, so the lock is always released one way or the other.
+- **Neighbours (§37):** a pass that throws still frees the lock; two concurrent
+  passes still exclude each other. Swept every advisory lock: the only other is
+  the Android publish lock, a transaction lock (`pg_advisory_xact_lock`), freed
+  by COMMIT/ROLLBACK by construction.
+- **Tests:** `commissionRunLockPg` (3; the unlock-failure case fails on main).
+  **Mutation-proved:** M231 KILLED.
+
+### F-049 — two clocks on one expiry: IP blocks and cash links
+`FIXED` · low (a valid request refused) · the `clock_timestamp()` shape again · from the PR #198 verification, §7, and its §37 sweep
+
+The IP block route computed `expires_at` from the APP's clock, and the CHECK
+`ip_blocks_expiry_future` compares it with `blocked_at`, the DATABASE's `now()`.
+With the app 2 minutes behind, a 1-minute block answered **500**. The §37 sweep
+for the shape found a sibling the review did not: `supplyCashLink` dated a cash
+link the same way against `cash_link_expiry_after_creation`, so a server behind
+the database by more than a link's lifetime refused **every** link a merchant
+supplied as "That link expires in the past".
+
+- **Fix:** both repositories take a DURATION and the database dates it
+  (`now() + make_interval(...)`), in the same statement as the CHECK's other
+  side, on a re-block too. The IP block's `live` flag is computed in SQL as well,
+  so the list and the enforcer cannot disagree about a block's last moments.
+- **Tests:** `ipBlocklistRoutesPg` (+2: skewed clock, and a re-block),
+  `retryAndMatchPg` (+1: skewed clock through the service). Each fails on main.
+  **Mutation-proved:** M232, M233 KILLED. Each mutant puts the app clock back.
+- **Swept, not fixed, recorded:** order and assignment expiries
+  (`paymentProcessing.service.js:435`, `merchant.assignment.routes.js:189,573`),
+  the merchant credit hold and chat bans are also dated by the app clock and
+  compared by the database. No CHECK refuses them, so skew does not cause a
+  failure. It moves the deadline by the size of the skew. With NTP on both
+  hosts that is milliseconds. Moving them needs the order writer to accept
+  durations, which is a change to the lifecycle writer (§21), so it is left
+  for a change of its own.
+
 ## 5. Derived coverage — regenerated, never typed
 
 <!-- BEGIN GENERATED: npm run audit:map -->
