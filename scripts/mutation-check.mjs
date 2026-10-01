@@ -1769,6 +1769,27 @@ const MUTATIONS = [
     WHERE NOT is_phantom\`, [], 'stats_betting',`,
     to: `     FROM bets\`, [], 'stats_betting',`,
   },
+  {
+    id: 'M237', file: 'backend/routes.js', config: PG,
+    test: 'backend/tests/routes/loginSecondFactorPg.test.js',
+    why: "a player's 2FA challenge is redeemed at the STAFF door and mints a staff-door session",
+    from: `    if (user.accountType !== door.accountType || !door.admits(user))`,
+    to: `    if (false)`,
+  },
+  {
+    id: 'M238', file: 'backend/routes.js', config: PG,
+    test: 'backend/tests/routes/loginSecondFactorPg.test.js',
+    why: 'any six digits complete a staff or player login',
+    from: `    if (!verdict.ok) {`,
+    to: `    if (false) {`,
+  },
+  {
+    id: 'M239', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
+    test: 'backend/tests/routes/loginSecondFactorPg.test.js',
+    why: 'any six digits complete a merchant login',
+    from: `        if (!verdict.ok) {`,
+    to: `        if (false) {`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that
