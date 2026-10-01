@@ -11,6 +11,18 @@
  * belonged to the player it named, so a WIN or a ROLLBACK naming player B on
  * player A's round paid B.
  *
+ * ── A round is one PLAYER's stake on one PROVIDER's round id ────────────────
+ * The first fix keyed a round on the provider's round id alone and refused any
+ * callback from a second player or a second provider. That is right for a
+ * slot, which one player spins, and wrong for everything multiplayer: a crash
+ * round and a live-table round are ONE round id shared by everybody at the
+ * table, so the second player to stake on it was refused — and two providers
+ * that both number their rounds from 1 collided. A round is therefore keyed
+ * (provider, player, round id). Each player's stake is its own row, and
+ * "a WIN needs this player's own standing bet" is asked of THAT row, which is
+ * the owner's rule exactly — another player's bet on the same table is not
+ * this player's bet.
+ *
  * Every case asserts the WALLETS — both players' where two are involved —
  * because a refusal that moved money anyway is the failure this exists to
  * catch.
@@ -32,6 +44,7 @@ const total = async (u) => { const w = await getBalancesPaise(u); return w.depos
 const call = (over) => applyProviderCallback({
   txId: tid(), userId: PLAYER, amountRupees: 100, providerKey: 'betby', gameId: 'g', ...over,
 });
+const roundOf = (roundId, userId = PLAYER, providerKey = 'betby') => getRound(roundId, { userId, providerKey });
 
 describePg('a casino WIN needs the player\'s own bet on that round (PostgreSQL)', () => {
   beforeAll(async () => { await applySchema(); });
@@ -50,7 +63,7 @@ describePg('a casino WIN needs the player\'s own bet on that round (PostgreSQL)'
     const r = await call({ roundId, type: 'WIN', amountRupees: 500 });
     expect(r).toMatchObject({ ok: false, reason: 'no_prior_bet' });
     expect(await total(PLAYER)).toBe(100_000);
-    expect(await getRound(roundId)).toBeNull();
+    expect(await roundOf(roundId)).toBeNull();
   });
 
   it('pays a WIN on the player\'s own bet, including more than the stake', async () => {
@@ -61,38 +74,65 @@ describePg('a casino WIN needs the player\'s own bet on that round (PostgreSQL)'
     expect(await total(PLAYER)).toBe(100_000 - 10_000 + 35_000);
   });
 
-  it('refuses a WIN naming ANOTHER player on this player\'s round', async () => {
+  it('refuses a WIN naming ANOTHER player who never bet on this round', async () => {
     const roundId = rid();
     expect((await call({ roundId, type: 'BET' })).ok).toBe(true);
     const r = await call({ roundId, type: 'WIN', userId: OTHER, amountRupees: 500 });
-    expect(r).toMatchObject({ ok: false, reason: 'round_not_this_player' });
+    expect(r).toMatchObject({ ok: false, reason: 'no_prior_bet' });
     expect(await total(OTHER)).toBe(100_000);
     expect(await total(PLAYER)).toBe(90_000);
+    expect(await roundOf(roundId, OTHER)).toBeNull();
   });
 
-  it('refuses a ROLLBACK naming another player on this player\'s round', async () => {
+  it('refuses a ROLLBACK naming another player who never bet on this round', async () => {
     const roundId = rid();
     expect((await call({ roundId, type: 'BET' })).ok).toBe(true);
     const r = await call({ roundId, type: 'ROLLBACK', userId: OTHER, amountRupees: 100 });
-    expect(r).toMatchObject({ ok: false, reason: 'round_not_this_player' });
+    expect(r).toMatchObject({ ok: false, reason: 'no_prior_debit' });
     expect(await total(OTHER)).toBe(100_000);
+    expect(await total(PLAYER)).toBe(90_000);
+    expect((await roundOf(roundId)).refundedPaise).toBe(0);
+  });
+
+  it('lets two players stake on ONE shared round, each on their own row, and pays a WIN only on its winner\'s stake', async () => {
+    // A crash round or a live table: one provider round id, many players.
+    const roundId = rid();
+    expect((await call({ roundId, type: 'BET', amountRupees: 100 })).ok).toBe(true);
+    const second = await call({ roundId, type: 'BET', userId: OTHER, amountRupees: 200 });
+    expect(second, 'the second player at the table was refused').toMatchObject({ ok: true });
+
+    // Each stake is its own round, and neither advanced the other's.
+    expect((await roundOf(roundId)).debitedPaise).toBe(10_000);
+    expect((await roundOf(roundId, OTHER)).debitedPaise).toBe(20_000);
+
+    // OTHER wins; PLAYER loses. The WIN lands on OTHER's own stake only.
+    const won = await call({ roundId, type: 'WIN', userId: OTHER, amountRupees: 600 });
+    expect(won.ok).toBe(true);
+    expect(await total(OTHER)).toBe(100_000 - 20_000 + 60_000);
+    expect(await total(PLAYER)).toBe(90_000);
+
+    // A rollback of PLAYER's stake is bounded by PLAYER's stake, not the table's.
+    const tooMuch = await call({ roundId, type: 'ROLLBACK', amountRupees: 150 });
+    expect(tooMuch).toMatchObject({ ok: false, reason: 'refund_exceeds_debit' });
     expect(await total(PLAYER)).toBe(90_000);
   });
 
-  it('refuses a BET by another player onto an existing round', async () => {
+  it('treats the same round id at two providers as two rounds', async () => {
+    await openSession({ sessionId: `s-${PLAYER}-pp`, userId: PLAYER, providerKey: 'pragmatic', ttlMinutes: 240 });
     const roundId = rid();
-    expect((await call({ roundId, type: 'BET' })).ok).toBe(true);
-    const r = await call({ roundId, type: 'BET', userId: OTHER });
-    expect(r).toMatchObject({ ok: false, reason: 'round_not_this_player' });
-    expect(await total(OTHER)).toBe(100_000);
-    expect((await getRound(roundId)).debitedPaise).toBe(10_000);
+    expect((await call({ roundId, type: 'BET', amountRupees: 100 })).ok).toBe(true);
+    const there = await call({ roundId, type: 'BET', providerKey: 'pragmatic', amountRupees: 100 });
+    expect(there, 'a second provider numbering its rounds the same way was refused').toMatchObject({ ok: true });
+    expect((await roundOf(roundId)).debitedPaise).toBe(10_000);
+    expect((await roundOf(roundId, PLAYER, 'pragmatic')).debitedPaise).toBe(10_000);
+    expect(await total(PLAYER)).toBe(80_000);
   });
 
-  it('refuses a WIN from a DIFFERENT provider on this round', async () => {
+  it('refuses a WIN from a DIFFERENT provider that has no bet on this round', async () => {
     const roundId = rid();
     expect((await call({ roundId, type: 'BET' })).ok).toBe(true);
     const r = await call({ roundId, type: 'WIN', providerKey: 'pragmatic' });
-    expect(r).toMatchObject({ ok: false, reason: 'round_not_this_provider' });
+    expect(r).toMatchObject({ ok: false, reason: 'no_prior_bet' });
     expect(await total(PLAYER)).toBe(90_000);
   });
 
@@ -112,5 +152,14 @@ describePg('a casino WIN needs the player\'s own bet on that round (PostgreSQL)'
     await expect(pgQuery(
       `UPDATE casino_rounds SET credited_paise = 100 WHERE round_id = $1`, [roundId],
     )).rejects.toThrow(/casino_rounds_win_needs_bet/);
+  });
+
+  it('the database refuses a second row for one player\'s stake on one provider round', async () => {
+    const roundId = rid();
+    await pgQuery(
+      `INSERT INTO casino_rounds (round_id, user_id, provider_key) VALUES ($1, $2, 'betby')`, [roundId, PLAYER]);
+    await expect(pgQuery(
+      `INSERT INTO casino_rounds (round_id, user_id, provider_key) VALUES ($1, $2, 'betby')`, [roundId, PLAYER],
+    )).rejects.toThrow(/casino_rounds_one_per_player/);
   });
 });

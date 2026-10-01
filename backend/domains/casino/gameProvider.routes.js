@@ -334,8 +334,6 @@ router.post('/wallet/:providerKey', async (req, res) => {
         invalid_amount:       'Invalid amount',
         no_live_session:      'No open game session for this player with this provider',
         no_prior_bet:         'No standing bet by this player on this round',
-        round_not_this_player:   'This round belongs to a different player',
-        round_not_this_provider: 'This round belongs to a different provider',
       }[applied.reason] || `Callback refused: ${applied.reason}`;
       console.error(`[casino] refusing ${type} for round ${roundId}: ${applied.reason}`);
       // A refusal is 400 with the balance attached: suppliers reconcile against

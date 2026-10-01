@@ -93,7 +93,7 @@ export async function applyProviderCallback({
   return {
     ok: true,
     idempotent: Boolean(result.idempotent),
-    round: result.round ?? await getRound(roundId),
+    round: result.round ?? await getRound(roundId, { userId, providerKey }),
     // Read AFTER the movement committed and its client was released — the
     // provider reconciles against this figure, so it must be the balance the
     // wallet actually holds rather than the one this function expected.

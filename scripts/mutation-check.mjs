@@ -1562,18 +1562,22 @@ const MUTATIONS = [
     to: `      if (false) {`,
   },
   {
+    // Retargeted 2026-10-01: a round is keyed (provider, player, round id), so
+    // "whose round is this" is the lock's key, not a check after it. The
+    // mutant drops the player from the key, so another player's stake on the
+    // same table is found and paid against.
     id: 'M209', file: 'database/repositories/casino.core.js', config: PG,
     test: 'database/tests/casinoWinNeedsBetPg.test.js',
-    why: 'a WIN or ROLLBACK naming another player on someone else\'s round credits that other player',
-    from: `    if (ctx.round && ctx.round.userId !== ctx.uid) {`,
-    to: `    if (false) {`,
+    why: 'a WIN or ROLLBACK naming another player on a shared round is paid against the stake somebody else placed',
+    from: `WHERE provider_key = $1 AND user_id = $2 AND round_id = $3 FOR UPDATE`,
+    to: `WHERE provider_key = $1 AND $2::text IS NOT NULL AND round_id = $3 FOR UPDATE`,
   },
   {
     id: 'M210', file: 'database/repositories/casino.core.js', config: PG,
     test: 'database/tests/casinoWinNeedsBetPg.test.js',
-    why: 'a WIN from one provider pays on a round bet at a different provider',
-    from: `    if (ctx.round && providerKey && ctx.round.providerKey !== providerKey) {`,
-    to: `    if (false) {`,
+    why: 'a WIN from one provider pays on a stake placed at a different provider that numbers its rounds the same way',
+    from: `WHERE provider_key = $1 AND user_id = $2 AND round_id = $3 FOR UPDATE`,
+    to: `WHERE $1::text IS NOT NULL AND user_id = $2 AND round_id = $3 FOR UPDATE`,
   },
   {
     id: 'M211', file: 'backend/domains/distribution/apkInspector.js', config: UNIT,
@@ -1630,6 +1634,30 @@ const MUTATIONS = [
     why: 'halting a DRAFT is not refused by name',
     from: `      WHERE release_id = $1 AND published_at IS NOT NULL AND halted_at IS NULL`,
     to: `      WHERE release_id = $1 AND halted_at IS NULL`,
+  },
+  {
+    // 2026-10-01 review of PR #198: the socket.io upgrade never consulted the
+    // IP deny-list — measured, a blocked range got 403 on HTTP and a working
+    // socket with every broadcast.
+    id: 'M219', file: 'backend/middleware/ipBlocklist.js', config: UNIT,
+    test: 'backend/tests/unit/ipBlocklistRealtime.test.js',
+    why: 'an address refused on every HTTP route still opens a socket and receives every broadcast',
+    from: `    return callback(null, !listCovers(list, asExpressSees.ip));`,
+    to: `    return callback(null, true);`,
+  },
+  {
+    id: 'M220', file: 'backend/middleware/ipBlocklist.js', config: UNIT,
+    test: 'backend/tests/unit/ipBlocklistRealtime.test.js',
+    why: 'behind the balancer the socket is judged on the BALANCER\'s address, so no client is ever refused',
+    from: `    return callback(null, !listCovers(list, asExpressSees.ip));`,
+    to: `    return callback(null, !listCovers(list, raw.socket.remoteAddress));`,
+  },
+  {
+    id: 'M221', file: 'backend/routes/admin/ipBlocks.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/ipBlocklistRoutesPg.test.js',
+    why: 'an IPv4 /8 respelled as ::ffff:10.0.0.0/104 clears the /16 floor and blocks a region',
+    from: `    if (v4Bits !== null && v4Bits < MIN_PREFIX.ipv4) {`,
+    to: `    if (false) {`,
   },
 ];
 

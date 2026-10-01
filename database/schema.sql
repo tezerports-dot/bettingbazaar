@@ -647,7 +647,11 @@ CREATE INDEX IF NOT EXISTS cycle_settlements_status_idx ON cycle_settlements (st
 -- was taken" checkable inside one transaction.
 CREATE TABLE IF NOT EXISTS casino_rounds (
   id              BIGSERIAL PRIMARY KEY,
-  round_id        TEXT NOT NULL UNIQUE,
+  -- The PROVIDER's round id. NOT unique on its own: a crash round or a live
+  -- table is one round id shared by every player at it, and two providers can
+  -- number their rounds the same way. A round here is one player's stake on
+  -- one provider's round — `casino_rounds_one_per_player` below.
+  round_id        TEXT NOT NULL,
   user_id         TEXT NOT NULL,
   provider_key    TEXT NOT NULL,
   game_id         TEXT,
@@ -673,7 +677,7 @@ ALTER TABLE casino_rounds ADD CONSTRAINT casino_rounds_win_needs_bet
 CREATE TABLE IF NOT EXISTS casino_transactions (
   id            BIGSERIAL PRIMARY KEY,
   tx_id         TEXT NOT NULL UNIQUE,      -- the PROVIDER's id; the idempotency gate
-  round_id      TEXT NOT NULL REFERENCES casino_rounds (round_id) ON DELETE RESTRICT,
+  round_id      TEXT NOT NULL,             -- with provider_key + user_id: casino_transactions_round_fkey
   user_id       TEXT NOT NULL,
   tx_type       TEXT NOT NULL,
   amount_paise  BIGINT NOT NULL CHECK (amount_paise > 0),
@@ -681,7 +685,38 @@ CREATE TABLE IF NOT EXISTS casino_transactions (
   CONSTRAINT casino_transactions_type_check
     CHECK (tx_type IN ('BET','WIN','ROLLBACK','REFUND'))
 );
-CREATE INDEX IF NOT EXISTS casino_transactions_round_idx ON casino_transactions (round_id, id);
+
+-- ── A round is one PLAYER's stake on one PROVIDER's round id ───────────────
+-- It was keyed on the provider's round id alone (`round_id UNIQUE`). That is
+-- one row per slot spin, and wrong for everything multiplayer: a crash round
+-- and a live-table round are one round id shared by everybody at the table, so
+-- every player after the first was refused, and two providers numbering their
+-- rounds from 1 collided. Before that refusal existed the rows MERGED, and one
+-- player's rollback was bounded by — and paid against — another player's stake.
+-- Keyed (provider, player, round id), each stake is its own row, and "a WIN
+-- needs this player's own standing bet" is asked of that row alone.
+--
+-- Dropped and re-added in this order so an existing database converges
+-- (§32 S31): the old foreign key depends on the old global key. The new
+-- foreign key and the provider CHECK are NOT VALID because a development
+-- database can hold callbacks written before `provider_key` existed, and this
+-- table is append-only, so they cannot be backfilled; both bind every write
+-- from now on. A fresh database never has an unchecked row.
+ALTER TABLE casino_transactions DROP CONSTRAINT IF EXISTS casino_transactions_round_id_fkey;
+ALTER TABLE casino_rounds DROP CONSTRAINT IF EXISTS casino_rounds_round_id_key;
+ALTER TABLE casino_transactions ADD COLUMN IF NOT EXISTS provider_key TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS casino_rounds_one_per_player
+  ON casino_rounds (provider_key, user_id, round_id);
+ALTER TABLE casino_transactions DROP CONSTRAINT IF EXISTS casino_transactions_round_fkey;
+ALTER TABLE casino_transactions ADD CONSTRAINT casino_transactions_round_fkey
+  FOREIGN KEY (provider_key, user_id, round_id)
+  REFERENCES casino_rounds (provider_key, user_id, round_id) ON DELETE RESTRICT NOT VALID;
+ALTER TABLE casino_transactions DROP CONSTRAINT IF EXISTS casino_transactions_provider_present;
+ALTER TABLE casino_transactions ADD CONSTRAINT casino_transactions_provider_present
+  CHECK (provider_key IS NOT NULL) NOT VALID;
+DROP INDEX IF EXISTS casino_transactions_round_idx;
+CREATE INDEX IF NOT EXISTS casino_transactions_round_key_idx
+  ON casino_transactions (provider_key, user_id, round_id, id);
 
 DROP TRIGGER IF EXISTS casino_transactions_append_only ON casino_transactions;
 CREATE TRIGGER casino_transactions_append_only
