@@ -10,6 +10,8 @@ import { fetchCycleHistory } from '../domains/markets/cycleHistory.service.js';
 import { getSystemConfig } from '#db/repositories/config.js';
 import { systemConfigPayload, systemConfigFallback } from '../domains/configuration/systemConfigPayload.js';
 import { getActivePolicy as getActivePaymentModePolicy } from '#db/repositories/paymentModePolicy.js';
+import { roomsForViewer } from '../domains/notification/staffEventAreas.js';
+import { PERMISSION_KEYS } from '../domains/identity/staffPermissions.js';
 
 // Public cycle-room id guard: the room name is client-supplied, so bound it to
 // the shape a real cycleId has (no auth needed — pool totals are public — but a
@@ -173,8 +175,11 @@ export function attachSocketHandlers(io, cycleGenerator, gameEngine) {
         if (!token) return;
         const decoded = verifyJwt(token);
         const user = await loadActiveUser(decoded);
-        if ((user?.isAdmin || user?.isSubAdmin) && await sessionIsLive(token, decoded, user)) {
-          socket.join('admin-room');
+        if ((user?.isAdmin || user?.isSubAdmin || user?.isQueueManager) && await sessionIsLive(token, decoded, user)) {
+          // One room per AREA the account holds, not one room for all staff:
+          // an emit then reaches exactly who `staffMayReceive` allows, and the
+          // personal room lets a permission change disconnect this socket.
+          socket.join(roomsForViewer(user, PERMISSION_KEYS));
           socket.emit('joined_admin_room', { success: true });
         }
       } catch { console.warn('⚠️  join_admin_room rejected — invalid token'); }

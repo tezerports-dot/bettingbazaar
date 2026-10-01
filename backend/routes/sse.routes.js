@@ -37,6 +37,7 @@ import { fetchCycleHistory } from '../domains/markets/cycleHistory.service.js';
 // responder like any route handler, and it was the only one not going through
 // this.
 import { toMerchantOrderViews } from '../domains/merchant/merchantOrderView.js';
+import { staffMayReceive } from '../domains/notification/staffEventAreas.js';
 
 // The admin queue projection used to be a hand-written field list here. It is
 // the repository's `toOrder` now — one description of what an order looks like
@@ -253,9 +254,12 @@ export function initSSERoutes(sseManager, cycleGenerator) {
         if (sessionSuperseded(adminUser, decoded)) return refuseSupersededSession(res);
 
         initSSEResponse(res);
-        sseManager.addAdminClient(res);
+        sseManager.addAdminClient(res, adminUser);
 
-        // Push queue snapshot immediately on connect
+        // The queue snapshot is every pending order with its player: it goes
+        // only to staff who work the queue, the same rule as the
+        // `queue_order_update` events that follow it (staffEventAreas.js).
+        if (!staffMayReceive(adminUser, 'queue_snapshot')) return;
         try {
             const limit = normalizeLimit(req.query.limit, 100, 250);
             const page = await db.orders.findOrders({

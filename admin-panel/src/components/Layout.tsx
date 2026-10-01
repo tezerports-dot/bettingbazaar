@@ -35,7 +35,8 @@ interface MenuItem {
   label: string;          // short label shown in the sidebar
   title: string;          // page title shown in the header
   sub: string;            // page subtitle shown in the header
-  permission?: PermissionKey | string;
+  /** The area this screen belongs to — or several, when it serves more than one. */
+  permission?: PermissionKey | PermissionKey[];
   adminOnly?: boolean;
   queueManagerAccess?: boolean;
   badge?: BadgeKind;      // live count badge (resolved from stats)
@@ -58,33 +59,32 @@ const NAV_GROUPS: MenuGroup[] = [
   ] },
   { key: 'people', label: 'Users & Merchants', items: [
     { path: '/users',               icon: Users,            label: 'Users',          title: 'Users',              sub: 'Player accounts, balances, status & KYC', permission: 'canManageUsers' },
-    { path: '/users/balance-adjust',icon: SlidersHorizontal,label: 'Balance Adjust', title: 'Balance Adjustment', sub: 'Manual credit / debit with mandatory audit note', permission: 'canManageUsers' },
+    { path: '/users/balance-adjust',icon: SlidersHorizontal,label: 'Balance Adjust', title: 'Balance Adjustment', sub: 'Manual credit / debit with mandatory audit note', permission: 'canAdjustBalances' },
     { path: '/users/flagged',       icon: Flag,             label: 'Flagged Players',title: 'Flagged Players',    sub: "A merchant disputed their payment — reason, proof, and the block decision", permission: 'canManageUsers' },
     { path: '/merchants',           icon: Store,            label: 'Merchants',      title: 'Merchants',          sub: 'P2P payment merchants, limits & availability', permission: 'canManageMerchants' },
     { path: '/kyc',                 icon: UserCheck,        label: 'KYC Queue',      title: 'KYC Queue',          sub: 'Accounts awaiting an Aadhaar verdict', permission: 'canVerifyKYC', badge: 'kyc' },
-    { path: '/merchant-token-orders', icon: Coins,           label: 'Token Purchases',title: 'Merchant Token Purchases', sub: 'Merchants buying the float they trade with, paid in USDT', adminOnly: true },
-    { path: '/users/phantom-agents',  icon: Ghost,           label: 'Phantom Agents', title: 'Phantom Agents',     sub: 'Who can place cosmetic bets, and on which boards', adminOnly: true },
+    { path: '/merchant-token-orders', icon: Coins,           label: 'Token Purchases',title: 'Merchant Token Purchases', sub: 'Merchants buying the float they trade with, paid in USDT', permission: 'canManageMerchantTokenOrders' },
+    { path: '/users/phantom-agents',  icon: Ghost,           label: 'Phantom Agents', title: 'Phantom Agents',     sub: 'Who can place cosmetic bets, and on which boards', permission: 'canManagePhantomAgents' },
   ] },
-  // Identity and payout control plane. Full admins only — these release
-  // national identity numbers, replace the platform's identity root, and pay
-  // real money. Admin 2FA is mandatory, so adminOnly also means a second
-  // factor was proved.
+  // Identity and payout control plane. Each screen is its own area, granted
+  // by an admin on the Sub-admins screen (owner, 2026-10-01). Every staff
+  // account owes a second factor, sub-admins included.
   { key: 'identity', label: 'Identity & Growth', items: [
-    { path: '/telegram',  icon: Bot,             label: 'Telegram Setup',  title: 'Telegram Setup',      sub: 'Replace the sign-in bot or channel without a deploy', adminOnly: true },
-    { path: '/kyc/bulk',  icon: FileSpreadsheet, label: 'Bulk KYC',        title: 'Bulk KYC',            sub: 'Export Aadhaar numbers for verification, import verdicts', adminOnly: true },
-    { path: '/referrals', icon: Share2,          label: 'Referrals',       title: 'Referral Programme',  sub: 'Fund the payout queue in joining order', adminOnly: true },
+    { path: '/telegram',  icon: Bot,             label: 'Telegram Setup',  title: 'Telegram Setup',      sub: 'Replace the sign-in bot or channel without a deploy', permission: 'canManageTelegram' },
+    { path: '/kyc/bulk',  icon: FileSpreadsheet, label: 'Bulk KYC',        title: 'Bulk KYC',            sub: 'Export Aadhaar numbers for verification, import verdicts', permission: 'canBulkVerifyKYC' },
+    { path: '/referrals', icon: Share2,          label: 'Referrals',       title: 'Referral Programme',  sub: 'Fund the payout queue in joining order', permission: 'canManageReferrals' },
   ] },
   { key: 'payments', label: 'Payments & Queue', items: [
     { path: '/queue-manager',   icon: Layers,   label: 'Queue Manager',  title: 'Queue Manager', sub: 'Live payment order queue & merchant assignment', queueManagerAccess: true, permission: 'canManageMerchants', badge: 'queue' },
     { path: '/transactions',    icon: FileText, label: 'Transactions',   title: 'Transactions',  sub: 'Ledger of deposits, withdrawals, bets & adjustments', permission: 'canViewTransactions' },
-    { path: '/payment-control', icon: Zap,      label: 'Payment System', title: 'Payment System',sub: 'Gateways, limits & platform payment controls', adminOnly: true },
+    { path: '/payment-control', icon: Zap,      label: 'Payment System', title: 'Payment System',sub: 'Gateways, limits & platform payment controls', permission: 'canManagePaymentSystem' },
     { path: '/disputes',        icon: Scale,    label: 'Disputes',       title: 'Disputes',      sub: 'Payment order disputes & resolution', permission: 'canResolveDisputes' },
     { path: '/disputes/cdm-receipts', icon: Banknote, label: 'CDM Slips', title: 'CDM Slips', sub: 'Cash payouts settled without evidence, and the only read of a slip', permission: 'canResolveDisputes' },
     { path: '/disputes/stalled-withdrawals', icon: Hourglass, label: 'Stalled Payouts', title: 'Stalled Withdrawals', sub: 'Payouts no merchant has taken, and the tokens locked behind them', permission: 'canResolveDisputes' },
   ] },
   { key: 'policy', label: 'Business Policy', items: [
-    { path: '/business-policy/deposit', icon: Landmark, label: 'Deposit Policy', title: 'Deposit Policy', sub: 'Versioned deposit / reserve allocation policy', adminOnly: true },
-    { path: '/business-policy/settlement-rail', icon: ToggleLeft, label: 'Settlement Rail', title: 'Settlement Rail', sub: 'Switch between UPI and ATM cash settlement', adminOnly: true },
+    { path: '/business-policy/deposit', icon: Landmark, label: 'Deposit Policy', title: 'Deposit Policy', sub: 'Versioned deposit / reserve allocation policy', permission: 'canManageBusinessPolicy' },
+    { path: '/business-policy/settlement-rail', icon: ToggleLeft, label: 'Settlement Rail', title: 'Settlement Rail', sub: 'Switch between UPI and ATM cash settlement', permission: 'canManageBusinessPolicy' },
   ] },
   { key: 'enterprise', label: 'Enterprise Platforms', items: [
     { path: '/revenue',           icon: Landmark, label: 'Revenue & Ledger',  title: 'Revenue & Ledger',    sub: 'Enterprise revenue ledger & settlements', permission: 'canViewAnalytics' },
@@ -93,13 +93,13 @@ const NAV_GROUPS: MenuGroup[] = [
     { path: '/merchant-platform', icon: Store,    label: 'Merchant Platform', title: 'Merchant Platform',   sub: 'Merchant onboarding, tiers & performance', permission: 'canManageMerchants' },
   ] },
   { key: 'games', label: 'Game Providers', items: [
-    { path: '/games',          icon: Gamepad2, label: 'Game Registry',  title: 'Game Registry',  sub: 'Game catalogue & categories', adminOnly: true },
-    { path: '/game-providers', icon: Star,     label: 'Game Providers', title: 'Game Providers', sub: 'Casino / crash / sports API providers', adminOnly: true },
+    { path: '/games',          icon: Gamepad2, label: 'Game Registry',  title: 'Game Registry',  sub: 'Game catalogue & categories', permission: 'canManageGames' },
+    { path: '/game-providers', icon: Star,     label: 'Game Providers', title: 'Game Providers', sub: 'Casino / crash / sports API providers', permission: 'canManageGames' },
   ] },
   { key: 'promos', label: 'Promotions', items: [
     { path: '/winners-manager',          icon: Trophy,        label: 'Winners Manager', title: 'Winners Manager', sub: 'Real & phantom winner surfacing', permission: 'canManageContent' },
-    { path: '/chat-management',          icon: MessageCircle, label: 'Chat & Support',  title: 'Chat & Support',  sub: 'Public chat moderation & support console', permission: 'canModerateChatPublic' },
-    { path: '/support-assistant',        icon: BookOpenCheck, label: 'Support Assistant', title: 'Support Assistant', sub: 'Knowledge base the assistant answers players from', adminOnly: true },
+    { path: '/chat-management',          icon: MessageCircle, label: 'Chat & Support',  title: 'Chat & Support',  sub: 'Public chat moderation & support console', permission: ['canModerateChat', 'canManageSupportTickets'] },
+    { path: '/support-assistant',        icon: BookOpenCheck, label: 'Support Assistant', title: 'Support Assistant', sub: 'Knowledge base the assistant answers players from', permission: 'canManageSupportAssistant' },
     { path: '/promotions/announcements', icon: Bell,          label: 'Announcements',   title: 'Announcements',   sub: 'Platform-wide notices & popups', permission: 'canManageContent' },
   ] },
   { key: 'content', label: 'Content & Branding', items: [
@@ -108,17 +108,32 @@ const NAV_GROUPS: MenuGroup[] = [
     { path: '/content/support', icon: MessageCircle, label: 'Support Links',    title: 'Support Links',   sub: 'Contact & social channels', permission: 'canManageContent' },
     { path: '/content/cdn',     icon: ImageIcon,     label: 'CDN Library',      title: 'CDN Library',     sub: 'Uploaded media assets', permission: 'canManageContent' },
     { path: '/branding',        icon: Palette,       label: 'Branding',         title: 'Branding',        sub: 'App name, logo, colours & tagline', permission: 'canManageContent' },
-    { path: '/app-assets',      icon: Upload,        label: 'App Assets',       title: 'App Assets',      sub: 'Logo, loading splash & icons — web and Android app', adminOnly: true },
-    { path: '/android-app',     icon: Smartphone,    label: 'Android App',      title: 'Android App',     sub: 'Upload, publish & force updates', adminOnly: true },
+    { path: '/app-assets',      icon: Upload,        label: 'App Assets',       title: 'App Assets',      sub: 'Logo, loading splash & icons — web and Android app', permission: 'canManageContent' },
+    { path: '/android-app',     icon: Smartphone,    label: 'Android App',      title: 'Android App',     sub: 'Upload, publish & force updates', permission: 'canManageAndroidApp' },
   ] },
   { key: 'admin', label: 'Admin', items: [
     { path: '/sub-admins',       icon: ShieldCheck, label: 'Sub-Admins',       title: 'Sub-Admins',       sub: 'Roles, permissions & access control', adminOnly: true },
-    { path: '/settings',         icon: Settings,    label: 'System Settings',  title: 'System Settings',  sub: 'Platform configuration', adminOnly: true },
-    { path: '/audit-logs',       icon: Shield,      label: 'Audit Logs',       title: 'Audit Logs',       sub: 'Administrative action trail', adminOnly: true },
-    { path: '/blocked-ips',      icon: ShieldBan,   label: 'Blocked IPs',      title: 'Blocked IPs',      sub: 'Refuse every request from an address or range', adminOnly: true },
-    { path: '/error-logs',       icon: Shield,      label: 'Error Logs',       title: 'Error Logs',       sub: 'Runtime errors & failed jobs', adminOnly: true },
+    { path: '/settings',         icon: Settings,    label: 'System Settings',  title: 'System Settings',  sub: 'Platform configuration', permission: 'canManageSystemSettings' },
+    { path: '/audit-logs',       icon: Shield,      label: 'Audit Logs',       title: 'Audit Logs',       sub: 'Administrative action trail', permission: 'canViewAuditLogs' },
+    { path: '/blocked-ips',      icon: ShieldBan,   label: 'Blocked IPs',      title: 'Blocked IPs',      sub: 'Refuse every request from an address or range', permission: 'canManageIpBlocks' },
+    { path: '/error-logs',       icon: Shield,      label: 'Error Logs',       title: 'Error Logs',       sub: 'Runtime errors & failed jobs', permission: 'canViewAuditLogs' },
   ] },
 ];
+
+/**
+ * The first screen this account may open, in sidebar order — where a sub-admin
+ * lands after signing in. Derived from the same items the sidebar shows, so a
+ * new area is a landing page with no second list to update.
+ */
+export function firstPermittedPath(canAny: (keys: PermissionKey[]) => boolean): string | null {
+  for (const group of NAV_GROUPS) {
+    for (const item of group.items) {
+      if (item.adminOnly || !item.permission) continue;
+      if (canAny(Array.isArray(item.permission) ? item.permission : [item.permission])) return item.path;
+    }
+  }
+  return null;
+}
 
 const ROLE_IDENTITY = (admin: { username?: string; role?: string; isAdmin?: boolean; isSubAdmin?: boolean; isQueueManager?: boolean } | null) => {
   if (admin?.isAdmin) return { role: 'Super Admin', color: 'var(--gold-ink)' };
@@ -136,7 +151,7 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
   const location = useLocation();
   const navigate = useNavigate();
   const { admin, logout } = useAuthStore();
-  const { can, isAdmin, isQueueManager } = usePermissions();
+  const { can, canAny, isAdmin, isQueueManager } = usePermissions();
   const { theme, toggleTheme, collapsed, toggleCollapsed } = useThemeStore();
 
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -181,7 +196,7 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
     if (isAdmin) return true;
     if (item.adminOnly) return false;
     if (item.queueManagerAccess && isQueueManager) return true;
-    if (item.permission) return can(item.permission);
+    if (item.permission) return canAny(Array.isArray(item.permission) ? item.permission : [item.permission]);
     return true; // dashboard etc. — any authenticated user
   };
 

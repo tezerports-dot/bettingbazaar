@@ -19,16 +19,13 @@
  * canManageContent    → FAQ manager, support links, CDN images, branding
  * canManagePhantom    → phantom access assignment (set on sub-admin account itself)
  */
-export interface SubAdminPermissions {
-  canVerifyKYC: boolean;
-  canManageUsers: boolean;
-  canManageMerchants: boolean;
-  canResolveDisputes: boolean;
-  canViewTransactions: boolean;
-  canViewAnalytics: boolean;
-  canManageContent: boolean;
-  canManageSupport: boolean; // kept for back-compat — maps to canManageContent
-}
+/**
+ * A sub-admin's grant: every key in `utils/permissions.ts` (the server's list),
+ * true or false. Derived from that list rather than restated, so a new area is
+ * a new field here with nothing to edit — the interface it replaced named eight
+ * keys and had already fallen behind the routes.
+ */
+export type SubAdminPermissions = Partial<Record<import('./utils/permissions').PermissionKey, boolean>>;
 
 export interface Admin {
   _id: string;

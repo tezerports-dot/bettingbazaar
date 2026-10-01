@@ -236,6 +236,12 @@ jobs:
       # every merchant-authenticated request answer 500.
       - name: No orphaned references (deleted imports still called)
         run: npm run check:orphans
+      # Every staff route asks for an AREA an admin can grant, read off the live
+      # route stacks; full-admin-only is a listed, reasoned exception; the admin
+      # panel names the same keys. F-001 and F-042 were each one route open to
+      # "any sub-admin", found after it shipped — this refuses the class.
+      - name: Every staff route asks for an area
+        run: npm run check:staff-permissions
       # Nothing outside database/ writes SQL, imports the driver, or reaches the
       # folder by relative path. The single data layer is a boundary or it is a
       # directory name.

@@ -233,15 +233,23 @@ describePg('flagged players — the admin review queue', () => {
       expect(res.status).toBe(404);
     });
 
-    it('is refused to a sub-admin', async () => {
-      // Reading the queue is `isAdminOrSubAdmin`; clearing is `isAdmin`. A
-      // sub-admin dismissing a payment complaint is a money decision.
+    it('is refused to a sub-admin who was not given player management', async () => {
+      // Clearing a flag is the "Manage players" area (owner, 2026-10-01: every
+      // staff route permission-based). A sub-admin without it cannot.
       const { player } = await flaggedPlayer();
-      const subAdmin = await actor({ isSubAdmin: true });
+      const subAdmin = await actor({ isSubAdmin: true, permissions: { canViewAnalytics: true } });
 
       const res = await as(app, subAdmin).post(`/users/${player.userId}/clear-flag`).send({});
       expect(res.status).toBe(403);
       expect((await getUser(player.userId)).paymentFlagged).toBe(true);
+    });
+
+    it('is allowed to a sub-admin who WAS given player management (the opposite case)', async () => {
+      const { player } = await flaggedPlayer();
+      const subAdmin = await actor({ isSubAdmin: true, permissions: { canManageUsers: true } });
+      const res = await as(app, subAdmin).post(`/users/${player.userId}/clear-flag`).send({});
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect((await getUser(player.userId)).paymentFlagged).toBe(false);
     });
   });
 });

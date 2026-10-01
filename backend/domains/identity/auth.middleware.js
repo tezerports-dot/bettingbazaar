@@ -36,6 +36,7 @@ import { isChallengeToken } from './twoFactorChallenge.js';
 // ROUTES here would be a cycle: they import this file.
 import { requires2FA } from './twoFactorPolicy.js';
 import { getSystemConfig } from '#db/repositories/config.js';
+import { isPermissionKey, permissionLabel, staffCan } from './staffPermissions.js';
 
 
 /**
@@ -437,33 +438,17 @@ const isAdmin = (req, res, next) => {
   // User is admin, proceed
   next();
 };
+// Read by `check:staff-permissions`: a route gated this way must be one of the
+// areas `staffPermissions.ADMIN_ONLY_AREAS` names.
+isAdmin.adminOnly = true;
 
 /**
- * Middleware to check if user is admin OR sub-admin
- * Allows both full admins and sub-admins to access the route
- * 
- * @param {Object} req - Express request object
- * @param {Object} res - Express response object
- * @param {Function} next - Express next middleware function
- * @returns {void}
+ * `isAdminOrSubAdmin` was here: "are you staff at all". It admitted a sub-admin
+ * holding nothing but chat moderation to any route it guarded, which is the
+ * question F-001 and F-042 each found one more instance of. Every staff route
+ * now names its area (`hasPermission`), and `check:staff-permissions` refuses
+ * a route that does not (owner, 2026-10-01).
  */
-const isAdminOrSubAdmin = (req, res, next) => {
-  if (!req.user) {
-    return res.status(401).json({ 
-      success: false,
-      message: 'Authentication required' 
-    });
-  }
-
-  if (!req.user.isAdmin && !req.user.isSubAdmin) {
-    return res.status(403).json({ 
-      success: false,
-      message: 'Admin or sub-admin access required' 
-    });
-  }
-
-  next();
-};
 
 /**
  * ════════════════════════════════════════════════════════════════════════════
@@ -472,151 +457,42 @@ const isAdminOrSubAdmin = (req, res, next) => {
  */
 
 /**
- * Higher-order function to create permission-checking middleware
- * 
- * Usage:
- *   router.post('/kyc/:id/approve', authenticate, hasPermission('canVerifyKYC'), approveKYC)
- * 
- * Logic:
- * - Full admins (isAdmin = true) always have all permissions
- * - Sub-admins need the specific permission to be true
- * 
- * @param {string} permission - Permission name (e.g., 'canVerifyKYC')
- * @returns {Function} Express middleware function
+ * The gate on every staff route: the caller works in this AREA, or is refused.
+ *
+ * The key must be one `staffPermissions.js` declares — checked when the route
+ * file is IMPORTED, so a misspelt key stops the server booting instead of
+ * shipping a route nobody can ever be given (the chat screen asked for
+ * `canModerateChatPublic` while its routes asked for `canManageSupport`).
+ *
+ * Full admins pass. A sub-admin passes holding the key. Nobody else does. The
+ * answer itself is `staffCan`, which both realtime transports also ask.
+ *
+ * The returned function carries `.permission`, which is how
+ * `check:staff-permissions` reads a route's area off the live route stack.
  */
 export const hasPermission = (permission) => {
-  return (req, res, next) => {
+  if (!isPermissionKey(permission)) {
+    throw new Error(`hasPermission: '${permission}' is not in staffPermissions.js — add it there or use an existing key`);
+  }
+  const gate = (req, res, next) => {
     if (!req.user) {
-      return res.status(401).json({ 
-        success: false,
-        message: 'Authentication required' 
-      });
+      return res.status(401).json({ success: false, message: 'Authentication required' });
     }
-
-    // Full admins have all permissions
-    if (req.user.isAdmin) {
-      return next();
+    if (staffCan(req.user, permission)) return next();
+    if (!req.user.isAdmin && !req.user.isSubAdmin) {
+      return res.status(403).json({ success: false, message: 'Administrative privileges required' });
     }
-
-    // Check if user is a sub-admin
-    if (!req.user.isSubAdmin) {
-      return res.status(403).json({ 
-        success: false,
-        message: 'Administrative privileges required' 
-      });
-    }
-
-    // Check if sub-admin has the specific permission
-    const permissions = req.user.subAdminPermissions || {};
-    
-    if (!permissions[permission]) {
-      return res.status(403).json({ 
-        success: false,
-        message: `Insufficient permissions. Required: ${permission}`,
-        requiredPermission: permission
-      });
-    }
-
-    // Sub-admin has the required permission
-    next();
+    return res.status(403).json({
+      success: false,
+      code: 'PERMISSION_REQUIRED',
+      // Names the area in the words the Sub-admins screen uses, so the person
+      // refused knows exactly what to ask their admin for.
+      message: `You do not have the "${permissionLabel(permission)}" permission. Ask an admin to grant it on the Sub-admins screen.`,
+      requiredPermission: permission,
+    });
   };
-};
-
-/**
- * Middleware to check multiple permissions (user must have ALL)
- * 
- * Usage:
- *   router.delete('/user/:id', authenticate, hasAllPermissions(['canManageUsers', 'canDeleteAccounts']), deleteUser)
- * 
- * @param {Array<string>} permissions - Array of required permission names
- * @returns {Function} Express middleware function
- */
-export const hasAllPermissions = (permissions) => {
-  return (req, res, next) => {
-    if (!req.user) {
-      return res.status(401).json({ 
-        success: false,
-        message: 'Authentication required' 
-      });
-    }
-
-    // Full admins have all permissions
-    if (req.user.isAdmin) {
-      return next();
-    }
-
-    // Check if user is a sub-admin
-    if (!req.user.isSubAdmin) {
-      return res.status(403).json({ 
-        success: false,
-        message: 'Administrative privileges required' 
-      });
-    }
-
-    // Check if sub-admin has ALL required permissions
-    const userPermissions = req.user.subAdminPermissions || {};
-    const missingPermissions = permissions.filter(perm => !userPermissions[perm]);
-    
-    if (missingPermissions.length > 0) {
-      return res.status(403).json({ 
-        success: false,
-        message: 'Insufficient permissions',
-        required: permissions,
-        missing: missingPermissions
-      });
-    }
-
-    // Sub-admin has all required permissions
-    next();
-  };
-};
-
-/**
- * Middleware to check if user has ANY of the specified permissions
- * 
- * Usage:
- *   router.get('/support/tickets', authenticate, hasAnyPermission(['canManageSupport', 'canViewTickets']), getTickets)
- * 
- * @param {Array<string>} permissions - Array of acceptable permission names
- * @returns {Function} Express middleware function
- */
-export const hasAnyPermission = (permissions) => {
-  return (req, res, next) => {
-    if (!req.user) {
-      return res.status(401).json({ 
-        success: false,
-        message: 'Authentication required' 
-      });
-    }
-
-    // Full admins have all permissions
-    if (req.user.isAdmin) {
-      return next();
-    }
-
-    // Check if user is a sub-admin
-    if (!req.user.isSubAdmin) {
-      return res.status(403).json({ 
-        success: false,
-        message: 'Administrative privileges required' 
-      });
-    }
-
-    // Check if sub-admin has ANY of the required permissions
-    const userPermissions = req.user.subAdminPermissions || {};
-    const hasAtLeastOne = permissions.some(perm => userPermissions[perm]);
-    
-    if (!hasAtLeastOne) {
-      return res.status(403).json({ 
-        success: false,
-        message: 'Insufficient permissions. At least one of these permissions required:',
-        required: permissions
-      });
-    }
-
-    // Sub-admin has at least one required permission
-    next();
-  };
+  gate.permission = permission;
+  return gate;
 };
 
 /**
@@ -635,5 +511,4 @@ export {
   // second factor reach these three steps and nothing else.
   authenticateForEnrolment,
   isAdmin,
-  isAdminOrSubAdmin,
 };

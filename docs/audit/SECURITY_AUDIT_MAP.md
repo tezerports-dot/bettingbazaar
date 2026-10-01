@@ -718,7 +718,8 @@ sub-admin writes without a permission key.
 
 **The 47 reads are proposed, not shipped**, because the owner confirmed
 sub-admin accounts are IN USE: gating a read a colleague depends on blanks their
-screen mid-shift. The table is `docs/audit/SUBADMIN-PERMISSION-PROPOSAL.md`.
+screen mid-shift. **Superseded 2026-10-01 by F-047**: the owner decided every
+staff route is permission-based, and the proposal file was deleted.
 
 Its rows are not guesses. The admin panel's `NAV_GROUPS` already declares which
 key each screen requires, so where a route is reached from a screen the proposed
@@ -3058,7 +3059,7 @@ see these two.
 - **Gate fixed:** `audit:map` counts both tier guards. It now reports 6
   keyless sub-admin routes, all reads (2 payment-mode, 4 queue), and 0 writes.
   The reads stay with the owner's read proposal
-  (`SUBADMIN-PERMISSION-PROPOSAL.md`), as F-001 decided.
+  (since shipped as F-047), as F-001 decided.
 - **Tests:** `queueWritePermissionPg` (9). On the old routes the chat
   moderator got past reassign and merchant-pool.
 - **Mutation-proved:** M207 KILLED.
@@ -3210,6 +3211,62 @@ message that did not name the real problem.
   enforced against plain IPv4 clients. Two fail on main.
 - **Mutation-proved:** M221 KILLED.
 
+### F-047 — every staff route permission-based: the owner's decision, and what it found
+`FIXED` · decision + three defects · F-001's shape, closed as a CLASS · 2026-10-01
+
+**The decision** (owner): *"all sub admin read routes should be permission
+based … give them permission by selecting the permissions from the entire list
+of access and permission, the sub admin then can only do the work in those
+permissioned areas."* So every staff route now asks for exactly one AREA
+(`backend/domains/identity/staffPermissions.js`, 29 keys). A full admin holds
+all; a sub-admin holds what an admin ticked. 136 routes that were full-admin
+only, and the 6 reads open to any sub-admin, now each name their area. Only 8
+routes stay full-admin-only, each listed with its reason in `ADMIN_ONLY_AREAS`:
+granting sub-admins, staff roles, and the queue-manager role. A holder of any
+of those could grant themselves everything. `isAdminOrSubAdmin`, its queue
+variant and `hasAnyPermission` are deleted, and `npm run check:staff-permissions`
+reads the LIVE route stacks and fails the build on a staff route that names no
+area. F-001 and F-042 were each one such route, found after it shipped.
+
+**Defects found while doing it**, each failing first on main:
+
+1. **Any sub-admin acted as the PLAYER on the player's order routes**
+   (medium). `orderAccessGuard` admitted any staff account. A sub-admin given
+   nothing but chat could read any player's order, and raise a dispute on it
+   recorded as `disputeRaisedBy: 'user'`, a dispute the player never raised,
+   attributed to them. Now the player's routes are the player's and the
+   assigned merchant's. A full admin is admitted on the deposit confirm alone
+   (`orderAccessGuardOrAdmin`). Tests: `orderAccessGuardRoutes` (+4, 3 fail on
+   main). M225 KILLED.
+2. **"Save Permissions" revoked every permission the sub-admin had** (medium,
+   §32 S26). The panel sent the grant AS the body; the route read
+   `req.body.permissions`, found nothing, and stored an empty grant. The
+   client now sends `{ permissions }`, and the route REFUSES a body without the
+   key (absent is not empty). It also refuses an unknown key by name, and a
+   non-boolean: the old test asserted that the string `"false"` was stored as
+   TRUE. Tests: `staffPermissionsPg`, `adminSubadminsRoutes`,
+   `subAdminsApi.test.ts` (fails without the client fix). M223, M224 KILLED.
+3. **The admin live stream sent everything to every staff account** (medium,
+   §32 S32). The SSE admin stream (its `queue_snapshot` of every pending order
+   with its player, and every order, dispute and merchant event) and the
+   socket admin room (bets, KYC verdicts, cycle results) were delivered to any
+   sub-admin who connected. Each event now names the areas that may receive it
+   (`staffEventAreas.js`); the SSE stream filters per client, the socket joins
+   one room per area, and a permission change closes that account's streams on
+   every instance. Tests: `staffRealtimePermissions` (11),
+   `adminStreamPermissionsPg` (the content-only sub-admin received the queue on
+   main), redis bridge (+1). M226–M229 KILLED.
+
+And two lock-outs, the opposite failure: the Chat screen was offered on
+`canModerateChatPublic` while every chat route asked for `canManageSupport`;
+three queue routes let a `canManageMerchants` sub-admin past the gate and
+then refused them inside the handler. Both are now one key, asked once.
+
+- **Proof:** `staffPermissionsPg` walks every route the admin router mounts.
+  A sub-admin with no areas is refused by all of them, reads and writes alike.
+  A sub-admin holding exactly a read's area is let through every one (§37
+  step 6). 9 of its 11 named cases fail on main. M222, M230 KILLED.
+
 ## 5. Derived coverage — regenerated, never typed
 
 <!-- BEGIN GENERATED: npm run audit:map -->
@@ -3223,11 +3280,10 @@ message that did not name the real problem.
 
 | Measure | Count |
 |---|---|
-| Route declarations in `backend/**` | 324 |
+| Route declarations in `backend/**` | 322 |
 | Reachable with **no auth middleware** | 44 |
-| Gated `isAdminOrSubAdmin` with **no permission key** | 6 |
-| — of those, **writes** (non-GET) | 0 |
-| Carrying an explicit permission key | 58 |
+| Staff routes carrying an **area** (permission key) | 198 |
+| Staff routes a sub-admin can **never** be given (full admin only) | 8 |
 
 A count moving is not by itself a defect — it is a prompt to read the
 new route and decide. Each of the three questions is defined in §2.
@@ -3281,9 +3337,16 @@ new route and decide. Each of the three questions is defined in §2.
 
 </details>
 
-<details><summary>Writes any sub-admin can make without holding a permission key</summary>
+<details><summary>Staff routes only a full admin can use (each must be in ADMIN_ONLY_AREAS, with its reason)</summary>
 
-- _none_
+- `DELETE /sub-admins/:subAdminId  (backend/routes/admin/subadmins.admin.routes.js)`
+- `GET /queue-managers  (backend/routes/admin/users.admin.routes.js)`
+- `GET /staff-permissions  (backend/routes/admin/subadmins.admin.routes.js)`
+- `GET /sub-admins  (backend/routes/admin/subadmins.admin.routes.js)`
+- `POST /sub-admins  (backend/routes/admin/subadmins.admin.routes.js)`
+- `POST /users/:userId/queue-manager  (backend/routes/admin/users.admin.routes.js)`
+- `PUT /sub-admins/:subAdminId/permissions  (backend/routes/admin/subadmins.admin.routes.js)`
+- `PUT /users/:userId/roles  (backend/routes/admin/users.admin.routes.js)`
 
 </details>
 
@@ -3309,7 +3372,7 @@ new route and decide. Each of the three questions is defined in §2.
 | Panel | .ts/.tsx files | `dangerouslySetInnerHTML` | `.innerHTML =` |
 |---|---|---|---|
 | `user-panel` | 87 | 0 | 0 |
-| `admin-panel` | 101 | 0 | 0 |
+| `admin-panel` | 104 | 0 | 0 |
 | `merchant-panel` | 41 | 0 | 0 |
 
 <!-- END GENERATED -->

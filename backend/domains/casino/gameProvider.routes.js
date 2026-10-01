@@ -23,7 +23,7 @@ import { refreshProviderFrameSources } from './providerFrameSources.js';
 // Balances go to a third-party provider. They come from the wallet.
 import { db } from '#db';
 import crypto from 'crypto';
-import { authenticate, isAdmin, isAdminOrSubAdmin } from '../identity/auth.middleware.js';
+import { authenticate, hasPermission } from '../identity/auth.middleware.js';
 import { networkClient } from '../../services/networkClient.js';
 import { verifyWebhookSignature } from './webhookSignature.js';
 // Credentials are ciphertext in the row; they become usable only here.
@@ -369,7 +369,7 @@ router.post('/wallet/:providerKey', async (req, res) => {
 // received, which is a stronger guarantee than masking one it did.
 
 // GET /api/admin/game-providers
-router.get('/admin/game-providers', authenticate, isAdmin, async (req, res) => {
+router.get('/admin/game-providers', authenticate, hasPermission('canManageGames'), async (req, res) => {
   try {
     await seedProviders();
     res.json({ success: true, providers: await db.games.listProviders() });
@@ -386,7 +386,7 @@ router.get('/admin/game-providers', authenticate, isAdmin, async (req, res) => {
  * explicit empty string clears it. The form shows `hasApiKey`, never the key,
  * so "unchanged" is the only thing a re-submitted form can mean.
  */
-router.put('/admin/game-providers/:key', authenticate, isAdmin, async (req, res) => {
+router.put('/admin/game-providers/:key', authenticate, hasPermission('canManageGames'), async (req, res) => {
   try {
     const b = req.body || {};
     const patch = {};
@@ -430,7 +430,7 @@ router.put('/admin/game-providers/:key', authenticate, isAdmin, async (req, res)
  * The credentials are fetched by name and stay in this function. The response
  * says reachable or not and why; it never echoes what it authenticated with.
  */
-router.post('/admin/game-providers/:key/test', authenticate, isAdmin, async (req, res) => {
+router.post('/admin/game-providers/:key/test', authenticate, hasPermission('canManageGames'), async (req, res) => {
   try {
     const provider = await db.games.getProvider(req.params.key);
     if (!provider) return res.status(404).json({ success: false, message: 'Provider not found' });
@@ -457,7 +457,7 @@ router.post('/admin/game-providers/:key/test', authenticate, isAdmin, async (req
 });
 
 // GET /api/admin/game-transactions — provider callback history
-router.get('/admin/game-transactions', authenticate, isAdmin, async (req, res) => {
+router.get('/admin/game-transactions', authenticate, hasPermission('canManageGames'), async (req, res) => {
   try {
     const { providerKey, userId, txType, page = 1, limit = 30 } = req.query;
     // The page and its total come back from one query, so the footer count and
@@ -476,7 +476,7 @@ router.get('/admin/game-transactions', authenticate, isAdmin, async (req, res) =
  * Created disabled: enabling happens after the credentials are entered and the
  * test passes, which is a second, deliberate action.
  */
-router.post('/admin/game-providers', authenticate, isAdmin, async (req, res) => {
+router.post('/admin/game-providers', authenticate, hasPermission('canManageGames'), async (req, res) => {
   try {
     const { key, name, category, description, logoUrl, apiUrl,
       apiKey, apiSecret, merchantId, webhookSecret, extraConfig } = req.body || {};
@@ -519,7 +519,7 @@ router.post('/admin/game-providers', authenticate, isAdmin, async (req, res) => 
  * tile leaves a lobby entry that fails at the click, and the player is the one
  * who discovers it.
  */
-router.delete('/admin/game-providers/:key', authenticate, isAdmin, async (req, res) => {
+router.delete('/admin/game-providers/:key', authenticate, hasPermission('canManageGames'), async (req, res) => {
   try {
     const result = await db.games.deleteProvider(req.params.key);
     if (!result.ok && result.reason === 'NOT_FOUND') {

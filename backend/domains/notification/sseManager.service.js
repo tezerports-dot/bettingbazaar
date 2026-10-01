@@ -3,6 +3,7 @@
 
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
+import { staffMayReceive } from './staffEventAreas.js';
 
 const DEFAULT_MAX_BUFFERED_BYTES = 1024 * 1024;
 
@@ -21,8 +22,12 @@ class SSEManager {
         // Private merchant channels  Map<merchantId_string, Set<response>>
         this.merchantClients = new Map();
 
-        // Private admin channel  Set<response>
-        this.adminClients = new Set();
+        // Private staff channel  Map<response, viewer>. The viewer is the staff
+        // account as it was when the stream opened: what it may receive is
+        // decided per event from its permissions (staffEventAreas.js), and a
+        // change to those permissions closes the stream (closeAdminClientsFor),
+        // so a stream never outlives the grant it was opened under.
+        this.adminClients = new Map();
 
         // Private USER channels  Map<userId_string, Set<response>>
         // Wallet service calls sendToUser after every balance change.
@@ -83,6 +88,7 @@ class SSEManager {
             case 'sendToUser':       return this._localSendToUser(...args);
             case 'sendToMerchant':   return this._localSendToMerchant(...args);
             case 'broadcastToAdmins':return this._localBroadcastToAdmins(...args);
+            case 'closeAdminClientsFor': return this._localCloseAdminClientsFor(...args);
             case 'broadcastToMerchants': return this._localBroadcastToMerchants(...args);
         }
     }
@@ -272,8 +278,15 @@ class SSEManager {
      * Register an admin SSE connection.
      * @param {Response} res — Express response object
      */
-    addAdminClient(res) {
-        this.adminClients.add(res);
+    /**
+     * @param {import('http').ServerResponse} res
+     * @param {{userId:string,isAdmin?:boolean,isSubAdmin?:boolean,isQueueManager?:boolean,subAdminPermissions?:object}} viewer
+     *   REQUIRED. A stream with no viewer would have to be sent everything or
+     *   nothing, and "everything" is the defect this exists to stop.
+     */
+    addAdminClient(res, viewer) {
+        if (!viewer?.userId) throw new Error('addAdminClient: the staff viewer is required');
+        this.adminClients.set(res, viewer);
         this.stats.totalConnections++;
 
         res.on('close', () => { this.adminClients.delete(res); });
@@ -282,7 +295,8 @@ class SSEManager {
     }
 
     /**
-     * Broadcast an event to ALL connected admin SSE clients.
+     * Broadcast an event to the connected staff ALLOWED it — the areas
+     * `staffEventAreas.js` names for this event, and full admins.
      * @param {string} event
      * @param {object} data
      */
@@ -295,10 +309,29 @@ class SSEManager {
         if (this.adminClients.size === 0) return;
         const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
         const dead = [];
-        for (const res of this.adminClients) {
+        for (const [res, viewer] of this.adminClients) {
+            if (!staffMayReceive(viewer, event)) continue;
             this._writeOrDrop(res, payload, () => dead.push(res));
         }
         for (const res of dead) this.adminClients.delete(res);
+    }
+
+    /**
+     * End every staff stream this account holds, on every instance. Called when
+     * an admin changes or removes a sub-admin's permissions: the panel
+     * reconnects, and the new stream is opened under the new grant.
+     */
+    closeAdminClientsFor(userId) {
+        this._localCloseAdminClientsFor(userId);
+        this._publish('closeAdminClientsFor', [userId]);
+    }
+
+    _localCloseAdminClientsFor(userId) {
+        for (const [res, viewer] of this.adminClients) {
+            if (String(viewer.userId) !== String(userId)) continue;
+            this.adminClients.delete(res);
+            try { res.end(); } catch { /* already gone */ }
+        }
     }
 
     // ── KEEP-ALIVE ────────────────────────────────────────────────────────────
@@ -325,7 +358,7 @@ class SSEManager {
 
         // Admin clients
         const deadAdmin = [];
-        for (const res of this.adminClients) {
+        for (const res of this.adminClients.keys()) {
             this._writeOrDrop(res, ping, () => deadAdmin.push(res));
         }
         for (const res of deadAdmin) this.adminClients.delete(res);

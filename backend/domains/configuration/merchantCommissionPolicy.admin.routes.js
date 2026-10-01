@@ -6,7 +6,7 @@
  * Mounted at /api/admin via routes/admin/index.js.
  */
 import {
-  authenticate, express, hasPermission, isAdmin, isAdminOrSubAdmin,
+  authenticate, express, hasPermission,
 } from '../../routes/admin/_adminShared.js';
 import { db } from '#db';
 import {
@@ -20,7 +20,7 @@ import {
 const router = express.Router();
 
 // GET /api/admin/merchant-commission-policy — the currently active policy.
-router.get('/merchant-commission-policy', authenticate, hasPermission('canManageMerchants'), async (req, res) => {
+router.get('/merchant-commission-policy', authenticate, hasPermission('canManageCommission'), async (req, res) => {
   try {
     const policy = await getActiveCommissionPolicy();
     res.json({ success: true, policy: policy || null,
@@ -36,7 +36,7 @@ router.get('/merchant-commission-policy', authenticate, hasPermission('canManage
 });
 
 // GET /api/admin/merchant-commission-policy/history — full audit trail.
-router.get('/merchant-commission-policy/history', authenticate, hasPermission('canManageMerchants'), async (req, res) => {
+router.get('/merchant-commission-policy/history', authenticate, hasPermission('canManageCommission'), async (req, res) => {
   try {
     const history = await getCommissionPolicyHistory();
     res.json({ success: true, history });
@@ -49,7 +49,7 @@ router.get('/merchant-commission-policy/history', authenticate, hasPermission('c
 // PUT /api/admin/merchant-commission-policy — create a new version.
 // Body: { enabled, minMatchedVolume, rates: [{currency, paymentMode,
 //         denominationPaise, buyPercent, sellPercent}], justification }
-router.put('/merchant-commission-policy', authenticate, isAdmin, async (req, res) => {
+router.put('/merchant-commission-policy', authenticate, hasPermission('canManageCommission'), async (req, res) => {
   try {
     const { enabled, minMatchedVolume, rates, justification } = req.body;
     const actor = { userId: req.user.userId, userName: req.user.username };
@@ -85,7 +85,7 @@ router.put('/merchant-commission-policy', authenticate, isAdmin, async (req, res
 });
 
 // POST /api/admin/merchant-commission-policy/version/:versionId/rollback
-router.post('/merchant-commission-policy/version/:versionId/rollback', authenticate, isAdmin, async (req, res) => {
+router.post('/merchant-commission-policy/version/:versionId/rollback', authenticate, hasPermission('canManageCommission'), async (req, res) => {
   try {
     const actor = { userId: req.user.userId, userName: req.user.username };
     let doc;

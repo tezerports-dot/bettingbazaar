@@ -269,7 +269,8 @@ wrong owner gets working code deleted by the next reader.
 | Cycle-type vocabulary | `domains/markets/cycleTypes.js` — names only, never numbers. Throws on an unknown type rather than defaulting, because the ternaries it replaced failed silently. |
 | Game catalogue | `games` + `game_categories`. No hardcoded game arrays anywhere. |
 | Trading vocabulary | `domains/trading/tradingModels.js` |
-| Sub-admin permission keys | `users.sub_admin_permissions`; frontends import from `utils/permissions.ts`. |
+| **What a sub-admin can be given, and what every staff route asks for** | `backend/domains/identity/staffPermissions.js` — 29 AREAS (`STAFF_PERMISSIONS`), one key per area of the admin panel, each with the label and description the Sub-admins screen shows, and `ADMIN_ONLY_AREAS`: the 8 routes no sub-admin can be given, each with its reason (they GRANT authority — sub-admins, staff roles, queue managers). Every staff route asks `hasPermission(<area>)` and nothing weaker; `isAdminOrSubAdmin` ("are you staff at all") is deleted. Owner, 2026-10-01: *"the sub admin then can only do the work in those permissioned areas."* `npm run check:staff-permissions` reads the LIVE route stacks and fails the build on a staff route naming no area, an unlisted full-admin-only route, or a panel key the server does not declare. A grant is stored as every key true/false; an unknown key or a non-boolean is refused by name, and a body with no `permissions` is refused — ABSENT is not EMPTY (the panel sent the wrong shape and every save revoked everything). The admin panel renders the picker from `GET /api/admin/staff-permissions` and keeps only a §5 mirror of the keys (`utils/permissions.ts`). A grant is the account's row (`users.sub_admin_permissions`), read on every request. |
+| **Which staff receive a live admin event** | `backend/domains/notification/staffEventAreas.js` — each admin event names the areas whose screens need it; the SSE admin stream filters per client and the socket admin room is one room per area. An undeclared event reaches full admins only. A permission change closes that account's streams on every instance (`closeAdminClientsFor`, `disconnectSockets`), so no stream outlives the grant it was opened under. Both transports delivered EVERYTHING to every staff account before (F-047). |
 | Chat rules | Chat config document via `/api/chat/config` |
 | Branding | The `Branding` document — see §13 |
 | Social/support links | `SupportLinks` — **not** Branding |
@@ -2244,6 +2245,7 @@ when the §31 table's **Neighbours** row names:
 | `npm run check:settable` | Every order-lifecycle `set` names a column the writer accepts. |
 | `npm run check:db-boundary` | No SQL, driver or relative reach past `#db`. |
 | `npm run check:orphans` | Every identifier used is declared, imported or a parameter. |
+| `npm run check:staff-permissions` | Every staff route asks for an AREA an admin can grant (read off the live route stacks); full-admin-only routes are the listed, reasoned few; the admin panel names the same keys. |
 | `npm run check:balance-reads` | A number that GATES a transfer is read from the rows the write will lock. |
 | `npm run check:coherence` | Every column the repositories name exists, and no schema object is defined twice. |
 | `npm run check:merchant-privacy` | A merchant is told the payout account — never the player's phone or UPI ID. |

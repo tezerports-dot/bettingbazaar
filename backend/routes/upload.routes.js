@@ -4,7 +4,7 @@
 import express from 'express';
 import { db } from '#db';
 import cdnService from '../services/cdn.service.js';
-import { authenticate, isAdmin } from '../domains/identity/auth.middleware.js';
+import { authenticate } from '../domains/identity/auth.middleware.js';
 import { merchantAuth } from '../middleware/merchantAuth.js';
 import { serverError, callerError, respondError } from '../shared/httpError.js';
 // Order chat. An attachment that is not recorded is an upload nobody can find.

@@ -2,7 +2,7 @@
 /** merchant.admin.routes.js — admin-facing merchant management. Domain: Merchant
  * (BBEPS Phase 003 §3.3). Moved from backend/routes/admin/merchants.admin.routes.js
  * on 2026-07-01 (BBEPS Phase 004 migration). */
-import { express, authenticate, isAdmin, isAdminOrSubAdmin } from '../../routes/admin/_adminShared.js';
+import { express, authenticate, hasPermission } from '../../routes/admin/_adminShared.js';
 import { paiseToRupees } from '../../shared/money.js';
 import { db } from '#db';
 import { creditMerchantTokens, debitMerchantTokens } from './merchantWallet.service.js';
@@ -21,6 +21,7 @@ import {
   CONSIDERATION_CURRENCIES,
   assertRecordable as assertConsiderationRecordable,
 } from '#db/repositories/adminTokenConsiderations.js';
+import { emitToStaff } from '../notification/staffEventAreas.js';
 
 const router = express.Router();
 
@@ -75,7 +76,7 @@ async function rollbackAdminTransfer(amount, opts) {
 }
 
 
-router.get('/merchants', authenticate, isAdmin, async (req, res) => {
+router.get('/merchants', authenticate, hasPermission('canManageMerchants'), async (req, res) => {
   try {
     const { status, page = 1, limit = 50, search, currency } = req.query;
 
@@ -145,7 +146,7 @@ router.get('/merchants', authenticate, isAdmin, async (req, res) => {
 
 // ✅ FIX #20: Audit log endpoint now uses EnhancedAuditLog model (defined in models/audit.model.js)
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
-router.get('/merchants/:merchantId', authenticate, isAdmin, async (req, res) => {
+router.get('/merchants/:merchantId', authenticate, hasPermission('canManageMerchants'), async (req, res) => {
   try {
     const { merchantId } = req.params;
     const merchant = await db.merchants.getMerchant(merchantId);
@@ -158,7 +159,7 @@ router.get('/merchants/:merchantId', authenticate, isAdmin, async (req, res) => 
 });
 
 // Suspend a merchant. The reason is required by the row, not only by the route.
-router.put('/merchants/:merchantId/suspend', authenticate, isAdmin, async (req, res) => {
+router.put('/merchants/:merchantId/suspend', authenticate, hasPermission('canManageMerchants'), async (req, res) => {
   try {
     const { merchantId } = req.params;
     const { reason } = req.body;
@@ -187,7 +188,7 @@ router.put('/merchants/:merchantId/suspend', authenticate, isAdmin, async (req, 
 });
 
 // Activate a merchant, clearing any stale suspension reason in the same statement.
-router.put('/merchants/:merchantId/activate', authenticate, isAdmin, async (req, res) => {
+router.put('/merchants/:merchantId/activate', authenticate, hasPermission('canManageMerchants'), async (req, res) => {
   try {
     const { merchantId } = req.params;
 
@@ -230,7 +231,7 @@ router.put('/merchants/:merchantId/activate', authenticate, isAdmin, async (req,
  * same for everyone, because a small order still takes real inventory out of
  * circulation for the length of its window.
  */
-router.put('/merchants/:merchantId/limits', authenticate, isAdmin, async (req, res) => {
+router.put('/merchants/:merchantId/limits', authenticate, hasPermission('canManageMerchants'), async (req, res) => {
   try {
     const { merchantId } = req.params;
     const { cashDenomination } = req.body;
@@ -330,7 +331,7 @@ router.put('/merchants/:merchantId/limits', authenticate, isAdmin, async (req, r
 // and order range. Everything here is enforced by
 // merchantScoring.selectBestMerchant, so toggling a capability immediately
 // changes which orders this merchant is offered. (Phase-audit 2026-07-09.)
-router.put('/merchants/:merchantId/capabilities', authenticate, isAdmin, async (req, res) => {
+router.put('/merchants/:merchantId/capabilities', authenticate, hasPermission('canManageMerchants'), async (req, res) => {
   try {
     const { merchantId } = req.params;
     const { acceptsDeposits, acceptsWithdrawals, acceptedCurrencies, merchantType } = req.body;
@@ -407,7 +408,7 @@ router.put('/merchants/:merchantId/capabilities', authenticate, isAdmin, async (
 });
 
 // Get merchant earnings
-router.get('/merchants/:merchantId/earnings', authenticate, isAdmin, async (req, res) => {
+router.get('/merchants/:merchantId/earnings', authenticate, hasPermission('canManageMerchants'), async (req, res) => {
   try {
     const { merchantId } = req.params;
     const merchant = await db.merchants.getMerchant(req.params.merchantId);
@@ -434,7 +435,7 @@ router.get('/merchants/:merchantId/earnings', authenticate, isAdmin, async (req,
   }
 });
 
-router.get('/merchants/:merchantId/profile', authenticate, isAdmin, async (req, res) => {
+router.get('/merchants/:merchantId/profile', authenticate, hasPermission('canManageMerchants'), async (req, res) => {
   try {
     const { merchantId } = req.params;
     const merchant = await db.merchants.getMerchant(merchantId);
@@ -465,7 +466,7 @@ router.get('/merchants/:merchantId/profile', authenticate, isAdmin, async (req, 
 });
 
 // Approve a merchant application.
-router.put('/merchants/:merchantId/approve', authenticate, isAdmin, async (req, res) => {
+router.put('/merchants/:merchantId/approve', authenticate, hasPermission('canManageMerchants'), async (req, res) => {
   try {
     const { merchantId } = req.params;
     // Approval sets the status, records WHO approved it and WHEN, and clears
@@ -515,7 +516,7 @@ router.put('/merchants/:merchantId/approve', authenticate, isAdmin, async (req, 
  * The expiry streak is zeroed with it, in the same statement — left at three,
  * the next ordinary expiry pauses them again and this decision lasts one order.
  */
-router.put('/merchants/:merchantId/resume-assignment', authenticate, isAdmin, async (req, res) => {
+router.put('/merchants/:merchantId/resume-assignment', authenticate, hasPermission('canManageMerchants'), async (req, res) => {
   try {
     const { merchantId } = req.params;
     const { note } = req.body ?? {};
@@ -557,7 +558,7 @@ router.put('/merchants/:merchantId/resume-assignment', authenticate, isAdmin, as
 });
 
 // Reject merchant — FIX B6-b: new endpoint (previously missing)
-router.put('/merchants/:merchantId/reject', authenticate, isAdmin, async (req, res) => {
+router.put('/merchants/:merchantId/reject', authenticate, hasPermission('canManageMerchants'), async (req, res) => {
   try {
     const { merchantId } = req.params;
     const { reason } = req.body;
@@ -590,7 +591,7 @@ router.put('/merchants/:merchantId/reject', authenticate, isAdmin, async (req, r
 });
 
 // Create merchant account — FIX B6-c: also create Merchant doc (was User-only, broke all merchant APIs)
-router.post('/merchants/create', authenticate, isAdmin, async (req, res) => {
+router.post('/merchants/create', authenticate, hasPermission('canManageMerchants'), async (req, res) => {
   try {
     // AQ-8: hash via the password authority (argon2id).
     const { hashPassword } = await import('../identity/password.util.js');
@@ -646,7 +647,7 @@ router.post('/merchants/create', authenticate, isAdmin, async (req, res) => {
 });
 
 // Get user transaction history for admin user detail modal
-router.get('/merchants/:merchantId/transactions', authenticate, isAdmin, async (req, res) => {
+router.get('/merchants/:merchantId/transactions', authenticate, hasPermission('canManageMerchants'), async (req, res) => {
   try {
     const { merchantId } = req.params;
     const { type, status, limit = 50, skip = 0 } = req.query;
@@ -756,7 +757,7 @@ async function resolveConsideration(body, direction) {
   return consideration;
 }
 
-router.post('/merchants/:merchantId/fund', authenticate, isAdmin, async (req, res) => {
+router.post('/merchants/:merchantId/fund', authenticate, hasPermission('canFundMerchants'), async (req, res) => {
   // Logs a MERCHANT_TOPUP transaction — appears in merchant-funding dashboard only,
   // NEVER in user deposit/withdrawal dashboards.
   try {
@@ -920,7 +921,7 @@ router.post('/merchants/:merchantId/fund', authenticate, isAdmin, async (req, re
 // ─────────────────────────────────────────────────────────────────────────────
 // Merchant admin-token purchase workflow: merchant requests once/day with USDT
 // proof; admin approval mints from the fixed supply cap into merchant wallet.
-router.get('/merchant-token-orders', authenticate, isAdmin, async (req, res) => {
+router.get('/merchant-token-orders', authenticate, hasPermission('canManageMerchantTokenOrders'), async (req, res) => {
   try {
     const { status } = req.query;
     const orders = await db.paymentConfig.listTokenOrders({ status: status || null, limit: 200 });
@@ -946,7 +947,7 @@ router.get('/merchant-token-orders', authenticate, isAdmin, async (req, res) => 
   }
 });
 
-router.post('/merchant-token-orders/:orderId/approve', authenticate, isAdmin, async (req, res) => {
+router.post('/merchant-token-orders/:orderId/approve', authenticate, hasPermission('canManageMerchantTokenOrders'), async (req, res) => {
   try {
     const { orderId } = req.params;
 
@@ -1022,7 +1023,7 @@ router.post('/merchant-token-orders/:orderId/approve', authenticate, isAdmin, as
   }
 });
 
-router.post('/merchant-token-orders/:orderId/reject', authenticate, isAdmin, async (req, res) => {
+router.post('/merchant-token-orders/:orderId/reject', authenticate, hasPermission('canManageMerchantTokenOrders'), async (req, res) => {
   try {
     // The note is required by the row: a rejected request the merchant cannot
     // be given a reason for is one they cannot fix and resubmit.
@@ -1052,7 +1053,7 @@ router.post('/merchant-token-orders/:orderId/reject', authenticate, isAdmin, asy
 // a merchant negative, that would silently mint liability elsewhere.
 // GOVERNANCE §1: via merchantWallet.service.js (sole tokenBalance writer).
 // ─────────────────────────────────────────────────────────────────────────────
-router.post('/merchants/:merchantId/deduct', authenticate, isAdmin, async (req, res) => {
+router.post('/merchants/:merchantId/deduct', authenticate, hasPermission('canFundMerchants'), async (req, res) => {
   try {
     const { merchantId } = req.params;
     const { tokenAmount, reason } = req.body;
@@ -1171,7 +1172,7 @@ router.post('/merchants/:merchantId/deduct', authenticate, isAdmin, async (req, 
 
 // Also used to approve and set up merchant accounts after registration.
 // ─────────────────────────────────────────────────────────────────────────────
-router.put('/merchants/:merchantId/panel-url', authenticate, isAdmin, async (req, res) => {
+router.put('/merchants/:merchantId/panel-url', authenticate, hasPermission('canManageMerchants'), async (req, res) => {
   try {
     const { merchantId } = req.params;
     const { panelUrl } = req.body;
@@ -1190,7 +1191,7 @@ router.put('/merchants/:merchantId/panel-url', authenticate, isAdmin, async (req
       return res.status(404).json({ success: false, message: 'Merchant not found' });
     }
 
-    global.io?.to('admin-room').emit('merchant_config_updated', { merchantId, panelUrl: merchant.panelUrl });
+    emitToStaff(global.io, 'merchant_config_updated', { merchantId, panelUrl: merchant.panelUrl });
 
     res.json({ success: true, message: 'Merchant panel URL updated', panelUrl: merchant.panelUrl });
   } catch (error) {
@@ -1228,7 +1229,7 @@ router.put('/merchants/:merchantId/panel-url', authenticate, isAdmin, async (req
 //   Profit     = Revenue − FundCost − WithdrawEx
 //   ROI        = Profit / FundCost × 100
 // ─────────────────────────────────────────────────────────────────────────────
-router.get('/merchants/:merchantId/profit-engine', authenticate, isAdmin, async (req, res) => {
+router.get('/merchants/:merchantId/profit-engine', authenticate, hasPermission('canManageMerchants'), async (req, res) => {
   try {
     const { merchantId } = req.params;
     const merchant = await db.merchants.getMerchant(merchantId);

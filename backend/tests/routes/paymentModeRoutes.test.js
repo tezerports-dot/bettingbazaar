@@ -104,13 +104,14 @@ describePg('the settlement rail, through the routes that move it', () => {
     expect(res.body.status).toBeUndefined();
   });
 
-  it('refuses the switch to a sub-admin, and to no token at all', async () => {
+  it('refuses the rail to a sub-admin without the business-policy area — read and switch — and to no token at all', async () => {
     const subAdmin = await actor({ isSubAdmin: true, permissions: { canViewAnalytics: true } });
     const before = await getActivePolicy();
 
-    // Reading the rail is operational; changing it is not.
+    // The rail is the Business Policy area (owner, 2026-10-01: every staff
+    // route permission-based). Reading it was open to ANY sub-admin before.
     const read = await as(adminApp, subAdmin).get('/payment-mode');
-    expect(read.status).toBe(200);
+    expect(read.status).toBe(403);
 
     const write = await as(adminApp, subAdmin).post('/payment-mode')
       .send({ activeMode: PAYMENT_MODES.CASH_ATM, justification: 'Sub-admin tries to switch.' });

@@ -102,7 +102,23 @@ export function verifyOrderHmac(orderId, stored) {
  * `deriveOrderHmac` warns at the first order and the guard degrades with it.
  * Production cannot be that deployment; `validateEnv` refuses to boot it.
  */
-export async function orderAccessGuard(req, res, next) {
+export const orderAccessGuard = guardOrder({ admitAdmin: false });
+
+/**
+ * The same guard for the ONE player-side route a staff member may use: the
+ * deposit confirm, where a full admin force-completing a buy is a real case.
+ *
+ * Everywhere else the order routes are the PLAYER's and the assigned merchant's.
+ * They used to admit any staff account, so a sub-admin holding nothing but
+ * chat moderation could read any player's order, submit a payment reference on
+ * it, or raise a dispute recorded as `disputeRaisedBy: 'user'` — a dispute the
+ * player never raised, attributed to them (2026-10-01). A full admin acts on
+ * orders through the admin routes, which are gated by area.
+ */
+export const orderAccessGuardOrAdmin = guardOrder({ admitAdmin: true });
+
+function guardOrder({ admitAdmin }) {
+  return async function orderAccess(req, res, next) {
   try {
     const orderId = req.params.orderId || req.body?.orderId;
     if (!orderId) return res.status(400).json({ success: false, message: 'orderId required' });
@@ -141,7 +157,10 @@ export async function orderAccessGuard(req, res, next) {
     const isBuyer = uid !== null && String(order.userId) === uid;
     const isMerchant = req.merchantId != null
       && order.merchantId != null && String(order.merchantId) === String(req.merchantId);
-    const isAdmin = req.user?.isAdmin === true || req.user?.isSubAdmin === true;
+    // A FULL admin, and only on the route that asked for one. A sub-admin is
+    // never an order's party: what they may do with orders is decided by their
+    // area on the admin routes, not by this door.
+    const isAdmin = admitAdmin && req.user?.isAdmin === true && req.user?.isBlocked !== true;
 
     if (!isBuyer && !isMerchant && !isAdmin) return refuse();
 
@@ -155,4 +174,5 @@ export async function orderAccessGuard(req, res, next) {
     console.error('[orderAccessGuard] access check failed:', e.message);
     res.status(500).json({ success: false, message: 'Access check failed' });
   }
+  };
 }

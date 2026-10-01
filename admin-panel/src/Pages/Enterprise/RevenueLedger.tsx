@@ -51,7 +51,9 @@ const inr = (n: number) =>
   '₹' + (n ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
 
 export const RevenueLedger: React.FC = () => {
-  const { isAdmin } = usePermissions();
+  const { can } = usePermissions();
+  // Funding the pool moves platform money: the commission area, not analytics.
+  const canFundPool = can('canManageCommission');
   const [summary, setSummary] = useState<{
     accounts: LedgerAccount[]; integrityOk: boolean;
     distributableRevenue: number; merchantBonusPool: number;
@@ -140,7 +142,7 @@ export const RevenueLedger: React.FC = () => {
         </>
       )}
 
-      {isAdmin && (
+      {canFundPool && (
         <div className="card border border-gold-500/30">
           <h3 className="text-lg font-semibold mb-1 flex items-center gap-2">
             <PiggyBank size={18} className="text-gold-500" /> Fund Merchant Bonus Pool

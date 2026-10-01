@@ -1,7 +1,7 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /** users.admin.routes.js — User management, balance adjust, block/unblock, phantom, queue managers */
 import {
-  authenticate, express, hasPermission, isAdmin, isAdminOrSubAdmin,
+  authenticate, express, hasPermission, isAdmin,
 } from './_adminShared.js';
 import { db } from '#db';
 // Cycle-type vocabulary — phantom access is scoped to one type, or BOTH.
@@ -174,7 +174,7 @@ router.get('/users/flagged', authenticate, hasPermission('canManageUsers'), asyn
  * `resetWarnings` stays the admin's separate choice: clearing one wrong
  * complaint should not erase the record of every earlier one.
  */
-router.post('/users/:userId/clear-flag', authenticate, isAdmin, async (req, res) => {
+router.post('/users/:userId/clear-flag', authenticate, hasPermission('canManageUsers'), async (req, res) => {
   try {
     const { resetWarnings = false, note } = req.body || {};
     const user = await db.users.clearPaymentFlag(req.params.userId, {
@@ -271,7 +271,7 @@ router.put('/users/:userId/roles', authenticate, isAdmin, async (req, res) => {
 });
 
 // Block user
-router.put('/users/:userId/block', authenticate, isAdmin, async (req, res) => {
+router.put('/users/:userId/block', authenticate, hasPermission('canManageUsers'), async (req, res) => {
   try {
     const { reason } = req.body;
     // A block REQUIRES a reason — `users_blocked_has_reason` refuses a blocked
@@ -333,7 +333,7 @@ router.put('/users/:userId/block', authenticate, isAdmin, async (req, res) => {
 });
 
 // Unblock user — with optional warningCount reset (Section 13.4 of Migration Spec)
-router.put('/users/:userId/unblock', authenticate, isAdmin, async (req, res) => {
+router.put('/users/:userId/unblock', authenticate, hasPermission('canManageUsers'), async (req, res) => {
   try {
     const { resetWarnings = false } = req.body;
 
@@ -401,7 +401,7 @@ router.put('/users/:userId/unblock', authenticate, isAdmin, async (req, res) => 
  * when. The handler this replaced set those three fields on a plain object and
  * called `.save()`, so no deletion has been recorded at all.
  */
-router.delete('/users/:userId', authenticate, isAdmin, async (req, res) => {
+router.delete('/users/:userId', authenticate, hasPermission('canManageUsers'), async (req, res) => {
   try {
     // ── Money in flight refuses the delete ──────────────────────────────────
     // These two guards existed ONLY in `services/admin.service.js`, which
@@ -469,7 +469,7 @@ router.delete('/users/:userId', authenticate, isAdmin, async (req, res) => {
  */
 
 // Get KYC queue
-router.get('/phantom-agents', authenticate, isAdmin, async (req, res) => {
+router.get('/phantom-agents', authenticate, hasPermission('canManagePhantomAgents'), async (req, res) => {
   try {
     // Secrets never leave the repository: `toUser` omits the password hash and
     // both two-factor secrets, so the `.select('-passwordHash …')` this
@@ -484,7 +484,7 @@ router.get('/phantom-agents', authenticate, isAdmin, async (req, res) => {
 });
 
 // Assign phantom agent role
-router.post('/users/:userId/phantom-access', authenticate, isAdmin, async (req, res) => {
+router.post('/users/:userId/phantom-access', authenticate, hasPermission('canManagePhantomAgents'), async (req, res) => {
   try {
     const { userId } = req.params;
     const { accessLevel } = req.body; // 'NONE', a cycle type, or 'BOTH' (= every type)
@@ -531,7 +531,7 @@ router.post('/users/:userId/phantom-access', authenticate, isAdmin, async (req, 
 });
 
 // Get phantom betting statistics
-router.get('/analytics/phantom-stats', authenticate, isAdmin, async (req, res) => {
+router.get('/analytics/phantom-stats', authenticate, hasPermission('canManagePhantomAgents'), async (req, res) => {
   try {
     // Grouped in the database, ordered by when the cycle RAN. The aggregate
     // this replaced sorted on the grouped cycle id, so its "most recent 10"

@@ -23,7 +23,7 @@
  */
 import net from 'node:net';
 import { db } from '#db';
-import { express, authenticate, isAdmin } from './_adminShared.js';
+import { express, authenticate, hasPermission } from './_adminShared.js';
 import { respondError } from '../../shared/httpError.js';
 import { buildBlockList, listCovers, refreshIpBlocklistNow, ipBlocklistStatus } from '../../middleware/ipBlocklist.js';
 
@@ -81,7 +81,7 @@ export function judgeNetwork(input, requesterIp) {
   return `${address}/${bits}`;
 }
 
-router.get('/security/ip-blocks', authenticate, isAdmin, async (req, res) => {
+router.get('/security/ip-blocks', authenticate, hasPermission('canManageIpBlocks'), async (req, res) => {
   try {
     const includeReleased = req.query.includeReleased === '1' || req.query.includeReleased === 'true';
     const blocks = await db.ipBlocks.listBlocks({ includeReleased });
@@ -91,7 +91,7 @@ router.get('/security/ip-blocks', authenticate, isAdmin, async (req, res) => {
   }
 });
 
-router.post('/security/ip-blocks', authenticate, isAdmin, async (req, res) => {
+router.post('/security/ip-blocks', authenticate, hasPermission('canManageIpBlocks'), async (req, res) => {
   try {
     const network = judgeNetwork(req.body?.network, req.ip);
     const reason = String(req.body?.reason ?? '').trim();
@@ -122,7 +122,7 @@ router.post('/security/ip-blocks', authenticate, isAdmin, async (req, res) => {
   }
 });
 
-router.post('/security/ip-blocks/:blockId/release', authenticate, isAdmin, async (req, res) => {
+router.post('/security/ip-blocks/:blockId/release', authenticate, hasPermission('canManageIpBlocks'), async (req, res) => {
   try {
     const block = await db.ipBlocks.releaseBlock({ blockId: req.params.blockId, actor: req.user.userId });
     if (!block) return res.status(404).json({ success: false, message: 'That block does not exist.' });

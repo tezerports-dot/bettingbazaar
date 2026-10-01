@@ -19,7 +19,7 @@
  *    called a method that does not exist — so every fraud resolution threw a
  *    TypeError after appearing to do its work.
  */
-import { express, authenticate, isAdmin } from './_adminShared.js';
+import { express, authenticate, hasPermission } from './_adminShared.js';
 import { db } from '#db';
 import { cancelOrder as cancelOrderState } from '../../domains/payment/orderLifecycle.service.js';
 
@@ -27,7 +27,7 @@ const router = express.Router();
 
 // ─── GET /api/admin/utr-registry ─────────────────────────────────────────────
 // The registry, filterable by status (ACTIVE | RELEASED | FRAUD).
-router.get('/utr-registry', authenticate, isAdmin, async (req, res) => {
+router.get('/utr-registry', authenticate, hasPermission('canManageUtr'), async (req, res) => {
   try {
     const { status, limit = 50, page = 1 } = req.query;
     // Page and total from one query, with the player and order joined rather
@@ -45,7 +45,7 @@ router.get('/utr-registry', authenticate, isAdmin, async (req, res) => {
 });
 
 // ─── GET /api/admin/utr-registry/:utr ────────────────────────────────────────
-router.get('/utr-registry/:utr', authenticate, isAdmin, async (req, res) => {
+router.get('/utr-registry/:utr', authenticate, hasPermission('canManageUtr'), async (req, res) => {
   try {
     const entry = await db.utr.getRegistryEntry(req.params.utr);
     if (!entry) return res.status(404).json({ success: false, message: 'UTR not found in registry' });
@@ -63,7 +63,7 @@ router.get('/utr-registry/:utr', authenticate, isAdmin, async (req, res) => {
  * decisions with separate evidence, and coupling them means an operator marking
  * a suspicious reference silently cancels a player's deposit.
  */
-router.put('/utr-registry/:utr/flag', authenticate, isAdmin, async (req, res) => {
+router.put('/utr-registry/:utr/flag', authenticate, hasPermission('canManageUtr'), async (req, res) => {
   try {
     const { reason } = req.body || {};
     if (!String(reason ?? '').trim()) {
@@ -91,7 +91,7 @@ router.put('/utr-registry/:utr/flag', authenticate, isAdmin, async (req, res) =>
 });
 
 /** Lift a flag. Recorded as a state change, never by erasing the previous one. */
-router.put('/utr-registry/:utr/clear', authenticate, isAdmin, async (req, res) => {
+router.put('/utr-registry/:utr/clear', authenticate, hasPermission('canManageUtr'), async (req, res) => {
   try {
     const result = await db.utr.clearFraudFlag(req.params.utr, { actor: req.user.userId });
     if (!result.ok) return res.status(404).json({ success: false, message: 'That UTR is not flagged' });
@@ -107,7 +107,7 @@ router.put('/utr-registry/:utr/clear', authenticate, isAdmin, async (req, res) =
 });
 
 // ─── GET /api/admin/utr/flagged — orders held for review ─────────────────────
-router.get('/utr/flagged', authenticate, isAdmin, async (req, res) => {
+router.get('/utr/flagged', authenticate, hasPermission('canManageUtr'), async (req, res) => {
   try {
     const { page = 1, limit = 50 } = req.query;
     const size = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 200);
@@ -141,7 +141,7 @@ router.get('/utr/flagged', authenticate, isAdmin, async (req, res) => {
  * starts at zero attempts and sorted below all of them, so it never appeared at
  * all.
  */
-router.get('/utr/contested', authenticate, isAdmin, async (req, res) => {
+router.get('/utr/contested', authenticate, hasPermission('canManageUtr'), async (req, res) => {
   try {
     const { page = 1, limit = 50 } = req.query;
     const result = await db.utr.contestedUtrs({ page, limit });
@@ -157,7 +157,7 @@ router.get('/utr/contested', authenticate, isAdmin, async (req, res) => {
 });
 
 // ─── GET /api/admin/utr/stats ────────────────────────────────────────────────
-router.get('/utr/stats', authenticate, isAdmin, async (req, res) => {
+router.get('/utr/stats', authenticate, hasPermission('canManageUtr'), async (req, res) => {
   try {
     res.json({ success: true, stats: await db.utr.utrStats() });
   } catch (error) {
@@ -167,7 +167,7 @@ router.get('/utr/stats', authenticate, isAdmin, async (req, res) => {
 });
 
 // ─── GET /api/admin/utr/user-history/:userId ─────────────────────────────────
-router.get('/utr/user-history/:userId', authenticate, isAdmin, async (req, res) => {
+router.get('/utr/user-history/:userId', authenticate, hasPermission('canManageUtr'), async (req, res) => {
   try {
     const history = await db.utr.userUtrHistory(req.params.userId, { limit: 100 });
     res.json({ success: true, history, totalUTRs: history.length });
@@ -187,7 +187,7 @@ router.get('/utr/user-history/:userId', authenticate, isAdmin, async (req, res) 
  * — so the cancellation neither happened nor was recorded, and the handler
  * threw.
  */
-router.post('/utr/resolve/:orderId', authenticate, isAdmin, async (req, res) => {
+router.post('/utr/resolve/:orderId', authenticate, hasPermission('canManageUtr'), async (req, res) => {
   try {
     const { action, notes } = req.body || {};
     if (!['approve', 'reject'].includes(action)) {

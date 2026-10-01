@@ -14,16 +14,19 @@
  * users are unaffected because identities are keyed on the person's Telegram
  * user id, which belongs to Telegram rather than to our bot.
  *
- * ── Everything here is isAdmin, never isAdminOrSubAdmin ─────────────────────
- * These endpoints move the platform's identity root and export national ID
- * numbers. Admin 2FA is mandatory platform-wide, so isAdmin also means "proved
- * a second factor" — which is the control the operator obligations research
- * calls for on raw-KYC access.
+ * ── Three areas, each granted on its own ──────────────────────────────────
+ * Telegram setup (`canManageTelegram`) moves the platform's identity root; bulk
+ * KYC (`canBulkVerifyKYC`) exports national ID numbers; referrals
+ * (`canManageReferrals`) pay money. Each is its own area so an admin can give
+ * one without the others (owner, 2026-10-01). Every staff account owes a second
+ * factor (twoFactorPolicy), sub-admins included — the control the operator
+ * obligations research calls for on raw-KYC access holds for whoever is given
+ * it.
  */
 import express from 'express';
 import { db } from '#db';
 import crypto from 'crypto';
-import { authenticate, isAdmin } from '../../domains/identity/auth.middleware.js';
+import { authenticate, hasPermission } from '../../domains/identity/auth.middleware.js';
 import { encryptField } from '../../domains/identity/fieldCrypto.util.js';
 import {
   verifyBotToken, setWebhook, invalidateConfigCache, activeConfig, liveBot,
@@ -88,7 +91,7 @@ router.get('/verification', authenticate, verificationEndpoint((req) => req.user
 // ═══════════════════════════════════════════════════════════════════════════
 
 /** GET /api/admin/telegram/config — the active generation, secrets omitted. */
-router.get('/telegram/config', authenticate, isAdmin, async (req, res) => {
+router.get('/telegram/config', authenticate, hasPermission('canManageTelegram'), async (req, res) => {
   try {
     const audience = audienceFromQuery(req);
     if (!audience) {
@@ -136,7 +139,7 @@ router.get('/telegram/config', authenticate, isAdmin, async (req, res) => {
  * noticed, and the failure would look like "the bot stopped working" rather
  * than "the value pasted was wrong".
  */
-router.post('/telegram/config', authenticate, isAdmin, async (req, res) => {
+router.post('/telegram/config', authenticate, hasPermission('canManageTelegram'), async (req, res) => {
   try {
     const {
       botToken, recoveryBotToken, channelId, channelUsername, channelInviteLink,
@@ -248,7 +251,7 @@ router.post('/telegram/config', authenticate, isAdmin, async (req, res) => {
  * untouched: none of them is keyed on the channel. A player joins the new
  * channel and continues exactly where they were.
  */
-router.post('/telegram/channel', authenticate, isAdmin, async (req, res) => {
+router.post('/telegram/channel', authenticate, hasPermission('canManageTelegram'), async (req, res) => {
   try {
     const { channelId, channelUsername, channelInviteLink, reason } = req.body || {};
     if (!channelId) {
@@ -336,7 +339,7 @@ router.post('/telegram/channel', authenticate, isAdmin, async (req, res) => {
  * be from different moments — and the moment that matters is the one where an
  * operator decides whether to add bots.
  */
-router.get('/telegram/bots', authenticate, isAdmin, async (req, res) => {
+router.get('/telegram/bots', authenticate, hasPermission('canManageTelegram'), async (req, res) => {
   try {
     // No audience filter by default: the screen shows all three fleets
     // together, because the state an operator most needs to see is a panel
@@ -358,7 +361,7 @@ router.get('/telegram/bots', authenticate, isAdmin, async (req, res) => {
 });
 
 /** POST /api/admin/telegram/bots — register a bot, verified against Telegram. */
-router.post('/telegram/bots', authenticate, isAdmin, async (req, res) => {
+router.post('/telegram/bots', authenticate, hasPermission('canManageTelegram'), async (req, res) => {
   try {
     const { label, role, audience, token, notes } = req.body || {};
     const bot = await registerBot({
@@ -381,7 +384,7 @@ router.post('/telegram/bots', authenticate, isAdmin, async (req, res) => {
  * none. Players are not affected: an identity is keyed on the person's Telegram
  * user id, not on whichever of our bots they happen to be messaging.
  */
-router.post('/telegram/bots/:id/promote', authenticate, isAdmin, async (req, res) => {
+router.post('/telegram/bots/:id/promote', authenticate, hasPermission('canManageTelegram'), async (req, res) => {
   try {
     const result = await promote({
       id: req.params.id,
@@ -403,7 +406,7 @@ router.post('/telegram/bots/:id/promote', authenticate, isAdmin, async (req, res
 });
 
 /** POST /api/admin/telegram/bots/:id/webhook — retry a registration that failed. */
-router.post('/telegram/bots/:id/webhook', authenticate, isAdmin, async (req, res) => {
+router.post('/telegram/bots/:id/webhook', authenticate, hasPermission('canManageTelegram'), async (req, res) => {
   try {
     const bot = await retryWebhook({ id: req.params.id, webhookBaseUrl: req.body?.webhookBaseUrl });
     res.json({ success: true, bot, message: `Telegram is now delivering to @${bot.username}.` });
@@ -413,7 +416,7 @@ router.post('/telegram/bots/:id/webhook', authenticate, isAdmin, async (req, res
 });
 
 /** POST /api/admin/telegram/bots/:id/retire — stand a bot down for good. */
-router.post('/telegram/bots/:id/retire', authenticate, isAdmin, async (req, res) => {
+router.post('/telegram/bots/:id/retire', authenticate, hasPermission('canManageTelegram'), async (req, res) => {
   try {
     const bot = await retire({ id: req.params.id, actorId: req.user.userId });
     console.warn(`[admin/telegram] RETIRE @${bot.username} (${bot.role}) by admin ${req.user.userId}`);
@@ -427,7 +430,7 @@ router.post('/telegram/bots/:id/retire', authenticate, isAdmin, async (req, res)
 // MESSAGE TEMPLATES — the bot's words
 // ═══════════════════════════════════════════════════════════════════════════
 
-router.get('/telegram/templates', authenticate, isAdmin, async (req, res) => {
+router.get('/telegram/templates', authenticate, hasPermission('canManageTelegram'), async (req, res) => {
   try {
     res.json({ success: true, templates: await listTemplates() });
   } catch (err) {
@@ -443,7 +446,7 @@ router.get('/telegram/templates', authenticate, isAdmin, async (req, res) => {
  * path falls back to if a template somehow still fails to parse — a typo here
  * must not be able to take signup offline.
  */
-router.put('/telegram/templates/:key', authenticate, isAdmin, async (req, res) => {
+router.put('/telegram/templates/:key', authenticate, hasPermission('canManageTelegram'), async (req, res) => {
   try {
     const saved = await saveTemplate({
       key: req.params.key,
@@ -466,7 +469,7 @@ router.put('/telegram/templates/:key', authenticate, isAdmin, async (req, res) =
 // KYC BATCHES
 // ═══════════════════════════════════════════════════════════════════════════
 
-router.get('/kyc/bulk/stats', authenticate, isAdmin, async (req, res) => {
+router.get('/kyc/bulk/stats', authenticate, hasPermission('canBulkVerifyKYC'), async (req, res) => {
   try {
     res.json({ success: true, ...(await kycStats()) });
   } catch (err) {
@@ -480,7 +483,7 @@ router.get('/kyc/bulk/stats', authenticate, isAdmin, async (req, res) => {
  * Streamed as an attachment and never persisted server-side. Every call writes
  * an audit row naming the admin.
  */
-router.get('/kyc/bulk/export', authenticate, isAdmin, async (req, res) => {
+router.get('/kyc/bulk/export', authenticate, hasPermission('canBulkVerifyKYC'), async (req, res) => {
   try {
     const limit = Math.min(Number(req.query.limit) || 10_000, 50_000);
     const { batchId, csv, rowCount } = await buildExport({ actorId: req.user.userId, limit });
@@ -502,7 +505,7 @@ router.get('/kyc/bulk/export', authenticate, isAdmin, async (req, res) => {
 });
 
 /** POST /api/admin/kyc/bulk/import — apply a completed verification file. */
-router.post('/kyc/bulk/import', authenticate, isAdmin, async (req, res) => {
+router.post('/kyc/bulk/import', authenticate, hasPermission('canBulkVerifyKYC'), async (req, res) => {
   try {
     const csv = typeof req.body === 'string' ? req.body : req.body?.csv;
     const result = await applyImport({ csv, actorId: req.user.userId });
@@ -519,7 +522,7 @@ router.post('/kyc/bulk/import', authenticate, isAdmin, async (req, res) => {
 // REFERRAL PROGRAMME
 // ═══════════════════════════════════════════════════════════════════════════
 
-router.get('/referral/stats', authenticate, isAdmin, async (req, res) => {
+router.get('/referral/stats', authenticate, hasPermission('canManageReferrals'), async (req, res) => {
   try {
     const s = await programmeStats();
     res.json({
@@ -549,7 +552,7 @@ router.get('/referral/stats', authenticate, isAdmin, async (req, res) => {
  * defensible to everyone waiting in it, and what stops a disbursal from being a
  * discretionary favour.
  */
-router.post('/referral/disburse', authenticate, isAdmin, async (req, res) => {
+router.post('/referral/disburse', authenticate, hasPermission('canManageReferrals'), async (req, res) => {
   try {
     const amount = Number(req.body?.amount);
     if (!Number.isFinite(amount) || amount <= 0) {

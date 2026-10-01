@@ -19,6 +19,7 @@ vi.mock('../../services/api', () => ({ default: { get, post } }));
 vi.mock('react-hot-toast', () => ({ default: { success: vi.fn(), error: vi.fn() } }));
 
 import { OperationsOverview } from './OperationsOverview';
+import { useAuthStore } from '../../services/auth';
 
 /**
  * The overview tab is left UNSET on purpose (`success: false`, so `overview`
@@ -38,6 +39,8 @@ const CHANNELS = [
 
 beforeEach(() => {
   get.mockReset(); post.mockReset();
+  // A full admin: the maintenance controls are the canRunMaintenance area.
+  useAuthStore.setState({ admin: { isAdmin: true } as any, isAuthenticated: true });
   get.mockImplementation((url: string) => {
     if (url.includes('operations/overview')) return Promise.resolve({ data: { success: false } });
     if (url.includes('config-catalog')) return Promise.resolve({ data: { success: true, catalog: [] } });
@@ -94,6 +97,13 @@ describe('the operations console', () => {
     fireEvent.click(await screen.findByRole('button', { name: /Rebuild leaderboard/ }));
     await waitFor(() => expect(post).toHaveBeenCalled());
     expect(post.mock.calls[0][0]).toBe('/api/leaderboard/rebuild');
+  });
+
+  it('does not offer the rebuild to a sub-admin who was not given maintenance', async () => {
+    useAuthStore.setState({ admin: { isAdmin: false, isSubAdmin: true, permissions: { canViewAnalytics: true } } as any });
+    await openChannels();
+    await screen.findByText(/admin actions|No admin actions/i).catch(() => undefined);
+    expect(screen.queryByRole('button', { name: /Rebuild leaderboard/ })).toBeNull();
   });
 
   it('survives channels being unavailable without losing the rest', async () => {

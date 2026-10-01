@@ -13,6 +13,7 @@ import sseService from '../../services/sse';
 import type { Cycle } from '../../types';
 import toast from 'react-hot-toast';
 
+import { usePermissions } from '../../hooks/usePermission';
 // Short label per cycle type. A ternary here rendered every type it did not
 // know as "FULL DAY" — so a 1-minute cycle was mislabelled on the live board.
 const CYCLE_TYPE_LABEL: Record<string, string> = {
@@ -35,6 +36,7 @@ const cycleStatusTone: Record<string, string> = {
 };
 
 export const LiveCycles: React.FC = () => {
+  const canAct = usePermissions().can('canManageCycles');
   const [cycles, setCycles] = useState<Cycle[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [now, setNow] = useState(Date.now());
@@ -216,8 +218,10 @@ export const LiveCycles: React.FC = () => {
                   </span>
                 </div>
 
-                {/* Actions — Balance Book (equalizer) + lifecycle controls */}
-                <div style={{ display: 'flex', gap: 9, marginTop: 14, flexWrap: 'wrap' }}>
+                {/* Actions — Balance Book (equalizer) + lifecycle controls.
+                    Acting on a cycle is its own area (canManageCycles); viewing
+                    them is analytics. */}
+                {canAct && <div style={{ display: 'flex', gap: 9, marginTop: 14, flexWrap: 'wrap' }}>
                   {!c.phantomBalanced && c.status === 'OPEN' && (
                     <button onClick={() => setConfirmAction({ type: 'equalizer', cycle: c })} style={{ flex: 1, minWidth: 130, height: 38, borderRadius: 9, background: 'var(--surface-2)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, fontSize: 12.5, fontWeight: 700, cursor: 'pointer', color: 'var(--text)' }}>
                       <Scale size={14} /> Balance Book
@@ -232,7 +236,7 @@ export const LiveCycles: React.FC = () => {
                   {c.status === 'PAUSED' && (
                     <button onClick={() => setConfirmAction({ type: 'resume', cycle: c })} style={{ flex: 1, height: 38, borderRadius: 9, background: 'var(--gold)', color: 'var(--gold-on)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, fontSize: 12.5, fontWeight: 700, cursor: 'pointer', border: 'none' }}><Play size={14} /> Resume</button>
                   )}
-                </div>
+                </div>}
               </div>
             );
           })}

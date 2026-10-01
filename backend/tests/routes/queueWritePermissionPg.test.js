@@ -48,12 +48,13 @@ describePg('queue writes require canManageMerchants (or the queue-manager role)'
       expect(res.status, JSON.stringify(res.body)).not.toBe(403);
     });
 
-  it('keeps ASSIGN to queue managers and admins, whatever a sub-admin holds', async () => {
-    // The handler's own rule, stricter than the gate, and unchanged: first
-    // assignment of a queued order is the queue manager's job.
+  it('lets a sub-admin holding the area ASSIGN too — the gate is the only answer', async () => {
+    // The handler used to refuse every sub-admin AFTER the gate admitted them,
+    // so the Queue Manager screen the panel offered them failed on load. Owner,
+    // 2026-10-01: a sub-admin works in the areas they were given. It is now
+    // the gate alone; past it, the handler answers on the ORDER.
     const res = await as(app, who.merchantManager).post('/queue/assign/ORD-does-not-exist').send({ merchantId: 'nobody' });
-    expect(res.status).toBe(403);
-    expect(res.body.message).toMatch(/Queue manager access required/);
+    expect(res.status).toBe(404);
   });
 
   it.each(WRITES)('admits a queue manager, whose role this screen is for: %s %s', async (method, path, body) => {

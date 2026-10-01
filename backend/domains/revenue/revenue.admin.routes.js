@@ -9,7 +9,7 @@
  * distributable-revenue cap) is enforced in the service, never here.
  */
 import {
-  authenticate, express, hasPermission, isAdmin, isAdminOrSubAdmin,
+  authenticate, express, hasPermission,
 } from '../../routes/admin/_adminShared.js';
 import { db } from '#db';
 import {
@@ -77,7 +77,7 @@ router.get('/revenue/ledger', authenticate, hasPermission('canViewAnalytics'), a
 // Body: { amount (rupees), justification, idempotencyKey? }
 // The service enforces: platform-funded only, capped at distributable
 // revenue, justification required, append-only + idempotent.
-router.post('/revenue/bonus-pool/fund', authenticate, isAdmin, async (req, res) => {
+router.post('/revenue/bonus-pool/fund', authenticate, hasPermission('canManageCommission'), async (req, res) => {
   try {
     const { amount, justification, idempotencyKey } = req.body;
     if (typeof amount !== 'number' || !Number.isFinite(amount) || amount <= 0) {

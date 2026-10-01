@@ -48,7 +48,9 @@ const varietyId = (v: { currency: string; paymentMode: string; denominationPaise
   `${v.currency}:${v.paymentMode}:${v.denominationPaise ?? 'none'}`;
 
 export const MerchantPlatform: React.FC = () => {
-  const { isAdmin } = usePermissions();
+  const { can } = usePermissions();
+  // Commission is its own area: rates, the engine run and its history.
+  const canCommission = can('canManageCommission');
   const [policy, setPolicy] = useState<any>(null);
   const [varieties, setVarieties] = useState<Variety[]>([]);
   const [history, setHistory] = useState<any[]>([]);
@@ -73,9 +75,12 @@ export const MerchantPlatform: React.FC = () => {
   const load = useCallback(async () => {
     setLoading(true);
     try {
+      // Commission is a separate area. Without it the policy calls would be
+      // refused and, inside one Promise.all, take the leaderboard down with them.
+      const none = Promise.resolve({ data: null as any });
       const [polRes, histRes, lbRes] = await Promise.all([
-        api.get<any>('/api/admin/merchant-commission-policy'),
-        api.get<any>('/api/admin/merchant-commission-policy/history'),
+        canCommission ? api.get<any>('/api/admin/merchant-commission-policy') : none,
+        canCommission ? api.get<any>('/api/admin/merchant-commission-policy/history') : none,
         api.get<any>('/api/admin/merchant-platform/leaderboard', { params: { days, limit: 25 } }),
       ]);
       if (polRes.data?.success) {
@@ -97,7 +102,7 @@ export const MerchantPlatform: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [days]);
+  }, [days, canCommission]);
 
   useEffect(() => { load(); }, [load]);
   /**
@@ -216,11 +221,11 @@ export const MerchantPlatform: React.FC = () => {
   return (
     <div className="om-fade space-y-6">
       <Toolbar actions={[
-        ...(isAdmin ? [{ label: running ? 'Running…' : 'Run Commission Engine', icon: Play, primary: true, onClick: runEngine } as ToolbarAction] : []),
+        ...(canCommission ? [{ label: running ? 'Running…' : 'Run Commission Engine', icon: Play, primary: true, onClick: runEngine } as ToolbarAction] : []),
         { label: 'Refresh', icon: RefreshCw, onClick: load },
       ]} />
 
-      {isAdmin && (
+      {canCommission && (
         <div className="card border border-gold-500/30">
           <h3 className="text-lg font-semibold mb-1">Merchant Commission Policy</h3>
           <p className="text-xs text-gray-400 mb-3">

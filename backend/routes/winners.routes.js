@@ -17,7 +17,7 @@
 import express from 'express';
 import { db } from '#db';
 import {
-  authenticate, hasPermission, isAdmin, isAdminOrSubAdmin,
+  authenticate, hasPermission,
 } from '../domains/identity/auth.middleware.js';
 import { respondError } from '../shared/httpError.js';
 
@@ -65,7 +65,7 @@ router.get('/admin/fake-winners', authenticate, hasPermission('canManageContent'
   }
 });
 
-router.post('/admin/fake-winners', authenticate, isAdmin, async (req, res) => {
+router.post('/admin/fake-winners', authenticate, hasPermission('canManageContent'), async (req, res) => {
   try {
     const { displayName, profilePic, city, amount, game, badge, isPublic, sortOrder, displayTime } = req.body || {};
     if (!displayName || !amount) {
@@ -98,7 +98,7 @@ router.post('/admin/fake-winners', authenticate, isAdmin, async (req, res) => {
   }
 });
 
-router.put('/admin/fake-winners/:id', authenticate, isAdmin, async (req, res) => {
+router.put('/admin/fake-winners/:id', authenticate, hasPermission('canManageContent'), async (req, res) => {
   try {
     const winner = await db.engagement.updateFakeWinner(req.params.id, req.body || {});
     if (!winner) return res.status(404).json({ success: false, message: 'Not found' });
@@ -112,7 +112,7 @@ router.put('/admin/fake-winners/:id', authenticate, isAdmin, async (req, res) =>
   }
 });
 
-router.delete('/admin/fake-winners/:id', authenticate, isAdmin, async (req, res) => {
+router.delete('/admin/fake-winners/:id', authenticate, hasPermission('canManageContent'), async (req, res) => {
   try {
     // 404 rather than a silent success. This answered `{success:true}` whatever
     // came back, so an operator deleting the wrong id twice was told both times

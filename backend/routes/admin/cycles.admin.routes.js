@@ -1,7 +1,7 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /** cycles.admin.routes.js — Cycle phases, history, equalization, manage-cycle */
 import {
-  authenticate, express, hasPermission, isAdmin, isAdminOrSubAdmin,
+  authenticate, express, hasPermission, isAdmin,
 } from './_adminShared.js';
 import { db } from '#db';
 import { DEFAULT_CYCLE_PHASES, isCycleType, phasesFor } from '../../domains/markets/cycleTypes.js';
@@ -143,7 +143,7 @@ router.get('/cycles/history', authenticate, hasPermission('canViewAnalytics'), a
 });
 
 // Manual phantom equalizer trigger (emergency use)
-router.post('/cycles/:cycleId/equalize', authenticate, isAdmin, async (req, res) => {
+router.post('/cycles/:cycleId/equalize', authenticate, hasPermission('canManageCycles'), async (req, res) => {
   try {
     const { cycleId } = req.params;
     // The levelling arithmetic runs IN the statement. The handler this replaced
@@ -220,7 +220,7 @@ router.post('/cycles/:cycleId/equalize', authenticate, isAdmin, async (req, res)
  * Each action is now one guarded UPDATE that either applies in full or reports
  * why it could not.
  */
-router.post('/manage-cycle', authenticate, isAdmin, async (req, res) => {
+router.post('/manage-cycle', authenticate, hasPermission('canManageCycles'), async (req, res) => {
   try {
     const { action, cycleId, payload } = req.body;
     if (!cycleId) return res.status(400).json({ success: false, message: 'cycleId is required' });

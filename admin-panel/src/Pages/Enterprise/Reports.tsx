@@ -18,7 +18,9 @@ const inr = (n: number) =>
 type Tab = 'financial' | 'settlement' | 'merchants';
 
 export const Reports: React.FC = () => {
-  const { isAdmin } = usePermissions();
+  const { can } = usePermissions();
+  // The ledger file is every money movement on the platform: its own area.
+  const canExport = can('canExportLedger');
   const [tab, setTab] = useState<Tab>('financial');
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
@@ -83,7 +85,7 @@ export const Reports: React.FC = () => {
         <button onClick={load} className="btn-primary flex items-center h-10" disabled={loading}>
           <RefreshCw size={16} className={`mr-2 ${loading ? 'animate-spin' : ''}`} /> Run
         </button>
-        {isAdmin && (
+        {canExport && (
           <button onClick={downloadCsv} className="btn-primary flex items-center h-10" title="Regulatory export — one CSV row per journal posting">
             <Download size={16} className="mr-2" /> Ledger CSV
           </button>

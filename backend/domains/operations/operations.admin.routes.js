@@ -11,7 +11,7 @@
  * surface points at the platform that configures it.
  */
 import {
-  authenticate, express, hasPermission, isAdmin, isAdminOrSubAdmin,
+  authenticate, express, hasPermission,
 } from '../../routes/admin/_adminShared.js';
 import { db } from '#db';
 import { runRetention } from './retention.service.js';
@@ -158,7 +158,7 @@ router.get('/operations/config-catalog', authenticate, hasPermission('canViewAna
 // Body: { dryRun?: boolean, months?: number }. dryRun (default true) only
 // COUNTS; pass dryRun:false to actually delete. Admin-only. Financial/audit/
 // user data is never reachable from the retention service (X-7).
-router.post('/operations/retention/run', authenticate, isAdmin, async (req, res) => {
+router.post('/operations/retention/run', authenticate, hasPermission('canRunMaintenance'), async (req, res) => {
   try {
     const dryRun = req.body?.dryRun !== false; // default to a safe preview
     const months = req.body?.months;

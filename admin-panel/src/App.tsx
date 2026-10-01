@@ -3,7 +3,7 @@ import React, { useEffect } from 'react';
 import { HashRouter as Router, Routes, Route, Navigate } from 'react-router';
 import { Toaster } from 'react-hot-toast';
 import { applyBranding, applyCachedBranding } from './services/branding';
-import { Layout } from './components/Layout';
+import { Layout, firstPermittedPath } from './components/Layout';
 import { Login } from './Pages/Login';
 import { Dashboard } from './Pages/Dashboard';
 import { UsersList } from './Pages/Users/UsersList';
@@ -54,12 +54,13 @@ import { Reports }            from './Pages/Enterprise/Reports';
 import { MerchantPlatform }   from './Pages/Enterprise/MerchantPlatform';
 import { useAuthStore } from './services/auth';
 import { usePermissions } from './hooks/usePermission';
+import type { PermissionKey } from './utils/permissions';
 import sseService from './services/sse';
 // The obligation gate. Wraps the whole route table rather than each guard —
 // see the file header for why four copies of one rule is the wrong shape.
 import MandatoryTwoFactor from './components/MandatoryTwoFactor';
 import VerificationGate from './components/VerificationGate';
-// Permission strings in PermRoute must exist in PERMISSION_KEYS (utils/permissions.ts) — GOVERNANCE.md M-1
+// Permission strings in PermRoute are PermissionKey — the server's list, held equal by check:staff-permissions.
 
 // ─── Route Guards ─────────────────────────────────────────────────────────────
 
@@ -74,32 +75,34 @@ const AdminOnly: React.FC<{ children: React.ReactNode }> = ({ children }) => {
 };
 
 /**
- * PermRoute — accessible if user has the given permission OR is a full admin.
- * Sub-admins without the permission are redirected to /login (shows "Access Denied").
+ * PermRoute — a full admin, or a sub-admin holding the screen's permission (any
+ * one of them, when the screen serves two areas). The server refuses the same
+ * routes by the same keys (`staffPermissions.js`); this only decides whether
+ * the screen is offered at all.
  */
-const PermRoute: React.FC<{ permission: string; children: React.ReactNode }> = ({
+const PermRoute: React.FC<{ permission: PermissionKey | PermissionKey[]; children: React.ReactNode }> = ({
   permission,
   children,
 }) => {
   const { isAuthenticated, admin } = useAuthStore();
+  const { canAny } = usePermissions();
   if (!isAuthenticated) return <Navigate to="/login" replace />;
   if (!admin) return <Navigate to="/login" replace />;
-  if (admin.isAdmin) return <>{children}</>;
-  if (!admin.isSubAdmin) return <Navigate to="/login" replace />;
-  const perms = admin.permissions || {};
-  if (!(perms as any)[permission]) return <Navigate to="/login" replace />;
+  if (!canAny(Array.isArray(permission) ? permission : [permission])) return <Navigate to="/login" replace />;
   return <>{children}</>;
 };
 
 /**
- * QueueRoute — accessible to queue_managers AND full admins.
+ * QueueRoute — queue managers, and staff holding `canManageMerchants`: the same
+ * rule every queue route applies on the server (`queueManagerOrPermission`). It
+ * admitted ANY sub-admin, who then met a screen of refusals.
  */
 const QueueRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { isAuthenticated, admin } = useAuthStore();
+  const { can } = usePermissions();
   if (!isAuthenticated) return <Navigate to="/login" replace />;
   if (!admin) return <Navigate to="/login" replace />;
-  if (!admin.isAdmin && !admin.isSubAdmin && !admin.isQueueManager)
-    return <Navigate to="/login" replace />;
+  if (!admin.isQueueManager && !can('canManageMerchants')) return <Navigate to="/login" replace />;
   return <>{children}</>;
 };
 
@@ -152,6 +155,12 @@ const App: React.FC = () => {
     if (!admin) return <Navigate to="/login" replace />;
     if (admin.isQueueManager && !admin.isAdmin && !admin.isSubAdmin)
       return <Navigate to="/queue-manager" replace />;
+    // The dashboard is analytics. A sub-admin who was not given analytics lands
+    // on the first area they WERE given, instead of a dashboard of refusals.
+    if (!admin.isAdmin && !(admin.permissions as Record<string, boolean> | undefined)?.canViewAnalytics) {
+      const first = firstPermittedPath((keys) => keys.some((k) => (admin.permissions as Record<string, boolean> | undefined)?.[k] === true));
+      if (first) return <Navigate to={first} replace />;
+    }
     return (
       <AnyAuth>
         <Layout><Dashboard /></Layout>
@@ -237,29 +246,27 @@ const App: React.FC = () => {
           </PermRoute>
         } />
 
-        {/* Identity and payout control plane — AdminOnly, never PermRoute.
-            These release national identity numbers, move the platform's
-            identity root, and pay real money. Admin 2FA is mandatory, so
-            AdminOnly also means a second factor was proved. */}
-        {/* Treasury: approving one MINTS platform supply and credits a
-            merchant's wallet, so it is AdminOnly like the rest of this group —
-            matching the `isAdmin` the routes themselves enforce. */}
+        {/* Identity and payout control plane. Each screen is its own area, so an
+            admin decides who works in it (owner, 2026-10-01). These release
+            national identity numbers, move tokens and pay real money; every
+            staff account owes a second factor (twoFactorPolicy), sub-admins
+            included, and the routes refuse by the same keys. */}
         <Route path="/merchant-token-orders" element={
-          <AdminOnly><Layout><MerchantTokenOrders /></Layout></AdminOnly>
+          <PermRoute permission="canManageMerchantTokenOrders"><Layout><MerchantTokenOrders /></Layout></PermRoute>
         } />
         {/* Reading back who can place cosmetic bets. The grant is made from the
             Users list; this is the roster and the way to take it away. */}
         <Route path="/users/phantom-agents" element={
-          <AdminOnly><Layout><PhantomAgents /></Layout></AdminOnly>
+          <PermRoute permission="canManagePhantomAgents"><Layout><PhantomAgents /></Layout></PermRoute>
         } />
         <Route path="/kyc/bulk" element={
-          <AdminOnly><Layout><KycBulk /></Layout></AdminOnly>
+          <PermRoute permission="canBulkVerifyKYC"><Layout><KycBulk /></Layout></PermRoute>
         } />
         <Route path="/telegram" element={
-          <AdminOnly><Layout><TelegramConfig /></Layout></AdminOnly>
+          <PermRoute permission="canManageTelegram"><Layout><TelegramConfig /></Layout></PermRoute>
         } />
         <Route path="/referrals" element={
-          <AdminOnly><Layout><ReferralProgramme /></Layout></AdminOnly>
+          <PermRoute permission="canManageReferrals"><Layout><ReferralProgramme /></Layout></PermRoute>
         } />
 
         {/* Transactions — canViewTransactions */}
@@ -305,19 +312,19 @@ const App: React.FC = () => {
 
         {/* App Assets — admin only */}
         <Route path="/app-assets" element={
-          <AdminOnly><Layout><AppAssetsPage /></Layout></AdminOnly>
+          <PermRoute permission="canManageContent"><Layout><AppAssetsPage /></Layout></PermRoute>
         } />
 
         {/* Android App — upload, publish and force updates. Admin only: a
             release is code that runs on every player's phone. */}
         <Route path="/android-app" element={
-          <AdminOnly><Layout><AndroidAppPage /></Layout></AdminOnly>
+          <PermRoute permission="canManageAndroidApp"><Layout><AndroidAppPage /></Layout></PermRoute>
         } />
 
         {/* Blocked IPs — the deny-list. Admin only: a block refuses every request
             from a range, players and merchants included. */}
         <Route path="/blocked-ips" element={
-          <AdminOnly><Layout><BlockedIpsPage /></Layout></AdminOnly>
+          <PermRoute permission="canManageIpBlocks"><Layout><BlockedIpsPage /></Layout></PermRoute>
         } />
 
         {/* ── ENTERPRISE PLATFORM CONSOLES (Phase C) ── */}
@@ -337,7 +344,7 @@ const App: React.FC = () => {
           </PermRoute>
         } />
         <Route path="/support-assistant" element={
-          <AdminOnly><Layout><SupportAssistant /></Layout></AdminOnly>
+          <PermRoute permission="canManageSupportAssistant"><Layout><SupportAssistant /></Layout></PermRoute>
         } />
         <Route path="/reports" element={
           <PermRoute permission="canViewAnalytics">
@@ -354,24 +361,24 @@ const App: React.FC = () => {
         {/* /token-rates removed 2026-07-08 — token conversion is fixed 1:1 (Phase 006 flattening) */}
         {/* Business Policy Platform (BBEPS Phase 006) — first sibling: DepositPolicy */}
         <Route path="/business-policy/deposit" element={
-          <AdminOnly><Layout><DepositPolicy /></Layout></AdminOnly>
+          <PermRoute permission="canManageBusinessPolicy"><Layout><DepositPolicy /></Layout></PermRoute>
         } />
         {/* The settlement rail: one switch moves the whole platform between the
             UPI rail and the ATM cash rail. Orders in flight keep their own. */}
         <Route path="/business-policy/settlement-rail" element={
-          <AdminOnly><Layout><SettlementRail /></Layout></AdminOnly>
+          <PermRoute permission="canManageBusinessPolicy"><Layout><SettlementRail /></Layout></PermRoute>
         } />
         <Route path="/sub-admins" element={
           <AdminOnly><Layout><SubAdminsList /></Layout></AdminOnly>
         } />
         <Route path="/settings" element={
-          <AdminOnly><Layout><SystemSettings /></Layout></AdminOnly>
+          <PermRoute permission="canManageSystemSettings"><Layout><SystemSettings /></Layout></PermRoute>
         } />
         <Route path="/audit-logs" element={
-          <AdminOnly><Layout><AuditLogs /></Layout></AdminOnly>
+          <PermRoute permission="canViewAuditLogs"><Layout><AuditLogs /></Layout></PermRoute>
         } />
         <Route path="/error-logs" element={
-          <AdminOnly><Layout><ErrorLogs /></Layout></AdminOnly>
+          <PermRoute permission="canViewAuditLogs"><Layout><ErrorLogs /></Layout></PermRoute>
         } />
 
         <Route path="/disputes" element={
@@ -409,24 +416,24 @@ const App: React.FC = () => {
 
         {}
         <Route path="/chat-management" element={
-          <PermRoute permission="canModerateChatPublic">
+          <PermRoute permission={['canModerateChat', 'canManageSupportTickets']}>
             <Layout><ChatSupport /></Layout>
           </PermRoute>
         } />
 
         {/* ── GAME PROVIDERS — admin only */}
         <Route path="/game-providers" element={
-          <AdminOnly><Layout><GameProviders /></Layout></AdminOnly>
+          <PermRoute permission="canManageGames"><Layout><GameProviders /></Layout></PermRoute>
         } />
 
         {/* ── GAME REGISTRY (catalogue + categories) — admin only */}
         <Route path="/games" element={
-          <AdminOnly><Layout><GamesManager /></Layout></AdminOnly>
+          <PermRoute permission="canManageGames"><Layout><GamesManager /></Layout></PermRoute>
         } />
 
         {}
         <Route path="/payment-control" element={
-          <AdminOnly><Layout><PaymentControlCenter /></Layout></AdminOnly>
+          <PermRoute permission="canManagePaymentSystem"><Layout><PaymentControlCenter /></Layout></PermRoute>
         } />
 
         {/* ── PROMOTIONS — canManageContent sub-admins can manage these ── */}
@@ -438,7 +445,7 @@ const App: React.FC = () => {
 
         {/* ── BALANCE ADJUSTMENT — canManageUsers sub-admins with finance note ── */}
         <Route path="/users/balance-adjust" element={
-          <PermRoute permission="canManageUsers">
+          <PermRoute permission="canAdjustBalances">
             <Layout><BalanceAdjustment /></Layout>
           </PermRoute>
         } />

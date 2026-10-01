@@ -11,6 +11,7 @@ import toast from 'react-hot-toast';
 import api from '../../services/api';
 import { Toolbar } from '../../components/design';
 
+import { usePermissions } from '../../hooks/usePermission';
 const inr = (n: number) =>
   '₹' + (n ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
 
@@ -27,6 +28,7 @@ export const OperationsOverview: React.FC = () => {
   const [channels, setChannels] = useState<Array<{ code: string; label: string; active: boolean }>>([]);
   const [adminActivity, setAdminActivity] = useState<any[]>([]);
   const [rebuilding, setRebuilding] = useState(false);
+  const canMaintain = usePermissions().can('canRunMaintenance');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -254,7 +256,8 @@ export const OperationsOverview: React.FC = () => {
             </div>
           </Section>
 
-          <Section title="Maintenance">
+          {/* A maintenance job is its own area (canRunMaintenance). */}
+          {canMaintain && (<Section title="Maintenance">
             <div className="flex items-center justify-between gap-4">
               <p className="text-xs text-gray-400">
                 The leaderboard is derived from bet rows. Rebuild it after a correction or a backfill —
@@ -265,7 +268,7 @@ export const OperationsOverview: React.FC = () => {
                 <Trophy size={14} />{rebuilding ? 'Rebuilding…' : 'Rebuild leaderboard'}
               </button>
             </div>
-          </Section>
+          </Section>)}
         </div>
       )}
     </div>

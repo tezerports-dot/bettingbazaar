@@ -325,7 +325,7 @@ const MUTATIONS = [
     // asks whether you hold the permission, not whether you are staff). The
     // mutation is unchanged in substance — take the path away.
     from: `router.get('/users/flagged', authenticate, hasPermission('canManageUsers'), async (req, res) => {`,
-    to: `router.get('/users/flagged-unreachable', authenticate, isAdminOrSubAdmin, async (req, res) => {`,
+    to: `router.get('/users/flagged-unreachable', authenticate, hasPermission('canManageUsers'), async (req, res) => {`,
   },
   // ── status and is_blocked cannot come apart ───────────────────────────────
   {
@@ -1658,6 +1658,70 @@ const MUTATIONS = [
     why: 'an IPv4 /8 respelled as ::ffff:10.0.0.0/104 clears the /16 floor and blocks a region',
     from: `    if (v4Bits !== null && v4Bits < MIN_PREFIX.ipv4) {`,
     to: `    if (false) {`,
+  },
+  // ── Staff permissions: every route an area (owner, 2026-10-01) ────────────
+  {
+    id: 'M222', file: 'backend/domains/identity/staffPermissions.js', config: PG,
+    test: 'backend/tests/routes/staffPermissionsPg.test.js',
+    why: 'a sub-admin passes every gate whatever they were given: the areas mean nothing',
+    from: `  return user.subAdminPermissions?.[key] === true;`,
+    to: `  return true;`,
+  },
+  {
+    id: 'M223', file: 'backend/domains/identity/staffPermissions.js', config: PG,
+    test: 'backend/tests/routes/adminSubadminsRoutes.test.js',
+    why: 'the string "false" is coerced and stored as granted, turning a revoked area back on',
+    from: `    if (notBoolean.length) throw refuse(`,
+    to: `    if (false) throw refuse(`,
+  },
+  {
+    id: 'M224', file: 'backend/routes/admin/subadmins.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/staffPermissionsPg.test.js',
+    why: 'a save with no `permissions` key is read as "revoke everything" — what the panel sent on every save',
+    from: `    if (!req.body || !Object.prototype.hasOwnProperty.call(req.body, 'permissions')) {`,
+    to: `    if (false) {`,
+  },
+  {
+    id: 'M225', file: 'backend/middleware/order-crypto-access.js', config: PG,
+    test: 'backend/tests/routes/orderAccessGuardRoutes.test.js',
+    why: 'any staff account acts as the player on the player\'s order: reads it, and raises a dispute recorded as the player\'s',
+    from: `    const isAdmin = admitAdmin && req.user?.isAdmin === true && req.user?.isBlocked !== true;`,
+    to: `    const isAdmin = req.user?.isAdmin === true || req.user?.isSubAdmin === true;`,
+  },
+  {
+    id: 'M226', file: 'backend/domains/notification/sseManager.service.js', config: UNIT,
+    test: 'backend/tests/unit/staffRealtimePermissions.test.js',
+    why: 'the admin stream sends every order, dispute and KYC event to every staff account, whatever its areas',
+    from: `            if (!staffMayReceive(viewer, event)) continue;`,
+    to: `            if (false) continue;`,
+  },
+  {
+    id: 'M227', file: 'backend/domains/notification/sseManager.service.js', config: UNIT,
+    test: 'backend/tests/unit/staffRealtimePermissions.test.js',
+    why: 'a sub-admin whose permissions were changed keeps receiving under the old grant',
+    from: `            if (String(viewer.userId) !== String(userId)) continue;`,
+    to: `            continue;`,
+  },
+  {
+    id: 'M228', file: 'backend/domains/notification/staffEventAreas.js', config: UNIT,
+    test: 'backend/tests/unit/staffRealtimePermissions.test.js',
+    why: 'a staff socket joins every area\'s room, so the socket admin room is open to every sub-admin',
+    from: `  else rooms.push(...keys.filter((k) => staffCan(viewer, k)).map(staffRoom));`,
+    to: `  else rooms.push(...keys.map(staffRoom));`,
+  },
+  {
+    id: 'M229', file: 'backend/routes/sse.routes.js', config: PG,
+    test: 'backend/tests/routes/adminStreamPermissionsPg.test.js',
+    why: 'the payment queue (every pending order and its player) goes to a sub-admin who only edits content',
+    from: `        if (!staffMayReceive(adminUser, 'queue_snapshot')) return;`,
+    to: `        if (false) return;`,
+  },
+  {
+    id: 'M230', file: 'backend/routes/admin/users.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/staffPermissionsPg.test.js',
+    why: 'an area is quietly made full-admin-only: a sub-admin holding it is refused, and the list says nothing',
+    from: `router.get('/phantom-agents', authenticate, hasPermission('canManagePhantomAgents'),`,
+    to: `router.get('/phantom-agents', authenticate, isAdmin,`,
   },
 ];
 

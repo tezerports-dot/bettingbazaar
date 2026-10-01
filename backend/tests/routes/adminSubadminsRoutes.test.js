@@ -107,28 +107,35 @@ describePg('sub-admin routes', () => {
     const id = created.body.subAdmin.userId;
 
     const res = await as(app, admin).put(`/sub-admins/${id}/permissions`)
-      .send({ permissions: { canVerifyKYC: false, canManageOrders: true } });
+      .send({ permissions: { canVerifyKYC: false, canManageMerchants: true } });
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     const after = await getUser(id);
-    expect(after.subAdminPermissions).toMatchObject({ canVerifyKYC: false, canManageOrders: true });
+    expect(after.subAdminPermissions).toMatchObject({ canVerifyKYC: false, canManageMerchants: true });
   });
 
-  it('normalises permissions to booleans', async () => {
+  it('refuses a permission that is not a boolean, or not a real area, and changes nothing', async () => {
     const created = await as(app, admin).post('/sub-admins').send({
       username: 'Norm', mobile: uniqueMobile(), password: 'a-long-enough-password-123',
+      permissions: { canVerifyKYC: true },
     });
     const id = created.body.subAdmin.userId;
 
-    // A permission stored as the STRING "false" is truthy everywhere it is
-    // read, which turns a revoked capability back on.
-    await as(app, admin).put(`/sub-admins/${id}/permissions`)
-      .send({ permissions: { canVerifyKYC: 'false', canManageOrders: 1 } });
+    // A permission sent as the STRING "false" was coerced with Boolean() and
+    // stored as TRUE — turning a revoked capability back on — and this test
+    // used to assert exactly that. A key no route reads (`canManageOrders`) was
+    // stored too. Both are refused now, by name, and the grant stands.
+    const stringy = await as(app, admin).put(`/sub-admins/${id}/permissions`)
+      .send({ permissions: { canVerifyKYC: 'false' } });
+    expect(stringy.status).toBe(400);
+    const unknown = await as(app, admin).put(`/sub-admins/${id}/permissions`)
+      .send({ permissions: { canManageOrders: true } });
+    expect(unknown.status).toBe(400);
+    expect(unknown.body.message).toMatch(/canManageOrders/);
 
     const after = await getUser(id);
-    expect(after.subAdminPermissions.canVerifyKYC).toBe(true);   // "false" is a non-empty string
-    expect(after.subAdminPermissions.canManageOrders).toBe(true);
-    expect(typeof after.subAdminPermissions.canVerifyKYC).toBe('boolean');
+    expect(after.subAdminPermissions.canVerifyKYC).toBe(true);
+    expect(after.subAdminPermissions).not.toHaveProperty('canManageOrders');
   });
 
   it('removes the ROLE but keeps the account — the other .save() handler', async () => {

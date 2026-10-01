@@ -10,6 +10,7 @@ import { useRetryCountdown } from '../hooks/useRetryCountdown';
 import { LogoMark, getBrand } from '../components/Logo';
 import toast from 'react-hot-toast';
 
+import { firstPermittedPath } from '../components/Layout';
 type LoginType = 'admin' | 'subadmin' | 'queue_manager';
 
 const ROLES: { id: LoginType; label: string }[] = [
@@ -66,14 +67,15 @@ export const Login: React.FC = () => {
     } else if (admin.isQueueManager) {
       navigate('/queue-manager');
     } else {
-      const perms = (admin.permissions || {}) as import('../types').SubAdminPermissions;
-      if (perms.canViewAnalytics) navigate('/');
-      else if (perms.canManageUsers) navigate('/users');
-      else if (perms.canManageMerchants) navigate('/merchants');
-      else if (perms.canVerifyKYC) navigate('/kyc');
-      else if (perms.canViewTransactions) navigate('/transactions');
-      else if (perms.canManageContent) navigate('/content/faq');
-      else navigate('/login');
+      // The first area they were given, in sidebar order — the same list the
+      // sidebar is drawn from, so a new area needs no line here.
+      const perms = (admin.permissions || {}) as Record<string, boolean>;
+      const first = perms.canViewAnalytics ? '/' : firstPermittedPath((keys) => keys.some((k) => perms[k] === true));
+      if (!first) {
+        toast.error('Your account has not been given any area yet. Ask an admin to grant permissions on the Sub-admins screen.');
+        return;
+      }
+      navigate(first);
     }
     toast.success('Login successful!');
   };

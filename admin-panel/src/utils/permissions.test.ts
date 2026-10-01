@@ -1,33 +1,19 @@
-// GOVERNANCE: Read CLAUDE.md before editing this file.
+// GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * The sub-admin permission catalogue.
- *
- * Every key here is a capability a full admin can grant to a sub-admin, and the
- * create form renders one row per key from these maps. A key with no label or
- * no description renders as a blank checkbox — a permission an operator grants
- * without being told what it does — so the maps must stay in lockstep with the
- * key list. The default must be all-false: a new sub-admin starts with nothing
- * until it is deliberately granted.
+ * The mirror is held equal to the SERVER's list by `npm run check:staff-permissions`
+ * (a panel test cannot import from backend/, §15). What is asserted here is the
+ * panel's own half: every key appears once, and a new sub-admin starts with
+ * nothing granted.
  */
 import { describe, it, expect } from 'vitest';
-import { PERMISSION_KEYS, DEFAULT_PERMISSIONS, PERMISSION_LABELS, PERMISSION_DESCRIPTIONS } from './permissions';
+import { PERMISSION_KEYS, DEFAULT_PERMISSIONS } from './permissions';
 
-describe('sub-admin permissions', () => {
-  it('gives every key a label and a description', () => {
-    for (const key of PERMISSION_KEYS) {
-      expect(PERMISSION_LABELS[key], `${key} has no label`).toBeTruthy();
-      expect(PERMISSION_DESCRIPTIONS[key], `${key} has no description`).toBeTruthy();
-    }
+describe('permission keys', () => {
+  it('names each key once', () => {
+    expect(new Set(PERMISSION_KEYS).size).toBe(PERMISSION_KEYS.length);
   });
 
-  it('carries no label or description for a key that is not real', () => {
-    // The reverse: a stale entry in the maps for a removed key would render a
-    // checkbox that grants nothing.
-    expect(Object.keys(PERMISSION_LABELS).sort()).toEqual([...PERMISSION_KEYS].sort());
-    expect(Object.keys(PERMISSION_DESCRIPTIONS).sort()).toEqual([...PERMISSION_KEYS].sort());
-  });
-
-  it('defaults every permission to false — a new sub-admin holds nothing', () => {
+  it('starts a new sub-admin with nothing granted', () => {
     for (const key of PERMISSION_KEYS) {
       expect(DEFAULT_PERMISSIONS[key], `${key} defaults to granted`).toBe(false);
     }

@@ -91,11 +91,23 @@ suite('SSE Redis bridge (cross-instance fan-out)', () => {
     const mOnB = fakeClient();
     const admOnB = fakeClient();
     B.addMerchantClient('m1', mOnB);
-    B.addAdminClient(admOnB);
+    B.addAdminClient(admOnB, { userId: 'adm-1', isAdmin: true });
     A.sendToMerchant('m1', 'new_order', { orderId: 'o1' });
     A.broadcastToAdmins('queue_order_update', { orderId: 'o1' });
     await sleep(150);
     expect(mOnB.received()[0]).toMatchObject({ ev: 'new_order', data: { orderId: 'o1' } });
     expect(admOnB.received()[0]).toMatchObject({ ev: 'queue_order_update', data: { orderId: 'o1' } });
+  });
+
+  it('closes a staff member\'s streams on EVERY instance when their permissions change', async () => {
+    // The permission change is handled on A; the sub-admin's stream is on B.
+    // Closing only A's copy would leave B delivering under the old grant.
+    const subOnB = fakeClient();
+    B.addAdminClient(subOnB, { userId: 'sub-9', isSubAdmin: true, subAdminPermissions: { canManageMerchants: true } });
+    A.closeAdminClientsFor('sub-9');
+    await sleep(150);
+    A.broadcastToAdmins('queue_order_update', { orderId: 'o2' });
+    await sleep(150);
+    expect(subOnB.received()).toHaveLength(0);
   });
 });

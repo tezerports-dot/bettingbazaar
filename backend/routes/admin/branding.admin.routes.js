@@ -1,7 +1,7 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /** branding.admin.routes.js — Branding config, CDN images, app assets */
 import {
-  authenticate, express, hasPermission, isAdmin, isAdminOrSubAdmin,
+  authenticate, express, hasPermission,
 } from './_adminShared.js';
 import { db } from '#db';
 import { brandingPayload, broadcastBranding } from '../../domains/branding/brandingPayload.js';
@@ -52,7 +52,7 @@ function bust(url, ts) {
   return `${url}${sep}t=${ts}`;
 }
 
-router.get('/branding', authenticate, isAdmin, async (req, res) => {
+router.get('/branding', authenticate, hasPermission('canManageContent'), async (req, res) => {
   try {
     // Branding is a configuration scope. Every key reads as its declared
     // default when nothing has been set, so there is no `|| {}` here and no
@@ -86,7 +86,7 @@ router.get('/branding', authenticate, isAdmin, async (req, res) => {
  *     Empty is stored as empty; the env is consulted at READ time, in
  *     `brandingPayload`.
  */
-router.put('/branding', authenticate, isAdmin, async (req, res) => {
+router.put('/branding', authenticate, hasPermission('canManageContent'), async (req, res) => {
   try {
     // `key`, `version`, `updatedAt` and `updatedBy` come back on every read;
     // an admin panel that PUTs the object it just GET'd would otherwise be
@@ -116,7 +116,7 @@ router.put('/branding', authenticate, isAdmin, async (req, res) => {
  */
 
 // Get all transactions
-router.post('/branding/images', authenticate, isAdmin, async (req, res) => {
+router.post('/branding/images', authenticate, hasPermission('canManageContent'), async (req, res) => {
   try {
     const { url, category, title, description, fileKey } = req.body;
 
@@ -163,7 +163,7 @@ router.get('/branding/images', authenticate, hasPermission('canManageContent'), 
 // ─── DELETE /api/admin/branding/images/:imageId ──────────────────────────────
 // AUDIT FIX: was deleting from SystemConfig.cdnImages array.  Now deletes from
 // CDNImage model, consistent with the unified GET/POST above.
-router.delete('/branding/images/:imageId', authenticate, isAdmin, async (req, res) => {
+router.delete('/branding/images/:imageId', authenticate, hasPermission('canManageContent'), async (req, res) => {
   try {
     const { imageId } = req.params;
     const deleted = await db.content.deleteImage(imageId);
@@ -198,7 +198,7 @@ router.delete('/branding/images/:imageId', authenticate, isAdmin, async (req, re
 
 // Get FAQs
 // FIX-14: seed default FAQs on first access so FAQ Manager is never blank
-router.post('/branding/cdn-url', authenticate, isAdmin, async (req, res) => {
+router.post('/branding/cdn-url', authenticate, hasPermission('canManageContent'), async (req, res) => {
   try {
     const { url, title, category, description, tags } = req.body;
     if (!url || !title) return res.status(400).json({ success: false, message: 'url and title required' });
@@ -226,7 +226,7 @@ router.post('/branding/cdn-url', authenticate, isAdmin, async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // POST /api/admin/branding/upload-url — Generate S3 presigned URL for branding asset
-router.post('/branding/upload-url', authenticate, isAdmin, async (req, res) => {
+router.post('/branding/upload-url', authenticate, hasPermission('canManageContent'), async (req, res) => {
   try {
     const { fileName, contentType, fileSize, category = 'logo' } = req.body;
     if (!fileName || !contentType || !fileSize) {
@@ -252,7 +252,7 @@ router.post('/branding/upload-url', authenticate, isAdmin, async (req, res) => {
 });
 
 // POST /api/admin/branding/confirm-upload — Record completed branding asset upload in DB
-router.post('/branding/confirm-upload', authenticate, isAdmin, async (req, res) => {
+router.post('/branding/confirm-upload', authenticate, hasPermission('canManageContent'), async (req, res) => {
   try {
     const { fileKey, cdnUrl, category = 'logo', title, fileSize } = req.body;
     if (!fileKey || !cdnUrl) {
@@ -308,7 +308,7 @@ router.post('/branding/confirm-upload', authenticate, isAdmin, async (req, res) 
 // comes from the AppAsset collection (multi-instance source of truth); if a slot
 // has no record we fall back to a local-disk stat so pre-existing disk uploads
 // still show (backward compatible).
-router.get('/app-assets', authenticate, isAdmin, async (req, res) => {
+router.get('/app-assets', authenticate, hasPermission('canManageContent'), async (req, res) => {
   try {
     const byslot = await db.content.getAllAssets();
 
@@ -349,7 +349,7 @@ router.get('/app-assets', authenticate, isAdmin, async (req, res) => {
 // Uploads to S3 when configured (shared across instances) or local disk otherwise.
 // Uses inline express.json with 6MB limit — no new npm dependencies needed.
 router.post('/app-assets/upload',
-  authenticate, isAdmin,
+  authenticate, hasPermission('canManageContent'),
   express.json({ limit: '6mb' }),
   async (req, res) => {
     try {
@@ -401,7 +401,7 @@ router.post('/app-assets/upload',
   }
 );
 
-router.delete('/app-assets/:name', authenticate, isAdmin, async (req, res) => {
+router.delete('/app-assets/:name', authenticate, hasPermission('canManageContent'), async (req, res) => {
   const { name } = req.params;
   if (!ASSET_SLOTS[name]) return res.status(400).json({ success: false, message: 'Unknown slot' });
   try {

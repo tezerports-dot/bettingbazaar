@@ -1,5 +1,6 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import axios, { AxiosInstance, AxiosError } from 'axios';
+import type { StaffPermissionCatalog } from '../utils/permissions';
 import type {
   Admin,
   User,
@@ -955,14 +956,25 @@ export const subAdmins = {
     username: string;
     mobile: string;
     password: string;
-    permissions?: any;
+    permissions?: Record<string, boolean>;
   }) => {
     const res = await api.post('/api/admin/sub-admins', data);
     return res.data;
   },
 
-  updatePermissions: async (subAdminId: string, permissions: any) => {
-    const res = await api.put(`/api/admin/sub-admins/${subAdminId}/permissions`, permissions);
+  /**
+   * Sent as `{ permissions }`, which is what the route reads. It sent the object
+   * AS the body, so the route found no `permissions` key and stored an empty
+   * grant: every "Save Permissions" revoked everything the sub-admin had.
+   */
+  updatePermissions: async (subAdminId: string, permissions: Record<string, boolean>) => {
+    const res = await api.put(`/api/admin/sub-admins/${subAdminId}/permissions`, { permissions });
+    return res.data;
+  },
+
+  /** Every area a sub-admin can be given, grouped — the picker is rendered from this. */
+  permissionCatalog: async (): Promise<StaffPermissionCatalog> => {
+    const res = await api.get<any>('/api/admin/staff-permissions');
     return res.data;
   },
 
