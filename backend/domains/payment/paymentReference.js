@@ -25,7 +25,7 @@
  * somebody who submitted a Tron hash reads as a different system's error, and
  * they will submit it again.
  */
-import { MERCHANT_CURRENCY, USDT_CHAIN_SPEC } from '../merchant/merchantCurrency.js';
+import { MERCHANT_CURRENCY, USDT_CHAIN_SPEC, USDT_CHAINS, isUsdtTxHash } from '../merchant/merchantCurrency.js';
 import { markUTRAsUsed, normalizeUTR } from '../../middleware/utrValidation.js';
 
 /** The minimum length of a bank UTR. Twelve is the shortest a bank issues. */
@@ -53,7 +53,9 @@ export function referenceSpecFor(order) {
     }
     return {
       label: 'transaction ID',
-      valid: (value) => chain.txPattern.test(value),
+      // One owner of "a well-formed hash on THIS chain" (merchantCurrency.js),
+      // not a second reading of its pattern here.
+      valid: (value) => isUsdtTxHash(order.usdtChain, value),
       hint: `Enter the ${chain.label} transaction ID — ${chain.txLabel}.`,
     };
   }
@@ -141,6 +143,6 @@ export const MERCHANT_TOKEN_REFERENCE_SPEC = Object.freeze({
   label: 'transaction ID',
   // Either chain's shape. A merchant pays the platform's own wallet and the
   // platform accepts both networks, so this cannot narrow to one of them.
-  valid: (value) => Object.values(USDT_CHAIN_SPEC).some((c) => c.txPattern.test(value)),
+  valid: (value) => USDT_CHAINS.some((chain) => isUsdtTxHash(chain, value)),
   hint: 'Enter the USDT transaction ID for your payment — 64 hexadecimal characters, with or without a leading 0x.',
 });

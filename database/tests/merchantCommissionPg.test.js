@@ -281,6 +281,54 @@ describePg('merchant commission — per variety, against real Postgres', () => {
       expect((await getMerchantBalances(M)).available).toBe(afterFirst);
     });
 
+    it('delivers, on the next pass, a commission whose wallet credit failed after the ledger recorded it', async () => {
+      // The ledger event is written first and the mark is derived from it, so
+      // a credit that failed afterwards used to be owed forever: the next pass
+      // saw no new volume and never tried again (R6, F-041). The failure is
+      // injected at the wallet row, the way a real one would arrive.
+      await fundPool(1_000_000);
+      await policy({ rates: [{ ...UPI, buyPercent: 5, sellPercent: 0 }] });
+      await completedOrder({ type: 'DEPOSIT', tokenPaise: 1_000_000, ...UPI });
+      await completedOrder({ type: 'WITHDRAWAL', tokenPaise: 1_000_000, ...UPI });
+
+      await pgQuery(`
+        CREATE OR REPLACE FUNCTION rt_commission_credit_fails() RETURNS trigger AS $$
+        BEGIN
+          IF NEW.movement_id LIKE 'acct\\_commission\\_%' THEN RAISE EXCEPTION 'injected wallet failure'; END IF;
+          RETURN NEW;
+        END $$ LANGUAGE plpgsql`);
+      await pgQuery('DROP TRIGGER IF EXISTS rt_commission_credit_fails ON merchant_wallet_entries');
+      await pgQuery(`CREATE TRIGGER rt_commission_credit_fails BEFORE INSERT ON merchant_wallet_entries
+                      FOR EACH ROW EXECUTE FUNCTION rt_commission_credit_fails()`);
+      try {
+        const failed = await runCommissionEngine();
+        expect(failed.results[0].error).toMatch(/injected wallet failure/);
+      } finally {
+        await pgQuery('DROP TRIGGER IF EXISTS rt_commission_credit_fails ON merchant_wallet_entries');
+        await pgQuery('DROP FUNCTION IF EXISTS rt_commission_credit_fails()');
+      }
+      expect((await getMerchantBalances(M)).available).toBe(0);
+
+      const next = await runCommissionEngine();
+      expect(next.delivered).toEqual([expect.objectContaining({ merchantId: M, delivered: true })]);
+      expect((await getMerchantBalances(M)).available).toBe(50_000);
+
+      // And once only.
+      await runCommissionEngine();
+      expect((await getMerchantBalances(M)).available).toBe(50_000);
+    });
+
+    it('runs one pass at a time', async () => {
+      await fundPool(1_000_000);
+      await policy({ rates: [{ ...UPI, buyPercent: 5, sellPercent: 0 }] });
+      await completedOrder({ type: 'DEPOSIT', tokenPaise: 1_000_000, ...UPI });
+      await completedOrder({ type: 'WITHDRAWAL', tokenPaise: 1_000_000, ...UPI });
+      const passes = await Promise.all([runCommissionEngine(), runCommissionEngine(), runCommissionEngine()]);
+      expect(passes.filter((p) => p.ran)).toHaveLength(1);
+      expect(passes.filter((p) => !p.ran).every((p) => /Another commission pass is running/.test(p.reason))).toBe(true);
+      expect((await getMerchantBalances(M)).available).toBe(50_000);
+    });
+
     it('pays only the NEW volume when more arrives', async () => {
       await fundPool(1_000_000);
       await policy({ rates: [{ ...UPI, buyPercent: 10, sellPercent: 0 }] });

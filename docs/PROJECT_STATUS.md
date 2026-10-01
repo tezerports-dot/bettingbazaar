@@ -314,8 +314,8 @@ e2e 181 (0 fail); every repository gate exits 0.
 
 | # | Step | Who | Estimate | Blocked by |
 |---|---|---|---|---|
-| L1 | PR #197 CI green on the latest commit | automatic (Claude fixes if red) | ~20 min | — |
-| L2 | Merge PR #197 | owner | 5 min | L1 |
+| L1 | ~~PR #197 CI green on the latest commit~~ **done** | automatic | — | — |
+| L2 | ~~Merge PR #197~~ **done 2026-09-30** | owner | — | — |
 | L3 | Run `scripts/android/create-signing-key.sh` in a Codespace | owner | 15 min | L2 |
 | L4 | A deployed backend on HTTPS | owner + Claude | **not estimable here** | §3.3: jurisdiction; hosting; S3; domain |
 | L5 | Server env: `ANDROID_PACKAGE_ID`, fingerprint, `https://localhost` in `ALLOWED_ORIGINS`; Turnstile `localhost` | owner | 15 min | L3, L4 |
@@ -336,6 +336,48 @@ the app, because no emulator is available here.
 - An iOS app (not requested).
 - Over-the-air JS updates without a new APK (declined for now: an unsigned
   code channel into a money app; see DECISION_LOG 2026-09-30).
+
+## 3.6 Tracker — the 2026-09-30 external review (as of 2026-09-30)
+
+An outside review handed over 14 items: A1–A7 fixed on its own branch, B1–B4
+confirmed and not fixed, C1–C4 unproven. Each item was reproduced FAILING
+first on this branch, not taken on trust. Status is evidence (§29): each "done"
+names the test that failed before the fix and the mutation that proves it.
+
+### Done — 14 of 14 items worked; 13 fixed (P197-1 later, as R7), 1 not a defect
+
+| # | Item | Found on main | Fix | Proof |
+|---|---|---|---|---|
+| A1 | F-024 order tamper tag never written | stripped tag → 200 | tag written at INSERT; guard fails closed | M156, M165, M92 |
+| A2 | F-025 retry locked winnings with no order | 2,000 locked for one 1,000 withdrawal | lock + INSERT in one transaction | M166, M118 |
+| A3 | F-026 **every buy charged the merchant twice** | 200,000 paise for a 1,000-token buy | hold consumed once, via `moveDepositMoney` | M167, M168 |
+| A4 | F-027 admin withdrawal endings wrong in 10/11 cells | lock left standing; cancelled dispute back to DISPUTED | `endWithdrawal` one owner | M169–M171 |
+| A5 | F-028 hold=0 confirm settled after commit | (review) | always HELD + settle inline | M172 |
+| A6 | S40 NaN-vs-NaN assertion guard | (review) | vitest setupFiles guard | M173 |
+| B1 | `check:dead-code` counted comments | 0 DEAD → 12 + 1 module when blanked | gate blanks comments; 12 exports + UTRManager deleted | planted failures reported |
+| B2 | IP deny-list dead, claimed live | nothing mounted, called or screened it | first deleted; **rebuilt properly** on the owner's instruction (R1, F-030) | M183–M187 |
+| B3 | undeclared config key had no status | `status` undefined | `invalidConfig`; + 2 whitespace-reason 500s found by the sweep | M174–M176 |
+| B4 | PAN registry dead | no caller | deleted; table dropped | gates |
+| C1 | order stamped on a rail it was not validated for | CASH_ATM-validated, P2P_UPI-stamped | stamp from the validated policy | M180 |
+| C2 | cash matcher branched on the live rail | waiting cash order abandoned (0 matched) | per-order rail | M179 |
+| C3 | **dispute raced by the hold worker** | dispute erased, money moved | order lock in the settlement; guarded mirror | M177, M178 |
+| C4 | Android: zip bomb (P197-2), upload race (P197-3) | 64 MB inflated; loser got 500 | inflate bound; race → 400, no orphan | M181, M182 |
+| C4 | P197-5 `https://localhost` + credentials | — | **not a defect**: WebView cookie jars are per-app | reasoning in commit |
+| C4 | P197-1 APK signature not verified | — | **fixed as R7 (2026-10-01)** | v2/v3 signatures and content digests verified at upload; M211–M213 |
+
+### Left — who does it
+
+| # | Step | Who | Estimate |
+|---|---|---|---|
+| R1 | ~~Decide B2~~ **owner, 2026-09-30: build it properly** — **DONE**: mounted, admin routes, Blocked IPs screen, route + page + e2e tests, M183–M187 (F-030 REBUILT) | Claude | ~1 day |
+| R2 | Merge this branch's PR | owner | 5 min |
+| R3 | ~~Full mutation run (all 135 entries)~~ **done** — CI on PR #198 (`ba2a861`): 135/135 killed. Its first run caught M171 surviving after C3; retargeted | — | — |
+| R4 | ~~Browser passes~~ **done (owner: do it)**, 2026-10-01, against a dev backend on `bb_drive`. Final: `test:browser` 72 checks, 68 PASS / 0 FAIL / 4 NOTE (route wildcards; support-assistant's 503 is explained on screen). `test:drive` 69 screens, 68 PASS / 0 FAIL / 1 NOTE (a board button whose name carries the live results strip, so it renames itself each cycle), 0 THREW, 0 5xx. `test:mutate` 49/49 driven, 0 failed, every bystander untouched. `test:forms` 16/16. **Fixed on the way:** Announcements hid a failed load as "none" (§28); the player app's toasts were not a live region, so every bet-card refusal was silent to a screen reader; 12 default tabs/segments published no selected state; 3 icon/initials-only buttons had no name (profile photo, stop pricing, Restore version N); bet sides did not say when betting was shut; Min/Max Bet Amount had no client floor. **Harness made honest:** file pickers, live select options, checked radios, collapsed `<details>`, and disabled-at-press-time are now read rather than reported as INERT/UNREACHABLE (18 notes → 1) | — | — |
+| R5 | ~~PostgreSQL 18~~ **done** — CI on PR #198: pg tier 109/109 files green on PostgreSQL 18.6 | — | — |
+| R6 | ~~Domains the review did not reach~~ **done (owner: do it)**: bet placement (F-033, F-034), settlement (F-035), 2FA/reset (F-036–F-038), Telegram gates (F-039), referral payouts (F-040), commission engine (F-041), sub-admin permissions (F-042); USDT rail reviewed with no new defect. **Casino WIN (owner, 2026-10-01: wins only on rounds the player bet on): done as F-043.** A provider WIN now needs the player's own standing bet on that round, at that provider; M208–M210 | — | — |
+| R7 | ~~APK signature verification~~ **done (owner, 2026-10-01: do it).** Every v2/v3 signer of an uploaded APK is verified: content digest recomputed in 1 MB chunks, signature checked with the signer's key for every algorithm it lists, and the certificate must be that key. Proven against Google's `apksigner` (build-tools 34) output, RSA and EC, v2 and v3, whose printed fingerprints the tests pin; tampered contents, a bad signature, and a certificate naming another key are each refused; M211–M213 KILLED | — | — |
+| R9 | ~~Admin control of the APK~~ **done (owner, 2026-10-01).** (a) **Halt / Resume** a published release: it stops being offered, downloaded or required at once, phones go back to the newest release that is not halted, a mandatory block it set is lifted; the publish floor and the upload's early check still count it (the upload check had read the offered release and would have accepted a build below a halted one: caught by the new test before it shipped). (b) **Android-version safety**: the app reports its API level (new `sdkLevel` plugin method; older installs send nothing and behave as before); a phone is never offered, or blocked by, a release it cannot install, and below a mandatory one it cannot install it is told its Android is too old (`unsupported`, a new blocking screen) rather than looping. (c) The card shows required Android, verified signature schemes, uploader/publisher/halter, a Download APK button, and warns when a draft raises the Android floor. Tests: androidReleaseControlRoutes 9 (pg), AndroidAppPage 7, NativeUpdateGate +1, nativeUpdater 3; M214–M218 KILLED. Not verified here: the Java method compiles only in CI's Android build (this container has no Android SDK) | — | — |
+| R8 | ~~Force the races behind M49 / M122~~ **done**: M49's export test now forces the overlap (a SHARE lock on `kyc_batches` parks export A holding its rows while B runs) — KILLED 3/3. M122 was already deterministic: the sequential 'second tap' test kills it | — | — |
 
 ## 4. How to pick this up
 

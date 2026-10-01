@@ -660,6 +660,15 @@ CREATE TABLE IF NOT EXISTS casino_rounds (
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS casino_rounds_user_idx ON casino_rounds (user_id, created_at DESC);
+-- A round cannot pay out unless it took a stake (owner, 2026-10-01: winnings
+-- only where the player bet on that round). Dropped and re-added so the
+-- definition converges (CLAUDE.md §32 S31). NOT VALID because a development
+-- database can hold rounds the old code credited with no bet: validating them
+-- would stop the apply here and leave every statement below unrun. It still
+-- binds every INSERT and UPDATE from now on, which is what the rule is about.
+ALTER TABLE casino_rounds DROP CONSTRAINT IF EXISTS casino_rounds_win_needs_bet;
+ALTER TABLE casino_rounds ADD CONSTRAINT casino_rounds_win_needs_bet
+  CHECK (credited_paise = 0 OR debited_paise > 0) NOT VALID;
 
 CREATE TABLE IF NOT EXISTS casino_transactions (
   id            BIGSERIAL PRIMARY KEY,
@@ -1249,38 +1258,54 @@ CREATE TABLE IF NOT EXISTS kyc_batches (
 CREATE INDEX IF NOT EXISTS kyc_batches_kind_idx ON kyc_batches (kind, created_at DESC);
 
 -- ═══════════════════════════════════════════════════════════════════════════
--- THREE TABLES FOR CODE THAT WAS ALREADY DEAD
+-- TWO TABLES FOR CODE THAT WAS ALREADY DEAD
 -- ═══════════════════════════════════════════════════════════════════════════
 --
--- BlockedIP, ChatMessage and BalanceAdjustment were referenced through the
--- document store in five files and DEFINED NOWHERE. Every call raised
--- MissingSchemaError, and every call site swallowed it — so the IP block never
--- blocked, order chat never persisted, and the admin adjustment audit row was
--- never written. Nothing reported any of it.
+-- ChatMessage and BalanceAdjustment were referenced through the document store
+-- and DEFINED NOWHERE. Every call raised MissingSchemaError, and every call site
+-- swallowed it — so order chat never persisted and the admin adjustment audit
+-- row was never written. Nothing reported any of it.
+--
+-- There was a third, `blocked_ips`, for an IP deny-list that was never mounted.
+-- It is dropped here and REBUILT below as `ip_blocks` (owner, 2026-09-30:
+-- "build it properly"). A new name rather than the old one, so a database that
+-- still holds the old shape converges on what this file says (§32 S31).
+DROP TABLE IF EXISTS blocked_ips;
 
 -- ── The IP deny-list ─────────────────────────────────────────────────────────
 --
--- A REAL SECURITY CONTROL THAT HAS NEVER FUNCTIONED. `ipBlocker` runs on every
--- request, asked for a model that does not exist, threw, and hit a catch that
--- fails open with no log. `blockIP` did nothing at all: an operator blocking an
--- abusive address got a success message and no effect.
-CREATE TABLE IF NOT EXISTS blocked_ips (
-  ip          TEXT PRIMARY KEY,
-  reason      TEXT NOT NULL DEFAULT '',
-  active      BOOLEAN NOT NULL DEFAULT TRUE,
+-- An admin blocks an address or a range; `middleware/ipBlocklist.js` refuses
+-- every request from it before the rate limiters, the audit writer or any route
+-- runs. The live list is held in memory (Node's `net.BlockList`) and reloaded
+-- from this table — so a blocked address costs one in-memory lookup, not a
+-- query per request.
+--
+-- A RANGE, because an abusive client rarely keeps one address; a `CIDR` column
+-- so the database, not a regex, decides what a valid range is. `network()` is
+-- applied on write, so 203.0.113.7/24 is stored as 203.0.113.0/24 and one
+-- range cannot be entered twice under two spellings.
+--
+-- Nothing is deleted. A release keeps the row, stamped — "was this address ever
+-- blocked, by whom, and why?" is what an appeal asks.
+CREATE TABLE IF NOT EXISTS ip_blocks (
+  block_id    TEXT PRIMARY KEY,
+  network     CIDR NOT NULL,
+  reason      TEXT NOT NULL,
+  blocked_by  TEXT NOT NULL,
   blocked_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-  blocked_by  TEXT,
-  -- An unblock keeps the row, marked. "Was this address ever blocked, and why?"
-  -- is what an appeal asks, and deleting the row destroys the answer.
-  unblocked_at TIMESTAMPTZ,
-  unblocked_by TEXT,
-  -- Optional expiry for a temporary block. NULL means indefinite. Enforced by
-  -- the READ, like every other expiry here — a sweep that is late must not let
-  -- a live block lapse.
+  -- A temporary block lapses by itself: the enforcer loads only rows whose
+  -- expiry is in the future, so a late sweep cannot keep a lapsed block alive.
   expires_at  TIMESTAMPTZ,
-  notes       TEXT NOT NULL DEFAULT ''
+  released_at TIMESTAMPTZ,
+  released_by TEXT,
+  CONSTRAINT ip_blocks_reason_present CHECK (length(btrim(reason)) > 0),
+  CONSTRAINT ip_blocks_release_pair   CHECK ((released_at IS NULL) = (released_by IS NULL)),
+  CONSTRAINT ip_blocks_expiry_future  CHECK (expires_at IS NULL OR expires_at > blocked_at)
 );
-CREATE INDEX IF NOT EXISTS blocked_ips_active_idx ON blocked_ips (ip) WHERE active;
+-- One unreleased row per range: blocking it again refreshes that row rather
+-- than stacking a second one that a release would leave behind.
+CREATE UNIQUE INDEX IF NOT EXISTS ip_blocks_one_open_per_network
+  ON ip_blocks (network) WHERE released_at IS NULL;
 
 -- ── Order chat ───────────────────────────────────────────────────────────────
 -- The conversation between a player and a merchant about one payment order.
@@ -1382,8 +1407,10 @@ CREATE TABLE IF NOT EXISTS merchants (
   username     TEXT,
   mobile       TEXT,
   email        TEXT,
-  -- Hashed. Never selected by the general reader — see `getMerchantCredentials`.
-  password_hash TEXT,
+  -- No password here. A merchant's login is its `users` row (§33.5), and the
+  -- password lives there, once. It was stored in both places: the reset
+  -- wrote `users`, the login door read this column, so a merchant who reset
+  -- was told it worked and was then refused the new password (R6, 2026-09-30).
 
   -- ── Second factor. Mandatory for merchants ────────────────────────────────
   -- Same column names as `users`, deliberately: the drift window, replay guard
@@ -1509,6 +1536,7 @@ CREATE TABLE IF NOT EXISTS merchants (
     AND (max_concurrent_deposit_orders    IS NULL OR max_concurrent_deposit_orders    > 0)
     AND (max_concurrent_withdrawal_orders IS NULL OR max_concurrent_withdrawal_orders > 0))
 );
+ALTER TABLE merchants DROP COLUMN IF EXISTS password_hash;
 
 -- Payment credentials are an IDENTITY, not a preference: two merchants sharing
 -- a UPI id or a bank account means money routed to one arrives at the other,
@@ -2107,6 +2135,18 @@ ALTER TABLE android_releases DROP CONSTRAINT IF EXISTS android_releases_version_
 DO $$ BEGIN
   ALTER TABLE android_releases ADD CONSTRAINT android_releases_package_version UNIQUE (package_name, version_code);
 EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL; END $$;
+-- R9 (owner, 2026-10-01): an admin can HALT a published release so a broken
+-- build stops being offered. It stays published, because phones may already run
+-- it and every later release must still be above it; it is just no longer
+-- what anybody is told to install. Only a published release can be halted.
+ALTER TABLE android_releases ADD COLUMN IF NOT EXISTS halted_at   TIMESTAMPTZ;
+ALTER TABLE android_releases ADD COLUMN IF NOT EXISTS halted_by   TEXT;
+ALTER TABLE android_releases ADD COLUMN IF NOT EXISTS halt_reason TEXT;
+-- Which APK signature schemes the upload VERIFIED (R7), e.g. {2,3}.
+ALTER TABLE android_releases ADD COLUMN IF NOT EXISTS signature_schemes INTEGER[] NOT NULL DEFAULT '{}';
+ALTER TABLE android_releases DROP CONSTRAINT IF EXISTS android_releases_halt_needs_publish;
+ALTER TABLE android_releases ADD CONSTRAINT android_releases_halt_needs_publish
+  CHECK (halted_at IS NULL OR (published_at IS NOT NULL AND length(btrim(coalesce(halt_reason, ''))) BETWEEN 3 AND 500));
 DROP INDEX IF EXISTS android_releases_published_idx;
 CREATE INDEX IF NOT EXISTS android_releases_published_pkg_idx
   ON android_releases (package_name, version_code DESC) WHERE published_at IS NOT NULL;
@@ -2493,21 +2533,11 @@ CREATE TABLE IF NOT EXISTS frontend_error_reports (
 CREATE INDEX IF NOT EXISTS frontend_error_reports_recent_idx ON frontend_error_reports (created_at DESC);
 
 -- ═══════════════════════════════════════════════════════════════════════════
--- COMPLIANCE — the PAN registry
+-- The PAN registry was removed 2026-09-30. Nothing in the product called it,
+-- and §2 says no identity document beyond the Aadhaar number is collected — a
+-- one-PAN-one-account table contradicted the rule it sat beside.
 -- ═══════════════════════════════════════════════════════════════════════════
---
--- One PAN, one account. The hash is the primary key, so the uniqueness is
--- STORAGE-ENFORCED: two accounts cannot claim one tax identity, and the index
--- decides rather than a pre-read two concurrent registrations both pass. The
--- number itself is never stored — only its hash and last four, which is what a
--- support agent needs to confirm an identity without holding the document.
-CREATE TABLE IF NOT EXISTS pan_registry (
-  pan_hash    TEXT PRIMARY KEY,
-  pan_last4   TEXT NOT NULL,
-  user_id     TEXT NOT NULL UNIQUE,
-  verified_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  CONSTRAINT pan_registry_last4_shape CHECK (pan_last4 ~ '^[0-9A-Z]{4}$')
-);
+DROP TABLE IF EXISTS pan_registry;
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- PAYMENTS — merchant token purchases from the platform

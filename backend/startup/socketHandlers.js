@@ -4,6 +4,7 @@ import { db } from '#db';
 import { brandingPayload, currentBranding } from '../domains/branding/brandingPayload.js';
 // AQ-2: verify via the single PASETO authority (Ed25519 signature + iss/aud stamped).
 import { verifyJwt } from '../domains/identity/jwt.util.js';
+import { sessionIsLive, merchantLoginRow } from '../domains/identity/auth.middleware.js';
 import { cycleSnapshotPublisher } from '../domains/markets/cycleSnapshotPublisher.js';
 import { fetchCycleHistory } from '../domains/markets/cycleHistory.service.js';
 import { getSystemConfig } from '#db/repositories/config.js';
@@ -140,12 +141,12 @@ export function attachSocketHandlers(io, cycleGenerator, gameEngine) {
       if (!token) return;
       try {
         const decoded = verifyJwt(token);
-        if (decoded.userId?.toString() === userId?.toString()) {
-          socket.join(`user-${userId}`);
-          return;
-        }
+        // The account is loaded for BOTH branches now. A player joining their
+        // own room was admitted on the signature alone, so a signed-out or
+        // reset session kept receiving that player's balance pushes (R6).
         const user = await loadActiveUser(decoded);
-        if (user?.isAdmin) socket.join(`user-${userId}`);
+        if (!user || !(await sessionIsLive(token, decoded, user))) return;
+        if (user.userId?.toString() === userId?.toString() || user.isAdmin) socket.join(`user-${userId}`);
       } catch { /* invalid token — silently reject */ }
     });
 
@@ -156,11 +157,13 @@ export function attachSocketHandlers(io, cycleGenerator, gameEngine) {
         const decoded = verifyJwt(token);
         if (decoded.isMerchant && decoded.merchantId?.toString() === merchantId?.toString()) {
           const merchant = await db.merchants.getMerchant(decoded.merchantId);
-          if (merchant?.status === 'ACTIVE' && merchant?.merchantApprovalStatus === 'APPROVED') socket.join(`merchant-${merchantId}`);
+          if (merchant?.status !== 'ACTIVE' || merchant?.merchantApprovalStatus !== 'APPROVED') return;
+          if (!(await sessionIsLive(token, decoded, await merchantLoginRow(merchant)))) return;
+          socket.join(`merchant-${merchantId}`);
           return;
         }
         const user = await loadActiveUser(decoded);
-        if (user?.isAdmin) socket.join(`merchant-${merchantId}`);
+        if (user?.isAdmin && await sessionIsLive(token, decoded, user)) socket.join(`merchant-${merchantId}`);
       } catch { /* invalid token — silently reject */ }
     });
 
@@ -170,7 +173,7 @@ export function attachSocketHandlers(io, cycleGenerator, gameEngine) {
         if (!token) return;
         const decoded = verifyJwt(token);
         const user = await loadActiveUser(decoded);
-        if (user?.isAdmin || user?.isSubAdmin) {
+        if ((user?.isAdmin || user?.isSubAdmin) && await sessionIsLive(token, decoded, user)) {
           socket.join('admin-room');
           socket.emit('joined_admin_room', { success: true });
         }

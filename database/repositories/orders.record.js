@@ -27,7 +27,7 @@
 import { pgQuery } from '../client.js';
 import { rupeesToPaise, paiseToRupees } from '../../backend/shared/money.js';
 import { deriveOrderHmac } from '../../backend/middleware/order-crypto-access.js';
-import { stampForNewOrder } from './paymentModePolicy.js';
+import { stampForNewOrder, stampFromPolicy } from './paymentModePolicy.js';
 
 const num = (v) => Number(v ?? 0);
 const rupees = (v) => paiseToRupees(num(v));
@@ -369,6 +369,14 @@ async function newOrderStatement({
   // A trigger refuses the update too; this keeps the allowlist from being one
   // edit away from permitting it.
   usdtChain = null,
+  // The POLICY the caller already validated this order against — its mode AND
+  // its version — when there is one. The service reads the rail to judge the
+  // amount (a cash buy must be a denomination a machine dispenses), and this
+  // function then read the rail again to stamp the row: an admin switch between
+  // the two reads stamped an order on a rail it was never checked for (review
+  // C1). A caller that validated passes what it validated; one that did not
+  // leaves this null and the live rail is read here, as before.
+  railPolicy = null,
   ...detail
 }) {
   if (!orderId) throw new Error('createOrderRecord requires an orderId');
@@ -389,7 +397,9 @@ async function newOrderStatement({
   //
   // The row is immutable afterwards (order_states_mode_immutable), so an admin
   // switching rails mid-flight cannot change what this order is running under.
-  const stamp = await stampForNewOrder(paymentMode);
+  const stamp = railPolicy
+    ? stampFromPolicy(railPolicy)
+    : await stampForNewOrder(paymentMode);
   const columns = ['order_id', 'user_id', 'order_type', 'state', 'token_amount_paise', 'fiat_amount_paise',
     'payment_mode', 'payment_mode_version', 'usdt_chain', 'order_hmac'];
   const params = [String(orderId), String(userId), type, state, tokenPaise, rupeesToPaise(fiatAmountRupees),
@@ -1193,8 +1203,12 @@ export async function mirrorSettlementState(orderId, settlementStatus, {
     `UPDATE order_states SET
        merchant_credit_status = $2,
        escrow_locked = $3,
-       state = COALESCE($4, state),
-       completed_at = CASE WHEN $4 = 'COMPLETED' THEN now() ELSE completed_at END,
+       -- Only from PAID, the one state the hold worker settles from. A dispute
+       -- that lands after the settlement commits (it waits on the settlement's
+       -- lock, then moves PAID -> DISPUTED) must stay an open dispute; writing
+       -- COMPLETED over it took it out of the queue with nobody told (C3).
+       state = CASE WHEN $4::text IS NOT NULL AND state = 'PAID' THEN $4 ELSE state END,
+       completed_at = CASE WHEN $4 = 'COMPLETED' AND state = 'PAID' THEN now() ELSE completed_at END,
        merchant_credit_reversed_at = CASE
          WHEN $2 = 'REVERSED' THEN COALESCE(merchant_credit_reversed_at, now())
          ELSE merchant_credit_reversed_at END,

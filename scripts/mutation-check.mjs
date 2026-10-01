@@ -256,24 +256,8 @@ const MUTATIONS = [
   const r = await credit({
     userId, field: 'depositBalance', amount,`,
   },
-  // ── The three controls that were defined nowhere ─────────────────────────
-  {
-    id: 'M57', file: 'database/repositories/security.js', config: PG,
-    test: 'database/tests/securityChatAdjustmentPg.test.js',
-    why: 'expiry is left to a sweep, so a lapsed temporary block still blocks',
-    from: `      WHERE ip = $1 AND active AND (expires_at IS NULL OR expires_at > now())`,
-    to: `      WHERE ip = $1 AND active`,
-  },
-  {
-    id: 'M58', file: 'database/repositories/security.js', config: PG,
-    test: 'database/tests/securityChatAdjustmentPg.test.js',
-    why: 'a new block waits out the cache TTL — slow to stop an attacker',
-    from: `  // Applied immediately, not at the next TTL: slow to stop an attacker is the
-  // expensive direction of this trade.
-  invalidateIpCache(ip);
-  return rows[0];`,
-    to: `  return rows[0];`,
-  },
+  // ── The controls that were defined nowhere ───────────────────────────────
+  // M57/M58 guarded the IP deny-list, removed 2026-09-30 (it never ran).
   {
     id: 'M59', file: 'database/repositories/balanceAdjustments.js', config: PG,
     test: 'database/tests/securityChatAdjustmentPg.test.js',
@@ -534,7 +518,11 @@ const MUTATIONS = [
     id: 'M92', file: 'database/repositories/orders.record.js', config: PG,
     test: 'backend/tests/routes/paymentModeSwitchPg.test.js',
     why: 'the order insert stops stamping the rail, so every order silently takes the column default',
-    from: `  const stamp = await stampForNewOrder(paymentMode);`,
+    // Retargeted 2026-09-30 (review C1): the stamp is now either the policy the
+    // caller validated against or a read of the live one. Both go.
+    from: `  const stamp = railPolicy
+    ? stampFromPolicy(railPolicy)
+    : await stampForNewOrder(paymentMode);`,
     to: `  const stamp = { mode: 'P2P_UPI', version: null };`,
   },
   {
@@ -1190,8 +1178,17 @@ const MUTATIONS = [
     id: 'M171', file: 'database/repositories/orders.record.js', config: PG,
     test: 'backend/tests/routes/withdrawalResolutionPg.test.js',
     why: 'the settlement mirror writes the order state behind the route, so a refunded dispute is written back to DISPUTED and returns to the queue',
-    from: `  if (keepState) OUTCOME.state = null;`,
-    to: `  if (false) OUTCOME.state = null;`,
+    // Two layered guards since review C3 (2026-09-30): `keepState` for the
+    // admin routes, and the UPDATE writing state only from PAID. Either alone
+    // keeps a route-moved order where the route put it, so removing ONE is
+    // unkillable by construction — CI reported this entry SURVIVED once C3
+    // landed. The property is lost only when both go; M178 covers the PAID
+    // guard on its own, through the race it exists for.
+    edits: [
+      [`  if (keepState) OUTCOME.state = null;`, `  if (false) OUTCOME.state = null;`],
+      [`state = CASE WHEN $4::text IS NOT NULL AND state = 'PAID' THEN $4 ELSE state END,`,
+       `state = COALESCE($4, state),`],
+    ],
   },
   {
     id: 'M172', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
@@ -1298,6 +1295,341 @@ const MUTATIONS = [
     why: 'a draft signed with a different key publishes — legal at upload while nothing was published — and every phone refuses the update',
     from: `                             AND k.published_at IS NOT NULL AND k.signer_sha256 <> r.signer_sha256)`,
     to: `                             AND false)`,
+  },
+  // ── An undeclared config key is the CALLER's mistake (B3, 2026-09-30) ────
+  {
+    id: 'M174', file: 'database/repositories/config.js', config: PG,
+    test: 'backend/tests/routes/configRefusalRoutes.test.js',
+    why: 'the undeclared-key refusal loses its status, so an admin typo on the branding or support-links screen answers "Something went wrong" and hides the key it named',
+    from: `      throw invalidConfig(
+        \`config: refusing to write undeclared setting`,
+    to: `      throw new Error(
+        \`config: refusing to write undeclared setting`,
+  },
+  // ── A blank-looking reason is the admin's mistake (B3 sweep, 2026-09-30) ──
+  // Each route tested `!reason` while its writer requires `reason.trim()`, so a
+  // reason of spaces passed the route and the writer's bare Error became a 500.
+  {
+    id: 'M175', file: 'backend/routes/retention.routes.js', config: PG,
+    test: 'backend/tests/routes/adminBalanceAdjustRoutes.test.js',
+    why: 'a reason of spaces passes the balance-adjust route and the writer throws it back as a 500',
+    from: `if (!userId || !type || !field || !amount || !String(reason ?? '').trim()) {`,
+    to: `if (!userId || !type || !field || !amount || !reason) {`,
+  },
+  {
+    id: 'M176', file: 'backend/domains/merchant/merchant.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/merchantAdminRoutes.test.js',
+    why: 'a rejection reason of spaces passes the route and rejectMerchant throws it back as a 500',
+    from: `if (!String(reason ?? '').trim()) return res.status(400).json({ success: false, message: 'Rejection reason is required' });`,
+    to: `if (!reason) return res.status(400).json({ success: false, message: 'Rejection reason is required' });`,
+  },
+  // ── A dispute that races the hold worker (review C3, 2026-09-30) ─────────
+  {
+    id: 'M177', file: 'backend/domains/payment/withdrawalHold.service.js', config: PG,
+    test: 'backend/tests/routes/disputeSettleRacePg.test.js',
+    why: 'the worker settles on a snapshot of the order: a dispute raised after the read is settled underneath, stake consumed and merchant credited',
+    from: `    orderStateIn: ['PAID'],
+  });`,
+    to: `  });`,
+  },
+  {
+    id: 'M178', file: 'database/repositories/orders.record.js', config: PG,
+    test: 'backend/tests/routes/disputeSettleRacePg.test.js',
+    why: 'the settlement mirror writes COMPLETED over a dispute raised after the settlement committed, taking it out of the queue with nobody told',
+    from: `state = CASE WHEN $4::text IS NOT NULL AND state = 'PAID' THEN $4 ELSE state END,`,
+    to: `state = COALESCE($4, state),`,
+  },
+  // ── The cash matcher follows the ORDER's rail (review C2, 2026-09-30) ────
+  {
+    id: 'M179', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
+    test: 'backend/tests/routes/cashLinkRoutes.test.js',
+    why: 'the matcher branches on the rail in force, so a switch to UPI strands every cash buy already waiting and every link already supplied for them',
+    from: `  const waiting = await db.orders.ordersAwaitingCashLink({ limit });`,
+    to: `  const rail = await getActivePaymentModePolicy();
+  if (rail?.activeMode !== PAYMENT_MODES.CASH_ATM) return { matched: 0, considered: 0 };
+  const waiting = await db.orders.ordersAwaitingCashLink({ limit });`,
+  },
+  // ── An order is stamped with the rail it was validated for (review C1) ───
+  {
+    id: 'M180', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
+    test: 'backend/tests/routes/railSnapshotPg.test.js',
+    why: 'the buy is stamped by a second read of the rail, so an admin switch in between births an order on a rail its amount was never checked for',
+    from: `    railPolicy:        railNow,
+`,
+    to: ``,
+  },
+  // ── Android release uploads (review C4: P197-2, P197-3) ─────────────────
+  {
+    id: 'M181', file: 'backend/domains/distribution/apkInspector.js', config: UNIT,
+    test: 'backend/tests/unit/apkInspector.test.js',
+    why: 'the manifest is inflated without a bound, so a zip bomb on one entry inflates gigabytes inside the API process',
+    from: `return inflateRawSync(raw, { maxOutputLength: MAX_MANIFEST_BYTES });`,
+    to: `return inflateRawSync(raw);`,
+  },
+  {
+    id: 'M182', file: 'backend/domains/distribution/androidRelease.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/androidReleaseRoutes.test.js',
+    why: 'the upload that loses the race for a version code answers 500 and leaves its stored APK behind',
+    from: `        if (err?.code !== '23505') throw err;`,
+    to: `        throw err;`,
+  },
+  // ── The IP deny-list (F-030, rebuilt) ───────────────────────────────────
+  {
+    id: 'M183', file: 'backend/middleware/ipBlocklist.js', config: PG,
+    test: 'backend/tests/routes/ipBlocklistRoutesPg.test.js',
+    why: 'the enforcer serves every address, so a block an admin was told is in force refuses nobody',
+    from: `  if (!listCovers(list, req.ip)) return next();`,
+    to: `  return next();`,
+  },
+  {
+    id: 'M184', file: 'backend/routes/admin/ipBlocks.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/ipBlocklistRoutesPg.test.js',
+    why: 'an admin can block a range covering their own address; behind a misconfigured proxy that is the balancer, and everybody, the admin included, is locked out',
+    from: `  if (listCovers(probe, requesterIp)) {`,
+    to: `  if (false) {`,
+  },
+  {
+    id: 'M185', file: 'backend/routes/admin/ipBlocks.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/ipBlocklistRoutesPg.test.js',
+    why: 'a /8 is accepted; behind carrier NAT that blocks a region of players',
+    from: `  if (bits < MIN_PREFIX[family]) {`,
+    to: `  if (false) {`,
+  },
+  {
+    id: 'M186', file: 'database/repositories/ipBlocks.js', config: PG,
+    test: 'backend/tests/routes/ipBlocklistRoutesPg.test.js',
+    why: 'a temporary block never lapses, because the enforcer loads expired rows as live',
+    from: 'WHERE released_at IS NULL AND (expires_at IS NULL OR expires_at > now())`,',
+    to: 'WHERE released_at IS NULL`,',
+  },
+  {
+    id: 'M187', file: 'backend/middleware/ipBlocklist.js', config: UNIT,
+    test: 'backend/tests/unit/ipBlocklistRefresh.test.js',
+    why: 'a failed reload drops to an empty list, so a database blip unblocks every blocked client at once',
+    from: `    refreshIpBlocklistNow().catch((error) => {`,
+    to: `    refreshIpBlocklistNow().catch((error) => { list = new net.BlockList(); count = 0;`,
+  },  // ── Bet placement (R6) ──────────────────────────────────────────────────
+  {
+    id: 'M188', file: 'backend/domains/markets/bet.routes.js', config: PG,
+    test: 'backend/tests/routes/betPlaceRoutesPg.test.js',
+    why: 'the stake limits come from the type the client SENDS, so a full-day bet goes under the full-day floor by claiming to be a 30-minute bet',
+    from: `const limitsKey = isCycleType(cycle.type) ? limitsKeyFor(cycle.type) : 'thirtyMin';`,
+    to: `const limitsKey = isCycleType(req.body.type) ? limitsKeyFor(req.body.type) : 'thirtyMin';`,
+  },
+  {
+    id: 'M189', file: 'database/repositories/bets.js', config: PG,
+    test: 'backend/tests/routes/betPlaceRoutesPg.test.js',
+    why: 'a bet whose cycle closed during placement is reported refunded while its stake stays locked',
+    from: `  return refundBet({
+    betId, userId: String(userId), reason,`,
+    to: `  return { ok: true }; ({
+    betId, userId: String(userId), reason,`,
+  },
+  {
+    id: 'M190', file: 'backend/domains/markets/bet.routes.js', config: PG,
+    test: 'backend/tests/routes/betPlaceRoutesPg.test.js',
+    why: 'a failed refund is swallowed and the player is told "fully restored" while the stake is still locked',
+    from: `      } catch (refundErr) {`,
+    to: `      } catch (refundErr) { return res.status(400).json({ success: false, message: 'Betting window just closed. Your balance has been fully restored.' });`,
+  },
+  {
+    id: 'M191', file: 'backend/domains/markets/bet.routes.js', config: PG,
+    test: 'backend/tests/routes/betPlaceRoutesPg.test.js',
+    why: 'a phantom bet with a non-numeric amount reaches rupeesToPaise and answers 500',
+    from: `    if (!Number.isFinite(amount) || amount < 1) {`,
+    to: `    if (amount < 1) {`,
+  },  // ── Cancelled cycles return their stakes (R6) ────────────────────────────
+  {
+    id: 'M192', file: 'backend/routes/admin/cycles.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/cycleCancelRefundPg.test.js',
+    why: 'CANCEL moves the status and returns no stake, so every bet on the cycle stays locked',
+    from: 'const voiding = await voidCancelledCycle(cycleId, { actor: `admin:${req.user.userId}` })',
+    to: 'const voiding = await Promise.resolve({ ok: true, voided: 2, refused: [] })',
+  },
+  {
+    id: 'M193', file: 'database/repositories/settlements.js', config: PG,
+    test: 'backend/tests/routes/cycleCancelRefundPg.test.js',
+    why: 'a cycle still being played has its stakes handed back',
+    from: `  if (rows[0].status !== 'CANCELLED') return { ok: false, reason: 'not_cancelled', status: rows[0].status };`,
+    to: `  if (false) return { ok: false, reason: 'not_cancelled', status: rows[0].status };`,
+  },
+  {
+    id: 'M194', file: 'database/repositories/settlements.js', config: PG,
+    test: 'backend/tests/routes/cycleCancelRefundPg.test.js',
+    why: 'the recovery sweep never finds a cancelled cycle whose stakes were left locked',
+    from: `      WHERE c.status = 'CANCELLED'
+        AND EXISTS`,
+    to: `      WHERE c.status = 'CLOSED'
+        AND EXISTS`,
+  },  // ── Second-factor guesses are counted per ACCOUNT (R6) ──────────────────
+  {
+    id: 'M195', file: 'backend/middleware/security.js', config: UNIT,
+    test: 'backend/tests/unit/rateLimitKeys.test.js',
+    why: 'the 2FA budget is per challenge token, so each correct password buys five fresh guesses and the lockout never trips',
+    from: `    if (subject) return subject.audience === CHALLENGE_AUDIENCE.MERCHANT ? \`m:\${subject.id}\` : \`u:\${subject.id}\`;`,
+    to: `    if (false) return null;`,
+  },  // ── A merchant's password has one owner, and a reset evicts its sessions (R6)
+  {
+    id: 'M196', file: 'database/repositories/merchants.js', config: PG,
+    test: 'backend/tests/routes/merchantPasswordResetPg.test.js',
+    why: 'the merchant door reads a password the reset never writes, so a reset merchant is refused their new password',
+    from: `LEFT JOIN users u ON u.user_id = m.user_id AND u.account_type = 'MERCHANT'`,
+    to: `LEFT JOIN users u ON FALSE`,
+  },
+  {
+    id: 'M197', file: 'backend/middleware/merchantAuth.js', config: PG,
+    test: 'backend/tests/routes/merchantPasswordResetPg.test.js',
+    why: 'a password reset evicts no merchant session, so the session the reset was meant to end keeps working',
+    from: `    if (sessionSuperseded(login, decoded)) return refuseSupersededSession(res);`,
+    to: `    if (false) return refuseSupersededSession(res);`,
+  },  // ── A session is checked the same way on every path that accepts one (R6)
+  {
+    id: 'M198', file: 'backend/startup/socketHandlers.js', config: PG,
+    test: 'backend/tests/routes/sessionCutoffEverywherePg.test.js',
+    why: 'a signed-out or password-reset session still joins its player room and receives balance pushes',
+    from: `        if (!user || !(await sessionIsLive(token, decoded, user))) return;`,
+    to: `        if (!user) return;`,
+  },
+  {
+    id: 'M199', file: 'backend/domains/identity/auth.middleware.js', config: PG,
+    test: 'backend/tests/routes/sessionCutoffEverywherePg.test.js',
+    why: 'the shared session check ignores the reset cutoff, so every inline path honours a superseded session',
+    from: `  return !sessionSuperseded(login, decoded);`,
+    to: `  return true;`,
+  },
+  {
+    id: 'M200', file: 'backend/routes/sse.routes.js', config: PG,
+    test: 'backend/tests/routes/merchantPasswordResetPg.test.js',
+    why: 'a merchant whose password was reset keeps the live order feed',
+    from: `            if (sessionSuperseded(await merchantLoginRow(merchant), decoded)) {`,
+    to: `            if (false) {`,
+  },  // ── A contact proves a number only when it is the sender's own (R6) ──────
+  {
+    id: 'M201', file: 'backend/domains/telegram/telegram.routes.js', config: PG,
+    test: 'backend/tests/routes/telegramContactOwnershipPg.test.js',
+    why: 'an address-book card with no user_id links the sender to the account holding that number, and the reset button then hands it over',
+    from: `  if (!contactUserId || String(contactUserId) !== String(telegramUserId)) {`,
+    to: `  if (contactUserId && String(contactUserId) !== String(telegramUserId)) {`,
+  },
+  {
+    id: 'M202', file: 'backend/domains/telegram/telegramRecovery.service.js', config: UNIT,
+    test: 'backend/tests/unit/telegramRecoverySafety.test.js',
+    why: 'recovery accepts a contact card with no user_id, so a number the sender does not hold stands in for one they do',
+    from: `  if (!contactUserId || String(contactUserId) !== String(newTelegramUserId)) {`,
+    to: `  if (contactUserId && String(contactUserId) !== String(newTelegramUserId)) {`,
+  },  // ── A referral disbursal reserves its budget before it pays (R6) ────────
+  {
+    id: 'M203', file: 'backend/domains/referral/referral.service.js', config: UNIT,
+    test: 'backend/tests/unit/referralDisbursalBudget.test.js',
+    why: 'a disbursal whose budget reservation was refused pays anyway, so the programme ceiling is crossed',
+    from: `  if (!reservation.ok) {`,
+    to: `  if (false) {`,
+  },
+  {
+    id: 'M204', file: 'database/repositories/referrals.js', config: PG,
+    test: 'database/tests/newDomains.test.js',
+    why: 'returning unspent budget can drive the drawn total below zero, inventing budget',
+    from: `WHERE programme_key = $1 AND disbursed_paise - $2 >= 0`,
+    to: `WHERE programme_key = $1`,
+  },  // ── Commission recorded is commission delivered; one pass at a time (R6) ─
+  {
+    id: 'M205', file: 'database/repositories/ledger.core.js', config: PG,
+    test: 'database/tests/merchantCommissionPg.test.js',
+    why: 'a commission the ledger recorded and the wallet never received is never delivered',
+    from: `        AND NOT EXISTS (SELECT 1 FROM merchant_wallet_entries w
+                         WHERE w.movement_id = e.idempotency_key)`,
+    to: `        AND FALSE`,
+  },
+  {
+    id: 'M206', file: 'database/repositories/ledger.core.js', config: PG,
+    test: 'database/tests/merchantCommissionPg.test.js',
+    why: 'the cron and the admin run-now overlap, both reading the pool before either writes',
+    from: `    if (!rows[0].got) return { locked: false };`,
+    to: `    if (false) return { locked: false };`,
+  },  // ── Queue writes are gated on a permission, not a tier (R6) ──────────────
+  {
+    id: 'M207', file: 'backend/routes/admin/_adminShared.js', config: PG,
+    test: 'backend/tests/routes/queueWritePermissionPg.test.js',
+    why: 'any sub-admin, whatever they hold, can reassign a player\'s order to any merchant or edit the merchant pool',
+    from: `    return byPermission(req, res, next);`,
+    to: `    return next();`,
+  },
+  {
+    id: 'M208', file: 'database/repositories/casino.core.js', config: PG,
+    test: 'database/tests/casinoWinNeedsBetPg.test.js',
+    why: 'a provider WIN pays a player on a round they never bet on, or whose bet was rolled back',
+    from: `      if (!ctx.round || ctx.round.debitedPaise <= ctx.round.refundedPaise) {`,
+    to: `      if (false) {`,
+  },
+  {
+    id: 'M209', file: 'database/repositories/casino.core.js', config: PG,
+    test: 'database/tests/casinoWinNeedsBetPg.test.js',
+    why: 'a WIN or ROLLBACK naming another player on someone else\'s round credits that other player',
+    from: `    if (ctx.round && ctx.round.userId !== ctx.uid) {`,
+    to: `    if (false) {`,
+  },
+  {
+    id: 'M210', file: 'database/repositories/casino.core.js', config: PG,
+    test: 'database/tests/casinoWinNeedsBetPg.test.js',
+    why: 'a WIN from one provider pays on a round bet at a different provider',
+    from: `    if (ctx.round && providerKey && ctx.round.providerKey !== providerKey) {`,
+    to: `    if (false) {`,
+  },
+  {
+    id: 'M211', file: 'backend/domains/distribution/apkInspector.js', config: UNIT,
+    test: 'backend/tests/unit/apkInspector.test.js',
+    why: 'an APK changed after it was signed is accepted for upload and publishing',
+    from: `      if (!digestCache.get(algorithm).equals(signedDigest)) {`,
+    to: `      if (false) {`,
+  },
+  {
+    id: 'M212', file: 'backend/domains/distribution/apkInspector.js', config: UNIT,
+    test: 'backend/tests/unit/apkInspector.test.js',
+    why: 'a signing block whose signature does not verify is accepted',
+    from: `      if (!signatureVerifies(sig.id, publicKey, data, sig.value)) {`,
+    to: `      if (false) {`,
+  },
+  {
+    id: 'M213', file: 'backend/domains/distribution/apkInspector.js', config: UNIT,
+    test: 'backend/tests/unit/apkInspector.test.js',
+    why: 'an APK signed by one key is reported under another key\'s certificate',
+    from: `    if (!certKey.equals(publicKey)) {`,
+    to: `    if (false) {`,
+  },
+  {
+    id: 'M214', file: 'database/repositories/androidReleases.js', config: PG,
+    test: 'backend/tests/routes/androidReleaseControlRoutes.test.js',
+    why: 'a HALTED release goes on being offered, downloaded and required',
+    from: `        WHERE package_name = $1 AND published_at IS NOT NULL AND halted_at IS NULL`,
+    to: `        WHERE package_name = $1 AND published_at IS NOT NULL`,
+  },
+  {
+    id: 'M215', file: 'database/repositories/androidReleases.js', config: PG,
+    test: 'backend/tests/routes/androidReleaseControlRoutes.test.js',
+    why: 'a phone is offered a release its Android cannot install',
+    from: `SELECT * FROM live WHERE $2::int IS NULL OR min_sdk IS NULL OR min_sdk <= $2::int`,
+    to: `SELECT * FROM live WHERE true OR $2::int IS NULL`,
+  },
+  {
+    id: 'M216', file: 'backend/domains/distribution/androidRelease.shared.js', config: PG,
+    test: 'backend/tests/routes/androidReleaseControlRoutes.test.js',
+    why: 'a phone too old for a mandatory release keeps running the unsupported build, told nothing',
+    from: `  if (policy.unsupportedBelow && installedCode < policy.unsupportedBelow) return 'unsupported';`,
+    to: ``,
+  },
+  {
+    id: 'M217', file: 'backend/domains/distribution/androidRelease.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/androidReleaseControlRoutes.test.js',
+    why: 'a build below a halted release that phones may run is accepted as a draft',
+    from: `      const latest = await db.androidReleases.getHighestPublished(expectedPackage());`,
+    to: `      const { latest } = await db.androidReleases.getUpdatePolicy(expectedPackage());`,
+  },
+  {
+    id: 'M218', file: 'database/repositories/androidReleases.js', config: PG,
+    test: 'backend/tests/routes/androidReleaseControlRoutes.test.js',
+    why: 'halting a DRAFT is not refused by name',
+    from: `      WHERE release_id = $1 AND published_at IS NOT NULL AND halted_at IS NULL`,
+    to: `      WHERE release_id = $1 AND halted_at IS NULL`,
   },
 ];
 

@@ -561,7 +561,9 @@ router.put('/merchants/:merchantId/reject', authenticate, isAdmin, async (req, r
   try {
     const { merchantId } = req.params;
     const { reason } = req.body;
-    if (!reason) return res.status(400).json({ success: false, message: 'Rejection reason is required' });
+    // `trim()`, as the writer asks: a reason of spaces passed `!reason` and
+    // left `rejectMerchant` to throw a bare Error, answered as a 500 (S35).
+    if (!String(reason ?? '').trim()) return res.status(400).json({ success: false, message: 'Rejection reason is required' });
 
     // ONE statement. This was two updates to the same row — the first setting
     // the status without the reason, the second adding it — so a failure

@@ -21,20 +21,28 @@ export interface ReleaseInfo {
   sizeBytes: number;
   releaseNotes: string;
   mandatory: boolean;
+  minSdk: number | null;
   publishedAt: string | null;
 }
 
 export interface UpdateCheck {
-  status: 'required' | 'available' | 'current';
+  /**
+   * 'unsupported': below a mandatory release this phone's Android cannot
+   * install — the app must stop, and say the phone is too old.
+   */
+  status: 'required' | 'unsupported' | 'available' | 'current';
   minRequiredVersionCode: number;
   latest: ReleaseInfo | null;
   installedVersionCode: number;
+  /** Only with 'unsupported': the Android it needs, worded by the server. */
+  requiredAndroid?: string;
 }
 
 interface ApkUpdaterPlugin {
   download(o: { url: string; sha256: string; sizeBytes: number }): Promise<{ path: string }>;
   install(o: { path: string }): Promise<{ status: 'started' | 'needs_permission' }>;
   canInstall(): Promise<{ allowed: boolean }>;
+  sdkLevel(): Promise<{ sdkInt: number }>;
   openInstallSettings(): Promise<void>;
   addListener(
     event: 'downloadProgress',
@@ -56,6 +64,20 @@ export async function installedVersionCode(): Promise<number | null> {
 }
 
 /**
+ * This phone's Android API level, or null — an install older than this plugin
+ * method has no way to say, and the server then treats every release as
+ * installable, which is what it did before.
+ */
+export async function deviceSdk(): Promise<number | null> {
+  try {
+    const { sdkInt } = await ApkUpdater.sdkLevel();
+    return Number.isInteger(sdkInt) && sdkInt > 0 ? sdkInt : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Where the APK is. The server hands back an absolute CDN URL in production;
  * in development the file is served by the API itself under a relative path,
  * which inside the app must be resolved against the API origin, not the phone.
@@ -69,7 +91,9 @@ export async function checkForUpdate(): Promise<UpdateCheck | null> {
   const installed = await installedVersionCode();
   if (installed == null) return null;
   try {
-    const res = await fetch(apiUrl(`/api/app/android/update?versionCode=${installed}`), { cache: 'no-store' });
+    const sdk = await deviceSdk();
+    const query = `versionCode=${installed}${sdk ? `&sdk=${sdk}` : ''}`;
+    const res = await fetch(apiUrl(`/api/app/android/update?${query}`), { cache: 'no-store' });
     if (!res.ok) return null;
     const body = await res.json();
     if (!body?.success) return null;
@@ -78,6 +102,7 @@ export async function checkForUpdate(): Promise<UpdateCheck | null> {
       minRequiredVersionCode: Number(body.minRequiredVersionCode) || 0,
       latest: body.latest ? { ...body.latest, downloadUrl: resolveDownloadUrl(body.latest.downloadUrl) } : null,
       installedVersionCode: installed,
+      ...(body.requiredAndroid ? { requiredAndroid: String(body.requiredAndroid) } : {}),
     };
   } catch {
     return null;
@@ -97,6 +122,8 @@ export const SNOOZE_MS = 24 * 60 * 60 * 1000;
  * "later" was an answer about the version they were shown.
  */
 export function shouldShow(check: UpdateCheck | null, now = Date.now(), snooze = readSnooze()): boolean {
+  // Too old to run, with or without a release it could install: always shown.
+  if (check?.status === 'unsupported') return true;
   if (!check?.latest || check.status === 'current') return false;
   if (check.status === 'required') return true;
   return !(snooze && snooze.versionCode === check.latest.versionCode && now - snooze.at < SNOOZE_MS);

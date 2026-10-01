@@ -8,7 +8,7 @@ import { brandingPayload, broadcastBranding } from '../../domains/branding/brand
 import { generateBrandingUploadUrl, isS3Configured, uploadBufferToS3, deleteFile, verifyUploadedObject } from '../../services/cdn.service.js';
 import path_node from 'path';
 import fs_node from 'fs';
-import { serverError } from '../../shared/httpError.js';
+import { serverError, respondError } from '../../shared/httpError.js';
 
 const router = express.Router();
 
@@ -102,12 +102,9 @@ router.put('/branding', authenticate, isAdmin, async (req, res) => {
     res.json({ success: true, message: 'Branding updated successfully', branding: applied.config });
   } catch (error) {
     // A refused key or an out-of-range value is the admin's mistake to see, not
-    // a server fault: the message names the exact path.
-    if (/^config: /.test(error.message)) {
-      return res.status(400).json({ success: false, message: error.message });
-    }
-    console.error('Update branding error:', error);
-    res.status(500).json({ success: false, message: 'Failed to update branding' });
+    // a server fault: the config store throws it with status 400 and a message
+    // naming the exact path, and respondError keeps that wording.
+    return respondError(res, error, 'PUT /branding', { message: 'Failed to update branding' });
   }
 });
 

@@ -250,7 +250,10 @@ router.get('/bonuses/my', authenticate, async (req, res) => {
 router.post('/admin/balance-adjust', authenticate, isAdmin, async (req, res) => {
   try {
     const { userId, type, field, amount, reason } = req.body || {};
-    if (!userId || !type || !field || !amount || !reason) {
+    // The reason is tested as the writer tests it — trimmed. A reason of
+    // spaces passed `!reason` and the writer's own check threw a bare Error,
+    // answered as a 500 to a request that can never succeed (S35).
+    if (!userId || !type || !field || !amount || !String(reason ?? '').trim()) {
       return res.status(400).json({ success: false, message: 'All fields required' });
     }
     if (!['CREDIT', 'DEBIT'].includes(type)) {

@@ -244,9 +244,13 @@ export async function getMerchantByLogin(identifier) {
 export async function getMerchantCredentials(merchantId) {
   if (!merchantId) return null;
   const { rows } = await pgQuery(
-    `SELECT merchant_id, password_hash, two_factor_enabled, two_factor_secret,
-            two_factor_pending_secret, two_factor_last_counter, backup_codes
-       FROM merchants WHERE merchant_id = $1`,
+    // The password comes from the merchant's LOGIN row — the one owner, and
+    // the row a password reset writes. The second factor stays on `merchants`.
+    `SELECT m.merchant_id, u.password_hash, m.two_factor_enabled, m.two_factor_secret,
+            m.two_factor_pending_secret, m.two_factor_last_counter, m.backup_codes
+       FROM merchants m
+       LEFT JOIN users u ON u.user_id = m.user_id AND u.account_type = 'MERCHANT'
+      WHERE m.merchant_id = $1`,
     [String(merchantId)], 'merchant_get_credentials',
   );
   const r = rows[0];
@@ -724,7 +728,7 @@ export async function merchantCounts() {
  * settlements cannot lose one of them to a read-modify-write.
  */
 const UPDATABLE = new Set([
-  'user_id', 'name', 'username', 'mobile', 'email', 'password_hash',
+  'user_id', 'name', 'username', 'mobile', 'email',
   'two_factor_enabled', 'two_factor_secret', 'two_factor_pending_secret',
   'two_factor_last_counter', 'two_factor_enrolled_at', 'backup_codes',
   'status', 'suspension_reason', 'is_online', 'accepts_deposits', 'accepts_withdrawals',
@@ -816,7 +820,7 @@ function toColumns(patch, fn) {
  */
 export async function createMerchant({
   merchantId = null, userId = null, name, publicRef = null,
-  username = null, mobile = null, email = null, passwordHash = null,
+  username = null, mobile = null, email = null,
   currency = 'INR', status = 'PENDING', bankDetails = null,
   usdtAddressTrc20 = null, usdtAddressBep20 = null, panelUrl = '',
   limits = null, client = null,
@@ -832,16 +836,16 @@ export async function createMerchant({
   const l = limits || {};
   const { rows } = await run(
     `INSERT INTO merchants (
-       merchant_id, user_id, name, public_ref, username, mobile, email, password_hash,
+       merchant_id, user_id, name, public_ref, username, mobile, email,
        accepted_currencies, status,
        bank_account_holder_name, bank_upi_id, bank_name, bank_account_no, bank_ifsc,
        usdt_address_trc20, usdt_address_bep20, panel_url,
        min_deposit_paise, max_deposit_paise, min_withdraw_paise, max_withdraw_paise)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8, ARRAY[$9], $10,
-             $11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
+     VALUES ($1,$2,$3,$4,$5,$6,$7, ARRAY[$8], $9,
+             $10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
      RETURNING ${COLUMNS}`,
     [id, userId ? String(userId) : null, String(name), ref,
-      username || null, mobile || null, email || null, passwordHash,
+      username || null, mobile || null, email || null,
       String(currency), String(status),
       bankDetails?.accountHolderName || null, bankDetails?.upiId || null,
       bankDetails?.bankName || null, bankDetails?.accountNo || null, bankDetails?.ifsc || null,
@@ -1209,7 +1213,7 @@ export async function createMerchantAccount({
 
     const merchant = await createMerchant({
       merchantId: newMerchantId(), userId: uid, name: username || String(mobile),
-      username, mobile, email, passwordHash,
+      username, mobile, email,
       currency, status: 'PENDING', bankDetails, usdtAddressTrc20, usdtAddressBep20,
       client,
     });

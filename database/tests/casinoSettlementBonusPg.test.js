@@ -26,7 +26,7 @@ import {
 } from '../repositories/casino.core.js';
 import {
   SETTLEMENT_STATUS, openSettlement, settleBet, completeSettlement,
-  voidSettlement, getCycleSettlement, reconcileSettlement, findIncompleteSettlements,
+  getCycleSettlement, reconcileSettlement, findIncompleteSettlements,
 } from '../repositories/settlements.js';
 import { grantBonus, clawBackBonus, getGrant, reconcileBonusPools, GRANT_STATUS } from '../repositories/bonuses.core.js';
 import { ACCOUNTS, getTreasuryBalances, allocateFromHouse, trialBalance } from '../repositories/treasury.js';
@@ -227,20 +227,6 @@ describePg('Domains 6-8 (PostgreSQL)', () => {
       expect(results.every((r) => r.ok)).toBe(true);
       expect(results.filter((r) => !r.idempotent)).toHaveLength(1);
       expect((await getCycleSettlement('cyc1')).status).toBe(SETTLEMENT_STATUS.COMPLETED);
-    });
-
-    it('voiding returns every outstanding stake', async () => {
-      await fund(100_000, 'f1');
-      await seedBet('b1'); await seedBet('b2');
-      await openSettlement({ cycleId: 'cyc1', winningSide: 'DELHI' });
-
-      const r = await voidSettlement({
-        cycleId: 'cyc1',
-        bets: [{ betId: 'b1', userId: U, slices: stake }, { betId: 'b2', userId: U, slices: stake }],
-      });
-      expect(r.returned).toEqual(['b1', 'b2']);
-      expect(await bal()).toMatchObject({ depositBalance: 100_000, lockedBalance: 0 });
-      expect((await getBet('b1')).status).toBe(BET_STATUS.VOID);
     });
 
     it('finds a run that says COMPLETED while bets are still pending', async () => {

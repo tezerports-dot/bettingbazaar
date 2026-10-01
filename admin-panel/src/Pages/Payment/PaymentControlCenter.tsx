@@ -189,6 +189,7 @@ export const PaymentControlCenter: React.FC = () => {
         {}
         <button
           onClick={() => set('activeMode', 'P2P')}
+          aria-pressed={isP2P}
           className={`card text-left transition-all border-2 ${isP2P ? 'border-green-500 bg-green-500/5' : 'border-dark-600 opacity-60 hover:opacity-80'}`}
         >
           <div className="flex items-start justify-between mb-3">
@@ -219,6 +220,7 @@ export const PaymentControlCenter: React.FC = () => {
         {/* Gateway Card */}
         <button
           onClick={() => set('activeMode', 'GATEWAY')}
+          aria-pressed={!isP2P}
           className={`card text-left transition-all border-2 ${!isP2P ? 'border-yellow-500 bg-yellow-500/5' : 'border-dark-600 opacity-60 hover:opacity-80'}`}
         >
           <div className="flex items-start justify-between mb-3">

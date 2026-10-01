@@ -9,7 +9,7 @@
  * reconstructible afterwards, including when two exports run at once.
  */
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
-import { pgConfigured, pgQuery, applySchema, closePg } from '../client.js';
+import { pgConfigured, pgQuery, applySchema, closePg, withTransaction } from '../client.js';
 import { createUser } from '../repositories/users.js';
 import {
   revokeToken, isTokenRevoked,
@@ -174,10 +174,43 @@ describePg('identity (PostgreSQL)', () => {
     });
 
     it('two concurrent exports never disclose one Aadhaar in both files', async () => {
-      const [a, b] = await Promise.all([
-        exportPending({ batchId: 'exp-a', limit: 4 }),
-        exportPending({ batchId: 'exp-b', limit: 4 }),
-      ]);
+      // The overlap is FORCED, not hoped for (R8, 2026-09-30). Two exports
+      // fired with Promise.all usually ran one after the other, and then the
+      // second found every row already stamped and the test passed with
+      // SKIP LOCKED removed — the M182 shape. Here a SHARE lock on kyc_batches
+      // parks export A AFTER it has claimed and row-locked its rows (its batch
+      // INSERT is blocked), and export B runs against those locked rows. With
+      // SKIP LOCKED, B claims nothing; without it, B waits on A's rows and then
+      // stamps the same four — two files, one Aadhaar.
+      let release;
+      const released = new Promise((r) => { release = r; });
+      let locked;
+      const isLocked = new Promise((r) => { locked = r; });
+      const holder = withTransaction(async (client) => {
+        await client.query('LOCK TABLE kyc_batches IN SHARE MODE');
+        locked();
+        await released;
+      });
+      await isLocked;
+      const waiting = async (n) => {
+        const deadline = Date.now() + 10_000;
+        for (;;) {
+          const { rows } = await pgQuery(
+            `SELECT count(*)::int AS n FROM pg_stat_activity
+              WHERE wait_event_type = 'Lock'
+                AND (query ILIKE '%INSERT INTO kyc_batches%' OR query ILIKE '%UPDATE kyc_verifications%')`, []);
+          if (rows[0].n >= n) return;
+          if (Date.now() > deadline) { release(); await holder; throw new Error(`only ${rows[0].n} export(s) parked — the overlap was not forced`); }
+          await new Promise((r) => setTimeout(r, 20));
+        }
+      };
+      const exportA = exportPending({ batchId: 'exp-a', limit: 4 });
+      await waiting(1);                       // A holds its rows, parked at its INSERT
+      const exportB = exportPending({ batchId: 'exp-b', limit: 4 });
+      await waiting(2);                       // B parked too: at its INSERT, or on A's rows
+      release();
+      await holder;
+      const [a, b] = await Promise.all([exportA, exportB]);
       const ids = [...a, ...b].map((r) => r.userId);
       expect(new Set(ids).size).toBe(ids.length);
       expect(ids).toHaveLength(4);

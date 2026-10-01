@@ -337,7 +337,23 @@ export const reverseSettlement = (args) =>
  * something that actually succeeded.
  */
 async function advance(
-  { settlementId, merchantId, actor = null, reason = null, correlationId = null },
+  {
+    settlementId, merchantId, actor = null, reason = null, correlationId = null,
+    /**
+     * The ORDER states this transition may happen in, checked under a lock in
+     * this same transaction. Omitted, the order is not consulted.
+     *
+     * The hold worker read "is this order disputed?" in one statement and
+     * completed the settlement in another — a snapshot (§32 S6). A player's
+     * dispute landing between the two was settled underneath: stake consumed,
+     * merchant credited, and the mirror wrote COMPLETED over the open dispute
+     * (proven in disputeSettleRacePg). `FOR SHARE` on the order row closes the
+     * gap in both directions: a dispute that committed first is SEEN here, and
+     * one arriving now waits for this transaction and then lands on an order
+     * whose money has moved — which the mirror no longer writes over.
+     */
+    orderStateIn = null,
+  },
   spec,
 ) {
   if (!settlementId) throw new Error(`${spec.transition}Settlement requires a settlementId`);
@@ -353,6 +369,13 @@ async function advance(
         commit: false,
         value: { ok: false, reason: 'invalid_transition', state: s.state, expected: spec.expect },
       };
+    }
+    if (orderStateIn) {
+      const { rows: [o] } = await ctx.client.query(
+        'SELECT state FROM order_states WHERE order_id = $1 FOR SHARE', [s.orderId]);
+      if (!o || !orderStateIn.includes(o.state)) {
+        return { commit: false, value: { ok: false, reason: 'order_state', orderState: o?.state ?? null } };
+      }
     }
 
     // The guard is in the WHERE clause, not in the check above: between reading

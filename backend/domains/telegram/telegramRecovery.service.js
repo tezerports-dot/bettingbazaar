@@ -51,9 +51,11 @@ import { sendAlert } from '../../services/alerting.service.js';
  * @returns {Promise<{ok: boolean, reason?: string, userId?: string}>}
  */
 export async function attemptRecovery({ newTelegramUserId, audience, phone, contactUserId, aadhaarHashes }) {
-  // Same guard as signup: a forwarded contact card would let someone recover an
-  // account using a number they do not hold.
-  if (contactUserId && String(contactUserId) !== String(newTelegramUserId)) {
+  // Same guard as signup: the contact must be the sender's OWN — `user_id`
+  // present and equal. Absent, it is a card from an address book, and this
+  // used to skip itself then, letting a number the sender does not hold stand
+  // in for the one they do (R6, F-039).
+  if (!contactUserId || String(contactUserId) !== String(newTelegramUserId)) {
     return { ok: false, reason: 'not_own_contact' };
   }
 

@@ -66,33 +66,12 @@ function scopeFor(modelName) {
 }
 
 /**
- * setConfigField — the write path for a single business-parameter change.
- *
- * @param {string} modelName  'SystemConfig'
- * @param {string} field      dot-path, e.g. 'betLimits.thirtyMin.min'
- * @param {*}      newValue
- * @param {object} actor      { userId, userName }
- * @param {object} opts       { justification }
- *
- * Applies immediately and records the version in the same transaction. Throws
- * with the offending PATH when the spec does not declare the field or the value
- * is out of its declared range — an admin panel writing a setting nobody reads
- * is worse than one that reports the mistake.
- */
-export async function setConfigField(modelName, field, newValue, actor, opts = {}) {
-  const { justification = '' } = opts;
-  return db.config.setConfigPath(scopeFor(modelName), field, newValue, {
-    actor: actor?.userId ?? null,
-    reason: justification || `Set ${field}`,
-  });
-}
-
-/**
  * setConfigFields — one admin save, one transaction, one version row.
  *
- * ── Why this exists, and what calling `setConfigField` in a loop did ────────
+ * ── Why this exists, and what a per-field write in a loop did ────────────────
  * The System Settings page sends about thirty values in one PUT, and the route
- * used to write them by calling `setConfigField` once per value. Two things
+ * used to write them with a single-field setter (`setConfigField`, deleted
+ * 2026-09-30 once nothing called it) once per value. Two things
  * followed, and both were reachable by an operator typing one wrong number:
  *
  *   1. A PARTIAL SAVE. Each call is its own transaction. The spec refuses an
@@ -103,9 +82,8 @@ export async function setConfigField(modelName, field, newValue, actor, opts = {
  *      is CLAUDE.md §21 — a write that follows a commit must not be able to
  *      fail — with the commit and the failure inside the same request.
  *
- *   2. THIRTY audit rows for ONE decision. `getFieldHistory` then reads a
- *      change history in which a single save looks like thirty separate
- *      changes, and the version number an operator would roll back to is one
+ *   2. THIRTY audit rows for ONE decision. The config history then read as
+ *      one save looking like thirty separate changes, and the version number an operator would roll back to is one
  *      of thirty arbitrary midpoints, most of which are states the platform
  *      never intentionally ran in.
  *
@@ -141,17 +119,6 @@ export async function setConfigFields(modelName, entries, actor, opts = {}) {
     actor: actor?.userId ?? null,
     reason: justification || `Set ${entries.map(([f]) => f).join(', ')}`,
   });
-}
-
-/** getFieldHistory — every recorded change, newest first. Read-only. */
-export async function getFieldHistory(modelName, field) {
-  const history = await db.config.getConfigHistory(scopeFor(modelName));
-  // Filtered on the keys a version actually touched, which the store records
-  // per change — so a field's history is the changes to THAT field rather than
-  // every configuration edit that happened to include it in a full document.
-  return history.filter((v) => Object.keys(v.changed ?? {}).some(
-    (key) => key === field || key.startsWith(`${field}.`),
-  ));
 }
 
 /**

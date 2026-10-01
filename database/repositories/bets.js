@@ -34,7 +34,7 @@ import { createHash } from 'crypto';
 import { rupeesToPaise, paiseToRupees } from '../../backend/shared/money.js';
 import { MONEY_PATHS } from '../moneyPaths.js';
 import {
-  placeBet as placeBetPg, BET_STATUS, getBet, resolveBetId,
+  placeBet as placeBetPg, refundBet, BET_STATUS, getBet, resolveBetId,
 } from './bets.core.js';
 
 /**
@@ -136,6 +136,32 @@ export async function placeBet({
     // carry the units the client renders.
     balances: result.balances ? mapRupees(result.balances) : null,
   };
+}
+
+/**
+ * Return a placed bet's stake because its cycle closed while it was being placed.
+ *
+ * PENDING → REFUNDED through `refundBet`: the transition, the stake going back
+ * to the pockets it came from, and the ledger rows are ONE transaction under
+ * the bet lock that settlement also takes. So exactly one of the two wins a
+ * given bet, and neither can leave money moved without the record that says so.
+ *
+ * This replaced a DELETE of the bet followed by a refund in a second
+ * transaction whose failure the route swallowed. It could not have worked
+ * anyway: `bet_transitions` references the bet ON DELETE RESTRICT and placement
+ * always writes a transition, so the DELETE failed every time. And had it
+ * succeeded, a failed refund would have left the stake locked against a bet
+ * that no longer existed.
+ *
+ * @returns {{ok:true, idempotent:boolean}}                  the stake went back
+ *          {{ok:false, reason:'invalid_transition', status}} settlement got there first
+ * Throws when the outcome is unknown; the caller pages a human.
+ */
+export async function refundPlacedBet({ betId, userId, slices, reason }) {
+  return refundBet({
+    betId, userId: String(userId), reason,
+    slices: slices.map((s) => ({ field: s.field, amountPaise: rupeesToPaise(s.amount) })),
+  });
 }
 
 function mapRupees(balancesPaise) {

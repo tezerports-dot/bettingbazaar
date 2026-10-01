@@ -262,8 +262,6 @@ export const RATE_LIMIT_TIERS = {
   // A CDM receipt carries an uploaded image reference and is read only by an
   // admin. One per order, so this bounds the sweep.
   cdmReceipt: tier(60 * 60 * 1000, 30),
-  // General API tier used by security.js's apiLimiter
-  api: tier(1 * 60 * 1000, 100),
 };
 
 // ── Global-limiter exemption for phantom (ghost) bet placement ──────────────

@@ -2693,7 +2693,421 @@ and due, and the next sweep settles it.
   disabled settles both sides before the order reads COMPLETED".
 - **Mutation-proved:** M172 (no inline settlement) KILLED.
 
+### F-029 — a dispute raised while the hold worker settled was settled underneath
+`FIXED` · medium-high · §32 S6, trap 18 · found 2026-09-30 (review candidate C3, proven here)
+
+`settleHold` read "is this withdrawal disputed?" and then completed the
+settlement in another statement. A player's dispute landing between the two was
+settled anyway — stake consumed, merchant credited — and `mirrorSettlementState`
+(no expected-state guard) wrote COMPLETED over the open dispute, removing it
+from the admin queue. The radius is **plus the clock**: nothing in either
+function is wrong read alone.
+
+**Fixed where the race lands, twice.** `completeSettlement` takes
+`orderStateIn`, checked with `FOR SHARE` on the order row inside the
+settlement's own transaction (the worker passes `['PAID']`), and the mirror
+writes state only from PAID, so a dispute that lands after the settlement
+committed stays DISPUTED with the credit status telling the truth.
+
+- **Tests:** `disputeSettleRacePg` — both interleavings, made deterministic by
+  holding the lock the worker needs.
+- **Mutation-proved:** M177 (gate), M178 (mirror) KILLED.
+- **Swept:** money moved on a read of order state — deposit confirm (benign:
+  a dispute there asks for the credit the confirm makes), withdrawal confirm
+  (moves no money). None other.
+
+### F-030 — an IP deny-list three files said "runs on every request" had never run
+`REBUILT` · medium (a security control that did not exist) · §22, §32 S43 · found 2026-09-30 (review B2)
+
+`ipBlocker` was mounted nowhere, `blockIP`/`unblockIP` had no caller, and no
+route or screen could block an address; the repository and table were reached
+only by their own test. `check:dead-code` reported it live because the comment
+claiming it ran was the only thing naming it. It was deleted along with its table
+(`DROP TABLE IF EXISTS blocked_ips`). **Owner, 2026-09-30: build it properly.**
+It is rebuilt as one piece:
+
+- **Rows:** `ip_blocks` (CIDR, reason required, release kept rather than
+  deleted, one open row per range), owned by `database/repositories/ipBlocks.js`.
+  Expiry is decided by the database's clock in `liveBlocks()`, so no sweep is needed.
+- **Enforcer:** `middleware/ipBlocklist.js`, mounted in `server.js` after the
+  request logger and BEFORE `securityMonitor`, the load shedder and every
+  limiter. A blocked client costs one in-memory `net.BlockList` lookup, never
+  a database write. The list is loaded at boot (awaited, so a failure fails
+  startup), reloaded every 10 s and at once on the instance that changed it.
+  A failed reload keeps the last good list.
+- **Routes:** `GET/POST /api/admin/security/ip-blocks` and
+  `POST …/:blockId/release`, admin only, each audited (`IP_BLOCKED`,
+  `IP_UNBLOCKED`). They refuse with a 400 naming the problem: a range wider
+  than /16 (IPv4) or /48 (IPv6), loopback or unspecified, a range covering
+  the admin's own address (the TRUST_PROXY-misconfigured lockout), no reason,
+  and a nonsense expiry.
+- **Screen:** Admin › Blocked IPs, which shows the address the admin is
+  connecting from before they pick a range.
+- **Tests:** `ipBlocklistRoutesPg` (15, real middleware in front of a real
+  route, bystander checked), `BlockedIpsPage.test.tsx` (4, the body each
+  button sends), and e2e `s8` probe 18 against the real server (block → 403
+  inside, 200 outside, release → 200).
+- **Mutation-proved:** M183–M187 KILLED.
+- **Gate fixed:** `check:dead-code` blanks comments (planted a comment-only
+  export and a commented-out import: both reported).
+
+### F-031 — the rail was read twice, and the cash matcher read the wrong one
+`FIXED` · low (no money moves wrongly) · §2 · found 2026-09-30 (review candidates C1, C2, proven here)
+
+C1: a buy was judged against the rail in force and then stamped by a second
+read of it, so an admin switch between them produced an order on a rail its
+amount was never checked for. C2: the cash-link matcher returned early unless
+the LIVE rail was cash, stranding every waiting cash order and supplied link
+after a switch. Both are §2's "branch on the order's own value".
+
+- **Tests:** `railSnapshotPg`, `cashLinkRoutes` ("still serves a CASH order…").
+- **Mutation-proved:** M180 (C1), M179 (C2) KILLED; M92 retargeted, KILLED.
+- **Swept:** every other worker resolves the order's stamped policy version
+  first. None other.
+
+### F-032 — APK uploads: an unbounded inflate and a race that answered 500
+`FIXED` · low (admin-only surface; the process it could take down is shared) · §32 S6, S35 · found 2026-09-30 (review P197-2, P197-3)
+
+A manifest zip bomb was inflated in full in the API process; two uploads of one
+version code both passed the pre-read and the loser answered 500, leaving its
+file behind. Inflate bounded at 4 MB; the loser gets the same 400 as a
+sequential duplicate, and its file is removed unless the winner names the same
+one. P197-1 (the inspector read the certificate a signing block NAMED without
+verifying the signature) was documented as a residual risk here and is now
+**FIXED (R7, 2026-10-01)**: every v2/v3 signer's signature and content digest
+are verified at upload, and the certificate must be the signing key. Proven
+against Google's own `apksigner` output (RSA and EC, v2 and v3) and against
+tampered copies; M211–M213 KILLED. **Reviewed, not a defect:** P197-5 (`https://localhost` with
+credentials — WebView cookie stores are per-app).
+
+- **Mutation-proved:** M181, M182 KILLED.
+
 ---
+
+### F-033 — bet limits were chosen by the type the CLIENT sent
+`FIXED` · medium (a configured limit the platform did not enforce) · §3, §18.1 · found 2026-09-30 (R6 review)
+
+`POST /api/bet/place` keyed `betLimits` on `req.body.type`, not on the cycle it
+was placing into. A full-day bet (floor ₹100) went through at ₹10 by sending
+`type: "30_MIN"`, and a 30-minute bet reached the full-day ceiling (₹5,00,000)
+by sending `FULL_DAY`. **The player panel sends no `type` at all**, so on the real
+screen every bet on every board was held to the 30-minute limits, and
+`betLimits.fullDay` and `betLimits.oneMin` were admin-editable numbers nothing
+honoured. That is §3's shape, found from the request side.
+
+- **Fix:** the cycle is read first, and the limits are the cycle's own type's.
+  The body's `type` is no longer read for anything; the response reports
+  `cycle.type`.
+- **Tests:** `betPlaceRoutesPg`: under-floor full-day and over-ceiling
+  30-minute stakes are refused, and nothing is written (both 200 before the fix).
+- **Mutation-proved:** M188 KILLED.
+- **Swept:** the other money routes decide by the order's or cycle's own
+  stamped value (C1's rail snapshot; `order_states.payment_mode`). Phantom bets
+  take the cycle's type from the row. None other.
+
+### F-034 — a bet whose cycle closed during placement could not be refunded
+`FIXED` · medium (a stake held, a player told the platform failed) · §21, §32 S7, S43 · found 2026-09-30 (R6 review)
+
+When the cycle closed between the stake commit and the pool check, the route
+DELETEd the bet and then refunded the stake in a second transaction, whose
+failure was swallowed while the player was told "fully restored". The DELETE
+could never succeed: `bet_transitions` references the bet `ON DELETE RESTRICT`,
+and placement always writes a transition. **Every late close therefore
+answered 500 "could not confirm your bet"** and paged an operator, and the bet
+stayed PENDING on the closed cycle. Had the DELETE worked, a failed refund
+would have left the stake locked against a bet that no longer existed. The
+comment saying reconciliation would catch it named `reconcileUserStakes`,
+which nothing calls (S43).
+
+- **Fix:** PENDING → REFUNDED through the existing, previously uncalled
+  `refundBet`: the transition, the stake returned to the pockets it came from,
+  and the ledger rows, in one transaction under the bet lock settlement also
+  takes. A refund that fails leaves the bet PENDING with its stake behind it,
+  and the player is told the bet stays in the cycle rather than that it was
+  refunded.
+- **Tests:** `betPlaceRoutesPg` forces the close, with no timing luck: it holds
+  the wallet row, lets the request park on it, closes the cycle, then releases.
+  A second case injects a refund failure with a trigger scoped to one user.
+- **Mutation-proved:** M189, M190 KILLED.
+- **Also:** a phantom bet with a non-numeric (or numeric-string) amount answered
+  500 (S35); now a 400. M191 KILLED.
+- **Removed, nothing called them:** `claimPendingBetForRefund`,
+  `unlockBetStake` (both layers), `lockBetStake` (authority layer),
+  `debitForBet` (both layers; a bet debit that wrote no bet), and
+  `debitSpendOrderPaise` with its test, which `TRUNCATE`d `wallets` and
+  `wallet_ledger` before every case (trap 10).
+- **Gate fixed:** `check:dead-code` counted another module's same-named
+  DEFINITION, and a member access (`pg.debitForBet`) in the defining file, as
+  uses. That is why the `debitForBet` pair was never reported. A name in a
+  string literal still counts; that remains a blind spot.
+
+### F-035 — cancelling a cycle locked every stake on it, for good
+`FIXED` · high (player money locked by an admin action, with no path back) · §32 S4, S14, S43, §22 · found 2026-09-30 (R6 review)
+
+The admin CANCEL moved the cycle's status and nothing else. `cancelCycle`'s
+comment said returning the stakes was "settlement's job". But settlement only
+claims a cycle WITH a winner, and `declareWinner` refuses a CANCELLED cycle.
+So no cancelled cycle was ever offered, and every real stake on one stayed in
+`lockedBalance` with nothing in the platform that would release it. The admin
+screen toasted **"Cycle cancelled — all bets refunded"**. `voidBet` and
+`voidSettlement` existed, and only tests called them. `voidSettlement` could not
+have served anyway: it needed an open settlement run with a winning side.
+
+- **Fix:** `voidCancelledCycle` returns each PENDING real bet's stake through
+  `voidBet` (the transition, the stake back to its own pockets, and the ledger
+  rows, in one transaction under the bet lock), and marks phantom bets VOID. The
+  CANCEL action calls it at once. A failure there is alerted and never a 500,
+  because the cancel has committed (§21). The engine's recovery sweep calls
+  `voidCancelledCycles` every 5 minutes, to finish what a crash interrupted. The
+  admin toast is now the server's own count. `voidSettlement` is replaced.
+- **Also:** the engine's comments named `findIncompleteSettlements` as "the
+  query that finds it later". Nothing ran it (S43). The recovery sweep runs it
+  now and pages on a hit.
+- **Tests:** `cycleCancelRefundPg`: two players' stakes are returned through the
+  real bet and admin routes, and a bet on another cycle is left alone (the
+  bystander). The sweep returns stakes a cancel left behind. A live cycle is
+  refused. The first case fails on the old route.
+- **Mutation-proved:** M192–M194 KILLED.
+- **Not covered by a test:** the engine's CALL to the sweep. A test that ran
+  the recovery task would claim other suites' stranded cycles on the shared
+  database (trap 10). It is covered by code read only.
+- **Swept:** `voidBet`/`refundBet` were the two money transitions with no
+  production caller; both are wired now (F-034, F-035). `settleBet` and
+  `reconcileSettlement` in `settlements.js` are still test-only: the engine
+  settles through `winBet`/`loseBet` directly. They are recorded, not deleted.
+
+### F-036 — the 2FA lockout was per challenge, so holding the password bought unlimited guesses
+`FIXED` · high (a second factor weaker than it reads) · §32 S13 · found 2026-09-30 (R6 review)
+
+`twoFactorLimiter` ("5 failed codes per 15 minutes") keyed a pre-session
+attempt on the CHALLENGE TOKEN. Every correct password mints a new token, and
+the password limiters count only FAILURES, so someone who held the password got
+five fresh guesses per login, forever. Under the 1-per-10-seconds pace that is
+about 0.5 guesses a second. Against a ±1-step TOTP window, that is roughly a
+12% chance of a hit per day, where the lockout claims months. The test's own
+comment rested on the false premise that a token "cannot be re-minted without
+passing the password limiter again". It can: the password limiter does not count
+a correct password.
+
+- **Fix:** `challengeSubject()` reads the ACCOUNT a valid challenge is for, and
+  `actorKey` keys on it (`u:`/`m:`), which is the bucket an authenticated
+  request from that account already uses. The pace limiter on that leg shares
+  the key. An invalid token is still keyed on its hash.
+- **Trade-off, stated:** someone holding the password can now use up the real
+  owner's code attempts for 15 minutes. With the password already
+  compromised, a lockout is the right side to fail on.
+- **Tests:** `rateLimitKeys` (unit): two challenges for one account share one
+  key; a merchant challenge keys on the merchant. Three cases fail on the old
+  code.
+- **Mutation-proved:** M195 KILLED.
+
+### F-037 — a merchant password reset "succeeded" and changed nothing the merchant door reads
+`FIXED` · high (account recovery broken on one panel; sessions not evicted) · §2, §32 S4, S32 · found 2026-09-30 (R6 review)
+
+A merchant's password was stored twice: on the `users` login row a merchant
+signup writes (§33.5), and on `merchants.password_hash`. The reset wrote the
+first, and the merchant login door read the second. **Measured:** a reset
+answered 200, "Your password has been changed", and the new password was then
+refused with "Invalid credentials" while the old one still worked.
+`merchantAuth` also checked no session cutoff, so a working reset would have
+evicted nothing.
+
+- **Fix:** one owner. `getMerchantCredentials` reads the password from the
+  merchant's login row. The hash upgrade on login writes that row.
+  `merchants.password_hash` is dropped (§0.0: nothing to migrate).
+  `merchantAuth` refuses a session issued before the login row's
+  `sessions_valid_from`.
+- **Tests:** `merchantPasswordResetPg` drives the real reset route, the merchant
+  login and a `merchantAuth` read, and then the merchant SSE feed. The new
+  password is admitted, the old one refused, and the old session refused
+  everywhere. It fails on the old code.
+- **Mutation-proved:** M196, M197, M200 KILLED.
+- **Also fixed:** `merchantPg`'s two USDT-address tests used FIXED addresses on
+  a UNIQUE column, so a second run of the file against the same database
+  failed (trap 10). The addresses are random per run now.
+
+### F-038 — a reset or sign-out left sessions alive on every path that verified its own token
+`FIXED` · medium · §32 S32 · found 2026-09-30 (R6 review, sweeping F-037)
+
+`sessions_valid_from` was checked by `authenticate` and `/me` and nowhere else.
+The socket room joins (player, merchant, admin) and both private SSE streams
+verify tokens inline. None checked the cutoff, and the socket joins did not
+check the revocation list either. A player who reset because somebody else held
+a session left that session receiving their balance pushes, and reset or
+signed-out staff and merchant sessions kept their live feeds.
+
+- **Fix:** `sessionIsLive(token, decoded, login)` (not revoked, not superseded)
+  is the one question, and every inline path asks it.
+- **Removed, nothing called them:** `authenticateMerchant` (a second merchant
+  verifier that checked neither revocation nor the cutoff: the next route to
+  reach for it would have honoured a dead session), `optionalAuth`,
+  `generateToken`, `generateMerchantToken`, `verifyToken`, `auditLog`,
+  `checkResourcePermission`, `isMerchantApproved`, and the module's default
+  export object.
+- **Gate blind spot, recorded:** `check:dead-code` scans `export function` and
+  `export const` DECLARATIONS. A name exported through an `export { … }` list
+  is never scanned, which is how all of these stayed off the report.
+- **Tests:** `sessionCutoffEverywherePg` connects a socket to the real handlers
+  and asserts what it joined, for a player and an admin, live and then
+  superseded, plus a revoked token and the admin SSE stream. Four cases fail
+  on the old code.
+- **Mutation-proved:** M198, M199 KILLED.
+
+### F-039 — a contact card with no `user_id` verified a number the sender does not hold
+`FIXED` · critical (account takeover of any account not yet Telegram-verified) · §32 S6, §22.2 · found 2026-09-30 (R6 review)
+
+The contact-share handler refused a contact whose `user_id` differed from the
+sender's, and **skipped the check when `user_id` was absent**. A contact card
+from a phone's address book, for a number that is not a Telegram account,
+arrives with no `user_id`. So anybody could send a card carrying a victim's
+mobile and be linked as that account's verified Telegram. The bot then offers
+the password-reset button to exactly that link. **Measured:** the attacker's
+Telegram id was linked to the victim's account. `attemptRecovery` had the same
+guard, with the same hole. The unit test "rejects a forwarded contact card"
+asserted the guard's SOURCE TEXT with a regex, so it passed over the missing
+case (§22.2).
+
+- **Fix:** the contact must carry a `user_id` AND it must equal the sender's.
+  The `request_contact` button, the only way these bots ask, always carries it.
+- **Tests:** `telegramContactOwnershipPg` goes through the real webhook. A card
+  with no `user_id` and a forwarded card are both not linked; an own-contact
+  share is linked (positive control). The first fails on the old code. The
+  recovery case is now a behavioural unit test instead of a regex.
+- **Mutation-proved:** M201, M202 KILLED.
+- **Swept:** the three contact paths are sign-in, recovery by Aadhaar, and the
+  recovery bot's password path. The third reads the SENDER's existing link and
+  compares the number to it, so a foreign card reaches nothing. Join requests
+  are approved for anyone who asks; membership unlocks nothing without a
+  verified link, by design.
+
+### F-040 — the referral budget was drawn AFTER paying, and its refusal was ignored
+`FIXED` · high (a hard money ceiling that could be crossed silently) · §21, §32 S6, S7, S18 · found 2026-09-30 (R6 review)
+
+`disburse` checked the remaining programme budget with a READ, paid the queue
+through `creditWinnings`, and only then called `drawFromProgramme`, without
+reading its answer. The draw's guard is correct (in the UPDATE's WHERE), but it
+ran after the money had moved. Two overlapping disbursals, or a pause mid-run,
+paid the players and had the draw refused, and the refusal was dropped. The
+programme then recorded less than it had paid, the next run saw budget that was
+already gone, and the ₹400 crore ceiling could be crossed with nothing
+recording it.
+
+- **Fix:** the whole pool is RESERVED from the programme before the first
+  credit, through the guarded statement. If the reservation is refused, nobody
+  is paid (409, which says to refresh). What was not spent is returned at the
+  end, in the failure path too, by `returnToProgramme`, which cannot go below
+  zero. If the return fails, the programme overstates what was drawn: the
+  ceiling errs conservative, and the batch row still records the true spend.
+- **Tests:** `referralDisbursalBudget` (unit): with the reservation refused, no
+  credit is made. The draw precedes the first credit, and the unspent part is
+  returned, including after a mid-run failure. All three fail on the old code.
+  `newDomains`: the return cannot go below zero, through a real database.
+- **Why the order test is a unit test:** a pg test of `disburse` pays the
+  GLOBAL queue head, which is every other suite's queued earnings on the shared
+  database (trap 10; 370 were queued when measured). Both guards the order
+  relies on are DB-tested.
+- **Mutation-proved:** M203, M204 KILLED.
+
+### F-041 — a commission the ledger recorded and the wallet never received was never delivered
+`FIXED` · high (money recorded as paid, not paid, never retried) · trap 19, §32 S18, S43 · found 2026-09-30 (R6 review)
+
+The engine writes the ledger event (pool → merchant) first and the wallet
+credit second, on one key. The high-water mark is DERIVED from the ledger event.
+So once the event existed, the next pass saw no new volume and never tried the
+credit again. A credit that threw after the event, or a crash between the two,
+left the merchant recorded as paid and unpaid, permanently. The code comment
+said a run that dies in between "heals on the next pass because both sides
+share the key", which was not true. Separately, the admin's "run now" route
+had no lock, while the cron had its leader lock. Two passes could overlap, and
+both pool checks are reads.
+
+- **Fix:** each pass first delivers every commission ledger event with no wallet
+  movement on its key (`undeliveredCommissions`), whatever the policy says:
+  owed is owed. Passes run under a session advisory try-lock
+  (`withCommissionRunLock`), and a second pass is told another is running. The
+  admin toast reports late deliveries.
+- **Tests:** `merchantCommissionPg`. A wallet failure is injected by a trigger
+  on the commission movement; the next pass delivers ₹500, and the pass after
+  that delivers nothing more. Three simultaneous passes give one that ran and
+  two told another is running. Both cases fail on the old engine.
+- **Mutation-proved:** M205, M206 KILLED.
+- **Also seen, not changed:** `merchantCommissionPg` TRUNCATEs `order_states`,
+  `accounting_events`, `merchants` and the merchant wallets before every case.
+  It only works because the pg tier runs files one at a time. Recorded as a
+  trap-10 hazard; running that tier in parallel would break other suites.
+
+### F-042 — any sub-admin could reassign an order or edit the merchant pool
+`FIXED` · high (money routing open to every staff role) · F-001's shape, §32 S8 · found 2026-09-30 (R6 review)
+
+`POST /payment-orders/:id/reassign` and `PUT /queue/merchant-pool` carried
+`isAdminOrSubAdminOrQueueManager`, a TIER check. A sub-admin holding nothing
+but `canModerateChatPublic` could send any player's order to any merchant,
+and choose which merchants the queue may use. `audit:map` counted only the
+exact name `isAdminOrSubAdmin`, so it reported 2 sub-admin routes with no
+permission key while 9 existed, 2 of them money-routing writes: a gate
+measuring a fraction. F-001 gated every such write on 2026-09-10 and could not
+see these two.
+
+- **Fix:** `queueManagerOrPermission('canManageMerchants')` on the three queue
+  writes. Admins and queue managers are unchanged. A sub-admin needs the key
+  that already gates merchant scoring (F-001's precedent for "shapes where
+  money goes"). `POST /queue/assign` keeps its own stricter rule (queue
+  managers and admins only), unchanged. The admin sidebar hides Queue Manager
+  from a sub-admin without the key: it had shown it to every sub-admin by
+  falling through to its default, not by decision.
+- **Gate fixed:** `audit:map` counts both tier guards. It now reports 6
+  keyless sub-admin routes, all reads (2 payment-mode, 4 queue), and 0 writes.
+  The reads stay with the owner's read proposal
+  (`SUBADMIN-PERMISSION-PROPOSAL.md`), as F-001 decided.
+- **Tests:** `queueWritePermissionPg` (9). On the old routes the chat
+  moderator got past reassign and merchant-pool.
+- **Mutation-proved:** M207 KILLED.
+
+### R6 domains reviewed with no new defect, recorded so the absence is a finding
+- **USDT rail:** the quote is fixed at creation and rounded UP to hundredths,
+  and the rate and chain are frozen by trigger. The transaction hash is checked
+  against the ORDER's own chain (`referenceSpecFor`) before it is claimed.
+  `isUsdtTxHash` was a second, test-only copy of that rule; both reference
+  specs now call it (one owner, §5).
+- **Casino callback:** signatures are required and compared in constant time.
+  A BET is bound to the player's live session (fixed earlier today). A
+  rollback must prove a prior debit and cannot exceed it, backed by a CHECK.
+  A WIN on a round with no BET was left as a question for the owner. It
+  was answered on 2026-10-01 and fixed as F-043.
+
+### F-043 — a provider WIN paid without a bet, and to whichever player it named
+`FIXED` · high once a provider is live (none is configured) · §32 S18, S30 · found 2026-09-30, rule set by the owner 2026-10-01
+
+Owner: *"Winnings are only given on those where users place bets on rounds."*
+Board games already worked that way: a payout is the WON transition of a
+PENDING row in `bets`. The provider callback (casino, crash, sports) did not:
+
+- A **WIN on a round nobody bet on** created the round and credited the
+  player.
+- **No callback checked whose round it was.** A WIN or a ROLLBACK naming
+  player B on player A's round credited B, and a BET naming B advanced A's
+  stake. The round's totals were checked; its owner never was.
+- A WIN from one provider was accepted on a round bet at another.
+
+- **Fix:** `recordCallback` refuses, under the round lock and before the round
+  is materialised: any callback on a round owned by another player
+  (`round_not_this_player`) or another provider (`round_not_this_provider`);
+  a WIN with no standing stake, meaning no BET or one rolled back in full
+  (`no_prior_bet`). A WIN's amount stays unbounded, since a win may be many
+  times the stake. The route answers each with a 400 naming the reason.
+- **In the data:** `casino_rounds_win_needs_bet`,
+  `CHECK (credited_paise = 0 OR debited_paise > 0)`, added `NOT VALID` so a
+  development database holding rows the old code wrote does not stop the
+  schema apply. It binds every write from now on.
+- **Consequence, stated:** provider "free spin" or promotional wins on a round
+  with no stake are now refused. That is the rule as given.
+- **Swept:** every other winnings credit was read. Board payout is the bet
+  row's own transition, `refundWithdrawal` returns a withdrawal, and fake
+  winners are a display table that never touches a wallet. None found.
+- **Tests:** `casinoWinNeedsBetPg` (8). Seven failed on the old code, each
+  with money moved. `casinoSessionBindingPg`'s "WIN after the session ended"
+  staged a WIN with no BET (S16) and now bets first.
+- **Mutation-proved:** M208, M209, M210 KILLED.
 
 ## 5. Derived coverage — regenerated, never typed
 
@@ -2708,11 +3122,11 @@ and due, and the next sweep settles it.
 
 | Measure | Count |
 |---|---|
-| Route declarations in `backend/**` | 320 |
+| Route declarations in `backend/**` | 324 |
 | Reachable with **no auth middleware** | 44 |
-| Gated `isAdminOrSubAdmin` with **no permission key** | 2 |
+| Gated `isAdminOrSubAdmin` with **no permission key** | 6 |
 | — of those, **writes** (non-GET) | 0 |
-| Carrying an explicit permission key | 56 |
+| Carrying an explicit permission key | 58 |
 
 A count moving is not by itself a defect — it is a prompt to read the
 new route and decide. Each of the three questions is defined in §2.
@@ -2776,9 +3190,9 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 473 |
+| `pgQuery` call sites | 476 |
 | Parameters only (safe by construction) | 320 |
-| Interpolating into statement text (each needs a reading) | 150 |
+| Interpolating into statement text (each needs a reading) | 153 |
 | Statement text built elsewhere and passed in (each needs a reading) | 3 |
 
 <details><summary>Call sites whose statement text is built elsewhere</summary>
@@ -2793,8 +3207,8 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Panel | .ts/.tsx files | `dangerouslySetInnerHTML` | `.innerHTML =` |
 |---|---|---|---|
-| `user-panel` | 85 | 0 | 0 |
-| `admin-panel` | 99 | 0 | 0 |
+| `user-panel` | 87 | 0 | 0 |
+| `admin-panel` | 101 | 0 | 0 |
 | `merchant-panel` | 41 | 0 | 0 |
 
 <!-- END GENERATED -->

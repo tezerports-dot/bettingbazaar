@@ -57,8 +57,8 @@ export {
 // ── Namespaced repositories ─────────────────────────────────────────────────
 import * as users from './repositories/users.js';
 import * as identity from './repositories/identity.js';
-import * as security from './repositories/security.js';
 import * as telegram from './repositories/telegram.js';
+import * as ipBlocks from './repositories/ipBlocks.js';
 import * as merchants from './repositories/merchants.js';
 import * as chat from './repositories/chat.js';
 import * as config from './repositories/config.js';
@@ -71,7 +71,6 @@ import * as engagement from './repositories/engagement.js';
 import * as social from './repositories/social.js';
 import * as referrals from './repositories/referrals.js';
 import * as audit from './repositories/audit.js';
-import * as compliance from './repositories/compliance.js';
 import * as operations from './repositories/operations.js';
 import * as paymentConfig from './repositories/paymentConfig.js';
 import * as supportDocuments from './repositories/supportDocuments.js';
@@ -113,7 +112,7 @@ export const db = Object.freeze({
   // Identity and access
   users,
   identity,
-  security,
+  ipBlocks,
   telegram,
 
   // Money
@@ -141,7 +140,6 @@ export const db = Object.freeze({
 
   // Compliance
   kyc: merge(kycCore, kycApi),
-  compliance,
   audit,
 
   // Catalogue and content
@@ -169,8 +167,8 @@ export const db = Object.freeze({
 export default db;
 
 // Named re-exports for the call sites that read better without the namespace.
-export { users, identity, security, telegram, merchants, chat, config };
+export { users, identity, ipBlocks, telegram, merchants, chat, config };
 export { treasury, settlements, merchantSettlements, adminIssuance, balanceAdjustments };
 export { adminTokenConsiderations };
 export { markets, games, content, androidReleases, engagement, social, referrals };
-export { audit, cashLinks, compliance, depositPolicy, merchantCommissionPolicy, paymentModePolicy, operations, paymentConfig, supportDocuments, stats, utr };
+export { audit, cashLinks, depositPolicy, merchantCommissionPolicy, paymentModePolicy, operations, paymentConfig, supportDocuments, stats, utr };

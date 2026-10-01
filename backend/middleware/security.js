@@ -1,6 +1,7 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import { rateLimit, ipKeyGenerator } from 'express-rate-limit';
 import { createHash } from 'node:crypto';
+import { challengeSubject, CHALLENGE_AUDIENCE } from '../domains/identity/twoFactorChallenge.js';
 import { db } from '#db';
 // F-3 (2026-07-10): counters shared across instances via Redis; graceful
 // per-instance fallback when Redis is absent/unreachable.
@@ -9,9 +10,6 @@ import { createRateLimitStore } from './redisRateLimitStore.js';
 // values unchanged; edit the config to change policy.
 import { RATE_LIMIT_TIERS } from '../config/security.config.js';
 import { betBehaviorLimiter } from './behavioralRateLimit.js';
-// The IP deny-list. Was a model registered nowhere; every call threw into a
-// silent fail-open catch, so nothing was ever blocked. Now a real table.
-import { isIpBlocked, blockIp, unblockIp } from '#db/repositories/security.js';
 // The deposit pace is a business number an operator sets, so the limiter reads
 // it at request time rather than baking it into a tier constant.
 import { getSystemConfig } from '#db/repositories/config.js';
@@ -217,9 +215,16 @@ export const merchantAuthLimiter = rateLimit({
 export function actorKey(req) {
   if (req.user?.userId)   return `u:${req.user.userId}`;
   if (req.merchantId)     return `m:${req.merchantId}`;
-  // Hashed: a rate-limit key becomes a Redis key name and appears in logs, and
-  // a challenge token is a bearer credential for the rest of its short life.
   if (req.body?.challengeToken) {
+    // The ACCOUNT the challenge is for — never the token. A correct password
+    // mints a new token every time, so a key per token handed somebody who
+    // holds the password a fresh budget of second-factor guesses with each
+    // login, and the lockout never tripped (R6, 2026-09-30). The same key an
+    // authenticated request from that account gets, so the budgets are one.
+    const subject = challengeSubject(req.body.challengeToken);
+    if (subject) return subject.audience === CHALLENGE_AUDIENCE.MERCHANT ? `m:${subject.id}` : `u:${subject.id}`;
+    // Not a valid challenge: the handler refuses it. Hashed, because a
+    // rate-limit key becomes a Redis key name and appears in logs.
     return `c:${createHash('sha256').update(String(req.body.challengeToken)).digest('hex').slice(0, 32)}`;
   }
   if (req.body?.mobile)   return `p:${String(req.body.mobile)}`;
@@ -228,7 +233,8 @@ export function actorKey(req) {
 
 /** The account a security audit row should name, or null when unidentified. */
 export function actorAccount(req) {
-  return req.user?.userId ?? req.merchantId ?? req.body?.mobile ?? null;
+  return req.user?.userId ?? req.merchantId
+    ?? challengeSubject(req.body?.challengeToken)?.id ?? req.body?.mobile ?? null;
 }
 
 /**
@@ -599,20 +605,6 @@ export const depositCreateLimiter = moneyLimiter(
     { bounds: 'effects', skip: async () => (await depositPacePerMinute()) === 0 },
 );
 
-// ==================== GENERAL API RATE LIMITER ====================
-
-// General API rate limiter for all other endpoints
-export const apiLimiter = rateLimit({
-    store: createRateLimitStore('rl:api:'),
-    ...RATE_LIMIT_TIERS.api, // 100 / min
-    message: { 
-        success: false,
-        message: "Too many requests. Please slow down."
-    },
-    standardHeaders: true,
-    legacyHeaders: false
-});
-
 // ==================== SECURITY MONITOR MIDDLEWARE ====================
 
 /**
@@ -651,62 +643,4 @@ export const securityMonitor = async (req, res, next) => {
     };
     
     next();
-};
-
-// ==================== IP BLOCKING MIDDLEWARE ====================
-
-/**
- * IP Blocking Middleware
- * Blocks IPs that have been flagged for suspicious activity
- * In production, you'd store blocked IPs in Redis or database
- */
-/**
- * The IP deny-list, which until now has never blocked anything.
- *
- * All three of these asked for a model registered NOWHERE. Every call raised
- * MissingSchemaError; `ipBlocker`'s catch swallowed it silently and let the
- * request through, and `blockIP` logged a success it had not achieved. An
- * operator blocking an abusive address got a confirmation and no effect, for as
- * long as this code has existed.
- *
- * FAIL-OPEN IS KEPT and made loud. A deny-list that failed closed would lock
- * every user out when the database blinks — worse than letting a few blocked
- * addresses through meanwhile. But the failure is LOGGED now rather than
- * swallowed, because a control that stops working quietly is how this stayed
- * dead. (Contrast `isTokenRevoked`, which fails CLOSED: a revoked token is a
- * credential its holder is not entitled to, while a blocked IP is a coarse
- * abuse control whose false positives are ordinary users.)
- */
-export const ipBlocker = async (req, res, next) => {
-    try {
-        if (await isIpBlocked(req.ip)) {
-            console.warn('🚫 BLOCKED IP attempted access:', req.ip);
-            return res.status(403).json({ success: false, message: 'Access denied.' });
-        }
-    } catch (e) {
-        // Deliberately open — see above — but never silent again.
-        console.error('[security] IP deny-list unavailable, allowing request:', e.message);
-    }
-    next();
-};
-
-/** Block an address. Called from the admin panel and from automated detection. */
-export const blockIP = async (ip, reason = 'Suspicious activity', actor = null) => {
-    try {
-        await blockIp(ip, { reason, actor });
-        console.log('🚫 IP blocked:', ip);
-        return true;
-    } catch (e) {
-        // Reported, not swallowed: the caller told an operator this worked.
-        console.error('blockIP failed:', e.message);
-        return false;
-    }
-};
-
-export const unblockIP = async (ip, actor = null) => {
-    try {
-        await unblockIp(ip, { actor });
-        console.log('✅ IP unblocked:', ip);
-        return true;
-    } catch (e) { console.error('unblockIP failed:', e.message); return false; }
 };

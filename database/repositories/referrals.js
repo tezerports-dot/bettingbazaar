@@ -329,6 +329,24 @@ export async function drawFromProgramme(key, amountRupees) {
   return rows[0] ? { ok: true, programme: toProgramme(rows[0]) } : { ok: false, reason: 'BUDGET_EXHAUSTED_OR_INACTIVE' };
 }
 
+/**
+ * Give back budget a disbursal reserved and did not spend.
+ *
+ * `disburse` reserves its WHOLE pool from the programme before it pays anyone
+ * (`drawFromProgramme`, guarded in the WHERE), and returns what it did not
+ * spend at the end. The floor is in the statement, so this cannot drive the
+ * drawn total below zero whatever it is asked to return.
+ */
+export async function returnToProgramme(key, amountRupees) {
+  const { rows } = await pgQuery(
+    `UPDATE referral_programmes SET disbursed_paise = disbursed_paise - $2, updated_at = now()
+      WHERE programme_key = $1 AND disbursed_paise - $2 >= 0
+      RETURNING *`,
+    [String(key), rupeesToPaise(amountRupees)], 'programme_return',
+  );
+  return rows[0] ? { ok: true, programme: toProgramme(rows[0]) } : { ok: false, reason: 'NOTHING_TO_RETURN' };
+}
+
 /** Count a newly verified member against the cap. */
 export async function countVerifiedMember(key = 'main') {
   const { rows } = await pgQuery(

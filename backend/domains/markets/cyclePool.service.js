@@ -60,11 +60,3 @@ export function computeRealPools(cycleId) {
 export function cycleWithPools(cycleId) {
   return db.markets.cycleWithPools(cycleId);
 }
-
-/**
- * Kept as a no-op so the settlement path need not change shape.
- *
- * It dropped a cycle from the freshness memo when the cycle settled, so a stale
- * entry could not outlive it. There is no memo.
- */
-export function forgetCycle() { /* no memo to forget */ }

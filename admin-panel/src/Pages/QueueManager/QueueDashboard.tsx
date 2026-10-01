@@ -265,7 +265,7 @@ export const QueueDashboard: React.FC = () => {
           <div className="flex items-center gap-3 flex-wrap">
             <span className="text-sm text-gray-400">Filter:</span>
             {(['ALL', 'DEPOSIT', 'WITHDRAWAL'] as const).map((f) => (
-              <button key={f} onClick={() => setFilterType(f)}
+              <button key={f} onClick={() => setFilterType(f)} aria-pressed={filterType === f}
                 className="px-3 py-1.5 rounded-sm text-sm font-medium transition-colors"
                 style={filterType === f ? { background: 'var(--warning-bg)', color: 'var(--warning)' } : { background: 'var(--surface-2)', color: 'var(--text-2)' }}>{f}</button>
             ))}

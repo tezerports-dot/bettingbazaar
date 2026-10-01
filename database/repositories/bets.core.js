@@ -577,29 +577,6 @@ export const refundBet = (args) => settle(args, { name: 'refund', ...TRANSITIONS
  * caller can subtract what it knows about the other.
  */
 /**
- * Claim a bet for compensation: delete it, but ONLY while it is still PENDING.
- *
- * The bet-placement route uses this when the cycle closes underneath a bet it
- * has already taken money for. Settlement may have reached the same bet first,
- * in which case it owns it and the stake must NOT be refunded — the player was
- * included in the round and will be paid or not on its result.
- *
- * `status = 'PENDING'` is in the WHERE clause, so the race is settled by the
- * database. THREE outcomes, and collapsing the last two loses money:
- *
- *   { claimed: true }   this call owns it; refund the stake
- *   { claimed: false }  settlement owns it; touch nothing
- *   a THROW              ownership unknown — the caller must page a human
- *                        rather than guess, because refunding risks paying
- *                        twice and not refunding risks locking the stake
- *
- * That last case is why this does not swallow its own errors. A `.catch(=> null)`
- * would make a transient database failure indistinguishable from "settlement
- * won", sending it down the branch that deliberately does not refund — and
- * reconciliation could not recover it, because the ledger legitimately shows
- * the debit.
- */
-/**
  * A cycle's outstanding bets, with the pockets each stake came from.
  *
  * ── Why the slices come from the LEDGER ────────────────────────────────────
@@ -724,14 +701,6 @@ export async function closePhantomBets(cycleId) {
     [String(cycleId)], 'bets_close_phantom',
   );
   return rowCount;
-}
-
-export async function claimPendingBetForRefund(betId) {
-  const { rows } = await pgQuery(
-    `DELETE FROM bets WHERE bet_id = $1 AND status = 'PENDING' RETURNING *`,
-    [String(betId)], 'bet_claim_for_refund',
-  );
-  return { claimed: rows.length > 0, bet: rows[0] ? rowToBet(rows[0]) : null };
 }
 
 export async function reconcileUserStakes(userId) {

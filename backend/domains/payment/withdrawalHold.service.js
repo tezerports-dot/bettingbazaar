@@ -128,10 +128,19 @@ export async function settleHold(orderId) {
   }
 
   // ── The gate ───────────────────────────────────────────────────────────────
+  // `orderStateIn`: the DISPUTED check above is a read; this is the same
+  // question asked under a lock, in the settlement's own transaction, so a
+  // dispute landing after the read cannot be settled underneath.
   const settled = await completeSettlement({
     settlementId, merchantId: order.merchantId, actor: 'settlement-worker',
     reason: `Withdrawal ${order.orderId} settled after hold`,
+    orderStateIn: ['PAID'],
   });
+  if (!settled.ok && settled.reason === 'order_state') {
+    // Disputed (or otherwise moved) since it was read. Nothing moved; the
+    // settlement stays RESERVED for the admin who resolves the dispute.
+    return false;
+  }
 
   if (!settled.ok || settled.idempotent) {
     // Three ways to land here — already SETTLED, CANCELLED by a dispute, or

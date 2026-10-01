@@ -81,8 +81,16 @@ describePg('the ATM cash-link queue', () => {
   // `userId` is a parameter because the refusal bar is a PAIR — a merchant who
   // refused this player must not be given their next order either — and that
   // cannot be tested with every order belonging to the same person.
+  // Every order this file inserts, so `afterAll` can put the waiting ones out of
+  // reach (trap 10). Left PENDING_QUEUE they are CASH_ATM buys with no link —
+  // exactly what the matcher looks for — and the next suite to supply a link at
+  // that size had it claimed out from under its own assertion. That was the
+  // long-standing `cashLinkRoutes` flake (2026-09-30): a ₹40,000 order created
+  // here by "runs out rather than handing the same link to a fifth order".
+  const createdOrders = [];
   const orderAt = async (denominationPaise, state = 'PENDING_QUEUE', userId = 'clq-user') => {
     const orderId = uid('ord');
+    createdOrders.push(orderId);
     await pgQuery(
       `INSERT INTO order_states
          (order_id, user_id, order_type, state, token_amount_paise, payment_mode)
@@ -108,7 +116,16 @@ describePg('the ATM cash-link queue', () => {
     // time against the shared database.
     await pgQuery('DELETE FROM cash_link_queue');
   }, 60_000);
-  afterAll(async () => { await closePg(); });
+  afterAll(async () => {
+    // Outside any assertion: a cleanup that only runs on a pass is the one that
+    // matters least.
+    await pgQuery(
+      `UPDATE order_states SET state = 'CANCELLED', updated_at = now()
+        WHERE order_id = ANY($1) AND state = 'PENDING_QUEUE'`,
+      [createdOrders], 'clq_test_teardown',
+    ).catch(() => {});
+    await closePg();
+  });
 
   it('lets one merchant hold exactly one live link', async () => {
     const m = await merchant({ denominationPaise: 500_000 });

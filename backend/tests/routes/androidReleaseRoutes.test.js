@@ -19,12 +19,12 @@
  * published or not, outside any assertion.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { pgConfigured, applySchema, closePg, pgQuery } from '#db/client.js';
+import { pgConfigured, applySchema, closePg, pgQuery, withTransaction } from '#db/client.js';
 import { mountRouter, actor, as, request } from './_harness.js';
 import { buildApk } from '../_fakeApk.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
-const KEY = Buffer.from('CN=BettingBazaar route-test release key, O=BB, C=IN');
+const KEY = 'CN=BettingBazaar route-test release key, O=BB, C=IN';
 const PKG = `com.bettingbazaar.rt${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 const APK = 'application/vnd.android.package-archive';
 
@@ -38,7 +38,7 @@ describePg('Android releases', () => {
 
   const upload = (who, bytes) => as(adminApp, who).post('/android/releases').set('Content-Type', APK).send(bytes);
   const apk = (offset, extra = {}) => buildApk({
-    packageName: PKG, versionCode: base + offset, versionName: `9.${base + offset}.0`, cert: KEY, ...extra,
+    packageName: PKG, versionCode: base + offset, versionName: `9.${base + offset}.0`, signer: KEY, ...extra,
   });
 
   beforeAll(async () => {
@@ -83,7 +83,7 @@ describePg('Android releases', () => {
 
   it.each([
     ['another app', { packageName: 'com.example.other' }, /but this platform ships/],
-    ['a debug build', { cert: Buffer.from('CN=Android Debug, O=Android, C=US') }, /debug key/],
+    ['a debug build', { signer: 'CN=Android Debug, O=Android, C=US' }, /debug key/],
     ['a duplicate version code', {}, /already been uploaded/],
   ])('refuses %s, naming the mistake', async (_label, extra, message) => {
     const res = await upload(admin, apk(1, extra));
@@ -118,7 +118,7 @@ describePg('Android releases', () => {
     expect(older.body.latest).toMatchObject({ versionCode: base + 1, sha256: draft.fileSha256, sizeBytes: draft.sizeBytes });
     // What a phone is told names no storage key and no uploader.
     expect(Object.keys(older.body.latest).sort()).toEqual(
-      ['downloadUrl', 'mandatory', 'publishedAt', 'releaseNotes', 'sha256', 'sizeBytes', 'versionCode', 'versionName']);
+      ['downloadUrl', 'mandatory', 'minSdk', 'publishedAt', 'releaseNotes', 'sha256', 'sizeBytes', 'versionCode', 'versionName']);
 
     const same = await request(publicApp).get(`/api/app/android/update?versionCode=${base + 1}`);
     expect(same.body.status).toBe('current');
@@ -157,7 +157,7 @@ describePg('Android releases', () => {
   });
 
   it('refuses a different key once a release is installed on phones', async () => {
-    const res = await upload(admin, apk(4, { cert: Buffer.from('CN=Some other key') }));
+    const res = await upload(admin, apk(4, { signer: 'CN=Some other key, O=BB, C=IN' }));
     expect(res.status).toBe(400);
     expect(res.body.message).toMatch(/different key than version/);
   });
@@ -221,9 +221,83 @@ describePg('Android releases', () => {
     await as(adminApp, admin).delete(`/android/releases/${draft.releaseId}`);
   });
 
+  it('two uploads of one version code at once: one lands, the other is told why, and no file is orphaned', async () => {
+    // Both can pass the "already uploaded?" read — it is a read (§32 S6). The
+    // unique index decides, and the loser used to leave as a 500 with its
+    // stored file behind it (review P197-3). Different bytes, so two files.
+    const { RELEASES_DIR } = await import('../../domains/distribution/androidRelease.shared.js');
+    const { readdirSync } = await import('node:fs');
+    const code = base + 30;
+    const filesFor = () => { try { return readdirSync(RELEASES_DIR).filter((f) => f.startsWith(`${PKG}-`) && f.includes(`-${code}-`)); } catch { return []; } };
+    // The race is FORCED, not hoped for. Fired together, the two requests
+    // often ran one after the other, and the second was refused by the
+    // pre-read — so the test passed with the 23505 handling removed, and CI's
+    // mutation run reported M182 KILLED on one commit and SURVIVED on the next
+    // with no code change between them. A SHARE lock on the table blocks the
+    // INSERT and not the reads: both requests pass "already uploaded?", both
+    // park at the INSERT, and only then is the lock released.
+    let release;
+    const released = new Promise((r) => { release = r; });
+    let locked;
+    const isLocked = new Promise((r) => { locked = r; });
+    const holder = withTransaction(async (client) => {
+      await client.query('LOCK TABLE android_releases IN SHARE MODE');
+      locked();
+      await released;
+    });
+    await isLocked;
+    const racing = Promise.all([
+      upload(admin, apk(30, { padding: 1 })),
+      upload(admin, apk(30, { padding: 2 })),
+    ]);
+    const deadline = Date.now() + 10_000;
+    for (;;) {
+      const { rows } = await pgQuery(
+        `SELECT count(*)::int AS n FROM pg_stat_activity
+          WHERE wait_event_type = 'Lock' AND query ILIKE 'INSERT INTO android_releases%'`, []);
+      if (rows[0].n >= 2) break;
+      if (Date.now() > deadline) { release(); await holder; throw new Error('both uploads never reached the INSERT together — the race was not forced'); }
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    release();
+    await holder;
+    const [a, b] = await racing;
+    const statuses = [a.status, b.status].sort();
+    expect(statuses[0]).toBe(201);
+    expect(statuses[1], JSON.stringify([a.body, b.body])).toBe(400);
+    expect((statuses[1] === a.status ? a : b).body.message).toMatch(/already been uploaded/);
+    // Exactly the winner's file is on disk; the loser's bytes are gone.
+    expect(filesFor()).toHaveLength(1);
+  });
+
   it('shows the operator what is not configured yet', async () => {
     const { body } = await as(adminApp, admin).get('/android/releases');
     expect(body.packageName).toBe(PKG);
     expect(body.checks.map((c) => c.key).sort()).toEqual(['allowed_origins', 'fingerprints', 'storage']);
+  });
+
+  it('records the moment a publish WROTE, not the moment it started waiting for the lock', async () => {
+    // `now()` is the transaction's START. A publish that waited on the lock
+    // was stamped with the time it began waiting, so a release published
+    // after another could carry the earlier time, which the racing test
+    // above caught intermittently. Forced here: hold the lock, publish,
+    // release, and the stamp must be after the release.
+    const draft = (await upload(admin, apk(40))).body.release;
+    let release;
+    const released = new Promise((r) => { release = r; });
+    let releasedAt;
+    const holder = withTransaction(async (client) => {
+      await client.query('SELECT pg_advisory_xact_lock($1)', [0x41504b31]);
+      await released;
+      releasedAt = Date.now();
+    });
+    await new Promise((r) => setTimeout(r, 100));
+    const publishing = as(adminApp, admin).post(`/android/releases/${draft.releaseId}/publish`).then((r) => r);
+    await new Promise((r) => setTimeout(r, 300));
+    release();
+    await holder;
+    expect((await publishing).status).toBe(200);
+    const { rows } = await pgQuery('SELECT published_at FROM android_releases WHERE release_id = $1', [draft.releaseId]);
+    expect(new Date(rows[0].published_at).getTime()).toBeGreaterThanOrEqual(releasedAt - 50);
   });
 });

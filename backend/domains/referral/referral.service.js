@@ -178,10 +178,34 @@ export async function disburse({ poolPaise, actorId, maxRows = 50_000 }) {
   }
   const pool = Math.min(poolPaise, remainingBudget);
 
+  // ── The budget is RESERVED before a rupee moves ─────────────────────────
+  // The read above is a snapshot, used only to size the pool. The ceiling is
+  // this UPDATE's WHERE. It used to be drawn AFTER every credit had committed,
+  // and its refusal was never read: two overlapping disbursals, or a pause
+  // mid-run, paid the players, had the draw refused, and left the programme
+  // recording less than it had paid — so the next run saw budget that was
+  // already gone, and the ceiling could be crossed silently (R6, F-040).
+  const reservation = await db.referrals.drawFromProgramme('main', paiseToRupees(pool));
+  if (!reservation.ok) {
+    throw Object.assign(
+      new Error('The referral programme budget was just used by another disbursal, or the programme was paused. Refresh and try again.'),
+      { status: 409 },
+    );
+  }
+  // What was reserved and not spent goes back. If that write fails, the
+  // programme shows MORE drawn than paid — the ceiling errs conservative, and
+  // the batch row still records the true spend.
+  const giveBack = async (spentPaise) => {
+    const unspent = pool - spentPaise;
+    if (unspent <= 0) return;
+    const r = await db.referrals.returnToProgramme('main', paiseToRupees(unspent)).catch((e) => ({ ok: false, reason: e.message }));
+    if (!r.ok) console.error(`[referral] could not return ₹${paiseToRupees(unspent)} of unspent budget:`, r.reason);
+  };
+
   const batchId = `refdisb_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
   await db.referrals.openBatch({
     batchId, poolRupees: paiseToRupees(pool), actorId,
-  });
+  }).catch(async (err) => { await giveBack(0); throw err; });
 
   let spent = 0;
   let paid = 0;
@@ -243,10 +267,8 @@ export async function disburse({ poolPaise, actorId, maxRows = 50_000 }) {
       lastPosition = earning.queuePosition;
     }
 
-    // The programme budget is a second ceiling, enforced the same way: an
-    // application-side check lets two concurrent disbursals both read the same
-    // total and both pass it.
-    if (spent > 0) await db.referrals.drawFromProgramme('main', paiseToRupees(spent));
+    // The budget was reserved up front; return the part not spent.
+    await giveBack(spent);
 
     // The counts and the spend are already on the batch — `spendFromBatch`
     // moved them as each earning settled, so a crash mid-run leaves a batch
@@ -260,6 +282,7 @@ export async function disburse({ poolPaise, actorId, maxRows = 50_000 }) {
       lastQueuePosition: lastPosition,
     };
   } catch (err) {
+    await giveBack(spent);
     // Recorded as FAILED with what it managed to pay, so a half-run batch is
     // legible rather than looking like it never happened.
     await db.referrals.closeBatch(batchId, {

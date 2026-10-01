@@ -13,11 +13,10 @@
  * ║  Place this file at: user-panel/src/GAME_CORE.ts      ║
  * ║                                                                          ║
  * ║  Then import in every file that needs it:                               ║
- * ║    import { PHASE, WINNER, PAYOUT, CELEBRATION } from '../GAME_CORE';   ║
+ * ║    import { PHASE, WINNER, PAYOUT } from '../GAME_CORE';                ║
  * ║                                                                          ║
  * ║  Files that MUST import from here:                                       ║
- * ║    services/GameContext.tsx   — calculateStatus(), tick()                ║
- * ║    redesign/GameScreen.tsx    — phase labels, lock, celebration          ║
+ * ║    redesign/GameScreen.tsx    — canPlaceBet (stop offering a late bet)   ║
  * ║    types.ts                   — the shared phase/winner unions           ║
  * ║    services/realBackend.ts    — (reference only, server enforces)        ║
  * ║                                                                          ║
@@ -33,7 +32,7 @@
  * ╚══════════════════════════════════════════════════════════════════════════╝
  */
 
-import { CycleType, GameState, BettingSide } from './types';
+import { CycleType, BettingSide } from './types';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 1. CYCLE PHASE TIMINGS
@@ -346,45 +345,10 @@ export const PHANTOM = Object.freeze({
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 5. CELEBRATION & FIREWORKS CONFIG
-//    Controls how the winner celebration looks and how long it runs.
-// ─────────────────────────────────────────────────────────────────────────────
-
-export const CELEBRATION = Object.freeze({
-
-  /**
-   * Celebration starts this many ms before cycle end (matches CELEBRATE_AT_MS).
-   * It runs until the cycle ends and the next one starts.
-   */
-  DURATION_MS: 10 * 1000,  // 10 seconds
-
-  /** Number of particle bursts rendered on screen simultaneously */
-  PARTICLE_COUNT: 40,
-
-  /** Each burst re-fires every N milliseconds while celebration is active */
-  BURST_INTERVAL_MS: 2500,
-
-  /** Colors for the Delhi (red) winning celebration */
-  DELHI_COLORS:  ['#E53935', '#FF6659', '#FFD700', '#FFFFFF', '#FF8A65'] as const,
-
-  /** Colors for the Bombay (blue) winning celebration */
-  BOMBAY_COLORS: ['#1E88E5', '#64B5F6', '#FFD700', '#FFFFFF', '#80DEEA'] as const,
-
-  /** Fallback gold colors when winner is not yet known */
-  NEUTRAL_COLORS: ['#FFD700', '#FFF176', '#FFCA28', '#FFFFFF', '#FFB300'] as const,
-
-  /** Card shimmer animation duration in seconds */
-  SHIMMER_DURATION_S: 1.8,
-
-  /** Second shimmer pass delay (gold sweep) in seconds */
-  SHIMMER_DELAY_S: 1.1,
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 6. PHASE STATE MACHINE
-//    The single function every component must use to determine the current
-//    GameState from a cycle's endTime and the current server-corrected time.
-//    NEVER reimplement this inline — always import and call PHASE.getStatus().
+// 5. WHEN TO STOP OFFERING A BET
+//    The cycle's PHASE is server-authoritative (cycle_update events); the client
+//    derives none of it. What the client does own is a courtesy: stop offering a
+//    stake it cannot land in time. See §11 of CLAUDE.md — display only.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Phase config per cycle type. A map rather than a ternary chain: with two
@@ -398,20 +362,12 @@ const PHASE_BY_TYPE = Object.freeze({
 });
 
 /**
- * Derive the current GameState from timing alone.
- *
- * @param type      any CycleType
- * @param nowMs     Current time in ms — MUST be server-corrected (Date.now() + serverTimeOffset)
- * @param endTimeMs The cycle's endTime in ms
- * @returns         The correct GameState for this moment
- */
-/**
  * Safety margin between when the CLIENT stops accepting a stake and when the
  * SERVER stops accepting one.
  *
  * The server closes betting on the clock at `endTime - closeBeforeEndSec`
- * (bet.routes.js). The client closes at the same instant via `getPhaseStatus`.
- * Both read the same wall clock, so in principle they agree — but a stake
+ * (bet.routes.js), and `canPlaceBet` below reads the same offset from the same
+ * wall clock, so in principle they agree — but a stake
  * submitted at T−5.2s does not ARRIVE at T−5.2s. It crosses a mobile network
  * first, and lands at T−4.8s, where the server correctly rejects it.
  *
@@ -435,8 +391,7 @@ export const BET_SUBMIT_MARGIN_MS = 1500;
 /**
  * Whether the client should still OFFER a bet on this cycle.
  *
- * Deliberately separate from `getPhaseStatus`: that reports the cycle's true
- * phase and must keep agreeing with the server, so the countdown and the
+ * Not the cycle's phase — that comes from the server, so the countdown and the
  * MERGED/CLOSED labels stay honest. This is the narrower question of whether a
  * tap right now would still arrive in time.
  */
@@ -445,98 +400,9 @@ export function canPlaceBet(type: CycleType, nowMs: number, endTimeMs: number): 
   return (endTimeMs - nowMs) > (cfg.CLOSE_AT_MS + BET_SUBMIT_MARGIN_MS);
 }
 
-export function getPhaseStatus(type: CycleType, nowMs: number, endTimeMs: number): GameState {
-  const cfg      = PHASE_BY_TYPE[type] ?? PHASE.THIRTY_MIN;
-  const timeLeft = endTimeMs - nowMs;
-
-  if (timeLeft <= 0)                    return GameState.RESULT_DECLARED; // cycle over
-  if (timeLeft <= cfg.CELEBRATE_AT_MS)  return GameState.RESULT_DECLARED; // 00:10 → celebrate
-  if (timeLeft <= cfg.CLOSE_AT_MS)      return GameState.CLOSED;           // 00:30 → lock bets
-  if (timeLeft <= cfg.MERGE_AT_MS)      return GameState.MERGED;           // 03:00 / 05:00 → merge
-  return GameState.OPEN;
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 7. PHASE LABELS & UI COLOURS
-//    Used by CycleControl and any other component that shows phase status.
-//    Import PHASE_UI instead of writing ternary chains in components.
-// ─────────────────────────────────────────────────────────────────────────────
-
-export const PHASE_UI = Object.freeze({
-  [GameState.OPEN]: Object.freeze({
-    label:    'NEXT RESULT IN',
-    color:    '#25D366',           // green
-    dotClass: 'bg-[#25D366] shadow-[#25D366]',
-    textClass:'text-[#25D366]',
-  }),
-  [GameState.MERGED]: Object.freeze({
-    label:    '⚡ POOLS MERGED',
-    color:    '#FB8C00',           // orange
-    dotClass: 'bg-orange-400 shadow-orange-400',
-    textClass:'text-orange-400',
-  }),
-  [GameState.CLOSED]: Object.freeze({
-    label:    '🔒 BETS CLOSED',
-    color:    '#EF5350',           // red
-    dotClass: 'bg-red-400 shadow-red-400',
-    textClass:'text-red-400',
-  }),
-  [GameState.RESULT_DECLARED]: Object.freeze({
-    label:    '🎉 WINNER DECLARED',
-    color:    '#FFD700',           // gold
-    dotClass: 'bg-[#FFD700] shadow-[#FFD700]',
-    textClass:'text-[#FFD700]',
-  }),
-  [GameState.PAUSED]: Object.freeze({
-    label:    '⏸ PAUSED',
-    color:    '#9E9E9E',
-    dotClass: 'bg-gray-400 shadow-gray-400',
-    textClass:'text-gray-400',
-  }),
-  [GameState.CANCELLED]: Object.freeze({
-    label:    '✖ CANCELLED',
-    color:    '#9E9E9E',
-    dotClass: 'bg-gray-500 shadow-gray-500',
-    textClass:'text-gray-500',
-  }),
-} as Record<GameState, { label: string; color: string; dotClass: string; textClass: string }>);
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 8. BETTING LOCK RULES
-//    Defines exactly which phases allow which bet types.
-//    Import BETTING_ALLOWED instead of writing phase checks inline.
-// ─────────────────────────────────────────────────────────────────────────────
-
-export const BETTING_ALLOWED = Object.freeze({
-  /**
-   * Can a REAL bet be placed in this phase?
-   * OPEN  → yes.  MERGED → yes (blind).  CLOSED / RESULT_DECLARED → NO.
-   */
-  realBet(state: GameState): boolean {
-    return state === GameState.OPEN || state === GameState.MERGED;
-  },
-
-  /**
-   * Can a PHANTOM (admin) bet be placed in this phase?
-   * OPEN → yes.  MERGED → yes BUT only until PHANTOM_EQUALIZER_AT_MS (server enforces).
-   * CLOSED / RESULT_DECLARED → NO.
-   */
-  phantomBet(state: GameState): boolean {
-    return state === GameState.OPEN || state === GameState.MERGED;
-  },
-
-  /**
-   * Should the betting card UI show as locked (disabled buttons + overlay)?
-   * Only CLOSED and RESULT_DECLARED lock the UI.
-   */
-  uiLocked(state: GameState): boolean {
-    return state === GameState.CLOSED || state === GameState.RESULT_DECLARED;
-  },
-});
-
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 10. QUICK REFERENCE — complete timeline in plain English
+// 6. QUICK REFERENCE — complete timeline in plain English
 // ─────────────────────────────────────────────────────────────────────────────
 //
 //  ── 30-MINUTE CYCLE ────────────────────────────────────────────────────────

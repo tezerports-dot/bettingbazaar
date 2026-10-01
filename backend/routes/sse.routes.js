@@ -30,7 +30,7 @@ import { db } from '#db';
 // anyone could have forged a token and opened these streams. verifyJwt pins
 // HS256 and uses the fail-fast secret.
 import { verifyJwt } from '../domains/identity/jwt.util.js';
-import { isTokenRevoked } from '../domains/identity/auth.middleware.js';
+import { isTokenRevoked, sessionSuperseded, refuseSupersededSession, merchantLoginRow } from '../domains/identity/auth.middleware.js';
 import { decodeOrderCursor, encodeOrderCursor, normalizeLimit } from '../utils/cursorPagination.js';
 import { fetchCycleHistory } from '../domains/markets/cycleHistory.service.js';
 // The one shape a merchant receives. The merchant stream is a merchant-facing
@@ -162,6 +162,10 @@ export function initSSERoutes(sseManager, cycleGenerator) {
             if (!merchant || merchant.status !== 'ACTIVE') {
                 return res.status(403).json({ success: false, message: 'Merchant account is not active' });
             }
+            // A password reset ends this stream too, not only the REST API.
+            if (sessionSuperseded(await merchantLoginRow(merchant), decoded)) {
+                return refuseSupersededSession(res);
+            }
         } catch (e) {
             console.error('❌ SSE merchant auth check error:', e.message);
             return res.status(500).json({ success: false, message: 'Auth check failed' });
@@ -245,6 +249,8 @@ export function initSSERoutes(sseManager, cycleGenerator) {
             || (!adminUser.isAdmin && !adminUser.isSubAdmin && !adminUser.isQueueManager)) {
             return res.status(403).json({ success: false, message: 'Admin access required' });
         }
+        // A password reset ends this stream too, not only the REST API.
+        if (sessionSuperseded(adminUser, decoded)) return refuseSupersededSession(res);
 
         initSSEResponse(res);
         sseManager.addAdminClient(res);

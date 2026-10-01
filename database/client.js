@@ -252,7 +252,7 @@ export function getPoolStats() {
 
 // Register the pool-stats provider with the metrics module (inversion of control:
 // pgClient depends on metrics, never the reverse — this breaks the import cycle
-// dependency-cruiser's no-circular rule enforces). The /metrics pgPoolConnections
+// dependency-cruiser's no-circular rule enforces). The /metrics bb_pg_pool_connections
 // gauge samples through this without importing pgClient.
 setPoolStatsProvider(getPoolStats);
 
