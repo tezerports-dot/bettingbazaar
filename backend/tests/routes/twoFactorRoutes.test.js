@@ -127,6 +127,19 @@ describePg('two-factor routes', () => {
     // currently protected by.
     expect(res.status).toBe(409);
     expect(res.body.code).toBe('2FA_ALREADY_ENABLED');
+    // A player CAN turn it off (/disable admits them), so that is what they are told.
+    expect(res.body.message).toMatch(/Turn it off first/);
+  });
+
+  it('tells STAFF a step that exists, because /disable refuses them (2FA is mandatory)', async () => {
+    // The harness enrols staff by default.
+    const admin = await actor({ isAdmin: true });
+    const res = await as(app, admin).post('/setup').send({});
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('2FA_ALREADY_ENABLED');
+    expect(res.body.message, 'staff were told to disable a factor they cannot disable').not.toMatch(/disable it first|turn it off/i);
+    expect(res.body.message).toMatch(/mandatory/);
+    expect(res.body.message).toMatch(/recovery code|admin/);
   });
 
   it('refuses to disable without a current code', async () => {
