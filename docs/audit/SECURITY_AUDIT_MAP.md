@@ -2772,9 +2772,12 @@ A manifest zip bomb was inflated in full in the API process; two uploads of one
 version code both passed the pre-read and the loser answered 500, leaving its
 file behind. Inflate bounded at 4 MB; the loser gets the same 400 as a
 sequential duplicate, and its file is removed unless the winner names the same
-one. **Not fixed, documented:** the inspector does not cryptographically verify
-the v2/v3 signature (P197-1); the release workflow's `apksigner verify` is the
-check. **Reviewed, not a defect:** P197-5 (`https://localhost` with
+one. P197-1 (the inspector read the certificate a signing block NAMED without
+verifying the signature) was documented as a residual risk here and is now
+**FIXED (R7, 2026-10-01)**: every v2/v3 signer's signature and content digest
+are verified at upload, and the certificate must be the signing key. Proven
+against Google's own `apksigner` output (RSA and EC, v2 and v3) and against
+tampered copies; M211–M213 KILLED. **Reviewed, not a defect:** P197-5 (`https://localhost` with
 credentials — WebView cookie stores are per-app).
 
 - **Mutation-proved:** M181, M182 KILLED.

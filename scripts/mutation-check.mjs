@@ -1575,6 +1575,27 @@ const MUTATIONS = [
     from: `    if (ctx.round && providerKey && ctx.round.providerKey !== providerKey) {`,
     to: `    if (false) {`,
   },
+  {
+    id: 'M211', file: 'backend/domains/distribution/apkInspector.js', config: UNIT,
+    test: 'backend/tests/unit/apkInspector.test.js',
+    why: 'an APK changed after it was signed is accepted for upload and publishing',
+    from: `      if (!digestCache.get(algorithm).equals(signedDigest)) {`,
+    to: `      if (false) {`,
+  },
+  {
+    id: 'M212', file: 'backend/domains/distribution/apkInspector.js', config: UNIT,
+    test: 'backend/tests/unit/apkInspector.test.js',
+    why: 'a signing block whose signature does not verify is accepted',
+    from: `      if (!signatureVerifies(sig.id, publicKey, data, sig.value)) {`,
+    to: `      if (false) {`,
+  },
+  {
+    id: 'M213', file: 'backend/domains/distribution/apkInspector.js', config: UNIT,
+    test: 'backend/tests/unit/apkInspector.test.js',
+    why: 'an APK signed by one key is reported under another key\'s certificate',
+    from: `    if (!certKey.equals(publicKey)) {`,
+    to: `    if (false) {`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

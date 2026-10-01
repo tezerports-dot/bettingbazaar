@@ -24,7 +24,7 @@ import { mountRouter, actor, as, request } from './_harness.js';
 import { buildApk } from '../_fakeApk.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
-const KEY = Buffer.from('CN=BettingBazaar route-test release key, O=BB, C=IN');
+const KEY = 'CN=BettingBazaar route-test release key, O=BB, C=IN';
 const PKG = `com.bettingbazaar.rt${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 const APK = 'application/vnd.android.package-archive';
 
@@ -38,7 +38,7 @@ describePg('Android releases', () => {
 
   const upload = (who, bytes) => as(adminApp, who).post('/android/releases').set('Content-Type', APK).send(bytes);
   const apk = (offset, extra = {}) => buildApk({
-    packageName: PKG, versionCode: base + offset, versionName: `9.${base + offset}.0`, cert: KEY, ...extra,
+    packageName: PKG, versionCode: base + offset, versionName: `9.${base + offset}.0`, signer: KEY, ...extra,
   });
 
   beforeAll(async () => {
@@ -83,7 +83,7 @@ describePg('Android releases', () => {
 
   it.each([
     ['another app', { packageName: 'com.example.other' }, /but this platform ships/],
-    ['a debug build', { cert: Buffer.from('CN=Android Debug, O=Android, C=US') }, /debug key/],
+    ['a debug build', { signer: 'CN=Android Debug, O=Android, C=US' }, /debug key/],
     ['a duplicate version code', {}, /already been uploaded/],
   ])('refuses %s, naming the mistake', async (_label, extra, message) => {
     const res = await upload(admin, apk(1, extra));
@@ -157,7 +157,7 @@ describePg('Android releases', () => {
   });
 
   it('refuses a different key once a release is installed on phones', async () => {
-    const res = await upload(admin, apk(4, { cert: Buffer.from('CN=Some other key') }));
+    const res = await upload(admin, apk(4, { signer: 'CN=Some other key, O=BB, C=IN' }));
     expect(res.status).toBe(400);
     expect(res.body.message).toMatch(/different key than version/);
   });
