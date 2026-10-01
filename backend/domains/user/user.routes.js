@@ -388,22 +388,11 @@ router.get('/v1/system/config', async (req, res) => {
   }
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// GET /api/v1/content/promo/:location  (public)
-// ─────────────────────────────────────────────────────────────────────────────
-router.get('/v1/content/promo/:location', async (req, res) => {
-  try {
-    const { location } = req.params;
-    // PUBLISHED and active, not merely active. A draft with `isActive` left
-    // on was reaching the home page — the two flags mean different things and
-    // the query only checked one of them.
-    const content = await db.content.listLivePromos(location);
-    res.json({ success: true, content });
-  } catch (error) {
-    console.error('Promo content error:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch promo content' });
-  }
-});
+// `GET /api/v1/content/promo/:location` was removed 2026-10-01. No client
+// called it: the player app asks over the socket (`request_promo` →
+// `promo_data`, socketHandlers.js), which reads the same `listLivePromos` and
+// also upper-cases the location this route did not. Two doors to one read is a
+// second one to keep correct for nobody.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/v1/content/faq  (public)

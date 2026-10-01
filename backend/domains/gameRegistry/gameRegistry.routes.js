@@ -122,18 +122,20 @@ router.post('/admin/games', authenticate, hasPermission('canManageGames'), async
     const slug = slugify(req.body.slug || data.name);
     if (!slug) return res.status(400).json({ success: false, message: 'A valid slug/name is required' });
 
-    // The slug's uniqueness is decided by the primary key, not by an `exists`
-    // check two simultaneous creations both pass. The launchability rule is a
-    // CHECK on the row, so an ACTIVE game that nothing can launch is refused
-    // here as well as on every other path that could set the status.
-    if (await db.games.getGame(slug)) {
-      return res.status(409).json({ success: false, message: `A game with slug "${slug}" already exists` });
-    }
+    // The slug's uniqueness is decided by the primary key, in the INSERT
+    // (`createOnly`). This said so, and then read `getGame` and UPSERTED: two
+    // creates of one slug both passed the read, and the second overwrote the
+    // first with each admin told 200 (§32 S6, 2026-10-01). The launchability
+    // rule is a CHECK on the row, so an ACTIVE game that nothing can launch is
+    // refused here as well as on every other path that could set the status.
     let game;
     try {
       game = await db.games.upsertGame({
         ...data, slug, createdBy: req.user.userId, updatedBy: req.user.userId,
-      });
+      }, { createOnly: true });
+      if (!game) {
+        return res.status(409).json({ success: false, message: `A game with slug "${slug}" already exists` });
+      }
     } catch (e) {
       if (e.code === '23514') {
         return res.status(400).json({
@@ -211,9 +213,15 @@ router.post('/admin/categories', authenticate, hasPermission('canManageGames'), 
     const slug = slugify(req.body.slug || name);
     if (!slug) return res.status(400).json({ success: false, message: 'A valid slug/name is required' });
 
+    // A CREATE: an existing slug is refused, never overwritten. It upserted, so
+    // "creating" Slots over an existing slots category replaced its name, icon
+    // and order, and re-enabled it if an admin had disabled it (2026-10-01).
     const category = await db.games.upsertCategory({
       slug, name, icon, order, enabled, updatedBy: req.user.userId,
-    });
+    }, { createOnly: true });
+    if (!category) {
+      return res.status(409).json({ success: false, message: `A category with slug "${slug}" already exists` });
+    }
     res.json({ success: true, category });
   } catch (err) {
     console.error('[gameRegistry] create category error:', err.message);

@@ -349,7 +349,20 @@ export async function curatedWinners({ sinceHours = 24, limit = 50 } = {}) {
       Math.min(Math.max(Number(limit) || 50, 1), 200)],
     'engagement_curated_winners',
   );
-  return rows.map((r) => ({ ...toFakeWinner(r), isReal: false }));
+  // The PUBLIC feed's shape, named key by key like `realWinners` beside it —
+  // not the editor's row spread whole. Spread, it published `createdBy` (the
+  // staff account that wrote the entry), the internal id, sort order and
+  // visibility flag on an unauthenticated endpoint (§32 S52, 2026-10-01).
+  return rows.map((r) => ({
+    displayName: r.display_name,
+    profilePic: r.profile_pic ?? '',
+    amount: paiseToRupees(Number(r.amount_paise)),
+    game: r.game,
+    city: r.city ?? '',
+    badge: r.badge ?? '',
+    displayTime: r.display_time,
+    isReal: false,
+  }));
 }
 
 /** Edit a curated entry. Returns null for an id that does not exist. */

@@ -2037,6 +2037,52 @@ const MUTATIONS = [
     from: `    currency: merchantTypeOf(merchant),`,
     to: `    currency: 'INR',`,
   },
+  // ── A create is a create (2026-10-01) ───────────────────────────────────
+  {
+    id: 'M272', file: 'backend/domains/gameRegistry/gameRegistry.routes.js', config: PG,
+    test: 'backend/tests/routes/gameRegistryAdminRoutesPg.test.js',
+    why: 'creating a game whose slug exists overwrites it, and two simultaneous creates both answer 200',
+    from: `      }, { createOnly: true });
+      if (!game) {`,
+    to: `      });
+      if (!game) {`,
+  },
+  {
+    id: 'M273', file: 'backend/domains/gameRegistry/gameRegistry.routes.js', config: PG,
+    test: 'backend/tests/routes/gameRegistryAdminRoutesPg.test.js',
+    why: 'creating a category whose slug exists overwrites it and re-enables a disabled one',
+    from: `    }, { createOnly: true });
+    if (!category) {`,
+    to: `    });
+    if (!category) {`,
+  },
+  // ── Curated winners (2026-10-01) ────────────────────────────────────────
+  {
+    id: 'M274', file: 'backend/routes/winners.routes.js', config: PG,
+    test: 'backend/tests/routes/curatedWinnersRoutesPg.test.js',
+    why: 'an entry created at a positive amount is edited to a negative one and published',
+    from: `      if (!(Number.isFinite(rupees) && rupees > 0)) {`,
+    to: `      if (false) {`,
+  },
+  {
+    id: 'M275', file: 'backend/routes/winners.routes.js', config: PG,
+    test: 'backend/tests/routes/curatedWinnersRoutesPg.test.js',
+    why: 'an edit to a public payout claim leaves no record of who made it',
+    from: `      performedBy: req.user.userId, action: 'CURATED_WINNER_UPDATED', category: 'CONTENT',`,
+    to: `      performedBy: req.user.userId, action: 'CURATED_WINNER_EDIT_X', category: 'CONTENT',`,
+  },
+  {
+    id: 'M276', file: 'database/repositories/engagement.js', config: PG,
+    test: 'backend/tests/routes/curatedWinnersRoutesPg.test.js',
+    why: 'the public winners feed publishes the staff id that wrote each curated entry',
+    from: `    badge: r.badge ?? '',
+    displayTime: r.display_time,
+    isReal: false,`,
+    to: `    badge: r.badge ?? '',
+    displayTime: r.display_time,
+    createdBy: r.created_by,
+    isReal: false,`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that
