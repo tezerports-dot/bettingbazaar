@@ -130,8 +130,6 @@ export const STAFF_PERMISSIONS = Object.freeze([
 export const ADMIN_ONLY_AREAS = Object.freeze([
   { area: 'Sub-admins', why: 'Creating a sub-admin or changing one\'s permissions grants authority; a holder could grant themselves everything.',
     routes: ['GET /sub-admins', 'POST /sub-admins', 'PUT /sub-admins/:subAdminId/permissions', 'DELETE /sub-admins/:subAdminId', 'GET /staff-permissions'] },
-  { area: 'Staff roles', why: 'Setting an account\'s roles can make it an admin.',
-    routes: ['PUT /users/:userId/roles'] },
   { area: 'Queue managers', why: 'The queue-manager role routes players\' payments; granting it is granting authority.',
     routes: ['GET /queue-managers', 'POST /users/:userId/queue-manager'] },
 ]);

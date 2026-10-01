@@ -1815,6 +1815,62 @@ const MUTATIONS = [
     from: `router.get('/payment-queue', authenticate, queueManagerOrPermission('canManageMerchants'),`,
     to: `router.get('/payment-queue', authenticate, hasPermission('canViewTransactions'),`,
   },
+  // ── Staff authority on STAFF rows only; a deleted account is closed (2026-10-01) ──
+  {
+    id: 'M243', file: 'database/schema.sql', config: PG,
+    test: 'backend/tests/routes/adminUsersRoutes.test.js',
+    why: 'a staff flag can be written onto a PLAYER row, and that player\'s own session carries it',
+    from: `CHECK (account_type = 'STAFF' OR NOT (is_admin OR is_sub_admin OR is_queue_manager OR is_mediator));`,
+    to: `CHECK (TRUE);`,
+  },
+  {
+    id: 'M244', file: 'backend/routes/admin/users.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/adminUsersRoutes.test.js',
+    why: 'the queue-manager grant accepts a PLAYER id and the admin is not told why it failed',
+    from: `if (target.accountType !== 'STAFF') {`,
+    to: `if (false) {`,
+  },
+  {
+    id: 'M245', file: 'database/repositories/users.js', config: PG,
+    test: 'backend/tests/routes/closedAccountPg.test.js',
+    why: 'a sub-admin holding the players area can close the full admin\'s account',
+    from: `WHERE user_id = $1 AND status <> 'DELETED' AND account_type = 'PLAYER'`,
+    to: `WHERE user_id = $1 AND status <> 'DELETED'`,
+  },
+  {
+    id: 'M246', file: 'database/repositories/users.js', config: PG,
+    test: 'backend/tests/routes/closedAccountPg.test.js',
+    why: 'a deleted account keeps every socket and SSE stream it already held',
+    from: `sessions_valid_from = now(), updated_at = now()
+      WHERE user_id = $1 AND status <> 'DELETED'`,
+    to: `updated_at = now()
+      WHERE user_id = $1 AND status <> 'DELETED'`,
+  },
+  {
+    id: 'M247', file: 'backend/routes.js', config: PG,
+    test: 'backend/tests/routes/closedAccountPg.test.js',
+    why: 'a deleted player signs in with their password',
+    from: `    if (accountClosed(user)) return refuseClosedAccount(res);
+
+    // The hash comes`,
+    to: `
+    // The hash comes`,
+  },
+  {
+    id: 'M248', file: 'backend/routes.js', config: PG,
+    test: 'backend/tests/routes/closedAccountPg.test.js',
+    why: 'an account closed between the two legs of a login completes the second',
+    from: `    if (accountClosed(user)) return refuseClosedAccount(res);
+    // The SAME door`,
+    to: `    // The SAME door`,
+  },
+  {
+    id: 'M249', file: 'backend/domains/identity/auth.middleware.js', config: PG,
+    test: 'backend/tests/routes/closedAccountPg.test.js',
+    why: 'a deleted account is told its password changed instead of that it is closed',
+    from: `    if (accountClosed(user)) return refuseClosedAccount(res);`,
+    to: ``,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

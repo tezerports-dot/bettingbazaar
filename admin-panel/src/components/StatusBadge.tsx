@@ -15,6 +15,7 @@ export const StatusBadge: React.FC<StatusBadgeProps> = ({ status, type = 'user' 
       if (upperStatus === 'ACTIVE') return 'bg-green-500/20 text-green-500';
       if (upperStatus === 'BLOCKED') return 'bg-red-500/20 text-red-500';
       if (upperStatus === 'SUSPENDED') return 'bg-orange-500/20 text-orange-500';
+      if (upperStatus === 'DELETED') return 'bg-gray-500/20 text-gray-400';
       if (upperStatus === 'PENDING_KYC') return 'bg-yellow-500/20 text-yellow-500';
     }
 

@@ -107,7 +107,6 @@ export interface Backend {
   resubmitAadhaar(aadhaar: string): Promise<{ success: boolean; message?: string; last4?: string }>;
 
   // --- CORE SERVICES ---
-  getServerTime(): Promise<{ unixtime: number }>;
   
   getUserData(userId: string): Promise<{ 
     user: User; 
@@ -123,7 +122,6 @@ export interface Backend {
   getSystemConfig(): Promise<SystemConfigData>;
 
   // AI ANALYSIS
-  getAIAnalysis(): Promise<{ text: string, cached: boolean }>;
 
   // KYC & BANKING
   // uploadKYC removed 2026-08-25 with POST /api/user/:userId/kyc. The bot takes
@@ -138,23 +136,11 @@ export interface Backend {
 
   placePhantomBet(userId: string, cycleId: string, amount: number, side: BettingSide): Promise<{ bet: Bet }>;
 
-  getCycleState(type: CycleType, startTime: number): Promise<{
-    totalDelhi: number;
-    totalBombay: number;
-    realDelhi: number; 
-    realBombay: number; 
-    status?: GameState;
-    isPaused?: boolean;
-    pendingResult?: BettingSide;
-    winner?: BettingSide;
-  }>;
   
   getCycleHistory(): Promise<GameCycle[]>;
-  getBetHistory(userId: string): Promise<Bet[]>;
 
   // --- REAL-TIME SUBSCRIPTIONS ---
 
-  subscribeToTicker(callback: (data: { id: string, text: string, side: 'DELHI' | 'BOMBAY', amount: number }) => void): () => void;
   subscribeToUserUpdates(userId: string, callback: (data: any) => void): () => void;
   subscribeToBranding(callback: (branding: any) => void): () => void;
 

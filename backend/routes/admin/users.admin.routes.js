@@ -229,46 +229,12 @@ router.get('/users/:userId', authenticate, hasPermission('canManageUsers'), asyn
   }
 });
 
-/**
- * Set an account's roles.
- *
- * The authorisation flags are DERIVED from the roles inside one statement, not
- * assigned beside them. The handler this replaced set `roles`, then `isAdmin`,
- * `isSubAdmin` and `isQueueManager` as four properties on a document and saved
- * it — and it called `.save()` on a plain object the repository returned, which
- * is a TypeError, so this endpoint has thrown on every call since the accounts
- * moved to PostgreSQL.
- */
-router.put('/users/:userId/roles', authenticate, isAdmin, async (req, res) => {
-  try {
-    const { roles } = req.body;
-    if (!Array.isArray(roles)) {
-      return res.status(400).json({ success: false, message: 'roles must be an array' });
-    }
-    const KNOWN = ['admin', 'subadmin', 'queue_manager', 'merchant', 'mediator'];
-    const unknown = roles.filter((r) => !KNOWN.includes(r));
-    if (unknown.length) {
-      return res.status(400).json({
-        success: false, message: `Unknown role(s): ${unknown.join(', ')}`,
-      });
-    }
-
-    const user = await db.users.setRoles(req.params.userId, roles);
-    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
-
-    await db.audit.recordDetailed({
-      performedBy: req.user.userId, performedByRole: 'admin',
-      action: 'USER_ROLES_SET', category: 'USER',
-      targetType: 'User', targetId: String(user.userId),
-      details: { roles },
-    });
-
-    res.json({ success: true, user });
-  } catch (error) {
-    console.error('Update roles error:', error);
-    res.status(500).json({ success: false, message: 'Failed to update roles' });
-  }
-});
+// `PUT /users/:userId/roles` was removed 2026-10-01. No screen called it, and
+// it was a second way to grant staff authority beside the Sub-admins screen —
+// one that asked nothing about the account it was handed, so it would set
+// `is_admin` on a PLAYER row (`users_staff_flags_need_staff` now refuses that
+// in the data). Sub-admins are created and revoked on `/sub-admins`, queue
+// managers on `/users/:userId/queue-manager`, and the one full admin is seeded.
 
 // Block user
 router.put('/users/:userId/block', authenticate, hasPermission('canManageUsers'), async (req, res) => {
@@ -442,10 +408,10 @@ router.delete('/users/:userId', authenticate, hasPermission('canManageUsers'), a
 
     const user = await db.users.softDeleteUser(req.params.userId, { actor: req.user.userId });
     if (!user) {
-      // Null covers both "no such account" and "already deleted": either way
+      // Null covers "no such account", "already deleted" and "not a PLAYER": either way
       // there was nothing here to delete, and reporting success for the second
       // is how a double-click looks like two deletions in an audit trail.
-      return res.status(404).json({ success: false, message: 'User not found or already deleted' });
+      return res.status(404).json({ success: false, message: 'No player account to delete (not found, already deleted, or a staff or merchant login)' });
     }
 
     await db.audit.recordDetailed({
@@ -569,6 +535,23 @@ router.post('/users/:userId/queue-manager', authenticate, isAdmin, async (req, r
     const { enable } = req.body; // true or false
     if (typeof enable !== 'boolean') {
       return res.status(400).json({ success: false, message: 'enable must be true or false' });
+    }
+
+    // A STAFF account only. A queue manager routes players' payments, and the
+    // flag is read off whatever row a SESSION belongs to — so set on a PLAYER
+    // row it hands that player's own session the payment queue. The screen
+    // takes a typed user id, so this is the question that has to be asked.
+    // `users_staff_flags_need_staff` refuses it in the data too; this is the
+    // refusal that tells the admin what to do instead.
+    if (enable) {
+      const target = await db.users.getUser(userId);
+      if (!target) return res.status(404).json({ success: false, message: 'User not found' });
+      if (target.accountType !== 'STAFF') {
+        return res.status(409).json({
+          success: false,
+          message: 'Only a staff account can be a queue manager. Create a sub-admin for this person first, then grant it to that account.',
+        });
+      }
     }
 
     // One UPDATE. The handler this replaced read the account, set the property

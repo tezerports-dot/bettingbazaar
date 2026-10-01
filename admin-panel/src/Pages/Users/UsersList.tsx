@@ -1,6 +1,6 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import React, { useEffect, useState } from 'react';
-import { Users, Eye, Ban, CheckCircle, Plus, Minus, CreditCard, History, Ghost } from 'lucide-react';
+import { Users, Eye, Ban, CheckCircle, Plus, Minus, CreditCard, History, Ghost, Trash2 } from 'lucide-react';
 import { DataTable } from '../../components/DataTable';
 import { StatusBadge } from '../../components/StatusBadge';
 import { SearchBar } from '../../components/SearchBar';
@@ -99,6 +99,16 @@ export const UsersList: React.FC = () => {
 
   const handleBlockUser   = async (id: string) => { try { await api.users.blockUser(id, 'Blocked by admin'); toast.success('Blocked'); loadUsers(); } catch { toast.error('Failed'); } };
   const handleUnblockUser = async (id: string) => { try { await api.users.unblockUser(id); toast.success('Unblocked'); loadUsers(); } catch { toast.error('Failed'); } };
+  // Closing an account. The server refuses one with an open order or money
+  // locked in escrow, and names which (409) — that sentence IS what the admin
+  // has to act on, so it is shown, not replaced with "Failed".
+  const handleDeleteUser = async (id: string) => {
+    try {
+      await api.users.deleteUser(id);
+      toast.success('Account closed');
+      loadUsers();
+    } catch (e: any) { toast.error(e.response?.data?.message || 'Failed to delete the account'); }
+  };
 
   const openBalanceModal = (user: User, type: 'add' | 'deduct') => {
     setBalanceTarget(user); setBalanceType(type);
@@ -147,6 +157,10 @@ export const UsersList: React.FC = () => {
             <button onClick={() => setConfirmAction({ type: 'unblock', user: u })} className="p-1.5 hover:bg-green-600/20 text-green-500 rounded-sm" title="Unblock"><CheckCircle size={14} /></button>
           ) : (
             <button onClick={() => setConfirmAction({ type: 'block', user: u })}   className="p-1.5 hover:bg-red-600/20   text-red-500   rounded-sm" title="Block"><Ban size={14} /></button>
+          )}
+          {/* PLAYER rows only — the route refuses a staff or merchant login. */}
+          {u.accountType === 'PLAYER' && u.status !== 'DELETED' && (
+            <button onClick={() => setConfirmAction({ type: 'delete', user: u })} className="p-1.5 hover:bg-red-600/20 text-red-500 rounded-sm" title="Delete Account"><Trash2 size={14} /></button>
           )}
         </div>
       ),
@@ -335,11 +349,18 @@ export const UsersList: React.FC = () => {
 
       {confirmAction && (
         <ConfirmDialog isOpen={!!confirmAction} onClose={() => setConfirmAction(null)}
-          onConfirm={() => { confirmAction.type === 'block' ? handleBlockUser(confirmAction.user.userId) : handleUnblockUser(confirmAction.user.userId); }}
-          title={confirmAction.type === 'block' ? 'Block User' : 'Unblock User'}
-          message={`Are you sure you want to ${confirmAction.type} ${confirmAction.user.username}?`}
-          type={confirmAction.type === 'block' ? 'danger' : 'warning'}
-          confirmText={confirmAction.type === 'block' ? 'Block' : 'Unblock'}
+          onConfirm={() => {
+            const id = confirmAction.user.userId;
+            if (confirmAction.type === 'block') handleBlockUser(id);
+            else if (confirmAction.type === 'delete') handleDeleteUser(id);
+            else handleUnblockUser(id);
+          }}
+          title={confirmAction.type === 'block' ? 'Block User' : confirmAction.type === 'delete' ? 'Delete Account' : 'Unblock User'}
+          message={confirmAction.type === 'delete'
+            ? `Close ${confirmAction.user.username}'s account? They will be signed out everywhere and cannot sign in again. Their bets, orders and ledger are kept. This cannot be undone from the panel.`
+            : `Are you sure you want to ${confirmAction.type} ${confirmAction.user.username}?`}
+          type={confirmAction.type === 'unblock' ? 'warning' : 'danger'}
+          confirmText={confirmAction.type === 'block' ? 'Block' : confirmAction.type === 'delete' ? 'Delete' : 'Unblock'}
         />
       )}
 

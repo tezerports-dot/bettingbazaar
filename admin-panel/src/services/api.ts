@@ -184,19 +184,6 @@ export const users = {
     return res.data;
   },
 
-  getById: async (userId: string) => {
-    const res = await api.get<any>(`/api/admin/users/${userId}`);
-    if (res.data?.success && res.data?.user) {
-      return { success: true, data: res.data.user };
-    }
-    return res.data;
-  },
-
-  updateRoles: async (userId: string, roles: string[]) => {
-    const res = await api.put(`/api/admin/users/${userId}/roles`, { roles });
-    return res.data;
-  },
-
   /**
    * Adjust a player's balance. ONE route, `POST /api/admin/balance-adjust`,
    * shared with the dedicated Balance Adjustment screen.
@@ -1066,46 +1053,12 @@ export const branding = {
     return res.data;
   },
 
-  uploadLogo: async (file: File) => {
-    // Step 1: Get presigned URL from backend
-    const urlRes = await api.post<any>('/api/admin/branding/upload-url', {
-      fileName: file.name,
-      contentType: file.type,
-      fileSize: file.size,
-      category: 'logo',
-    });
-    if (!urlRes.data?.success) throw new Error('Failed to get upload URL');
-    const { uploadUrl, cdnUrl, key } = urlRes.data;
-
-    // Step 2: Upload directly to S3 via presigned URL
-    await fetch(uploadUrl, {
-      method: 'PUT',
-      body: file,
-      headers: { 'Content-Type': file.type },
-    });
-
-    // FE 4.2 FIX: was sending key+fileName, backend requires fileKey+title -> always 400 -> logo upload fails
-    const confirmRes = await api.post<any>('/api/admin/branding/confirm-upload', {
-      fileKey: key,         // renamed from key
-      cdnUrl,
-      category: 'logo',
-      title: file.name,     // renamed from fileName
-      fileSize: file.size,
-    });
-    return confirmRes.data;
-  },
 };
 
 // --- CDN ----------------------------------------------------------------------
-// AUDIT FIX: cdn.uploadImage previously sent multipart/form-data to
-// POST /api/admin/branding/images, but that backend route expects JSON
-// { url, category, title } — it has no multer middleware and cannot parse
-// multipart bodies.  Result: req.body was always empty → url undefined → 400.
-//
-// Unified to the same 3-step S3 presigned-URL flow used by branding.uploadLogo:
-//   1. POST /branding/upload-url  → get { uploadUrl, cdnUrl, key } from backend
-//   2. PUT file → S3 via presigned uploadUrl
-//   3. POST /branding/images      → register cdnUrl in CDNImage model (JSON)
+// uploadImage (and branding.uploadLogo) removed 2026-10-01: no screen called
+// either. CDNManager registers an external URL (addUrl); branding assets are
+// uploaded through appAssets.
 
 export const cdn = {
   getImages: async (category?: string) => {
@@ -1114,41 +1067,6 @@ export const cdn = {
       return { success: true, data: res.data.images };
     }
     return res.data;
-  },
-
-  /**
-   * Upload an image file to S3 via presigned URL, then register it in the
-   * CDNImage library.  All three steps share the same CDNImage model so
-   * images appear consistently in both CDNManager and BrandingSettings.
-   */
-  uploadImage: async (file: File, category: string, title: string, description?: string) => {
-    // Step 1: Get S3 presigned upload URL from backend
-    const urlRes = await api.post<any>('/api/admin/branding/upload-url', {
-      fileName:    file.name,
-      contentType: file.type,
-      fileSize:    file.size,
-      category,
-    });
-    if (!urlRes.data?.success) throw new Error(urlRes.data?.message || 'Failed to get upload URL');
-    const { uploadUrl, cdnUrl, key } = urlRes.data;
-
-    // Step 2: Upload directly to S3 (no backend bandwidth used)
-    const s3Res = await fetch(uploadUrl, {
-      method:  'PUT',
-      body:    file,
-      headers: { 'Content-Type': file.type },
-    });
-    if (!s3Res.ok) throw new Error(`S3 upload failed: ${s3Res.status}`);
-
-    // Step 3: Register the CDN URL in the CDNImage model (JSON body)
-    const confirmRes = await api.post<any>('/api/admin/branding/images', {
-      url:         cdnUrl,
-      fileKey:     key,
-      category,
-      title,
-      description: description || '',
-    });
-    return confirmRes.data;
   },
 
   deleteImage: async (imageId: string) => {
@@ -1239,22 +1157,9 @@ export const system = {
 
 // ─── DISPUTES ──────────────────────────────────────────────────────────────
 export const disputes = {
-  getAll: async (status?: string) => {
-    const res = await api.get<any>('/api/admin/dispute-orders', { params: { status } });
-    return res.data;
-  },
-  getOne: async (id: string) => {
-    const res = await api.get<any>(`/api/admin/dispute-orders/${id}`);
-    return res.data;
-  },
-  resolve: async (id: string, data: { decision: string; resolution: string; refundAmount?: number; penaltyAmount?: number }) => {
-    const res = await api.post(`/api/admin/dispute-orders/${id}/resolve`, data);
-    return res.data;
-  },
-  escalate: async (id: string, notes: string) => {
-    const res = await api.post(`/api/admin/dispute-orders/${id}/escalate`, { notes });
-    return res.data;
-  },
+  // getAll / getOne / resolve / escalate removed 2026-10-01: DisputeManager
+  // calls those four routes itself, so these were a second client surface for
+  // the same endpoints that nothing used (§5).
 
   /**
    * The CDM slip for one cash payout — the only read of one that exists.
@@ -1521,10 +1426,6 @@ export const twoFactor = {
   /** Returns { backupCodes } — shown exactly once, never again. */
   activate: async (code: string) => {
     const res = await api.post<any>('/api/2fa/activate', { code });
-    return res.data;
-  },
-  disable: async (code: string) => {
-    const res = await api.post<any>('/api/2fa/disable', { code });
     return res.data;
   },
 };

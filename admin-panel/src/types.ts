@@ -71,7 +71,11 @@ export interface User {
   walletAddress?: string;
   profilePic?: string;
 
-  status: 'ACTIVE' | 'BLOCKED' | 'SUSPENDED' | 'PENDING_KYC';
+  // DELETED is a status the server sends: the list includes closed accounts.
+  status: 'ACTIVE' | 'BLOCKED' | 'SUSPENDED' | 'PENDING_KYC' | 'DELETED';
+  // `users.account_type`, from the repository mapper. The list holds staff as
+  // well as players, and only a PLAYER can be deleted from this screen.
+  accountType?: 'PLAYER' | 'STAFF' | 'MERCHANT';
   kycStatus: 'PENDING_SUBMISSION' | 'PENDING_APPROVAL' | 'APPROVED' | 'REJECTED';
 
   // Decision metadata only. There is no name, Aadhaar number or document here:

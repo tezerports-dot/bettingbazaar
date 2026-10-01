@@ -3379,10 +3379,10 @@ checked and is correct; the evidence is named.
 
 | Measure | Count |
 |---|---|
-| Route declarations in `backend/**` | 322 |
+| Route declarations in `backend/**` | 321 |
 | Reachable with **no auth middleware** | 44 |
 | Staff routes carrying an **area** (permission key) | 198 |
-| Staff routes a sub-admin can **never** be given (full admin only) | 8 |
+| Staff routes a sub-admin can **never** be given (full admin only) | 7 |
 
 A count moving is not by itself a defect — it is a prompt to read the
 new route and decide. Each of the three questions is defined in §2.
@@ -3445,7 +3445,6 @@ new route and decide. Each of the three questions is defined in §2.
 - `POST /sub-admins  (backend/routes/admin/subadmins.admin.routes.js)`
 - `POST /users/:userId/queue-manager  (backend/routes/admin/users.admin.routes.js)`
 - `PUT /sub-admins/:subAdminId/permissions  (backend/routes/admin/subadmins.admin.routes.js)`
-- `PUT /users/:userId/roles  (backend/routes/admin/users.admin.routes.js)`
 
 </details>
 

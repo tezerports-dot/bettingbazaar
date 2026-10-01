@@ -21,7 +21,7 @@
  * shape this finding already is.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { pgConfigured, applySchema, closePg } from '#db/client.js';
+import { pgConfigured, applySchema, closePg, pgQuery } from '#db/client.js';
 import { db } from '#db';
 import { hashPassword } from '../../domains/identity/password.util.js';
 import { mountRouter, actor, request } from './_harness.js';
@@ -164,8 +164,11 @@ describePg('a staff session says whether a second factor is still owed', () => {
     meApp.use(express.json()); meApp.use(cookieParser());
     meApp.use('/api/v1/auth', authRoutes);
 
-    // Signed in as an ordinary account — nothing owed.
+    // Signed in as a STAFF account holding no authority yet — nothing owed.
+    // STAFF, because promotion is only possible on one: the data refuses a
+    // staff flag on any other type (`users_staff_flags_need_staff`).
     const who = await staff({});
+    await pgQuery(`UPDATE users SET account_type = 'STAFF' WHERE user_id = $1`, [who.userId]);
     const before = await request(meApp).get('/api/v1/auth/me').set('Authorization', who.auth);
     expect(before.status, before.body?.message).toBe(200);
     expect(before.body.mustEnroll2FA ?? false).toBe(false);

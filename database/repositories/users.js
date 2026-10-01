@@ -746,10 +746,18 @@ export async function setRoles(userId, roles = []) {
  */
 export async function softDeleteUser(userId, { actor }) {
   if (!actor) throw new Error('softDeleteUser requires an actor');
+  // PLAYER rows only, in the WHERE. The route is the players area
+  // (`canManageUsers`), and without this a sub-admin holding it could close a
+  // STAFF account — the full admin's included — or a merchant's login.
+  //
+  // `sessions_valid_from = now()` in the same statement, for the reason a
+  // password reset moves it: sessions are stateless, so this cutoff is the only
+  // way to evict the ones already issued, and it is the one every path that
+  // verifies a token checks — sockets and SSE streams included.
   const { rows } = await pgQuery(
     `UPDATE users SET status = 'DELETED', deleted_at = now(), deleted_by = $2,
-            updated_at = now()
-      WHERE user_id = $1 AND status <> 'DELETED'
+            sessions_valid_from = now(), updated_at = now()
+      WHERE user_id = $1 AND status <> 'DELETED' AND account_type = 'PLAYER'
       RETURNING ${COLUMNS}`,
     [String(userId), String(actor)], 'user_soft_delete',
   );

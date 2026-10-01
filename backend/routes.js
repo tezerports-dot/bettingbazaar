@@ -32,7 +32,7 @@ import { isTokenRevoked, revokeToken } from '#db/repositories/identity.js';
 import { issueChallenge, verifyChallenge, CHALLENGE_AUDIENCE } from './domains/identity/twoFactorChallenge.js';
 import { verifySecondFactor, SECOND_FACTOR_RESULT } from './domains/identity/verifySecondFactor.js';
 import { requires2FA } from './domains/identity/twoFactor.routes.js';
-import { sessionSuperseded, refuseSupersededSession } from './domains/identity/auth.middleware.js';
+import { sessionSuperseded, refuseSupersededSession, accountClosed, refuseClosedAccount } from './domains/identity/auth.middleware.js';
 
 const router = express.Router();
 
@@ -135,6 +135,7 @@ export async function loginHandler(req, res) {
 
     if (user.status === 'BLOCKED' || user.isBlocked)
       return res.status(403).json({ success: false, message: 'Account blocked. Contact support.' });
+    if (accountClosed(user)) return refuseClosedAccount(res);
 
     // The hash comes from the credentials read, which is the ONLY function that
     // returns it. An ordinary user read cannot leak a password hash into a
@@ -306,6 +307,7 @@ export async function loginTwoFactorHandler(req, res) {
     // between the two requests.
     if (user.status === 'BLOCKED' || user.isBlocked)
       return res.status(403).json({ success: false, message: 'Account blocked. Contact support.' });
+    if (accountClosed(user)) return refuseClosedAccount(res);
     // The SAME door the password leg applied, on the account type AND the role.
     // A challenge minted at one door and redeemed at the other is the shape
     // this re-check exists to refuse: without it a player's valid challenge,
@@ -386,6 +388,7 @@ router.get('/me', async (req, res) => {
     // implementation would be the thing that drifts. Measured before it
     // existed: a password reset left the pre-reset session answering 200 here,
     // on the endpoint every page load calls to restore a session.
+    if (accountClosed(user)) return refuseClosedAccount(res);
     if (sessionSuperseded(user, decoded)) return refuseSupersededSession(res);
 
     if (user.isBlocked || user.status === 'BLOCKED')

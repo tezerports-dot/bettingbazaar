@@ -100,6 +100,31 @@ export function sessionSuperseded(user, decoded) {
     || issued < new Date(user.sessionsValidFrom).getTime();
 }
 
+/**
+ * Has an admin closed this account?
+ *
+ * A soft-deleted account keeps its row, its bets and its ledger, because its
+ * money still has to reconcile — so a read by id or by mobile still FINDS it.
+ * Before 2026-10-01 nothing asked: the login refused BLOCKED only, so a
+ * deleted player signed in and transacted as before, and "Delete" removed the
+ * row from nothing but the admin's list. `softDeleteUser` also moves
+ * `sessions_valid_from`, which evicts every outstanding session on every path
+ * that checks the cutoff (sockets and SSE included); this is the refusal the
+ * REST paths and the login say out loud, so the person is told the account is
+ * closed rather than that their password changed.
+ */
+export function accountClosed(user) {
+  return user?.status === 'DELETED';
+}
+
+export function refuseClosedAccount(res) {
+  return res.status(403).json({
+    success: false,
+    code: 'ACCOUNT_CLOSED',
+    message: 'This account has been closed. Contact support.',
+  });
+}
+
 /** One refusal, so both callers say the same thing to the same panel. */
 export function refuseSupersededSession(res) {
   return res.status(401).json({
@@ -259,6 +284,7 @@ const makeAuthenticate = ({ allowUnenrolledStaff = false } = {}) => async (req, 
       });
     }
 
+    if (accountClosed(user)) return refuseClosedAccount(res);
     if (sessionSuperseded(user, decoded)) return refuseSupersededSession(res);
 
     // Check if user account is active

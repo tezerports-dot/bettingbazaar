@@ -494,6 +494,32 @@ CLAUDE.md gained shapes S46–S48 and the coverage commands.
    KILLED), the e2e tier after the last three commits, and an independent
    review (§37 step 12). **This branch has not been independently reviewed.**
 
+## 3.9 Tracker — §3.8 item 1 worked, two defects found (as of 2026-10-01, IN PROGRESS)
+
+**Committed mid-work so it is not lost (§17.4). Two pg tests are RED on this commit — see "Left".**
+
+| Found | Fix | Proof |
+|---|---|---|
+| A staff flag could be written onto a PLAYER row, and the authority checks read flags off whatever row a session belongs to. Measured: `POST /api/admin/users/:id/queue-manager` with a player id → 200, and that player's own session read `GET /api/admin/payment-queue` → 200 | `users_staff_flags_need_staff` CHECK; the grant route refuses a non-STAFF id with 409; `PUT /users/:userId/roles` deleted (no screen, unscoped) | adminUsersRoutes +4 (3 fail on main); M243, M244 |
+| A deleted account was asked about by nothing: login refused BLOCKED only, so a deleted player signed in as before. The delete route was also unscoped, so a sub-admin with the players area could close the full admin | `accountClosed` refused at both login legs, `/me`, `authenticate`; `softDeleteUser` is PLAYER-only and moves `sessions_valid_from` (evicts sockets/SSE) | closedAccountPg 4 (all 4 fail on main); M245–M249 |
+| `users.deleteUser` had no button | Delete Account on PLAYER rows of the Users screen, behind a confirmation; the server's 409 text is shown | UsersList.areas +3 |
+| 17 client methods no screen called | deleted (user-panel 11, admin 6) | tsc all panels |
+| `report:routes` counted helpers the client calls itself as uncalled, and matched bare names (so `utr.getFlagged` hid behind `users.getFlagged`) | object-aware matching, per-file comment blanking, calls no longer taken for definitions | uncalled list 20 → 25, read by hand |
+
+CLAUDE.md gained S49 and S50.
+
+Measured on this commit: unit 912/912; pg 1705/1707 (the 2 below); admin panel 144, user panel 224; all 16 gates exit 0; audit map regenerated and matching.
+
+### Left
+
+1. **Two pg fixtures put staff flags on PLAYER rows**, which the new CHECK now refuses (§32 S16): `userPg.test.js` "derives the authorisation flags from the roles it is given" (uses player `u-4`) and `staffTwoFactorEnrolmentPg.test.js` "flags on the SESSION CHECK too" (promotes a PLAYER mid-session). Each needs a STAFF account. A fix was drafted and held for the owner.
+2. Run the mutation harness for M243–M249 (not run).
+3. Regenerate `ROUTE_COVERAGE.md` with the fixed script: every tier must be re-run with `BB_ROUTE_COVERAGE` set, browser included. Not done, so the committed report still shows the old 20.
+4. **The `canManageUtr` area has no screen.** A sub-admin can be granted it; the 7 UTR routes (registry lookup, flagged, contested, stats, user history, resolve) have no screen. Build one, or remove the area.
+5. Five player routes lost their last client: `/v1/content/ai-analysis`, `/v1/system/time`, `/v1/game/cycle/:type/:startTime`, `/user/:userId/bets`, `/user/:userId/transactions`. Two are probes in `s8-pentest.js`. Each one needs a delete-or-keep decision (§3.8 item 2).
+6. The remaining client methods are listed by `report:routes`: user `getById`, `deleteUser` (now wired), and `utr.*`.
+7. §3.8 items 2–8 still stand. **Not independently reviewed.**
+
 ## 4. How to pick this up
 
 1. Read `CLAUDE.md` end to end. It is the only rules file.

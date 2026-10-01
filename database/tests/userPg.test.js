@@ -389,7 +389,10 @@ describePg('accounts (PostgreSQL)', () => {
     });
 
     it('derives the authorisation flags from the roles it is given', async () => {
-      const admin = await setRoles('u-4', ['admin', 'queue_manager']);
+      // A STAFF row: `users_staff_flags_need_staff` refuses these flags on any
+      // other type, and the listing fixtures are players (§32 S16).
+      await createUser(mk({ userId: 'u-staff', username: 'staff4', mobile: '9770000099', accountType: 'STAFF' }));
+      const admin = await setRoles('u-staff', ['admin', 'queue_manager']);
       expect(admin.roles.sort()).toEqual(['admin', 'queue_manager']);
       expect(admin.isAdmin).toBe(true);
       expect(admin.isQueueManager).toBe(true);
@@ -398,10 +401,15 @@ describePg('accounts (PostgreSQL)', () => {
       // Removing the role removes the flag in the same statement. The four
       // separate assignments this replaced could leave `roles` saying one thing
       // and `is_admin` — which every authorisation check reads — saying another.
-      const stripped = await setRoles('u-4', []);
+      const stripped = await setRoles('u-staff', []);
       expect(stripped.roles).toEqual([]);
       expect(stripped.isAdmin).toBe(false);
       expect(stripped.isQueueManager).toBe(false);
+    });
+
+    it('refuses an authorisation flag on a PLAYER row, and still lets it be cleared', async () => {
+      await expect(setRoles('u-4', ['admin'])).rejects.toThrow(/users_staff_flags_need_staff/);
+      expect((await setRoles('u-4', [])).isAdmin).toBe(false);
     });
   });
 });

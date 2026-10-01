@@ -4234,6 +4234,24 @@ BEGIN
   END IF;
 END $$;
 
+-- ── Staff authority lives on STAFF rows, and nowhere else ─────────────────
+-- The doors keep a PLAYER row out of the staff LOGIN. They do not keep staff
+-- authority out of a PLAYER SESSION: `isAdmin`, `hasPermission` and
+-- `queueManagerOrPermission` read the flags on whatever row the session
+-- belongs to. So a flag written onto a player's row is staff authority riding
+-- a player's password, the player app's session and none of the staff
+-- door's 2FA. Measured 2026-10-01: `POST /api/admin/users/:id/queue-manager`
+-- with a PLAYER id answered 200, and that player's own session then read the
+-- whole payment queue (`GET /api/admin/payment-queue`, 200).
+--
+-- Stated here rather than in each route because two routes wrote these flags
+-- and neither asked, and the next one would not either. Clearing a flag is
+-- always allowed — a revoke must never be refused. Dropped and re-added: its
+-- definition names the flag set, which may grow.
+ALTER TABLE users DROP CONSTRAINT IF EXISTS users_staff_flags_need_staff;
+ALTER TABLE users ADD CONSTRAINT users_staff_flags_need_staff
+  CHECK (account_type = 'STAFF' OR NOT (is_admin OR is_sub_admin OR is_queue_manager OR is_mediator));
+
 -- ── The bot's password reset ──────────────────────────────────────────────
 -- A player who has forgotten their password opens a bot, shares their contact,
 -- and — if that number matches an account — is sent a link that lets them SET a
