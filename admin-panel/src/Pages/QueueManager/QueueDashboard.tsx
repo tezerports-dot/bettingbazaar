@@ -10,12 +10,19 @@ import { Layers, Store, Clock, CheckCircle, XCircle, RefreshCw, List, Users } fr
 import { LoadingSpinner } from '../../components/LoadingSpinner';
 import { Kpis, Toolbar } from '../../components/design';
 import api from '../../services/api';
+import { usePermissions } from '../../hooks/usePermission';
 import type { PaymentOrder, Merchant } from '../../types';
 import toast from 'react-hot-toast';
 
 type Tab = 'pending' | 'all' | 'pool';
 
 export const QueueDashboard: React.FC = () => {
+  // Approve / Reject / Cancel decide an order's money, which is the disputes
+  // area (canResolveDisputes) — a queue manager ASSIGNS. They were offered to
+  // every viewer and refused on press for the queue manager this screen is for
+  // (measured: the cross-area sweep of every admin screen).
+  const { can } = usePermissions();
+  const canDecide = can('canResolveDisputes');
   const [tab, setTab]                           = useState<Tab>('pending');
   const [pendingOrders, setPendingOrders]       = useState<PaymentOrder[]>([]);
   const [groupedOrders, setGroupedOrders]       = useState<Record<string, PaymentOrder[]>>({});
@@ -144,19 +151,16 @@ export const QueueDashboard: React.FC = () => {
     finally { setAssigningId(null); }
   };
 
-  const handleOrderAction = async (orderId: string, action: 'APPROVE'|'REJECT'|'CANCEL'|'VIDEO_KYC') => {
-    const reason = action === 'VIDEO_KYC'
-      ? undefined
-      : prompt(`Enter reason for ${action}:`);
-    if (action !== 'VIDEO_KYC' && !reason) return;
+  const handleOrderAction = async (orderId: string, action: 'APPROVE'|'REJECT'|'CANCEL') => {
+    const reason = prompt(`Enter reason for ${action}:`);
+    if (!reason) return;
     try {
       let res: any;
       if (action === 'APPROVE') res = await api.orderActions.approve(orderId, reason!);
       else if (action === 'REJECT') res = await api.orderActions.reject(orderId, reason!);
-      else if (action === 'CANCEL') res = await api.orderActions.cancel(orderId, reason!);
-      else res = await api.orderActions.requireVideoKYC(orderId);
+      else res = await api.orderActions.cancel(orderId, reason!);
       if (res.success) {
-        toast.success(action === 'VIDEO_KYC' ? 'Video KYC requested' : `Order ${action}D`);
+        toast.success(`Order ${action}D`);
         await loadData();
       } else toast.error(res.message || 'Action failed');
     } catch (e: any) { toast.error(e.response?.data?.message || 'Action failed'); }
@@ -210,8 +214,8 @@ export const QueueDashboard: React.FC = () => {
             {assigningId===id && <RefreshCw className="animate-spin text-yellow-400 shrink-0" size={18}/>}
           </div>
         )}
-        {/* Admin action buttons — visible on ALL orders regardless of status */}
-        <div className="flex flex-wrap gap-1.5 pt-2 border-t border-dark-600 mt-2">
+        {/* Decisions on the order's money — the disputes area only */}
+        {canDecide && <div className="flex flex-wrap gap-1.5 pt-2 border-t border-dark-600 mt-2">
           <button
             onClick={() => handleOrderAction(id, 'APPROVE')}
             className="px-3 py-1.5 bg-green-600 hover:bg-green-500 text-white text-xs font-bold rounded-sm transition-colors"
@@ -227,12 +231,7 @@ export const QueueDashboard: React.FC = () => {
             className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white text-xs font-bold rounded-sm transition-colors"
             title="Cancel this order"
           >🚫 Cancel</button>
-          <button
-            onClick={() => handleOrderAction(id, 'VIDEO_KYC')}
-            className="px-3 py-1.5 bg-purple-700 hover:bg-purple-600 text-white text-xs font-bold rounded-sm transition-colors"
-            title="Require video KYC before releasing funds"
-          >📹 Video KYC</button>
-        </div>
+        </div>}
       </div>
     );
   };

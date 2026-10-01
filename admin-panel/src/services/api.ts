@@ -1461,15 +1461,8 @@ export const orderActions = {
       const res = await api.post(`/api/admin/payment-orders/${orderId}/action`, { action: 'CANCEL', reason });
       return res.data;
     },
-    // NOT IMPLEMENTED SERVER-SIDE. There is no video-KYC route on payment orders
-    // in the backend — this called `/p2p-orders/:id/video-kyc`, which never
-    // existed under any prefix. Left throwing rather than silently 404-ing so the
-    // gap is visible to whoever wires the feature up; the caller in
-    // QueueDashboard surfaces the message. Building it is a product decision
-    // (what the operator sends, how the player responds), not a path fix.
-    requireVideoKYC: async (_orderId: string) => {
-      throw new Error('Video-KYC on payment orders is not implemented on the server yet.');
-    },
+    // There is no video-KYC action on payment orders: the button that threw
+    // here was removed (2026-10-01). Building it is a product decision.
 };
 
 // --- CHAT & SUPPORT (public chat moderation + support-ticket desk) -----------

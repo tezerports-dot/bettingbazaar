@@ -11,6 +11,7 @@ import { Kpis, Toolbar, AvatarCell, Money } from '../../components/design';
 import { usePagination } from '../../hooks/usePagination';
 import { useDebounce } from '../../hooks/useDebounce';
 import { formatters } from '../../utils/formatters';
+import { usePermissions } from '../../hooks/usePermission';
 import api from '../../services/api';
 import type { User, Transaction } from '../../types';
 import toast from 'react-hot-toast';
@@ -18,6 +19,14 @@ import toast from 'react-hot-toast';
 type ModalTab = 'profile' | 'bank' | 'history';
 
 export const UsersList: React.FC = () => {
+  // A control is OFFERED only to an account whose area admits it. The Users
+  // screen is the players area; adding to or deducting from a balance is
+  // canAdjustBalances, and phantom access is canManagePhantomAgents. A
+  // sub-admin given players alone was shown all three and refused on press
+  // (measured: BB_PROFILE=subadmin-players, and the cross-area sweep).
+  const { can } = usePermissions();
+  const canAdjust = can('canAdjustBalances');
+  const canPhantom = can('canManagePhantomAgents');
   const [users, setUsers] = useState<User[]>([]);
   const [total, setTotal] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
@@ -129,11 +138,11 @@ export const UsersList: React.FC = () => {
       render: (u: User) => (
         <div className="flex items-center justify-end space-x-1">
           <button onClick={() => openUserDetails(u, 'profile')} className="p-1.5 hover:bg-dark-700 rounded-sm" title="Details"><Eye size={14} /></button>
-          <button onClick={() => openBalanceModal(u, 'add')}    className="p-1.5 hover:bg-green-600/20 text-green-500 rounded-sm" title="Add Balance"><Plus size={14} /></button>
-          <button onClick={() => openBalanceModal(u, 'deduct')} className="p-1.5 hover:bg-red-600/20   text-red-400   rounded-sm" title="Deduct"><Minus size={14} /></button>
+          {canAdjust && <button onClick={() => openBalanceModal(u, 'add')}    className="p-1.5 hover:bg-green-600/20 text-green-500 rounded-sm" title="Add Balance"><Plus size={14} /></button>}
+          {canAdjust && <button onClick={() => openBalanceModal(u, 'deduct')} className="p-1.5 hover:bg-red-600/20   text-red-400   rounded-sm" title="Deduct"><Minus size={14} /></button>}
           <button onClick={() => openUserDetails(u, 'history')} className="p-1.5 hover:bg-blue-600/20  text-blue-400  rounded-sm" title="Tx History"><History size={14} /></button>
           <button onClick={() => openUserDetails(u, 'bank')}    className="p-1.5 hover:bg-purple-600/20 text-purple-400 rounded-sm" title="Bank"><CreditCard size={14} /></button>
-          <button onClick={() => { setPhantomUser(u); setPhantomLevel((u as any).phantomAccess || 'NONE'); }} className="p-1.5 hover:bg-yellow-600/20 text-yellow-400 rounded-sm" title="Phantom Access"><Ghost size={14} /></button>
+          {canPhantom && <button onClick={() => { setPhantomUser(u); setPhantomLevel((u as any).phantomAccess || 'NONE'); }} className="p-1.5 hover:bg-yellow-600/20 text-yellow-400 rounded-sm" title="Phantom Access"><Ghost size={14} /></button>}
           {u.status === 'BLOCKED' ? (
             <button onClick={() => setConfirmAction({ type: 'unblock', user: u })} className="p-1.5 hover:bg-green-600/20 text-green-500 rounded-sm" title="Unblock"><CheckCircle size={14} /></button>
           ) : (
@@ -220,8 +229,10 @@ export const UsersList: React.FC = () => {
               <p className="text-sm text-gray-400">Joined: {formatters.datetime(selectedUser.joinedAt)}</p>
 
               <div className="flex gap-3 pt-2 border-t border-dark-700">
+                {canAdjust && (<>
                 <button onClick={() => openBalanceModal(selectedUser, 'add')} className="flex-1 flex items-center justify-center bg-green-600 hover:bg-green-700 py-2 rounded-lg text-sm font-medium"><Plus size={14} className="mr-1" />Add Balance</button>
                 <button onClick={() => openBalanceModal(selectedUser, 'deduct')} className="flex-1 flex items-center justify-center bg-red-600 hover:bg-red-700 py-2 rounded-lg text-sm font-medium"><Minus size={14} className="mr-1" />Deduct</button>
+                </>)}
               </div>
             </div>
           )}
