@@ -162,6 +162,11 @@ const formatMerchant = async (merchant, user = null) => {
         usdtChains:           usdtChainsHeldBy(merchant),
         limits:               merchant.limits,
         tokenBalance:         await getMerchantTokenBalance(merchant._id),
+        // Whether the platform has stopped sending them new buy orders (three
+        // unpaid in a row, §2). A merchant was never told: the Dashboard read
+        // "Online · Accepting orders" while no order could reach them. Only the
+        // TIME is sent — the stored reason is written for an admin.
+        assignmentPausedAt:   merchant.assignmentPausedAt ?? null,
         earnings:             merchant.earnings,
         totalProcessedVolume: merchant.totalProcessedVolume,
         // Performance figures the panel's dashboard/profile show; all are

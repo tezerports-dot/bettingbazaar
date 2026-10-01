@@ -39,6 +39,9 @@ const Dashboard: React.FC = () => {
   const rail = railOf(merchant);
   const copy = railCopy(rail);
   const online = !!merchant?.isOnline;
+  // The platform paused new buy orders to them (§2: three unpaid in a row).
+  // Online or not, nothing new arrives until support resumes it.
+  const paused = !!merchant?.assignmentPausedAt;
 
   const [stats, setStats] = useState<Stats | null>(null);
   const [earnings, setEarnings] = useState<Earnings | null>(null);
@@ -178,7 +181,7 @@ const Dashboard: React.FC = () => {
               Merchant status
             </div>
             <div style={{ fontSize: 20, fontWeight: 800, color: '#fff', letterSpacing: '-.3px' }}>
-              {online ? 'Online · Accepting orders' : 'Offline · Not accepting'}
+              {online ? (paused ? 'Online · New orders paused' : 'Online · Accepting orders') : 'Offline · Not accepting'}
             </div>
           </div>
         </div>
@@ -193,6 +196,21 @@ const Dashboard: React.FC = () => {
           <Power size={15} /> {online ? 'Go offline' : 'Go online'}
         </button>
       </div>
+
+      {paused && (
+        <div role="alert" style={{
+          padding: '14px 18px', borderRadius: 14, border: '1px solid var(--warn, #f59e0b)',
+          background: 'rgba(245, 158, 11, .10)', color: 'var(--text)', lineHeight: 1.5,
+        }}>
+          <div style={{ fontWeight: 800, marginBottom: 4 }}>New buy orders are paused for your account</div>
+          <div style={{ fontSize: 13 }}>
+            Several players in a row could not complete a payment to you, so the platform has stopped
+            sending you new buy orders. This is not a suspension: your balance and your current orders
+            are untouched. Check that your UPI ID and QR code can receive payments, then contact support
+            to have new orders resumed.
+          </div>
+        </div>
+      )}
 
       {/* KPI row */}
       {!metricsReady ? (
