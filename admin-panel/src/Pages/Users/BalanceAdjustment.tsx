@@ -23,14 +23,25 @@ export const BalanceAdjustment: React.FC = () => {
   const loadCeiling = async () => {
     // Left null if the platform cannot be reached: an input bounded by a
     // guessed number is worse than one the server will judge.
-    try { const r = await api.get('/api/admin/system/config'); setMaxAdjustment(Number(r.data?.config?.maxBalanceAdjustment ?? r.data?.maxBalanceAdjustment) || null); } catch {}
+    //
+    // From this screen's OWN area. It read `/api/admin/system/config`, which is
+    // System Settings — so a sub-admin given balance adjustment alone was
+    // refused and the input went unbounded (check:staff-permissions, 5).
+    try { const r = await api.get('/api/admin/balance-adjust/players'); setMaxAdjustment(Number(r.data?.maxBalanceAdjustment) || null); } catch {}
   };
   useEffect(() => { loadHistory(); loadCeiling(); }, []);
 
   const searchUsers = async () => {
     if (!userSearch) return;
-    try { const r = await api.get(`/api/admin/users?search=${userSearch}&limit=10`); if(r.data.success) setUsers(r.data.users||r.data.data||[]); }
-    catch {}
+    // The balance-adjust area's own player lookup. It used `GET /api/admin/users`
+    // — the Users area — so a sub-admin given balance adjustment alone could
+    // not find anybody to adjust, and the list it did return carried no
+    // balances at all (the users read has none), so every row read "Dep: ₹0".
+    // This one returns PLAYERS only, with their wallet.
+    try {
+      const r = await api.get('/api/admin/balance-adjust/players', { params: { search: userSearch, limit: 10 } });
+      if (r.data.success) setUsers(r.data.players || []);
+    } catch (e: any) { toast.error(e.response?.data?.message || 'Search failed'); }
   };
 
   /**
@@ -80,15 +91,15 @@ export const BalanceAdjustment: React.FC = () => {
       <div className="card space-y-4">
         <h3 className="font-semibold">New Adjustment</h3>
         <div>
-          <label className="text-xs text-gray-400 mb-1 block">Search User</label>
+          <label htmlFor="adjust-player-search" className="text-xs text-gray-400 mb-1 block">Search User</label>
           <div className="flex gap-2">
-            <input value={userSearch} onChange={e=>setUserSearch(e.target.value)} onKeyDown={e=>e.key==='Enter'&&searchUsers()} className="flex-1 input" placeholder="Username or mobile..."/>
+            <input id="adjust-player-search" value={userSearch} onChange={e=>setUserSearch(e.target.value)} onKeyDown={e=>e.key==='Enter'&&searchUsers()} className="flex-1 input" placeholder="Username or mobile..."/>
             <button onClick={searchUsers} className="btn-secondary" aria-label="Search players"><Search size={14}/></button>
           </div>
           {selectedUser&&<div className="mt-2 p-2 bg-green-500/10 border border-green-500/30 rounded-sm text-sm text-green-400">Selected: {selectedUser.username} ({selectedUser.mobile})</div>}
           {users.length>0&&(
             <div className="mt-2 bg-dark-700 rounded-lg border border-dark-600 overflow-hidden">
-              {users.map(u=><button key={u.userId} onClick={()=>selectUser(u)} className="w-full text-left px-3 py-2 hover:bg-dark-600 text-sm border-b border-dark-600 last:border-0">{u.username} — {u.mobile} — Dep: ₹{u.depositBalance||0}</button>)}
+              {users.map(u=><button key={u.userId} onClick={()=>selectUser(u)} className="w-full text-left px-3 py-2 hover:bg-dark-600 text-sm border-b border-dark-600 last:border-0">{u.username} — {u.mobile} — Dep: ₹{u.depositBalance ?? 0} · Win: ₹{u.winningsBalance ?? 0}</button>)}
             </div>
           )}
         </div>

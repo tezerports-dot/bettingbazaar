@@ -10,6 +10,7 @@ import { Modal } from '../../components/Modal';
 import { usePagination } from '../../hooks/usePagination';
 import { useDebounce } from '../../hooks/useDebounce';
 import { formatters } from '../../utils/formatters';
+import { usePermissions } from '../../hooks/usePermission';
 import api from '../../services/api';
 import type { Cycle } from '../../types';
 import toast from 'react-hot-toast';
@@ -44,6 +45,10 @@ export const CycleHistory: React.FC = () => {
    * modal — never as a series an operator could scan.
    */
   const [phantom, setPhantom] = useState<any[]>([]);
+  // Phantom scale is the phantom-agents area (canManagePhantomAgents), not
+  // analytics: asked for only by an account that holds it, so an analytics-only
+  // sub-admin is not sent a request the server refuses.
+  const canSeePhantom = usePermissions().can('canManagePhantomAgents');
 
   const { page, limit, setPage } = usePagination();
   const debouncedSearch = useDebounce(search);
@@ -51,10 +56,11 @@ export const CycleHistory: React.FC = () => {
   useEffect(() => { loadCycles(); }, [page, debouncedSearch, typeFilter, startDate, endDate]);
 
   useEffect(() => {
+    if (!canSeePhantom) return;
     api.get<any>('/api/admin/analytics/phantom-stats')
       .then((r) => { if (r.data?.success) setPhantom(r.data.stats || []); })
       .catch(() => { /* the panel simply does not render */ });
-  }, []);
+  }, [canSeePhantom]);
 
   const loadCycles = async () => {
     setIsLoading(true);

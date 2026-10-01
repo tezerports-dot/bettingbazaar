@@ -28,7 +28,12 @@ export const OperationsOverview: React.FC = () => {
   const [channels, setChannels] = useState<Array<{ code: string; label: string; active: boolean }>>([]);
   const [adminActivity, setAdminActivity] = useState<any[]>([]);
   const [rebuilding, setRebuilding] = useState(false);
-  const canMaintain = usePermissions().can('canRunMaintenance');
+  const { can } = usePermissions();
+  const canMaintain = can('canRunMaintenance');
+  // Who did what is the audit trail (canViewAuditLogs), not analytics. Asked
+  // for only by an account that holds it: refused, it read as "No admin actions
+  // in the window" — a refusal shown as a fact (§32 S47).
+  const canSeeAudit = can('canViewAuditLogs');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -38,7 +43,9 @@ export const OperationsOverview: React.FC = () => {
         api.get<any>('/api/admin/operations/config-catalog'),
         api.get<any>('/api/admin/communication/audit-feed', { params: { limit: 50 } }).catch(() => ({ data: null })),
         api.get<any>('/api/admin/communication/channels').catch(() => ({ data: null })),
-        api.get<any>('/api/admin/communication/admin-activity', { params: { hours: 24 } }).catch(() => ({ data: null })),
+        canSeeAudit
+          ? api.get<any>('/api/admin/communication/admin-activity', { params: { hours: 24 } }).catch(() => ({ data: null }))
+          : Promise.resolve({ data: null }),
       ]);
       if (ovRes.data?.success) setOverview(ovRes.data.overview);
       if (catRes.data?.success) setCatalog(catRes.data.catalog || []);
@@ -50,7 +57,7 @@ export const OperationsOverview: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [canSeeAudit]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -244,7 +251,7 @@ export const OperationsOverview: React.FC = () => {
             </div>
           </Section>
 
-          <Section title="Admin activity — last 24 hours">
+          {canSeeAudit && (<Section title="Admin activity — last 24 hours">
             <div className="space-y-2">
               {adminActivity.map((a: any, i: number) => (
                 <div key={a.performedBy ?? i} className="flex justify-between gap-4 border-b border-dark-800 pb-2 last:border-0 text-sm">
@@ -254,7 +261,7 @@ export const OperationsOverview: React.FC = () => {
               ))}
               {adminActivity.length === 0 && <p className="text-gray-500 text-sm py-4 text-center">No admin actions in the window.</p>}
             </div>
-          </Section>
+          </Section>)}
 
           {/* A maintenance job is its own area (canRunMaintenance). */}
           {canMaintain && (<Section title="Maintenance">
