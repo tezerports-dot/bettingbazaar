@@ -404,6 +404,96 @@ unique.
 **Not done in this pass:** a full mutation run (only the six touched entries
 ran), a browser re-run (no screen changed), PostgreSQL 18 (CI runs it).
 
+## 3.8 Tracker — measured coverage, and the handoff (as of 2026-10-01)
+
+The owner asked for coverage gaps to be **measured, not guessed**: every route
+nothing calls, and every control nothing pressed, per account type and state.
+This section is also the handoff. Work here stopped at a mergeable point on
+branch `claude/remove-mongodb-postgres-only-kfuhe8` (PR #200), so another
+session can pick it up.
+
+### How the measurement works (rerun it before trusting any number below)
+
+| What | How |
+|---|---|
+| Route hits | Start any server or test tier with `BB_ROUTE_COVERAGE=<dir>/<tier>.jsonl` (`backend/startup/routeCoverage.js`). Each route is identified by the file:line that registered it; a hit is recorded on `finish` or `close`, so SSE streams count. The server writes `<file>.inventory.json` at boot. |
+| Route report | `node scripts/report-route-coverage.mjs --dir <dir> --out docs/reference/ROUTE_COVERAGE.md` (`npm run report:routes`) |
+| Controls per account | `BB_PROFILE=<name> [BB_VIEWPORT=phone] npm run test:browser` writes `controls.manifest.<name>[.phone].json` (gitignored). The 18 profiles are in `backend/tests/browser/profiles.js`. |
+| Control gap report | `npm run report:control-gaps`, which writes `docs/reference/CONTROL_COVERAGE_BY_ACCOUNT.md` |
+
+### Measured (generated reports are committed)
+
+| | Number |
+|---|---|
+| Routes mounted | 335 |
+| Reached by some tier | 278: unit 2, pg 215, e2e 59, browser 160 |
+| **Never reached by any tier** | **57** (listed in ROUTE_COVERAGE.md) |
+| Reached but only ever refused | 57 |
+| Reached only by in-process route tests | 90 |
+| Answered a 5xx at least once | 8 (read the list; some are provoked on purpose) |
+| Client methods no screen calls | 20 (27 before this pass) |
+| Controls only some account has, never pressed | 52 distinct (99 screen slots) |
+| Browser passes on this branch | inventory 72 checks 68 pass 0 fail, phone 72 checks 68 pass, drive 69 screens 68 pass 0 fail 1 note, forms 16/16, ghost-mode 14/14, mutate 48/51 → fixed, the failing and not-driven cases rerun 4/4 |
+| Panel suites | admin 141, merchant 70, user 224 |
+
+### Done in this pass: 19 commits, `6f31cef`..`1fc666b`
+
+Defects found by the measurement and fixed. Each has a test that fails without the fix:
+
+| Found | Fix |
+|---|---|
+| A sub-admin without an area was sent to the sign-in page while signed in | `NoAccess` screen inside the layout; a sub-admin with NO area is told so at `/` |
+| A paused merchant was shown "Accepting orders" | `assignmentPausedAt` sent; one `availabilityOf()` used by every merchant screen |
+| A rejected player had no way to correct their Aadhaar | resubmission form in `KYCModal` |
+| Dashboard "today" tiles showed all-time figures and counted phantom bets | `bettingStats` excludes phantoms; tiles read `finance.today` (M236) |
+| No way to lift a chat ban | Chat bans list with Lift ban |
+| Second leg of every login (3 doors) reached by nothing | `loginSecondFactorPg` 7 tests (M237–M239) |
+| Cash payment-reference route reached by nothing | `cashReferenceRoutePg` 5 tests (concurrent case serialised by `utr_registry`) |
+| Merchant 2FA enrolment reached by nothing; message named a route that does not exist | `merchantTwoFactorEnrolmentPg` 4 tests (M240, M241) |
+| Staff told to "disable 2FA first", which `/disable` refuses them | role-dependent refusal text |
+| **A queue manager's own queue screen could not load (F-047 regression)** | `/payment-queue` gated by `queueManagerOrPermission` (M242) |
+| Sub-admins offered Add/Deduct/Phantom and Approve/Reject/Cancel they cannot use; a Video KYC button that always threw | controls gated by `can()`; Video KYC removed |
+| 5 merchant methods shipped in the player bundle | deleted |
+| Fresh-database provider seeding silently updated 0 rows | `enableGameProviders` fetches first, throws on rowCount ≠ 1 |
+| Two mutate cases queried `cycles.type` | `cycle_type` |
+
+CLAUDE.md gained shapes S46–S48 and the coverage commands.
+
+### Left: in order, with how
+
+1. **Decide wire-or-delete for the 20 uncalled client methods** (table in
+   ROUTE_COVERAGE.md). Admin `deleteUser` and `updateRoles` are features with
+   no button: wire them with a test or delete them. The user-panel
+   `getBetHistory`/`getTransactionHistory`/`getWinners` look superseded:
+   confirm, then delete (§30).
+2. **Work the 57 never-reached routes.** Each gets a pg route test or is
+   deleted. Known ones: merchant signup (live scripts only), fake-winners
+   CRUD, payment admin config/test-gateway, `/api/bonuses/my`, leaderboard
+   rebuild, and the retry/batch routes (only their services are tested).
+3. **Read the 8 routes that answered a 5xx.** In particular,
+   `GET /api/v1/system/config` 500 once in e2e and `POST /api/bet/place` 500
+   once in pg. Find out which run did it and why.
+4. **Make the cross-area sweep a gate.** This pass ran it once by hand. Walk
+   the live route stacks (as `check:staff-permissions` already does), map
+   each admin `api.ts` method to the area its route needs, and fail when a
+   screen offers a control whose area differs from the screen's own without
+   a `can()` around it. Put it inside `check:staff-permissions`.
+5. **Profile the states not yet profiled:** cycle paused, closing or
+   settled; an order in each lifecycle state; paginated lists past page 1; a
+   merchant with live orders. Add each to `profiles.js` and rerun
+   `report:control-gaps`.
+6. **Recorded, not changed:** a blocked player sees the signed-out app and
+   learns of the block only at sign-in. A suspended merchant is the same.
+   The `merchant-pending` profile is a state login cannot produce (drop it or
+   make it the signup screen). `setPaused`'s comment is inaccurate: resume
+   decides by `end_time`. Real bets are safe (`bet.routes.js` checks close
+   time); phantom bets are exposed for at most one tick.
+7. **Owner decision A3: free spins.** F-043 refuses a provider WIN with no
+   stake. Keep refusing, or credit it as a bonus through a bounded pool.
+8. **Not run in this pass:** the full mutation run (only M236–M242 ran, all
+   KILLED), the e2e tier after the last three commits, and an independent
+   review (§37 step 12). **This branch has not been independently reviewed.**
+
 ## 4. How to pick this up
 
 1. Read `CLAUDE.md` end to end. It is the only rules file.
