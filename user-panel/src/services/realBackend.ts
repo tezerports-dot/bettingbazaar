@@ -30,7 +30,7 @@ import { Backend, VerificationState } from './backend.interface';
 import { PAYOUT, WINNER, PHASE } from '../GAME_CORE';
 import {
   User, Bet, BettingSide, CycleType, AdminUser, AuditLog,
-  PromoContent, Transaction, PromoLocation, MerchantProfile, PaymentOrder,
+  PromoContent, Transaction, PromoLocation,
   GameState, ChatMessage, SystemConfigData, GameCycle
 } from '../types';
 import { io, Socket } from 'socket.io-client';
@@ -624,26 +624,11 @@ export class RealBackend implements Backend {
     return this.getPromoContent(location);
   }
 
-  // FE 4.3 FIX: all 4 methods were constructing non-existent URL patterns -> 404 on every call
-  async getMerchantProfile() {
-    return this.request<MerchantProfile>('/merchant/profile'); // identity from JWT, no merchantId in path
-  }
-  async updateMerchantProfile(merchantId: string, updates: any) {
-    return this.request<MerchantProfile>('/merchant/profile', { method: 'PUT', body: JSON.stringify(updates) });
-  }
-  async getMerchantPaymentOrders(merchantId: string, type?: string) {
-    const query = type ? `?type=${type.toUpperCase()}` : '';
-    return this.request<PaymentOrder[]>(`/merchant/orders${query}`);
-  }
-  async acceptOrder(merchantId: string, orderId: string) {
-    await this.request(`/merchant/accept/${orderId}`, { method: 'POST' });
-  }
-  async rejectOrder(merchantId: string, orderId: string, reason: string) {
-    await this.request(`/merchant/reject/${orderId}`, {
-      method: 'POST', body: JSON.stringify({ reason })
-    });
-  }
-
+  // getMerchantProfile / updateMerchantProfile / getMerchantPaymentOrders /
+  // acceptOrder / rejectOrder removed 2026-10-01: MERCHANT routes in the
+  // PLAYER bundle, called by no screen (measured: report:routes, "client
+  // methods no screen calls"). A player token cannot pass merchantAuth, so
+  // they could never have worked here; the merchant panel has its own client.
   
   // ── Payment-order + order-chat API removed 2026-08-24 ─────────────────────
   // createPaymentOrder / getPaymentOrder / cancelPaymentOrder / confirmPayment /

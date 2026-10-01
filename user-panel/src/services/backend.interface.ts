@@ -1,7 +1,7 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import {
   User, Bet, GameCycle, BettingSide, CycleType, AdminUser, AuditLog,
-  PromoContent, Transaction, PromoLocation, MerchantProfile, PaymentOrder,
+  PromoContent, Transaction, PromoLocation,
   GameState, SystemConfigData, ChatMessage
 } from '../types';
 
@@ -162,18 +162,15 @@ export interface Backend {
   // Token conversion is fixed 1:1 (Phase 006 flattening, 2026-07-08) —
   // getTokenRates/updateTokenRates removed with the TokenRates model.
 
-  // Merchant App Specific
-  getMerchantProfile(merchantId?: string): Promise<MerchantProfile>;
-  updateMerchantProfile(merchantId: string, updates: Partial<MerchantProfile>): Promise<MerchantProfile>;
-  
   // Payment Order Flow
   // createPaymentOrder / getUserPaymentOrders / getAllPaymentOrders /
   // updateOrderStatus / sendChatMessage / getOrderChat were removed 2026-08-24:
   // no screen implemented them and every one addressed the retired `/api/p2p/*`
   // prefix, so they would have 404'd on first use. The player wallet talks to
   // `/api/payment/*` through apiClient from WalletPage.tsx — see the note in
-  // realBackend.ts. Do not re-declare these here without a caller.
-  getMerchantPaymentOrders(merchantId: string, type?: string): Promise<PaymentOrder[]>;
+  // realBackend.ts. Do not re-declare these here without a caller. The
+  // merchant methods that sat here went 2026-10-01: a player token cannot reach
+  // a merchant route.
 
   // Files
   

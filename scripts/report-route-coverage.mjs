@@ -27,7 +27,8 @@
  * server at boot, so at least one tier must run a server (e2e or a browser pass).
  */
 import { readFileSync, existsSync, readdirSync, statSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join, resolve, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const arg = (name) => {
   const i = process.argv.indexOf(name);
@@ -187,6 +188,49 @@ L.push('browser pass hit is a screen that broke.');
 L.push('');
 table(fiveHundreds, [...route, ['What it answered', statusList]]);
 
+// ── Client methods no screen calls ────────────────────────────────────────
+// The other half of "a route nothing reaches". A panel's API client can hold a
+// method that calls a real route while NO screen calls the method:
+// `check:ui-coverage` sees the client's call resolve and reports it covered.
+// Found when the Aadhaar resubmission route — route, service, client method —
+// turned out to have no button at all.
+const ROOT = fileURLToPath(new URL('..', import.meta.url));
+const CLIENTS = [
+  ['user-panel', 'user-panel/src/services/realBackend.ts'],
+  ['admin-panel', 'admin-panel/src/services/api.ts'],
+  ['merchant-panel', 'merchant-panel/src/services/api.ts'],
+];
+const walk = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((d) => (d.isDirectory()
+  ? (d.name === 'node_modules' ? [] : walk(join(dir, d.name)))
+  : (/\.tsx?$/.test(d.name) && !/\.test\.tsx?$/.test(d.name) ? [join(dir, d.name)] : [])));
+const uncalled = [];
+for (const [panel, file] of CLIENTS) {
+  const abs = join(ROOT, file);
+  if (!existsSync(abs)) continue;
+  const src = readFileSync(abs, 'utf8');
+  const others = walk(join(ROOT, panel, 'src')).filter((f) => f !== abs && !/backend\.interface\.ts$/.test(f))
+    .map((f) => readFileSync(f, 'utf8')).join('\n');
+  const defs = [...src.matchAll(/^\s+(?:async\s+)?([a-zA-Z_]\w*)\s*(?:\(|:\s*(?:async\s*)?\()/gm)];
+  const skip = new Set(['if', 'for', 'while', 'switch', 'catch', 'constructor', 'request', 'return', 'function', 'get', 'set', 'onUploadProgress']);
+  defs.forEach((m, i) => {
+    const name = m[1];
+    if (skip.has(name) || new RegExp(`\\b${name}\\b`).test(others)) return;
+    if (uncalled.some((u) => u.panel === panel && u.name === name)) return;
+    // Comments blanked, so a path a comment mentions is not taken for the request.
+    const body = src.slice(m.index, defs[i + 1]?.index ?? src.length)
+      .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    const path = body.match(/['\`](\/(?:api|v1)[^'\`]*)['\`]/)?.[1] ?? '';
+    uncalled.push({ panel, file: relative(ROOT, abs), name, path });
+  });
+}
+L.push(`## Client methods no screen calls — ${uncalled.length}`);
+L.push('');
+L.push('A method in a panel\'s API client that nothing else in that panel names. `check:ui-coverage` counts');
+L.push('its request as reaching a route; no person can make it. Each is either a feature with no button');
+L.push('(wire it) or code nothing needs (delete it, §30).');
+L.push('');
+table(uncalled, [['Panel', (r) => r.panel], ['Method', (r) => `\`${r.name}\``], ['Requests', (r) => (r.path ? `\`${r.path}\`` : '—')]]);
+
 L.push('## Every route');
 L.push('');
 table(all, [['Method', (r) => r.m], ['Path', (r) => `\`${r.path}\``],
@@ -207,6 +251,7 @@ if (OUT) {
   writeFileSync(OUT, doc);
   console.log(`Wrote ${OUT}`);
 }
+console.log(`client methods no screen calls: ${uncalled.length}`);
 console.log(`${all.length} routes mounted · ${all.length - never.length} reached · ${never.length} NEVER reached · ${onlyRefused.length} only refused · ${inProcessOnly.length} in-process only · ${fiveHundreds.length} answered a 5xx`);
 for (const { tier } of tierInfo) {
   const r = all.filter((x) => x.by[tier]?.n);

@@ -194,30 +194,6 @@ export interface PromoContent {
 }
 
 
-export interface MerchantProfile {
-  id: string;
-  name: string;
-  status: 'ACTIVE' | 'SUSPENDED';
-  isOnline: boolean;
-  acceptsDeposits: boolean;
-  acceptsWithdrawals: boolean;
-  bankDetails: {
-    upiId: string;
-    bankName: string;
-    accountNo: string;
-    ifsc: string;
-  };
-  limits: {
-    minDeposit: number;
-    maxDeposit: number;
-    minWithdraw: number;
-    maxWithdraw: number;
-  };
-  dailyCap: number;
-  currentDailyVolume: number;
-  totalProcessedVolume: number;
-}
-
 export interface ChatMessage {
   id: string;
   orderId: string;
