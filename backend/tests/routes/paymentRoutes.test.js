@@ -2,16 +2,15 @@
 /**
  * The player-facing payment routes, over HTTP against a real database.
  *
- * ── The one that matters ────────────────────────────────────────────────────
- * `POST /deposit/:orderId/confirm` is where tokens are dispensed. It debits a
- * merchant and credits a player, and it once debited `depositAllocation ||
- * tokenAmount` while crediting `depositAllocation + reserveAllocation` — so
- * every deposit carrying a reserve share credited more than it debited, and the
- * difference came from nowhere. The books did not close and nothing said so.
- *
- * The conservation test below is therefore the point of this file: what leaves
- * the merchant equals what reaches the player, to the paise, on the same
- * request.
+ * ── Where the confirm went ──────────────────────────────────────────────────
+ * This file used to centre on `POST /deposit/:orderId/confirm`, a second way to
+ * complete a buy that once debited `depositAllocation || tokenAmount` while
+ * crediting `depositAllocation + reserveAllocation`, so every deposit with a
+ * reserve share credited more than it debited. No screen called it, and it was
+ * deleted 2026-10-01; its conservation, split, idempotency and race assertions
+ * now run against the route merchants use, in merchantConfirmMoneyPg.test.js.
+ * What remains here is the player's side: creating orders, the payment claim,
+ * the order list and the dispute.
  *
  * ── Why not mocked ──────────────────────────────────────────────────────────
  * CLAUDE.md: do not mock the boundary that carries money. A suite that mocked
@@ -312,231 +311,13 @@ describePg('payment routes', () => {
     expect((await getOrderRecord(second)).status).not.toBe('PAID');
   });
 
-  // ── Who may confirm a deposit ─────────────────────────────────────────────
-  it('refuses a confirm from a plain player', async () => {
-    // 404, not 403: `orderAccessGuard` gives one answer for "no such order",
-    // "not yours" and "that tag does not verify", because order ids travel in
-    // URLs and a distinguishable reply tells someone probing which ids are
-    // real. The status is the weaker half of this test — what matters is that
-    // the order did not advance.
-    const { orderId } = await depositOrder();
-    const nobody = await actor({});
-    const res = await as(app, nobody).post(`/deposit/${orderId}/confirm`).send({});
-    expect(res.status).toBe(404);
-    expect((await getOrderRecord(orderId)).status).not.toBe('COMPLETED');
-  });
-
-  it('refuses a confirm from a merchant the order is not assigned to', async () => {
-    // The assignment is what makes a merchant the counterparty. Without this
-    // check any approved merchant could dispense tokens against anyone's order.
-    const { orderId } = await depositOrder();
-    const stranger = await merchantActor({ tokensRupees: 10_000 });
-    const res = await as(app, stranger).post(`/deposit/${orderId}/confirm`).send({});
-    expect(res.status).toBe(404);
-    // The message no longer names the reason — see the note above — so this
-    // asserts the thing that actually matters instead: the stranger's float is
-    // untouched and the order did not complete.
-    expect(Number(await getMerchantTokenBalance(stranger.merchantId))).toBe(10_000);
-    expect((await getOrderRecord(orderId)).status).not.toBe('COMPLETED');
-  });
-
-  it('refuses a merchant whose account is not approved', async () => {
-    const pending = await merchantActor({ status: 'PENDING', approval: 'PENDING' });
-    const { orderId } = await depositOrder({ merchant: pending });
-    expect((await as(app, pending).post(`/deposit/${orderId}/confirm`).send({})).status).toBe(403);
-  });
-
-  it('404s a confirm against an order that is not a deposit', async () => {
-    seq += 1;
-    const who = await actor({});
-    const orderId = `PAY-${RUN}-wd-${seq}`;
-    await createOrderRecord({
-      orderId, userId: who.userId, type: 'WITHDRAWAL',
-      tokenAmountRupees: 500, fiatAmountRupees: 500, state: 'PAID',
-    });
-    expect((await as(app, admin).post(`/deposit/${orderId}/confirm`).send({})).status).toBe(404);
-  });
-
-  // ── The money ─────────────────────────────────────────────────────────────
-  it('DEBITS THE MERCHANT EXACTLY WHAT IT CREDITS THE PLAYER', async () => {
-    // The defect this pins: the merchant was debited `depositAllocation` while
-    // the player was credited `depositAllocation + reserveAllocation`, so every
-    // deposit with a reserve share created tokens out of nothing.
-    const { orderId, who, merchant } = await depositOrder({ tokens: 500, betting: 400, reserve: 100 });
-
-    const merchantBefore = await getMerchantTokenBalance(merchant.merchantId);
-    const playerBefore = await getBalancesPaise(who.userId);
-
-    const res = await as(app, admin).post(`/deposit/${orderId}/confirm`).send({});
-    expect(res.status, res.body.message).toBe(200);
-
-    const merchantAfter = await getMerchantTokenBalance(merchant.merchantId);
-    const playerAfter = await getBalancesPaise(who.userId);
-
-    const merchantOut = merchantBefore - merchantAfter;
-    const playerIn = R(
-      (playerAfter.depositBalance - playerBefore.depositBalance)
-      + (playerAfter.reserveBalance - playerBefore.reserveBalance),
-    );
-
-    expect(merchantOut).toBe(500);
-    expect(playerIn, 'the merchant and the player did not move the same amount').toBe(merchantOut);
-  });
-
-  it('honours the split — betting and reserve pockets each get their share', async () => {
-    const { orderId, who } = await depositOrder({ tokens: 500, betting: 400, reserve: 100 });
-    const before = await getBalancesPaise(who.userId);
-    await as(app, admin).post(`/deposit/${orderId}/confirm`).send({});
-    const after = await getBalancesPaise(who.userId);
-
-    expect(after.depositBalance - before.depositBalance).toBe(400_00);
-    expect(after.reserveBalance - before.reserveBalance).toBe(100_00);
-  });
-
-  it('cannot be handed an order whose split does not close — the ROW is impossible', async () => {
-    // `depositCreditSplit` falls back to crediting the whole amount to betting
-    // when the allocations do not add up to the deposit. That fallback is
-    // unreachable through this route, and deliberately so: the CHECK
-    // `order_states_allocation_closes` refuses the row, so an order carrying a
-    // difference nothing accounts for cannot be created at all. The stronger
-    // guarantee is the one worth pinning.
-    await expect(depositOrder({ tokens: 500, betting: 300, reserve: 100 }))
-      .rejects.toThrow(/order_states_allocation_closes/);
-  });
-
-  it('credits the whole amount to betting when there is no split at all', async () => {
-    // Zero allocations is the other value the CHECK allows: an order that never
-    // split. The whole deposit goes to the betting pocket, and the merchant is
-    // debited the same amount.
-    const { orderId, who, merchant } = await depositOrder({ tokens: 500, betting: 0, reserve: 0 });
-    const before = await getBalancesPaise(who.userId);
-    const merchantBefore = await getMerchantTokenBalance(merchant.merchantId);
-
-    await as(app, admin).post(`/deposit/${orderId}/confirm`).send({});
-
-    const after = await getBalancesPaise(who.userId);
-    expect(after.depositBalance - before.depositBalance).toBe(500_00);
-    expect(after.reserveBalance).toBe(before.reserveBalance);
-    expect(merchantBefore - await getMerchantTokenBalance(merchant.merchantId)).toBe(500);
-  });
-
-  it('refuses BEFORE anything moves when the merchant cannot cover it', async () => {
-    // Refusing is the ordinary case — a merchant confirming more than they
-    // hold — and it must leave the player's wallet and the order untouched.
-    const poor = await merchantActor({ tokensRupees: 10 });
-    const { orderId, who } = await depositOrder({ tokens: 500, merchant: poor });
-    const before = await getBalancesPaise(who.userId);
-
-    const res = await as(app, admin).post(`/deposit/${orderId}/confirm`).send({});
-    expect(res.status).toBe(400);
-    expect(res.body.message).toMatch(/insufficient/i);
-
-    expect(await getBalancesPaise(who.userId)).toMatchObject({
-      depositBalance: before.depositBalance, reserveBalance: before.reserveBalance,
-    });
-    expect((await getOrderRecord(orderId)).state).toBe('PAID');
-    expect(await getMerchantTokenBalance(poor.merchantId)).toBe(10);
-  });
-
-  it('CREDITS ONCE when the same confirm arrives twice', async () => {
-    // A merchant clicking while an admin force-approves is the real case. Every
-    // movement is keyed on the order, so the second pass replays them as no-ops
-    // and exactly one caller is told it completed the order.
-    const { orderId, who, merchant } = await depositOrder({ tokens: 500, betting: 400, reserve: 100 });
-
-    const first = await as(app, admin).post(`/deposit/${orderId}/confirm`).send({});
-    const balanceAfterFirst = await getBalancesPaise(who.userId);
-    const merchantAfterFirst = await getMerchantTokenBalance(merchant.merchantId);
-
-    const second = await as(app, admin).post(`/deposit/${orderId}/confirm`).send({});
-    expect(first.status).toBe(200);
-    expect(second.status).toBe(200);
-    expect(second.body.message).toMatch(/already completed/i);
-
-    expect(await getBalancesPaise(who.userId)).toMatchObject({
-      depositBalance: balanceAfterFirst.depositBalance,
-      reserveBalance: balanceAfterFirst.reserveBalance,
-    });
-    expect(await getMerchantTokenBalance(merchant.merchantId)).toBe(merchantAfterFirst);
-  });
-
-  it('survives two confirms racing each other', async () => {
-    const { orderId, who, merchant } = await depositOrder({ tokens: 500, betting: 400, reserve: 100 });
-    const before = await getBalancesPaise(who.userId);
-    const merchantBefore = await getMerchantTokenBalance(merchant.merchantId);
-
-    const results = await Promise.all(
-      Array.from({ length: 4 }, () => as(app, admin).post(`/deposit/${orderId}/confirm`).send({})),
-    );
-    expect(results.every((r) => r.status === 200 || r.status === 409)).toBe(true);
-
-    const after = await getBalancesPaise(who.userId);
-    expect(after.depositBalance - before.depositBalance).toBe(400_00);
-    expect(after.reserveBalance - before.reserveBalance).toBe(100_00);
-    expect(merchantBefore - await getMerchantTokenBalance(merchant.merchantId)).toBe(500);
-  });
-
-  it('posts the accounting event in the same transaction as the completion', async () => {
-    // A completed order always has its ledger entry: the state change and the
-    // event are one transaction, so there is no window where money moved and
-    // the books do not know. Walked through the repository — the transition
-    // carries the ledger key, and the key resolves to a real event.
-    const { orderId } = await depositOrder();
-    await as(app, admin).post(`/deposit/${orderId}/confirm`).send({});
-
-    const completed = (await listOrderTransitions(orderId)).filter((t) => t.toState === 'COMPLETED');
-    expect(completed).toHaveLength(1);
-    expect(completed[0].ledgerKey, 'the completion recorded no ledger key').toBeTruthy();
-    const event = await getEvent(completed[0].ledgerKey);
-    expect(event, 'the completion has no accounting event behind it').toBeTruthy();
-  });
-
-  it('releases the bank reference when the deposit completes', async () => {
-    // RELEASED means the order finished and the reference is SPENT. Leaving it
-    // ACTIVE would let the same transfer be claimed again.
-    const { orderId } = await depositOrder({ extra: { utrNumber: `UTRPAY${RUN}${seq}` } });
-    const order = await getOrderRecord(orderId);
-    await claimUtr({ utr: order.utrNumber, orderId, userId: order.userId, amountRupees: 500 });
-
-    await as(app, admin).post(`/deposit/${orderId}/confirm`).send({});
-    expect((await getUtr(order.utrNumber)).status).toBe('RELEASED');
-  });
-
-  it('409s a confirm on an order that has not been paid yet', async () => {
-    const { orderId, who } = await depositOrder({ state: 'PENDING_QUEUE' });
-    const before = await getBalancesPaise(who.userId);
-    const res = await as(app, admin).post(`/deposit/${orderId}/confirm`).send({});
-    expect(res.status).toBe(409);
-    expect(res.body.message).toMatch(/PENDING_QUEUE/);
-    expect(await getBalancesPaise(who.userId)).toMatchObject({ depositBalance: before.depositBalance });
-  });
-
-  // ── What a merchant is allowed to see ─────────────────────────────────────
-  it('STRIPS the player’s contact and bank details from a merchant’s response', async () => {
-    // Those fields are on the order because a merchant needs them to PAY a
-    // withdrawal. In a deposit the money flows the other way and they are a
-    // leak.
-    const merchant = await merchantActor({ tokensRupees: 10_000 });
-    const { orderId } = await depositOrder({
-      merchant,
-      extra: { userPhone: '9998887777', userBankDetails: { accountNo: '123456789', ifsc: 'HDFC0001' } },
-    });
-
-    const res = await as(app, merchant).post(`/deposit/${orderId}/confirm`).send({});
-    expect(res.status, res.body.message).toBe(200);
-    for (const leak of ['userPhone', 'userBankDetails', 'merchantSnapshot', 'upiId']) {
-      expect(res.body.order, `${leak} reached the merchant`).not.toHaveProperty(leak);
-    }
-    // And the order itself still holds them — they are stripped from the
-    // response, not lost from the record a withdrawal will need.
-    expect((await getOrderRecord(orderId)).userPhone).toBe('9998887777');
-  });
-
-  it('gives an admin the unredacted order', async () => {
-    const { orderId } = await depositOrder({ extra: { userPhone: '9998887777' } });
-    const res = await as(app, admin).post(`/deposit/${orderId}/confirm`).send({});
-    expect(res.body.order.userPhone).toBe('9998887777');
-  });
+  // ── Confirming a deposit ──────────────────────────────────────────────────
+  // The confirm cases that stood here drove `POST /deposit/:orderId/confirm`,
+  // a second confirm route no screen or workflow called. It was deleted
+  // 2026-10-01 (owner decision) after every money assertion it carried — the
+  // split, double delivery, the four-way race, the accounting event, the
+  // reference release and the merchant's redacted view — was ported to the
+  // route merchants use: merchantConfirmMoneyPg.test.js.
 
   // ── The player's own history ──────────────────────────────────────────────
   it('shows a player only their OWN orders', async () => {
@@ -603,9 +384,13 @@ describePg('payment routes', () => {
   it('keeps a player\'s order routes the player\'s: an admin reads orders through the admin routes', async () => {
     // These routes admitted any staff account, so a sub-admin trusted with
     // nothing but chat could read any player's order (2026-10-01). Staff work
-    // on orders through /api/admin, gated by area.
+    // on orders through /api/admin, gated by area — and a staff session is now
+    // refused at the player door itself, naming the panel it belongs to.
     const { orderId } = await depositOrder();
-    expect((await as(app, admin).get(`/order/${orderId}`)).status).toBe(404);
+    const res = await as(app, admin).get(`/order/${orderId}`);
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe('WRONG_PANEL');
+    expect(res.body.order).toBeUndefined();
   });
 
   // ── The polling endpoint ──────────────────────────────────────────────────

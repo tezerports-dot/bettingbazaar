@@ -27,6 +27,10 @@ export const UsersList: React.FC = () => {
   const { can } = usePermissions();
   const canAdjust = can('canAdjustBalances');
   const canPhantom = can('canManagePhantomAgents');
+  // And only on an account it can act on. A balance and phantom access are a
+  // PLAYER's: the routes refuse a staff or merchant login (409), so offering
+  // the control on those rows is a button that can only be refused.
+  const isPlayer = (u: User) => u.accountType === 'PLAYER' && u.status !== 'DELETED';
   const [users, setUsers] = useState<User[]>([]);
   const [total, setTotal] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
@@ -148,18 +152,18 @@ export const UsersList: React.FC = () => {
       render: (u: User) => (
         <div className="flex items-center justify-end space-x-1">
           <button onClick={() => openUserDetails(u, 'profile')} className="p-1.5 hover:bg-dark-700 rounded-sm" title="Details"><Eye size={14} /></button>
-          {canAdjust && <button onClick={() => openBalanceModal(u, 'add')}    className="p-1.5 hover:bg-green-600/20 text-green-500 rounded-sm" title="Add Balance"><Plus size={14} /></button>}
-          {canAdjust && <button onClick={() => openBalanceModal(u, 'deduct')} className="p-1.5 hover:bg-red-600/20   text-red-400   rounded-sm" title="Deduct"><Minus size={14} /></button>}
+          {canAdjust && isPlayer(u) && <button onClick={() => openBalanceModal(u, 'add')}    className="p-1.5 hover:bg-green-600/20 text-green-500 rounded-sm" title="Add Balance"><Plus size={14} /></button>}
+          {canAdjust && isPlayer(u) && <button onClick={() => openBalanceModal(u, 'deduct')} className="p-1.5 hover:bg-red-600/20   text-red-400   rounded-sm" title="Deduct"><Minus size={14} /></button>}
           <button onClick={() => openUserDetails(u, 'history')} className="p-1.5 hover:bg-blue-600/20  text-blue-400  rounded-sm" title="Tx History"><History size={14} /></button>
           <button onClick={() => openUserDetails(u, 'bank')}    className="p-1.5 hover:bg-purple-600/20 text-purple-400 rounded-sm" title="Bank"><CreditCard size={14} /></button>
-          {canPhantom && <button onClick={() => { setPhantomUser(u); setPhantomLevel((u as any).phantomAccess || 'NONE'); }} className="p-1.5 hover:bg-yellow-600/20 text-yellow-400 rounded-sm" title="Phantom Access"><Ghost size={14} /></button>}
+          {canPhantom && isPlayer(u) && <button onClick={() => { setPhantomUser(u); setPhantomLevel((u as any).phantomAccess || 'NONE'); }} className="p-1.5 hover:bg-yellow-600/20 text-yellow-400 rounded-sm" title="Phantom Access"><Ghost size={14} /></button>}
           {u.status === 'BLOCKED' ? (
             <button onClick={() => setConfirmAction({ type: 'unblock', user: u })} className="p-1.5 hover:bg-green-600/20 text-green-500 rounded-sm" title="Unblock"><CheckCircle size={14} /></button>
           ) : (
             <button onClick={() => setConfirmAction({ type: 'block', user: u })}   className="p-1.5 hover:bg-red-600/20   text-red-500   rounded-sm" title="Block"><Ban size={14} /></button>
           )}
           {/* PLAYER rows only — the route refuses a staff or merchant login. */}
-          {u.accountType === 'PLAYER' && u.status !== 'DELETED' && (
+          {isPlayer(u) && (
             <button onClick={() => setConfirmAction({ type: 'delete', user: u })} className="p-1.5 hover:bg-red-600/20 text-red-500 rounded-sm" title="Delete Account"><Trash2 size={14} /></button>
           )}
         </div>
@@ -243,7 +247,7 @@ export const UsersList: React.FC = () => {
               <p className="text-sm text-gray-400">Joined: {formatters.datetime(selectedUser.joinedAt)}</p>
 
               <div className="flex gap-3 pt-2 border-t border-dark-700">
-                {canAdjust && (<>
+                {canAdjust && isPlayer(selectedUser) && (<>
                 <button onClick={() => openBalanceModal(selectedUser, 'add')} className="flex-1 flex items-center justify-center bg-green-600 hover:bg-green-700 py-2 rounded-lg text-sm font-medium"><Plus size={14} className="mr-1" />Add Balance</button>
                 <button onClick={() => openBalanceModal(selectedUser, 'deduct')} className="flex-1 flex items-center justify-center bg-red-600 hover:bg-red-700 py-2 rounded-lg text-sm font-medium"><Minus size={14} className="mr-1" />Deduct</button>
                 </>)}

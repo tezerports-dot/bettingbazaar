@@ -83,6 +83,27 @@ describe('Users screen controls, by area', () => {
     expect(within(staffRow).queryByTitle('Delete Account')).not.toBeInTheDocument();
   });
 
+  // A balance and phantom access are a PLAYER's; both routes refuse a staff or
+  // merchant login (409), so the controls are not offered on those rows.
+  it('offers Add Balance, Deduct and Phantom Access on a PLAYER row only', async () => {
+    as({ isAdmin: true });
+    const row = (userId: string, username: string, accountType: string) => ({ userId, username, mobile: '9876543210', status: 'ACTIVE', kycStatus: 'APPROVED', accountType, depositBalance: 0, winningsBalance: 0, lockedBalance: 0 });
+    (api.users.getAll as any).mockResolvedValueOnce({
+      success: true,
+      data: [row('u-1', 'player1', 'PLAYER'), row('s-9', 'colleague', 'STAFF'), row('m-3', 'trader', 'MERCHANT')],
+      pagination: { total: 3 },
+    });
+    render(<UsersList />);
+    await screen.findByText('player1');
+    const playerRow = screen.getByText('player1').closest('tr')!;
+    for (const title of ['Add Balance', 'Deduct', 'Phantom Access']) {
+      expect(within(playerRow).getByTitle(title)).toBeInTheDocument();
+      for (const other of ['colleague', 'trader']) {
+        expect(within(screen.getByText(other).closest('tr')!).queryByTitle(title)).not.toBeInTheDocument();
+      }
+    }
+  });
+
   it('calls the route only after the confirmation, for that player', async () => {
     as({ isAdmin: true });
     (api.users.deleteUser as any).mockResolvedValue({ success: true });

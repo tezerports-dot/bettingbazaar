@@ -299,14 +299,57 @@ describePg('admin user routes', () => {
     expect((await getUser(colleague.userId)).isQueueManager).toBe(false);
   });
 
+  // Both database probes put the row back in a `finally`. Under a mutant that
+  // disables the CHECK the probe's write LANDS, the assertion fails, and a row
+  // left behind is one the restored CHECK then refuses to be re-added over —
+  // the schema apply stops there and every later suite on that database
+  // fails to start (trap 10, measured 2026-10-01: M261 left exactly that).
   it('the DATABASE refuses a staff flag on a non-staff row, whatever path writes it', async () => {
     plain = await subject();
-    for (const flag of ['is_admin', 'is_sub_admin', 'is_queue_manager', 'is_mediator']) {
-      await expect(pgQuery(`UPDATE users SET ${flag} = TRUE WHERE user_id = $1`, [plain.userId]))
-        .rejects.toThrow(/users_staff_flags_need_staff/);
+    try {
+      for (const flag of ['is_admin', 'is_sub_admin', 'is_queue_manager', 'is_mediator']) {
+        await expect(pgQuery(`UPDATE users SET ${flag} = TRUE WHERE user_id = $1`, [plain.userId]))
+          .rejects.toThrow(/users_staff_flags_need_staff/);
+      }
+    } finally {
+      // Clearing one is always allowed: revoking must never be refused.
+      await pgQuery(`UPDATE users SET is_admin = FALSE, is_sub_admin = FALSE, is_queue_manager = FALSE,
+        is_mediator = FALSE WHERE user_id = $1`, [plain.userId]);
     }
-    // Clearing one is always allowed: revoking must never be refused.
-    await pgQuery('UPDATE users SET is_admin = FALSE WHERE user_id = $1', [plain.userId]);
+  });
+
+  // ── Phantom access is a PLAYER's (2026-10-01) ──────────────────────────
+  // Phantom bets are placed from the player app, whose routes admit a player's
+  // session only. The grant took any id, so a staff account could hold access
+  // it could never use — the same shape as the queue-manager grant above.
+  it('refuses phantom access on a STAFF account, and the row is unchanged', async () => {
+    const colleague = await actor({ isSubAdmin: true, permissions: {} });
+    const res = await as(app, admin)
+      .post(`/users/${colleague.userId}/phantom-access`).send({ accessLevel: 'BOTH' });
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.code).toBe('NOT_A_PLAYER_ACCOUNT');
+    expect(res.body.message).toMatch(/player account/i);
+    expect((await getUser(colleague.userId)).phantomAccess).toBe('NONE');
+  });
+
+  it('still grants and revokes phantom access on a PLAYER account (the opposite behaviour)', async () => {
+    plain = await subject();
+    const on = await as(app, admin).post(`/users/${plain.userId}/phantom-access`).send({ accessLevel: '1_MIN' });
+    expect(on.status, JSON.stringify(on.body)).toBe(200);
+    expect((await getUser(plain.userId)).phantomAccess).toBe('1_MIN');
+    const off = await as(app, admin).post(`/users/${plain.userId}/phantom-access`).send({ accessLevel: 'NONE' });
+    expect(off.status, JSON.stringify(off.body)).toBe(200);
+    expect((await getUser(plain.userId)).phantomAccess).toBe('NONE');
+  });
+
+  it('the DATABASE refuses phantom access on a non-player row, and always allows a revoke', async () => {
+    const colleague = await actor({ isSubAdmin: true, permissions: {} });
+    try {
+      await expect(pgQuery(`UPDATE users SET phantom_access = 'BOTH' WHERE user_id = $1`, [colleague.userId]))
+        .rejects.toThrow(/users_phantom_access_needs_player/);
+    } finally {
+      await pgQuery(`UPDATE users SET phantom_access = 'NONE' WHERE user_id = $1`, [colleague.userId]);
+    }
   });
 
   it('no longer serves PUT /users/:id/roles — the second, unscoped way to make an admin', async () => {

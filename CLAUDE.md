@@ -32,7 +32,7 @@ listed below, which hold **data and history, never rules**.
 | **How this audit keeps missing things, and the four questions that find them** | `docs/audit/SECURITY_AUDIT_MAP.md` **§0.5 — read before trusting a green check** |
 | **Every defect SHAPE found so far, how wide you must search to see it, and what actually found it** | `docs/audit/SECURITY_AUDIT_MAP.md` **§4.0 — the shape index. Read it before auditing anything.** |
 | **What every change must REPORT, as a table, before it is done** | **§31 — the completeness contract** |
-| **Every shape that keeps shipping here (S1–S50), each with the question that finds it** | **§32 — ask these of the change in front of you** |
+| **Every shape that keeps shipping here (S1–S51), each with the question that finds it** | **§32 — ask these of the change in front of you** |
 | **How a player signs up, signs in, and is verified** | **§33 — the form, the bot fleet, the gate, and which limiter guards what** |
 | **Relaxing rate limits for a test run, and where that is forbidden** | **§34 — `BB_RATE_LIMIT_RELAX`** |
 | **How this scales to many servers, and the three env vars an operator MUST set** | **§36 — horizontal scale + the pen-test result** |
@@ -262,6 +262,7 @@ wrong owner gets working code deleted by the next reader.
 | **A merchant's password** | `users.password_hash` on the merchant's LOGIN row (§33.5), read by `getMerchantCredentials` through `merchants.user_id`. **Not on `merchants`**: that column was removed on 2026-09-30. It was a second copy, and the two had split. The password reset wrote `users` and the merchant door read `merchants`, so a merchant who reset was told it worked and was then refused the new password. |
 | **A password reset link** | `password_resets` + `domains/identity/passwordReset.service.js`. Issued by a bot to a number Telegram has verified, because there is no player email. It grants the right to CHOOSE A PASSWORD and **never a session** (owner, 2026-09-24) — a fleet of hundreds of bot tokens must not be able to sign anybody in. SHA-256 at rest, single-use (`consumed_at` set in the same UPDATE that reads it), expiry in the WHERE, one live token per account, and the token rides in the URL **fragment** so it never reaches an access log or a `Referer`. PLAYER accounts only, refused twice over. |
 | **Which door a password login arrived at** | `LOGIN_DOOR` in `backend/routes.js`, set by the MOUNT. One `loginHandler` serves both `/api/admin/login` (staff) and `/api/v1/auth/login` (players); they differ only in who they admit, and every other thing they do — reading the hash from the one function that returns it, the blocked refusal, the argon2 upgrade, issuing a challenge INSTEAD of a session — is identical and must stay identical. **The door scopes the READ by `account_type`**, so the separation is a predicate rather than a check made afterwards: the staff door never loads a player row at all, and a flipped `is_admin` cannot admit one. Checked on BOTH legs, so a challenge minted at one cannot be redeemed at the other — and on the 2FA leg the type is compared explicitly, because that leg reads by user id and the predicate never touched its query. |
+| **Which panel a SESSION may be used at** | The door middleware, by `account_type` — `belongsElsewhere` / `refuseWrongPanel` in `domains/identity/auth.middleware.js`. **`authenticatePlayer`** guards every player route (payment, user, bet, support, game launch, profile picture, `/bonuses/my`, `/v1/auth/verification`, `/v1/auth/kyc/resubmit`) and admits a PLAYER session only; **`authenticate`** admits PLAYER and STAFF and never a MERCHANT; `/me` keeps the same rule inline (S32); the socket `join_user_room` admits a PLAYER to their own room only. A refusal is `403 WRONG_PANEL` naming the panel the account belongs to. The login doors scoped by type and the session door did not, so a session minted at one door worked at another's (§32 S51): a merchant's session read the player's projection of an order assigned to it, and a staff session created deposits in its own name — measured 200 on both (2026-10-01). `npm run test:pg -- playerDoorPg` presses every player route as a staff and a merchant session. |
 | What the bot says | `TelegramTemplate` rows via `telegramTemplates.service.js`, with `DEFAULT_TEMPLATES` as fallback. A blank row means the shipped default, never silence. Do not hardcode a player-facing sentence in a route. **Which BOT sends it is a separate question** — `sendTemplate({ bot })`, always, on the sign-in fleet: a bot may only message somebody who has opened a chat with IT, so a reply from any other bot is refused by Telegram and reads to the player as a conversation that simply stopped. |
 | What a valid Aadhaar, mobile or referral code LOOKS like | `backend/domains/identity/signupFields.js`. Both ends import it — the form that takes what a person typed, and the contact share that takes what Telegram verified — because if they normalise a phone number differently the match fails for a player who did nothing wrong, silently. The user panel keeps a §5 MIRROR (`indianMobile` in `AuthModal.tsx`) because §15 forbids importing from `backend/`; change them in the same commit. |
 | What a password may be | `backend/domains/identity/passwordPolicy.js` — `assertStaffPassword` (12) and `assertPlayerPassword` (8), ONE implementation with two floors. The floor is set by BLAST RADIUS: a staff password reads the whole player base and the ledger; a player's reaches one wallet. Everything above the floor is identical, deliberately — a second copy is where the degenerate-run check quietly stops being applied to players. |
@@ -483,7 +484,17 @@ Two dead-delivery traps found here, both silent:
 - `emitMerchantUpdate('*', …)` reaches **nobody** — it looks the literal `'*'`
   up as a merchant id and returns, no error and no log. Use `broadcastToMerchants`.
 - The panel SSE client registers listeners from a hardcoded name list, so a
-  subscriber for an unlisted event never fires and never errors.
+  subscriber for an unlisted event never fires and never errors. **And an event
+  the server SENDS that the list omits is delivered to nobody**: swept
+  2026-10-01, the server sent the merchant eight names and the panel listed six.
+  `order_paid` — a player's Paid tap — never reached the merchant's screen while
+  the paid-response clock ran against them, and a moved UTR deadline went out as
+  `order_updated`, a typo variant of `order_update`. Compare BOTH lists: every
+  `emitMerchantUpdate`/`emitAllMerchantsUpdate` name against the panel's.
+- A socket room nobody joins is a third: the merchant panel has no socket
+  client, so `io.to('merchant-<id>')` reached nobody and a resolved dispute
+  stayed DISPUTED on the merchant's screen. Merchant pushes go through
+  `emitMerchantUpdate`.
 
 ---
 
@@ -780,6 +791,13 @@ it achieves.
     than the one it had just written: **fourteen failures, in five files, none
     of which the change had touched.** Worse, the values CLIMBED each run, so
     the same suite passed locally and failed on the next run of itself.
+
+    **A mutant that disables a CHECK leaves the row its own probe wrote**, and
+    that row is the one the restored CHECK then refuses to be re-added over: the
+    schema apply stops at that statement and every later suite on that database
+    fails before its first test — reported NOT-MEASURED, which is honest, but it
+    measured nothing (M261, 2026-10-01). A test that probes a CHECK by writing
+    the forbidden value puts the row back in a `finally`.
 
     A test that writes config takes a baseline in `beforeAll` and puts it back
     in `afterAll`, outside any assertion — a restore that only runs when the
@@ -1376,6 +1394,7 @@ these are the specific ones this codebase has actually produced.
 | S48 | One state, two redirects: "not signed in" and "not permitted" sent to the same place | Does a signed-in account that lacks an area land on a screen that says so? Every admin route guard sent it to `/login`, so a sub-admin following a link was asked to sign in again. |
 | S49 | Authority read off a row whose POPULATION nobody checked | The door scoped the login by `account_type`; did anything scope the FLAG? A check that reads `isAdmin`/`isQueueManager` off the session's row grants it to whatever row holds it. A grant route taking a typed id is how a player's row came to hold one. State it in the data, then refuse it at the route with a sentence the admin can act on. |
 | S50 | A status nothing reads | Which reads, doors and session checks ask about this value? `DELETED` was written by the delete route and asked about by nothing: the login refused BLOCKED only, so a deleted player signed in as before. A terminal state is real only where every door and every session check refuses it. |
+| S51 | A door that scopes the LOGIN and not the SESSION | The login checked `account_type`; does the middleware every later request passes through? A token is signed by the same key whichever door minted it. Send a staff and a merchant session to every player route, and a player's to every staff route. Measured 2026-10-01: a merchant's session read a player's order and a staff session opened a deposit, both 200. |
 
 **S36 shut the whole platform's front door, and it was one missing word.**
 `IDENTITY_COLUMNS` in `database/repositories/telegram.js` listed thirteen

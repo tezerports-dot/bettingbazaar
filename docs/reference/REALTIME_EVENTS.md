@@ -62,8 +62,8 @@ reuse a name on a different transport for a different meaning.
 |---|---|---|---|
 | `new_order` | emitter | server→merchant | `paymentProcessing.service.js`, `merchant.assignment.routes.js` |
 | `order_assigned` | emitter | server→user | `merchant.routes.js`, `merchant.assignment.routes.js` |
-| `order_paid` | emitter | server→merchant | `paymentProcessing.service.js` |
-| `order_update` | emitter + socket.io | server→user/merchant | `merchant.routes.js`, `disputeResolution.admin.routes.js` |
+| `order_paid` | emitter | server→merchant | `paymentProcessing.service.js` — listened for by the merchant panel since 2026-10-01; before that it was sent and never delivered |
+| `order_update` | emitter (merchant SSE) + socket.io (`user-<id>` room) | server→user/merchant | `merchant.routes.js`, `disputeResolution.admin.routes.js`, `paymentProcessing.service.js` (a moved UTR deadline — this was the unregistered typo `order_updated` until 2026-10-01) |
 | `order_completed` | emitter | server→user | `merchant.routes.js`, `paymentOrder.routes.js` |
 | `order_rejected` | emitter | server→user | `merchant.routes.js` |
 | `order_expired` | emitter | server→user | `paymentProcessing.service.js` |

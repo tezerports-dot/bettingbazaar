@@ -48,7 +48,7 @@ import {
   API, EXECUTABLE, PANELS, children, stopAll, waitFor, startVite, settle, clickThrough,
   configureTelegram,
 } from './stack.js';
-import { seedPlayer, seedMerchant, seedAdmin } from '../e2e/seed.js';
+import { seedPlayer, seedMerchant, seedAdmin, seedStaff } from '../e2e/seed.js';
 import { playerToken, adminToken, merchantToken } from '../e2e/harness.js';
 import { db } from '#db';
 import { pgQuery } from '#db/client.js';
@@ -833,14 +833,11 @@ const CASES = [
     panel: 'admin-panel',
     what: 'Remove a sub-admin',
     async run(page, cfg, base) {
-      const target = await seedPlayer({});
-      const bystander = await seedPlayer({});
-      for (const u of [target, bystander]) {
-        await pgQuery(
-          `UPDATE users SET is_sub_admin = true, sub_admin_permissions = '{"canViewAnalytics":true}'::jsonb
-            WHERE user_id = $1`, [u.userId],
-        );
-      }
+      // STAFF accounts, made the way the Sub-admins screen makes them. This
+      // wrote `is_sub_admin` onto two PLAYER rows, which the database refuses
+      // since 2026-10-01 (`users_staff_flags_need_staff`, seedStaff).
+      const target = await seedStaff({ subAdmin: true, permissions: { canViewAnalytics: true } });
+      const bystander = await seedStaff({ subAdmin: true, permissions: { canViewAnalytics: true } });
 
       await go(page, cfg, base, '/sub-admins');
       const row = await rowFor(page, target.userId);
@@ -2551,9 +2548,14 @@ const CASES = [
   {
     id: 'admin/sub-admins/grant',
     panel: 'admin-panel',
-    what: 'Grant, once a person is chosen',
+    what: 'Grant, once a person is chosen — to a STAFF account, never a player',
     async run(page, cfg, base) {
-      const target = await seedPlayer({ balancePaise: 0 });
+      // A staff login holding no authority yet. Queue-manager access routes
+      // players' payments, so it goes on a STAFF account only: the route
+      // refuses a player id with 409 and the database refuses the flag
+      // (owner, 2026-10-01 — separate accounts). This granted it to a PLAYER.
+      const target = await seedStaff({});
+      const player = await seedPlayer({ balancePaise: 0 });
       await go(page, cfg, base, '/sub-admins');
       const grant = page.getByRole('button', { name: /^\s*Grant\s*$/i }).first();
       if (await grant.count() === 0) return ['NOT DRIVEN', 'no Grant control on /sub-admins'];
@@ -2584,10 +2586,26 @@ const CASES = [
       const granted = Boolean((await pgQuery(
         'SELECT is_queue_manager FROM users WHERE user_id = $1', [target.userId],
       )).rows[0]?.is_queue_manager);
-      if (!granted) return ['FAILED', 'pressed Grant and the player is still not a queue manager'];
+      if (!granted) return ['FAILED', 'pressed Grant and the staff account is still not a queue manager'];
       await pgQuery('UPDATE users SET is_queue_manager = FALSE WHERE user_id = $1',
         [target.userId]).catch(() => {});
-      return ['DROVE', `disabled with the field empty, enabled once filled, and ${target.userId} became a queue manager`];
+
+      // The opposite case, on the same control: a PLAYER id is refused, the
+      // player gains nothing, and the screen says why.
+      await field.fill(player.userId);
+      await settle(page, 2000);
+      const again = await clickThrough(grant, { timeout: 8000 });
+      if (!again.ok) return ['FAILED', `Grant could not be pressed for the player id: ${again.why}`];
+      await settle(page, 6000);
+      await confirmWith(page, 'Grant');
+      const playerGot = Boolean((await pgQuery(
+        'SELECT is_queue_manager FROM users WHERE user_id = $1', [player.userId],
+      )).rows[0]?.is_queue_manager);
+      if (playerGot) return ['FAILED', 'a PLAYER account was made a queue manager'];
+      if (!/staff account/i.test(await words(page))) {
+        return ['FAILED', 'the player id was refused, but the screen never said why'];
+      }
+      return ['DROVE', `${target.userId} (STAFF) became a queue manager; a PLAYER id was refused and the screen said why`];
     },
   },
 

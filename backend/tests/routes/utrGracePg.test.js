@@ -28,7 +28,7 @@ import { createOrderRecord, getOrderRecord, setOrderFields } from '#db/repositor
 import {
   PAYMENT_MODES, getActivePolicy, publishPolicyVersion,
 } from '#db/repositories/paymentModePolicy.js';
-import { mountRouter, actor, as } from './_harness.js';
+import { mountRouter, actor, merchantActor, as } from './_harness.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 
@@ -87,6 +87,33 @@ describePg('the UTR grace', () => {
     expect(gained).toBeGreaterThan(window - 12);
     expect(gained).toBeLessThan(window + 2);
     expect(after.utrGraceAt).toBeTruthy();
+  });
+
+  // The merchant's countdown shows this deadline too. The push went out as
+  // `order_updated`, a typo variant of `order_update` that the merchant panel
+  // never registered (CLAUDE.md §12), so their screen kept the old deadline.
+  it('tells the assigned merchant the new deadline, under the name their panel listens for', async () => {
+    const player = await actor({});
+    const merchant = await merchantActor({ tokensRupees: 5_000 });
+    const orderId = oid();
+    await createOrderRecord({
+      orderId, userId: player.userId, type: 'DEPOSIT',
+      tokenAmountRupees: 1000, fiatAmountRupees: 1000, state: 'ASSIGNED',
+      merchantId: merchant.merchantId, expiresAt: new Date(Date.now() + 8_000),
+    });
+    const sent = [];
+    const previous = global.sseManager;
+    global.sseManager = { sendToMerchant: (m, event, data) => sent.push({ m, event, data }) };
+    try {
+      expect((await as(app, player).post(`/order/${orderId}/utr-grace`).send({})).status).toBe(200);
+    } finally {
+      global.sseManager = previous;
+    }
+    const after = await getOrderRecord(orderId);
+    expect(sent.map((e) => e.event)).toEqual(['order_update']);
+    expect(sent[0].m).toBe(String(merchant.merchantId));
+    expect(sent[0].data.orderId).toBe(orderId);
+    expect(new Date(sent[0].data.expiresAt).getTime()).toBe(new Date(after.expiresAt).getTime());
   });
 
   it('follows the admin when they change the window', async () => {

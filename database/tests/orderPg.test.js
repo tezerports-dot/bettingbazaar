@@ -97,6 +97,30 @@ describePg('Payment orders (PostgreSQL state machine)', () => {
       expect(rows[0].n).toBe(0);
     });
 
+    it('refuses a deposit whose split does not add up — the ROW is impossible', async () => {
+      // `depositCreditSplit` would credit the whole amount to betting for a
+      // split that does not close. That fallback is unreachable from a stored
+      // order, deliberately: `order_states_allocation_closes` refuses the row,
+      // so an order carrying a difference nothing accounts for cannot exist.
+      // Moved here 2026-10-01 from paymentRoutes.test.js, where it rode on a
+      // confirm route that was deleted; it is a property of the TABLE.
+      await expect(createOrderRecord({
+        orderId: 'split-bad', userId: 'u', type: 'DEPOSIT', tokenAmountRupees: 500,
+        fiatAmountRupees: 500, depositAllocation: 300, reserveAllocation: 100,
+      })).rejects.toThrow(/order_states_allocation_closes/);
+      // The two shapes the CHECK allows: a split that closes, and no split.
+      await createOrderRecord({
+        orderId: 'split-ok', userId: 'u', type: 'DEPOSIT', tokenAmountRupees: 500,
+        fiatAmountRupees: 500, depositAllocation: 400, reserveAllocation: 100,
+      });
+      await createOrderRecord({
+        orderId: 'split-none', userId: 'u', type: 'DEPOSIT', tokenAmountRupees: 500,
+        fiatAmountRupees: 500, depositAllocation: 0, reserveAllocation: 0,
+      });
+      const { rows } = await pgQuery(`SELECT order_id FROM order_states ORDER BY order_id`);
+      expect(rows.map((r) => r.order_id)).toEqual(['split-none', 'split-ok']);
+    });
+
     it('records the merchant on assignment', async () => {
       await open('o3', ORDER_TYPES.DEPOSIT, 50_000, { merchantId: null });
       expect((await getOrder('o3')).merchantId).toBeNull();

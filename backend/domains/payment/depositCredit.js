@@ -170,8 +170,9 @@ export async function reportUncreditableDeposit(order, total) {
  * Move the money for a confirmed deposit. THE one place it happens.
  *
  * ── Why this is a function and not two copies ───────────────────────────────
- * Two routes force-complete a deposit — the merchant/admin confirm
- * (`POST /api/payment/deposit/:orderId/confirm`) and the admin queue override
+ * Two routes force-completed a deposit — a merchant/admin confirm
+ * (`POST /api/payment/deposit/:orderId/confirm`, deleted 2026-10-01: no screen
+ * called it) and the admin queue override
  * (`POST /api/admin/payment-orders/:orderId/action`) — and they did not agree.
  * The override credited `tokenAmount` in one lump, never debited the merchant,
  * and never released the UTR, so an admin approval MINTED tokens: the merchant

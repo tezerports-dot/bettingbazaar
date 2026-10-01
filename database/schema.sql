@@ -4257,6 +4257,16 @@ ALTER TABLE users DROP CONSTRAINT IF EXISTS users_staff_flags_need_staff;
 ALTER TABLE users ADD CONSTRAINT users_staff_flags_need_staff
   CHECK (account_type = 'STAFF' OR NOT (is_admin OR is_sub_admin OR is_queue_manager OR is_mediator));
 
+-- The same rule from the other side: phantom access is a PLAYER's. Phantom
+-- bets are placed from the player app, and the player's routes admit a
+-- player's session only (`authenticatePlayer`), so a grant on a staff or
+-- merchant row is authority nobody can use — and the grant route took any id.
+-- A revoke (NONE) is always allowed. Dropped and re-added so a change to the
+-- level list converges (§32 S31).
+ALTER TABLE users DROP CONSTRAINT IF EXISTS users_phantom_access_needs_player;
+ALTER TABLE users ADD CONSTRAINT users_phantom_access_needs_player
+  CHECK (account_type = 'PLAYER' OR phantom_access = 'NONE');
+
 -- ── The bot's password reset ──────────────────────────────────────────────
 -- A player who has forgotten their password opens a bot, shares their contact,
 -- and — if that number matches an account — is sent a link that lets them SET a

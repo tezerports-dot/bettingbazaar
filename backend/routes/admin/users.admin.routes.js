@@ -470,7 +470,20 @@ router.post('/users/:userId/phantom-access', authenticate, hasPermission('canMan
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
-    
+
+    // Phantom bets are placed from the PLAYER app, whose routes admit a
+    // player's session only, so a grant on a staff or merchant account is
+    // authority nobody can use (§32 S49). `users_phantom_access_needs_player`
+    // states it in the data; this says it in a sentence the admin can act on.
+    // A revoke is always allowed.
+    if (accessLevel !== 'NONE' && user.accountType !== 'PLAYER') {
+      return res.status(409).json({
+        success: false, code: 'NOT_A_PLAYER_ACCOUNT',
+        message: 'Phantom access is for a player account: phantom bets are placed from the player app. '
+          + 'Grant it to the agent\'s player account.',
+      });
+    }
+
     // ── This assigned the field and called `user.save()` ────────────────────
     // `getUser` returns a mapped row, not a document; `.save` is not a function
     // on it, so this threw a TypeError on EVERY call and the catch returned a

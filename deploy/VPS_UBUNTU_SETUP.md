@@ -206,7 +206,6 @@ ALLOWED_ORIGINS=https://yourdomain.com
 S3_BUCKET_NAME=bettingbazaar
 METRICS_TOKEN=<openssl rand -base64 48>
 PUBLIC_APP_ORIGIN=https://yourdomain.com
-PUBLIC_APP_ALLOWED_ORIGINS=https://yourdomain.com
 
 # ── Required in practice: server.js throws without all four (§0.2) ──────────
 S3_ENDPOINT=http://127.0.0.1:9000

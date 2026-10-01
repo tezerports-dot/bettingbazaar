@@ -5,8 +5,9 @@
  * ── What was measured, on a running server ─────────────────────────────────
  * `authLimiter` is the brute-force guard: four FAILED attempts per thirty
  * minutes, keyed by IP, answering "Too many failed login attempts." It is
- * mounted on `/api/v1/auth`, which holds `/me`, `/logout` and `/health` — and
- * NOT ONE of them checks a credential.
+ * mounted on `/api/v1/auth`, which held `/me`, `/logout` and `/health` — and
+ * NOT ONE of them checks a credential. (`/health` had no client and was
+ * deleted on 2026-10-01; the two session paths remain.)
  *
  *     four unauthenticated GET /me  →  /me, /logout AND /health all 429,
  *                                      from that IP, for thirty minutes
@@ -35,15 +36,16 @@ import { authLimiter } from '../../middleware/security.js';
 /**
  * A stand-in for `/api/v1/auth`, mounted exactly as server.js mounts it.
  *
- * `/me` and `/logout` answer 401 with no credential, the way the real ones do;
- * `/guess` answers 401 as a credential route would, and is the control: it is
- * NOT in `SESSION_PATHS`, so its failures must still be counted.
+ * `/me` and `/logout` answer 401 with no credential, the way the real ones do,
+ * and `/me` answers 200 to a live session (`Bearer live`); `/guess` answers 401
+ * as a credential route would, and is the control: it is NOT in
+ * `SESSION_PATHS`, so its failures must still be counted.
  */
 function app() {
   const a = express();
   a.set('trust proxy', true);
   a.use('/api/v1/auth', authLimiter, (req, res) => {
-    if (req.path === '/health') return res.json({ ok: true });
+    if (req.path === '/me' && req.headers.authorization === 'Bearer live') return res.json({ ok: true });
     return res.status(401).json({ success: false, message: 'Not authenticated' });
   });
   return a;
@@ -71,6 +73,7 @@ describe('the auth limiter and an expired session', () => {
   beforeEach(() => { server = app(); ip = freshIp(); });
 
   const get = (path) => request(server).get(path).set('X-Forwarded-For', ip);
+  const liveMe = () => get('/api/v1/auth/me').set('Authorization', 'Bearer live');
 
   it('does not lock a user out of /logout after their token expires', async () => {
     // Four page loads with a dead token — the old behaviour spent the whole
@@ -81,7 +84,7 @@ describe('the auth limiter and an expired session', () => {
     // The one that mattered: they can still end their own session.
     expect((await request(server).post('/api/v1/auth/logout').set('X-Forwarded-For', ip)).status)
       .toBe(401);              // unauthenticated, but ANSWERED — not 429
-    expect((await get('/api/v1/auth/health')).status).toBe(200);
+    expect((await liveMe()).status).toBe(200);
     expect((await get('/api/v1/auth/me')).status).toBe(401);
   });
 
@@ -116,9 +119,9 @@ describe('the auth limiter and an expired session', () => {
   });
 
   it('never counts a successful session check', async () => {
-    // /health answers 200 and must cost nothing, whatever else is happening.
+    // A live session's /me answers 200 and must cost nothing, however often.
     for (let i = 0; i < 20; i++) {
-      expect((await get('/api/v1/auth/health')).status).toBe(200);
+      expect((await liveMe()).status).toBe(200);
     }
     expect((await get('/api/v1/auth/me')).status).toBe(401);
   });

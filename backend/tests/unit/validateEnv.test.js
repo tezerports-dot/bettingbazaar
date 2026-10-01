@@ -14,7 +14,7 @@ const full = {
   // All four S3 vars: production boot requires isS3Configured(), which needs
   // bucket + access key + secret key + endpoint, not the bucket alone.
   S3_BUCKET_NAME: 'b', S3_ACCESS_KEY: 'ak', S3_SECRET_KEY: 'sk', S3_ENDPOINT: 'https://s3.example.test',
-  PUBLIC_APP_ORIGIN: 'https://app.example.test', PUBLIC_APP_ALLOWED_ORIGINS: 'https://app.example.test',
+  PUBLIC_APP_ORIGIN: 'https://app.example.test',
   // Both must be STATED in production (2026-09-30): see the two cases below.
   TRUST_PROXY: '1', TURNSTILE_SECRET_KEY: 'a-turnstile-secret-for-tests',
 };

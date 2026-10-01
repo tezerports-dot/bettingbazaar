@@ -155,65 +155,13 @@ describePg('a merchant can release tokens on a paid deposit', () => {
     expect(row.proofScreenshot ?? null).toBeNull();
   });
 
-  /**
-   * ── The OTHER confirm route admitted a state this one refuses ────────────
-   *
-   * F-017 records that there are two deposit-confirm implementations and that
-   * the money assertions live on the one no screen calls. What it did not
-   * record is that the two disagree about ADMISSION, and the unreachable one
-   * is the weaker:
-   *
-   *   /api/merchant/confirm/:id        PAID only, and refuses an order with no
-   *   (the panel's button)             payment reference on the row.
-   *   /api/payment/deposit/:id/confirm PAID **or PROCESSING**, and never read
-   *   (nothing calls it)               the reference at all.
-   *
-   * PROCESSING is where an order sits after a merchant accepts it and BEFORE
-   * the player pays. Driven on a live server as the assigned merchant, on one
-   * order: the panel's route answered 400 "Current: PROCESSING" and the other
-   * answered 200 "Deposit completed" — leaving a COMPLETED deposit with no
-   * reference and a player a thousand tokens richer for a payment nobody made.
-   * The merchant's own float funds it, which is what makes it a collusion
-   * route rather than a mistake, and it leaves `utr_registry` with nothing for
-   * a later dispute to match against (§27).
-   *
-   * It was invisible because `check:ui-coverage` fails on a panel call that
-   * reaches no route and never on a route no panel calls. The `--unused` list
-   * had it the whole time.
-   */
-  describe('the unreachable confirm route holds the same admission', () => {
-    let payments;
-    beforeAll(async () => {
-      payments = mountRouter((await import('../../domains/payment/payment.routes.js')).default);
-    }, 60_000);
-
-    it('refuses a PROCESSING deposit, and moves no money', async () => {
-      // Staged in the state a merchant reaches by accepting, before the player
-      // has paid anything.
-      const { merchant, player, orderId } = await paidDeposit({ state: 'PROCESSING', utrNumber: null });
-
-      const before = await getBalances(player.userId);
-      const res = await as(payments, merchant).post(`/deposit/${orderId}/confirm`).send({});
-
-      expect(res.status, JSON.stringify(res.body)).toBe(409);
-      expect((await getOrderRecord(orderId)).state).toBe('PROCESSING');
-      const after = await getBalances(player.userId);
-      expect(after.depositBalance, 'no tokens for a payment nobody made').toBe(before.depositBalance);
-    });
-
-    it('refuses a PAID deposit that carries no payment reference', async () => {
-      // §27: the reference belongs to the player and is bound to the order at
-      // mark-paid. A confirm on an order without one completes a deposit the
-      // registry never saw.
-      const { merchant, player, orderId } = await paidDeposit({ utrNumber: null });
-      const before = await getBalances(player.userId);
-      const res = await as(payments, merchant).post(`/deposit/${orderId}/confirm`).send({});
-
-      expect(res.status, JSON.stringify(res.body)).toBe(400);
-      expect(res.body.message).toMatch(/payment reference/i);
-      expect((await getOrderRecord(orderId)).state).toBe('PAID');
-      expect((await getBalances(player.userId)).depositBalance).toBe(before.depositBalance);
-    });
-  });
+  // F-017's second confirm route, `POST /api/payment/deposit/:orderId/confirm`,
+  // admitted PROCESSING as well as PAID and never read the payment reference —
+  // driven on a live server, it completed a deposit nobody had paid for out of
+  // the merchant's own float, a collusion route nothing on any screen called.
+  // The block that held it to the panel route's admission was the guard; the
+  // route itself was deleted 2026-10-01 (owner decision), so the weaker door
+  // no longer exists to hold. The panel route's admission is asserted above and
+  // in merchantPanelRoutes.test.js.
 
 });

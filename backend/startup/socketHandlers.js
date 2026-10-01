@@ -4,7 +4,7 @@ import { db } from '#db';
 import { brandingPayload, currentBranding } from '../domains/branding/brandingPayload.js';
 // AQ-2: verify via the single PASETO authority (Ed25519 signature + iss/aud stamped).
 import { verifyJwt } from '../domains/identity/jwt.util.js';
-import { sessionIsLive, merchantLoginRow } from '../domains/identity/auth.middleware.js';
+import { sessionIsLive } from '../domains/identity/auth.middleware.js';
 import { cycleSnapshotPublisher } from '../domains/markets/cycleSnapshotPublisher.js';
 import { fetchCycleHistory } from '../domains/markets/cycleHistory.service.js';
 import { getSystemConfig } from '#db/repositories/config.js';
@@ -148,26 +148,25 @@ export function attachSocketHandlers(io, cycleGenerator, gameEngine) {
         // reset session kept receiving that player's balance pushes (R6).
         const user = await loadActiveUser(decoded);
         if (!user || !(await sessionIsLive(token, decoded, user))) return;
-        if (user.userId?.toString() === userId?.toString() || user.isAdmin) socket.join(`user-${userId}`);
+        // A PLAYER's own room, and nobody else's (2026-10-01). It admitted any
+        // full admin to ANY player's room — every balance push, order update
+        // and support reply for that player — and a merchant's or staff
+        // member's session to a room under its own login id. No admin screen
+        // joins a player's room (the admin panel has no socket client at all),
+        // and the REST door for the same data now admits a player's session
+        // only (`authenticatePlayer`); this is the same door on the socket.
+        if (user.accountType === 'PLAYER' && user.userId?.toString() === userId?.toString()) {
+          socket.join(`user-${userId}`);
+        }
       } catch { /* invalid token — silently reject */ }
     });
 
-    socket.on('join_merchant_room', async (merchantId) => {
-      const token = socketToken();
-      if (!token) return;
-      try {
-        const decoded = verifyJwt(token);
-        if (decoded.isMerchant && decoded.merchantId?.toString() === merchantId?.toString()) {
-          const merchant = await db.merchants.getMerchant(decoded.merchantId);
-          if (merchant?.status !== 'ACTIVE' || merchant?.merchantApprovalStatus !== 'APPROVED') return;
-          if (!(await sessionIsLive(token, decoded, await merchantLoginRow(merchant)))) return;
-          socket.join(`merchant-${merchantId}`);
-          return;
-        }
-        const user = await loadActiveUser(decoded);
-        if (user?.isAdmin && await sessionIsLive(token, decoded, user)) socket.join(`merchant-${merchantId}`);
-      } catch { /* invalid token — silently reject */ }
-    });
+    // `join_merchant_room` was here. No panel ever emitted it — the merchant
+    // panel's live feed is the SSE stream `/api/sse/merchant/events` — so the
+    // room had no member, and the handler's one other branch let a full
+    // admin's session into ANY merchant's room. Deleted, not restricted:
+    // code nothing calls is not code (CLAUDE.md §22). Merchant pushes go
+    // through `emitMerchantUpdate`.
 
     socket.on('join_admin_room', async (data) => {
       try {

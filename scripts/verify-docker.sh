@@ -155,7 +155,6 @@ docker run -d --name "$APPC" --network "$NET" -p 8080:8080 \
   -e METRICS_TOKEN="$(openssl rand -hex 32)" \
   -e ALLOWED_ORIGINS="https://app.example.com" \
   -e PUBLIC_APP_ORIGIN="https://app.example.com" \
-  -e PUBLIC_APP_ALLOWED_ORIGINS="https://app.example.com" \
   -e S3_BUCKET_NAME=verify-bucket \
   -e S3_ACCESS_KEY=verify-access-key \
   -e S3_SECRET_KEY=verify-secret-key \

@@ -23,7 +23,7 @@ import {
   adminAdjustment, getBalanceAdjustments, ADJUSTABLE_FIELDS,
 } from '../domains/wallet/walletAuthority.service.js';
 import {
-  authenticate, hasPermission,
+  authenticate, authenticatePlayer, hasPermission,
 } from '../domains/identity/auth.middleware.js';
 import { publicLeaderboard } from '../domains/analytics/leaderboardPublicView.js';
 import { emitToStaff } from '../domains/notification/staffEventAreas.js';
@@ -242,7 +242,7 @@ router.delete('/admin/announcements/:id', authenticate, hasPermission('canManage
 
 // ── BONUS HISTORY ────────────────────────────────────────────────────────────
 
-router.get('/bonuses/my', authenticate, async (req, res) => {
+router.get('/bonuses/my', authenticatePlayer, async (req, res) => {
   try {
     const { page = 1, limit = 30 } = req.query;
     // Page and total from one query, so a bonus credited between them cannot

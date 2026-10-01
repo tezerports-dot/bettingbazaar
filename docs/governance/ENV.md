@@ -26,7 +26,6 @@ Generate every secret with: `openssl rand -base64 48`
 | `S3_ENDPOINT` | S3-compatible endpoint URL. Required **even on AWS S3** — see §2. |
 | `METRICS_TOKEN` | Bearer token protecting `GET /metrics` from public disclosure. |
 | `PUBLIC_APP_ORIGIN` | Official public app origin advertised to native clients (a valid `https://…` origin). |
-| `PUBLIC_APP_ALLOWED_ORIGINS` | Public app origin allow-list advertised to native clients (comma-separated origins). |
 
 **`TRUST_PROXY` — set this whenever anything terminates TLS in front of Node.**
 Not in the required table because the app boots without it, but leaving it
@@ -47,7 +46,7 @@ prepend PROXY v2.
 **Secret-strength rules the gate enforces (production):**
 - `JWT_SECRET`, `PASETO_SECRET_KEY` (if used instead of `JWT_SECRET`), `ORDER_HMAC_SECRET`,
   `AADHAAR_HMAC_SECRET`, `METRICS_TOKEN` must each be **≥ 32 characters and non-placeholder**.
-- `PUBLIC_APP_ORIGIN` / `PUBLIC_APP_ALLOWED_ORIGINS` must be valid **https** origins in production.
+- `PUBLIC_APP_ORIGIN` must be a valid **https** origin in production.
 
 ## 2. Object storage (S3-compatible) — all four vars are required
 
@@ -208,8 +207,9 @@ System Settings.
 | `BACKEND_MTLS_CERT` / `BACKEND_MTLS_KEY` / `BACKEND_MTLS_CA` | Enable mutual TLS on the backend listener. All three are required together. |
 | `TLS_FINGERPRINT_EDGE_SECRET` | Shared secret that lets the app trust a TLS-fingerprint header from the edge. Without it the header is ignored — correct default. |
 
-**Native app identifiers** (used by the app-distribution endpoints — see `NATIVE_APP_DISTRIBUTION_POLICY.md`):
-`ANDROID_PACKAGE_ID`, `IOS_BUNDLE_ID`, `DESKTOP_APP_ID`, `PUBLIC_APP_NAME`.
+**Native app identifier** (Android release policy and App Links — see `NATIVE_APP_DISTRIBUTION_POLICY.md`):
+`ANDROID_PACKAGE_ID`. `IOS_BUNDLE_ID`, `DESKTOP_APP_ID` and `PUBLIC_APP_NAME` were read only by
+`GET /api/app/bootstrap`, which nothing called; all three and the route were removed 2026-10-01.
 
 **Support RAG service** (dormant until an API key is set — §19):
 `RAG_CHAT_API_KEY`, `RAG_CHAT_BASE_URL`, `RAG_CHAT_MODEL`, `RAG_MODEL`,
@@ -323,9 +323,8 @@ verification failure, whereas a 404 leaves the next attempt free to succeed).
 
 | Variable | Required | Purpose |
 |---|---|---|
-| `ANDROID_PACKAGE_ID` | for the APK | Package name; must equal `appId` in `user-panel/capacitor.config.ts` (`com.bettingbazaar.app`). Also advertised by `GET /api/app/bootstrap`. |
+| `ANDROID_PACKAGE_ID` | for the APK | Package name; must equal `appId` in `user-panel/capacitor.config.ts` (`com.bettingbazaar.app`). |
 | `ANDROID_SHA256_CERT_FINGERPRINTS` | for the APK | Comma-separated SHA-256 signing-certificate fingerprints. Colons and case are normalised. **List both the upload key and the Play-held key** once published: Play App Signing re-signs the APK, so a site naming only the upload fingerprint verifies for sideloads and fails for every store install. |
-| `IOS_BUNDLE_ID` | no | Advertised by `/api/app/bootstrap`. There is no iOS client — see `NATIVE_APP_DISTRIBUTION_POLICY.md`. |
 
 The build side of the same association lives in GitHub, not here: the release
 workflow needs an `ANDROID_APP_ORIGIN` repository **variable** (the same value

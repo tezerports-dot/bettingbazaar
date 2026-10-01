@@ -280,14 +280,8 @@ export function initSSERoutes(sseManager, cycleGenerator) {
         }
     });
 
-    // ── GET /api/sse/stats ── MONITORING ──────────────────────────────────────
-    router.get('/stats', (req, res) => {
-        res.json({
-            success: true,
-            sse: sseManager.getStats(),
-            timestamp: new Date().toISOString()
-        });
-    });
+    // `GET /api/sse/stats` was removed 2026-10-01: nothing called it, and it
+    // told any unauthenticated caller how many streams were open.
 
     return router;
 }

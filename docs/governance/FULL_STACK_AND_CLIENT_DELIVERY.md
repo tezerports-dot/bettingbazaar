@@ -319,10 +319,9 @@ Order state lives in `hooks/useOrders.ts` fed by `services/sse.ts`.
 
 The backend already advertises both mobile targets: `GET /api/download/android`
 302s to the newest Android release published on the admin Android App page
-(`android_releases`), `/api/download/ios` to `SystemConfig.iosUrl`, and
-`GET /api/app/bootstrap` returns the official origin, allow-list, package IDs and
-a compliance block for a native shell to verify **before** opening its WebView
-(`NATIVE_APP_DISTRIBUTION_POLICY.md`). The iOS half of that contract has no client.
+(`android_releases`) and `/api/download/ios` to `SystemConfig.iosUrl`. The
+`GET /api/app/bootstrap` handshake this paragraph used to describe was never
+called by any shell and was removed 2026-10-01 (`NATIVE_APP_DISTRIBUTION_POLICY.md`).
 
 ## 3.2 The routing decision that gates everything else
 

@@ -202,6 +202,30 @@ export async function seedMerchant({
 // refused with TWO_FACTOR_ENROLMENT_REQUIRED before reaching any handler.
 // That is the product working; the driver enrols the seeded admin so the
 // scenarios past the door can run.
+/**
+ * A STAFF account that is not the full admin: a sub-admin, a queue manager, or
+ * a staff login holding neither yet.
+ *
+ * Built the way `/api/admin/sub-admins` builds one — a STAFF row, then the roles
+ * and the grant — never a player row with staff flags written onto it. That
+ * shortcut is refused by `users_staff_flags_need_staff` since 2026-10-01: a
+ * staff member holds a SEPARATE account (owner), and a flag on a PLAYER row was
+ * staff authority riding a player's session. Two mutate cases still took the
+ * shortcut and failed on the constraint, which is the constraint working.
+ */
+export async function seedStaff({ subAdmin = false, queueManager = false, permissions = {}, verified = true } = {}) {
+  const userId = rid('staff');
+  const mobile = mob();
+  const { user } = await db.users.createUser({
+    userId, username: userId, mobile, status: 'ACTIVE', accountType: 'STAFF', kycStatus: 'APPROVED',
+  });
+  const roles = [subAdmin ? 'subadmin' : null, queueManager ? 'queue_manager' : null].filter(Boolean);
+  if (roles.length) await db.users.setRoles(userId, roles);
+  if (subAdmin) await db.users.updateUser(userId, { subAdminPermissions: permissions });
+  if (verified) await verifyActor({ userId, mobile, audience: 'STAFF' });
+  return { ...user, userId, mobile };
+}
+
 export async function seedAdmin({ enrol2fa = true, verified = true } = {}) {
   const userId = rid('admin');
   const mobile = mob();

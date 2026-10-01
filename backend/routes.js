@@ -32,7 +32,7 @@ import { isTokenRevoked, revokeToken } from '#db/repositories/identity.js';
 import { issueChallenge, verifyChallenge, CHALLENGE_AUDIENCE } from './domains/identity/twoFactorChallenge.js';
 import { verifySecondFactor, SECOND_FACTOR_RESULT } from './domains/identity/verifySecondFactor.js';
 import { requires2FA } from './domains/identity/twoFactor.routes.js';
-import { sessionSuperseded, refuseSupersededSession, accountClosed, refuseClosedAccount } from './domains/identity/auth.middleware.js';
+import { sessionSuperseded, refuseSupersededSession, accountClosed, refuseClosedAccount, belongsElsewhere, refuseWrongPanel } from './domains/identity/auth.middleware.js';
 
 const router = express.Router();
 
@@ -390,6 +390,10 @@ router.get('/me', async (req, res) => {
     // on the endpoint every page load calls to restore a session.
     if (accountClosed(user)) return refuseClosedAccount(res);
     if (sessionSuperseded(user, decoded)) return refuseSupersededSession(res);
+    // The same door `authenticate` keeps (S32: the same check in both paths).
+    // `/me` serves the player app and the admin panel; a merchant session
+    // belongs to `merchantAuth` and restores itself through the merchant routes.
+    if (belongsElsewhere(user, ['PLAYER', 'STAFF'])) return refuseWrongPanel(res, user);
 
     if (user.isBlocked || user.status === 'BLOCKED')
       return res.status(403).json({ success: false, message: 'Account blocked' });
@@ -463,6 +467,7 @@ router.post('/logout', async (req, res) => {
   }
 });
 
-router.get('/health', (_, res) => res.json({ success: true, status: 'ok', timestamp: new Date().toISOString() }));
+// `GET /api/v1/auth/health` was removed 2026-10-01: nothing called it, and
+// `/health` and `/health/ready` are the probes a balancer uses.
 
 export default router;

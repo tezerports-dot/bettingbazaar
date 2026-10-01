@@ -55,10 +55,12 @@ describe('a player signs up and signs in with a form', () => {
     expect(server).toMatch(/app\.use\('\/api\/v1\/auth',\s*playerAuthRoutes\)/);
   });
 
-  it('keeps the three session routes every page load depends on', () => {
+  it('keeps the two session routes every page load depends on', () => {
     expect(routes).toMatch(/router\.get\(\s*'\/me'/);
     expect(routes).toMatch(/router\.post\(\s*'\/logout'/);
-    expect(routes).toMatch(/router\.get\(\s*'\/health'/);
+    // `/health` was the third. No panel called it and the server's own health
+    // check is `/api/v1/health`; deleted 2026-10-01 (route coverage).
+    expect(routes).not.toMatch(/router\.get\(\s*'\/health'/);
   });
 });
 

@@ -29,14 +29,15 @@
  * BUG-U19 — New: GET /v1/content/support-links  → admin-configured WhatsApp /
  *                Telegram / email so users can reach support in-app.
  *
- * CROSS-2 — New: GET /v1/branding  → CDN base URL + all asset names so the
- *                frontend getAssetUrl() works without manual localStorage setup.
+ * GET /v1/branding and the two token-rate routes were deleted 2026-10-01: no
+ * client called them. Branding reaches every panel through `sendBranding()`
+ * (socket) and the public SSE stream (§13); token conversion is a fixed 1:1.
  *
  */
 
 import express from 'express';
 import { db } from '#db';
-import { authenticate } from '../identity/auth.middleware.js';
+import { authenticatePlayer } from '../identity/auth.middleware.js';
 import { getUserLedger, getBalances } from '../wallet/walletAuthority.service.js';
 // The withdrawal rate limiters (withdrawalLimiter, createSubnetLimiter,
 // globalSurgeBreaker) and the alerting import were removed with the withdrawal
@@ -139,7 +140,7 @@ router.get('/v1/game/cycles/history', async (req, res) => {
 // BUG-U5 FIX: Now returns bets[], history[], kycData, bankDetails.
 // BUG-U6 FIX: Now returns walletBalance = depositBalance + winningsBalance.
 // ─────────────────────────────────────────────────────────────────────────────
-router.get('/v1/user/:id/data', authenticate, async (req, res) => {
+router.get('/v1/user/:id/data', authenticatePlayer, async (req, res) => {
   try {
     const { id } = req.params;
     if (req.user.userId.toString() !== id) {
@@ -208,7 +209,7 @@ router.get('/v1/user/:id/data', authenticate, async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 // PUT /api/user/:userId/profile  (auth required, atomic)
 // ─────────────────────────────────────────────────────────────────────────────
-router.put('/user/:userId/profile', authenticate, async (req, res) => {
+router.put('/user/:userId/profile', authenticatePlayer, async (req, res) => {
   try {
     const { userId } = req.params;
     if (req.user.userId.toString() !== userId) {
@@ -267,7 +268,7 @@ router.put('/user/:userId/profile', authenticate, async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 // PUT /api/user/:userId/bank-details  (auth required, atomic)
 // ─────────────────────────────────────────────────────────────────────────────
-router.put('/user/:userId/bank-details', authenticate, async (req, res) => {
+router.put('/user/:userId/bank-details', authenticatePlayer, async (req, res) => {
   try {
     const { userId } = req.params;
     if (req.user.userId.toString() !== userId) {
@@ -304,7 +305,7 @@ router.put('/user/:userId/bank-details', authenticate, async (req, res) => {
 // other people's KYC, and mixing an unrealised promise into a balance is how a
 // player comes to believe they hold money they cannot withdraw.
 // ─────────────────────────────────────────────────────────────────────────────
-router.get('/user/referrals', authenticate, async (req, res) => {
+router.get('/user/referrals', authenticatePlayer, async (req, res) => {
   try {
     const { referralSummaryFor } = await import('../referral/referral.service.js');
     const summary = await referralSummaryFor(req.user.userId);
@@ -330,7 +331,7 @@ router.get('/user/referrals', authenticate, async (req, res) => {
 // a second copy of a money rule, and the first divergence would show a player a
 // maximum that gets refused.
 // ─────────────────────────────────────────────────────────────────────────────
-router.get('/user/bet-limits', authenticate, async (req, res) => {
+router.get('/user/bet-limits', authenticatePlayer, async (req, res) => {
   try {
     const { computeMaxStake } = await import('../risk/riskValidation.service.js');
     const { getRiskRules } = await import('../risk/riskValidation.service.js');
@@ -457,57 +458,6 @@ router.get('/v1/content/support-links', async (req, res) => {
   }
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// GET /api/v1/branding  (public)
-// CROSS-2 FIX: Frontend getAssetUrl() reads app_branding from localStorage.
-// This route fills that localStorage key on app init.
-// ─────────────────────────────────────────────────────────────────────────────
-router.get('/v1/branding', async (req, res) => {
-  try {
-    // Branding is a configuration scope, so every key reads as its declared
-    // default when nothing has been set — no `|| {}` and no per-field fallback
-    // scattered through the response below.
-    const b = await db.config.getConfig('branding');
-
-    // The environment variable is the BOOTSTRAP value; an admin setting one
-    // here overrides it without a redeploy.
-    const cdnBaseUrl = b.cdnBaseUrl || process.env.CDN_URL || '';
-
-    res.json({
-      success: true,
-      branding: {
-        appName:      b.appName,
-        cdnBaseUrl,
-        primaryColor: b.primaryColor,
-        assets: {
-          logo:    'logo.jpeg',
-          appIcon: 'App icon.jpeg',
-          delhi:   'Delhi.jpg',
-          bombay:  'Bomabay.jpg',
-          popup:   'Popup.jpeg',
-          rules:   'Rules.jpeg',
-          tipsBg:  'tips.jpeg'
-        }
-      }
-    });
-  } catch (error) {
-    // Even on DB error, return CDN_URL from env so images always work
-    console.error('Branding fetch error:', error);
-    res.json({
-      success: true,
-      branding: {
-        appName:      'BettingBazaar',
-        cdnBaseUrl:   process.env.CDN_URL || '',
-        primaryColor: '#D4AF37',
-        assets: {
-          logo: 'logo.jpeg', appIcon: 'App icon.jpeg', delhi: 'Delhi.jpg',
-          bombay: 'Bomabay.jpg', popup: 'Popup.jpeg', rules: 'Rules.jpeg', tipsBg: 'tips.jpeg'
-        }
-      }
-    });
-  }
-});
-
 // ── Withdrawals live in the P2P funding platform, not here ──────────────────
 // A second, parallel withdrawal implementation used to sit at this spot:
 // POST /v1/user/withdraw + GET /v1/user/withdrawals, backed by a
@@ -528,58 +478,13 @@ router.get('/v1/branding', async (req, res) => {
 
 // ── WALLET LEDGER — user's personal transaction history ──────────────────────
 // GET /api/v1/wallet/ledger  — append-only audit trail of every balance change
-router.get('/v1/wallet/ledger', authenticate, async (req, res) => { // paginated
+router.get('/v1/wallet/ledger', authenticatePlayer, async (req, res) => { // paginated
   try {
     const { page = 1, limit = 30 } = req.query;
     const result = await getUserLedger(req.user.userId, Number(page), Number(limit));
     res.json({ success: true, ...result });
   } catch (err) {
     return serverError(res, err, 'GET /v1/wallet/ledger');
-  }
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// GET /api/v1/tokens/rate  — public token exchange rates.
-// Fixed 1:1 internal conversion (Phase 006 flattening, 2026-07-08): 1 BB
-// token = ₹1, no buy/sell spread. Response shape kept for client compat.
-// ─────────────────────────────────────────────────────────────────────────────
-router.get('/v1/tokens/rate', async (req, res) => {
-  try {
-    const config = await getSystemConfig();
-    res.json({
-      success:        true,
-      buyRate:        INR_TOKEN_RATE,
-      sellRate:       INR_TOKEN_RATE,
-      ratesConfigured: true, // the INR peg is not configurable — see tokenRates.js
-      minExchange:    config?.minWithdrawal ?? 500  /* schema default — was incorrectly 100 (GOVERNANCE.md M-5) */,
-      maxExchange:    config?.maxWithdrawal ?? 50000,
-      currency:       'INR',
-      updatedAt:      null,
-    });
-  } catch (err) {
-    return serverError(res, err, 'GET /v1/tokens/rate');
-  }
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// GET /api/v1/token/rates  — canonical alias used by WalletModal + WalletPage
-// (WalletModal calls /api/v1/token/rates; old route was /v1/tokens/rate)
-// Both return the same fixed 1:1 values.
-// ─────────────────────────────────────────────────────────────────────────────
-router.get('/v1/token/rates', async (req, res) => {
-  try {
-    const config = await getSystemConfig();
-    res.json({
-      success:  true,
-      rates: { buyRate: INR_TOKEN_RATE, sellRate: INR_TOKEN_RATE, updatedAt: null },
-      minExchange: config?.minWithdrawal ?? 500  /* schema default — was incorrectly 100 (GOVERNANCE.md M-5) */,
-      maxExchange: config?.maxWithdrawal ?? 50000,
-      // Flat fields for back-compat
-      buyRate:  INR_TOKEN_RATE,
-      sellRate: INR_TOKEN_RATE,
-    });
-  } catch (err) {
-    return serverError(res, err, 'GET /v1/token/rates');
   }
 });
 
@@ -599,7 +504,7 @@ router.get('/v1/token/rates', async (req, res) => {
  * user id and scope by it, so a caller cannot read or acknowledge somebody
  * else's notification even by id.
  */
-router.get('/user/notifications', authenticate, async (req, res) => {
+router.get('/user/notifications', authenticatePlayer, async (req, res) => {
   try {
     const unreadOnly = String(req.query.unreadOnly || '') === 'true';
     // The repository clamps this to 1..200; parsing here keeps a bad query
@@ -623,7 +528,7 @@ router.get('/user/notifications', authenticate, async (req, res) => {
  * is the rarer act — asking for fifty rows to show one integer is the kind of
  * read that looks free until there are players.
  */
-router.get('/user/notifications/unread-count', authenticate, async (req, res) => {
+router.get('/user/notifications/unread-count', authenticatePlayer, async (req, res) => {
   try {
     res.json({ success: true, unreadCount: await db.engagement.unreadCount(String(req.user.userId)) });
   } catch (err) {
@@ -639,7 +544,7 @@ router.get('/user/notifications/unread-count', authenticate, async (req, res) =>
  * from "those were already read" — and so an id belonging to somebody else
  * reports 0 rather than succeeding silently.
  */
-router.post('/user/notifications/read', authenticate, async (req, res) => {
+router.post('/user/notifications/read', authenticatePlayer, async (req, res) => {
   try {
     const raw = req.body?.ids;
     if (raw !== undefined && !Array.isArray(raw)) {
@@ -667,7 +572,7 @@ export default router;
 // GET /api/v1/user/profile  — self-profile from JWT (no userId in URL)
 // Called by WalletPage and WalletModal to load balance + bankDetails.
 // ─────────────────────────────────────────────────────────────────────────────
-router.get('/v1/user/profile', authenticate, async (req, res) => {
+router.get('/v1/user/profile', authenticatePlayer, async (req, res) => {
   try {
     // The wallet page reads this for the balance it shows. From `wallets`, not
     // the account — the accounts table has no balance columns.

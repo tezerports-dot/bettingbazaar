@@ -4,7 +4,7 @@
 import express from 'express';
 import { db } from '#db';
 import cdnService from '../services/cdn.service.js';
-import { authenticate } from '../domains/identity/auth.middleware.js';
+import { authenticatePlayer } from '../domains/identity/auth.middleware.js';
 import { merchantAuth } from '../middleware/merchantAuth.js';
 import { serverError, callerError, respondError } from '../shared/httpError.js';
 // Order chat. An attachment that is not recorded is an upload nobody can find.
@@ -200,7 +200,7 @@ router.post('/merchant/cdm-receipt/:orderId/upload-url', merchantAuth, async (re
 // ═══════════════════════════════════════════════════════════════════════
 
 // ── Profile picture upload (used by profile page) ────────────────────────────
-router.post('/user/profile/picture/upload-url', authenticate, async (req, res) => {
+router.post('/user/profile/picture/upload-url', authenticatePlayer, async (req, res) => {
   try {
     const { fileName, contentType, fileSize } = req.body;
     if (!hasValidUploadInput(fileName, contentType, fileSize))
@@ -222,7 +222,7 @@ router.post('/user/profile/picture/upload-url', authenticate, async (req, res) =
   }
 });
 
-router.post('/user/profile/picture/confirm-upload', authenticate, async (req, res) => {
+router.post('/user/profile/picture/confirm-upload', authenticatePlayer, async (req, res) => {
   try {
     const { fileKey, cdnUrl } = req.body;
     if (!fileKey || !cdnUrl) return res.status(400).json({ success: false, message: 'fileKey and cdnUrl are required' });

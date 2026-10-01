@@ -1244,8 +1244,11 @@ export async function claimUtrGrace(userId, orderId) {
   }
 
   // The merchant's screen shows this deadline too, and it just moved.
+  // `order_update`, the registered name the merchant panel listens for. This
+  // was `order_updated` — a typo variant of it (§12), listened for by nothing,
+  // so the merchant's countdown kept the old deadline.
   if (extended.merchantId) {
-    emitMerchantUpdate(String(extended.merchantId), 'order_updated', {
+    emitMerchantUpdate(String(extended.merchantId), 'order_update', {
       orderId: extended.orderId, expiresAt: extended.expiresAt, server_ts: Date.now(),
     });
   }

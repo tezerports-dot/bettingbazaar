@@ -1683,11 +1683,13 @@ const MUTATIONS = [
     to: `    if (false) {`,
   },
   {
-    id: 'M225', file: 'backend/middleware/order-crypto-access.js', config: PG,
+    // Repointed 2026-10-01: the guard's admin branch is gone, and what keeps a
+    // staff session off the player's order is now the player door itself.
+    id: 'M225', file: 'backend/domains/identity/auth.middleware.js', config: PG,
     test: 'backend/tests/routes/orderAccessGuardRoutes.test.js',
     why: 'any staff account acts as the player on the player\'s order: reads it, and raises a dispute recorded as the player\'s',
-    from: `    const isAdmin = admitAdmin && req.user?.isAdmin === true && req.user?.isBlocked !== true;`,
-    to: `    const isAdmin = req.user?.isAdmin === true || req.user?.isSubAdmin === true;`,
+    from: `const authenticatePlayer = makeAuthenticate({ accountTypes: ['PLAYER'] });`,
+    to: `const authenticatePlayer = makeAuthenticate();`,
   },
   {
     id: 'M226', file: 'backend/domains/notification/sseManager.service.js', config: UNIT,
@@ -1901,6 +1903,78 @@ const MUTATIONS = [
     why: 'any uncaught route error hands the caller the server\'s internal text',
     from: `const decided = Boolean(err?.status || err?.statusCode);`,
     to: `const decided = true;`,
+  },
+  // ── A session is used at its own panel's door (2026-10-01) ──────────────
+  {
+    id: 'M254', file: 'backend/domains/identity/auth.middleware.js', config: PG,
+    test: 'backend/tests/routes/playerDoorPg.test.js',
+    why: 'a merchant\'s session reads the player\'s projection of an order assigned to it, and a staff session creates deposits in its own name',
+    from: `    if (belongsElsewhere(user, accountTypes)) return refuseWrongPanel(res, user);`,
+    to: ``,
+  },
+  {
+    id: 'M255', file: 'backend/domains/identity/auth.middleware.js', config: PG,
+    test: 'backend/tests/routes/playerDoorPg.test.js',
+    why: 'a staff session passes the player door: deposits, bets and support tickets in a staff account\'s name',
+    from: `const authenticatePlayer = makeAuthenticate({ accountTypes: ['PLAYER'] });`,
+    to: `const authenticatePlayer = makeAuthenticate({ accountTypes: ['PLAYER', 'STAFF'] });`,
+  },
+  {
+    id: 'M256', file: 'backend/routes.js', config: PG,
+    test: 'backend/tests/routes/playerDoorPg.test.js',
+    why: 'a merchant\'s session restores itself on /me, the endpoint every player and admin page load reads',
+    from: `    if (belongsElsewhere(user, ['PLAYER', 'STAFF'])) return refuseWrongPanel(res, user);`,
+    to: ``,
+  },
+  {
+    id: 'M257', file: 'backend/middleware/order-crypto-access.js', config: PG,
+    test: 'backend/tests/routes/orderAccessGuardRoutes.test.js',
+    why: 'any signed-in player reads, pays and disputes another player\'s order',
+    from: `    if (uid === null || String(order.userId) !== uid) return refuse();`,
+    to: `    if (uid === null) return refuse();`,
+  },
+  {
+    id: 'M258', file: 'backend/startup/socketHandlers.js', config: PG,
+    test: 'backend/tests/routes/playerDoorPg.test.js',
+    why: 'a merchant\'s or staff member\'s session joins a player socket room',
+    from: `        if (user.accountType === 'PLAYER' && user.userId?.toString() === userId?.toString()) {`,
+    to: `        if (user.userId?.toString() === userId?.toString()) {`,
+  },
+  {
+    id: 'M259', file: 'backend/startup/socketHandlers.js', config: PG,
+    test: 'backend/tests/routes/playerDoorPg.test.js',
+    why: 'a full admin\'s session joins ANY player\'s room: every balance push and order update for that player',
+    from: `        if (user.accountType === 'PLAYER' && user.userId?.toString() === userId?.toString()) {`,
+    to: `        if ((user.accountType === 'PLAYER' && user.userId?.toString() === userId?.toString()) || user.isAdmin) {`,
+  },
+  {
+    id: 'M260', file: 'backend/routes/admin/users.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/adminUsersRoutes.test.js',
+    why: 'phantom access is granted to a staff account that can never use it, and the admin is told it failed for no reason',
+    from: `    if (accessLevel !== 'NONE' && user.accountType !== 'PLAYER') {`,
+    to: `    if (false) {`,
+  },
+  {
+    id: 'M261', file: 'database/schema.sql', config: PG,
+    test: 'backend/tests/routes/adminUsersRoutes.test.js',
+    why: 'phantom access can be written onto a staff or merchant row by any path',
+    from: `  CHECK (account_type = 'PLAYER' OR phantom_access = 'NONE');`,
+    to: `  CHECK (TRUE);`,
+  },
+  // ── What the server tells a merchant reaches their screen (2026-10-01) ──
+  {
+    id: 'M262', file: 'backend/domains/disputes/disputeResolution.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/disputeResolutionRoutes.test.js',
+    why: 'a resolved dispute stays DISPUTED on the merchant\'s screen: the push goes nowhere the panel listens',
+    from: `      emitMerchantUpdate(order.merchantId, 'order_update', {`,
+    to: `      global.io?.to(\`merchant-\${order.merchantId}\`).emit('order_update', {`,
+  },
+  {
+    id: 'M263', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
+    test: 'backend/tests/routes/utrGracePg.test.js',
+    why: 'a moved UTR deadline goes out under a name the merchant panel never registered, so their countdown is wrong',
+    from: `    emitMerchantUpdate(String(extended.merchantId), 'order_update', {`,
+    to: `    emitMerchantUpdate(String(extended.merchantId), 'order_updated', {`,
   },
 ];
 

@@ -37,6 +37,7 @@ import { isChallengeToken } from './twoFactorChallenge.js';
 import { requires2FA } from './twoFactorPolicy.js';
 import { getSystemConfig } from '#db/repositories/config.js';
 import { isPermissionKey, permissionLabel, staffCan } from './staffPermissions.js';
+import { PANEL_NAME } from './audiences.js';
 
 
 /**
@@ -214,7 +215,46 @@ function refuseUnenrolledStaff(req, res, user) {
   return true;
 }
 
-const makeAuthenticate = ({ allowUnenrolledStaff = false } = {}) => async (req, res, next) => {
+/**
+ * A session at the wrong panel's door.
+ *
+ * Owner, 2026-10-01: a player account, a staff account and a merchant account
+ * are separate, and "if he has his admin account that account can only be used
+ * for admin activity". The LOGIN doors already scope by `account_type`; the
+ * SESSION door did not. Measured before this existed: a full admin's and a
+ * sub-admin's STAFF session each created a deposit through
+ * `POST /api/payment/deposit/create` (200, an order in the staff account's
+ * name), and a merchant's session read the PLAYER's projection of an order
+ * assigned to them through `GET /api/payment/order/:orderId` (200). §32 S49,
+ * at the session rather than the flag.
+ *
+ * The message names the panel the account belongs to, because the person who
+ * meets it can act on that (§32 S14).
+ */
+export function belongsElsewhere(user, accountTypes) {
+  return !accountTypes.includes(user?.accountType);
+}
+
+export function refuseWrongPanel(res, user) {
+  const panel = PANEL_NAME[user?.accountType] ?? 'other';
+  return res.status(403).json({
+    success: false,
+    code: 'WRONG_PANEL',
+    message: `This account is for the ${panel} panel and cannot be used here. `
+      + 'Sign in with the account you hold for this panel.',
+  });
+}
+
+/**
+ * @param {object}   [opts]
+ * @param {boolean}  [opts.allowUnenrolledStaff]  the 2FA enrolment handshake only
+ * @param {string[]} [opts.accountTypes]  the populations this door admits. The
+ *   shared door admits PLAYER and STAFF (the staff routes then ask for an AREA,
+ *   which only a STAFF row can hold); `authenticatePlayer` admits PLAYER alone.
+ *   MERCHANT is never admitted here — merchants have their own door,
+ *   `merchantAuth`, and no merchant-facing route relies on this one.
+ */
+const makeAuthenticate = ({ allowUnenrolledStaff = false, accountTypes = ['PLAYER', 'STAFF'] } = {}) => async (req, res, next) => {
   try {
     // Accept token from httpOnly cookie (user panel) OR Authorization header (admin/merchant panels)
     let token = req.cookies?.auth_token;
@@ -286,6 +326,7 @@ const makeAuthenticate = ({ allowUnenrolledStaff = false } = {}) => async (req, 
 
     if (accountClosed(user)) return refuseClosedAccount(res);
     if (sessionSuperseded(user, decoded)) return refuseSupersededSession(res);
+    if (belongsElsewhere(user, accountTypes)) return refuseWrongPanel(res, user);
 
     // Check if user account is active
     if (user.isBlocked) {
@@ -306,15 +347,10 @@ const makeAuthenticate = ({ allowUnenrolledStaff = false } = {}) => async (req, 
     // (wallet, settlement, …) are attributable to this user by correlation id.
     try { setContextUser(user.userId); } catch { /* context is best-effort */ }
 
-    
-    // Merchant PASETO contains { merchantId, isMerchant: true } — set by domains/merchant/merchant.routes.js /auth/login.
-    // isMerchant is a PASETO claim, NOT a User schema field. merchantAuth middleware handles Merchant PASETOs.
-    // This authenticate middleware is for User PASETOs only (players, admin, sub-admin, queue manager).
-    
-    
-    if (decoded.merchantId) {
-      req.merchantId = decoded.merchantId;
-    }
+    // `req.merchantId` is NOT set here any more. It was copied from a merchant
+    // token's claims, which is what let a merchant session reach the player's
+    // order routes as "the assigned merchant". Merchant sessions are refused
+    // above; `merchantAuth` is the only thing that establishes a merchant.
 
     // Continue to next middleware
     next();
@@ -330,6 +366,12 @@ const makeAuthenticate = ({ allowUnenrolledStaff = false } = {}) => async (req, 
 
 /** Every authenticated route. Unenrolled staff are refused here. */
 const authenticate = makeAuthenticate();
+
+/**
+ * The PLAYER's routes — money, bets, orders, profile, support tickets. A staff
+ * or merchant session is refused with the panel it belongs to.
+ */
+const authenticatePlayer = makeAuthenticate({ accountTypes: ['PLAYER'] });
 
 /**
  * The enrolment handshake only — identical in every other respect.
@@ -533,6 +575,7 @@ export const hasPermission = (permission) => {
  */
 export {
   authenticate,
+  authenticatePlayer,
   // The enrolment handshake only — see `makeAuthenticate`. Staff who owe a
   // second factor reach these three steps and nothing else.
   authenticateForEnrolment,

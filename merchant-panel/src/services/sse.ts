@@ -1,6 +1,6 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 // §11: Public SSE events: system_config, branding, branding_updated
-// §11: Private merchant SSE events: merchant_orders_snapshot, new_order, order_update, merchant_stats
+// §11: Private merchant SSE events: the `merchantEvents` list below is the whole set — an unlisted name is never delivered
 //      (via /api/sse/merchant/events?token=<merchantToken>)
 // §1: merchantToken is the sole auth token storage key for merchant panel
 
@@ -62,6 +62,11 @@ class SSEService {
       // `merchant_stats` defect recorded above.
       const merchantEvents = [
         'merchant_orders_snapshot', 'new_order', 'order_update', 'merchant_score_update',
+        // A player marked a buy PAID — the moment this merchant has to look.
+        // Sent since the PAID transition existed and never listed here, so the
+        // order sat unchanged on screen until a reload while the paid-response
+        // clock (`paidResponseMinutes`) ran against the merchant (2026-10-01).
+        'order_paid',
         // Broadcast to every merchant when an admin switches the settlement
         // rail, so a merchant mid-shift is not left on the old workflow.
         'payment_mode_changed',

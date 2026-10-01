@@ -122,7 +122,6 @@ import { S3StorageProvider } from './providers/storage/S3StorageProvider.js';
 import { LocalDiskStorageProvider } from './providers/storage/LocalDiskStorageProvider.js';
 import twoFactorRoutes from './domains/identity/twoFactor.routes.js';
 import winnersRoutes      from './routes/winners.routes.js';
-import appBootstrapRoutes from './routes/app-bootstrap.routes.js';
 import wellKnownRoutes from './routes/wellKnown.routes.js';
 
 
@@ -571,7 +570,6 @@ app.use('/api/v1/auth', authLimiter, authRoutes);
 // manages enrolment.
 app.use('/api/2fa', twoFactorRoutes);
 app.use('/api', winnersRoutes);
-app.use('/api/app', appBootstrapRoutes);
 
 // `loginPaceLimiter` runs FIRST, deliberately. A paced request never reaches
 // the credential check, so it is not a failed attempt and must not consume the

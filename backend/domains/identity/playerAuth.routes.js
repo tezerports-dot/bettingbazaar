@@ -54,7 +54,7 @@ import { assignSigninBot } from './signupVerification.service.js';
 import { verificationEndpoint } from './verificationEndpoint.js';
 import { resubmitAadhaar, MAX_KYC_SUBMISSIONS } from './aadhaarResubmission.service.js';
 import { redeemResetLink } from './passwordReset.service.js';
-import { authenticate } from './auth.middleware.js';
+import { authenticatePlayer } from './auth.middleware.js';
 import { authLimiter, loginPaceLimiter, twoFactorLimiter, signupLimiter } from '../../middleware/security.js';
 import { requireCaptcha } from '../../middleware/captcha.js';
 import { createSubnetLimiter, globalSurgeBreaker } from '../../middleware/ipDefense.js';
@@ -322,7 +322,7 @@ router.get('/invite/:code', async (req, res) => {
  * mount is here; the merchant and staff mounts are on their own routers, and
  * they answer the same shape because they ARE the same function.
  */
-router.get('/verification', authenticate, verificationEndpoint((req) => req.user));
+router.get('/verification', authenticatePlayer, verificationEndpoint((req) => req.user));
 
 // ═══════════════════════════════════════════════════════════════════════════
 // POST /api/v1/auth/kyc/resubmit — a REJECTED player corrects their Aadhaar
@@ -342,7 +342,7 @@ router.get('/verification', authenticate, verificationEndpoint((req) => req.user
  * somebody who genuinely mistyped needs to know the difference between "wrong
  * number" and "that one belongs to somebody else".
  */
-router.post('/kyc/resubmit', authenticate, async (req, res) => {
+router.post('/kyc/resubmit', authenticatePlayer, async (req, res) => {
   try {
     const result = await resubmitAadhaar({ userId: req.user.userId, aadhaar: req.body?.aadhaar });
     if (result.ok) {

@@ -4,7 +4,7 @@
 // Dashboard and Orders both read from this so they never disagree about what
 // is in the queue.
 //
-// GOVERNANCE §11 event names: merchant_orders_snapshot, new_order, order_update
+// GOVERNANCE §11 event names: merchant_orders_snapshot, new_order, order_update, order_paid
 // (constants.SOCKET_EVENTS is the canonical spelling — no string literals here).
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../services/api';
@@ -91,11 +91,15 @@ export function useOrders() {
     sseService.on(SOCKET_EVENTS.NEW_ORDER, upsert);
     sseService.on('new_order', upsert);
     sseService.on(SOCKET_EVENTS.ORDER_UPDATE, upsert);
+    // The player's Paid tap: the payload is the order's own fields (id, status
+    // PAID, the reference or `awaitingReference`), so it merges like any update.
+    sseService.on('order_paid', upsert);
     return () => {
       sseService.off('merchant_orders_snapshot', onSnapshot);
       sseService.off(SOCKET_EVENTS.NEW_ORDER, upsert);
       sseService.off('new_order', upsert);
       sseService.off(SOCKET_EVENTS.ORDER_UPDATE, upsert);
+      sseService.off('order_paid', upsert);
     };
   }, []);
 

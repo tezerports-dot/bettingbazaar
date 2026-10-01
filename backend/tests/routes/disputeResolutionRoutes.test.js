@@ -130,6 +130,32 @@ describePg('dispute resolution routes', () => {
     expect((await getOrderRecord(orderId)).state).toBe('CANCELLED');
   });
 
+  // The merchant's live feed is SSE. The resolution was pushed to a socket room
+  // no merchant client ever joined, so the order stayed DISPUTED on the
+  // merchant's screen until they reloaded (§32 S17).
+  it("tells the order's merchant the outcome, on the stream their panel listens to", async () => {
+    const { orderId, merchant } = await disputed({ type: 'DEPOSIT', tokens: 500 });
+    const sent = [];
+    const previous = global.sseManager;
+    global.sseManager = {
+      sendToMerchant: (m, event, data) => sent.push({ m, event, data }),
+      broadcastToAdmins: () => {},
+    };
+    try {
+      const res = await as(app, admin).post(`/dispute-orders/${orderId}/resolve`)
+        .send({ decision: 'CANCEL_ORDER', resolution: 'No payment was ever made.' });
+      expect(res.status, res.body.message).toBe(200);
+    } finally {
+      global.sseManager = previous;
+    }
+    const toMerchant = sent.filter((e) => e.m === String(merchant.merchantId));
+    expect(toMerchant.map((e) => e.event)).toEqual(['order_update']);
+    expect(toMerchant[0].data).toMatchObject({ orderId, status: 'CANCELLED' });
+    // The id and the state, nothing the merchant view does not carry: the
+    // panel MERGES this payload into the order it holds.
+    expect(Object.keys(toMerchant[0].data).sort()).toEqual(['orderId', 'server_ts', 'status']);
+  });
+
   it('survives two admins resolving the same deposit dispute at once', async () => {
     const { orderId, who } = await disputed({ type: 'DEPOSIT', tokens: 500 });
     const before = await getBalancesPaise(who.userId);

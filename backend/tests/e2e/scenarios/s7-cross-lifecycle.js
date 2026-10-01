@@ -16,8 +16,32 @@
 import { pgQuery } from '#db/client.js';
 import { seedPlayer, seedMerchant, seedAdmin } from '../seed.js';
 import {
-  playerToken, merchantToken, adminToken, GET, POST, PUT, check, note, idemKey,
+  playerToken, merchantToken, adminToken, GET, POST, PUT, check, note, idemKey, BASE,
 } from '../harness.js';
+
+/**
+ * The `branding` event a fresh client receives on the public SSE stream — how
+ * the panels actually get branding. This read `GET /api/v1/branding`, a route
+ * no panel called that built its own payload with hard-coded file names
+ * (§13); it was deleted 2026-10-01.
+ */
+async function brandingOverSse() {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 8000);
+  try {
+    const res = await fetch(`${BASE}/api/sse/events`, { signal: ctrl.signal, headers: { Accept: 'text/event-stream' } });
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) return null;
+      buf += dec.decode(value, { stream: true });
+      const m = buf.match(/event: branding\ndata: (.*)\n/);
+      if (m) return JSON.parse(m[1]);
+    }
+  } catch { return null; } finally { clearTimeout(timer); ctrl.abort(); }
+}
 
 const A = 'LIFECYCLE';
 
@@ -76,10 +100,10 @@ export default async function run() {
       check(A, 'admin', 'save a brand name', '200',
         `${saved.status} ${saved.body?.message ?? ''}`, saved.status === 200);
 
-      const pub = await GET(null, '/api/v1/branding');
-      check(A, 'player', 'the branding every panel reads carries the new name', mark,
-        String(pub.body?.branding?.appName ?? pub.body?.appName),
-        JSON.stringify(pub.body).includes(mark),
+      const pub = await brandingOverSse();
+      check(A, 'player', 'the branding a fresh panel receives carries the new name', mark,
+        String(pub?.appName),
+        pub?.appName === mark,
         '§13: sendBranding is the SOLE constructor of this payload — a panel with a literal never updates');
     } finally {
       if (before.appName) await PUT(aT, '/api/admin/branding', { appName: before.appName });

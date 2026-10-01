@@ -10,6 +10,7 @@ import { endWithdrawal } from '../payment/withdrawalHold.service.js';
 import { releaseForOrder } from '../merchant/depositEscrow.service.js';
 import { debitMerchantTokens } from '../merchant/merchantWallet.service.js';
 import { releaseUTR } from '../../middleware/utrValidation.js';
+import { emitMerchantUpdate } from '../notification/realtimeEmitters.js';
 // The order state machine. Resolving a dispute is a guarded transition, and it
 // runs BEFORE any money moves so that it is what decides the race.
 import { completeOrder, cancelOrder } from '../payment/orderLifecycle.service.js';
@@ -221,11 +222,15 @@ router.post('/dispute-orders/:orderId/chat', authenticate, hasPermission('canRes
       isSystem:   false,
     });
 
-    // Notify both parties in real time
+    // Tell the player in real time. The merchant is NOT told, and that is a
+    // recorded gap rather than a choice (PROJECT_STATUS §3.9): this emitted to
+    // a socket room no merchant client ever joined, and the merchant panel has
+    // no order chat to show the message in. Routing it to the merchant's SSE
+    // `order_update` as it stood would have merged `type: 'ADMIN_MESSAGE'`
+    // over the order's own type in the merchant's list.
     const order = await db.orders.getOrderRecord(req.params.orderId);
     if (order) {
       global.io?.to(`user-${order.userId}`).emit('support_reply', { orderId: order._id, message: message.trim() });
-      global.io?.to(`merchant-${order.merchantId}`).emit('order_update', { orderId: order._id, type: 'ADMIN_MESSAGE' });
     }
 
     res.json({ success: true, message: msg });
@@ -437,8 +442,14 @@ router.post('/dispute-orders/:orderId/resolve', authenticate, hasPermission('can
       orderId: order._id,
       message: `Your dispute has been resolved. Decision: ${decision.replace(/_/g, ' ')}`,
     });
+    // The merchant's live feed is SSE; this went to a socket room no merchant
+    // client ever joined, so a resolved dispute stayed DISPUTED on the
+    // merchant's screen until they reloaded (§32 S17). The order's id and its
+    // new state are all their list needs — the decision text is the admin's.
     if (order.merchantId) {
-      global.io?.to(`merchant-${order.merchantId}`).emit('order_update', payload);
+      emitMerchantUpdate(order.merchantId, 'order_update', {
+        orderId: order._id, status: newStatus, server_ts: Date.now(),
+      });
     }
     global.sseManager?.broadcastToAdmins('queue_order_update', payload);
 

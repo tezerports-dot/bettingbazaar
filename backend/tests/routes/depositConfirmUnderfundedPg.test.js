@@ -7,7 +7,9 @@
  * There are two deposit-confirm implementations (F-017). All sixteen
  * real-database money assertions — conservation, the split, idempotency, a
  * four-way confirm race — are on `POST /api/payment/deposit/:orderId/confirm`,
- * which is on `check:ui-coverage --unused`: no screen calls it. The route the
+ * which was on `check:ui-coverage --unused`: no screen called it, and it was
+ * deleted 2026-10-01 once those assertions were ported to the route merchants
+ * use (merchantConfirmMoneyPg.test.js). The route the
  * merchant panel calls, `POST /api/merchant/confirm/:id`, reimplements the
  * sequence inline and had authorization and validation tests only.
  *

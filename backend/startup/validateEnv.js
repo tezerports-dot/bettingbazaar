@@ -44,8 +44,11 @@ const REQUIRED = [
   ['S3_SECRET_KEY',     'S3 credentials; production storage refuses the local-disk fallback'],
   ['S3_ENDPOINT',       'S3-compatible endpoint URL (e.g. Cloudflare R2, Vultr, AWS)'],
   ['METRICS_TOKEN',     'protects Prometheus metrics from public disclosure'],
-  ['PUBLIC_APP_ORIGIN', 'official public application origin advertised to native clients'],
-  ['PUBLIC_APP_ALLOWED_ORIGINS', 'explicit public application origin allow-list advertised to native clients'],
+  // The player app's origin: the links the platform mints (password reset,
+  // panelOrigin()) and the Android App Links association are built from it.
+  // PUBLIC_APP_ALLOWED_ORIGINS was required beside it and read only by
+  // GET /api/app/bootstrap, which nothing called; both went 2026-10-01.
+  ['PUBLIC_APP_ORIGIN', 'the player app origin: minted links (panelOrigin) and Android App Links'],
 ];
 
 // Only meaningful in a real deployment; absence is a warning, not a failure.
@@ -127,7 +130,7 @@ export function validateEnv(env = process.env, isProd = env.NODE_ENV === 'produc
   const missing = REQUIRED.filter(([k]) => !env[k] || String(env[k]).trim() === '').map(([k]) => k);
   const weakAadhaarHmacSecret = hasWeakAadhaarHmacSecret(env.AADHAAR_HMAC_SECRET);
   const weakMetricsToken = hasWeakMetricsToken(env.METRICS_TOKEN);
-  const invalidOrigins = ['PUBLIC_APP_ORIGIN', 'PUBLIC_APP_ALLOWED_ORIGINS'].filter((key) => {
+  const invalidOrigins = ['PUBLIC_APP_ORIGIN'].filter((key) => {
     const origins = csv(env[key]);
     return env[key] && (!origins.length || !origins.every((origin) => isOrigin(origin, { requireHttps: isProd })));
   });

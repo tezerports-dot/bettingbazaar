@@ -6,7 +6,8 @@
  * ── Why this file exists ────────────────────────────────────────────────────
  * Two routes force-complete a deposit and they did not agree.
  *
- * `POST /api/payment/deposit/:orderId/confirm` (the merchant/admin path) debits
+ * `POST /api/payment/deposit/:orderId/confirm` (the merchant/admin path,
+ * deleted 2026-10-01 — no screen called it) debits
  * the merchant for the whole amount, credits the player's deposit and reserve
  * pockets separately, and releases the UTR. This admin route did none of that:
  * it credited `tokenAmount` in one lump, never debited the merchant, and never
