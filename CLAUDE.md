@@ -35,6 +35,7 @@ listed below, which hold **data and history, never rules**.
 | **Relaxing rate limits for a test run, and where that is forbidden** | **§34 — `BB_RATE_LIMIT_RELAX`** |
 | **How this scales to many servers, and the three env vars an operator MUST set** | **§36 — horizontal scale + the pen-test result** |
 | **Why there is no single coverage percentage, and what each category actually claims** | **§35 — coverage is a set of different claims** |
+| **How a FIX is proven: the root invariant, the opposite behaviour, and the neighbouring scenarios** | **§37 — ask "what is the closest scenario where this fix would be wrong?"** |
 
 ---
 
@@ -102,6 +103,11 @@ readiness requires before that day.
     closes one instance and leaves its siblings is how `setOrderFields` shipped
     the same defect three times (§21). The procedure and the register are in
     `docs/audit/SECURITY_AUDIT_MAP.md` §1 and §4.
+16. **If it is a fix in money, game, verification or security code, take it
+    through §37.** That means the root invariant, every path that reaches it,
+    a test that the LEGITIMATE case still succeeds, and the neighbouring
+    scenarios. A fix that is green against its own test is how F-043 locked
+    every second player out of a shared round.
 
 **For AI sessions specifically.** You cannot assume your context holds the
 current state of this codebase. Verify target text exists before generating a
@@ -1287,13 +1293,15 @@ commit message or the reply. Every row gets one of:
 | Failure path | What does the user see when it refuses? Is the message actionable (§25)? |
 | Money | Both sides asserted — debited AND credited — against a real database (§9, §19)? |
 | Tests | Which tier, how many, and does a mutation of the fix fail them? |
+| Neighbours | For a FIX: which invariant does it restore, which paths reach it, what is the opposite-behaviour test, and which of §37.1's pairs were tested or ruled out with a reason? |
 | Gates | Which ones ran, and what did they PRINT (§29)? |
 
 **Rows nobody fills in are where the defects were.** Of everything found in the
 2026-09 review, not one was a wrong calculation. They were: a route no button
 called, a button calling no route, a panel rendering a field the server never
 sent, a server sending a field no panel read, two routes admitting different
-things, and a message that blamed the player. Six of the ten rows above.
+things, and a message that blamed the player. Six of the ten rows the table
+had then. The eleventh, **Neighbours**, was added after F-044 (§37).
 
 ### 31.1 Keep the table current
 
@@ -2145,6 +2153,83 @@ the CSV export were read. semgrep (OWASP, node, react, jwt, typescript
 rulesets; 458 files) raised 23 findings: the three above and 20 false
 positives, each read. Not covered: the same four items listed above, plus
 semgrep only partially parsed 9 TSX files (a bare `&` in JSX text).
+
+---
+
+## 37. A fix is proven against its NEIGHBOURS, not only against its own test
+
+Owner, 2026-10-01, after the verification of PR #198: *"Prove that each
+important fix addresses the underlying invariant and doesn't break adjacent
+execution paths."*
+
+**The problem this exists to stop.** Every fix in this repository already ends
+in a failing-first test, a mutation and a green suite. F-043 had all three, and
+it was still wrong. A provider's round id was unique on its own, so two players
+on one crash round MERGED into one row. The fix added "refuse a callback on a
+round another player owns", which closed the leak. It also refused every
+legitimate second player at the table, and its own test wrote that down as
+correct: *"refuses a BET by another player onto an existing round"*. B2 had the
+same problem twice: the IP block covered HTTP but not the socket.io upgrade
+(F-045), and its /16 floor judged how a range was WRITTEN, not what it covered
+(F-046). In all three, the question in front of the fix was answered correctly.
+The question next to it was never asked.
+
+So this sequence stops too early:
+
+```
+find bug → fix bug → add regression test → tests green
+```
+
+For money, game, verification and security code, a fix goes through all of these:
+
+| # | Step | What it means here | What it would have caught |
+|---|---|---|---|
+| 1 | Find the bug | Reproduce it FAILING first, against a real database (§1) | — |
+| 2 | Understand the root cause | Name the INVARIANT that broke, not the line that misbehaved. §0.5 question 4: symptom or cause? | F-044: the invariant was "a round is one player's stake", and the key said otherwise |
+| 3 | Identify every caller, path and state | Every route, worker, transport, retry and state that reaches this code. S32: which OTHER path gets here without the check? | F-045: socket.io reaches the server before Express |
+| 4 | Fix the underlying invariant | Fix the key, the owner or the constraint. Do not add a check after the read (S45). A check layered on a wrong key turns one defect into another | F-044: the ownership check traded a leak for a lock-out |
+| 5 | Add the regression test | The one that failed in step 1 now passes | — |
+| 6 | Test the opposite behaviour | A fix that REFUSES something needs a test that the LEGITIMATE case still SUCCEEDS. A fix that ALLOWS something needs a test that the illegitimate case is still refused | F-043 tested the refusal only. "A second player with a valid session bets on the same round" was never run |
+| 7 | Test the neighbouring scenarios | The pairs below: the closest variation where this fix would be wrong | F-044, F-045, F-046, all three |
+| 8 | Mutation test | Break the fix on purpose and see a test fail (`scripts/mutation-check.mjs`). Cover the neighbour tests too, not only the regression test | — |
+| 9 | Database / integration test | Through the real database and the real transport, never a mock of the boundary that carries money (§1) | F-045 needed a real socket.io server behind the real trust-proxy setting |
+| 10 | Search for alternate paths around the fix | Can the same effect be reached another way: another spelling, another route, another transport, an older row? | F-046: `::ffff:10.0.0.0/104` is 10.0.0.0/8 spelled differently |
+| 11 | Run the complete gates | Every tier and every gate, with the numbers printed (§29, §31) | — |
+| 12 | Independent review | A second pass by someone who did NOT write the fix: a separate session or the owner. Until then the PR says *"not independently reviewed"* | PR #199's review is what found all three |
+
+### 37.1 The question to ask of every fix
+
+> **What is the closest scenario where this fix would accidentally be wrong?**
+
+Answer it by walking these pairs and testing EVERY one that applies. Each pair
+is a place where a defect here has already hidden, or nearly did:
+
+| Pair | Ask |
+|---|---|
+| Single-player / multi-player | Can more than one person share the thing this keys on: a round, a table, a link, a pool? |
+| Same user / different user | Does the fix still let the owner in and keep the stranger out, on the same row? |
+| Same provider / different provider | Can two external systems use the same id for different things? |
+| HTTP / WebSocket (and SSE, cron, webhook) | Which transports reach this state? Is the check on all of them? |
+| IPv4 / IPv6, and every other spelling of one value | Is the input judged by what it MEANS, or by how it is written? (S29, F-046) |
+| New database / existing database | Does the schema change converge on a database that already has rows (S31)? |
+| First request / concurrent request | Is the guard a write the database serialises, or a read (S6, trap 18)? |
+| Success / partial failure | If it fails halfway, what does the row say (S7, §21)? |
+| Retry / duplicate request | Does a redelivery do the work twice, or refuse a legitimate retry? |
+
+A pair that does not apply is written down as not applying, **with the reason**
+(§31's n/a). A pair skipped in silence is the one that ships.
+
+### 37.2 What "done" now requires
+
+A fix in money, game, verification or security code is reported as done only
+when the §31 table's **Neighbours** row names:
+
+- the invariant it restores (step 2),
+- the paths it found (step 3),
+- the opposite-behaviour test (step 6),
+- the pairs it tested and the ones it ruled out, with reasons (§37.1).
+
+"Tests green" is not on that list. F-043 was green.
 
 ## Commands
 
