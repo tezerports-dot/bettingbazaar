@@ -164,6 +164,10 @@ const App: React.FC = () => {
     if (!admin.isAdmin && !(admin.permissions as Record<string, boolean> | undefined)?.canViewAnalytics) {
       const first = firstPermittedPath((keys) => keys.some((k) => (admin.permissions as Record<string, boolean> | undefined)?.[k] === true));
       if (first) return <Navigate to={first} replace />;
+      // Given NO area at all: say so. The dashboard would answer with
+      // "Live metrics are unavailable right now", which reads as an outage
+      // (measured as the `subadmin-none` browser profile).
+      return <AnyAuth><Layout><NoAccess /></Layout></AnyAuth>;
     }
     return (
       <AnyAuth>

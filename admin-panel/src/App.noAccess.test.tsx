@@ -83,6 +83,13 @@ describe('a screen outside the grant', () => {
     expect(screen.queryByRole('heading', { name: /don.t have access/i })).not.toBeInTheDocument();
   });
 
+  it('tells a sub-admin with NO area at all, on the root, rather than showing a failing dashboard', async () => {
+    window.location.hash = '#/';
+    signInAs({ isAdmin: false, isSubAdmin: true, permissions: {} });
+    render(<App />);
+    expect(await screen.findByText(/has not been given any area yet/i)).toBeInTheDocument();
+  });
+
   it('still sends a person who is NOT signed in to the sign-in screen', async () => {
     window.location.hash = '#/users';
     current.admin = null;
