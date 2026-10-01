@@ -2135,6 +2135,18 @@ ALTER TABLE android_releases DROP CONSTRAINT IF EXISTS android_releases_version_
 DO $$ BEGIN
   ALTER TABLE android_releases ADD CONSTRAINT android_releases_package_version UNIQUE (package_name, version_code);
 EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL; END $$;
+-- R9 (owner, 2026-10-01): an admin can HALT a published release so a broken
+-- build stops being offered. It stays published, because phones may already run
+-- it and every later release must still be above it; it is just no longer
+-- what anybody is told to install. Only a published release can be halted.
+ALTER TABLE android_releases ADD COLUMN IF NOT EXISTS halted_at   TIMESTAMPTZ;
+ALTER TABLE android_releases ADD COLUMN IF NOT EXISTS halted_by   TEXT;
+ALTER TABLE android_releases ADD COLUMN IF NOT EXISTS halt_reason TEXT;
+-- Which APK signature schemes the upload VERIFIED (R7), e.g. {2,3}.
+ALTER TABLE android_releases ADD COLUMN IF NOT EXISTS signature_schemes INTEGER[] NOT NULL DEFAULT '{}';
+ALTER TABLE android_releases DROP CONSTRAINT IF EXISTS android_releases_halt_needs_publish;
+ALTER TABLE android_releases ADD CONSTRAINT android_releases_halt_needs_publish
+  CHECK (halted_at IS NULL OR (published_at IS NOT NULL AND length(btrim(coalesce(halt_reason, ''))) BETWEEN 3 AND 500));
 DROP INDEX IF EXISTS android_releases_published_idx;
 CREATE INDEX IF NOT EXISTS android_releases_published_pkg_idx
   ON android_releases (package_name, version_code DESC) WHERE published_at IS NOT NULL;

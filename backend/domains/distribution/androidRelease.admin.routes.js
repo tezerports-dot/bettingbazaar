@@ -6,6 +6,8 @@
  *   POST   /android/releases               upload an APK (the raw body IS the file)
  *   PATCH  /android/releases/:id           notes / mandatory
  *   POST   /android/releases/:id/publish
+ *   POST   /android/releases/:id/halt      stop offering a published release (reason required)
+ *   POST   /android/releases/:id/resume    offer a halted release again
  *   DELETE /android/releases/:id           drafts only
  *
  * Why the app updates itself, and what "mandatory" means: androidRelease.shared.js.
@@ -19,9 +21,21 @@ import { inspectApk } from './apkInspector.js';
 import { deleteFile } from '../../services/cdn.service.js';
 import { respondError, serverError } from '../../shared/httpError.js';
 import {
-  MAX_APK_BYTES, RELEASES_DIR, callerFault, configuredFingerprints, expectedPackage,
+  MAX_APK_BYTES, RELEASES_DIR, androidLabel, callerFault, configuredFingerprints, expectedPackage,
   readinessChecks, refused, storeApk,
 } from './androidRelease.shared.js';
+
+/** What the admin card shows beside the stored row: the Android it needs, in words. */
+const forAdmin = (r) => ({ ...r, requiresAndroid: androidLabel(r.minSdk) });
+
+function audit(req, action, release, details) {
+  return db.audit.recordDetailed({
+    performedBy: req.user.userId, performedByName: req.user.username, performedByRole: 'admin',
+    action, category: 'SYSTEM',
+    targetType: 'android_release', targetId: release.releaseId, targetName: `${release.versionName} (${release.versionCode})`,
+    details, ip: req.ip, method: req.method, endpoint: req.originalUrl,
+  });
+}
 
 const router = express.Router();
 
@@ -30,7 +44,7 @@ router.get('/android/releases', authenticate, isAdmin, async (req, res) => {
     const [releases, policy] = await Promise.all([db.androidReleases.listReleases(expectedPackage()), db.androidReleases.getUpdatePolicy(expectedPackage())]);
     res.json({
       success: true,
-      releases,
+      releases: releases.map(forAdmin),
       latestPublishedVersionCode: policy.latest?.versionCode ?? null,
       minRequiredVersionCode: policy.minRequiredVersionCode,
       ...readinessChecks(),
@@ -76,7 +90,8 @@ router.post('/android/releases',
       if (fps.length && !fps.includes(info.signerSha256)) {
         throw callerFault(`This APK is signed with a key (${info.signerSha256.slice(0, 16)}…) that ANDROID_SHA256_CERT_FINGERPRINTS does not list. Android would refuse it as an update.`);
       }
-      const { latest } = await db.androidReleases.getUpdatePolicy(expectedPackage());
+      // Every published release, halted or not: phones may run a halted one.
+      const latest = await db.androidReleases.getHighestPublished(expectedPackage());
       if (latest && latest.signerSha256 !== info.signerSha256) {
         throw callerFault(`This APK is signed with a different key than version ${latest.versionName}, which players have installed. Android refuses an update signed with a different key.`);
       }
@@ -100,6 +115,7 @@ router.post('/android/releases',
           sizeBytes: info.sizeBytes,
           ...stored,
           uploadedBy: req.user.userId,
+          signatureSchemes: info.signatureSchemes,
         });
       } catch (err) {
         if (err?.code !== '23505') throw err;
@@ -115,10 +131,10 @@ router.post('/android/releases',
         performedBy: req.user.userId, performedByName: req.user.username, performedByRole: 'admin',
         action: 'ANDROID_RELEASE_UPLOADED', category: 'SYSTEM',
         targetType: 'android_release', targetId: release.releaseId, targetName: `${release.versionName} (${release.versionCode})`,
-        details: { sha256: release.fileSha256, signer: release.signerSha256, size: release.sizeBytes },
+        details: { sha256: release.fileSha256, signer: release.signerSha256, size: release.sizeBytes, schemes: release.signatureSchemes },
         ip: req.ip, method: req.method, endpoint: req.originalUrl,
       });
-      res.status(201).json({ success: true, release });
+      res.status(201).json({ success: true, release: forAdmin(release) });
     } catch (err) {
       if (err?.type === 'entity.too.large') {
         return refused(res, 413, `The APK is larger than ${MAX_APK_BYTES / (1024 * 1024)} MB.`);
@@ -145,7 +161,7 @@ router.patch('/android/releases/:id', authenticate, isAdmin, async (req, res) =>
       details: { mandatory: release.mandatory, notesChanged: releaseNotes !== undefined },
       ip: req.ip, method: req.method, endpoint: req.originalUrl,
     });
-    res.json({ success: true, release });
+    res.json({ success: true, release: forAdmin(release) });
   } catch (err) {
     return respondError(res, err, 'PATCH /admin/android/releases/:id', { message: 'Failed to update the release' });
   }
@@ -170,9 +186,51 @@ router.post('/android/releases/:id/publish', authenticate, isAdmin, async (req, 
       details: { mandatory: out.release.mandatory },
       ip: req.ip, method: req.method, endpoint: req.originalUrl,
     });
-    res.json({ success: true, release: out.release });
+    res.json({ success: true, release: forAdmin(out.release) });
   } catch (err) {
     return serverError(res, err, 'POST /admin/android/releases/:id/publish', 'Failed to publish the release');
+  }
+});
+
+// ── Halt and resume (R9) ─────────────────────────────────────────────────────
+// A broken build that is already published cannot be deleted (phones may run
+// it) and could only be replaced. Halting stops it being OFFERED at once:
+// phones are pointed back at the newest release that is not halted, and the
+// download link follows. Players who already installed it keep it until a
+// newer release reaches them; the screen says so.
+router.post('/android/releases/:id/halt', authenticate, isAdmin, async (req, res) => {
+  try {
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : '';
+    if (reason.length < 3 || reason.length > 500) {
+      throw callerFault('Say why this release is being halted (3–500 characters). It is kept in the release history.');
+    }
+    const out = await db.androidReleases.haltRelease(req.params.id, req.user.userId, reason);
+    if (out.refused === 'not_found') return refused(res, 404, 'Release not found.');
+    if (out.refused === 'not_published') return refused(res, 409, 'Only a published release can be halted. A draft is simply not published — delete it instead.');
+    if (out.refused === 'already_halted') return refused(res, 409, 'This release is already halted.');
+    await audit(req, 'ANDROID_RELEASE_HALTED', out.release, { reason });
+    const { latest } = await db.androidReleases.getUpdatePolicy(expectedPackage());
+    res.json({
+      success: true,
+      release: forAdmin(out.release),
+      message: latest
+        ? `${out.release.versionName} is halted. Phones are now offered ${latest.versionName}.`
+        : `${out.release.versionName} is halted. No release is offered until you publish or resume one.`,
+    });
+  } catch (err) {
+    return respondError(res, err, 'POST /admin/android/releases/:id/halt', { message: 'Failed to halt the release' });
+  }
+});
+
+router.post('/android/releases/:id/resume', authenticate, isAdmin, async (req, res) => {
+  try {
+    const out = await db.androidReleases.resumeRelease(req.params.id);
+    if (out.refused === 'not_found') return refused(res, 404, 'Release not found.');
+    if (out.refused === 'not_halted') return refused(res, 409, 'This release is not halted.');
+    await audit(req, 'ANDROID_RELEASE_RESUMED', out.release, {});
+    res.json({ success: true, release: forAdmin(out.release) });
+  } catch (err) {
+    return serverError(res, err, 'POST /admin/android/releases/:id/resume', 'Failed to resume the release');
   }
 });
 

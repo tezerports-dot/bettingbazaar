@@ -6,9 +6,12 @@
  * APK it asks the server on launch, every time the app returns to the
  * foreground, and every half hour:
  *
- *   required   a full-screen block with no way past it — a release an admin
- *              marked mandatory is above this install
- *   available  a sheet the player can put off for a day ("Later")
+ *   required     a full-screen block with no way past it — a release an admin
+ *                marked mandatory is above this install
+ *   unsupported  a full-screen block that says the PHONE is too old: a
+ *                mandatory release needs a newer Android than it has, so there
+ *                is no update to offer and pretending otherwise is a loop
+ *   available    a sheet the player can put off for a day ("Later")
  *
  * "Update" downloads inside the app with a progress bar, verifies the file's
  * SHA-256 against the one the server published, and opens Android's installer.
@@ -122,6 +125,24 @@ export default function NativeUpdateGate() {
     return () => { cancelled = true; clearInterval(timer); removeResume?.(); };
   }, [install]);
 
+  if (visible && check?.status === 'unsupported') {
+    return (
+      <div style={{ position: 'fixed', inset: 0, zIndex: 3000, display: 'flex', alignItems: 'center', justifyContent: 'center',
+        background: 'var(--app-bg)', padding: '24px 22px', paddingTop: 'env(safe-area-inset-top)' }}>
+        <div role="alertdialog" aria-modal="true" aria-labelledby="unsupported-title"
+          style={{ maxWidth: 420, display: 'flex', flexDirection: 'column', gap: 14, color: 'var(--text)' }}>
+          <img src={brandLogo('logo.png')} onError={fallBackToMark} alt="" style={{ width: 52, height: 52, objectFit: 'contain', borderRadius: 12 }} />
+          <h2 id="unsupported-title" style={{ margin: 0, fontSize: 20, fontWeight: 900 }}>This phone's Android is too old</h2>
+          <p style={{ margin: 0, fontSize: 14, lineHeight: 1.5, color: 'var(--text2)' }}>
+            This version of the app is no longer supported, and the update it needs requires
+            {' '}<strong>{check.requiredAndroid || 'a newer Android'}</strong> or newer.
+            To keep playing, use a phone with a newer Android, or play in your phone's web browser.
+            Your account and balance are not affected.
+          </p>
+        </div>
+      </div>
+    );
+  }
   if (!visible || !check?.latest) return null;
   const { latest } = check;
   const required = check.status === 'required';

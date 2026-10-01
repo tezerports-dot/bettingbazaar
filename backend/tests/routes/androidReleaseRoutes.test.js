@@ -118,7 +118,7 @@ describePg('Android releases', () => {
     expect(older.body.latest).toMatchObject({ versionCode: base + 1, sha256: draft.fileSha256, sizeBytes: draft.sizeBytes });
     // What a phone is told names no storage key and no uploader.
     expect(Object.keys(older.body.latest).sort()).toEqual(
-      ['downloadUrl', 'mandatory', 'publishedAt', 'releaseNotes', 'sha256', 'sizeBytes', 'versionCode', 'versionName']);
+      ['downloadUrl', 'mandatory', 'minSdk', 'publishedAt', 'releaseNotes', 'sha256', 'sizeBytes', 'versionCode', 'versionName']);
 
     const same = await request(publicApp).get(`/api/app/android/update?versionCode=${base + 1}`);
     expect(same.body.status).toBe('current');

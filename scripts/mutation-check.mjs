@@ -1596,6 +1596,41 @@ const MUTATIONS = [
     from: `    if (!certKey.equals(publicKey)) {`,
     to: `    if (false) {`,
   },
+  {
+    id: 'M214', file: 'database/repositories/androidReleases.js', config: PG,
+    test: 'backend/tests/routes/androidReleaseControlRoutes.test.js',
+    why: 'a HALTED release goes on being offered, downloaded and required',
+    from: `        WHERE package_name = $1 AND published_at IS NOT NULL AND halted_at IS NULL`,
+    to: `        WHERE package_name = $1 AND published_at IS NOT NULL`,
+  },
+  {
+    id: 'M215', file: 'database/repositories/androidReleases.js', config: PG,
+    test: 'backend/tests/routes/androidReleaseControlRoutes.test.js',
+    why: 'a phone is offered a release its Android cannot install',
+    from: `SELECT * FROM live WHERE $2::int IS NULL OR min_sdk IS NULL OR min_sdk <= $2::int`,
+    to: `SELECT * FROM live WHERE true OR $2::int IS NULL`,
+  },
+  {
+    id: 'M216', file: 'backend/domains/distribution/androidRelease.shared.js', config: PG,
+    test: 'backend/tests/routes/androidReleaseControlRoutes.test.js',
+    why: 'a phone too old for a mandatory release keeps running the unsupported build, told nothing',
+    from: `  if (policy.unsupportedBelow && installedCode < policy.unsupportedBelow) return 'unsupported';`,
+    to: ``,
+  },
+  {
+    id: 'M217', file: 'backend/domains/distribution/androidRelease.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/androidReleaseControlRoutes.test.js',
+    why: 'a build below a halted release that phones may run is accepted as a draft',
+    from: `      const latest = await db.androidReleases.getHighestPublished(expectedPackage());`,
+    to: `      const { latest } = await db.androidReleases.getUpdatePolicy(expectedPackage());`,
+  },
+  {
+    id: 'M218', file: 'database/repositories/androidReleases.js', config: PG,
+    test: 'backend/tests/routes/androidReleaseControlRoutes.test.js',
+    why: 'halting a DRAFT is not refused by name',
+    from: `      WHERE release_id = $1 AND published_at IS NOT NULL AND halted_at IS NULL`,
+    to: `      WHERE release_id = $1 AND halted_at IS NULL`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

@@ -15,11 +15,16 @@
  *      updates; any other release is offered and can be postponed.
  *
  * Nothing here can be undone by deleting — a published release stays in the
- * history, because players may have it installed. A mistake is fixed by
- * publishing a newer one.
+ * history, because players may have it installed. A broken one can be HALTED:
+ * it stops being offered, downloaded or required at once, and phones are
+ * pointed back at the previous release. Players who already installed it keep
+ * it until a newer release reaches them, so the real fix is still a new build.
+ *
+ * Each card also says which Android the build needs (a phone below that is
+ * never offered it) and which signature schemes the upload verified.
  */
 import React, { useEffect, useRef, useState } from 'react';
-import { Upload, RefreshCw, CheckCircle, AlertTriangle, Smartphone, Trash2, Send, ShieldAlert } from 'lucide-react';
+import { Upload, RefreshCw, CheckCircle, AlertTriangle, Smartphone, Trash2, Send, ShieldAlert, PauseCircle, PlayCircle, Download } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { androidReleases, type AndroidRelease, type AndroidReleasesResponse } from '../../services/api';
 import { Toolbar } from '../../components/design';
@@ -29,7 +34,7 @@ const short = (h: string) => `${h.slice(0, 12)}…${h.slice(-6)}`;
 const when = (d: string | null) => (d ? new Date(d).toLocaleString() : '—');
 const errMsg = (e: any, fallback: string) => e?.response?.data?.message || e?.message || fallback;
 
-const ReleaseCard: React.FC<{ r: AndroidRelease; onChange: () => Promise<void> }> = ({ r, onChange }) => {
+const ReleaseCard: React.FC<{ r: AndroidRelease; offered: AndroidRelease | null; onChange: () => Promise<void> }> = ({ r, offered, onChange }) => {
   const [notes, setNotes] = useState(r.releaseNotes);
   const [mandatory, setMandatory] = useState(r.mandatory);
   const [busy, setBusy] = useState(false);
@@ -58,6 +63,26 @@ const ReleaseCard: React.FC<{ r: AndroidRelease; onChange: () => Promise<void> }
     if (!confirm(`Delete the draft ${r.versionName} (${r.versionCode})?`)) return;
     return run(() => androidReleases.remove(r.releaseId), 'Draft deleted');
   };
+  const halt = async () => {
+    const reason = prompt(
+      `Halt ${r.versionName}?\n\nPhones stop being offered it at once and go back to the previous release. `
+      + 'Players who already installed it keep it until you publish a newer one.\n\nWhy? (kept in the release history)');
+    if (reason == null) return;
+    setBusy(true);
+    try {
+      const res = await androidReleases.halt(r.releaseId, reason);
+      toast.success(res.message);
+      await onChange();
+    } catch (e) { toast.error(errMsg(e, 'That did not work')); } finally { setBusy(false); }
+  };
+  const resume = () => {
+    if (!confirm(`Offer ${r.versionName} to phones again?`)) return;
+    return run(() => androidReleases.resume(r.releaseId), `${r.versionName} is offered again`);
+  };
+  // A draft that needs a newer Android than the release phones get now: those
+  // phones will not be offered it, and if it is MANDATORY they are told their
+  // phone is too old. Worth knowing before publishing, not after.
+  const raisesAndroid = !r.published && offered?.minSdk != null && r.minSdk != null && r.minSdk > offered.minSdk;
 
   return (
     <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3">
@@ -75,12 +100,34 @@ const ReleaseCard: React.FC<{ r: AndroidRelease; onChange: () => Promise<void> }
             ? <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-green-900/40 text-green-300 border border-green-800">Published</span>
             : <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-slate-800 text-slate-300 border border-slate-700">Draft</span>}
           {r.mandatory && <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-red-900/40 text-red-300 border border-red-800">Mandatory</span>}
+          {r.halted && <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-amber-900/40 text-amber-300 border border-amber-800">Halted</span>}
         </div>
       </div>
 
-      <div className="grid sm:grid-cols-2 gap-2 text-[11px] font-mono text-slate-500">
-        <div title={r.fileSha256}>file sha256 {short(r.fileSha256)}</div>
-        <div title={r.signerSha256}>signing key {short(r.signerSha256)}</div>
+      {r.halted && (
+        <div role="status" className="text-xs bg-amber-950/40 border border-amber-900 text-amber-200 rounded-lg p-2.5">
+          Not offered to anyone since {when(r.haltedAt)}{r.haltedByName ? ` (halted by ${r.haltedByName})` : ''}: {r.haltReason}.
+          Phones that already installed it keep it until a newer release reaches them.
+        </div>
+      )}
+      {raisesAndroid && (
+        <div role="status" className="text-xs bg-yellow-950/40 border border-yellow-900 text-yellow-200 rounded-lg p-2.5">
+          This build needs {r.requiresAndroid}; the release phones get now ({offered!.versionName}) needs {offered!.requiresAndroid}.
+          Phones in between will not be offered it{mandatory ? ', and because it is mandatory they will be told their Android is too old to keep using the app' : ''}.
+        </div>
+      )}
+
+      <div className="grid sm:grid-cols-2 gap-x-2 gap-y-1 text-[11px] text-slate-500">
+        <div>Needs <span className="text-slate-300">{r.requiresAndroid ?? 'any Android'}</span></div>
+        <div>
+          {r.signatureSchemes.length
+            ? <>Signature <span className="text-green-300">verified</span> (v{r.signatureSchemes.join(', v')})</>
+            : <>Signature verification not recorded (uploaded before it existed)</>}
+        </div>
+        <div>Uploaded by {r.uploadedByName ?? '—'}</div>
+        <div>{r.published ? `Published by ${r.publishedByName ?? '—'}` : 'Not published'}</div>
+        <div className="font-mono" title={r.fileSha256}>file sha256 {short(r.fileSha256)}</div>
+        <div className="font-mono" title={r.signerSha256}>signing key {short(r.signerSha256)}</div>
       </div>
 
       <div>
@@ -98,6 +145,22 @@ const ReleaseCard: React.FC<{ r: AndroidRelease; onChange: () => Promise<void> }
       </div>
 
       <div className="flex flex-wrap gap-2">
+        <a href={androidReleases.fileHref(r)} download className="btn btn-secondary text-sm inline-flex items-center gap-1.5"
+          aria-label={`Download ${r.versionName} APK`}>
+          <Download size={14} /> Download APK
+        </a>
+        {r.published && !r.halted && (
+          <button type="button" onClick={halt} disabled={busy}
+            className="btn text-sm inline-flex items-center gap-1.5 bg-amber-900/30 text-amber-300 hover:bg-amber-900/50" aria-label={`Halt ${r.versionName}`}>
+            <PauseCircle size={14} /> Halt
+          </button>
+        )}
+        {r.halted && (
+          <button type="button" onClick={resume} disabled={busy}
+            className="btn btn-secondary text-sm inline-flex items-center gap-1.5" aria-label={`Resume ${r.versionName}`}>
+            <PlayCircle size={14} /> Resume
+          </button>
+        )}
         {dirty && (
           <button type="button" onClick={save} disabled={busy} className="btn btn-secondary text-sm">Save changes</button>
         )}
@@ -142,7 +205,8 @@ export const AndroidAppPage: React.FC = () => {
     } finally { setProgress(null); }
   };
 
-  const latest = data?.releases.find((r) => r.published) ?? null;
+  // What phones are offered: the newest published release that is not halted.
+  const latest = data?.releases.find((r) => r.published && !r.halted) ?? null;
 
   return (
     <div className="om-fade" style={{ maxWidth: 1040, margin: '0 auto' }}>
@@ -157,7 +221,7 @@ export const AndroidAppPage: React.FC = () => {
         <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
           <div className="text-xs text-slate-500 flex items-center gap-1.5"><ShieldAlert size={13} /> Oldest version allowed</div>
           <div className="text-2xl font-black text-white mt-1">{data?.minRequiredVersionCode ? `code ${data.minRequiredVersionCode}` : 'Any'}</div>
-          <div className="text-[11px] text-slate-500">Set by the newest mandatory release</div>
+          <div className="text-[11px] text-slate-500">Set by the newest mandatory release that is not halted</div>
         </div>
         <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
           <div className="text-xs text-slate-500">App identity</div>
@@ -218,7 +282,7 @@ export const AndroidAppPage: React.FC = () => {
         <div className="text-center py-10 text-slate-500 text-sm">No releases uploaded yet.</div>
       ) : (
         <div className="space-y-4">
-          {data?.releases.map((r) => <ReleaseCard key={r.releaseId} r={r} onChange={load} />)}
+          {data?.releases.map((r) => <ReleaseCard key={r.releaseId} r={r} offered={latest} onChange={load} />)}
         </div>
       )}
     </div>

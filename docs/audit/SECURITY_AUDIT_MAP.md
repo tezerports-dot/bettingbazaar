@@ -3122,7 +3122,7 @@ PENDING row in `bets`. The provider callback (casino, crash, sports) did not:
 
 | Measure | Count |
 |---|---|
-| Route declarations in `backend/**` | 322 |
+| Route declarations in `backend/**` | 324 |
 | Reachable with **no auth middleware** | 44 |
 | Gated `isAdminOrSubAdmin` with **no permission key** | 6 |
 | — of those, **writes** (non-GET) | 0 |
@@ -3190,8 +3190,8 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 473 |
-| Parameters only (safe by construction) | 317 |
+| `pgQuery` call sites | 476 |
+| Parameters only (safe by construction) | 320 |
 | Interpolating into statement text (each needs a reading) | 153 |
 | Statement text built elsewhere and passed in (each needs a reading) | 3 |
 
@@ -3207,8 +3207,8 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Panel | .ts/.tsx files | `dangerouslySetInnerHTML` | `.innerHTML =` |
 |---|---|---|---|
-| `user-panel` | 86 | 0 | 0 |
-| `admin-panel` | 100 | 0 | 0 |
+| `user-panel` | 87 | 0 | 0 |
+| `admin-panel` | 101 | 0 | 0 |
 | `merchant-panel` | 41 | 0 | 0 |
 
 <!-- END GENERATED -->

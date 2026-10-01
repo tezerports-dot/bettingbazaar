@@ -1371,6 +1371,13 @@ export interface AndroidRelease {
   minSdk: number | null; signerSha256: string; fileSha256: string; sizeBytes: number;
   fileUrl: string; storage: 'S3' | 'LOCAL'; releaseNotes: string; mandatory: boolean;
   uploadedAt: string; publishedAt: string | null; published: boolean;
+  /** Halted: published, but no longer offered, downloaded or required (R9). */
+  halted: boolean; haltedAt: string | null; haltReason: string | null;
+  /** The Android this build needs, worded by the server ("Android 9 (API 28)"). */
+  requiresAndroid: string | null;
+  /** The APK signature schemes the upload VERIFIED (R7), e.g. [2, 3]. */
+  signatureSchemes: number[];
+  uploadedByName: string | null; publishedByName: string | null; haltedByName: string | null;
 }
 export interface AndroidReleaseCheck { key: string; ok: boolean; label: string; why: string }
 export interface AndroidReleasesResponse {
@@ -1406,6 +1413,17 @@ export const androidReleases = {
     const res = await api.delete<{ success: boolean }>(`/api/admin/android/releases/${releaseId}`);
     return res.data;
   },
+  halt: async (releaseId: string, reason: string) => {
+    const res = await api.post<{ success: boolean; release: AndroidRelease; message: string }>(
+      `/api/admin/android/releases/${releaseId}/halt`, { reason });
+    return res.data;
+  },
+  resume: async (releaseId: string) => {
+    const res = await api.post<{ success: boolean; release: AndroidRelease }>(`/api/admin/android/releases/${releaseId}/resume`);
+    return res.data;
+  },
+  /** Where a release's file is, for downloading it to test on a phone. */
+  fileHref: (r: Pick<AndroidRelease, 'fileUrl'>) => (/^https?:\/\//i.test(r.fileUrl) ? r.fileUrl : `${API_URL.replace(/\/$/, '')}${r.fileUrl}`),
 };
 
   // ── Payment Order Actions (approve / reject / force-complete / video-KYC) ──────
