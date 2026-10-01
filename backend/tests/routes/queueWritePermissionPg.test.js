@@ -62,3 +62,34 @@ describePg('queue writes require canManageMerchants (or the queue-manager role)'
     expect(res.status, JSON.stringify(res.body)).not.toBe(403);
   });
 });
+
+// ── The queue's own LIST, which the Queue Manager screen loads first ─────────
+// `GET /api/admin/payment-queue` was gated on canViewTransactions when every
+// staff route was re-gated by area (F-047). A queue manager holds no areas, so
+// the one screen their role exists for answered 403 and read "load error" —
+// measured by opening the panel AS a queue manager (browser profile
+// `queue-manager`). The writes above were right; the read they depend on was not.
+describePg('the payment queue list', () => {
+  let app;
+  const who = {};
+  beforeAll(async () => {
+    await applySchema();
+    app = mountRouter((await import('../../domains/payment/paymentOrder.routes.js')).default);
+    who.queueManager = await actor({ isQueueManager: true });
+    who.merchantManager = await actor({ isSubAdmin: true, permissions: { canManageMerchants: true } });
+    who.chatModerator = await actor({ isSubAdmin: true, permissions: { canModerateChat: true } });
+  }, 60_000);
+
+  it('loads for a queue manager, whose screen it is', async () => {
+    const res = await as(app, who.queueManager).get('/payment-queue');
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+  });
+
+  it('loads for a sub-admin holding the merchants area, as the other queue routes do', async () => {
+    expect((await as(app, who.merchantManager).get('/payment-queue')).status).toBe(200);
+  });
+
+  it('is refused to a sub-admin given only another area (the opposite case)', async () => {
+    expect((await as(app, who.chatModerator).get('/payment-queue')).status).toBe(403);
+  });
+});

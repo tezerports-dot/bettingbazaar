@@ -5,7 +5,7 @@
 // Split out of the old backend/routes/admin/queue.admin.routes.js on 2026-07-01 as part
 // of the Merchant+Payment domain migration (BBEPS Phase 004). See backend/domains/README.md.
 
-import { express, authenticate, hasPermission } from '../../routes/admin/_adminShared.js';
+import { express, authenticate, hasPermission, queueManagerOrPermission } from '../../routes/admin/_adminShared.js';
 import { db } from '#db';
 import { creditDeposit, creditReserve } from '../wallet/walletAuthority.service.js';
 // The one owner of how an admin decision ends a withdrawal's money, and of a
@@ -25,7 +25,13 @@ import { emitAdminUpdate, emitOrderUpdate, emitWalletUpdate } from '../notificat
 const router = express.Router();
 
 // ─── GET /api/admin/payment-queue ─────────────────────────────────────────────────
-router.get('/payment-queue', authenticate, hasPermission('canViewTransactions'), async (req, res) => {
+// The QUEUE MANAGER's own list — the Queue Manager screen is its only caller —
+// so it carries the queue gate every other queue route carries. It was given
+// canViewTransactions when every staff route was re-gated by area (F-047), and
+// a queue manager holds no areas: their one screen answered 403 and read
+// "load error". Measured by opening the panel AS a queue manager
+// (browser profile `queue-manager`), not by any route test.
+router.get('/payment-queue', authenticate, queueManagerOrPermission('canManageMerchants'), async (req, res) => {
   try {
     const { status } = req.query;
     // The parties come from a join rather than two populates, and the per-state

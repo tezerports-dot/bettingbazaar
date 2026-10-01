@@ -3267,6 +3267,22 @@ then refused them inside the handler. Both are now one key, asked once.
   A sub-admin holding exactly a read's area is let through every one (§37
   step 6). 9 of its 11 named cases fail on main. M222, M230 KILLED.
 
+**A regression in this change, found by measuring (2026-10-01).** Re-gating
+every route by area gave `GET /api/admin/payment-queue` the
+`canViewTransactions` area. Its one caller is the Queue Manager screen, and a
+queue manager holds no areas, so the screen their role exists for answered
+403 and read "load error". No route test sent that GET as a queue manager;
+it was found by opening the admin panel AS each account type
+(`BB_PROFILE=queue-manager npm run test:browser`), then confirmed by a sweep
+of every admin screen for calls into another area. Fixed: the queue gate
+(`queueManagerOrPermission('canManageMerchants')`), as every other queue
+route has. Proof: `queueWritePermissionPg` +3, two FAIL on the previous gate;
+M242 KILLED. The same sweep found two screens offering controls from an area
+the viewer may lack (Users: Add/Deduct and Phantom Access; Queue Manager:
+approve/cancel/reject) — a refusal on press, not a hole; the server refuses
+them. Recorded under §0.5 question 1: "does anything CALL this" was asked of
+the route, never of the account the screen is for.
+
 ### F-048 — a failed unlock parked the commission run lock in the pool
 `FIXED` · low (commission silently stops being paid) · §32 S7 · from the PR #198 verification, §7
 

@@ -1808,6 +1808,13 @@ const MUTATIONS = [
     to: `        if (false)
             return res.status(400).json({ success: false,`,
   },
+  {
+    id: 'M242', file: 'backend/domains/payment/paymentOrder.routes.js', config: PG,
+    test: 'backend/tests/routes/queueWritePermissionPg.test.js',
+    why: "a queue manager's one screen cannot load its own queue",
+    from: `router.get('/payment-queue', authenticate, queueManagerOrPermission('canManageMerchants'),`,
+    to: `router.get('/payment-queue', authenticate, hasPermission('canViewTransactions'),`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that
