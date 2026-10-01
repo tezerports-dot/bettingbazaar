@@ -2714,6 +2714,99 @@ const CASES = [
       }
     },
   },
+
+  // ── Live Cycles: the controls nothing pressed ────────────────────────────
+  // Measured 2026-10-01 (route coverage + the control inventory): Pause,
+  // Resume and Balance Book on /live-cycles had no pass that pressed them, and
+  // `POST /api/admin/cycles/:cycleId/equalize` was reached only by refusals.
+  // They act on the LIVE board, so each case targets the FULL DAY cycle (the
+  // longest window, so no phase boundary lands mid-case), checks the 30 MIN
+  // cycle as the bystander, and puts back what it changed in a `finally`.
+  {
+    id: 'admin/live-cycles/pause-resume',
+    panel: 'admin-panel',
+    what: 'Pause the full-day cycle, then resume it',
+    async run(page, cfg, base) {
+      const cycleRow = async (type) => (await pgQuery(
+        `SELECT cycle_id, status, is_paused FROM cycles
+          WHERE type = $1 AND status IN ('OPEN','PAUSED') AND end_time > now()
+          ORDER BY start_time DESC LIMIT 1`, [type])).rows[0];
+      const target = await cycleRow('FULL_DAY');
+      if (!target) return ['NOT DRIVEN', 'no open FULL_DAY cycle on the board'];
+      if (target.status !== 'OPEN') return ['NOT DRIVEN', `the FULL_DAY cycle is ${target.status}, not OPEN`];
+      const bystander = await cycleRow('30_MIN');
+      const statusOf = async (id) => (await pgQuery('SELECT status, is_paused FROM cycles WHERE cycle_id = $1', [id])).rows[0];
+      try {
+        await go(page, cfg, base, '/live-cycles');
+        const card = () => page.locator('.card').filter({ hasText: 'FULL DAY' }).first();
+        if (await card().count() === 0) return ['NOT DRIVEN', 'no FULL DAY card on /live-cycles'];
+
+        await card().getByRole('button', { name: /^\s*Pause\s*$/ }).click({ timeout: 8000 });
+        if (await confirmWith(page, 'Pause') === 'stuck') return ['FAILED', 'the Pause confirmation could not be pressed'];
+        await settle(page, 4000);
+        const paused = await statusOf(target.cycle_id);
+        if (paused.status !== 'PAUSED' || !paused.is_paused) {
+          return ['FAILED', `after Pause the cycle is ${paused.status}, is_paused ${paused.is_paused}`];
+        }
+        if (bystander && (await statusOf(bystander.cycle_id)).status !== bystander.status) {
+          return ['FAILED', 'the 30 MIN BYSTANDER cycle changed state too'];
+        }
+        // The screen, without a reload: the card now offers Resume.
+        const resume = card().getByRole('button', { name: /^\s*Resume\s*$/ });
+        if (await resume.count() === 0) return ['FAILED', 'server paused it; the card never offered Resume'];
+
+        await resume.click({ timeout: 8000 });
+        if (await confirmWith(page, 'Resume') === 'stuck') return ['FAILED', 'the Resume confirmation could not be pressed'];
+        await settle(page, 4000);
+        const resumed = await statusOf(target.cycle_id);
+        if (resumed.is_paused || resumed.status === 'PAUSED') return ['FAILED', `after Resume the cycle is ${resumed.status}`];
+        return ['DROVE', `FULL_DAY ${target.cycle_id}: OPEN → PAUSED → ${resumed.status}; 30 MIN bystander unchanged`];
+      } finally {
+        // Never leave the live board paused (trap 10).
+        const now = await statusOf(target.cycle_id);
+        if (now?.is_paused) await db.markets.setPaused(target.cycle_id, false).catch(() => {});
+      }
+    },
+  },
+  {
+    id: 'admin/live-cycles/balance-book',
+    panel: 'admin-panel',
+    what: 'Balance the full-day cycle\'s phantom book',
+    async run(page, cfg, base) {
+      const { rows: [target] } = await pgQuery(
+        `SELECT cycle_id, phantom_delhi_paise::bigint AS d, phantom_bombay_paise::bigint AS b, phantom_balanced
+           FROM cycles WHERE type = 'FULL_DAY' AND status = 'OPEN' AND end_time > now()
+          ORDER BY start_time DESC LIMIT 1`);
+      if (!target) return ['NOT DRIVEN', 'no open FULL_DAY cycle on the board'];
+      // The button is offered only while the book is unbalanced, so the case
+      // makes it unbalanced — the state an operator presses it in.
+      await pgQuery(
+        `UPDATE cycles SET phantom_delhi_paise = phantom_delhi_paise + 70000, phantom_balanced = FALSE WHERE cycle_id = $1`,
+        [target.cycle_id]);
+      try {
+        await go(page, cfg, base, '/live-cycles');
+        const card = page.locator('.card').filter({ hasText: 'FULL DAY' }).first();
+        const button = card.getByRole('button', { name: /Balance Book/i });
+        if (await button.count() === 0) return ['FAILED', 'an unbalanced FULL DAY book offered no Balance Book button'];
+        await button.click({ timeout: 8000 });
+        if (await confirmWith(page, 'Equalizer') === 'stuck') return ['FAILED', 'the Balance confirmation could not be pressed'];
+        await settle(page, 4000);
+        const { rows: [after] } = await pgQuery(
+          `SELECT phantom_delhi_paise::bigint AS d, phantom_bombay_paise::bigint AS b, phantom_balanced FROM cycles WHERE cycle_id = $1`,
+          [target.cycle_id]);
+        if (!after.phantom_balanced) return ['FAILED', 'the book is not marked balanced'];
+        if (String(after.d) !== String(after.b)) return ['FAILED', `phantom pools still differ: ${after.d} / ${after.b}`];
+        const audited = (await pgQuery(
+          `SELECT 1 FROM audit_logs WHERE details::text LIKE $1 AND created_at > now() - interval '5 minutes' LIMIT 1`,
+          [`%${target.cycle_id}%`]).catch(() => ({ rows: [] }))).rows.length > 0;
+        return ['DROVE', `phantom pools levelled to ₹${Number(after.d) / 100} each${audited ? ', audit row written' : ''}`];
+      } finally {
+        await pgQuery(
+          `UPDATE cycles SET phantom_delhi_paise = $2, phantom_bombay_paise = $3, phantom_balanced = $4 WHERE cycle_id = $1`,
+          [target.cycle_id, target.d, target.b, target.phantom_balanced]).catch(() => {});
+      }
+    },
+  },
 ];
 
 // ════════════════════════════════════════════════════════════════════════════

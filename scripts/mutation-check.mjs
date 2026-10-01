@@ -1761,6 +1761,14 @@ const MUTATIONS = [
     from: `  if (signers.length > 1) {`,
     to: `  if (false) {`,
   },
+  {
+    id: 'M236', file: 'database/repositories/stats.js', config: PG,
+    test: 'backend/tests/routes/analyticsRoutesPg.test.js',
+    why: "the dashboard's bet count counts the house's phantom bets as player bets",
+    from: `     FROM bets
+    WHERE NOT is_phantom\`, [], 'stats_betting',`,
+    to: `     FROM bets\`, [], 'stats_betting',`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

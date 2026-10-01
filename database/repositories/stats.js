@@ -75,7 +75,16 @@ export async function merchantStats() {
   };
 }
 
-/** Bet counts and staked volume. Volume is summed in paise and shown in rupees. */
+/**
+ * Bet counts and staked volume. Volume is summed in paise and shown in rupees.
+ *
+ * PLAYER bets only. A phantom bet is the house's own liquidity on the board,
+ * never staked from a wallet and never paid out, and every money figure on the
+ * dashboard (`platformFinance`, `dailyFinance`) already leaves it out. This
+ * counted it, so the dashboard's bet tile and its finance tiles described two
+ * different populations — measured 2026-10-01, the tile moved by one for every
+ * phantom bet an agent placed.
+ */
 export async function bettingStats() {
   const { rows } = await pgQuery(
     `SELECT
@@ -86,7 +95,8 @@ export async function bettingStats() {
        COUNT(*) FILTER (WHERE status = 'WON')::int             AS won,
        COUNT(*) FILTER (WHERE status = 'LOST')::int            AS lost,
        COALESCE(SUM(payout_paise), 0)                          AS total_paid_out
-     FROM bets`, [], 'stats_betting',
+     FROM bets
+    WHERE NOT is_phantom`, [], 'stats_betting',
   );
   const r = rows[0];
   return {
