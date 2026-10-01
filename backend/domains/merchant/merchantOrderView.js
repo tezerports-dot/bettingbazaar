@@ -25,8 +25,8 @@
  * ── What a merchant is NOT told ────────────────────────────────────────────
  * Beyond the player's identity: the platform's treasury split
  * (`depositAllocation`, `reserveAllocation`, `depositPolicySnapshot`), the risk
- * verdicts on their own conduct (`redFlagged*`, `requiresReview`, the review
- * notes), the admin actors behind a decision (`assignedBy`, `reviewedBy`,
+ * verdicts on their own conduct (`redFlagged*`, the red-flag
+ * notes), the admin actors behind a decision (`assignedBy`, `approvedBy`,
  * `disputeResolvedBy`, `mediatorId`), and the tamper tag (`orderHmac`). A
  * merchant told they are red-flagged is a merchant told to change behaviour
  * before an investigation finishes.
@@ -107,7 +107,6 @@ export const MERCHANT_FORBIDDEN_ORDER_FIELDS = Object.freeze([
   'userPhone', 'upiId', 'userUsdtAddress', 'merchantSnapshot',
   'depositAllocation', 'reserveAllocation', 'depositPolicySnapshot',
   'redFlagged', 'redFlagReason', 'redFlaggedBy', 'redFlaggedAt',
-  'requiresReview', 'reviewedBy', 'reviewedAt', 'reviewAction', 'reviewNotes',
   'assignedBy', 'approvedBy', 'rejectedBy', 'disputeResolvedBy',
   'disputeEscalationNotes', 'mediatorId', 'orderHmac',
   'warningIssued', 'requiresVideoKYC', 'utrWarningData', 'platformFeeRate',

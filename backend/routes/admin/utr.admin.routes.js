@@ -7,21 +7,16 @@
  * belongs to one order, enforced by the registry's primary key: reusing one is
  * either a mistake or a fraud attempt, and both are refused by the same index.
  *
- * ── Two things this file used to get wrong ──────────────────────────────────
+ * ── A thing this file used to get wrong ──────────────────────────────────
  *
  * 1. FLAGGING WAS UNATTRIBUTED. `{ $set: { status: 'FRAUD' } }` — no actor, no
  *    reason. A fraud marking nobody signed is one nobody can defend in a
  *    dispute, and it blocks a real customer who then has nobody to appeal to.
  *    `flagFraud` requires both, and the row insists.
  *
- * 2. THE RESOLVE ROUTE CALLED `.save()` ON A PLAIN OBJECT. It read the order
- *    through the repository, mutated seven fields on the returned object, and
- *    called a method that does not exist — so every fraud resolution threw a
- *    TypeError after appearing to do its work.
  */
 import { express, authenticate, hasPermission } from './_adminShared.js';
 import { db } from '#db';
-import { cancelOrder as cancelOrderState } from '../../domains/payment/orderLifecycle.service.js';
 
 const router = express.Router();
 
@@ -106,27 +101,6 @@ router.put('/utr-registry/:utr/clear', authenticate, hasPermission('canManageUtr
   }
 });
 
-// ─── GET /api/admin/utr/flagged — orders held for review ─────────────────────
-router.get('/utr/flagged', authenticate, hasPermission('canManageUtr'), async (req, res) => {
-  try {
-    const { page = 1, limit = 50 } = req.query;
-    const size = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 200);
-    const result = await db.orders.findOrders({
-      requiresReview: true,
-      limit: size,
-      offset: Math.max(parseInt(page, 10) - 1, 0) * size,
-    });
-    res.json({
-      success: true,
-      flaggedOrders: result.orders,
-      pagination: { page: Math.max(parseInt(page, 10) || 1, 1), limit: size, total: result.total },
-    });
-  } catch (error) {
-    console.error('GET /utr/flagged error:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch flagged orders' });
-  }
-});
-
 /**
  * The review queue proper: references somebody tried to REUSE.
  *
@@ -177,69 +151,10 @@ router.get('/utr/user-history/:userId', authenticate, hasPermission('canManageUt
   }
 });
 
-/**
- * POST /api/admin/utr/resolve/:orderId — clear an order held for review.
- *
- * `reject` CANCELS the order, and it goes through the state machine rather than
- * being written onto the row: cancelling has a legal from-set, it releases a
- * withdrawal's escrow, and it belongs in the order's history. This route used to
- * set `status = 'CANCELLED'` directly and then call `.save()` on a plain object
- * — so the cancellation neither happened nor was recorded, and the handler
- * threw.
- */
-router.post('/utr/resolve/:orderId', authenticate, hasPermission('canManageUtr'), async (req, res) => {
-  try {
-    const { action, notes } = req.body || {};
-    if (!['approve', 'reject'].includes(action)) {
-      return res.status(400).json({ success: false, message: 'action must be approve or reject' });
-    }
-
-    const order = await db.orders.getOrderRecord(req.params.orderId);
-    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-
-    const review = {
-      requiresReview: false,
-      reviewedBy: req.user.userId,
-      reviewedAt: new Date(),
-      reviewAction: action,
-      reviewNotes: notes || '',
-    };
-
-    if (action === 'reject') {
-      // The transition carries the review fields with it, so an order cannot be
-      // found CANCELLED without the decision that cancelled it.
-      const cancelled = await cancelOrderState(order.orderId, {
-        set: {
-          ...review,
-          cancelReason: `UTR fraud: ${order.utrWarningMessage || 'admin review'}`,
-          cancelledAt: new Date(),
-        },
-      });
-      if (!cancelled.ok) {
-        return res.status(409).json({
-          success: false,
-          message: `Cannot cancel an order that is ${cancelled.status ?? 'missing'}`,
-        });
-      }
-      await db.audit.recordDetailed({
-        performedBy: req.user.userId, action: 'UTR_REVIEW_REJECTED', category: 'SECURITY',
-        targetType: 'PaymentOrder', targetId: order.orderId,
-        details: { notes: notes || '', utr: order.utrNumber },
-      });
-      return res.json({ success: true, message: 'Order rejected', order: cancelled.order });
-    }
-
-    const approved = await db.orders.setOrderFields(order.orderId, review);
-    await db.audit.recordDetailed({
-      performedBy: req.user.userId, action: 'UTR_REVIEW_APPROVED', category: 'SECURITY',
-      targetType: 'PaymentOrder', targetId: order.orderId,
-      details: { notes: notes || '', utr: order.utrNumber },
-    });
-    res.json({ success: true, message: 'Order approved', order: approved });
-  } catch (error) {
-    console.error('POST /utr/resolve error:', error);
-    res.status(500).json({ success: false, message: 'Failed to resolve order' });
-  }
-});
+// `GET /utr/flagged` and `POST /utr/resolve/:orderId` were deleted 2026-10-01
+// (owner decision). They worked orders with `requires_review` set, and nothing
+// on the platform ever set it — a queue that was empty forever (§32 S4). The
+// column went with them. Reused references are this file's real queue:
+// `/utr/contested`, worked on the admin Payment References screen.
 
 export default router;

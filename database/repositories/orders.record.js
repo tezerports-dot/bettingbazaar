@@ -79,9 +79,6 @@ export function toOrder(r) {
     utrWarningMessage: r.utr_warning_message,
     utrWarningData: r.utr_warning_data,
 
-    requiresReview: r.requires_review,
-    reviewedBy: r.reviewed_by, reviewedAt: r.reviewed_at,
-    reviewAction: r.review_action, reviewNotes: r.review_notes,
     rejectedReason: r.rejected_reason,
 
     disputeReason: r.dispute_reason,
@@ -221,9 +218,6 @@ const SETTABLE = Object.freeze({
   utrWarningMessage: 'utr_warning_message',
   utrWarningData: ['utr_warning_data', JSON.stringify],
 
-  requiresReview: 'requires_review',
-  reviewedBy: 'reviewed_by', reviewedAt: 'reviewed_at',
-  reviewAction: 'review_action', reviewNotes: 'review_notes',
   rejectedReason: 'rejected_reason',
 
   disputeReason: 'dispute_reason',
@@ -857,7 +851,7 @@ export async function getOrderRecord(orderId) {
 export async function findOrders({
   userId = null, merchantId = null, state = null, states = null,
   orderType = null, currency = null, since = null, until = null,
-  redFlagged = null, requiresReview = null, disputedOnly = false,
+  redFlagged = null, disputedOnly = false,
   limit = 50, cursor = null, offset = 0,
 } = {}) {
   const where = []; const params = [];
@@ -889,9 +883,6 @@ export async function findOrders({
   if (until) add('created_at <= $?', until);
   if (redFlagged !== null && redFlagged !== undefined) {
     where.push(redFlagged ? 'red_flagged' : 'NOT red_flagged');
-  }
-  if (requiresReview !== null && requiresReview !== undefined) {
-    where.push(requiresReview ? 'requires_review' : 'NOT requires_review');
   }
   if (disputedOnly) where.push("state = 'DISPUTED'");
   if (cursor?.createdAt && cursor?.orderId) {
@@ -1592,7 +1583,6 @@ export async function orderCounts({ since = null } = {}) {
        COUNT(*) FILTER (WHERE state = 'COMPLETED')::int AS completed,
        COUNT(*) FILTER (WHERE state = 'DISPUTED')::int AS disputed,
        COUNT(*) FILTER (WHERE red_flagged)::int AS flagged,
-       COUNT(*) FILTER (WHERE requires_review)::int AS awaiting_review,
        COALESCE(SUM(token_amount_paise) FILTER (WHERE state = 'COMPLETED'), 0) AS completed_paise
      FROM order_states
      ${since ? 'WHERE created_at >= $1' : ''}`,
@@ -1602,7 +1592,7 @@ export async function orderCounts({ since = null } = {}) {
   return {
     total: r.total, pending: r.pending, active: r.active,
     completed: r.completed, disputed: r.disputed,
-    flagged: r.flagged, awaitingReview: r.awaiting_review,
+    flagged: r.flagged,
     completedValue: rupees(r.completed_paise),
   };
 }

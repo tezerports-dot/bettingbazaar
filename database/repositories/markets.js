@@ -26,8 +26,6 @@ import { pgQuery, withTransaction } from '../client.js';
 import { rupeesToPaise, paiseToRupees } from '../../backend/shared/money.js';
 
 
-/** The states in which a cycle is still taking or holding live bets. */
-export const LIVE_STATUSES = Object.freeze(['OPEN', 'MERGED', 'CLOSED', 'RESULT_DECLARED']);
 export const SIDES = Object.freeze(['DELHI', 'BOMBAY']);
 
 const COLUMNS = `cycle_id, cycle_type, start_time, end_time, status,
@@ -189,37 +187,6 @@ export async function listActiveCycles() {
     [['OPEN', 'MERGED']], 'cycle_list_active',
   );
   return rows.map(toCycle);
-}
-
-/**
- * The cycle covering an instant, for a type.
- *
- * A two-minute tolerance either side, because the caller's clock and the
- * server's differ and a page loading on the boundary must still find the round
- * it is showing. Falls back to the most recent declared result: during the
- * celebration window the current cycle has completed and the next has not
- * opened, and returning nothing would blank the page mid-animation.
- */
-export async function getCycleAt(cycleType, atMs, { toleranceMs = 120_000 } = {}) {
-  const at = new Date(Number(atMs));
-  const { rows } = await pgQuery(
-    `SELECT ${COLUMNS} FROM cycles
-      WHERE cycle_type = $1
-        AND start_time <= $2::timestamptz + ($3 || ' milliseconds')::interval
-        AND end_time   >= $2::timestamptz - ($3 || ' milliseconds')::interval
-        AND status = ANY($4::text[])
-      ORDER BY start_time DESC LIMIT 1`,
-    [String(cycleType), at, String(toleranceMs), LIVE_STATUSES], 'cycle_get_at',
-  );
-  if (rows[0]) return toCycle(rows[0]);
-
-  const { rows: declared } = await pgQuery(
-    `SELECT ${COLUMNS} FROM cycles
-      WHERE cycle_type = $1 AND winner IS NOT NULL
-      ORDER BY end_time DESC LIMIT 1`,
-    [String(cycleType)], 'cycle_get_last_declared',
-  );
-  return toCycle(declared[0]);
 }
 
 /**
@@ -758,26 +725,6 @@ export async function setPendingResult(cycleId, side) {
     [String(cycleId), side], 'cycle_set_pending',
   );
   return rows[0] ? { ok: true, cycle: toCycle(rows[0]) } : { ok: false, reason: 'ALREADY_DECLARED' };
-}
-
-/**
- * The last N cycles with a declared result, newest first.
- *
- * `winner IS NOT NULL` rather than a status filter, because that is the
- * property the caller actually wants: a cycle whose result is in. Filtering on
- * status alone would miss a declared cycle whose settlement is still running,
- * and would include a COMPLETED one whose winner was somehow never written —
- * which the table now refuses, but the query should not depend on that.
- */
-export async function recentResults(cycleType, { limit = 10 } = {}) {
-  const { rows } = await pgQuery(
-    `SELECT ${COLUMNS} FROM cycles
-      WHERE cycle_type = $1 AND winner IS NOT NULL
-      ORDER BY end_time DESC LIMIT $2`,
-    [String(cycleType), Math.min(Math.max(Number(limit) || 10, 1), 200)],
-    'cycle_recent_results',
-  );
-  return rows.map(toCycle);
 }
 
 /**

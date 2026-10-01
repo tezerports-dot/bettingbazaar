@@ -2811,11 +2811,18 @@ ALTER TABLE order_states ADD COLUMN IF NOT EXISTS utr_warning_message TEXT;
 ALTER TABLE order_states ADD COLUMN IF NOT EXISTS utr_warning_data JSONB;
 
 -- Review, dispute and resolution. Every decision names WHO made it.
-ALTER TABLE order_states ADD COLUMN IF NOT EXISTS requires_review BOOLEAN NOT NULL DEFAULT FALSE;
-ALTER TABLE order_states ADD COLUMN IF NOT EXISTS reviewed_by TEXT;
-ALTER TABLE order_states ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ;
-ALTER TABLE order_states ADD COLUMN IF NOT EXISTS review_action TEXT;
-ALTER TABLE order_states ADD COLUMN IF NOT EXISTS review_notes TEXT;
+-- `requires_review` and its four `review_*` columns were DROPPED 2026-10-01
+-- (owner decision). They held an "orders held for review" queue that nothing
+-- ever filled: no path on the platform set `requires_review`, so the queue
+-- route answered an empty list forever and its resolve route had nothing to
+-- act on (§32 S4). Reused references are caught by `utr_registry` and worked
+-- on the Payment References screen. Dropped, not left: a column nothing writes
+-- is the next reader's false lead (§6).
+ALTER TABLE order_states DROP COLUMN IF EXISTS requires_review;
+ALTER TABLE order_states DROP COLUMN IF EXISTS reviewed_by;
+ALTER TABLE order_states DROP COLUMN IF EXISTS reviewed_at;
+ALTER TABLE order_states DROP COLUMN IF EXISTS review_action;
+ALTER TABLE order_states DROP COLUMN IF EXISTS review_notes;
 ALTER TABLE order_states ADD COLUMN IF NOT EXISTS rejected_reason TEXT;
 -- The merchant's evidence for rejecting a PAID order — a bank statement
 -- screenshot or a photo showing the credit never arrived. Rejecting a PAID
@@ -2912,8 +2919,6 @@ CREATE INDEX IF NOT EXISTS order_states_expiring_idx ON order_states (expires_at
   WHERE expires_at IS NOT NULL AND state IN ('PENDING_QUEUE', 'ASSIGNED', 'PROCESSING');
 CREATE INDEX IF NOT EXISTS order_states_disputes_idx ON order_states (dispute_raised_at DESC)
   WHERE state = 'DISPUTED';
-CREATE INDEX IF NOT EXISTS order_states_review_idx ON order_states (created_at)
-  WHERE requires_review;
 
 -- ── UTR REGISTRY: the lifecycle, and why the rows are permanent ─────────────
 --

@@ -3379,9 +3379,9 @@ checked and is correct; the evidence is named.
 
 | Measure | Count |
 |---|---|
-| Route declarations in `backend/**` | 321 |
-| Reachable with **no auth middleware** | 44 |
-| Staff routes carrying an **area** (permission key) | 198 |
+| Route declarations in `backend/**` | 314 |
+| Reachable with **no auth middleware** | 41 |
+| Staff routes carrying an **area** (permission key) | 196 |
 | Staff routes a sub-admin can **never** be given (full admin only) | 7 |
 
 A count moving is not by itself a defect — it is a prompt to read the
@@ -3411,14 +3411,11 @@ new route and decide. Each of the three questions is defined in §2.
 - `GET /stats  (backend/routes/sse.routes.js)`
 - `GET /status  (backend/domains/support/support.routes.js)`
 - `GET /v1/branding  (backend/domains/user/user.routes.js)`
-- `GET /v1/content/ai-analysis  (backend/domains/user/user.routes.js)`
 - `GET /v1/content/faq  (backend/domains/user/user.routes.js)`
 - `GET /v1/content/promo/:location  (backend/domains/user/user.routes.js)`
 - `GET /v1/content/support-links  (backend/domains/user/user.routes.js)`
-- `GET /v1/game/cycle/:type/:startTime  (backend/domains/user/user.routes.js)`
 - `GET /v1/game/cycles/history  (backend/domains/user/user.routes.js)`
 - `GET /v1/system/config  (backend/domains/user/user.routes.js)`
-- `GET /v1/system/time  (backend/domains/user/user.routes.js)`
 - `GET /v1/token/rates  (backend/domains/user/user.routes.js)`
 - `GET /v1/tokens/rate  (backend/domains/user/user.routes.js)`
 - `GET /v1/winners  (backend/routes/winners.routes.js)`
@@ -3452,9 +3449,9 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 476 |
+| `pgQuery` call sites | 473 |
 | Parameters only (safe by construction) | 320 |
-| Interpolating into statement text (each needs a reading) | 153 |
+| Interpolating into statement text (each needs a reading) | 150 |
 | Statement text built elsewhere and passed in (each needs a reading) | 3 |
 
 <details><summary>Call sites whose statement text is built elsewhere</summary>

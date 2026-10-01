@@ -117,20 +117,6 @@ describePg('the domains written from scratch', () => {
       expect(active).not.toContain(`c-${ID}-dead`);
     });
 
-    it('finds the cycle covering an instant, and falls back to the last result', async () => {
-      const cycle = await makeCycle();
-      const midpoint = new Date(cycle.startTime).getTime() + 30_000;
-      expect((await markets.getCycleAt('30_MIN', midpoint)).cycleId).toBe(`c-${ID}`);
-
-      // Outside every live window: during the celebration the current cycle
-      // has completed and the next has not opened, so returning nothing would
-      // blank the page mid-animation.
-      await markets.declareWinner(`c-${ID}`, 'DELHI');
-      const far = await markets.getCycleAt('30_MIN', Date.now() + 86_400_000);
-      expect(far).not.toBeNull();
-      expect(far.winner).not.toBeNull();
-    });
-
     it('writes the winner and the status in ONE statement', async () => {
       await makeCycle();
       const r = await markets.declareWinner(`c-${ID}`, 'DELHI', { by: 'engine', confidence: 0.9 });

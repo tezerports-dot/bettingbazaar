@@ -112,15 +112,13 @@ export async function operationStats() {
        COUNT(*) FILTER (WHERE state IN ('ASSIGNED', 'PROCESSING'))::int AS pending_orders,
        COUNT(*) FILTER (WHERE state = 'PENDING_QUEUE')::int             AS queued_orders,
        COUNT(*) FILTER (WHERE state = 'DISPUTED')::int                  AS active_disputes,
-       COUNT(*) FILTER (WHERE red_flagged AND state <> 'COMPLETED')::int AS flagged,
-       COUNT(*) FILTER (WHERE requires_review)::int                     AS awaiting_review
+       COUNT(*) FILTER (WHERE red_flagged AND state <> 'COMPLETED')::int AS flagged
      FROM order_states`, [], 'stats_operations',
   );
   const r = rows[0];
   return {
     pendingOrders: r.pending_orders, queuedOrders: r.queued_orders,
     activeDisputes: r.active_disputes, flagged: r.flagged,
-    awaitingReview: r.awaiting_review,
   };
 }
 

@@ -32,7 +32,7 @@ router.get('/operations/overview', authenticate, hasPermission('canViewAnalytics
   try {
     // EIGHT names were destructured from SEVEN promises here. `orderCounts()`
     // landed in `pendingOrders` — the whole `{total, pending, active,
-    // completed, disputed, flagged, awaitingReview, completedValue}` object —
+    // completed, disputed, flagged, completedValue}` object —
     // and `openDisputes` got nothing at all.
     //
     // Both were then rendered straight into the page, so React threw

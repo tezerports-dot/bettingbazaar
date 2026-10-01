@@ -24,7 +24,6 @@
  * BUG-U12 — New: GET /v1/game/winners  → real top-winners from settled bets
  *                (was 100% random mock data in WinnersPage.tsx)
  *
- * BUG-U14 — New: GET /v1/content/ai-analysis  → last-10-cycles pattern summary
 
  *
  * BUG-U19 — New: GET /v1/content/support-links  → admin-configured WhatsApp /
@@ -106,30 +105,6 @@ router.get('/cycles/:cycleId', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// GET /api/v1/game/cycle/:type/:startTime  (public)
-// Used by realBackend.getCycleState()
-// ─────────────────────────────────────────────────────────────────────────────
-router.get('/v1/game/cycle/:type/:startTime', async (req, res) => {
-  try {
-    const { type, startTime } = req.params;
-    const startMs = parseInt(startTime, 10);
-
-    // The tolerance and the celebration-window fallback both live in the
-    // repository now: a page loading on a cycle boundary must still find the
-    // round it is showing, and during the celebration the current cycle has
-    // completed while the next has not opened — returning nothing there blanks
-    // the page mid-animation.
-    const cycle = await db.markets.getCycleAt(type, startMs);
-
-    if (!cycle) return res.status(404).json({ success: false, message: 'Cycle not found' });
-    res.json({ success: true, cycle: sanitiseCycleForUser(cycle) });
-  } catch (error) {
-    console.error('Get cycle state error:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch cycle state' });
-  }
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
 // GET /api/v1/game/cycles/history  (public)
 // BUG-U2 FIX: Returns both delhiPool AND totalDelhi (aliases).
 // ─────────────────────────────────────────────────────────────────────────────
@@ -158,42 +133,6 @@ router.get('/v1/game/cycles/history', async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 // AUDIT REMOVED: GET /v1/game/winners — superseded by winners.routes.js GET /v1/winners
 // The new endpoint merges real winners + admin-curated fake winners (FakeWinner model).
-
-// ─────────────────────────────────────────────────────────────────────────────
-// GET /api/user/:userId/bets  (auth required)
-// Users can only fetch their own bets. isPhantom:false enforced.
-// ─────────────────────────────────────────────────────────────────────────────
-router.get('/user/:userId/bets', authenticate, async (req, res) => {
-  try {
-    const { userId } = req.params;
-    const { limit = 50, skip = 0, cycleId, status } = req.query;
-    // SEC 2.7 FIX: cap pagination to prevent DoS
-    const parsedLimit = Math.min(Math.max(parseInt(limit) || 50, 1), 100);
-    const parsedSkip  = Math.max(parseInt(skip) || 0, 0);
-
-    if (req.user.userId.toString() !== userId) {
-      return res.status(403).json({ success: false, message: 'Access denied' });
-    }
-
-    // Phantom bets are house liquidity placed under a managed account. They
-    // are excluded by DEFAULT in the repository — showing a player wagers they
-    // never made is not a display bug, it is a dispute.
-    const { bets, total } = await db.bets.listUserBets(userId, {
-      cycleId: cycleId || null,
-      status: status || null,
-      limit: parsedLimit,
-    });
-
-    res.json({
-      success: true,
-      bets,
-      pagination: { total, limit: parsedLimit, skip: parsedSkip }
-    });
-  } catch (error) {
-    console.error('Get user bets error:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch bets' });
-  }
-});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/v1/user/:id/data  (auth required)
@@ -358,10 +297,6 @@ router.put('/user/:userId/bank-details', authenticate, async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// GET /api/user/:userId/transactions  (auth required)
-// BUG-U11 FIX: Transaction history for WalletModal
-// ─────────────────────────────────────────────────────────────────────────────
-// ─────────────────────────────────────────────────────────────────────────────
 // GET /api/user/referrals — a referrer's own report
 //
 // Deliberately NOT on the wallet screen. Only the DISBURSED portion ever
@@ -435,48 +370,6 @@ router.get('/user/bet-limits', authenticate, async (req, res) => {
   }
 });
 
-router.get('/user/:userId/transactions', authenticate, async (req, res) => {
-  try {
-    const { userId } = req.params;
-    if (req.user.userId.toString() !== userId) {
-      return res.status(403).json({ success: false, message: 'Access denied' });
-    }
-
-    const { limit = 30, skip = 0 } = req.query;
-    // SEC 2.7 FIX: cap pagination to prevent DoS
-    const parsedLimit = Math.min(Math.max(parseInt(limit) || 30, 1), 100);
-    const parsedSkip  = Math.max(parseInt(skip) || 0, 0);
-
-    // The player's funding history comes from their ORDERS, which is where a
-    // deposit or a withdrawal actually lives. The separate transaction
-    // collection this read was a projection written alongside them, and a
-    // projection of one store by another is a second record that can disagree
-    // with the first — it is deleted.
-    const { orders, total } = await db.orders.findOrders({
-      userId,
-      states: null,
-      limit: parsedLimit,
-    });
-
-    res.json({
-      success: true,
-      transactions: orders.map((o) => ({
-        id:        o.orderId,
-        type:      o.type,
-        amount:    o.tokenAmount,
-        status:    o.status,
-        reference: o.utr || o.orderId || '',
-        note:      o.cancelReason || o.rejectedReason || '',
-        createdAt: o.createdAt,
-      })),
-      pagination: { total, limit: parsedLimit, skip: parsedSkip }
-    });
-  } catch (error) {
-    console.error('Get transactions error:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch transactions' });
-  }
-});
-
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/v1/system/config  (public)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -491,18 +384,6 @@ router.get('/v1/system/config', async (req, res) => {
     console.error('System config error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch config' });
   }
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// GET /api/v1/system/time  (public)
-// ─────────────────────────────────────────────────────────────────────────────
-router.get('/v1/system/time', (req, res) => {
-  res.json({
-    success:    true,
-    serverTime: Date.now(),
-    unixtime:   Date.now(),
-    iso:        new Date().toISOString()
-  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -573,74 +454,6 @@ router.get('/v1/content/support-links', async (req, res) => {
   } catch (error) {
     console.error('Support links error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch support links' });
-  }
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// GET /api/v1/content/ai-analysis  (public)
-// BUG-U14 FIX: Reads last 10 completed cycles and returns a structured
-// pattern summary (streak, dominant side, win rates, prediction confidence).
-// ─────────────────────────────────────────────────────────────────────────────
-router.get('/v1/content/ai-analysis', async (req, res) => {
-  try {
-    const { type = 'THIRTY_MIN' } = req.query;
-    // Filtered on the WINNER, not the status: a cycle whose result is in is
-    // what this reads, and a status filter would miss a declared cycle whose
-    // settlement is still running.
-    const cycles = await db.markets.recentResults(type, { limit: 10 });
-
-    if (!cycles.length) {
-      return res.json({
-        success: true,
-        cached: false,
-        text: 'Insufficient data for analysis. Play more cycles to unlock AI predictions.',
-        data: null
-      });
-    }
-
-    const delhiWins  = cycles.filter(c => c.winner === 'DELHI').length;
-    const bombayWins = cycles.filter(c => c.winner === 'BOMBAY').length;
-    const total      = cycles.length;
-
-    // Streak: how many consecutive times the same side won (from most recent)
-    let streak = 1;
-    for (let i = 1; i < cycles.length; i++) {
-      if (cycles[i].winner === cycles[0].winner) streak++;
-      else break;
-    }
-
-    const dominant    = delhiWins >= bombayWins ? 'DELHI' : 'BOMBAY';
-    const dominantPct = Math.round((Math.max(delhiWins, bombayWins) / total) * 100);
-    const recentSide  = cycles[0].winner;
-    const streakWord  = streak >= 3 ? `on a ${streak}-game winning streak` : `won the last game`;
-    const confidence  = streak >= 3 ? 'High' : dominantPct >= 70 ? 'Moderate' : 'Low';
-
-    const text =
-      `📊 Last ${total} cycles — Delhi: ${delhiWins} wins | Bombay: ${bombayWins} wins. ` +
-      `${dominant} is dominant at ${dominantPct}% win rate. ` +
-      `${recentSide} ${streakWord}. ` +
-      `Prediction confidence: ${confidence}. ` +
-      `⚠️ Past performance does not guarantee future results.`;
-
-    res.json({
-      success: true,
-      cached: false,
-      text,
-      data: {
-        delhiWins,
-        bombayWins,
-        total,
-        dominant,
-        dominantPct,
-        streak,
-        streakSide: cycles[0].winner,
-        confidence,
-        lastResult: cycles[0].winner
-      }
-    });
-  } catch (error) {
-    console.error('AI analysis error:', error);
-    res.status(500).json({ success: false, message: 'Failed to generate analysis' });
   }
 });
 
