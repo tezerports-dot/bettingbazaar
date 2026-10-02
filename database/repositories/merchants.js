@@ -62,7 +62,8 @@ const COLUMNS = `merchant_id, user_id, name, public_ref, username, mobile, email
   success_rate, avg_response_minutes, dispute_rate, consecutive_rejections,
   consecutive_expiries, assignment_paused_at, assignment_pause_reason, max_concurrent_orders,
   max_concurrent_deposit_orders, max_concurrent_withdrawal_orders,
-  total_orders_completed, total_orders_all, created_at, updated_at`;
+  total_orders_completed, total_orders_all, is_supervisor, supervisor_rail,
+  created_at, updated_at`;
 
 /**
  * The same columns, qualified. A join against a CTE that also has
@@ -179,6 +180,10 @@ function toMerchant(row) {
     maxConcurrentWithdrawalOrders: toInt(row.max_concurrent_withdrawal_orders),
     totalOrdersCompleted: toInt(row.total_orders_completed),
     totalOrdersAll: toInt(row.total_orders_all),
+    // A supervisor runs teams and serves no orders; its rail is what every
+    // team under it settles on (teams.js).
+    isSupervisor: row.is_supervisor === true,
+    supervisorRail: row.supervisor_rail ?? null,
 
     createdAt: row.created_at,
     updatedAt: row.updated_at,

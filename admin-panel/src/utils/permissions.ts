@@ -23,6 +23,7 @@ export const PERMISSION_KEYS = [
   'canManagePhantomAgents',
   'canManageReferrals',
   'canManageMerchants',
+  'canManageTeams',
   'canFundMerchants',
   'canManageMerchantTokenOrders',
   'canManageCommission',

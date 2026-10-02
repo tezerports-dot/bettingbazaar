@@ -93,6 +93,7 @@ import telegramRoutes     from './domains/telegram/telegram.routes.js';
 import referralRedirect   from './routes/referralRedirect.routes.js';
 import userRoutes         from './domains/user/user.routes.js';
 import merchantRoutes     from './domains/merchant/merchant.routes.js';
+import teamMerchantRoutes from './domains/team/team.merchant.routes.js';
 import paymentRoutes      from './domains/payment/payment.routes.js';
 import supportRoutes      from './domains/support/support.routes.js'; // CAP-71: RAG support assistant
 import uploadRoutes       from './routes/upload.routes.js';
@@ -661,6 +662,7 @@ app.use(
   requireCaptcha('merchant-signup'),
 );
 app.use('/api/merchant',  merchantRoutes);
+app.use('/api/merchant',  teamMerchantRoutes);
 app.use('/api/payment', paymentRoutes);
 app.use('/api/support',   supportRoutes); // CAP-71: RAG support assistant (dormant until keys set)
 app.use('/api',           uploadRoutes);

@@ -4248,3 +4248,84 @@ ALTER TABLE order_states DROP COLUMN IF EXISTS requires_video_kyc;
 ALTER TABLE users DROP CONSTRAINT IF EXISTS users_status_check;
 ALTER TABLE users ADD CONSTRAINT users_status_check
   CHECK (status IN ('ACTIVE','BLOCKED','SUSPENDED','DELETED'));
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- SUPERVISORS AND TEAMS (owner, 2026-10-02 — PROJECT_STATUS §3.10, Step 2a)
+-- ═══════════════════════════════════════════════════════════════════════════
+-- A SUPERVISOR is a merchant login with a role and ONE rail, set by an admin.
+-- It runs up to four TEAMS of exactly ten member merchants. A member is in one
+-- team at most — `team_members.merchant_id` is the primary key, so a second
+-- team is unrepresentable rather than merely refused.
+--
+-- The caps (4 teams, 10 members) are not CHECKs — a row cannot count its
+-- siblings — so they are asked inside the statement that writes, under a lock
+-- on the parent row (teams.js). A read in one statement acted on in another
+-- is a snapshot (§32 S6).
+ALTER TABLE merchants ADD COLUMN IF NOT EXISTS is_supervisor BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE merchants ADD COLUMN IF NOT EXISTS supervisor_rail TEXT;
+ALTER TABLE merchants DROP CONSTRAINT IF EXISTS merchants_supervisor_rail;
+-- `IS NOT NULL` is load-bearing: `NULL IN (…)` is NULL, a CHECK passes
+-- anything that is not FALSE, and the first draft therefore admitted a
+-- supervisor with NO rail — measured by teamsPg before it shipped.
+ALTER TABLE merchants ADD CONSTRAINT merchants_supervisor_rail CHECK (
+  (NOT is_supervisor AND supervisor_rail IS NULL)
+  OR (is_supervisor AND supervisor_rail IS NOT NULL
+      AND supervisor_rail IN ('CASH', 'UPI_BANK', 'USDT')));
+
+CREATE TABLE IF NOT EXISTS teams (
+  team_id       TEXT PRIMARY KEY,
+  supervisor_id TEXT NOT NULL REFERENCES merchants (merchant_id),
+  name          TEXT NOT NULL,
+  -- When the team dropped below ten APPROVED members, having been at ten. It
+  -- keeps taking orders until the end of that day (IST) and then stops until
+  -- it is back at ten (owner). NULL while full, and for a team that has never
+  -- been full — which has never worked, so it has no grace day to use.
+  short_since   TIMESTAMPTZ,
+  -- Whether it has EVER been at ten. Distinguishes "dropped to nine today"
+  -- from "never had ten", which the grace rule treats differently.
+  was_full      BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT teams_name_present CHECK (length(btrim(name)) BETWEEN 1 AND 60)
+);
+CREATE INDEX IF NOT EXISTS teams_supervisor_idx ON teams (supervisor_id);
+
+CREATE TABLE IF NOT EXISTS team_members (
+  merchant_id TEXT PRIMARY KEY REFERENCES merchants (merchant_id),
+  team_id     TEXT NOT NULL REFERENCES teams (team_id) ON DELETE CASCADE,
+  status      TEXT NOT NULL DEFAULT 'PENDING',
+  added_by    TEXT NOT NULL,
+  added_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  approved_by TEXT,
+  approved_at TIMESTAMPTZ,
+  CONSTRAINT team_members_status_known CHECK (status IN ('PENDING', 'APPROVED')),
+  -- An approval names who made it and when; a PENDING row names neither.
+  CONSTRAINT team_members_approval_recorded CHECK (
+    (status = 'PENDING' AND approved_by IS NULL AND approved_at IS NULL)
+    OR (status = 'APPROVED' AND approved_by IS NOT NULL AND approved_at IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS team_members_team_idx ON team_members (team_id, status);
+
+-- A supervisor is never a member, and a member is never a supervisor. Both
+-- directions, in the data: a supervisor serving orders in a team they also
+-- supervise would be paid twice for one volume and judge their own red flags.
+CREATE OR REPLACE FUNCTION bb_team_roles_disjoint() RETURNS trigger AS $$
+BEGIN
+  IF TG_TABLE_NAME = 'team_members' THEN
+    IF EXISTS (SELECT 1 FROM merchants WHERE merchant_id = NEW.merchant_id AND is_supervisor) THEN
+      RAISE EXCEPTION 'a supervisor cannot be a team member' USING ERRCODE = '23514',
+        CONSTRAINT = 'team_roles_disjoint';
+    END IF;
+  ELSIF NEW.is_supervisor AND EXISTS (SELECT 1 FROM team_members WHERE merchant_id = NEW.merchant_id) THEN
+    RAISE EXCEPTION 'a team member cannot be a supervisor' USING ERRCODE = '23514',
+      CONSTRAINT = 'team_roles_disjoint';
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS team_members_roles_disjoint ON team_members;
+CREATE TRIGGER team_members_roles_disjoint BEFORE INSERT OR UPDATE ON team_members
+  FOR EACH ROW EXECUTE FUNCTION bb_team_roles_disjoint();
+DROP TRIGGER IF EXISTS merchants_roles_disjoint ON merchants;
+CREATE TRIGGER merchants_roles_disjoint BEFORE INSERT OR UPDATE OF is_supervisor ON merchants
+  FOR EACH ROW EXECUTE FUNCTION bb_team_roles_disjoint();

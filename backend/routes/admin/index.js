@@ -35,6 +35,7 @@ import supportAdminRoutes from '../../domains/support/support.admin.routes.js'; 
 import chatRoutes        from './chat.admin.routes.js'; // Public chat moderation + support-ticket desk
 import androidReleaseRoutes from '../../domains/distribution/androidRelease.admin.routes.js';
 import ipBlocksRoutes from './ipBlocks.admin.routes.js';
+import teamAdminRoutes from '../../domains/team/team.admin.routes.js';
 import { authenticate } from '../../domains/identity/auth.middleware.js';
 
 const router = express.Router();
@@ -62,6 +63,7 @@ router.use('/', revenueRoutes);
 router.use('/', merchantPlatformRoutes);
 router.use('/', paymentModeRoutes);
 router.use('/', ipBlocksRoutes);
+router.use('/', teamAdminRoutes);
 router.use('/', telegramAdminRoutes);
 router.use('/', communicationRoutes);
 router.use('/', operationsRoutes);

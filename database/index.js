@@ -78,6 +78,7 @@ import * as depositPolicy from './repositories/depositPolicy.js';
 import * as merchantCommissionPolicy from './repositories/merchantCommissionPolicy.js';
 import * as paymentModePolicy from './repositories/paymentModePolicy.js';
 import * as cashLinks from './repositories/cashLinks.js';
+import * as teams from './repositories/teams.js';
 import * as stats from './repositories/stats.js';
 import * as utr from './repositories/utr.js';
 
@@ -156,6 +157,7 @@ export const db = Object.freeze({
   merchantCommissionPolicy,
   paymentModePolicy,
   cashLinks,
+  teams,
   operations,
   supportDocuments,
   stats,
@@ -168,4 +170,4 @@ export { users, identity, ipBlocks, telegram, merchants, chat, config };
 export { treasury, settlements, merchantSettlements, adminIssuance, balanceAdjustments };
 export { adminTokenConsiderations };
 export { markets, games, content, androidReleases, engagement, social, referrals };
-export { audit, cashLinks, depositPolicy, merchantCommissionPolicy, paymentModePolicy, operations, paymentConfig, supportDocuments, stats, utr };
+export { audit, cashLinks, teams, depositPolicy, merchantCommissionPolicy, paymentModePolicy, operations, paymentConfig, supportDocuments, stats, utr };
