@@ -103,8 +103,8 @@ const COPY: Record<string, { icon: string; title: string; body: string; blamePla
     icon: '📣',
     title: 'Join our Telegram channel',
     body: 'Membership of our official channel is required to bet, play and use your wallet. '
-      + 'Your request is approved automatically. Your balance, KYC status and referral '
-      + 'position are unchanged.',
+      + 'Your request is approved automatically. Your balance and referral position '
+      + 'are unchanged.',
   },
 };
 

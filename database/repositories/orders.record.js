@@ -70,7 +70,6 @@ export function toOrder(r) {
     userPhone: r.user_phone,
     userBankDetails: r.user_bank_details,
     userUsdtAddress: r.user_usdt_address,
-    requiresVideoKYC: r.requires_video_kyc,
 
     utrNumber: r.utr, utr: r.utr,
     proofScreenshot: r.proof_screenshot,
@@ -209,7 +208,6 @@ const SETTABLE = Object.freeze({
   userPhone: 'user_phone',
   userBankDetails: ['user_bank_details', JSON.stringify],
   userUsdtAddress: 'user_usdt_address',
-  requiresVideoKYC: 'requires_video_kyc',
 
   utrNumber: 'utr', utr: 'utr',
   proofScreenshot: 'proof_screenshot',
@@ -957,7 +955,6 @@ export async function paymentQueue({ state = null, limit = 200 } = {}) {
     pgQuery(
       `SELECT o.*,
               u.username AS user_username, u.mobile AS user_mobile,
-              u.kyc_status AS user_kyc_status,
               m.name AS merchant_name, m.mobile AS merchant_mobile
          FROM order_states o
          LEFT JOIN users u     ON u.user_id = o.user_id
@@ -980,7 +977,7 @@ export async function paymentQueue({ state = null, limit = 200 } = {}) {
     // moved; losing the order because an account was deleted would put a hole
     // in the queue an operator has to work.
     user: r.user_username
-      ? { userId: r.user_id, username: r.user_username, mobile: r.user_mobile, kycStatus: r.user_kyc_status }
+      ? { userId: r.user_id, username: r.user_username, mobile: r.user_mobile }
       : null,
     merchant: r.merchant_name
       ? { merchantId: r.merchant_id, name: r.merchant_name, mobile: r.merchant_mobile }
@@ -1042,7 +1039,6 @@ export async function disputeQueue({ status = 'DISPUTED', page = 1, limit = 50 }
   const { rows } = await pgQuery(
     `SELECT o.*,
             u.username AS user_username, u.mobile AS user_mobile,
-            u.kyc_status AS user_kyc_status,
             m.name AS merchant_name, m.mobile AS merchant_mobile,
             COUNT(*) OVER () AS total_matching
        FROM order_states o
@@ -1061,7 +1057,7 @@ export async function disputeQueue({ status = 'DISPUTED', page = 1, limit = 50 }
     disputes: rows.map((r) => ({
       ...toOrder(r),
       user: r.user_username
-        ? { userId: r.user_id, username: r.user_username, mobile: r.user_mobile, kycStatus: r.user_kyc_status }
+        ? { userId: r.user_id, username: r.user_username, mobile: r.user_mobile }
         : null,
       merchant: r.merchant_name
         ? { merchantId: r.merchant_id, name: r.merchant_name, mobile: r.merchant_mobile }
@@ -1077,7 +1073,6 @@ export async function getOrderWithParties(orderId) {
   const { rows } = await pgQuery(
     `SELECT o.*,
             u.username AS user_username, u.mobile AS user_mobile,
-            u.kyc_status AS user_kyc_status,
             m.name AS merchant_name, m.mobile AS merchant_mobile
        FROM order_states o
        LEFT JOIN users u     ON u.user_id = o.user_id
@@ -1090,7 +1085,7 @@ export async function getOrderWithParties(orderId) {
   return {
     ...toOrder(r),
     user: r.user_username
-      ? { userId: r.user_id, username: r.user_username, mobile: r.user_mobile, kycStatus: r.user_kyc_status }
+      ? { userId: r.user_id, username: r.user_username, mobile: r.user_mobile }
       : null,
     merchant: r.merchant_name
       ? { merchantId: r.merchant_id, name: r.merchant_name, mobile: r.merchant_mobile }
@@ -1233,7 +1228,7 @@ export async function mirrorSettlementState(orderId, settlementStatus, {
  */
 export async function queuePendingOrders({ limit = 50 } = {}) {
   const { rows } = await pgQuery(
-    `SELECT o.*, u.username, u.mobile, u.kyc_status, u.bank_details
+    `SELECT o.*, u.username, u.mobile, u.bank_details
        FROM order_states o
        LEFT JOIN users u ON u.user_id = o.user_id
       WHERE o.state = 'PENDING_QUEUE'
@@ -1245,7 +1240,6 @@ export async function queuePendingOrders({ limit = 50 } = {}) {
     ...toOrder(r),
     userName: r.username ?? null,
     userMobile: r.mobile ?? null,
-    userKycStatus: r.kyc_status ?? null,
     userBankDetails: r.bank_details ?? null,
   }));
 }

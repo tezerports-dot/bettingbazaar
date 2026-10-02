@@ -683,97 +683,10 @@ export async function createIdentity({
   return toIdentity(rows[0]);
 }
 
-/**
- * Hand an account to a DIFFERENT Telegram identity — account recovery.
- *
- * ══════════════════════════════════════════════════════════════════════════
- * THIS IS THE SHAPE A SUCCESSFUL TAKEOVER HAS
- * ══════════════════════════════════════════════════════════════════════════
- * Everything about it is deliberate. The caller proves TWO factors before
- * reaching here — the phone resolves the account, and the Aadhaar hash is
- * checked AGAINST that account rather than used as a search key, because
- * looking an account up by Aadhaar would make the bot an enumeration oracle.
- *
- * The swap is one transaction because three unique constraints have to be
- * satisfied at once and none of them may be briefly violated:
- *
- *   • `user_id` is UNIQUE, so the old identity must release the account in the
- *     same statement sequence that gives it to the new one. Two steps leave a
- *     window in which the account has no identity, and a failure between them
- *     leaves it stranded there permanently.
- *   • `one_active_identity_per_phone` is partial on `contact_active`, so the
- *     old row must be deactivated before the new one can claim the number.
- *   • `telegram_user_id` is the PRIMARY KEY, so the same Telegram account
- *     asking twice re-points its own row rather than colliding with itself.
- *
- * Returns `{ ok: false, reason: 'TELEGRAM_ALREADY_LINKED' }` when the new
- * Telegram account already holds a DIFFERENT platform account. Handing it a
- * second one would create exactly the duplicate this design exists to prevent,
- * and it is a refusal rather than an error because the caller answers it with a
- * message rather than a stack trace.
- */
-export async function relinkIdentity({
-  telegramUserId, audience, userId, phone, generation = 0,
-  telegramUsername = '', firstName = '',
-}) {
-  assertAudience(audience, 'relinkIdentity');
-  return withTelegramTransaction(async (client) => {
-    // Whoever the new Telegram account is currently linked to. Read INSIDE the
-    // transaction: a check outside it is a decision made against a state that
-    // can change before the write lands.
-    const { rows: holder } = await client.query(
-      `SELECT user_id FROM telegram_identities
-        WHERE telegram_user_id = $1 AND audience = $2`,
-      [String(telegramUserId), audience],
-    );
-    if (holder[0] && String(holder[0].user_id) !== String(userId)) {
-      return { ok: false, reason: 'TELEGRAM_ALREADY_LINKED' };
-    }
-
-    // The old identity steps aside FIRST — while it is active it holds both
-    // the account's slot and the phone's. It keeps its real `user_id`: both
-    // indexes are partial on `contact_active`, so an inactive row occupies
-    // neither, and the record of who used to hold the account survives. That
-    // record is the first thing a takeover review asks for.
-    const { rows: retired } = await client.query(
-      `UPDATE telegram_identities
-          SET contact_active = FALSE, channel_status = 'left'
-        WHERE user_id = $1 AND telegram_user_id <> $2 AND contact_active
-        RETURNING telegram_user_id`,
-      [String(userId), String(telegramUserId)],
-    );
-    // No audience filter on the stand-down above, and that is correct rather
-    // than an omission: `user_id` is already one account in one audience, so
-    // every row it matches is in this audience by construction. Filtering would
-    // read as though the account could have identities elsewhere.
-
-    const { rows } = await client.query(
-      `INSERT INTO telegram_identities (
-         telegram_user_id, user_id, telegram_username, first_name, phone,
-         contact_shared_at, contact_active, channel_status,
-         channel_generation, linked_generation, audience)
-       VALUES ($1,$2,$3,$4,$5, now(), TRUE, 'unknown', $6, $6, $7)
-       ON CONFLICT (telegram_user_id, audience) DO UPDATE SET
-         user_id = EXCLUDED.user_id, phone = EXCLUDED.phone,
-         contact_shared_at = EXCLUDED.contact_shared_at,
-         contact_active = TRUE, channel_status = 'unknown',
-         channel_generation = EXCLUDED.channel_generation,
-         linked_generation = EXCLUDED.linked_generation,
-         last_seen_at = now()
-       RETURNING ${IDENTITY_COLUMNS}`,
-      [String(telegramUserId), String(userId), telegramUsername, firstName,
-       String(phone), generation, audience],
-    );
-
-    return {
-      ok: true,
-      identity: toIdentity(rows[0]),
-      // Which identity lost the account, so the caller can report it. A
-      // recovery that displaced nobody is a first link, not a recovery.
-      displacedTelegramUserId: retired[0]?.telegram_user_id ?? null,
-    };
-  });
-}
+// `relinkIdentity` — handing an account to a DIFFERENT Telegram identity — was
+// removed 2026-10-02 with the Aadhaar-based recovery that was its only caller.
+// A changed Telegram account is the Telegram Mini App's job (Step 3 of the
+// redesign, docs/PROJECT_STATUS.md §3.10).
 
 /**
  * Cache a channel-membership observation.
@@ -832,65 +745,8 @@ export async function deactivateContact(telegramUserId, audience) {
 // Deleted rather than kept for a caller that might come back (§30: do not
 // accommodate; remove). Nothing imports them — check:dead-code proves it.
 
-// ── Recovery sessions ────────────────────────────────────────────────────────
-//
-// The Aadhaar a person sent the recovery bot, held until their contact share
-// arrives. HASHES only — `attemptRecovery` compares and never reads the number,
-// so the plaintext is not stored anywhere (schema.sql explains why this is not
-// merged into `telegram_pending_links`).
-
-/**
- * Start or replace a recovery session.
- *
- * Replaces on conflict rather than refusing: sending the bot a second Aadhaar
- * means correcting a typo, and a person who has already lost their account
- * should not also be told they must wait out a TTL to fix one.
- */
-export async function putRecoverySession({ telegramUserId, audience, aadhaarHashes, ttlSeconds }) {
-  if (!telegramUserId) throw new Error('putRecoverySession requires a telegramUserId');
-  assertAudience(audience, 'putRecoverySession');
-  if (!Array.isArray(aadhaarHashes) || !aadhaarHashes.length) {
-    throw new Error('putRecoverySession requires at least one aadhaar hash');
-  }
-  const { rows } = await pgQuery(
-    `INSERT INTO telegram_recovery_sessions (telegram_user_id, audience, aadhaar_hashes, expires_at)
-     VALUES ($1, $4, $2, now() + ($3 || ' seconds')::interval)
-     ON CONFLICT (telegram_user_id, audience) DO UPDATE
-       SET aadhaar_hashes = EXCLUDED.aadhaar_hashes,
-           created_at     = now(),
-           expires_at     = EXCLUDED.expires_at
-     RETURNING expires_at`,
-    [String(telegramUserId), aadhaarHashes.map(String),
-     String(Math.max(Number(ttlSeconds) || 600, 1)), audience],
-    'tg_recovery_put',
-  );
-  return { expiresAt: rows[0].expires_at };
-}
-
-/**
- * The live session, or null.
- *
- * Expiry is in the STATEMENT, so a sweep that is late, failed or never
- * scheduled cannot make a stale session usable.
- */
-export async function getRecoverySession(telegramUserId, audience) {
-  assertAudience(audience, 'getRecoverySession');
-  const { rows } = await pgQuery(
-    `SELECT aadhaar_hashes, expires_at FROM telegram_recovery_sessions
-      WHERE telegram_user_id = $1 AND audience = $2 AND expires_at > now()`,
-    [String(telegramUserId), audience], 'tg_recovery_get',
-  );
-  return rows[0] ? { aadhaarHashes: rows[0].aadhaar_hashes, expiresAt: rows[0].expires_at } : null;
-}
-
-/** Consume it. Called whether the attempt succeeded or failed — one try per send. */
-export async function deleteRecoverySession(telegramUserId, audience) {
-  assertAudience(audience, 'deleteRecoverySession');
-  await pgQuery(
-    'DELETE FROM telegram_recovery_sessions WHERE telegram_user_id = $1 AND audience = $2',
-    [String(telegramUserId), audience], 'tg_recovery_delete',
-  );
-}
+// Recovery sessions (the Aadhaar held between the two recovery messages) were
+// removed 2026-10-02 with KYC; `telegram_recovery_sessions` is dropped.
 
 // ── Retention ────────────────────────────────────────────────────────────────
 
@@ -907,15 +763,13 @@ export async function deleteRecoverySession(telegramUserId, audience) {
  * crash mid-pass loses the number permanently.
  */
 export async function sweepExpired() {
-  // Two tables. Three others (pending links, login tokens, login codes) were
-  // swept here and no longer exist — a sweep naming a dropped table throws
-  // 42P01 on every pass, which would take the whole retention job down rather
-  // than just this line.
-  const recovery = await pgQuery(
-    `DELETE FROM telegram_recovery_sessions WHERE expires_at <= now()`, [], 'tg_sweep_recovery');
+  // One table. Four others (pending links, login tokens, login codes, recovery
+  // sessions) were swept here and no longer exist — a sweep naming a dropped
+  // table throws 42P01 on every pass, which would take the whole retention job
+  // down rather than just this line.
   const resets = await pgQuery(
     `DELETE FROM password_resets WHERE expires_at <= now()`, [], 'tg_sweep_resets');
-  return { recoverySessions: recovery.rowCount ?? 0, passwordResets: resets.rowCount ?? 0 };
+  return { passwordResets: resets.rowCount ?? 0 };
 }
 
 /** Run `fn` in a transaction — for the two swaps that must be all-or-nothing. */

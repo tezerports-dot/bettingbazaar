@@ -54,9 +54,8 @@ import { decryptField } from '../identity/fieldCrypto.util.js';
 import { applyMemberUpdate, isJoinedStatus, joinPrompt, membershipFor } from './telegramMembership.js';
 import { completeVerification, noteContactChange } from '../identity/signupVerification.service.js';
 import { issueResetLink } from '../identity/passwordReset.service.js';
-import { normalisePhone, isValidAadhaar } from '../identity/signupFields.js';
+import { normalisePhone } from '../identity/signupFields.js';
 import { sendTemplate } from './telegramTemplates.service.js';
-import { hashAadhaarCandidates } from '../identity/aadhaarHash.util.js';
 
 const router = express.Router();
 
@@ -481,40 +480,15 @@ async function handleChatMember(chatMember, bot) {
  * the other two, every merchant and every admin stuck at recovery, and nothing
  * anywhere saying why. The bot id identifies; the secret authenticates.
  *
- * ── What recovery is FOR, now that there are passwords ────────────────────
- * Not signing in. A player who has lost their Telegram account still has their
- * password and still logs in with it — what they cannot do is verify, because
- * `one_active_identity_per_user` refuses a second live link and the old,
- * unreachable Telegram account is holding the one they have.
+ * ── What the recovery bot does now: a forgotten password ──────────────────
+ * A player whose Telegram account is linked shares their contact here and is
+ * sent a link to choose a new password — never a session (§33.6).
  *
- * So recovery MOVES THE LINK to their new Telegram account, against the same
- * two proofs it always required: the Aadhaar on the account, and a contact
- * share of the same mobile. It no longer issues a session — it cannot, and that
- * is the point of the change.
+ * Moving the link to a NEW Telegram account used the Aadhaar on the account as
+ * the second proof. KYC was removed 2026-10-02 (owner), so that path had
+ * nothing left to check and was deleted with it; the Telegram Mini App
+ * (PROJECT_STATUS §3.10, step 3) is what replaces the recovery bot.
  */
-const RECOVERY_SESSION_SECONDS = 10 * 60;
-
-// ── The half-finished recovery lives in the DATABASE ──────────────────────
-// It was a process-local `Map`, and this platform is built for horizontal
-// scale. Behind a load balancer the Aadhaar message and the contact message
-// land on different instances, and the second answers "please send your Aadhaar
-// first" to somebody who just did: intermittent, indistinguishable from their
-// own mistake, on the one path a person reaches BECAUSE they have already lost
-// access. Its size cap was also a `clear()` at 10,000, which wiped live
-// recoveries rather than old ones. Audit F-002.
-//
-// It stores HASHES. `attemptRecovery` only ever compared, so it never needed
-// the number — the plaintext exists for the length of one function call and is
-// never stored, which is stronger than the ciphertext onboarding held.
-async function rememberRecovery(id, audience, aadhaar) {
-  const aadhaarHashes = hashAadhaarCandidates(aadhaar);
-  if (!aadhaarHashes.length) return false;
-  await db.telegram.putRecoverySession({
-    telegramUserId: String(id), audience, aadhaarHashes, ttlSeconds: RECOVERY_SESSION_SECONDS,
-  });
-  return true;
-}
-
 router.post('/recovery/webhook/:botId', async (req, res) => {
   const bot = await resolveDeliveringBot(req, { role: 'recovery' });
   // Same terse refusal as the sign-in webhook, for the same reason: a probe
@@ -529,81 +503,30 @@ router.post('/recovery/webhook/:botId', async (req, res) => {
     if (!message?.from || message.from.is_bot) return;
     const telegramUserId = String(message.from.id);
     const chatId = message.chat.id;
-    const { attemptRecovery } = await import('./telegramRecovery.service.js');
 
     if (message.contact) {
-      const held = await db.telegram.getRecoverySession(telegramUserId, audience);
-      if (!held) {
-        // ── No Aadhaar held: this is the PASSWORD path, not the recovery one ──
-        // Somebody who has lost their password and opened the recovery bot has
-        // done a reasonable thing, and telling them to send an Aadhaar number
-        // sends them down a flow that ends in "we could not verify these
-        // details" — for a problem that is one link away. So a contact share
-        // with no Aadhaar behind it is read as what it almost always is, and
-        // answered from the LINK that already exists (owner, 2026-09-24: both
-        // bots issue a reset).
-        //
-        // It grants nothing this bot could not already do: the identity is the
-        // one a verified contact share created, and an unlinked Telegram
-        // account reaches no account at all.
-        const phone = normalisePhone(message.contact.phone_number);
-        const linked = phone
-          ? await db.telegram.getIdentityByTelegramId(telegramUserId, audience)
-          : null;
-        if (linked?.contactActive && String(linked.phone) === phone) {
-          const issued = await issueResetLink({
-            userId: linked.userId, telegramUserId, audience,
+      // Answered from the LINK that already exists. It grants nothing this bot
+      // could not already do: the identity is the one a verified contact share
+      // created, and an unlinked Telegram account reaches no account at all.
+      const phone = normalisePhone(message.contact.phone_number);
+      const linked = phone
+        ? await db.telegram.getIdentityByTelegramId(telegramUserId, audience)
+        : null;
+      if (linked?.contactActive && String(linked.phone) === phone) {
+        const issued = await issueResetLink({
+          userId: linked.userId, telegramUserId, audience,
+        });
+        if (issued.ok) {
+          return sendTemplate({
+            bot, chatId, key: 'password_reset', role: 'recovery', audience,
+            vars: { resetUrl: issued.url, minutes: issued.minutes, firstName: message.from?.first_name || '' },
+            extra: { reply_markup: { remove_keyboard: true } },
           });
-          if (issued.ok) {
-            return sendTemplate({
-              bot, chatId, key: 'password_reset', role: 'recovery', audience,
-              vars: { resetUrl: issued.url, minutes: issued.minutes, firstName: message.from?.first_name || '' },
-              extra: { reply_markup: { remove_keyboard: true } },
-            });
-          }
         }
-        return sendRecoveryMessage(audience, chatId,
-          'To move your account to this Telegram account, send your 12-digit Aadhaar number first.\n\n'
-          + 'If you only need a new PASSWORD, share your contact from the Telegram account you '
-          + 'already verified with and we will send you a reset link.',
-          { reply_markup: { remove_keyboard: true } });
       }
-      const result = await attemptRecovery({
-        newTelegramUserId: telegramUserId,
-        audience,
-        phone: message.contact.phone_number,
-        contactUserId: message.contact.user_id,
-        aadhaarHashes: held.aadhaarHashes,
-      });
-      // Consumed whether it succeeded or failed: one attempt per Aadhaar sent,
-      // so a wrong contact share cannot be retried against a held Aadhaar.
-      await db.telegram.deleteRecoverySession(telegramUserId, audience);
-
-      if (!result.ok) {
-        const copy = {
-          not_own_contact: 'Please share YOUR OWN contact using the button.',
-          invalid_phone: 'We could not read that number. Please try again.',
-          blocked: 'This account is blocked. Please contact support.',
-          telegram_already_linked: 'This Telegram account is already linked to a different account.',
-          // Every genuine mismatch lands here with one message, on purpose.
-          no_match: 'We could not verify these details. The Aadhaar and the mobile number must both '
-            + 'match the account exactly, and you must be messaging from the number the account uses.',
-        }[result.reason] || 'We could not complete recovery. Please contact support.';
-        return sendRecoveryMessage(audience, chatId, copy, { reply_markup: { remove_keyboard: true } });
-      }
-
-      // ── No link, and no session ──────────────────────────────────────────
-      // This bot could previously sign somebody in. It cannot now: the player
-      // has a password, so the thing recovery had to restore was the Telegram
-      // LINK, and it just did. Sending them to the app to use the password they
-      // already have is both the correct instruction and one fewer credential
-      // this bot is able to mint.
-      const prompt = await joinPrompt(audience);
       return sendRecoveryMessage(audience, chatId,
-        '✅ Your Telegram account is now linked again.\n\n'
-        + 'Sign in to Betting Bazaar with your mobile number and password as usual. '
-        + 'Your balance, history and referrals are unchanged.'
-        + (prompt?.inviteLink ? `\n\nIf you are not in our channel yet, join here: ${prompt.inviteLink}` : ''),
+        'We could not find an account verified with this Telegram account. '
+        + 'Share your contact from the Telegram account you verified with, and we will send you a reset link.',
         { reply_markup: { remove_keyboard: true } });
     }
 
@@ -615,24 +538,9 @@ router.post('/recovery/webhook/:botId', async (req, res) => {
       });
     }
 
-    if (isValidAadhaar(text)) {
-      // AWAITED. The session is a database row and the very next message reads
-      // it — telling the person to share their contact before the write has
-      // landed is a race whose loser is answered "send your Aadhaar first"
-      // after doing exactly that.
-      const remembered = await rememberRecovery(telegramUserId, audience, text);
-      if (!remembered) {
-        return sendRecoveryMessage(audience, chatId,
-          'We could not start recovery just now. Please send your Aadhaar number again in a moment.');
-      }
-      return sendRecoveryMessage(audience, chatId,
-        'Now tap the button below to share the contact of <b>this</b> Telegram account. '
-        + 'It must be the same mobile number your account uses.',
-        { reply_markup: contactKeyboard });
-    }
-
     return sendRecoveryMessage(audience, chatId,
-      'Please send your 12-digit Aadhaar number, or /start to begin again.');
+      'Tap the button below to share your contact, and we will send you a link to set a new password.',
+      { reply_markup: contactKeyboard });
   } catch (err) {
     console.error('[telegram] recovery handling failed:', err.message);
   }

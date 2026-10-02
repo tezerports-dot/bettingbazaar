@@ -44,7 +44,6 @@ export const STAFF_EVENT_AREAS = Object.freeze({
   merchant_config_updated: MERCHANTS,
   // Players
   user_flagged: { keys: ['canManageUsers'] },
-  kyc_update: { keys: ['canVerifyKYC'] },
   // Cycles and the live book
   admin_cycle_result: CYCLES,
   admin_new_cycle: CYCLES,

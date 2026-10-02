@@ -322,7 +322,7 @@ export class RealBackend implements Backend {
    * outage before the server ever got to apply that.
    */
   async register(form: {
-    aadhaar: string; mobile: string; password: string; confirmPassword: string;
+    mobile: string; password: string; confirmPassword: string;
     referralCode?: string; captchaToken?: string;
   }) {
     const captchaToken = form.captchaToken ?? (await getCaptchaToken()) ?? undefined;
@@ -378,12 +378,6 @@ export class RealBackend implements Backend {
     return this.request<{ success: boolean; message?: string }>(
       '/v1/auth/password/reset',
       { method: 'POST', body: JSON.stringify({ token, password, confirmPassword, captchaToken }) });
-  }
-
-  /** A rejected player submits a corrected Aadhaar. */
-  async resubmitAadhaar(aadhaar: string) {
-    return this.request<{ success: boolean; message?: string; last4?: string }>(
-      '/v1/auth/kyc/resubmit', { method: 'POST', body: JSON.stringify({ aadhaar }) });
   }
 
   // -- SYSTEM CONFIG --------------------------------------------------------
@@ -516,7 +510,7 @@ export class RealBackend implements Backend {
   // deposit() / withdraw() removed 2026-08-24 — dead, and pointed at the retired
   // `/api/p2p/*` prefix. WalletPage.tsx owns this flow via apiClient.
 
-  // -- KYC & BANKING ----------------------------------------------------------
+  // -- BANKING ----------------------------------------------------------------
   async updateBankDetails(userId: string, details: any) {
     return this.request<User>(`/user/${userId}/bank-details`, { method: 'PUT', body: JSON.stringify(details) });
   }

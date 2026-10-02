@@ -120,42 +120,22 @@ describePg('payment routes', () => {
   // owner of that value, in unit/systemConfigPayload.test.js.
 
   /**
-   * Money IN needs identity LINKED; money OUT needs it APPROVED.
+   * There is no identity gate on money (owner, 2026-10-02: KYC removed).
    *
-   * The asymmetry is an owner decision: an Aadhaar submitted and queued is
-   * enough to fund an account, because verification runs in batches and the
-   * player can do nothing to hurry it. Holding deposits behind it loses the
-   * player without protecting anyone — the protection that matters is on the
-   * way out, which cannot be undone.
-   *
-   * This test used to assert the opposite for deposits, because the ROUTE
-   * admitted PENDING_APPROVAL and the SERVICE behind it demanded APPROVED, so a
-   * player passed the gate built to let them through and was refused one layer
-   * down. Both now read the same predicate (`kycGates.js`), and this pins each
-   * side of the asymmetry so neither can drift into the other.
+   * Deposits and withdrawals were held behind an Aadhaar verdict. With KYC gone,
+   * the only identity a player has is the Telegram-verified mobile, and THAT is
+   * enforced by the verification gate on the panel, not by these routes. So an
+   * ordinary player opens a deposit, and a withdrawal is refused for a money
+   * reason (nothing to withdraw) — never for an identity one.
    */
-  it('lets a player with a submitted Aadhaar deposit, but not withdraw', async () => {
-    const pending = await actor({ kycStatus: 'PENDING_APPROVAL' });
-
-    const deposit = await as(app, pending).post('/deposit/create').send({ tokenAmount: 500 });
+  it('lets an ordinary player deposit, and refuses a withdrawal only for money', async () => {
+    const player = await actor({});
+    const deposit = await as(app, player).post('/deposit/create').send({ tokenAmount: 500 });
     expect(deposit.status, `deposit refused: ${JSON.stringify(deposit.body)}`).toBe(200);
 
-    const withdrawal = await as(app, pending).post('/withdrawal/create').send({ tokenAmount: 500 });
-    expect(withdrawal.status).toBe(403);
-
-    // KYC gates the money routes and nothing else.
-    expect((await as(app, pending).get('/orders')).status).toBe(200);
-  });
-
-  it('refuses BOTH to a player who has submitted no Aadhaar at all', async () => {
-    // The guard that must survive relaxing the deposit rule: "linked" is a real
-    // bar, not an open door. A player the bot has never taken an Aadhaar from
-    // is refused on the way in as well as the way out.
-    const unlinked = await actor({ kycStatus: 'PENDING_SUBMISSION' });
-    const deposit = await as(app, unlinked).post('/deposit/create').send({ tokenAmount: 500 });
-    expect(deposit.status).toBe(403);
-    expect((await as(app, unlinked).post('/withdrawal/create').send({ tokenAmount: 500 })).status).toBe(403);
-    expect((await as(app, unlinked).get('/orders')).status).toBe(200);
+    const withdrawal = await as(app, player).post('/withdrawal/create').send({ tokenAmount: 500 });
+    expect(withdrawal.status, JSON.stringify(withdrawal.body)).not.toBe(403);
+    expect(JSON.stringify(withdrawal.body)).not.toMatch(/kyc|aadhaar/i);
   });
 
   /**
@@ -178,14 +158,6 @@ describePg('payment routes', () => {
 
     const second = await as(app, player).post('/deposit/create').send({ tokenAmount: 500 });
     expect(second.status, 'the second create inside a minute was not paced').toBe(429);
-  });
-
-  it('refuses a player whose Aadhaar was REJECTED', async () => {
-    // REJECTED is not "waiting": the details given did not match the issuing
-    // authority, and the benefit of the doubt is the wrong default here.
-    const rejected = await actor({ kycStatus: 'REJECTED' });
-    expect((await as(app, rejected).post('/deposit/create').send({ tokenAmount: 500 })).status).toBe(403);
-    expect((await as(app, rejected).post('/withdrawal/create').send({ tokenAmount: 500 })).status).toBe(403);
   });
 
   // ── mark-paid validation ──────────────────────────────────────────────────

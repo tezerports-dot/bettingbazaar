@@ -109,7 +109,7 @@ export const MERCHANT_FORBIDDEN_ORDER_FIELDS = Object.freeze([
   'redFlagged', 'redFlagReason', 'redFlaggedBy', 'redFlaggedAt',
   'assignedBy', 'approvedBy', 'rejectedBy', 'disputeResolvedBy',
   'disputeEscalationNotes', 'mediatorId', 'orderHmac',
-  'warningIssued', 'requiresVideoKYC', 'utrWarningData', 'platformFeeRate',
+  'warningIssued', 'utrWarningData', 'platformFeeRate',
 ]);
 
 /** The four permitted bank fields, and nothing that arrived alongside them. */

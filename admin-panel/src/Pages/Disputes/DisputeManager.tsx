@@ -164,8 +164,8 @@ export const DisputeManager: React.FC = () => {
     setPenaltyAmt('');
     // Cleared with the rest of the per-dispute state. A slip left behind from
     // the previously opened dispute would render this player's decision against
-    // another player's bank slip — the same shape as the KYC screen matching
-    // the first row every time, and worse, because this one is evidence.
+    // another player's bank slip — the same shape as a list screen matching
+    // the first row every time (§23), and worse, because this one is evidence.
     setSlip(null);
     setSlipNote('');
     await loadChat(d);

@@ -599,33 +599,7 @@ export const queueManager = {
   },
 };
 
-// --- KYC ---------------------------------------------------------------------
-
-export const kyc = {
-  getQueue: async () => {
-    const res = await api.get<any>('/api/admin/kyc/queue');
-    if (res.data?.success && res.data?.queue) {
-      return { success: true, data: res.data.queue };
-    }
-    return res.data;
-  },
-
-  approve: async (userId: string) => {
-    const res = await api.post(`/api/admin/kyc/${userId}/approve`);
-    return res.data;
-  },
-
-  reject: async (userId: string, reason: string) => {
-    const res = await api.post(`/api/admin/kyc/${userId}/reject`, { reason });
-    return res.data;
-  },
-
-  // viewDocument removed 2026-08-25 with GET /api/admin/kyc/:userId/document/:docType.
-  // There are no KYC documents: the bot takes the Aadhaar number and it is
-  // verified in bulk, so nothing is uploaded and nothing is presigned for review.
-};
-
-// --- TELEGRAM, BULK KYC & REFERRALS -------------------------------------------
+// --- TELEGRAM & REFERRALS -------------------------------------------------
 /**
  * The identity and payout control plane. Every endpoint behind these is
  * `isAdmin`, never `isAdminOrSubAdmin`: they move the platform's identity root
@@ -837,8 +811,8 @@ export interface BotTemplate {
  * What the bot says.
  *
  * The welcome message is the first sentence anyone reads from this platform and
- * carries the requirement that their Telegram account be on the Aadhaar-linked
- * mobile. Getting it wrong shows up weeks later as failed verifications, so it
+ * carries the requirement that their Telegram account be on the mobile they
+ * signed up with. Getting it wrong shows up weeks later as failed verifications, so it
  * is editable here rather than in a deploy.
  */
 export const telegramTemplates = {
@@ -851,49 +825,6 @@ export const telegramTemplates = {
   save: async (key: string, body: string) => {
     const res = await api.put<any>(`/api/admin/telegram/templates/${key}`, { body });
     return res.data as { success: boolean; template?: BotTemplate; message?: string };
-  },
-};
-
-export const kycBulk = {
-  stats: async () => {
-    const res = await api.get<any>('/api/admin/kyc/bulk/stats');
-    return res.data as {
-      success: boolean;
-      pending?: number;
-      verified?: number;
-      failed?: number;
-      recentBatches?: Array<{
-        batchId: string; kind: 'EXPORT' | 'IMPORT'; rowCount: number;
-        verified?: number; failed?: number; skipped?: number;
-        actor?: string; at?: string; note?: string;
-      }>;
-      message?: string;
-    };
-  },
-
-  /**
-   * Download the pending rows as CSV.
-   *
-   * Fetched as text and handed to the browser as a Blob rather than opened as a
-   * link: the request needs the Authorization header, and a plain <a href> would
-   * not carry it. The file is never written server-side, and every call writes
-   * an audit row naming the admin.
-   */
-  exportCsv: async (limit = 10000) => {
-    const res = await api.get<string>(`/api/admin/kyc/bulk/export?limit=${limit}`, {
-      responseType: 'text',
-      headers: { Accept: 'text/csv' },
-    });
-    return res.data;
-  },
-
-  importCsv: async (csv: string) => {
-    const res = await api.post<any>('/api/admin/kyc/bulk/import', { csv });
-    return res.data as {
-      success: boolean; batchId?: string;
-      verified?: number; failed?: number; skipped?: number;
-      errors?: string[]; message?: string;
-    };
   },
 };
 
@@ -1369,9 +1300,7 @@ export const androidReleases = {
   fileHref: (r: Pick<AndroidRelease, 'fileUrl'>) => (/^https?:\/\//i.test(r.fileUrl) ? r.fileUrl : `${API_URL.replace(/\/$/, '')}${r.fileUrl}`),
 };
 
-  // ── Payment Order Actions (approve / reject / force-complete / video-KYC) ──────
-
-// Payment Order Actions — approve / reject / cancel / video-KYC
+// Payment Order Actions — approve / reject / cancel
 // FIX: was orphaned label-statement; esbuild rejected TS type annotations in label blocks
 // The path segment is `payment-orders`, NOT `p2p-orders`. It was the latter here
 // until 2026-08-24, which meant every approve / reject / cancel from the queue
@@ -1392,8 +1321,6 @@ export const orderActions = {
       const res = await api.post(`/api/admin/payment-orders/${orderId}/action`, { action: 'CANCEL', reason });
       return res.data;
     },
-    // There is no video-KYC action on payment orders: the button that threw
-    // here was removed (2026-10-01). Building it is a product decision.
 };
 
 // --- CHAT & SUPPORT (public chat moderation + support-ticket desk) -----------
@@ -1466,11 +1393,9 @@ export default {
   cycles,
   depositPolicy,
   queueManager,
-  kyc,
   telegram,
   telegramBots,
   telegramTemplates,
-  kycBulk,
   referrals,
   subAdmins,
   finance,

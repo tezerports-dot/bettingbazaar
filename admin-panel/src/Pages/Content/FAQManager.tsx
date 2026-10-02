@@ -211,7 +211,6 @@ export const FAQManager: React.FC = () => {
               <option value="account">Account</option>
               <option value="betting">Betting</option>
               <option value="payments">Payments</option>
-              <option value="kyc">KYC</option>
               <option value="security">Security</option>
               <option value="technical">Technical</option>
             </select>

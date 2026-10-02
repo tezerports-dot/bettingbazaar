@@ -3,7 +3,7 @@ import React from 'react';
 
 interface StatusBadgeProps {
   status: string;
-  type?: 'user' | 'merchant' | 'order' | 'cycle' | 'kyc' | 'policy';
+  type?: 'user' | 'merchant' | 'order' | 'cycle' | 'policy';
 }
 
 export const StatusBadge: React.FC<StatusBadgeProps> = ({ status, type = 'user' }) => {
@@ -16,7 +16,6 @@ export const StatusBadge: React.FC<StatusBadgeProps> = ({ status, type = 'user' 
       if (upperStatus === 'BLOCKED') return 'bg-red-500/20 text-red-500';
       if (upperStatus === 'SUSPENDED') return 'bg-orange-500/20 text-orange-500';
       if (upperStatus === 'DELETED') return 'bg-gray-500/20 text-gray-400';
-      if (upperStatus === 'PENDING_KYC') return 'bg-yellow-500/20 text-yellow-500';
     }
 
     // Merchant statuses
@@ -47,14 +46,6 @@ export const StatusBadge: React.FC<StatusBadgeProps> = ({ status, type = 'user' 
       if (upperStatus === 'RESULT_DECLARED') return 'bg-gold-500/20 text-gold-500';
       if (upperStatus === 'PAUSED') return 'bg-gray-500/20 text-gray-500';
       if (upperStatus === 'CANCELLED') return 'bg-red-500/20 text-red-500';
-    }
-
-    // KYC statuses
-    if (type === 'kyc') {
-      if (upperStatus === 'APPROVED') return 'bg-green-500/20 text-green-500';
-      if (upperStatus === 'PENDING_APPROVAL') return 'bg-yellow-500/20 text-yellow-500';
-      if (upperStatus === 'PENDING_SUBMISSION') return 'bg-gray-500/20 text-gray-500';
-      if (upperStatus === 'REJECTED') return 'bg-red-500/20 text-red-500';
     }
 
     // Business Policy Platform statuses (DepositPolicy and future sibling policies)

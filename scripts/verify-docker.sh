@@ -150,7 +150,6 @@ docker run -d --name "$APPC" --network "$NET" -p 8080:8080 \
   -e REDIS_URL="redis://$REDISC:6379" \
   -e JWT_SECRET="$(openssl rand -hex 32)" \
   -e ORDER_HMAC_SECRET="$(openssl rand -hex 32)" \
-  -e AADHAAR_HMAC_SECRET="$(openssl rand -hex 32)" \
   -e IDENTITY_ENCRYPTION_KEY="$(openssl rand -base64 32)" \
   -e METRICS_TOKEN="$(openssl rand -hex 32)" \
   -e ALLOWED_ORIGINS="https://app.example.com" \

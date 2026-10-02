@@ -13,7 +13,7 @@ import { Kpis, Toolbar } from '../../components/design';
 // Admin pastes CDN URLs from their CDN provider (e.g. Cloudflare, BunnyCDN, etc.)
 // and gives them a title/category so they can be referenced across all panels.
 
-const CATEGORIES: CDNImage['category'][] = ['promo', 'banner', 'avatar', 'logo', 'icon', 'kyc', 'payment_proof', 'other'];
+const CATEGORIES: CDNImage['category'][] = ['promo', 'banner', 'avatar', 'logo', 'icon', 'payment_proof', 'other'];
 
 export const CDNManager: React.FC = () => {
   const [images, setImages] = useState<CDNImage[]>([]);
@@ -95,7 +95,7 @@ export const CDNManager: React.FC = () => {
       {/* Info Banner */}
       <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-4 text-sm">
         <p className="font-semibold text-blue-400 mb-2">How it works</p>
-        <p className="text-gray-300">Upload images to your CDN provider (Cloudflare Images, BunnyCDN, Cloudinary, etc.), paste the public URL here, assign a category and title. These URLs are then available across all three panels (user app, merchant, admin) and referenced in Branding, Promo Content, and KYC flows.</p>
+        <p className="text-gray-300">Upload images to your CDN provider (Cloudflare Images, BunnyCDN, Cloudinary, etc.), paste the public URL here, assign a category and title. These URLs are then available across all three panels (user app, merchant, admin) and referenced in Branding and Promo Content.</p>
       </div>
 
       {/* Image Grid */}

@@ -432,7 +432,7 @@ describePg('the domains written from scratch', () => {
       await referrals.recordEarning({ earningId: `s1-${ID}`, earnerId: earner, sourceUserId: `x1-${ID}`, amountRupees: 30 });
       await referrals.recordEarning({ earningId: `s2-${ID}`, earnerId: earner, sourceUserId: `x2-${ID}`, amountRupees: 20 });
       await referrals.markPaid(`s1-${ID}`, { batchId: null, walletTxId: `tx-s1-${ID}` });
-      await referrals.markBlocked(`s2-${ID}`, 'KYC incomplete');
+      await referrals.markBlocked(`s2-${ID}`, 'account blocked');
 
       const summary = await referrals.earningsSummary(earner);
       expect(summary).toMatchObject({ paid: 30, queued: 0, blocked: 20, total: 2 });

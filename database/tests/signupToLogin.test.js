@@ -36,7 +36,7 @@ import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { pgConfigured, pgQuery, applySchema, closePg } from '../client.js';
 import { getIdentityByUserId, linkTelegramToAccount } from '../repositories/telegram.js';
 import { getUser, getUserByMobile, getUserCredentials, newUserId, claimJoiningNumber } from '../repositories/users.js';
-import { createAccountFromSignup, getVerification } from '../repositories/identity.js';
+import { createAccountFromSignup } from '../repositories/identity.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 
@@ -44,7 +44,7 @@ describePg('signup → login, end to end on one store', () => {
   beforeAll(async () => { await applySchema(); });
   afterAll(async () => { await closePg(); });
   beforeEach(async () => {
-    await pgQuery(`TRUNCATE kyc_verifications, telegram_identities, users
+    await pgQuery(`TRUNCATE telegram_identities, users
                    RESTART IDENTITY CASCADE`);
   });
 
@@ -52,7 +52,6 @@ describePg('signup → login, end to end on one store', () => {
     const r = await createAccountFromSignup({
       userId: newUserId(), mobile: '9995550001', username: 'newplayer',
       passwordHash: '$argon2id$v=19$fake-hash',
-      aadhaarHash: 'ah-1', aadhaarEncrypted: 'ac-1', aadhaarLast4: '0001',
       referralCode: 'FORMCODE', ...over,
     });
     expect(r.ok).toBe(true);
@@ -84,13 +83,6 @@ describePg('signup → login, end to end on one store', () => {
     expect(creds.userId).toBe(userId);
     expect(creds.passwordHash).toBe('$argon2id$v=19$fake-hash');
     expect(JSON.stringify(await getUser(userId))).not.toContain('argon2id');
-  });
-
-  it('the KYC row and the account agree on who the account is', async () => {
-    const userId = await signUp();
-    const verification = await getVerification(userId);
-    expect(verification.userId).toBe(userId);
-    expect(verification.status).toBe('PENDING_VERIFICATION');
   });
 
   it('creates NO Telegram identity and NO joining number at signup', async () => {

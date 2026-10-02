@@ -328,7 +328,6 @@ export const SYSTEM_CONFIG_SPEC = group({
     blockJa3Hashes: sa([]),
   }),
 
-  kycRequired:         b(true),
   registrationEnabled: b(true),
   depositMethods:      sa(['UPI', 'BANK_TRANSFER']),
   withdrawalMethods:   sa(['UPI', 'BANK_TRANSFER']),

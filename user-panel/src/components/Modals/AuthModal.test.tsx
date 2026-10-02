@@ -51,8 +51,7 @@ const open = (mode: 'login' | 'register' = 'login') =>
 const field = (name: RegExp) => screen.getByLabelText(name) as HTMLInputElement;
 
 async function fillSignup(over: Partial<Record<string, string>> = {}) {
-  await userEvent.type(field(/aadhaar number/i), over.aadhaar ?? '123456789012');
-  await userEvent.type(field(/aadhaar-linked mobile/i), over.mobile ?? '9876543210');
+  await userEvent.type(field(/mobile number/i), over.mobile ?? '9876543210');
   await userEvent.type(field(/^password$/i), over.password ?? 'a-long-enough-phrase');
   await userEvent.type(field(/confirm password/i), over.confirm ?? 'a-long-enough-phrase');
 }
@@ -73,7 +72,7 @@ describe('the signup form', () => {
     // not ADDRESSABLE by it. Untestable and unusable have one cause, and this
     // whole file would be impossible without the fix.
     open('register');
-    for (const name of [/aadhaar number/i, /aadhaar-linked mobile/i, /^password$/i,
+    for (const name of [/mobile number/i, /^password$/i,
                         /confirm password/i, /invite code/i]) {
       expect(field(name)).toBeTruthy();
     }
@@ -84,7 +83,7 @@ describe('the signup form', () => {
     await fillSignup();
     await userEvent.click(screen.getByRole('button', { name: /create account/i }));
     expect(register).toHaveBeenCalledWith({
-      aadhaar: '123456789012', mobile: '9876543210',
+      mobile: '9876543210',
       password: 'a-long-enough-phrase', confirmPassword: 'a-long-enough-phrase',
       referralCode: undefined,
     });
@@ -97,9 +96,8 @@ describe('the signup form', () => {
     // test that types ONE character passes, which is why this types many into
     // every box and reads them all back.
     open('register');
-    await fillSignup({ aadhaar: '111122223333', mobile: '9000011111' });
-    expect(field(/aadhaar number/i).value).toBe('111122223333');
-    expect(field(/aadhaar-linked mobile/i).value).toBe('9000011111');
+    await fillSignup({ mobile: '9000011111' });
+    expect(field(/mobile number/i).value).toBe('9000011111');
     expect(field(/^password$/i).value).toBe('a-long-enough-phrase');
   });
 
@@ -111,10 +109,15 @@ describe('the signup form', () => {
     expect(button.disabled).toBe(false);
   });
 
-  it('keeps non-digits out of the Aadhaar and mobile boxes', async () => {
+  it('keeps non-digits out of the mobile box', async () => {
     open('register');
-    await userEvent.type(field(/aadhaar number/i), '1234-5678 9012');
-    expect(field(/aadhaar number/i).value).toBe('123456789012');
+    await userEvent.type(field(/mobile number/i), '98765-43210');
+    expect(field(/mobile number/i).value).toBe('9876543210');
+  });
+
+  it('asks for no Aadhaar — KYC was removed (owner, 2026-10-02)', async () => {
+    open('register');
+    expect(screen.queryByLabelText(/aadhaar/i)).toBeNull();
   });
 
   it('strips a country code the player typed as well as the one on screen', async () => {
@@ -128,7 +131,7 @@ describe('the signup form', () => {
     // Both boxes, because the login box has the same "+91" printed beside it
     // and the same person types into it.
     for (const [screenName, label] of [
-      ['register', /aadhaar-linked mobile/i] as const,
+      ['register', /mobile number/i] as const,
       ['login', /mobile number/i] as const,
     ]) {
       const view = render(<AuthModal onClose={onClose} initialMode={screenName as 'login' | 'register'} />);
@@ -140,17 +143,17 @@ describe('the signup form', () => {
 
   it('strips a leading zero, the other way an Indian number gets written', async () => {
     open('register');
-    await userEvent.type(field(/aadhaar-linked mobile/i), '09876543210');
-    expect(field(/aadhaar-linked mobile/i).value).toBe('9876543210');
+    await userEvent.type(field(/mobile number/i), '09876543210');
+    expect(field(/mobile number/i).value).toBe('9876543210');
   });
 
   it('shows the server refusal VERBATIM, because it names the field', async () => {
-    register.mockRejectedValue(new Error('Enter the 10-digit mobile number linked to that Aadhaar, without +91.'));
+    register.mockRejectedValue(new Error('Enter your 10-digit mobile number — the one on your Telegram account — without +91.'));
     open('register');
     await fillSignup();
     await userEvent.click(screen.getByRole('button', { name: /create account/i }));
     expect(await screen.findByRole('alert')).toHaveProperty(
-      'textContent', 'Enter the 10-digit mobile number linked to that Aadhaar, without +91.');
+      'textContent', 'Enter your 10-digit mobile number — the one on your Telegram account — without +91.');
     expect(onClose).not.toHaveBeenCalled();
   });
 
@@ -291,7 +294,7 @@ describe('the login form', () => {
   it('offers a way to the signup form, and back', async () => {
     open('login');
     await userEvent.click(screen.getByRole('button', { name: /create an account/i }));
-    expect(field(/aadhaar number/i)).toBeTruthy();
+    expect(field(/confirm password/i)).toBeTruthy();
     await userEvent.click(screen.getByRole('tab', { name: /log in/i }));
     expect(field(/mobile number/i)).toBeTruthy();
   });

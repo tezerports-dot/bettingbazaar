@@ -19,8 +19,6 @@ export const PERMISSION_KEYS = [
   'canViewAuditLogs',
   'canManageUsers',
   'canAdjustBalances',
-  'canVerifyKYC',
-  'canBulkVerifyKYC',
   'canViewTransactions',
   'canManagePhantomAgents',
   'canManageReferrals',

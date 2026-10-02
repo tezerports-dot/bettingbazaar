@@ -89,21 +89,11 @@ describe('NOTHING in the Telegram surface can grant access', () => {
     expect(telegram).not.toMatch(/router\.post\('\/otp\//);
   });
 
-  it('takes no Aadhaar number over the sign-in conversation', () => {
+  it('takes no Aadhaar number anywhere in the Telegram surface', () => {
     // The account exists before the bot is opened, so the bot has nothing to
-    // collect.
-    //
-    // Scoped to the sign-in HANDLERS, not to the file. The recovery bot does
-    // still take an Aadhaar — it is the one path that proves an identity in
-    // order to move a link to a new Telegram account — so its helper and the
-    // hashing import it needs both live in this file, above the handlers that
-    // use them. A file-wide match reported those and called it a failure, which
-    // is a gate measuring the wrong thing (§28).
-    const from = telegram.indexOf('async function handleUpdate');
-    const to   = telegram.indexOf('const RECOVERY_SESSION_SECONDS');
-    expect(from).toBeGreaterThan(-1);
-    expect(to).toBeGreaterThan(from);
-    expect(telegram.slice(from, to)).not.toMatch(/aadhaar/i);
+    // collect — and since KYC was removed (owner, 2026-10-02) the recovery bot
+    // no longer takes one either. File-wide now, because nothing is exempt.
+    expect(telegram).not.toMatch(/aadhaar/i);
   });
 });
 

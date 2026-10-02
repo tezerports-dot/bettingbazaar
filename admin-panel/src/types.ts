@@ -10,7 +10,6 @@
 /**
  * All 8 sub-admin permissions and what they control:
  *
- * canVerifyKYC        → /kyc page: approve and reject user KYC submissions
  * canManageUsers      → /users page: view users, block/unblock, adjust balance
  * canManageMerchants  → /merchants page: view, suspend/activate, update limits
  * canResolveDisputes  → dispute resolution on payment orders
@@ -72,28 +71,10 @@ export interface User {
   profilePic?: string;
 
   // DELETED is a status the server sends: the list includes closed accounts.
-  status: 'ACTIVE' | 'BLOCKED' | 'SUSPENDED' | 'PENDING_KYC' | 'DELETED';
+  status: 'ACTIVE' | 'BLOCKED' | 'SUSPENDED' | 'DELETED';
   // `users.account_type`, from the repository mapper. The list holds staff as
   // well as players, and only a PLAYER can be deleted from this screen.
   accountType?: 'PLAYER' | 'STAFF' | 'MERCHANT';
-  kycStatus: 'PENDING_SUBMISSION' | 'PENDING_APPROVAL' | 'APPROVED' | 'REJECTED';
-
-  // Decision metadata only. There is no name, Aadhaar number or document here:
-  // identity lives in KycVerification and reaches this panel as `verification`
-  // below, masked to its last four digits.
-  kycData?: {
-    submittedAt?: string;
-    rejectionReason?: string;
-    reviewedAt?: string;
-  };
-
-  /** Joined by GET /api/admin/kyc/queue — why this user is still waiting. */
-  verification?: {
-    status?: 'PENDING_VERIFICATION' | 'VERIFIED' | 'FAILED';
-    aadhaarLast4?: string;
-    exportBatchId?: string | null;
-    failureReason?: string;
-  };
 
   bankDetails?: {
     accountHolderName: string;
@@ -416,7 +397,7 @@ export interface Branding {
 export interface CDNImage {
   _id: string;
   url: string;
-  category: 'promo' | 'banner' | 'avatar' | 'kyc' | 'payment_proof' | 'logo' | 'icon' | 'other';
+  category: 'promo' | 'banner' | 'avatar' | 'payment_proof' | 'logo' | 'icon' | 'other';
   title: string;
   description?: string;
   tags: string[];
@@ -431,7 +412,7 @@ export interface FAQ {
   _id: string;
   question: string;
   answer: string;
-  category: 'general' | 'account' | 'betting' | 'payments' | 'kyc' | 'security' | 'technical';
+  category: 'general' | 'account' | 'betting' | 'payments' | 'security' | 'technical';
   order: number;
   isPublished: boolean;
   views: number;
@@ -471,7 +452,7 @@ export interface PromoContent {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface DashboardStats {
-  users: { total: number; active: number; blocked: number; kycPending: number };
+  users: { total: number; active: number; blocked: number };
   merchants: { total: number; active: number; pending: number; online: number };
   finance: {
     totalDeposits: number;

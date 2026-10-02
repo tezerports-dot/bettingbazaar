@@ -89,7 +89,7 @@ router.get('/analytics/dashboard', authenticate, hasPermission('canViewAnalytics
       metrics: {
         users: {
           total: core.users.total, active: core.users.active,
-          blocked: core.users.blocked, kycPending: core.users.pendingKYC,
+          blocked: core.users.blocked,
         },
         merchants: {
           total: core.merchants.total, active: core.merchants.active,

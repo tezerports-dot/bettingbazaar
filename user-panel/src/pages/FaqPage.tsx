@@ -15,7 +15,7 @@ const FALLBACK: FAQ[] = [
   { id: 'f1', category: 'Gameplay', question: 'How does Delhi vs Bombay Bazaar work?', answer: 'Each cycle you back either Delhi or Bombay with chips. When bets close, the side holding the smaller real-money pool is declared the winner and everyone on it is paid 2× their stake.' },
   { id: 'f2', category: 'Gameplay', question: 'What are the two cycle types?', answer: '30-Min cycles resolve every 30 minutes with smaller chip values. Full-Day cycles resolve once per day with larger chips. Bets, pools and results are tracked separately per cycle type.' },
   { id: 'f3', category: 'Gameplay', question: 'Why did the pools disappear before results?', answer: 'A few minutes before each result the two pools merge into one hidden total. This blind window keeps late betting fair — you can still bet, but you cannot see the split.' },
-  { id: 'f4', category: 'Withdrawals', question: 'When can I withdraw my winnings?', answer: 'Winnings are withdrawable to UPI or bank once a cycle settles and KYC is approved. Deposit balance used for betting clears normal wagering first.' },
+  { id: 'f4', category: 'Withdrawals', question: 'When can I withdraw my winnings?', answer: 'Winnings are withdrawable to UPI or bank once a cycle settles. Deposit balance used for betting clears normal wagering first.' },
   { id: 'f5', category: 'Gameplay', question: 'Is there a minimum bet?', answer: 'Yes — ₹10 for 30-min cycles and ₹100 for full-day cycles, matching the smallest chip in each mode.' },
 ];
 

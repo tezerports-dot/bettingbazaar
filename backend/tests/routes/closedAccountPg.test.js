@@ -55,7 +55,7 @@ describePg('a deleted account is closed', () => {
   afterAll(async () => { await closePg(); });
 
   const player = async () => {
-    const who = await actor({ kycStatus: 'APPROVED' });
+    const who = await actor({});
     await db.users.updateUser(who.userId, { passwordHash: await hashPassword(PASSWORD) });
     return who;
   };

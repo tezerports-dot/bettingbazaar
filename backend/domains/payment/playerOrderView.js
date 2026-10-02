@@ -133,7 +133,7 @@ export const PLAYER_FORBIDDEN_ORDER_FIELDS = Object.freeze([
   // A player told they are red-flagged is a player told to change behaviour
   // before anybody has finished looking.
   'redFlagged', 'redFlagReason', 'redFlaggedBy', 'redFlaggedAt',
-  'requiresVideoKYC', 'warningIssued', 'utrWarningData',
+  'warningIssued', 'utrWarningData',
 
   // ── Who acted on it, inside the company ───────────────────────────────────
   'assignedBy', 'approvedBy', 'rejectedBy', 'disputeResolvedBy',

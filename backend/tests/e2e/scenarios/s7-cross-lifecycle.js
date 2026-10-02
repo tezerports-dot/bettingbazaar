@@ -6,8 +6,7 @@
 // ACCESS, and where the effect has to land on two panels at once.
 //
 // These are the expensive half. A config change that does not propagate makes a
-// screen wrong; a KYC approval that does not propagate leaves somebody unable
-// to withdraw with no way to find out why, and a dispute resolution that lands
+// screen wrong, and a dispute resolution that lands
 // on one side only leaves a player and a merchant looking at the same order and
 // disagreeing about what happened to it.
 //
@@ -49,46 +48,20 @@ export default async function run() {
   const admin = await seedAdmin();
   const aT = adminToken(admin);
 
-  // ══ 1. KYC: the admin approves, the PLAYER's own profile says so ═════════
+  // ══ 1. There is no KYC: the player's own profile carries none ════════════
+  // KYC was removed (owner, 2026-10-02). A field that survives on the profile
+  // is a panel somewhere still rendering an identity status nobody decides.
   {
-    const p = await seedPlayer({ kycStatus: 'PENDING_APPROVAL' });
+    const p = await seedPlayer();
     const pT = playerToken(p);
-
-    const before = await GET(pT, '/api/v1/user/profile');
-    check(A, 'player', 'a pending player reads their own KYC status', 'PENDING_APPROVAL',
-      String(before.body?.user?.kycStatus), before.body?.user?.kycStatus === 'PENDING_APPROVAL');
-
-    const ok = await POST(aT, `/api/admin/kyc/${p.userId}/approve`, {});
-    check(A, 'admin', 'approve the Aadhaar', '200',
-      `${ok.status} ${ok.body?.message ?? ''}`, ok.status === 200);
-
-    const after = await GET(pT, '/api/v1/user/profile');
-    check(A, 'player', 'the PLAYER panel shows the approval', 'APPROVED',
-      String(after.body?.user?.kycStatus), after.body?.user?.kycStatus === 'APPROVED',
-      'approving grants withdrawal access — a player who cannot see it cannot act on it');
-  }
-
-  // ══ 2. KYC rejection carries a REASON the player can act on ══════════════
-  {
-    const p = await seedPlayer({ kycStatus: 'PENDING_APPROVAL' });
-    const pT = playerToken(p);
-
-    const no = await POST(aT, `/api/admin/kyc/${p.userId}/reject`,
-      { reason: 'The Aadhaar number did not match the name on file.' });
-    check(A, 'admin', 'reject an Aadhaar with a reason', '200',
-      `${no.status} ${no.body?.message ?? ''}`, no.status === 200);
-
-    // `/v1/user/:id/data`, not `/v1/user/profile`. The wallet profile carries
-    // the STATUS and deliberately not the reason; this is the route that
-    // projects `kycData`, and it is the one the resubmission screen reads.
-    const seen = await GET(pT, `/api/v1/user/${p.userId}/data`);
-    const kyc = seen.body?.user ?? seen.body ?? {};
-    const reason = JSON.stringify(kyc.kycData ?? {});
-    check(A, 'player', 'the player is told WHY, not just that it failed', 'the reason text',
-      `${kyc.kycStatus} :: ${reason.slice(0, 140)}`,
-      kyc.kycStatus === 'REJECTED' && /did not match/.test(reason),
-      '§32 S4: this read `user.kycData.rejectionReason` — a field on a row that has no such '
-      + 'column — so it returned null for EVERY rejected player, on login, on /me and here');
+    const me = await GET(pT, '/api/v1/user/profile');
+    const keys = Object.keys(me.body?.user ?? {});
+    check(A, 'player', 'the profile carries no KYC field', 'no kyc* key',
+      `${me.status} ${keys.filter((k) => /kyc|aadhaar/i.test(k)).join(',') || 'none'}`,
+      me.status === 200 && !keys.some((k) => /kyc|aadhaar/i.test(k)));
+    const gone = await POST(aT, `/api/admin/kyc/${p.userId}/approve`, {});
+    check(A, 'admin', 'the KYC approval route is gone', '404',
+      String(gone.status), gone.status === 404);
   }
 
   // ══ 3. Branding: one document, three panels ══════════════════════════════
@@ -117,7 +90,7 @@ export default async function run() {
   // wrong — which is why this case reads the PLAYER and the MERCHANT, not the
   // admin route's own answer.
   {
-    const p = await seedPlayer({ kycStatus: 'APPROVED' });
+    const p = await seedPlayer();
     const m = await seedMerchant({ currency: 'INR', tokensPaise: 500000000 });
     const pT = playerToken(p);
     const mT = merchantToken(m);
@@ -222,7 +195,7 @@ export default async function run() {
 
   // ══ 5c. Referral disbursal: the admin pays, the PLAYER's report shows it ══
   {
-    const p = await seedPlayer({ kycStatus: 'APPROVED' });
+    const p = await seedPlayer();
     const pT = playerToken(p);
 
     const before = await GET(pT, '/api/user/referrals');
@@ -267,7 +240,7 @@ export default async function run() {
           tokenEncrypted: encryptField('000:FAKE'), webhookSecret: `s-${botId}`, status: 'ACTIVE',
         });
       }
-      const p = await seedPlayer({ kycStatus: 'APPROVED' });
+      const p = await seedPlayer();
       const first = await db.telegram.assignSigninBot(p.userId, 'PLAYER');
       check(A, 'system', 'a player is assigned one of the live sign-in bots', 'one of the two',
         String(first), ids.includes(first));

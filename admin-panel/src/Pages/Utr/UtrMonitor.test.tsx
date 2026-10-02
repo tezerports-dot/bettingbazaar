@@ -14,7 +14,7 @@ const entry = (over: Record<string, unknown> = {}) => ({
   utr: 'UTR123456789', orderId: 'ord-1', userId: 'u-1', amount: 500, status: 'ACTIVE',
   registeredAt: '2026-10-01T10:00:00Z', releasedAt: null, flaggedAt: null, flaggedBy: null, flagReason: null,
   duplicateAttempts: 2, lastContestedAt: '2026-10-01T11:00:00Z',
-  user: { username: 'player1', mobile: '9876543210', kycStatus: 'APPROVED' },
+  user: { username: 'player1', mobile: '9876543210' },
   order: { orderId: 'ord-1', type: 'DEPOSIT', status: 'COMPLETED', tokenAmount: 500 },
   ...over,
 });

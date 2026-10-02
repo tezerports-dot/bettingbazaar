@@ -27,9 +27,7 @@ export const bep20 = () => '0x' + Array.from({ length: 40 }, () => '0123456789ab
  *
  * These are the rows the contact-share webhook and the membership check write.
  * The harness writes them directly because `registerBot` verifies the token
- * against Telegram itself, and there is no Telegram here — the same reason
- * the KYC rows below are walked through the real transitions instead of being
- * INSERTed, stated the other way round.
+ * against Telegram itself, and there is no Telegram here.
  *
  * Skipped when that audience has no channel: there is nothing to be a member
  * of, and `configureTelegram()` is what arranges for there to be one.
@@ -53,7 +51,7 @@ export async function verifyActor({ userId, mobile, audience }) {
   return true;
 }
 
-export async function seedPlayer({ kycStatus = 'APPROVED', balancePaise = 0, verified = true } = {}) {
+export async function seedPlayer({ balancePaise = 0, verified = true } = {}) {
   const userId = rid('player');
   // The number is held in a LOCAL, not read back off the projection. The
   // identity insert below needs it and `phone` is NOT NULL, so a projection
@@ -62,7 +60,7 @@ export async function seedPlayer({ kycStatus = 'APPROVED', balancePaise = 0, ver
   // is exactly what it did.
   const mobile = mob();
   const user = await db.users.createUser({
-    userId, username: userId, mobile, status: 'ACTIVE', kycStatus,
+    userId, username: userId, mobile, status: 'ACTIVE',
   });
 
   // ── The Telegram verification a real player cannot deposit without ──────
@@ -82,34 +80,6 @@ export async function seedPlayer({ kycStatus = 'APPROVED', balancePaise = 0, ver
   // Skipped silently when no channel is configured — there is nothing to be a
   // member of, and the gate admits (§31's owner decision, 2026-09-17).
   if (verified) await verifyActor({ userId, mobile, audience: 'PLAYER' });
-  // ── The KYC ROW a real submission writes ───────────────────────────────
-  // §32 S16, a third instance in this file. `createUser` sets
-  // `users.kyc_status` and nothing else, so a seeded player had a status and
-  // no `user_kyc` row — a state the platform cannot produce, because every
-  // real status arrives through `transitionKyc`, which writes the row, the
-  // column and a `kyc_transitions` entry in ONE transaction.
-  //
-  // It cost nothing until something DECIDED on that row. `approveKyc` answered
-  // 409 "Cannot approve KYC from unknown status" for every seeded player, so no
-  // test could ever exercise an approval — the one decision that grants
-  // withdrawal access.
-  //
-  // Opened at PENDING_SUBMISSION and then walked forward through the real
-  // transitions, so the seed reaches its requested status the same way a person
-  // does and `KYC_ALLOWED_FROM` stays the only rule about what is reachable.
-  if (kycStatus && kycStatus !== 'PENDING_SUBMISSION') {
-    await db.kyc.openKyc({ userId });
-    await db.kyc.transitionKyc({ userId, to: 'PENDING_APPROVAL', actor: 'e2e' });
-    if (kycStatus === 'APPROVED') {
-      await db.kyc.transitionKyc({ userId, to: 'APPROVED', actor: 'e2e' });
-    } else if (kycStatus === 'REJECTED') {
-      await db.kyc.transitionKyc({
-        userId, to: 'REJECTED', actor: 'e2e', reason: 'e2e seeded rejection',
-      });
-    }
-  } else {
-    await db.kyc.openKyc({ userId });
-  }
 
   if (balancePaise > 0) {
     const { creditDeposit } = await import('../../domains/wallet/walletAuthority.service.js');
@@ -170,9 +140,9 @@ export async function seedMerchant({
   // right; the fixture was describing a merchant with no login.
   const merchantUserId = rid('muser');
   await pgQuery(
-    `INSERT INTO users (user_id, username, mobile, password_hash, status, kyc_status,
+    `INSERT INTO users (user_id, username, mobile, password_hash, status,
                         roles, account_type)
-     VALUES ($1, $2, $3, $4, 'ACTIVE', 'PENDING_SUBMISSION', ARRAY['merchant'], 'MERCHANT')
+     VALUES ($1, $2, $3, $4, 'ACTIVE', ARRAY['merchant'], 'MERCHANT')
      ON CONFLICT (mobile, account_type) DO NOTHING`,
     [merchantUserId, merchant.username ?? name, mobile, 'x'.repeat(60)],
     'e2e_merchant_login',
@@ -217,7 +187,7 @@ export async function seedStaff({ subAdmin = false, queueManager = false, permis
   const userId = rid('staff');
   const mobile = mob();
   const { user } = await db.users.createUser({
-    userId, username: userId, mobile, status: 'ACTIVE', accountType: 'STAFF', kycStatus: 'APPROVED',
+    userId, username: userId, mobile, status: 'ACTIVE', accountType: 'STAFF',
   });
   const roles = [subAdmin ? 'subadmin' : null, queueManager ? 'queue_manager' : null].filter(Boolean);
   if (roles.length) await db.users.setRoles(userId, roles);
@@ -244,7 +214,7 @@ export async function seedAdmin({ enrol2fa = true, verified = true } = {}) {
     // PLAYER fleet's bot, for an admin. The gate was right; the fixture was
     // describing an account that does not exist.
     accountType: 'STAFF',
-    kycStatus: 'APPROVED', isAdmin: true,
+    isAdmin: true,
   });
   if (enrol2fa) {
     const { pgQuery } = await import('#db/client.js');

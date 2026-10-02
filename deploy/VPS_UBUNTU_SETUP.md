@@ -200,7 +200,6 @@ PORT=3000
 JWT_SECRET=<openssl rand -base64 48>
 DATABASE_URL=postgresql://bb_user:PASSWORD@127.0.0.1:5432/bb_money
 ORDER_HMAC_SECRET=<openssl rand -base64 48>
-AADHAAR_HMAC_SECRET=<openssl rand -base64 48>
 REDIS_URL=redis://127.0.0.1:6379
 ALLOWED_ORIGINS=https://yourdomain.com
 S3_BUCKET_NAME=bettingbazaar
@@ -222,7 +221,6 @@ TOTP_ENCRYPTION_KEY=<openssl rand -base64 32>
 # ── Identity at rest. Must decode to EXACTLY 32 bytes, or the boot gate refuses
 #    (a wrong length is caught here rather than on the first unreadable Aadhaar).
 IDENTITY_ENCRYPTION_KEY=<openssl rand -base64 32>
-AADHAAR_HMAC_SECRET=<openssl rand -base64 48>
 
 # ── Telegram. Bot TOKENS are NOT here — they live in the database so a
 #    suspended bot can be replaced from the admin panel without a deploy.
@@ -251,9 +249,7 @@ Notes that cost people hours:
   enrolled user to re-enrol. Back it up off the box.
 - **`IDENTITY_ENCRYPTION_KEY` is rotatable, but only deliberately.** Put the old
   value in `IDENTITY_ENCRYPTION_PREVIOUS_KEYS` (decrypt-only) before switching, or
-  every stored Aadhaar and every stored bot token becomes unreadable. Same for
-  `AADHAAR_HMAC_SECRET` → `AADHAAR_HMAC_PREVIOUS_SECRETS`, which is what keeps
-  existing players able to recover their accounts after a rotation.
+  every stored bot token and provider credential becomes unreadable.
 - **Nobody can sign up until the bot is configured.** That is an admin-panel step
   after deploy (**Telegram Setup**), not an env var — see
   `docs/IDENTITY_AND_REFERRALS.md` §6.

@@ -47,7 +47,7 @@ interface Entry {
   duplicateAttempts: number;
   lastContestedAt: string | null;
   // Only on the registry list and the single lookup, which join them on.
-  user?: { username: string; mobile: string; kycStatus: string } | null;
+  user?: { username: string; mobile: string } | null;
   order?: { orderId: string; type: string; status: string; tokenAmount: number } | null;
 }
 
@@ -244,7 +244,7 @@ export const UtrMonitor: React.FC = () => {
             <div><dt className="text-gray-400 text-xs">Order</dt><dd className="font-mono break-all">{selected.orderId}</dd></div>
             <div><dt className="text-gray-400 text-xs">Order type / state</dt><dd>{selected.order ? `${selected.order.type} · ${selected.order.status}` : '— (no order row)'}</dd></div>
             <div><dt className="text-gray-400 text-xs">Tokens</dt><dd>{selected.order ? selected.order.tokenAmount.toLocaleString('en-IN') : '—'}</dd></div>
-            <div><dt className="text-gray-400 text-xs">Player</dt><dd>{selected.user ? `${selected.user.username} · ${selected.user.mobile} · KYC ${selected.user.kycStatus}` : '— (account not found)'}</dd></div>
+            <div><dt className="text-gray-400 text-xs">Player</dt><dd>{selected.user ? `${selected.user.username} · ${selected.user.mobile}` : '— (account not found)'}</dd></div>
             <div><dt className="text-gray-400 text-xs">Claimed</dt><dd>{when(selected.registeredAt)}</dd></div>
             <div><dt className="text-gray-400 text-xs">Reuse attempts</dt><dd className={selected.duplicateAttempts > 0 ? 'text-yellow-400' : ''}>{selected.duplicateAttempts}{selected.lastContestedAt ? ` · last ${when(selected.lastContestedAt)}` : ''}</dd></div>
             {selected.status === 'FRAUD' && (

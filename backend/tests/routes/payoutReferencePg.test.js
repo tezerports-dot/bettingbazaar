@@ -63,7 +63,7 @@ describePg('the payout reference is the MERCHANT\'s, and it is claimed', () => {
 
   /** A withdrawal sitting where the merchant presses "I've sent the money". */
   const payout = async (merchant, { paymentMode = PAYMENT_MODES.P2P_UPI } = {}) => {
-    const player = await actor({ kycStatus: 'APPROVED' });
+    const player = await actor({});
     const orderId = oid('wd');
     await createOrderRecord({
       orderId, userId: player.userId, type: 'WITHDRAWAL',
@@ -144,7 +144,7 @@ describePg('the payout reference is the MERCHANT\'s, and it is claimed', () => {
   // ── The other half of the asymmetry, so it cannot be collapsed ───────────
   it('a DEPOSIT still takes no reference from the merchant', async () => {
     const m = await seller();
-    const player = await actor({ kycStatus: 'APPROVED' });
+    const player = await actor({});
     const orderId = oid('dep');
     const players = utr();
     await createOrderRecord({

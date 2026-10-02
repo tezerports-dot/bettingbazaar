@@ -364,7 +364,7 @@ export const TelegramConfig: React.FC = () => {
           <div style={{ fontSize: 12, lineHeight: 1.65 }}>
             <strong>Every logged-in player will be asked to join the new channel</strong> the next time they
             bet, play or open their wallet — a prompt they cannot dismiss, carrying the new invite link.
-            Accounts, balances, KYC status, referral positions and joining numbers are all unchanged;
+            Accounts, balances, referral positions and joining numbers are all unchanged;
             nothing has to be migrated. Add the bot to the new channel <strong>as an administrator</strong>
             first, or it cannot read join events and the prompt will never clear.
           </div>

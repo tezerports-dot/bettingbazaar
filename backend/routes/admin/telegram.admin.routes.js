@@ -14,14 +14,11 @@
  * users are unaffected because identities are keyed on the person's Telegram
  * user id, which belongs to Telegram rather than to our bot.
  *
- * ── Three areas, each granted on its own ──────────────────────────────────
- * Telegram setup (`canManageTelegram`) moves the platform's identity root; bulk
- * KYC (`canBulkVerifyKYC`) exports national ID numbers; referrals
- * (`canManageReferrals`) pay money. Each is its own area so an admin can give
- * one without the others (owner, 2026-10-01). Every staff account owes a second
- * factor (twoFactorPolicy), sub-admins included — the control the operator
- * obligations research calls for on raw-KYC access holds for whoever is given
- * it.
+ * ── Two areas, each granted on its own ────────────────────────────────────
+ * Telegram setup (`canManageTelegram`) moves the platform's identity root;
+ * referrals (`canManageReferrals`) pay money. Each is its own area so an admin
+ * can give one without the other (owner, 2026-10-01). Every staff account owes
+ * a second factor (twoFactorPolicy), sub-admins included.
  */
 import express from 'express';
 import { db } from '#db';
@@ -35,7 +32,6 @@ import {
   registerBot, promote, retire, retryWebhook, listBots, signinLoads,
 } from '../../domains/telegram/telegramBots.service.js';
 import { listTemplates, saveTemplate } from '../../domains/telegram/telegramTemplates.service.js';
-import { buildExport, applyImport, kycStats } from '../../domains/identity/kycBulk.service.js';
 import { disburse, programmeStats } from '../../domains/referral/referral.service.js';
 import { rupeesToPaise, paiseToRupees } from '../../shared/money.js';
 import { serverError, respondError } from '../../shared/httpError.js';
@@ -465,58 +461,7 @@ router.put('/telegram/templates/:key', authenticate, hasPermission('canManageTel
   }
 });
 
-// ═══════════════════════════════════════════════════════════════════════════
-// KYC BATCHES
-// ═══════════════════════════════════════════════════════════════════════════
-
-router.get('/kyc/bulk/stats', authenticate, hasPermission('canBulkVerifyKYC'), async (req, res) => {
-  try {
-    res.json({ success: true, ...(await kycStats()) });
-  } catch (err) {
-    return serverError(res, err, 'GET /kyc/bulk/stats');
-  }
-});
-
-/**
- * GET /api/admin/kyc/bulk/export — download pending rows for verification.
- *
- * Streamed as an attachment and never persisted server-side. Every call writes
- * an audit row naming the admin.
- */
-router.get('/kyc/bulk/export', authenticate, hasPermission('canBulkVerifyKYC'), async (req, res) => {
-  try {
-    const limit = Math.min(Number(req.query.limit) || 10_000, 50_000);
-    const { batchId, csv, rowCount } = await buildExport({ actorId: req.user.userId, limit });
-
-    if (!rowCount) {
-      return res.status(404).json({ success: false, message: 'There are no pending verifications to export.' });
-    }
-
-    console.warn(`[kyc] EXPORT ${batchId}: ${rowCount} Aadhaar row(s) released to admin ${req.user.userId}`);
-    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename="${batchId}.csv"`);
-    // Identity data must never sit in a shared cache.
-    res.setHeader('Cache-Control', 'no-store, private');
-    return res.send(csv);
-  } catch (err) {
-    console.error('[admin/kyc] export failed:', err.message);
-    return respondError(res, err, 'GET /admin/kyc/bulk/export');
-  }
-});
-
-/** POST /api/admin/kyc/bulk/import — apply a completed verification file. */
-router.post('/kyc/bulk/import', authenticate, hasPermission('canBulkVerifyKYC'), async (req, res) => {
-  try {
-    const csv = typeof req.body === 'string' ? req.body : req.body?.csv;
-    const result = await applyImport({ csv, actorId: req.user.userId });
-    console.warn(`[kyc] IMPORT ${result.batchId} by admin ${req.user.userId}: `
-      + `${result.verified} verified, ${result.failed} failed, ${result.skipped} skipped`);
-    res.json({ success: true, ...result });
-  } catch (err) {
-    console.error('[admin/kyc] import failed:', err.message);
-    return respondError(res, err, 'POST /admin/kyc/bulk/import');
-  }
-});
+// KYC batches (export/import of Aadhaar numbers) were removed 2026-10-02 with KYC.
 
 // ═══════════════════════════════════════════════════════════════════════════
 // REFERRAL PROGRAMME

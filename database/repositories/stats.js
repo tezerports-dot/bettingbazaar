@@ -43,7 +43,6 @@ export async function userStats() {
        COUNT(*)::int                                                        AS total,
        COUNT(*) FILTER (WHERE status = 'ACTIVE' AND NOT is_blocked)::int    AS active,
        COUNT(*) FILTER (WHERE is_blocked)::int                              AS blocked,
-       COUNT(*) FILTER (WHERE kyc_status = 'PENDING_APPROVAL')::int         AS pending_kyc,
        COUNT(*) FILTER (WHERE joined_at >= CURRENT_DATE)::int               AS today,
        COUNT(*) FILTER (WHERE is_admin)::int                                AS admins,
        COUNT(*) FILTER (WHERE is_sub_admin)::int                            AS sub_admins
@@ -52,7 +51,7 @@ export async function userStats() {
   const r = rows[0];
   return {
     total: r.total, active: r.active, blocked: r.blocked,
-    pendingKYC: r.pending_kyc, today: r.today,
+    today: r.today,
     admins: r.admins, subAdmins: r.sub_admins,
   };
 }

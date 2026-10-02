@@ -39,13 +39,13 @@ export const DEFAULT_TEMPLATES = {
   // ── The conversation the bot now has ─────────────────────────────────────
   // It is SHORTER than the one it replaces, and that is the point: the account
   // already exists by the time anybody opens this chat, so the bot no longer
-  // takes an Aadhaar number, no longer creates anything, and no longer hands
+  // creates anything, and no longer hands
   // out a link that signs somebody in. It proves a phone number and gets them
   // into the channel. Two jobs, three messages.
   welcome:
     'Welcome to <b>Betting Bazaar</b>.\n\n'
     + 'Tap the <b>Share my contact</b> button below to verify your mobile number.\n\n'
-    + '⚠️ It must be the number you signed up with — the mobile linked to your Aadhaar. '
+    + '⚠️ It must be the number you signed up with. '
     + 'If you are using a different Telegram account, sign in to that one first.',
 
   ask_contact:
@@ -70,8 +70,8 @@ export const DEFAULT_TEMPLATES = {
   // person has done everything they were asked and been told "no".
   not_registered:
     'That number is not registered on <b>Betting Bazaar</b>.\n\n'
-    + 'Create your account on the app or website first — you will need your Aadhaar '
-    + 'number and this mobile number — then come back here and share your contact.',
+    + 'Create your account on the app or website first with this mobile number, '
+    + 'then come back here and share your contact.',
 
   // The ONE message on this platform that carries a credential. It says what
   // the link does and what it does NOT do, because somebody who expects to be
@@ -84,10 +84,9 @@ export const DEFAULT_TEMPLATES = {
     + 'and only this Telegram account can open the link.',
 
   recovery_welcome:
-    '<b>Account recovery</b>\n\n'
-    + 'Use this only if you have lost the Telegram account you signed up with, '
-    + 'but still use the same mobile number.\n\n'
-    + 'Send your <b>12-digit Aadhaar number</b> to begin.',
+    '<b>Forgot your password?</b>\n\n'
+    + 'Tap <b>Share my contact</b> from the Telegram account you verified with, '
+    + 'and we will send you a link to choose a new password.',
 };
 
 export const TEMPLATE_KEYS = Object.keys(DEFAULT_TEMPLATES);

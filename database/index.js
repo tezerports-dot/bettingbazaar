@@ -94,8 +94,6 @@ import * as casinoCore from './repositories/casino.core.js';
 import * as casinoApi from './repositories/casino.js';
 import * as bonusesCore from './repositories/bonuses.core.js';
 import * as bonusesApi from './repositories/bonuses.js';
-import * as kycCore from './repositories/kyc.core.js';
-import * as kycApi from './repositories/kyc.js';
 import * as merchantWalletsCore from './repositories/merchantWallets.core.js';
 import * as merchantWalletsApi from './repositories/merchantWallets.js';
 
@@ -139,7 +137,6 @@ export const db = Object.freeze({
   utr,
 
   // Compliance
-  kyc: merge(kycCore, kycApi),
   audit,
 
   // Catalogue and content

@@ -52,11 +52,8 @@ export interface User {
   rating?: number;
   totalOrders?: number;
   realName?: string;
-  aadhaarNumber?: string;
-  kycDocumentUrl?: string;
   bankDetails?: BankDetails;
   status?: string;
-  kycStatus?: string;
 }
 
 export interface ChatMessage {

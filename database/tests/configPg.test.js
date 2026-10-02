@@ -287,7 +287,7 @@ describePg('the configuration store', () => {
   it('reads several scopes in one call for a panel that renders them all', async () => {
     const all = await getConfigs(['system', 'branding', 'supportLinks'], { docKey: KEY });
     expect(Object.keys(all).sort()).toEqual(['branding', 'supportLinks', 'system']);
-    expect(all.system.kycRequired).toBe(true);
+    expect(all.system.maintenanceMode).toBe(false);
   });
 
   it('keeps scopes apart', async () => {

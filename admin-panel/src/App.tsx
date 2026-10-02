@@ -21,8 +21,6 @@ import { ProfitLoss } from './Pages/Finance/ProfitLoss';
 import { TokenFlow } from './Pages/Finance/TokenFlow';
 import { SupportAssistant } from './Pages/Support/SupportAssistant';
 import { QueueDashboard } from './Pages/QueueManager/QueueDashboard';
-import { KYCQueue } from './Pages/KYC/KYCQueue';
-import { KycBulk } from './Pages/KYC/KycBulk';
 import { TelegramConfig } from './Pages/Telegram/TelegramConfig';
 import { ReferralProgramme } from './Pages/Referrals/ReferralProgramme';
 import { SubAdminsList } from './Pages/SubAdmins/SubAdminsList';
@@ -248,13 +246,6 @@ const App: React.FC = () => {
           </PermRoute>
         } />
 
-        {/* KYC — canVerifyKYC */}
-        <Route path="/kyc" element={
-          <PermRoute permission="canVerifyKYC">
-            <Layout><KYCQueue /></Layout>
-          </PermRoute>
-        } />
-
         {/* Identity and payout control plane. Each screen is its own area, so an
             admin decides who works in it (owner, 2026-10-01). These release
             national identity numbers, move tokens and pay real money; every
@@ -267,9 +258,6 @@ const App: React.FC = () => {
             Users list; this is the roster and the way to take it away. */}
         <Route path="/users/phantom-agents" element={
           <PermRoute permission="canManagePhantomAgents"><Layout><PhantomAgents /></Layout></PermRoute>
-        } />
-        <Route path="/kyc/bulk" element={
-          <PermRoute permission="canBulkVerifyKYC"><Layout><KycBulk /></Layout></PermRoute>
         } />
         <Route path="/telegram" element={
           <PermRoute permission="canManageTelegram"><Layout><TelegramConfig /></Layout></PermRoute>
@@ -419,11 +407,9 @@ const App: React.FC = () => {
         } />
         {/* UTR REMOVED: route /utr-monitor stripped per product decision */}
 
-        {/* Account recovery is no longer an admin queue. It runs unattended on a
-            second Telegram bot that requires BOTH the registered phone (proved
-            by a contact share) and the Aadhaar on file — see
-            backend/domains/telegram/telegramRecovery.service.js. Every grant
-            raises an alert. */}
+        {/* Account recovery is not an admin queue: a forgotten password is
+            reset through the panel's Telegram bot, which issues a link to a
+            number Telegram has verified (passwordReset.service.js). */}
 
         {/* ── WINNERS MANAGEMENT */}
         <Route path="/winners-manager" element={

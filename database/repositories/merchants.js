@@ -1198,9 +1198,9 @@ export async function createMerchantAccount({
     // panels are separate accounts by the owner's decision; this is where the
     // merchant one says so.
     const account = await client.query(
-      `INSERT INTO users (user_id, username, mobile, password_hash, status, kyc_status,
+      `INSERT INTO users (user_id, username, mobile, password_hash, status,
                           roles, account_type)
-       VALUES ($1, $2, $3, $4, 'ACTIVE', 'PENDING_SUBMISSION', ARRAY['merchant'], 'MERCHANT')
+       VALUES ($1, $2, $3, $4, 'ACTIVE', ARRAY['merchant'], 'MERCHANT')
        ON CONFLICT (mobile, account_type) DO NOTHING
        RETURNING user_id`,
       [String(userId), username ?? '', String(mobile), passwordHash],

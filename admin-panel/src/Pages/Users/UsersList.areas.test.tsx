@@ -17,7 +17,7 @@ vi.mock('../../services/api', () => ({
     users: {
       getAll: vi.fn().mockResolvedValue({
         success: true,
-        data: [{ userId: 'u-1', username: 'player1', mobile: '9876543210', status: 'ACTIVE', kycStatus: 'APPROVED', accountType: 'PLAYER', depositBalance: 0, winningsBalance: 0, lockedBalance: 0 }],
+        data: [{ userId: 'u-1', username: 'player1', mobile: '9876543210', status: 'ACTIVE', accountType: 'PLAYER', depositBalance: 0, winningsBalance: 0, lockedBalance: 0 }],
         pagination: { total: 1 },
       }),
       deleteUser: vi.fn(),
@@ -72,7 +72,7 @@ describe('Users screen controls, by area', () => {
   // coverage, "client methods no screen calls").
   it('offers Delete Account on a PLAYER row and never on a staff row', async () => {
     as({ isAdmin: true });
-    const row = (userId: string, username: string, accountType: string) => ({ userId, username, mobile: '9876543210', status: 'ACTIVE', kycStatus: 'APPROVED', accountType, depositBalance: 0, winningsBalance: 0, lockedBalance: 0 });
+    const row = (userId: string, username: string, accountType: string) => ({ userId, username, mobile: '9876543210', status: 'ACTIVE', accountType, depositBalance: 0, winningsBalance: 0, lockedBalance: 0 });
     (api.users.getAll as any).mockResolvedValueOnce({
       success: true, data: [row('u-1', 'player1', 'PLAYER'), row('s-9', 'colleague', 'STAFF')], pagination: { total: 2 },
     });
@@ -87,7 +87,7 @@ describe('Users screen controls, by area', () => {
   // merchant login (409), so the controls are not offered on those rows.
   it('offers Add Balance, Deduct and Phantom Access on a PLAYER row only', async () => {
     as({ isAdmin: true });
-    const row = (userId: string, username: string, accountType: string) => ({ userId, username, mobile: '9876543210', status: 'ACTIVE', kycStatus: 'APPROVED', accountType, depositBalance: 0, winningsBalance: 0, lockedBalance: 0 });
+    const row = (userId: string, username: string, accountType: string) => ({ userId, username, mobile: '9876543210', status: 'ACTIVE', accountType, depositBalance: 0, winningsBalance: 0, lockedBalance: 0 });
     (api.users.getAll as any).mockResolvedValueOnce({
       success: true,
       data: [row('u-1', 'player1', 'PLAYER'), row('s-9', 'colleague', 'STAFF'), row('m-3', 'trader', 'MERCHANT')],

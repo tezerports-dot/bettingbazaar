@@ -357,8 +357,7 @@ export async function awaitBudget(label) {
  * is — §32 S19, a pass that needs a value SETS it rather than reading whatever
  * the database happened to hold. The rows are written directly, because
  * `registerBot` verifies the token against Telegram itself and there is no
- * Telegram here; that is the same reason, stated the other way round, that
- * `seedPlayer` walks the KYC transitions instead of INSERTing a status.
+ * Telegram here.
  *
  * The restore goes in a `finally` (trap 10): a configured channel re-gates
  * every player the moment its generation moves, so leaving one behind is not

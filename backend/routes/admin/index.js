@@ -10,7 +10,6 @@
 import express from 'express';
 import analyticsRoutes  from '../../domains/analytics/analytics.admin.routes.js';
 import usersRoutes      from './users.admin.routes.js';
-import kycRoutes        from './kyc.admin.routes.js';
 import subAdminsRoutes  from './subadmins.admin.routes.js';
 import merchantsRoutes  from '../../domains/merchant/merchant.admin.routes.js';
 import brandingRoutes   from './branding.admin.routes.js';
@@ -46,7 +45,6 @@ router.use(authenticate);
 
 router.use('/', analyticsRoutes);
 router.use('/', usersRoutes);
-router.use('/', kycRoutes);
 router.use('/', subAdminsRoutes);
 router.use('/', merchantsRoutes);
 router.use('/', brandingRoutes);

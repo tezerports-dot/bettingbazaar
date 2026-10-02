@@ -48,7 +48,6 @@ import { getUserLedger, getBalances } from '../wallet/walletAuthority.service.js
 // here any more: KYC submission was the last caller of both in this file, and a
 // module that cannot reach them cannot accidentally publish or presign an
 // identity document.
-import { buildPublicKycData } from './kycPublicData.js';
 // The one public projection of a cycle. Real/phantom pools reveal the winner,
 // so every user-facing cycle response goes through here (cyclePublicView.js).
 import { publicCycleView } from '../markets/cyclePublicView.js';
@@ -171,8 +170,6 @@ router.get('/v1/user/:id/data', authenticatePlayer, async (req, res) => {
     // history = last 20 cycle IDs the user bet in (for LiveTicker dots)
     const historyCycleIds = [...new Set(normalizedBets.map(b => b.cycleId))].slice(0, 20);
 
-    const publicKycData = await buildPublicKycData(user);
-
     res.json({
       success: true,
       user: {
@@ -184,10 +181,6 @@ router.get('/v1/user/:id/data', authenticatePlayer, async (req, res) => {
         lockedBalance,
         walletBalance,    // BUG-U6 fix — Header now shows real balance
         totalBalance:     walletBalance,
-        kycStatus:        user.kycStatus,
-        // KYC documents/PII are admin-only after submission; users get status
-        // plus rejection reason only when they must resubmit.
-        kycData:          publicKycData,
         bankDetails: user.bankDetails || null,
         profilePic:       user.profilePic || '',
         joinedAt:         user.joinedAt,
@@ -582,7 +575,6 @@ router.get('/v1/user/profile', authenticatePlayer, async (req, res) => {
         depositBalance:   balances.depositBalance  || 0,
         winningsBalance:  balances.winningsBalance || 0,
         lockedBalance:    balances.lockedBalance   || 0,
-        kycStatus:        user.kycStatus,
         bankDetails:      user.bankDetails     || null,
         profilePic:       user.profilePic      || null,
         joinedAt:         user.joinedAt,

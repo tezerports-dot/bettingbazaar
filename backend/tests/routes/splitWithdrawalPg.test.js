@@ -49,7 +49,7 @@ describePg('a cash withdrawal that becomes several withdrawals', () => {
   let restoreMaxWithdrawal = null;
 
   /**
-   * A player who can actually withdraw: KYC approved, bank details on file, and
+   * A player who can actually withdraw: bank details on file, and
    * winnings to draw on. The withdrawal path checks all three before it reaches
    * anything this suite is about.
    */
@@ -59,7 +59,6 @@ describePg('a cash withdrawal that becomes several withdrawals', () => {
     // outside `database/`, and a fixture written in hand-rolled SQL keeps
     // passing after the column it names is renamed.
     await updateUser(player.userId, {
-      kycStatus: 'APPROVED',
       bankDetails: {
         accountNumber: '000111222333', ifscCode: 'HDFC0000001',
         bankName: 'HDFC Bank', accountHolderName: 'Test Player',

@@ -34,7 +34,7 @@
  *
  *   npm run test:drive                      every panel
  *   npm run test:drive -- admin-panel       one panel
- *   npm run test:drive -- admin-panel /kyc  one screen
+ *   npm run test:drive -- admin-panel /users one screen
  */
 import { setTimeout as sleep } from 'node:timers/promises';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -475,7 +475,7 @@ mkdirSync(SHOTS, { recursive: true });
 
 /**
  * ── The report MERGES; it does not overwrite ──────────────────────────────
- * A filtered run (`test:drive -- admin-panel /kyc`) used to replace the whole
+ * A filtered run (`test:drive -- admin-panel /users`) used to replace the whole
  * file, so every screen it did not touch silently became "NOT DRIVEN" — and the
  * coverage report read that as work still to do. It nearly had me publish a
  * table saying the merchant panel had never been driven, hours after driving

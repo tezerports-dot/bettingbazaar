@@ -76,7 +76,7 @@ function parseCursor(raw) {
  */
 router.get('/users', authenticate, hasPermission('canManageUsers'), async (req, res) => {
   try {
-    const { status, kycStatus, search, page = 1, limit = 50, cursor } = req.query;
+    const { status, search, page = 1, limit = 50, cursor } = req.query;
 
     // Merchants are a completely separate entity with their own record and auth
     // system, so the player list excludes them by the role they were created
@@ -89,7 +89,6 @@ router.get('/users', authenticate, hasPermission('canManageUsers'), async (req, 
     // wildcard on every keystroke of an admin's search box.
     const listed = await db.users.listUsers({
       status: status && status !== 'all' ? status : null,
-      kycStatus: kycStatus && kycStatus !== 'all' ? kycStatus : null,
       search: search || null,
       excludeRole: 'merchant',
       limit: Math.min(Number(limit) || 50, 200),

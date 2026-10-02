@@ -185,18 +185,9 @@ router.post('/merchant/cdm-receipt/:orderId/upload-url', merchantAuth, async (re
 // ═══════════════════════════════════════════════════════════════════════
 
 // ═══════════════════════════════════════════════════════════════════════
-// 🪪 KYC DOCUMENTS — REMOVED 2026-08-25
-//
-// POST /user/kyc/:docType/upload-url presigned a PUT into a private bucket
-// for an Aadhaar card and a selfie, which an admin then reviewed by eye.
-// KYC no longer works that way: the Telegram bot captures the Aadhaar NUMBER,
-// it is held encrypted, and verification happens in bulk against the issuing
-// authority (domains/identity/kycBulk.service.js). There is no document to
-// upload, so there is no bucket to presign into — and the safest identity
-// document is the one never collected.
-//
-// Do not re-add an upload endpoint here without the private-store guarantees
-// that used to sit on this one; docs/IDENTITY_AND_REFERRALS.md §6a records them.
+// KYC DOCUMENTS — none. No identity document is collected, and since
+// 2026-10-02 no identity number either (KYC removed, owner). Do not add an
+// upload path for one.
 // ═══════════════════════════════════════════════════════════════════════
 
 // ── Profile picture upload (used by profile page) ────────────────────────────

@@ -184,7 +184,7 @@ ok('and the admin is sent to a STAFF bot, not the player one',
 
 // ── 5. Three accounts on ONE mobile ────────────────────────────────────────
 const signup = await req('/api/v1/auth/register', { method:'POST', body:{
-  mobile: MOBILE, aadhaar: '2' + stamp.padStart(11,'4'),
+  mobile: MOBILE,
   password: 'PlayerPw-2026!', confirmPassword: 'PlayerPw-2026!',
 }});
 ok('a PLAYER signs up on that mobile', signup.status === 200 && signup.body.success === true,

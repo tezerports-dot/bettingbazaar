@@ -790,7 +790,7 @@ Anything in the user panel is W+P+A today; merchant and admin are W only.
 | Referral / invite — code, share, team, commissions (**F1 only**) | `/invite` | `/api/referral/me`, `/team`, `/commissions`, `/apply` | — |
 | VIP — tier, progress, benefits | `/vip` | `/api/vip/config`, `/api/vip/my`, `/api/bonuses/my` | — |
 | **Account recovery** — REMOVED 2026-08-25. There is no in-app recovery screen and no `/api/auth/check-aadhaar`, `/recover` or `/recover/status`. Recovery runs entirely in a SECOND Telegram bot and requires the same mobile AND the same Aadhaar to match. | — | — | — |
-| Profile — username, avatar, bank/UPI, KYC status, sign-out. **No password, no email** — the only editable field is the username; Aadhaar and mobile are proved, not typed. | `/profile` | profile, bank, avatar-upload endpoints | `kyc_update` |
+| Profile — username, avatar, bank/UPI, sign-out. **No password, no email** — the only editable field is the username; the mobile is proved, not typed. There is no KYC (removed 2026-10-02). | `/profile` | profile, bank, avatar-upload endpoints | — |
 | Transaction / order history — timeline, filters, proof & dispute links | `/history` | `/api/payment/orders`, `/order/:id` | `order_update` |
 | My bets — list, cycle/side/amount/status filters | `/my-bets` | `GET /api/user/:userId/bets` | `bet_placed` |
 | Results — cycle timeline, winner/pool summary | `/results` | `/api/v1/game/cycles/history` | `cycle_result` |

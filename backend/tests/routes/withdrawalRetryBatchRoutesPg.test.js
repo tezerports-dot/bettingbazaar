@@ -29,7 +29,6 @@ describePg('withdrawal retry and batch routes', () => {
   const withdrawer = async (winningsRupees) => {
     const player = await actor({});
     await updateUser(player.userId, {
-      kycStatus: 'APPROVED',
       bankDetails: {
         accountNumber: '000111222333', ifscCode: 'HDFC0000001',
         bankName: 'HDFC Bank', accountHolderName: 'Test Player',

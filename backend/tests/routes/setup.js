@@ -16,7 +16,6 @@
 const FIXED = {
   JWT_SECRET: 'test-only-signing-key-not-a-real-secret-0123456789abcdef',
   ORDER_HMAC_SECRET: 'test-only-order-hmac-not-a-real-secret-0123456789abcdef',
-  AADHAAR_HMAC_SECRET: 'test-only-aadhaar-hmac-not-a-real-secret-0123456789abcd',
   // 32 bytes, base64 — AES-256 needs a real key shape even in a test.
   IDENTITY_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString('base64'),
   TOTP_ENCRYPTION_KEY: Buffer.alloc(32, 9).toString('base64'),

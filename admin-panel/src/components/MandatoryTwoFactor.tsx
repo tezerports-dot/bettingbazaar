@@ -48,7 +48,7 @@ const MandatoryTwoFactor: React.FC<{ children: React.ReactNode }> = ({ children 
             Set up two-factor authentication
           </h1>
           <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
-            This account can approve KYC, move balances and resolve disputes, so it
+            This account can move balances and resolve disputes, so it
             has to be protected by more than a password. Enrol an authenticator
             app to continue.
           </p>

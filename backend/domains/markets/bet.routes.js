@@ -4,7 +4,7 @@
 import express from 'express';
 import { db } from '#db';
 import { getBalances } from '../wallet/walletAuthority.service.js';
-import { authenticatePlayer, requireLinkedKyc } from '../identity/auth.middleware.js';
+import { authenticatePlayer } from '../identity/auth.middleware.js';
 import { betLimiter } from '../../middleware/security.js';
 // Betting is for members of the official Telegram channel. The gate serves a
 // cache kept current by chat_member events, so this costs a lookup, not a
@@ -81,11 +81,7 @@ async function idempotentBetResponse(bet, userId, type) {
 // POST /api/bet/place
 // Places a real bet. Deducts from winnings first, then deposits.
 // ─────────────────────────────────────────────────────────────────────────────
-// Linked, not approved (owner decision 2026-09-08). A bet is placed with
-// tokens the player already bought, and it can only ever move value between
-// their own two pockets — the approved-KYC gate belongs on the way OUT, which
-// is where it still is.
-router.post('/place', authenticatePlayer, requireLinkedKyc, requireChannelMembership({ action: 'place a bet' }), betLimiter, async (req, res) => {
+router.post('/place', authenticatePlayer, requireChannelMembership({ action: 'place a bet' }), betLimiter, async (req, res) => {
   // NOTE: No session opened here — the critical balance step is a single atomic
   // findOneAndUpdate (see FIX B). Remaining writes (Bet, Cycle pool, Transaction)
   // are idempotent/append-only and do not need a multi-document transaction.

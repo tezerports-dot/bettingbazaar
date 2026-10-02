@@ -4,7 +4,7 @@
  *
  * ── Why these were not in the drive pass ───────────────────────────────────
  * `drive.js` presses everything that cannot do harm and DEFERS the rest with a
- * reason: pressing "Approve" on a live KYC queue is not a test, it is an
+ * reason: pressing "Approve" on a live payment queue is not a test, it is an
  * incident, and pressing "Save" on System Settings publishes whatever the form
  * happened to hold to the whole platform. Eighty-five controls came back
  * DEFERRED, and a deferral is an admission, not a result — this is the pass
@@ -36,7 +36,7 @@
  * of things nobody pressed is visible.
  *
  *   node backend/tests/browser/mutate.js            every case
- *   node backend/tests/browser/mutate.js kyc        cases whose id matches
+ *   node backend/tests/browser/mutate.js games      cases whose id matches
  *
  * Wants its OWN database (`bb_drive`) and a backend on it — these cases block
  * merchants, delete games and rewrite config documents, which is not something
@@ -263,7 +263,7 @@ const words = (page) => page.locator('body').innerText()
 // ── Server-side readers, each naming the ONE owner of what it reads ─────────
 
 // ── Scalars, like every other reader here ─────────────────────────────────
-// This one returned the ROW while `merchantStatus`, `kycStatus` and
+// This one returned the ROW while `merchantStatus` and
 // `orderStatus` beside it return a string. A case that treated it like its
 // neighbours compared an OBJECT to 'ACTIVE' — true for every object — and
 // reported "pressed ONE Block on row 5 and 5 accounts changed". The database
@@ -314,10 +314,6 @@ const merchantStatus = async (merchantId) => {
 const gameExists = async (slug) => {
   const { rows } = await pgQuery('SELECT 1 FROM games WHERE slug = $1', [String(slug)]);
   return rows.length > 0;
-};
-const kycStatus = async (userId) => {
-  const { rows } = await pgQuery('SELECT kyc_status FROM users WHERE user_id = $1', [userId]);
-  return rows[0]?.kyc_status ?? null;
 };
 const isSubAdmin = async (userId) => {
   const { rows } = await pgQuery('SELECT is_sub_admin FROM users WHERE user_id = $1', [userId]);
@@ -765,67 +761,6 @@ const CASES = [
     },
   },
 
-  // ── Access: approving KYC is what lets a player withdraw ─────────────────
-  {
-    id: 'admin/kyc/approve',
-    panel: 'admin-panel',
-    what: 'Approve a KYC submission',
-    async run(page, cfg, base) {
-      // ── Seed the state the PLATFORM can actually produce (S16) ───────────
-      // Two different fields are in play: the queue LISTS by `users.kyc_status`,
-      // and the decision GATES on the `user_kyc` submission row. Setting only
-      // the first produces a player who appears in the queue and cannot be
-      // approved — the route answers 409 "Cannot approve KYC from unknown
-      // status", which is correct, and a case that staged that row would be
-      // reporting the platform for refusing a row a real submission never
-      // creates. So both, at the state a submitted player is really in.
-      const target = await seedPlayer({ kycStatus: 'PENDING_APPROVAL' });
-      const bystander = await seedPlayer({ kycStatus: 'PENDING_APPROVAL' });
-      for (const u of [target, bystander]) {
-        await pgQuery(
-          `INSERT INTO user_kyc (user_id, kyc_status, submitted_at)
-           VALUES ($1, 'PENDING_APPROVAL', now())
-           ON CONFLICT (user_id) DO UPDATE SET kyc_status = 'PENDING_APPROVAL'`,
-          [u.userId],
-        );
-      }
-
-      await go(page, cfg, base, '/kyc');
-      // ── Not a table ───────────────────────────────────────────────────────
-      // The queue renders cards, not `tbody tr`, so looking for a row found
-      // nothing and reported "0 rows on the queue" — which reads like the queue
-      // is empty (the exact false alarm §28 warns about) when in fact the query
-      // is right and the harness was looking for the wrong shape. The control
-      // names its own player, so address it directly.
-      const review = page
-        .getByRole('button', { name: new RegExp(`Review KYC for ${target.userId}`, 'i') }).first();
-      if (await review.count() === 0) {
-        const n = await page.getByRole('button', { name: /Review KYC for/i }).count();
-        return ['NOT DRIVEN',
-          `${target.userId} is not among the ${n} players the queue is offering for review`];
-      }
-      await review.click({ timeout: 8000 });
-      await settle(page, 6000);
-
-      // Both the panel's button and the confirmation's read "Approve KYC" — the
-      // dialog is given `confirmText="Approve KYC"`. An anchored /^Approve$/
-      // matched neither, so the dialog opened and was never answered and the
-      // case reported the platform as failing to approve. It had not been asked.
-      const approve = page.getByRole('button', { name: /^\s*Approve KYC\s*$/i }).last();
-      if (await approve.count() === 0) return ['NOT DRIVEN', 'the review panel offered no Approve KYC'];
-      await approve.click({ timeout: 8000 });
-      await settle(page, 4000);
-      const said = await confirmWith(page, 'Approve KYC');
-      if (said === 'stuck') return ['FAILED', 'the Approve KYC confirmation could not be pressed'];
-      if (said === 'none') return ['FAILED', 'the approve dialog offered no Approve KYC button'];
-
-      const after = await kycStatus(target.userId);
-      const neighbour = await kycStatus(bystander.userId);
-      if (after !== 'APPROVED') return ['FAILED', `KYC is ${after}, not APPROVED`];
-      if (neighbour === 'APPROVED') return ['FAILED', 'the BYSTANDER was approved too'];
-      return ['DROVE', `${target.userId} APPROVED, bystander still ${neighbour}`];
-    },
-  },
 
   // ── Taking staff access away ─────────────────────────────────────────────
   {
@@ -1168,48 +1103,6 @@ const CASES = [
     },
   },
 
-  {
-    id: 'admin/kyc/reject',
-    panel: 'admin-panel',
-    what: 'Reject a KYC submission',
-    async run(page, cfg, base) {
-      const target = await seedPlayer({ kycStatus: 'PENDING_APPROVAL' });
-      await pgQuery(
-        `INSERT INTO user_kyc (user_id, kyc_status, submitted_at)
-         VALUES ($1, 'PENDING_APPROVAL', now())
-         ON CONFLICT (user_id) DO UPDATE SET kyc_status = 'PENDING_APPROVAL'`, [target.userId],
-      );
-
-      await go(page, cfg, base, '/kyc');
-      const review = page
-        .getByRole('button', { name: new RegExp(`Review KYC for ${target.userId}`, 'i') }).first();
-      if (await review.count() === 0) return ['NOT DRIVEN', `${target.userId} is not on the queue`];
-      await review.click({ timeout: 8000 });
-      await settle(page, 6000);
-
-      const reject = page.getByRole('button', { name: /^\s*Reject\s*$/i }).last();
-      if (await reject.count() === 0) return ['NOT DRIVEN', 'the review panel offered no Reject'];
-      await reject.click({ timeout: 8000 });
-      await settle(page, 4000);
-
-      const typed = await fill(page, '#rejection-reason', 'mutating drive: unreadable submission');
-      if (!typed.ok) return ['NOT DRIVEN', `the reject modal never opened — ${typed.why}`];
-      const said = await confirmWith(page, 'Reject KYC');
-      if (said === 'stuck') return ['FAILED', 'the Reject KYC button could not be pressed'];
-      if (said === 'none') return ['FAILED', 'the reject modal offered no Reject KYC button'];
-
-      const after = await kycStatus(target.userId);
-      if (after !== 'REJECTED') return ['FAILED', `KYC is ${after}, not REJECTED`];
-      // The reason is what the player is shown — a rejection without one is the
-      // defect the transition module exists to refuse.
-      const { rows } = await pgQuery(
-        'SELECT rejection_reason FROM user_kyc WHERE user_id = $1', [target.userId]);
-      if (!String(rows[0]?.rejection_reason ?? '').trim()) {
-        return ['FAILED', 'REJECTED with no reason stored — the player is told nothing'];
-      }
-      return ['DROVE', `REJECTED, and the reason was stored for the player to read`];
-    },
-  },
 
   // ── Config saves, each through the one declared factory ──────────────────
   // ── Not a config document, so not the factory ────────────────────────────
@@ -1920,8 +1813,8 @@ const CASES = [
   // that screen. Pressing all 574 is not the answer; the ASSUMPTION is, and
   // the assumption is that row 40's button acts on row 40.
   //
-  // §23 is this codebase's own record of that assumption failing: the KYC
-  // screen's `find(u => u._id === selectedId)` matched the FIRST row every
+  // §23 is this codebase's own record of that assumption failing: the (since
+  // removed) KYC screen's `find(u => u._id === selectedId)` matched the FIRST row every
   // time, so a reviewer clicking the fifth player read the first player's
   // record — and approving grants withdrawal access. Every check was green.
   //
@@ -1998,70 +1891,6 @@ const CASES = [
     },
   },
 
-  {
-    id: 'admin/kyc/approve-a-later-row',
-    panel: 'admin-panel',
-    what: 'Approve KYC from a row that is NOT the first — the screen §23 was found on',
-    async run(page, cfg, base) {
-      const seeded = [];
-      for (let i = 0; i < 4; i++) seeded.push(await seedPlayer({ kycStatus: 'PENDING_APPROVAL', balancePaise: 0 }));
-      const target = seeded[seeded.length - 1];
-
-      await go(page, cfg, base, '/kyc');
-      await settle(page, 8000);
-
-      const review = page.getByRole('button', { name: new RegExp(`Review KYC for ${target.userId}`, 'i') }).first();
-      if (await review.count() === 0) {
-        const n = await page.getByRole('button', { name: /Review KYC for/i }).count();
-        return ['NOT DRIVEN', `${target.userId} is not among the ${n} reviewable row(s) on screen`];
-      }
-      const index = await page.evaluate((id) => {
-        const btns = [...document.querySelectorAll('button')]
-          .filter((b) => /Review KYC for/i.test(b.getAttribute('aria-label') || b.title || ''));
-        return btns.findIndex((b) => (b.getAttribute('aria-label') || b.title || '').includes(id));
-      }, target.userId);
-      if (index <= 0) return ['NOT DRIVEN', `${target.userId} is queue position ${index + 1} — not a later row`];
-
-      await clickThrough(review, { timeout: 8000 });
-      await settle(page, 5000);
-
-      // ── The record on screen must be the one whose row was pressed ───────
-      // This is the half §23 says was silently wrong: the row highlighted and
-      // the record shown were different people, and the reviewer could not
-      // tell. Asserting the id is on screen BEFORE approving is the check.
-      const shown = await words(page);
-      if (!shown.includes(target.userId)) {
-        const other = seeded.find((u) => u.userId !== target.userId && shown.includes(u.userId));
-        return ['FAILED', `opened the review for queue position ${index + 1} (${target.userId})`
-          + (other ? ` and the screen is showing ${other.userId} — §23, exactly` : ' and their id is not on the screen')];
-      }
-
-      const approve = page.getByRole('button', { name: /^\s*Approve KYC\s*$/i }).last();
-      if (await approve.count() === 0) return ['NOT DRIVEN', 'no "Approve KYC" in the opened review'];
-      const hit = await clickThrough(approve, { timeout: 8000 });
-      if (!hit.ok) return ['FAILED', `Approve KYC could not be pressed: ${hit.why}`];
-      await settle(page, 4000);
-      // The dialog is given `confirmText="Approve KYC"` — both the panel's
-      // button and the confirmation read the same words, and an anchored
-      // /^Approve$/ matches neither. The working case already records this;
-      // asking for the wrong verb left the dialog open and reported the
-      // platform as failing to approve something it was never asked to.
-      const said = await confirmWith(page, 'Approve KYC');
-      if (said === 'stuck') return ['FAILED', 'the Approve KYC confirmation could not be pressed'];
-      if (String(said).startsWith('unanswered')) return ['FAILED', `the approve dialog was not answered — ${said}`];
-
-      const after = await Promise.all(seeded.map((u) => kycStatus(u.userId)));
-      const moved = seeded.filter((u, i) => after[i] === 'APPROVED').map((u) => u.userId);
-
-      if (moved.length === 0) return ['FAILED', `approved queue position ${index + 1} and nobody is APPROVED`];
-      if (moved.length > 1) return ['FAILED', `ONE approval and ${moved.length} accounts are APPROVED: ${moved.join(', ')}`];
-      if (moved[0] !== target.userId) {
-        return ['FAILED', `approved queue position ${index + 1} (${target.userId})`
-          + ` and ${moved[0]} got withdrawal access instead — §23's exact defect`];
-      }
-      return ['DROVE', `queue position ${index + 1}: approved ${target.userId} and nobody else`];
-    },
-  },
 
   {
     id: 'admin/merchants/suspend-a-later-row',
@@ -2609,53 +2438,6 @@ const CASES = [
     },
   },
 
-  {
-    id: 'admin/kyc/bulk/nothing-pending',
-    panel: 'admin-panel',
-    what: 'The bulk-KYC action, once something IS pending',
-    async run(page, cfg, base) {
-      await go(page, cfg, base, '/kyc/bulk');
-      const idle = page.getByRole('button', { name: /^\s*Nothing pending\s*$/i }).first();
-      if (await idle.count() === 0) {
-        return ['NOT DRIVEN', 'the screen is not in its "Nothing pending" state — something is already queued'];
-      }
-      if (!await idle.isDisabled()) return ['FAILED', '"Nothing pending" is offered as a pressable control'];
-
-      // ── PENDING_VERIFICATION, not PENDING_APPROVAL ─────────────────────
-      // `kycStats()` returns `pending: counts.PENDING_VERIFICATION`, counted
-      // off `kyc_verifications` — the queue an operator EXPORTS to an outside
-      // verifier. `users.kyc_status = 'PENDING_APPROVAL'` is the admin's own
-      // review and a different question entirely. Seeding the wrong one made
-      // the screen look wrong while it was reporting its own queue correctly,
-      // which is §32 S19: a precondition the case never established.
-      // Through the repository's own writer, not a hand-made row: every
-      // column here is NOT NULL and the Aadhaar is an HMAC plus ciphertext
-      // (§2), so an INSERT that invents them is a fixture the platform cannot
-      // produce (§32 S16).
-      const target = await seedPlayer({ kycStatus: 'PENDING_APPROVAL', balancePaise: 0 });
-      await db.identity.submitVerification({
-        userId: target.userId,
-        aadhaarHash: `drive-${rid('hash')}`,
-        aadhaarEncrypted: `drive-${rid('ct')}`,
-        aadhaarLast4: '9999',
-        phone: target.mobile,
-      });
-      await go(page, cfg, base, '/kyc/bulk');
-      await settle(page, 6000);
-
-      const still = page.getByRole('button', { name: /^\s*Nothing pending\s*$/i }).first();
-      if (await still.count() > 0) {
-        return ['FAILED', `${target.userId} is PENDING_APPROVAL and the screen still says "Nothing pending"`];
-      }
-      const action = page.locator('main').getByRole('button').filter({ hasNotText: /back|cancel|close/i }).first();
-      if (await action.count() === 0) return ['FAILED', 'the label changed and no pressable action appeared'];
-      if (await action.isDisabled()) {
-        return ['FAILED', 'a submission is pending and the bulk action is still disabled'];
-      }
-      await pgQuery('DELETE FROM kyc_verifications WHERE user_id = $1', [target.userId]).catch(() => {});
-      return ['DROVE', `"Nothing pending" while nothing was, and a live action once ${target.userId} was queued`];
-    },
-  },
 
   // ── Log out: the one control that ends the pass that presses it ─────────
   // `ownContext` is the whole point. Pressing this on the shared page would
@@ -2727,34 +2509,6 @@ const CASES = [
     },
   },
 
-  // ── A file PICKER can be driven; Playwright sets the files directly ──────
-  {
-    id: 'admin/kyc/bulk/choose-csv',
-    panel: 'admin-panel',
-    what: 'Choose a CSV on the bulk KYC screen',
-    async run(page, cfg, base) {
-      await go(page, cfg, base, '/kyc/bulk');
-      const input = page.locator('input[type="file"]').first();
-      if (await input.count() === 0) return ['NOT DRIVEN', 'no file input on /kyc/bulk'];
-
-      // A REAL shape, not an empty file: the screen's job is to parse it and
-      // say what it found, and an empty upload cannot tell "parsed nothing"
-      // from "never parsed".
-      const before = await words(page);
-      await input.setInputFiles({
-        name: 'drive-bulk-kyc.csv',
-        mimeType: 'text/csv',
-        buffer: Buffer.from('mobile,aadhaar\n9876500001,111122223333\n9876500002,444455556666\n'),
-      });
-      await settle(page, 6000);
-      const after = await words(page);
-
-      if (after === before) {
-        return ['FAILED', 'a CSV was chosen and the screen said nothing — no count, no preview, no error'];
-      }
-      return ['DROVE', 'a 2-row CSV was accepted and the screen responded to it'];
-    },
-  },
 
   // ── A DOWNLOAD can be driven too; the browser hands it over ──────────────
   {

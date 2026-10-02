@@ -8,7 +8,7 @@
  * over HTTP. Copies drift, and these already had:
  *
  *   only the socket sent  webUrl, androidUrl (since removed), iosUrl
- *   only the HTTP route sent  kycRequired, registrationEnabled
+ *   only the HTTP route sent  registrationEnabled
  *
  * So the answer to "what is this platform configured to do" depended on which
  * transport a client happened to ask over. §1 — one owner per value. This is
@@ -117,7 +117,6 @@ export function systemConfigPayload(cfg, rail = null) {
 
     // Signup gating. Only the HTTP route used to carry these. `!== false` keeps
     // an unset flag meaning "on", which is what both copies already did.
-    kycRequired:         cfg?.kycRequired         !== false,
     registrationEnabled: cfg?.registrationEnabled !== false,
   };
 }

@@ -37,7 +37,7 @@ describePg('balance adjustment — its own area, players only', () => {
   afterAll(async () => { await closePg(); });
 
   const funded = async (rupees) => {
-    const p = await actor({ kycStatus: 'APPROVED' });
+    const p = await actor({});
     if (rupees > 0) {
       await applyMovementPaise({
         userId: p.userId,

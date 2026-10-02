@@ -536,7 +536,6 @@ router.get('/queue/pending-orders', authenticate, queueManagerOrPermission('canM
         ...o,
         userName:      o.userName ?? 'Deleted account',
         userMobile:    o.userMobile ?? '',
-        userKycStatus: o.userKycStatus ?? 'UNKNOWN',
       })),
     });
   } catch (error) {

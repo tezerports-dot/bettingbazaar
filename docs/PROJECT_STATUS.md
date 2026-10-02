@@ -553,12 +553,18 @@ Measured on the commit that adds items 18–19: unit 920/920; pg 1736/1736 (133 
 
 Measured on the commit that adds items 11–17: unit 920/920; pg 1719/1719 (130 files); admin panel 155, merchant 73, user 224, tsc clean on all three; e2e 183 checks, 178 pass, 0 fail, 5 notes (each says what a dev server cannot measure), then s8 alone with the door probes 64/61/0/3; all 17 gates exit 0; `audit:map --check` matches after regeneration (308 routes, 35 unauthenticated). Mutation: M225, M243, M254–M263 KILLED. Not run: the browser tiers after the door change, the full mutation run, and an independent review (§37 step 12).
 
-## 3.10 Plan — the redesign (owner, 2026-10-02). NOT STARTED except where marked.
+## 3.10 Plan — the redesign (owner, 2026-10-02). Step 1 DONE; Steps 2–3 NOT STARTED.
 
 Three replacements, built in this order, each step tested, committed, and
 reported to the owner in a short update every 5–10 fixes.
 
-### Step 1 — Remove KYC entirely
+### Step 1 — Remove KYC entirely — **DONE 2026-10-02**
+Done as planned below, plus: the Aadhaar-based Telegram account-move recovery
+(`telegramRecovery.service.js`, `telegram_recovery_sessions`, `relinkIdentity`)
+is deleted; the recovery bot now does password reset only. **Defaults taken,
+for the owner to change:** referral eligibility rests on the account not being
+blocked (the KYC condition is gone); a player who changes their Telegram
+account has no self-service path until the Mini App (Step 3).
 - Signup becomes mobile + password + captcha + invite code. No Aadhaar.
 - Delete: the Aadhaar field and its hashing/encryption, `kyc_verifications`
   and every `kyc_*`/`aadhaar_*` column, the admin KYC queue and bulk verify,

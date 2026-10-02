@@ -98,7 +98,7 @@ describePg('three separate entities, one mobile', () => {
     const staff = await createUser({
       userId: newUserId(), username: 'the staff', mobile: MOBILE,
       passwordHash: await hashPassword(PW.staff),
-      status: 'ACTIVE', kycStatus: 'APPROVED', isAdmin: true, accountType: 'STAFF',
+      status: 'ACTIVE', isAdmin: true, accountType: 'STAFF',
     });
     expect(staff.created, 'the staff account on the SAME mobile').toBe(true);
     await setRoles(staff.user.userId, ['admin']);

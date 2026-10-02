@@ -27,7 +27,6 @@ import { db } from '#db';
 import { signToken, verifyJwt, decodeTokenClaims } from './domains/identity/jwt.util.js';
 // AQ-8: password hashing authority (argon2id + bcrypt verify-fallback).
 import { hashPassword, verifyPassword } from './domains/identity/password.util.js';
-import { buildPublicKycData } from './domains/user/kycPublicData.js';
 import { isTokenRevoked, revokeToken } from '#db/repositories/identity.js';
 import { issueChallenge, verifyChallenge, CHALLENGE_AUDIENCE } from './domains/identity/twoFactorChallenge.js';
 import { verifySecondFactor, SECOND_FACTOR_RESULT } from './domains/identity/verifySecondFactor.js';
@@ -260,8 +259,7 @@ export async function issueSession(user, res, { secondFactorPresented = false } 
     // bets the engine then refused. GET /api/user/bet-limits publishes the true
     // ceiling, computed by the same rule the bet route enforces.
     reserveBalance: balances.reserveBalance,
-    walletBalance: dep + win, kycStatus: user.kycStatus,
-    kycData: await buildPublicKycData(user),
+    walletBalance: dep + win,
     bankDetails: user.bankDetails || null, profilePic: user.profilePic || '',
     status: user.status || 'ACTIVE', joinedAt: user.joinedAt || null,
     lastLogin: lastLogin?.lastLogin ?? new Date(),
@@ -409,8 +407,7 @@ router.get('/me', async (req, res) => {
         isQueueManager: user.isQueueManager || false, permissions: user.subAdminPermissions || {},
         depositBalance: dep, winningsBalance: win, lockedBalance: balances.lockedBalance || 0,
         reserveBalance: balances.reserveBalance || 0,
-        walletBalance: dep + win, kycStatus: user.kycStatus,
-        kycData: await buildPublicKycData(user),
+        walletBalance: dep + win,
         bankDetails: user.bankDetails || null, profilePic: user.profilePic || '',
         status: user.status || 'ACTIVE', joinedAt: user.joinedAt || null,
         lastLogin: user.lastLogin || null, phantomAccess: user.phantomAccess || 'NONE',

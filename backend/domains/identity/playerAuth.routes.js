@@ -43,16 +43,13 @@ import { db } from '#db';
 import { issueSession, loginHandler, loginTwoFactorHandler, LOGIN_DOOR } from '../../routes.js';
 import { hashPassword } from './password.util.js';
 import { assertPlayerPassword } from './passwordPolicy.js';
-import { hashAadhaar, hashAadhaarCandidates } from './aadhaarHash.util.js';
-import { encryptField } from './fieldCrypto.util.js';
 import { generateReferralCode } from '../referral/referral.service.js';
 import {
-  normalisePhone, isValidMobile, isValidAadhaar, normaliseAadhaar, normaliseReferralCode,
+  normalisePhone, isValidMobile, normaliseReferralCode,
 } from './signupFields.js';
 import { respondError } from '../../shared/httpError.js';
 import { assignSigninBot } from './signupVerification.service.js';
 import { verificationEndpoint } from './verificationEndpoint.js';
-import { resubmitAadhaar, MAX_KYC_SUBMISSIONS } from './aadhaarResubmission.service.js';
 import { redeemResetLink } from './passwordReset.service.js';
 import { authenticatePlayer } from './auth.middleware.js';
 import { authLimiter, loginPaceLimiter, twoFactorLimiter, signupLimiter } from '../../middleware/security.js';
@@ -132,24 +129,22 @@ const signupChain = (action) => [
 /**
  * POST /api/v1/auth/register — the signup form.
  *
- * Body: aadhaar, mobile, password, confirmPassword, referralCode?, and the
- * captcha token `requireCaptcha` reads.
+ * Body: mobile, password, confirmPassword, referralCode?, and the captcha
+ * token `requireCaptcha` reads. No Aadhaar: KYC was removed 2026-10-02 (owner),
+ * and the Telegram contact share is what proves the mobile is theirs.
  */
 router.post('/register', ...signupChain('player-register'), async (req, res) => {
   try {
-    const { aadhaar, mobile, password, confirmPassword, referralCode } = req.body || {};
+    const { mobile, password, confirmPassword, referralCode } = req.body || {};
 
     // ── Every refusal NAMES THE FIELD (§25, §32 S14) ───────────────────────
     // A signup form that answers "invalid details" to six different mistakes
     // sends the player back to guess which box is wrong, and the commonest
-    // wrong box — the Aadhaar-linked mobile, where they typed +91 as well —
-    // looks identical to a correct one.
-    if (!isValidAadhaar(aadhaar)) {
-      throw refuse('Enter your 12-digit Aadhaar number — digits only.', 400);
-    }
+    // wrong box — the mobile, where they typed +91 as well — looks identical to
+    // a correct one.
     if (!isValidMobile(mobile)) {
       throw refuse(
-        'Enter the 10-digit mobile number linked to that Aadhaar, without +91.', 400,
+        'Enter your 10-digit mobile number — the one on your Telegram account — without +91.', 400,
       );
     }
     if (String(password ?? '') !== String(confirmPassword ?? '')) {
@@ -157,28 +152,19 @@ router.post('/register', ...signupChain('player-register'), async (req, res) => 
     }
 
     const number = normalisePhone(mobile);
-    const digits = normaliseAadhaar(aadhaar);
 
     // Throws a 400 naming what is wrong with it. The mobile is passed as
     // context because it is printed on the form directly above this box, so
     // "my own number" is the first thing somebody reaches for.
     assertPlayerPassword(password, { mobile: number }, 'player');
 
-    // ── Courtesy checks, not the guarantee ─────────────────────────────────
-    // The UNIQUE indexes on `users.mobile` and `kyc_verifications.aadhaar_hash`
-    // are what actually prevent a second account; two signups arriving together
-    // both pass a read. These exist to produce the RIGHT SENTENCE, and
-    // `createAccountFromSignup` reads the violated constraint by name and
-    // returns the same two reasons when the race is lost.
+    // ── A courtesy check, not the guarantee ────────────────────────────────
+    // The UNIQUE index on `(mobile, account_type)` is what actually prevents a
+    // second account; two signups arriving together both pass a read. This
+    // exists to produce the RIGHT SENTENCE, and `createAccountFromSignup`
+    // returns the same reason when the race is lost.
     if (await db.users.getUserByMobile(number, 'PLAYER')) {
       throw refuse('An account already exists for that mobile number. Log in instead.', 409);
-    }
-    // Checked across every candidate hash: the HMAC secret is rotatable, so a
-    // number registered under a retired secret must still read as taken.
-    if (await db.identity.findRegisteredAadhaar(hashAadhaarCandidates(digits))) {
-      throw refuse(
-        'That Aadhaar is already registered. Each Aadhaar can hold one account.', 409,
-      );
     }
 
     // ── The referrer is resolved BEFORE the account is written ─────────────
@@ -205,9 +191,6 @@ router.post('/register', ...signupChain('player-register'), async (req, res) => 
       username: `player${number.slice(-4)}`,
       mobile: number,
       passwordHash: await hashPassword(password),
-      aadhaarHash: hashAadhaar(digits),
-      aadhaarEncrypted: encryptField(digits),
-      aadhaarLast4: digits.slice(-4),
       referralCode: generateReferralCode(),
       referredBy: referrer?.userId ?? null,
     });
@@ -217,7 +200,6 @@ router.post('/register', ...signupChain('player-register'), async (req, res) => 
       // player who lost it is told the same thing as one who was simply second.
       const said = {
         mobile_taken: 'An account already exists for that mobile number. Log in instead.',
-        aadhaar_taken: 'That Aadhaar is already registered. Each Aadhaar can hold one account.',
         duplicate: 'An account already exists for those details.',
       }[created.reason] || 'An account already exists for those details.';
       throw refuse(said, 409);
@@ -324,50 +306,7 @@ router.get('/invite/:code', async (req, res) => {
  */
 router.get('/verification', authenticatePlayer, verificationEndpoint((req) => req.user));
 
-// ═══════════════════════════════════════════════════════════════════════════
-// POST /api/v1/auth/kyc/resubmit — a REJECTED player corrects their Aadhaar
-// ═══════════════════════════════════════════════════════════════════════════
-/**
- * On the panel, not in a chat.
- *
- * This used to be a message to the bot, and it had to be: the account was born
- * in a conversation, so a correction arrived in one. Now the player is logged
- * in and the screen that told them they were rejected is the screen that takes
- * the new number — which is also the only place that can show them how many
- * attempts they have left.
- *
- * Every refusal is named. `already_registered` is deliberately specific and
- * deliberately BOUNDED by the attempt cap: it is an enumeration oracle if it
- * can be repeated freely, and vague if it cannot be repeated at all, and
- * somebody who genuinely mistyped needs to know the difference between "wrong
- * number" and "that one belongs to somebody else".
- */
-router.post('/kyc/resubmit', authenticatePlayer, async (req, res) => {
-  try {
-    const result = await resubmitAadhaar({ userId: req.user.userId, aadhaar: req.body?.aadhaar });
-    if (result.ok) {
-      return res.json({
-        success: true,
-        last4: result.last4,
-        message: `Received — Aadhaar ending ${result.last4}. It is queued for verification, `
-          + 'which is done in batches, so it is not instant. There is nothing more for you to do.',
-      });
-    }
-    const said = {
-      not_rejected: 'Your Aadhaar is not awaiting a correction.',
-      too_many_attempts: `You have used all ${MAX_KYC_SUBMISSIONS} attempts. Please contact support.`,
-      invalid_format: 'That does not look like a 12-digit Aadhaar number. Send just the 12 digits.',
-      already_registered: 'That Aadhaar is already registered to another account. '
-        + 'Each Aadhaar can hold one account.',
-      state_refused: 'We could not accept that right now. Please try again shortly.',
-      no_user: 'Account not found.',
-    }[result.reason] || 'We could not accept that Aadhaar number. Please check it and try again.';
-    throw refuse(said, result.reason === 'too_many_attempts' ? 429 : 400);
-  } catch (err) {
-    return respondError(res, err, 'auth/kyc-resubmit',
-      { message: 'Could not submit that Aadhaar number. Please try again.' });
-  }
-});
+// `POST /api/v1/auth/kyc/resubmit` was removed 2026-10-02 with KYC.
 
 // ═══════════════════════════════════════════════════════════════════════════
 // POST /api/v1/auth/password/reset — redeem a link the bot sent

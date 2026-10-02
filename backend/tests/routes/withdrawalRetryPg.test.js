@@ -37,11 +37,10 @@ describePg('retrying an expired withdrawal', () => {
   let seq = 0;
   const oid = () => `wr-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}-${seq += 1}`;
 
-  /** A player who can withdraw: KYC approved, bank details, and winnings. */
+  /** A player who can withdraw: bank details, and winnings. */
   const withdrawer = async (winningsRupees) => {
     const player = await actor({});
     await updateUser(player.userId, {
-      kycStatus: 'APPROVED',
       bankDetails: {
         accountNumber: '000111222333', ifscCode: 'HDFC0000001',
         bankName: 'HDFC Bank', accountHolderName: 'Test Player',

@@ -151,7 +151,6 @@ router.get('/system/config', authenticate, hasPermission('canManageSystemSetting
         retentionMonths:       config.retentionMonths ?? 6, // schema default: 6
         // Business Config Audit (2026-07-11) — formerly-hardcoded business values
         payoutMultiplier:      config.payoutMultiplier ?? 2,   // schema default: 2 (2x)
-        kycRequired:           config.kycRequired           !== false,
         registrationEnabled:   config.registrationEnabled   !== false,
         maintenanceMode:       config.maintenanceMode       || false,
         maintenanceMessage:    config.maintenanceMessage    || '',
@@ -185,7 +184,7 @@ router.put('/system/config', authenticate, hasPermission('canManageSystemSetting
     const {
       minBet, maxBet, max30MinBet, maxFullDayBet,
       minDeposit, maxDeposit, minWithdrawal, maxWithdrawal, maxWinningsWithdrawal,
-      kycRequired, registrationEnabled,
+      registrationEnabled,
       maintenanceMode, maintenanceMessage,
       depositMethods, withdrawalMethods,
       webUrl, iosUrl, minVersion, latestVersion,
@@ -377,7 +376,6 @@ router.put('/system/config', authenticate, hasPermission('canManageSystemSetting
     if (minWithdrawal         !== undefined) fieldWrites.push(['SystemConfig', 'minWithdrawal', minWithdrawal]);
     if (maxWithdrawal         !== undefined) fieldWrites.push(['SystemConfig', 'maxWithdrawal', maxWithdrawal]);
     if (maxWinningsWithdrawal !== undefined) fieldWrites.push(['SystemConfig', 'maxWinningsWithdrawal', maxWinningsWithdrawal]);
-    if (kycRequired           !== undefined) fieldWrites.push(['SystemConfig', 'kycRequired', kycRequired]);
     if (registrationEnabled   !== undefined) fieldWrites.push(['SystemConfig', 'registrationEnabled', registrationEnabled]);
     if (maintenanceMode       !== undefined) fieldWrites.push(['SystemConfig', 'maintenanceMode', maintenanceMode]);
     if (maintenanceMessage    !== undefined) fieldWrites.push(['SystemConfig', 'maintenanceMessage', maintenanceMessage]);

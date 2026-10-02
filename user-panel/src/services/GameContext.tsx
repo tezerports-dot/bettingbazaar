@@ -69,7 +69,6 @@ interface LiveStats { totalDelhi: number; totalBombay: number; }
  * filled in.
  */
 export interface RegisterForm {
-  aadhaar: string;
   mobile: string;
   password: string;
   confirmPassword: string;
@@ -288,7 +287,7 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
   }, []);
 
   // ── SESSION RESTORE: Rehydrate user from stored JWT on every page load ────
-  // /auth/me now returns the full profile (balances, kycData, bankDetails etc.)
+  // /auth/me now returns the full profile (balances, bankDetails etc.)
   // so wallet never shows 0 after refresh.
   // We also call getUserData immediately after to load the 50 most recent bets
   // and double-confirm balances from the DB.
@@ -921,18 +920,6 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
   }, [user?.id]);
 
   // ── AUTH ──────────────────────────────────────────────────────────────────
-  /**
-   * Redeem a one-time bot link and adopt the session it grants.
-   *
-   * There is no password leg and no OTP leg any more: the bot proved the phone
-   * number with a contact share and took the Aadhaar before it ever issued this
-   * token, so by the time it arrives the only question left is whether the
-   * token is still good. The server answers that, sets the httpOnly cookie, and
-   * hands back the player — this just seats them.
-   *
-   * Throws on failure so the calling screen can show why; every failure reason
-   * comes back as one message on purpose, and the fix is always a fresh /start.
-   */
   /**
    * Take the seat a successful auth call grants.
    *

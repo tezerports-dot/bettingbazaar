@@ -3,7 +3,7 @@
  * AuthModal.tsx — the signup form and the login form.
  *
  * ── What this replaced (owner decision, 2026-09-23) ────────────────────────
- * Signing up happened inside a Telegram bot — /start, type your Aadhaar to the
+ * Signing up happened inside a Telegram bot — /start, type your details to the
  * bot, share your contact — and signing in was a six-digit code the same bot
  * DMed. Every step depended on a third party that suspends gambling bots, rate
  * limits at roughly thirty messages a second per bot, and cannot message
@@ -15,10 +15,12 @@
  * verification gate (`VerificationGateModal`).
  *
  * ── The signup form ────────────────────────────────────────────────────────
- *   1. Aadhaar number          5. captcha (invisible unless Turnstile is set up)
- *   2. Aadhaar-linked mobile   6. invite code
- *   3. password
- *   4. confirm password
+ *   1. mobile (the one on the player's Telegram account)
+ *   2. password                4. captcha (invisible unless Turnstile is set up)
+ *   3. confirm password        5. invite code
+ *
+ * There is no Aadhaar and no KYC (owner, 2026-10-02): the mobile, proved by a
+ * Telegram contact share, is the identity.
  *
  * The invite code is PRE-FILLED and NON-EDITABLE when the player arrived
  * through a referral link. That is the owner's requirement and it has a reason:
@@ -34,8 +36,8 @@
  *
  * ── Every refusal names the FIELD ──────────────────────────────────────────
  * The server's messages do (§32 S14) and this screen shows them verbatim rather
- * than replacing them with one of its own. "Enter the 10-digit mobile number
- * linked to that Aadhaar, without +91" is the difference between a player
+ * than replacing them with one of its own. "Enter your 10-digit mobile number
+ * — the one on your Telegram account — without +91" is the difference between a player
  * fixing their entry and a player trying the same thing again.
  */
 import React, { useEffect, useRef, useState } from 'react';
@@ -184,7 +186,6 @@ const AuthModal: React.FC<AuthModalProps> = ({ onClose, initialMode }) => {
   const pace = useRetryCountdown();
 
   // ── Signup ────────────────────────────────────────────────────────────────
-  const [aadhaar, setAadhaar] = useState('');
   const [signupMobile, setSignupMobile] = useState('');
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
@@ -227,7 +228,7 @@ const AuthModal: React.FC<AuthModalProps> = ({ onClose, initialMode }) => {
     return () => { alive = false; };
   }, [invite]);
 
-  const signupReady = aadhaar.length === 12 && signupMobile.length === 10
+  const signupReady = signupMobile.length === 10
     && password.length >= 8 && confirm.length > 0 && !busy;
   const loginReady = loginMobile.length === 10 && loginPassword.length > 0 && !busy && !pace.blocked;
 
@@ -237,7 +238,7 @@ const AuthModal: React.FC<AuthModalProps> = ({ onClose, initialMode }) => {
     setBusy(true); setError('');
     try {
       await register({
-        aadhaar, mobile: signupMobile, password, confirmPassword: confirm,
+        mobile: signupMobile, password, confirmPassword: confirm,
         referralCode: invite || undefined,
       });
       // Seated. The verification gate takes over from here — it is mounted
@@ -332,17 +333,11 @@ const AuthModal: React.FC<AuthModalProps> = ({ onClose, initialMode }) => {
         {mode === 'signup' && (
           <form onSubmit={submitSignup} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
             <Field
-              id="bb-aadhaar" label="Aadhaar number" value={aadhaar} autoFocus
-              onChange={(v) => setAadhaar(digits(v, 12))}
-              inputMode="numeric" placeholder="1234 5678 9012" maxLength={12}
-              hint="12 digits. We store it encrypted and verify it in batches — nothing is uploaded."
-            />
-            <Field
-              id="bb-signup-mobile" label="Aadhaar-linked mobile" value={signupMobile}
+              id="bb-signup-mobile" label="Mobile number" value={signupMobile} autoFocus
               onChange={(v) => setSignupMobile(indianMobile(v))}
               inputMode="numeric" autoComplete="tel-national" prefix="+91"
               placeholder="98765 43210" maxLength={14}
-              hint="It must be the number linked to that Aadhaar — you will verify it on Telegram from this same number."
+              hint="Use the number on your Telegram account — you will verify it on Telegram from this same number."
             />
             <Field
               id="bb-password" label="Password" value={password}

@@ -50,11 +50,10 @@ reuse a name on a different transport for a different meaning.
 | Event | Transport | Direction | Emitted from |
 |---|---|---|---|
 | `user_balance_update` | socket.io | server→user | `realtimeEmitters.js` |
-| `user_update` | socket.io | server→admin | `users.admin.routes.js`, `kyc.admin.routes.js` |
+| `user_update` | socket.io | server→admin | `users.admin.routes.js` |
 | `new_withdrawal_request` | socket.io | server→admin | `domains/user/user.routes.js` |
 | `withdrawal_approved` | socket.io | server→user | `system.admin.routes.js` |
 | `withdrawal_rejected` | socket.io | server→user | `system.admin.routes.js` |
-| `kyc_update` | socket.io | server→admin | `kyc.admin.routes.js` |
 
 ### Payment orders (P2P)
 

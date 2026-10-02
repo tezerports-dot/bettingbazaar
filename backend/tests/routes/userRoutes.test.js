@@ -6,10 +6,9 @@
  * ── The two properties that carry weight ────────────────────────────────────
  *
  * 1. PROFILE IS AN ALLOW-LIST, NOT A SPREAD. The route reads exactly `username`
- *    off the body. The repository, on the other hand, WILL write `kyc_status`,
- *    `status`, `bank_details` and more — they are all in its UPDATABLE set — so
- *    the only thing standing between a player and setting their own KYC to
- *    APPROVED, or their status to admin, is that the route never hands those
+ *    off the body. The repository, on the other hand, WILL write `status`,
+ *    `bank_details` and more — they are all in its UPDATABLE set — so the only
+ *    thing standing between a player and setting their own status to admin, is that the route never hands those
  *    fields down. Strict mode would not save it: they are declared columns. So
  *    the test sends them and proves they did not land — this is a
  *    privilege-escalation guard, tested as one.
@@ -80,11 +79,9 @@ describePg('user account routes', () => {
   it('IGNORES every field except username — the escalation guard', async () => {
     // The repository would write all of these. The route is the only thing
     // that does not hand them down.
-    const me = await actor({ kycStatus: 'PENDING_APPROVAL' });
+    const me = await actor({});
     const res = await as(app, me).put(`/user/${me.userId}/profile`).send({
       username: 'RenamedOnly',
-      kycStatus: 'APPROVED',
-      kyc_status: 'APPROVED',
       status: 'admin',
       isAdmin: true,
       mobile: '0000000000',
@@ -95,7 +92,6 @@ describePg('user account routes', () => {
 
     const row = await getUser(me.userId);
     expect(row.username).toBe('RenamedOnly');
-    expect(row.kycStatus, 'a player set their own KYC status through /profile').toBe('PENDING_APPROVAL');
     expect(row.status, 'a player set their own account status through /profile').not.toBe('admin');
     expect(String(row.mobile), 'a player rewrote their mobile through /profile').toBe(String(me.mobile));
     expect(row.walletAddress ?? null, 'a player set a wallet address through /profile').toBeNull();

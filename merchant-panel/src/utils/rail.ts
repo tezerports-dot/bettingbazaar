@@ -248,7 +248,7 @@ export function truncateMiddle(value: string, head = 10, tail = 6): string {
 /**
  * How to name the user on an order.
  *
- * The backend strips the user's name, phone and KYC snapshot from every order it
+ * The backend strips the user's name and phone from every order it
  * sends a merchant (`sanitizeMerchantOrder`), and additionally strips their
  * payout details on deposits — merchants only ever see the identity they need to
  * complete the transfer in front of them. So:

@@ -623,7 +623,7 @@ const WalletPage: React.FC = () => {
    * Try an order that nobody served, again.
    *
    * The new order goes to the FRONT of the queue. Everything else about it is
-   * ordinary — the server runs the same creation path, so the same KYC, limit,
+   * ordinary — the server runs the same creation path, so the same limit,
    * denomination and escrow rules apply as to a first attempt.
    *
    * The order id is remembered locally so the button disappears immediately

@@ -199,11 +199,11 @@ describePg('staff permissions: every area, every route', () => {
       });
       expect(bad.status).toBe(400);
       const good = await as(app, admin).post('/sub-admins').send({
-        username: `sa${Date.now()}`, mobile, password: 'Correct-Horse-9-Battery', permissions: ['canVerifyKYC', 'canManageGames'],
+        username: `sa${Date.now()}`, mobile, password: 'Correct-Horse-9-Battery', permissions: ['canViewAnalytics', 'canManageGames'],
       });
       expect(good.status, JSON.stringify(good.body)).toBe(200);
       const granted = Object.entries(good.body.subAdmin.subAdminPermissions).filter(([, v]) => v).map(([k]) => k).sort();
-      expect(granted).toEqual(['canManageGames', 'canVerifyKYC']);
+      expect(granted).toEqual(['canManageGames', 'canViewAnalytics']);
     });
   });
 });

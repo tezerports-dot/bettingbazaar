@@ -42,7 +42,7 @@ describePg('what a player is allowed to buy', () => {
   const buy = async (userId, rupees) => (await createDepositOrder(userId, rupees)).order;
 
   /** A player with no purchase in flight. */
-  const freshPlayer = () => actor({ kycStatus: 'APPROVED' });
+  const freshPlayer = () => actor({});
 
   beforeAll(async () => {
     await applySchema();

@@ -52,19 +52,10 @@ export interface User {
   isMerchant?: boolean;
   isQueueManager?: boolean;
   isMediator?: boolean;
-  status: 'ACTIVE' | 'BLOCKED' | 'SUSPENDED' | 'PENDING_KYC';
+  status: 'ACTIVE' | 'BLOCKED' | 'SUSPENDED';
 
   mfaEnabled?: boolean;
   mfaSecret?: string;
-
-  kycStatus: 'PENDING_SUBMISSION' | 'PENDING_APPROVAL' | 'APPROVED' | 'REJECTED';
-  // The API sends only the rejection reason, and only when the status is
-  // REJECTED — see backend domains/user/kycPublicData.js. There is no name,
-  // Aadhaar number or document reference to send: identity is captured by the
-  // Telegram bot and held in a separate collection this panel never reads.
-  kycData?: {
-    rejectionReason?: string;
-  };
 
   bankDetails?: {
     accountHolderName: string;
@@ -206,15 +197,6 @@ export interface ChatMessage {
 }
 
 
-export interface KYCRecord {
-  userId: string;
-  fullName: string;
-  aadhaarNumber: string;
-  aadharNumber?: string; // deprecated typo alias, kept for migration compatibility
-  status: 'PENDING' | 'VERIFIED' | 'REJECTED';
-  submittedAt: number;
-}
-
 export interface SystemConfigData {
   latestVersion: string;
   minVersion: string;
@@ -273,7 +255,7 @@ export interface PaymentOrder {
   proofScreenshot?:   string;
   // ── What this interface stopped declaring, and why ────────────────────────
   // `merchantId`, `merchantSnapshot`, `merchantProfit`, `depositAllocation`,
-  // `reserveAllocation`, `platformFeeRate`, `requiresVideoKYC`,
+  // `reserveAllocation`, `platformFeeRate`,
   // `requiresReview`, `warningIssued` and `redFlagged`. (`bulkPayoutDate` and
   // `bulkPayoutBatch` were named here too, until the bulk-payout feature and
   // its columns were removed on 2026-09-10.)

@@ -270,8 +270,8 @@ describePg('Postgres-authoritative wallet', () => {
       // shared with every other suite and with the mutation harness (trap 10).
       await pgQuery('DELETE FROM users WHERE user_id = $1 OR mobile = $2', [USER, '9995550001']);
       await pgQuery(
-        `INSERT INTO users (user_id, username, mobile, kyc_status)
-         VALUES ($1, 'walletowner', '9995550001', 'APPROVED')`, [USER],
+        `INSERT INTO users (user_id, username, mobile)
+         VALUES ($1, 'walletowner', '9995550001')`, [USER],
       );
       const account = await users.getUser(USER);
       expect(account).toBeTruthy();

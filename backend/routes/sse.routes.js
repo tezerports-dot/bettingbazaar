@@ -9,7 +9,7 @@
  * THREE ENDPOINTS:
  *   GET /api/sse/events                — Public: cycles, branding, system_config
  *   GET /api/sse/merchant/events       — Private: merchant order events (PASETO auth)
- *   GET /api/sse/admin/events          — Private: admin queue/KYC/cycle events (PASETO auth)
+ *   GET /api/sse/admin/events          — Private: admin queue/cycle events (PASETO auth)
  *
  * PRIVATE CHANNEL AUTH:
  *   Pass PASETO as ?token=... query param (EventSource doesn't support headers).
@@ -219,7 +219,6 @@ export function initSSERoutes(sseManager, cycleGenerator) {
     // Events emitted to this stream:
     //   new_order           — new order in the PENDING_QUEUE
     //   queue_order_update  — any order status change
-    //   kyc_update          — KYC submission / action
     //   admin_cycle_update  — cycle pool breakdown (real + phantom)
     //   admin_new_cycle     — new cycle created
     //   admin_cycle_result  — cycle result declared
@@ -243,7 +242,7 @@ export function initSSERoutes(sseManager, cycleGenerator) {
 
         // Re-checked against the ROW, not taken from the token. A token issued
         // before an admin was blocked still carries their old claims, and this
-        // stream carries every order, every KYC submission and every cycle
+        // stream carries every order and every cycle
         // result — the last thing a revoked admin should keep receiving.
         const adminUser = await db.users.getUser(decoded.userId);
         if (!adminUser || adminUser.isBlocked

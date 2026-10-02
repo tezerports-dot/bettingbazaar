@@ -38,7 +38,7 @@ describePg('admin user routes', () => {
 
   // A fresh subject per test: these handlers mutate the account they name, and
   // a shared one would make the order of the tests part of their meaning.
-  const subject = () => actor({ kycStatus: 'APPROVED' });
+  const subject = () => actor({});
 
   // ── Authorisation is the first thing, not an afterthought ────────────────
   it('refuses every admin route without a token', async () => {

@@ -100,7 +100,7 @@ export function mountRouter(router, { prefix = '' } = {}) {
  */
 export async function actor({
   userId, roles = [], isAdmin = false, isSubAdmin = false,
-  isQueueManager = false, kycStatus = 'APPROVED', permissions = null,
+  isQueueManager = false, permissions = null,
   twoFactorEnabled = undefined,
 } = {}) {
   const id = userId || `rt-${Math.random().toString(36).slice(2, 10)}`;
@@ -128,7 +128,7 @@ export async function actor({
   for (let attempt = 1; attempt <= 5; attempt += 1) {
     const candidate = uniqueMobile('9');
     const { created } = await createUser({
-      userId: id, username: id, mobile: candidate, kycStatus, accountType,
+      userId: id, username: id, mobile: candidate, accountType,
     });
     if (created) { mobile = candidate; break; }
   }

@@ -83,7 +83,7 @@ const PLAYER_ROUTES = {
     ['post', '/ask'], ['post', '/tickets'], ['get', '/tickets'], ['get', '/tickets/x'],
     ['post', '/tickets/x/reply'],
   ],
-  playerAuth: [['get', '/verification'], ['post', '/kyc/resubmit']],
+  playerAuth: [['get', '/verification']],
   game: [['post', '/launch']],
   uploads: [['post', '/user/profile/picture/upload-url'], ['post', '/user/profile/picture/confirm-upload']],
   retention: [['get', '/bonuses/my']],

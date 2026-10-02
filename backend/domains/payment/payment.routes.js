@@ -3,7 +3,7 @@
  * Moved from backend/routes/payment.routes.js on 2026-07-01 (BBEPS Phase 004 migration). */
 import express   from 'express';
 import { db }    from '#db';
-import { authenticatePlayer, requireApprovedKyc, requireLinkedKyc } from '../identity/auth.middleware.js';
+import { authenticatePlayer } from '../identity/auth.middleware.js';
 import {
   withdrawalLimiter,
   // Creating a USDT purchase reaches the merchant queue and holds a price.
@@ -49,15 +49,10 @@ function forPlayer(order) {
   return toPlayerOrderView(order);
 }
 
-// Money IN needs only LINKED identity, not an approved one (owner decision
-// 2026-09-08). Verification runs in batches and can take a day; holding a
-// player at the door for it loses the player without protecting anyone, and the
-// deposit lands in their own wallet either way.
-//
-// `requireApprovedKyc` stays on the withdrawal below. That is the whole of the
-// stricter rule and it is where it belongs: money leaving is the irreversible
-// direction.
-router.post('/deposit/create', authenticatePlayer, requireLinkedKyc, requireChannelMembership({ action: 'add funds' }), depositCreateLimiter, async (req, res) => {
+// No KYC gate on any money route: KYC was removed 2026-10-02 (owner). The
+// channel-membership gate, which requires the Telegram contact share, is the
+// identity check.
+router.post('/deposit/create', authenticatePlayer, requireChannelMembership({ action: 'add funds' }), depositCreateLimiter, async (req, res) => {
   try {
     const result = await requestDeposit({ userId: req.user.userId, tokenAmount: Number(req.body.tokenAmount) });
     res.json({ success: true, message: 'Deposit request created. Waiting for merchant assignment.', ...result });
@@ -77,15 +72,9 @@ router.post('/deposit/create', authenticatePlayer, requireLinkedKyc, requireChan
  * The SERVER still decides what each rail serves: `assertBuyIsLegal` refuses a
  * ₹5,000 purchase here and a ₹50,000 one on the INR route, whatever a client
  * asks for.
- *
- * `requireLinkedKyc`, matching the INR deposit exactly — money IN needs linked
- * identity, and holding a player at the door while verification runs in batches
- * loses the player without protecting anyone. The stricter rule belongs on
- * withdrawal, where the money leaves.
  */
 router.post('/usdt/deposit/create',
   authenticatePlayer,
-  requireLinkedKyc,
   requireChannelMembership({ action: 'add funds' }),
   usdtDepositLimiter,
   async (req, res) => {
@@ -111,11 +100,7 @@ router.post('/usdt/deposit/create',
 // builders of one payload is exactly how the config object drifted the first
 // time; the answer then was one owner, and it is the answer here.
 
-// APPROVED, not merely linked. Every withdrawal here draws from the WINNINGS
-// balance — `debitWinningsForWithdrawal` is the only debit path — so "approved
-// KYC to withdraw winnings" and "approved KYC to withdraw" are the same rule on
-// this platform, and this line is it.
-router.post('/withdrawal/create', authenticatePlayer, requireApprovedKyc, requireChannelMembership({ action: 'withdraw' }), withdrawalLimiter, createSubnetLimiter('withdrawal'), globalSurgeBreaker('withdrawal'), async (req, res) => {
+router.post('/withdrawal/create', authenticatePlayer, requireChannelMembership({ action: 'withdraw' }), withdrawalLimiter, createSubnetLimiter('withdrawal'), globalSurgeBreaker('withdrawal'), async (req, res) => {
   try {
     const result = await requestWithdrawal({ userId: req.user.userId, tokenAmount: Number(req.body.tokenAmount) });
     res.json({ success: true, message: 'Withdrawal request created. Waiting for merchant assignment.', ...result });

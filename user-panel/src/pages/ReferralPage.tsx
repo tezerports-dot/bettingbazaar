@@ -4,21 +4,20 @@
  *
  * ── Why none of this lives on the wallet screen ─────────────────────────────
  * Only the DISBURSED portion ever reaches the winnings wallet. Everything else
- * is a promise whose value depends on other people's KYC and on when the
- * operator next funds the queue. Folding an unrealised promise into a balance
+ * is a promise whose value depends on when the operator next funds the queue. Folding an unrealised promise into a balance
  * is how a player comes to believe they hold money they cannot withdraw — the
  * same class of mistake as counting the reserve as spendable.
  *
- * ── Four numbers, deliberately separated ────────────────────────────────────
+ * ── Three numbers, deliberately separated ───────────────────────────────────
  *   Paid to winnings   — already in the wallet. Real, withdrawable.
  *   Next disbursal     — confirmed and owed, waiting only on the operator.
- *   Awaiting KYC       — the invited player has not been verified yet. NOT
- *                        theirs, and shown apart so it cannot be mistaken for
- *                        income.
- *   Not payable        — voided (a failed KYC upstream) or otherwise blocked.
+ *   Not payable        — voided or otherwise blocked.
+ *
+ * There was a fourth, "Awaiting KYC". KYC was removed (owner, 2026-10-02), and
+ * the server no longer sends it.
  *
  * ── What a referrer sees about the people they invited ──────────────────────
- * A joining number, and nothing else. No name, no phone, no Aadhaar. The
+ * A joining number, and nothing else. No name and no phone. The
  * joining number is already the queue key, so it is the one identifier that has
  * to be visible for the payout order to be checkable by the person waiting in
  * it.
@@ -29,11 +28,10 @@ import { apiClient } from '../services/apiClient';
 import { apiUrl } from '../services/apiUrl';
 
 interface LevelTotals {
-  count: number; confirmed: number; awaitingKyc: number; disbursed: number; blocked: number;
+  count: number; confirmed: number; disbursed: number; blocked: number;
 }
 interface Row {
   joiningNumber: number; level: 1 | 2; amount: number;
-  kyc: 'PENDING_VERIFICATION' | 'VERIFIED' | 'FAILED';
   status: 'PENDING' | 'DISBURSED' | 'BLOCKED';
   reason: string; disbursedAt: string | null;
 }
@@ -45,7 +43,7 @@ interface Summary {
   level2: LevelTotals;
   totals: {
     referrals: number; confirmed: number; disbursed: number;
-    nextDisbursal: number; awaitingKyc: number; blocked: number;
+    nextDisbursal: number; blocked: number;
     /** People who opened the link, deduplicated per viewer per day. */
     clicks: number;
   };
@@ -57,9 +55,8 @@ const inr = (n: number) => `₹${(Number(n) || 0).toLocaleString('en-IN', { maxi
 /** One row's state, in the words a player would use. */
 function rowState(r: Row): { label: string; tone: string } {
   if (r.status === 'DISBURSED') return { label: 'Paid', tone: 'var(--green)' };
-  if (r.status === 'BLOCKED' || r.kyc === 'FAILED') return { label: 'Not payable', tone: 'var(--red)' };
-  if (r.kyc === 'VERIFIED') return { label: 'Ready to pay', tone: 'var(--gold-ink)' };
-  return { label: 'Awaiting their KYC', tone: 'var(--text3)' };
+  if (r.status === 'BLOCKED') return { label: 'Not payable', tone: 'var(--red)' };
+  return { label: 'Ready to pay', tone: 'var(--gold-ink)' };
 }
 
 const ReferralPage: React.FC = () => {
@@ -206,12 +203,11 @@ const ReferralPage: React.FC = () => {
         </div>
       </div>
 
-      {/* ── The four numbers ──────────────────────────────────────────── */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2,1fr)', gap: 10, marginBottom: 14 }}>
+      {/* ── The three numbers ─────────────────────────────────────────── */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10, marginBottom: 14 }}>
         {[
           { k: 'Paid to winnings', v: t.disbursed, tone: 'var(--green)', sub: 'Already in your wallet' },
           { k: 'Next disbursal',   v: t.nextDisbursal, tone: 'var(--gold-ink)', sub: 'Confirmed, awaiting payout' },
-          { k: 'Awaiting their KYC', v: t.awaitingKyc, tone: 'var(--text2)', sub: 'Not yours yet' },
           { k: 'Not payable',      v: t.blocked, tone: t.blocked > 0 ? 'var(--red)' : 'var(--text3)', sub: 'Voided or blocked' },
         ].map((c) => (
           <div key={c.k} style={card}>
@@ -234,7 +230,7 @@ const ReferralPage: React.FC = () => {
               <span className="font-grotesk" style={{ fontSize: 15, fontWeight: 800, color: 'var(--gold-ink)' }}>{inr(lv.confirmed)}</span>
             </div>
             <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 4 }}>
-              {lv.count} referral{lv.count === 1 ? '' : 's'} · {inr(lv.disbursed)} paid · {inr(lv.awaitingKyc)} awaiting KYC
+              {lv.count} referral{lv.count === 1 ? '' : 's'} · {inr(lv.disbursed)} paid
               {lv.blocked > 0 && <> · {inr(lv.blocked)} not payable</>}
             </div>
           </div>

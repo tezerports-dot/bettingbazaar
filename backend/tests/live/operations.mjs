@@ -93,8 +93,8 @@ async function cron() {
   const player = async () => {
     const userId = rid('u');
     await pgQuery(
-      `INSERT INTO users (user_id, username, mobile, account_type, status, kyc_status)
-       VALUES ($1, $1, $2, 'PLAYER', 'ACTIVE', 'APPROVED')`,
+      `INSERT INTO users (user_id, username, mobile, account_type, status)
+       VALUES ($1, $1, $2, 'PLAYER', 'ACTIVE')`,
       [userId, String(6000000000 + Math.floor(Math.random() * 999999999))],
     );
     await pgQuery('INSERT INTO wallets (user_id) VALUES ($1) ON CONFLICT DO NOTHING', [userId]);
@@ -639,8 +639,8 @@ async function crash() {
       const userId = rid('cu');
       userIds.push(userId);
       await pgQuery(
-        `INSERT INTO users (user_id, username, mobile, account_type, status, kyc_status)
-         VALUES ($1, $1, $2, 'PLAYER', 'ACTIVE', 'APPROVED')`,
+        `INSERT INTO users (user_id, username, mobile, account_type, status)
+         VALUES ($1, $1, $2, 'PLAYER', 'ACTIVE')`,
         [userId, String(6500000000 + Math.floor(Math.random() * 499999999))],
       );
       await pgQuery(

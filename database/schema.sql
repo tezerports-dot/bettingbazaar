@@ -154,61 +154,6 @@ CREATE TABLE IF NOT EXISTS utr_registry (
 );
 ALTER TABLE utr_registry ADD COLUMN IF NOT EXISTS amount_paise BIGINT;
 
--- ── USER KYC ────────────────────────────────────────────────────────────────
--- Held apart from the `users` row deliberately: a KYC decision needs an actor,
--- a reason and an append-only history, and a status string on the account can
--- carry none of those. `users.kyc_status` is the denormalised copy the
--- authorisation checks read, written only by the same transaction as the
--- decision itself.
-CREATE TABLE IF NOT EXISTS user_kyc (
-  user_id          TEXT PRIMARY KEY,
-  kyc_status       TEXT,
-  name_on_pan      TEXT,
-  pan_number       TEXT,
-  id_proof_url     TEXT,
-  photo_url        TEXT,
-  submitted_at     TIMESTAMPTZ,
-  rejection_reason TEXT,
-  updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
--- WHO decided, and WHEN. The route this replaced intended to record both, but
--- assigned them to a path its schema did not declare, so the write was silently
--- dropped and every approval was anonymous. A KYC
--- approval with no reviewer is not auditable, which is the one thing a KYC
--- decision has to be.
-ALTER TABLE user_kyc ADD COLUMN IF NOT EXISTS reviewed_by TEXT;
-ALTER TABLE user_kyc ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ;
--- Where the documents actually live. `id_proof_url`/`photo_url` are CDN URLs,
--- which are a delivery detail and can change with the CDN; the object key is
--- the durable identity of the blob in object storage. Kept separately so a
--- bucket or CDN migration does not lose the reference to the file itself.
-ALTER TABLE user_kyc ADD COLUMN IF NOT EXISTS id_proof_key TEXT;
-ALTER TABLE user_kyc ADD COLUMN IF NOT EXISTS photo_key    TEXT;
-
--- Every KYC decision, append-only. A status string alone has no history, so
--- "was this user ever rejected, and why?" — the question every compliance
--- review asks — cannot be answered from
--- it once a resubmission overwrites the field.
---
--- `tx_id` UNIQUE is the idempotency gate, same as order_transitions: a double
--- clicked approve collides inside the transaction and unwinds.
-CREATE TABLE IF NOT EXISTS kyc_transitions (
-  id          BIGSERIAL PRIMARY KEY,
-  tx_id       TEXT NOT NULL UNIQUE,
-  user_id     TEXT NOT NULL REFERENCES user_kyc (user_id),
-  from_status TEXT,
-  to_status   TEXT NOT NULL,
-  actor       TEXT,
-  reason      TEXT,
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-  CONSTRAINT kyc_transitions_moves CHECK (from_status IS NULL OR from_status <> to_status)
-);
-CREATE INDEX IF NOT EXISTS kyc_transitions_user_idx ON kyc_transitions (user_id, id);
-CREATE OR REPLACE TRIGGER kyc_transitions_append_only
-  BEFORE UPDATE OR DELETE ON kyc_transitions FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
-
-
 -- ── MERCHANT WALLET (integer paise) ─────────────────────────────────────────
 -- A merchant's money, in pockets, with an append-only entry per movement. It
 -- replaced a single mutable counter on the merchant record: every user<->merchant
@@ -759,11 +704,6 @@ CREATE INDEX IF NOT EXISTS bonus_grants_kind_idx ON bonus_grants (kind, status);
 -- WRITER waiting to disagree with the first. Every balance read, for display or
 -- for a decision, goes to `wallets`. Do not add a balance column here, not even
 -- a cached one, not even "just for the admin list".
---
--- The KYC decision fields are likewise not here: `user_kyc` owns them, with
--- `kyc_transitions` as its audit trail. `users.kyc_status` exists only as the
--- denormalised status the authorisation checks read on every request, and is
--- written by the same transaction that writes `user_kyc` — never independently.
 CREATE TABLE IF NOT EXISTS users (
   user_id            TEXT PRIMARY KEY,     -- the account's stable identity
   username           TEXT NOT NULL,
@@ -791,7 +731,6 @@ CREATE TABLE IF NOT EXISTS users (
 
   -- ── Account state ────────────────────────────────────────────────────────
   status             TEXT NOT NULL DEFAULT 'ACTIVE',
-  kyc_status         TEXT NOT NULL DEFAULT 'PENDING_SUBMISSION',
   wallet_address     TEXT UNIQUE,
   profile_pic        TEXT NOT NULL DEFAULT '',
   warning_count      INT  NOT NULL DEFAULT 0 CHECK (warning_count >= 0),
@@ -844,9 +783,7 @@ CREATE TABLE IF NOT EXISTS users (
   updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
 
   CONSTRAINT users_status_check
-    CHECK (status IN ('ACTIVE','BLOCKED','SUSPENDED','PENDING_KYC','DELETED')),
-  CONSTRAINT users_kyc_status_check
-    CHECK (kyc_status IN ('PENDING_SUBMISSION','PENDING_APPROVAL','APPROVED','REJECTED')),
+    CHECK (status IN ('ACTIVE','BLOCKED','SUSPENDED','DELETED')),
   CONSTRAINT users_phantom_access_check
     CHECK (phantom_access IN ('NONE','1_MIN','30_MIN','FULL_DAY','BOTH')),
   CONSTRAINT users_sub_admin_role_check
@@ -886,30 +823,7 @@ DO $$ BEGIN
     CHECK (status <> 'DELETED' OR (deleted_at IS NOT NULL AND deleted_by IS NOT NULL));
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
--- How many Aadhaar numbers this account has ever submitted.
---
--- ON `users`, NOT on `kyc_verifications`, and the placement is the whole point.
--- `releaseFailedSubmission` DELETES the verification row when a number comes
--- back rejected — that is what frees the unique hash so a mistyped digit does
--- not park a stranger's Aadhaar in the index forever. A counter living on that
--- row would be deleted with it and reset to zero, which defeats the cap
--- entirely: submit, fail, submit again, indefinitely.
---
--- The cap exists because "submit a number, be told whether it is already
--- registered" is an ENUMERATION ORACLE the moment it can be repeated freely.
--- Bounding it is what keeps this a correction path rather than a probe.
-ALTER TABLE users ADD COLUMN IF NOT EXISTS kyc_submission_count INT NOT NULL DEFAULT 0;
--- `ADD CONSTRAINT` has no IF NOT EXISTS, and this file is applied on EVERY
--- boot — so a bare ADD would fail the second start with "constraint already
--- exists". Swallowing just that error is the idempotent idiom.
-DO $$ BEGIN
-  ALTER TABLE users ADD CONSTRAINT users_kyc_submission_count_check
-    CHECK (kyc_submission_count >= 0);
-EXCEPTION WHEN duplicate_object THEN NULL;
-END $$;
-
 CREATE INDEX IF NOT EXISTS users_status_idx        ON users (status);
-CREATE INDEX IF NOT EXISTS users_kyc_status_idx    ON users (kyc_status);
 CREATE INDEX IF NOT EXISTS users_referred_by_idx   ON users (referred_by) WHERE referred_by IS NOT NULL;
 CREATE INDEX IF NOT EXISTS users_joined_at_idx     ON users (joined_at DESC);
 -- The admin user list filters on these two constantly and they are rare, so a
@@ -1153,55 +1067,6 @@ CREATE INDEX IF NOT EXISTS telegram_identities_channel_idx
 -- reader's false lead (§3, §22), and this one would read as though the
 -- platform still took Aadhaar numbers over Telegram.
 
--- ── Telegram: a recovery in progress ─────────────────────────────────────────
---
--- Account recovery is two messages: the Aadhaar, then the contact share. This
--- holds the first while the platform waits for the second.
---
--- It replaces a process-local `Map` in telegram.routes.js (audit F-002). That
--- worked on one machine and failed on more than one: the two messages land on
--- different instances, the second finds no session, and the bot answers "please
--- send your Aadhaar first" to somebody who just did — intermittently, looking
--- like their mistake, on the one path a person reaches BECAUSE they have
--- already lost access. It also cleared itself wholesale at 10,000 entries,
--- wiping live recoveries rather than old ones, and a deploy dropped every one.
---
--- ── It stores HASHES, not the Aadhaar ───────────────────────────────────────
--- `attemptRecovery` only ever computes `hashAadhaarCandidates(aadhaar)` and
--- compares — it never needs the number itself. So the number is hashed at the
--- moment it arrives and the plaintext is never stored anywhere, which is
--- stronger than the ciphertext `telegram_pending_links` holds for onboarding.
--- An array because the HMAC secret can be rotated and both candidates must be
--- comparable.
---
--- NOT merged into `telegram_pending_links`: that table's `step` CHECK is the
--- ONBOARDING state machine, and both are keyed on `telegram_user_id`. A person
--- recovering from a fresh Telegram account could be onboarding on that same id,
--- and one row cannot own two workflows (CLAUDE.md §7).
-CREATE TABLE IF NOT EXISTS telegram_recovery_sessions (
-  telegram_user_id TEXT NOT NULL,
-  -- Part of the key for the same reason it is part of `telegram_identities`'s:
-  -- one person opens all three recovery bots from ONE Telegram account, and a
-  -- half-finished merchant recovery must not overwrite a half-finished player
-  -- one — which, with a bare `telegram_user_id` key, is exactly what the
-  -- ON CONFLICT DO UPDATE in `putRecoverySession` would do.
-  audience         TEXT NOT NULL DEFAULT 'PLAYER',
-  aadhaar_hashes   TEXT[] NOT NULL,
-  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-  expires_at       TIMESTAMPTZ NOT NULL,
-  PRIMARY KEY (telegram_user_id, audience),
-  CONSTRAINT telegram_recovery_sessions_has_hashes
-    CHECK (cardinality(aadhaar_hashes) > 0),
-  CONSTRAINT telegram_recovery_sessions_audience_check
-    CHECK (audience IN ('PLAYER','STAFF','MERCHANT'))
-);
-ALTER TABLE telegram_recovery_sessions
-  ADD COLUMN IF NOT EXISTS audience TEXT NOT NULL DEFAULT 'PLAYER';
--- The reads all filter on it, so expiry is a property of the QUERY and never
--- depends on the sweep having run (same posture as the login-code tables).
-CREATE INDEX IF NOT EXISTS telegram_recovery_sessions_expiry_idx
-  ON telegram_recovery_sessions (expires_at);
-
 -- ── The bot can no longer sign anybody in — REMOVED 2026-09-23 ────────────
 --
 -- Two tables went together, because they were two spellings of one thing: a
@@ -1230,67 +1095,6 @@ CREATE TABLE IF NOT EXISTS token_blacklist (
   expires_at TIMESTAMPTZ NOT NULL DEFAULT (now() + interval '24 hours')
 );
 CREATE INDEX IF NOT EXISTS token_blacklist_expiry_idx ON token_blacklist (expires_at);
-
--- ── KYC verification ─────────────────────────────────────────────────────────
---
--- No identity DOCUMENTS are collected, stored or accepted anywhere: KYC is a
--- 12-digit number, held as an HMAC plus a ciphertext. See CLAUDE.md §1.
-CREATE TABLE IF NOT EXISTS kyc_verifications (
-  user_id          TEXT PRIMARY KEY REFERENCES users (user_id) ON DELETE CASCADE,
-  -- UNIQUE: the no-duplicate-accounts rule, enforced by the database. Two
-  -- people cannot register the same Aadhaar, and it is a hash, so the index
-  -- itself reveals nothing.
-  aadhaar_hash     TEXT NOT NULL UNIQUE,
-  -- Ciphertext. Read in exactly one place (the audited export), which is why
-  -- the repository never selects it by default.
-  aadhaar_encrypted TEXT NOT NULL,
-  -- Shown to operators instead of the number: enough to match a query, useless
-  -- to an attacker.
-  aadhaar_last4    TEXT NOT NULL,
-  phone            TEXT NOT NULL,
-  status           TEXT NOT NULL DEFAULT 'PENDING_VERIFICATION',
-
-  -- Which export a row went out in and which import decided it. Two rows
-  -- sharing an export batch went to the verifier together, which is what makes
-  -- a disputed result traceable to a specific file.
-  export_batch_id  TEXT,
-  exported_at      TIMESTAMPTZ,
-  import_batch_id  TEXT,
-  verified_at      TIMESTAMPTZ,
-  -- Verbatim from the verifier on a NO, so support can tell a player why
-  -- instead of guessing.
-  failure_reason   TEXT NOT NULL DEFAULT '',
-  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-
-  CONSTRAINT kyc_verifications_status_check
-    CHECK (status IN ('PENDING_VERIFICATION','VERIFIED','FAILED'))
-);
-CREATE INDEX IF NOT EXISTS kyc_verifications_phone_idx ON kyc_verifications (phone);
--- The export query: everything still awaiting a verdict, oldest first.
-CREATE INDEX IF NOT EXISTS kyc_verifications_pending_idx
-  ON kyc_verifications (created_at) WHERE status = 'PENDING_VERIFICATION';
-CREATE INDEX IF NOT EXISTS kyc_verifications_export_batch_idx ON kyc_verifications (export_batch_id);
-CREATE INDEX IF NOT EXISTS kyc_verifications_import_batch_idx ON kyc_verifications (import_batch_id);
-
--- ── KYC batches: one export or one import, as an auditable record ────────────
--- An EXPORT is Aadhaar numbers LEAVING the platform. Recording who asked and
--- when is the difference between a controlled disclosure and a leak nobody can
--- reconstruct afterwards.
-CREATE TABLE IF NOT EXISTS kyc_batches (
-  batch_id       TEXT PRIMARY KEY,
-  kind           TEXT NOT NULL,
-  actor_id       TEXT NOT NULL,
-  row_count      INT NOT NULL DEFAULT 0 CHECK (row_count >= 0),
-  verified_count INT NOT NULL DEFAULT 0 CHECK (verified_count >= 0),
-  failed_count   INT NOT NULL DEFAULT 0 CHECK (failed_count >= 0),
-  skipped_count  INT NOT NULL DEFAULT 0 CHECK (skipped_count >= 0),
-  note           TEXT NOT NULL DEFAULT '',
-  created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-
-  CONSTRAINT kyc_batches_kind_check CHECK (kind IN ('EXPORT','IMPORT'))
-);
-CREATE INDEX IF NOT EXISTS kyc_batches_kind_idx ON kyc_batches (kind, created_at DESC);
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- TWO TABLES FOR CODE THAT WAS ALREADY DEAD
@@ -2800,7 +2604,6 @@ ALTER TABLE order_states ADD COLUMN IF NOT EXISTS merchant_credit_reversed_reaso
 ALTER TABLE order_states ADD COLUMN IF NOT EXISTS user_phone TEXT;
 ALTER TABLE order_states ADD COLUMN IF NOT EXISTS user_bank_details JSONB;
 ALTER TABLE order_states ADD COLUMN IF NOT EXISTS user_usdt_address TEXT;
-ALTER TABLE order_states ADD COLUMN IF NOT EXISTS requires_video_kyc BOOLEAN NOT NULL DEFAULT FALSE;
 
 -- The payment evidence.
 ALTER TABLE order_states ADD COLUMN IF NOT EXISTS utr TEXT;
@@ -4421,19 +4224,27 @@ DROP INDEX IF EXISTS one_active_identity_per_phone;
 CREATE UNIQUE INDEX one_active_identity_per_phone
   ON telegram_identities (phone, audience) WHERE contact_active;
 
--- ── telegram_recovery_sessions: one half-finished recovery PER PANEL ───────
-ALTER TABLE telegram_recovery_sessions DROP CONSTRAINT IF EXISTS telegram_recovery_sessions_audience_check;
-ALTER TABLE telegram_recovery_sessions ADD CONSTRAINT telegram_recovery_sessions_audience_check
-  CHECK (audience IN ('PLAYER','STAFF','MERCHANT'));
-DO $$ BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint con
-      JOIN pg_attribute a
-        ON a.attrelid = con.conrelid AND a.attnum = ANY (con.conkey)
-     WHERE con.conrelid = 'telegram_recovery_sessions'::regclass
-       AND con.contype = 'p' AND a.attname = 'audience'
-  ) THEN
-    ALTER TABLE telegram_recovery_sessions DROP CONSTRAINT IF EXISTS telegram_recovery_sessions_pkey;
-    ALTER TABLE telegram_recovery_sessions ADD PRIMARY KEY (telegram_user_id, audience);
-  END IF;
-END $$;
+-- ═══════════════════════════════════════════════════════════════════════════
+-- KYC REMOVED (owner, 2026-10-02)
+-- ═══════════════════════════════════════════════════════════════════════════
+-- No Aadhaar number, hash or ciphertext is collected any more; the Telegram
+-- contact share is the only identity check (PROJECT_STATUS §3.10). The CREATE
+-- statements are gone from this file, and these DROPs make a database that
+-- already had them CONVERGE on what the file says (§32 S31) — a table left
+-- behind would hold every Aadhaar ever submitted, for nobody.
+DROP TABLE IF EXISTS kyc_transitions;
+DROP TABLE IF EXISTS user_kyc;
+DROP TABLE IF EXISTS kyc_batches;
+DROP TABLE IF EXISTS kyc_verifications;
+DROP TABLE IF EXISTS telegram_recovery_sessions;
+DROP INDEX IF EXISTS users_kyc_status_idx;
+ALTER TABLE users DROP CONSTRAINT IF EXISTS users_kyc_status_check;
+ALTER TABLE users DROP CONSTRAINT IF EXISTS users_kyc_submission_count_check;
+ALTER TABLE users DROP COLUMN IF EXISTS kyc_status;
+ALTER TABLE users DROP COLUMN IF EXISTS kyc_submission_count;
+ALTER TABLE order_states DROP COLUMN IF EXISTS requires_video_kyc;
+-- PENDING_KYC was an account status nothing wrote; dropped and re-added so the
+-- narrower list converges on an existing database too.
+ALTER TABLE users DROP CONSTRAINT IF EXISTS users_status_check;
+ALTER TABLE users ADD CONSTRAINT users_status_check
+  CHECK (status IN ('ACTIVE','BLOCKED','SUSPENDED','DELETED'));

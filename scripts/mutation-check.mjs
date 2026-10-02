@@ -142,13 +142,7 @@ const MUTATIONS = [
     from: `const toInt = (v) => (v == null ? null : Number(v));`,
     to: `const toInt = (v) => v;`,
   },
-  {
-    id: 'M46', file: 'database/repositories/users.js', config: PG,
-    test: 'database/tests/userPg.test.js',
-    why: 'the denormalised kyc_status can be written outside the decision transaction',
-    from: `  if (!client) throw new Error('setKycStatus must run inside the transaction that records the decision');`,
-    to: `  if (!client) return null;`,
-  },
+  // M46 (setKycStatus outside its transaction) deleted 2026-10-02 with KYC.
   // ── The sign-in surface: expiry, single use, and disclosure control ────────
   {
     id: 'M47', file: 'database/repositories/telegram.js', config: PG,
@@ -172,20 +166,9 @@ const MUTATIONS = [
     from: `WHERE token_hash = $1 AND consumed_at IS NULL AND expires_at > now()`,
     to: `WHERE token_hash = $1 AND consumed_at IS NULL`,
   },
-  {
-    id: 'M49', file: 'database/repositories/identity.js', config: PG,
-    test: 'database/tests/identityPg.test.js',
-    why: 'two concurrent exports disclose the same Aadhaar in two files',
-    from: `          FOR UPDATE SKIP LOCKED)`,
-    to: `          )`,
-  },
-  {
-    id: 'M50', file: 'database/repositories/identity.js', config: PG,
-    test: 'database/tests/identityPg.test.js',
-    why: 'a VERIFIED Aadhaar row can be deleted, freeing a number that is in use',
-    from: `WHERE user_id = $1 AND status = 'FAILED'`,
-    to: `WHERE user_id = $1`,
-  },
+  // M49 and M50 (the Aadhaar export lock; deleting only FAILED Aadhaar rows)
+  // deleted 2026-10-02 with KYC: the queue they guarded no longer exists.
+
   {
     id: 'M51', file: 'database/repositories/identity.js', config: PG,
     test: 'database/tests/identityPg.test.js',
@@ -1511,13 +1494,9 @@ const MUTATIONS = [
     from: `  if (!contactUserId || String(contactUserId) !== String(telegramUserId)) {`,
     to: `  if (contactUserId && String(contactUserId) !== String(telegramUserId)) {`,
   },
-  {
-    id: 'M202', file: 'backend/domains/telegram/telegramRecovery.service.js', config: UNIT,
-    test: 'backend/tests/unit/telegramRecoverySafety.test.js',
-    why: 'recovery accepts a contact card with no user_id, so a number the sender does not hold stands in for one they do',
-    from: `  if (!contactUserId || String(contactUserId) !== String(newTelegramUserId)) {`,
-    to: `  if (contactUserId && String(contactUserId) !== String(newTelegramUserId)) {`,
-  },  // ── A referral disbursal reserves its budget before it pays (R6) ────────
+  // M202 (Aadhaar recovery took a contact card with no user_id) deleted
+  // 2026-10-02 with the recovery service. M201 still guards the same check on
+  // the one contact-share path that remains.  // ── A referral disbursal reserves its budget before it pays (R6) ────────
   {
     id: 'M203', file: 'backend/domains/referral/referral.service.js', config: UNIT,
     test: 'backend/tests/unit/referralDisbursalBudget.test.js',
@@ -2082,6 +2061,35 @@ const MUTATIONS = [
     displayTime: r.display_time,
     createdBy: r.created_by,
     isReal: false,`,
+  },
+  // ── KYC removed (owner, 2026-10-02): the signup writer ─────────────────────
+  {
+    id: 'M277', file: 'database/repositories/identity.js', config: PG,
+    test: 'database/tests/identityPg.test.js',
+    why: 'the signup form writes its account into the STAFF population, so the player door can never read it back',
+    from: `VALUES ($1, $2, $3, $4, $5, $6, 'ACTIVE', 'PLAYER')`,
+    to: `VALUES ($1, $2, $3, $4, $5, $6, 'ACTIVE', 'STAFF')`,
+  },
+  {
+    id: 'M278', file: 'database/repositories/identity.js', config: PG,
+    test: 'database/tests/identityPg.test.js',
+    why: 'a second player signup on one mobile is reported as created, so the route seats a player on an account that is not theirs',
+    from: `    if (!rows[0]) return { ok: false, reason: 'mobile_taken' };`,
+    to: `    if (!rows[0]) return { ok: true, userId: String(userId) };`,
+  },
+  {
+    id: 'M279', file: 'database/repositories/users.js', config: PG,
+    test: 'database/tests/userPg.test.js',
+    why: 'a redelivered channel join hands out a SECOND joining number, moving the player down the referral payout queue and counting them twice',
+    from: `        WHERE user_id = $1 AND joining_number IS NULL`,
+    to: `        WHERE user_id = $1`,
+  },
+  {
+    id: 'M280', file: 'database/repositories/users.js', config: PG,
+    test: 'database/tests/userPg.test.js',
+    why: 'the referral member count advances on every repeat of a completion, so the cap fills with people counted twice',
+    from: `        WHERE programme_key = 'main' AND EXISTS (SELECT 1 FROM claimed)`,
+    to: `        WHERE programme_key = 'main'`,
   },
 ];
 

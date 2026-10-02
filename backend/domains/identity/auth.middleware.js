@@ -24,7 +24,6 @@
 import { db } from '#db';
 // The KYC vocabulary has one owner, and it is not this file — the payment
 // service needs the same rule without booting the token layer to get it.
-import { isKycLinked, isKycApproved, kycRefusalFor } from './kycGates.js';
 import { isTokenRevoked as pgIsTokenRevoked } from '#db/repositories/identity.js';
 import { getUser } from '#db/repositories/users.js';
 import { setContextUser } from '../../middleware/requestContext.js'; // X-6
@@ -399,79 +398,9 @@ const authenticateForEnrolment = makeAuthenticate({ allowUnenrolledStaff: true }
  */
 
 
-/**
- * The WEAKER gate: KYC details have been given, not necessarily cleared.
- *
- * ── Why two gates and not one ───────────────────────────────────────────────
- * Owner decision 2026-09-08: an approved Aadhaar is required to take money OUT
- * and nothing else. Depositing, buying tokens and placing a bet need only that
- * the player has actually linked their identity — the verification runs in
- * batches and can take a day, and holding a funded player at the door for it
- * loses the player without protecting anybody.
- *
- * Withdrawal keeps `requireApprovedKyc`, and that is the whole of the stricter
- * rule: every withdrawal on this platform draws from the WINNINGS balance —
- * `debitWinningsForWithdrawal` is the only debit path — so "approved KYC to
- * withdraw winnings" and "approved KYC to withdraw" are the same sentence here.
- *
- * ── REJECTED is refused, and that is the owner's decision ───────────────────
- * PENDING_APPROVAL passes: the details are linked and a verifier has simply not
- * reached them, which is a queue the player cannot do anything about.
- *
- * REJECTED does not pass, and stays refused while they re-submit (owner
- * confirmed 2026-09-08). An Aadhaar that came back not matching the issuing
- * authority means the details given were wrong, and somebody giving wrong
- * identity details on a money platform is a bot or a scammer often enough that
- * the benefit of the doubt is the wrong default. Getting it wrong in this
- * direction costs an honest player a delay; getting it wrong in the other
- * direction lets funds move against an identity that failed its check, and that
- * cannot be undone afterwards.
- */
-export async function requireLinkedKyc(req, res, next) {
-  try {
-    const cfg = await getSystemConfig();
-    if (cfg?.kycRequired === false) return next();
-
-    const status = req.user?.kycStatus || 'PENDING_SUBMISSION';
-    if (isKycLinked(status)) return next();
-
-    return res.status(403).json({
-      success: false,
-      message: kycRefusalFor(status),
-      // A DIFFERENT code from the approved gate. A panel that cannot tell the
-      // two apart shows "your Aadhaar is being verified" to someone who never
-      // submitted one, and the button it offers leads nowhere.
-      code: 'KYC_NOT_LINKED',
-      kycStatus: status,
-      actionable: true,
-    });
-  } catch (error) {
-    console.error('KYC link check error:', error);
-    return res.status(500).json({ success: false, message: 'Failed to verify KYC settings.' });
-  }
-}
-
-export async function requireApprovedKyc(req, res, next) {
-  try {
-    const cfg = await getSystemConfig();
-    if (cfg?.kycRequired === false || isKycApproved(req.user?.kycStatus)) return next();
-
-    const status = req.user?.kycStatus || 'PENDING_SUBMISSION';
-    return res.status(403).json({
-      success: false,
-      message: kycRefusalFor(status),
-      code: 'KYC_REQUIRED',
-      kycStatus: status,
-      // Whether the player can do anything at all. The panel uses this to
-      // decide between "finish signing up" and a passive "we are working on it",
-      // rather than showing an action button that leads nowhere.
-      actionable: status !== 'PENDING_APPROVAL',
-    });
-  } catch (error) {
-    console.error('KYC config check error:', error);
-    return res.status(500).json({ success: false, message: 'Failed to verify KYC settings.' });
-  }
-}
+// The KYC gates (`requireLinkedKyc`, `requireApprovedKyc`) were removed
+// 2026-10-02 with KYC itself (owner): the Telegram contact share is the only
+// identity check now.
 
 /**
  * ════════════════════════════════════════════════════════════════════════════

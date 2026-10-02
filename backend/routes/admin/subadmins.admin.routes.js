@@ -109,10 +109,6 @@ router.post('/sub-admins', authenticate, isAdmin, async (req, res) => {
       mobile,
       passwordHash,
       status: 'ACTIVE',
-      // A sub-admin does not go through Aadhaar verification — staff do not
-      // authenticate through Telegram at all — so the KYC gate is satisfied at
-      // creation rather than left blocking a colleague on their first day.
-      kycStatus: 'APPROVED',
       // STAFF. A sub-admin written as a PLAYER cannot sign in at the admin door
       // at all — the door scopes its read by account type — and the account
       // would look perfectly correct in every listing.

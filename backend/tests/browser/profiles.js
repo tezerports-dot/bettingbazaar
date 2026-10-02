@@ -7,7 +7,7 @@
  * account: a verified player with ₹1,500, a full admin, a cash merchant. A
  * control that only exists for somebody else — the GHOST MODE toggle a phantom
  * agent sees, the screens a sub-admin is limited to, what a suspended merchant
- * or a KYC-rejected player is shown — was never in the inventory, so it could
+ * or an unverified player is shown — was never in the inventory, so it could
  * never be counted as unpressed. It was simply not there to miss.
  *
  * Each profile seeds a FRESH account through the same seed functions every
@@ -83,18 +83,6 @@ export const PROFILES = {
     what: 'a verified player with no money',
     ...player({ balancePaise: 0 }),
   },
-  'player-kyc-none': {
-    what: 'a player who has not submitted Aadhaar',
-    ...player({ kycStatus: 'PENDING_SUBMISSION' }),
-  },
-  'player-kyc-pending': {
-    what: 'a player whose Aadhaar is waiting for an admin',
-    ...player({ kycStatus: 'PENDING_APPROVAL' }),
-  },
-  'player-kyc-rejected': {
-    what: 'a player whose Aadhaar was rejected (may resubmit)',
-    ...player({ kycStatus: 'REJECTED' }),
-  },
   'player-unverified': {
     what: 'a player who has not shared their contact or joined the channel — the gate',
     ...player({ verified: false }),
@@ -116,8 +104,8 @@ export const PROFILES = {
     ...staff({ isSubAdmin: true, keys: ['canViewAnalytics'] }),
   },
   'subadmin-players': {
-    what: 'a sub-admin granted players, KYC and transactions, nothing that moves money',
-    ...staff({ isSubAdmin: true, keys: ['canManageUsers', 'canVerifyKYC', 'canViewTransactions'] }),
+    what: 'a sub-admin granted players and transactions, nothing that moves money',
+    ...staff({ isSubAdmin: true, keys: ['canManageUsers', 'canViewTransactions'] }),
   },
   'subadmin-all': {
     what: 'a sub-admin granted every area',

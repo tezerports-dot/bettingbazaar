@@ -3,7 +3,7 @@
  * A permission that stops at the REST API is half a permission (§32 S32).
  *
  * The admin SSE stream and the socket admin room delivered every order,
- * dispute, KYC verdict and bet to every staff account that connected, whatever
+ * dispute and bet to every staff account that connected, whatever
  * it had been given. These are the realtime halves of the owner's rule (2026-10-01):
  * a sub-admin receives the live events of the areas they hold, and nothing else.
  */
@@ -45,7 +45,7 @@ describe('who may receive a live staff event', () => {
     expect(staffMayReceive(merchants, 'order_disputed')).toBe(false);
     expect(staffMayReceive(disputes, 'order_disputed')).toBe(true);
     expect(staffMayReceive(contentOnly, 'new_order')).toBe(false);
-    expect(staffMayReceive(contentOnly, 'kyc_update')).toBe(false);
+    expect(staffMayReceive(contentOnly, 'order_disputed')).toBe(false);
   });
 
   it('a full admin gets everything; a queue manager gets the queue', () => {
@@ -110,7 +110,7 @@ describe('the socket admin room', () => {
   });
 
   it('an event is emitted to the rooms of its areas, and full admins', () => {
-    expect(roomsForEvent('kyc_update')).toEqual([FULL_ADMIN_ROOM, staffRoom('canVerifyKYC')]);
+    expect(roomsForEvent('order_disputed')).toEqual([FULL_ADMIN_ROOM, staffRoom('canResolveDisputes')]);
     expect(roomsForEvent('undeclared_event')).toEqual([FULL_ADMIN_ROOM]);
     const sent = [];
     const io = { to: (rooms) => ({ emit: (event, data) => sent.push({ rooms, event, data }) }) };

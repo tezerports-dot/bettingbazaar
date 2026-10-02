@@ -145,7 +145,6 @@ export const UsersList: React.FC = () => {
     { key: 'deposit',  label: 'Deposit',  render: (u: User) => <div className="text-right"><Money value={formatters.currency(u.depositBalance)} /></div> },
     { key: 'winnings', label: 'Winnings', render: (u: User) => <div className="text-right"><Money value={formatters.currency(u.winningsBalance)} /></div> },
     { key: 'locked',   label: 'Locked',   render: (u: User) => <div className="text-right"><Money value={formatters.currency(u.lockedBalance)} tone={(u.lockedBalance || 0) > 0 ? 'warning' : 'muted'} /></div> },
-    { key: 'kycStatus', label: 'KYC',    render: (u: User) => <StatusBadge status={u.kycStatus} type="kyc"  /> },
     { key: 'status',    label: 'Status', render: (u: User) => <StatusBadge status={u.status}    type="user" /> },
     {
       key: 'actions', label: '',
@@ -177,7 +176,6 @@ export const UsersList: React.FC = () => {
         { label: 'Total Users', value: total.toLocaleString('en-IN') },
         { label: 'Active', value: users.filter((u) => u.status === 'ACTIVE').length, tone: 'var(--success)' },
         { label: 'Blocked', value: users.filter((u) => u.status === 'BLOCKED').length, tone: 'var(--danger)' },
-        { label: 'Pending KYC', value: users.filter((u) => u.kycStatus !== 'APPROVED').length, tone: 'var(--warning)' },
       ]} />
 
       <Toolbar
@@ -186,7 +184,6 @@ export const UsersList: React.FC = () => {
           { label: 'Active', active: statusFilter === 'ACTIVE', onClick: () => setStatusFilter('ACTIVE') },
           { label: 'Blocked', active: statusFilter === 'BLOCKED', onClick: () => setStatusFilter('BLOCKED') },
           { label: 'Suspended', active: statusFilter === 'SUSPENDED', onClick: () => setStatusFilter('SUSPENDED') },
-          { label: 'Pending KYC', active: statusFilter === 'PENDING_KYC', onClick: () => setStatusFilter('PENDING_KYC') },
         ]}
         search={{ value: search, onChange: setSearch, placeholder: 'Search name, mobile, ID…' }}
       />
@@ -226,23 +223,7 @@ export const UsersList: React.FC = () => {
 
               <div className="grid grid-cols-2 gap-3">
                 <div><p className="text-xs text-gray-400 mb-1">Status</p><StatusBadge status={selectedUser.status} type="user" /></div>
-                <div><p className="text-xs text-gray-400 mb-1">KYC</p><StatusBadge status={selectedUser.kycStatus} type="kyc" /></div>
               </div>
-
-              {(selectedUser.verification || selectedUser.kycData?.rejectionReason) && (
-                <div className="bg-dark-700 rounded-lg p-4 text-sm">
-                  <p className="font-semibold mb-3 text-gray-300">Identity verification</p>
-                  <div className="grid grid-cols-2 gap-2">
-                    <div><p className="text-gray-400">Aadhaar</p><p className="font-mono">{selectedUser.verification?.aadhaarLast4 ? `XXXX-${selectedUser.verification.aadhaarLast4}` : '—'}</p></div>
-                    <div><p className="text-gray-400">Verifier</p><p className="font-mono">{selectedUser.verification?.status || '—'}</p></div>
-                    <div><p className="text-gray-400">Batch</p><p className="font-mono">{selectedUser.verification?.exportBatchId || 'Not exported'}</p></div>
-                    <div><p className="text-gray-400">Submitted</p><p>{selectedUser.kycData?.submittedAt ? formatters.date(selectedUser.kycData.submittedAt) : '—'}</p></div>
-                  </div>
-                  {selectedUser.kycData?.rejectionReason && (
-                    <p className="mt-3 text-red-400">{selectedUser.kycData.rejectionReason}</p>
-                  )}
-                </div>
-              )}
 
               <p className="text-sm text-gray-400">Joined: {formatters.datetime(selectedUser.joinedAt)}</p>
 

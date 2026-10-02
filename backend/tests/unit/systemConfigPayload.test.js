@@ -5,7 +5,7 @@
  * ── Why this file exists ────────────────────────────────────────────────────
  * This object was assembled twice — Socket.IO on connect, HTTP on request — and
  * the copies had already drifted in both directions: only the socket carried
- * webUrl/androidUrl/iosUrl, only the HTTP route carried kycRequired and
+ * webUrl/androidUrl/iosUrl, only the HTTP route carried kycRequired (removed with KYC, 2026-10-02) and
  * registrationEnabled. What a client believed about the platform depended on
  * which transport it asked over.
  *
@@ -35,7 +35,7 @@ describe('the system-config payload', () => {
     // Both transports render the same object, so a field added for one reaches
     // the other. The two used to differ by five fields.
     const keys = Object.keys(systemConfigPayload(null)).sort();
-    for (const gone of ['webUrl', 'iosUrl', 'kycRequired', 'registrationEnabled']) {
+    for (const gone of ['webUrl', 'iosUrl', 'registrationEnabled']) {
       expect(keys, `${gone} must be in the one payload, not one transport's copy`).toContain(gone);
     }
     expect(Object.keys(systemConfigFallback()).sort()).toEqual(keys);
@@ -72,7 +72,6 @@ describe('the system-config payload', () => {
   it('treats false and empty string as configured, not missing', () => {
     expect(systemConfigPayload({ maintenanceMode: false }).maintenanceMode).toBe(false);
     expect(systemConfigPayload({ maintenanceMessage: '' }).maintenanceMessage).toBe('');
-    expect(systemConfigPayload({ kycRequired: false }).kycRequired).toBe(false);
     expect(systemConfigPayload({ registrationEnabled: false }).registrationEnabled).toBe(false);
   });
 

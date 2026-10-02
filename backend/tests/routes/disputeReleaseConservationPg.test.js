@@ -59,7 +59,7 @@ describePg('a released dispute moves tokens between two parties', () => {
   const disputedDeposit = async ({ rupees = 1000, deposit = 900, reserve = 100 } = {}) => {
     const merchant = await merchantActor({ tokensRupees: 50_000 });
     await updateMerchant(merchant.merchantId, { isOnline: true, acceptsDeposits: true });
-    const player = await actor({ kycStatus: 'APPROVED' });
+    const player = await actor({});
     const orderId = oid();
     await createOrderRecord({
       orderId, userId: player.userId, type: 'DEPOSIT',
