@@ -553,6 +553,51 @@ Measured on the commit that adds items 18–19: unit 920/920; pg 1736/1736 (133 
 
 Measured on the commit that adds items 11–17: unit 920/920; pg 1719/1719 (130 files); admin panel 155, merchant 73, user 224, tsc clean on all three; e2e 183 checks, 178 pass, 0 fail, 5 notes (each says what a dev server cannot measure), then s8 alone with the door probes 64/61/0/3; all 17 gates exit 0; `audit:map --check` matches after regeneration (308 routes, 35 unauthenticated). Mutation: M225, M243, M254–M263 KILLED. Not run: the browser tiers after the door change, the full mutation run, and an independent review (§37 step 12).
 
+## 3.10 Plan — the redesign (owner, 2026-10-02). NOT STARTED except where marked.
+
+Three replacements, built in this order, each step tested, committed, and
+reported to the owner in a short update every 5–10 fixes.
+
+### Step 1 — Remove KYC entirely
+- Signup becomes mobile + password + captcha + invite code. No Aadhaar.
+- Delete: the Aadhaar field and its hashing/encryption, `kyc_verifications`
+  and every `kyc_*`/`aadhaar_*` column, the admin KYC queue and bulk verify,
+  `POST /api/v1/auth/kyc/resubmit`, the KYC modal, and every
+  `requireApprovedKyc`/`requireLinkedKyc` gate (withdrawals included).
+- The only identity check is the Telegram contact share (Step 3).
+
+### Step 2 — Replace the payment system with supervisors and teams
+Owner answers, 2026-10-02:
+
+| Topic | Decision |
+|---|---|
+| Account types | A **supervisor** is a MERCHANT login with a supervisor role, on the merchant panel; created/approved by the admin. It does no transactions. **Members** sign up as merchants; the supervisor adds them by merchant ID; the admin approves. A member is in exactly one team. |
+| Team size | Up to 4 teams per supervisor, exactly 10 members each. A team works only with 10. If it drops below 10 it keeps working until the end of that day (IST), then takes no new orders until it is back to 10; open orders always finish. |
+| Rail | Each supervisor is approved for ONE rail: `CASH` (cash link), `UPI_BANK` (UPI link / bank account) or `USDT`. This **replaces the platform-wide payment-mode switch** (`payment_mode_policies`) and the gateway settings, which are deleted. |
+| Denominations | Global, admin-editable list of which sizes are on offer, from 500, 1,000, 5,000, 10,000, 50,000, 100,000, 500,000 tokens. CASH serves 500 / 1,000 / 5,000 / 10,000; UPI_BANK serves 50,000 / 100,000 / 500,000 — the same sizes for buys and sells. One size per order; **no splitting** (the CDM split and CDM receipts go). Cash sells may be paid by UPI or any means. |
+| USDT | Buy only. Multiples of 100 USDT, minimum 100, maximum 10,000 (default; confirm). Token↔USDT rate admin-editable. No USDT sells. |
+| Security deposit | Paid by the supervisor OFF-platform; the admin records it. The per-member amount is admin-editable per supervisor (default 2,500). A team's ceiling = members × amount (10 × 2,500 = 25,000): the total value of the team's OPEN orders may never exceed it, enforced in the database statement that reserves capacity (§32 S6), not by a read. |
+| Tokens | Merchants hold NO token inventory. On a confirmed buy the PLATFORM's holding credits the player; on a sell the player's tokens return to the platform. The UTR registry, the order lifecycle, disputes and the conservation invariant stay; the per-merchant token escrow becomes the team-capacity reservation. |
+| Routing | Auto-assign inside the team: an eligible online member with the fewest open orders, ties to the one assigned least recently. CASH buys additionally need the member to press **Ready** (they are at the ATM); it switches itself off when an order is assigned. Concurrency per member: CASH 1 at a time, UPI_BANK 3, USDT admin-editable — all admin-editable. A CASH member with an open buy is not given a sell until it is done; UPI_BANK and USDT members may be. |
+| Bonus | 10% of the team's matched cycle volume, min(completed buys, completed sells), from the platform pool, paid once per volume (high-water mark). 16% to the supervisor, 84% split equally among the members. Replaces the per-variety commission engine. |
+| Red flag | Computed daily: a member whose transaction count and active time are below the team average by the threshold (admin-editable, default 25%) is flagged to the supervisor and admin. Flag only — the supervisor decides. |
+| Visibility | Members see their team's performance. The supervisor sees and manages members, sees all their transaction logs, and talks to the dispute manager on members' behalf. |
+
+### Step 3 — Telegram Mini App replaces every bot, all three panels
+- One bot per panel, which sends no messages; the Mini App does contact
+  share (proves the mobile), channel-membership check, and password reset.
+- **Login with Telegram** beside the password form: tapping it opens the Mini
+  App, and the app (or the website) is signed in — only when the Telegram
+  account is the one whose shared contact matches the account's mobile. The
+  Mini App's `initData` is verified server-side with the bot token.
+- Deleted: the sign-in bot fleet, rotation, per-bot webhooks, bot message
+  templates, the recovery bots.
+
+### Defaults chosen without an answer (change any of them)
+- USDT order maximum 10,000 USDT.
+- "Until the next day" means until 00:00 IST.
+- The security deposit is recorded in rupees.
+
 ## 4. How to pick this up
 
 1. Read `CLAUDE.md` end to end. It is the only rules file.
