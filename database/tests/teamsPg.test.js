@@ -10,7 +10,7 @@
  * Trap 10: every merchant and team here is this run's own, and removed after.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { pgConfigured, pgQuery, applySchema, closePg } from '../client.js';
+import { pgConfigured, pgQuery, applySchema, closePg, getPool } from '../client.js';
 import {
   createMerchant, updateMerchant, newMerchantId, generateMerchantPublicRef,
 } from '../repositories/merchants.js';
@@ -53,6 +53,16 @@ describePg('supervisors and teams (PostgreSQL)', () => {
       members.push(m);
     }
     return { sup, teamId, members };
+  };
+
+  /** A team with `n` PENDING proposals (they count against the ten). */
+  const teamWithPending = async (n) => {
+    const sup = await supervisor();
+    const { teamId } = await createTeam({ supervisorId: sup, name: 'Kilo' });
+    for (let i = 0; i < n; i += 1) {
+      expect((await addMember({ teamId, supervisorId: sup, merchantRef: await merchant(), actor: sup })).ok).toBe(true);
+    }
+    return { sup, teamId };
   };
 
   beforeAll(async () => { await applySchema(); }, 60_000);
@@ -192,6 +202,43 @@ describePg('supervisors and teams (PostgreSQL)', () => {
       addMember({ teamId, supervisorId: sup, merchantRef: m, actor: sup })));
     expect(results.filter((r) => r.ok)).toHaveLength(TEAM_SIZE);
     expect(results.filter((r) => r.reason === 'team_full')).toHaveLength(15 - TEAM_SIZE);
+    expect(await listMembers({ teamId })).toHaveLength(TEAM_SIZE);
+  });
+
+  // The test above races 15 proposals, which proves the cap holds under real
+  // concurrency but only CATCHES a missing lock when the scheduler happens to
+  // interleave them — on CI it did not, and the mutation removing the lock
+  // survived (M282). This one forces the interleaving: a SHARE lock on
+  // team_members stops every INSERT, so each proposal gets as far as it can
+  // and waits. With the team row locked, only the first is past its count;
+  // without it, all five have counted nine. Then the lock is released.
+  it('proposals for the last place are serialised by the team row lock, not by timing', async () => {
+    const { sup, teamId } = await teamWithPending(TEAM_SIZE - 1);
+    const candidates = [];
+    for (let i = 0; i < 5; i += 1) candidates.push(await merchant());
+
+    const holder = await (await getPool()).connect();
+    let results;
+    try {
+      await holder.query('BEGIN');
+      await holder.query('LOCK TABLE team_members IN SHARE MODE');
+      const racing = Promise.all(candidates.map((m) =>
+        addMember({ teamId, supervisorId: sup, merchantRef: m, actor: sup })));
+      // Wait until all five are parked on a lock — wherever their code stops them.
+      for (let i = 0; i < 200; i += 1) {
+        const { rows } = await pgQuery(
+          `SELECT count(*)::int AS n FROM pg_stat_activity
+            WHERE datname = current_database() AND wait_event_type = 'Lock' AND pid <> $1`, [holder.processID]);
+        if (rows[0].n >= candidates.length) break;
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      await holder.query('COMMIT');
+      results = await racing;
+    } finally {
+      holder.release();
+    }
+    expect(results.filter((r) => r.ok)).toHaveLength(1);
+    expect(results.filter((r) => r.reason === 'team_full')).toHaveLength(4);
     expect(await listMembers({ teamId })).toHaveLength(TEAM_SIZE);
   });
 
