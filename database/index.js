@@ -80,6 +80,7 @@ import * as paymentModePolicy from './repositories/paymentModePolicy.js';
 import * as cashLinks from './repositories/cashLinks.js';
 import * as teams from './repositories/teams.js';
 import * as teamPools from './repositories/teamPools.js';
+import * as teamRouting from './repositories/teamRouting.js';
 import * as stats from './repositories/stats.js';
 import * as utr from './repositories/utr.js';
 
@@ -160,6 +161,7 @@ export const db = Object.freeze({
   cashLinks,
   teams,
   teamPools,
+  teamRouting,
   operations,
   supportDocuments,
   stats,

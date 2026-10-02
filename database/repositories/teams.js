@@ -36,7 +36,7 @@ const newTeamId = () => `team_${randomBytes(10).toString('hex')}`;
  *   GRACE   — dropped below ten today (IST); still takes orders until midnight.
  *   STOPPED — below ten, and either never full or the grace day has passed.
  */
-const STRENGTH_SQL = `CASE
+export const STRENGTH_SQL = `CASE
     WHEN approved_count >= ${TEAM_SIZE} THEN 'WORKING'
     WHEN t.short_since IS NOT NULL
      AND (t.short_since AT TIME ZONE 'Asia/Kolkata')::date = (now() AT TIME ZONE 'Asia/Kolkata')::date

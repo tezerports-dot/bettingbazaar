@@ -616,8 +616,8 @@ Owner answers, 2026-10-02 (two rounds; the second replaced the security deposit 
   is the pool UPDATE's own WHERE, the treasury moves TOKEN_SUPPLY↔`TEAM_FLOAT`,
   and the `admin_token_considerations` row (now with `team_id`) records the
   payment. Reconciliation checks TEAM_FLOAT = Σ pools. A team with pool
-  history cannot be deleted. `held_paise` exists for 2c and nothing writes it
-  yet. **Default taken:** no admin-side "sell without a request" — every pool
+  history cannot be deleted. `held_paise` is written by 2c's buy holds.
+  **Default taken:** no admin-side "sell without a request" — every pool
   movement starts as the supervisor's request, so both sides see one record.
 - **2c The switch.** Orders route to teams: fewest open orders, ties to least
   recently assigned; Ready for CASH buys; per-rail concurrency (CASH 1, UPI 3,
@@ -625,6 +625,15 @@ Owner answers, 2026-10-02 (two rounds; the second replaced the security deposit 
   below-10 rule; buys hold pool tokens at assignment. DELETE the per-merchant
   wallet, escrow, scoring/ranking, cash-link queue, payment-mode policy,
   gateway settings, merchant token orders and fund/deduct.
+  **Part 1 DONE (data layer, nothing calls it yet):** `teamRouting.js`
+  (`routingCandidates`, `assignToTeam`, `setCashReady`, `routingSettings`),
+  the pool's order money in `teamPools.js` (`holdForBuyWithin`,
+  `releaseBuyHold`, `spendForBuy`, `creditSellToPool`, `reverseSellFromPool`,
+  the two hold reports), `order_states.team_id` / `pool_held_paise`,
+  `merchants.cash_ready` / `last_assigned_at`, `SystemConfig.teamRouting`, and
+  a `within` step on the order transition so the hold commits with the move.
+  `teamRoutingPg` 21 cases, M294–M304. Part 2 switches the order paths onto
+  it; part 3 deletes what it replaces.
   **2c design (written before building it, §17.4):**
   - *The rail an order runs on* is derived at creation, never read from a
     switch: USDT currency → the USDT rail; INR up to 10,000 tokens → `CASH`

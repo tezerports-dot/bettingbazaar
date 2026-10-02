@@ -48,6 +48,7 @@ export function toOrder(r) {
     status: r.state, state: r.state,
     currency: r.currency,
     tokenAmount: rupees(r.token_amount_paise),
+    tokenAmountPaise: Number(r.token_amount_paise),
     fiatAmount: rupees(r.fiat_amount_paise),
     amount: rupees(r.token_amount_paise),
     rateUsed: r.rate_used === null ? null : Number(r.rate_used),
@@ -124,6 +125,9 @@ export function toOrder(r) {
     // worker and every screen branches on this: after a switch both rails run
     // side by side until the last pre-flip order settles.
     paymentMode: r.payment_mode,
+    // The team serving it, and what a buy holds in that team's pool (Step 2c).
+    teamId: r.team_id ?? null,
+    poolHeldPaise: Number(r.pool_held_paise ?? 0),
     // On a USDT order, the chain the PLAYER chose to pay on. Fixed at creation:
     // the merchant snapshot carries the address for this chain and nothing
     // else, and a chain that moved after assignment would point a player at an

@@ -213,6 +213,9 @@ function rowToOrder(row) {
     // side after a switch, until the last pre-flip order settles.
     paymentMode: row.payment_mode,
     paymentModeVersion: row.payment_mode_version === null ? null : Number(row.payment_mode_version),
+    // The team serving it, and what a buy holds in that team's pool (Step 2c).
+    teamId: row.team_id ?? null,
+    poolHeldPaise: toPaise(row.pool_held_paise ?? 0),
     createdAt:  row.created_at,
     updatedAt:  row.updated_at,
   };
@@ -278,6 +281,11 @@ async function withOrderLock(orderId, fn) {
  */
 export async function transition({
   orderId, to, actor = null, reason = null, merchantId = null, txId = null,
+  // Work that must commit WITH the move or not at all — a team pool hold on
+  // assignment (Step 2c). Called with the transaction's client and the moved
+  // row, after the transition is recorded. A throw unwinds the move with it;
+  // the caller sees the throw, never a half-applied assignment.
+  within = null,
 }) {
   if (!ORDER_STATES[to]) {
     throw new Error(`Unknown order state '${to}'. Known: ${Object.keys(ORDER_STATES).join(', ')}`);
@@ -392,9 +400,12 @@ export async function transition({
       );
     }
 
+    let movedOrder = rowToOrder(moved.rows[0]);
+    if (within) movedOrder = (await within(client, movedOrder)) ?? movedOrder;
+
     return {
       commit: true,
-      value: { ok: true, idempotent: false, order: rowToOrder(moved.rows[0]), ledgerKey },
+      value: { ok: true, idempotent: false, order: movedOrder, ledgerKey },
     };
   });
 }

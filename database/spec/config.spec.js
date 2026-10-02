@@ -258,6 +258,34 @@ export const SYSTEM_CONFIG_SPEC = group({
     minAdminTokenPurchaseUsdt: n(100, 100),
     maxAdminTokenPurchaseUsdt: n(0, 0),      // 0 = unlimited
   }),
+  // ── Team routing (redesign Step 2c) ─────────────────────────────────────
+  // An order goes to a TEAM member on the rail its amount and currency put it
+  // on. These were the payment-mode policy's columns; there is no rail switch
+  // any more, so each rail carries its own. Defaults equal that table's column
+  // defaults (schema.sql, payment_mode_policies) so nothing moves on the day
+  // the policy is deleted. Read through `railSettings` in
+  // database/repositories/teamRouting.js — never off this document directly.
+  teamRouting: group({
+    // How many open orders ONE member may hold at a time on each rail. CASH is
+    // 1: the notes a member is holding at the machine are the same notes.
+    concurrency: group({
+      CASH:     n(1, 1, 10),
+      UPI_BANK: n(3, 1, 20),
+      USDT:     n(3, 1, 20),
+    }),
+    // Seconds. A queued order nobody could take expires after assignmentWait;
+    // an assigned order after processingWindow; a cash player's reference is
+    // due utrSubmit after they tap Paid; disputeWindow is how long a player
+    // may dispute after the deadline.
+    assignmentWaitSeconds:   n(1500, 60, 86400),
+    processingWindowSeconds: group({
+      CASH:     n(900, 60, 7200),
+      UPI_BANK: n(900, 60, 7200),
+      USDT:     n(900, 60, 7200),
+    }),
+    utrSubmitSeconds:      n(60, 15, 3600),
+    disputeWindowSeconds:  n(1800, 60, 86400),
+  }),
 
   riskRules: group({
     enforceMultiplesOf10:     b(true),

@@ -4370,7 +4370,8 @@ CREATE TABLE IF NOT EXISTS team_pool_entries (
   ref_id                TEXT,
   note                  TEXT,
   created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
-  CONSTRAINT team_pool_entries_kind_known CHECK (kind IN ('ADMIN_SALE', 'ADMIN_BUYBACK')),
+  CONSTRAINT team_pool_entries_kind_known CHECK (kind IN (
+    'ADMIN_SALE', 'ADMIN_BUYBACK', 'BUY_HOLD', 'BUY_RELEASE', 'BUY_PAID', 'SELL_SETTLED', 'SELL_REVERSED')),
   CONSTRAINT team_pool_entries_moves CHECK (available_delta_paise <> 0 OR held_delta_paise <> 0)
 );
 CREATE INDEX IF NOT EXISTS team_pool_entries_team_idx ON team_pool_entries (team_id, created_at DESC, id DESC);
@@ -4405,3 +4406,34 @@ CREATE INDEX IF NOT EXISTS team_pool_requests_status_idx ON team_pool_requests (
 -- What the platform got, or paid, for a pool trade lives in the same table as
 -- a merchant's: `merchant_id` is the supervisor who traded, `team_id` the pool.
 ALTER TABLE admin_token_considerations ADD COLUMN IF NOT EXISTS team_id TEXT;
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- TEAM ROUTING (redesign Step 2c, PROJECT_STATUS §3.10)
+--
+-- An order is served by a MEMBER of a TEAM, and a buy's tokens are HELD in
+-- the team's pool while it is open. The order row carries which team and how
+-- much it holds: `pool_held_paise` is the guard every hold, release and spend
+-- writes in its own WHERE, so a hold is taken once and ended once (S6).
+-- ═══════════════════════════════════════════════════════════════════════════
+
+-- The kind list grew (S31: a CHECK whose definition moves is dropped and re-added).
+ALTER TABLE team_pool_entries DROP CONSTRAINT IF EXISTS team_pool_entries_kind_known;
+ALTER TABLE team_pool_entries ADD CONSTRAINT team_pool_entries_kind_known CHECK (kind IN (
+  'ADMIN_SALE', 'ADMIN_BUYBACK', 'BUY_HOLD', 'BUY_RELEASE', 'BUY_PAID', 'SELL_SETTLED', 'SELL_REVERSED'));
+-- An order's pool movements name the order; an admin trade names its request.
+CREATE INDEX IF NOT EXISTS team_pool_entries_ref_idx ON team_pool_entries (ref_id);
+
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS team_id TEXT;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS pool_held_paise BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE order_states DROP CONSTRAINT IF EXISTS order_states_pool_held_nonneg;
+ALTER TABLE order_states ADD CONSTRAINT order_states_pool_held_nonneg CHECK (pool_held_paise >= 0);
+-- A hold names the team it is held in.
+ALTER TABLE order_states DROP CONSTRAINT IF EXISTS order_states_pool_hold_has_team;
+ALTER TABLE order_states ADD CONSTRAINT order_states_pool_hold_has_team CHECK (pool_held_paise = 0 OR team_id IS NOT NULL);
+CREATE INDEX IF NOT EXISTS order_states_team_open_idx ON order_states (team_id)
+  WHERE state IN ('ASSIGNED', 'PROCESSING', 'PAID', 'DISPUTED');
+
+-- Ready: a CASH member at the machine. Cleared by the assignment it attracts.
+ALTER TABLE merchants ADD COLUMN IF NOT EXISTS cash_ready BOOLEAN NOT NULL DEFAULT FALSE;
+-- Ties in routing go to whoever was assigned least recently.
+ALTER TABLE merchants ADD COLUMN IF NOT EXISTS last_assigned_at TIMESTAMPTZ;

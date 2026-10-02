@@ -93,12 +93,12 @@ async function keyForRepeatableMove(orderId, to, txId) {
  * cutover and no second store: an order without a row does not exist, and
  * saying so is the correct answer rather than conjuring one.
  */
-export async function transitionOrder(orderId, to, { set = {}, expectFrom = null, actor = null, reason = null, txId = null } = {}) {
+export async function transitionOrder(orderId, to, { set = {}, expectFrom = null, actor = null, reason = null, txId = null, within = null } = {}) {
   const key = await keyForRepeatableMove(orderId, to, txId);
   const result = await pgTransition({
     orderId: String(orderId), to, actor, reason,
     merchantId: set.merchantId ? String(set.merchantId) : null,
-    txId: key,
+    txId: key, within,
   });
 
   if (!result.ok) {

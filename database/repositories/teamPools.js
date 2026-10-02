@@ -278,3 +278,255 @@ async function fulfilWithin(client, { requestId, actor, consideration, movementI
 
   return { ok: true, teamId, pool: toPool(teamId, pool[0]), consideration: recorded };
 }
+
+// ── Orders against the pool (Step 2c) ────────────────────────────────────────
+//
+// A BUY's tokens are HELD in the team's pool from the moment the order is
+// assigned until it ends: spent when the merchant confirms the player paid,
+// released back to `available` on any other ending. A SELL holds nothing; its
+// tokens join the pool when it settles.
+//
+// The order row is the guard. `order_states.pool_held_paise` is what this
+// order holds, and every hold, release and spend writes it in its own WHERE
+// under the order's row lock — so a hold is taken once and ended once, however
+// many paths race to end it (S6). Every movement leaves a `team_pool_entries`
+// row naming the order (`ref_id`).
+
+const entryTx = (kind, orderId) => `pool_${kind.toLowerCase()}_${orderId}_${randomBytes(6).toString('hex')}`;
+
+async function writeEntry(client, { txId, teamId, kind, availableDelta, heldDelta, pool, actor, refId, note = null }) {
+  await client.query(
+    `INSERT INTO team_pool_entries
+       (tx_id, team_id, kind, available_delta_paise, held_delta_paise,
+        available_after_paise, held_after_paise, actor, ref_id, note)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+    [txId, teamId, kind, availableDelta, heldDelta,
+      toNum(pool.available_paise), toNum(pool.held_paise), String(actor ?? 'system'), String(refId), note]);
+}
+
+/**
+ * Hold a buy's tokens in its team's pool, INSIDE the caller's transaction —
+ * the one that assigns the order (teamRouting.js). Throws `Refused` when the
+ * pool cannot cover it or the order already holds something; the caller's
+ * transaction unwinds with it, so an order is never assigned unheld.
+ */
+export async function holdForBuyWithin(client, { orderId, teamId, amountPaise, actor = 'assignment' }) {
+  const amount = toNum(amountPaise);
+  if (!Number.isInteger(amount) || amount <= 0) throw new TypeError(`holdForBuyWithin: bad amount ${amountPaise}`);
+  await client.query('INSERT INTO team_pools (team_id) VALUES ($1) ON CONFLICT (team_id) DO NOTHING', [teamId]);
+  const { rows: pool } = await client.query(
+    `UPDATE team_pools
+        SET available_paise = available_paise - $2, held_paise = held_paise + $2, updated_at = now()
+      WHERE team_id = $1 AND available_paise >= $2
+      RETURNING available_paise, held_paise`, [teamId, amount]);
+  if (!pool[0]) throw new Refused('pool_short');
+  const { rowCount } = await client.query(
+    `UPDATE order_states SET team_id = $2, pool_held_paise = $3
+      WHERE order_id = $1 AND pool_held_paise = 0`, [String(orderId), teamId, amount]);
+  if (!rowCount) throw new Refused('already_held');
+  await writeEntry(client, {
+    txId: entryTx('BUY_HOLD', orderId), teamId, kind: 'BUY_HOLD',
+    availableDelta: -amount, heldDelta: amount, pool: pool[0], actor, refId: orderId,
+  });
+}
+
+/** Throws are how a caller's transaction learns "refused"; re-exported for teamRouting.js. */
+export { Refused as PoolRefused };
+
+/**
+ * End a buy's hold WITHOUT spending it — the order was cancelled, expired,
+ * refused or put back in the queue. The tokens go back to `available`.
+ * A no-op on an order that holds nothing, so every ending path may call it.
+ */
+export async function releaseBuyHold(orderId, { actor = 'system', reason = null } = {}) {
+  return withTransaction(async (client) => {
+    const { rows } = await client.query(
+      `UPDATE order_states o SET pool_held_paise = 0
+         FROM (SELECT order_id, team_id, pool_held_paise FROM order_states
+                WHERE order_id = $1 AND pool_held_paise > 0 FOR UPDATE) prev
+        WHERE o.order_id = prev.order_id
+        RETURNING prev.team_id, prev.pool_held_paise`, [String(orderId)]);
+    if (!rows[0]) return { ok: true, releasedPaise: 0 };
+    const teamId = rows[0].team_id;
+    const amount = toNum(rows[0].pool_held_paise);
+    const { rows: pool } = await client.query(
+      `UPDATE team_pools
+          SET held_paise = held_paise - $2, available_paise = available_paise + $2, updated_at = now()
+        WHERE team_id = $1 RETURNING available_paise, held_paise`, [teamId, amount]);
+    await writeEntry(client, {
+      txId: entryTx('BUY_RELEASE', orderId), teamId, kind: 'BUY_RELEASE',
+      availableDelta: amount, heldDelta: -amount, pool: pool[0], actor, refId: orderId,
+      note: reason ? String(reason).slice(0, 200) : null,
+    });
+    return { ok: true, releasedPaise: amount, teamId };
+  });
+}
+
+/**
+ * The merchant's side of a completed BUY: the held tokens leave the pool for
+ * the player. Spends the hold when there is one; when the hold was already
+ * released (a dispute resolved in the player's favour after expiry) it takes
+ * the tokens from `available`, refused by the UPDATE's WHERE if the pool is
+ * short. Once per order: a BUY_PAID entry for this order means it is done.
+ *
+ * Returns { ok, taken: 'hold' | 'available' } or { ok, alreadyTaken },
+ * or { ok: false, reason: 'no_team' | 'pool_short' } with nothing moved.
+ */
+export async function spendForBuy(orderId, { actor = 'system' } = {}) {
+  const oid = String(orderId);
+  try {
+    return await withTransaction(async (client) => {
+      const { rows: o } = await client.query(
+        `SELECT team_id, pool_held_paise, token_amount_paise FROM order_states WHERE order_id = $1 FOR UPDATE`, [oid]);
+      if (!o[0]) throw new Refused('not_found');
+      const { rows: done } = await client.query(
+        `SELECT 1 FROM team_pool_entries WHERE ref_id = $1 AND kind = 'BUY_PAID' LIMIT 1`, [oid]);
+      if (done[0]) return { ok: true, alreadyTaken: true };
+      const teamId = o[0].team_id;
+      if (!teamId) throw new Refused('no_team');
+      const amount = toNum(o[0].token_amount_paise);
+      const held = toNum(o[0].pool_held_paise);
+
+      let pool; let taken;
+      if (held > 0) {
+        await client.query('UPDATE order_states SET pool_held_paise = 0 WHERE order_id = $1', [oid]);
+        ({ rows: pool } = await client.query(
+          `UPDATE team_pools SET held_paise = held_paise - $2, updated_at = now()
+            WHERE team_id = $1 RETURNING available_paise, held_paise`, [teamId, held]));
+        taken = 'hold';
+        // A hold is always the whole order; anything else is a defect worth refusing loudly.
+        if (held !== amount) throw new Error(`spendForBuy: order ${oid} holds ${held}, owes ${amount}`);
+        await writeEntry(client, {
+          txId: `pool_buy_paid_${oid}`, teamId, kind: 'BUY_PAID',
+          availableDelta: 0, heldDelta: -amount, pool: pool[0], actor, refId: oid,
+        });
+      } else {
+        ({ rows: pool } = await client.query(
+          `UPDATE team_pools SET available_paise = available_paise - $2, updated_at = now()
+            WHERE team_id = $1 AND available_paise >= $2 RETURNING available_paise, held_paise`, [teamId, amount]));
+        if (!pool[0]) throw new Refused('pool_short');
+        taken = 'available';
+        await writeEntry(client, {
+          txId: `pool_buy_paid_${oid}`, teamId, kind: 'BUY_PAID',
+          availableDelta: -amount, heldDelta: 0, pool: pool[0], actor, refId: oid,
+        });
+      }
+      const moved = await postMovement({
+        client, movementId: `team_buy_${oid}`, operation: 'TEAM_BUY_PAID',
+        legs: { [ACCOUNTS.TEAM_FLOAT]: -amount, [ACCOUNTS.USER_FLOAT]: amount },
+        actor: String(actor), refModel: 'PaymentOrder', refId: oid, reason: 'Team pool paid a player buy',
+      });
+      if (!moved.ok) throw new Refused(moved.reason);
+      return { ok: true, taken, teamId };
+    });
+  } catch (e) {
+    if (e instanceof Refused) return { ok: false, reason: e.reason };
+    throw e;
+  }
+}
+
+/**
+ * A SELL has settled: the player's tokens join the team's pool. Once per
+ * order — the entry's tx_id is the order's, so a replay is a no-op.
+ */
+export async function creditSellToPool(orderId, { actor = 'system' } = {}) {
+  const oid = String(orderId);
+  try {
+    return await withTransaction(async (client) => {
+      const { rows: o } = await client.query(
+        `SELECT team_id, token_amount_paise, order_type FROM order_states WHERE order_id = $1 FOR UPDATE`, [oid]);
+      if (!o[0]) throw new Refused('not_found');
+      if (o[0].order_type !== 'WITHDRAWAL') throw new Refused('not_a_sell');
+      const teamId = o[0].team_id;
+      if (!teamId) throw new Refused('no_team');
+      const amount = toNum(o[0].token_amount_paise);
+      const { rows: done } = await client.query(
+        `SELECT 1 FROM team_pool_entries WHERE tx_id = $1`, [`pool_sell_${oid}`]);
+      if (done[0]) return { ok: true, alreadyCredited: true };
+      await client.query('INSERT INTO team_pools (team_id) VALUES ($1) ON CONFLICT (team_id) DO NOTHING', [teamId]);
+      const { rows: pool } = await client.query(
+        `UPDATE team_pools SET available_paise = available_paise + $2, updated_at = now()
+          WHERE team_id = $1 RETURNING available_paise, held_paise`, [teamId, amount]);
+      await writeEntry(client, {
+        txId: `pool_sell_${oid}`, teamId, kind: 'SELL_SETTLED',
+        availableDelta: amount, heldDelta: 0, pool: pool[0], actor, refId: oid,
+      });
+      const moved = await postMovement({
+        client, movementId: `team_sell_${oid}`, operation: 'TEAM_SELL_SETTLED',
+        legs: { [ACCOUNTS.USER_FLOAT]: -amount, [ACCOUNTS.TEAM_FLOAT]: amount },
+        actor: String(actor), refModel: 'PaymentOrder', refId: oid, reason: 'Player sell settled into a team pool',
+      });
+      if (!moved.ok) throw new Refused(moved.reason);
+      return { ok: true, teamId };
+    });
+  } catch (e) {
+    if (e instanceof Refused) return { ok: false, reason: e.reason };
+    throw e;
+  }
+}
+
+/**
+ * Undo a settled SELL — an admin refunded it after the tokens reached the
+ * pool. Takes them back out of `available`; refused by the UPDATE's WHERE if
+ * the team has already used them. Once per order.
+ */
+export async function reverseSellFromPool(orderId, { actor = 'system', reason = null } = {}) {
+  const oid = String(orderId);
+  try {
+    return await withTransaction(async (client) => {
+      const { rows: o } = await client.query(
+        `SELECT team_id, token_amount_paise FROM order_states WHERE order_id = $1 FOR UPDATE`, [oid]);
+      if (!o[0]) throw new Refused('not_found');
+      const { rows: settled } = await client.query(
+        `SELECT 1 FROM team_pool_entries WHERE tx_id = $1`, [`pool_sell_${oid}`]);
+      if (!settled[0]) throw new Refused('not_settled');
+      const { rows: done } = await client.query(
+        `SELECT 1 FROM team_pool_entries WHERE tx_id = $1`, [`pool_sellrev_${oid}`]);
+      if (done[0]) return { ok: true, alreadyReversed: true };
+      const teamId = o[0].team_id;
+      const amount = toNum(o[0].token_amount_paise);
+      const { rows: pool } = await client.query(
+        `UPDATE team_pools SET available_paise = available_paise - $2, updated_at = now()
+          WHERE team_id = $1 AND available_paise >= $2 RETURNING available_paise, held_paise`, [teamId, amount]);
+      if (!pool[0]) throw new Refused('pool_short');
+      await writeEntry(client, {
+        txId: `pool_sellrev_${oid}`, teamId, kind: 'SELL_REVERSED',
+        availableDelta: -amount, heldDelta: 0, pool: pool[0], actor, refId: oid,
+        note: reason ? String(reason).slice(0, 200) : null,
+      });
+      const moved = await postMovement({
+        client, movementId: `team_sell_rev_${oid}`, operation: 'TEAM_SELL_REVERSED',
+        legs: { [ACCOUNTS.TEAM_FLOAT]: -amount, [ACCOUNTS.USER_FLOAT]: amount },
+        actor: String(actor), refModel: 'PaymentOrder', refId: oid, reason: reason || 'Settled sell reversed',
+      });
+      if (!moved.ok) throw new Refused(moved.reason);
+      return { ok: true, teamId };
+    });
+  } catch (e) {
+    if (e instanceof Refused) return { ok: false, reason: e.reason };
+    throw e;
+  }
+}
+
+/**
+ * Holds whose order has ended without spending them — a path that forgot to
+ * release. Released by the sweep; the list is the evidence of which path
+ * forgot. A COMPLETED buy still holding is NOT here: its player was credited
+ * and the hold is owed to them, so releasing it would hand the tokens back
+ * to the team. `findCompletedUnspentBuys` reports those for a person.
+ */
+export async function findStrandedBuyHolds({ limit = 200 } = {}) {
+  const { rows } = await pgQuery(
+    `SELECT order_id, team_id, pool_held_paise, state FROM order_states
+      WHERE pool_held_paise > 0 AND state IN ('CANCELLED', 'FAILED', 'REJECTED', 'PENDING_QUEUE')
+      LIMIT $1`, [limit], 'team_pool_stranded_holds');
+  return rows.map((r) => ({ orderId: r.order_id, teamId: r.team_id, heldPaise: toNum(r.pool_held_paise), state: r.state }));
+}
+
+/** COMPLETED buys whose hold was never spent — reported, never auto-fixed. */
+export async function findCompletedUnspentBuys({ limit = 200 } = {}) {
+  const { rows } = await pgQuery(
+    `SELECT order_id, team_id, pool_held_paise FROM order_states
+      WHERE pool_held_paise > 0 AND state = 'COMPLETED' LIMIT $1`, [limit], 'team_pool_unspent_completed');
+  return rows.map((r) => ({ orderId: r.order_id, teamId: r.team_id, heldPaise: toNum(r.pool_held_paise) }));
+}
