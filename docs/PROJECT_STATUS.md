@@ -573,7 +573,7 @@ account has no self-service path until the Mini App (Step 3).
 - The only identity check is the Telegram contact share (Step 3).
 
 ### Step 2 — Replace the payment system with supervisors and teams
-Owner answers, 2026-10-02:
+Owner answers, 2026-10-02 (two rounds; the second replaced the security deposit with a team token pool and made commission instant):
 
 | Topic | Decision |
 |---|---|
@@ -581,13 +581,50 @@ Owner answers, 2026-10-02:
 | Team size | Up to 4 teams per supervisor, exactly 10 members each. A team works only with 10. If it drops below 10 it keeps working until the end of that day (IST), then takes no new orders until it is back to 10; open orders always finish. |
 | Rail | Each supervisor is approved for ONE rail: `CASH` (cash link), `UPI_BANK` (UPI link / bank account) or `USDT`. This **replaces the platform-wide payment-mode switch** (`payment_mode_policies`) and the gateway settings, which are deleted. |
 | Denominations | Global, admin-editable list of which sizes are on offer, from 500, 1,000, 5,000, 10,000, 50,000, 100,000, 500,000 tokens. CASH serves 500 / 1,000 / 5,000 / 10,000; UPI_BANK serves 50,000 / 100,000 / 500,000 — the same sizes for buys and sells. One size per order; **no splitting** (the CDM split and CDM receipts go). Cash sells may be paid by UPI or any means. |
-| USDT | Buy only. Multiples of 100 USDT, minimum 100, maximum 10,000 (default; confirm). Token↔USDT rate admin-editable. No USDT sells. |
-| Security deposit | Paid by the supervisor OFF-platform; the admin records it. The per-member amount is admin-editable per supervisor (default 2,500). A team's ceiling = members × amount (10 × 2,500 = 25,000): the total value of the team's OPEN orders may never exceed it, enforced in the database statement that reserves capacity (§32 S6), not by a read. |
-| Tokens | Merchants hold NO token inventory. On a confirmed buy the PLATFORM's holding credits the player; on a sell the player's tokens return to the platform. The UTR registry, the order lifecycle, disputes and the conservation invariant stay; the per-merchant token escrow becomes the team-capacity reservation. |
+| USDT | Buy only. Multiples of 100 USDT, minimum 100, maximum 10,000 (admin-editable; owner confirmed). Token↔USDT rate admin-editable. No USDT sells. |
+| ~~Security deposit~~ → **Team token pool** | **Revised by the owner, 2026-10-02 (second round).** There is no security deposit. Each TEAM has a token POOL. The supervisor BUYS tokens from the admin on the team's behalf (paid off-platform in INR or USDT, recorded by the admin with what was paid), and the team can only take orders its pool can cover: a buy HOLDS its tokens in the pool at assignment, in the statement that assigns it (§32 S6). The supervisor can SELL pool tokens back to the admin to cash out, which shrinks what the team can take on. |
+| Tokens | Individual merchants hold NO tokens; the team pool does. A confirmed buy moves the held tokens from the pool to the player; a completed sell moves the player's tokens into the pool. Conservation becomes platform holding + every team pool + every player wallet = total. The UTR registry, the order lifecycle and disputes stay. |
 | Routing | Auto-assign inside the team: an eligible online member with the fewest open orders, ties to the one assigned least recently. CASH buys additionally need the member to press **Ready** (they are at the ATM); it switches itself off when an order is assigned. Concurrency per member: CASH 1 at a time, UPI_BANK 3, USDT admin-editable — all admin-editable. A CASH member with an open buy is not given a sell until it is done; UPI_BANK and USDT members may be. |
-| Bonus | 10% of the team's matched cycle volume, min(completed buys, completed sells), from the platform pool, paid once per volume (high-water mark). 16% to the supervisor, 84% split equally among the members. Replaces the per-variety commission engine. |
+| Commission | **Instant** (owner, second round). Matched volume = min(completed buys, completed sells) for the TEAM. Every time it rises above the team's high-water mark — even by 500 — 10% of the rise is credited as TOKENS into the team's pool from the platform's commission pool, once per volume (the mark is the idempotency key). The 16% supervisor / 84% members-equally split is kept as an ATTRIBUTION record so each person sees what they earned; the tokens themselves sit in the pool. Replaces the per-variety commission engine. |
 | Red flag | Computed daily: a member whose transaction count and active time are below the team average by the threshold (admin-editable, default 25%) is flagged to the supervisor and admin. Flag only — the supervisor decides. |
 | Visibility | Members see their team's performance. The supervisor sees and manages members, sees all their transaction logs, and talks to the dispute manager on members' behalf. |
+
+**Also decided (second round):**
+- **Cash link by QR.** For a CASH buy the member, at the ATM, scans the machine's
+  QR with a scanner built into the order screen. The decoded link (amount
+  pre-filled) is attached to the order, and the player sees a single
+  "Pay ₹amount" button. The pre-supplied cash-link queue is deleted.
+
+**Defaults I took, for the owner to change:**
+- One pool PER TEAM (not one per supervisor).
+- A team's open orders of BOTH directions count against nothing but the pool:
+  a buy holds pool tokens; a sell holds none (it adds tokens when it completes).
+
+**Build order — each batch tested, committed, pushed and reported:**
+- **2a Teams.** `teams`, `team_members`, supervisor role + rail on the merchant;
+  caps (4 teams, 10 members, one team per member) enforced in the statements;
+  admin designates supervisors and approves members; supervisor manages teams
+  on the merchant panel; members see their team. No money, no orders.
+- **2b Team pool.** `team_pools` + entries ledger, one owner service; the admin
+  sells tokens to a pool and buys them back, with what was paid recorded;
+  supervisor requests both from the merchant panel; treasury `TEAM_FLOAT`.
+- **2c The switch.** Orders route to teams: fewest open orders, ties to least
+  recently assigned; Ready for CASH buys; per-rail concurrency (CASH 1, UPI 3,
+  USDT editable); no sell to a CASH member with an open buy; the end-of-day
+  below-10 rule; buys hold pool tokens at assignment. DELETE the per-merchant
+  wallet, escrow, scoring/ranking, cash-link queue, payment-mode policy,
+  gateway settings, merchant token orders and fund/deduct.
+- **2d Orders.** Global admin-editable denomination list; CASH 500–10,000 and
+  UPI_BANK 50,000–500,000 for both directions; no splitting (split payouts and
+  CDM receipts deleted); USDT 100–10,000 step 100; the QR cash link.
+- **2e Commission.** Instant, per-team high-water mark, 10% into the pool,
+  16/84 attribution. DELETE the per-variety engine.
+- **2f Oversight.** Daily red flag (threshold admin-editable, 25%) from
+  transaction count and online time; member online-time log; team
+  performance for members; supervisor sees member logs and joins their
+  disputes.
+- **2g Close-out.** CLAUDE.md §2/§25/§26 rewritten for the new owners, docs,
+  every gate and tier.
 
 ### Step 3 — Telegram Mini App replaces every bot, all three panels
 - One bot per panel, which sends no messages; the Mini App does contact
