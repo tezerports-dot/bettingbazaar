@@ -553,7 +553,7 @@ Measured on the commit that adds items 18–19: unit 920/920; pg 1736/1736 (133 
 
 Measured on the commit that adds items 11–17: unit 920/920; pg 1719/1719 (130 files); admin panel 155, merchant 73, user 224, tsc clean on all three; e2e 183 checks, 178 pass, 0 fail, 5 notes (each says what a dev server cannot measure), then s8 alone with the door probes 64/61/0/3; all 17 gates exit 0; `audit:map --check` matches after regeneration (308 routes, 35 unauthenticated). Mutation: M225, M243, M254–M263 KILLED. Not run: the browser tiers after the door change, the full mutation run, and an independent review (§37 step 12).
 
-## 3.10 Plan — the redesign (owner, 2026-10-02). Step 1 DONE; Steps 2–3 NOT STARTED.
+## 3.10 Plan — the redesign (owner, 2026-10-02). Step 1 DONE; Step 2 IN PROGRESS (2a, 2b done); Step 3 NOT STARTED.
 
 Three replacements, built in this order, each step tested, committed, and
 reported to the owner in a short update every 5–10 fixes.
@@ -605,9 +605,20 @@ Owner answers, 2026-10-02 (two rounds; the second replaced the security deposit 
   caps (4 teams, 10 members, one team per member) enforced in the statements;
   admin designates supervisors and approves members; supervisor manages teams
   on the merchant panel; members see their team. No money, no orders.
-- **2b Team pool.** `team_pools` + entries ledger, one owner service; the admin
-  sells tokens to a pool and buys them back, with what was paid recorded;
-  supervisor requests both from the merchant panel; treasury `TEAM_FLOAT`.
+- **2b Team pool — DONE 2026-10-02.** `team_pools` (available + held) and the
+  append-only `team_pool_entries` ledger, written only by
+  `database/repositories/teamPools.js`. A supervisor REQUESTS a buy or a
+  buyback per team from the merchant Team page (`team_pool_requests`, one
+  pending per direction per team); an admin holding `canFundMerchants`
+  fulfils it from the Teams page after the money has moved, typing what was
+  received (INR or USDT, a sale) or paid (INR only, a buyback). Fulfilment is
+  ONE transaction: the status flip is the once-only guard, the buyback floor
+  is the pool UPDATE's own WHERE, the treasury moves TOKEN_SUPPLY↔`TEAM_FLOAT`,
+  and the `admin_token_considerations` row (now with `team_id`) records the
+  payment. Reconciliation checks TEAM_FLOAT = Σ pools. A team with pool
+  history cannot be deleted. `held_paise` exists for 2c and nothing writes it
+  yet. **Default taken:** no admin-side "sell without a request" — every pool
+  movement starts as the supervisor's request, so both sides see one record.
 - **2c The switch.** Orders route to teams: fewest open orders, ties to least
   recently assigned; Ready for CASH buys; per-rail concurrency (CASH 1, UPI 3,
   USDT editable); no sell to a CASH member with an open buy; the end-of-day

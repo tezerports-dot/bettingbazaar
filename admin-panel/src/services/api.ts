@@ -14,7 +14,7 @@ import type {
   CDNImage,
   FAQ,
   SupportLinks,
-  SupervisorRail, TeamSupervisor, TeamView, TeamMemberView,
+  SupervisorRail, TeamSupervisor, TeamView, TeamMemberView, TeamPoolRequest,
 } from '../types';
 
 const _adminViteUrl = import.meta.env.VITE_API_URL as string | undefined;
@@ -847,6 +847,17 @@ export const teams = {
     (await api.post(`/api/admin/team-members/${merchantId}/reject`)).data,
   removeMember: async (merchantId: string) =>
     (await api.delete(`/api/admin/team-members/${merchantId}`)).data,
+
+  // Team token pools (Step 2b) — area canFundMerchants, because they move money.
+  poolRequests: async (status: 'PENDING' | null = 'PENDING') => {
+    const res = await api.get<any>('/api/admin/team-pool-requests', { params: status ? { status } : {} });
+    return res.data as { success: boolean; requests: TeamPoolRequest[] };
+  },
+  /** settlementAmount is in the MAJOR unit (rupees or whole USDT); 0 means no money changed hands. */
+  fulfilPoolRequest: async (requestId: string, body: { settlementCurrency: 'INR' | 'USDT'; settlementAmount: number }) =>
+    (await api.post(`/api/admin/team-pool-requests/${requestId}/fulfil`, body)).data as { success: boolean; message: string },
+  rejectPoolRequest: async (requestId: string, reason: string) =>
+    (await api.post(`/api/admin/team-pool-requests/${requestId}/reject`, { reason })).data,
 };
 
 export const referrals = {

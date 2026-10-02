@@ -5,7 +5,9 @@
 //
 // One screen, three readers, decided by the server (GET /api/merchant/team):
 //   SUPERVISOR — up to 4 teams of exactly 10; create, rename, delete an empty
-//                team, propose members by their merchant ID, remove members.
+//                team, propose members by their merchant ID, remove members,
+//                and buy tokens into each team's pool or sell them back
+//                (Step 2b) — an admin fulfils once the money has moved.
 //   MEMBER     — the team they are in, whether an admin has approved them yet,
 //                and whether the team is working.
 //   NONE       — not in a team; shows the ID to hand to a supervisor.
@@ -17,8 +19,9 @@ import toast from 'react-hot-toast';
 import { RefreshCw, Users } from 'lucide-react';
 import {
   getMyTeam, createTeam, renameTeam, deleteTeam, addTeamMember, removeTeamMember,
+  getTeamPool, requestTeamPool, cancelTeamPoolRequest,
 } from '../services/api';
-import type { MyTeam, Team, TeamMember } from '../types';
+import type { MyTeam, PoolDirection, Team, TeamMember, TeamPoolEntry, TeamPoolRequest } from '../types';
 import { Banner, Button, Card, CardTitle, CopyRow, ErrorState, Skeleton, inputStyle } from '../components/ui';
 
 const STRENGTH: Record<Team['strength'], { label: string; tone: 'ok' | 'warn' | 'danger'; body: string }> = {
@@ -41,11 +44,119 @@ const StrengthTag: React.FC<{ team: Team }> = ({ team }) => {
   );
 };
 
+const tokens = (paise: number) => (paise / 100).toLocaleString('en-IN');
+const labelStyle: React.CSSProperties = { display: 'block', fontSize: 12, fontWeight: 700, color: 'var(--text-2)', marginBottom: 6 };
+
+/**
+ * A team's token pool: its balance, a request to buy or sell, the requests
+ * still waiting, and the pool's history on demand. Module level (§32 S23).
+ */
+const TeamPoolSection: React.FC<{
+  team: Team; requests: TeamPoolRequest[]; busy: string;
+  run: (key: string, fn: () => Promise<unknown>, ok: string) => Promise<void>;
+}> = ({ team, requests, busy, run }) => {
+  const [direction, setDirection] = useState<PoolDirection>('BUY');
+  const [amount, setAmount] = useState('');
+  const [note, setNote] = useState('');
+  const [history, setHistory] = useState<TeamPoolEntry[] | null>(null);
+  const [historyError, setHistoryError] = useState('');
+  const pending = requests.filter((r) => r.status === 'PENDING');
+  const decided = requests.filter((r) => r.status === 'REJECTED').slice(0, 3);
+  const whole = Number(amount);
+  const valid = Number.isInteger(whole) && whole > 0;
+
+  const showHistory = async () => {
+    try {
+      setHistory((await getTeamPool(team.teamId)).entries);
+      setHistoryError('');
+    } catch (err) {
+      setHistoryError(errorText(err, 'Could not load the pool history.'));
+    }
+  };
+
+  return (
+    <div style={{ borderTop: '1px solid var(--border)', paddingTop: 12, marginBottom: 12 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10 }}>
+        <span style={{ fontSize: 13, fontWeight: 800 }}>Token pool</span>
+        <span className="bb-mono" style={{ fontSize: 14, fontWeight: 800 }}>
+          {tokens(team.poolAvailablePaise)} tokens
+          {team.poolHeldPaise > 0 && <span style={{ fontSize: 11, color: 'var(--muted)' }}> · {tokens(team.poolHeldPaise)} held</span>}
+        </span>
+      </div>
+
+      {pending.map((r) => (
+        <Banner key={r.requestId} tone="warn" style={{ marginBottom: 8 }}>
+          {r.direction === 'BUY' ? 'Buying' : 'Selling back'} {tokens(r.tokenAmountPaise)} tokens — waiting for an admin.{' '}
+          <Button variant="ghost" tone="danger" disabled={!!busy}
+            onClick={() => void run(`pc-${r.requestId}`, () => cancelTeamPoolRequest(r.requestId), 'Request cancelled')}>
+            Cancel this request
+          </Button>
+        </Banner>
+      ))}
+      {decided.map((r) => (
+        <Banner key={r.requestId} tone="danger" style={{ marginBottom: 8 }}>
+          An admin turned down {r.direction === 'BUY' ? 'buying' : 'selling back'} {tokens(r.tokenAmountPaise)} tokens
+          {r.decisionNote ? `: ${r.decisionNote}` : '.'}
+        </Banner>
+      ))}
+
+      <form
+        style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (!valid) return;
+          void run(`pr-${team.teamId}`, async () => {
+            const message = await requestTeamPool(team.teamId, direction, whole, note.trim());
+            setAmount(''); setNote('');
+            return message;
+          }, direction === 'BUY' ? 'Requested. Pay the platform; an admin adds the tokens.' : 'Requested. An admin will pay you and take the tokens.');
+        }}
+      >
+        <div>
+          <label htmlFor={`pd-${team.teamId}`} style={labelStyle}>Request for {team.name}</label>
+          <select id={`pd-${team.teamId}`} value={direction} onChange={(e) => setDirection(e.target.value as PoolDirection)} style={inputStyle}>
+            <option value="BUY">Buy tokens</option>
+            <option value="SELL">Sell tokens back</option>
+          </select>
+        </div>
+        <div>
+          <label htmlFor={`pa-${team.teamId}`} style={labelStyle}>Tokens for {team.name}</label>
+          <input id={`pa-${team.teamId}`} inputMode="numeric" value={amount}
+            onChange={(e) => setAmount(e.target.value.replace(/[^0-9]/g, ''))} style={{ ...inputStyle, width: 130 }} />
+        </div>
+        <div style={{ flex: 1, minWidth: 140 }}>
+          <label htmlFor={`pn-${team.teamId}`} style={labelStyle}>Note for the admin (optional)</label>
+          <input id={`pn-${team.teamId}`} value={note} onChange={(e) => setNote(e.target.value)} style={inputStyle} maxLength={200} />
+        </div>
+        <Button type="submit" disabled={!valid || !!busy}>Send {team.name} request</Button>
+      </form>
+
+      <div style={{ marginTop: 10 }}>
+        {history === null ? (
+          <Button variant="ghost" tone="neutral" onClick={() => void showHistory()}>Show {team.name} pool history</Button>
+        ) : history.length === 0 ? (
+          <p style={{ fontSize: 12.5, color: 'var(--muted)' }}>Nothing has moved in this pool yet.</p>
+        ) : (
+          <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+            {history.map((h) => (
+              <li key={h.id} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5, padding: '4px 0' }}>
+                <span>{h.kind === 'ADMIN_SALE' ? 'Bought from the platform' : 'Sold back to the platform'} · {new Date(h.createdAt).toLocaleString('en-IN')}</span>
+                <span className="bb-mono">{h.availableDeltaPaise > 0 ? '+' : ''}{tokens(h.availableDeltaPaise)} → {tokens(h.availableAfterPaise)}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+        {historyError && <p role="alert" style={{ fontSize: 12.5, color: 'var(--danger)' }}>{historyError}</p>}
+      </div>
+    </div>
+  );
+};
+
 /** One team, as its supervisor manages it. Declared at module level so typing does not remount it (§32 S23). */
 const SupervisorTeamCard: React.FC<{
-  team: Team; members: TeamMember[]; busy: string;
+  team: Team; members: TeamMember[]; poolRequests: TeamPoolRequest[]; busy: string;
   run: (key: string, fn: () => Promise<unknown>, ok: string) => Promise<void>;
-}> = ({ team, members, busy, run }) => {
+}> = ({ team, members, poolRequests, busy, run }) => {
   const [ref, setRef] = useState('');
   const [name, setName] = useState(team.name);
   const inputId = `add-${team.teamId}`;
@@ -54,6 +165,7 @@ const SupervisorTeamCard: React.FC<{
     <Card style={{ marginBottom: 14 }}>
       <CardTitle title={team.name} sub={`${team.approvedCount} approved · ${team.pendingCount} waiting for an admin`} action={<StrengthTag team={team} />} />
       <Banner tone={STRENGTH[team.strength].tone} style={{ marginBottom: 12 }}>{STRENGTH[team.strength].body}</Banner>
+      <TeamPoolSection team={team} requests={poolRequests} busy={busy} run={run} />
 
       <ul style={{ listStyle: 'none', padding: 0, margin: '0 0 12px' }}>
         {members.length === 0 && <li style={{ fontSize: 12.5, color: 'var(--muted)' }}>No members yet.</li>}
@@ -208,7 +320,8 @@ const TeamPage: React.FC = () => {
       </Card>
       {data.teams.map((t) => (
         <SupervisorTeamCard key={t.teamId} team={t} busy={busy} run={run}
-          members={data.members.filter((m) => m.teamId === t.teamId)} />
+          members={data.members.filter((m) => m.teamId === t.teamId)}
+          poolRequests={(data.poolRequests ?? []).filter((r) => r.teamId === t.teamId)} />
       ))}
     </div>
   );

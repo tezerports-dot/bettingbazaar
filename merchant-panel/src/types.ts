@@ -482,12 +482,27 @@ export interface Team {
   teamId: string; supervisorId: string; supervisorName: string; supervisorRef: string;
   name: string; rail: SupervisorRail; approvedCount: number; pendingCount: number; size: number;
   strength: 'WORKING' | 'GRACE' | 'STOPPED'; shortSince: string | null; wasFull: boolean; createdAt: string;
+  /** The team's token pool, in paise (Step 2b). */
+  poolAvailablePaise: number; poolHeldPaise: number;
+}
+// Team token pools (Step 2b). Mirrors `toPool`, `toEntry`, `toRequest` and
+// POOL_DIRECTIONS in database/repositories/teamPools.js — §5.
+export type PoolDirection = 'BUY' | 'SELL';
+export interface TeamPool { teamId: string; availablePaise: number; heldPaise: number; totalPaise: number }
+export interface TeamPoolEntry {
+  id: number; kind: 'ADMIN_SALE' | 'ADMIN_BUYBACK'; availableDeltaPaise: number; heldDeltaPaise: number;
+  availableAfterPaise: number; heldAfterPaise: number; createdAt: string;
+}
+export interface TeamPoolRequest {
+  requestId: string; teamId: string; direction: PoolDirection; tokenAmountPaise: number;
+  status: 'PENDING' | 'FULFILLED' | 'REJECTED' | 'CANCELLED';
+  note: string | null; decisionNote: string | null; decidedAt: string | null; createdAt: string;
 }
 export interface TeamMember {
   merchantId: string; teamId: string; name: string; publicRef: string;
   status: 'PENDING' | 'APPROVED'; isOnline: boolean;
 }
 export type MyTeam =
-  | { role: 'SUPERVISOR'; rail: SupervisorRail; publicRef: string; teams: Team[]; members: TeamMember[] }
+  | { role: 'SUPERVISOR'; rail: SupervisorRail; publicRef: string; teams: Team[]; members: TeamMember[]; poolRequests: TeamPoolRequest[] }
   | { role: 'MEMBER'; publicRef: string; status: 'PENDING' | 'APPROVED'; team: Team }
   | { role: 'NONE'; publicRef: string };

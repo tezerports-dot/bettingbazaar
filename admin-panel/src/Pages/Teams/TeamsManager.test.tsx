@@ -10,13 +10,21 @@ const listing = {
   success: true,
   supervisors: [{ merchantId: 's-1', name: 'Sup One', publicRef: 'MSUP1', rail: 'UPI_BANK', isOnline: true }],
   teams: [{ teamId: 't-1', supervisorId: 's-1', supervisorName: 'Sup One', supervisorRef: 'MSUP1', name: 'Alpha',
-    rail: 'UPI_BANK', approvedCount: 1, pendingCount: 2, size: 10, strength: 'STOPPED', shortSince: null, wasFull: false, createdAt: '' }],
+    rail: 'UPI_BANK', approvedCount: 1, pendingCount: 2, size: 10, strength: 'STOPPED', shortSince: null, wasFull: false, createdAt: '',
+    poolAvailablePaise: 0, poolHeldPaise: 0 }],
   members: [
     { merchantId: 'm-1', teamId: 't-1', name: 'Asha', publicRef: 'MA', status: 'APPROVED', isOnline: false, addedBy: 's-1', addedAt: '', approvedBy: 'a', approvedAt: '' },
     { merchantId: 'm-2', teamId: 't-1', name: 'Bhanu', publicRef: 'MB', status: 'PENDING', isOnline: false, addedBy: 's-1', addedAt: '', approvedBy: null, approvedAt: null },
     { merchantId: 'm-3', teamId: 't-1', name: 'Chitra', publicRef: 'MC', status: 'PENDING', isOnline: false, addedBy: 's-1', addedAt: '', approvedBy: null, approvedAt: null },
   ],
 };
+
+const poolRequests = [
+  { requestId: 'pr-1', teamId: 't-1', teamName: 'Alpha', supervisorId: 's-1', supervisorName: 'Sup One', direction: 'BUY',
+    tokenAmountPaise: 150000, status: 'PENDING', note: null, decidedBy: null, decidedAt: null, decisionNote: null, createdAt: '' },
+  { requestId: 'pr-2', teamId: 't-2', teamName: 'Bravo', supervisorId: 's-1', supervisorName: 'Sup One', direction: 'SELL',
+    tokenAmountPaise: 40000, status: 'PENDING', note: null, decidedBy: null, decidedAt: null, decisionNote: null, createdAt: '' },
+];
 
 vi.mock('../../services/api', () => ({
   default: {
@@ -26,8 +34,15 @@ vi.mock('../../services/api', () => ({
       approveMember: vi.fn().mockResolvedValue({ success: true }),
       rejectMember: vi.fn().mockResolvedValue({ success: true }),
       removeMember: vi.fn().mockResolvedValue({ success: true }),
+      poolRequests: vi.fn(),
+      fulfilPoolRequest: vi.fn().mockResolvedValue({ success: true, message: 'Sold' }),
+      rejectPoolRequest: vi.fn().mockResolvedValue({ success: true }),
     },
   },
+}));
+const perms = { fund: true };
+vi.mock('../../hooks/usePermission', () => ({
+  usePermissions: () => ({ can: (k: string) => (k === 'canFundMerchants' ? perms.fund : true) }),
 }));
 vi.mock('react-hot-toast', () => ({ default: { success: vi.fn(), error: vi.fn() } }));
 
@@ -39,6 +54,48 @@ describe('admin Teams screen', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     (api.teams.list as any).mockResolvedValue(listing);
+    (api.teams.poolRequests as any).mockResolvedValue({ success: true, requests: poolRequests });
+    perms.fund = true;
+  });
+
+  // ── Team token pools (Step 2b) ───────────────────────────────────────────
+  it('fulfils the request on the row pressed, with the payment typed on THAT row', async () => {
+    render(<TeamsManager />);
+    const amount = await screen.findByLabelText('Platform paid');
+    fireEvent.change(amount, { target: { value: '390' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Buy 400 tokens back from Bravo' }));
+    await waitFor(() => expect(api.teams.fulfilPoolRequest).toHaveBeenCalledWith('pr-2', { settlementCurrency: 'INR', settlementAmount: 390 }));
+    expect(api.teams.fulfilPoolRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it('cannot fulfil with no payment typed, and a buyback offers rupees only', async () => {
+    render(<TeamsManager />);
+    expect(await screen.findByRole('button', { name: /Sell 1,500 tokens to Alpha/ })).toBeDisabled();
+    const sellCurrency = screen.getAllByLabelText('Currency')[1] as HTMLSelectElement;
+    expect([...sellCurrency.options].map((o) => o.value)).toEqual(['INR']);
+  });
+
+  it('shows the server\'s refusal verbatim', async () => {
+    (api.teams.fulfilPoolRequest as any).mockRejectedValueOnce({ response: { data: { message: 'The pool holds fewer tokens than that.' } } });
+    render(<TeamsManager />);
+    fireEvent.change(await screen.findByLabelText('Platform received'), { target: { value: '1500' } });
+    fireEvent.click(screen.getByRole('button', { name: /Sell 1,500 tokens to Alpha/ }));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('The pool holds fewer tokens than that.'));
+  });
+
+  it('rejects with the reason typed on the row', async () => {
+    render(<TeamsManager />);
+    fireEvent.change((await screen.findAllByLabelText('Reason (if rejecting)'))[0], { target: { value: 'No payment seen' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Reject request from Alpha' }));
+    await waitFor(() => expect(api.teams.rejectPoolRequest).toHaveBeenCalledWith('pr-1', 'No payment seen'));
+  });
+
+  it('staff without the money area never see, or load, the pool queue', async () => {
+    perms.fund = false;
+    render(<TeamsManager />);
+    await screen.findByRole('button', { name: 'Approve Chitra' });
+    expect(screen.queryByText('Team token requests')).toBeNull();
+    expect(api.teams.poolRequests).not.toHaveBeenCalled();
   });
 
   it('approves the member on the row pressed — the second pending row, not the first', async () => {

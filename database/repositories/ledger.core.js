@@ -542,7 +542,7 @@ export async function postingExport({ from = null, to = null, limit = 10000 } = 
 }
 
 export async function reconcileAgainstSubLedgers() {
-  const [ledger, wallets, merchants, treasury] = await Promise.all([
+  const [ledger, wallets, merchants, treasury, pools] = await Promise.all([
     trialBalance(),
     pgQuery(
       `SELECT COALESCE(SUM(deposit_paise + winnings_paise + reserve_paise + locked_paise), 0) AS total
@@ -552,6 +552,9 @@ export async function reconcileAgainstSubLedgers() {
          FROM merchant_wallets`, [], 'ledger_recon_merchants'),
     pgQuery(
       `SELECT account, balance_paise FROM treasury_accounts`, [], 'ledger_recon_treasury'),
+    pgQuery(
+      `SELECT COALESCE(SUM(available_paise + held_paise), 0) AS total
+         FROM team_pools`, [], 'ledger_recon_team_pools'),
   ]);
 
   const treasuryBy = Object.fromEntries(treasury.rows.map((r) => [r.account, toPaise(r.balance_paise)]));
@@ -572,6 +575,12 @@ export async function reconcileAgainstSubLedgers() {
       ledgerPaise: treasuryBy.MERCHANT_FLOAT ?? 0,
       subLedgerPaise: toPaise(merchants.rows[0]?.total),
       subLedger: 'merchant_wallets (available + reserved + settlement)',
+    },
+    {
+      name: 'team_float',
+      ledgerPaise: treasuryBy.TEAM_FLOAT ?? 0,
+      subLedgerPaise: toPaise(pools.rows[0]?.total),
+      subLedger: 'team_pools (available + held)',
     },
     {
       name: 'user_float',

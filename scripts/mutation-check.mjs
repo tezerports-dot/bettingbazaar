@@ -2141,6 +2141,49 @@ const MUTATIONS = [
     from: `    if (!membership || membership.team.teamId !== req.params.teamId) return refuse(res, 'not_found');`,
     to: `    if (!membership) return refuse(res, 'not_found');`,
   },
+  {
+    id: 'M288', file: 'database/repositories/teamPools.js', config: PG,
+    test: 'database/tests/teamPoolsPg.test.js',
+    why: 'a buyback larger than the pool is attempted anyway, and the platform pays for tokens the team does not hold',
+    from: `      WHERE team_id = $1 AND available_paise + $2 >= 0`,
+    to: `      WHERE team_id = $1`,
+  },
+  {
+    id: 'M289', file: 'database/repositories/teamPools.js', config: PG,
+    test: 'database/tests/teamPoolsPg.test.js',
+    why: 'a sale into a team pool is booked to the merchant float, so the books say merchants hold tokens a team holds',
+    from: `{ [ACCOUNTS.TOKEN_SUPPLY]: -amount, [ACCOUNTS.TEAM_FLOAT]: amount }`,
+    to: `{ [ACCOUNTS.TOKEN_SUPPLY]: -amount, [ACCOUNTS.MERCHANT_FLOAT]: amount }`,
+  },
+  {
+    id: 'M290', file: 'database/repositories/teamPools.js', config: PG,
+    test: 'database/tests/teamPoolsPg.test.js',
+    why: "a supervisor can ask for tokens into another supervisor's team",
+    from: `'SELECT team_id FROM teams WHERE team_id = $1 AND supervisor_id = $2',`,
+    to: `'SELECT team_id FROM teams WHERE team_id = $1 OR supervisor_id = $2',`,
+  },
+  {
+    id: 'M291', file: 'database/repositories/teams.js', config: PG,
+    test: 'database/tests/teamPoolsPg.test.js',
+    why: 'a team that has traded tokens can be deleted, taking the record of where its pool went with it',
+    from: `        AND NOT EXISTS (SELECT 1 FROM team_pool_entries WHERE team_id = t.team_id)
+        AND NOT EXISTS (SELECT 1 FROM team_pool_requests WHERE team_id = t.team_id)`,
+    to: `        AND true`,
+  },
+  {
+    id: 'M292', file: 'backend/domains/team/team.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/teamPoolRoutesPg.test.js',
+    why: 'any staff member with the Teams area can sell the platform\'s tokens into a pool — the money area is not asked for',
+    from: `const POOL_AREA = 'canFundMerchants';`,
+    to: `const POOL_AREA = 'canManageTeams';`,
+  },
+  {
+    id: 'M293', file: 'database/repositories/teamPools.js', config: PG,
+    test: 'database/tests/teamPoolsPg.test.js',
+    why: 'a sale is recorded as money the platform PAID, so every pool sale reads as an outflow in the books',
+    from: `  const direction = preview.direction === POOL_DIRECTIONS.BUY ? DIRECTIONS.RECEIVED : DIRECTIONS.PAID;`,
+    to: `  const direction = DIRECTIONS.PAID;`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

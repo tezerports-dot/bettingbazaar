@@ -47,9 +47,12 @@ const TEAM_SELECT = `
   SELECT t.team_id, t.supervisor_id, t.name, t.short_since, t.was_full, t.created_at,
          s.name AS supervisor_name, s.public_ref AS supervisor_ref, s.supervisor_rail AS rail,
          c.approved_count, c.pending_count,
+         COALESCE(p.available_paise, 0) AS pool_available_paise,
+         COALESCE(p.held_paise, 0)      AS pool_held_paise,
          ${STRENGTH_SQL} AS strength
     FROM teams t
     JOIN merchants s ON s.merchant_id = t.supervisor_id
+    LEFT JOIN team_pools p ON p.team_id = t.team_id
     CROSS JOIN LATERAL (
       SELECT count(*) FILTER (WHERE status = 'APPROVED')::int AS approved_count,
              count(*) FILTER (WHERE status = 'PENDING')::int  AS pending_count
@@ -68,6 +71,9 @@ function toTeam(row) {
     pendingCount: Number(row.pending_count),
     size: TEAM_SIZE,
     strength: row.strength,
+    // The team's tokens (Step 2b). BIGINT arrives as a string (trap 5).
+    poolAvailablePaise: Number(row.pool_available_paise ?? 0),
+    poolHeldPaise: Number(row.pool_held_paise ?? 0),
     shortSince: row.short_since,
     wasFull: row.was_full,
     createdAt: row.created_at,
@@ -199,16 +205,23 @@ export async function renameTeam({ teamId, supervisorId, name }) {
   return rowCount ? { ok: true } : { ok: false, reason: 'not_found' };
 }
 
-/** A team with any member (pending or approved) is not deleted. */
+/**
+ * A team with any member (pending or approved) is not deleted, nor one that
+ * has ever traded tokens: its pool ledger is the record of where those tokens
+ * went, and a deleted team would orphan it.
+ */
 export async function deleteTeam({ teamId, supervisorId }) {
   const { rowCount } = await pgQuery(
     `DELETE FROM teams t
       WHERE t.team_id = $1 AND t.supervisor_id = $2
-        AND NOT EXISTS (SELECT 1 FROM team_members WHERE team_id = t.team_id)`,
+        AND NOT EXISTS (SELECT 1 FROM team_members WHERE team_id = t.team_id)
+        AND NOT EXISTS (SELECT 1 FROM team_pool_entries WHERE team_id = t.team_id)
+        AND NOT EXISTS (SELECT 1 FROM team_pool_requests WHERE team_id = t.team_id)`,
     [String(teamId), String(supervisorId)], 'teams_delete');
   if (rowCount) return { ok: true };
   const team = await getTeam(teamId);
-  return { ok: false, reason: team && team.supervisorId === String(supervisorId) ? 'has_members' : 'not_found' };
+  if (!team || team.supervisorId !== String(supervisorId)) return { ok: false, reason: 'not_found' };
+  return { ok: false, reason: team.approvedCount + team.pendingCount > 0 ? 'has_members' : 'has_pool_history' };
 }
 
 export async function getTeam(teamId) {

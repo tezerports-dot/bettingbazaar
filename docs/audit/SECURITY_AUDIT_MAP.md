@@ -3387,9 +3387,9 @@ checked and is correct; the evidence is named.
 
 | Measure | Count |
 |---|---|
-| Route declarations in `backend/**` | 311 |
+| Route declarations in `backend/**` | 317 |
 | Reachable with **no auth middleware** | 34 |
-| Staff routes carrying an **area** (permission key) | 196 |
+| Staff routes carrying an **area** (permission key) | 199 |
 | Staff routes a sub-admin can **never** be given (full admin only) | 7 |
 
 A count moving is not by itself a defect — it is a prompt to read the
@@ -3450,14 +3450,15 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 455 |
-| Parameters only (safe by construction) | 301 |
-| Interpolating into statement text (each needs a reading) | 151 |
-| Statement text built elsewhere and passed in (each needs a reading) | 3 |
+| `pgQuery` call sites | 462 |
+| Parameters only (safe by construction) | 305 |
+| Interpolating into statement text (each needs a reading) | 153 |
+| Statement text built elsewhere and passed in (each needs a reading) | 4 |
 
 <details><summary>Call sites whose statement text is built elsewhere</summary>
 
 - `database/client.js — sql`
+- `database/repositories/adminTokenConsiderations.js — text`
 - `database/repositories/merchants.js — text`
 - `database/repositories/users.js — text`
 

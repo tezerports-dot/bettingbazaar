@@ -90,6 +90,10 @@ export const ENDPOINTS = {
     DELETE:        (teamId: string) => `/api/merchant/supervisor/teams/${teamId}`,
     ADD_MEMBER:    (teamId: string) => `/api/merchant/supervisor/teams/${teamId}/members`,
     REMOVE_MEMBER: (teamId: string, merchantId: string) => `/api/merchant/supervisor/teams/${teamId}/members/${merchantId}`,
+    // Team token pools (Step 2b).
+    POOL:          (teamId: string) => `/api/merchant/supervisor/teams/${teamId}/pool`,
+    POOL_REQUEST:  (teamId: string) => `/api/merchant/supervisor/teams/${teamId}/pool-requests`,
+    POOL_CANCEL:   (requestId: string) => `/api/merchant/supervisor/pool-requests/${requestId}`,
   },
   TOKEN_SUPPLY: {
     LIST:   '/api/merchant/admin-token-orders',

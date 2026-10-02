@@ -13,6 +13,9 @@ import {
   AdminTokenQuote,
   MyTeam,
   Team,
+  PoolDirection,
+  TeamPool,
+  TeamPoolEntry,
 } from '../types';
 import { ENDPOINTS, ERROR_MESSAGES } from '../constants';
 
@@ -729,6 +732,22 @@ export const addTeamMember = async (teamId: string, merchantRef: string): Promis
 
 export const removeTeamMember = async (teamId: string, merchantId: string): Promise<void> => {
   await request(ENDPOINTS.TEAM.REMOVE_MEMBER(teamId, merchantId), { method: 'DELETE' });
+};
+
+/** A team's pool and its ledger, newest first (Step 2b). */
+export const getTeamPool = async (teamId: string): Promise<{ pool: TeamPool; entries: TeamPoolEntry[] }> =>
+  request<{ pool: TeamPool; entries: TeamPoolEntry[] }>(ENDPOINTS.TEAM.POOL(teamId));
+
+/** BUY asks the platform for tokens; SELL asks it to buy pool tokens back. Whole tokens. */
+export const requestTeamPool = async (
+  teamId: string, direction: PoolDirection, tokenAmount: number, note: string,
+): Promise<string> =>
+  (await request<{ message: string }>(ENDPOINTS.TEAM.POOL_REQUEST(teamId), {
+    method: 'POST', body: JSON.stringify({ direction, tokenAmount, note: note || null }),
+  })).message;
+
+export const cancelTeamPoolRequest = async (requestId: string): Promise<void> => {
+  await request(ENDPOINTS.TEAM.POOL_CANCEL(requestId), { method: 'DELETE' });
 };
 
 export const api = {

@@ -14,6 +14,7 @@ import { db } from '#db';
 import { merchantAuth } from '../../middleware/merchantAuth.js';
 import { respondError } from '../../shared/httpError.js';
 import { refuse } from './teamRefusals.js';
+import { rupeesToPaise } from '../../shared/money.js';
 
 const router = express.Router();
 
@@ -33,7 +34,8 @@ router.get('/team', merchantAuth, async (req, res) => {
     if (me.isSupervisor) {
       const teams = await db.teams.listTeams({ supervisorId: me.merchantId });
       const members = (await Promise.all(teams.map((t) => db.teams.listMembers({ teamId: t.teamId })))).flat();
-      return res.json({ success: true, role: 'SUPERVISOR', rail: me.supervisorRail, publicRef: me.publicRef, teams, members });
+      const poolRequests = await db.teamPools.listRequests({ supervisorId: me.merchantId, limit: 50 });
+      return res.json({ success: true, role: 'SUPERVISOR', rail: me.supervisorRail, publicRef: me.publicRef, teams, members, poolRequests });
     }
     const membership = await db.teams.membershipOf(me.merchantId);
     if (!membership) return res.json({ success: true, role: 'NONE', publicRef: me.publicRef });
@@ -103,6 +105,64 @@ router.delete('/supervisor/teams/:teamId/members/:merchantId', merchantAuth, req
     });
     res.json({ success: true, team: await db.teams.getTeam(out.teamId) });
   } catch (err) { respondError(res, err, 'DELETE /merchant/supervisor/teams/:id/members/:mid'); }
+});
+
+// ── Team token pools (Step 2b) ───────────────────────────────────────────────
+
+// GET /api/merchant/supervisor/teams/:teamId/pool — the pool and its ledger.
+router.get('/supervisor/teams/:teamId/pool', merchantAuth, requireSupervisor, async (req, res) => {
+  try {
+    const team = await db.teams.getTeam(req.params.teamId);
+    // Another supervisor's team is "not yours", never "not found" vs "forbidden" (trap 16).
+    if (!team || team.supervisorId !== String(req.merchantId)) return refuse(res, 'team_not_found');
+    const [pool, entries, requests] = await Promise.all([
+      db.teamPools.getPool(team.teamId),
+      db.teamPools.listEntries(team.teamId),
+      db.teamPools.listRequests({ teamId: team.teamId }),
+    ]);
+    res.json({ success: true, team, pool, entries, requests });
+  } catch (err) { respondError(res, err, 'GET /merchant/supervisor/teams/:id/pool'); }
+});
+
+/**
+ * POST /api/merchant/supervisor/teams/:teamId/pool-requests
+ *   { direction: 'BUY'|'SELL', tokenAmount, note }
+ * BUY asks the platform to sell tokens into the pool; SELL asks it to buy pool
+ * tokens back. An admin fulfils it after the money has changed hands.
+ */
+router.post('/supervisor/teams/:teamId/pool-requests', merchantAuth, requireSupervisor, async (req, res) => {
+  try {
+    const direction = String(req.body?.direction ?? '').toUpperCase();
+    const tokens = Number(req.body?.tokenAmount);
+    if (!Number.isInteger(tokens) || tokens <= 0) {
+      return res.status(400).json({ success: false, code: 'bad_amount', message: 'Enter a whole number of tokens greater than zero.' });
+    }
+    const out = await db.teamPools.createRequest({
+      teamId: req.params.teamId, supervisorId: req.merchantId, direction,
+      tokenAmountPaise: rupeesToPaise(tokens), note: req.body?.note ?? null,
+    });
+    if (!out.ok) return refuse(res, out.reason);
+    await db.audit.recordDetailed({
+      performedBy: req.merchantId, category: 'TREASURY', targetType: 'TEAM',
+      action: direction === 'BUY' ? 'TEAM_POOL_BUY_REQUESTED' : 'TEAM_POOL_SELL_REQUESTED',
+      targetId: req.params.teamId, ip: req.ip, details: { requestId: out.requestId, tokenAmount: tokens },
+    });
+    res.status(201).json({
+      success: true, request: await db.teamPools.getRequest(out.requestId),
+      message: direction === 'BUY'
+        ? 'Requested. Pay the platform, and an admin will add the tokens once the payment is confirmed.'
+        : 'Requested. An admin will pay you and take the tokens out of the pool.',
+    });
+  } catch (err) { respondError(res, err, 'POST /merchant/supervisor/teams/:id/pool-requests'); }
+});
+
+// DELETE /api/merchant/supervisor/pool-requests/:requestId — a pending request only.
+router.delete('/supervisor/pool-requests/:requestId', merchantAuth, requireSupervisor, async (req, res) => {
+  try {
+    const out = await db.teamPools.cancelRequest({ requestId: req.params.requestId, supervisorId: req.merchantId });
+    if (!out.ok) return refuse(res, out.reason);
+    res.json({ success: true });
+  } catch (err) { respondError(res, err, 'DELETE /merchant/supervisor/pool-requests/:id'); }
 });
 
 export default router;

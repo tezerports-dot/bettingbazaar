@@ -516,6 +516,18 @@ export interface TeamView {
   teamId: string; supervisorId: string; supervisorName: string; supervisorRef: string;
   name: string; rail: SupervisorRail; approvedCount: number; pendingCount: number; size: number;
   strength: 'WORKING' | 'GRACE' | 'STOPPED'; shortSince: string | null; wasFull: boolean; createdAt: string;
+  /** The team's token pool, in paise (Step 2b). */
+  poolAvailablePaise: number; poolHeldPaise: number;
+}
+// Mirrors `toRequest` and POOL_DIRECTIONS in database/repositories/teamPools.js
+// — §5: change them together.
+export interface TeamPoolRequest {
+  requestId: string; teamId: string; teamName: string | null;
+  supervisorId: string; supervisorName: string | null;
+  direction: 'BUY' | 'SELL'; tokenAmountPaise: number;
+  status: 'PENDING' | 'FULFILLED' | 'REJECTED' | 'CANCELLED';
+  note: string | null; decidedBy: string | null; decidedAt: string | null;
+  decisionNote: string | null; createdAt: string;
 }
 export interface TeamMemberView {
   merchantId: string; teamId: string; name: string; publicRef: string;

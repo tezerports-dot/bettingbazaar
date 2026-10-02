@@ -13,9 +13,15 @@ import { authenticate, express, hasPermission } from '../../routes/admin/_adminS
 import { db } from '#db';
 import { respondError } from '../../shared/httpError.js';
 import { refuse } from './teamRefusals.js';
+import { resolveConsideration } from '../merchant/tradeConsideration.js';
+import { DIRECTIONS as CONSIDERATION_DIRECTIONS } from '#db/repositories/adminTokenConsiderations.js';
+import { paiseToRupees } from '../../shared/money.js';
 
 const router = express.Router();
 const AREA = 'canManageTeams';
+// Selling tokens to a team, or buying them back, moves money: the same area
+// that tops up and deducts merchant wallets (Step 2b).
+const POOL_AREA = 'canFundMerchants';
 
 // GET /api/admin/teams — every supervisor, team and member (pending included).
 router.get('/teams', authenticate, hasPermission(AREA), async (req, res) => {
@@ -78,6 +84,80 @@ router.delete('/team-members/:merchantId', authenticate, hasPermission(AREA), as
     });
     res.json({ success: true, team: await db.teams.getTeam(out.teamId) });
   } catch (err) { respondError(res, err, 'DELETE /admin/team-members/:id'); }
+});
+
+// ── Team token pools (Step 2b) ───────────────────────────────────────────────
+
+// GET /api/admin/team-pool-requests?status=PENDING
+router.get('/team-pool-requests', authenticate, hasPermission(POOL_AREA), async (req, res) => {
+  try {
+    const status = req.query.status ? String(req.query.status).toUpperCase() : null;
+    const requests = await db.teamPools.listRequests({ status });
+    res.json({ success: true, requests });
+  } catch (err) { respondError(res, err, 'GET /admin/team-pool-requests'); }
+});
+
+/**
+ * POST /api/admin/team-pool-requests/:requestId/fulfil
+ *   { settlementCurrency: 'INR'|'USDT', settlementAmount }
+ *
+ * Sells the tokens into the pool (a BUY request) or buys them back (a SELL
+ * request), and records what was paid — one transaction (teamPools.js). A
+ * second press, or a redelivery, finds the request no longer PENDING.
+ */
+router.post('/team-pool-requests/:requestId/fulfil', authenticate, hasPermission(POOL_AREA), async (req, res) => {
+  try {
+    const request = await db.teamPools.getRequest(req.params.requestId);
+    if (!request) return refuse(res, 'request_not_found');
+    const direction = request.direction === 'BUY' ? CONSIDERATION_DIRECTIONS.RECEIVED : CONSIDERATION_DIRECTIONS.PAID;
+    const { currency, fiatAmountMinor, rateUsed } = await resolveConsideration(req.body, direction);
+    const out = await db.teamPools.fulfilRequest({
+      requestId: request.requestId, actor: req.user.userId,
+      consideration: { currency, fiatAmountMinor, rateUsed },
+    });
+    if (!out.ok) return refuse(res, out.reason);
+    await db.audit.recordDetailed({
+      performedBy: req.user.userId, category: 'TREASURY', targetType: 'TEAM',
+      action: request.direction === 'BUY' ? 'TEAM_POOL_SALE' : 'TEAM_POOL_BUYBACK',
+      targetId: out.teamId, ip: req.ip,
+      details: {
+        requestId: request.requestId, tokenAmount: paiseToRupees(request.tokenAmountPaise),
+        settlementCurrency: out.consideration.currency,
+        settlementAmount: paiseToRupees(out.consideration.fiatAmountMinor),
+        settlementInr: paiseToRupees(out.consideration.inrEquivalentPaise),
+        rateUsed: out.consideration.rateUsed,
+      },
+    });
+    res.json({
+      success: true,
+      message: request.direction === 'BUY'
+        ? `Sold ${paiseToRupees(request.tokenAmountPaise)} tokens into the team's pool.`
+        : `Bought ${paiseToRupees(request.tokenAmountPaise)} tokens back from the team's pool.`,
+      pool: out.pool,
+      settlement: {
+        currency: out.consideration.currency,
+        amount: paiseToRupees(out.consideration.fiatAmountMinor),
+        inrValue: paiseToRupees(out.consideration.inrEquivalentPaise),
+        rateUsed: out.consideration.rateUsed,
+      },
+    });
+  } catch (err) { respondError(res, err, 'POST /admin/team-pool-requests/:id/fulfil'); }
+});
+
+// POST /api/admin/team-pool-requests/:requestId/reject  { reason }
+router.post('/team-pool-requests/:requestId/reject', authenticate, hasPermission(POOL_AREA), async (req, res) => {
+  try {
+    const out = await db.teamPools.rejectRequest({
+      requestId: req.params.requestId, actor: req.user.userId, reason: req.body?.reason ?? null,
+    });
+    if (!out.ok) return refuse(res, out.reason);
+    await db.audit.recordDetailed({
+      performedBy: req.user.userId, category: 'TREASURY', targetType: 'TEAM_POOL_REQUEST',
+      action: 'TEAM_POOL_REQUEST_REJECTED', targetId: req.params.requestId, ip: req.ip,
+      details: { reason: req.body?.reason ?? null },
+    });
+    res.json({ success: true });
+  } catch (err) { respondError(res, err, 'POST /admin/team-pool-requests/:id/reject'); }
 });
 
 export default router;

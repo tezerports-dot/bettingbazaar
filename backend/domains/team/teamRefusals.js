@@ -24,6 +24,13 @@ const REFUSALS = Object.freeze({
   already_in_team:       [409, 'That merchant is already in a team. They must leave it first.'],
   has_members:           [409, 'Remove every member before deleting the team.'],
   not_pending:           [409, 'That merchant is not waiting for approval.'],
+  has_pool_history:      [409, 'This team has traded tokens, so it is kept as the record of where they went. It cannot be deleted.'],
+  // Team pools (Step 2b)
+  pool_short:            [409, "The team's pool does not have that many tokens available. Ask for fewer, or wait for open orders to finish."],
+  request_pending:       [409, 'This team already has a request of that kind waiting. Cancel it, or wait for an admin to decide it.'],
+  request_not_pending:   [409, 'That request has already been decided or cancelled. Refresh to see its outcome.'],
+  request_not_found:     [404, 'No such request.'],
+  supply_cap_exceeded:   [409, 'The platform does not hold that many tokens to sell. Sell fewer.'],
 });
 
 /** Send the refusal for a repository `{ ok: false, reason }`. */

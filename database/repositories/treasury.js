@@ -61,6 +61,9 @@ export const ACCOUNTS = Object.freeze({
   BONUS_POOL:        'BONUS_POOL',
   REFERRAL_POOL:     'REFERRAL_POOL',
   OPERATIONAL_FLOAT: 'OPERATIONAL_FLOAT',
+  // Every team pool's tokens, held and available together (Step 2b). Equals
+  // the sum of `team_pools` — `teamPools.js` is the only writer of both.
+  TEAM_FLOAT:        'TEAM_FLOAT',
 });
 
 const ALL_ACCOUNTS = Object.freeze(Object.values(ACCOUNTS));
@@ -142,6 +145,11 @@ export async function postMovement({
   movementId, operation, legs,
   actor = null, reason = null, refModel = null, refId = null, correlationId = null,
   supplyCapPaise = TOTAL_SUPPLY_PAISE,
+  // A caller already inside a transaction passes its client, and the movement
+  // commits or unwinds WITH that transaction. A team pool credit and the
+  // treasury movement that funds it are one fact; two transactions would be
+  // §21's shape, a second write that can fail after the first committed.
+  client: outer = null,
 }) {
   if (!movementId) throw new Error('postMovement requires a movementId (idempotency key)');
   if (!operation) throw new Error('postMovement requires an operation');
@@ -165,13 +173,21 @@ export async function postMovement({
   }
 
   const accounts = entries.map(([a]) => a).sort();
-  const pool = await getPool();
-  if (!pool) throw new Error('Postgres not configured (DATABASE_URL unset)');
-  const client = await connectGuarded(pool);
+  let client = outer;
+  if (!client) {
+    const pool = await getPool();
+    if (!pool) throw new Error('Postgres not configured (DATABASE_URL unset)');
+    client = await connectGuarded(pool);
+  }
   let failure = null;
+  // Inside a caller's transaction, a refusal or replay unwinds to a savepoint
+  // instead of rolling the caller's whole transaction back.
+  const begin    = outer ? 'SAVEPOINT treasury_movement' : 'BEGIN';
+  const rollback = outer ? 'ROLLBACK TO SAVEPOINT treasury_movement' : 'ROLLBACK';
+  const commit   = outer ? 'RELEASE SAVEPOINT treasury_movement' : 'COMMIT';
 
   try {
-    await client.query('BEGIN');
+    await client.query(begin);
     for (const account of accounts) {
       await client.query(
         `INSERT INTO treasury_accounts (account) VALUES ($1) ON CONFLICT (account) DO NOTHING`,
@@ -194,7 +210,7 @@ export async function postMovement({
     if (supplyLeg < 0) {
       const wouldCirculate = -(before[ACCOUNTS.TOKEN_SUPPLY] + supplyLeg);
       if (wouldCirculate > supplyCapPaise) {
-        await client.query('ROLLBACK');
+        await client.query(rollback);
         return {
           ok: false, reason: 'supply_cap_exceeded',
           capPaise: supplyCapPaise, circulatingPaise: -before[ACCOUNTS.TOKEN_SUPPLY],
@@ -225,7 +241,7 @@ export async function postMovement({
         // UNIQUE tx_id — the idempotency gate firing INSIDE the transaction, so
         // the whole movement unwinds rather than half of it landing.
         if (error.code === '23505') {
-          await client.query('ROLLBACK');
+          await client.query(rollback);
           // Read on THIS client — see readBalances for why a pooled read here deadlocks.
           return { ok: true, idempotent: true, balances: await readBalances((t, p) => client.query(t, p)) };
         }
@@ -243,16 +259,16 @@ export async function postMovement({
     // commit would be a second pooled connection (the deadlock above) and would
     // also report a moment later than the one this movement created.
     const balances = await readBalances((t, p) => client.query(t, p));
-    await client.query('COMMIT');
+    await client.query(commit);
     return { ok: true, idempotent: false, entries: written, balances };
   } catch (error) {
     failure = error;
-    try { await client.query('ROLLBACK'); } catch { /* already unwound */ }
+    try { await client.query(rollback); } catch { /* already unwound */ }
     throw error;
   } finally {
     // Destroy rather than reuse a client whose backend may have gone away
     // mid-transaction — see merchantWalletPg.withMerchantLock.
-    client.release(failure ?? undefined);
+    if (!outer) client.release(failure ?? undefined);
   }
 }
 

@@ -14,6 +14,9 @@ const api = vi.hoisted(() => ({
   deleteTeam: vi.fn().mockResolvedValue(undefined),
   addTeamMember: vi.fn().mockResolvedValue('Added.'),
   removeTeamMember: vi.fn().mockResolvedValue(undefined),
+  getTeamPool: vi.fn(),
+  requestTeamPool: vi.fn().mockResolvedValue('Requested.'),
+  cancelTeamPoolRequest: vi.fn().mockResolvedValue(undefined),
 }));
 const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn() }));
 vi.mock('../services/api', () => api);
@@ -23,7 +26,8 @@ import TeamPage from './TeamPage';
 
 const team = (teamId: string, name: string, extra = {}) => ({
   teamId, supervisorId: 's-1', supervisorName: 'Sup', supervisorRef: 'MSUP', name, rail: 'UPI_BANK',
-  approvedCount: 0, pendingCount: 0, size: 10, strength: 'STOPPED', shortSince: null, wasFull: false, createdAt: '', ...extra,
+  approvedCount: 0, pendingCount: 0, size: 10, strength: 'STOPPED', shortSince: null, wasFull: false, createdAt: '',
+  poolAvailablePaise: 0, poolHeldPaise: 0, ...extra,
 });
 
 describe('merchant Team screen', () => {
@@ -82,5 +86,60 @@ describe('merchant Team screen', () => {
     fireEvent.change(box, { target: { value: 'Fifth' } });
     fireEvent.submit(box.closest('form')!);
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith('A supervisor can run at most 4 teams.'));
+  });
+
+  // ── Team token pools (Step 2b) ───────────────────────────────────────────
+  const supervisorWith = (poolRequests: unknown[] = []) => api.getMyTeam.mockResolvedValue({
+    role: 'SUPERVISOR', rail: 'UPI_BANK', publicRef: 'MSUP',
+    teams: [team('t-1', 'Alpha', { poolAvailablePaise: 250000 }), team('t-2', 'Bravo')], members: [], poolRequests,
+  });
+
+  it('shows each team its own pool balance', async () => {
+    supervisorWith();
+    render(<TeamPage />);
+    expect(await screen.findByText(/2,500 tokens/)).toBeInTheDocument();
+  });
+
+  it('asks to buy for the team whose form was used, in whole tokens', async () => {
+    supervisorWith();
+    render(<TeamPage />);
+    const box = await screen.findByLabelText('Tokens for Bravo');
+    fireEvent.change(box, { target: { value: '5,000' } });
+    expect((box as HTMLInputElement).value).toBe('5000');
+    fireEvent.click(screen.getByRole('button', { name: 'Send Bravo request' }));
+    await waitFor(() => expect(api.requestTeamPool).toHaveBeenCalledWith('t-2', 'BUY', 5000, ''));
+  });
+
+  it('asks to sell back when that is chosen, and shows the server refusal verbatim', async () => {
+    supervisorWith();
+    api.requestTeamPool.mockRejectedValueOnce(new Error('The pool holds 2,500 tokens. Ask for that or less.'));
+    render(<TeamPage />);
+    fireEvent.change(await screen.findByLabelText('Request for Alpha'), { target: { value: 'SELL' } });
+    fireEvent.change(screen.getByLabelText('Tokens for Alpha'), { target: { value: '9000' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send Alpha request' }));
+    await waitFor(() => expect(api.requestTeamPool).toHaveBeenCalledWith('t-1', 'SELL', 9000, ''));
+    expect(toast.error).toHaveBeenCalledWith('The pool holds 2,500 tokens. Ask for that or less.');
+  });
+
+  it('cancels the pending request shown, and shows a rejection with its reason', async () => {
+    supervisorWith([
+      { requestId: 'pr-1', teamId: 't-2', direction: 'BUY', tokenAmountPaise: 100000, status: 'PENDING', note: null, decisionNote: null, decidedAt: null, createdAt: '' },
+      { requestId: 'pr-0', teamId: 't-2', direction: 'BUY', tokenAmountPaise: 50000, status: 'REJECTED', note: null, decisionNote: 'No payment seen', decidedAt: '', createdAt: '' },
+    ]);
+    render(<TeamPage />);
+    expect(await screen.findByText(/No payment seen/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel this request' }));
+    await waitFor(() => expect(api.cancelTeamPoolRequest).toHaveBeenCalledWith('pr-1'));
+  });
+
+  it('loads the pool history of the team pressed', async () => {
+    supervisorWith();
+    api.getTeamPool.mockResolvedValue({ pool: {}, entries: [
+      { id: 1, kind: 'ADMIN_SALE', availableDeltaPaise: 250000, heldDeltaPaise: 0, availableAfterPaise: 250000, heldAfterPaise: 0, createdAt: '2026-10-02T10:00:00Z' },
+    ] });
+    render(<TeamPage />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Show Alpha pool history' }));
+    await waitFor(() => expect(api.getTeamPool).toHaveBeenCalledWith('t-1'));
+    expect(await screen.findByText(/Bought from the platform/)).toBeInTheDocument();
   });
 });

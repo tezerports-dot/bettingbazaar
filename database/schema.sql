@@ -4329,3 +4329,79 @@ CREATE TRIGGER team_members_roles_disjoint BEFORE INSERT OR UPDATE ON team_membe
 DROP TRIGGER IF EXISTS merchants_roles_disjoint ON merchants;
 CREATE TRIGGER merchants_roles_disjoint BEFORE INSERT OR UPDATE OF is_supervisor ON merchants
   FOR EACH ROW EXECUTE FUNCTION bb_team_roles_disjoint();
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- TEAM TOKEN POOLS (owner, 2026-10-02 — PROJECT_STATUS §3.10, Step 2b)
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Each TEAM holds a pool of tokens; individual members hold none. A supervisor
+-- buys tokens from the platform for a team (paid off-platform, recorded by the
+-- admin) and can sell them back. `available` is what new orders may take;
+-- `held` is what open buys have promised (Step 2c). Neither may go negative,
+-- and the guard is the UPDATE's own WHERE, under the row lock (§32 S6).
+--
+-- TEAM_FLOAT in the treasury is the sum of every pool: `teamPools.js` writes
+-- both in one transaction, so they cannot disagree.
+ALTER TABLE treasury_accounts DROP CONSTRAINT IF EXISTS treasury_accounts_known;
+ALTER TABLE treasury_accounts ADD CONSTRAINT treasury_accounts_known CHECK (account IN (
+  'TOKEN_SUPPLY', 'MERCHANT_FLOAT', 'USER_FLOAT', 'HOUSE_RESERVE', 'COMMISSION_POOL',
+  'BONUS_POOL', 'REFERRAL_POOL', 'OPERATIONAL_FLOAT', 'TEAM_FLOAT'));
+
+CREATE TABLE IF NOT EXISTS team_pools (
+  team_id         TEXT PRIMARY KEY REFERENCES teams (team_id),
+  available_paise BIGINT NOT NULL DEFAULT 0,
+  held_paise      BIGINT NOT NULL DEFAULT 0,
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT team_pools_available_nonneg CHECK (available_paise >= 0),
+  CONSTRAINT team_pools_held_nonneg CHECK (held_paise >= 0)
+);
+
+-- Every change to a pool, append-only. `tx_id` is the idempotency key: a
+-- redelivered sale or buyback collides here and moves nothing a second time.
+CREATE TABLE IF NOT EXISTS team_pool_entries (
+  id                    BIGSERIAL PRIMARY KEY,
+  tx_id                 TEXT NOT NULL UNIQUE,
+  team_id               TEXT NOT NULL REFERENCES teams (team_id),
+  kind                  TEXT NOT NULL,
+  available_delta_paise BIGINT NOT NULL,
+  held_delta_paise      BIGINT NOT NULL DEFAULT 0,
+  available_after_paise BIGINT NOT NULL,
+  held_after_paise      BIGINT NOT NULL,
+  actor                 TEXT,
+  ref_id                TEXT,
+  note                  TEXT,
+  created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT team_pool_entries_kind_known CHECK (kind IN ('ADMIN_SALE', 'ADMIN_BUYBACK')),
+  CONSTRAINT team_pool_entries_moves CHECK (available_delta_paise <> 0 OR held_delta_paise <> 0)
+);
+CREATE INDEX IF NOT EXISTS team_pool_entries_team_idx ON team_pool_entries (team_id, created_at DESC, id DESC);
+CREATE OR REPLACE TRIGGER team_pool_entries_append_only
+  BEFORE UPDATE OR DELETE ON team_pool_entries FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
+
+-- A supervisor asks the platform to sell tokens into a team's pool (BUY) or to
+-- buy pool tokens back (SELL). An admin fulfils it, recording what was paid, or
+-- rejects it. At most one PENDING request per team and direction.
+CREATE TABLE IF NOT EXISTS team_pool_requests (
+  request_id         TEXT PRIMARY KEY,
+  team_id            TEXT NOT NULL REFERENCES teams (team_id),
+  supervisor_id      TEXT NOT NULL REFERENCES merchants (merchant_id),
+  direction          TEXT NOT NULL,
+  token_amount_paise BIGINT NOT NULL,
+  status             TEXT NOT NULL DEFAULT 'PENDING',
+  note               TEXT,
+  decided_by         TEXT,
+  decided_at         TIMESTAMPTZ,
+  decision_note      TEXT,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT team_pool_requests_direction_known CHECK (direction IN ('BUY', 'SELL')),
+  CONSTRAINT team_pool_requests_status_known CHECK (status IN ('PENDING', 'FULFILLED', 'REJECTED', 'CANCELLED')),
+  CONSTRAINT team_pool_requests_tokens_positive CHECK (token_amount_paise > 0),
+  CONSTRAINT team_pool_requests_decision_recorded CHECK (
+    (status = 'PENDING' AND decided_at IS NULL) OR (status <> 'PENDING' AND decided_at IS NOT NULL))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS team_pool_requests_one_pending
+  ON team_pool_requests (team_id, direction) WHERE status = 'PENDING';
+CREATE INDEX IF NOT EXISTS team_pool_requests_status_idx ON team_pool_requests (status, created_at);
+
+-- What the platform got, or paid, for a pool trade lives in the same table as
+-- a merchant's: `merchant_id` is the supervisor who traded, `team_id` the pool.
+ALTER TABLE admin_token_considerations ADD COLUMN IF NOT EXISTS team_id TEXT;

@@ -7,7 +7,10 @@
  *   1. makes an approved merchant a SUPERVISOR on one rail (or removes the
  *      role from a supervisor who runs no teams);
  *   2. approves or rejects the members supervisors propose;
- *   3. removes a member from a team.
+ *   3. removes a member from a team;
+ *   4. sells tokens into a team's pool, or buys them back, when a supervisor
+ *      asks — recording what was paid (Step 2b). That part is the money area
+ *      canFundMerchants, so it is shown only to staff who hold it.
  *
  * Supervisors create their teams and propose members from the merchant panel.
  * Every cap (4 teams, 10 members, one team per merchant) is enforced by the
@@ -20,7 +23,8 @@ import toast from 'react-hot-toast';
 import api from '../../services/api';
 import { EmptyState } from '../../components/EmptyState';
 import { LoadingSpinner } from '../../components/LoadingSpinner';
-import type { SupervisorRail, TeamMemberView, TeamSupervisor, TeamView } from '../../types';
+import { usePermissions } from '../../hooks/usePermission';
+import type { SupervisorRail, TeamMemberView, TeamPoolRequest, TeamSupervisor, TeamView } from '../../types';
 
 /** Mirrors SUPERVISOR_RAILS in database/repositories/teams.js (§5). */
 const RAILS: Array<{ value: SupervisorRail; label: string }> = [
@@ -36,6 +40,121 @@ const STRENGTH: Record<TeamView['strength'], { label: string; cls: string }> = {
 };
 
 const messageOf = (err: any, fallback: string) => err?.response?.data?.message || fallback;
+const tokens = (paise: number) => (paise / 100).toLocaleString('en-IN');
+
+/**
+ * The pool request queue. Declared at module level, never inside the parent
+ * (§32 S23). Each row takes what the platform received (a sale) or paid (a
+ * buyback) — required, 0 meaning no money changed hands — because the server
+ * refuses a fulfilment without it.
+ */
+const PoolRequests: React.FC<{ onChanged: () => void }> = ({ onChanged }) => {
+  const [requests, setRequests] = useState<TeamPoolRequest[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState('');
+  const [amount, setAmount] = useState<Record<string, string>>({});
+  const [currency, setCurrency] = useState<Record<string, 'INR' | 'USDT'>>({});
+  const [reason, setReason] = useState<Record<string, string>>({});
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      setRequests((await api.teams.poolRequests('PENDING')).requests || []);
+    } catch (err) {
+      toast.error(messageOf(err, 'Could not load pool requests'));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+  useEffect(() => { void load(); }, [load]);
+
+  const run = async (key: string, fn: () => Promise<{ message?: string } | unknown>, ok: string, fail: string) => {
+    setBusy(key);
+    try {
+      const out = await fn() as { message?: string } | undefined;
+      toast.success(out?.message || ok);
+      await load();
+      onChanged();
+    } catch (err) {
+      toast.error(messageOf(err, fail));
+    } finally {
+      setBusy('');
+    }
+  };
+
+  return (
+    <div className="bg-dark-800 border border-dark-600 rounded-xl p-4">
+      <h2 className="text-base font-semibold mb-1">Team token requests</h2>
+      <p className="text-xs text-gray-400 mb-3">
+        A supervisor asks to buy tokens for a team's pool, or to sell them back. Fulfil only once
+        the money has changed hands, and record how much.
+      </p>
+      {loading ? <LoadingSpinner /> : requests.length === 0 ? (
+        <p className="text-sm text-gray-400">No requests waiting.</p>
+      ) : (
+        <ul className="space-y-3">
+          {requests.map((r) => {
+            const isBuy = r.direction === 'BUY';
+            const cur = isBuy ? (currency[r.requestId] ?? 'INR') : 'INR';
+            const typed = amount[r.requestId] ?? '';
+            return (
+              <li key={r.requestId} className="border border-dark-600 rounded-lg p-3">
+                <div className="flex flex-wrap items-center gap-2 mb-2 text-sm">
+                  <span className={`text-xs px-2 py-0.5 rounded-lg ${isBuy ? 'bg-green-500/20 text-green-400' : 'bg-orange-500/20 text-orange-400'}`}>
+                    {isBuy ? 'Buy tokens' : 'Sell back'}
+                  </span>
+                  <span className="font-medium">{tokens(r.tokenAmountPaise)} tokens</span>
+                  <span className="text-gray-400">for {r.teamName ?? r.teamId}</span>
+                  <span className="text-xs text-gray-500">by {r.supervisorName ?? r.supervisorId}</span>
+                  {r.note && <span className="text-xs text-gray-400 italic">“{r.note}”</span>}
+                </div>
+                <div className="flex flex-wrap gap-2 items-end">
+                  <div>
+                    <label htmlFor={`pr-amt-${r.requestId}`} className="block text-xs text-gray-400 mb-1">
+                      {isBuy ? 'Platform received' : 'Platform paid'}
+                    </label>
+                    <input id={`pr-amt-${r.requestId}`} inputMode="decimal" value={typed}
+                      onChange={(e) => setAmount((a) => ({ ...a, [r.requestId]: e.target.value }))}
+                      className="bg-dark-700 border border-dark-600 rounded-lg px-3 py-1.5 text-sm w-36" />
+                  </div>
+                  <div>
+                    <label htmlFor={`pr-cur-${r.requestId}`} className="block text-xs text-gray-400 mb-1">Currency</label>
+                    <select id={`pr-cur-${r.requestId}`} value={cur} disabled={!isBuy}
+                      onChange={(e) => setCurrency((c) => ({ ...c, [r.requestId]: e.target.value as 'INR' | 'USDT' }))}
+                      className="bg-dark-700 border border-dark-600 rounded-lg px-3 py-1.5 text-sm">
+                      <option value="INR">INR</option>
+                      {isBuy && <option value="USDT">USDT</option>}
+                    </select>
+                  </div>
+                  <button disabled={!!busy || typed.trim() === ''}
+                    onClick={() => void run(`f-${r.requestId}`,
+                      () => api.teams.fulfilPoolRequest(r.requestId, { settlementCurrency: cur, settlementAmount: Number(typed) }),
+                      'Fulfilled', 'Could not fulfil')}
+                    className="px-3 py-1.5 rounded-lg bg-yellow-500 text-black text-sm font-semibold disabled:opacity-50">
+                    {isBuy ? `Sell ${tokens(r.tokenAmountPaise)} tokens to ${r.teamName ?? 'team'}` : `Buy ${tokens(r.tokenAmountPaise)} tokens back from ${r.teamName ?? 'team'}`}
+                  </button>
+                  <div>
+                    <label htmlFor={`pr-why-${r.requestId}`} className="block text-xs text-gray-400 mb-1">Reason (if rejecting)</label>
+                    <input id={`pr-why-${r.requestId}`} value={reason[r.requestId] ?? ''}
+                      onChange={(e) => setReason((a) => ({ ...a, [r.requestId]: e.target.value }))}
+                      className="bg-dark-700 border border-dark-600 rounded-lg px-3 py-1.5 text-sm w-48" />
+                  </div>
+                  <button disabled={!!busy}
+                    onClick={() => void run(`r-${r.requestId}`,
+                      () => api.teams.rejectPoolRequest(r.requestId, reason[r.requestId] ?? ''),
+                      'Request rejected', 'Could not reject')}
+                    className="px-3 py-1.5 rounded-lg bg-red-500/20 text-red-400 text-sm disabled:opacity-50">
+                    Reject request from {r.teamName ?? r.teamId}
+                  </button>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+};
 
 export const TeamsManager: React.FC = () => {
   const [supervisors, setSupervisors] = useState<TeamSupervisor[]>([]);
@@ -45,6 +164,7 @@ export const TeamsManager: React.FC = () => {
   const [busy, setBusy] = useState('');
   const [newId, setNewId] = useState('');
   const [newRail, setNewRail] = useState<SupervisorRail>('UPI_BANK');
+  const canFund = usePermissions().can('canFundMerchants');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -121,6 +241,8 @@ export const TeamsManager: React.FC = () => {
         </form>
       </div>
 
+      {canFund && <PoolRequests onChanged={() => void load()} />}
+
       {/* ── Waiting for approval ──────────────────────────────────────── */}
       <div className="bg-dark-800 border border-dark-600 rounded-xl p-4">
         <h2 className="text-base font-semibold mb-3">Members waiting for approval</h2>
@@ -190,6 +312,9 @@ export const TeamsManager: React.FC = () => {
                   <span className="font-medium">{t.name}</span>
                   <span className="text-xs text-gray-400">{t.approvedCount}/{t.size} members{t.pendingCount ? ` · ${t.pendingCount} pending` : ''}</span>
                   <span className={`text-xs px-2 py-0.5 rounded-lg ${STRENGTH[t.strength].cls}`}>{STRENGTH[t.strength].label}</span>
+                  <span className="text-xs text-gray-400">
+                    Pool: {tokens(t.poolAvailablePaise)} tokens{t.poolHeldPaise ? ` · ${tokens(t.poolHeldPaise)} held` : ''}
+                  </span>
                 </div>
                 <ul className="text-sm space-y-1">
                   {members.filter((m) => m.teamId === t.teamId && m.status === 'APPROVED').map((m) => (
