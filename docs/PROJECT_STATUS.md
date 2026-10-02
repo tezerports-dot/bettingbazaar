@@ -625,6 +625,39 @@ Owner answers, 2026-10-02 (two rounds; the second replaced the security deposit 
   below-10 rule; buys hold pool tokens at assignment. DELETE the per-merchant
   wallet, escrow, scoring/ranking, cash-link queue, payment-mode policy,
   gateway settings, merchant token orders and fund/deduct.
+  **2c design (written before building it, §17.4):**
+  - *The rail an order runs on* is derived at creation, never read from a
+    switch: USDT currency → the USDT rail; INR up to 10,000 tokens → `CASH`
+    (`payment_mode = CASH_ATM`); INR above → `UPI_BANK` (`P2P_UPI`). The
+    column `order_states.payment_mode` and its trigger stay — every worker
+    already branches on the ORDER's value. 2d replaces the amount boundary
+    with the denomination list.
+  - *Timers and caps* move from `payment_mode_policies` to `SystemConfig`
+    (`teamRouting`): the same five timers per rail, defaults equal to the
+    policy's column defaults, and the per-member concurrency
+    (CASH 1, UPI_BANK 3, USDT 3).
+  - *Routing* is one query in `database/repositories/teamRouting.js`: approved
+    members of a team whose supervisor's rail is the order's and whose
+    strength is WORKING or GRACE; member ACTIVE, APPROVED, online, not
+    assignment-paused, not barred for this order or player, under the cap, on
+    USDT holding an address on the order's chain; a CASH buy needs **Ready**;
+    a CASH member with an open buy gets no sell; for a buy, the team's pool
+    must cover it. Ordered by open orders, then least recently assigned.
+  - *The hold is the assignment*: one transaction locks the pool row, moves
+    the buy's tokens available → held (refused in the UPDATE's WHERE),
+    transitions the order with `team_id`, stamps the member's
+    `last_assigned_at` and clears Ready on a CASH buy.
+  - *Money*: a confirmed buy spends the hold (held −a) and credits the
+    player; a cancelled/expired/refused buy releases it (held → available);
+    a settled sell credits the pool (available +a). The treasury moves
+    TEAM_FLOAT ↔ USER_FLOAT with them, so TEAM_FLOAT = Σ pools stays true.
+    A refund of a settled sell takes the tokens back out of the pool.
+  - *Deleted*: `merchant_wallets`, `merchant_wallet_entries`,
+    `merchant_settlements` and the escrow service, the scorer and
+    `assignmentCandidates`, the cash-link queue (QR replaces it in 2d), the
+    payment-mode policy and its screens, the gateway settings, merchant token
+    orders, admin fund/deduct of a merchant, and every test, mutation and
+    panel control that existed only for them.
 - **2d Orders.** Global admin-editable denomination list; CASH 500–10,000 and
   UPI_BANK 50,000–500,000 for both directions; no splitting (split payouts and
   CDM receipts deleted); USDT 100–10,000 step 100; the QR cash link.
