@@ -19,8 +19,8 @@
  * These tests drive `moveDepositMoney` — the ONE function every route that
  * completes a buy goes through (§2) — with its money movers passed in as stubs,
  * so the amount each one is ASKED for is observable. The invariant asserted is
- * the one the platform's closing check depends on: tokens debited from the
- * merchant == tokens credited to the user.
+ * the one the platform's closing check depends on: tokens taken from the
+ * team's pool == tokens credited to the user.
  *
  * They drove `POST /api/payment/deposit/:orderId/confirm`'s handler until
  * 2026-10-01, when that route was deleted: a second confirm route no screen or
@@ -43,17 +43,24 @@ const { moveDepositMoney } = await import('../../domains/payment/depositCredit.j
 const calls = { debit: [], deposit: [], reserve: [] };
 
 /**
- * An order nothing held for this merchant, so its tokens come out of
- * `available` — the debit these amounts are read from. A HELD order is paid out
- * of its hold instead and moves no `available` at all; that path is proven
- * against a real database in `depositConfirmConservationPg`.
+ * The team's side. `spendForBuy` spends the order's WHOLE token amount from
+ * its team's pool — the hold taken at assignment, or `available` when nothing
+ * was held — and nothing else: it reads the amount off the order row itself,
+ * so the split fields cannot change it. So the stub records the order's token
+ * amount as what left the team; that it really is the whole amount, and that
+ * TEAM_FLOAT and USER_FLOAT move by it, is proven against a real database in
+ * `teamRoutingPg` and `depositConfirmConservationPg`.
  */
+let current = null;
 const movers = {
-  debitMerchantTokens: async ({ amount }) => { calls.debit.push(amount); return { merchant: { merchantId: 'm1' } }; },
+  spendPool: async (orderId) => {
+    expect(orderId).toBe(current.orderId);
+    calls.debit.push(current.tokenAmount);
+    return { ok: true, taken: 'held' };
+  },
   creditDeposit: async (userId, amount) => { calls.deposit.push(amount); },
   creditReserve: async (userId, amount) => { calls.reserve.push(amount); },
   releaseUTR: async () => {},
-  dispenseHold: async () => ({ ok: true, noHold: true }),
 };
 
 /**
@@ -85,21 +92,22 @@ beforeEach(() => {
 
 describe('moveDepositMoney — tokens moved, not minted', () => {
   const run = async (o) => {
+    current = o;
     const result = await moveDepositMoney(o, movers);
     expect(result.ok, JSON.stringify(result)).toBe(true);
     return result;
   };
-  it('debits the merchant exactly what it credits the user (90/10 policy)', async () => {
+  it('takes from the team exactly what it credits the user (90/10 policy)', async () => {
     await run(makeOrder());
 
     // The user receives the whole token amount, split across two pockets…
     expect(totalCredited()).toBe(1000);
-    // …so the merchant must part with the whole token amount.
+    // …so the team must part with the whole token amount.
     expect(totalDebited()).toBe(totalCredited());
   });
 
   it('conserves under a reserve-heavy policy too', async () => {
-    // 50/50. Nothing about the split should change how much leaves the merchant.
+    // 50/50. Nothing about the split should change how much leaves the team.
     await run(makeOrder({ depositAllocation: 500, reserveAllocation: 500 }));
 
     expect(totalCredited()).toBe(1000);
@@ -126,7 +134,7 @@ describe('moveDepositMoney — tokens moved, not minted', () => {
   });
 
   it('conserves for an order with NO recorded split — read hydrated (0/0)', async () => {
-    // An order predating the split fields. The merchant is debited the full
+    // An order predating the split fields. The team parts with the full
     // amount either way, so a fallback that credited nothing would BURN tokens
     // — the same invariant broken in the opposite direction from the bug this
     // file was written for, and just as invisible without this assertion.

@@ -15,7 +15,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   RAIL, railOf, railOfOrder, isUsdt, railCopy,
-  formatMoney, formatMoneyCompact, formatWallet, tokenColumn,
+  formatMoney, formatMoneyCompact, formatTokens, tokenColumn,
   isUsdtAddress, receivingAddressFor, truncateMiddle, counterpartyOf,
 } from './rail';
 import type { MerchantProfile, PaymentOrder } from '../types';
@@ -76,27 +76,22 @@ describe('formatMoneyCompact', () => {
   });
 });
 
-describe('formatWallet — the unit the wallet is denominated in', () => {
-  it('labels the INR wallet as BB tokens, NOT rupees', () => {
-    // The INR wallet holds BB tokens (1:1 with rupees but still tokens), so
-    // "₹2,50,000" would mislabel what the merchant actually holds.
-    expect(formatWallet(250000, RAIL.INR)).toBe('2,50,000 BB');
-    expect(formatWallet(0, RAIL.INR)).toBe('0 BB');
+describe('formatTokens — a token figure is BB on either rail', () => {
+  it('renders tokens as BB with Indian grouping, NOT rupees', () => {
+    // Tokens are 1:1 with rupees but still tokens, so "₹2,50,000" would
+    // mislabel a token count.
+    expect(formatTokens(250000)).toBe('2,50,000 BB');
+    expect(formatTokens(0)).toBe('0 BB');
+    expect(formatTokens(null)).toBe('0 BB');
   });
 
-  it('labels the USDT wallet as BB tokens too — the rail is not the unit', () => {
-    // This asserted '1,000 USDT' and was PINNING THE DEFECT (§28). The wallet
-    // holds BB tokens for every merchant: an admin top-up of 1,000,000 writes
-    // 100,000,000 paise of TOKENS whether the merchant settles in rupees or in
-    // USDT, and the deposit escrow reserves tokens against every order. USDT is
-    // what a PLAYER SENDS on a USDT order.
-    //
-    // At ₹90 per USDT this suffix turned a 900,000-token float into
-    // "900,000 USDT" — a float worth about 10,000 USDT, overstated ninety
-    // times, on the merchant's own balance tile. Trap 15 in the line a human
-    // reads.
-    expect(formatWallet(1000, RAIL.USDT)).toBe('1,000 BB');
-    expect(formatWallet(1000, RAIL.USDT)).toBe(formatWallet(1000, RAIL.INR));
+  it('takes no rail, because the rail is not the unit', () => {
+    // A USDT order moves TOKENS on the platform; USDT is what the player sends
+    // the member off-platform. At ₹90 per USDT a "USDT" suffix on a token
+    // figure overstates it ninety times — trap 15 in the line a human reads.
+    // formatTokens has no rail parameter, so the suffix cannot be chosen.
+    expect(formatTokens.length).toBe(1);
+    expect(formatTokens(900000)).toBe('9,00,000 BB');
   });
 });
 

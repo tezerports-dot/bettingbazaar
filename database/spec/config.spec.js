@@ -66,23 +66,6 @@ const s = (def = '') => ({ type: 'string', default: def });
 const sa = (def = []) => ({ type: 'string[]', default: def });
 /** A nested group of settings. */
 const group = (fields) => ({ type: 'group', fields });
-/**
- * A value the PLATFORM writes, living in this document but not a setting.
- *
- * The admin config route derives the fields it will accept from this spec, so
- * that a setting is editable the moment it is declared and nobody has to
- * remember to wire it (CLAUDE.md §2). `internal` is the other half of that:
- * without it, deriving would have handed an operator a text box for
- * `adminTokenSupply.transferred` — how much of the platform's own holding has
- * been handed out. Setting it back to 0 does not correct a count; it tells the
- * platform it still holds tokens it has already given away.
- *
- * So the rule is a property of the DECLARATION, not of any route's memory: a
- * counter the platform maintains is marked here, and every derived accept list
- * skips it. Bounds and defaults still apply — the value is still validated when
- * the code that owns it writes it.
- */
-const internal = (decl) => ({ ...decl, internal: true });
 
 const phaseGroup = (d) => group({
   mergeBeforeEndSec:     n(d.mergeBeforeEndSec, 0),
@@ -158,39 +141,23 @@ export const SYSTEM_CONFIG_SPEC = group({
   // config GET and sets it as the input's `max`.
   maxBalanceAdjustment:  n(1000000, 0),
 
-  // Minted merchant inventory may never exceed the cap.
-  // `cap` is a policy an operator sets. `minted` is the running total the
-  // issuance path maintains — see `internal` above for why it must not be a
-  // text box on a settings screen.
   // ── The platform's entire token supply ───────────────────────────────────
   // **20,000,000,000 tokens exist. None are ever created.** (Owner, 2026-09-23.)
   //
   // `total` is how many there are, full stop — not a ceiling on how many may be
   // made. The platform starts holding all of them and every movement after that
-  // is a TRANSFER: platform → merchant when a merchant buys inventory, merchant
-  // → player when a player buys, and back the other way when they sell. So
+  // is a TRANSFER, through the double-entry treasury: platform → a team's pool
+  // when a supervisor buys, pool → player when a player buys, and back the
+  // other way when they sell. So
   //
-  //     platform holding + every merchant wallet + every player wallet = total
+  //     platform holding + every team pool + every player wallet = total
   //
-  // always, and that is an invariant the books can prove rather than a promise.
-  //
-  // `transferred` is what has left the platform's own holding, maintained by
-  // the transfer path — marked `internal` because setting it back to 0 does not
-  // correct a count, it re-authorises handing out the whole supply a second
-  // time. What the platform still holds is `total - transferred`.
-  adminTokenSupply: group({ total: n(20000000000, 0), transferred: internal(n(0, 0)) }),
+  // always, and the books prove it (`reconcileAgainstSubLedgers`). How much the
+  // platform has handed out is DERIVED from the treasury, never counted here.
+  adminTokenSupply: group({ total: n(20000000000, 0) }),
 
-  // Platform defaults for per-type merchant concurrency; a merchant's own
-  // override lives on the merchant row.
+  // Per-merchant order rules. Concurrency per member is `teamRouting`.
   merchantOrderLimits: group({
-    // No upper bound. The owner's model: on the UPI rail this is whatever an
-    // operator decides a merchant can carry, because they are moving bank
-    // balance rather than holding notes. The cash rail's 1 is derived in
-    // `concurrencyCapFor` and cannot be raised from configuration at all, so
-    // capping the setting only ever limited the rail that has no physical
-    // constraint.
-    maxConcurrentDepositOrders:    n(1, 1),
-    maxConcurrentWithdrawalOrders: n(1, 1),
     // CONSECUTIVE rejections a merchant may make before they are suspended.
     // Consecutive, not total: a merchant who declines three in a row is either
     // gaming the queue or is not in a position to serve it, and either way the
@@ -252,18 +219,13 @@ export const SYSTEM_CONFIG_SPEC = group({
     // Counted separately from `maxConsecutiveRejections` on purpose: an expiry
     // is not a refusal, and mixing them would suspend an honest merchant.
     maxConsecutiveMerchantExpiries:      n(3, 1, 20),
-    minAdminTokenPurchase:     n(50000, 1),
     minUserTokenPurchaseUsdt:  n(100, 100),
     maxUserTokenPurchaseUsdt:  n(0, 0),      // 0 = unlimited
-    minAdminTokenPurchaseUsdt: n(100, 100),
-    maxAdminTokenPurchaseUsdt: n(0, 0),      // 0 = unlimited
   }),
   // ── Team routing (redesign Step 2c) ─────────────────────────────────────
   // An order goes to a TEAM member on the rail its amount and currency put it
-  // on. These were the payment-mode policy's columns; there is no rail switch
-  // any more, so each rail carries its own. Defaults equal that table's column
-  // defaults (schema.sql, payment_mode_policies) so nothing moves on the day
-  // the policy is deleted. Read through `railSettings` in
+  // on. There is no rail switch, so each rail carries its own timers and cap.
+  // Read through `routingSettings` in
   // database/repositories/teamRouting.js — never off this document directly.
   teamRouting: group({
     // How many open orders ONE member may hold at a time on each rail. CASH is
@@ -322,10 +284,7 @@ export const SYSTEM_CONFIG_SPEC = group({
   // MUST divide 60 evenly so blocks tile the hour cleanly. The type label
   // '30_MIN' is a fixed identifier and does NOT rename when this changes.
   cycleDurationMinutes: n(30, 10, 60),
-  // orderExpiryMinutes moved to payment_mode_policies.processing_window_seconds
-  // (2026-09-08): the two settlement rails have different timelines and one
-  // global number cannot express that. The seeded policy carries the value
-  // an admin had already set — see schema.sql.
+  // The payment order windows are per rail, in `teamRouting` below.
   retentionMonths:      n(6, 1, 120),
 
   cyclePhases: group({
@@ -360,10 +319,6 @@ export const SYSTEM_CONFIG_SPEC = group({
   depositMethods:      sa(['UPI', 'BANK_TRANSFER']),
   withdrawalMethods:   sa(['UPI', 'BANK_TRANSFER']),
 
-  // Curated 3–5 merchants eligible for MANUAL assignment. Bounds the manual
-  // endpoints so they never draw from the full pool automatic assignment uses.
-  // Empty = not yet configured, and the endpoints refuse until an admin sets it.
-  queueManagerPool: sa([]),
 });
 
 /** Branding — colours, logos, the platform's name. */

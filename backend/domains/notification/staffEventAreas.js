@@ -29,14 +29,11 @@ export const STAFF_EVENT_AREAS = Object.freeze({
   queue_snapshot: QUEUE,
   queue_order_update: QUEUE,
   new_order: QUEUE,
-  cash_link_demand: QUEUE,
-  payment_mode_changed: { keys: ['canManageBusinessPolicy', 'canManageMerchants'], queueManager: true },
   // Disputes
   order_disputed: DISPUTES,
   order_red_flagged: DISPUTES,
   // Merchants
   merchant_status_changed: MERCHANTS,
-  merchant_limits_updated: MERCHANTS,
   merchant_approved: MERCHANTS,
   merchant_rejected: MERCHANTS,
   merchant_assignment_paused: MERCHANTS,

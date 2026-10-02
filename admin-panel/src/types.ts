@@ -166,39 +166,6 @@ export interface Bet {
 // backend/domains/configuration/depositPolicy.model.js for the source of truth.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// ── Settlement rail ──────────────────────────────────────────────────────────
-// The platform runs ONE of two P2P rails at a time and an admin switches
-// between them. Backend authority: database/repositories/paymentModePolicy.js
-// (payment_mode_policies), whose CHECK is what makes these the only two.
-export type PaymentMode = 'P2P_UPI' | 'CASH_ATM';
-
-export interface PaymentModeTimers {
-  assignmentWaitSeconds: number;
-  processingWindowSeconds: number;
-  utrSubmitSeconds: number;
-  disputeWindowSeconds: number;
-  linkExpirySeconds: number;
-  linkMinRemainingSeconds: number;
-}
-
-export interface PaymentModePolicy extends PaymentModeTimers {
-  _id: string;
-  version: number;
-  status: 'ACTIVE' | 'SUPERSEDED';
-  activeMode: PaymentMode;
-  justification: string;
-  changedBy: string | null;
-  changedByName: string;
-  createdAt: string;
-  supersededAt: string | null;
-}
-
-export interface PaymentModeOption {
-  mode: PaymentMode;
-  label: string;
-  merchantMessage: string;
-}
-
 export type DepositPolicyCurrency = 'INR' | 'USDT';
 
 export interface DepositPolicyReserveUsageRules {
@@ -235,8 +202,11 @@ export interface DepositPolicyVersion {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Merchants
-// Merchants earn from the buy/sell rate SPREAD (merchantProfit on PaymentOrder).
-// There is no commission % — do not show or edit a commission rate.
+// A merchant holds no tokens of their own: they work in a team whose POOL holds
+// them, and routing hands each order to a member of a working team on the
+// order's rail. Checked against the list route's row and `toMerchant`
+// (backend/domains/merchant/merchant.admin.routes.js,
+// database/repositories/merchants.js).
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface Merchant {
@@ -250,6 +220,8 @@ export interface Merchant {
   isOnline: boolean;
   acceptsDeposits: boolean;
   acceptsWithdrawals: boolean;
+  /** Which credential set the merchant keeps — never which orders they get. */
+  merchantType?: 'INR' | 'USDT';
   merchantStats: {
     dailyProcessed: number;
     monthlyProcessed: number;
@@ -259,6 +231,10 @@ export interface Merchant {
 }
 
 export interface MerchantProfile extends Merchant {
+  acceptedCurrencies?: string[];
+  /** Set when three buys in a row expired unpaid; routing skips them until an admin resumes. */
+  assignmentPausedAt?: string | null;
+  assignmentPauseReason?: string | null;
   statistics: {
     totalOrders: number;
     completedOrders: number;
@@ -308,6 +284,12 @@ export interface PaymentOrder {
   fiatAmount: number;
   rateUsed: number;
   merchantProfit: number; // spread retired 2026-07-08 (fixed 1:1) — 0 for new orders, historical audit only
+  /** 'INR' or 'USDT'. On a USDT order `fiatAmount` is in USDT (trap 15). */
+  currency?: 'INR' | 'USDT';
+  /** Stamped at creation and frozen: 'CASH_ATM' or 'P2P_UPI' (orderRails.js). */
+  paymentMode?: 'CASH_ATM' | 'P2P_UPI';
+  /** The team serving it, once routed. */
+  teamId?: string | null;
   status: OrderStatus;
   assignedBy?: string;
   assignedAt?: string;

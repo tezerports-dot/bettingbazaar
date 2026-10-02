@@ -212,32 +212,22 @@ router.get('/analytics/withdrawal-dashboard', authenticate, hasPermission('canVi
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/admin/analytics/merchant-funding
-// Shows ONLY MERCHANT_TOPUP / MERCHANT_RESERVE / MERCHANT_LIQUIDITY.
-// Completely separate from user deposit/withdrawal dashboards.
+// What the platform received and paid for team pool tokens. Separate from the
+// user deposit/withdrawal dashboards.
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/analytics/merchant-funding', authenticate, hasPermission('canViewAnalytics'), async (req, res) => {
   try {
-    // Merchant funding is merchant WALLET movement, which is where it has
-    // always actually been recorded. The aggregate this replaced grouped a
-    // player transaction collection by three type strings that were never
-    // written to it, so all three tiles read zero on a platform that had funded
-    // merchants every day.
-    const [funding, merchants, trade] = await Promise.all([
-      db.merchantWallets.fundingTotals(),
+    // Merchants hold no tokens any more (PROJECT_STATUS §3.10 2c): a team's
+    // pool does, and every pool movement is a supervisor's request fulfilled
+    // with what the platform received or paid. So the funding picture is the
+    // money side of those movements, plus the merchant count.
+    const [merchants, trade] = await Promise.all([
       db.stats.merchantStats(),
-      // The MONEY side of that same funding. The three tiles above count TOKENS
-      // handed to merchants; until the top-up and deduct forms captured a
-      // settlement figure, nothing anywhere recorded what the platform got for
-      // them, so this screen could say how much float was issued and not one
-      // thing about whether it had been paid for.
       db.adminTokenConsiderations.platformConsiderationTotals(),
     ]);
     res.json({
       success: true,
       data: {
-        merchantTopup:     funding.topup,
-        merchantReserve:   funding.reserve,
-        merchantLiquidity: funding.liquidity,
         activeMerchants:   merchants.total,
         // Rupees. `receivedInr` is the INR-EQUIVALENT across every settlement
         // currency and is the only figure that may be added up; `byCurrency`

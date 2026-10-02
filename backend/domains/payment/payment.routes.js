@@ -280,24 +280,7 @@ router.get('/order/:orderId', authenticatePlayer, orderAccessGuard, async (req, 
   try {
     const order = req.p2pOrder;
 
-    // ── The ATM link, for the order's owner and nobody else ────────────────
-    // On the cash rail this link IS the payment: the player opens it, pays,
-    // and the machine dispenses to the merchant standing there. So it has to
-    // reach them — and only them.
-    //
-    // `orderAccessGuard` has already established that this caller owns the
-    // order, which is why the link can be resolved here rather than behind a
-    // second ownership check that could disagree with the first.
-    //
-    // The merchant is NOT named. A player sees where to pay, never who they
-    // are paying — the same rule the merchant side obeys in reverse.
-    let cashLink = null;
-    if (order?.cashLinkId) {
-      const link = await db.cashLinks.getLinkForOrder(order.orderId);
-      if (link) cashLink = { paymentLink: link.paymentLink, expiresAt: link.expiresAt };
-    }
-
-    res.json({ success: true, order: forPlayer(order), cashLink });
+    res.json({ success: true, order: forPlayer(order) });
   } catch (err) {
     console.error('GET /payment/order/:orderId error:', err);
     res.status(500).json({ success: false, message: 'Failed to fetch order' });

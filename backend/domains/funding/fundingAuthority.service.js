@@ -11,7 +11,7 @@
 //     from completed orders — the Funding Platform never writes accounting
 //     logic (2026-07-09 directive: "integrates with Revenue & Settlement but
 //     never owns accounting logic").
-//   - Wallet balances: walletAuthority.service.js / merchantWallet.service.js.
+//   - Balances: walletAuthority.service.js (players) / teamPools.js (teams).
 //   - Configurable rules: Business Policy Platform.
 //
 // Every request flows: risk/validation gate (Risk Platform, Phase 010 —

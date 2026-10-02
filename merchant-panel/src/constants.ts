@@ -32,9 +32,9 @@ export const ENDPOINTS = {
     PROFILE: '/api/merchant/profile',
     STATUS: '/api/merchant/online-status',
     PREFERENCES: '/api/merchant/preferences',
-    // The settlement rail this merchant is on. Read on load: a notification
-    // can be missed and a socket can drop, but the panel always loads.
-    PAYMENT_MODE: '/api/merchant/payment-mode',
+    // A CASH team member's Ready: at the machine and free for a cash buy.
+    // backend/domains/merchant/merchant.routes.js PUT /cash-ready.
+    CASH_READY: '/api/merchant/cash-ready',
   },
   CDM_RECEIPT: {
     // `/api`, not `/api/upload` — upload.routes.js is mounted at `/api`
@@ -48,10 +48,6 @@ export const ENDPOINTS = {
     // admin-and-disputes-manager only, including from the merchant who
     // uploaded it. This lists what is still owed, nothing more.
     OUTSTANDING: '/api/merchant/cdm-receipts/outstanding',
-  },
-  CASH_LINKS: {
-    CURRENT: '/api/merchant/cash-links/current',
-    SUPPLY: '/api/merchant/cash-links',
   },
   ORDERS: {
     LIST: '/api/merchant/orders',
@@ -77,10 +73,6 @@ export const ENDPOINTS = {
   ORDERS_EXTRA: {
     RED_FLAG: (id: string) => `/api/merchant/orders/${id}/red-flag`,
   },
-  // Buying platform tokens from the platform, in USDT. QUOTE prices an amount
-  // before the request exists — the transaction id is required at creation, so
-  // the merchant has to send the USDT first and needs the figure in advance.
-  // The server owns the arithmetic; the panel never recomputes it (§5).
   // Supervisors and teams (redesign Step 2a). Backend:
   // backend/domains/team/team.merchant.routes.js.
   TEAM: {
@@ -94,11 +86,6 @@ export const ENDPOINTS = {
     POOL:          (teamId: string) => `/api/merchant/supervisor/teams/${teamId}/pool`,
     POOL_REQUEST:  (teamId: string) => `/api/merchant/supervisor/teams/${teamId}/pool-requests`,
     POOL_CANCEL:   (requestId: string) => `/api/merchant/supervisor/pool-requests/${requestId}`,
-  },
-  TOKEN_SUPPLY: {
-    LIST:   '/api/merchant/admin-token-orders',
-    QUOTE:  '/api/merchant/admin-token-orders/quote',
-    CREATE: '/api/merchant/admin-token-orders',
   },
 };
 
@@ -164,15 +151,7 @@ export const ROUTES = {
   LOGIN: '/',
   DASHBOARD: '/dashboard',
   ORDERS: '/orders',
-  // The ATM cash rail. Only reachable while the platform is on that rail and
-  // this merchant is approved for a denomination — the screen says which of
-  // those is missing rather than rendering an empty queue, because an empty
-  // queue and "you are not approved" look identical otherwise.
-  CASH_LINKS: '/cash-links',
   HISTORY: '/history',
-  // Where a merchant buys the float they trade with. One request per day, and
-  // an admin decides it.
-  TOKEN_SUPPLY: '/token-supply',
   // Every merchant: a supervisor manages teams here, a member sees theirs.
   TEAM: '/team',
   PROFILE: '/profile',

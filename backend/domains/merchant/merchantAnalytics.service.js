@@ -14,10 +14,8 @@
  * JavaScript with a lookup per row. It is one statement now, and the merchant
  * join is a join.
  *
- * The funding picture read a stored `tokenBalance` off the merchant record.
- * That figure is not where a merchant's money lives, so an operator reviewing
- * whether to top somebody up saw a number no transfer would have found. The
- * balance now comes from `merchant_wallets`, read by name.
+ * A merchant holds no tokens (PROJECT_STATUS §3.10 2c): their team's pool
+ * does, so there is no balance in the funding picture.
  *
  * The performance history grouped by a UTC date. This platform operates in IST,
  * which is UTC+5:30, so every order placed after 18:30 local was charted on the
@@ -25,7 +23,6 @@
  * orders is a zero rather than a gap the chart interpolates across.
  */
 import { db } from '#db';
-import { getMerchantTokenBalance } from '#db/repositories/merchantWallets.js';
 import { merchantTypeOf } from './merchantCurrency.js';
 
 /**
@@ -39,9 +36,8 @@ export function getMerchantLeaderboard(options = {}) {
 }
 
 /**
- * One merchant's funding picture: completed deposit and withdrawal volume,
- * matched buy→sell cycle volume, bonuses issued, current wallet balance, and
- * admin top-up totals.
+ * One merchant's funding picture: completed deposit and withdrawal volume
+ * and matched buy→sell cycle volume.
  *
  * Returns null for a merchant that does not exist, so a caller can answer 404
  * rather than render a page of zeroes for a typo'd id.
@@ -50,11 +46,7 @@ export async function getMerchantFundingStats(merchantId) {
   const merchant = await db.merchants.getMerchant(merchantId);
   if (!merchant) return null;
 
-  const [stats, tokenBalance] = await Promise.all([
-    db.stats.merchantFundingStats(merchantId),
-    // From the wallet, by name. See the header.
-    getMerchantTokenBalance(merchantId),
-  ]);
+  const stats = await db.stats.merchantFundingStats(merchantId);
 
   return {
     ...stats,
@@ -63,7 +55,6 @@ export async function getMerchantFundingStats(merchantId) {
     isOnline: merchant.isOnline,
     successRate: merchant.successRate,
     avgResponseMinutes: merchant.avgResponseMinutes,
-    tokenBalance,
     // The volumes above are summed in the ORDER's currency, which for one
     // merchant is their one rail (§2) — so a screen must say WHICH: a USDT
     // merchant's 555.56 is USDT, and "₹555.56" beside it is trap 15's display

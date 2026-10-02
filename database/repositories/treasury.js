@@ -20,9 +20,9 @@
  * ── The invariant ───────────────────────────────────────────────────────────
  * EVERY MOVEMENT'S LEGS SUM TO ZERO, therefore the entire ledger sums to zero,
  * always. Value is never created or destroyed here — it is only moved between
- * accounts, and a merchant buying inventory is no exception:
+ * accounts, and a team buying inventory is no exception:
  *
- *     merchant buys ₹100  →  TOKEN_SUPPLY -10000, MERCHANT_FLOAT +10000
+ *     team buys ₹100  →  TOKEN_SUPPLY -10000, TEAM_FLOAT +10000
  *
  * TOKEN_SUPPLY is a contra account holding the platform's own tokens. All
  * 20,000,000,000 start there; the negation of its balance is how many have
@@ -34,7 +34,7 @@
  * this module.
  *
  * ── Signed amounts, unlike the wallet ledgers ───────────────────────────────
- * merchant_wallet_entries and wallet_ledger store a positive magnitude with the
+ * team_pool_entries and wallet_ledger store a positive magnitude with the
  * direction in a separate column, because every sum-based check reads the
  * direction from that column. This table is double-entry, and in
  * double entry the sign IS the meaning: the legs of one movement sum to zero,
@@ -47,14 +47,13 @@
  * decrements twice), and if its `.catch(() => {})` ever fires the figure is
  * permanently wrong with nothing to reconcile against. These accounts can say
  * where every token is, which is what makes the conservation invariant —
- * platform holding + every merchant wallet + every player wallet = 20B —
+ * platform holding + every team pool + every player wallet = 20B —
  * something the books prove rather than something a counter asserts.
  */
 import { getPool, pgQuery, connectGuarded } from '../client.js';
 
 export const ACCOUNTS = Object.freeze({
   TOKEN_SUPPLY:      'TOKEN_SUPPLY',
-  MERCHANT_FLOAT:    'MERCHANT_FLOAT',
   USER_FLOAT:        'USER_FLOAT',
   HOUSE_RESERVE:     'HOUSE_RESERVE',
   COMMISSION_POOL:   'COMMISSION_POOL',
@@ -278,22 +277,6 @@ const move = (from, to) => (amountPaise, args) => {
   requirePositive(amountPaise, args.operation ?? 'treasury movement');
   return postMovement({ ...args, legs: { [from]: -amountPaise, [to]: amountPaise } });
 };
-
-/** Admin mints tokens into merchant float. The only way supply increases. */
-export const transferToMerchantFloat = (amountPaise, args = {}) =>
-  move(ACCOUNTS.TOKEN_SUPPLY, ACCOUNTS.MERCHANT_FLOAT)(amountPaise, { operation: 'MINT', ...args });
-
-/** Tokens destroyed — supply decreases. The exact inverse of a mint. */
-export const burnFromMerchantFloat = (amountPaise, args = {}) =>
-  move(ACCOUNTS.MERCHANT_FLOAT, ACCOUNTS.TOKEN_SUPPLY)(amountPaise, { operation: 'BURN', ...args });
-
-/** A merchant dispensed tokens to a user (deposit completed). */
-export const merchantDispensedToUser = (amountPaise, args = {}) =>
-  move(ACCOUNTS.MERCHANT_FLOAT, ACCOUNTS.USER_FLOAT)(amountPaise, { operation: 'DEPOSIT_DISPENSED', ...args });
-
-/** A user's tokens went to a merchant (withdrawal settled). */
-export const userPaidMerchant = (amountPaise, args = {}) =>
-  move(ACCOUNTS.USER_FLOAT, ACCOUNTS.MERCHANT_FLOAT)(amountPaise, { operation: 'WITHDRAWAL_SETTLED', ...args });
 
 /** A losing stake. The house takes what the user staked. */
 export const stakeLostToHouse = (amountPaise, args = {}) =>

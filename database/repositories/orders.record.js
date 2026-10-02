@@ -27,7 +27,7 @@
 import { pgQuery } from '../client.js';
 import { rupeesToPaise, paiseToRupees } from '../../backend/shared/money.js';
 import { deriveOrderHmac } from '../../backend/middleware/order-crypto-access.js';
-import { stampForNewOrder, stampFromPolicy } from './paymentModePolicy.js';
+import { paymentModeFor } from './orderRails.js';
 
 const num = (v) => Number(v ?? 0);
 const rupees = (v) => paiseToRupees(num(v));
@@ -133,11 +133,6 @@ export function toOrder(r) {
     // else, and a chain that moved after assignment would point a player at an
     // address on a network they cannot reach.
     usdtChain: r.usdt_chain ?? null,
-    paymentModeVersion: r.payment_mode_version === null ? null : Number(r.payment_mode_version),
-    // The ATM link serving this order, on the cash rail. The id only — the
-    // link itself lives in `cash_link_queue` and is resolved for the ORDER'S
-    // OWNER alone, because it is a claim on notes about to leave a machine.
-    cashLinkId: r.cash_link_id ?? null,
 
     // The siblings of one withdrawal request, as a LABEL.
     //
@@ -254,9 +249,6 @@ const SETTABLE = Object.freeze({
   // it is written with the row like any other detail; it decides nothing.
   withdrawalBatchRef: 'withdrawal_batch_ref',
 
-  // The ATM link serving this order. Settable so the claim path can stamp it;
-  // the link itself lives in `cash_link_queue`.
-  cashLinkId: 'cash_link_id',
 
   // The queue rank and what it is a retry of. Written with the row at creation;
   // neither is meant to change afterwards, but they go through the same
@@ -347,32 +339,12 @@ export async function prepareOrderRecord(input) {
 async function newOrderStatement({
   orderId, userId, type, tokenAmountRupees, fiatAmountRupees = 0,
   state = 'PENDING_QUEUE',
-  // The rail to stamp on this order, for tests that need to build one on a
-  // rail other than the live policy's. Deliberately NOT part of `detail`: it
-  // is not a SETTABLE field, because nothing may update it afterwards.
-  //
-  // A MODE string ('CASH_ATM'), not a policy object. It used to be handed to a
-  // `stampForNewOrder` that read `.activeMode` off it, so every value passed
-  // here was silently discarded and the order opened on the live rail instead —
-  // a cash-rail fixture that was in fact a UPI order. `stampForNewOrder` now
-  // takes the mode and throws on one it does not know.
-  paymentMode = null,
   // The chain a USDT order is paid on, chosen by the player. A named parameter
-  // and NOT a SETTABLE field, for the same reason `paymentMode` is one: nothing
-  // may change it afterwards. The snapshot carries the merchant's address for
-  // this chain alone, so repointing the order would hand a player an address on
-  // a network they did not choose — and USDT sent on the wrong network is gone.
-  // A trigger refuses the update too; this keeps the allowlist from being one
-  // edit away from permitting it.
+  // and NOT a SETTABLE field: nothing may change it afterwards. The snapshot
+  // carries the member's address for this chain alone, so repointing the order
+  // would hand a player an address on a network they did not choose — and USDT
+  // sent on the wrong network is gone. A trigger refuses the update too.
   usdtChain = null,
-  // The POLICY the caller already validated this order against — its mode AND
-  // its version — when there is one. The service reads the rail to judge the
-  // amount (a cash buy must be a denomination a machine dispenses), and this
-  // function then read the rail again to stamp the row: an admin switch between
-  // the two reads stamped an order on a rail it was never checked for (review
-  // C1). A caller that validated passes what it validated; one that did not
-  // leaves this null and the live rail is read here, as before.
-  railPolicy = null,
   ...detail
 }) {
   if (!orderId) throw new Error('createOrderRecord requires an orderId');
@@ -385,21 +357,16 @@ async function newOrderStatement({
     throw new TypeError(`createOrderRecord: tokenAmount must be positive, got ${tokenAmountRupees}`);
   }
 
-  // ── The rail this order is born on, snapshotted here and nowhere else ─────
-  // Read HERE rather than taken from the caller. A parameter every caller must
-  // remember is a parameter one caller forgets, and the failure is silent: the
-  // column has a DEFAULT, so a forgotten snapshot produces a P2P_UPI order on
-  // a CASH_ATM platform that looks exactly like a correct one.
-  //
-  // The row is immutable afterwards (order_states_mode_immutable), so an admin
-  // switching rails mid-flight cannot change what this order is running under.
-  const stamp = railPolicy
-    ? stampFromPolicy(railPolicy)
-    : await stampForNewOrder(paymentMode);
+  // ── The rail this order is born on, derived here and nowhere else ────────
+  // From the order itself (`paymentModeFor`): its currency and its size. There
+  // is no platform-wide switch to read and no parameter a caller could forget
+  // or a fixture could set to a rail the order's size would never get (§32
+  // S16). The row is immutable afterwards (order_states_mode_immutable).
+  const paymentMode = paymentModeFor({ currency: detail.currency, tokenAmountPaise: tokenPaise });
   const columns = ['order_id', 'user_id', 'order_type', 'state', 'token_amount_paise', 'fiat_amount_paise',
-    'payment_mode', 'payment_mode_version', 'usdt_chain', 'order_hmac'];
+    'payment_mode', 'usdt_chain', 'order_hmac'];
   const params = [String(orderId), String(userId), type, state, tokenPaise, rupeesToPaise(fiatAmountRupees),
-    stamp.mode, stamp.version, usdtChain, deriveOrderHmac(orderId)];
+    paymentMode, usdtChain, deriveOrderHmac(orderId)];
 
   // The same allowlist `setOrderFields` uses, so a field this create accepts is
   // one an update accepts and vice versa — and an unknown one is refused here
@@ -425,34 +392,21 @@ async function newOrderStatement({
 }
 
 /**
- * Buy orders still waiting for a cash link, best claim first.
+ * The queue the assignment sweep walks: every order, either direction, still
+ * waiting for a team member (§3.10, 2c).
  *
- * ── Why this query has to exist at all ────────────────────────────────────
- * The link claim ran exactly once per order, at creation. An order created when
- * no merchant had a link at its denomination therefore never got one: nothing
- * looked again when the link it had been waiting for was supplied a minute
- * later. The player watched a live order sit at PENDING_QUEUE until it expired,
- * while a merchant stood at a machine with a link nobody took.
- *
- * This is the queue the matcher walks. Ordering is the rule the design states:
- * a retry outranks a first-time order, because sending somebody who already
- * waited and got nothing to the back of the same queue is how they wait twice
- * and get nothing twice. Age breaks the tie, so within a rank it stays
- * first-come-first-served.
- *
- * `cash_link_id IS NULL` is what makes it a WAITING list rather than a list of
- * orders — an order that already holds a link is not looking for one.
+ * Ordering is the rule the design states: a retry outranks a first-time order,
+ * because sending somebody who already waited and got nothing to the back of
+ * the same queue is how they wait twice and get nothing twice. Age breaks the
+ * tie, so within a rank it stays first-come-first-served.
  */
-export async function ordersAwaitingCashLink({ limit = 100 } = {}) {
+export async function queuedOrdersForAssignment({ limit = 200 } = {}) {
   const { rows } = await pgQuery(
     `SELECT * FROM order_states
-      WHERE order_type = 'DEPOSIT'
-        AND state = 'PENDING_QUEUE'
-        AND payment_mode = 'CASH_ATM'
-        AND cash_link_id IS NULL
+      WHERE state = 'PENDING_QUEUE'
       ORDER BY assignment_priority DESC, created_at ASC
-      LIMIT ${Math.min(Math.max(Number(limit) || 100, 1), 500)}`,
-    [], 'orders_awaiting_cash_link',
+      LIMIT ${Math.min(Math.max(Number(limit) || 200, 1), 500)}`,
+    [], 'orders_queued_for_assignment',
   );
   return rows.map(toOrder);
 }
@@ -1408,20 +1362,16 @@ export async function findExpiredOrders({ limit = 100, assignmentWaitSeconds = 1
   //    query: the state list admitted the order, the deadline test threw it back
   //    out. Every check here was green.
   //
-  //    The window is the ORDER's own rail's, from the policy version stamped on
-  //    it, falling back to the caller's figure for a row written before versions
-  //    existed. An order held across a rail switch keeps the process it was
-  //    created under, deadlines included.
+  //    The window is `SystemConfig.teamRouting.assignmentWaitSeconds`, passed
+  //    in by the caller.
   const { rows } = await pgQuery(
     `SELECT o.* FROM order_states o
-       LEFT JOIN payment_mode_policies p ON p.version = o.payment_mode_version
       WHERE o.state IN ('PENDING_QUEUE', 'ASSIGNED', 'PROCESSING')
         AND (
               (o.expires_at IS NOT NULL AND o.expires_at <= now())
               OR (o.expires_at IS NULL
                   AND o.state = 'PENDING_QUEUE'
-                  AND o.created_at < now() - make_interval(
-                        secs => COALESCE(p.assignment_wait_seconds, $2)))
+                  AND o.created_at < now() - make_interval(secs => $2))
             )
       ORDER BY COALESCE(o.expires_at, o.created_at) ASC LIMIT $1`,
     [
@@ -1434,22 +1384,15 @@ export async function findExpiredOrders({ limit = 100, assignmentWaitSeconds = 1
 }
 
 /**
- * What a merchant may see in their queue.
- *
- * Two sets, and they are different in kind: the orders ASSIGNED to them, plus
- * the OPEN withdrawal pool on their own rail — orders nobody holds yet, which
- * any merchant on that rail may claim. Mixing the two in one query is what the
- * panel needs; keeping them separate would make the merchant poll twice and
- * see the pool at a different instant from their own work.
- *
- * The rail filter is not cosmetic: an INR merchant claiming a USDT order cannot
- * settle it, and the player waits for a payment that will never come.
+ * What a member may see in their queue: the orders assigned to them, and
+ * nothing else. Every order reaches a member through team routing, so there is
+ * no open pool to show (§3.10, 2c).
  */
 export async function merchantVisibleOrders({
-  merchantId, rail = 'INR', state = null, orderType = null,
+  merchantId, state = null, orderType = null,
   limit = 50, offset = 0,
 }) {
-  const params = [String(merchantId), String(rail)];
+  const params = [String(merchantId)];
   const filters = [];
   if (state) { params.push(String(state)); filters.push(`state = $${params.length}`); }
   if (orderType) { params.push(String(orderType)); filters.push(`order_type = $${params.length}`); }
@@ -1459,11 +1402,7 @@ export async function merchantVisibleOrders({
 
   const { rows } = await pgQuery(
     `SELECT *, COUNT(*) OVER () AS total_count FROM order_states
-      WHERE (
-              merchant_id = $1
-              OR (merchant_id IS NULL AND order_type = 'WITHDRAWAL'
-                  AND state = 'PENDING_QUEUE' AND currency = $2)
-            )
+      WHERE merchant_id = $1
         ${filters.length ? `AND ${filters.join(' AND ')}` : ''}
       ORDER BY created_at DESC, order_id DESC
       LIMIT ${size} OFFSET ${skip}`,
@@ -1497,78 +1436,6 @@ export async function countRecentOrders(userId, { withinMinutes = 60 } = {}) {
     'order_recent_count',
   );
   return rows[0].n;
-}
-
-/**
- * Matched volume per merchant AND VARIETY: the smaller of what they took in and
- * what they paid out within one kind of work, which is what a completed
- * buy→sell cycle actually is.
- *
- * The commission engine pays on this figure, so it is computed in one statement
- * over completed orders rather than assembled from two aggregates and a loop
- * that defaulted the side it did not find.
- *
- * ── Matched WITHIN a variety, never across ─────────────────────────────────
- * Grouping only by merchant would pair a ₹500 cash run to an ATM with a UPI
- * payout and pay one rate for two different jobs. The pairing is what the rate
- * is applied to, so it has to happen inside the variety the rate prices.
- *
- * ── token_amount_paise, and why NOT fiat_amount_paise ──────────────────────
- * `fiat_amount_paise` is "what the payer sends, in the ORDER's currency". On a
- * USDT order that is USDT — 500, for 50,000 tokens — so summing it across
- * currencies adds USDT to rupees. The previous version of this query did
- * exactly that: a 50,000-token USDT deposit contributed ₹500 of "matched
- * volume" instead of ₹50,000, understating that merchant's work by a hundred
- * times, in a figure a percentage is then paid on. It is the same mistake as
- * posting `fiat_amount_paise` to the ledger as rupees, and it was silent for
- * the same reason: the number is plausible and nothing sums it against
- * anything.
- *
- * `token_amount_paise` is the platform's own unit of account — tokens at the
- * peg, so INR-equivalent on BOTH rails — which is what a rupee-denominated
- * commission drawn from a rupee-denominated pool has to be a percentage of.
- *
- * ── The denomination is derived, not stored ────────────────────────────────
- * A cash order IS a denomination: `fiat_amount_paise` on the CASH_ATM rail is
- * one of the five amounts a machine deals in, by construction. A USDT order's
- * size is its token count. The UPI rail is a range and has no denomination,
- * which is the NULL. Deriving it here rather than adding a column keeps one
- * owner for the value — the order's own amount.
- */
-export async function merchantMatchedVolumesByVariety() {
-  const { rows } = await pgQuery(
-    `SELECT merchant_id,
-            currency,
-            payment_mode,
-            CASE
-              WHEN currency = 'USDT'         THEN token_amount_paise
-              WHEN payment_mode = 'CASH_ATM' THEN fiat_amount_paise
-              ELSE NULL
-            END AS denomination_paise,
-            COALESCE(SUM(token_amount_paise) FILTER (WHERE order_type = 'DEPOSIT'), 0)    AS deposit_paise,
-            COALESCE(SUM(token_amount_paise) FILTER (WHERE order_type = 'WITHDRAWAL'), 0) AS withdrawal_paise
-       FROM order_states
-      WHERE state = 'COMPLETED' AND merchant_id IS NOT NULL
-        AND order_type IN ('DEPOSIT', 'WITHDRAWAL')
-      GROUP BY merchant_id, currency, payment_mode, 4`,
-    [], 'order_merchant_matched_volumes_by_variety',
-  );
-  return rows.map((r) => {
-    // BIGINT arrives from node-postgres as a STRING. Uncast, '900' >= 1000 is
-    // true and every comparison downstream is wrong, so it is cast once, here,
-    // where the row is read.
-    const depositMinor = Number(r.deposit_paise);
-    const withdrawalMinor = Number(r.withdrawal_paise);
-    return {
-      merchantId: r.merchant_id,
-      currency: r.currency,
-      paymentMode: r.payment_mode,
-      denominationPaise: r.denomination_paise === null ? null : Number(r.denomination_paise),
-      depositMinor,
-      withdrawalMinor,
-      matchedMinor: Math.min(depositMinor, withdrawalMinor),
-    };
-  });
 }
 
 /** Counts for the admin dashboard, in one pass. */

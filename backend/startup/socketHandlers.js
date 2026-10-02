@@ -9,7 +9,6 @@ import { cycleSnapshotPublisher } from '../domains/markets/cycleSnapshotPublishe
 import { fetchCycleHistory } from '../domains/markets/cycleHistory.service.js';
 import { getSystemConfig } from '#db/repositories/config.js';
 import { systemConfigPayload, systemConfigFallback } from '../domains/configuration/systemConfigPayload.js';
-import { getActivePolicy as getActivePaymentModePolicy } from '#db/repositories/paymentModePolicy.js';
 import { roomsForViewer } from '../domains/notification/staffEventAreas.js';
 import { PERMISSION_KEYS } from '../domains/identity/staffPermissions.js';
 
@@ -35,7 +34,7 @@ export function attachSocketHandlers(io, cycleGenerator, gameEngine) {
         // had already drifted — this one carried webUrl/androidUrl/iosUrl, that
         // one carried kycRequired/registrationEnabled, so what a client learned
         // about the platform depended on the transport it asked over.
-        const configData = systemConfigPayload(await getSystemConfig(), await getActivePaymentModePolicy());
+        const configData = systemConfigPayload(await getSystemConfig());
         global.cachedSystemConfig = configData;
         socket.emit('system_config', configData);
       } catch (e) {

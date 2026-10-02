@@ -30,7 +30,7 @@
  * actual sum of user wallets, and the merchant/treasury accounts against
  * theirs, is what makes it an audit rather than an assertion.
  */
-import { pgQuery, getPool, connectGuarded } from '../client.js';
+import { pgQuery } from '../client.js';
 import { ACCOUNTS, ACCOUNT_CODES, EVENT_TYPES } from '../../backend/domains/revenue/chartOfAccounts.js';
 
 /** pg returns BIGINT as a string; every amount crosses this boundary as paise. */
@@ -227,20 +227,6 @@ export async function accountBalancePaise(code) {
 }
 
 /**
- * reconcileAgainstSubLedgers — does the general ledger agree with the
- * sub-ledgers it summarises?
- *
- * The trial balance proves the ledger is internally consistent. It says nothing
- * about whether it describes reality: a ledger can conserve perfectly to zero
- * while claiming users hold ₹5,000 they do not have. This compares the summary
- * accounts against the actual balances in the wallets, merchant pockets and
- * treasury, which is the check that makes it an audit.
- *
- * Every comparison is in integer paise and every query is a plain read — no
- * transaction is held, so this can run on a replica and cannot contend with a
- * money path.
- */
-/**
  * Period activity per account: movement, not just a closing balance.
  *
  * ── Why movement and not balance ────────────────────────────────────────────
@@ -253,162 +239,6 @@ export async function accountBalancePaise(code) {
  * flag, so the two always add back to the net and there is no third field to
  * disagree with them.
  */
-/**
- * The bonus high-water mark per merchant, read from the IDEMPOTENCY KEY.
- *
- * -- Why not from metadata --------------------------------------------------
- * The engine passed `cumulativeMatchedMinor` in a `metadata` object and read it
- * back with `$metadata.cumulativeMatchedMinor`. There is no metadata column on
- * an accounting event and nothing stores one — so every mark came back
- * undefined, defaulted to 0, and the engine would treat a merchant's ENTIRE
- * lifetime matched volume as newly matched on every pass. Enabling the bonus
- * engine would have paid every merchant their whole history again, each run.
- * It ships disabled, which is the only reason this never fired.
- *
- * The mark is recovered from `acct_bonusissue_<merchantId>_<cumulative>`
- * instead. That key already exists, is UNIQUE, and is the very thing that makes
- * the payment idempotent — so the mark and the idempotency cannot disagree,
- * which a separate metadata field could.
- */
-/**
- * Commission the LEDGER says was issued and the merchant's WALLET never got.
- *
- * The engine writes the ledger event first and the wallet credit second, on
- * one key. The high-water mark is derived from the ledger event, so once the
- * event exists the engine sees no new volume — and a wallet credit that failed
- * after it was never tried again. The merchant was recorded as paid and was
- * not, permanently (R6, F-041; trap 19's shape). This is the list of those, for
- * the engine to deliver on the same key.
- *
- * `movement_id` is the caller's key on every merchant wallet movement.
- */
-export async function undeliveredCommissions({ limit = 200 } = {}) {
-  const { rows } = await pgQuery(
-    `SELECT e.idempotency_key, e.ref_id AS merchant_id, e.amount_paise
-       FROM accounting_events e
-      WHERE e.event_type = 'MERCHANT_BONUS_ISSUED'
-        AND e.idempotency_key LIKE 'acct\\_commission\\_%~%~%'
-        AND NOT EXISTS (SELECT 1 FROM merchant_wallet_entries w
-                         WHERE w.movement_id = e.idempotency_key)
-      ORDER BY e.id
-      LIMIT $1`,
-    [Math.min(Math.max(Number(limit) || 200, 1), 1000)], 'ledger_commission_undelivered',
-  );
-  return rows.map((r) => ({
-    idempotencyKey: r.idempotency_key, merchantId: r.merchant_id, amountPaise: Number(r.amount_paise),
-  }));
-}
-
-/** An arbitrary constant, the commission engine's own advisory-lock id. */
-const COMMISSION_RUN_LOCK = 734_120_915;
-
-/**
- * Run `fn` only if no other commission pass is running, on any instance.
- *
- * The cron has a leader lock; the admin's "run now" route did not, so the two
- * could overlap — and the pool check is a read, which two passes can both pass.
- * A session-level advisory lock on a dedicated connection, released in a
- * `finally`, and a `try` lock rather than a wait: a second pass has nothing to
- * add, and a caller told "already running" can act on that.
- *
- * @returns {{locked:false}} | {{locked:true, value:any}}
- */
-export async function withCommissionRunLock(fn) {
-  const pool = await getPool();
-  if (!pool) throw new Error('Postgres not configured (DATABASE_URL unset)');
-  const client = await connectGuarded(pool);
-  // ── The lock dies with the SESSION, so a doubtful session dies too ────────
-  // The unlock used to be best-effort (`.catch(() => {})`) and the connection
-  // went back to the pool either way. When the unlock failed, that pooled
-  // session kept the lock, and every later pass on any other connection was
-  // told "another pass is running" until the connection happened to be
-  // recycled: commission silently stopped being paid. Destroying the
-  // connection ends the session, and Postgres drops a session's advisory locks
-  // with it — so the lock is always released by one route or the other.
-  let destroy = false;
-  try {
-    let got;
-    try {
-      ({ rows: [{ got }] } = await client.query('SELECT pg_try_advisory_lock($1) AS got', [COMMISSION_RUN_LOCK]));
-    } catch (error) {
-      // The lock request itself failed: whether this session holds the lock
-      // is unknown, so it is not pooled.
-      destroy = true;
-      throw error;
-    }
-    if (!got) return { locked: false };
-    try {
-      return { locked: true, value: await fn() };
-    } finally {
-      // `fn` runs on its own connections; whatever it did, this session's only
-      // job now is to give the lock back — confirmed, or the session goes.
-      const unlocked = await client.query('SELECT pg_advisory_unlock($1) AS released', [COMMISSION_RUN_LOCK])
-        .then((r) => r.rows[0]?.released === true, () => false);
-      if (!unlocked) destroy = true;
-    }
-  } finally {
-    client.release(destroy);
-  }
-}
-
-export async function commissionHighWaterMarks() {
-  const { rows } = await pgQuery(
-    `SELECT ref_id AS merchant_id,
-            split_part(idempotency_key, '~', 2) AS variety,
-            MAX(NULLIF(split_part(idempotency_key, '~', 3), '')::BIGINT) AS mark
-       FROM accounting_events
-      WHERE event_type = 'MERCHANT_BONUS_ISSUED'
-        AND idempotency_key LIKE 'acct\\_commission\\_%~%~%'
-      GROUP BY ref_id, split_part(idempotency_key, '~', 2)`,
-    [], 'ledger_commission_high_water',
-  );
-  const marks = {};
-  // MAX, not "the most recent": an issuance out of order — a replay, a repair —
-  // must never LOWER the mark, because lowering it re-pays the difference on the
-  // very next pass.
-  //
-  // Keyed per MERCHANT AND VARIETY. One mark per merchant would let a payment
-  // for a merchant's cash work advance the mark on their UPI work, and the UPI
-  // volume underneath it would then never be paid at all — money withheld
-  // silently, with a ledger that reads as complete.
-  //
-  // `split_part` rather than a regexp, and `~` rather than `_` as the
-  // separator: a merchant id can itself contain an underscore, so a pattern
-  // has to guess where the id ends. Splitting on a character the id cannot
-  // contain removes the guess.
-  for (const r of rows) {
-    marks[r.merchant_id] = marks[r.merchant_id] || {};
-    marks[r.merchant_id][r.variety] = Number(r.mark) || 0;
-  }
-  return marks;
-}
-
-/**
- * Merchants carrying an issuance from the RETIRED flat-rate bonus engine.
- *
- * That engine paid on total matched volume with no variety in the key, so its
- * marks cannot be split across the varieties this one pays per. A merchant
- * holding one would be treated as having been paid nothing, and their entire
- * history would be re-paid on the first pass — which is the exact failure the
- * high-water mark exists to prevent, arriving through the door left open by
- * replacing it.
- *
- * The retired engine shipped disabled and its mark always read zero, so this
- * should return nothing. "Should" is doing real work in that sentence: the cost
- * of being wrong is paying every merchant their whole history again, so the
- * engine asks rather than assumes, and refuses the merchants it finds.
- */
-export async function legacyBonusIssuedMerchants() {
-  const { rows } = await pgQuery(
-    `SELECT DISTINCT ref_id AS merchant_id
-       FROM accounting_events
-      WHERE event_type = 'MERCHANT_BONUS_ISSUED'
-        AND idempotency_key LIKE 'acct\\_bonusissue\\_%'`,
-    [], 'ledger_legacy_bonus_merchants',
-  );
-  return rows.map((r) => r.merchant_id);
-}
-
 export async function accountActivity({ from = null, to = null } = {}) {
   const where = []; const params = [];
   if (from) { params.push(new Date(from)); where.push(`created_at >= $${params.length}`); }
@@ -541,15 +371,26 @@ export async function postingExport({ from = null, to = null, limit = 10000 } = 
   }));
 }
 
+/**
+ * reconcileAgainstSubLedgers — does the general ledger agree with the
+ * sub-ledgers it summarises?
+ *
+ * The trial balance proves the ledger is internally consistent. It says nothing
+ * about whether it describes reality: a ledger can conserve perfectly to zero
+ * while claiming users hold ₹5,000 they do not have. This compares the summary
+ * accounts against the actual balances in the wallets, merchant pockets and
+ * treasury, which is the check that makes it an audit.
+ *
+ * Every comparison is in integer paise and every query is a plain read — no
+ * transaction is held, so this can run on a replica and cannot contend with a
+ * money path.
+ */
 export async function reconcileAgainstSubLedgers() {
-  const [ledger, wallets, merchants, treasury, pools] = await Promise.all([
+  const [ledger, wallets, treasury, pools] = await Promise.all([
     trialBalance(),
     pgQuery(
       `SELECT COALESCE(SUM(deposit_paise + winnings_paise + reserve_paise + locked_paise), 0) AS total
          FROM wallets`, [], 'ledger_recon_wallets'),
-    pgQuery(
-      `SELECT COALESCE(SUM(available_paise + reserved_paise + settlement_paise), 0) AS total
-         FROM merchant_wallets`, [], 'ledger_recon_merchants'),
     pgQuery(
       `SELECT account, balance_paise FROM treasury_accounts`, [], 'ledger_recon_treasury'),
     pgQuery(
@@ -569,12 +410,6 @@ export async function reconcileAgainstSubLedgers() {
       ledgerPaise: ledger.accounts.USER_FUNDS.reportedPaise + ledger.accounts.PLATFORM_RESERVE.reportedPaise,
       subLedgerPaise: toPaise(wallets.rows[0]?.total),
       subLedger: 'wallets (deposit + winnings + reserve + locked)',
-    },
-    {
-      name: 'merchant_float',
-      ledgerPaise: treasuryBy.MERCHANT_FLOAT ?? 0,
-      subLedgerPaise: toPaise(merchants.rows[0]?.total),
-      subLedger: 'merchant_wallets (available + reserved + settlement)',
     },
     {
       name: 'team_float',

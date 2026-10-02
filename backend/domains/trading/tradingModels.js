@@ -35,4 +35,4 @@ export const SETTLEMENT_STATUS = Object.freeze({
 //   2. The Revenue & Settlement Platform DERIVES append-only ledger entries
 //      from those records via idempotent reconciliation (see
 //      revenueSettlement.service.js) — products never write accounting.
-//   3. Wallet effects go through walletAuthority / merchantWallet only.
+//   3. Wallet effects go through walletAuthority / teamPools only.

@@ -12,11 +12,9 @@ import { FlaggedPlayers } from './Pages/Users/FlaggedPlayers';
 import { PhantomAgents } from './Pages/Users/PhantomAgents';
 import { TeamsManager } from './Pages/Teams/TeamsManager';
 import { MerchantsList } from './Pages/Merchants/MerchantsList';
-import { MerchantTokenOrders } from './Pages/Merchants/MerchantTokenOrders';
 import { LiveCycles } from './Pages/Cycles/LiveCycles';
 import { CycleHistory } from './Pages/Cycles/CycleHistory';
 import { DepositPolicy } from './Pages/BusinessPolicy/DepositPolicy';
-import { SettlementRail } from './Pages/BusinessPolicy/SettlementRail';
 import { TransactionsList } from './Pages/Finance/TransactionsList';
 import { ProfitLoss } from './Pages/Finance/ProfitLoss';
 import { TokenFlow } from './Pages/Finance/TokenFlow';
@@ -41,7 +39,6 @@ import { AppAssetsPage } from './Pages/AppAssets/AppAssetsPage';
 import { AndroidAppPage } from './Pages/AndroidApp/AndroidAppPage';
 import { BlockedIpsPage } from './Pages/Security/BlockedIpsPage';
 // ── NEW FEATURE PAGES ──────────────────────────────────────────────────────
-import { PaymentControlCenter } from './Pages/Payment/PaymentControlCenter';
 import { AnnouncementsPage } from './Pages/Promotions/AnnouncementsPage';
 import { BalanceAdjustment } from './Pages/Users/BalanceAdjustment';
 import { GameProviders }           from './Pages/GameProviders/GameProviders';
@@ -247,14 +244,6 @@ const App: React.FC = () => {
           </PermRoute>
         } />
 
-        {/* Identity and payout control plane. Each screen is its own area, so an
-            admin decides who works in it (owner, 2026-10-01). These release
-            national identity numbers, move tokens and pay real money; every
-            staff account owes a second factor (twoFactorPolicy), sub-admins
-            included, and the routes refuse by the same keys. */}
-        <Route path="/merchant-token-orders" element={
-          <PermRoute permission="canManageMerchantTokenOrders"><Layout><MerchantTokenOrders /></Layout></PermRoute>
-        } />
         {/* Reading back who can place cosmetic bets. The grant is made from the
             Users list; this is the roster and the way to take it away. */}
         <Route path="/teams" element={
@@ -364,11 +353,6 @@ const App: React.FC = () => {
         <Route path="/business-policy/deposit" element={
           <PermRoute permission="canManageBusinessPolicy"><Layout><DepositPolicy /></Layout></PermRoute>
         } />
-        {/* The settlement rail: one switch moves the whole platform between the
-            UPI rail and the ATM cash rail. Orders in flight keep their own. */}
-        <Route path="/business-policy/settlement-rail" element={
-          <PermRoute permission="canManageBusinessPolicy"><Layout><SettlementRail /></Layout></PermRoute>
-        } />
         <Route path="/sub-admins" element={
           <AdminOnly><Layout><SubAdminsList /></Layout></AdminOnly>
         } />
@@ -435,11 +419,6 @@ const App: React.FC = () => {
         {/* ── GAME REGISTRY (catalogue + categories) — admin only */}
         <Route path="/games" element={
           <PermRoute permission="canManageGames"><Layout><GamesManager /></Layout></PermRoute>
-        } />
-
-        {}
-        <Route path="/payment-control" element={
-          <PermRoute permission="canManagePaymentSystem"><Layout><PaymentControlCenter /></Layout></PermRoute>
         } />
 
         {/* ── PROMOTIONS — canManageContent sub-admins can manage these ── */}

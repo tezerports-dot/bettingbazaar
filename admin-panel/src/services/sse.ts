@@ -59,7 +59,7 @@ class SSEService {
       const adminEvents = [
         'new_order', 'queue_order_update', 'queue_snapshot',
         'admin_cycle_update', 'admin_new_cycle', 'admin_cycle_result',
-        'merchant_status_changed', 'merchant_limits_updated',
+        'merchant_status_changed',
       ];
       for (const ev of adminEvents) {
         this.adminSse.addEventListener(ev, (e: MessageEvent) => {

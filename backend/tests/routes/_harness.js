@@ -28,7 +28,6 @@ import { createUser, updateUser, setRoles } from '#db/repositories/users.js';
 import {
   createMerchant, updateMerchant, newMerchantId, generateMerchantPublicRef,
 } from '#db/repositories/merchants.js';
-import { creditMerchantTokens } from '../../domains/merchant/merchantWallet.service.js';
 
 /**
  * A mobile number nothing else in the run holds.
@@ -156,9 +155,12 @@ export async function actor({
  * suspended or unapproved merchant fails the test rather than passing it.
  */
 export async function merchantActor({
-  status = 'ACTIVE', approval = 'APPROVED', name = null, tokensRupees = 0,
+  status = 'ACTIVE', approval = 'APPROVED', name = null, tokensRupees,
   suspensionReason = 'route test suspension',
 } = {}) {
+  // A merchant holds no tokens any more: a team's pool does. A test that wants
+  // a merchant to serve buys puts them in a working team (../teamFixture.js).
+  if (tokensRupees !== undefined) throw new Error('merchantActor: tokensRupees is gone — use teamFixture().workingTeam({ include: [merchantId], poolTokens })');
   const merchantId = newMerchantId();
   const mobile = uniqueMobile('8');
   await createMerchant({
@@ -170,12 +172,6 @@ export async function merchantActor({
   });
   if (status === 'SUSPENDED') await updateMerchant(merchantId, { status, suspensionReason });
   if (approval !== 'PENDING') await updateMerchant(merchantId, { merchantApprovalStatus: approval });
-  if (tokensRupees > 0) {
-    await creditMerchantTokens({
-      merchantId, amount: tokensRupees, reason: 'route test float',
-      refModel: 'Test', refId: merchantId, txId: `rt_float_${merchantId}`,
-    });
-  }
   const token = signToken({ merchantId, userId: merchantId, mobile, isMerchant: true, isAdmin: false });
   return { merchantId, mobile, token, auth: `Bearer ${token}` };
 }

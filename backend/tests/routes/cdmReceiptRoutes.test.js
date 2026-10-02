@@ -17,13 +17,23 @@
  * check "the endpoint strips it" — they check the receipt cannot be found in
  * any response either party can obtain, which is the property that actually
  * holds and the one that survives somebody adding a new endpoint.
+ *
+ * ── How a payout reaches the state a slip is owed for (§3.10, 2c) ──────────
+ * Through the real path, so the row is one the platform can produce (§32
+ * S16): the player's ₹5,000 withdrawal is a CASH order by its size, it is
+ * ROUTED to the one online member of a working CASH team, the member accepts
+ * and confirms through their own routes, and — with the withdrawal hold set to
+ * zero for this suite — the confirm settles it there and then: the team pool
+ * is credited, the player's stake consumed, the order COMPLETED.
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
-import { pgConfigured, applySchema, closePg } from '#db/client.js';
-import { createOrderRecord, getOrderRecord, getCdmReceipt } from '#db/repositories/orders.record.js';
-import {
-  PAYMENT_MODES, getActivePolicy, publishPolicyVersion,
-} from '#db/repositories/paymentModePolicy.js';
+import { pgConfigured, applySchema, closePg, pgQuery } from '#db/client.js';
+import { getOrderRecord, getCdmReceipt } from '#db/repositories/orders.record.js';
+import { updateUser } from '#db/repositories/users.js';
+import { getSystemConfig, applySystemConfig } from '#db/repositories/config.js';
+import { PAYMENT_MODES } from '#db/repositories/teamRouting.js';
+import { createWithdrawalOrder } from '../../domains/payment/paymentProcessing.service.js';
+import { teamFixture } from '../teamFixture.js';
 import { mountRouter, actor, merchantActor, as } from './_harness.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
@@ -39,11 +49,17 @@ vi.mock('../../services/cdn.service.js', async (importOriginal) => {
 });
 
 describePg('the CDM receipt', () => {
+  const teams = teamFixture();
   let merchantApp;
   let adminApp;
-  let restore = null;
-  let seq = 0;
-  const oid = () => `cdm-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}-${seq += 1}`;
+  let restoreHold = null;
+  const players = [];
+  // The members of one working CASH team. A cash member holds ONE open order
+  // at a time, and every payout here completes before the next is made — so
+  // they are handed out in turn and reused.
+  const members = [];
+  let turn = 0;
+  const nextMember = () => members[(turn++) % members.length];
 
   const RECEIPT_URL = 'https://cdn.test/cdm-receipt/slip.jpg';
   /**
@@ -60,45 +76,70 @@ describePg('the CDM receipt', () => {
     transactionId, receiptFileKey: 'cdm-receipt/slip.jpg', receiptCdnUrl: RECEIPT_URL,
   });
 
-  const payout = async (merchant, player, state = 'COMPLETED') => {
-    const orderId = oid();
-    await createOrderRecord({
-      orderId, userId: player.userId, type: 'WITHDRAWAL',
-      tokenAmountRupees: 5000, fiatAmountRupees: 5000,
-      state, merchantId: merchant.merchantId,
-      completedAt: state === 'COMPLETED' ? new Date() : undefined,
+  /**
+   * A ₹5,000 cash payout served by `merchant`: COMPLETED (the slip is owed), or
+   * left at PROCESSING (accepted, the cash not yet deposited).
+   */
+  const payout = async (merchant, state = 'COMPLETED') => {
+    const player = await actor({});
+    players.push(player.userId);
+    await updateUser(player.userId, {
+      bankDetails: {
+        accountNumber: '000111222333', ifscCode: 'HDFC0000001',
+        bankName: 'HDFC Bank', accountHolderName: 'Test Player',
+      },
     });
-    return orderId;
+    const { creditWinnings } = await import('../../domains/wallet/walletAuthority.service.js');
+    await creditWinnings(player.userId, 5000, 'CDM receipt suite seed', 'Test',
+      `seed_${player.userId}`, `cdm_seed_${player.userId}`);
+    await teams.onlyOnline([merchant.merchantId]);
+    const { order } = await createWithdrawalOrder(player.userId, 5000);
+    const orderId = order.orderId ?? order._id;
+    const routed = await getOrderRecord(orderId);
+    expect(routed.merchantId, 'the payout was not routed to the member').toBe(String(merchant.merchantId));
+    expect(routed.paymentMode).toBe(PAYMENT_MODES.CASH_ATM);
+    expect((await as(merchantApp, merchant).post(`/accept/${orderId}`).send({})).status).toBe(200);
+    if (state === 'COMPLETED') {
+      const confirmed = await as(merchantApp, merchant).post(`/confirm/${orderId}`).send({});
+      expect(confirmed.status, JSON.stringify(confirmed.body)).toBe(200);
+      expect((await getOrderRecord(orderId)).status).toBe('COMPLETED');
+    }
+    return { orderId, player };
   };
 
   beforeAll(async () => {
     await applySchema();
     merchantApp = mountRouter((await import('../../domains/merchant/merchant.routes.js')).default);
     adminApp = mountRouter((await import('../../routes/admin/index.js')).default);
-    restore = await getActivePolicy();
-    await publishPolicyVersion({
-      activeMode: PAYMENT_MODES.CASH_ATM,
-      justification: 'CDM receipt suite.', changedByName: 'test setup',
-    });
-  }, 60_000);
+    for (let i = 0; i < 6; i += 1) members.push(await merchantActor({}));
+    await teams.workingTeam({ rail: 'CASH', include: members.map((m) => m.merchantId) });
+    // The hold switched off (admin-editable down to 0): the confirm settles the
+    // payout itself, which is the moment a slip becomes owed. Put back after,
+    // outside any assertion — the config row is shared by every suite (trap 10).
+    restoreHold = (await getSystemConfig({ fresh: true }))?.withdrawalHoldMinutes ?? null;
+    await applySystemConfig({ withdrawalHoldMinutes: 0 });
+  }, 120_000);
 
   afterAll(async () => {
-    if (restore) {
-      await publishPolicyVersion({
-        activeMode: restore.activeMode,
-        justification: 'Restoring the rail this suite found in force.',
-        changedByName: 'test teardown',
-      });
+    if (restoreHold !== null) await applySystemConfig({ withdrawalHoldMinutes: restoreHold });
+    await pgQuery('SET session_replication_role = replica');
+    try {
+      await pgQuery(
+        'DELETE FROM order_transitions WHERE order_id IN (SELECT order_id FROM order_states WHERE user_id = ANY($1))',
+        [players]);
+      await pgQuery('DELETE FROM order_states WHERE user_id = ANY($1)', [players]);
+    } finally {
+      await pgQuery('SET session_replication_role = DEFAULT');
     }
+    await teams.cleanup();
     await closePg();
   });
 
   it('records a receipt bound to this merchant and this order', async () => {
     cdn.verify.mockResolvedValue({ cdnUrl: RECEIPT_URL, fileKey: 'cdm-receipt/slip.jpg' });
     const good = slip();
-    const merchant = await merchantActor({});
-    const player = await actor({});
-    const orderId = await payout(merchant, player);
+    const merchant = nextMember();
+    const orderId = (await payout(merchant)).orderId;
 
     const res = await as(merchantApp, merchant).post(`/orders/${orderId}/cdm-receipt`).send(good);
     expect(res.status).toBe(200);
@@ -123,13 +164,12 @@ describePg('the CDM receipt', () => {
     // payouts — one deposit, two players marked paid.
     cdn.verify.mockResolvedValue({ cdnUrl: RECEIPT_URL, fileKey: 'cdm-receipt/slip.jpg' });
     const good = slip();
-    const merchant = await merchantActor({});
-    const player = await actor({});
+    const merchant = nextMember();
 
-    const first = await payout(merchant, player);
+    const first = (await payout(merchant)).orderId;
     expect((await as(merchantApp, merchant).post(`/orders/${first}/cdm-receipt`).send(good)).status).toBe(200);
 
-    const second = await payout(merchant, player);
+    const second = (await payout(merchant)).orderId;
     const res = await as(merchantApp, merchant).post(`/orders/${second}/cdm-receipt`).send(good);
     expect(res.status).toBe(409);
     expect(res.body.reason).toBe('DUPLICATE_UTR');
@@ -145,9 +185,8 @@ describePg('the CDM receipt', () => {
   it('never returns the receipt to the merchant who uploaded it', async () => {
     cdn.verify.mockResolvedValue({ cdnUrl: RECEIPT_URL, fileKey: 'cdm-receipt/slip.jpg' });
     const good = slip();
-    const merchant = await merchantActor({});
-    const player = await actor({});
-    const orderId = await payout(merchant, player);
+    const merchant = nextMember();
+    const orderId = (await payout(merchant)).orderId;
 
     const submit = await as(merchantApp, merchant).post(`/orders/${orderId}/cdm-receipt`).send(good);
     expect(submit.status).toBe(200);
@@ -166,9 +205,8 @@ describePg('the CDM receipt', () => {
   it('keeps it out of the order record every projection is built from', async () => {
     cdn.verify.mockResolvedValue({ cdnUrl: RECEIPT_URL, fileKey: 'cdm-receipt/slip.jpg' });
     const good = slip();
-    const merchant = await merchantActor({});
-    const player = await actor({});
-    const orderId = await payout(merchant, player);
+    const merchant = nextMember();
+    const orderId = (await payout(merchant)).orderId;
     await as(merchantApp, merchant).post(`/orders/${orderId}/cdm-receipt`).send(good);
 
     // This is the property the whole design rests on: `toOrder` does not map
@@ -182,10 +220,9 @@ describePg('the CDM receipt', () => {
   it('gives it to an admin, and records that they looked', async () => {
     cdn.verify.mockResolvedValue({ cdnUrl: RECEIPT_URL, fileKey: 'cdm-receipt/slip.jpg' });
     const good = slip();
-    const merchant = await merchantActor({});
-    const player = await actor({});
+    const merchant = nextMember();
     const admin = await actor({ isAdmin: true });
-    const orderId = await payout(merchant, player);
+    const orderId = (await payout(merchant)).orderId;
     await as(merchantApp, merchant).post(`/orders/${orderId}/cdm-receipt`).send(good);
 
     const res = await as(adminApp, admin).get(`/orders/${orderId}/cdm-receipt`);
@@ -197,9 +234,8 @@ describePg('the CDM receipt', () => {
   it('refuses it to a sub-admin without the disputes permission', async () => {
     cdn.verify.mockResolvedValue({ cdnUrl: RECEIPT_URL, fileKey: 'cdm-receipt/slip.jpg' });
     const good = slip();
-    const merchant = await merchantActor({});
-    const player = await actor({});
-    const orderId = await payout(merchant, player);
+    const merchant = nextMember();
+    const orderId = (await payout(merchant)).orderId;
     await as(merchantApp, merchant).post(`/orders/${orderId}/cdm-receipt`).send(good);
 
     const other = await actor({ isSubAdmin: true, permissions: { canViewAnalytics: true } });
@@ -216,9 +252,8 @@ describePg('the CDM receipt', () => {
   it('refuses a transaction id with no image, and an image with no id', async () => {
     cdn.verify.mockResolvedValue({ cdnUrl: RECEIPT_URL, fileKey: 'cdm-receipt/slip.jpg' });
     const good = slip();
-    const merchant = await merchantActor({});
-    const player = await actor({});
-    const orderId = await payout(merchant, player);
+    const merchant = nextMember();
+    const orderId = (await payout(merchant)).orderId;
 
     const noImage = await as(merchantApp, merchant).post(`/orders/${orderId}/cdm-receipt`)
       .send({ transactionId: txn() });
@@ -238,10 +273,9 @@ describePg('the CDM receipt', () => {
   it('will not let one merchant attach a receipt to another\'s order', async () => {
     cdn.verify.mockResolvedValue({ cdnUrl: RECEIPT_URL, fileKey: 'cdm-receipt/slip.jpg' });
     const good = slip();
-    const owner = await merchantActor({});
-    const other = await merchantActor({});
-    const player = await actor({});
-    const orderId = await payout(owner, player);
+    const owner = nextMember();
+    const other = nextMember();
+    const orderId = (await payout(owner)).orderId;
 
     const res = await as(merchantApp, other).post(`/orders/${orderId}/cdm-receipt`).send(good);
     expect(res.status).toBe(404);
@@ -252,10 +286,9 @@ describePg('the CDM receipt', () => {
     // A settled order with no receipt is expected: the confirm completes the
     // order and the evidence follows. An error here would make a normal state
     // look like a fault.
-    const merchant = await merchantActor({});
-    const player = await actor({});
+    const merchant = nextMember();
     const admin = await actor({ isAdmin: true });
-    const orderId = await payout(merchant, player);
+    const orderId = (await payout(merchant)).orderId;
 
     const res = await as(adminApp, admin).get(`/orders/${orderId}/cdm-receipt`);
     expect(res.status).toBe(200);
@@ -265,11 +298,10 @@ describePg('the CDM receipt', () => {
   it('tells a merchant which of their own payouts still needs a slip', async () => {
     cdn.verify.mockResolvedValue({ cdnUrl: RECEIPT_URL, fileKey: 'cdm-receipt/slip.jpg' });
     const good = slip();
-    const merchant = await merchantActor({});
-    const player = await actor({});
+    const merchant = nextMember();
 
-    const owed = await payout(merchant, player);
-    const evidenced = await payout(merchant, player);
+    const owed = (await payout(merchant)).orderId;
+    const evidenced = (await payout(merchant)).orderId;
     await as(merchantApp, merchant).post(`/orders/${evidenced}/cdm-receipt`).send(good);
 
     // The confirm COMPLETES the order and the slip is chased afterwards, so
@@ -286,9 +318,8 @@ describePg('the CDM receipt', () => {
   });
 
   it('never re-identifies the player through the list of slips owed', async () => {
-    const merchant = await merchantActor({});
-    const player = await actor({});
-    const owed = await payout(merchant, player);
+    const merchant = nextMember();
+    const { orderId: owed, player } = await payout(merchant);
 
     const res = await as(merchantApp, merchant).get('/cdm-receipts/outstanding');
     expect(res.status).toBe(200);
@@ -301,10 +332,9 @@ describePg('the CDM receipt', () => {
   });
 
   it('shows a merchant only their OWN outstanding slips', async () => {
-    const owner = await merchantActor({});
-    const other = await merchantActor({});
-    const player = await actor({});
-    const orderId = await payout(owner, player);
+    const owner = nextMember();
+    const other = nextMember();
+    const orderId = (await payout(owner)).orderId;
 
     const res = await as(merchantApp, other).get('/cdm-receipts/outstanding');
     expect(res.status).toBe(200);
@@ -312,11 +342,10 @@ describePg('the CDM receipt', () => {
   });
 
   it('does not chase a slip for a payout that has not completed', async () => {
-    const merchant = await merchantActor({});
-    const player = await actor({});
+    const merchant = nextMember();
     // PROCESSING — the merchant has not said the cash is in the account yet, so
     // there is no deposit to have a slip for.
-    const open = await payout(merchant, player, 'PROCESSING');
+    const { orderId: open } = await payout(merchant, 'PROCESSING');
 
     const res = await as(merchantApp, merchant).get('/cdm-receipts/outstanding');
     expect(res.status).toBe(200);
@@ -324,10 +353,9 @@ describePg('the CDM receipt', () => {
   });
 
   it('lists payouts that were settled and never evidenced', async () => {
-    const merchant = await merchantActor({});
-    const player = await actor({});
+    const merchant = nextMember();
     const admin = await actor({ isAdmin: true });
-    const orderId = await payout(merchant, player);
+    const orderId = (await payout(merchant)).orderId;
 
     // A merchant appearing here repeatedly is asserting payments they are not
     // evidencing — which nothing would otherwise notice, because a missing

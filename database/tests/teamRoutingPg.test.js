@@ -13,7 +13,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomBytes } from 'node:crypto';
 import { pgConfigured, pgQuery, applySchema, closePg } from '../client.js';
 import {
-  createMerchant, updateMerchant, newMerchantId, generateMerchantPublicRef,
+  createMerchant, updateMerchant, newMerchantId, generateMerchantPublicRef, getMerchant,
 } from '../repositories/merchants.js';
 import { setSupervisorRole, createTeam, addMember, approveMember, removeMember } from '../repositories/teams.js';
 import {
@@ -70,11 +70,14 @@ describePg('team routing and pool holds (PostgreSQL)', () => {
     return { sup, teamId, members };
   };
 
-  const order = async (type, tokens, { mode = 'P2P_UPI', currency = 'INR', usdtChain = null } = {}) => {
+  // The rail is derived from the size (`paymentModeFor`): up to 10,000 tokens
+  // is CASH, above it UPI_BANK. The UPI cases below therefore use amounts
+  // above 10,000.
+  const order = async (type, tokens, { currency = 'INR', usdtChain = null } = {}) => {
     const orderId = `TR_${randomBytes(6).toString('hex')}`;
     orders.push(orderId);
     return createOrderRecord({
-      orderId, userId: `u_${orderId}`, type, tokenAmountRupees: tokens, paymentMode: mode, currency, usdtChain,
+      orderId, userId: `u_${orderId}`, type, tokenAmountRupees: tokens, currency, usdtChain,
     });
   };
   const assign = (o, cap = 3, barred = []) => assignToTeam(o, {
@@ -143,7 +146,7 @@ describePg('team routing and pool holds (PostgreSQL)', () => {
     await addMember({ teamId, supervisorId: sup, merchantRef: m, actor: sup });
     await approveMember({ merchantId: m, actor: 'a' });
     await online([m]);
-    const o = await order('WITHDRAWAL', 1000);
+    const o = await order('WITHDRAWAL', 100000);
     const cands = await routingCandidates(await getOrderRecord(o.orderId), { cap: 3 });
     expect(cands.map((c) => c.merchantId)).not.toContain(m);
     expect(cands.every((c) => c.teamId !== teamId)).toBe(true);
@@ -152,27 +155,27 @@ describePg('team routing and pool holds (PostgreSQL)', () => {
   it('a team that drops below ten keeps working today (grace)', async () => {
     const t = await workingTeam('UPI_BANK', 0);
     expect((await removeMember({ merchantId: t.members[0], supervisorId: t.sup })).ok).toBe(true);
-    const cands = await routingCandidates(await order('WITHDRAWAL', 700), { cap: 3, limit: 500 });
+    const cands = await routingCandidates(await order('WITHDRAWAL', 70000), { cap: 3, limit: 500 });
     expect(cands.some((c) => c.teamId === t.teamId)).toBe(true);
   });
 
   it('a buy is not routed to a team whose pool cannot cover it, and stays queued', async () => {
-    const t = await workingTeam('UPI_BANK', 1000);
-    const o = await order('DEPOSIT', 1001);
+    const t = await workingTeam('UPI_BANK', 100000);
+    const o = await order('DEPOSIT', 100100);
     const cands = await routingCandidates(o, { cap: 3, limit: 500 });
     expect(cands.some((c) => c.teamId === t.teamId)).toBe(false);
   });
 
   it('only teams on the order\'s rail are candidates', async () => {
     const cash = await workingTeam('CASH', 100000);
-    const o = await order('WITHDRAWAL', 500);  // UPI_BANK rail
+    const o = await order('WITHDRAWAL', 50000);  // UPI_BANK rail
     const cands = await routingCandidates(o, { cap: 3, limit: 500 });
     expect(cands.some((c) => c.teamId === cash.teamId)).toBe(false);
   });
 
   it('a CASH buy needs a member who pressed Ready, and the assignment switches it off', async () => {
     const t = await workingTeam('CASH', 10000);
-    const o = await order('DEPOSIT', 500, { mode: 'CASH_ATM' });
+    const o = await order('DEPOSIT', 500);
     const none = await routingCandidates(o, { cap: 1, limit: 500 });
     expect(none.some((c) => c.teamId === t.teamId)).toBe(false);
     expect(await setCashReady(t.members[3], true)).toEqual({ ok: true, ready: true });
@@ -180,6 +183,13 @@ describePg('team routing and pool holds (PostgreSQL)', () => {
     expect(out).toMatchObject({ ok: true, merchantId: t.members[3], teamId: t.teamId });
     const { rows } = await pgQuery('SELECT cash_ready FROM merchants WHERE merchant_id = $1', [t.members[3]]);
     expect(rows[0].cash_ready).toBe(false);
+  });
+
+  it('the merchant read carries Ready, so the panel shows what routing sees (S36)', async () => {
+    const t = await workingTeam('CASH', 0);
+    expect((await getMerchant(t.members[0])).cashReady).toBe(false);
+    await setCashReady(t.members[0], true);
+    expect((await getMerchant(t.members[0])).cashReady).toBe(true);
   });
 
   it('Ready is refused to a merchant who is not in a CASH team', async () => {
@@ -190,10 +200,10 @@ describePg('team routing and pool holds (PostgreSQL)', () => {
   it('a CASH member holding an open buy is not given a sell', async () => {
     const t = await workingTeam('CASH', 10000);
     for (const m of t.members) await setCashReady(m, true);
-    const buy = await order('DEPOSIT', 500, { mode: 'CASH_ATM' });
+    const buy = await order('DEPOSIT', 500);
     const got = await assign(buy, 1);
     expect(got.ok).toBe(true);
-    const sell = await order('WITHDRAWAL', 500, { mode: 'CASH_ATM' });
+    const sell = await order('WITHDRAWAL', 500);
     const cands = await routingCandidates(sell, { cap: 5, limit: 500 });
     expect(cands.map((c) => c.merchantId)).not.toContain(got.merchantId);
   });
@@ -203,37 +213,37 @@ describePg('team routing and pool holds (PostgreSQL)', () => {
     // Take everyone else offline but two.
     await online(t.members.slice(2), false);
     const [a, b] = t.members;
-    const first = await assign(await order('WITHDRAWAL', 600), 3);
-    const second = await assign(await order('WITHDRAWAL', 600), 3);
+    const first = await assign(await order('WITHDRAWAL', 60000), 3);
+    const second = await assign(await order('WITHDRAWAL', 60000), 3);
     expect(new Set([first.merchantId, second.merchantId])).toEqual(new Set([a, b]));
     // Both hold one; the next goes to whoever was assigned FIRST (least recently).
-    const third = await assign(await order('WITHDRAWAL', 600), 3);
+    const third = await assign(await order('WITHDRAWAL', 60000), 3);
     expect(third.merchantId).toBe(first.merchantId);
   });
 
   it('a barred merchant is never chosen', async () => {
     const t = await workingTeam('UPI_BANK', 0);
     await online(t.members.slice(1), false);
-    const o = await order('WITHDRAWAL', 600);
+    const o = await order('WITHDRAWAL', 60000);
     expect(await assign(o, 3, [t.members[0]])).toMatchObject({ ok: false });
     expect((await getOrderRecord(o.orderId)).status).toBe('PENDING_QUEUE');
   });
 
   // ── Races ────────────────────────────────────────────────────────────────
   it('12 buys racing for a team with room for 5 hold exactly 5, and the pool never goes negative', async () => {
-    const t = await workingTeam('UPI_BANK', 5000);
-    const os = await Promise.all(Array.from({ length: 12 }, () => order('DEPOSIT', 1000)));
+    const t = await workingTeam('UPI_BANK', 500000);
+    const os = await Promise.all(Array.from({ length: 12 }, () => order('DEPOSIT', 100000)));
     const results = await Promise.all(os.map((o) => assign(o, 3)));
     // Other suites' teams may also take some; count only this team's.
     const ours = results.filter((r) => r.ok && r.teamId === t.teamId);
     expect(ours).toHaveLength(5);
-    expect(await getPool(t.teamId)).toMatchObject({ availablePaise: 0, heldPaise: T(5000) });
+    expect(await getPool(t.teamId)).toMatchObject({ availablePaise: 0, heldPaise: T(500000) });
   });
 
   it('a member with cap 1 is given one of two racing orders, never both', async () => {
     const t = await workingTeam('UPI_BANK', 0);
     await online(t.members.slice(1), false);
-    const os = await Promise.all([order('WITHDRAWAL', 500), order('WITHDRAWAL', 500)]);
+    const os = await Promise.all([order('WITHDRAWAL', 50000), order('WITHDRAWAL', 50000)]);
     const results = await Promise.all(os.map((o) => assign(o, 1)));
     const toHer = results.filter((r) => r.ok && r.merchantId === t.members[0]);
     expect(toHer).toHaveLength(1);
@@ -241,25 +251,25 @@ describePg('team routing and pool holds (PostgreSQL)', () => {
 
   // ── Ending a buy ─────────────────────────────────────────────────────────
   it('a cancelled buy releases its hold once, however many paths release it', async () => {
-    const t = await workingTeam('UPI_BANK', 3000);
-    const o = await order('DEPOSIT', 3000);
+    const t = await workingTeam('UPI_BANK', 300000);
+    const o = await order('DEPOSIT', 300000);
     expect((await assign(o)).teamId).toBe(t.teamId);
     await transitionOrder(o.orderId, 'CANCELLED', { actor: 'test' });
     const results = await Promise.all([releaseBuyHold(o.orderId), releaseBuyHold(o.orderId), releaseBuyHold(o.orderId)]);
     expect(results.filter((r) => r.releasedPaise > 0)).toHaveLength(1);
-    expect(await getPool(t.teamId)).toMatchObject({ availablePaise: T(3000), heldPaise: 0 });
+    expect(await getPool(t.teamId)).toMatchObject({ availablePaise: T(300000), heldPaise: 0 });
   });
 
   it('a confirmed buy spends the hold: pool and TEAM_FLOAT down, USER_FLOAT up, once', async () => {
-    const t = await workingTeam('UPI_BANK', 2000);
-    const o = await order('DEPOSIT', 2000);
+    const t = await workingTeam('UPI_BANK', 200000);
+    const o = await order('DEPOSIT', 200000);
     expect((await assign(o)).teamId).toBe(t.teamId);
     const before = await getTreasuryBalances();
     expect(await spendForBuy(o.orderId)).toMatchObject({ ok: true, taken: 'hold' });
     expect(await spendForBuy(o.orderId)).toEqual({ ok: true, alreadyTaken: true });
     const after = await getTreasuryBalances();
-    expect(after[ACCOUNTS.TEAM_FLOAT] - before[ACCOUNTS.TEAM_FLOAT]).toBe(-T(2000));
-    expect(after[ACCOUNTS.USER_FLOAT] - before[ACCOUNTS.USER_FLOAT]).toBe(T(2000));
+    expect(after[ACCOUNTS.TEAM_FLOAT] - before[ACCOUNTS.TEAM_FLOAT]).toBe(-T(200000));
+    expect(after[ACCOUNTS.USER_FLOAT] - before[ACCOUNTS.USER_FLOAT]).toBe(T(200000));
     expect(await getPool(t.teamId)).toMatchObject({ availablePaise: 0, heldPaise: 0 });
     expect((await getOrderRecord(o.orderId)).poolHeldPaise).toBe(0);
     // Spent, so a late release finds nothing.
@@ -267,12 +277,12 @@ describePg('team routing and pool holds (PostgreSQL)', () => {
   });
 
   it('a buy whose hold was released is paid from available, or refused if the pool is short', async () => {
-    const t = await workingTeam('UPI_BANK', 1000);
-    const o = await order('DEPOSIT', 1000);
+    const t = await workingTeam('UPI_BANK', 100000);
+    const o = await order('DEPOSIT', 100000);
     expect((await assign(o)).teamId).toBe(t.teamId);
     await releaseBuyHold(o.orderId);
     // Another order takes the tokens back out.
-    const other = await order('DEPOSIT', 1000);
+    const other = await order('DEPOSIT', 100000);
     expect((await assign(other)).teamId).toBe(t.teamId);
     expect(await spendForBuy(o.orderId)).toEqual({ ok: false, reason: 'pool_short' });
     await releaseBuyHold(other.orderId);
@@ -280,19 +290,19 @@ describePg('team routing and pool holds (PostgreSQL)', () => {
   });
 
   it('the sweep finds a hold left on a cancelled order, and not one on a live order', async () => {
-    const t = await workingTeam('UPI_BANK', 2000);
-    const live = await order('DEPOSIT', 1000);
-    const dead = await order('DEPOSIT', 1000);
+    const t = await workingTeam('UPI_BANK', 200000);
+    const live = await order('DEPOSIT', 100000);
+    const dead = await order('DEPOSIT', 100000);
     await assign(live); await assign(dead);
     await transitionOrder(dead.orderId, 'CANCELLED', { actor: 'test' });
     const stranded = await findStrandedBuyHolds({ limit: 1000 });
-    expect(stranded.find((s) => s.orderId === dead.orderId)).toMatchObject({ teamId: t.teamId, heldPaise: T(1000), state: 'CANCELLED' });
+    expect(stranded.find((s) => s.orderId === dead.orderId)).toMatchObject({ teamId: t.teamId, heldPaise: T(100000), state: 'CANCELLED' });
     expect(stranded.map((s) => s.orderId)).not.toContain(live.orderId);
   });
 
   it('a COMPLETED buy still holding is reported for a person, never treated as stranded', async () => {
-    const t = await workingTeam('UPI_BANK', 700);
-    const o = await order('DEPOSIT', 700);
+    const t = await workingTeam('UPI_BANK', 70000);
+    const o = await order('DEPOSIT', 70000);
     expect((await assign(o)).teamId).toBe(t.teamId);
     expect((await transitionOrder(o.orderId, 'PAID', { actor: 'test', set: { utr: `UTR${Date.now()}` } })).ok).toBe(true);
     expect((await transitionOrder(o.orderId, 'COMPLETED', { actor: 'test' })).ok).toBe(true);
@@ -303,17 +313,17 @@ describePg('team routing and pool holds (PostgreSQL)', () => {
   // ── Sells ────────────────────────────────────────────────────────────────
   it('a settled sell credits the pool once; a refund takes it back only while the pool holds it', async () => {
     const t = await workingTeam('UPI_BANK', 0);
-    const o = await order('WITHDRAWAL', 800);
+    const o = await order('WITHDRAWAL', 80000);
     const a = await assign(o);
     expect(a.teamId).toBe(t.teamId);
     expect((await getOrderRecord(o.orderId)).poolHeldPaise).toBe(0);
     const before = await getTreasuryBalances();
     expect((await creditSellToPool(o.orderId)).ok).toBe(true);
     expect(await creditSellToPool(o.orderId)).toEqual({ ok: true, alreadyCredited: true });
-    expect((await getPool(t.teamId)).availablePaise).toBe(T(800));
+    expect((await getPool(t.teamId)).availablePaise).toBe(T(80000));
     const mid = await getTreasuryBalances();
-    expect(mid[ACCOUNTS.TEAM_FLOAT] - before[ACCOUNTS.TEAM_FLOAT]).toBe(T(800));
-    expect(mid[ACCOUNTS.USER_FLOAT] - before[ACCOUNTS.USER_FLOAT]).toBe(-T(800));
+    expect(mid[ACCOUNTS.TEAM_FLOAT] - before[ACCOUNTS.TEAM_FLOAT]).toBe(T(80000));
+    expect(mid[ACCOUNTS.USER_FLOAT] - before[ACCOUNTS.USER_FLOAT]).toBe(-T(80000));
 
     expect((await reverseSellFromPool(o.orderId)).ok).toBe(true);
     expect(await reverseSellFromPool(o.orderId)).toEqual({ ok: true, alreadyReversed: true });
@@ -323,12 +333,67 @@ describePg('team routing and pool holds (PostgreSQL)', () => {
 
   it('a refund of a sell the team already used is refused, and nothing moves', async () => {
     const t = await workingTeam('UPI_BANK', 0);
-    const sell = await order('WITHDRAWAL', 600);
+    const sell = await order('WITHDRAWAL', 60000);
     await assign(sell);
     await creditSellToPool(sell.orderId);
-    const buy = await order('DEPOSIT', 600);
-    expect((await assign(buy)).teamId).toBe(t.teamId);  // holds the 600
+    const buy = await order('DEPOSIT', 60000);
+    expect((await assign(buy)).teamId).toBe(t.teamId);  // holds the 60,000
     expect(await reverseSellFromPool(sell.orderId)).toEqual({ ok: false, reason: 'pool_short' });
-    expect(await getPool(t.teamId)).toMatchObject({ availablePaise: 0, heldPaise: T(600) });
+    expect(await getPool(t.teamId)).toMatchObject({ availablePaise: 0, heldPaise: T(60000) });
+  });
+
+  it('a USDT order reaches only a member holding an address on ITS chain (§25)', async () => {
+    const t = await workingTeam('USDT', 200000);
+    const [tron, bsc] = t.members;
+    await pgQuery('UPDATE merchants SET usdt_address_trc20 = $2 WHERE merchant_id = $1', [tron, `T${'A'.repeat(33)}`]);
+    await pgQuery('UPDATE merchants SET usdt_address_bep20 = $2 WHERE merchant_id = $1', [bsc, `0x${'b'.repeat(40)}`]);
+
+    const onTron = await order('DEPOSIT', 50000, { currency: 'USDT', usdtChain: 'TRC20' });
+    expect(await assign(onTron)).toMatchObject({ ok: true, merchantId: tron, teamId: t.teamId });
+    const onBsc = await order('DEPOSIT', 50000, { currency: 'USDT', usdtChain: 'BEP20' });
+    expect(await assign(onBsc)).toMatchObject({ ok: true, merchantId: bsc, teamId: t.teamId });
+
+    // Nobody else holds a Tron address, and the one who does is still free
+    // (cap 3): the next Tron order goes to them again, never to a member who
+    // would show the player nothing to send to.
+    const again = await order('DEPOSIT', 50000, { currency: 'USDT', usdtChain: 'TRC20' });
+    expect(await assign(again)).toMatchObject({ ok: true, merchantId: tron });
+  });
+
+  it('an unknown chain is a throw, never an empty list that reads as "nobody is free"', async () => {
+    await expect(routingCandidates(
+      { orderId: 'x', type: 'DEPOSIT', currency: 'USDT', paymentMode: 'P2P_UPI', usdtChain: 'ERC20', tokenAmountPaise: T(50000) },
+      { cap: 3 },
+    )).rejects.toThrow(/unknown usdtChain 'ERC20'/);
+  });
+
+  it('a REFUND the team cannot fund is covered by the platform, once, and the pool is never taken twice', async () => {
+    const t = await workingTeam('UPI_BANK', 0);
+    const sell = await order('WITHDRAWAL', 60000);
+    await assign(sell);
+    await creditSellToPool(sell.orderId);
+    const buy = await order('DEPOSIT', 60000);
+    expect((await assign(buy)).teamId).toBe(t.teamId);  // the team has used the 60,000
+
+    const before = await getTreasuryBalances();
+    expect(await reverseSellFromPool(sell.orderId, { coverShortfall: true }))
+      .toEqual({ ok: true, covered: true, teamId: t.teamId });
+    const after = await getTreasuryBalances();
+    // From the platform's own holding to the user side: the player's refund is
+    // backed by a movement, and the team's pool is untouched.
+    expect(after[ACCOUNTS.TOKEN_SUPPLY] - before[ACCOUNTS.TOKEN_SUPPLY]).toBe(-T(60000));
+    expect(after[ACCOUNTS.USER_FLOAT] - before[ACCOUNTS.USER_FLOAT]).toBe(T(60000));
+    expect(after[ACCOUNTS.TEAM_FLOAT]).toBe(before[ACCOUNTS.TEAM_FLOAT]);
+    expect(await getPool(t.teamId)).toMatchObject({ availablePaise: 0, heldPaise: T(60000) });
+
+    // The buy is released and the pool can pay again. A retried refund must
+    // still not take the tokens from it: they already went back once.
+    expect((await releaseBuyHold(buy.orderId)).ok).toBe(true);
+    expect(await reverseSellFromPool(sell.orderId, { coverShortfall: true }))
+      .toEqual({ ok: true, covered: true, alreadyCovered: true });
+    expect(await reverseSellFromPool(sell.orderId))
+      .toEqual({ ok: true, covered: true, alreadyCovered: true });
+    expect(await getPool(t.teamId)).toMatchObject({ availablePaise: T(60000), heldPaise: 0 });
+    expect(await getTreasuryBalances()).toEqual(after);
   });
 });

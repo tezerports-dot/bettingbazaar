@@ -62,17 +62,25 @@ interface PaymentOrder {
    */
   payTo?: { paymentLink?: string; merchantRef?: string; expiresAt?: string } | null;
   utrNumber?: string; proofScreenshot?: string;
-  // The rail this order was created on. Snapshotted server-side and immutable,
-  // so an admin switching rails mid-flight cannot change what this screen is
-  // supposed to be showing.
+  // The rail this order runs on, stamped by the server at creation from the
+  // order's own size and currency (`paymentModeFor`, database/repositories/
+  // orderRails.js) and frozen by trigger. There is no platform-wide switch, so
+  // this — never the current config — is what decides how an EXISTING order is
+  // rendered: a ₹5,000 buy placed before an operator changed anything is still
+  // the cash order it was created as.
   paymentMode?: 'P2P_UPI' | 'CASH_ATM';
-  cashLinkId?: string | null;
+  // What the order settles in. A USDT buy is drawn by `UsdtBuyPanel`, never by
+  // the INR payment step, whose "Pay ₹…" would name 500 USDT as ₹500 (trap 15).
+  currency?: 'INR' | 'USDT';
   // The label grouping the separate withdrawals that came from one request.
   // Null on an ordinary withdrawal, so the expander only appears where there is
   // something to expand. It is a LABEL: nothing here decides anything by it.
   withdrawalBatchRef?: string | null;
   userBankDetails?: { accountNumber?: string; ifscCode?: string; bankName?: string; accountHolderName?: string; };
-  upiId?: string;
+  // No `upiId` and no `cashLinkId`. The first is in PLAYER_FORBIDDEN_ORDER_FIELDS
+  // and the server has never sent it to a player; the second named the cash-link
+  // queue, which was removed with its routes (§23 — a type naming a field the
+  // server never sends typechecks every read and is `undefined` at runtime).
 }
 interface UserProfile {
   id: string; username: string;
@@ -132,9 +140,15 @@ function CountdownTimer({ expiresAt, onExpire }: { expiresAt?: string; onExpire?
  * platform's sight, and it had no coverage while it collected a screenshot no
  * decision read and rendered a QR through a third-party service.
  */
-export function BuyPaymentUI({ order, onPaid, onExpire, onExpiryExtended, cashLink = null }: {
+export function BuyPaymentUI({ order, onPaid, onExpire, onExpiryExtended }: {
   order: PaymentOrder;
-  onPaid: () => void;
+  /**
+   * The server accepted the payment report. Handed what it now says about the
+   * order — its own response when it sent one — so the screen above moves on
+   * from the facts, not from a guess: on the cash rail the tap leaves the order
+   * PAID with no reference, which is exactly the state that asks for one.
+   */
+  onPaid: (patch: Partial<PaymentOrder>) => void;
   onExpire: () => void;
   /**
    * The server granted the player extra time to submit their UTR, and the
@@ -143,21 +157,13 @@ export function BuyPaymentUI({ order, onPaid, onExpire, onExpiryExtended, cashLi
    * expire the order on screen while the server considers it live.
    */
   onExpiryExtended?: (expiresAt: string) => void;
-  /**
-   * The ATM link serving this order, on the CASH_ATM rail.
-   *
-   * Resolved by the server for the order's OWNER only. `null` means either
-   * that this is the UPI rail, or that no merchant has supplied a link yet —
-   * two states the screen must render differently, because "we are finding you
-   * a machine" and "here is where to go" are not the same message and a player
-   * shown the wrong one either waits forever or walks out for nothing.
-   */
-  cashLink?: { paymentLink: string; expiresAt: string } | null;
 }) {
   // Where to pay, and nothing about who is being paid. `payTo` carries a
   // per-order payment link, an opaque reference and the deadline — see
   // backend/domains/payment/playerOrderView.js.
   const payTo = order.payTo;
+  // The ORDER's rail, stamped at creation — never the amount re-judged here and
+  // never anything in the current config. See `PaymentOrder.paymentMode`.
   const onCashRail = order.paymentMode === 'CASH_ATM';
   const [utr, setUtr] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -186,13 +192,12 @@ export function BuyPaymentUI({ order, onPaid, onExpire, onExpiryExtended, cashLi
    * floats like 100.10000000000001. That belongs on the side an attacker
    * holding the handset cannot edit.
    *
-   * On the CASH_ATM rail this is the link the ATM produced and the merchant
-   * supplied, used verbatim — constructing anything from it would change what
-   * the machine agreed to dispense.
+   * ONE source on both rails. The cash rail used to read a second link, from a
+   * queue of links merchants supplied at a machine; that queue and its routes
+   * are gone, and a cash order is paid to the link in `payTo` that the server
+   * builds for the member serving it — used verbatim, like every other.
    */
-  const intentString = onCashRail
-    ? (cashLink?.paymentLink ?? '')
-    : (payTo?.paymentLink ?? '');
+  const intentString = payTo?.paymentLink ?? '';
 
   useEffect(() => {
     if (order.status === 'PAID' && order.paidAt) {
@@ -220,8 +225,9 @@ export function BuyPaymentUI({ order, onPaid, onExpire, onExpiryExtended, cashLi
   const handleTapPaid = async () => {
     setSubmitting(true); setError('');
     try {
-      await apiClient.post(`/api/payment/order/${order.orderId}/mark-paid`, {});
-      onPaid();
+      const res: any = await apiClient.post(`/api/payment/order/${order.orderId}/mark-paid`, {});
+      // The server's order when it sent one; it says PAID with no reference.
+      onPaid({ status: 'PAID', ...(res?.order ?? {}) });
     } catch (err: any) { setError(err?.message || 'Failed to submit. Try again.'); }
     finally { setSubmitting(false); }
   };
@@ -243,12 +249,12 @@ export function BuyPaymentUI({ order, onPaid, onExpire, onExpiryExtended, cashLi
       // `check:ui-coverage`, which reported it as a dead button — correctly,
       // since a gate that cannot see which route a call reaches cannot tell you
       // the route exists (§28).
-      if (awaitingReference) {
-        await apiClient.post(`/api/payment/order/${order.orderId}/payment-reference`, { utrNumber: utr.trim() });
-      } else {
-        await apiClient.post(`/api/payment/order/${order.orderId}/mark-paid`, { utrNumber: utr.trim() });
-      }
-      onPaid();
+      const res: any = awaitingReference
+        ? await apiClient.post(`/api/payment/order/${order.orderId}/payment-reference`, { utrNumber: utr.trim() })
+        : await apiClient.post(`/api/payment/order/${order.orderId}/mark-paid`, { utrNumber: utr.trim() });
+      // The reference is on the order now. Without it the cash rail would read
+      // as still awaiting one until the next status poll.
+      onPaid({ status: 'PAID', utrNumber: utr.trim(), ...(res?.order ?? {}) });
     } catch (err: any) { setError(err?.message || 'Failed to submit. Try again.'); }
     finally { setSubmitting(false); }
   };
@@ -287,22 +293,24 @@ export function BuyPaymentUI({ order, onPaid, onExpire, onExpiryExtended, cashLi
     } catch (err: any) { setError(err?.message || 'Failed to raise dispute'); }
   };
 
-  // ── Waiting for a machine ────────────────────────────────────────────────
-  // On the cash rail an order exists before any merchant has supplied a link.
-  // Rendering the payment screen with an empty link would show a player a
-  // "pay now" button that does nothing — the empty-state-as-success failure
-  // this codebase has shipped before. Say what is actually happening.
-  if (onCashRail && !cashLink && order.status !== 'PAID') {
+  // ── Nobody to pay yet ────────────────────────────────────────────────────
+  // An order is created before a member is free to take it, and `payTo` only
+  // exists once one has. Until then there is nothing the player CAN have paid,
+  // so neither rail offers the controls that report a payment: on the cash rail
+  // the "I've paid" tap would mark PAID a payment nobody could receive, and on
+  // the UPI rail a UTR field invites a reference for a transfer to no one. Say
+  // what is actually happening instead (§32 S22 — a control that does nothing).
+  if (!intentString && order.status !== 'PAID') {
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-        <div style={{ textAlign: 'center', padding: '12px 8px' }}>
-          <div style={{ fontSize: 40, marginBottom: 8 }}>🏧</div>
+        <div role="status" style={{ textAlign: 'center', padding: '12px 8px' }}>
+          <div style={{ fontSize: 40, marginBottom: 8 }}>⏳</div>
           <div className="font-grotesk" style={{ fontWeight: 700, fontSize: 17, color: 'var(--text)' }}>
-            Finding you a machine
+            Waiting for merchant details…
           </div>
           <div style={{ fontSize: 12, color: 'var(--text3)', lineHeight: 1.5, margin: '6px 0 0' }}>
-            A merchant is going to an ATM to set up your {fmtINR(order.fiatAmount)} withdrawal.
-            You will get a link to pay the moment one is ready.
+            A merchant is being assigned to your {fmtINR(order.fiatAmount)} purchase. The link to pay
+            appears here the moment one is — there is nothing to pay until then.
           </div>
           {order.expiresAt && (
             <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 8 }}>
@@ -314,7 +322,13 @@ export function BuyPaymentUI({ order, onPaid, onExpire, onExpiryExtended, cashLi
     );
   }
 
-  if (order.status === 'PAID') {
+  // `awaitingReference` is a PAID order too, so this must not answer for it.
+  // It did: this branch sat above the reference step and returned first, so a
+  // cash buy tapped as paid showed "Payment submitted" with an empty UTR, the
+  // reference field was never reachable, and the merchant's Confirm refused
+  // until the sweep sent the order to an admin (§32 S34 — an early return above
+  // the question it must not pre-empt).
+  if (order.status === 'PAID' && !awaitingReference) {
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
         <div style={{ textAlign: 'center', padding: '12px 8px' }}>
@@ -338,12 +352,29 @@ export function BuyPaymentUI({ order, onPaid, onExpire, onExpiryExtended, cashLi
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       <div style={{ background: 'color-mix(in srgb,var(--gold) 10%,var(--surface2))', border: '1px solid var(--line2)', borderRadius: 12, padding: 12, textAlign: 'center' }}>
-        <div style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 700 }}>Pay exactly</div>
-        <div className="font-grotesk" style={{ fontWeight: 700, fontSize: 26, color: 'var(--gold-ink)' }}>{fmtINR(order.fiatAmount)}</div>
-        <div style={{ fontSize: 10, color: 'var(--text3)' }}>to receive {fmtT(order.tokenAmount)} · <CountdownTimer expiresAt={order.expiresAt} onExpire={onExpire} /></div>
+        {awaitingReference ? (
+          // Already paid — the cash tap was made. Asking them to "pay exactly"
+          // again, with the link, is an invitation to pay twice. And no
+          // countdown: a PAID order is not expired by its window, so a timer
+          // reaching zero here would close a screen that is still owed a UTR.
+          <>
+            <div style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 700 }}>You reported paying</div>
+            <div className="font-grotesk" style={{ fontWeight: 700, fontSize: 26, color: 'var(--gold-ink)' }}>{fmtINR(order.fiatAmount)}</div>
+            <div style={{ fontSize: 10, color: 'var(--text3)' }}>add the UTR below to receive {fmtT(order.tokenAmount)}</div>
+          </>
+        ) : (
+          <>
+            <div style={{ fontSize: 10, color: 'var(--text3)', fontWeight: 700 }}>Pay exactly</div>
+            <div className="font-grotesk" style={{ fontWeight: 700, fontSize: 26, color: 'var(--gold-ink)' }}>{fmtINR(order.fiatAmount)}</div>
+            <div style={{ fontSize: 10, color: 'var(--text3)' }}>to receive {fmtT(order.tokenAmount)} · <CountdownTimer expiresAt={order.expiresAt} onExpire={onExpire} /></div>
+          </>
+        )}
       </div>
 
-      {intentString ? (
+      {/* Past the two early returns above, a link exists unless the reference
+          is what is owed — and then the payment has already been made, so the
+          link is not offered again. */}
+      {!awaitingReference && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           <a href={intentString} style={{ width: '100%', background: 'linear-gradient(135deg,var(--gold2),var(--gold))', color: '#1a1200', fontWeight: 800, padding: '15px 12px', borderRadius: 13, fontSize: 15, textAlign: 'center', display: 'block', textDecoration: 'none' }}>
             Pay {fmtINR(order.fiatAmount)} in your UPI app
@@ -370,8 +401,6 @@ export function BuyPaymentUI({ order, onPaid, onExpire, onExpiryExtended, cashLi
               protocol, not this screen — and it is a very different thing from
               handing them an account number to keep. */}
         </div>
-      ) : (
-        <div style={{ background: 'var(--surface2)', border: '1px solid var(--line)', borderRadius: 12, padding: 14, textAlign: 'center', fontSize: 12, color: 'var(--text3)' }}>⏳ Waiting for merchant details…</div>
       )}
 
       {/* While the cash tap is all that is being asked for, the reference field
@@ -381,9 +410,9 @@ export function BuyPaymentUI({ order, onPaid, onExpire, onExpiryExtended, cashLi
           order is PAID and the reference is what is actually owed. */}
       {tapToPay ? (
         <div style={{ background: 'var(--surface2)', border: '1px solid var(--line)', borderRadius: 12, padding: 12, fontSize: 11.5, color: 'var(--text2)' }}>
-          Press this as soon as the machine has your cash. We will ask for the
-          reference next — the merchant needs to know now so they can finish at
-          the ATM.
+          This is a cash purchase: the merchant is at a cash machine. Press
+          this as soon as you have paid — they need to know now so they can
+          finish at the ATM. We will ask for the reference next.
         </div>
       ) : (
       <div>
@@ -457,12 +486,15 @@ const WalletPage: React.FC = () => {
   // as an APK containing this bundle, so a client-side list is one an attacker
   // can edit — and one that drifts from the gate is a player offered an amount
   // that will be refused.
-  // The ATM link for the buy order in flight, if one has been claimed. Fetched
-  // from the order's own read rather than the status poll, because the link is
-  // resolved for the owner and the poll is a lightweight status shape.
-  const [buyCashLink, setBuyCashLink]   = useState<{ paymentLink: string; expiresAt: string } | null>(null);
+  //
+  // There is no platform-wide rail in it. A buy's rail follows from its own
+  // size: up to `maxCashBuy` it is a cash order and must be one of
+  // `buyDenominations`; above it, UPI/bank (backend/domains/configuration/
+  // systemConfigPayload.js, the same rule `paymentModeFor` stamps the order with).
   const [rail, setRail]                 = useState<{
-    paymentMode: string | null; buyDenominations: number[]; maxCashBuy: number | null;
+    buyDenominations: number[];
+    /** The largest buy paid in cash. Null until the config has loaded. */
+    maxCashBuy: number | null;
     // The USDT rail's two amounts and the networks it is served on. From the
     // server, for the same reason the INR denominations are: both are money
     // rules, and a panel holding its own copy offers what the gate refuses.
@@ -471,7 +503,7 @@ const WalletPage: React.FC = () => {
     usdtTokensPerUnit: number | null;
     usdtChains: { chain: string; label: string }[];
   }>({
-    paymentMode: null, buyDenominations: [], maxCashBuy: null,
+    buyDenominations: [], maxCashBuy: null,
     usdtBuyDenominations: [], usdtTokensPerUnit: null, usdtChains: [],
   });
   const [activeBuyOrder, setActiveBuyOrder] = useState<PaymentOrder | null>(null);
@@ -499,12 +531,11 @@ const WalletPage: React.FC = () => {
       // computed by the same rule the bet route enforces. Taking the numbers
       // and the ceiling from one response also means they cannot disagree with
       // each other on screen.
-      // The settlement rail and the amounts it allows, from the one payload
-      // that owns them (domains/configuration/systemConfigPayload.js).
+      // The amounts each rail allows, from the one payload that owns them
+      // (domains/configuration/systemConfigPayload.js).
       const sys: any = await apiClient.get('/api/v1/system/config');
       if (sys?.config) {
         setRail({
-          paymentMode: sys.config.paymentMode ?? null,
           buyDenominations: sys.config.buyDenominations ?? [],
           maxCashBuy: sys.config.maxCashBuy ?? null,
           usdtBuyDenominations: sys.config.usdtBuyDenominations ?? [],
@@ -534,7 +565,10 @@ const WalletPage: React.FC = () => {
       const res: any = await apiClient.get('/api/payment/orders?limit=20');
       const orders = Array.isArray(res?.orders) ? res.orders : [];
       setPaymentOrders(orders);
-      const activeDeposit = orders.find((o: PaymentOrder) => o.type === 'DEPOSIT' && ['ASSIGNED', 'PROCESSING', 'PAID'].includes(o.status));
+      // An INR buy only. A USDT buy in flight is `activeUsdtOrder`, drawn by
+      // UsdtBuyPanel; taken here it replaced that panel with the INR payment
+      // step, which named the USDT amount in rupees and offered no address.
+      const activeDeposit = orders.find((o: PaymentOrder) => o.type === 'DEPOSIT' && o.currency !== 'USDT' && ['ASSIGNED', 'PROCESSING', 'PAID'].includes(o.status));
       const activeWithdrawal = orders.find((o: PaymentOrder) => o.type === 'WITHDRAWAL' && ['ASSIGNED', 'PROCESSING', 'PAID'].includes(o.status));
       if (activeDeposit && buyStep === 'amount') { setActiveBuyOrder(activeDeposit); setBuyStep('pay_now'); setSide('buy'); }
       if (activeWithdrawal && sellStep === 'amount') { setActiveSellOrder(activeWithdrawal); setSellStep('waiting'); setSide('sell'); }
@@ -587,21 +621,12 @@ const WalletPage: React.FC = () => {
       try {
         const res: any = await apiClient.get(`/api/payment/order/${activeOrderId}/status`);
         if (activeBuyOrder) {
+          // The poll carries `payTo` on both rails (payment.routes.js, the
+          // status route), so a link that arrives after the order — nobody was
+          // free when it was created — lands here like any other change.
           setActiveBuyOrder(prev => prev ? { ...prev, ...res } : prev);
           if (res.status === 'COMPLETED') { resetBuy(); loadMeta(); loadOrders(); }
           if (res.status === 'CANCELLED' || res.status === 'FAILED') { resetBuy(); loadOrders(); }
-
-          // On the cash rail an order waits with no link until a merchant
-          // reaches a machine, so the link arrives LATER than the order. The
-          // status poll is a lightweight shape and does not carry it; the
-          // order's own read resolves it for the owner. Asked for only while
-          // the link is still missing, so a served player is not re-reading it
-          // every three seconds.
-          if (activeBuyOrder.paymentMode === 'CASH_ATM' && !buyCashLink
-              && res.status !== 'COMPLETED' && res.status !== 'CANCELLED' && res.status !== 'FAILED') {
-            const full: any = await apiClient.get(`/api/payment/order/${activeOrderId}`);
-            if (full?.cashLink) setBuyCashLink(full.cashLink);
-          }
         }
         if (activeSellOrder) {
           setActiveSellOrder(prev => prev ? { ...prev, ...res } : prev);
@@ -646,7 +671,7 @@ const WalletPage: React.FC = () => {
     }
   };
 
-  const resetBuy = () => { setBuyStep('amount'); setBuyTokens(''); setActiveBuyOrder(null); setBuyError(''); setBuyCashLink(null); };
+  const resetBuy = () => { setBuyStep('amount'); setBuyTokens(''); setActiveBuyOrder(null); setBuyError(''); };
   const handleBuySubmit = async () => {
     const amt = parseInt(buyTokens);
     if (!amt || amt < 1) { setBuyError('Enter a valid token amount'); return; }
@@ -681,18 +706,24 @@ const WalletPage: React.FC = () => {
   // screen exists to stop repeating.
   const total = r2(balances.depositBalance + balances.winningsBalance + balances.reserveBalance);
 
-  // The CASH rail's ceiling, and only the cash rail's. ₹10,000 is the largest
-  // amount an ATM dispenses, so it bounds what a merchant standing at one can
-  // serve — it is not a limit on buying, and on the UPI rail nothing prevents a
-  // larger purchase.
+  // ── Which rail THIS amount is on ─────────────────────────────────────────
+  // Derived from the amount, as the server derives it (`paymentModeFor`): up to
+  // `maxCashBuy` a buy is a CASH order — served by a merchant at a cash machine,
+  // so it must be one of the amounts a machine deals in — and above it a
+  // UPI/bank order. The ceiling and the amounts both come from the SERVER; a
+  // number written here would be a second owner of a money rule (§3).
   //
-  // This was `aboveInrCeiling` and hid the buy button on EVERY rail above
-  // ₹10,000, refusing on the UPI rail something the server allows. The
-  // threshold still comes from the SERVER: a number written here would be a
-  // second owner of a money rule.
-  const aboveCashCeiling = rail.maxCashBuy !== null
-    && rail.paymentMode === 'CASH_ATM'
-    && (parseInt(buyTokens) || 0) > rail.maxCashBuy;
+  // Null while the config has not loaded, or nothing is typed: the screen then
+  // claims no rail at all rather than guessing one, and the server decides.
+  const buyAmount = parseInt(buyTokens) || 0;
+  const buyRail: 'CASH' | 'UPI' | null = rail.maxCashBuy === null || buyAmount <= 0
+    ? null
+    : (buyAmount <= rail.maxCashBuy ? 'CASH' : 'UPI');
+  // An amount on the cash rail that no machine dispenses. The server refuses it
+  // (NOT_A_DENOMINATION), so the button that would send it is not offered, and
+  // the sentence below says which amounts are.
+  const cashAmountRefused = buyRail === 'CASH' && !rail.buyDenominations.includes(buyAmount);
+  const rupees = (n: number) => `₹${n.toLocaleString('en-IN')}`;
 
   // The USDT purchase in flight, if there is one. Found by CURRENCY on the
   // orders already loaded rather than by a second request: one list, one truth
@@ -772,74 +803,75 @@ const WalletPage: React.FC = () => {
                 <>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 9, background: 'var(--surface3)', border: '1px solid var(--line)', borderRadius: 11, padding: 11, marginBottom: 14 }}>
                     <span style={{ fontSize: 18, color: 'var(--gold-ink)' }}>📲</span>
-                    <span style={{ display: 'flex', flexDirection: 'column' }}><span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>UPI (INR)</span><span style={{ fontSize: 9, color: 'var(--text3)' }}>Instant · scan & pay a verified merchant</span></span>
+                    <span style={{ display: 'flex', flexDirection: 'column' }}><span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>INR · paid from your UPI app</span><span style={{ fontSize: 9, color: 'var(--text3)' }}>A verified merchant is assigned to every order</span></span>
                   </div>
                   <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--text2)', marginBottom: 9 }}>Tokens to buy</div>
-                  {/* On the ATM cash rail the amount is not typed. A cash
-                      machine dispenses one of a fixed set, so anything between
-                      them is an order no merchant could serve — and the server
-                      refuses it. Offering a free field here would let a player
-                      type an amount, wait, and be rejected for a reason the
-                      screen never showed them.
+                  {/* ── Two rails, chosen by the amount ─────────────────────
+                      Up to the cash ceiling a buy is served by a merchant at a
+                      cash machine, which dispenses one of a fixed set — so the
+                      tiles offer exactly those, from the SERVER's list. Above
+                      the ceiling a buy is UPI/bank and any amount within the
+                      deposit limits is fine, so it is typed.
 
-                      The tiles are rendered from the SERVER's list. If it is
-                      empty the field falls back to typing, because an empty
-                      picker offers nothing at all. */}
-                  {rail.paymentMode === 'CASH_ATM' && rail.buyDenominations.length > 0 ? (
-                    <div role="radiogroup" aria-label="Amount to buy" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8, marginBottom: 8 }}>
-                      {rail.buyDenominations.map((amount) => {
-                        const on = buyTokens === String(amount);
-                        return (
-                          <button
-                            key={amount} type="button" role="radio" aria-checked={on}
-                            onClick={() => setBuyTokens(String(amount))}
-                            className="font-grotesk"
-                            style={{
-                              padding: '14px 10px', borderRadius: 12, cursor: 'pointer', fontWeight: 800, fontSize: 15,
-                              border: on ? '2px solid var(--gold)' : '1px solid var(--line)',
-                              background: on ? 'var(--gold-soft, rgba(var(--brand-primary-rgb), .12))' : 'transparent',
-                              color: on ? 'var(--gold-ink)' : 'var(--text)',
-                            }}
-                          >
-                            ₹{amount.toLocaleString()}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  ) : (
-                    <div style={{ position: 'relative', marginBottom: 6 }}>
-                      <input value={buyTokens} onChange={e => setBuyTokens(e.target.value.replace(/[^0-9]/g, ''))} inputMode="numeric" placeholder="e.g. 500" className="font-grotesk" style={{ ...inputBox, padding: '0 44px 0 15px' }} />
-                      <span style={{ position: 'absolute', right: 15, top: '50%', transform: 'translateY(-50%)', color: 'var(--gold-ink)', fontWeight: 800, fontSize: 13 }}>T</span>
-                    </div>
+                      Both are on screen at once rather than behind a switch: a
+                      player does not pick a rail, they pick an amount, and the
+                      sentence under the field says which rail that amount is. */}
+                  {rail.buyDenominations.length > 0 && rail.maxCashBuy !== null && (
+                    <>
+                      <div id="buy-cash-amounts" style={{ fontSize: 11, color: 'var(--text3)', marginBottom: 6 }}>
+                        Cash amounts, up to {rupees(rail.maxCashBuy)}
+                      </div>
+                      <div role="radiogroup" aria-labelledby="buy-cash-amounts" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8, marginBottom: 10 }}>
+                        {rail.buyDenominations.map((amount) => {
+                          const on = buyTokens === String(amount);
+                          return (
+                            <button
+                              key={amount} type="button" role="radio" aria-checked={on}
+                              onClick={() => setBuyTokens(String(amount))}
+                              className="font-grotesk"
+                              style={{
+                                padding: '14px 10px', borderRadius: 12, cursor: 'pointer', fontWeight: 800, fontSize: 15,
+                                border: on ? '2px solid var(--gold)' : '1px solid var(--line)',
+                                background: on ? 'var(--gold-soft, rgba(var(--brand-primary-rgb), .12))' : 'transparent',
+                                color: on ? 'var(--gold-ink)' : 'var(--text)',
+                              }}
+                            >
+                              {rupees(amount)}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </>
                   )}
-                  {rail.maxCashBuy !== null && rail.paymentMode === 'CASH_ATM' && (
-                    <div style={{ fontSize: 11, color: 'var(--text3)', marginBottom: 6 }}>
-                      Up to ₹{rail.maxCashBuy.toLocaleString('en-IN')} in one purchase — a machine does not dispense more in one go.
-                    </div>
-                  )}
-                  <div style={{ fontSize: 12, color: 'var(--text2)', marginBottom: 14 }}>You pay <b style={{ color: 'var(--gold-ink)' }}>{fmtINR(parseInt(buyTokens) || 0)}</b> · 1 token = ₹1</div>
-                  {buyError && <p style={{ color: 'var(--red)', fontSize: 11, marginBottom: 10 }}>{buyError}</p>}
-                  {/* Above the INR ceiling there is no merchant who could serve
-                      the order, so the button that leads to one is not offered.
-                      The threshold comes from the SERVER (`maxCashBuy`); a
-                      number written here would be a second owner of a money
-                      rule, and the day they disagreed a player would be shown a
-                      merchant flow the server refuses.
-
-                      The panel does not decide the price or the floor — the
-                      USDT panel asks for both. All this decides is which of the
-                      two affordances to render. */}
-                  {aboveCashCeiling ? (
-                    // Not offered, because the server refuses it. Naming the
-                    // reason is the whole answer — a disabled button with no
-                    // explanation is how a player retries and retries.
-                    <div style={{ fontSize: 11.5, color: 'var(--text3)', padding: '12px 0' }}>
-                      A cash machine dispenses at most ₹{(rail.maxCashBuy ?? 0).toLocaleString('en-IN')} in one go.
-                      Choose a smaller amount, or buy with USDT below.
-                    </div>
-                  ) : (
-                    <button onClick={handleBuySubmit} disabled={!buyTokens || buyLoading} style={{ width: '100%', padding: 14, borderRadius: 13, border: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 15, color: '#1a1200', background: 'linear-gradient(135deg,var(--gold2),var(--gold))', boxShadow: '0 8px 22px -8px var(--glow)', opacity: (!buyTokens || buyLoading) ? .5 : 1 }}>{buyLoading ? '⏳ Creating order…' : 'Continue to payment'}</button>
-                  )}
+                  <label htmlFor="buy-tokens" style={{ display: 'block', fontSize: 11, color: 'var(--text3)', marginBottom: 6 }}>
+                    {rail.maxCashBuy !== null && rail.buyDenominations.length > 0
+                      ? `Or type an amount — above ${rupees(rail.maxCashBuy)} is paid by UPI`
+                      : 'Amount'}
+                  </label>
+                  <div style={{ position: 'relative', marginBottom: 6 }}>
+                    <input id="buy-tokens" value={buyTokens} onChange={e => setBuyTokens(e.target.value.replace(/[^0-9]/g, ''))} inputMode="numeric" placeholder="e.g. 500" className="font-grotesk" style={{ ...inputBox, padding: '0 44px 0 15px' }} />
+                    <span style={{ position: 'absolute', right: 15, top: '50%', transform: 'translateY(-50%)', color: 'var(--gold-ink)', fontWeight: 800, fontSize: 13 }}>T</span>
+                  </div>
+                  {/* Which rail this amount is on, said as it is typed. A
+                      `status` region so a screen reader hears it too — the
+                      refusal case most of all (§32 S44). */}
+                  <div role="status" style={{ fontSize: 11, lineHeight: 1.5, marginBottom: 8, color: cashAmountRefused ? 'var(--red)' : 'var(--text3)' }}>
+                    {buyRail === 'CASH' && !cashAmountRefused && rail.maxCashBuy !== null && (
+                      <><b style={{ color: 'var(--text)' }}>Cash purchase.</b> Buys up to {rupees(rail.maxCashBuy)} are served by a merchant at a cash machine: pay their link, tap “I’ve paid” straight away, then add the UTR.</>
+                    )}
+                    {cashAmountRefused && rail.maxCashBuy !== null && (
+                      <>Up to {rupees(rail.maxCashBuy)} a purchase is paid in cash at an ATM, which only deals in {rail.buyDenominations.map(rupees).join(', ')}. Choose one of those — or more than {rupees(rail.maxCashBuy)}, which is paid by UPI.</>
+                    )}
+                    {buyRail === 'UPI' && rail.maxCashBuy !== null && (
+                      <><b style={{ color: 'var(--text)' }}>UPI purchase.</b> Buys above {rupees(rail.maxCashBuy)} are paid to a merchant from your UPI app, then you submit the UTR.</>
+                    )}
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--text2)', marginBottom: 14 }}>You pay <b style={{ color: 'var(--gold-ink)' }}>{fmtINR(buyAmount)}</b> · 1 token = ₹1</div>
+                  {buyError && <p role="alert" style={{ color: 'var(--red)', fontSize: 11, marginBottom: 10 }}>{buyError}</p>}
+                  {/* Disabled, never hidden, on an amount the cash rail cannot
+                      serve: the sentence above says why and what to choose
+                      instead, so the button is not a dead end with no reason. */}
+                  <button onClick={handleBuySubmit} disabled={!buyTokens || buyLoading || cashAmountRefused} style={{ width: '100%', padding: 14, borderRadius: 13, border: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 15, color: '#1a1200', background: 'linear-gradient(135deg,var(--gold2),var(--gold))', boxShadow: '0 8px 22px -8px var(--glow)', opacity: (!buyTokens || buyLoading || cashAmountRefused) ? .5 : 1 }}>{buyLoading ? '⏳ Creating order…' : 'Continue to payment'}</button>
 
                   {/* The USDT rail, as its own block rather than a mode this
                       screen switches into. The two rails serve DIFFERENT
@@ -863,8 +895,7 @@ const WalletPage: React.FC = () => {
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}><span style={{ fontSize: 13, fontWeight: 800, color: 'var(--text)' }}>Complete payment</span><button onClick={resetBuy} style={{ fontSize: 11, color: 'var(--text3)', background: 'none', border: 'none', cursor: 'pointer' }}>✕ Cancel</button></div>
                   <BuyPaymentUI
                     order={activeBuyOrder}
-                    cashLink={buyCashLink}
-                    onPaid={() => setActiveBuyOrder(prev => prev ? { ...prev, status: 'PAID' } : prev)}
+                    onPaid={(patch) => setActiveBuyOrder(prev => prev ? { ...prev, ...patch } : prev)}
                     onExpire={() => { resetBuy(); loadOrders(); }}
                     /* The countdown reads `order.expiresAt`. Without this the
                        screen would keep counting down to the OLD deadline and

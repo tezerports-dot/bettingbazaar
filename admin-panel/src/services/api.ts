@@ -31,25 +31,6 @@ const api: AxiosInstance = axios.create({
   headers: { 'Content-Type': 'application/json' },
 });
 
-/**
- * A fresh idempotency key for one financial intent.
- *
- * Financial endpoints that have no natural key of their own require the caller
- * to name the request, because only the caller can tell a RETRY from a second
- * deliberate action — "top up merchant X by 5000" is identical bytes either
- * way. The server refuses to guess and returns 400 without one.
- *
- * `randomUUID` is unavailable on insecure origins in some browsers, so there is
- * a fallback. It only needs to be unique per intent, not unpredictable — the
- * key is an identifier, not a secret, and the endpoints behind it are already
- * authenticated.
- */
-function newIdempotencyKey(): string {
-  const uuid = globalThis.crypto?.randomUUID?.();
-  if (uuid) return uuid;
-  return `k-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
-}
-
 api.interceptors.request.use(
   (config) => {
     let token: string | null = null;
@@ -259,7 +240,7 @@ export const merchants = {
     return res.data;
   },
 
-  getProfile: async (merchantId: string) => { // returns { ..merchant, merchantLimits } flattened // returns { ..merchant, merchantLimits } flattened
+  getProfile: async (merchantId: string) => {
     const res = await api.get<any>(`/api/admin/merchants/${merchantId}/profile`);
     if (res.data?.success && res.data?.merchant) {
       return { success: true, data: res.data.merchant };
@@ -277,88 +258,10 @@ export const merchants = {
     return res.data;
   },
 
-  updateLimits: async (merchantId: string, limits: any) => {
-    const res = await api.put(`/api/admin/merchants/${merchantId}/limits`, limits);
-    return res.data;
-  },
-
-  // setCommission removed — commission model superseded by buy/sell spread.
-  // MerchantsList.tsx comment: 'commission handler removed — merchants earn via spread.'
   getEarnings: async (merchantId: string) => {
     const res = await api.get<any>(`/api/admin/merchants/${merchantId}/earnings`);
     return res.data;
   },
-  setPanelUrl: async (merchantId: string, panelUrl: string) => {
-    const res = await api.put(`/api/admin/merchants/${merchantId}/panel-url`, { panelUrl });
-    return res.data;
-  },
-  // FIX 8: Top up merchant token wallet (backend: POST /merchants/:id/fund)
-  //
-  // The Idempotency-Key is REQUIRED — the endpoint returns 400 without one.
-  // Only the caller can tell a retry from a second deliberate top-up, so the
-  // server refuses to guess. One invocation of this function is one intent, so
-  // the key is minted here: a transport-level retry inside axios reuses the
-  // same header and cannot double-fund, while a second click is a genuinely
-  // new request and gets a new key.
-  //
-  // Pass `idempotencyKey` explicitly to retry a call whose response was lost
-  // (a timeout, a dropped connection) — that is the case where reusing the
-  // ORIGINAL key is the whole point.
-  //
-  // `settlementAmount` is what the platform RECEIVED for these tokens, in the
-  // major unit — rupees, or whole USDT — and it is REQUIRED: the server refuses
-  // a top-up without one, so that the profit and loss is never missing the
-  // revenue side of a trade nobody can reconstruct afterwards. Zero is a valid
-  // answer and means "no money changed hands", which is a different fact from
-  // "nobody recorded it".
-  fundWallet: async (
-    merchantId: string,
-    tokenAmount: number,
-    settlement: { amount: number; currency: 'INR' | 'USDT' },
-    note?: string,
-    idempotencyKey?: string,
-  ) => {
-    const res = await api.post(
-      `/api/admin/merchants/${merchantId}/fund`,
-      {
-        tokenAmount, note,
-        settlementAmount: settlement.amount,
-        settlementCurrency: settlement.currency,
-      },
-      { headers: { 'Idempotency-Key': idempotencyKey || newIdempotencyKey() } },
-    );
-    return res.data;
-  },
-
-  // Phase B (2026-07-10): deduct merchant tokens — strict (no overdraft),
-  // reason required and audit-logged (backend: POST /merchants/:id/deduct)
-  //
-  // ── The Idempotency-Key was MISSING, and the button had never worked ──────
-  // The route requires one and answers 400 without it, so every press of
-  // "Deduct From Wallet" since this shipped returned "Idempotency-Key is
-  // required for this request" — a protocol message an operator cannot act on,
-  // rendered as the failure reason on a money screen. Confirmed against a
-  // running server: the same call with a key succeeds. One invocation is one
-  // intent, so the key is minted here, exactly as the top-up above does.
-  //
-  // `settlementAmount` is what the platform PAID to take the tokens back, in
-  // rupees. There is no currency argument: payouts are INR (owner, 2026-09-23),
-  // and the server and the table both refuse anything else.
-  deductWallet: async (
-    merchantId: string,
-    tokenAmount: number,
-    reason: string,
-    settlementAmount: number,
-    idempotencyKey?: string,
-  ) => {
-    const res = await api.post(
-      `/api/admin/merchants/${merchantId}/deduct`,
-      { tokenAmount, reason, settlementAmount, settlementCurrency: 'INR' },
-      { headers: { 'Idempotency-Key': idempotencyKey || newIdempotencyKey() } },
-    );
-    return res.data;
-  },
-
   create: async (data: { username: string; mobile: string; password: string; email?: string }) => {
     const res = await api.post('/api/admin/merchants/create', data);
     return res.data;
@@ -393,37 +296,6 @@ export const merchants = {
     if (res.data?.success && res.data?.transactions) {
       return { success: true, data: res.data.transactions };
     }
-    return res.data;
-  },
-};
-
-// --- MERCHANT TOKEN PURCHASES ------------------------------------------------
-//
-// A merchant buys the float they trade with from the platform, paying in USDT.
-// Approving one MINTS supply and credits their wallet, so this is treasury:
-// the routes are full-admin (isAdmin), never a sub-admin permission.
-export const merchantTokenOrders = {
-  /** `status` filters server-side; omit for every request, newest first. */
-  list: async (status?: string) => {
-    const res = await api.get<any>('/api/admin/merchant-token-orders', {
-      params: status && status !== 'ALL' ? { status } : undefined,
-    });
-    return res.data;
-  },
-
-  /**
-   * Mint, credit, then record the decision — in that order, server-side, all
-   * keyed on the order. Approving twice is the same act twice: the second call
-   * returns 404 rather than crediting again.
-   */
-  approve: async (orderId: string, note?: string) => {
-    const res = await api.post(`/api/admin/merchant-token-orders/${orderId}/approve`, { note });
-    return res.data;
-  },
-
-  /** The reason is required by the row — a merchant cannot fix what they cannot read. */
-  reject: async (orderId: string, reason: string) => {
-    const res = await api.post(`/api/admin/merchant-token-orders/${orderId}/reject`, { reason });
     return res.data;
   },
 };
@@ -517,32 +389,6 @@ export const depositPolicy = {
   },
 };
 
-// --- SETTLEMENT RAIL ----------------------------------------------------------
-// One button moves the whole platform between the UPI rail and the ATM cash
-// rail. Orders already in flight keep the rail they were created on — that is
-// enforced by the database, not by this client.
-
-export const paymentMode = {
-  getCurrent: async () => {
-    const res = await api.get<any>('/api/admin/payment-mode');
-    return res.data;
-  },
-
-  getHistory: async (limit = 50) => {
-    const res = await api.get<any>(`/api/admin/payment-mode/history?limit=${limit}`);
-    return res.data;
-  },
-
-  update: async (fields: {
-    activeMode?: string;
-    timers?: Record<string, number>;
-    justification: string;
-  }) => {
-    const res = await api.post('/api/admin/payment-mode', fields);
-    return res.data;
-  },
-};
-
 // --- QUEUE MANAGER ------------------------------------------------------------
 
 export const queueManager = {
@@ -554,38 +400,15 @@ export const queueManager = {
     return res.data;
   },
 
-  assignOrder: async (orderId: string, merchantId: string) => {
-    const res = await api.post(`/api/admin/queue/assign/${orderId}`, { merchantId });
+  // Offer one queued order to the teams NOW instead of waiting for the sweep.
+  // There is no merchant argument: routing picks the member (teamRouting), and
+  // the server answers 409 NO_MEMBER_FREE, with a sentence naming why, when no
+  // working team on the order's rail can take it.
+  assignOrder: async (orderId: string) => {
+    const res = await api.post(`/api/admin/queue/assign/${orderId}`);
     return res.data;
   },
 
-  getAvailableMerchants: async (type: 'DEPOSIT' | 'WITHDRAWAL') => {
-    const res = await api.get<any>('/api/admin/queue/available-merchants', { params: { type } });
-    if (res.data?.success && res.data?.merchants) {
-      return { success: true, data: res.data.merchants, isPoolConfigured: res.data.isPoolConfigured };
-    }
-    return res.data;
-  },
-
-  // Merchant pool: the curated merchants manual/forced assignment draws
-  // from, instead of searching every ACTIVE merchant. Configured by admin or
-  // queue_manager. See backend/routes/admin/queue.admin.routes.js.
-  getMerchantPool: async () => {
-    const res = await api.get<any>('/api/admin/queue/merchant-pool');
-    return res.data;
-  },
-
-  setMerchantPool: async (merchantIds: string[]) => {
-    const res = await api.put('/api/admin/queue/merchant-pool', { merchantIds });
-    return res.data;
-  },
-
-  getEligibleMerchants: async () => {
-    const res = await api.get<any>('/api/admin/queue/eligible-merchants');
-    return res.data;
-  },
-
-  
   getGroupedQueue: async (status?: string) => {
     // FIX: p2p-queue route no longer exists post P2P->Merchant migration; use payment-queue (same response shape)
     const res = await api.get<any>('/api/admin/payment-queue', { params: status ? { status } : {} });
@@ -593,9 +416,10 @@ export const queueManager = {
   },
 
   
-  reassignOrder: async (orderId: string, merchantId: string) => {
-    // FIX: p2p-queue route no longer exists; use payment-orders/:id/reassign (correct status guard for already-assigned orders)
-    const res = await api.post(`/api/admin/payment-orders/${orderId}/reassign`, { merchantId });
+  // Take an ASSIGNED order off its member and offer it to the next one. No
+  // body: the server routes it, and its message says whether anybody took it.
+  reassignOrder: async (orderId: string) => {
+    const res = await api.post(`/api/admin/payment-orders/${orderId}/reassign`);
     return res.data;
   },
 };
@@ -1421,7 +1245,6 @@ export default {
   analytics,
   users,
   merchants,
-  merchantTokenOrders,
   cycles,
   depositPolicy,
   queueManager,

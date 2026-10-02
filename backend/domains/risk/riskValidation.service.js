@@ -27,7 +27,7 @@ import { db } from '#db';
 // Shared trading vocabulary (Phase 011) — canonical sides, no local strings.
 import { oppositeSide } from '../trading/tradingModels.js';
 import { getSystemConfig } from '#db/repositories/config.js';
-import { PAYMENT_MODES } from '#db/repositories/paymentModePolicy.js';
+import { PAYMENT_MODES, paymentModeFor } from '#db/repositories/orderRails.js';
 import { MERCHANT_CURRENCY } from '../merchant/merchantCurrency.js';
 import {
   BUY_DENOMINATIONS_PAISE, MAX_CASH_BUY_PAISE, isBuyDenomination,
@@ -382,7 +382,7 @@ export { getRiskRules };
  *    soon as this one finishes — but two at once would let one player occupy
  *    several merchants' entire capacity during a shortage.
  */
-async function assertBuyIsLegal({ userId, tokenAmount, paymentMode, currency }) {
+async function assertBuyIsLegal({ userId, tokenAmount, currency }) {
   // ── An amount that is not a number is the CALLER's mistake, not a fault ──
   //
   // `rupeesToPaise` throws a bare `TypeError` on a NaN, and a TypeError carries
@@ -438,24 +438,18 @@ async function assertBuyIsLegal({ userId, tokenAmount, paymentMode, currency }) 
     return;
   }
 
-  // ── The CASH rail's ceiling, on the cash rail only ──────────────────────
-  // ₹10,000 is the largest amount a machine dispenses, so it is the largest a
-  // merchant standing at one can serve. It is not a limit on buying: this
-  // refused ₹12,000 on the UPI rail too, where there is no machine and nothing
-  // to dispense — a rule enforced somewhere it does not apply.
-  //
-  // On the UPI rail a purchase is bounded by the configured min/max deposit,
-  // like any other.
-  if (paymentMode === PAYMENT_MODES.CASH_ATM && paise > MAX_CASH_BUY_PAISE) {
-    throw Object.assign(
-      new Error(`A cash purchase is capped at ₹${(MAX_CASH_BUY_PAISE / 100).toLocaleString('en-IN')} — a machine does not dispense more in one go.`),
-      { status: 400, code: 'CASH_BUY_CEILING' },
-    );
-  }
-
+  // ── The CASH rail: an amount a machine dispenses ────────────────────────
+  // The rail is DERIVED from the size (`paymentModeFor`, the same rule the
+  // order writer stamps with): up to ₹10,000 is paid in cash at an ATM, and a
+  // machine dispenses one of a fixed set, so an amount between them is
+  // unservable by construction. Above ₹10,000 is UPI/bank, bounded by the
+  // configured min/max deposit like any other.
+  const paymentMode = paymentModeFor({ currency, tokenAmountPaise: paise });
   if (paymentMode === PAYMENT_MODES.CASH_ATM && !isBuyDenomination(paise)) {
     throw Object.assign(
-      new Error(`Choose one of ₹${BUY_DENOMINATIONS_PAISE.map((p) => p / 100).join(', ₹')} — a cash machine does not dispense other amounts.`),
+      new Error(`Up to ₹${(MAX_CASH_BUY_PAISE / 100).toLocaleString('en-IN')} is paid in cash at an ATM, so choose one of `
+        + `₹${BUY_DENOMINATIONS_PAISE.map((p) => (p / 100).toLocaleString('en-IN')).join(', ₹')} — a cash machine does not `
+        + 'dispense other amounts. Larger purchases are paid by UPI.'),
       { status: 400, code: 'NOT_A_DENOMINATION' },
     );
   }
@@ -471,11 +465,10 @@ async function assertBuyIsLegal({ userId, tokenAmount, paymentMode, currency }) 
 
 export async function assessFundingOrder({
   userId, tokenAmount, type, min, max,
-  // The rail this order will be created on, and what it settles in. Both
-  // decide what amounts are legal, so both are gated HERE rather than in the
-  // handler: this is the single validation authority, and a rule enforced in a
-  // route is a rule the next route forgets.
-  paymentMode = null, currency = 'INR',
+  // What the order settles in. It decides what amounts are legal — and, with
+  // the size, which rail it runs on — so it is gated HERE rather than in the
+  // handler: this is the single validation authority.
+  currency = 'INR',
 }) {
   const rules = await getRiskRules();
 
@@ -492,7 +485,7 @@ export async function assessFundingOrder({
     //
     // Neither check is removed. The generic bounds still catch everything the
     // rail rule does not speak to.
-    await assertBuyIsLegal({ userId, tokenAmount, paymentMode, currency });
+    await assertBuyIsLegal({ userId, tokenAmount, currency });
     validateTokenPurchase({ amount: tokenAmount, min, max, enforceMultiples: rules.enforceMultiplesOf10 });
   } else {
     validateTokenSale({ amount: tokenAmount, min, max, enforceMultiples: rules.enforceMultiplesOf10 });

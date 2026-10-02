@@ -71,15 +71,13 @@ export const STAFF_PERMISSIONS = Object.freeze([
 
   // ── Merchants ────────────────────────────────────────────────────────────
   { key: 'canManageMerchants', group: 'merchants', label: 'Manage merchants',
-    description: 'Merchant list and records, approve, reject, suspend, activate, limits and capabilities, create a merchant, Merchant Platform, and the payment queue.' },
+    description: 'Merchant list and records, approve, reject, suspend, activate, capabilities, create a merchant, Merchant Platform, and the payment queue.' },
   { key: 'canManageTeams', group: 'merchants', label: 'Supervisors and teams',
     description: 'Make a merchant a supervisor and set their rail, and approve or remove the members supervisors propose for their teams.' },
-  { key: 'canFundMerchants', group: 'merchants', label: 'Top up and deduct merchant wallets and team pools', money: true,
-    description: 'Move tokens between the platform and a merchant\'s wallet or a team\'s pool, recording what was paid.' },
-  { key: 'canManageMerchantTokenOrders', group: 'merchants', label: 'Merchant token purchases', money: true,
-    description: 'Approve or reject a merchant buying the float they trade with.' },
+  { key: 'canFundMerchants', group: 'merchants', label: 'Team pool requests', money: true,
+    description: 'Fulfil or reject a supervisor\'s request to buy tokens into a team\'s pool or sell them back, recording what was paid.' },
   { key: 'canManageCommission', group: 'merchants', label: 'Merchant commission', money: true,
-    description: 'Commission rates and their history, run the commission engine, and fund the bonus pool it pays from.' },
+    description: 'Fund the bonus pool merchant commission is paid from.' },
 
   // ── Payments & disputes ──────────────────────────────────────────────────
   { key: 'canResolveDisputes', group: 'payments', label: 'Resolve disputes', money: true,

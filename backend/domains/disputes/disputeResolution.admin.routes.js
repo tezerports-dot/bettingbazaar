@@ -7,8 +7,6 @@ import { moveDepositMoney } from '../payment/depositCredit.js';
 // The one owner of how an admin decision ends a withdrawal's money (F-027),
 // and of a cancelled buy's merchant hold.
 import { endWithdrawal } from '../payment/withdrawalHold.service.js';
-import { releaseForOrder } from '../merchant/depositEscrow.service.js';
-import { debitMerchantTokens } from '../merchant/merchantWallet.service.js';
 import { releaseUTR } from '../../middleware/utrValidation.js';
 import { emitMerchantUpdate } from '../notification/realtimeEmitters.js';
 // The order state machine. Resolving a dispute is a guarded transition, and it
@@ -331,11 +329,10 @@ router.post('/dispute-orders/:orderId/resolve', authenticate, hasPermission('can
         // and it was wrong in four ways at once. Every one of them reached
         // money, and this is the route the Disputes screen actually calls.
         //
-        //  1. TOKENS WERE MINTED. Nothing in this file debits a merchant —
-        //     `grep -c debitMerchant` returns 0. The player was credited and
-        //     the tokens came from nowhere, so a released dispute broke the
-        //     conservation the whole settlement design rests on. The other
-        //     resolve route debited the merchant; this one never has.
+        //  1. TOKENS WERE MINTED. Nothing debited the merchant side: the player
+        //     was credited and the tokens came from nowhere, so a released
+        //     dispute broke the conservation the whole settlement design rests
+        //     on. `moveDepositMoney` spends the team pool's hold.
         //
         //  2. THE IDEMPOTENCY KEY WAS A SENTENCE. The third argument is the
         //     ORDER ID — `creditDeposit` builds `dep_complete_<orderId>` from
@@ -357,13 +354,11 @@ router.post('/dispute-orders/:orderId/resolve', authenticate, hasPermission('can
         //     who was right, and whom an admin agreed with, kept a
         //     payment-failure strike toward an hour-long buying lockout.
         //
-        // `allowOverdraft` because an admin has already decided and the
-        // transition has already committed: refusing the money now would leave
-        // the dispute resolved and the player uncredited. A merchant going
-        // negative is the correct outcome — they owe it.
+        // A DISPUTED buy keeps its pool hold, so this spends it. If the hold
+        // is somehow gone and the pool cannot cover it, `moveDepositMoney`
+        // reports it and the log below makes it a case a person sees.
         const moved = await moveDepositMoney(order, {
-          debitMerchantTokens, creditDeposit, creditReserve, releaseUTR,
-          allowOverdraft: true,
+          creditDeposit, creditReserve, releaseUTR,
         });
         if (!moved.ok) {
           console.error(`[dispute resolve] ${order.orderId} released but money did not move:`, moved.reason);
@@ -373,9 +368,8 @@ router.post('/dispute-orders/:orderId/resolve', authenticate, hasPermission('can
           `Resolution: ${resolution}`;
       } else {
         // RELEASE_TO_MERCHANT or CANCEL — the player did not pay, so nothing
-        // reaches them; the merchant's tokens held for this buy go back. This
-        // released nothing and left the hold to the stranded-hold sweep.
-        await releaseForOrder(order, { actor: `admin:${req.user.userId}`, reason: resolution });
+        // reaches them; the team's tokens held for this buy go back to its pool.
+        await db.teamPools.releaseBuyHold(order.orderId, { actor: `admin:${req.user.userId}`, reason: resolution });
         systemMessage = `❌ Admin Decision: DEPOSIT REJECTED\n` +
           `No payment confirmed. Order cancelled. No token movement.\n` +
           `Resolution: ${resolution}`;
@@ -397,14 +391,14 @@ router.post('/dispute-orders/:orderId/resolve', authenticate, hasPermission('can
       }
       if (withdrawalDecision === 'RELEASE') {
         systemMessage = `✅ Admin Decision: WITHDRAWAL COMPLETED\n` +
-          `Payment confirmed. ${order.tokenAmount} tokens released to the merchant.\n` +
+          `Payment confirmed. ${order.tokenAmount} tokens released to the team.\n` +
           `Resolution: ${resolution}`;
       } else if (ended.afterSettlement) {
         systemMessage = `🔄 Admin Decision: WITHDRAWAL REFUNDED\n` +
           `${order.tokenAmount} tokens returned to user winnings balance.\n` +
           `Resolution: ${resolution}`;
         console.warn(`[dispute] Withdrawal ${order.orderId} refunded AFTER settlement — ` +
-          `merchant ${order.merchantId} was already credited ${order.tokenAmount}; manual recovery required.`);
+          `team ${order.teamId}'s pool had already been credited ${order.tokenAmount}.`);
       } else {
         systemMessage = `🔄 Admin Decision: WITHDRAWAL REVERSED\n` +
           `Payment was not received. ${order.tokenAmount} tokens returned to your balance.\n` +

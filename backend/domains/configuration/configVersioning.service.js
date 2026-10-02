@@ -120,15 +120,3 @@ export async function setConfigFields(modelName, entries, actor, opts = {}) {
     reason: justification || `Set ${entries.map(([f]) => f).join(', ')}`,
   });
 }
-
-/**
- * rollbackToVersion — restore the document to an earlier version.
- *
- * Never deletes history: the restore is itself a new version with its own audit
- * entry, so the trail says what happened rather than pretending it did not.
- */
-export async function rollbackToVersion(modelName, version, actor) {
-  return db.config.restoreConfigVersion(scopeFor(modelName), version, {
-    actor: actor?.userId ?? null,
-  });
-}

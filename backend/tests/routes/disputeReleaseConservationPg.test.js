@@ -5,9 +5,9 @@
  * ── What was wrong ──────────────────────────────────────────────────────────
  * `POST /api/admin/dispute-orders/:orderId/resolve` — the route the admin
  * Disputes screen actually calls — credited the player and debited nobody.
- * `grep -c debitMerchant` over that whole file returned 0. So every dispute an
- * admin resolved in the player's favour created tokens out of nothing, and the
- * conservation the settlement design rests on broke a little each time.
+ * So every dispute an admin resolved in the player's favour created tokens out
+ * of nothing, and the conservation the settlement design rests on broke a
+ * little each time.
  *
  * It also passed a SENTENCE where `creditDeposit` expects the order id. That
  * third argument builds the idempotency key `dep_complete_<orderId>`, so
@@ -20,20 +20,31 @@
  * what restores the deposit/reserve split, the UTR release and the player's
  * payment-failure clear.
  *
+ * ── The other side is the TEAM POOL (PROJECT_STATUS §3.10, 2c) ──────────────
+ * A buy is held in the pool of the team whose member serves it, from the
+ * moment it is assigned, and a DISPUTED buy keeps that hold. Releasing it to
+ * the player SPENDS the hold (`teamPools.spendForBuy`): the pool's `held` falls
+ * by the amount and the treasury moves it TEAM_FLOAT → USER_FLOAT, keyed on
+ * the order. The disputed orders below are made the way production makes them
+ * — routed to a member, accepted, marked paid by the player, disputed — so the
+ * hold the release spends is one the assignment really took (§32 S16).
+ *
  * ── What is asserted, and why it is the pair ────────────────────────────────
  * The existing dispute suite asserts `deposit + reserve` moved by the right
  * TOTAL. That is a conservation check on the player's side alone, and it passes
- * whether or not a merchant funded it — which is exactly why the minting was
- * invisible for so long. These assert the OTHER side, and the split, and the
- * key.
+ * whether or not anybody funded it — which is exactly why the minting was
+ * invisible for so long. These assert the OTHER side (the pool and the
+ * order's treasury legs), and the split, and the key.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { pgConfigured, applySchema, closePg } from '#db/client.js';
+import { pgConfigured, applySchema, closePg, pgQuery, withTransaction } from '#db/client.js';
 import { createOrderRecord, getOrderRecord } from '#db/repositories/orders.record.js';
 import { transitionOrder } from '#db/repositories/orders.js';
 import { getBalancesPaise } from '#db/repositories/wallets.core.js';
-import { getMerchantBalances } from '#db/repositories/merchantWallets.core.js';
-import { updateMerchant } from '#db/repositories/merchants.js';
+import { getPool } from '#db/repositories/teamPools.js';
+import { setCashReady } from '#db/repositories/teamRouting.js';
+import { tryAssignMerchant, markOrderPaid } from '../../domains/payment/paymentProcessing.service.js';
+import { teamFixture } from '../teamFixture.js';
 import { mountRouter, actor, merchantActor, as } from './_harness.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
@@ -41,7 +52,13 @@ const describePg = pgConfigured() ? describe : describe.skip;
 describePg('a released dispute moves tokens between two parties', () => {
   let app; let admin;
   let seq = 0;
-  const oid = () => `drc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}-${seq += 1}`;
+  const teams = teamFixture();
+  const made = [];
+  const oid = () => {
+    const id = `drc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}-${seq += 1}`;
+    made.push(id);
+    return id;
+  };
 
   beforeAll(async () => {
     await applySchema();
@@ -49,38 +66,65 @@ describePg('a released dispute moves tokens between two parties', () => {
     admin = await actor({ isAdmin: true, roles: ['admin'] });
   }, 60_000);
 
-  afterAll(async () => { await closePg(); });
+  afterAll(async () => {
+    // Trap 10: this run's orders, then its teams (append-only transitions, so
+    // with replication triggers off, inside one transaction).
+    await withTransaction(async (c) => {
+      await c.query('SET LOCAL session_replication_role = replica');
+      await c.query('DELETE FROM order_transitions WHERE order_id = ANY($1)', [made]);
+      await c.query('DELETE FROM order_states WHERE order_id = ANY($1)', [made]);
+    });
+    await teams.cleanup();
+    await closePg();
+  });
+
+  /** What the treasury moved for ONE order, account → paise. */
+  const legsFor = async (orderId) => {
+    const { rows } = await pgQuery(
+      `SELECT account, SUM(amount_paise)::bigint AS paise FROM treasury_entries
+        WHERE ref_id = $1 GROUP BY account`, [orderId]);
+    return Object.fromEntries(rows.map((r) => [r.account, Number(r.paise)]));
+  };
 
   /**
    * A disputed deposit carrying its allocation, as a real one does: the split
    * is stamped on the ORDER at creation by the deposit policy, so the release
    * has to honour what that order was created under rather than a live read.
+   * Served by a member of a working CASH team (≤ 10,000 tokens is the CASH
+   * rail), whose pool holds it from the assignment on.
    */
   const disputedDeposit = async ({ rupees = 1000, deposit = 900, reserve = 100 } = {}) => {
-    const merchant = await merchantActor({ tokensRupees: 50_000 });
-    await updateMerchant(merchant.merchantId, { isOnline: true, acceptsDeposits: true });
+    const merchant = await merchantActor({});
+    const team = await teams.workingTeam({ rail: 'CASH', poolTokens: 10_000, include: [merchant.merchantId] });
+    expect(await setCashReady(merchant.merchantId, true)).toEqual({ ok: true, ready: true });
     const player = await actor({});
     const orderId = oid();
-    await createOrderRecord({
+    const order = await createOrderRecord({
       orderId, userId: player.userId, type: 'DEPOSIT',
       tokenAmountRupees: rupees, fiatAmountRupees: rupees,
-      state: 'PAID', merchantId: merchant.merchantId,
+      currency: 'INR', rateUsed: 1, merchantProfit: 0,
       depositAllocation: deposit, reserveAllocation: reserve,
-      utrNumber: `UTRDRC${String(Date.now()).slice(-6)}${seq}`,
     });
-    await transitionOrder(orderId, 'DISPUTED', {
+    expect(await tryAssignMerchant(order), 'team routing did not take the buy').toBe(true);
+    expect(await getOrderRecord(orderId)).toMatchObject({ merchantId: merchant.merchantId, poolHeldPaise: rupees * 100 });
+    expect((await transitionOrder(orderId, 'PROCESSING', { set: { processingAt: new Date() } })).ok).toBe(true);
+    await markOrderPaid(player.userId, orderId, `UTRDRC${Date.now()}${seq}`);
+    // What the player's dispute route writes, on a PAID buy.
+    expect((await transitionOrder(orderId, 'DISPUTED', {
       set: { disputeReason: 'paid but no tokens', disputeRaisedBy: 'user', disputeRaisedAt: new Date() },
-    });
-    return { orderId, player, merchant };
+    })).ok).toBe(true);
+    // A DISPUTED buy still holds its tokens: the dispute is a question, not a refund.
+    expect((await getOrderRecord(orderId)).poolHeldPaise).toBe(rupees * 100);
+    return { orderId, player, merchant, team };
   };
 
   const resolve = (orderId, body) =>
     as(app, admin).post(`/dispute-orders/${orderId}/resolve`).send(body);
 
-  it('debits the merchant by exactly what it credits the player', async () => {
-    const { orderId, player, merchant } = await disputedDeposit({ rupees: 1000 });
+  it('takes from the team pool exactly what it credits the player', async () => {
+    const { orderId, player, team } = await disputedDeposit({ rupees: 1000 });
     const playerBefore = await getBalancesPaise(player.userId);
-    const merchantBefore = await getMerchantBalances(merchant.merchantId);
+    const poolBefore = await getPool(team.teamId);
 
     const res = await resolve(orderId, {
       decision: 'RELEASE_TO_USER', resolution: 'Bank statement shows the credit',
@@ -88,16 +132,21 @@ describePg('a released dispute moves tokens between two parties', () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
 
     const playerAfter = await getBalancesPaise(player.userId);
-    const merchantAfter = await getMerchantBalances(merchant.merchantId);
+    const poolAfter = await getPool(team.teamId);
 
     const credited = (playerAfter.depositBalance + playerAfter.reserveBalance)
                    - (playerBefore.depositBalance + playerBefore.reserveBalance);
-    const debited = Number(merchantBefore.available) - Number(merchantAfter.available);
+    const taken = poolBefore.totalPaise - poolAfter.totalPaise;
 
     expect(credited).toBe(100_000);
     // THE assertion. This route credited the player and debited NOBODY, so the
     // tokens were minted. A player-side check alone cannot see that.
-    expect(debited, 'a released dispute must move tokens, never create them').toBe(credited);
+    expect(taken, 'a released dispute must move tokens, never create them').toBe(credited);
+    // From the HOLD, not from what the team still has free.
+    expect(poolBefore.heldPaise - poolAfter.heldPaise).toBe(100_000);
+    expect(poolAfter.availablePaise).toBe(poolBefore.availablePaise);
+    // And the books agree, for this order alone: out of the teams, into the players.
+    expect(await legsFor(orderId)).toEqual({ TEAM_FLOAT: -100_000, USER_FLOAT: 100_000 });
   });
 
   it('honours the split the ORDER was created under', async () => {
@@ -117,9 +166,9 @@ describePg('a released dispute moves tokens between two parties', () => {
   });
 
   it('keys the credit on the ORDER, so a second release pays nothing again', async () => {
-    const { orderId, player, merchant } = await disputedDeposit({ rupees: 1000 });
+    const { orderId, player, team } = await disputedDeposit({ rupees: 1000 });
     const playerBefore = await getBalancesPaise(player.userId);
-    const merchantBefore = await getMerchantBalances(merchant.merchantId);
+    const poolBefore = await getPool(team.teamId);
 
     await resolve(orderId, { decision: 'RELEASE_TO_USER', resolution: 'first' });
     // The order is COMPLETED now, so the route refuses on state — but the money
@@ -128,10 +177,11 @@ describePg('a released dispute moves tokens between two parties', () => {
     await resolve(orderId, { decision: 'RELEASE_TO_USER', resolution: 'second' });
 
     const playerAfter = await getBalancesPaise(player.userId);
-    const merchantAfter = await getMerchantBalances(merchant.merchantId);
+    const poolAfter = await getPool(team.teamId);
     expect((playerAfter.depositBalance + playerAfter.reserveBalance)
          - (playerBefore.depositBalance + playerBefore.reserveBalance)).toBe(100_000);
-    expect(Number(merchantBefore.available) - Number(merchantAfter.available)).toBe(100_000);
+    expect(poolBefore.totalPaise - poolAfter.totalPaise).toBe(100_000);
+    expect(await legsFor(orderId)).toEqual({ TEAM_FLOAT: -100_000, USER_FLOAT: 100_000 });
     expect((await getOrderRecord(orderId)).status).toBe('COMPLETED');
   });
 });

@@ -53,9 +53,10 @@ describe('the rule table is the same one the database enforces', () => {
 
   it('knows where an order can go from here', () => {
     expect(nextStates(ORDER_STATES.PENDING_QUEUE).sort())
-      // PROCESSING because a merchant may take an order straight out of the
-      // open pool without it having been assigned to them first.
-      .toEqual(['ASSIGNED', 'CANCELLED', 'FAILED', 'PROCESSING', 'REJECTED']);
+      // NOT PROCESSING: nobody takes an order straight out of the queue any
+      // more. Every order reaches a member through team routing, which moves it
+      // to ASSIGNED first (§3.10, 2c).
+      .toEqual(['ASSIGNED', 'CANCELLED', 'FAILED', 'REJECTED']);
     // Nothing leaves COMPLETED except a dispute. Everything else is a reversal.
     expect(nextStates(ORDER_STATES.COMPLETED)).toEqual(['DISPUTED']);
     // ...and a dispute resolves in exactly two directions.

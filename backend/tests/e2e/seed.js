@@ -1,8 +1,11 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import { db } from '#db';
 import { pgQuery } from '#db/client.js';
-import { createMerchantWithWallet, approveMerchant, setOnline, updateMerchant } from '#db/repositories/merchants.js';
-import { creditMerchantTokens } from '../../domains/merchant/merchantWallet.service.js';
+import { createMerchant, approveMerchant, setOnline } from '#db/repositories/merchants.js';
+import { setSupervisorRole, createTeam, addMember, approveMember, TEAM_SIZE } from '#db/repositories/teams.js';
+import { createRequest, fulfilRequest, getPool } from '#db/repositories/teamPools.js';
+import { setCashReady, RAILS } from '#db/repositories/teamRouting.js';
+import { getTreasuryBalances, ACCOUNTS } from '#db/repositories/treasury.js';
 import { rid } from './harness.js';
 
 const mob = () => String(6000000000 + Math.floor(Math.random() * 3999999999));
@@ -89,35 +92,42 @@ export async function seedPlayer({ balancePaise = 0, verified = true } = {}) {
 }
 
 /**
- * ── `cashDenominationPaise` is what makes a merchant a CASH merchant ────────
- * It is not a second rail (§2: `accepted_currencies` is exactly one entry). An
- * ATM merchant is an INR merchant an admin has told which single denomination
- * they stand at, and `CashLinks.tsx` renders its whole screen off that: with
- * no denomination it shows an empty state explaining the account is not
- * approved for the ATM rail, and nothing to press.
+ * A merchant: the trading identity, its LOGIN row, and the link between them.
  *
- * Which is why this option exists. The browser pass seeded a plain INR
- * merchant, so `/cash-links` rendered that empty state on every run — zero
- * controls, and the pass reported `ok`. The entire supply side of the CASH_ATM
- * rail had never once been opened by anything that clicks.
+ * ── A merchant holds no tokens, and is not on a rail by itself ─────────────
+ * Since Step 2c (PROJECT_STATUS §3.10) a merchant serves orders only as a
+ * MEMBER of a working team, the rail is the team supervisor's, and the tokens
+ * are the team's POOL. So this seeds an approved, online merchant and nothing
+ * more; `seedTeam` below is what puts merchants where orders can reach them.
  *
- * Must be one of `CASH_DENOMINATIONS_PAISE`; the column's CHECK refuses
- * anything else (verified: 50_000_000 was refused by name).
+ * `tokensPaise` and `cashDenominationPaise` are REFUSED, not ignored. Both
+ * named things the platform no longer has (a merchant wallet; a merchant
+ * approved for one ATM denomination), and a caller still passing them is a
+ * scenario still describing the old model — silently dropping the argument
+ * would let it carry on asserting against tokens nobody was given.
  */
 export async function seedMerchant({
-  currency = 'INR', approve = true, tokensPaise = 0, online = true,
-  usdtAddressTrc20 = null, usdtAddressBep20 = null, cashDenominationPaise = null,
-  verified = true,
+  currency = 'INR', approve = true, online = true,
+  usdtAddressTrc20 = null, usdtAddressBep20 = null,
+  verified = true, tokensPaise, cashDenominationPaise,
 } = {}) {
+  if (tokensPaise !== undefined || cashDenominationPaise !== undefined) {
+    throw new Error('seedMerchant: tokensPaise/cashDenominationPaise are gone — a merchant holds no tokens and '
+      + 'is on no rail by itself. Put it in a team: seedTeam({ rail, poolTokens, include: [merchant] }).');
+  }
   const name = rid('merch');
   // Held in a LOCAL for the same reason `seedPlayer` holds the player's: the
   // identity row's `phone` is NOT NULL and a projection may not carry it.
   const mobile = mob();
-  const merchant = await createMerchantWithWallet({
+  // `merchants_bank_account_unique` is (account number, IFSC), so every seeded
+  // merchant gets its own account — a literal shared by two merchants is a row
+  // the platform refuses (§32 S16).
+  const accountNo = String(100000000000 + Math.floor(Math.random() * 899999999999));
+  const merchant = await createMerchant({
     name, username: name, mobile, email: `${name}@example.test`,
     currency, status: 'PENDING',
     bankDetails: currency === 'INR'
-      ? { accountNumber: '000111222333', ifsc: 'HDFC0000001', accountHolder: name, upiId: `${name}@upi` }
+      ? { accountNo, ifsc: 'HDFC0000001', accountHolderName: name, upiId: `${name}@upi`, bankName: 'HDFC Bank' }
       : null,
     usdtAddressTrc20, usdtAddressBep20,
   });
@@ -127,7 +137,7 @@ export async function seedMerchant({
   // A real merchant signup writes a `users` row (the login) as well as a
   // `merchants` row (the trading identity), and points the second at the first
   // — §33.5, and `createMerchantAccount` does all of it in one transaction.
-  // `createMerchantWithWallet` writes only the trading identity and leaves
+  // `createMerchant` writes only the trading identity and leaves
   // `merchants.user_id` NULL, so every seeded merchant was an account that
   // cannot exist (§32 S16).
   //
@@ -154,18 +164,131 @@ export async function seedMerchant({
   await pgQuery(`UPDATE merchants SET user_id = $2 WHERE merchant_id = $1`,
                 [id, merchantUserId], 'e2e_merchant_link');
 
-  if (cashDenominationPaise !== null) {
-    await updateMerchant(id, { cashDenominationPaise: Number(cashDenominationPaise) });
-  }
   if (approve) await approveMerchant(id, { actor: 'e2e' });
   if (online) await setOnline(id, true);
-  if (tokensPaise > 0) {
-    await creditMerchantTokens({
-      merchantId: id, amount: tokensPaise / 100,
-      txId: `${id}_seed_float`, reason: 'e2e float',
-    });
-  }
   return { ...merchant, _id: id, merchantId: id, userId: merchantUserId, mobile };
+}
+
+/**
+ * Sell `tokens` into a team's pool the way the platform does it: the
+ * supervisor's BUY request, then an admin's fulfilment recording what was paid
+ * (`teamPools.js` — one transaction moving TOKEN_SUPPLY → TEAM_FLOAT, the pool
+ * row, its ledger entry and the consideration). Never a pool row written by
+ * hand: TEAM_FLOAT must equal the sum of the pools, and only this path keeps
+ * it so.
+ *
+ * Scenarios that are ABOUT funding a pool go through the two HTTP routes
+ * instead (s6); this is the seed's shortcut through the same repository calls
+ * those routes make.
+ */
+export async function fundTeam(team, tokens) {
+  const r = await createRequest({
+    teamId: team.teamId, supervisorId: team.supervisor.merchantId,
+    direction: 'BUY', tokenAmountPaise: tokens * 100, note: 'e2e seed',
+  });
+  if (!r.ok) throw new Error(`fundTeam: pool request refused: ${r.reason}`);
+  const done = await fulfilRequest({
+    requestId: r.requestId, actor: 'e2e-admin',
+    consideration: { currency: 'INR', fiatAmountMinor: tokens * 100, rateUsed: null },
+  });
+  if (!done.ok) throw new Error(`fundTeam: pool fulfilment refused: ${done.reason}`);
+  return done.pool;
+}
+
+/**
+ * A WORKING team on one rail: a supervisor approved for `rail`, and ten
+ * approved members — every one a full `seedMerchant` with a login, so a
+ * scenario can act as whichever member routing picks.
+ *
+ * Built through the repositories the admin and supervisor routes call
+ * (`setSupervisorRole`, `createTeam`, `addMember`, `approveMember`), so the
+ * team is one the platform could have produced — the same calls
+ * `teamFixture.js` makes for the vitest tiers. That fixture is not imported
+ * here because its `cleanup()` DELETES the team and its merchants, and this
+ * tier never deletes what it seeds: its orders are left behind referring to
+ * their merchant and team, and a deleted team would leave them pointing at
+ * nothing (trap 10 — this tier asserts deltas, never global state).
+ *
+ *   include    merchants (from `seedMerchant`) to put in it; padded to ten.
+ *   online     which members are online — default ALL of them. The others are
+ *              taken offline.
+ *   ready      CASH only: members who have pressed Ready. Through the same
+ *              writer `PUT /api/merchant/cash-ready` calls (`setCashReady`),
+ *              so the flag is one a member could have set; s4 presses it over
+ *              HTTP where the press itself is under test.
+ *   exclusive  default TRUE: every member of every OTHER team on this rail is
+ *              taken offline, so routing on the rail reaches this team and
+ *              nobody else. Teams from earlier runs (this tier never deletes)
+ *              would otherwise compete for the scenario's orders, and which
+ *              member a buy lands on — and whose pool holds it — would depend
+ *              on whatever the database happened to hold (§32 S19).
+ *   poolTokens tokens sold into the pool through `fundTeam`.
+ *
+ * Returns { teamId, rail, supervisor, members, byId(merchantId) }.
+ */
+export async function seedTeam({
+  rail = 'UPI_BANK', poolTokens = 0, include = [], online = null, ready = [], exclusive = true,
+} = {}) {
+  if (!RAILS[rail]) throw new Error(`seedTeam: unknown rail ${rail}`);
+  if (include.length > TEAM_SIZE) throw new Error(`seedTeam: a team has ${TEAM_SIZE} members, not ${include.length}`);
+  const currency = rail === RAILS.USDT ? 'USDT' : 'INR';
+
+  // The supervisor does no transactions (owner, 2026-10-02) — offline, and
+  // never a member: `team_roles_disjoint` refuses one account being both.
+  const supervisor = await seedMerchant({ currency, online: false });
+  const role = await setSupervisorRole(supervisor.merchantId, { rail });
+  if (!role.ok) throw new Error(`seedTeam: supervisor refused: ${role.reason}`);
+  const made = await createTeam({ supervisorId: supervisor.merchantId, name: rid(`team-${rail}`) });
+  if (!made.ok) throw new Error(`seedTeam: team refused: ${made.reason}`);
+  const { teamId } = made;
+
+  const members = [...include];
+  while (members.length < TEAM_SIZE) {
+    // A USDT member holds an address on BOTH chains unless the scenario
+    // brings its own, so the padding can serve either network.
+    members.push(await seedMerchant({
+      currency, online: false,
+      ...(rail === RAILS.USDT ? { usdtAddressTrc20: trc20(), usdtAddressBep20: bep20() } : {}),
+    }));
+  }
+  for (const m of members) {
+    const added = await addMember({ teamId, supervisorId: supervisor.merchantId, merchantRef: m.merchantId, actor: supervisor.merchantId });
+    if (!added.ok) throw new Error(`seedTeam: add ${m.merchantId} refused: ${added.reason}`);
+    const approved = await approveMember({ merchantId: m.merchantId, actor: 'e2e-admin' });
+    if (!approved.ok) throw new Error(`seedTeam: approve ${m.merchantId} refused: ${approved.reason}`);
+  }
+
+  if (exclusive) {
+    await pgQuery(
+      `UPDATE merchants SET is_online = FALSE, cash_ready = FALSE, last_online_toggle = now()
+        WHERE is_online AND merchant_id IN (
+          SELECT tm.merchant_id FROM team_members tm
+            JOIN teams t ON t.team_id = tm.team_id
+            JOIN merchants s ON s.merchant_id = t.supervisor_id
+           WHERE s.supervisor_rail = $1 AND tm.team_id <> $2)`,
+      [rail, teamId], 'e2e_team_exclusive');
+  }
+  const onlineIds = new Set((online ?? members).map((m) => m.merchantId ?? m));
+  for (const m of members) await setOnline(m.merchantId, onlineIds.has(m.merchantId));
+  for (const m of ready) {
+    const set = await setCashReady(m.merchantId ?? m, true);
+    if (!set.ok) throw new Error(`seedTeam: Ready refused for ${m.merchantId ?? m}: ${set.reason}`);
+  }
+
+  const team = { teamId, rail, supervisor, members };
+  if (poolTokens > 0) await fundTeam(team, poolTokens);
+  const byId = new Map(members.map((m) => [m.merchantId, m]));
+  return { ...team, byId: (id) => byId.get(String(id)) ?? null };
+}
+
+/** The pool's two halves and the treasury's two floats, as one snapshot to diff. */
+export async function poolAndFloats(teamId) {
+  const pool = await getPool(teamId);
+  const t = await getTreasuryBalances();
+  return {
+    available: pool.availablePaise, held: pool.heldPaise,
+    teamFloat: t[ACCOUNTS.TEAM_FLOAT], userFloat: t[ACCOUNTS.USER_FLOAT],
+  };
 }
 
 // The admin 2FA guard (F-011) is ON, so an admin with no authenticator is

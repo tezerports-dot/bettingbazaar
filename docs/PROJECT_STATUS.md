@@ -634,6 +634,46 @@ Owner answers, 2026-10-02 (two rounds; the second replaced the security deposit 
   a `within` step on the order transition so the hold commits with the move.
   `teamRoutingPg` 21 cases, M294–M304. Part 2 switches the order paths onto
   it; part 3 deletes what it replaces.
+  **Parts 2–3 IN PROGRESS (2026-10-02), saved unfinished on branch
+  `claude/busy-wright-cy111a-2c-wip`** — not on the PR branch, so #201 stays
+  green. Work moved from the Project thread to a plain session (owner: the
+  Project's usage limit was reached). What the branch holds:
+  - DONE and green when last run: every order path switched onto routing and
+    pool holds; per-merchant wallets, escrow, scorer, cash-link queue,
+    payment-mode policy, gateway settings, merchant token orders and
+    fund/deduct deleted; rail derived per order (`database/repositories/orderRails.js`);
+    no withdrawal splitting (a cash-size withdrawal that is not a dispensable
+    amount is refused, `NOT_A_CASH_AMOUNT`); player panel (tsc 0, 228 tests);
+    merchant panel (Ready card, tsc 0, 89 tests); the DB suites
+    (`teamRoutingPg` 25, `moneyConservation`, `depositConservationPg`,
+    `ledgerPg`, `treasuryPg`, `configPg`, `merchantPg`, `newDomains`,
+    `paymentModeImmutabilityPg`). A settled sell refunded after the team spent
+    its tokens is covered by the platform (`reverseSellFromPool({ coverShortfall })`,
+    TOKEN_SUPPLY → USER_FLOAT, once, under the order lock).
+  - UNFINISHED — helpers were stopped mid-task, so RUN THE SUITES FIRST to see
+    where each stopped: the admin panel; the route suites for deposits,
+    disputes, withdrawals and merchant/player routes; the e2e/browser
+    harnesses (`backend/tests/e2e`, `backend/tests/browser`, including
+    `mutate.js`'s dynamic import of the deleted `depositEscrow`).
+  - OPEN DEFECT, fix first (a 2c regression, measured): `endWithdrawal(id,
+    'REFUND')` replayed on a settled sell pays the player twice. The first
+    refund's `mirrorSettlement(…, 'CANCELLED')` rewrites
+    `merchantCreditStatus` from RELEASED to REVERSED, so the replay
+    (`alreadyReversed` / `alreadyCovered`, still `ok`) takes the else-branch
+    and calls `refundWithdrawal` on key `refund_<id>` — a different key from
+    the first refund's `dispute_wd_refund_<id>` — draining another order's
+    locked stake, or throwing a 500 when there is none. Reached by two admins
+    resolving one disputed settled sell at once
+    (`disputeResolution.admin.routes.js` `moved.idempotent`,
+    `paymentOrder.routes.js` `resolved.idempotent` and `/action`). HEAD before
+    2c replayed `creditWinnings` on one key. Fix: decide the branch from what
+    the ledger says was consumed, not from the mirrored status; test the replay.
+  - `scripts/mutation-check.mjs` is retargeted statically (220 entries, every
+    anchor and test present, 34 deleted with the code they guarded); NOT yet
+    run. Run it once the suites are green.
+  - Then: every gate, `test:unit`, `test:pg` on a fresh database, all three
+    panels' tsc/test/build, `audit:map`, CLAUDE.md §2 rows for the new owners
+    (or leave to 2g), the §31 table, merge onto `claude/busy-wright-cy111a`, push, CI green.
   **2c design (written before building it, §17.4):**
   - *The rail an order runs on* is derived at creation, never read from a
     switch: USDT currency → the USDT rail; INR up to 10,000 tokens → `CASH`

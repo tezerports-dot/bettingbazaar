@@ -28,19 +28,18 @@
  * complete — allocations, escrow flag, bank details and all — so it can never
  * be picked up by the assignment sweep in a half-built state.
  *
- * NOTE: this file calls the Merchant domain's `selectBestMerchant()` directly.
- * That is pre-existing cross-domain coupling, flagged per BBEPS Phase 003 §3.7.
+ * ── Who serves an order ─────────────────────────────────────────────────────
+ * A member of a working team on the order's rail (`db.teamRouting`, §3.10 2c).
+ * A buy's tokens are held in the team's pool in the transaction that assigns
+ * it; there are no per-merchant wallets and no escrow outside the pool.
  */
 import crypto from 'crypto';
 import { db } from '#db';
 // One owner for what a token is worth: the INR peg, and the two USDT legs.
 import {
-  INR_TOKEN_RATE, rateForMerchant, tokensPerUsdt, usdtForTokens,
+  INR_TOKEN_RATE, tokensPerUsdt, usdtForTokens,
 } from '../configuration/tokenRates.js';
-import { debitWinningsForWithdrawal, refundWithdrawal, getBalances } from '../wallet/walletAuthority.service.js';
-import { selectBestMerchant } from '../merchant/merchantScoring.service.js';
-import { holdForOrder, releaseForOrder } from '../merchant/depositEscrow.service.js';
-import { claimLinkFor } from '../merchant/cashLink.service.js';
+import { debitWinningsForWithdrawal, refundWithdrawal } from '../wallet/walletAuthority.service.js';
 import {
   MERCHANT_CURRENCY, merchantTypeOf, usdtAddressFor,
   USDT_CHAIN_SPEC, USDT_CHAINS, isUsdtChain,
@@ -54,23 +53,20 @@ import { referenceSpecFor, claimPaymentReference } from './paymentReference.js';
 // The order state machine. Every status change goes through here so an illegal
 // move is refused by the database rather than by whichever check ran first.
 import {
-  assignOrder as assignOrderState, markOrderPaid as markOrderPaidState,
+  markOrderPaid as markOrderPaidState,
   cancelOrder as cancelOrderState, disputeOrder as disputeOrderState,
 } from './orderLifecycle.service.js';
 import { emitWalletUpdate, emitOrderUpdate, emitMerchantUpdate, emitAdminUpdate } from '../notification/realtimeEmitters.js';
 import { getSystemConfig } from '#db/repositories/config.js';
+// Which rail an order runs on, and the per-rail timers and caps.
 import {
-  PAYMENT_MODES,
-  getActivePolicy as getActivePaymentModePolicy,
-  getPolicyVersion as getPaymentModePolicyVersion,
-} from '#db/repositories/paymentModePolicy.js';
-// The denomination ladder and the split rule. One owner — the same module the
-// risk gate validates buys against and `systemConfigPayload` builds the picker
-// from, so the amounts a screen offers, the amounts the gate accepts and the
-// amounts a withdrawal splits into cannot disagree.
+  PAYMENT_MODES, paymentModeFor, railOf, routingSettings,
+} from '#db/repositories/teamRouting.js';
+// The denomination ladder. One owner — the same module the risk gate validates
+// buys against and `systemConfigPayload` builds the picker from, so the amounts
+// a screen offers and the amounts the gate accepts cannot disagree.
 import {
-  WITHDRAWAL_DENOMINATIONS_PAISE, USDT_BUY_DENOMINATIONS_PAISE,
-  splitWithdrawal, shareFeeAcrossParts,
+  USDT_BUY_DENOMINATIONS_PAISE, BUY_DENOMINATIONS_PAISE, MAX_CASH_BUY_PAISE, isBuyDenomination,
 } from '../merchant/denominations.js';
 import { rupeesToPaise, paiseToRupees } from '../../shared/money.js';
 // The per-order payment link has one owner, and it is not the client.
@@ -183,346 +179,68 @@ function buildMerchantSnapshot(merchant, expiresAt, order = null) {
   };
 }
 
-// ─── Payment order window ─────────────────────────────────────────────────────
-//
-// How long a user has to pay the assigned merchant before the order expires and
-// refunds. Owned by `payment_mode_policies.processing_window_seconds`.
-//
-// ── Why it moved off SystemConfig.orderExpiryMinutes ─────────────────────────
-// The two settlement rails have DIFFERENT timelines by design: paying a
-// merchant's UPI and drawing cash at an ATM are not the same act and do not
-// take the same time. One global number cannot express that, so the window
-// belongs to the policy that also names the rail. The existing value was
-// carried forward into the seeded policy (see schema.sql) so nothing an admin
-// tuned was discarded, and `orderExpiryMinutes` is gone — two owners for one
-// number is how they drift.
-//
-// ── Why it reads the ORDER's version, not the active one ─────────────────────
-// This runs at ASSIGNMENT, on an order whose rail was stamped at creation. If
-// an admin switched the rail in between, the order is still running the process
-// it was created under and must be held to that rail's window — otherwise a
-// player is given a deadline for a workflow they were never shown.
-//
-// There is no hardcoded fallback. The column is NOT NULL with a CHECK that it
-// is positive, and the schema seeds a version 1, so a policy always exists; a
-// literal here would be a second owner waiting to disagree with the first.
-async function getOrderExpiryMs(order = null) {
-  const policy = (order?.paymentModeVersion != null
-    ? await getPaymentModePolicyVersion(order.paymentModeVersion)
-    : null) ?? await getActivePaymentModePolicy();
-  return policy.processingWindowSeconds * 1000;
-}
-
+// ─── Assign an order to a team member; returns true if assigned ───────────────
 /**
- * Assign a cash-rail BUY by claiming a link from the queue.
+ * Hand a PENDING_QUEUE order to a member of a working team on its rail.
  *
- * The claim and the order's own stamp commit together inside the repository,
- * so an order never ends up holding a link the queue does not agree it has.
- * What is left here is the ASSIGNMENT: the link's supplier becomes the
- * merchant, and the order moves to ASSIGNED with the same lifecycle call the
- * UPI rail uses — the state machine stays the one owner of a state change.
+ * ── The choice and the hold are one transaction ────────────────────────────
+ * `db.teamRouting.assignToTeam` ranks the eligible members (fewest open orders,
+ * then least recently assigned), and takes each candidate inside the order's
+ * own transition: the member's row locked, their open orders counted again, and
+ * on a buy the tokens HELD in the team's pool in the same statement that moves
+ * the order (§32 S6). There is nothing to release here when it does not take —
+ * a refused candidate unwinds its own transaction.
  *
- * The expiry is the link's, not the rail's processing window. The player has
- * until the ATM transaction times out and not a second longer, so a window
- * from the policy would promise time the machine will not give them.
+ * ── The quote is NOT re-made here ───────────────────────────────────────────
+ * The order was priced at creation, and the player was shown that price before
+ * they agreed to anything. Its own `rateUsed` is what stands (§25).
+ *
+ * Both directions come here. There is no open pool any more: a sell nobody is
+ * free for waits PENDING_QUEUE and the assignment sweep offers it again.
  */
-/**
- * Claim a link for a buy order and assign its owner as the merchant.
- *
- * EXPORTED for the suite that covers its rollback. The failure it has to survive
- * is a transition refused AFTER the claim has committed — the order moved under
- * it — and that cannot be staged from outside without being able to hand this
- * function an order whose row has already moved on. A test that tried to time it
- * would be asserting about scheduling instead of about the rollback, and what is
- * at stake is a consumed link no merchant can be sent with.
- */
-export async function tryClaimCashLink(order) {
-  const claim = await claimLinkFor(order);
-  if (!claim.ok) return false;
+async function tryAssignMerchant(order, { alsoBar = [] } = {}) {
+  const settings = routingSettings(await getSystemConfig());
+  // Who this order may NOT go to: anybody who already refused it, anybody who
+  // refused an order from this player before, and — on an admin's reassign —
+  // the member it was just taken from.
+  const barredMerchantIds = [
+    ...await db.orders.merchantsBarredFrom({ orderId: order.orderId, userId: order.userId }),
+    ...alsoBar,
+  ];
+  const expiresAt = new Date(Date.now() + settings.processingWindowSeconds[railOf(order)] * 1000);
 
-  // ── The cash rail attaches a merchant HERE, so it holds their tokens here ──
-  // This is the FOURTH route by which an order becomes a merchant's, and it
-  // does not go through `tryAssignMerchant` — a cash order is matched to the
-  // link a merchant has already produced at a machine, not scored against a
-  // candidate list. It was missed on the first pass of this work precisely
-  // because it is the path that looks least like an assignment.
-  //
-  // A cash buy owes the merchant's tokens exactly as a UPI buy does: the player
-  // draws notes and the merchant hands over tokens. Without the hold the cash
-  // rail kept the whole defect the UPI rail had just lost.
-  if (order.type === 'DEPOSIT') {
-    const held = await holdForOrder(order, claim.link.merchantId, { actor: 'cash-link' });
-    if (!held.ok) {
-      // The link is given back for the same reason as below: it was claimed
-      // before this could fail, and a consumed link on an unassigned order is
-      // two people waiting on nothing.
-      await db.cashLinks.releaseClaim({ linkId: claim.link.linkId, orderId: order.orderId })
-        .catch((e) => console.error(`[cashLink] could not release ${claim.link.linkId}:`, e.message));
-      console.warn(
-        `[cashLink] ${order.orderId}: merchant ${claim.link.merchantId} could not hold `
-        + `${order.tokenAmount} tokens (${held.reason}); link returned to the queue.`,
-      );
-      return false;
-    }
-  }
-
-  const moved = await assignOrderState(order.orderId, {
-    set: {
-      merchantId: claim.link.merchantId,
-      assignedAt: new Date(),
-      // The machine's deadline, not ours.
-      expiresAt: claim.link.expiresAt,
-    },
-  });
-  if (!moved.ok || moved.idempotent) {
-    // ── Give the link back ────────────────────────────────────────────────
-    // The claim committed BEFORE this transition was attempted, so a refusal
-    // here leaves the link consumed and the order still PENDING_QUEUE holding a
-    // link id. Nothing about either row looks wrong: the link is out of the
-    // queue so no merchant can be sent with it, and the order shows a payment
-    // link nobody is working. Two people waiting on a link doing nothing for
-    // either of them, until it expires.
-    //
-    // The release is guarded on this order's own claim, so it can never take a
-    // link away from an order that IS being served, and it is not fatal: the
-    // caller's answer is still "not assigned" whether or not the tidy-up
-    // worked, and failing the request would turn a recoverable state into an
-    // error the player sees.
-    await db.cashLinks.releaseClaim({ linkId: claim.link.linkId, orderId: order.orderId })
-      .catch((e) => console.error(`[cashLink] could not release ${claim.link.linkId}:`, e.message));
-    // …and the tokens held two blocks up have nothing to hold for either.
-    if (order.type === 'DEPOSIT') {
-      await releaseForOrder(order, { actor: 'cash-link', reason: 'Cash link assignment did not take' });
-    }
-    return false;
-  }
-
-  // Keep the caller's in-memory copy consistent with the row that now exists,
-  // so the emitters below describe reality rather than a hoped-for state.
-  Object.assign(order, {
-    merchantId: claim.link.merchantId,
-    status: 'ASSIGNED',
-    assignedAt: moved.order.assignedAt,
-    expiresAt: claim.link.expiresAt,
-    cashLinkId: claim.link.linkId,
-  });
-  return true;
-}
-
-/**
- * Hand waiting orders the links that have appeared since they were created.
- *
- * ── The gap this closes ───────────────────────────────────────────────────
- * The claim ran exactly ONCE per order, at creation. An order created at a
- * moment when no merchant held a link at its denomination therefore never got
- * one — nothing looked again when the link it had been waiting for was supplied
- * a minute later. The player watched a live order sit at PENDING_QUEUE until it
- * expired while a merchant stood at a machine with a link nobody took. Both
- * sides waiting for each other, and every check in this repository green.
- *
- * ── It lives HERE, not in the link service ────────────────────────────────
- * Because it must go through `tryClaimCashLink`, which is the COMPLETE
- * operation: claim the link, assign its owner as the order's merchant, and take
- * the machine's deadline as the order's. Calling the raw claim instead stamps a
- * link id onto an order that still has no merchant and is still PENDING_QUEUE —
- * a half-assignment, which is worse than no assignment because the player sees
- * a link and nobody is serving them.
- *
- * ── Order matters, and it is the design's order ───────────────────────────
- * Best claim first: a retry outranks a first attempt, because sending somebody
- * who already waited and got nothing to the back of the same queue is how they
- * wait twice and get nothing twice. Age breaks the tie.
- *
- * Safe to run from anywhere and from several places at once — the claim takes
- * the link `FOR UPDATE … SKIP LOCKED` with a unique index behind it, so two
- * matchers hand each link to exactly one order and the loser finds nothing.
- * A failure on one order does not stop the rest: the next one is a different
- * player, and one bad row must not hold up everybody behind it.
- */
-export async function matchWaitingOrdersToLinks({ limit = 100 } = {}) {
-  // No check on the rail in force. The query selects on each ORDER's own
-  // `payment_mode` (§2: a worker branches on the order, never the current
-  // policy). This returned early off the cash rail, so switching to UPI
-  // stranded every cash buy already waiting, and every link a merchant had
-  // already supplied for them, until both expired (review C2). The switch still
-  // stops NEW links: `supplyCashLink` refuses off the cash rail.
-  const waiting = await db.orders.ordersAwaitingCashLink({ limit });
-  let matched = 0;
-  for (const order of waiting) {
-    try {
-      if (await tryClaimCashLink(order)) {
-        matched += 1;
-        emitAdminUpdate('queue_order_update', {
-          orderId: order.orderId, status: 'ASSIGNED', server_ts: Date.now(),
-        });
-      }
-    } catch (error) {
-      console.error(`[cashLink] could not match order ${order.orderId}:`, error.message);
-    }
-  }
-  return { matched, considered: waiting.length };
-}
-
-// ─── Attempt to assign order to best merchant; returns true if assigned ────────
-async function tryAssignMerchant(order) {
-  // ── On the cash rail, a BUY is assigned by taking a link, not by ranking ──
-  //
-  // The merchant is already standing at the machine. Their link is the supply,
-  // and whoever supplied the one this order takes IS the merchant serving it —
-  // so there is nothing to score. Ranking candidates here would pick a merchant
-  // who has no link, and the player would be assigned somebody who is not at an
-  // ATM.
-  //
-  // Withdrawals on this rail still go through the scorer below: the merchant
-  // deposits at a CDM, which is not a link and has no queue.
-  if (order.paymentMode === PAYMENT_MODES.CASH_ATM && order.type === 'DEPOSIT') {
-    return tryClaimCashLink(order);
-  }
-
-  // Pass the order's rail: `selectBestMerchant` matches it against the
-  // merchant's accepted currencies, so a USDT order can only reach a USDT
-  // merchant and an INR order only an INR merchant. The argument was once
-  // omitted and every order fell back to the 'INR' default, which would have
-  // routed a USDT order to an INR merchant (2026-07-27).
-  // The order's OWN rail, not the one live now: on CASH_ATM the amount is a
-  // denomination a merchant must be approved for, and the concurrency cap is
-  // the one that rail promised them.
-  // Who this order may NOT go to: anybody who already refused it, and anybody
-  // who refused an order from this player before. Read here rather than inside
-  // the scorer because this is the only layer that holds both the order and its
-  // owner — and read on EVERY assignment, not just a reassignment, because the
-  // player-level rule applies to an order the merchant has never seen.
-  const barredMerchantIds = await db.orders.merchantsBarredFrom({
-    orderId: order.orderId, userId: order.userId,
-  });
-
-  const merchant = await selectBestMerchant(order.type, order.tokenAmount, order.currency, {
+  const assigned = await db.teamRouting.assignToTeam(order, {
+    cap: settings.concurrency[railOf(order)],
     barredMerchantIds,
-    paymentMode: order.paymentMode,
-    paymentModeVersion: order.paymentModeVersion,
-    // On USDT, the chain the player chose. A merchant holding only a TRC-20
-    // address cannot receive a BEP-20 payment, so they are not a candidate at
-    // all — the alternative is assigning an order the merchant must refuse,
-    // with the player already waiting.
-    usdtChain: order.usdtChain ?? null,
-  });
-  if (!merchant) return false;
-
-  // ── The quote is NOT re-made here ───────────────────────────────────────
-  // A USDT order was priced at creation, from the rate live at that moment, and
-  // the player was shown the USDT figure before they agreed to anything. This
-  // used to read the rate again and overwrite `rateUsed` with whatever it was
-  // when a merchant happened to accept — minutes later, and an admin edit in
-  // between silently re-priced a purchase already agreed to.
-  //
-  // So the order's OWN rate is what stands. It is read back rather than
-  // recomputed, and only an order that somehow has none falls through to the
-  // merchant's rail rate.
-  const rateUsed = order.rateUsed ?? rateForMerchant(merchant, await getSystemConfig());
-  if (rateUsed === null) {
-    console.error(
-      `[assignment] ${order.orderId}: merchant ${merchant.merchantId} settles in USDT and `
-      + 'usdtPricing.userMerchantBuyInr is not set — leaving the order queued rather than pricing it at the INR peg',
-    );
-    return false;
-  }
-
-  // The window of the rail THIS order was created on, not the rail live now.
-  const expiresAt = new Date(Date.now() + await getOrderExpiryMs(order));
-  const snapshot  = buildMerchantSnapshot(merchant, expiresAt, order);
-
-  // ── The HOLD is the gate on the MERCHANT ────────────────────────────────
-  // The transition below gates the ORDER — exactly one caller may move one
-  // order out of PENDING_QUEUE. It says nothing about the merchant, so two
-  // DIFFERENT orders racing for the same merchant both passed it, and both were
-  // assigned to somebody who could fund one. Measured: two 600-token orders on
-  // a merchant holding 1,000.
-  //
-  // `selectBestMerchant` above reads a balance and this line acts on it in a
-  // separate statement — a snapshot, however accurate the number. The hold is
-  // the guarantee: its refusal is in the reserve leg's own UPDATE … WHERE
-  // under the merchant's row lock, so the second of two racing orders is
-  // refused by the database and there is no window to lose.
-  //
-  // Taken BEFORE the transition, deliberately. A hold on an order that then
-  // fails to move is released two lines down and the tokens come straight back;
-  // a transition that moves an order whose tokens were never held leaves a
-  // player promised a merchant who cannot pay them.
-  if (order.type === 'DEPOSIT') {
-    const held = await holdForOrder(order, merchant.merchantId, { actor: 'assignment' });
-    if (!held.ok) {
-      // Not an error and not a retry — this merchant cannot serve it. The order
-      // stays queued and the next sweep offers it to somebody else.
-      console.warn(
-        `[assignment] ${order.orderId}: merchant ${merchant.merchantId} could not hold `
-        + `${order.tokenAmount} tokens (${held.reason}); leaving the order queued.`,
-      );
-      return false;
-    }
-  }
-
-  // The transition is the gate. Two assignment passes racing the same queued
-  // order — the synchronous attempt at creation and the retry loop, which do
-  // overlap — both used to pass a `status === 'PENDING_QUEUE'` read and both
-  // used to save, so the second silently overwrote the first merchant's
-  // assignment. Exactly one caller now matches a row.
-  const moved = await assignOrderState(order.orderId, {
-    set: {
-      merchantId:       merchant.merchantId,
-      assignedAt:       new Date(),
-      expiresAt,
-      merchantSnapshot: snapshot,
-      rateUsed,
+    actor: 'assignment',
+    // Per candidate, because the snapshot names the member — what was true
+    // about them at the moment the order became theirs.
+    buildSet: async (cand) => {
+      const merchant = await db.merchants.getMerchant(cand.merchantId);
+      return {
+        assignedAt: new Date(),
+        expiresAt,
+        merchantSnapshot: buildMerchantSnapshot(merchant, expiresAt, order),
+      };
     },
   });
-  if (!moved.ok || moved.idempotent) {
-    // The order did not move, so the hold taken above has nothing to hold FOR.
-    // Released here rather than left to the sweep: the tokens are wanted by the
-    // next candidate, and the sweep is the safety net for the paths that forget,
-    // not the ordinary way a hold ends.
-    if (order.type === 'DEPOSIT') {
-      await releaseForOrder(order, { actor: 'assignment', reason: 'Assignment did not take' });
-    }
-    return false;
-  }
+  if (!assigned.ok) return false;
 
   // Keep the caller's in-memory copy consistent with what was written, so the
   // emitters below describe the row that exists rather than a hoped-for one.
-  Object.assign(order, {
-    merchantId: merchant.merchantId,
-    rateUsed,
-    status: 'ASSIGNED',
-    assignedAt: moved.order.assignedAt,
-    expiresAt,
-    merchantSnapshot: snapshot,
-  });
+  Object.assign(order, assigned.order);
 
-  // No activeOrderCount increment. That counter is DERIVED from the orders
-  // themselves (`db.merchants.getActiveOrderCounts`), so there is nothing to
-  // bump and nothing to leave stale when an assignment is refused — which is
-  // precisely how a merchant ended up holding a count for an order they did
-  // not have.
-
-  // Notify merchant via SSE (GOVERNANCE §11: new_order)
-  //
-  // Through the projection. This spread the WHOLE order — `...order` — to the
-  // merchant's stream at the moment of assignment: the player's phone number,
-  // their UPI id, their bank details on a deposit, the platform's treasury
-  // split and the risk verdicts on the player, all of it. `check:merchant-
-  // privacy` was green throughout because it only read `merchant.routes.js`,
-  // and this line is in a service.
-  emitMerchantUpdate(String(merchant.merchantId), 'new_order', {
+  // Through the projection: the merchant receives the merchant's shape of the
+  // order and nothing else (§24).
+  emitMerchantUpdate(String(assigned.merchantId), 'new_order', {
     ...toMerchantOrderView(order),
     server_ts: Date.now(),
   });
 
-  // Notify user: order_assigned (GOVERNANCE §11)
+  // `payTo`, not the snapshot (§24).
   emitOrderUpdate(String(order.userId), 'order_assigned', {
     orderId:          order.orderId,
     _id:              order.orderId,
-    // `payTo`, not the snapshot. This pushed the whole thing — the merchant's
-    // handle, their QR and their bank account — to the player's socket the
-    // instant an order was assigned.
     payTo:            toPlayerOrderView(order).payTo ?? null,
     expiresAt:        order.expiresAt,
     status:           'ASSIGNED',
@@ -532,63 +250,34 @@ async function tryAssignMerchant(order) {
   return true;
 }
 
-// ─── Short merchant-search retry loop when no merchant available ─────────────
-// Owner directive (2026-07-14): retry at most TWICE (30s apart); if no merchant
-// is found after those 2 attempts, FAIL the order (CANCELLED/EXPIRED) instead of
-// keeping the user waiting for minutes. Uses a setTimeout chain — NOT a cron job.
-// NOTE: an initial assignment was already attempted synchronously at order
-// creation; this loop is the fallback, capped at 2 tries (~60s) then fail.
-function startPendingRetryLoop(orderId) {
-  const MAX_RETRIES = 2; // 2 × 30s ≈ 1 min, then fail (was 10 = 5 min)
-  let attempts = 0;
-
-  async function attempt() {
-    attempts++;
+/**
+ * Offer every queued order to the teams again — the cron's half of assignment.
+ *
+ * An order is offered once at creation. One that found nobody free waits at
+ * PENDING_QUEUE and this sweep offers it again on every run, best claim first:
+ * a retry outranks a first attempt, then the oldest goes first. It replaces the
+ * in-process `setTimeout` retry loop (which a restart forgot) and the cash-link
+ * matcher (a queue that no longer exists). Expiry is `expireOrders`'s, against
+ * `teamRouting.assignmentWaitSeconds`.
+ *
+ * Safe from several instances at once: `assignToTeam` moves an order through
+ * the guarded transition, so two sweeps reaching one order assign it once.
+ */
+export async function assignQueuedOrders({ limit = 200 } = {}) {
+  const waiting = await db.orders.queuedOrdersForAssignment({ limit });
+  let assigned = 0;
+  for (const order of waiting) {
     try {
-      const order = await db.orders.getOrderRecord(orderId);
-      if (!order || order.status !== 'PENDING_QUEUE') return; // already assigned/cancelled
-
       if (await tryAssignMerchant(order)) {
+        assigned += 1;
         emitAdminUpdate('queue_order_update', { orderId: order.orderId, status: 'ASSIGNED', server_ts: Date.now() });
-        return;
       }
-
-      if (attempts >= MAX_RETRIES) {
-        // Expire the order. The transition gates the refund: this loop and the
-        // expireOrders cron can both reach the same order, and only the caller
-        // that actually moved it may release the escrow.
-        const expired = await cancelOrderState(order.orderId, {
-          expectFrom: 'PENDING_QUEUE',
-          set: { cancelReason: 'EXPIRED', cancelledAt: new Date() },
-        });
-        if (!expired.ok || expired.idempotent) return;
-        order.status = 'CANCELLED';
-
-        // Release escrow if WITHDRAWAL
-        if (order.type === 'WITHDRAWAL' && order.escrowLocked) {
-          await refundWithdrawal(order.userId, order.tokenAmount, order.orderId)
-            .catch(e => console.error('[startPendingRetryLoop] escrow release failed:', e.message));
-        }
-
-        emitOrderUpdate(String(order.userId), 'order_expired', {
-          orderId:   order.orderId,
-          _id:       order.orderId,
-          status:    'CANCELLED',
-          reason:    'EXPIRED',
-          server_ts: Date.now(),
-        });
-        emitAdminUpdate('queue_order_update', { orderId: order.orderId, status: 'CANCELLED', reason: 'EXPIRED' });
-        return;
-      }
-
-      setTimeout(attempt, 30 * 1000);
-    } catch (err) {
-      console.error('[startPendingRetryLoop] attempt error:', err.message);
-      if (attempts < MAX_RETRIES) setTimeout(attempt, 30 * 1000);
+    } catch (error) {
+      // One bad row must not hold up everybody behind it.
+      console.error(`[assignment] ${order.orderId}:`, error.message);
     }
   }
-
-  setTimeout(attempt, 30 * 1000); // first retry after 30s
+  return { assigned, considered: waiting.length };
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -670,10 +359,8 @@ export async function createDepositOrder(userId, tokenAmount, attempt = {}) {
   const minDeposit = currency === MERCHANT_CURRENCY.USDT ? usdtBounds.min : (cfg?.minDeposit || 500); // schema default: 500
   const maxDeposit = currency === MERCHANT_CURRENCY.USDT ? usdtBounds.max : (cfg?.maxDeposit || 50000);
 
-  const railNow = await getActivePaymentModePolicy();
   await assessFundingOrder({
     userId, tokenAmount, type: 'DEPOSIT', min: minDeposit, max: maxDeposit,
-    paymentMode: railNow.activeMode,
     // The CURRENCY decides which rules apply: the USDT rail has two fixed
     // amounts and no cash denominations, the INR rail has its ceiling. Omitting
     // it here would judge a USDT buy against the INR rules and refuse every one
@@ -740,9 +427,9 @@ export async function createDepositOrder(userId, tokenAmount, attempt = {}) {
   // further writes, and between them the order existed at PENDING_QUEUE with a
   // zero allocation — visible to the assignment sweep in that state, and stuck
   // there for good if the process died in between.
+  // The rail is DERIVED from the currency and the size, inside the writer —
+  // the same rule the risk gate judged the amount by (`paymentModeFor`).
   const order = await db.orders.createOrderRecord({
-    // Stamped with the rail the amount was judged against above, not re-read.
-    railPolicy:        railNow,
     orderId:           `DEP_${crypto.randomBytes(12).toString('hex')}`,
     userId:            user.userId,
     type:              'DEPOSIT',
@@ -769,11 +456,10 @@ export async function createDepositOrder(userId, tokenAmount, attempt = {}) {
 
   emitAdminUpdate('new_order', adminOrderPayload(order, user));
 
-  // Auto-assign merchant immediately
+  // Offered to the teams now; if nobody is free it waits PENDING_QUEUE and
+  // `assignQueuedOrders` offers it again on every run until it expires.
   if (await tryAssignMerchant(order)) {
     emitAdminUpdate('queue_order_update', { orderId: order.orderId, status: 'ASSIGNED', server_ts: Date.now() });
-  } else {
-    startPendingRetryLoop(order.orderId);
   }
 
   // THROUGH the projection, not a literal that happens to agree with it.
@@ -834,65 +520,31 @@ export async function createWithdrawalOrder(userId, tokenAmount, attempt = {}) {
   const payoutFee      = payoutFeeMinor / 100;
   const fiatAmount     = tokenAmount - payoutFee;
 
-  // ── SPLIT, decided BEFORE any money moves ───────────────────────────────
+  // ── The cash rail pays fixed amounts, checked BEFORE any money moves ────
   //
-  // An ATM dispenses denominations, not amounts, so on the cash rail a payout
-  // larger than ₹40,000 is not one job — it is several merchants at several
-  // machines.
-  //
-  // ── Several ORDINARY withdrawals, not a parent and its legs ─────────────
-  // Each part below is a complete withdrawal in its own right: its own escrow
-  // lock, its own assignment, its own cancel, its own dispute, its own release.
-  // Nothing downstream branches on whether an order came from a split, which is
-  // the point — the first version made a container row and every query in the
-  // system then had to decide whether it counted containers or the work inside
-  // them, and one of the six that had to decide was a money guard.
-  //
-  // The reliability argument is the stronger one. A crash partway through this
-  // loop leaves N valid withdrawals and nothing dangling: the money that moved
-  // is locked against orders that exist, and the money that did not move is
-  // still the player's. A container holding an escrow with only some of its
-  // legs written is a withdrawal that does not add up, and no row looks wrong.
-  //
-  // What gets split is the FIAT figure, because that is the cash that reaches a
-  // machine. The fee rides on the token side — see `shareFeeAcrossParts`.
-  //
-  // This runs before any debit deliberately. An amount no set of denominations
-  // can make is one no merchant can pay at a machine, and discovering that
-  // AFTER a debit means unwinding a lock that has already committed.
-  const rail = await getActivePaymentModePolicy();
+  // A withdrawal up to the cash ceiling runs on the CASH rail (`paymentModeFor`,
+  // the same rule the order writer stamps with), and a member pays it at a
+  // machine, which pays out a denomination, not an amount. There is no
+  // splitting (owner, 2026-10-02): one withdrawal is one payout, so an amount a
+  // machine cannot make is refused by name rather than written and stranded.
+  // Discovering that AFTER the debit would mean unwinding a committed lock.
   const fiatPaise = rupeesToPaise(fiatAmount);
-  const feePaise = rupeesToPaise(payoutFee);
-
-  // One part for an ordinary withdrawal, several for a split. The loop below
-  // does not know which it is, so there is exactly one creation path and the
-  // split is not a special case of anything.
-  let parts = [{ tokenPaise: rupeesToPaise(tokenAmount), fiatPaise }];
-  let batchRef = null;
-
-  if (rail?.activeMode === PAYMENT_MODES.CASH_ATM) {
-    const cashParts = splitWithdrawal(fiatPaise);
-    if (!cashParts) {
-      // Named amounts, not "invalid amount". The player cannot guess which
-      // figures a cash machine can make, and the fee means the payable figure
-      // is not the one they typed.
-      const tiers = WITHDRAWAL_DENOMINATIONS_PAISE.map((p) => `₹${paiseToRupees(p).toLocaleString('en-IN')}`);
-      throw Object.assign(
-        new Error(
-          `Cash withdrawals are paid at an ATM, so the payout must be made up of ${tiers.join(', ')}`
-          + `. ₹${fiatAmount.toLocaleString('en-IN')} cannot be.`,
-        ),
-        { status: 400, code: 'NOT_A_CASH_AMOUNT' },
-      );
-    }
-    if (cashParts.length > 1) {
-      parts = shareFeeAcrossParts(cashParts, feePaise);
-      // A LABEL, not a relation. It groups the siblings so the player is told
-      // "part 2 of 4" and support can pull the set; nothing derives state from
-      // it, no money reads it, and no assignment consults it.
-      batchRef = `WB_${crypto.randomBytes(8).toString('hex')}`;
-    }
+  const tokenPaiseTotal = rupeesToPaise(tokenAmount);
+  if (paymentModeFor({ currency: 'INR', tokenAmountPaise: tokenPaiseTotal }) === PAYMENT_MODES.CASH_ATM
+      && !isBuyDenomination(fiatPaise)) {
+    const tiers = BUY_DENOMINATIONS_PAISE.map((p) => `₹${paiseToRupees(p).toLocaleString('en-IN')}`);
+    throw Object.assign(
+      new Error(
+        `A withdrawal up to ₹${paiseToRupees(MAX_CASH_BUY_PAISE).toLocaleString('en-IN')} is paid in cash at an ATM, `
+        + `so the payout must be one of ${tiers.join(', ')}. ₹${fiatAmount.toLocaleString('en-IN')} is not.`,
+      ),
+      { status: 400, code: 'NOT_A_CASH_AMOUNT' },
+    );
   }
+
+  // One part. The loop below is the shape the split left behind; 2d removes it.
+  const parts = [{ tokenPaise: tokenPaiseTotal, fiatPaise }];
+  const batchRef = null;
 
   // ── ADMISSION, once per part ────────────────────────────────────────────
   // The escrow debit IS the gate, and it is the whole gate: winnings → locked
@@ -942,8 +594,6 @@ export async function createWithdrawalOrder(userId, tokenAmount, attempt = {}) {
     // The order this part locks money FOR — prepared, not yet written. It is
     // written by the debit below, in the same transaction.
     const insertPart = await db.orders.prepareOrderRecord({
-      // The rail this withdrawal was split for, not a second read of it.
-      railPolicy:        rail,
       orderId:           partOrderId,
       userId:            user.userId,
       type:              'WITHDRAWAL',
@@ -1014,15 +664,10 @@ export async function createWithdrawalOrder(userId, tokenAmount, attempt = {}) {
 
     emitAdminUpdate('new_order', adminOrderPayload(partOrder, user));
 
+    // Offered to the teams now; if nobody is free it waits PENDING_QUEUE for
+    // the assignment sweep, its stake locked, until it is served or expires.
     if (await tryAssignMerchant(partOrder)) {
       emitAdminUpdate('queue_order_update', { orderId: partOrder.orderId, status: 'ASSIGNED', server_ts: Date.now() });
-    } else {
-      // Sell orders become an open merchant pool item immediately. They do not
-      // consume the deposit retry loop because any eligible merchant may accept
-      // them later as their sell capacity opens up.
-      emitAdminUpdate('queue_order_update', {
-        orderId: partOrder.orderId, status: 'PENDING_QUEUE', pool: 'SELL_OPEN_POOL', server_ts: Date.now(),
-      });
     }
 
     created.push({ ...partOrder, partIndex: index + 1 });
@@ -1164,16 +809,9 @@ export async function retryOrder(userId, orderId) {
  * have ALREADY MADE — the worst outcome this flow has, because the money is
  * gone and the order is not.
  *
- * ── The window is the admin's, and this is what makes it real ─────────────
- * `utrSubmitSeconds` has been in `payment_mode_policies` and on the admin
- * screen, labelled "how long the player has to submit the UTR after clicking
- * Paid", since the policy was built — and nothing read it. A value an operator
- * can edit is only configuration if something consults it; until this, it was a
- * number that decided nothing.
- *
- * Read from the ORDER's rail, not the live one. An order held across a rail
- * switch keeps the process it was created under, so it keeps that rail's
- * window too.
+ * ── The window is the admin's ──────────────────────────────────────────────
+ * `SystemConfig.teamRouting.utrSubmitSeconds`, the time the player has to
+ * submit the UTR after tapping Paid.
  *
  * ── Once ──────────────────────────────────────────────────────────────────
  * The repository decides that in the UPDATE's WHERE clause. Refusing a second
@@ -1188,10 +826,7 @@ export async function claimUtrGrace(userId, orderId) {
   if (order.type !== 'DEPOSIT')
     throw Object.assign(new Error('Only a buy order takes a UTR'), { status: 400 });
 
-  const policy = order.paymentModeVersion
-    ? await getPaymentModePolicyVersion(order.paymentModeVersion)
-    : await getActivePaymentModePolicy();
-  const graceSeconds = policy?.utrSubmitSeconds ?? 60;
+  const graceSeconds = routingSettings(await getSystemConfig()).utrSubmitSeconds;
 
   const extended = await db.orders.claimUtrGrace(order.orderId, userId, graceSeconds);
   if (!extended) {
@@ -1526,12 +1161,11 @@ export async function cancelOrder(actorId, isAdmin, orderId) {
   if (!cancelled.idempotent && order.type === 'WITHDRAWAL' && order.escrowLocked) {
     await refundWithdrawal(order.userId, order.tokenAmount, order.orderId);
   }
-  // A PENDING_QUEUE deposit has no merchant, so ordinarily no hold — but an
-  // order that was rejected and requeued sits in exactly this state, and if the
-  // reject path ever fails to release, the hold is still live. Releasing here
-  // costs one query and closes that overlap; it is a no-op when there is none.
+  // A PENDING_QUEUE deposit holds nothing in a pool — a requeue releases its
+  // hold in the same transaction that moves it back. Releasing here anyway
+  // costs one query and is a no-op when there is nothing held.
   if (!cancelled.idempotent && order.type === 'DEPOSIT') {
-    await releaseForOrder(order, { actor: 'cancel', reason: 'Order cancelled' });
+    await db.teamPools.releaseBuyHold(order.orderId, { actor: 'cancel', reason: 'Order cancelled' });
   }
 
   await emitWalletUpdate(order.userId);
@@ -1719,15 +1353,12 @@ export async function expireOrders() {
   // The due set comes from the DATABASE's clock, not the app server's. Three
   // instances with drifting clocks expiring the same orders is how an order
   // gets refunded a minute before its own deadline.
-  // The assignment window comes from the live policy as the FALLBACK; each
-  // order's own rail governs it where the order carries a policy version. An
-  // order nobody ever took is expired by that window — creation sets no
-  // deadline, assignment does, so without it such an order waits forever and a
-  // withdrawal's escrow is locked with nothing scheduled to release it.
-  const rail = await getActivePaymentModePolicy();
+  // An order nobody ever took is expired by the assignment wait — creation
+  // sets no deadline, assignment does, so without it such an order waits
+  // forever and a withdrawal's stake is locked with nothing to release it.
   const expired = await db.orders.findExpiredOrders({
     limit: 500,
-    assignmentWaitSeconds: rail?.assignmentWaitSeconds ?? 1500,
+    assignmentWaitSeconds: routingSettings(await getSystemConfig()).assignmentWaitSeconds,
   });
   if (expired.length === 0) return 0;
 
@@ -1760,14 +1391,12 @@ export async function expireOrders() {
           .catch(e => console.error('[expireOrders] escrow release failed:', e.message));
       }
 
-      // …and the other side of the same idea for a DEPOSIT. The merchant's
-      // tokens were held the moment the order became theirs; the window has
-      // closed, so they come back. Unconditional on `merchantId` because an
-      // order that never reached a merchant simply has no hold and this is a
-      // no-op — asking first would be a second place that has to agree about
-      // when a hold exists.
+      // …and the other side of the same idea for a DEPOSIT. The team's pool
+      // tokens were held the moment the order became a member's; the window
+      // has closed, so they come back. Unconditional because an order that
+      // never reached a member holds nothing and this is a no-op.
       if (order.type === 'DEPOSIT') {
-        await releaseForOrder(order, { actor: 'expiry', reason: 'Order expired' });
+        await db.teamPools.releaseBuyHold(order.orderId, { actor: 'expiry', reason: 'Order expired' });
       }
 
       // Scoring: the merchant did not complete it.

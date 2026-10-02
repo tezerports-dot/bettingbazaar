@@ -24,24 +24,15 @@
  * order moved. A refusal unwinds the move and the next candidate is tried.
  */
 import { pgQuery } from '../client.js';
-import { STRENGTH_SQL, SUPERVISOR_RAILS } from './teams.js';
+import { STRENGTH_SQL } from './teams.js';
+import { RAILS, railOf } from './orderRails.js';
 import { holdForBuyWithin, PoolRefused } from './teamPools.js';
 import { transitionOrder } from './orders.js';
 import { USDT_CHAIN_SPEC } from '../../backend/domains/merchant/merchantCurrency.js';
 
-export const RAILS = Object.freeze(Object.fromEntries(SUPERVISOR_RAILS.map((r) => [r, r])));
-const OPEN_STATES = ['ASSIGNED', 'PROCESSING', 'PAID'];
+export { RAILS, railOf, PAYMENT_MODES, paymentModeFor } from './orderRails.js';
 
-/**
- * The rail an order runs on, from its own row. A USDT order is the USDT rail;
- * an INR order on the cash-machine mode is CASH; every other INR order is
- * UPI_BANK. The order's mode is stamped at creation and frozen by trigger, so
- * this answer cannot change under an open order.
- */
-export function railOf(order) {
-  if (String(order?.currency ?? 'INR').toUpperCase() === 'USDT') return RAILS.USDT;
-  return order?.paymentMode === 'CASH_ATM' ? RAILS.CASH : RAILS.UPI_BANK;
-}
+const OPEN_STATES = ['ASSIGNED', 'PROCESSING', 'PAID'];
 
 /**
  * The routing settings, with the schema defaults (config.spec.js teamRouting)

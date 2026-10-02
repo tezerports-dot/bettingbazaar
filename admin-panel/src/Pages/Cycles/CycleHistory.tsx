@@ -235,7 +235,7 @@ export const CycleHistory: React.FC = () => {
           Net Revenue = <span className="text-red-400">Loser Side Real Bets</span> − <span className="text-blue-400">Winner Side Real Bets</span> + retained winnings fee.
           It is stored as Real Pool Total − Net Paid Out, where Net Paid Out is gross payout minus the winnings fee.
         </p>
-        <p className="text-gray-500 text-xs mt-1">Phantom bets, merchant wallet top-ups/security deposits, and user token buy/sell cash flow are not platform revenue.</p>
+        <p className="text-gray-500 text-xs mt-1">Phantom bets, team pool token purchases, and user token buy/sell cash flow are not platform revenue.</p>
       </div>
 
       <div className="card">

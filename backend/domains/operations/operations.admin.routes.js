@@ -20,7 +20,6 @@ import { ACCOUNTS, toRupees } from '../revenue/chartOfAccounts.js';
 import { listProviders } from '../funding/providerRegistry.js';
 import { getRiskRules } from '../risk/riskValidation.service.js';
 import { getActivePolicy } from '../configuration/depositPolicy.service.js';
-import { getActiveCommissionPolicy } from '../configuration/merchantCommissionPolicy.service.js';
 import { getMerchantLeaderboard } from '../merchant/merchantAnalytics.service.js';
 import { listChannels } from '../communication/communication.service.js';
 import { FLAGS, isEnabled } from '../../services/featureFlags.service.js';
@@ -46,12 +45,11 @@ router.get('/operations/overview', authenticate, hasPermission('canViewAnalytics
     // is why the second query was dropped in the first place — only the
     // destructuring was never updated to match. Named `counts` now, so the
     // shape is visible at the call site instead of implied by a position.
-    const [trial, distributableMinor, depositPolicy, commissionPolicy, riskRules,
+    const [trial, distributableMinor, depositPolicy, riskRules,
            topMerchants, counts] = await Promise.all([
       getTrialBalance(),
       getDistributableRevenueMinor(),
       getActivePolicy('INR'),
-      getActiveCommissionPolicy(),
       getRiskRules(),
       getMerchantLeaderboard({ days: 7, limit: 5 }),
       db.orders.orderCounts(),
@@ -90,12 +88,6 @@ router.get('/operations/overview', authenticate, hasPermission('canViewAnalytics
           depositPolicy: depositPolicy
             ? { version: depositPolicy.version, deposit: depositPolicy.depositAllocationPercent, reserve: depositPolicy.reserveAllocationPercent }
             : null,
-          merchantCommissionPolicy: commissionPolicy
-            ? { version: commissionPolicy.version, enabled: commissionPolicy.enabled,
-                // How many varieties are priced, not a single rate: there is no
-                // one percentage to show once the rate depends on the work.
-                pricedVarieties: commissionPolicy.rates.length }
-            : null,
         },
         // ── Merchant operations (Merchant Platform) ───────────────────────
         merchants: { top7d: topMerchants },
@@ -132,7 +124,7 @@ router.get('/operations/config-catalog', authenticate, hasPermission('canViewAna
     // knob (was hardcoded 2x in gameEngine); the winnings fee % remains separate.
     { value: 'Payout multiplier (winning bet pays stake × N, before fee)', owner: 'Business Policy — SystemConfig.payoutMultiplier (arithmetic in Risk computeWinningsPayout, paid by gameEngine)', edit: 'PUT /api/admin/system/config' },
     // Business Config Audit (2026-07-11): payment order window, was hardcoded 15m.
-    { value: 'Payment order expiry (time to pay the assigned merchant)', owner: 'Business Policy — payment_mode_policies.processing_window_seconds, per settlement rail (read by payment/paymentProcessing)', edit: 'POST /api/admin/payment-mode' },
+    { value: 'Payment order windows and per-member concurrency, per rail', owner: 'Business Policy — SystemConfig.teamRouting (read by teamRouting.routingSettings)', edit: 'PUT /api/admin/system/config' },
     // Business Config Audit (2026-07-11): cycle phase timings, were hardcoded.
     { value: 'Cycle phase timings (merge/equalizer/close/celebrate offsets, per type)', owner: 'Business Policy — SystemConfig.cyclePhases (read cached by markets/cycleGenerator)', edit: 'PUT /api/admin/system/config' },
     // Phase X X-5: short-block cycle duration, previously hardcoded.
@@ -140,7 +132,7 @@ router.get('/operations/config-catalog', authenticate, hasPermission('canViewAna
     // Phase X X-7: operational-data retention window.
     { value: 'Data retention (months of crash reports kept; expired referral clicks and notifications go after 30 days; bets, cycles, money and audit are never pruned)', owner: 'Business Policy — SystemConfig.retentionMonths (read by operations/retention.service)', edit: 'PUT /api/admin/system/config' },
     { value: 'Merchant bonus pool funding', owner: 'Revenue & Settlement (from distributable revenue only)', edit: 'POST /api/admin/revenue/bonus-pool/fund' },
-    { value: 'Per-merchant order limits + wallet top-ups', owner: 'Merchant Platform', edit: 'PUT /api/admin/merchants/:id (limits) / POST /api/admin/merchants/:id/fund' },
+    { value: 'Team pool tokens (supervisor requests, admin fulfils)', owner: 'Team pools — teamPools.js', edit: 'POST /api/admin/team-pool-requests/:id/fulfil' },
     { value: 'Funding providers (P2P / USDT / gateways)', owner: 'Funding Platform — providerRegistry adapters', edit: 'code adapter + registry entry (activation is a deploy, not a constant)' },
     { value: 'Casino game providers (Evolution, Pragmatic, ...)', owner: 'Casino Platform — GameProvider documents', edit: 'PUT /api/admin/game-providers/:key' },
     { value: 'Communication channels', owner: 'Communication Platform — channelRegistry adapters', edit: 'code adapter (activation gated by config/flags)' },

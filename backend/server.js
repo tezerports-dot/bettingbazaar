@@ -97,7 +97,6 @@ import teamMerchantRoutes from './domains/team/team.merchant.routes.js';
 import paymentRoutes      from './domains/payment/payment.routes.js';
 import supportRoutes      from './domains/support/support.routes.js'; // CAP-71: RAG support assistant
 import uploadRoutes       from './routes/upload.routes.js';
-import paymentCfgRoutes   from './routes/payment-config.routes.js';
 import retentionRoutes, { rebuildLeaderboard } from './routes/retention.routes.js';
 import gameProviderRoutes from './domains/casino/gameProvider.routes.js';
 import gameRegistryRoutes from './domains/gameRegistry/gameRegistry.routes.js';
@@ -666,7 +665,6 @@ app.use('/api/merchant',  teamMerchantRoutes);
 app.use('/api/payment', paymentRoutes);
 app.use('/api/support',   supportRoutes); // CAP-71: RAG support assistant (dormant until keys set)
 app.use('/api',           uploadRoutes);
-app.use('/api/payment',   paymentCfgRoutes);
 app.use('/api',           retentionRoutes);
 // Referral and VIP were removed from the platform on 2026-07-30 (owner
 // decision). No /api/referral or /api/vip routes exist; the models, the

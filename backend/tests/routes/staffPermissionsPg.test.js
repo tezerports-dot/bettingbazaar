@@ -97,10 +97,15 @@ describePg('staff permissions: every area, every route', () => {
     expect(lockedOut).toEqual([]);
   }, 120_000);
 
-  it('a key opens ITS area and no other: the merchant manager cannot fund a merchant or edit the FAQ', async () => {
+  it('a key opens ITS area and no other: the merchant manager cannot fill a team pool or edit the FAQ', async () => {
     const merchants = await actor({ isSubAdmin: true, permissions: { canManageMerchants: true } });
     expect((await as(app, merchants).get('/merchants')).status).toBe(200);
-    expect((await as(app, merchants).post('/merchants/m-x/fund').send({ amount: 1 })).status).toBe(403);
+    // Selling tokens into a team's pool is the money area, not the merchants
+    // one (it replaced funding a merchant's own wallet, which is gone).
+    const fulfil = await as(app, merchants).post('/team-pool-requests/tpr-x/fulfil').send({ fiatAmount: 1 });
+    expect(fulfil.status).toBe(403);
+    expect(fulfil.body.requiredPermission).toBe('canFundMerchants');
+    expect(fulfil.body.message).toMatch(/"Team pool requests" permission/);
     const faq = await as(app, merchants).post('/content/faq').send({ question: 'q', answer: 'a' });
     expect(faq.status).toBe(403);
     // The refusal says which area to ask for, in the picker's words.
@@ -121,12 +126,11 @@ describePg('staff permissions: every area, every route', () => {
     expect((await as(app, mod).get('/support/tickets')).status).toBe(403);
   });
 
-  it('the settlement rail and the queue pool were open to any sub-admin', async () => {
-    const chat = await actor({ isSubAdmin: true, permissions: { canModerateChat: true } });
-    expect((await as(app, chat).get('/payment-mode')).status).toBe(403);
-    expect((await as(app, chat).get('/queue/merchant-pool')).status).toBe(403);
-    expect((await as(app, chat).get('/queue/eligible-merchants')).status).toBe(403);
-  });
+  // 'the settlement rail and the queue pool were open to any sub-admin' was
+  // here. All three routes it named — GET /payment-mode, /queue/merchant-pool
+  // and /queue/eligible-merchants — were deleted with the payment-mode switch
+  // and the merchant picker (PROJECT_STATUS §3.10, 2c), so there is nothing
+  // left to gate. The two tests above still press every route that remains.
 
   it('the queue: a sub-admin holding canManageMerchants was refused inside the handler after the gate let them in', async () => {
     const m = await actor({ isSubAdmin: true, permissions: { canManageMerchants: true } });

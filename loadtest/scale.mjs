@@ -300,9 +300,9 @@ async function queries() {
     ['player · login lookup by mobile',   () => db.users.getUserByMobile('7000050000', 'PLAYER')],
     ['player · own activity',             () => db.stats.userActivity(someUser)],
     ['player · own timeline, page 1',     () => db.stats.userTimeline(someUser, { page: 1, limit: 50 })],
-    ['engine · assignment candidates',    () => db.merchants.assignmentCandidates({
-      amountPaise: 500000, direction: 'DEPOSIT', currency: 'INR', limit: 10 })],
-    ['engine · active order counts',      () => db.merchants.getActiveOrderCounts([someMerchant])],
+    ['engine · routing candidates',       () => db.teamRouting.routingCandidates({
+      orderId: 'load', type: 'DEPOSIT', currency: 'INR', paymentMode: 'P2P_UPI', tokenAmountPaise: 5000000 },
+      { cap: 3, limit: 10 })],
     ['merch  · queue counts',             () => db.stats.merchantQueueCounts(someMerchant)],
     ['merch  · earnings',                 () => db.stats.merchantEarnings(someMerchant, {})],
     ['merch  · daily earnings, 7d',       () => db.stats.merchantDailyEarnings(someMerchant, { days: 7 })],

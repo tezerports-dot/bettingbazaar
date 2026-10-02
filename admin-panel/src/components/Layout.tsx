@@ -11,9 +11,9 @@ import {
   FileText, Palette, Settings, ChevronLeft, ChevronRight,
   TrendingUp, ShieldCheck, HelpCircle, Image as ImageIcon,
   MessageCircle, Shield, History, Scale, Upload, Search, Sun, Moon, Bell,
-  Zap, SlidersHorizontal, Trophy, Star, Gamepad2, Bot, Share2,
-  type LucideIcon, ArrowLeftRight, BookOpenCheck, Flag, ToggleLeft, Banknote, Hourglass, Fingerprint,
-  Coins, Ghost, Smartphone, ShieldBan} from 'lucide-react';
+  SlidersHorizontal, Trophy, Star, Gamepad2, Bot, Share2,
+  type LucideIcon, ArrowLeftRight, BookOpenCheck, Flag, Banknote, Hourglass, Fingerprint,
+  Ghost, Smartphone, ShieldBan} from 'lucide-react';
 import { useAuthStore } from '../services/auth';
 import { usePermissions } from '../hooks/usePermission';
 import { useThemeStore } from '../services/theme';
@@ -55,15 +55,14 @@ const NAV_GROUPS: MenuGroup[] = [
     { path: '/live-cycles',   icon: Activity,        label: 'Live Cycles',    title: 'Live Cycles',        sub: 'Active Delhi vs Bombay betting cycles & phantom book control', permission: 'canViewAnalytics' },
     { path: '/cycle-history', icon: History,         label: 'Cycle History',  title: 'Cycle History',      sub: 'Settled cycles, results and house profit', permission: 'canViewAnalytics' },
     { path: '/profit-loss',   icon: TrendingUp,      label: 'Profit & Loss',  title: 'Profit & Loss',      sub: 'Gross & net gaming revenue over time', permission: 'canViewAnalytics' },
-    { path: '/token-flow',    icon: ArrowLeftRight,  label: 'Token Flow',     title: 'Token Flow',         sub: 'Player purchases, player sells and merchant funding — never summed', permission: 'canViewAnalytics' },
+    { path: '/token-flow',    icon: ArrowLeftRight,  label: 'Token Flow',     title: 'Token Flow',         sub: 'Player purchases, player sells and team pool funding — never summed', permission: 'canViewAnalytics' },
   ] },
   { key: 'people', label: 'Users & Merchants', items: [
     { path: '/users',               icon: Users,            label: 'Users',          title: 'Users',              sub: 'Player accounts, balances & status', permission: 'canManageUsers' },
     { path: '/users/balance-adjust',icon: SlidersHorizontal,label: 'Balance Adjust', title: 'Balance Adjustment', sub: 'Manual credit / debit with mandatory audit note', permission: 'canAdjustBalances' },
     { path: '/users/flagged',       icon: Flag,             label: 'Flagged Players',title: 'Flagged Players',    sub: "A merchant disputed their payment — reason, proof, and the block decision", permission: 'canManageUsers' },
-    { path: '/merchants',           icon: Store,            label: 'Merchants',      title: 'Merchants',          sub: 'P2P payment merchants, limits & availability', permission: 'canManageMerchants' },
+    { path: '/merchants',           icon: Store,            label: 'Merchants',      title: 'Merchants',          sub: 'P2P payment merchants, approval & settlement rail', permission: 'canManageMerchants' },
     { path: '/teams',               icon: Users,            label: 'Teams',          title: 'Supervisors & Teams', sub: 'Supervisors, their teams, and members waiting for approval', permission: 'canManageTeams' },
-    { path: '/merchant-token-orders', icon: Coins,           label: 'Token Purchases',title: 'Merchant Token Purchases', sub: 'Merchants buying the float they trade with, paid in USDT', permission: 'canManageMerchantTokenOrders' },
     { path: '/users/phantom-agents',  icon: Ghost,           label: 'Phantom Agents', title: 'Phantom Agents',     sub: 'Who can place cosmetic bets, and on which boards', permission: 'canManagePhantomAgents' },
   ] },
   // Identity and payout control plane. Each screen is its own area, granted
@@ -74,9 +73,8 @@ const NAV_GROUPS: MenuGroup[] = [
     { path: '/referrals', icon: Share2,          label: 'Referrals',       title: 'Referral Programme',  sub: 'Fund the payout queue in joining order', permission: 'canManageReferrals' },
   ] },
   { key: 'payments', label: 'Payments & Queue', items: [
-    { path: '/queue-manager',   icon: Layers,   label: 'Queue Manager',  title: 'Queue Manager', sub: 'Live payment order queue & merchant assignment', queueManagerAccess: true, permission: 'canManageMerchants', badge: 'queue' },
+    { path: '/queue-manager',   icon: Layers,   label: 'Queue Manager',  title: 'Queue Manager', sub: 'Live payment order queue — orders are routed to working teams', queueManagerAccess: true, permission: 'canManageMerchants', badge: 'queue' },
     { path: '/transactions',    icon: FileText, label: 'Transactions',   title: 'Transactions',  sub: 'Ledger of deposits, withdrawals, bets & adjustments', permission: 'canViewTransactions' },
-    { path: '/payment-control', icon: Zap,      label: 'Payment System', title: 'Payment System',sub: 'Gateways, limits & platform payment controls', permission: 'canManagePaymentSystem' },
     { path: '/disputes',        icon: Scale,    label: 'Disputes',       title: 'Disputes',      sub: 'Payment order disputes & resolution', permission: 'canResolveDisputes' },
     { path: '/disputes/cdm-receipts', icon: Banknote, label: 'CDM Slips', title: 'CDM Slips', sub: 'Cash payouts settled without evidence, and the only read of a slip', permission: 'canResolveDisputes' },
     { path: '/disputes/stalled-withdrawals', icon: Hourglass, label: 'Stalled Payouts', title: 'Stalled Withdrawals', sub: 'Payouts no merchant has taken, and the tokens locked behind them', permission: 'canResolveDisputes' },
@@ -84,7 +82,6 @@ const NAV_GROUPS: MenuGroup[] = [
   ] },
   { key: 'policy', label: 'Business Policy', items: [
     { path: '/business-policy/deposit', icon: Landmark, label: 'Deposit Policy', title: 'Deposit Policy', sub: 'Versioned deposit / reserve allocation policy', permission: 'canManageBusinessPolicy' },
-    { path: '/business-policy/settlement-rail', icon: ToggleLeft, label: 'Settlement Rail', title: 'Settlement Rail', sub: 'Switch between UPI and ATM cash settlement', permission: 'canManageBusinessPolicy' },
   ] },
   { key: 'enterprise', label: 'Enterprise Platforms', items: [
     { path: '/revenue',           icon: Landmark, label: 'Revenue & Ledger',  title: 'Revenue & Ledger',    sub: 'Enterprise revenue ledger & settlements', permission: 'canViewAnalytics' },

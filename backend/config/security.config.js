@@ -256,9 +256,6 @@ export const RATE_LIMIT_TIERS = {
   // construction (`utr_grace_at IS NULL`), so this bounds how fast a caller can
   // sweep across orders looking for one that has not claimed it.
   utrGrace: tier(60 * 60 * 1000, 30),
-  // A merchant supplying cash links. One LIVE link per merchant is enforced by
-  // a unique index; this stops a loop churning supply and demand broadcasts.
-  cashLinkSupply: tier(60 * 60 * 1000, 60),
   // A CDM receipt carries an uploaded image reference and is read only by an
   // admin. One per order, so this bounds the sweep.
   cdmReceipt: tier(60 * 60 * 1000, 30),

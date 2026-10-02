@@ -85,11 +85,10 @@ export const ALLOWED_FROM = Object.freeze({
   // the queue to be offered to someone else.
   [ORDER_STATES.PENDING_QUEUE]: [ORDER_STATES.ASSIGNED],
   [ORDER_STATES.ASSIGNED]:   [ORDER_STATES.PENDING_QUEUE],
-  // PENDING_QUEUE is here because a merchant can take an order straight out of
-  // the open pool without it ever having been assigned to them —
-  // merchant.routes.js's accept handler admits both, and the rail is re-checked
-  // at that moment precisely because the order arrived unassigned.
-  [ORDER_STATES.PROCESSING]: [ORDER_STATES.ASSIGNED, ORDER_STATES.PENDING_QUEUE],
+  // From ASSIGNED only: every order reaches a member through team routing, so
+  // nothing is taken straight out of the queue (§3.10, 2c). The open sell pool
+  // that once made PENDING_QUEUE an entry here is gone.
+  [ORDER_STATES.PROCESSING]: [ORDER_STATES.ASSIGNED],
   [ORDER_STATES.PAID]:       [ORDER_STATES.PROCESSING, ORDER_STATES.ASSIGNED],
   // DISPUTED is here because resolving a dispute IS this transition. Without
   // it, DISPUTED had no outgoing edges at all and every admin resolution
@@ -209,10 +208,9 @@ function rowToOrder(row) {
     // created before the column existed; a guard that refused those would lock
     // their owners out of their own money.
     orderHmac:  row.order_hmac ?? null,
-    // The rail this order was born on, not the one live now. Both run side by
-    // side after a switch, until the last pre-flip order settles.
+    // The rail this order runs on, derived from its size and currency at
+    // creation (`paymentModeFor`) and frozen by trigger.
     paymentMode: row.payment_mode,
-    paymentModeVersion: row.payment_mode_version === null ? null : Number(row.payment_mode_version),
     // The team serving it, and what a buy holds in that team's pool (Step 2c).
     teamId: row.team_id ?? null,
     poolHeldPaise: toPaise(row.pool_held_paise ?? 0),

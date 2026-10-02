@@ -1,7 +1,14 @@
-import sseService from '../../services/sse';
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
+//
+// Merchants: approval, suspension, the payment details they keep, and the
+// orders they have handled. A merchant holds NO tokens of their own and is not
+// ranked or capped here — they work in a team, the team's pool holds the
+// tokens, and routing hands each order to a member of a working team on the
+// order's rail (database/repositories/teamRouting.js). Teams are managed on
+// the Supervisors & Teams screen.
+import sseService from '../../services/sse';
 import React, { useEffect, useState } from 'react';
-import { Store, Eye, Ban, CheckCircle, Plus, Settings, History, RefreshCw, DollarSign, ExternalLink } from 'lucide-react';
+import { Eye, Ban, CheckCircle, Plus, Settings, History, RefreshCw, DollarSign, ExternalLink } from 'lucide-react';
 import { DataTable } from '../../components/DataTable';
 import { StatusBadge } from '../../components/StatusBadge';
 import { SearchBar } from '../../components/SearchBar';
@@ -9,14 +16,13 @@ import { Kpis, Toolbar, AvatarCell } from '../../components/design';
 import { Modal } from '../../components/Modal';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { usePagination } from '../../hooks/usePagination';
-import { usePermissions } from '../../hooks/usePermission';
 import { useDebounce } from '../../hooks/useDebounce';
 import { formatters } from '../../utils/formatters';
 import api from '../../services/api';
 import type { Merchant, MerchantProfile } from '../../types';
 import toast from 'react-hot-toast';
 
-type DetailTab = 'info' | 'limits' | 'history' | 'earnings' | 'profit';
+type DetailTab = 'info' | 'rail' | 'history' | 'earnings';
 
 export const MerchantsList: React.FC = () => {
   const [merchants, setMerchants] = useState<Merchant[]>([]);
@@ -35,42 +41,7 @@ export const MerchantsList: React.FC = () => {
   const [createForm, setCreateForm] = useState({ username: '', mobile: '', password: '', email: '' });
   const [isCreating, setIsCreating] = useState(false);
 
-  // Limits edit
-  // M-01 fix: initial values are 0; openDetails() populates from merchant.limits schema.
-  // GOVERNANCE §5: UI fallbacks must equal the schema defaults.
-  // Merchant.limits.minDeposit default=500, maxDeposit default=50000 per merchant.model.js.
-  const [limitsForm, setLimitsForm]   = useState<{ maxConcurrentOrders: number; cashDenomination: number | null }>(
-    { maxConcurrentOrders: 3, cashDenomination: null },
-  );
-  // The wallet top-up amount is NOT a limit. It lived on `limitsForm` as
-  // `dailyCap`, so it was posted to the limits endpoint — which ignores it —
-  // and read like a cap the platform enforces. It is neither: it is how many
-  // tokens the admin is about to hand this merchant.
-  const [topUpAmount, setTopUpAmount] = useState(0);
-  // What the platform GOT for those tokens. The treasury records that they
-  // moved; without this nothing records that they were SOLD, and the profit and
-  // loss is missing the revenue side of every admin↔merchant trade. Empty
-  // string rather than 0 as the initial value, because 0 is a real answer here
-  // ("no money changed hands") and must be something the operator typed.
-  const [topUpSettlement, setTopUpSettlement] =
-    useState<{ amount: string; currency: 'INR' | 'USDT' }>({ amount: '', currency: 'INR' });
-  // Phase B (2026-07-10): admin token-deduction control (strict, audited)
-  // `paid` is what the platform handed back for the tokens — INR only, because
-  // the platform buys its tokens back in rupees (owner, 2026-09-23).
-  const canFund = usePermissions().can('canFundMerchants');
-  const [deductForm, setDeductForm]   = useState({ amount: 0, reason: '', paid: '' });
-  const [panelUrl, setPanelUrl]       = useState('');
   const [merchantEarnings, setMerchantEarnings] = useState<any>(null);
-
-  // FIX-2: commission handler removed — commission model dropped; merchants earn via spread
-
-  const handleSavePanelUrl = async () => {
-    if (!selectedMerchant) return;
-    try {
-      await api.merchants.setPanelUrl(selectedMerchant._id, panelUrl.trim());
-      toast.success('Panel URL saved');
-    } catch { toast.error('Failed to save panel URL'); }
-  };
 
   const loadEarnings = async (merchantId: string) => {
     try {
@@ -78,19 +49,10 @@ export const MerchantsList: React.FC = () => {
       setMerchantEarnings(res.earnings || res);
     } catch { setMerchantEarnings(null); }
   };
-    const [merchantProfit, setMerchantProfit] = useState<any>(null);
-
-  const loadProfitEngine = async (merchantId: string) => {
-    try {
-      const res = await api.get(`/api/admin/merchants/${merchantId}/profit-engine`);
-      setMerchantProfit((res as any)?.data?.data || (res as any)?.data || null);
-    } catch { setMerchantProfit(null); }
-  };
-  const [isSavingLimits, setIsSavingLimits] = useState(false);
-  // Settlement rail. A merchant is INR-only (UPI + bank) or USDT-only (TRC-20)
-  // — never both. Written to Merchant.acceptedCurrencies via the capabilities
-  // route; enforced in merchantScoring.selectBestMerchant so switching the rail
-  // immediately changes which orders reach this merchant.
+  // Which payment details a merchant keeps: UPI + bank (INR) or USDT wallet
+  // addresses — never both. Written to merchants.accepted_currencies through
+  // the capabilities route; switching clears the other set. Which ORDERS they
+  // are offered is decided by their team's rail (supervisor_rail), not by this.
   const [rail, setRail] = useState<'INR' | 'USDT'>('INR');
   const [isSavingRail, setIsSavingRail] = useState(false);
 
@@ -103,7 +65,7 @@ export const MerchantsList: React.FC = () => {
 
   useEffect(() => { loadMerchants(); }, [page, debouncedSearch, statusFilter]);
 
-  // Real-time: update isOnline dot when merchant toggles status, update limits when admin saves them
+  // Real-time: update the isOnline dot when a merchant toggles their status.
   useEffect(() => {
     const handleStatusChange = (data: any) => {
       setMerchants(prev => prev.map(m =>
@@ -112,15 +74,9 @@ export const MerchantsList: React.FC = () => {
           : m
       ));
     };
-    const handleLimitsUpdate = (data: any) => {
-      // Reload the list so the detail modal also refreshes if open
-      loadMerchants();
-    };
     sseService.on('merchant_status_changed', handleStatusChange);
-    sseService.on('merchant_limits_updated',  handleLimitsUpdate);
     return () => {
       sseService.off('merchant_status_changed', handleStatusChange);
-      sseService.off('merchant_limits_updated',  handleLimitsUpdate);
     };
   }, []);
 
@@ -139,19 +95,12 @@ export const MerchantsList: React.FC = () => {
       const mData = (res as any).merchant || res.data;
       if ((res.success || (res as any).merchant) && mData) {
         setSelectedMerchant(mData);
-        setPanelUrl(mData.panelUrl || '');
         setDetailTab(tab);
         // Settlement rail — Merchant.acceptedCurrencies holds exactly one entry
         // (backend: domains/merchant/merchantCurrency.js). schema default: ['INR'].
         setRail(mData.merchantType ?? mData.acceptedCurrencies?.[0] ?? 'INR');
-        setLimitsForm({
-          // M-01 fix: use Merchant.limits from schema defaults (500 / 50000) — GOVERNANCE §5
-          // null is a real state: not approved for the cash rail at all.
-          cashDenomination: mData.cashDenomination ?? null,
-          maxConcurrentOrders: mData.maxConcurrentOrders ?? 3, // schema default: 3
-          // (the top-up amount lives in its own state — see topUpAmount)
-        });
         if (tab === 'history') loadMerchantOrders(merchantId);
+        if (tab === 'earnings') loadEarnings(merchantId);
       }
     } catch { toast.error('Failed to load merchant profile'); }
   };
@@ -172,19 +121,22 @@ export const MerchantsList: React.FC = () => {
    * The reason is shown BEFORE the confirm rather than after, because the whole
    * point of the pause is that somebody reads it and calls the merchant — an
    * admin who clears it without seeing why has skipped the only step that
-   * fixes anything.
+   * fixes anything. It lives on the profile because the profile is what
+   * carries `assignmentPausedAt`; the list rows never did, so a resume button
+   * on the list could never appear.
    */
-  const handleResumeAssignment = async (merchantId: string, reason?: string) => {
+  const handleResumeAssignment = async (merchantId: string, reason?: string | null) => {
     const ok = window.confirm(
       `${reason || 'This merchant is paused from new assignments.'}\n\n`
       + 'Have you checked with them that they can be paid? Resume assignment?',
     );
     if (!ok) return;
     try {
-      await api.merchants.resumeAssignment(merchantId);
-      toast.success('Assignment resumed');
+      const res = await api.merchants.resumeAssignment(merchantId);
+      toast.success(res?.message || 'Assignment resumed');
       loadMerchants();
-    } catch { toast.error('Failed to resume assignment'); }
+      openDetails(merchantId, 'info');
+    } catch (e: any) { toast.error(e?.response?.data?.message || 'Failed to resume assignment'); }
   };
 
   const handleSuspend  = async (merchantId: string) => { try { await api.merchants.suspend(merchantId, 'Suspended by admin'); toast.success('Suspended'); loadMerchants(); } catch { toast.error('Failed'); } };
@@ -213,24 +165,6 @@ export const MerchantsList: React.FC = () => {
     } catch { toast.error('Failed to reject merchant'); }
   };
 
-  const handleSaveLimits = async () => {
-    if (!selectedMerchant) return;
-    setIsSavingLimits(true);
-    try {
-      // Save order amount limits
-      await api.merchants.updateLimits(selectedMerchant._id, limitsForm);
-      // Save maxConcurrentOrders via scoring endpoint (Section 8 / admin route)
-      // No /queue segment. With it this 404'd, and because it shares a try with
-      // updateLimits above, the admin saw "Failed to save limits" on a save that
-      // had already stored the limits — only the concurrency cap was lost.
-      await api.put(`/api/admin/merchants/${selectedMerchant._id}/scoring`, {
-        maxConcurrentOrders: limitsForm.maxConcurrentOrders,
-      });
-      toast.success('Limits updated');
-    } catch { toast.error('Failed to save limits'); }
-    finally { setIsSavingLimits(false); }
-  };
-
   const handleSaveRail = async (next: 'INR' | 'USDT') => {
     if (!selectedMerchant || next === rail) return;
     setIsSavingRail(true);
@@ -239,8 +173,8 @@ export const MerchantsList: React.FC = () => {
       setRail(next);
       toast.success(
         next === 'USDT'
-          ? 'Now a USDT merchant — TRC-20 only. Existing UPI/bank details were cleared.'
-          : 'Now an INR merchant — UPI & bank. The USDT address was cleared.'
+          ? 'Now a USDT merchant. Existing UPI/bank details were cleared.'
+          : 'Now an INR merchant — UPI & bank. The USDT addresses were cleared.'
       );
       loadMerchants();
     } catch (e: any) {
@@ -281,60 +215,20 @@ export const MerchantsList: React.FC = () => {
       ),
     },
     {
-      key: 'stats', label: 'Wallet / Stats',
+      key: 'stats', label: 'Orders',
       render: (m: Merchant) => (
         <div className="text-sm">
-          {/* FIX 8: Show tokenBalance (actual capacity) instead of daily processed volume */}
-          {/* BB, not "Rs." — this is a token count, and the merchant's own panel
-              calls it "BB". Two panels naming one value differently is the drift
-              §5 is about, and this one said "Rs.900,000 tokens", which is two
-              units on one line. The peg makes the magnitude right and the label
-              wrong. */}
-          <p className="font-medium text-gold-400">{((m as any).tokenBalance ?? 0).toLocaleString('en-IN')} <span className="text-xs text-gray-500 font-normal">BB</span></p>
-          <p className="text-gray-400 text-xs">Orders: {m.merchantStats?.totalOrdersProcessed || (m as any).totalOrdersAll || 0}</p>
+          <p className="font-medium">{(m.merchantStats?.totalOrdersProcessed || 0).toLocaleString('en-IN')}</p>
+          <p className="text-gray-400 text-xs">Today: {formatters.currency(m.merchantStats?.dailyProcessed || 0)}</p>
         </div>
       ),
-    },
-    {
-      key: 'scoring', label: 'Scoring',
-      render: (m: Merchant) => {
-        const successRate  = (m as any).successRate  ?? 1;
-        const avgResp      = (m as any).avgResponseMinutes ?? 2;
-        const disputeRate  = (m as any).disputeRate  ?? 0;
-        const activeOrders = (m as any).activeOrderCount ?? 0;
-        const maxOrders    = (m as any).maxConcurrentOrders ?? 3;
-        return (
-          <div className="text-xs space-y-0.5 min-w-[120px]">
-            <div className="flex justify-between">
-              <span className="text-gray-400">Success</span>
-              <span className={successRate >= 0.9 ? 'text-green-400 font-medium' : successRate >= 0.7 ? 'text-yellow-400' : 'text-red-400'}>
-                {Math.round(successRate * 100)}%
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-gray-400">Avg resp.</span>
-              <span className="text-gray-300">{avgResp.toFixed(1)}m</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-gray-400">Disputes</span>
-              <span className={disputeRate > 0.1 ? 'text-red-400' : 'text-gray-300'}>
-                {Math.round(disputeRate * 100)}%
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-gray-400">Active</span>
-              <span className="text-gray-300">{activeOrders}/{maxOrders}</span>
-            </div>
-          </div>
-        );
-      },
     },
     {
       key: 'services', label: 'Services',
       render: (m: Merchant) => (
         <div className="text-xs space-y-1">
-          {m.acceptsDeposits    && <div className="text-green-400">? Deposits</div>}
-          {m.acceptsWithdrawals && <div className="text-blue-400">? Withdrawals</div>}
+          {m.acceptsDeposits    && <div className="text-green-400">Deposits</div>}
+          {m.acceptsWithdrawals && <div className="text-blue-400">Withdrawals</div>}
         </div>
       ),
     },
@@ -343,7 +237,7 @@ export const MerchantsList: React.FC = () => {
       render: (m: Merchant) => (
         <div className="flex items-center space-x-1">
           <button onClick={() => openDetails(m._id, 'info')}    className="p-1.5 hover:bg-dark-700 rounded-sm" title="Details"><Eye size={14}/></button>
-          <button onClick={() => openDetails(m._id, 'limits')}  className="p-1.5 hover:bg-blue-600/20 text-blue-400 rounded-sm" title="Limits"><Settings size={14}/></button>
+          <button onClick={() => openDetails(m._id, 'rail')}    className="p-1.5 hover:bg-blue-600/20 text-blue-400 rounded-sm" title="Payment details"><Settings size={14}/></button>
           <button onClick={() => openDetails(m._id, 'history')} className="p-1.5 hover:bg-purple-600/20 text-purple-400 rounded-sm" title="Orders"><History size={14}/></button>
           {m.merchantApprovalStatus === 'PENDING' && (
             <button onClick={() => handleApproveMerchant(m._id)} className="px-2 py-1 bg-gold-500/20 text-gold-400 hover:bg-gold-500/30 rounded-sm text-xs font-medium">Approve</button>
@@ -355,21 +249,6 @@ export const MerchantsList: React.FC = () => {
             <button onClick={() => setConfirmAction({ type: 'suspend', merchant: m })} className="p-1.5 hover:bg-red-600/20 text-red-500 rounded-sm" title="Suspend"><Ban size={14}/></button>
           ) : (
             <button onClick={() => setConfirmAction({ type: 'activate', merchant: m })} className="p-1.5 hover:bg-green-600/20 text-green-500 rounded-sm" title="Activate"><CheckCircle size={14}/></button>
-          )}
-          {/* Paused, not suspended. Three buy orders in a row expired with
-              nobody paying, which usually means nobody CAN pay this merchant —
-              a dead QR, a closed UPI handle, a bank refusing. They are not
-              accused of anything and keep every order they hold; they are just
-              not sent new ones until somebody has asked. There is no timer on
-              purpose: a clock cannot tell whether the QR was fixed. */}
-          {(m as any).assignmentPausedAt && (
-            <button
-              onClick={() => handleResumeAssignment(m._id, (m as any).assignmentPauseReason)}
-              className="px-2 py-1 bg-amber-500/20 text-amber-400 hover:bg-amber-500/30 rounded-sm text-xs font-medium"
-              title={(m as any).assignmentPauseReason || 'Paused from new assignments'}
-            >
-              Paused · resume
-            </button>
           )}
         </div>
       ),
@@ -407,10 +286,10 @@ export const MerchantsList: React.FC = () => {
       {selectedMerchant && (
         <Modal isOpen={!!selectedMerchant} onClose={() => setSelectedMerchant(null)} title="Merchant Profile" size="xl">
           <div className="flex space-x-1 mb-6 bg-dark-800 rounded-lg p-1">
-            {(['info', 'limits', 'history', 'earnings', 'profit'] as DetailTab[]).map((tab) => (
-              <button key={tab} onClick={() => { setDetailTab(tab); if (tab === 'history') loadMerchantOrders(selectedMerchant._id); if (tab === 'earnings') loadEarnings(selectedMerchant._id); if (tab === 'profit') loadProfitEngine(selectedMerchant._id); }}
+            {(['info', 'rail', 'history', 'earnings'] as DetailTab[]).map((tab) => (
+              <button key={tab} onClick={() => { setDetailTab(tab); if (tab === 'history') loadMerchantOrders(selectedMerchant._id); if (tab === 'earnings') loadEarnings(selectedMerchant._id); }}
                 className={`flex-1 py-2 px-3 rounded-md text-sm font-medium transition-colors capitalize ${detailTab === tab ? 'bg-dark-600 text-white' : 'text-gray-400 hover:text-white'}`}>
-                {tab === 'history' ? 'Order History' : tab === 'limits' ? 'Edit Limits' : tab === 'profit' ? '📊 Profit Engine' : tab === 'earnings' ? 'Earnings' : 'Info & Stats'}
+                {tab === 'history' ? 'Order History' : tab === 'rail' ? 'Payment Details' : tab === 'earnings' ? 'Order Volume' : 'Info & Stats'}
               </button>
             ))}
           </div>
@@ -429,6 +308,29 @@ export const MerchantsList: React.FC = () => {
                   <p className="flex-1 text-sm text-yellow-400">[!] This merchant is pending approval</p>
                   <button onClick={() => handleRejectMerchant(selectedMerchant._id)} className="px-4 py-1.5 bg-red-600 text-white rounded-lg text-sm font-semibold hover:bg-red-500">Reject</button>
                   <button onClick={() => handleApproveMerchant(selectedMerchant._id)} className="px-4 py-1.5 bg-gold-500 text-dark-900 rounded-lg text-sm font-semibold hover:bg-gold-400">Approve Now</button>
+                </div>
+              )}
+
+              {/* Paused, not suspended. Three buy orders in a row expired with
+                  nobody paying, which usually means nobody CAN pay this
+                  merchant — a dead QR, a closed UPI handle, a bank refusing.
+                  They are not accused of anything and keep every order they
+                  hold; routing just stops offering them new ones
+                  (teamRouting: assignment_paused_at IS NULL) until somebody
+                  has asked. There is no timer on purpose: a clock cannot tell
+                  whether the QR was fixed. */}
+              {selectedMerchant.assignmentPausedAt && (
+                <div className="flex items-center gap-3 p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg">
+                  <div className="flex-1 text-sm">
+                    <p className="font-semibold text-amber-400">Paused from new orders since {formatters.datetime(selectedMerchant.assignmentPausedAt)}</p>
+                    <p className="text-xs text-gray-400 mt-0.5">{selectedMerchant.assignmentPauseReason || 'No reason was recorded.'}</p>
+                  </div>
+                  <button
+                    onClick={() => handleResumeAssignment(selectedMerchant._id, selectedMerchant.assignmentPauseReason)}
+                    className="px-4 py-1.5 bg-amber-500/20 text-amber-400 hover:bg-amber-500/30 rounded-lg text-sm font-semibold"
+                  >
+                    Resume assignment
+                  </button>
                 </div>
               )}
 
@@ -451,14 +353,8 @@ export const MerchantsList: React.FC = () => {
               )}
 
               <div>
-                <p className="text-sm font-semibold mb-3 text-gray-300">Wallet & Performance</p>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                  {/* FIX 8: Show tokenBalance prominently -- this is the merchant's actual capacity */}
-                  <div className="p-3 bg-dark-700 rounded-lg border border-gold-500/30">
-                    <p className="text-xs text-gray-400">Token Wallet</p>
-                    <p className="text-xl font-bold text-gold-400">{((selectedMerchant as any).tokenBalance ?? 0).toLocaleString('en-IN')} <span className="text-xs text-gray-500 font-normal">BB</span></p>
-                    <p className="text-xs text-gray-500">Available balance</p>
-                  </div>
+                <p className="text-sm font-semibold mb-3 text-gray-300">Performance</p>
+                <div className="grid grid-cols-3 gap-3">
                   <div className="p-3 bg-dark-700 rounded-lg"><p className="text-xs text-gray-400">Total Orders</p><p className="text-xl font-bold">{selectedMerchant.statistics?.totalOrders || 0}</p></div>
                   <div className="p-3 bg-dark-700 rounded-lg"><p className="text-xs text-gray-400">Completed</p><p className="text-xl font-bold text-green-500">{selectedMerchant.statistics?.completedOrders || 0}</p></div>
                   <div className="p-3 bg-dark-700 rounded-lg"><p className="text-xs text-gray-400">Success Rate</p><p className="text-xl font-bold text-gold-500">{selectedMerchant.statistics?.successRate || 0}%</p></div>
@@ -495,15 +391,18 @@ export const MerchantsList: React.FC = () => {
             </div>
           )}
 
-          {detailTab === 'limits' && (
+          {detailTab === 'rail' && (
             <div className="space-y-5">
-              {/* Settlement rail — the consumer for Merchant.acceptedCurrencies
-                  (GOVERNANCE §2: no admin-editable field without a real consumer). */}
+              {/* The consumer for merchants.accepted_currencies (§3: no
+                  admin-editable field without a real consumer): it decides
+                  which credential set the merchant keeps, and so what the order
+                  snapshot carries (paymentProcessing: merchantType). */}
               <div className="p-4 bg-dark-700 rounded-lg space-y-3">
                 <div>
                   <p className="text-sm font-semibold text-gray-300">Settlement Rail</p>
                   <p className="text-xs text-gray-500 mt-1">
-                    A merchant settles on exactly one rail and is only ever offered orders in that currency.
+                    Which payment details this merchant keeps: UPI &amp; bank, or USDT wallet addresses — never both.
+                    Which orders they are offered is decided by their team&apos;s rail, on the Supervisors &amp; Teams screen.
                   </p>
                 </div>
                 <div className="grid grid-cols-2 gap-2">
@@ -518,228 +417,13 @@ export const MerchantsList: React.FC = () => {
                           : 'bg-dark-800 border-dark-600 text-gray-400 hover:text-gray-200'
                       }`}
                     >
-                      {option === 'INR' ? 'INR · UPI & bank' : 'USDT · TRC-20'}
+                      {option === 'INR' ? 'INR · UPI & bank' : 'USDT · wallet addresses'}
                     </button>
                   ))}
                 </div>
                 <p className="text-xs text-amber-400/80">
                   Switching rails clears the payment details for the old rail — the merchant re-enters them from their panel.
                 </p>
-              </div>
-
-              {/* FIX 8: tokenBalance is the capacity -- show it prominently and allow top-up */}
-              <div className="p-4 bg-dark-700 rounded-lg border border-gold-500/30">
-                <p className="text-xs text-gray-400 mb-1">Current Token Wallet Balance</p>
-                <p className="text-3xl font-bold text-gold-400">{((selectedMerchant as any).tokenBalance ?? 0).toLocaleString('en-IN')} <span className="text-base text-gray-500 font-normal">BB</span></p>
-                <p className="text-xs text-gray-500 mt-1">Merchant can only process orders up to this amount</p>
-              </div>
-
-              {/* Moving tokens to or from a merchant is its own area
-                  (canFundMerchants): managing a merchant does not imply it. */}
-              {canFund && (<>
-              <div className="space-y-3">
-                <p className="text-sm font-semibold text-gray-300">Top-Up Wallet</p>
-                <div>
-                  <label className="label" htmlFor="amount-to-add-rs-tokens">Amount to Add (Rs. tokens)</label>
-                  <input id="amount-to-add-rs-tokens"
-                    type="number" min="1"
-                    value={topUpAmount || ''}
-                    onChange={(e) => setTopUpAmount(Number(e.target.value) || 0)}
-                    placeholder="e.g. 10000"
-                    className="input"
-                  />
-                </div>
-                <div>
-                  <label className="label" htmlFor="topup-settlement-amount">
-                    Received from merchant ({topUpSettlement.currency === 'INR' ? 'Rs.' : 'USDT'})
-                  </label>
-                  <div className="flex gap-2">
-                    <input id="topup-settlement-amount"
-                      type="number" min="0" step="0.01"
-                      value={topUpSettlement.amount}
-                      onChange={(e) => setTopUpSettlement(f => ({ ...f, amount: e.target.value }))}
-                      placeholder="e.g. 9500"
-                      className="input flex-1"
-                    />
-                    <select
-                      aria-label="Settlement currency"
-                      value={topUpSettlement.currency}
-                      onChange={(e) => setTopUpSettlement(f => ({ ...f, currency: e.target.value as 'INR' | 'USDT' }))}
-                      className="input w-28"
-                    >
-                      <option value="INR">INR</option>
-                      <option value="USDT">USDT</option>
-                    </select>
-                  </div>
-                  <p className="text-xs text-gray-500 mt-1">
-                    What the platform actually received for these tokens. Enter 0 if this is a correction
-                    and no money changed hands. USDT is valued at the admin USDT buy rate and frozen on
-                    the record, so a later rate change cannot restate this trade.
-                  </p>
-                </div>
-                <button
-                  disabled={isSavingLimits || !topUpAmount || topUpSettlement.amount === ''}
-                  onClick={async () => {
-                    setIsSavingLimits(true);
-                    try {
-                      const res = await (api.merchants as any).fundWallet(
-                        selectedMerchant._id, topUpAmount,
-                        { amount: Number(topUpSettlement.amount), currency: topUpSettlement.currency },
-                      );
-                      // The BOOKED figure, not the typed one: they differ when a
-                      // USDT amount is valued in rupees, and the booked one is
-                      // what the profit and loss will read.
-                      const booked = res?.settlement;
-                      toast.success(
-                        `Wallet topped up by Rs.${topUpAmount}`
-                        + (booked ? ` — recorded ${booked.currency === 'INR' ? 'Rs.' : ''}${booked.amount}`
-                          + `${booked.currency === 'USDT' ? ' USDT (Rs.' + booked.inrValue + ')' : ''} received` : ''),
-                      );
-                      setTopUpAmount(0);
-                      setTopUpSettlement({ amount: '', currency: 'INR' });
-                      loadMerchants();
-                    } catch (e: any) {
-                      // The server's own wording — it names the field and what to
-                      // do about it (an unset USDT rate, a missing figure). A
-                      // fixed string here threw that away and told an operator
-                      // only that something failed.
-                      toast.error(e?.response?.data?.message || 'Failed to top up wallet');
-                    }
-                    finally { setIsSavingLimits(false); }
-                  }}
-                  className="btn-primary w-full disabled:opacity-50"
-                >
-                  {isSavingLimits ? 'Processing...' : 'Top Up Wallet'}
-                </button>
-              </div>
-
-              {/* Phase B (2026-07-10): the missing counterpart to top-up.
-                  Strict — the backend refuses to overdraft the merchant. */}
-              <div className="border-t border-dark-600 pt-4 space-y-3">
-                <p className="text-sm font-semibold text-gray-300">Deduct From Wallet</p>
-                <div>
-                  <label className="label" htmlFor="amount-to-remove-rs-tokens">Amount to Remove (Rs. tokens)</label>
-                  <input id="amount-to-remove-rs-tokens"
-                    type="number" min="1"
-                    value={deductForm.amount || ''}
-                    onChange={(e) => setDeductForm(f => ({ ...f, amount: Number(e.target.value) || 0 }))}
-                    placeholder="e.g. 5000"
-                    className="input"
-                  />
-                </div>
-                <div>
-                  <label className="label" htmlFor="reason-required-audit-logged">Reason (required, audit-logged)</label>
-                  <input id="reason-required-audit-logged"
-                    type="text"
-                    value={deductForm.reason}
-                    onChange={(e) => setDeductForm(f => ({ ...f, reason: e.target.value }))}
-                    placeholder="e.g. top-up correction, off-boarding"
-                    className="input"
-                  />
-                </div>
-                <div>
-                  <label className="label" htmlFor="deduct-settlement-amount">Paid back to merchant (Rs.)</label>
-                  <input id="deduct-settlement-amount"
-                    type="number" min="0" step="0.01"
-                    value={deductForm.paid}
-                    onChange={(e) => setDeductForm(f => ({ ...f, paid: e.target.value }))}
-                    placeholder="e.g. 5000"
-                    className="input"
-                  />
-                  <p className="text-xs text-gray-500 mt-1">
-                    What the platform handed back for these tokens. Enter 0 if this is a correction and no
-                    money changed hands. Payouts are always in rupees.
-                  </p>
-                </div>
-                <button
-                  disabled={isSavingLimits || !deductForm.amount || !deductForm.reason.trim() || deductForm.paid === ''}
-                  onClick={async () => {
-                    setIsSavingLimits(true);
-                    try {
-                      const res = await (api.merchants as any).deductWallet(
-                        selectedMerchant._id, deductForm.amount, deductForm.reason.trim(),
-                        Number(deductForm.paid),
-                      );
-                      if (res?.success) {
-                        const booked = res?.settlement;
-                        toast.success(
-                          `Wallet deducted by Rs.${deductForm.amount}`
-                          + (booked ? ` — recorded Rs.${booked.amount} paid out` : ''),
-                        );
-                        setDeductForm({ amount: 0, reason: '', paid: '' });
-                        loadMerchants();
-                      } else {
-                        toast.error(res?.message || 'Failed to deduct wallet');
-                      }
-                    } catch (e: any) { toast.error(e?.response?.data?.message || 'Failed to deduct wallet'); }
-                    finally { setIsSavingLimits(false); }
-                  }}
-                  className="w-full px-4 py-2 rounded-lg font-semibold bg-red-600 hover:bg-red-700 text-white disabled:opacity-50"
-                >
-                  {isSavingLimits ? 'Processing...' : 'Deduct From Wallet'}
-                </button>
-                <p className="text-xs text-gray-500">
-                  Deductions never overdraft — if the merchant holds less than the amount, the request is refused.
-                </p>
-              </div>
-              </>)}
-
-              <div className="border-t border-dark-600 pt-4 space-y-4">
-                <p className="text-sm font-semibold text-gray-300">Order Limits</p>
-                {/* Per-merchant min/max order amounts are GONE. A merchant's
-                    ceiling is the tokens they hold — enforced by the escrow,
-                    which reserves them the moment an order becomes theirs — and
-                    the floor is the platform's, SystemConfig.minDeposit /
-                    minWithdrawal, the same 500 tokens for everyone. Two numbers
-                    an admin could edit here changed nothing: assignment never
-                    read them. */}
-                <p className="text-xs text-gray-400">
-                  A merchant&apos;s buy capacity is their uncommitted token balance —
-                  held automatically when an order is assigned, so it cannot be
-                  spent twice. The minimum order is set platform-wide in System
-                  Settings, not per merchant.
-                </p>
-                {/* The cash rail deals in fixed amounts because a merchant is
-                    standing at an ATM: the machine dispenses one of these and
-                    nothing between them. A merchant is approved for exactly
-                    ONE, which is why this is a single select and not a set of
-                    checkboxes. ₹40,000 is a withdrawal leg only — no buy is
-                    ever that large. */}
-                <div>
-                  <label htmlFor="cash-denomination" className="label">ATM cash denomination</label>
-                  <select
-                    id="cash-denomination" name="cashDenomination" className="input"
-                    value={limitsForm.cashDenomination ?? ''}
-                    onChange={(e) => setLimitsForm(f => ({
-                      ...f, cashDenomination: e.target.value === '' ? null : Number(e.target.value),
-                    }))}
-                  >
-                    <option value="">Not approved for the cash rail</option>
-                    <option value="500">₹500</option>
-                    <option value="1000">₹1,000</option>
-                    <option value="5000">₹5,000</option>
-                    <option value="10000">₹10,000</option>
-                    <option value="40000">₹40,000 &mdash; withdrawal legs only</option>
-                  </select>
-                  <p className="text-xs text-gray-500 mt-1">
-                    This merchant will be offered this amount and no other while the
-                    ATM cash rail is live. It cannot be changed while they are holding
-                    an order.
-                  </p>
-                </div>
-                <div>
-                  <label htmlFor="max-concurrent" className="label">Max Concurrent Orders (1–10)</label>
-                  <input
-                    id="max-concurrent" name="maxConcurrentOrders" type="number" min="1" max="10"
-                    value={limitsForm.maxConcurrentOrders}
-                    onChange={(e) => setLimitsForm(f => ({ ...f, maxConcurrentOrders: Math.min(10, Math.max(1, Number(e.target.value) || 1)) }))}
-                    className="input"
-                  />
-                  <p className="text-xs text-gray-500 mt-1">Controls how many orders this merchant handles simultaneously (scoring algorithm: load score)</p>
-                </div>
-                <button onClick={handleSaveLimits} disabled={isSavingLimits} className="btn-primary w-full disabled:opacity-50">
-                  {isSavingLimits ? 'Saving...' : 'Save Order Limits'}
-                </button>
               </div>
             </div>
           )}
@@ -771,99 +455,23 @@ export const MerchantsList: React.FC = () => {
             </div>
           )}
 
+          {/* What GET /merchants/:id/earnings actually sends: four counts
+              and the lifetime volume of COMPLETED orders, in tokens (1 token
+              = ₹1). It never sent earnings figures — this tab rendered
+              totalEarnings / monthlyEarnings / avgPerOrder, read undefined,
+              and showed ₹0 for every merchant. Merchant pay arrives with the
+              team commission (Step 2e); nothing here claims to show it. */}
           {detailTab === 'earnings' && (
             <div className="space-y-4">
               {merchantEarnings ? (
-                <div className="space-y-3">
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="bg-dark-700 rounded-lg p-3"><p className="text-xs text-gray-400">Total Earnings</p><p className="text-xl font-bold text-green-400">{formatters.currency(merchantEarnings.totalEarnings || 0)}</p></div>
-                    <div className="bg-dark-700 rounded-lg p-3"><p className="text-xs text-gray-400">This Month</p><p className="text-xl font-bold text-gold-400">{formatters.currency(merchantEarnings.monthlyEarnings || 0)}</p></div>
-                    <div className="bg-dark-700 rounded-lg p-3"><p className="text-xs text-gray-400">Orders Processed</p><p className="text-xl font-bold">{merchantEarnings.totalOrders || 0}</p></div>
-                    <div className="bg-dark-700 rounded-lg p-3"><p className="text-xs text-gray-400">Avg per Order</p><p className="text-xl font-bold">{formatters.currency(merchantEarnings.avgPerOrder || 0)}</p></div>
-                  </div>
-                </div>
-              ) : (
-                <div className="text-center py-8 text-gray-500"><DollarSign size={36} className="mx-auto mb-3 opacity-30"/><p>No earnings data</p></div>
-              )}
-              <div className="pt-4 border-t border-dark-700">
-                <p className="text-xs text-gray-500">Merchants earn via the buy/sell price spread — no commission applies.</p>
-              </div>
-            </div>
-          )}
-
-          {/* PROFIT ENGINE TAB */}
-          {detailTab === 'profit' && (
-            <div className="space-y-4">
-              <h4 className="font-semibold text-sm text-gray-400 uppercase tracking-wider">f4ca Profit Engine — from Ledger</h4>
-              {!merchantProfit ? (
-                <div className="text-center py-8 text-gray-500"><p>Loading profit data…</p></div>
-              ) : (
                 <div className="grid grid-cols-2 gap-3">
-                  {([
-                    ['Current Token Holdings',(merchantProfit.currentTokenHoldings||0).toLocaleString('en-IN')+' T',''],
-                    ['Tokens Allocated',(merchantProfit.tokensAllocated||0).toLocaleString('en-IN')+' T',''],
-                    ['Tokens Returned',(merchantProfit.tokensReturned||0).toLocaleString('en-IN')+' T',''],
-                    ['Deposits Processed',(merchantProfit.depositsProcessed||0).toLocaleString('en-IN'),''],
-                    ['Withdrawals Processed',(merchantProfit.withdrawalsProcessed||0).toLocaleString('en-IN'),''],
-                    ['Net User Volume','₹'+(merchantProfit.netUserVolume||0).toLocaleString('en-IN'),''],
-                    ['Revenue Generated','₹'+(merchantProfit.revenue||0).toLocaleString('en-IN'),'green'],
-                    ['Funding Cost','₹'+(merchantProfit.fundingCost||0).toLocaleString('en-IN'),'red'],
-                    ['Withdrawal Exposure','₹'+(merchantProfit.withdrawalExposure||0).toLocaleString('en-IN'),'red'],
-                    ['Profit Generated','₹'+(merchantProfit.profit||0).toLocaleString('en-IN'),(merchantProfit.profit||0)>=0?'green':'red'],
-                    ['ROI',(merchantProfit.roi||0)+'%',(merchantProfit.roi||0)>=0?'green':'red'],
-                    ['Spread','₹'+(merchantProfit.spread||0).toFixed(4)+'/token',''],
-                  ] as [string,string,string][]).map(([lbl,val,hl]) => (
-                    <div key={lbl} className="bg-dark-700 rounded-lg p-3">
-                      <p className="text-xs text-gray-400">{lbl}</p>
-                      <p className={`font-bold text-sm ${hl==='green'?'text-green-400':hl==='red'?'text-red-400':'text-white'}`}>{val}</p>
-                    </div>
-                  ))}
+                  <div className="bg-dark-700 rounded-lg p-3"><p className="text-xs text-gray-400">Total Orders</p><p className="text-xl font-bold">{(merchantEarnings.totalOrders || 0).toLocaleString('en-IN')}</p></div>
+                  <div className="bg-dark-700 rounded-lg p-3"><p className="text-xs text-gray-400">Completed</p><p className="text-xl font-bold text-green-400">{(merchantEarnings.completedOrders || 0).toLocaleString('en-IN')}</p></div>
+                  <div className="bg-dark-700 rounded-lg p-3"><p className="text-xs text-gray-400">In Progress</p><p className="text-xl font-bold text-gold-400">{(merchantEarnings.pendingOrders || 0).toLocaleString('en-IN')}</p></div>
+                  <div className="bg-dark-700 rounded-lg p-3"><p className="text-xs text-gray-400">Completed Volume</p><p className="text-xl font-bold">{(merchantEarnings.totalVolume || 0).toLocaleString('en-IN')} <span className="text-xs text-gray-500 font-normal">BB</span></p></div>
                 </div>
-              )}
-              <p className="text-xs text-gray-600 pt-2 border-t border-dark-700">Formula: Revenue − Funding Cost − Withdrawal Exposure = Profit</p>
-
-              {/* ── The PLATFORM's side of the same relationship ─────────────
-                  Everything above is the MERCHANT's trade. These are the
-                  platform's: what it took in when it sold this merchant tokens
-                  and what it paid to buy them back. Until the settlement figure
-                  was captured on the top-up and deduct forms there was nothing
-                  to show here at all — the books balanced in tokens and said
-                  nothing about money. */}
-              {merchantProfit?.platformTokenTrade && (
-                <div className="space-y-3 pt-3 border-t border-dark-700">
-                  <h4 className="font-semibold text-sm text-gray-400 uppercase tracking-wider">
-                    Platform ↔ Merchant Token Trade
-                  </h4>
-                  <div className="grid grid-cols-2 gap-3">
-                    {([
-                      ['Received for Tokens','₹'+(merchantProfit.platformTokenTrade.receivedInr||0).toLocaleString('en-IN'),'green'],
-                      ['Paid to Buy Back','₹'+(merchantProfit.platformTokenTrade.paidInr||0).toLocaleString('en-IN'),'red'],
-                      ['Net to Platform','₹'+(merchantProfit.platformTokenTrade.netInr||0).toLocaleString('en-IN'),(merchantProfit.platformTokenTrade.netInr||0)>=0?'green':'red'],
-                      ['Tokens Sold',(merchantProfit.platformTokenTrade.tokensSold||0).toLocaleString('en-IN')+' T',''],
-                      ['Tokens Bought Back',(merchantProfit.platformTokenTrade.tokensBoughtBack||0).toLocaleString('en-IN')+' T',''],
-                      ['Movements Recorded',String(merchantProfit.platformTokenTrade.movements||0),''],
-                    ] as [string,string,string][]).map(([lbl,val,hl]) => (
-                      <div key={lbl} className="bg-dark-700 rounded-lg p-3">
-                        <p className="text-xs text-gray-400">{lbl}</p>
-                        <p className={`font-bold text-sm ${hl==='green'?'text-green-400':hl==='red'?'text-red-400':'text-white'}`}>{val}</p>
-                      </div>
-                    ))}
-                  </div>
-                  {/* The figures the merchant actually sent, kept APART by
-                      currency. The rupee totals above are the INR-equivalent, and
-                      they are the only ones anything may add up: summing the raw
-                      figures would read 500 USDT as ₹500. */}
-                  {Object.entries(merchantProfit.platformTokenTrade.byCurrency || {}).length > 0 && (
-                    <p className="text-xs text-gray-500">
-                      As settled:{' '}
-                      {Object.entries(merchantProfit.platformTokenTrade.byCurrency as Record<string, any>)
-                        .map(([code, v]) =>
-                          `${code} ${(v.received || 0).toLocaleString('en-IN')} in`
-                          + (v.paid ? ` / ${(v.paid).toLocaleString('en-IN')} out` : ''))
-                        .join(' · ')}
-                    </p>
-                  )}
-                </div>
+              ) : (
+                <div className="text-center py-8 text-gray-500"><DollarSign size={36} className="mx-auto mb-3 opacity-30"/><p>No order data</p></div>
               )}
             </div>
           )}

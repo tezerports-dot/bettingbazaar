@@ -525,13 +525,6 @@ export const utrGraceLimiter = moneyLimiter(
     { bounds: 'attempts' },
 );
 
-/** A merchant supplying a cash link from an ATM. */
-export const cashLinkSupplyLimiter = moneyLimiter(
-    'rl:cashlink:', RATE_LIMIT_TIERS.cashLinkSupply,
-    'Too many links supplied. Please wait before supplying another.',
-    { bounds: 'effects' },
-);
-
 /**
  * Submitting a CDM deposit slip.
  *

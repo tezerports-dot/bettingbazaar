@@ -405,38 +405,6 @@ export async function applySystemConfig(patch, options = {}) {
 }
 
 /**
- * Move a counter inside a configuration document, atomically.
- *
- * `adminTokenSupply.minted` is the only one of these, and it is a cap on how
- * many tokens may exist. A read-modify-write would let two concurrent mints
- * both read the same `minted` and both pass the cap check — which is how a
- * supply ceiling stops being a ceiling. The arithmetic and the check are one
- * statement here; it returns false rather than raising, because "the cap
- * refused this" is an answer, not an error.
- */
-export async function bumpConfigCounter({
-  scope, path, by, docKey = 'main', cap = null,
-}) {
-  specFor(scope);
-  const parts = path.split('.');
-  const { rows } = await pgQuery(
-    `UPDATE config_documents
-        SET settings = jsonb_set(settings, $3::text[],
-              to_jsonb(COALESCE((settings #>> $3::text[])::numeric, 0) + $4::numeric), true),
-            version = version + 1,
-            updated_at = now()
-      WHERE scope = $1 AND doc_key = $2
-        AND ($5::numeric IS NULL
-             OR COALESCE((settings #>> $3::text[])::numeric, 0) + $4::numeric <= $5::numeric)
-      RETURNING (settings #>> $3::text[])::numeric AS value`,
-    [scope, docKey, parts, Number(by), cap === null ? null : Number(cap)],
-    'config_bump',
-  );
-  invalidateConfigCache(scope, docKey);
-  return rows[0] ? { ok: true, value: Number(rows[0].value) } : { ok: false, reason: 'CAP_EXCEEDED' };
-}
-
-/**
  * Write ONE dotted path — `betLimits.thirtyMin.min` — and version it.
  *
  * A convenience over `applyConfig` for callers that hold a path and a value

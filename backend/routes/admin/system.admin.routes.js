@@ -268,8 +268,7 @@ router.put('/system/config', authenticate, hasPermission('canManageSystemSetting
         return null;
       };
       const limitError =
-        validateUsdtLimitPair('User token purchase', 'minUserTokenPurchaseUsdt', 'maxUserTokenPurchaseUsdt') ||
-        validateUsdtLimitPair('Merchant admin-token', 'minAdminTokenPurchaseUsdt', 'maxAdminTokenPurchaseUsdt');
+        validateUsdtLimitPair('User token purchase', 'minUserTokenPurchaseUsdt', 'maxUserTokenPurchaseUsdt');
       if (limitError) {
         return res.status(400).json({ success: false, message: limitError });
       }
@@ -348,10 +347,6 @@ router.put('/system/config', authenticate, hasPermission('canManageSystemSetting
     // no route at all — two of them under a comment that called them
     // "admin-editable". See F-022.
     //
-    // `internal` fields are skipped: `adminTokenSupply.transferred` is how much
-    // of the platform's own holding has been handed out, and an operator who could set
-    // it to 0 could re-authorise the whole supply.
-    //
     // The spec still validates every value and its bounds when the write is
     // applied, so an undeclared key or an out-of-range number is refused with
     // its path named, not silently stored.
@@ -361,7 +356,6 @@ router.put('/system/config', authenticate, hasPermission('canManageSystemSetting
         const value = body[key];
         if (value === undefined) continue;
         if (decl.type === 'group') { collectDeclared(decl, value, [...path, key]); continue; }
-        if (decl.internal) continue;
         fieldWrites.push(['SystemConfig', [...path, key].join('.'), value]);
       }
     };
@@ -424,10 +418,8 @@ router.put('/system/config', authenticate, hasPermission('canManageSystemSetting
     if (riskRules?.maxWarnings !== undefined) fieldWrites.push(['SystemConfig', 'riskRules.maxWarnings', riskRules.maxWarnings]);
     // Payout multiplier — consumed by markets/gameEngine.js via riskValidation.computeWinningsPayout
     if (payoutMultiplier   !== undefined) fieldWrites.push(['SystemConfig', 'payoutMultiplier', payoutMultiplier]);
-    // The payment order window is NOT here. It moved to
-    // payment_mode_policies.processing_window_seconds, because the two
-    // settlement rails have different timelines by design and one global number
-    // cannot express that. Edited at POST /api/admin/payment-mode.
+    // The payment order windows are per rail, in SystemConfig.teamRouting,
+    // accepted by declaration above.
     // Cycle phase offsets — consumed (cached) by markets/cycleGenerator.getCyclePhases.
     // Written per-type as a whole validated subdocument.
     // Validated above, board by board; written the same way. Only the four

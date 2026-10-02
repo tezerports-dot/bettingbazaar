@@ -11,7 +11,6 @@ import { creditDeposit, creditReserve } from '../wallet/walletAuthority.service.
 // The one owner of how an admin decision ends a withdrawal's money, and of a
 // cancelled buy's merchant hold. Both routes below end orders both ways.
 import { endWithdrawal } from './withdrawalHold.service.js';
-import { releaseForOrder } from '../merchant/depositEscrow.service.js';
 // The one owner of a confirmed deposit's money movement. The merchant confirm
 // route calls the same function; that is what keeps the two from disagreeing.
 import { moveDepositMoney } from './depositCredit.js';
@@ -19,7 +18,6 @@ import { releaseUTR } from '../../middleware/utrValidation.js';
 // The order state machine. Every status change goes through here so an illegal
 // move is refused by the database rather than by whichever check ran first.
 import { completeOrder, cancelOrder } from './orderLifecycle.service.js';
-import { debitMerchantTokens } from '../merchant/merchantWallet.service.js';
 import { emitAdminUpdate, emitOrderUpdate, emitWalletUpdate } from '../notification/realtimeEmitters.js';
 
 const router = express.Router();
@@ -61,24 +59,24 @@ router.post('/payment-orders/:orderId/action', authenticate, hasPermission('canR
     }
 
     // ── APPROVE on a deposit: money BEFORE status ───────────────────────────
-    // The merchant must be debited for what the player is credited, or an
+    // The team's pool must part with what the player is credited, or an
     // approval mints tokens. This route used to credit `tokenAmount` in one
     // lump, never debit the merchant and never release the UTR, so the books
     // did not close and nothing said so. It now moves the money through the
     // same function the merchant confirm route uses.
     //
-    // The order is deliberate: refusing (a merchant who cannot cover it) is the
-    // ordinary case and must refuse before the order advances. Every movement
+    // The order is deliberate: refusing (a pool that cannot cover it) must
+    // happen before the order advances. Every movement
     // is keyed on the order id, so a crash between the money and the transition
     // leaves a retryable PAID order rather than a COMPLETED one that paid
     // nobody.
     let deposited = null;
     if (action === 'APPROVE' && order.type === 'DEPOSIT') {
       deposited = await moveDepositMoney(order, {
-        debitMerchantTokens, creditDeposit, creditReserve, releaseUTR,
+        creditDeposit, creditReserve, releaseUTR,
       });
       if (!deposited.ok) {
-        return res.status(400).json({ success: false, message: 'Merchant insufficient token balance' });
+        return res.status(409).json({ success: false, message: 'The team\'s token pool cannot cover this buy. Nothing was credited; the order stays as it is.' });
       }
     }
 
@@ -142,10 +140,9 @@ router.post('/payment-orders/:orderId/action', authenticate, hasPermission('canR
         });
       }
     } else if (action !== 'APPROVE') {
-      // A buy that will not be served gives its merchant's tokens back. The
-      // stranded-hold sweep would find it in fifteen minutes and log it as a
-      // path that forgot — this route was that path.
-      await releaseForOrder(order, { actor: `admin:${req.user.userId}`, reason: reason || `${action} by admin` });
+      // A buy that will not be served gives its team's held tokens back to the
+      // pool, here, rather than leaving them for the stranded-hold report.
+      await db.teamPools.releaseBuyHold(order.orderId, { actor: `admin:${req.user.userId}`, reason: reason || `${action} by admin` });
     }
 
     const settled = moved.order ?? order;
@@ -255,13 +252,11 @@ router.post('/payment-orders/:orderId/resolve', authenticate, hasPermission('can
         //                 and three of those stop them opening a new order for
         //                 an hour, on both rails (§2).
         //
-        // `allowOverdraft` keeps this site's documented semantics: an admin has
-        // already decided, and the transition above has already committed, so
-        // refusing the money now would leave the order resolved and the player
-        // uncredited. The merchant going negative is correct — they owe it.
+        // A DISPUTED buy keeps its pool hold, so this spends it. If the hold is
+        // somehow gone and the pool cannot cover it, `moveDepositMoney` reports
+        // it and the log below makes it a case a person sees.
         const moved = await moveDepositMoney(order, {
-          debitMerchantTokens, creditDeposit, creditReserve, releaseUTR,
-          allowOverdraft: true,
+          creditDeposit, creditReserve, releaseUTR,
         });
         if (!moved.ok) {
           // `moveDepositMoney` has already reported it. Loud here too: the
@@ -318,7 +313,7 @@ router.post('/payment-orders/:orderId/resolve', authenticate, hasPermission('can
         // No tokens were credited to the player yet, so none come back — but
         // the merchant's tokens held for this buy do. This route released
         // nothing, leaving them for the stranded-hold sweep.
-        await releaseForOrder(order, { actor: `admin:${req.user.userId}`, reason: reason.trim() });
+        await db.teamPools.releaseBuyHold(order.orderId, { actor: `admin:${req.user.userId}`, reason: reason.trim() });
       } else {
         // WITHDRAWAL: the stake goes back OUT OF THE LOCK. This credited
         // winnings and left the lock standing, so the wallet read the amount

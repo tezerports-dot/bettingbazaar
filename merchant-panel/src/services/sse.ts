@@ -67,11 +67,6 @@ class SSEService {
         // order sat unchanged on screen until a reload while the paid-response
         // clock (`paidResponseMinutes`) ran against the merchant (2026-10-01).
         'order_paid',
-        // Broadcast to every merchant when an admin switches the settlement
-        // rail, so a merchant mid-shift is not left on the old workflow.
-        'payment_mode_changed',
-        // Orders waiting for an ATM link at this merchant's denomination.
-        'cash_link_demand',
       ];
       for (const ev of merchantEvents) {
         this.merchantSse.addEventListener(ev, (e: MessageEvent) => {

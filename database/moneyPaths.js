@@ -9,6 +9,5 @@ export const MONEY_PATHS = Object.freeze({
   WALLET: 'wallet', BETS: 'bets', ORDERS: 'orders', LEDGER: 'ledger',
   SETTLEMENTS: 'settlements', CASINO_SETTLEMENT: 'casino_settlement',
   BONUSES_AND_COMMISSIONS: 'bonuses_and_commissions',
-  MERCHANT_WALLET: 'merchant_wallet', MERCHANT_SETTLEMENT: 'merchant_settlement',
-  ADMIN_ISSUANCE: 'admin_issuance',
+  TEAM_POOLS: 'team_pools',
 });
