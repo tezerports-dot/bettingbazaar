@@ -2091,6 +2091,56 @@ const MUTATIONS = [
     from: `        WHERE programme_key = 'main' AND EXISTS (SELECT 1 FROM claimed)`,
     to: `        WHERE programme_key = 'main'`,
   },
+  // ── Supervisors and teams (Step 2a) ────────────────────────────────────────
+  {
+    id: 'M281', file: 'database/repositories/teams.js', config: PG,
+    test: 'database/tests/teamsPg.test.js',
+    why: 'a supervisor can create a fifth team, and as many more as they ask for',
+    from: `    if (c[0].n >= MAX_TEAMS) return { ok: false, reason: 'team_limit' };`,
+    to: `    if (false) return { ok: false, reason: 'team_limit' };`,
+  },
+  {
+    id: 'M282', file: 'database/repositories/teams.js', config: PG,
+    test: 'database/tests/teamsPg.test.js',
+    why: 'proposals arriving together each count the team before the others land, so a team fills past ten',
+    from: `'SELECT team_id FROM teams WHERE team_id = $1 AND supervisor_id = $2 FOR UPDATE',`,
+    to: `'SELECT team_id FROM teams WHERE team_id = $1 AND supervisor_id = $2',`,
+  },
+  {
+    id: 'M283', file: 'database/repositories/teams.js', config: PG,
+    test: 'database/tests/teamsPg.test.js',
+    why: 'every further departure restarts the grace day, so a team can be kept working below ten indefinitely',
+    from: `          WHEN t.was_full THEN COALESCE(t.short_since, now())`,
+    to: `          WHEN t.was_full THEN now()`,
+  },
+  {
+    id: 'M284', file: 'database/repositories/teams.js', config: PG,
+    test: 'database/tests/teamsPg.test.js',
+    why: 'a supervisor can add members to another supervisor\'s team',
+    from: `'SELECT team_id FROM teams WHERE team_id = $1 AND supervisor_id = $2 FOR UPDATE',`,
+    to: `'SELECT team_id FROM teams WHERE team_id = $1 AND $2::text IS NOT NULL FOR UPDATE',`,
+  },
+  {
+    id: 'M285', file: 'database/repositories/teams.js', config: PG,
+    test: 'database/tests/teamsPg.test.js',
+    why: 'the grace day never ends, so a team below ten keeps taking orders for good',
+    from: `     AND (t.short_since AT TIME ZONE 'Asia/Kolkata')::date = (now() AT TIME ZONE 'Asia/Kolkata')::date`,
+    to: `     AND true`,
+  },
+  // No M286. "Only a supervisor reaches the supervisor routes" is enforced
+  // TWICE on purpose — `requireSupervisor` in team.merchant.routes.js, and
+  // createTeam's own `is_supervisor` read under the lock (every other
+  // supervisor route is scoped by supervisor_id in its WHERE). A mutant of
+  // either alone behaves identically, so it was measured SURVIVED and deleted
+  // rather than kept as a permanent false hole (see the note on M101).
+
+  {
+    id: 'M287', file: 'backend/domains/team/team.merchant.routes.js', config: PG,
+    test: 'backend/tests/routes/teamRoutesPg.test.js',
+    why: 'a member of one of the supervisor\'s teams can be removed through another team\'s URL',
+    from: `    if (!membership || membership.team.teamId !== req.params.teamId) return refuse(res, 'not_found');`,
+    to: `    if (!membership) return refuse(res, 'not_found');`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

@@ -3468,8 +3468,8 @@ new route and decide. Each of the three questions is defined in §2.
 | Panel | .ts/.tsx files | `dangerouslySetInnerHTML` | `.innerHTML =` |
 |---|---|---|---|
 | `user-panel` | 86 | 0 | 0 |
-| `admin-panel` | 110 | 0 | 0 |
-| `merchant-panel` | 45 | 0 | 0 |
+| `admin-panel` | 112 | 0 | 0 |
+| `merchant-panel` | 47 | 0 | 0 |
 
 <!-- END GENERATED -->
 

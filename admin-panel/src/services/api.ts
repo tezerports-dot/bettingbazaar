@@ -14,6 +14,7 @@ import type {
   CDNImage,
   FAQ,
   SupportLinks,
+  SupervisorRail, TeamSupervisor, TeamView, TeamMemberView,
 } from '../types';
 
 const _adminViteUrl = import.meta.env.VITE_API_URL as string | undefined;
@@ -828,6 +829,26 @@ export const telegramTemplates = {
   },
 };
 
+// --- SUPERVISORS & TEAMS (redesign Step 2a) ----------------------------------
+// Backend: backend/domains/team/team.admin.routes.js, area canManageTeams.
+export const teams = {
+  list: async () => {
+    const res = await api.get<any>('/api/admin/teams');
+    return res.data as {
+      success: boolean; supervisors: TeamSupervisor[]; teams: TeamView[]; members: TeamMemberView[];
+    };
+  },
+  /** rail null removes the role. */
+  setSupervisor: async (merchantId: string, rail: SupervisorRail | null) =>
+    (await api.put(`/api/admin/merchants/${merchantId}/supervisor`, { rail })).data,
+  approveMember: async (merchantId: string) =>
+    (await api.post(`/api/admin/team-members/${merchantId}/approve`)).data,
+  rejectMember: async (merchantId: string) =>
+    (await api.post(`/api/admin/team-members/${merchantId}/reject`)).data,
+  removeMember: async (merchantId: string) =>
+    (await api.delete(`/api/admin/team-members/${merchantId}`)).data,
+};
+
 export const referrals = {
   stats: async () => {
     const res = await api.get<any>('/api/admin/referral/stats');
@@ -1393,6 +1414,7 @@ export default {
   cycles,
   depositPolicy,
   queueManager,
+  teams,
   telegram,
   telegramBots,
   telegramTemplates,

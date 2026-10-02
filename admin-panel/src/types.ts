@@ -504,3 +504,21 @@ export interface PaginatedResponse<T> {
     pages: number;
   };
 }
+
+// ── Supervisors and teams (redesign Step 2a) ─────────────────────────────────
+// Mirrors database/repositories/teams.js (`toTeam`, `toMember`,
+// SUPERVISOR_RAILS) — §5: change them together.
+export type SupervisorRail = 'CASH' | 'UPI_BANK' | 'USDT';
+export interface TeamSupervisor {
+  merchantId: string; name: string; publicRef: string; rail: SupervisorRail; isOnline: boolean;
+}
+export interface TeamView {
+  teamId: string; supervisorId: string; supervisorName: string; supervisorRef: string;
+  name: string; rail: SupervisorRail; approvedCount: number; pendingCount: number; size: number;
+  strength: 'WORKING' | 'GRACE' | 'STOPPED'; shortSince: string | null; wasFull: boolean; createdAt: string;
+}
+export interface TeamMemberView {
+  merchantId: string; teamId: string; name: string; publicRef: string;
+  status: 'PENDING' | 'APPROVED'; isOnline: boolean;
+  addedBy: string; addedAt: string; approvedBy: string | null; approvedAt: string | null;
+}

@@ -473,3 +473,21 @@ export interface AdminTokenQuote {
   minPurchaseUsdt?: number;
   maxPurchaseUsdt?: number;
 }
+
+// ── Supervisors and teams (redesign Step 2a) ─────────────────────────────────
+// Mirrors database/repositories/teams.js (`toTeam`, `toMember`) and the
+// GET /api/merchant/team response — §5: change them together.
+export type SupervisorRail = 'CASH' | 'UPI_BANK' | 'USDT';
+export interface Team {
+  teamId: string; supervisorId: string; supervisorName: string; supervisorRef: string;
+  name: string; rail: SupervisorRail; approvedCount: number; pendingCount: number; size: number;
+  strength: 'WORKING' | 'GRACE' | 'STOPPED'; shortSince: string | null; wasFull: boolean; createdAt: string;
+}
+export interface TeamMember {
+  merchantId: string; teamId: string; name: string; publicRef: string;
+  status: 'PENDING' | 'APPROVED'; isOnline: boolean;
+}
+export type MyTeam =
+  | { role: 'SUPERVISOR'; rail: SupervisorRail; publicRef: string; teams: Team[]; members: TeamMember[] }
+  | { role: 'MEMBER'; publicRef: string; status: 'PENDING' | 'APPROVED'; team: Team }
+  | { role: 'NONE'; publicRef: string };

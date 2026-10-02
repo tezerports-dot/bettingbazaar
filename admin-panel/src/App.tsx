@@ -10,6 +10,7 @@ import { Dashboard } from './Pages/Dashboard';
 import { UsersList } from './Pages/Users/UsersList';
 import { FlaggedPlayers } from './Pages/Users/FlaggedPlayers';
 import { PhantomAgents } from './Pages/Users/PhantomAgents';
+import { TeamsManager } from './Pages/Teams/TeamsManager';
 import { MerchantsList } from './Pages/Merchants/MerchantsList';
 import { MerchantTokenOrders } from './Pages/Merchants/MerchantTokenOrders';
 import { LiveCycles } from './Pages/Cycles/LiveCycles';
@@ -256,6 +257,9 @@ const App: React.FC = () => {
         } />
         {/* Reading back who can place cosmetic bets. The grant is made from the
             Users list; this is the roster and the way to take it away. */}
+        <Route path="/teams" element={
+          <PermRoute permission="canManageTeams"><Layout><TeamsManager /></Layout></PermRoute>
+        } />
         <Route path="/users/phantom-agents" element={
           <PermRoute permission="canManagePhantomAgents"><Layout><PhantomAgents /></Layout></PermRoute>
         } />

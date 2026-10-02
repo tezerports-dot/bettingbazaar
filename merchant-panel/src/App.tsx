@@ -9,6 +9,7 @@ import Dashboard from './pages/Dashboard';
 import OrderManagement from './pages/OrderManagement';
 import CashLinks from './pages/CashLinks';
 import TokenSupply from './pages/TokenSupply';
+import TeamPage from './pages/TeamPage';
 import HistoryViews from './pages/HistoryViews';
 import ProfileSettings from './pages/ProfileSettings';
 import Layout from './components/Layout';
@@ -100,6 +101,7 @@ function AppRoutes() {
       <Route path={ROUTES.ORDERS} element={<ProtectedRoute><Shell><OrderManagement /></Shell></ProtectedRoute>} />
       <Route path={ROUTES.CASH_LINKS} element={<ProtectedRoute><Shell><CashLinks /></Shell></ProtectedRoute>} />
       <Route path={ROUTES.TOKEN_SUPPLY} element={<ProtectedRoute><Shell><TokenSupply /></Shell></ProtectedRoute>} />
+      <Route path={ROUTES.TEAM} element={<ProtectedRoute><Shell><TeamPage /></Shell></ProtectedRoute>} />
       <Route path={ROUTES.HISTORY} element={<ProtectedRoute><Shell><HistoryViews /></Shell></ProtectedRoute>} />
       <Route path={ROUTES.PROFILE} element={<ProtectedRoute><Shell><ProfileSettings /></Shell></ProtectedRoute>} />
       <Route path="*" element={<Navigate to={ROUTES.LOGIN} replace />} />

@@ -601,7 +601,7 @@ Owner answers, 2026-10-02 (two rounds; the second replaced the security deposit 
   a buy holds pool tokens; a sell holds none (it adds tokens when it completes).
 
 **Build order — each batch tested, committed, pushed and reported:**
-- **2a Teams.** `teams`, `team_members`, supervisor role + rail on the merchant;
+- **2a Teams — DONE 2026-10-02.** `teams`, `team_members`, supervisor role + rail on the merchant;
   caps (4 teams, 10 members, one team per member) enforced in the statements;
   admin designates supervisors and approves members; supervisor manages teams
   on the merchant panel; members see their team. No money, no orders.

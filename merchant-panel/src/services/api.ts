@@ -11,6 +11,8 @@ import {
   OutstandingCdmReceipt,
   AdminTokenOrder,
   AdminTokenQuote,
+  MyTeam,
+  Team,
 } from '../types';
 import { ENDPOINTS, ERROR_MESSAGES } from '../constants';
 
@@ -702,6 +704,32 @@ export const formatTime = (dateString: string | number): string => {
 // =======================================================================
 // EXPORT ALL API FUNCTIONS
 // =======================================================================
+
+// =======================================================================
+// SUPERVISORS AND TEAMS (redesign Step 2a)
+// =======================================================================
+
+export const getMyTeam = async (): Promise<MyTeam> => request<MyTeam>(ENDPOINTS.TEAM.MINE);
+
+export const createTeam = async (name: string): Promise<Team> =>
+  (await request<{ team: Team }>(ENDPOINTS.TEAM.CREATE, { method: 'POST', body: JSON.stringify({ name }) })).team;
+
+export const renameTeam = async (teamId: string, name: string): Promise<Team> =>
+  (await request<{ team: Team }>(ENDPOINTS.TEAM.RENAME(teamId), { method: 'PUT', body: JSON.stringify({ name }) })).team;
+
+export const deleteTeam = async (teamId: string): Promise<void> => {
+  await request(ENDPOINTS.TEAM.DELETE(teamId), { method: 'DELETE' });
+};
+
+/** By merchant ID or the public ref shown on their Profile. PENDING until an admin approves. */
+export const addTeamMember = async (teamId: string, merchantRef: string): Promise<string> =>
+  (await request<{ message: string }>(ENDPOINTS.TEAM.ADD_MEMBER(teamId), {
+    method: 'POST', body: JSON.stringify({ merchantRef }),
+  })).message;
+
+export const removeTeamMember = async (teamId: string, merchantId: string): Promise<void> => {
+  await request(ENDPOINTS.TEAM.REMOVE_MEMBER(teamId, merchantId), { method: 'DELETE' });
+};
 
 export const api = {
   // Auth

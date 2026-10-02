@@ -62,6 +62,7 @@ const NAV_GROUPS: MenuGroup[] = [
     { path: '/users/balance-adjust',icon: SlidersHorizontal,label: 'Balance Adjust', title: 'Balance Adjustment', sub: 'Manual credit / debit with mandatory audit note', permission: 'canAdjustBalances' },
     { path: '/users/flagged',       icon: Flag,             label: 'Flagged Players',title: 'Flagged Players',    sub: "A merchant disputed their payment — reason, proof, and the block decision", permission: 'canManageUsers' },
     { path: '/merchants',           icon: Store,            label: 'Merchants',      title: 'Merchants',          sub: 'P2P payment merchants, limits & availability', permission: 'canManageMerchants' },
+    { path: '/teams',               icon: Users,            label: 'Teams',          title: 'Supervisors & Teams', sub: 'Supervisors, their teams, and members waiting for approval', permission: 'canManageTeams' },
     { path: '/merchant-token-orders', icon: Coins,           label: 'Token Purchases',title: 'Merchant Token Purchases', sub: 'Merchants buying the float they trade with, paid in USDT', permission: 'canManageMerchantTokenOrders' },
     { path: '/users/phantom-agents',  icon: Ghost,           label: 'Phantom Agents', title: 'Phantom Agents',     sub: 'Who can place cosmetic bets, and on which boards', permission: 'canManagePhantomAgents' },
   ] },

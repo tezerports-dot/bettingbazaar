@@ -81,6 +81,16 @@ export const ENDPOINTS = {
   // before the request exists — the transaction id is required at creation, so
   // the merchant has to send the USDT first and needs the figure in advance.
   // The server owns the arithmetic; the panel never recomputes it (§5).
+  // Supervisors and teams (redesign Step 2a). Backend:
+  // backend/domains/team/team.merchant.routes.js.
+  TEAM: {
+    MINE:          '/api/merchant/team',
+    CREATE:        '/api/merchant/supervisor/teams',
+    RENAME:        (teamId: string) => `/api/merchant/supervisor/teams/${teamId}`,
+    DELETE:        (teamId: string) => `/api/merchant/supervisor/teams/${teamId}`,
+    ADD_MEMBER:    (teamId: string) => `/api/merchant/supervisor/teams/${teamId}/members`,
+    REMOVE_MEMBER: (teamId: string, merchantId: string) => `/api/merchant/supervisor/teams/${teamId}/members/${merchantId}`,
+  },
   TOKEN_SUPPLY: {
     LIST:   '/api/merchant/admin-token-orders',
     QUOTE:  '/api/merchant/admin-token-orders/quote',
@@ -159,6 +169,8 @@ export const ROUTES = {
   // Where a merchant buys the float they trade with. One request per day, and
   // an admin decides it.
   TOKEN_SUPPLY: '/token-supply',
+  // Every merchant: a supervisor manages teams here, a member sees theirs.
+  TEAM: '/team',
   PROFILE: '/profile',
 };
 
