@@ -106,10 +106,18 @@ export default async function run() {
         'could not stage the dispute case');
     } else {
       const orderId = made.body?.order?.orderId ?? made.body?.orderId;
-      await pgQuery(
-        `UPDATE order_states SET state = 'DISPUTED', merchant_id = $2,
-                dispute_raised_by = 'system', dispute_reason = 'e2e cross-panel'
-          WHERE order_id = $1`, [orderId, m.merchantId]);
+      // Reached through the routes a player uses, not a raw UPDATE to DISPUTED:
+      // only a PAYMENT dispute (one raised from PAID with a reference, or from a
+      // rejection) suspends anybody, and a row staged straight from ASSIGNED is
+      // one production cannot make (§32 S16). The one thing moved by hand is
+      // the clock: `paid_at` goes back past the player's ten-minute wait.
+      const utr = String(Date.now()).slice(-12).padStart(12, '6');
+      const paidRes = await POST(pT, `/api/payment/order/${orderId}/mark-paid`, { utrNumber: utr });
+      await pgQuery(`UPDATE order_states SET paid_at = now() - interval '11 minutes' WHERE order_id = $1`, [orderId]);
+      const raised = await POST(pT, `/api/payment/order/${orderId}/dispute`, { reason: 'e2e cross-panel: nothing credited' });
+      check(A, 'player', 'mark the buy paid, then dispute it after the wait', '200 then 200',
+        `${paidRes.status} then ${raised.status} ${raised.body?.message ?? ''}`,
+        paidRes.status === 200 && raised.status === 200);
 
       const res = await POST(aT, `/api/admin/dispute-orders/${orderId}/resolve`, {
         decision: 'RELEASE_TO_USER', resolution: 'e2e: released to the player',
