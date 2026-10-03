@@ -634,9 +634,8 @@ Owner answers, 2026-10-02 (two rounds; the second replaced the security deposit 
   a `within` step on the order transition so the hold commits with the move.
   `teamRoutingPg` 21 cases, M294–M304. Part 2 switches the order paths onto
   it; part 3 deletes what it replaces.
-  **Parts 2–3 IN PROGRESS (2026-10-02), saved unfinished on branch
-  `claude/busy-wright-cy111a-2c-wip`** — not on the PR branch, so #201 stays
-  green. Work moved from the Project thread to a plain session (owner: the
+  **Parts 2–3 DONE (2026-10-03), built on branch
+  `claude/busy-wright-cy111a-2c-wip` and fast-forwarded onto #201's branch.** Work moved from the Project thread to a plain session (owner: the
   Project's usage limit was reached; then the owner chose to stay in the
   Project with ONE FRESH THREAD PER STEP instead). What the branch holds:
   - DONE and green when last run: every order path switched onto routing and
@@ -651,11 +650,19 @@ Owner answers, 2026-10-02 (two rounds; the second replaced the security deposit 
     `paymentModeImmutabilityPg`). A settled sell refunded after the team spent
     its tokens is covered by the platform (`reverseSellFromPool({ coverShortfall })`,
     TOKEN_SUPPLY → USER_FLOAT, once, under the order lock).
-  - UNFINISHED — helpers were stopped mid-task, so RUN THE SUITES FIRST to see
-    where each stopped: the admin panel; the route suites for deposits,
-    disputes, withdrawals and merchant/player routes; the e2e/browser
-    harnesses (`backend/tests/e2e`, `backend/tests/browser`, including
-    `mutate.js`'s dynamic import of the deleted `depositEscrow`).
+  - FINISHED 2026-10-03: the admin panel (170 tests); the merchant, payment,
+    rejection-cap, player-payment-failure, platform-stats and privacy route
+    suites, moved onto real routed orders; the e2e scenarios s1–s8 (team
+    pools, Ready, pool requests and buybacks); the browser and live harnesses
+    (`mutate.js` no longer imports `depositEscrow`; `walletButtons.js` and
+    `test:wallet-buttons` deleted with the routes they pressed;
+    `operations.mjs` lists the 12 cron jobs `cronJobs.js` runs). Found on the
+    way: routing had stopped reading a member's "accept buys / accept sells"
+    switches, so a member who switched buys off kept being routed them. It is
+    a predicate in `routingCandidates` now (M329). Measured: `test:pg` on a
+    fresh database 124 files / 1504 passed; every gate; panels 228 / 170 / 89.
+    Still open: `mutate.js`'s two `admin/payment-control` dispute cases target
+    a screen that no longer exists, so they report NOT DRIVEN.
   - FIXED 2026-10-03 (c5f2d8a; `withdrawalResolutionPg`, M307–M310): the
     defect below. A stake is now returned through `returnWithdrawalStake`,
     which reads the ledger under the wallet lock, and the release and the
