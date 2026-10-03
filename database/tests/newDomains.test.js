@@ -9,7 +9,7 @@
  * expiries a late sweep leaves in force, and rows that say two things at once.
  */
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
-import { pgConfigured, pgQuery, applySchema, closePg } from '../client.js';
+import { pgConfigured, pgQuery, applySchema, closePg, withTransaction } from '../client.js';
 import * as markets from '../repositories/markets.js';
 import * as games from '../repositories/games.js';
 import * as content from '../repositories/content.js';
@@ -807,22 +807,86 @@ describePg('the domains written from scratch', () => {
       return rows[0].n;
     };
 
+    /**
+     * Two writers that are GENUINELY in flight together — established, not hoped for.
+     *
+     * ── Why `Promise.all` was not enough (§32 S19) ──────────────────────────
+     * These two cases fired both writers with `Promise.all` and asserted one
+     * winner. Whether the two transactions overlap in the DATABASE is a matter
+     * of milliseconds: when the second one's UPDATE takes its snapshot after
+     * the first has committed, it sees the first's new ACTIVE row, supersedes
+     * it and inserts the next version. That is two SEQUENTIAL edits, both
+     * correctly applied (v2 superseded by v3, one ACTIVE row) — and the suite
+     * reported it as a doubled policy. Measured on 2026-10-03: 5 of 300 edit
+     * races and 1 of 300 first-version races came out that way, and in EVERY
+     * one the earlier row was SUPERSEDED by the later writer, which is only
+     * possible if that writer's statement began after the earlier commit. No
+     * interleaving produced two ACTIVE rows or a duplicate version.
+     *
+     * So the contention is made here: `gate` opens a transaction that every
+     * writer must wait behind, both writers are started, and the gate is not
+     * released until the database reports BOTH waiting on a lock. Only then is
+     * "exactly one wins" a claim about two writers racing.
+     */
+    const queuedWriters = async () => {
+      const { rows } = await pgQuery(
+        `SELECT count(*)::int AS n FROM pg_stat_activity
+          WHERE datname = current_database() AND pid <> pg_backend_pid()
+            AND wait_event_type = 'Lock' AND query ILIKE '%deposit_policies%'`,
+      );
+      return rows[0].n;
+    };
+    const raceBehind = async (gate, writers) => {
+      let held; const heldNow = new Promise((resolve) => { held = resolve; });
+      let release; const released = new Promise((resolve) => { release = resolve; });
+      const holder = withTransaction(async (client) => {
+        await gate(client);
+        held();
+        await released;
+        // Nothing the gate wrote survives it: a rollback, never a commit.
+        throw Object.assign(new Error('gate released'), { gateReleased: true });
+      }).catch((e) => { if (!e.gateReleased) throw e; });
+      await heldNow;
+      const racing = Promise.all(writers.map((w) => w()));
+      const deadline = Date.now() + 10_000;
+      let queued = await queuedWriters();
+      while (queued < writers.length && Date.now() < deadline) {
+        await new Promise((resolve) => { setTimeout(resolve, 20); });
+        queued = await queuedWriters();
+      }
+      release();
+      await holder;
+      expect(queued, 'the writers never queued behind the gate — this would not be a race').toBe(writers.length);
+      return racing;
+    };
+
     it('gives the FIRST version of a currency to exactly one of two writers', async () => {
       const currency = `${CUR()}A`;
       // There is no ACTIVE row yet, so there is nothing for the supersede to
       // lock and both writers compute version 1. The unique constraint is what
       // decides — one gets the row, the other a clean refusal it can retry.
       // Never a throw, and never two rows governing deposits.
-      const results = await Promise.all([
-        depositPolicy.createPolicyVersion({
-          currency, depositAllocationPercent: 90, reserveAllocationPercent: 10,
-          justification: 'race a', changedBy: 'admin-1',
-        }),
-        depositPolicy.createPolicyVersion({
-          currency, depositAllocationPercent: 80, reserveAllocationPercent: 20,
-          justification: 'race b', changedBy: 'admin-2',
-        }),
-      ]);
+      //
+      // The gate is an UNCOMMITTED version 1 of this currency: both writers
+      // compute version 1 too (they cannot see it) and wait on the unique index
+      // for its transaction. It is rolled back, so it never existed — and the
+      // two writers then meet each other on the same key.
+      const results = await raceBehind(
+        (client) => client.query(
+          `INSERT INTO deposit_policies (currency, version, status, deposit_allocation_percent,
+             reserve_allocation_percent, justification)
+           VALUES ($1, 1, 'PENDING_APPROVAL', 50, 50, 'race gate')`, [currency]),
+        [
+          () => depositPolicy.createPolicyVersion({
+            currency, depositAllocationPercent: 90, reserveAllocationPercent: 10,
+            justification: 'race a', changedBy: 'admin-1',
+          }),
+          () => depositPolicy.createPolicyVersion({
+            currency, depositAllocationPercent: 80, reserveAllocationPercent: 20,
+            justification: 'race b', changedBy: 'admin-2',
+          }),
+        ],
+      );
       expect(results.filter((r) => r.ok)).toHaveLength(1);
       expect(results.filter((r) => !r.ok).map((r) => r.reason)).toEqual(['CONCURRENT_CHANGE']);
       expect(await activeCount(currency)).toBe(1);
@@ -839,16 +903,23 @@ describePg('the domains written from scratch', () => {
       // nothing and holds no lock — so it is the one-ACTIVE-row index that
       // decides. What matters is what a caller can observe: one applied edit,
       // one retryable refusal, and one policy governing deposits.
-      const results = await Promise.all([
-        depositPolicy.createPolicyVersion({
-          currency, depositAllocationPercent: 70, reserveAllocationPercent: 30,
-          justification: 'race a', changedBy: 'admin-1',
-        }),
-        depositPolicy.createPolicyVersion({
-          currency, depositAllocationPercent: 60, reserveAllocationPercent: 40,
-          justification: 'race b', changedBy: 'admin-2',
-        }),
-      ]);
+      //
+      // The gate holds the live row, so both supersedes are queued on it with
+      // their snapshots already taken; neither can see the other's new row.
+      const results = await raceBehind(
+        (client) => client.query(
+          "SELECT 1 FROM deposit_policies WHERE currency = $1 AND status = 'ACTIVE' FOR UPDATE", [currency]),
+        [
+          () => depositPolicy.createPolicyVersion({
+            currency, depositAllocationPercent: 70, reserveAllocationPercent: 30,
+            justification: 'race a', changedBy: 'admin-1',
+          }),
+          () => depositPolicy.createPolicyVersion({
+            currency, depositAllocationPercent: 60, reserveAllocationPercent: 40,
+            justification: 'race b', changedBy: 'admin-2',
+          }),
+        ],
+      );
       expect(results.filter((r) => r.ok)).toHaveLength(1);
       expect(results.filter((r) => !r.ok).map((r) => r.reason)).toEqual(['CONCURRENT_CHANGE']);
       expect(await activeCount(currency)).toBe(1);

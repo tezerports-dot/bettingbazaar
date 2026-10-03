@@ -16,8 +16,16 @@
  * CLAUDE.md: do not mock the boundary that carries money. A suite that mocked
  * the settlement writer and asserted on its arguments once reported settlement
  * working while the real function threw on every call. So the router, the auth
- * middleware, the wallet authority, the merchant wallet and the ledger are all
- * the real ones.
+ * middleware, the wallet authority, the team pool and the ledger are all the
+ * real ones.
+ *
+ * ── Every order is one the platform can produce (§32 S16, 2c) ───────────────
+ * An order reaches a member by being ROUTED to them (PROJECT_STATUS §3.10):
+ * so the orders below are created queued with their split, offered by
+ * `tryAssignMerchant` to a working UPI team — which HOLDS the buy's tokens in
+ * the team's pool — and marked paid by the player through `markOrderPaid`.
+ * A queued order is one nobody was free for. A player has one open buy at a
+ * time (BUY_ALREADY_OPEN), so a history of two holds one the player cancelled.
  *
  * ── What is deliberately NOT driven end-to-end ──────────────────────────────
  * `POST /deposit/create` and `/withdrawal/create` delegate to
@@ -28,72 +36,96 @@
  * responsibility and short-circuits before the handler runs.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { pgConfigured, applySchema, closePg } from '#db/client.js';
-import { getBalancesPaise } from '#db/repositories/wallets.core.js';
+import { pgConfigured, applySchema, closePg, withTransaction } from '#db/client.js';
 import { createOrderRecord, getOrderRecord, setOrderFields, listOrderTransitions } from '#db/repositories/orders.record.js';
-import { getEvent } from '#db/repositories/ledger.core.js';
-import { claimUtr, getUtr } from '#db/repositories/utr.js';
-import { getMerchantTokenBalance } from '../../domains/merchant/merchantWallet.service.js';
-import { mountRouter, actor, merchantActor, as, request } from './_harness.js';
+import { tryAssignMerchant, markOrderPaid } from '../../domains/payment/paymentProcessing.service.js';
+import { teamFixture } from '../teamFixture.js';
+import { mountRouter, actor, as, request } from './_harness.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
-const R = (paise) => paise / 100;
+
+// Above the cash ceiling: a UPI_BANK buy, whose reference is required up front.
+const TOKENS = 20_000;
 
 describePg('payment routes', () => {
-  let app; let admin;
+  let app; let admin; let team;
   const RUN = Math.random().toString(36).slice(2, 8);
   let seq = 0;
+  const teams = teamFixture();
+  const players = [];
+
+  /** A player whose orders this suite removes afterwards (trap 10). */
+  const player = async () => {
+    const who = await actor({});
+    players.push(who.userId);
+    return who;
+  };
 
   beforeAll(async () => {
     await applySchema();
     const mod = await import('../../domains/payment/payment.routes.js');
     app = mountRouter(mod.default);
     admin = await actor({ isAdmin: true, roles: ['admin'] });
-  }, 60_000);
+    // Ten members at three open orders each is room for thirty, and a pool
+    // that covers every buy this suite leaves open.
+    team = await teams.workingTeam({ rail: 'UPI_BANK', poolTokens: 600_000 });
+  }, 120_000);
 
-  afterAll(async () => { await closePg(); });
+  afterAll(async () => {
+    await withTransaction(async (c) => {
+      await c.query('SET LOCAL session_replication_role = replica');
+      await c.query(
+        'DELETE FROM order_transitions WHERE order_id IN (SELECT order_id FROM order_states WHERE user_id = ANY($1))',
+        [players]);
+      await c.query('DELETE FROM order_states WHERE user_id = ANY($1)', [players]);
+    });
+    await teams.cleanup();
+    await closePg();
+  });
+
+  /** A reference nothing else in the run has claimed: twelve digits, a bank UTR. */
+  const nextUtr = () => String(520000000000 + (seq * 7919) + Math.floor(Math.random() * 7000));
 
   /**
-   * A deposit order sitting where a confirm can reach it.
+   * A deposit in a state PRODUCTION can actually produce, made the way it
+   * makes one:
    *
-   * `depositAllocation` + `reserveAllocation` must add up to `tokenAmount` or
-   * `depositCreditSplit` refuses the split and credits the whole amount to the
-   * betting pocket — which is the safe fallback, not the case under test.
+   *   PENDING_QUEUE  created, and offered while nobody was free
+   *   ASSIGNED       created, and routed to a member — the pool holds its tokens
+   *   PAID           routed, and the player marked it paid with their reference,
+   *                  which the registry claimed against it (§27). `mark-paid`
+   *                  stamps `paidAt` now; `paidMinutesAgo` moves that clock
+   *                  back, for the cases about a dispute after the wait.
+   *
+   * PAID orders always carry the player's reference, because `mark-paid` is the
+   * only way a UPI buy reaches PAID and it requires one. This fixture used to
+   * write the state and the merchant onto the row directly, which is how it once
+   * staged a PAID deposit carrying no reference — a row the platform cannot
+   * create — and both confirm routes happily completed it because only one of
+   * them was checking.
    */
-  /**
-   * A deposit in a state PRODUCTION can actually produce.
-   *
-   * PAID orders get a payment reference by default, because that is the only
-   * way an order reaches PAID: `mark-paid` is the player's route, it requires
-   * the reference, and it claims it against the order in `utr_registry` (§27).
-   * This fixture used to leave it null, which staged a PAID deposit carrying
-   * no reference — a row the platform cannot create — and both confirm routes
-   * happily completed it because only one of them was checking.
-   *
-   * Pass `utrNumber: null` deliberately to test the refusal.
-   */
-  const depositOrder = async ({
-    state = 'PAID', tokens = 500, betting = 400, reserve = 100,
-    owner = null, merchant = null, extra = {},
-    utrNumber = undefined,
-  } = {}) => {
+  const depositOrder = async ({ state = 'PAID', owner = null, extra = {}, paidMinutesAgo = 0 } = {}) => {
     seq += 1;
-    const who = owner || await actor({});
-    const m = merchant || await merchantActor({ tokensRupees: 10_000 });
+    const who = owner || await player();
+    if (owner) players.push(owner.userId);
     const orderId = `PAY-${RUN}-${seq}`;
-    // Unique per order: the registry holds one reference to one order, for good.
-    const reference = utrNumber === undefined
-      ? `UTRPAY${RUN}${String(seq).padStart(6, '0')}`.toUpperCase()
-      : utrNumber;
-    await createOrderRecord({
+    const order = await createOrderRecord({
       orderId, userId: who.userId, type: 'DEPOSIT',
-      tokenAmountRupees: tokens, fiatAmountRupees: tokens, state,
-      merchantId: m.merchantId,
-      depositAllocation: betting, reserveAllocation: reserve,
-      ...(state === 'PAID' && reference ? { utrNumber: reference } : {}),
+      tokenAmountRupees: TOKENS, fiatAmountRupees: TOKENS,
+      depositAllocation: 16_000, reserveAllocation: 4_000,
       ...extra,
     });
-    return { orderId, who, merchant: m, utrNumber: reference };
+    const queued = state === 'PENDING_QUEUE';
+    await teams.onlyOnline(queued ? [] : team.members);
+    expect(await tryAssignMerchant(order), `the buy was ${queued ? '' : 'not '}routed`).toBe(!queued);
+    let utrNumber = null;
+    if (state === 'PAID') {
+      utrNumber = nextUtr();
+      expect((await markOrderPaid(who.userId, orderId, utrNumber)).status).toBe('PAID');
+      if (paidMinutesAgo) await setOrderFields(orderId, { paidAt: new Date(Date.now() - paidMinutesAgo * 60 * 1000) });
+    }
+    expect((await getOrderRecord(orderId)).state).toBe(state);
+    return { orderId, who, utrNumber };
   };
 
   // ── The gate chain in front of the create routes ──────────────────────────
@@ -129,11 +161,11 @@ describePg('payment routes', () => {
    * reason (nothing to withdraw) — never for an identity one.
    */
   it('lets an ordinary player deposit, and refuses a withdrawal only for money', async () => {
-    const player = await actor({});
-    const deposit = await as(app, player).post('/deposit/create').send({ tokenAmount: 500 });
+    const who = await player();
+    const deposit = await as(app, who).post('/deposit/create').send({ tokenAmount: 500 });
     expect(deposit.status, `deposit refused: ${JSON.stringify(deposit.body)}`).toBe(200);
 
-    const withdrawal = await as(app, player).post('/withdrawal/create').send({ tokenAmount: 500 });
+    const withdrawal = await as(app, who).post('/withdrawal/create').send({ tokenAmount: 500 });
     expect(withdrawal.status, JSON.stringify(withdrawal.body)).not.toBe(403);
     expect(JSON.stringify(withdrawal.body)).not.toMatch(/kyc|aadhaar/i);
   });
@@ -151,12 +183,12 @@ describePg('payment routes', () => {
    * while both its siblings carried one.
    */
   it('paces new purchases per minute, and it is the limiter that says so', async () => {
-    const player = await actor({});
+    const who = await player();
 
-    const first = await as(app, player).post('/deposit/create').send({ tokenAmount: 500 });
+    const first = await as(app, who).post('/deposit/create').send({ tokenAmount: 500 });
     expect(first.status).toBe(200);
 
-    const second = await as(app, player).post('/deposit/create').send({ tokenAmount: 500 });
+    const second = await as(app, who).post('/deposit/create').send({ tokenAmount: 500 });
     expect(second.status, 'the second create inside a minute was not paced').toBe(429);
   });
 
@@ -170,17 +202,13 @@ describePg('payment routes', () => {
     // the handler, so an id nobody owns is refused as 404 before the body is
     // ever looked at — which is the right order: a caller who may not see the
     // order gets no feedback about what its body should have contained.
-    const player = await actor({});
-    const merchant = await merchantActor({ tokensRupees: 10_000 });
-    const orderId = `mpv-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-    await createOrderRecord({
-      orderId, userId: player.userId, type: 'DEPOSIT',
-      tokenAmountRupees: 500, fiatAmountRupees: 500,
-      state: 'ASSIGNED', merchantId: merchant.merchantId,
-    });
+    //
+    // A UPI buy: on the CASH rail an empty reference is the Paid TAP, which
+    // reaches PAID with the reference to follow (cashPaidThenReferencePg).
+    const { orderId, who } = await depositOrder({ state: 'ASSIGNED' });
 
     for (const body of [{}, { utrNumber: '   ' }, { utrNumber: null }]) {
-      const res = await as(app, player).post(`/order/${orderId}/mark-paid`).send(body);
+      const res = await as(app, who).post(`/order/${orderId}/mark-paid`).send(body);
       expect(res.status, `accepted ${JSON.stringify(body)}`).toBe(400);
       expect(res.body.message).toMatch(/utrNumber/i);
     }
@@ -193,19 +221,12 @@ describePg('payment routes', () => {
     // This is the assertion that the flow actually COMPLETES without one, which
     // a validation test cannot show — the route used to 400 on the missing
     // proofFileKey before it ever reached the order.
-    const player = await actor({});
-    const merchant = await merchantActor({ tokensRupees: 10_000 });
-    const orderId = `mp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-    await createOrderRecord({
-      orderId, userId: player.userId, type: 'DEPOSIT',
-      tokenAmountRupees: 500, fiatAmountRupees: 500,
-      state: 'ASSIGNED', merchantId: merchant.merchantId,
-    });
+    const { orderId, who } = await depositOrder({ state: 'ASSIGNED' });
 
     // Unique per run: `utr_registry` is permanent, so a fixed reference passes
     // once and 409s on every later run against the same database.
     const utrNumber = `UTR${Date.now().toString(36).toUpperCase()}${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
-    const res = await as(app, player).post(`/order/${orderId}/mark-paid`).send({ utrNumber });
+    const res = await as(app, who).post(`/order/${orderId}/mark-paid`).send({ utrNumber });
 
     expect(res.status).toBe(200);
     const stored = await getOrderRecord(orderId);
@@ -222,17 +243,10 @@ describePg('payment routes', () => {
     // duplicate gate does not either — the SAME reference typed two ways would
     // claim two orders. Normalising is what makes the registry's uniqueness
     // mean anything.
-    const player = await actor({});
-    const merchant = await merchantActor({ tokensRupees: 10_000 });
-    const orderId = `mpn-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-    await createOrderRecord({
-      orderId, userId: player.userId, type: 'DEPOSIT',
-      tokenAmountRupees: 500, fiatAmountRupees: 500,
-      state: 'ASSIGNED', merchantId: merchant.merchantId,
-    });
+    const { orderId, who } = await depositOrder({ state: 'ASSIGNED' });
 
     const core = `utrn${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-    const res = await as(app, player).post(`/order/${orderId}/mark-paid`)
+    const res = await as(app, who).post(`/order/${orderId}/mark-paid`)
       .send({ utrNumber: ` ${core.slice(0, 6)} ${core.slice(6)} ` });
 
     expect(res.status).toBe(200);
@@ -243,16 +257,9 @@ describePg('payment routes', () => {
     // Seven characters padded past twelve with spaces is not a twelve-character
     // reference. Checking the raw string would admit it. The length gate runs
     // after the order is loaded, so this needs a real one.
-    const player = await actor({});
-    const merchant = await merchantActor({ tokensRupees: 10_000 });
-    const orderId = `mpl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-    await createOrderRecord({
-      orderId, userId: player.userId, type: 'DEPOSIT',
-      tokenAmountRupees: 500, fiatAmountRupees: 500,
-      state: 'ASSIGNED', merchantId: merchant.merchantId,
-    });
+    const { orderId, who } = await depositOrder({ state: 'ASSIGNED' });
 
-    const res = await as(app, player).post(`/order/${orderId}/mark-paid`)
+    const res = await as(app, who).post(`/order/${orderId}/mark-paid`)
       .send({ utrNumber: 'A B C D E F G' });
     expect(res.status).toBe(400);
     expect(res.body.message).toMatch(/12 characters/i);
@@ -262,25 +269,17 @@ describePg('payment routes', () => {
   it('still refuses a UTR already spent on another order', async () => {
     // Dropping the screenshot must not weaken the one gate that mattered: the
     // reference is claimed in a single statement, so it cannot pay twice.
-    const player = await actor({});
-    const merchant = await merchantActor({ tokensRupees: 10_000 });
+    // Two players: one player holds one open buy at a time (BUY_ALREADY_OPEN),
+    // and a reference is refused on ANY other order, not only the same
+    // player's.
     const utrNumber = `UTRDUP${Date.now().toString(36).toUpperCase()}${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
-    const mk = async (suffix) => {
-      const orderId = `mpd-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}-${suffix}`;
-      await createOrderRecord({
-        orderId, userId: player.userId, type: 'DEPOSIT',
-        tokenAmountRupees: 500, fiatAmountRupees: 500,
-        state: 'ASSIGNED', merchantId: merchant.merchantId,
-      });
-      return orderId;
-    };
-    const first = await mk('a');
-    const second = await mk('b');
+    const first = await depositOrder({ state: 'ASSIGNED' });
+    const second = await depositOrder({ state: 'ASSIGNED' });
 
-    expect((await as(app, player).post(`/order/${first}/mark-paid`).send({ utrNumber })).status).toBe(200);
-    const dup = await as(app, player).post(`/order/${second}/mark-paid`).send({ utrNumber });
+    expect((await as(app, first.who).post(`/order/${first.orderId}/mark-paid`).send({ utrNumber })).status).toBe(200);
+    const dup = await as(app, second.who).post(`/order/${second.orderId}/mark-paid`).send({ utrNumber });
     expect(dup.status).toBe(409);
-    expect((await getOrderRecord(second)).status).not.toBe('PAID');
+    expect((await getOrderRecord(second.orderId)).status).not.toBe('PAID');
   });
 
   // ── Confirming a deposit ──────────────────────────────────────────────────
@@ -292,6 +291,15 @@ describePg('payment routes', () => {
   // route merchants use: merchantConfirmMoneyPg.test.js.
 
   // ── The player's own history ──────────────────────────────────────────────
+  /** A buy nobody was free for, which the player then cancelled themselves. */
+  const cancelledOrder = async (who) => {
+    const o = await depositOrder({ owner: who, state: 'PENDING_QUEUE' });
+    const res = await as(app, who).post('/order/cancel').send({ orderId: o.orderId });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect((await getOrderRecord(o.orderId)).state).toBe('CANCELLED');
+    return o;
+  };
+
   it('shows a player only their OWN orders', async () => {
     const mine = await depositOrder();
     const theirs = await depositOrder();
@@ -306,8 +314,8 @@ describePg('payment routes', () => {
     // `find()` plus `countDocuments()` are two reads of a table that accepts an
     // order between them, so a player watching their own history saw a footer
     // that disagreed with the rows above it.
-    const who = await actor({});
-    await depositOrder({ owner: who });
+    const who = await player();
+    await cancelledOrder(who);
     await depositOrder({ owner: who });
     const res = await as(app, who).get('/orders?limit=1');
     expect(res.body.orders).toHaveLength(1);
@@ -315,22 +323,22 @@ describePg('payment routes', () => {
   });
 
   it('filters the history by status and by type', async () => {
-    const who = await actor({});
+    const who = await player();
+    const cancelled = await cancelledOrder(who);
     const paid = await depositOrder({ owner: who, state: 'PAID' });
-    const queued = await depositOrder({ owner: who, state: 'PENDING_QUEUE' });
 
     const byState = await as(app, who).get('/orders?status=PAID&limit=100');
     expect(byState.body.orders.map((o) => o.orderId)).toEqual([paid.orderId]);
+    const other = await as(app, who).get('/orders?status=CANCELLED&limit=100');
+    expect(other.body.orders.map((o) => o.orderId)).toEqual([cancelled.orderId]);
 
     const byType = await as(app, who).get('/orders?type=WITHDRAWAL&limit=100');
     expect(byType.body.orders).toHaveLength(0);
     expect(byType.body.pagination.total).toBe(0);
-
-    expect(queued.orderId).toBeTruthy();
   });
 
   it('clamps an absurd page size rather than serving it', async () => {
-    const who = await actor({});
+    const who = await player();
     await depositOrder({ owner: who });
     const res = await as(app, who).get('/orders?limit=100000');
     expect(res.body.pagination.limit).toBe(100);
@@ -341,7 +349,7 @@ describePg('payment routes', () => {
     // A distinguishable 404-vs-403 tells someone probing ids which ones are
     // real. Every read of an order they do not own answers the same way.
     const { orderId } = await depositOrder();
-    const stranger = await actor({});
+    const stranger = await player();
     for (const path of [`/order/${orderId}`, `/order/${orderId}/status`]) {
       const res = await as(app, stranger).get(path);
       expect(res.status, `${path} distinguished a real id from a fake one`).toBe(404);
@@ -371,7 +379,12 @@ describePg('payment routes', () => {
     // often — every few seconds while a player is on the payment screen — and
     // it used to carry the snapshot WHOLE: the merchant's UPI handle, their QR
     // image, their bank account number, IFSC and the name on it.
-    const { orderId, who } = await depositOrder({ extra: { userPhone: '9998887777' } });
+    //
+    // The probe is a routed order, so the row really carries the merchant's
+    // snapshot the poll used to leak. (It used to plant a player phone number
+    // on a deposit; no buy carries one — only a sell does.)
+    const { orderId, who } = await depositOrder();
+    expect((await getOrderRecord(orderId)).merchantSnapshot, 'nothing on the row to leak').toBeTruthy();
     const res = await as(app, who).get(`/order/${orderId}/status`);
     expect(res.status).toBe(200);
     expect(Object.keys(res.body).sort()).toEqual(
@@ -379,6 +392,14 @@ describePg('payment routes', () => {
     );
   });
 
+  // ── The proof screenshot: a consumer with no producer (§32 S4) ────────────
+  // These two plant `proofScreenshot` at creation because nothing on the
+  // platform writes one any more — proof COLLECTION was removed, and the
+  // column, the poll's expiry and the retention job stayed "for orders that
+  // already carry an image" (paymentProcessing.service.js), of which there
+  // are none (§0.0). The rows are therefore not ones production can make.
+  // Left as they were, not deleted: whether the column goes is a decision
+  // outside Step 2c, and it is reported rather than taken here.
   it('HIDES a payment screenshot once it has expired', async () => {
     const { orderId, who } = await depositOrder({ extra: { proofScreenshot: 'https://cdn/proof.png' } });
     await setOrderFields(orderId, { proofExpiresAt: new Date(Date.now() - 1000) });
@@ -404,7 +425,9 @@ describePg('payment routes', () => {
 
   // ── Disputes ──────────────────────────────────────────────────────────────
   it('requires a reason to raise a dispute', async () => {
-    const { orderId, who } = await depositOrder();
+    // Past the ten-minute wait, so the missing reason is the only thing that
+    // can refuse it.
+    const { orderId, who } = await depositOrder({ paidMinutesAgo: 11 });
     for (const body of [{}, { reason: '' }, { reason: '   ' }]) {
       const res = await as(app, who).post(`/order/${orderId}/dispute`).send(body);
       expect(res.status, `accepted ${JSON.stringify(body)}`).toBe(400);
@@ -482,7 +505,7 @@ describePg('payment routes', () => {
   });
 
   it('requires a reason — the admin queue reads it', async () => {
-    const { orderId, who } = await depositOrder({ state: 'PAID' });
+    const { orderId, who } = await depositOrder({ state: 'PAID', paidMinutesAgo: 11 });
     for (const reason of [undefined, '', '   ']) {
       const res = await as(app, who).post(`/order/${orderId}/dispute`).send({ reason });
       expect(res.status, `accepted reason=${JSON.stringify(reason)}`).toBe(400);
@@ -498,7 +521,8 @@ describePg('payment routes', () => {
     // It WAS evadable: `POST /order/:id/status` raised the same dispute with no
     // wait at all. That route is gone, and this asserts the rule against every
     // route the player has, so a third path cannot quietly reintroduce the hole.
-    const { orderId, who } = await depositOrder({ state: 'PAID', extra: { paidAt: new Date() } });
+    // `mark-paid` stamps paidAt now: a freshly PAID order.
+    const { orderId, who } = await depositOrder({ state: 'PAID' });
 
     const res = await as(app, who).post(`/order/${orderId}/dispute`).send({ reason: 'nothing arrived' });
     expect(res.status).toBe(400);
@@ -517,7 +541,7 @@ describePg('payment routes', () => {
   it('truncates a runaway dispute reason rather than storing it whole', async () => {
     // `dispute_reason` is TEXT, so this does not error — it stores whatever it
     // is sent, and an admin's queue renders it.
-    const { orderId, who } = await depositOrder({ state: 'PAID' });
+    const { orderId, who } = await depositOrder({ state: 'PAID', paidMinutesAgo: 11 });
     const res = await as(app, who).post(`/order/${orderId}/dispute`).send({ reason: 'x'.repeat(5000) });
     expect(res.status, res.body.message).toBe(200);
     expect((await getOrderRecord(orderId)).disputeReason).toHaveLength(1000);

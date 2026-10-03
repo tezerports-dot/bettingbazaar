@@ -62,6 +62,14 @@ export function routingSettings(cfg) {
 /**
  * The eligible members for an order, best first. A READ — the caller takes a
  * candidate only through `assignToTeam`, which re-checks under a lock.
+ *
+ * A member's own two switches — "Accept deposit orders" / "Accept withdrawal
+ * orders", `merchants.accepts_deposits` / `accepts_withdrawals`, written by
+ * PUT /api/merchant/preferences and the admin's capabilities route — are read
+ * HERE, per direction. They are the only consumer: 2c deleted the assignment
+ * query and the accept check that used to read them, and for that window a
+ * member who switched buys off was told it saved and kept being handed buys
+ * (§3, §32 S5).
  */
 export async function routingCandidates(order, { cap, barredMerchantIds = [], limit = 20 }) {
   const rail = railOf(order);
@@ -104,6 +112,7 @@ export async function routingCandidates(order, { cap, barredMerchantIds = [], li
         AND m.merchant_approval_status = 'APPROVED'
         AND m.is_online
         AND m.assignment_paused_at IS NULL
+        AND (CASE WHEN $3 THEN m.accepts_deposits ELSE m.accepts_withdrawals END)
         AND COALESCE(o.total, 0) < $2
         AND (NOT $3 OR COALESCE(p.available_paise, 0) >= $4)
         AND (NOT ($3 AND $1 = 'CASH') OR m.cash_ready)

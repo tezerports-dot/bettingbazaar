@@ -2114,6 +2114,14 @@ const MUTATIONS = [
     from: "  const rate = config?.usdtPricing?.merchantAdminBuyInr;\n  return isUsableRate(rate) && isSaneUsdtRate(rate) ? Number(rate) : null;",
     to: "  const rate = config?.usdtPricing?.merchantAdminBuyInr;\n  return isUsableRate(rate) ? Number(rate) : null;",
   },
+  // ── A member's own switches reach the router (2c) ────────────────────────
+  {
+    id: 'M329', file: 'database/repositories/teamRouting.js', config: PG,
+    test: 'backend/tests/routes/merchantPanelRoutes.test.js',
+    why: 'a member who switched "Accept deposit orders" off is told it saved and keeps being handed buys — the preference has no consumer',
+    from: "        AND (CASE WHEN $3 THEN m.accepts_deposits ELSE m.accepts_withdrawals END)\n",
+    to: "\n",
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that
