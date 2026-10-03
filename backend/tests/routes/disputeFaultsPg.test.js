@@ -33,7 +33,9 @@ import { getMerchant } from '#db/repositories/merchants.js';
 import { recordDisputeFault, HIGH_RISK_LOSSES } from '#db/repositories/disputeFaults.js';
 import { tryAssignMerchant, markOrderPaid, createWithdrawalOrder } from '../../domains/payment/paymentProcessing.service.js';
 import { creditWinnings } from '../../domains/wallet/walletAuthority.service.js';
-import { partyAtFault } from '../../domains/disputes/disputeOutcome.service.js';
+import { partyAtFault, recordDisputeLoser } from '../../domains/disputes/disputeOutcome.service.js';
+import { cancelOrder } from '../../domains/payment/orderLifecycle.service.js';
+import { releaseBuyHold } from '#db/repositories/teamPools.js';
 import { teamFixture } from '../teamFixture.js';
 import { mountRouter, actor, merchantActor, as } from './_harness.js';
 
@@ -220,6 +222,25 @@ describePg('a decided dispute suspends whoever was wrong', () => {
     expect((await resolve(orderId, 'RELEASE_TO_MERCHANT')).status).toBe(200);
     expect(await playerState(player.userId)).toMatchObject({ blocked: false, lost: 0 });
     expect(await memberState(member.merchantId)).toMatchObject({ status: 'ACTIVE', lost: 0 });
+  });
+
+  it('an order read AFTER its decision is not a dispute, though its history says it was one', async () => {
+    // The snapshot must be the order as it stood when the decision was taken.
+    // A decided order keeps its dispute fields and its DISPUTED transition, so
+    // only its status says this decision was not taken on a dispute: a caller
+    // passing the order read after deciding would otherwise suspend somebody a
+    // second time, for a decision that was never theirs to count.
+    const { member, player, orderId } = await disputedBuy();
+    expect((await cancelOrder(orderId, { expectFrom: ['DISPUTED'], reason: 'test: decided elsewhere' })).ok).toBe(true);
+    await releaseBuyHold(orderId, { reason: 'test: decided elsewhere' });
+    const after = await getOrderRecord(orderId);
+    expect(after).toMatchObject({ status: 'CANCELLED', disputeRaisedBy: 'user' });
+    expect(await recordDisputeLoser(after, { completed: false, decision: 'CANCEL_ORDER' }))
+      .toMatchObject({ ok: false, reason: 'not_a_dispute' });
+    expect(await playerState(player.userId)).toMatchObject({ blocked: false, lost: 0 });
+    expect(await memberState(member.merchantId)).toMatchObject({ status: 'ACTIVE', lost: 0 });
+    const { rows } = await pgQuery('SELECT 1 FROM dispute_faults WHERE order_id = $1', [orderId]);
+    expect(rows).toHaveLength(0);
   });
 
   // ── Once per dispute ──────────────────────────────────────────────────────

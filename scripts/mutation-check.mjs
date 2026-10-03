@@ -2027,8 +2027,8 @@ const MUTATIONS = [
     id: 'M318', file: 'backend/domains/disputes/disputeOutcome.service.js', config: PG,
     test: 'backend/tests/routes/disputeFaultsPg.test.js',
     why: 'the loser is the wrong party: a buy decided for the player suspends the player',
-    from: "  if (order.type === 'DEPOSIT') return completed ? FAULT_PARTIES.MERCHANT : FAULT_PARTIES.PLAYER;",
-    to: "  if (order.type === 'DEPOSIT') return completed ? FAULT_PARTIES.PLAYER : FAULT_PARTIES.MERCHANT;",
+    from: "    if (!completed) return FAULT_PARTIES.PLAYER;",
+    to: "    if (!completed) return FAULT_PARTIES.MERCHANT;",
   },
   {
     id: 'M319', file: 'backend/domains/disputes/disputeOutcome.service.js', config: PG,
