@@ -33,6 +33,7 @@ import { getMerchant } from '#db/repositories/merchants.js';
 import { recordDisputeFault, HIGH_RISK_LOSSES } from '#db/repositories/disputeFaults.js';
 import { tryAssignMerchant, markOrderPaid, createWithdrawalOrder } from '../../domains/payment/paymentProcessing.service.js';
 import { creditWinnings } from '../../domains/wallet/walletAuthority.service.js';
+import { partyAtFault } from '../../domains/disputes/disputeOutcome.service.js';
 import { teamFixture } from '../teamFixture.js';
 import { mountRouter, actor, merchantActor, as } from './_harness.js';
 
@@ -329,6 +330,104 @@ describePg('a decided dispute suspends whoever was wrong', () => {
   });
 
   // ── A record naming nobody is worse than none ─────────────────────────────
+  // ── Only a dispute about a payment suspends anybody (security review,
+  //    2026-10-03, F2) ──────────────────────────────────────────────────────
+  /** A buy the player marked paid with a reference, waiting for the member. */
+  const paidBuy = async () => {
+    const member = await merchantActor();
+    await teams.workingTeam({ rail: 'UPI_BANK', poolTokens: 50_000, include: [member.merchantId] });
+    const player = await actor({});
+    const orderId = oid(); made.push(orderId);
+    const order = await createOrderRecord({
+      orderId, userId: player.userId, type: 'DEPOSIT', tokenAmountRupees: TOKENS, fiatAmountRupees: TOKENS,
+      depositAllocation: TOKENS, reserveAllocation: 0,
+    });
+    expect(await tryAssignMerchant(order)).toBe(true);
+    expect((await markOrderPaid(player.userId, orderId, nextUtr())).status).toBe('PAID');
+    return { member, player, orderId };
+  };
+  const listed = async (orderId) => {
+    const res = await as(disputeApp, admin).get('/dispute-orders?limit=200');
+    expect(res.status).toBe(200);
+    return res.body.disputes.find((d) => d.orderId === orderId);
+  };
+  const faultRows = async (orderId) => (await pgQuery('SELECT 1 FROM dispute_faults WHERE order_id = $1', [orderId])).rows;
+
+  it('the dispute screen is told who each decision would suspend', async () => {
+    const buy = await disputedBuy();
+    expect(await listed(buy.orderId)).toMatchObject({ suspendsIfToUser: 'MERCHANT', suspendsIfToMerchant: 'PLAYER' });
+    const sell = await disputedSell();
+    // On a sell, "to the user" is the refund: the member said they paid and did not.
+    expect(await listed(sell.orderId)).toMatchObject({ suspendsIfToUser: 'MERCHANT', suspendsIfToMerchant: 'PLAYER' });
+  });
+
+  it('a buy disputed after it completed: dismissing it suspends nobody, and it cannot be cancelled', async () => {
+    // Before: completing it again suspended the member who had confirmed it.
+    const { member, player, orderId } = await paidBuy();
+    expect((await as(merchantApp, member).post(`/confirm/${orderId}`)).status).toBe(200);
+    await pgQuery(`UPDATE order_states SET paid_at = now() - interval '11 minutes' WHERE order_id = $1`, [orderId]);
+    const disputed = await as(playerApp, player).post(`/order/${orderId}/dispute`).send({ reason: 'I was credited the wrong amount' });
+    expect(disputed.status, JSON.stringify(disputed.body)).toBe(200);
+    expect(await listed(orderId)).toMatchObject({ suspendsIfToUser: null, suspendsIfToMerchant: null });
+
+    // The tokens were delivered: no decision can cancel the buy (F1's rule).
+    const cancel = await resolve(orderId, 'RELEASE_TO_MERCHANT');
+    expect(cancel.status).toBe(409);
+    expect(cancel.body.message).toMatch(/already paid to the player/);
+
+    expect((await resolve(orderId, 'RELEASE_TO_USER')).status).toBe(200);
+    expect((await getOrderRecord(orderId)).status).toBe('COMPLETED');
+    expect(await memberState(member.merchantId)).toMatchObject({ status: 'ACTIVE', lost: 0 });
+    expect(await playerState(player.userId)).toMatchObject({ blocked: false, lost: 0 });
+    expect(await faultRows(orderId)).toHaveLength(0);
+  });
+
+  it('a member\'s red flag, decided against the player, suspends nobody', async () => {
+    const { member, player, orderId } = await paidBuy();
+    const flagged = await as(merchantApp, member).post(`/orders/${orderId}/red-flag`).send({ reason: 'The name on the payment does not match' });
+    expect(flagged.status, JSON.stringify(flagged.body)).toBe(200);
+    expect((await getOrderRecord(orderId)).disputeRaisedBy).toBe('merchant');
+    expect(await listed(orderId)).toMatchObject({ suspendsIfToUser: null, suspendsIfToMerchant: null });
+
+    expect((await resolve(orderId, 'RELEASE_TO_MERCHANT')).status).toBe(200);
+    expect((await getOrderRecord(orderId)).status).toBe('CANCELLED');
+    expect(await playerState(player.userId)).toMatchObject({ blocked: false, lost: 0 });
+    expect(await faultRows(orderId)).toHaveLength(0);
+  });
+
+  it('a member cannot red-flag a buy they rejected: it stays the player\'s to dispute', async () => {
+    const { member, player, orderId } = await paidBuy();
+    expect((await as(merchantApp, member).post(`/orders/${orderId}/reject`).send(REJECT)).status).toBe(200);
+    const flagged = await as(merchantApp, member).post(`/orders/${orderId}/red-flag`).send({ reason: 'never paid' });
+    expect(flagged.status).toBe(400);
+    expect(flagged.body.message).toMatch(/player's to dispute/);
+    expect((await getOrderRecord(orderId)).status).toBe('REJECTED');
+    // …and the player still can.
+    expect((await as(playerApp, player).post(`/order/${orderId}/dispute`).send({ reason: 'I did pay' })).status).toBe(200);
+  });
+
+  it('who is at fault, for every kind of dispute', () => {
+    const buy = (by, utr = 'UTR1') => ({ type: 'DEPOSIT', disputeRaisedBy: by, utr });
+    const sell = (by) => ({ type: 'WITHDRAWAL', disputeRaisedBy: by });
+    // A buy the member rejected, disputed by the player.
+    expect(partyAtFault(buy('user'), { completed: true, disputedFrom: 'REJECTED' })).toBe('MERCHANT');
+    expect(partyAtFault(buy('user'), { completed: false, disputedFrom: 'REJECTED' })).toBe('PLAYER');
+    // A paid buy the member sat on, put to an admin by the platform.
+    expect(partyAtFault(buy('system'), { completed: true, disputedFrom: 'PAID' })).toBe('MERCHANT');
+    // A cash buy the platform disputed because no reference ever arrived: the
+    // member was shown nothing, so completing it is not a finding against them.
+    expect(partyAtFault(buy('system', null), { completed: true, disputedFrom: 'PAID' })).toBeNull();
+    expect(partyAtFault(buy('system', null), { completed: false, disputedFrom: 'PAID' })).toBe('PLAYER');
+    // A buy disputed after it completed, or a member's red flag: nobody.
+    expect(partyAtFault(buy('user'), { completed: true, disputedFrom: 'COMPLETED' })).toBeNull();
+    expect(partyAtFault(buy('merchant'), { completed: false, disputedFrom: 'PAID' })).toBeNull();
+    expect(partyAtFault(buy(null), { completed: false, disputedFrom: 'PAID' })).toBeNull();
+    // A sell, inside its hold.
+    expect(partyAtFault(sell('user'), { completed: true, disputedFrom: 'COMPLETED' })).toBe('PLAYER');
+    expect(partyAtFault(sell('user'), { completed: false, disputedFrom: 'PAID' })).toBe('MERCHANT');
+    expect(partyAtFault(sell('merchant'), { completed: true, disputedFrom: 'PAID' })).toBeNull();
+  });
+
   it('rolls the record back when the party at fault has no row', async () => {
     const orderId = oid(); made.push(orderId);
     const out = await recordDisputeFault({ orderId, party: 'MERCHANT', merchantId: 'no-such-member', decision: 'RELEASE_TO_USER' });

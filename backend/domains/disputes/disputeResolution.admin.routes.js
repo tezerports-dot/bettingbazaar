@@ -7,7 +7,7 @@ import { moveDepositMoney } from '../payment/depositCredit.js';
 // The one owner of how an admin decision ends a withdrawal's money (F-027),
 // and of a cancelled buy's merchant hold.
 import { endWithdrawal } from '../payment/withdrawalHold.service.js';
-import { recordDisputeLoser } from './disputeOutcome.service.js';
+import { recordDisputeLoser, faultPreview } from './disputeOutcome.service.js';
 import { releaseUTR } from '../../middleware/utrValidation.js';
 import { emitMerchantUpdate } from '../notification/realtimeEmitters.js';
 // The order state machine. Resolving a dispute is a guarded transition, and it
@@ -149,7 +149,13 @@ router.get('/dispute-orders', authenticate, hasPermission('canResolveDisputes'),
     const queue = await db.orders.disputeQueue({ status, page, limit });
 
     // Mapped to the shape DisputeManager.tsx expects.
-    const disputes = queue.disputes.map((o) => ({
+    const disputes = queue.disputes.map((o) => {
+      // Who each of the screen's two decisions would suspend, from the rule's
+      // one owner, so the screen keeps no copy of it. On a buy, "to the user"
+      // completes the order; on a sell it refunds the player.
+      const preview = o.status === 'DISPUTED' ? faultPreview(o, o.disputedFrom) : { ifCompleted: null, ifNotCompleted: null };
+      const buy = o.type === 'DEPOSIT';
+      return {
       _id:               o.orderId,
       orderId:           o.orderId,
       type:              o.type,
@@ -172,7 +178,10 @@ router.get('/dispute-orders', authenticate, hasPermission('canResolveDisputes'),
       userId:            o.user,
       merchantId:        o.merchant,
       resolvedBy:        o.disputeResolvedBy,
-    }));
+      suspendsIfToUser:     buy ? preview.ifCompleted : preview.ifNotCompleted,
+      suspendsIfToMerchant: buy ? preview.ifNotCompleted : preview.ifCompleted,
+      };
+    });
 
     res.json({
       success: true, disputes,

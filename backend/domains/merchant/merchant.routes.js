@@ -1569,17 +1569,28 @@ router.post('/orders/:id/red-flag', merchantAuth, async (req, res) => {
         if (['COMPLETED', 'CANCELLED'].includes(order.status)) {
             return res.status(400).json({ success: false, message: 'Cannot red-flag a completed or cancelled order.' });
         }
+        if (order.status === 'REJECTED') {
+            return res.status(400).json({ success: false, message: 'You rejected this buy, so it is the player\'s to dispute until their window closes. Contact support if something else is wrong.' });
+        }
 
         // The red flag and the DISPUTED move land in ONE update. Writing the
         // flag separately would leave an order flagged but not disputed if the
         // second write failed, which is the state the admin queue cannot see.
+        // Not from REJECTED: a buy the member rejected is the player's to
+        // dispute, inside their window. A member flagging their own rejection
+        // would turn it into a dispute the player never raised (security
+        // review, 2026-10-03). `disputeRaisedBy: 'merchant'` says whose report
+        // this is, so a decision on it suspends nobody (disputeOutcome.service.js).
         const flagged = await disputeOrder(order._id, {
+            expectFrom: ['PROCESSING', 'PAID'],
             set: {
-                redFlagged:     true,
-                redFlagReason:  reason.trim(),
-                redFlaggedBy:   req.userId,
-                redFlaggedAt:   new Date(),
-                disputeReason:  `Red-flagged by merchant: ${reason.trim()}`,
+                redFlagged:      true,
+                redFlagReason:   reason.trim(),
+                redFlaggedBy:    req.userId,
+                redFlaggedAt:    new Date(),
+                disputeReason:   `Red-flagged by merchant: ${reason.trim()}`,
+                disputeRaisedAt: new Date(),
+                disputeRaisedBy: 'merchant',
             },
         });
         if (!flagged.ok) {

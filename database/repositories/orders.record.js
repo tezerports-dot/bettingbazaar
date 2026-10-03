@@ -1001,6 +1001,11 @@ export async function disputeQueue({ status = 'DISPUTED', page = 1, limit = 50 }
     `SELECT o.*,
             u.username AS user_username, u.mobile AS user_mobile,
             m.name AS merchant_name, m.mobile AS merchant_mobile,
+            -- The state the order was disputed FROM, which decides whether a
+            -- decision suspends anybody (disputeOutcome.service.js).
+            (SELECT t.from_state FROM order_transitions t
+              WHERE t.order_id = o.order_id AND t.to_state = 'DISPUTED'
+              ORDER BY t.id DESC LIMIT 1) AS disputed_from,
             COUNT(*) OVER () AS total_matching
        FROM order_states o
        LEFT JOIN users u     ON u.user_id = o.user_id
@@ -1017,6 +1022,7 @@ export async function disputeQueue({ status = 'DISPUTED', page = 1, limit = 50 }
   return {
     disputes: rows.map((r) => ({
       ...toOrder(r),
+      disputedFrom: r.disputed_from ?? null,
       user: r.user_username
         ? { userId: r.user_id, username: r.user_username, mobile: r.user_mobile }
         : null,

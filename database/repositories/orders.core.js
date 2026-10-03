@@ -247,6 +247,20 @@ export async function getOrderHistory(orderId) {
   }));
 }
 
+/**
+ * The state an order was last disputed FROM, or null if it never was. Read off
+ * the append-only history, so it survives the decision that moves the order on.
+ */
+export async function disputedFromState(orderId) {
+  const { rows } = await pgQuery(
+    `SELECT from_state FROM order_transitions
+      WHERE order_id = $1 AND to_state = 'DISPUTED'
+      ORDER BY id DESC LIMIT 1`,
+    [String(orderId)], 'order_disputed_from',
+  );
+  return rows[0]?.from_state ?? null;
+}
+
 async function withOrderLock(orderId, fn) {
   const oid = String(orderId);
   const pool = await getPool();

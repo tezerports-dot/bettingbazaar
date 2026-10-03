@@ -30,6 +30,18 @@ interface Dispute {
   disputeResolvedBy?: { username: string };
   utrNumber?: string;
   proofScreenshot?: string;
+  /** Who each decision suspends, from the server's one rule
+   *  (backend/domains/disputes/disputeOutcome.service.js): 'PLAYER', 'MERCHANT'
+   *  (the team member), or null when it is not a dispute about a payment. */
+  suspendsIfToUser?: 'PLAYER' | 'MERCHANT' | null;
+  suspendsIfToMerchant?: 'PLAYER' | 'MERCHANT' | null;
+}
+
+/** The note under the decision: who the server will suspend if it is taken. */
+function suspensionNote(party: 'PLAYER' | 'MERCHANT' | null | undefined): string {
+  if (party === 'MERCHANT') return 'The team member on this order will be suspended. A sub-admin or admin must lift it; after a third lost dispute only an admin can.';
+  if (party === 'PLAYER') return 'The player will be suspended. A sub-admin or admin must lift it; after a third lost dispute only an admin can.';
+  return 'Nobody is suspended by this decision: it is not a dispute over whether a payment was made (a member\'s red flag, or a buy disputed after it completed).';
 }
 
 /**
@@ -465,11 +477,7 @@ export const DisputeManager: React.FC = () => {
                     (disputeOutcome.service.js), so the admin is told before
                     pressing, not after. */}
                 <p role="note" className="text-xs text-amber-300 bg-amber-900/20 border border-amber-700/40 rounded-lg p-2">
-                  {/* On either order type, deciding for the player is deciding
-                      the member was wrong, and the other way round. */}
-                  {decision === 'RELEASE_TO_USER'
-                    ? 'The team member on this order will be suspended. A sub-admin or admin must lift it; after a third lost dispute only an admin can.'
-                    : 'The player will be suspended. A sub-admin or admin must lift it; after a third lost dispute only an admin can.'}
+                  {suspensionNote(decision === 'RELEASE_TO_USER' ? selected.suspendsIfToUser : selected.suspendsIfToMerchant)}
                 </p>
 
                 <div>

@@ -2144,6 +2144,42 @@ const MUTATIONS = [
     from: "    if (action === 'APPROVE' && !canTransition(order.status, 'COMPLETED')) {\n",
     to: "    if (false) {\n",
   },
+  // ── Security review 2026-10-03, F2: suspended for a dispute nobody lost ───
+  {
+    id: 'M335', file: 'backend/domains/disputes/disputeOutcome.service.js', config: PG,
+    test: 'backend/tests/routes/disputeFaultsPg.test.js',
+    why: 'a member\'s red flag decided against the player suspends a player who claimed nothing',
+    from: "  if (!['user', 'system'].includes(order.disputeRaisedBy)) return null;\n",
+    to: "\n",
+  },
+  {
+    id: 'M336', file: 'backend/domains/disputes/disputeOutcome.service.js', config: PG,
+    test: 'backend/tests/routes/disputeFaultsPg.test.js',
+    why: 'dismissing a dispute on a buy that had already completed suspends the member who confirmed it',
+    from: "  if (!PAYMENT_DISPUTE_FROM[order.type]?.includes(disputedFrom)) return null;\n",
+    to: "\n",
+  },
+  {
+    id: 'M337', file: 'backend/domains/disputes/disputeOutcome.service.js', config: PG,
+    test: 'backend/tests/routes/disputeFaultsPg.test.js',
+    why: 'a cash buy disputed because the player sent no reference suspends the member who was shown nothing',
+    from: "    return disputedFrom === 'REJECTED' || order.utr ? FAULT_PARTIES.MERCHANT : null;\n",
+    to: "    return FAULT_PARTIES.MERCHANT;\n",
+  },
+  {
+    id: 'M338', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
+    test: 'backend/tests/routes/disputeFaultsPg.test.js',
+    why: 'a member red-flags their own rejection, turning it into a dispute the player never raised',
+    from: "        if (order.status === 'REJECTED') {\n",
+    to: "        if (false) {\n",
+  },
+  {
+    id: 'M339', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
+    test: 'backend/tests/routes/disputeFaultsPg.test.js',
+    why: 'a red flag is not recorded as the member\'s, so the record cannot say whose report it was',
+    from: "                disputeRaisedBy: 'merchant',\n",
+    to: "\n",
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that
