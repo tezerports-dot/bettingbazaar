@@ -25,14 +25,16 @@
  * Both directions of the asymmetry, so neither can be "simplified" into the
  * other, and the CLAIM — a merchant's bank transfer is a real payment and the
  * same registry decides whether it has been spent. Without that, one transfer
- * could be presented as proof of two payouts, which is the defect §27 records
- * against the CDM slip.
+ * could be presented as proof of two payouts (§27).
+ *
+ * Every sell is paid by bank transfer, whichever team serves it (owner,
+ * 2026-10-03), so a cash-team payout is held to the same rule.
  *
  * ── How the orders get to the merchant (PROJECT_STATUS §3.10, 2c) ───────────
  * Through the real path: the player's withdrawal (or buy) is created by the
  * service, ROUTED to the one online member of a working team on the order's
  * rail, and accepted through the merchant's own route. The rail is the order's
- * size — ₹20,000 is UPI/bank, ₹1,000 is cash — never a switch.
+ * size — 50,000 is UPI/bank, 1,000 is cash (Step 2d) — never a switch.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { pgConfigured, applySchema, closePg, pgQuery } from '#db/client.js';
@@ -57,7 +59,7 @@ describePg('the payout reference is the MERCHANT\'s, and it is claimed', () => {
   // Unique per order: a reference belongs to exactly one order, by index (§27).
   const utr = () => `UTRPAY${String(Date.now()).slice(-6)}${String(seq += 1).padStart(4, '0')}`;
 
-  const UPI_RUPEES = 20_000;   // above the ₹10,000 cash ceiling: UPI/bank
+  const UPI_RUPEES = 50_000;   // a UPI/bank size (Step 2d)
   const CASH_RUPEES = 1_000;   // a cash denomination: CASH
 
   const players = [];
@@ -183,16 +185,24 @@ describePg('the payout reference is the MERCHANT\'s, and it is claimed', () => {
     expect((await getOrderRecord(orderId)).state).toBe('PROCESSING');
   });
 
-  it('does NOT ask for one at a cash machine — that payout is evidenced by the slip', async () => {
+  it('asks for one on a CASH-team sell too — it is a bank transfer like any other', async () => {
     const { orderId } = await payout(cashMember, CASH_RUPEES);
     expect((await getOrderRecord(orderId)).paymentMode).toBe(PAYMENT_MODES.CASH_ATM);
 
-    // No body at all. A CASH_ATM payout is notes handed over a counter; there
-    // is no bank UTR for it, and its evidence is the CDM slip, which has its
-    // own route and its own claim.
-    const res = await as(app, cashMember).post(`/confirm/${orderId}`).send({});
+    // No body: refused by name, and the order is where it was. The CDM slip
+    // that once stood in for a reference went with the cash-machine payout.
+    const bare = await as(app, cashMember).post(`/confirm/${orderId}`).send({});
+    expect(bare.status).toBe(400);
+    expect(bare.body.code).toBe('PAYOUT_REFERENCE_REQUIRED');
+    expect((await getOrderRecord(orderId)).state).toBe('PROCESSING');
+
+    // With the bank's UTR it goes through, and the reference is claimed.
+    const reference = utr();
+    const res = await as(app, cashMember).post(`/confirm/${orderId}`).send({ utrNumber: reference });
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(['PAID', 'COMPLETED']).toContain((await getOrderRecord(orderId)).state);
+    const claimed = await pgQuery('SELECT order_id FROM utr_registry WHERE utr = $1', [reference.toUpperCase()]);
+    expect(claimed.rows[0]?.order_id).toBe(orderId);
   });
 
   // ── The other half of the asymmetry, so it cannot be collapsed ───────────

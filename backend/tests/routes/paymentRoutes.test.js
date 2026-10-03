@@ -39,7 +39,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { pgConfigured, applySchema, closePg, withTransaction } from '#db/client.js';
 import { createOrderRecord, getOrderRecord, setOrderFields, listOrderTransitions } from '#db/repositories/orders.record.js';
 import { tryAssignMerchant, markOrderPaid } from '../../domains/payment/paymentProcessing.service.js';
-import { teamFixture } from '../teamFixture.js';
+import { teamFixture, readyToPay } from '../teamFixture.js';
 import { mountRouter, actor, as, request } from './_harness.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
@@ -118,6 +118,8 @@ describePg('payment routes', () => {
     const queued = state === 'PENDING_QUEUE';
     await teams.onlyOnline(queued ? [] : team.members);
     expect(await tryAssignMerchant(order), `the buy was ${queued ? '' : 'not '}routed`).toBe(!queued);
+    // Accepted by its member: from then on the player has somewhere to pay.
+    if (state === 'PROCESSING' || state === 'PAID') await readyToPay(orderId);
     let utrNumber = null;
     if (state === 'PAID') {
       utrNumber = nextUtr();
@@ -205,7 +207,7 @@ describePg('payment routes', () => {
     //
     // A UPI buy: on the CASH rail an empty reference is the Paid TAP, which
     // reaches PAID with the reference to follow (cashPaidThenReferencePg).
-    const { orderId, who } = await depositOrder({ state: 'ASSIGNED' });
+    const { orderId, who } = await depositOrder({ state: 'PROCESSING' });
 
     for (const body of [{}, { utrNumber: '   ' }, { utrNumber: null }]) {
       const res = await as(app, who).post(`/order/${orderId}/mark-paid`).send(body);
@@ -213,7 +215,7 @@ describePg('payment routes', () => {
       expect(res.body.message).toMatch(/utrNumber/i);
     }
     // …and nothing about the order moved.
-    expect((await getOrderRecord(orderId)).status).toBe('ASSIGNED');
+    expect((await getOrderRecord(orderId)).status).toBe('PROCESSING');
   });
 
   it('takes the UTR alone — no screenshot is asked for or required', async () => {
@@ -221,7 +223,7 @@ describePg('payment routes', () => {
     // This is the assertion that the flow actually COMPLETES without one, which
     // a validation test cannot show — the route used to 400 on the missing
     // proofFileKey before it ever reached the order.
-    const { orderId, who } = await depositOrder({ state: 'ASSIGNED' });
+    const { orderId, who } = await depositOrder({ state: 'PROCESSING' });
 
     // Unique per run: `utr_registry` is permanent, so a fixed reference passes
     // once and 409s on every later run against the same database.
@@ -243,7 +245,7 @@ describePg('payment routes', () => {
     // duplicate gate does not either — the SAME reference typed two ways would
     // claim two orders. Normalising is what makes the registry's uniqueness
     // mean anything.
-    const { orderId, who } = await depositOrder({ state: 'ASSIGNED' });
+    const { orderId, who } = await depositOrder({ state: 'PROCESSING' });
 
     const core = `utrn${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
     const res = await as(app, who).post(`/order/${orderId}/mark-paid`)
@@ -257,13 +259,13 @@ describePg('payment routes', () => {
     // Seven characters padded past twelve with spaces is not a twelve-character
     // reference. Checking the raw string would admit it. The length gate runs
     // after the order is loaded, so this needs a real one.
-    const { orderId, who } = await depositOrder({ state: 'ASSIGNED' });
+    const { orderId, who } = await depositOrder({ state: 'PROCESSING' });
 
     const res = await as(app, who).post(`/order/${orderId}/mark-paid`)
       .send({ utrNumber: 'A B C D E F G' });
     expect(res.status).toBe(400);
     expect(res.body.message).toMatch(/12 characters/i);
-    expect((await getOrderRecord(orderId)).status).toBe('ASSIGNED');
+    expect((await getOrderRecord(orderId)).status).toBe('PROCESSING');
   });
 
   it('still refuses a UTR already spent on another order', async () => {
@@ -273,13 +275,15 @@ describePg('payment routes', () => {
     // and a reference is refused on ANY other order, not only the same
     // player's.
     const utrNumber = `UTRDUP${Date.now().toString(36).toUpperCase()}${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
-    const first = await depositOrder({ state: 'ASSIGNED' });
-    const second = await depositOrder({ state: 'ASSIGNED' });
+    const first = await depositOrder({ state: 'PROCESSING' });
+    const second = await depositOrder({ state: 'PROCESSING' });
 
     expect((await as(app, first.who).post(`/order/${first.orderId}/mark-paid`).send({ utrNumber })).status).toBe(200);
     const dup = await as(app, second.who).post(`/order/${second.orderId}/mark-paid`).send({ utrNumber });
     expect(dup.status).toBe(409);
-    expect((await getOrderRecord(second.orderId)).status).not.toBe('PAID');
+    // Refused for the reference, not for anything else about the order.
+    expect(dup.body.code).toBe('DUPLICATE_UTR');
+    expect((await getOrderRecord(second.orderId)).status).toBe('PROCESSING');
   });
 
   // ── Confirming a deposit ──────────────────────────────────────────────────

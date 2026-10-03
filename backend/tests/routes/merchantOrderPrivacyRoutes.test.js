@@ -129,7 +129,7 @@ describePg('what a merchant is told about a player', () => {
   };
 
   /** A buy, queued with its split, routed to `merchant` and accepted: PROCESSING. */
-  const depositFor = async (merchant, who, tokens = 20_000) => {
+  const depositFor = async (merchant, who, tokens = 50_000) => {
     const orderId = oid();
     const order = await createOrderRecord({
       orderId, userId: who.userId, type: 'DEPOSIT',
@@ -196,7 +196,7 @@ describePg('what a merchant is told about a player', () => {
     // ordinary day (cap 3), never a cash member's.
     const merchant = await member('UPI_BANK');
     const who = await player();
-    await withdrawalFor(merchant, who, 20_000);
+    await withdrawalFor(merchant, who, 50_000);
     await depositFor(merchant, await player());
 
     const res = await as(app, merchant).get('/orders');

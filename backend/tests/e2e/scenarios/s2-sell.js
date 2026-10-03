@@ -4,8 +4,8 @@
 //
 // Since Step 2c a sell is ASSIGNED to a member of a working team on its rail,
 // exactly like a buy — there is no open pool to claim from — and when it
-// settles the player's tokens join that team's POOL. Above ₹10,000 an INR sell
-// runs on the UPI/bank rail (`orderRails.js`), so this sell is 20,000 tokens.
+// settles the player's tokens join that team's POOL. The size names the rail
+// (Step 2d, `denominations.js`), so this sell is 50,000 tokens: UPI/bank.
 import { pgQuery } from '#db/client.js';
 import { seedPlayer, seedMerchant, seedTeam, seedAdmin, orderPoolTrail } from '../seed.js';
 import { playerToken, merchantToken, adminToken, GET, POST, check } from '../harness.js';
@@ -24,7 +24,7 @@ export default async function run() {
   const pT = playerToken(player), oT = playerToken(other), mT = merchantToken(m), m2T = merchantToken(m2), aT = adminToken(admin);
 
   const { creditWinnings } = await import('../../../domains/wallet/walletAuthority.service.js');
-  await creditWinnings(player.userId, 30000, 'e2e seed winnings', `${player.userId}_e2e_win`, `${player.userId}_e2e_win`);
+  await creditWinnings(player.userId, 60000, 'e2e seed winnings', `${player.userId}_e2e_win`, `${player.userId}_e2e_win`);
   await pgQuery(
     `UPDATE users SET bank_details = $2 WHERE user_id = $1`,
     [player.userId, JSON.stringify({
@@ -35,23 +35,25 @@ export default async function run() {
     })], 'e2e_bank');
 
   const bal = await GET(pT, '/api/user/bet-limits');
-  check(A, 'player', 'winnings are available to withdraw', '30000 winnings',
-    String(bal.body.winnings), bal.body.winnings === 30000);
+  check(A, 'player', 'winnings are available to withdraw', '60000 winnings',
+    String(bal.body.winnings), bal.body.winnings === 60000);
 
-  // ── The floor is the SAME number from either end (§2, both 500) ───────────
+  // ── The sizes are the SAME list from either end (§2, Step 2d) ────────────
   const small = await POST(pT, '/api/payment/withdrawal/create', { tokenAmount: 490 });
-  check(A, 'player', 'sell below the 500-token floor', '4xx naming the floor',
-    `${small.status} ${small.body.message ?? ''}`, small.status >= 400 && small.status < 500);
+  check(A, 'player', 'sell an amount that is not an order size', '400 NOT_AN_ORDER_SIZE',
+    `${small.status} ${small.body.code ?? ''} ${small.body.message ?? ''}`,
+    small.status === 400 && small.body.code === 'NOT_AN_ORDER_SIZE');
 
   // ── More than the winnings pocket holds ──────────────────────────────────
-  const over = await POST(pT, '/api/payment/withdrawal/create', { tokenAmount: 40000 });
+  // 100,000 IS a size, so the refusal can only be the pocket's.
+  const over = await POST(pT, '/api/payment/withdrawal/create', { tokenAmount: 100000 });
   check(A, 'player', 'sell more than the winnings pocket holds', '4xx refusal',
     `${over.status} ${over.body.message ?? ''}`, over.status >= 400 && over.status < 500);
 
   // ── A real sell ──────────────────────────────────────────────────────────
-  const created = await POST(pT, '/api/payment/withdrawal/create', { tokenAmount: 20000 });
+  const created = await POST(pT, '/api/payment/withdrawal/create', { tokenAmount: 50000 });
   const order = created.body.order;
-  check(A, 'player', 'create a 20,000-token sell', '200 with an order',
+  check(A, 'player', 'create a 50,000-token sell', '200 with an order',
     `${created.status} ${order?.orderId ?? JSON.stringify(created.body).slice(0,140)}`,
     created.status === 200 && !!order?.orderId);
   if (!order?.orderId) return;
@@ -60,9 +62,9 @@ export default async function run() {
   // The stake leaves the spendable pocket immediately, or a player could sell
   // the same tokens twice while the first payout is in flight.
   const afterCreate = await GET(pT, '/api/user/bet-limits');
-  check(A, 'player', 'the tokens are held the moment the sell is created', 'winnings down by 20000',
+  check(A, 'player', 'the tokens are held the moment the sell is created', 'winnings down by 50000',
     `winnings ${bal.body.winnings} -> ${afterCreate.body.winnings}`,
-    afterCreate.body.winnings === bal.body.winnings - 20000);
+    afterCreate.body.winnings === bal.body.winnings - 50000);
 
   // ── IDOR ─────────────────────────────────────────────────────────────────
   const idor = await GET(oT, `/api/payment/order/${oid}`);
@@ -117,7 +119,7 @@ export default async function run() {
   // ── The player's held tokens are gone for good, not returned ─────────────
   const end = await GET(pT, '/api/user/bet-limits');
   check(A, 'player', 'the sold tokens do not come back after payout', 'winnings still down',
-    `winnings ${end.body.winnings}`, end.body.winnings === bal.body.winnings - 20000);
+    `winnings ${end.body.winnings}`, end.body.winnings === bal.body.winnings - 50000);
 
   // ── A confirmed payout reaches PAID, NOT COMPLETED — and that is correct ──
   // `SystemConfig.withdrawalHoldMinutes` keeps the merchant's credit HELD for a
@@ -157,12 +159,12 @@ export default async function run() {
   // the order's id, never by diffing the pool or the floats (trap 10).
   const trail = await orderPoolTrail(oid);
   const sold = trail.entries.filter(e => e.kind === 'SELL_SETTLED');
-  check(A, 'system', 'the settled sell credits the team pool', `one SELL_SETTLED +2000000 in ${team.teamId}`,
+  check(A, 'system', 'the settled sell credits the team pool', `one SELL_SETTLED +5000000 in ${team.teamId}`,
     sold.map(e => `${e.kind} avail ${e.available}, held ${e.held}, team ${e.teamId}`).join('; ') || 'NO POOL ENTRY',
-    sold.length === 1 && sold[0].teamId === team.teamId && sold[0].available === 2000000 && sold[0].held === 0);
+    sold.length === 1 && sold[0].teamId === team.teamId && sold[0].available === 5000000 && sold[0].held === 0);
   const legs = trail.legs[`team_sell_${oid}`] ?? {};
-  check(A, 'system', 'the treasury moves the tokens from the players to the team float', 'USER_FLOAT -2000000, TEAM_FLOAT +2000000',
-    JSON.stringify(legs), legs.USER_FLOAT === -2000000 && legs.TEAM_FLOAT === 2000000 && Object.keys(legs).length === 2);
+  check(A, 'system', 'the treasury moves the tokens from the players to the team float', 'USER_FLOAT -5000000, TEAM_FLOAT +5000000',
+    JSON.stringify(legs), legs.USER_FLOAT === -5000000 && legs.TEAM_FLOAT === 5000000 && Object.keys(legs).length === 2);
 
   // ── Admin sees it ────────────────────────────────────────────────────────
   const q = await GET(aT, '/api/admin/payment-queue');

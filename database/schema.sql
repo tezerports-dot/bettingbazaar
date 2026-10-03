@@ -2426,10 +2426,6 @@ ALTER TABLE order_states ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
 -- Dropped rather than left in place, for the same reason as the split-leg
 -- columns further down: a column nothing writes is a column the next reader has
 -- to work out the status of. Do not accommodate; remove.
---
--- NOT to be confused with `withdrawal_batch_ref`, which is added below and
--- stays: that is the SPLITTER's label for the siblings of one oversized
--- withdrawal, and two admin screens read it.
 ALTER TABLE order_states DROP COLUMN IF EXISTS bulk_payout_date;
 ALTER TABLE order_states DROP COLUMN IF EXISTS bulk_paid_at;
 ALTER TABLE order_states DROP COLUMN IF EXISTS bulk_payout_batch;
@@ -2627,83 +2623,14 @@ $$ LANGUAGE plpgsql;
 CREATE OR REPLACE TRIGGER order_states_mode_immutable
   BEFORE UPDATE ON order_states FOR EACH ROW EXECUTE FUNCTION bb_forbid_order_mode_change();
 
--- ── The CDM receipt: written by a merchant, read only by an admin ───────────
---
--- On the cash rail a SELL is settled by the merchant depositing cash at a Cash
--- Deposit Machine into the player's bank account. They then submit the bank
--- transaction id and a photograph of the receipt.
---
--- ── Write-only, and why that is a storage decision not a UI one ─────────────
--- Neither the player nor the merchant who uploaded it may read it back — only
--- an admin or a disputes manager. A CDM slip carries an account number, a
--- branch, a timestamp and a transaction reference; it is the strongest evidence
--- in a dispute and the least appropriate thing to hand back to either party.
---
--- The enforcement is that `toOrder` NEVER MAPS THESE COLUMNS. Every projection
--- on this platform is built from that mapper, so a field it does not name
--- cannot reach a merchant, a player, or a panel — by construction rather than
--- by each reader remembering to strip it. `getCdmReceipt` is a separate query,
--- and the admin route is its only caller.
---
--- That is deliberately the opposite shape to a denylist. A denylist admits the
--- next column by default and fails open; this admits nothing and fails closed.
-ALTER TABLE order_states ADD COLUMN IF NOT EXISTS cdm_transaction_id TEXT;
-ALTER TABLE order_states ADD COLUMN IF NOT EXISTS cdm_receipt_url TEXT;
-ALTER TABLE order_states ADD COLUMN IF NOT EXISTS cdm_receipt_at TIMESTAMPTZ;
-DO $$ BEGIN
-  -- A receipt image with no transaction id cannot be matched against a bank
-  -- statement, and a transaction id with no image is an assertion with no
-  -- evidence. They arrive together or not at all — the same rule the merchant
-  -- reject path already obeys with its proof.
-  ALTER TABLE order_states ADD CONSTRAINT order_states_cdm_receipt_complete
-    CHECK ((cdm_transaction_id IS NULL) = (cdm_receipt_url IS NULL));
-EXCEPTION WHEN duplicate_object THEN NULL; END $$;
-DO $$ BEGIN
-  ALTER TABLE order_states ADD CONSTRAINT order_states_cdm_receipt_timed
-    CHECK (cdm_receipt_url IS NULL OR cdm_receipt_at IS NOT NULL);
-EXCEPTION WHEN duplicate_object THEN NULL; END $$;
--- The admin queue of settled cash withdrawals still missing their receipt.
--- A partial index, because that is the only question ever asked of it.
-CREATE INDEX IF NOT EXISTS order_states_cdm_receipt_missing_idx
-  ON order_states (merchant_id, completed_at)
-  WHERE order_type = 'WITHDRAWAL' AND payment_mode = 'CASH_ATM' AND cdm_receipt_url IS NULL;
-
 -- ═══════════════════════════════════════════════════════════════════════════
--- 🧩 WITHDRAWAL BATCH SPLITTING — several ORDINARY withdrawals, not a tree
+-- 🧩 ONE WITHDRAWAL IS ONE ORDER
 --
--- An ATM dispenses denominations, not amounts. A ₹100,000 payout on the cash
--- rail is therefore not one job: it is 40,000 + 40,000 + 10,000 + 10,000, four
--- merchants at four machines.
---
--- ── This was a parent-and-legs relation, and it is not any more ────────────
--- The first version added `parent_order_id`, `leg_index` and `is_split_parent`:
--- one container row holding the escrow, several child rows doing the work. It
--- was correct and it was the wrong shape, for two reasons that only show up
--- once it exists:
---
---   1. **Every query had to choose.** Parent or legs? The answer differed for
---      the player's history, the sell pool, the pending total, the user stats,
---      the dispute queue and the delete guard — six places, each a silent
---      double-count or a silent omission if answered wrong, and one of them
---      (the delete guard) a money guard. A relation that every reader must
---      reason about is a tax on every future query, forever.
---
---   2. **A crash mid-creation left something incoherent.** A parent holding an
---      escrow with only some of its legs written is a withdrawal that does not
---      add up, and no row looks wrong.
---
--- Flat siblings have neither problem. Each order is an ORDINARY withdrawal:
--- its own escrow, its own assignment, its own cancel, its own dispute, its own
--- release. Nothing branches on anything. And a crash after two of four leaves
--- exactly two valid withdrawals — money conserved, nothing dangling, nothing
--- to unwind.
---
--- ── What is left is a LABEL, and nothing may branch on it ──────────────────
--- `withdrawal_batch_ref` groups the siblings that came from one request, so a
--- player sees "part of your ₹100,000 withdrawal" and support can find the set.
--- It is a display tag: no state is derived from it, no money reads it, no
--- assignment consults it. The moment something branches on this column it has
--- become the parent relation again wearing a different name.
+-- A cash payout used to be split into several withdrawals, first as a parent
+-- with legs and then as flat siblings sharing a label. Neither survives: the
+-- owner removed splitting (2026-10-02) and in Step 2d every order became one of
+-- a fixed list of sizes. The split's columns are dropped at the end of this
+-- file with the rest of 2d's removals.
 ALTER TABLE order_states DROP CONSTRAINT IF EXISTS order_states_leg_has_index;
 ALTER TABLE order_states DROP CONSTRAINT IF EXISTS order_states_leg_index_positive;
 ALTER TABLE order_states DROP CONSTRAINT IF EXISTS order_states_leg_holds_no_escrow;
@@ -2711,24 +2638,12 @@ ALTER TABLE order_states DROP CONSTRAINT IF EXISTS order_states_parent_unassigne
 ALTER TABLE order_states DROP CONSTRAINT IF EXISTS order_states_split_is_one_level;
 DROP INDEX IF EXISTS order_states_legs_idx;
 DROP INDEX IF EXISTS order_states_stalled_legs_idx;
--- Dropped rather than left in place. These were introduced on this same branch,
--- never carried production data, and a column nothing writes is a column the
--- next reader has to work out the status of. Do not accommodate; remove.
 ALTER TABLE order_states DROP COLUMN IF EXISTS parent_order_id;
 ALTER TABLE order_states DROP COLUMN IF EXISTS leg_index;
 ALTER TABLE order_states DROP COLUMN IF EXISTS is_split_parent;
 
-ALTER TABLE order_states ADD COLUMN IF NOT EXISTS withdrawal_batch_ref TEXT;
--- Find the siblings of one request. The only question ever asked of it, and it
--- is asked by a support screen rather than by anything that decides.
-CREATE INDEX IF NOT EXISTS order_states_withdrawal_batch_idx
-  ON order_states (withdrawal_batch_ref)
-  WHERE withdrawal_batch_ref IS NOT NULL;
--- Withdrawals still waiting for a merchant — the admin's stalled queue.
---
--- Not split-specific, deliberately. A sibling that finds no merchant IS an
--- ordinary queued withdrawal, so the question worth asking is the general one:
--- which payouts have nobody working them? A player's tokens are locked behind
+-- Withdrawals still waiting for a merchant — the admin's stalled queue: which
+-- payouts have nobody working them? A player's tokens are locked behind
 -- every row here, and an order with no deadline and no owner is one nobody is
 -- answerable for.
 CREATE INDEX IF NOT EXISTS order_states_stalled_withdrawals_idx
@@ -3031,8 +2946,8 @@ ALTER TABLE merchants ADD COLUMN IF NOT EXISTS consecutive_rejections INTEGER NO
 --
 -- Both questions they were reaching for have owners. The CEILING is the tokens
 -- the merchant holds, and the deposit escrow ENFORCES it by reserving them at
--- assignment rather than checking a number (F-018). The FLOOR is platform-wide:
--- SystemConfig.minDeposit / minWithdrawal, 500 tokens for everyone.
+-- assignment rather than checking a number (F-018). The SIZE is platform-wide:
+-- one of the fixed order sizes on offer (SystemConfig.orderSizes, Step 2d).
 --
 -- Dropped rather than left in place, per §3: an admin-editable field with no
 -- consumer is a violation, and a column nothing reads is the next reader's
@@ -3769,3 +3684,104 @@ ALTER TABLE users DROP CONSTRAINT IF EXISTS users_lost_disputes_nonneg;
 ALTER TABLE users ADD CONSTRAINT users_lost_disputes_nonneg CHECK (lost_disputes >= 0);
 ALTER TABLE merchants DROP CONSTRAINT IF EXISTS merchants_lost_disputes_nonneg;
 ALTER TABLE merchants ADD CONSTRAINT merchants_lost_disputes_nonneg CHECK (lost_disputes >= 0);
+
+-- Step 2d (owner, 2026-10-02 / 2026-10-03): fixed order sizes, one withdrawal
+-- per order, and every sell paid by bank transfer. Removed with what they
+-- served: the split withdrawal's batch label, and the CDM slip a cash-machine
+-- payout was evidenced by (a cash-team sell now carries the member's bank UTR
+-- like any other). Dropped, not left in place (§0.0, §30).
+DROP INDEX IF EXISTS order_states_withdrawal_batch_idx;
+ALTER TABLE order_states DROP COLUMN IF EXISTS withdrawal_batch_ref;
+DROP INDEX IF EXISTS order_states_cdm_receipt_missing_idx;
+ALTER TABLE order_states DROP CONSTRAINT IF EXISTS order_states_cdm_receipt_complete;
+ALTER TABLE order_states DROP CONSTRAINT IF EXISTS order_states_cdm_receipt_timed;
+ALTER TABLE order_states DROP COLUMN IF EXISTS cdm_transaction_id;
+ALTER TABLE order_states DROP COLUMN IF EXISTS cdm_receipt_url;
+ALTER TABLE order_states DROP COLUMN IF EXISTS cdm_receipt_at;
+
+-- Step 2d (owner, 2026-10-02): a CASH buy is paid through the ATM's own QR.
+-- The member stands at a machine offering UPI cash withdrawal, picks the order
+-- amount there and scans the QR it shows; the link it decodes is what the
+-- player pays, and the machine hands the cash to the member. Written only by
+-- `setCashLink` (orders.record.js), after `domains/payment/cashLink.js` has
+-- checked it against the order amount. The CHECK holds the shape any writer
+-- must keep: only a CASH buy carries one, it is a `upi://pay` intent, it is
+-- bounded, and it says when it arrived.
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS cash_link TEXT;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS cash_link_at TIMESTAMPTZ;
+ALTER TABLE order_states DROP CONSTRAINT IF EXISTS order_states_cash_link_shape;
+ALTER TABLE order_states ADD CONSTRAINT order_states_cash_link_shape CHECK (
+  cash_link IS NULL OR (
+    order_type = 'DEPOSIT' AND payment_mode = 'CASH_ATM'
+    AND cash_link LIKE 'upi://pay?%' AND length(cash_link) <= 1024
+    AND cash_link_at IS NOT NULL
+  )
+);
+
+-- The link is the machine the ASSIGNED member is standing at. When the order
+-- changes hands (reassignment, requeue, an admin move) the next member is at a
+-- different machine, so the old link is cleared in the same UPDATE, whichever
+-- path made it. A player is never shown a QR for cash somebody else collects.
+--
+-- This is also why a player's "I've paid" on a cash buy names the member it
+-- read (`markOrderPaid`, `expectMerchant`): the only way a link disappears is
+-- the order changing hands, and that move is refused in the transition's WHERE.
+CREATE OR REPLACE FUNCTION bb_cash_link_follows_member() RETURNS trigger AS $$
+BEGIN
+  IF NEW.merchant_id IS DISTINCT FROM OLD.merchant_id THEN
+    NEW.cash_link := NULL;
+    NEW.cash_link_at := NULL;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+CREATE OR REPLACE TRIGGER order_states_cash_link_follows_member
+  BEFORE UPDATE ON order_states FOR EACH ROW EXECUTE FUNCTION bb_cash_link_follows_member();
+
+-- ── An account number that is somebody's mobile (Step 2d, owner 2026-10-03) ──
+-- The member's bank account is shown to the player on a bank-transfer buy, and
+-- the player's to the member on a sell. "Make sure nowhere you expose anyone's
+-- mobile numbers": payments banks (Paytm, Airtel, Jio, Fino, NSDL, India Post)
+-- issue the customer's MOBILE as the account number, so such an account would
+-- show it to the other side. Refused on the row, for every writer:
+--   • a mobile-shaped number (10 digits from 6, optionally 91 or 0 first) at a
+--     payments bank's IFSC (its first four letters name the bank);
+--   • the account holder's OWN registered mobile, at any bank.
+-- A ten-digit number at a regular bank (Kotak's are ten digits) is allowed: it
+-- is an account number, not a phone number. Every spelling is read the same
+-- way: separators dropped, 91 / 091 / 0091 / 0 in front, an IFSC in any case
+-- or with stray spaces.
+CREATE OR REPLACE FUNCTION bb_account_number_is_a_mobile(account TEXT, ifsc TEXT, own_mobile TEXT)
+RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
+  WITH n AS (
+    SELECT regexp_replace(COALESCE(account, ''), '[^0-9]', '', 'g') AS digits,
+           right(regexp_replace(COALESCE(own_mobile, ''), '[^0-9]', '', 'g'), 10) AS own,
+           upper(left(regexp_replace(COALESCE(ifsc, ''), '[^A-Za-z0-9]', '', 'g'), 4)) AS bank
+  ), b AS (
+    SELECT CASE WHEN digits ~ '^(0{0,2}91|0)[6-9][0-9]{9}$' THEN right(digits, 10) ELSE digits END AS bare,
+           own, bank
+      FROM n
+  )
+  SELECT (bare ~ '^[6-9][0-9]{9}$'
+          AND bank IN ('PYTM', 'AIRP', 'JIOP', 'FINO', 'NSPB', 'IPOS'))
+      OR (length(own) = 10 AND bare = own)
+    FROM b
+$$;
+-- The NAMES on an account travel with it (the holder's name, the bank's name),
+-- so a mobile number typed into one reaches the other side the same way. A
+-- run of ten digits from 6, separators allowed, with 91 / +91 / 0091 / 0 or
+-- not, standing alone. Shorter numbers in a name are left alone.
+CREATE OR REPLACE FUNCTION bb_text_has_a_mobile(t TEXT)
+RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
+  SELECT COALESCE(t, '') ~ '(^|[^0-9])((00|[+])?91[ -]?|0)?[6-9]([ .-]?[0-9]){9}([^0-9]|$)'
+$$;
+ALTER TABLE merchants DROP CONSTRAINT IF EXISTS merchants_bank_account_not_a_mobile;
+ALTER TABLE merchants ADD CONSTRAINT merchants_bank_account_not_a_mobile
+  CHECK (NOT bb_account_number_is_a_mobile(bank_account_no, bank_ifsc, mobile)
+     AND NOT bb_text_has_a_mobile(bank_account_holder_name)
+     AND NOT bb_text_has_a_mobile(bank_name));
+ALTER TABLE users DROP CONSTRAINT IF EXISTS users_bank_account_not_a_mobile;
+ALTER TABLE users ADD CONSTRAINT users_bank_account_not_a_mobile
+  CHECK (NOT bb_account_number_is_a_mobile(bank_details->>'accountNumber', bank_details->>'ifscCode', mobile)
+     AND NOT bb_text_has_a_mobile(bank_details->>'accountHolderName')
+     AND NOT bb_text_has_a_mobile(bank_details->>'bankName'));

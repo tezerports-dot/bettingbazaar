@@ -1,28 +1,18 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file.
 /**
- * The buy-token payment step: a pre-filled UPI link and a UTR. Nothing else.
+ * The buy-token payment step: where to pay, and a UTR. Nothing else.
  *
- * ── What this replaced ──────────────────────────────────────────────────────
- * Two things left this screen.
+ * Where to pay depends on the ORDER's rail (owner, 2026-10-03):
+ *   • a bank-transfer buy shows the assigned member's bank account (holder,
+ *     number, IFSC, bank), each with Copy, and asks for the UTR;
+ *   • a cash buy shows one Pay button for the cash machine's QR the member
+ *     scanned (Step 2d), then the tap, then the UTR.
+ * Never the member's mobile number or UPI handle.
  *
- * The QR code was rendered by fetching api.qrserver.com — a THIRD PARTY handed
- * the merchant's UPI id, the merchant's name, the exact amount and the order id
- * on every single deposit, as a fallback that fired whenever the local encoder
- * failed to load. A link needs no such request, and works where these players
- * are: tapping it opens their UPI app, which scanning a QR on the same screen
- * cannot do.
- *
- * The screenshot upload proved nothing. It is trivially forged, no approval
- * read it, and the merchant matches the UTR against their own bank statement.
- * Collecting an identifying image that no decision reads is data a platform
- * should not hold — and it was a required field, so a player who could not
- * upload could not tell anyone they had paid.
- *
- * ── What is actually asserted ───────────────────────────────────────────────
- * The link's CONTENTS, field by field. A mistyped amount is the most common
- * cause of a deposit a merchant cannot match, and the whole point of a
- * pre-filled link is that there is nothing left to mistype. A test that only
- * checked "a link is rendered" would pass on a link with no amount in it.
+ * ── What left this screen before ────────────────────────────────────────────
+ * A QR fetched from api.qrserver.com (a third party handed the merchant's
+ * details on every deposit), and a screenshot upload no decision read. Both
+ * are asserted absent below.
  */
 import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -33,21 +23,21 @@ vi.mock('../services/apiClient', () => ({ default: { post, get: vi.fn() } }));
 
 import { BuyPaymentUI } from './WalletPage';
 
+const ACCOUNT = { accountHolder: 'Ravi Kumar', accountNo: '50100123456789', ifsc: 'HDFC0000123', bankName: 'HDFC Bank' };
+
 const ORDER: any = {
   orderId: 'ORD-77',
-  status: 'ASSIGNED',
-  fiatAmount: 1500.5,
-  tokenAmount: 1500.5,
+  status: 'PROCESSING',
+  fiatAmount: 50000,
+  tokenAmount: 50000,
+  paymentMode: 'P2P_UPI',
   expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
-  // Where to pay, and nothing about who is being paid. The link is built by the
-  // SERVER now (backend/domains/payment/paymentLink.js) — the panel is not given
-  // the merchant's handle to build one from, which is what makes the privacy
-  // rule structural rather than a thing this screen politely omits.
-  payTo: {
-    paymentLink: 'upi://pay?pa=ravi%40okhdfc&pn=Merchant+%237731&am=1500.50&cu=INR'
-      + '&tn=BettingBazaar-ORD-77&tr=ORD-77',
-    merchantRef: 'Merchant #7731',
-  },
+  // Where to pay on a bank-transfer buy: the member's account, as the server
+  // projects it (backend/domains/payment/playerOrderView.js).
+  payTo: { bankAccount: ACCOUNT, merchantRef: 'Merchant #7731' },
+  // Deliberately present, as a row from before the projection would carry it:
+  // it must be IGNORED.
+  merchantSnapshot: { upiId: '9876501234@ybl', mobile: '9876501234' },
 };
 
 const renderUI = (order: any = ORDER) =>
@@ -127,24 +117,21 @@ describe('the minute to fetch the UTR', () => {
 });
 
 describe('the buy-token payment step', () => {
-  it('renders the link the SERVER sent, verbatim', async () => {
-    // It used to assemble the intent here out of the merchant's handle and name,
-    // which meant the panel had to be given them — and the response that carried
-    // them also carried the merchant's QR, bank account, IFSC and account-holder
-    // name. Building it server-side is what removed the need for any of that.
-    //
-    // Verbatim matters: re-encoding a link the server built is a second chance
-    // to change an amount or drop a reference.
+  it('shows the member\'s bank account to transfer to, each line with Copy', () => {
     renderUI();
-    expect(payLink().href).toBe(ORDER.payTo.paymentLink);
+    for (const value of Object.values(ACCOUNT)) expect(screen.getByText(value)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Copy Account number' })).toBeInTheDocument();
+    expect(screen.getByText(/by IMPS, NEFT or RTGS/)).toBeInTheDocument();
+    // A bank transfer, not a UPI button.
+    expect(screen.queryByRole('link', { name: /UPI app/i })).toBeNull();
   });
 
-  it('fixes the amount to two decimals', () => {
-    // UPI apps reject an amount with more, and `fiatAmount` arithmetic produces
-    // exactly that: 1500.50000000000001 and the like.
-    renderUI({ ...ORDER, fiatAmount: 1500.50000000000001 });
-    const url = new URL(payLink().href.replace('upi://', 'https://'));
-    expect(url.searchParams.get('am')).toBe('1500.50');
+  it('copies the account number exactly', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    renderUI();
+    fireEvent.click(screen.getByRole('button', { name: 'Copy Account number' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('50100123456789'));
   });
 
   it('sends nothing to a third-party QR service', () => {
@@ -188,29 +175,19 @@ describe('the buy-token payment step', () => {
     expect(button).toBeEnabled();
   });
 
-  it('shows the player nothing about who they are paying', async () => {
-    // This test used to assert the OPPOSITE — that the merchant's handle stayed
-    // visible with a Copy button, arguing it was a fallback for a handset with no
-    // UPI app and something support asks for. It is the exact thing the privacy
-    // rule forbids in the other direction, and the response it read from also
-    // carried the merchant's bank account number, IFSC and account-holder name.
-    //
-    // The link still opens the player's own UPI app, which will show them the
-    // payee it is about to pay. That is the protocol. Handing them an account
-    // number to keep is not.
+  it('shows the account and nothing else: no UPI handle, no mobile number', async () => {
+    // Nobody learns another person's number (owner, 2026-10-03), and a UPI
+    // handle is usually one.
     renderUI();
-    expect(screen.queryByRole('button', { name: 'Copy' })).toBeNull();
-    expect(screen.queryByText('ravi@okhdfc')).toBeNull();
+    expect(document.body.innerHTML).not.toContain('9876501234');
     expect(screen.queryByText(/Merchant UPI/)).toBeNull();
   });
 
-  it('offers no link at all until a merchant is assigned', () => {
-    // A `upi://pay?pa=undefined` link takes a player to a payment they cannot
-    // make, and the money would go nowhere recoverable. The server sends no
-    // `payTo` at all until a merchant is assigned, so that absence — not a
-    // merchant record the panel no longer receives — is what this renders from.
+  it('offers nowhere to pay until a member is assigned', () => {
+    // The server sends no `payTo` until a member has the order, so that
+    // absence is what this renders from.
     renderUI({ ...ORDER, payTo: null });
-    expect(screen.queryByRole('link', { name: /UPI app/i })).toBeNull();
+    expect(screen.queryByText(ACCOUNT.accountNo)).toBeNull();
     expect(screen.getByText(/Waiting for merchant details/)).toBeInTheDocument();
     // Nor a field and button for reporting a payment to nobody (§32 S22).
     expect(screen.queryByPlaceholderText(/Enter after paying/)).toBeNull();
@@ -231,36 +208,29 @@ describe('the buy-token payment step', () => {
 
 describe('the ATM cash rail', () => {
   /**
-   * A cash order is decided by the ORDER's own `paymentMode` — stamped by the
-   * server at creation from the order's size — and paid to the same `payTo`
-   * link as every other order. There is no second link: the cash-link queue the
-   * panel used to poll for was removed with its routes.
+   * A cash order is decided by the ORDER's own `paymentMode`, stamped by the
+   * server from the order's size. It is paid through the cash machine's QR the
+   * member scans (Step 2d), sent as `payTo.paymentLink` and used verbatim.
    *
-   * What still differs is the ORDER of the two steps. The merchant is at a cash
-   * machine whose session times out, so the player taps "I've paid" first and
-   * the reference follows; the merchant cannot confirm until it does.
+   * The ORDER of the steps differs too: the member is at a machine whose
+   * session times out, so the player taps "I've paid" first and the reference
+   * follows; the member cannot confirm until it does.
    */
+  const ATM_LINK = 'upi://pay?pa=atm.cash@icici&pn=ICICI%20ATM&am=5000.00&cu=INR&tr=ATM88123';
   const CASH_ORDER: any = {
     orderId: 'ORD-CASH-1',
-    status: 'ASSIGNED',
+    status: 'PROCESSING',
     fiatAmount: 5000,
     tokenAmount: 5000,
     paymentMode: 'CASH_ATM',
     expiresAt: new Date(Date.now() + 90_000).toISOString(),
-    payTo: {
-      paymentLink: 'upi://pay?pa=member%40okaxis&pn=Merchant+%234411&am=5000.00&cu=INR'
-        + '&tn=BettingBazaar-ORD-CASH-1&tr=ORD-CASH-1',
-      merchantRef: 'Merchant #4411',
-    },
+    payTo: { paymentLink: ATM_LINK, merchantRef: 'Merchant #4411' },
     // Deliberately present, as a row from before the projection would carry
-    // it: it must be IGNORED. The player pays the link and never learns who
-    // the merchant is.
+    // it: it must be IGNORED.
     merchantSnapshot: { upiId: 'merchant@bank', merchantName: 'Someone' },
   };
 
   it('offers nothing to tap until a member is assigned', () => {
-    // Before a member takes the order there is no `payTo`. An "I've paid" tap
-    // then would report a payment nobody could have received.
     render(<BuyPaymentUI order={{ ...CASH_ORDER, status: 'PENDING_QUEUE', payTo: null }} onPaid={vi.fn()} onExpire={vi.fn()} />);
     expect(screen.getByRole('status')).toHaveTextContent(/Waiting for merchant details/);
     expect(screen.queryByRole('button', { name: /I've Paid/ })).toBeNull();
@@ -268,9 +238,27 @@ describe('the ATM cash rail', () => {
     expect(screen.queryByRole('link')).toBeNull();
   });
 
-  it('pays the payTo link verbatim, and never the merchant snapshot', () => {
+  it('waits for the member to accept, with nothing to tap', () => {
+    // Assigned but not accepted: the member may still decline, so the server
+    // sends no destination and refuses "I've paid" (NOT_ACCEPTED_YET).
+    render(<BuyPaymentUI order={{ ...CASH_ORDER, status: 'ASSIGNED', payTo: { merchantRef: 'Merchant #4411' } }} onPaid={vi.fn()} onExpire={vi.fn()} />);
+    expect(screen.getByRole('status')).toHaveTextContent(/Waiting for the member to accept/);
+    expect(screen.queryByRole('button', { name: /I've Paid/ })).toBeNull();
+    expect(screen.queryByRole('link')).toBeNull();
+  });
+
+  it('waits for the member to scan the machine, with nothing to tap', () => {
+    // Accepted, but the QR is not scanned yet: there is nothing to pay, and
+    // the server refuses "I've paid" until there is (CASH_LINK_PENDING).
+    render(<BuyPaymentUI order={{ ...CASH_ORDER, payTo: { merchantRef: 'Merchant #4411' } }} onPaid={vi.fn()} onExpire={vi.fn()} />);
+    expect(screen.getByRole('status')).toHaveTextContent(/going to the cash machine/);
+    expect(screen.queryByRole('button', { name: /I've Paid/ })).toBeNull();
+    expect(screen.queryByRole('link')).toBeNull();
+  });
+
+  it('pays the machine\'s QR verbatim, and never the merchant snapshot', () => {
     render(<BuyPaymentUI order={CASH_ORDER} onPaid={vi.fn()} onExpire={vi.fn()} />);
-    expect(payLink().getAttribute('href')).toBe(CASH_ORDER.payTo.paymentLink);
+    expect(payLink().getAttribute('href')).toBe(ATM_LINK);
     expect(document.body.innerHTML).not.toContain('merchant@bank');
   });
 
@@ -323,7 +311,7 @@ describe('the ATM cash rail', () => {
   it('a UPI order at a cash-sized amount is still a UPI order — the ORDER decides', () => {
     // The rail is the one stamped on the order, not the amount re-judged here.
     // An order the server created on P2P_UPI keeps the one-step UTR flow.
-    render(<BuyPaymentUI order={{ ...CASH_ORDER, paymentMode: 'P2P_UPI' }} onPaid={vi.fn()} onExpire={vi.fn()} />);
+    render(<BuyPaymentUI order={{ ...CASH_ORDER, paymentMode: 'P2P_UPI', payTo: { bankAccount: ACCOUNT } }} onPaid={vi.fn()} onExpire={vi.fn()} />);
     expect(screen.getByPlaceholderText(/Enter after paying/)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /tell the merchant/ })).toBeNull();
   });

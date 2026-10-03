@@ -26,9 +26,9 @@ vi.mock('../services/apiClient', () => ({ default: { post, get: vi.fn() } }));
 
 import { UsdtBuyPanel } from './UsdtBuyPanel';
 
-// PLATFORM TOKENS, as the server sends them. What a player SENDS is derived
-// from the rate, so a size is only ever half of what the tile has to say.
-const DENOMINATIONS = [50000, 100000, 500000];
+// Whole USDT, as the server sends them (SystemConfig.usdtBuy, Step 2d). What
+// the player RECEIVES is derived from the rate.
+const BOUNDS = { minUsdt: 100, maxUsdt: 10000, stepUsdt: 100 };
 const TOKENS_PER_USDT = 100;
 const CHAINS = [
   { chain: 'TRC20', label: 'Tron (TRC-20)' },
@@ -56,7 +56,7 @@ const assigned = (over: any = {}) => ({
 
 const renderPanel = (props: any = {}) => render(
   <UsdtBuyPanel
-    denominations={DENOMINATIONS}
+    bounds={BOUNDS}
     tokensPerUsdt={TOKENS_PER_USDT}
     chains={CHAINS}
     {...props}
@@ -65,44 +65,57 @@ const renderPanel = (props: any = {}) => render(
 
 beforeEach(() => { post.mockReset(); post.mockResolvedValue({ success: true }); });
 
+const amountBox = () => screen.getByLabelText(/USDT to send/i) as HTMLInputElement;
+const typeUsdt = (v: string) => fireEvent.change(amountBox(), { target: { value: v } });
+
 describe('choosing an amount and a network', () => {
-  it('offers exactly the sizes the server serves, and no free field', () => {
-    // A typed amount would let a player ask for a size no merchant is queued
-    // for and be refused after choosing a network.
+  it('takes USDT, and says the bounds and the step the server sent', () => {
     renderPanel();
-    expect(screen.getByRole('radio', { name: /50,000 tokens/ })).toBeInTheDocument();
-    expect(screen.getByRole('radio', { name: /1,00,000 tokens/ })).toBeInTheDocument();
-    expect(screen.getByRole('radio', { name: /5,00,000 tokens/ })).toBeInTheDocument();
-    expect(screen.queryByRole('textbox')).toBeNull();
+    expect(amountBox()).toBeInTheDocument();
+    expect(screen.getByRole('status').textContent).toMatch(/100 to 10,000 USDT, in steps of 100/);
   });
 
-  it('shows what the player RECEIVES and what they SEND, on every tile', () => {
-    // The denomination is a token count; the price comes from the admin's rate.
-    // A tile showing only one leaves the player guessing at the number that
-    // will actually leave their wallet — the only number their wallet asks for.
+  it('shows what the player RECEIVES for what they SEND', () => {
+    // 300 USDT at 100 tokens per USDT is 30,000 tokens.
     renderPanel();
-    expect(screen.getByRole('radio', { name: /50,000 tokens.*500 USDT/ })).toBeInTheDocument();
-    expect(screen.getByRole('radio', { name: /1,00,000 tokens.*1,000 USDT/ })).toBeInTheDocument();
-    expect(screen.getByRole('radio', { name: /5,00,000 tokens.*5,000 USDT/ })).toBeInTheDocument();
+    typeUsdt('300');
+    expect(screen.getByRole('status').textContent).toMatch(/You receive 30,000 tokens/);
   });
 
-  it('prices from the SERVER’s rate, not a rate of its own', () => {
-    // The rate is admin-editable. A panel holding a copy would quote a price
-    // the order refuses — the same drift that put two owners on the config
-    // payload. Halving the rate must double every price on the screen.
-    render(
-      <UsdtBuyPanel denominations={[50000]} tokensPerUsdt={50} chains={CHAINS} />,
-    );
-    expect(screen.getByRole('radio', { name: /50,000 tokens.*1,000 USDT/ })).toBeInTheDocument();
+  it('prices from the SERVER’s rate, in paise, as the order will', () => {
+    // 100 × 88.55 in floating point is 8854.999…; the server works in paise.
+    render(<UsdtBuyPanel bounds={BOUNDS} tokensPerUsdt={88.55} chains={CHAINS} />);
+    typeUsdt('100');
+    expect(screen.getByRole('status').textContent).toMatch(/You receive 8,855 tokens/);
+  });
+
+  it('refuses an amount off the step or outside the bounds, and says why', () => {
+    renderPanel();
+    fireEvent.click(screen.getByRole('radio', { name: /Tron/ }));
+    for (const bad of ['150', '50', '10100']) {
+      typeUsdt(bad);
+      expect(screen.getByRole('status').textContent).toMatch(/Choose 100 to 10,000 USDT, in steps of 100/);
+      expect(screen.getByRole('button', { name: /Continue/ })).toBeDisabled();
+    }
+  });
+
+  it('steps by 100 inside the bounds', () => {
+    renderPanel({ bounds: { minUsdt: 200, maxUsdt: 400, stepUsdt: 100 } });
+    const more = screen.getByRole('button', { name: /100 USDT more/ });
+    fireEvent.click(more);
+    expect(amountBox().value).toBe('200');
+    fireEvent.click(more); fireEvent.click(more); fireEvent.click(more);
+    expect(amountBox().value).toBe('400');
+    fireEvent.click(screen.getByRole('button', { name: /100 USDT less/ }));
+    expect(amountBox().value).toBe('300');
   });
 
   it('offers NOTHING when no rate has been set', () => {
-    // 0 is the schema default and 0 is not a rate. Offering unpriceable sizes
-    // is how a player picks one and is refused for a reason the screen never
-    // showed them; the server refuses these outright with USDT_RATE_UNSET.
-    render(<UsdtBuyPanel denominations={DENOMINATIONS} tokensPerUsdt={null} chains={CHAINS} />);
+    // 0 is the schema default and 0 is not a rate; the server refuses these
+    // outright with USDT_RATE_UNSET.
+    render(<UsdtBuyPanel bounds={BOUNDS} tokensPerUsdt={null} chains={CHAINS} />);
     expect(screen.getByText(/not available right now/i)).toBeInTheDocument();
-    expect(screen.queryByRole('radio')).toBeNull();
+    expect(screen.queryByLabelText(/USDT to send/i)).toBeNull();
     expect(screen.queryByRole('button', { name: /Continue/ })).toBeNull();
   });
 
@@ -113,36 +126,31 @@ describe('choosing an amount and a network', () => {
   });
 
   it('will not create an order until BOTH are chosen', () => {
-    // The network decides which merchants can serve the order, so it cannot be
-    // asked for afterwards — that would mean reassigning an order already
-    // placed.
+    // The network decides which members can serve the order, so it cannot be
+    // asked for afterwards.
     renderPanel();
-    const go = screen.getByRole('button', { name: /Continue/ });
-    expect(go).toBeDisabled();
-
-    fireEvent.click(screen.getByRole('radio', { name: /50,000 tokens/ }));
     expect(screen.getByRole('button', { name: /Continue/ })).toBeDisabled();
-
+    typeUsdt('500');
+    expect(screen.getByRole('button', { name: /Continue/ })).toBeDisabled();
     fireEvent.click(screen.getByRole('radio', { name: /Tron/ }));
     expect(screen.getByRole('button', { name: /Continue/ })).toBeEnabled();
   });
 
-  it('sends the amount and the network the player picked', async () => {
+  it('sends the USDT and the network the player picked, and no token count', async () => {
     renderPanel();
-    fireEvent.click(screen.getByRole('radio', { name: /1,00,000 tokens/ }));
+    typeUsdt('1000');
     fireEvent.click(screen.getByRole('radio', { name: /BNB Smart Chain/ }));
     fireEvent.click(screen.getByRole('button', { name: /Continue/ }));
-
     await waitFor(() => expect(post).toHaveBeenCalledWith(
       '/api/payment/usdt/deposit/create',
-      { tokenAmount: 100000, usdtChain: 'BEP20' },
+      { usdtAmount: 1000, usdtChain: 'BEP20' },
     ));
   });
 
   it('surfaces a refusal instead of pretending the order was created', async () => {
     post.mockRejectedValue({ message: 'You already have a USDT purchase in progress.' });
     renderPanel();
-    fireEvent.click(screen.getByRole('radio', { name: /50,000 tokens/ }));
+    typeUsdt('100');
     fireEvent.click(screen.getByRole('radio', { name: /Tron/ }));
     fireEvent.click(screen.getByRole('button', { name: /Continue/ }));
     expect(await screen.findByText(/already have a USDT purchase/)).toBeInTheDocument();
@@ -188,7 +196,7 @@ describe('an assigned order', () => {
     // order does not hold — and they would send it.
     render(
       <UsdtBuyPanel
-        denominations={DENOMINATIONS}
+        bounds={BOUNDS}
         tokensPerUsdt={50}
         chains={CHAINS}
         order={assigned({ fiatAmount: 500 })}

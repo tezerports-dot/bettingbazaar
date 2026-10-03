@@ -1,36 +1,28 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * `POST /api/payment/order/:orderId/retry` and `GET /api/payment/order/:orderId/batch`,
- * over HTTP, through `authenticate`, the order guard and a real database.
+ * `POST /api/payment/order/:orderId/retry`, over HTTP, through `authenticate`,
+ * the order guard and a real database.
  *
- * Route coverage (report:routes, 2026-10-01) recorded both as reached by NO
- * tier: the wallet's Retry button and the split-withdrawal parts list call
- * them, and only the services underneath had tests (withdrawalRetryPg,
- * splitWithdrawalPg). What this file owns is the ROUTE: who may call it, what
- * a refusal says, and that the response carries what the screen reads.
+ * Route coverage (report:routes, 2026-10-01) recorded it as reached by NO
+ * tier: the wallet's Retry button calls it, and only the service underneath
+ * had tests (withdrawalRetryPg). What this file owns is the ROUTE: who may call
+ * it, what a refusal says, and that the response carries what the screen reads.
  *
- * ── The batch route since 2c ────────────────────────────────────────────────
- * Withdrawals are no longer split (owner, 2026-10-02): one withdrawal is one
- * order on the rail its size names, and nothing writes a batch label any more.
- * So the only answer production can produce from `/batch` is "no batch, no
- * parts", on either rail — which is what is asserted. A case that listed the
- * parts of a split is gone with the split: staging a labelled sibling set by
- * hand would be a fixture the platform cannot create (§32 S16). The route
- * itself goes in 2d.
+ * The `/batch` route it used to share this file with listed the parts of a
+ * split withdrawal. Withdrawals are not split (owner, 2026-10-02), so the route
+ * went in 2d with the batch label; playerDoorPg pins that it answers nothing.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { pgConfigured, applySchema, closePg, pgQuery } from '#db/client.js';
 import { createOrderRecord, getOrderRecord } from '#db/repositories/orders.record.js';
 import { getBalances } from '#db/repositories/wallets.js';
 import { updateUser } from '#db/repositories/users.js';
-import { PAYMENT_MODES } from '#db/repositories/teamRouting.js';
 import { cancelOrder as cancelState } from '../../domains/payment/orderLifecycle.service.js';
-import { createWithdrawalOrder } from '../../domains/payment/paymentProcessing.service.js';
 import { mountRouter, actor, as } from './_harness.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 
-describePg('withdrawal retry and batch routes', () => {
+describePg('withdrawal retry route', () => {
   let app; let seq = 0;
   const oid = () => `wrb-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}-${seq += 1}`;
   // Every player this run made, so their orders can be removed afterwards: a
@@ -48,7 +40,7 @@ describePg('withdrawal retry and batch routes', () => {
     });
     const { creditWinnings } = await import('../../domains/wallet/walletAuthority.service.js');
     await creditWinnings(
-      player.userId, winningsRupees, 'retry/batch route suite seed', 'Test',
+      player.userId, winningsRupees, 'retry route suite seed', 'Test',
       `seed_${player.userId}`, `wrb_seed_${player.userId}`,
     );
     return player;
@@ -120,31 +112,5 @@ describePg('withdrawal retry and batch routes', () => {
     const res = await as(app, stranger).post(`/order/${expired}/retry`).send({});
     expect([403, 404]).toContain(res.status);
     expect(await getBalances(stranger.userId)).toEqual(before);
-  });
-
-  // ── Batch ────────────────────────────────────────────────────────────────
-  // On BOTH rails: ₹1,000 is a cash withdrawal, ₹20,000 a UPI/bank one. Neither
-  // is split, so neither has siblings for the screen to list.
-  for (const [rupees, mode] of [[1_000, PAYMENT_MODES.CASH_ATM], [20_000, PAYMENT_MODES.P2P_UPI]]) {
-    it(`answers a ${mode} withdrawal of ₹${rupees.toLocaleString('en-IN')} with no batch and no parts`, async () => {
-      const player = await withdrawer(rupees * 2);
-      const result = await createWithdrawalOrder(player.userId, rupees);
-      expect(result.parts).toHaveLength(1);
-      const id = result.order?.orderId ?? result.parts?.[0]?.orderId;
-      expect((await getOrderRecord(id)).paymentMode).toBe(mode);
-      const res = await as(app, player).get(`/order/${id}/batch`);
-      expect(res.status, JSON.stringify(res.body)).toBe(200);
-      expect(res.body.batchRef).toBeNull();
-      expect(res.body.parts).toEqual([]);
-    });
-  }
-
-  it("refuses another player's batch", async () => {
-    const owner = await withdrawer(2_000);
-    const stranger = await withdrawer(1_000);
-    const result = await createWithdrawalOrder(owner.userId, 1_000);
-    const res = await as(app, stranger).get(`/order/${result.parts[0].orderId}/batch`);
-    expect([403, 404]).toContain(res.status);
-    expect(res.body.parts).toBeUndefined();
   });
 });

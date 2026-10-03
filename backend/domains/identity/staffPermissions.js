@@ -81,7 +81,7 @@ export const STAFF_PERMISSIONS = Object.freeze([
 
   // ── Payments & disputes ──────────────────────────────────────────────────
   { key: 'canResolveDisputes', group: 'payments', label: 'Resolve disputes', money: true,
-    description: 'The dispute queue, CDM slips and stalled payouts, and the decision to release or refund.' },
+    description: 'The dispute queue and stalled payouts, and the decision to release or refund.' },
   { key: 'canManageUtr', group: 'payments', label: 'Payment references (UTR)',
     description: 'The UTR registry: look a reference up, flag or clear it, resolve a contested one.' },
   { key: 'canManagePaymentSystem', group: 'payments', label: 'Payment system',

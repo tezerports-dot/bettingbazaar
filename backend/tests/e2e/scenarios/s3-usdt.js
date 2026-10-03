@@ -58,7 +58,7 @@ async function drivePricedRail() {
   const rate = cfg.usdtTokensPerUnit;
   check(A, 'player', 'the player panel is told the rate the admin set', '90',
     String(rate), Number(rate) === 90,
-    '§25: there is no fallback — 0 gives Infinity USDT and 1 sells 50,000 tokens for 50,000 USDT');
+    '§25: there is no fallback — 0 prices nothing and 1 sells 500 tokens for 500 USDT');
 
   // Two members of one USDT team, each holding an address on ONE chain: `tron`
   // on TRC-20, `bnb` on BEP-20. They are the only members online on the rail
@@ -74,25 +74,26 @@ async function drivePricedRail() {
   const player = await seedPlayer({});
   const pT = playerToken(player);
 
-  // ── The denominations are the only sizes (§25) ───────────────────────────
-  const odd = await POST(pT, '/api/payment/usdt/deposit/create', { tokenAmount: 60000, usdtChain: 'TRC20' });
-  check(A, 'player', 'a size that is not a denomination', '4xx naming the sizes',
-    `${odd.status} ${odd.body.message ?? ''}`, odd.status >= 400 && odd.status < 500);
+  // ── A USDT buy is whole steps of 100 USDT, inside the bounds (Step 2d) ──
+  const odd = await POST(pT, '/api/payment/usdt/deposit/create', { usdtAmount: 150, usdtChain: 'TRC20' });
+  check(A, 'player', 'a USDT amount that is not a step of 100', '400 NOT_A_USDT_AMOUNT',
+    `${odd.status} ${odd.body.code ?? ''} ${odd.body.message ?? ''}`,
+    odd.status === 400 && odd.body.code === 'NOT_A_USDT_AMOUNT');
 
   // ── The chain is required, and must be one that exists ───────────────────
-  const noChain = await POST(pT, '/api/payment/usdt/deposit/create', { tokenAmount: 50000 });
+  const noChain = await POST(pT, '/api/payment/usdt/deposit/create', { usdtAmount: 500 });
   check(A, 'player', 'no chain named', '4xx', `${noChain.status} ${noChain.body.message ?? ''}`,
     noChain.status >= 400 && noChain.status < 500,
     '§25: USDT sent to the wrong chain is the one unrecoverable mistake this platform can make');
 
-  const badChain = await POST(pT, '/api/payment/usdt/deposit/create', { tokenAmount: 50000, usdtChain: 'ERC20' });
+  const badChain = await POST(pT, '/api/payment/usdt/deposit/create', { usdtAmount: 500, usdtChain: 'ERC20' });
   check(A, 'player', 'a chain the platform does not run', '4xx',
     `${badChain.status} ${badChain.body.message ?? ''}`, badChain.status >= 400 && badChain.status < 500);
 
   // ── A real USDT buy ──────────────────────────────────────────────────────
-  const created = await POST(pT, '/api/payment/usdt/deposit/create', { tokenAmount: 50000, usdtChain: 'TRC20' });
+  const created = await POST(pT, '/api/payment/usdt/deposit/create', { usdtAmount: 500, usdtChain: 'TRC20' });
   const order = created.body.order;
-  check(A, 'player', 'create a 50,000-token USDT buy on TRC-20', '200 with an order',
+  check(A, 'player', 'create a 500 USDT buy on TRC-20 (45,000 tokens at 90)', '200 with an order',
     `${created.status} ${order?.orderId ?? JSON.stringify(created.body).slice(0,160)}`,
     created.status === 200 && !!order?.orderId);
   if (!order?.orderId) return;
@@ -112,10 +113,10 @@ async function drivePricedRail() {
   // Trap 15: `fiat_amount_paise` is in the ORDER's currency. On a USDT order it
   // holds USDT, and `token_amount_paise` is what the ledger and any aggregate
   // must use.
-  check(A, 'system', 'the token amount is recorded separately from the USDT figure', '50,000 tokens',
+  check(A, 'system', 'the token amount is recorded separately from the USDT figure', '45,000 tokens',
     `tokens ${Number(r.token_amount_paise) / 100}, fiat ${Number(r.fiat_amount_paise) / 100}`,
-    Number(r.token_amount_paise) === 5000000,
-    'trap 15: a 50,000-token USDT deposit must never be aggregated as ₹500');
+    Number(r.token_amount_paise) === 4500000 && Number(r.fiat_amount_paise) === 50000,
+    'trap 15: a 45,000-token USDT deposit must never be aggregated as ₹500');
 
   // ── The chain is FROZEN by trigger ───────────────────────────────────────
   let frozen = false; let why = '';
@@ -135,7 +136,19 @@ async function drivePricedRail() {
     rateFrozen ? 'refused' : 'RE-PRICED', rateFrozen);
 
   // ── §24: the player is told where to pay and nothing about who ───────────
-  const view = JSON.stringify(order);
+  // Not before the member accepts: until then an admin may still move the
+  // order, and USDT sent to the first member's address is not recoverable.
+  check(A, 'player', 'before the member accepts, the player is given no address', 'no payTo.usdtAddress',
+    order.payTo?.usdtAddress ?? 'none', !order.payTo?.usdtAddress);
+  if (r.merchant_id === tron.merchantId) {
+    const accepted = await POST(merchantToken(tron), `/api/merchant/accept/${oid}`, {});
+    check(A, 'merchant', 'the TRC-20 member accepts the USDT buy', '200', `${accepted.status} ${accepted.body.message ?? ''}`, accepted.status === 200);
+  }
+  const shown = (await GET(pT, `/api/payment/order/${oid}`)).body.order ?? {};
+  const tronAddress = (await pgQuery('SELECT usdt_address_trc20 FROM merchants WHERE merchant_id = $1', [tron.merchantId], 'e2e')).rows[0]?.usdt_address_trc20;
+  check(A, 'player', 'once accepted, the player is given the member\'s TRC-20 address', tronAddress ?? 'the seeded address',
+    shown.payTo?.usdtAddress ?? 'none', !!tronAddress && shown.payTo?.usdtAddress === tronAddress);
+  const view = JSON.stringify(shown);
   check(A, 'player', 'the player is given an address AND its network together', 'both present',
     /TRC20|Tron/i.test(view) ? 'chain named' : 'CHAIN MISSING', /TRC20|Tron/i.test(view),
     '§25: an address on its own is the mistake');
@@ -150,13 +163,13 @@ async function drivePricedRail() {
     + 'assignment below landing on the TRC-20 holder is the evidence for it.');
 
   // ── The team's pool holds TOKENS, not USDT (owner correction; trap 15) ───
-  // The USDT goes to the member's own wallet; the platform holds the 50,000
+  // The USDT goes to the member's own wallet; the platform holds the 45,000
   // TOKENS the player is buying in the team's pool, at assignment.
   const hold = (await orderPoolTrail(oid)).entries.filter(e => e.kind === 'BUY_HOLD');
-  check(A, 'system', 'the team pool holds the TOKENS bought, not the USDT figure', `BUY_HOLD held +5000000 in ${team.teamId}`,
+  check(A, 'system', 'the team pool holds the TOKENS bought, not the USDT figure', `BUY_HOLD held +4500000 in ${team.teamId}`,
     hold.map(e => `${e.kind} avail ${e.available}, held ${e.held}, team ${e.teamId}`).join('; ') || 'NO HOLD',
-    hold.length === 1 && hold[0].teamId === team.teamId && hold[0].held === 5000000 && hold[0].available === -5000000,
-    'trap 15: 50,000 tokens is 5,000,000 paise; the order\'s USDT figure is a different unit');
+    hold.length === 1 && hold[0].teamId === team.teamId && hold[0].held === 4500000 && hold[0].available === -4500000,
+    'trap 15: 45,000 tokens is 4,500,000 paise; the order\'s USDT figure is a different unit');
 
   // The real proof of the chain guard: whoever the platform CHOSE holds an
   // address on the order's chain. A merchant with only a BEP-20 address must

@@ -60,7 +60,7 @@ describePg('the UTR grace', () => {
 
   /** A buy order routed to the team and about to run out of time — the only interesting case. */
   const expiringDeposit = async (p, secondsLeft = 8) => {
-    const { order } = await createDepositOrder(p.userId, 20_000);
+    const { order } = await createDepositOrder(p.userId, 50_000);
     const orderId = order.orderId ?? order._id;
     const routed = await getOrderRecord(orderId);
     expect(routed.status, 'the buy was not routed to the team').toBe('ASSIGNED');
@@ -76,7 +76,7 @@ describePg('the UTR grace', () => {
     await applySchema();
     app = mountRouter((await import('../../domains/payment/payment.routes.js')).default);
     // Ten members online, three open orders each: room for every buy here.
-    team = await teams.workingTeam({ rail: 'UPI_BANK', poolTokens: 200_000 });
+    team = await teams.workingTeam({ rail: 'UPI_BANK', poolTokens: 500_000 });
     restoreWindow = await graceWindow();
   }, 120_000);
 
@@ -223,7 +223,7 @@ describePg('the UTR grace', () => {
     let orderId;
     const p = await player();
     try {
-      const { order } = await createDepositOrder(p.userId, 20_000);
+      const { order } = await createDepositOrder(p.userId, 50_000);
       orderId = order.orderId ?? order._id;
       expect((await getOrderRecord(orderId)).status).toBe('PENDING_QUEUE');
       await cancelOrder(p.userId, false, orderId);
@@ -247,9 +247,9 @@ describePg('the UTR grace', () => {
       },
     });
     const { creditWinnings } = await import('../../domains/wallet/walletAuthority.service.js');
-    await creditWinnings(p.userId, 20_000, 'UTR grace suite seed', 'Test',
+    await creditWinnings(p.userId, 50_000, 'UTR grace suite seed', 'Test',
       `seed_${p.userId}`, `grace_seed_${p.userId}`);
-    const { order } = await createWithdrawalOrder(p.userId, 20_000);
+    const { order } = await createWithdrawalOrder(p.userId, 50_000);
     const orderId = order.orderId ?? order._id;
     const before = await getOrderRecord(orderId);
     expect(before.type).toBe('WITHDRAWAL');

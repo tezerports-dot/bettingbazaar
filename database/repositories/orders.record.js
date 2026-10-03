@@ -137,22 +137,16 @@ export function toOrder(r) {
     // address on a network they cannot reach.
     usdtChain: r.usdt_chain ?? null,
 
-    // The siblings of one withdrawal request, as a LABEL.
-    //
-    // A payout too large for one cash denomination becomes several ORDINARY
-    // withdrawals — not a parent and its legs. This groups the ones that came
-    // from a single request so a player is told "part 2 of 4" instead of
-    // finding four unexplained orders, and so support can pull the set.
-    //
-    // Nothing branches on it. No state is derived from it, no money reads it,
-    // no assignment consults it. The moment something does, it has become the
-    // parent relation again wearing a different name.
-    withdrawalBatchRef: r.withdrawal_batch_ref ?? null,
-
     // When the player claimed their minute to fetch the UTR. Null until they
     // do, and non-null forever after: the grace is claimable once, and the row
     // is what says so.
     utrGraceAt: r.utr_grace_at ?? null,
+
+    // On a CASH buy, the ATM's payment link the member scanned, and when
+    // (Step 2d). Null until they do. Written only by `setCashLink` below, so it
+    // is absent from SETTABLE.
+    cashLink: r.cash_link ?? null,
+    cashLinkAt: r.cash_link_at ?? null,
 
     // Where this order sits in the queue for a merchant. Higher goes first; a
     // retry carries 1, a first attempt 0. The tie is age, so within a rank it
@@ -162,19 +156,6 @@ export function toOrder(r) {
     // joins on it — and a partial UNIQUE, so one expired order yields one
     // retry and never two live orders for one intent.
     retryOfOrderId: r.retry_of_order_id ?? null,
-
-    // ── The CDM receipt is NOT mapped here, on purpose ────────────────────
-    // `cdm_transaction_id`, `cdm_receipt_url` and `cdm_receipt_at` are absent
-    // from this object and must stay absent. Every projection on this platform
-    // — the merchant view, the player's order read, the admin panel — is built
-    // from this mapper, so a field it does not name cannot reach any of them.
-    // That is what makes the receipt write-only BY CONSTRUCTION rather than by
-    // each reader remembering to strip it, which is the shape that fails open.
-    //
-    // `getCdmReceipt` is the one way to read it, and the admin route gated on
-    // canResolveDisputes is its only caller. Adding these three lines here
-    // would hand a CDM slip — account number, branch, timestamp — to the
-    // merchant who uploaded it and to the player, and nothing would fail.
 
     createdAt: r.created_at, updatedAt: r.updated_at,
   };
@@ -248,23 +229,12 @@ const SETTABLE = Object.freeze({
   warningIssued: 'warning_issued',
   paidAt: 'paid_at', completedAt: 'completed_at', expiresAt: 'expires_at',
 
-  // The label grouping the siblings of one split withdrawal. Settable because
-  // it is written with the row like any other detail; it decides nothing.
-  withdrawalBatchRef: 'withdrawal_batch_ref',
-
-
   // The queue rank and what it is a retry of. Written with the row at creation;
   // neither is meant to change afterwards, but they go through the same
   // allowlist as everything else so a typo is refused rather than dropped.
   assignmentPriority: 'assignment_priority',
   retryOfOrderId: 'retry_of_order_id',
 
-  // The CDM receipt. WRITABLE here and deliberately absent from `toOrder`
-  // below: a merchant submits it, and only an admin or a disputes manager may
-  // ever read it back. See `getCdmReceipt`.
-  cdmTransactionId: 'cdm_transaction_id',
-  cdmReceiptUrl: 'cdm_receipt_url',
-  cdmReceiptAt: 'cdm_receipt_at',
 });
 
 /**
@@ -457,18 +427,41 @@ export async function claimUtrGrace(orderId, userId, graceSeconds) {
 }
 
 /**
+ * Attach the ATM's payment link to a CASH buy — the one writer of `cash_link`.
+ *
+ * Every condition is in the WHERE (trap 18): the order is a CASH buy, it is
+ * this member's, they have accepted it (PROCESSING: before that they may still
+ * decline it), and the player has not yet said they paid. A second scan
+ * before then REPLACES the first (the member picked the wrong amount, or the
+ * machine timed out and showed a new QR); after PAID the link is what was
+ * paid, and nothing moves it. The caller has already checked the link itself
+ * with `checkCashLink`; the table's CHECK holds its shape regardless.
+ *
+ * @returns the updated order, or null when any condition failed. The caller
+ *   reads the order to say which.
+ */
+export async function setCashLink(orderId, merchantId, link) {
+  const { rows } = await pgQuery(
+    `UPDATE order_states
+        SET cash_link    = $3,
+            cash_link_at = now(),
+            updated_at   = now()
+      WHERE order_id     = $1
+        AND merchant_id  = $2
+        AND order_type   = 'DEPOSIT'
+        AND payment_mode = 'CASH_ATM'
+        AND state        = 'PROCESSING'
+      RETURNING *`,
+    [String(orderId), String(merchantId), String(link)], 'order_set_cash_link',
+  );
+  return rows[0] ? toOrder(rows[0]) : null;
+}
+
+/**
  * Withdrawals still waiting for a merchant — the admin's stalled queue.
  *
- * ── Not split-specific, on purpose ─────────────────────────────────────────
- * A payout too large for one cash denomination becomes several ORDINARY
- * withdrawals, so a sibling nobody has taken is just a queued withdrawal. The
- * question worth asking is therefore the general one — which payouts have
- * nobody working them? — and asking it generally covers the split siblings and
- * every other stuck payout with one query instead of two.
- *
  * A player's tokens are locked behind every row here. A withdrawal that finds
- * no merchant WAITS rather than failing, which is right on the cash rail (the
- * siblings already paid cannot be clawed back), and the price of it is a lock
+ * no merchant WAITS rather than failing, and the price of it is a lock
  * with no deadline. An order with no deadline and no owner is one nobody is
  * answerable for; this queue is the owner. The player can also cancel and take
  * the tokens back — the two together are what make waiting a decision rather
@@ -483,25 +476,6 @@ export async function stalledWithdrawals({ olderThanMinutes = 25, limit = 200 } 
       ORDER BY created_at ASC
       LIMIT ${Math.min(Math.max(Number(limit) || 200, 1), 1000)}`,
     [Math.max(Number(olderThanMinutes) || 0, 0)], 'orders_stalled_withdrawals',
-  );
-  return rows.map(toOrder);
-}
-
-/**
- * The siblings of one split withdrawal.
- *
- * A support and display read. `withdrawal_batch_ref` is a LABEL — nothing
- * derives state from it and nothing about the money path consults it — so this
- * exists to answer "which orders came from that one request", and for no other
- * purpose.
- */
-export async function withdrawalBatch(batchRef) {
-  if (!batchRef) return [];
-  const { rows } = await pgQuery(
-    `SELECT * FROM order_states
-      WHERE withdrawal_batch_ref = $1
-      ORDER BY token_amount_paise DESC, order_id ASC`,
-    [String(batchRef)], 'orders_withdrawal_batch',
   );
   return rows.map(toOrder);
 }
@@ -551,35 +525,6 @@ export async function findCompletedOrdersMissingEvents({ limit = 200 } = {}) {
  * CANCELLED, FAILED, REJECTED and COMPLETED are finished and must not block a
  * new purchase — a player whose order failed has to be able to try again.
  */
-/**
- * The CDM receipt for one order — the ONLY way to read it.
- *
- * Separate from `getOrderRecord` because the answer must not travel with the
- * order. `toOrder` does not map these columns, so no existing projection can
- * carry them; this query is the deliberate exception, and its only caller is
- * the admin route gated on `canResolveDisputes`.
- *
- * Returns null when nothing has been submitted, which is a real and expected
- * state: the merchant's confirm completes the order and the receipt is chased
- * afterwards, so an order can legitimately be settled with none yet.
- */
-export async function getCdmReceipt(orderId) {
-  const { rows } = await pgQuery(
-    `SELECT order_id, merchant_id, cdm_transaction_id, cdm_receipt_url, cdm_receipt_at
-       FROM order_states WHERE order_id = $1`,
-    [String(orderId)], 'order_cdm_receipt',
-  );
-  const r = rows[0];
-  if (!r || !r.cdm_receipt_url) return null;
-  return {
-    orderId: r.order_id,
-    merchantId: r.merchant_id,
-    transactionId: r.cdm_transaction_id,
-    receiptUrl: r.cdm_receipt_url,
-    submittedAt: r.cdm_receipt_at,
-  };
-}
-
 /**
  * Buy orders the PLAYER has paid for and the merchant has not answered.
  *
@@ -660,75 +605,6 @@ export async function findPaidDepositsAwaitingReference({ olderThanMinutes = 15,
     merchantId: r.merchant_id ? String(r.merchant_id) : null,
     userId:     String(r.user_id),
     paidAt:     r.paid_at,
-  }));
-}
-
-/**
- * Settled cash withdrawals whose receipt never arrived.
- *
- * The merchant's confirm completes the order and the receipt is chased after —
- * so a missing one does not block the player, and nothing would otherwise
- * notice it was never sent. This is what makes that pattern visible: a merchant
- * appearing here repeatedly is asserting payments they are not evidencing.
- */
-export async function withdrawalsMissingCdmReceipt({ olderThanMinutes = 60, limit = 200 } = {}) {
-  const { rows } = await pgQuery(
-    `SELECT order_id, merchant_id, user_id, token_amount_paise, completed_at
-       FROM order_states
-      WHERE order_type = 'WITHDRAWAL'
-        AND payment_mode = 'CASH_ATM'
-        AND cdm_receipt_url IS NULL
-        AND completed_at IS NOT NULL
-        AND completed_at < now() - make_interval(mins => $1)
-      ORDER BY completed_at ASC
-      LIMIT ${Math.min(Math.max(Number(limit) || 200, 1), 1000)}`,
-    [Math.max(Number(olderThanMinutes) || 0, 0)], 'orders_missing_cdm_receipt',
-  );
-  return rows.map((r) => ({
-    orderId: r.order_id,
-    merchantId: r.merchant_id,
-    userId: r.user_id,
-    tokenAmount: rupees(r.token_amount_paise),
-    completedAt: r.completed_at,
-  }));
-}
-
-/**
- * The receipts THIS merchant still owes.
- *
- * The admin query above answers "who is not evidencing their payouts". This
- * answers the merchant's own half of it: which of my completed cash payouts
- * still needs a slip. Without it the receipt can only ever be submitted in the
- * seconds after the confirm — a merchant whose upload failed, or who did not
- * have the slip in hand yet, has no way back to the order, and the admin queue
- * fills with items nobody can clear.
- *
- * Deliberately NOT built on `toOrder`: three columns, chosen here, and the
- * player is not one of them. There is no `user_id` in this result because a
- * list of "things you owe paperwork for" is not an occasion to re-identify the
- * people involved.
- *
- * `cdm_receipt_url` is read only as IS NULL. The merchant learns whether they
- * still owe a receipt, never what a submitted one contains — the slip stays
- * unreadable to them the moment it is stored.
- */
-export async function merchantWithdrawalsMissingCdmReceipt(merchantId, { limit = 50 } = {}) {
-  const { rows } = await pgQuery(
-    `SELECT order_id, fiat_amount_paise, completed_at
-       FROM order_states
-      WHERE merchant_id = $1
-        AND order_type = 'WITHDRAWAL'
-        AND payment_mode = 'CASH_ATM'
-        AND cdm_receipt_url IS NULL
-        AND completed_at IS NOT NULL
-      ORDER BY completed_at ASC
-      LIMIT ${Math.min(Math.max(Number(limit) || 50, 1), 200)}`,
-    [String(merchantId)], 'merchant_orders_missing_cdm_receipt',
-  );
-  return rows.map((r) => ({
-    orderId: r.order_id,
-    fiatAmount: rupees(r.fiat_amount_paise),
-    completedAt: r.completed_at,
   }));
 }
 

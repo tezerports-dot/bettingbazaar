@@ -1903,7 +1903,7 @@ const CASES = [
         const res = await fetch(`${API}/api/payment/deposit/create`, {
           method: 'POST',
           headers: { Authorization: `Bearer ${playerToken(player)}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ tokenAmount: 20000 }),
+          body: JSON.stringify({ tokenAmount: 50000 }), // the smallest UPI/bank size (2d)
         });
         const body = await res.json().catch(() => ({}));
         if (body.order?.orderId) made.push(body.order.orderId);
@@ -2242,14 +2242,16 @@ const CASES = [
       // The WHOLE document, not the one field — restoring a field leaves every
       // other one at whatever the press wrote.
       const before = await db.config.getSystemConfig();
-      const wasMinDeposit = before?.minDeposit;
+      const wasSizes = before?.orderSizes;
       try {
         await go(page, cfg, base, '/settings');
-        const field = page.getByLabel(/Min Deposit/i).first();
-        if (await field.count() === 0) return ['NOT DRIVEN', 'no Min Deposit field on /settings'];
-
-        const target = Number(wasMinDeposit) === 501 ? 502 : 501;
-        await field.fill(String(target));
+        // One size on the Order Sizes card (Step 2d), addressed by its printed
+        // name (S24). Flipped from whatever it is now, so the press changes the
+        // document whichever state an earlier run left it in.
+        const box = page.getByLabel('5,000', { exact: true }).first();
+        if (await box.count() === 0) return ['NOT DRIVEN', 'no 5,000 order-size checkbox on /settings'];
+        const wasOn = await box.isChecked();
+        await box.setChecked(!wasOn);
         await settle(page, 1500);
 
         const save = page.getByRole('button', { name: /^Save Settings$/i }).first();
@@ -2259,19 +2261,20 @@ const CASES = [
         await settle(page, 8000);
 
         const after = await db.config.getSystemConfig();
-        if (Number(after?.minDeposit) !== target) {
-          return ['FAILED', `pressed Save; minDeposit is ${after?.minDeposit}, expected ${target}`];
+        const nowOn = (after?.orderSizes ?? []).map(Number).includes(5000);
+        if (nowOn === wasOn) {
+          return ['FAILED', `pressed Save; 5,000 is still ${wasOn ? 'on' : 'off'} offer (${JSON.stringify(after?.orderSizes)})`];
         }
         const said = await words(page);
         if (!/saved|updated|success/i.test(said)) {
           return ['FAILED', 'the document was written; the screen never confirmed it'];
         }
-        return ['DROVE', `minDeposit ${wasMinDeposit} → ${target}, confirmed on screen`];
+        return ['DROVE', `5,000 ${wasOn ? 'taken off' : 'put on'} offer, confirmed on screen`];
       } finally {
         // Outside the assertions, and outside the early returns above (trap 10).
         await db.config.applyConfig({
-          scope: 'system', actor: 'mutating-drive', patch: { minDeposit: wasMinDeposit },
-        }).catch((e) => console.error('   ! could not restore minDeposit:', e.message));
+          scope: 'system', actor: 'mutating-drive', patch: { orderSizes: wasSizes },
+        }).catch((e) => console.error('   ! could not restore orderSizes:', e.message));
       }
     },
   },
@@ -2411,7 +2414,7 @@ async function main() {
     // routed to it — `merchant/orders/accept-a-later-card` depends on exactly
     // that. Since Step 2c a merchant outside a team is served no orders at all.
     driveMerchant = await seedMerchant({ currency: 'INR' });
-    await seedTeam({ rail: 'UPI_BANK', poolTokens: 100000, include: [driveMerchant], online: [driveMerchant] });
+    await seedTeam({ rail: 'UPI_BANK', poolTokens: 200000, include: [driveMerchant], online: [driveMerchant] });
     tokens['merchant-panel'] = merchantToken(driveMerchant);
     // A RETURNING merchant has a cached profile besides a token; seeding only
     // the token means one refused profile call renders the sign-in screen.

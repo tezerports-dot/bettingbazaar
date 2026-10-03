@@ -36,7 +36,7 @@ import {
 } from '#db/repositories/orders.record.js';
 import { PAYMENT_MODES, setCashReady } from '#db/repositories/teamRouting.js';
 import { createDepositOrder, markOrderPaid } from '../../domains/payment/paymentProcessing.service.js';
-import { teamFixture } from '../teamFixture.js';
+import { teamFixture, readyToPay } from '../teamFixture.js';
 import { actor } from './_harness.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
@@ -59,7 +59,7 @@ describePg('a cash buy reaches PAID before it is evidenced', () => {
   beforeAll(async () => {
     await applySchema();
     cashTeam = await teams.workingTeam({ rail: 'CASH', poolTokens: 10_000 });
-    upiTeam = await teams.workingTeam({ rail: 'UPI_BANK', poolTokens: 20_000 });
+    upiTeam = await teams.workingTeam({ rail: 'UPI_BANK', poolTokens: 50_000 });
   }, 120_000);
 
   afterAll(async () => {
@@ -97,6 +97,7 @@ describePg('a cash buy reaches PAID before it is evidenced', () => {
     expect(routed.merchantId).toBe(String(member));
     expect(routed.paymentMode).toBe(PAYMENT_MODES.CASH_ATM);
 
+    await readyToPay(orderId);
     await markOrderPaid(p.userId, orderId, utrNumber);
     // `paid_at` is what both sweeps measure from, and the tap wrote it as NOW.
     // Moving it back stands for the minutes that would otherwise have to pass.
@@ -159,15 +160,16 @@ describePg('a cash buy reaches PAID before it is evidenced', () => {
     const [member] = upiTeam.members;
     await teams.onlyOnline([member]);
     const p = await player();
-    const { order } = await createDepositOrder(p.userId, 20_000);
+    const { order } = await createDepositOrder(p.userId, 50_000);
     const orderId = order.orderId ?? order._id;
     const routed = await getOrderRecord(orderId);
     expect(routed.status).toBe('ASSIGNED');
     expect(routed.paymentMode).toBe(PAYMENT_MODES.P2P_UPI);
+    await readyToPay(orderId);
 
     await expect(markOrderPaid(p.userId, orderId, undefined)).rejects.toMatchObject({ status: 400 });
     const row = await getOrderRecord(orderId);
-    expect(row.status).toBe('ASSIGNED');
+    expect(row.status).toBe('PROCESSING');
     expect(row.paidAt ?? null).toBeNull();
     const due = await findPaidDepositsAwaitingReference({ olderThanMinutes: 0, limit: 1000 });
     expect(due.map((o) => o.orderId)).not.toContain(orderId);

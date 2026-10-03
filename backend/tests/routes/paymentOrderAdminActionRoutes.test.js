@@ -49,7 +49,7 @@ import { setCashReady } from '#db/repositories/teamRouting.js';
 import { getBalances, creditDeposit, creditReserve } from '../../domains/wallet/walletAuthority.service.js';
 import { moveDepositMoney } from '../../domains/payment/depositCredit.js';
 import { tryAssignMerchant, markOrderPaid } from '../../domains/payment/paymentProcessing.service.js';
-import { teamFixture } from '../teamFixture.js';
+import { teamFixture, readyToPay } from '../teamFixture.js';
 import { mountRouter, actor, merchantActor, as } from './_harness.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
@@ -113,6 +113,7 @@ describePg('admin force-action on a payment order', () => {
     const assigned = await getOrderRecord(orderId);
     expect(assigned).toMatchObject({ merchantId: merchant.merchantId, teamId: team.teamId, poolHeldPaise: tokenAmount * 100 });
     expect((await transitionOrder(orderId, 'PROCESSING', { set: { processingAt: new Date() } })).ok).toBe(true);
+    await readyToPay(orderId);
     await markOrderPaid(player.userId, orderId, `UTRPOA${Date.now()}${seq}`);
     expect((await getOrderRecord(orderId)).status).toBe('PAID');
     return { player, merchant, team, orderId };

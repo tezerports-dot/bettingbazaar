@@ -31,13 +31,12 @@ import { setCashReady } from '#db/repositories/teamRouting.js';
 import { getMerchant } from '#db/repositories/merchants.js';
 import { PAYMENT_MODES, railOf } from '#db/repositories/orderRails.js';
 import { createDepositOrder, tryAssignMerchant } from '../../domains/payment/paymentProcessing.service.js';
-import { MAX_CASH_BUY_PAISE } from '../../domains/merchant/denominations.js';
+import { CASH_SIZES, UPI_BANK_SIZES } from '../../domains/merchant/denominations.js';
 import { teamFixture } from '../teamFixture.js';
 import { actor, merchantActor } from './_harness.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 
-const CEILING = MAX_CASH_BUY_PAISE / 100;
 
 describePg('the rail an order runs on', () => {
   const teams = teamFixture();
@@ -81,18 +80,18 @@ describePg('the rail an order runs on', () => {
     expect(await getOrderRecord(orderId)).toBeNull();
   });
 
-  it('is the rail the buy was judged by, either side of the cash ceiling', async () => {
-    // The ceiling itself is a cash buy — it is a denomination, so the gate
-    // admitted it as one — and one step above is UPI, which the gate admitted
-    // as a range. Born on any other rail, either would be an order its rail
+  it('is the rail the buy was judged by, from its size', async () => {
+    // Every cash size is a cash buy and every UPI/bank size is UPI (Step 2d):
+    // the largest cash size and the smallest UPI one are the two either side of
+    // the line. Born on any other rail, either would be an order its rail
     // cannot serve.
-    const atCeiling = await buy(CEILING);
-    expect(atCeiling.paymentMode).toBe(PAYMENT_MODES.CASH_ATM);
-    expect(railOf(atCeiling)).toBe('CASH');
+    const largestCash = await buy(Math.max(...CASH_SIZES));
+    expect(largestCash.paymentMode).toBe(PAYMENT_MODES.CASH_ATM);
+    expect(railOf(largestCash)).toBe('CASH');
 
-    const above = await buy(CEILING + 10);
-    expect(above.paymentMode).toBe(PAYMENT_MODES.P2P_UPI);
-    expect(railOf(above)).toBe('UPI_BANK');
+    const smallestUpi = await buy(Math.min(...UPI_BANK_SIZES));
+    expect(smallestUpi.paymentMode).toBe(PAYMENT_MODES.P2P_UPI);
+    expect(railOf(smallestUpi)).toBe('UPI_BANK');
   });
 
   it('cannot be changed once written', async () => {
@@ -118,11 +117,11 @@ describePg('the rail an order runs on', () => {
       online: [cashMember.merchantId, upiMember.merchantId],
     });
     // The cash member is at the machine, free, and their pool would cover a
-    // 20,000-token buy — everything except the rail.
+    // 50,000-token buy — everything except the rail.
     expect(await setCashReady(cashMember.merchantId, true)).toEqual({ ok: true, ready: true });
 
     // A UPI-sized buy goes to the UPI team.
-    const big = await buy(20_000);
+    const big = await buy(50_000);
     expect(big).toMatchObject({ status: 'ASSIGNED', merchantId: upiMember.merchantId, teamId: upiTeam.teamId });
     expect(await getPool(cashTeam.teamId)).toMatchObject({ availablePaise: 50_000_00, heldPaise: 0 });
 

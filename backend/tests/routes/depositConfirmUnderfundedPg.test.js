@@ -45,7 +45,7 @@ import { actor, merchantActor } from './_harness.js';
 const describePg = pgConfigured() ? describe : describe.skip;
 
 // Above the cash ceiling, so the buy runs on UPI_BANK and needs no Ready press.
-const BUY_TOKENS = 20_000;
+const BUY_TOKENS = 50_000;
 const BUY_PAISE = BUY_TOKENS * 100;
 
 describePg('a buy the team pool cannot cover', () => {

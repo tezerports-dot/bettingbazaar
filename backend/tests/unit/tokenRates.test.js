@@ -48,7 +48,7 @@ import {
   merchantToUserUsdtRate,
   rateForMerchant,
   tokensPerUsdt,
-  usdtForTokens,
+  tokensForUsdt,
   isSaneUsdtRate,
   USDT_RATE_MIN_INR,
   USDT_RATE_MAX_INR,
@@ -153,23 +153,33 @@ describe('the rate that prices every USDT purchase is bounded', () => {
     const absurd = { usdtPricing: { userMerchantBuyInr: 10_000 } };
     expect(merchantToUserUsdtRate(absurd)).toBeNull();
     expect(tokensPerUsdt(absurd)).toBeNull();
-    expect(usdtForTokens(500_000, absurd)).toBeNull();
+    expect(tokensForUsdt(5_000, absurd)).toBeNull();
   });
 
-  it('prices the three sizes exactly as the owner specified', () => {
-    // 1 USDT = 100 tokens: 50,000 → 500, 100,000 → 1,000, 500,000 → 5,000.
+  it('prices a USDT buy in tokens: USDT times the rate (Step 2d)', () => {
+    // 100 USDT at ₹100 is 10,000 tokens; 10,000 USDT is 1,000,000 tokens.
     const cfg = { usdtPricing: { userMerchantBuyInr: 100 } };
     expect(tokensPerUsdt(cfg)).toBe(100);
-    expect(usdtForTokens(50_000, cfg)).toBe(500);
-    expect(usdtForTokens(100_000, cfg)).toBe(1_000);
-    expect(usdtForTokens(500_000, cfg)).toBe(5_000);
+    expect(tokensForUsdt(100, cfg)).toEqual({ tokens: 10_000, tokenPaise: 1_000_000, rate: 100 });
+    expect(tokensForUsdt(10_000, cfg).tokens).toBe(1_000_000);
   });
 
-  it('rounds the USDT figure UP, never against the platform', () => {
-    // 50,000 / 33 = 1515.1515…, and a rate that does not divide evenly is the
-    // normal case. Rounding down would hand over the difference on every order.
-    const cfg = { usdtPricing: { userMerchantBuyInr: 33 } };
-    expect(usdtForTokens(50_000, cfg)).toBe(1515.16);
+  it('computes in integer paise, so a two-decimal rate is exact', () => {
+    // 64.35 × 100 in floating point is 6434.999…, so a rate not taken to whole
+    // paise first prices 100 USDT at 643,499.99… paise. In paise it is exactly
+    // 643,500. (88.55 × 100 happens to be exact in floating point, so it
+    // cannot tell the two apart.)
+    const cfg = { usdtPricing: { userMerchantBuyInr: 64.35 } };
+    expect(tokensForUsdt(100, cfg)).toEqual({ tokens: 6_435, tokenPaise: 643_500, rate: 64.35 });
+    expect(tokensForUsdt(300, cfg).tokenPaise).toBe(1_930_500);
+  });
+
+  it('refuses what is not a whole, positive number of USDT', () => {
+    const cfg = { usdtPricing: { userMerchantBuyInr: 90 } };
+    for (const bad of [0, -100, 100.5, NaN, null, undefined, 'abc']) {
+      expect(tokensForUsdt(bad, cfg)).toBeNull();
+    }
+    expect(tokensForUsdt(100, {})).toBeNull(); // no rate set
   });
 });
 

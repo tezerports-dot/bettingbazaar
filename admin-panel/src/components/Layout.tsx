@@ -12,7 +12,7 @@ import {
   TrendingUp, ShieldCheck, HelpCircle, Image as ImageIcon,
   MessageCircle, Shield, History, Scale, Upload, Search, Sun, Moon, Bell,
   SlidersHorizontal, Trophy, Star, Gamepad2, Bot, Share2,
-  type LucideIcon, ArrowLeftRight, BookOpenCheck, Flag, Banknote, Hourglass, Fingerprint,
+  type LucideIcon, ArrowLeftRight, BookOpenCheck, Flag, Hourglass, Fingerprint,
   Ghost, Smartphone, ShieldBan} from 'lucide-react';
 import { useAuthStore } from '../services/auth';
 import { usePermissions } from '../hooks/usePermission';
@@ -76,9 +76,8 @@ const NAV_GROUPS: MenuGroup[] = [
     { path: '/queue-manager',   icon: Layers,   label: 'Queue Manager',  title: 'Queue Manager', sub: 'Live payment order queue — orders are routed to working teams', queueManagerAccess: true, permission: 'canManageMerchants', badge: 'queue' },
     { path: '/transactions',    icon: FileText, label: 'Transactions',   title: 'Transactions',  sub: 'Ledger of deposits, withdrawals, bets & adjustments', permission: 'canViewTransactions' },
     { path: '/disputes',        icon: Scale,    label: 'Disputes',       title: 'Disputes',      sub: 'Payment order disputes & resolution', permission: 'canResolveDisputes' },
-    { path: '/disputes/cdm-receipts', icon: Banknote, label: 'CDM Slips', title: 'CDM Slips', sub: 'Cash payouts settled without evidence, and the only read of a slip', permission: 'canResolveDisputes' },
     { path: '/disputes/stalled-withdrawals', icon: Hourglass, label: 'Stalled Payouts', title: 'Stalled Withdrawals', sub: 'Payouts no merchant has taken, and the tokens locked behind them', permission: 'canResolveDisputes' },
-    { path: '/payment-references', icon: Fingerprint, label: 'Payment References', title: 'Payment References', sub: 'UTRs, chain hashes and CDM references: who claimed what, and who tried to reuse one', permission: 'canManageUtr' },
+    { path: '/payment-references', icon: Fingerprint, label: 'Payment References', title: 'Payment References', sub: 'UTRs and chain hashes: who claimed what, and who tried to reuse one', permission: 'canManageUtr' },
   ] },
   { key: 'policy', label: 'Business Policy', items: [
     { path: '/business-policy/deposit', icon: Landmark, label: 'Deposit Policy', title: 'Deposit Policy', sub: 'Versioned deposit / reserve allocation policy', permission: 'canManageBusinessPolicy' },

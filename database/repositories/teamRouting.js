@@ -118,6 +118,12 @@ export async function routingCandidates(order, { cap, barredMerchantIds = [], li
         AND (NOT (NOT $3 AND $1 = 'CASH') OR COALESCE(o.buys, 0) = 0)
         AND NOT (m.merchant_id = ANY($5))
         ${chainColumn ? `AND m.${chainColumn} IS NOT NULL AND m.${chainColumn} <> ''` : ''}
+        -- A UPI/bank buy is paid by bank transfer to the member's own account
+        -- (owner, 2026-10-03), so a member without one is not a candidate: the
+        -- player would be shown nowhere to pay and take the expiry for it.
+        AND (NOT ($3 AND $1 = 'UPI_BANK') OR (
+              COALESCE(m.bank_account_no, '') <> '' AND COALESCE(m.bank_ifsc, '') <> ''
+          AND COALESCE(m.bank_account_holder_name, '') <> ''))
       ORDER BY COALESCE(o.total, 0) ASC, m.last_assigned_at ASC NULLS FIRST, m.merchant_id
       LIMIT $6`,
     [rail, cap, isBuy, amount, barred, limit, OPEN_STATES], 'team_routing_candidates');

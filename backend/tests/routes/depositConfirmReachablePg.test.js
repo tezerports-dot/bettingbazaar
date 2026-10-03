@@ -48,7 +48,7 @@ import { getPool } from '#db/repositories/teamPools.js';
 import { setCashReady } from '#db/repositories/teamRouting.js';
 import { getBalances } from '../../domains/wallet/walletAuthority.service.js';
 import { tryAssignMerchant, markOrderPaid } from '../../domains/payment/paymentProcessing.service.js';
-import { teamFixture } from '../teamFixture.js';
+import { teamFixture, readyToPay } from '../teamFixture.js';
 import { mountRouter, actor, merchantActor, as } from './_harness.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
@@ -106,6 +106,7 @@ describePg('a member can release tokens on a paid deposit', () => {
     });
     expect(await tryAssignMerchant(order), 'the router did not assign the buy').toBe(true);
     expect((await getOrderRecord(orderId)).merchantId).toBe(member.merchantId);
+    await readyToPay(orderId);
     const paid = await markOrderPaid(player.userId, orderId, cash ? '' : utr);
     expect(paid.status).toBe('PAID');
     return { member, player, orderId, tokens, utr, team };

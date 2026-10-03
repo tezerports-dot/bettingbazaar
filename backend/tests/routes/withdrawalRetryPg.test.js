@@ -94,7 +94,7 @@ describePg('retrying an expired withdrawal', () => {
     const fresh = await getOrderRecord(result.order.orderId ?? result.order._id);
     expect(fresh.retryOfOrderId).toBe(expired);
     // One order, on the rail its size names — not parts of a split.
-    expect(result.parts).toHaveLength(1);
+    expect(result).not.toHaveProperty('parts');
     expect(fresh.paymentMode).toBe(PAYMENT_MODES.CASH_ATM);
 
     const after = await getBalances(player.userId);

@@ -31,22 +31,22 @@ export default async function run() {
   // ── The rail is DERIVED from the size, not chosen by a policy ─────────────
   const upiPlayer = await seedPlayer({});
   const upiPT = playerToken(upiPlayer);
-  const big = await POST(upiPT, '/api/payment/deposit/create', { tokenAmount: 20000 });
+  const big = await POST(upiPT, '/api/payment/deposit/create', { tokenAmount: 50000 });
   const bigId = big.body?.order?.orderId;
   const bigRow = bigId ? await stateOf(bigId) : {};
-  check(A, 'system', 'a buy above ₹10,000 runs on UPI/bank, not cash', 'P2P_UPI',
+  check(A, 'system', 'a 50,000-token buy runs on UPI/bank, not cash', 'P2P_UPI',
     bigId ? String(bigRow.payment_mode) : `no order: ${big.status} ${big.body.message ?? ''}`,
     bigRow.payment_mode === 'P2P_UPI',
-    '§25: ₹10,000 is the largest a cash machine dispenses — it bounds the cash rail, not UPI');
+    'Step 2d: the size names the rail — 500 to 10,000 cash, 50,000 and up UPI/bank');
   // Not this scenario's order to keep; a queued one is cancelled so it does
   // not sit on the UPI rail for a later scenario's team to pick up.
   if (bigId && bigRow.state === 'PENDING_QUEUE') await POST(upiPT, '/api/payment/order/cancel', { orderId: bigId });
 
   const oddPlayer = await seedPlayer({});
   const odd = await POST(playerToken(oddPlayer), '/api/payment/deposit/create', { tokenAmount: 7770 });
-  check(A, 'player', 'a cash-size buy that no machine dispenses is refused by name', '400 NOT_A_DENOMINATION',
+  check(A, 'player', 'a buy that is not an order size is refused by name', '400 NOT_AN_ORDER_SIZE',
     `${odd.status} ${odd.body.code ?? ''} ${odd.body.message ?? ''}`,
-    odd.status === 400 && odd.body.code === 'NOT_A_DENOMINATION');
+    odd.status === 400 && odd.body.code === 'NOT_AN_ORDER_SIZE');
 
   // ── Nobody is Ready, so a cash buy waits ──────────────────────────────────
   const waitPlayer = await seedPlayer({});
@@ -116,8 +116,8 @@ export default async function run() {
     [seller.userId, JSON.stringify({ accountNumber: '900033334444', ifscCode: 'HDFC0000009', accountHolder: 'E2E Seller' })],
     'e2e_bank');
   const oddSell = await POST(sT, '/api/payment/withdrawal/create', { tokenAmount: 7770 });
-  check(A, 'player', 'a cash-size sell that no machine pays is refused by name', '400 NOT_A_CASH_AMOUNT',
-    `${oddSell.status} ${oddSell.body.code ?? ''}`, oddSell.status === 400 && oddSell.body.code === 'NOT_A_CASH_AMOUNT');
+  check(A, 'player', 'a sell that is not an order size is refused by name', '400 NOT_AN_ORDER_SIZE',
+    `${oddSell.status} ${oddSell.body.code ?? ''}`, oddSell.status === 400 && oddSell.body.code === 'NOT_AN_ORDER_SIZE');
   const sell = await POST(sT, '/api/payment/withdrawal/create', { tokenAmount: 1000 });
   const sellId = sell.body?.order?.orderId;
   const sellRow = sellId ? await stateOf(sellId) : {};
@@ -129,6 +129,37 @@ export default async function run() {
     const back = await POST(sT, '/api/payment/order/cancel', { orderId: sellId });
     check(A, 'player', 'cancel the waiting sell', '200', `${back.status} ${back.body.message ?? ''}`, back.status === 200);
   }
+
+  // ── Nothing to pay until the member accepts and scans the machine (2d) ──
+  const unaccepted = await POST(pT, `/api/payment/order/${oid}/mark-paid`, {});
+  check(A, 'player', '"I\'ve paid" before the member accepts', '409 NOT_ACCEPTED_YET',
+    `${unaccepted.status} ${unaccepted.body.code ?? ''}`, unaccepted.status === 409 && unaccepted.body.code === 'NOT_ACCEPTED_YET');
+  const scanFirst = await POST(mT, `/api/merchant/orders/${oid}/cash-link`, { link: `upi://pay?pa=atm.cash@icici&am=1000.00` });
+  check(A, 'merchant', 'scanning before accepting the order', '409 ACCEPT_FIRST',
+    `${scanFirst.status} ${scanFirst.body.code ?? ''}`, scanFirst.status === 409 && scanFirst.body.code === 'ACCEPT_FIRST',
+    'until the member accepts, an admin may still move the order; a QR attached now would be another member\'s machine');
+  const accepted = await POST(mT, `/api/merchant/accept/${oid}`, {});
+  check(A, 'merchant', 'the member accepts the cash buy', '200', `${accepted.status} ${accepted.body.message ?? ''}`, accepted.status === 200);
+  const tooSoon = await POST(pT, `/api/payment/order/${oid}/mark-paid`, {});
+  check(A, 'player', '"I\'ve paid" before the member scans the machine', '409 CASH_LINK_PENDING',
+    `${tooSoon.status} ${tooSoon.body.code ?? ''}`, tooSoon.status === 409 && tooSoon.body.code === 'CASH_LINK_PENDING',
+    'there was nothing to pay: a cash buy is paid through the machine\'s QR');
+  const unscanned = await GET(pT, `/api/payment/order/${oid}/status`);
+  check(A, 'player', 'the player is given nothing to pay before the scan', 'no payTo.paymentLink, no bank account',
+    JSON.stringify(unscanned.body.payTo ?? null), !unscanned.body.payTo?.paymentLink && !unscanned.body.payTo?.bankAccount);
+  const atm = (rupees) => `upi://pay?pa=atm.cash@icici&pn=ICICI%20ATM&am=${rupees}.00&cu=INR&tr=E2E${String(Date.now()).slice(-8)}`;
+  const wrong = await POST(mT, `/api/merchant/orders/${oid}/cash-link`, { link: atm(5000) });
+  check(A, 'merchant', 'a QR for another amount is refused by name', '400 INVALID_CASH_LINK',
+    `${wrong.status} ${wrong.body.code ?? ''} ${wrong.body.message ?? ''}`,
+    wrong.status === 400 && wrong.body.code === 'INVALID_CASH_LINK');
+  const link = atm(1000);
+  const scanned = await POST(mT, `/api/merchant/orders/${oid}/cash-link`, { link });
+  check(A, 'merchant', 'the member scans the machine\'s QR for the order amount', '200, the link on the order',
+    `${scanned.status} ${scanned.body.order?.cashLink === link ? 'stored' : scanned.body.message ?? 'not stored'}`,
+    scanned.status === 200 && scanned.body.order?.cashLink === link);
+  const payable = await GET(pT, `/api/payment/order/${oid}/status`);
+  check(A, 'player', 'the player is given exactly that QR to pay', link,
+    payable.body.payTo?.paymentLink ?? 'missing', payable.body.payTo?.paymentLink === link);
 
   // ── The tap reaches PAID; the reference follows; then the member confirms ─
   const tap = await POST(pT, `/api/payment/order/${oid}/mark-paid`, {});

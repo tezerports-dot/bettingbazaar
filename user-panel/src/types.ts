@@ -221,20 +221,21 @@ export type PaymentOrderStatus =
   | 'REJECTED';
 
 /**
- * Where to pay, and nothing about who is being paid.
+ * Where to pay, and nothing else about the member.
  *
- * This was `MerchantSnapshot`, and it declared the merchant's `upiId`,
- * `bankName`, `accountNo`, `ifsc` and `accountHolder`. A field the panel's type
- * names is a field somebody will render — and these were rendered, with a Copy
- * button on the handle.
+ * This was `MerchantSnapshot`, and it declared every credential the merchant
+ * had. The server sends where to pay instead, by rail
+ * (backend/domains/payment/playerOrderView.js, the only shape a player gets):
  *
- * The server sends this instead: a per-order payment link, an opaque reference
- * that names nobody, and the deadline. See
- * backend/domains/payment/playerOrderView.js, which is the only shape of an
- * order a player receives.
+ *   paymentLink   on a CASH buy, the cash machine's QR the member scanned
+ *   bankAccount   on a bank-transfer buy, the member's account (owner,
+ *                 2026-10-03): the four fields a transfer needs
+ *
+ * Never the member's mobile number or UPI handle.
  */
 export interface PayTo {
   paymentLink?: string;
+  bankAccount?: { accountHolder?: string; accountNo?: string; ifsc?: string; bankName?: string };
   /** `Merchant #<publicRef>` — a label for support, identifying no one. */
   merchantRef?: string;
   expiresAt?: string;

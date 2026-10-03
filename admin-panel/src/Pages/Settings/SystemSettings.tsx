@@ -98,6 +98,19 @@ const routingDefaults = (): TeamRoutingForm => ({
 
 const outOfRange = (v: number, b: { min: number; max: number }) => !Number.isFinite(v) || v < b.min || v > b.max;
 
+// ── The seven order sizes, per rail (§5 mirror) ──────────────────────────────
+// Mirrors CASH_SIZES / UPI_BANK_SIZES in backend/domains/merchant/denominations.js,
+// the only legal values of SystemConfig.orderSizes. Display only: the server
+// refuses anything else, and the GET serves the list actually on offer.
+const ORDER_SIZE_RAILS: Array<{ rail: string; label: string; sizes: number[] }> = [
+  { rail: 'CASH', label: 'Cash (member at an ATM)', sizes: [500, 1000, 5000, 10000] },
+  { rail: 'UPI_BANK', label: 'UPI / bank', sizes: [50000, 100000, 500000] },
+];
+const ALL_ORDER_SIZES = ORDER_SIZE_RAILS.flatMap((r) => r.sizes);
+// Mirrors USDT_BUY_STEP (denominations.js) and the spec's usdtBuy defaults.
+const USDT_BUY_STEP = 100;
+const usdtStepOk = (v: number) => Number.isInteger(v) && v >= USDT_BUY_STEP && v <= 100000 && v % USDT_BUY_STEP === 0;
+
 export const SystemSettings: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
@@ -107,20 +120,14 @@ export const SystemSettings: React.FC = () => {
     maintenanceMode: false,
     maintenanceMessage: '',
     registrationEnabled: true,
-    minDeposit: 500,      // schema default: 500
-    maxDeposit: 50000,    // schema default: 50000
-    // Was 100. §2: the buy floor and the sell floor are ONE policy — "both 500
-    // tokens, the same rule read from either end" — and 100 is the drifted
-    // value that rule was written to remove. A fallback that disagrees with
-    // the schema default is §4, and `||` means a legitimate 0 becomes it.
-    minWithdrawal: 500,   // schema default: 500
-    maxWithdrawal: 50000, // schema default: 50000
+    // The sizes on offer (Step 2d). Schema default: all seven.
+    orderSizes: [...ALL_ORDER_SIZES] as number[],
+    usdtBuy: { minUsdt: 100, maxUsdt: 10000 },   // schema defaults: 100 / 10,000
     maxBalanceAdjustment: 1000000, // schema default: 1000000 (₹10,00,000)
     minBet: 10,           // schema default: 10
     maxBet: 100000,       // schema default: 100000 (was 50000 here — §4 drift)
     max30MinBet: 50000,
     maxFullDayBet: 100000,
-    maxWinningsWithdrawal: 500000,
     // ── Money rules (Phase A + Risk Platform) — consumed by bet.routes.js,
     //    gameEngine.js and riskValidation.service.js on the backend ──────────
     betReservePercent: 1,      // schema default: 1
@@ -130,7 +137,6 @@ export const SystemSettings: React.FC = () => {
     // Every key the spec declares, so every one is sent back on save. The
     // operational half is seeded from MERCHANT_ORDER_RULES rather than restated.
     merchantOrderLimits: {
-      minUserTokenPurchaseUsdt: 100, maxUserTokenPurchaseUsdt: 0,   // spec defaults: 100 / 0
       ...Object.fromEntries(MERCHANT_ORDER_RULES.map((r) => [r.key, r.fallback])),
     } as Record<string, number>,
     // Per-rail caps and windows for team routing, seeded from ROUTING_RAILS /
@@ -201,16 +207,16 @@ export const SystemSettings: React.FC = () => {
           registrationEnabled: response.data.registrationEnabled !== false,
           // `??` rather than `||` throughout: 0 is a value an operator may
           // legitimately set, and `||` silently replaces it with the default.
-          minDeposit: response.data.minDeposit ?? 500,        // schema default: 500
-          maxDeposit: response.data.maxDeposit ?? 50000,      // schema default: 50000
-          minWithdrawal: response.data.minWithdrawal ?? 500,  // schema default: 500
-          maxWithdrawal: response.data.maxWithdrawal ?? 50000,// schema default: 50000
+          orderSizes: Array.isArray(response.data.orderSizes) ? response.data.orderSizes : [...ALL_ORDER_SIZES],
+          usdtBuy: {
+            minUsdt: response.data.usdtBuy?.minUsdt ?? 100,    // schema default: 100
+            maxUsdt: response.data.usdtBuy?.maxUsdt ?? 10000,  // schema default: 10,000
+          },
           maxBalanceAdjustment: response.data.maxBalanceAdjustment ?? 1000000, // schema default: 1000000
           minBet: response.data.minBet ?? 10,                 // schema default: 10
           maxBet: response.data.maxBet ?? 100000,             // schema default: 100000
           max30MinBet: response.data.max30MinBet || 50000,
           maxFullDayBet: response.data.maxFullDayBet || 100000,
-          maxWinningsWithdrawal: response.data.maxWinningsWithdrawal || 500000,
           betReservePercent:  response.data.betReservePercent  ?? 1, // schema default: 1
           winningsFeePercent: response.data.winningsFeePercent ?? 1, // schema default: 1
           payoutFeePercent:   response.data.payoutFeePercent   ?? 0, // schema default: 0
@@ -222,7 +228,6 @@ export const SystemSettings: React.FC = () => {
           // so the server's object is taken whole. The placeholders underneath
           // it exist only for a response that predates a newly declared field.
           merchantOrderLimits: {
-            minUserTokenPurchaseUsdt: 100, maxUserTokenPurchaseUsdt: 0,   // spec defaults: 100 / 0
             ...Object.fromEntries(MERCHANT_ORDER_RULES.map((r) => [r.key, r.fallback])),
             ...(response.data.merchantOrderLimits ?? {}),
           } as Record<string, number>,
@@ -454,79 +459,49 @@ export const SystemSettings: React.FC = () => {
         )}
       </div>
 
-      {/* Transaction Limits */}
+      {/* Order sizes (Step 2d) */}
       <div className="card">
-        <h3 className="text-lg font-semibold mb-4">Transaction Limits</h3>
-        {/*
-          ── The ceilings are here because an operator could not reach them ──
-          `maxDeposit` and `maxWithdrawal` are declared settings, the GET has
-          always served them, and this screen rendered no input for either —
-          so a floor could be raised with no way to raise the roof above it.
-
-          And every bound below is the PAIRED FIELD'S OWN VALUE, not a number
-          invented for the panel. That keeps one owner (§2): the client refuses
-          exactly what the server refuses —
-
-              config: 'minDeposit' (999999999) cannot be above 'maxDeposit' (50000)
-
-          which, before this, was answered 200 and closed the deposit rail for
-          every player.
-        */}
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <label className="label" htmlFor="min-deposit-amount-rs">Min Deposit Amount (Rs.)</label>
-            <input id="min-deposit-amount-rs"
-              type="number" min={0} max={formData.maxDeposit}
-              value={formData.minDeposit}
-              onChange={(e) =>
-                setFormData({ ...formData, minDeposit: (Number(e.target.value) || 0) })
-              }
-              className="input"
-            />
-            <p className="text-xs text-gray-500 mt-1">Cannot exceed the maximum beside it.</p>
-          </div>
-          <div>
-            <label className="label" htmlFor="max-deposit-amount-rs">Max Deposit Amount (Rs.)</label>
-            <input id="max-deposit-amount-rs"
-              type="number" min={formData.minDeposit}
-              value={formData.maxDeposit}
-              onChange={(e) =>
-                setFormData({ ...formData, maxDeposit: (Number(e.target.value) || 0) })
-              }
-              className="input"
-            />
-          </div>
-          <div>
-            <label className="label" htmlFor="min-withdrawal-amount-rs">Min Withdrawal Amount (Rs.)</label>
-            <input id="min-withdrawal-amount-rs"
-              type="number" min={0} max={formData.maxWithdrawal}
-              value={formData.minWithdrawal}
-              onChange={(e) =>
-                setFormData({ ...formData, minWithdrawal: (Number(e.target.value) || 0) })
-              }
-              className="input"
-            />
-            <p className="text-xs text-gray-500 mt-1">Cannot exceed the maximum beside it.</p>
-          </div>
-          <div>
-            <label className="label" htmlFor="max-withdrawal-amount-rs">Max Withdrawal Amount (Rs.)</label>
-            <input id="max-withdrawal-amount-rs"
-              type="number" min={formData.minWithdrawal}
-              value={formData.maxWithdrawal}
-              onChange={(e) =>
-                setFormData({ ...formData, maxWithdrawal: (Number(e.target.value) || 0) })
-              }
-              className="input"
-            />
-          </div>
+        <h3 className="text-lg font-semibold mb-1">Order Sizes</h3>
+        <p className="text-xs text-gray-500 mb-4">
+          Every buy and sell is exactly one of these sizes, in tokens. The size decides the rail:
+          cash sizes go to a member at an ATM, UPI/bank sizes to a UPI or bank team. Untick a size
+          to stop offering it; at least one must stay on.
+        </p>
+        <div className="space-y-3">
+          {ORDER_SIZE_RAILS.map((group) => (
+            <fieldset key={group.rail}>
+              <legend className="label">{group.label}</legend>
+              <div className="flex flex-wrap gap-4">
+                {group.sizes.map((size) => {
+                  const id = `order-size-${size}`;
+                  return (
+                    <label key={size} htmlFor={id} className="flex items-center gap-2 text-sm">
+                      <input id={id} type="checkbox"
+                        checked={formData.orderSizes.includes(size)}
+                        onChange={(e) => setFormData({
+                          ...formData,
+                          orderSizes: e.target.checked
+                            ? ALL_ORDER_SIZES.filter((s) => s === size || formData.orderSizes.includes(s))
+                            : formData.orderSizes.filter((s) => s !== size),
+                        })}
+                      />
+                      {size.toLocaleString('en-IN')}
+                    </label>
+                  );
+                })}
+              </div>
+            </fieldset>
+          ))}
         </div>
+        {formData.orderSizes.length === 0 && (
+          <div role="alert" className="mt-3 flex items-center space-x-2 p-3 bg-red-500/10 border border-red-500/30 rounded-lg">
+            <AlertTriangle className="text-red-500 shrink-0" size={16} />
+            <p className="text-sm text-red-400">
+              Keep at least one size on offer — with none, no player could buy or sell.
+            </p>
+          </div>
+        )}
 
-        {/*
-          Said out loud, the way the bet limits already do it. An input's `min`
-          and `max` stop the arrows and the browser's own validation, but a
-          typed or pasted value still lands — so the warning names the pair and
-          the Save button below refuses until it is resolved.
-        */}
         {/* An admin adjustment moves money into or out of a player's balance in
             one click. The ceiling is a setting rather than a constant so it is
             an operator's decision, and it is rendered here because a setting
@@ -545,24 +520,6 @@ export const SystemSettings: React.FC = () => {
           </p>
         </div>
 
-        {formData.minDeposit > formData.maxDeposit && (
-          <div className="mt-3 flex items-center space-x-2 p-3 bg-red-500/10 border border-red-500/30 rounded-lg">
-            <AlertTriangle className="text-red-500 shrink-0" size={16} />
-            <p className="text-sm text-red-400">
-              Minimum deposit ({formData.minDeposit}) is above the maximum ({formData.maxDeposit}) —
-              saving this would refuse every deposit on the platform.
-            </p>
-          </div>
-        )}
-        {formData.minWithdrawal > formData.maxWithdrawal && (
-          <div className="mt-3 flex items-center space-x-2 p-3 bg-red-500/10 border border-red-500/30 rounded-lg">
-            <AlertTriangle className="text-red-500 shrink-0" size={16} />
-            <p className="text-sm text-red-400">
-              Minimum withdrawal ({formData.minWithdrawal}) is above the maximum ({formData.maxWithdrawal}) —
-              saving this would strand every balance on the platform.
-            </p>
-          </div>
-        )}
       </div>
 
       {/* Betting Limits */}
@@ -620,14 +577,6 @@ export const SystemSettings: React.FC = () => {
               value={formData.maxFullDayBet}
               onChange={(e) => setFormData({ ...formData, maxFullDayBet: (Number(e.target.value) || 0) })}
               className="input" />
-          </div>
-          <div>
-            <label htmlFor="max-withdrawal" className="label">Max Winnings Withdrawal (Rs.)</label>
-            <input id="max-withdrawal" name="maxWinningsWithdrawal" type="number" min="0"
-              value={formData.maxWinningsWithdrawal}
-              onChange={(e) => setFormData({ ...formData, maxWinningsWithdrawal: (Number(e.target.value) || 0) })}
-              className="input" />
-            <p className="text-xs text-gray-400 mt-1">Maximum single withdrawal from winnings balance</p>
           </div>
         </div>
       </div>
@@ -734,26 +683,38 @@ export const SystemSettings: React.FC = () => {
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-4 border-t border-dark-700">
             <div>
-              <label className="label" htmlFor="user-token-buy-min-order-usdt">User Token Buy Min Order (USDT)</label>
-              <input id="user-token-buy-min-order-usdt"
-                type="number" min={100} step={10}
-                value={formData.merchantOrderLimits.minUserTokenPurchaseUsdt}
-                onChange={(e) => setFormData({ ...formData, merchantOrderLimits: { ...formData.merchantOrderLimits, minUserTokenPurchaseUsdt: Math.max(100, Math.ceil((Number(e.target.value) || 100) / 10) * 10) } })}
+              <label className="label" htmlFor="usdt-buy-min">USDT Buy Minimum (USDT)</label>
+              <input id="usdt-buy-min"
+                type="number" min={USDT_BUY_STEP} max={formData.usdtBuy.maxUsdt} step={USDT_BUY_STEP}
+                value={formData.usdtBuy.minUsdt}
+                onChange={(e) => setFormData({ ...formData, usdtBuy: { ...formData.usdtBuy, minUsdt: Number(e.target.value) || 0 } })}
                 className="input"
               />
-              <p className="text-xs text-gray-500 mt-1">Minimum buy-only user USDT deposit to receive BB tokens from a merchant. Multiple of 10 USDT.</p>
+              <p className="text-xs text-gray-500 mt-1">The smallest USDT purchase. A multiple of {USDT_BUY_STEP}.</p>
             </div>
             <div>
-              <label className="label" htmlFor="user-token-buy-max-order-usdt">User Token Buy Max Order (USDT)</label>
-              <input id="user-token-buy-max-order-usdt"
-                type="number" min={0} step={10}
-                value={formData.merchantOrderLimits.maxUserTokenPurchaseUsdt}
-                onChange={(e) => setFormData({ ...formData, merchantOrderLimits: { ...formData.merchantOrderLimits, maxUserTokenPurchaseUsdt: Math.max(0, Math.ceil((Number(e.target.value) || 0) / 10) * 10) } })}
+              <label className="label" htmlFor="usdt-buy-max">USDT Buy Maximum (USDT)</label>
+              <input id="usdt-buy-max"
+                type="number" min={formData.usdtBuy.minUsdt} max={100000} step={USDT_BUY_STEP}
+                value={formData.usdtBuy.maxUsdt}
+                onChange={(e) => setFormData({ ...formData, usdtBuy: { ...formData.usdtBuy, maxUsdt: Number(e.target.value) || 0 } })}
                 className="input"
               />
-              <p className="text-xs text-gray-500 mt-1">Optional maximum buy-only user USDT deposit. Use 0 for unlimited; users cannot sell tokens for USDT.</p>
+              <p className="text-xs text-gray-500 mt-1">
+                The largest USDT purchase. Players buy in steps of {USDT_BUY_STEP} USDT between the two; there is no USDT sell.
+              </p>
             </div>
           </div>
+          {(!usdtStepOk(formData.usdtBuy.minUsdt) || !usdtStepOk(formData.usdtBuy.maxUsdt)
+            || formData.usdtBuy.minUsdt > formData.usdtBuy.maxUsdt) && (
+            <div role="alert" className="mt-3 flex items-center space-x-2 p-3 bg-red-500/10 border border-red-500/30 rounded-lg">
+              <AlertTriangle className="text-red-500 shrink-0" size={16} />
+              <p className="text-sm text-red-400">
+                USDT limits must be multiples of {USDT_BUY_STEP} between {USDT_BUY_STEP} and 100,000, with the minimum
+                no higher than the maximum.
+              </p>
+            </div>
+          )}
 
           {/* ── Merchant and player order rules ──────────────────────────────
               Every operational limit the backend acts on, rendered from the
@@ -1425,8 +1386,9 @@ export const SystemSettings: React.FC = () => {
         onClick={handleSave}
         disabled={isSaving
           || (formData.minBet > formData.maxBet)
-          || (formData.minDeposit > formData.maxDeposit)
-          || (formData.minWithdrawal > formData.maxWithdrawal)
+          || formData.orderSizes.length === 0
+          || !usdtStepOk(formData.usdtBuy.minUsdt) || !usdtStepOk(formData.usdtBuy.maxUsdt)
+          || (formData.usdtBuy.minUsdt > formData.usdtBuy.maxUsdt)
           || ROUTING_RAILS.some((r) => outOfRange(formData.teamRouting.concurrency[r.rail], r.concurrency)
             || outOfRange(formData.teamRouting.processingWindowSeconds[r.rail], r.processing))
           || ROUTING_TIMERS.some((t) => outOfRange(formData.teamRouting[t.key], t))}

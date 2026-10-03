@@ -7,7 +7,12 @@
  * router already imports the order writer — a home in either would be a cycle.
  */
 import { SUPERVISOR_RAILS } from './teams.js';
-import { MAX_CASH_BUY_PAISE } from '../../backend/domains/merchant/denominations.js';
+import { CASH_SIZES } from '../../backend/domains/merchant/denominations.js';
+
+// The largest cash size, in paise: every legal INR order is one of the sizes
+// in `denominations.js`, and every cash size is at or below this one while
+// every UPI/bank size is above it, so the boundary IS the size list.
+const MAX_CASH_SIZE_PAISE = Math.max(...CASH_SIZES) * 100;
 
 /** The three rails a supervisor is approved for, as constants. */
 export const RAILS = Object.freeze(Object.fromEntries(SUPERVISOR_RAILS.map((r) => [r, r])));
@@ -26,13 +31,13 @@ export const PAYMENT_MODES = Object.freeze({
  * The mode a NEW order is stamped with — derived from the order itself, never
  * read from a switch (PROJECT_STATUS §3.10, 2c). There is no platform-wide rail
  * any more: each supervisor is approved for one, and an order goes to whichever
- * rail serves its size. An INR order up to the cash ceiling (₹10,000, the most
- * a machine dispenses in one go) is a cash order; a larger one is UPI/bank; a
- * USDT order is the USDT rail whatever its size.
+ * rail serves its size (`denominations.js`, Step 2d). A cash size (500 to
+ * 10,000 tokens) is a cash order; a UPI/bank size (50,000 and up) is UPI/bank;
+ * a USDT order is the USDT rail whatever its size. The risk gate has already
+ * refused any amount that is not a size on offer.
  *
  * Stamped at creation and frozen by trigger, so an open order cannot change
- * rail under the member serving it. 2d replaces the size boundary with the
- * admin's denomination list.
+ * rail under the member serving it.
  */
 export function paymentModeFor({ currency, tokenAmountPaise }) {
   if (String(currency ?? 'INR').toUpperCase() === 'USDT') return PAYMENT_MODES.P2P_UPI;
@@ -40,7 +45,7 @@ export function paymentModeFor({ currency, tokenAmountPaise }) {
   if (!Number.isInteger(paise) || paise <= 0) {
     throw new TypeError(`paymentModeFor: token amount must be positive paise, got ${tokenAmountPaise}`);
   }
-  return paise <= MAX_CASH_BUY_PAISE ? PAYMENT_MODES.CASH_ATM : PAYMENT_MODES.P2P_UPI;
+  return paise <= MAX_CASH_SIZE_PAISE ? PAYMENT_MODES.CASH_ATM : PAYMENT_MODES.P2P_UPI;
 }
 
 /**

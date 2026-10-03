@@ -112,6 +112,12 @@ export default async function run() {
       // one production cannot make (§32 S16). The one thing moved by hand is
       // the clock: `paid_at` goes back past the player's ten-minute wait.
       const utr = String(Date.now()).slice(-12).padStart(12, '6');
+      // A cash buy is paid through the machine the member scans, once they
+      // have accepted it (Step 2d).
+      await POST(mT, `/api/merchant/accept/${orderId}`, {});
+      await POST(mT, `/api/merchant/orders/${orderId}/cash-link`, {
+        link: `upi://pay?pa=atm.cash@icici&pn=ATM&am=1000.00&cu=INR&tr=E2E${utr.slice(-8)}`,
+      });
       const paidRes = await POST(pT, `/api/payment/order/${orderId}/mark-paid`, { utrNumber: utr });
       await pgQuery(`UPDATE order_states SET paid_at = now() - interval '11 minutes' WHERE order_id = $1`, [orderId]);
       const raised = await POST(pT, `/api/payment/order/${orderId}/dispute`, { reason: 'e2e cross-panel: nothing credited' });

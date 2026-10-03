@@ -30,6 +30,10 @@ import {
 } from '#db/repositories/merchants.js';
 import { setSupervisorRole, createTeam, addMember, approveMember } from '#db/repositories/teams.js';
 import { createRequest, fulfilRequest } from '#db/repositories/teamPools.js';
+import { getOrderRecord, setCashLink } from '#db/repositories/orders.record.js';
+import { PAYMENT_MODES } from '#db/repositories/orderRails.js';
+import { checkCashLink } from '../domains/payment/cashLink.js';
+import { startOrder } from '../domains/payment/orderLifecycle.service.js';
 
 let seq = 0;
 
@@ -43,7 +47,12 @@ export function teamFixture() {
     await createMerchant({
       merchantId, name: `${prefix} ${merchantId.slice(-6)}`, publicRef: generateMerchantPublicRef(),
       mobile: `4${String(Date.now()).slice(-6)}${String(seq % 1000).padStart(3, '0')}`, status: 'ACTIVE',
-      bankDetails: { upiId: `tf${randomBytes(5).toString('hex')}@upi` },
+      // The account a bank-transfer buy is paid into (owner, 2026-10-03).
+      bankDetails: {
+        upiId: `tf${randomBytes(5).toString('hex')}@upi`,
+        accountHolderName: `${prefix} Holder`, bankName: 'Test Bank',
+        accountNo: `5020${String(Date.now()).slice(-6)}${String(seq % 100).padStart(2, '0')}`, ifsc: 'TEST0000001',
+      },
     });
     await updateMerchant(merchantId, { merchantApprovalStatus: 'APPROVED' });
     merchants.push(merchantId);
@@ -107,4 +116,33 @@ export function teamFixture() {
   }
 
   return { workingTeam, fund, onlyOnline, freshMerchant, cleanup };
+}
+
+/**
+ * What has to happen on the member's side before a player can pay a buy
+ * (Step 2d): the member ACCEPTS it (until then they may still decline, so the
+ * player is shown nowhere to pay), and on a CASH buy scans the machine's QR.
+ * Through the transition the accept route makes, and the check and the one
+ * writer the scan route uses. A no-op on anything already past that, so a
+ * fixture can call it before every Paid tap.
+ */
+export async function readyToPay(orderId) {
+  let order = await getOrderRecord(orderId);
+  if (!order || order.type !== 'DEPOSIT') return order;
+  if (order.status === 'ASSIGNED') {
+    const accepted = await startOrder(order.orderId, {
+      expectFrom: ['ASSIGNED'], expectMerchant: order.merchantId, set: { processingAt: new Date() },
+    });
+    if (!accepted.ok) throw new Error(`readyToPay: ${orderId} could not be accepted (${accepted.reason})`);
+    order = await getOrderRecord(orderId);
+  }
+  if (order.paymentMode !== PAYMENT_MODES.CASH_ATM || order.cashLink || order.status !== 'PROCESSING') return order;
+  const tr = String(order.orderId).replace(/[^A-Za-z0-9]/g, '').slice(-20);
+  const link = checkCashLink(
+    `upi://pay?pa=atm.cash@icici&pn=ATM&am=${Number(order.fiatAmount).toFixed(2)}&cu=INR&tr=${tr}`,
+    order.fiatAmount,
+  );
+  const scanned = await setCashLink(order.orderId, order.merchantId, link);
+  if (!scanned) throw new Error(`readyToPay: ${orderId} is not a cash buy waiting for its QR (${order.status})`);
+  return scanned;
 }

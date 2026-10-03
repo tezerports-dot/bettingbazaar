@@ -56,8 +56,9 @@ const usdt = {
   kind: 'P2P',
   active: true,
   capabilities: { deposit: true, withdrawal: false },
-  createDeposit:    ({ userId, tokenAmount, usdtChain }) =>
-    createDepositOrder(userId, tokenAmount, { currency: 'USDT', usdtChain }),
+  // Priced in USDT (Step 2d): the tokens follow from the admin's rate.
+  createDeposit:    ({ userId, usdtChain, usdtAmount }) =>
+    createDepositOrder(userId, null, { currency: 'USDT', usdtChain, usdtAmount }),
   createWithdrawal: () => {
     throw Object.assign(
       new Error('USDT withdrawals are not supported. Withdraw in INR.'),

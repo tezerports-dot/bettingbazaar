@@ -69,7 +69,7 @@ const PLAYER_ROUTES = {
   payments: [
     ['post', '/deposit/create'], ['post', '/usdt/deposit/create'], ['post', '/withdrawal/create'],
     ['post', '/order/x/retry'], ['post', '/order/x/payment-reference'], ['post', '/order/x/utr-grace'],
-    ['post', '/order/x/mark-paid'], ['get', '/orders'], ['get', '/order/x'], ['get', '/order/x/batch'],
+    ['post', '/order/x/mark-paid'], ['get', '/orders'], ['get', '/order/x'],
     ['post', '/order/cancel'], ['get', '/order/x/status'], ['post', '/order/x/dispute'],
   ],
   users: [

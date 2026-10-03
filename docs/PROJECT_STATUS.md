@@ -795,6 +795,48 @@ Owner answers, 2026-10-02 (two rounds; the second replaced the security deposit 
 - **2d Orders.** Global admin-editable denomination list; CASH 500–10,000 and
   UPI_BANK 50,000–500,000 for both directions; no splitting (split payouts and
   CDM receipts deleted); USDT 100–10,000 step 100; the QR cash link.
+- **2d status (2026-10-03): BUILT on `claude/busy-wright-cy111a`.**
+  - *Order sizes.* An INR order is one of seven sizes (`ORDER_SIZES`); the
+    admin's Settings screen ticks which are offered (`SystemConfig.orderSizes`),
+    and the player picks from those. Min/max deposit and withdrawal limits are
+    gone; a size that is not offered is refused naming the ones that are.
+  - *USDT.* A buy is 100–10,000 USDT in steps of 100 (`SystemConfig.usdtBuy`,
+    admin-editable); tokens follow from the frozen rate. No USDT sell.
+  - *No splitting.* Split withdrawals, their batch screens and CDM slips are
+    deleted (columns dropped, upload category removed).
+  - *How each rail is paid (owner, 2026-10-03).* Every sell, on every rail, is a
+    bank transfer to the player's account and the member gives the UTR. A
+    UPI_BANK buy is a bank transfer into the member's account: the player sees
+    holder, account number, IFSC and bank with Copy buttons; routing skips a
+    member without a full account. The QR cash link is for CASH buys only.
+  - *The QR cash link.* The member's order card asks them to scan the ATM's
+    QR (camera with a jsQR fallback, or a photo; no typed link); the server
+    checks it (`checkCashLink`: a `upi://pay` link for exactly the order
+    amount) and the player gets one Pay button. No Paid tap before the scan; a
+    re-scan replaces it until the tap; a change of member clears it (trigger)
+    and a tap racing one is refused (`expectMerchant`). A cash buy that lapses
+    unscanned counts on the member only.
+  - *No mobiles (owner, 2026-10-03).* Closed three leaks: the member's UPI
+    handle in the player-readable timeline, an admin's mobile as a display
+    name, a merchant named after their mobile. `check:player-privacy` check 6.
+    An account number that is a mobile (payments-bank IFSC, or the holder's
+    own mobile at any bank) is refused by a CHECK on `merchants` and `users`,
+    named on every save path; a cash QR whose handle is a mobile is refused.
+    Default chosen with the coordinator; the owner can ask for it relaxed. The
+    security review added: a mobile in the holder's or bank's name, and in a
+    cash QR's name or note, is refused too; IFSC case and spacing and a 0091
+    prefix no longer slip past.
+  - *Accept before pay (security review).* The player is shown where to pay
+    (account, QR or USDT address) only once the member accepts; until then
+    "Waiting for the member to accept…", and Paid is refused
+    (`NOT_ACCEPTED_YET`). The scan waits for the accept (`ACCEPT_FIRST`); the
+    Paid move names the member on every rail; an unaccepted lapse is the
+    member's. Before this a member could take a transfer, decline, and leave
+    the order with someone else.
+  - *Tests.* `cashLinkPg` (15), `payoutAccountNotAMobilePg` (9),
+    `acceptBeforePayPg` (4), `orderTimelineNoMobilePg` (2), `orderSizesPg`,
+    privacy suites rewritten, `CashLinkScanner` (11), `BuyPaymentUI` (22);
+    mutations M349–M382; e2e s1/s3/s4/s7 accept before paying.
 - **2e Commission.** Instant, per-team high-water mark, 10% into the pool,
   16/84 attribution. DELETE the per-variety engine.
 - **2f Oversight.** Daily red flag (threshold admin-editable, 25%) from

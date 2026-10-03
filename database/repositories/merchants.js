@@ -850,7 +850,9 @@ export async function createMerchantAccount({
     const uid = account.rows[0].user_id;
 
     const merchant = await createMerchant({
-      merchantId: newMerchantId(), userId: uid, name: username || String(mobile),
+      merchantId: newMerchantId(), userId: uid,
+      // Never the mobile: a name is shown to other people, a number is not.
+      name: username || 'Member',
       username, mobile, email,
       currency, status: 'PENDING', bankDetails, usdtAddressTrc20, usdtAddressBep20,
       client,
@@ -866,6 +868,11 @@ export async function createMerchantAccount({
     // because "signup failed" tells an applicant nothing they can act on.
     if (error.code === '23505') {
       return { ok: false, reason: 'CREDENTIALS_TAKEN', constraint: error.constraint };
+    }
+    // An account number that is a mobile number (schema.sql, Step 2d): named
+    // for the same reason.
+    if (error.code === '23514' && error.constraint === 'merchants_bank_account_not_a_mobile') {
+      return { ok: false, reason: 'ACCOUNT_IS_A_MOBILE' };
     }
     throw error;
   } finally {

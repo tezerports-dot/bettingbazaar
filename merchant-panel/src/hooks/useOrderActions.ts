@@ -16,10 +16,12 @@
 //              accept one from the merchant. There is no payment-proof
 //              requirement — proof collection was removed platform-wide.
 //              WITHDRAWAL (PROCESSING → PAID/COMPLETED) — the MERCHANT paid, so
-//              `utrNumber` is theirs to give and required on the UPI rail. At a
-//              cash machine it is not asked for: that payout is evidenced by the
-//              CDM slip, which has its own route and its own claim.
+//              `utrNumber` is theirs to give, and required on EVERY rail: a sell
+//              is paid by bank transfer whichever team serves it (Step 2d).
 //   redFlag  POST /orders/:id/red-flag {reason} → flagged + DISPUTED for review
+//   cashLink POST /orders/:id/cash-link {link}  a CASH buy, ASSIGNED|PROCESSING:
+//              the cash machine's QR the member scanned, which the player pays
+//              (Step 2d). Replaceable until the player taps "I've paid".
 //   payment-not-received
 //            POST /orders/:id/reject {reason, proofFileKey, proofCdnUrl}
 //              PAID|PROCESSING → CANCELLED. Different from `reject` above,
@@ -40,32 +42,24 @@ const MIN_UTR_LENGTH = 12;
 
 const orderRef = (order: PaymentOrder): string => String(order._id || order.id || order.orderId);
 
-/**
- * @param onCashPayoutSettled called after a CASH_ATM withdrawal completes, so
- *   the screen can ask for the CDM slip while the merchant is still at the
- *   machine holding it. Branching on the ORDER's rail, never the live policy:
- *   an admin can switch at any moment and both rails then run side by side
- *   until the last pre-flip order settles, so an order held across a switch
- *   still settles the way it was created.
- */
 export function useOrderActions(
   rail: MerchantRail,
   onChanged: () => Promise<void> | void,
-  onCashPayoutSettled?: (order: PaymentOrder) => void,
 ) {
   const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
   const [closeDetail, setCloseDetail] = useState(false);
   const [rejectTarget, setRejectTarget] = useState<PaymentOrder | null>(null);
   const [rejectBusy, setRejectBusy] = useState(false);
+  const [scanTarget, setScanTarget] = useState<PaymentOrder | null>(null);
+  const [scanBusy, setScanBusy] = useState(false);
   const copy = railCopy(rail);
 
   /**
    * Run one action and say whether it WORKED.
    *
    * The boolean is not decoration. This helper swallows the error into a toast,
-   * so a caller that chains anything after it — the CDM slip prompt below —
-   * would otherwise run identically whether the payout completed or threw, and
-   * the merchant would be asked to evidence a payout that never happened.
+   * so a caller that chains anything after it would otherwise run identically
+   * whether the action completed or threw.
    */
   const run = useCallback(
     async (work: () => Promise<unknown>, success: string): Promise<boolean> => {
@@ -89,6 +83,8 @@ export function useOrderActions(
     },
 
     onPaymentNotReceived: (order) => setRejectTarget(order),
+
+    onScanCashLink: (order) => setScanTarget(order),
 
     onReject: (order) => setConfirmRequest({
       title: 'Reject this order?',
@@ -129,46 +125,28 @@ export function useOrderActions(
       });
     },
 
-    onPayout: (order) => {
-      const atMachine = order.paymentMode === 'CASH_ATM';
-      setConfirmRequest({
-        title: 'Mark payout as sent?',
-        body: atMachine
-          ? 'Confirm the cash is in the player\u2019s account. The order completes immediately and you will be asked for the CDM slip next \u2014 keep it to hand.'
-          : 'Confirm you have transferred the amount to the user, and enter the reference your bank gave the transfer.',
-        confirmLabel: "I've sent the money",
-        tone: 'ok',
-        // ── The reference on a SELL is the MERCHANT's ──────────────────────
-        // A buy and a sell put the reference on opposite sides. On a buy the
-        // PLAYER pays and submits their UTR; on a sell the MERCHANT pays, so
-        // the reference for that transfer is theirs to give and there is
-        // nobody else who could.
-        //
-        // Not asked at a cash machine: that payout's evidence is the CDM slip,
-        // collected separately below, and a bank UTR does not exist for it.
-        ...(atMachine ? {} : {
-          input: {
-            label: `UTR for this transfer (min ${MIN_UTR_LENGTH} characters)`,
-            validate: (v: string) => (v.length >= MIN_UTR_LENGTH
-              ? null
-              : `A UTR is at least ${MIN_UTR_LENGTH} characters. It is on your transfer receipt.`),
-          },
-        }),
-        onConfirm: async (utr: string) => {
-          const settled = await run(
-            () => api.confirmPayment(orderRef(order), atMachine ? undefined : utr),
-            'Payout confirmed — order completed'
-          );
-          // AFTER the confirm, and only if it SUCCEEDED. The receipt is chased
-          // and does not gate the payout — a player is not held up waiting for
-          // paperwork, and a merchant who dismisses this still finds the order
-          // in the list of slips they owe. But the submit route checks the rail
-          // and the order type, not the state, so a slip offered against a
-          // payout that threw would be stored against an unsettled order.
-          if (settled && atMachine) onCashPayoutSettled?.(order);
-        },
-      });
-    },
+    onPayout: (order) => setConfirmRequest({
+      title: 'Mark payout as sent?',
+      body: 'Confirm you have sent the amount by bank transfer to the player\u2019s account, and enter the reference your bank gave the transfer.',
+      confirmLabel: "I've sent the money",
+      tone: 'ok',
+      // ── The reference on a SELL is the MERCHANT's ──────────────────────
+      // A buy and a sell put the reference on opposite sides. On a buy the
+      // PLAYER pays and submits their UTR; on a sell the MERCHANT pays, so
+      // the reference for that transfer is theirs to give and there is
+      // nobody else who could. Asked on every rail: a cash team's payout is
+      // a bank transfer too (owner, 2026-10-03).
+      input: {
+        label: `UTR for this transfer (min ${MIN_UTR_LENGTH} characters)`,
+        validate: (v: string) => (v.length >= MIN_UTR_LENGTH
+          ? null
+          : `A UTR is at least ${MIN_UTR_LENGTH} characters. It is on your transfer receipt.`),
+      },
+      onConfirm: (utr: string) => run(
+        () => api.confirmPayment(orderRef(order), utr),
+        'Payout confirmed'
+      ),
+    }),
 
     // A merchant reports that an order is wrong; they do not DISPUTE it. The
     // dispute is the instrument of the party who is owed, which on this
@@ -184,7 +162,7 @@ export function useOrderActions(
 
     // Replaced by the screen that owns the detail drawer.
     onOpen: () => undefined,
-  }), [copy.proofLabel, onCashPayoutSettled, rail, run]);
+  }), [copy.proofLabel, rail, run]);
 
   /**
    * Send the rejection.
@@ -210,9 +188,34 @@ export function useOrderActions(
     }
   }, [onChanged, rejectTarget]);
 
+  /**
+   * Send the scanned QR. The scanner stays OPEN on a refusal, so the member
+   * can scan again at the machine they are standing at; the server's message
+   * says what was wrong (another amount, not a UPI payment QR).
+   */
+  const sendCashLink = useCallback(async (order: PaymentOrder, link: string): Promise<boolean> => {
+    setScanBusy(true);
+    try {
+      await api.attachCashLink(orderRef(order), link);
+      toast.success('QR sent. The player can pay it now.');
+      await onChanged();
+      return true;
+    } catch (error: any) {
+      toast.error(error?.message || 'That did not go through — scan again');
+      return false;
+    } finally {
+      setScanBusy(false);
+    }
+  }, [onChanged]);
+
   return {
     actions,
     confirmRequest,
+    /** The cash buy whose machine QR is being scanned, if any. */
+    scanTarget,
+    scanBusy,
+    dismissScan: () => setScanTarget(null),
+    sendCashLink,
     dismissConfirm: () => setConfirmRequest(null),
     /** The order awaiting a "payment never arrived" rejection, if any. */
     rejectTarget,

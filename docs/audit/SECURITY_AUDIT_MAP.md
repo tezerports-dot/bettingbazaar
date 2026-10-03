@@ -3356,6 +3356,73 @@ by asking R7's neighbours rather than its own case.
   extra signers). The same-key v2+v3 APK is accepted — the opposite case — and
   the two refusals fail on main. **Mutation-proved:** M234, M235 KILLED.
 
+### F-051 — a mobile number or UPI handle could reach the other side of an order
+`FIXED` · medium (§24: the counterparty learns a contact detail) · Step 2d, owner's rule of 2026-10-03 · 2026-10-03
+
+Shape: *text written for one party carries a contact detail of another*. The
+order views were allowlists and clean; the leaks were in text built beside them.
+
+- **Found and fixed:** (1) the member's accept route wrote "UPI ID: <handle>"
+  into the order timeline, which the player reads; (2) an admin with no
+  username was named by their mobile in the dispute message the player reads;
+  (3) a merchant signing up without a username was NAMED after their mobile;
+  (4) a cash buy's QR is whatever the member scans, so a member could scan a
+  personal QR whose handle is their mobile and the player's UPI app would show
+  it. `checkCashLink` now refuses a payee handle containing a mobile number.
+- **Sweep:** every `postSystemMessage` / timeline write and every display-name
+  fallback in `backend/` (`rg "postSystemMessage|\|\| .*mobile|mobile \|\|"`):
+  the three above; the rest name a `merchantRef`, the order, or the player's own
+  account to the player. Team views (`teams.js`) select no mobile. Admin
+  screens show mobiles by design (staff, not a counterparty).
+- **Gate:** `check:player-privacy` check 6 fails if `PLAYER_PAY_TO_BANK_FIELDS`
+  names a contact detail; check 5 fails on a `upi://pay` built anywhere but
+  `cashLink.js`. Timeline TEXT is not mechanisable beyond that (it needs a
+  judgement about whose detail a sentence names), so the tests carry it:
+  `playerOrderPrivacyRoutes` scans every player payload for the member's mobile
+  and UPI handle.
+- **(5) An account number that is a mobile.** Payments banks issue the mobile
+  as the account number, and the account is shown across the order. Refused by
+  a CHECK on `merchants` and `users` (`bb_account_number_is_a_mobile`:
+  mobile-shaped at a payments-bank IFSC, or the holder's own mobile at any
+  bank), so every writer is covered; the three save paths name it
+  (`payoutAccount.js`). `payoutAccountNotAMobilePg`, with the opposite cases (a
+  ten-digit Kotak account, a twelve-digit India Post account).
+- **(6) Found by the pre-push review: the names, the spelling, the QR's text.**
+  A mobile in the account holder's or bank's name crossed the same way, and so
+  did one in a cash QR's `pn`/`tn`; an IFSC in lower case or with a space, and
+  a number written 0091…, slipped past (5). The CHECKs now also apply
+  `bb_text_has_a_mobile` to both names, the IFSC and prefix are normalised, and
+  `checkCashLink` reads `pn`/`tn`. Sweep: every column the member or player
+  views project from an account (`PLAYER_PAY_TO_BANK_FIELDS`, the merchant
+  view's payout fields): holder, number, IFSC, bank; all four covered. A
+  member's free text in the order chat is not covered by a rule (it is a
+  conversation; recorded, not mechanisable).
+- **Mutation-proved:** M349–M371, M378–M382.
+
+### F-052 — the player was shown where to pay before the member accepted
+`FIXED` · high (a member could take a transfer, decline, and the order and its tokens go to another member) · Step 2d security review · 2026-10-03
+
+Shape: *a detail shown in a state that can still be undone* (§32 S42: "assigned"
+read as "will be served"). `playerOrderView` sent `payTo` (account, QR, USDT
+address) from ASSIGNED, and `markOrderPaid` took Paid there, while the member
+may decline (`/reject`, ASSIGNED only) and an admin may reassign (ASSIGNED only).
+
+- **Fixed:** `PAY_DETAIL_STATES` (PROCESSING, PAID, REJECTED, DISPUTED) gates
+  every pay-to field; Paid is refused at ASSIGNED as `NOT_ACCEPTED_YET` before
+  the reference is claimed, and moves only from PROCESSING; the move names the
+  member read (`expectMerchant`) on every rail, not only cash; `setCashLink`
+  takes PROCESSING only and the route answers `ACCEPT_FIRST`; a lapse never
+  accepted counts on the member (`playerCouldPay`).
+- **Paths:** the player's order, status poll and history (all `playerOrderView`);
+  the HTTP mark-paid and the service; the scan route and its writer; the
+  expiry cron. The player panel shows "Waiting for the member to accept…"; the
+  merchant card hides Scan until accepted.
+- **Neighbours:** bank/cash/USDT rails (each tested at ASSIGNED and after);
+  the race of a Paid tap against a change of hands, bank and cash
+  (`acceptBeforePayPg`, `cashLinkPg`, a held row lock); the opposite case, an
+  accepted buy that lapses unpaid, still counts on the player.
+- **Mutation-proved:** M372–M377, with M353, M356, M357 repointed.
+
 ### The §37 neighbour pass over the follow-up's fixes (2026-10-01)
 Each fix was asked the §37.1 pairs that apply. "held" means the neighbour was
 checked and is correct; the evidence is named.
@@ -3387,9 +3454,9 @@ checked and is correct; the evidence is named.
 
 | Measure | Count |
 |---|---|
-| Route declarations in `backend/**` | 287 |
+| Route declarations in `backend/**` | 282 |
 | Reachable with **no auth middleware** | 34 |
-| Staff routes carrying an **area** (permission key) | 175 |
+| Staff routes carrying an **area** (permission key) | 173 |
 | Staff routes a sub-admin can **never** be given (full admin only) | 7 |
 
 A count moving is not by itself a defect — it is a prompt to read the
@@ -3450,9 +3517,9 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 416 |
-| Parameters only (safe by construction) | 269 |
-| Interpolating into statement text (each needs a reading) | 143 |
+| `pgQuery` call sites | 413 |
+| Parameters only (safe by construction) | 268 |
+| Interpolating into statement text (each needs a reading) | 141 |
 | Statement text built elsewhere and passed in (each needs a reading) | 4 |
 
 <details><summary>Call sites whose statement text is built elsewhere</summary>
@@ -3468,8 +3535,8 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Panel | .ts/.tsx files | `dangerouslySetInnerHTML` | `.innerHTML =` |
 |---|---|---|---|
-| `user-panel` | 88 | 0 | 0 |
-| `admin-panel` | 111 | 0 | 0 |
+| `user-panel` | 87 | 0 | 0 |
+| `admin-panel` | 110 | 0 | 0 |
 | `merchant-panel` | 44 | 0 | 0 |
 
 <!-- END GENERATED -->

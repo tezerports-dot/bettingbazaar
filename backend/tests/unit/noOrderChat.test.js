@@ -89,16 +89,13 @@ describe('no merchant-to-user order chat', () => {
     // guard is inverted rather than deleted: the reason it must not come back
     // is worth keeping where somebody would look for it.
     //
-    // A merchant supplies a UPI ID and nothing else on the INR rail.
-    // `upiPaymentLink()` builds a `upi://pay` intent per order with THAT
-    // order's amount already in it, so the player taps and their own UPI app
-    // opens filled in. A stored image cannot carry the amount, which is the
-    // whole point of it.
+    // A stored image cannot carry the order amount. A cash buy is paid
+    // through the ATM QR the member scans per order (Step 2d), and a UPI/bank
+    // buy by bank transfer to the member's account (owner, 2026-10-03).
     expect(read('backend/routes/upload.routes.js')).not.toMatch(/merchant\/qr\/upload-url/);
     // And the remaining upload categories are untouched — this deletion was
     // scoped to the QR, not to uploads.
     const uploads = read('backend/routes/upload.routes.js');
-    expect(uploads).toMatch(/cdm-receipt/);
     expect(uploads).toMatch(/order-reject-proof/);
     expect(uploads).toMatch(/profile\/picture/);
   });

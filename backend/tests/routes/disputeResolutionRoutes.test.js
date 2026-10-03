@@ -30,7 +30,7 @@ import {
   tryAssignMerchant, markOrderPaid, createWithdrawalOrder,
 } from '../../domains/payment/paymentProcessing.service.js';
 import { settleHold } from '../../domains/payment/withdrawalHold.service.js';
-import { teamFixture } from '../teamFixture.js';
+import { teamFixture, readyToPay } from '../teamFixture.js';
 import { mountRouter, actor, merchantActor, as, request } from './_harness.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
@@ -103,6 +103,7 @@ describePg('dispute resolution routes', () => {
     expect(await tryAssignMerchant(order), 'team routing did not take the buy').toBe(true);
     expect((await getOrderRecord(orderId)).merchantId).toBe(merchant.merchantId);
     expect((await transitionOrder(orderId, 'PROCESSING', { set: { processingAt: new Date() } })).ok).toBe(true);
+    await readyToPay(orderId);
     await markOrderPaid(who.userId, orderId, `UTRDR${RUN}${Date.now()}${seq}`);
     expect((await raiseDispute(orderId)).ok).toBe(true);
     expect((await getOrderRecord(orderId)).poolHeldPaise).toBe(tokens * 100);

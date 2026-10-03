@@ -60,18 +60,19 @@ router.post('/deposit/create', authenticatePlayer, requireChannelMembership({ ac
 });
 
 /**
- * POST /api/payment/usdt/deposit/create — buy above the INR ceiling.
+ * POST /api/payment/usdt/deposit/create — a buy paid in USDT.
  *
  * ── Why this is a separate route from `/deposit/create` ────────────────────
- * It is a different rail with different rules — two fixed amounts, and a chain
- * the player must choose — and the two are not interchangeable. One route
+ * It is a different rail with different rules — priced in whole steps of 100
+ * USDT, and a chain the player must choose — and the two are not
+ * interchangeable. One route
  * branching on a body field would make "which rail am I on" a question every
  * reader of the handler has to answer, and the failure mode is a request that
  * silently lands on the wrong one.
  *
- * The SERVER still decides what each rail serves: `assertBuyIsLegal` refuses a
- * ₹5,000 purchase here and a ₹50,000 one on the INR route, whatever a client
- * asks for.
+ * The SERVER still decides what each rail serves: `assessFundingOrder` refuses
+ * a USDT amount off the step here and an INR amount that is not a size on
+ * offer on the INR route, whatever a client asks for.
  */
 router.post('/usdt/deposit/create',
   authenticatePlayer,
@@ -81,7 +82,9 @@ router.post('/usdt/deposit/create',
     try {
       const result = await requestDeposit({
         userId: req.user.userId,
-        tokenAmount: Number(req.body.tokenAmount),
+        // In whole USDT — what the player sends (Step 2d). The tokens are the
+        // server's to work out from the admin's rate, never the client's.
+        usdtAmount: Number(req.body.usdtAmount),
         usdtChain: req.body.usdtChain,
         provider: 'USDT',
       });
@@ -284,61 +287,6 @@ router.get('/order/:orderId', authenticatePlayer, orderAccessGuard, async (req, 
   } catch (err) {
     console.error('GET /payment/order/:orderId error:', err);
     res.status(500).json({ success: false, message: 'Failed to fetch order' });
-  }
-});
-
-/**
- * GET /api/payment/order/:orderId/batch — the other parts of one request.
- *
- * A cash withdrawal too large for one denomination becomes several ORDINARY
- * withdrawals, because that is what an ATM dispenses. They are not a parent and
- * its legs — each is a complete withdrawal with its own merchant, its own
- * escrow and its own state — but the player made ONE request, so they need to
- * be told which orders came out of it. Otherwise four unexplained withdrawals
- * appear at the same second and nothing says why.
- *
- * That is all this is: a label lookup for display. Nothing derives state from
- * `withdrawal_batch_ref`, no money reads it, no assignment consults it. If
- * something ever branches on it, it has become the parent relation again
- * wearing a different name.
- *
- * Behind `orderAccessGuard`, so it is the owner asking, and it returns the
- * siblings that belong to THIS caller — a batch ref is not a capability.
- * An ordinary withdrawal answers with an empty list rather than a 404: "this
- * was not split" is a true answer, and a screen forced to tell that apart from
- * "not found" will get it wrong.
- */
-router.get('/order/:orderId/batch', authenticatePlayer, orderAccessGuard, async (req, res) => {
-  try {
-    const order = req.p2pOrder;
-    const siblings = order?.withdrawalBatchRef
-      ? await db.orders.withdrawalBatch(order.withdrawalBatchRef)
-      : [];
-    res.json({
-      success: true,
-      batchRef: order?.withdrawalBatchRef ?? null,
-      // PARTS, not `orders`: a deliberately narrow display list — id, position,
-      // amount, state — and not order-shaped, so nothing here has to be kept in
-      // step with the player's order projection.
-      parts: siblings
-        // Ownership re-checked per row. The guard proved this caller owns the
-        // order they named; it did not prove they own everything sharing a
-        // label with it, and a label is not an authorisation.
-        .filter((o) => String(o.userId) === String(req.user.userId))
-        .map((o, index) => ({
-          orderId:   o.orderId,
-          partIndex: index + 1,
-          amount:    o.fiatAmount,
-          status:    o.status,
-          expiresAt: o.expiresAt,
-          // Whether the player can take this one back. Same rule as any other
-          // withdrawal, because it IS any other withdrawal.
-          cancellable: o.status === 'PENDING_QUEUE',
-        })),
-    });
-  } catch (err) {
-    console.error('GET /payment/order/:orderId/batch error:', err);
-    res.status(500).json({ success: false, message: 'Failed to fetch the other parts of this withdrawal' });
   }
 });
 

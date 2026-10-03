@@ -36,7 +36,7 @@ import { getTreasuryBalances, ACCOUNTS } from '#db/repositories/treasury.js';
 import { getBalances } from '../../domains/wallet/walletAuthority.service.js';
 import { tryAssignMerchant, markOrderPaid } from '../../domains/payment/paymentProcessing.service.js';
 import { disputeOrder } from '../../domains/payment/orderLifecycle.service.js';
-import { teamFixture } from '../teamFixture.js';
+import { teamFixture, readyToPay } from '../teamFixture.js';
 import { mountRouter, actor, merchantActor, as } from './_harness.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
@@ -115,6 +115,7 @@ describePg('a confirmed buy moves the tokens once', () => {
     expect(await tryAssignMerchant(order), 'the router did not assign the buy').toBe(true);
     const assigned = await getOrderRecord(orderId);
     expect(assigned).toMatchObject({ merchantId: member.merchantId, teamId: team.teamId, poolHeldPaise: ORDER_PAISE });
+    await readyToPay(orderId);
     expect((await markOrderPaid(player.userId, orderId, nextUtr())).status).toBe('PAID');
     return { member, player, orderId, team };
   };

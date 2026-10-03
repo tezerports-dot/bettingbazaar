@@ -32,7 +32,7 @@ import { tryAssignMerchant, markOrderPaid } from '../../domains/payment/paymentP
 import {
   MERCHANT_ORDER_FIELDS, MERCHANT_FORBIDDEN_ORDER_FIELDS,
 } from '../../domains/merchant/merchantOrderView.js';
-import { teamFixture } from '../teamFixture.js';
+import { teamFixture, readyToPay } from '../teamFixture.js';
 import { mountRouter, actor, merchantActor, as } from './_harness.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
@@ -93,6 +93,7 @@ describePg('a member confirms a buy — the money', () => {
     });
     expect(await tryAssignMerchant(order), 'the router did not assign the buy').toBe(true);
     expect((await getOrderRecord(orderId)).merchantId).toBe(member.merchantId);
+    await readyToPay(orderId);
     expect((await markOrderPaid(player.userId, orderId, utr)).status).toBe('PAID');
     return { member, player, orderId, utr, team };
   };

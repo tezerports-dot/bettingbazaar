@@ -1055,6 +1055,46 @@ merchant's identity; it cannot hide a payee from a payer.
 
 `npm run check:merchant-privacy` · `npm run check:player-privacy`
 
+**Step 2d (owner, 2026-10-03): where to pay, and no mobiles.** Every UPI_BANK
+order (50,000, 100,000, 500,000) is paid by bank transfer, so the player is
+shown the assigned member's account (holder, number, IFSC, bank) and the member
+is shown the player's on a sell. The owner's condition was that *nobody* sees
+another person's mobile number. Building it found three places one could
+reach the other side, all fixed with tests: the accept route wrote the
+member's UPI handle into the order timeline the player reads; an admin's
+display name in a dispute message fell back to their mobile; and a merchant
+created without a username was named after their mobile. Check 6 of
+`check:player-privacy` fails if `PLAYER_PAY_TO_BANK_FIELDS` ever names a
+contact detail. Payments banks (Paytm, Airtel, Jio, Fino, NSDL, India Post)
+use the mobile number as the account number, so a member or player banking
+there would show it as their account: such an account is refused by the row,
+told apart by the IFSC's bank code, and so is an account number equal to the
+holder's own mobile at any bank (a ten-digit Kotak account is not a phone
+number and is allowed). On a cash buy the player pays the ATM's own QR, so
+its payee is the bank's ATM handle; a QR whose handle is a mobile number is a
+person's, and is refused.
+
+The security review before the push found two more ways through. The NAMES on
+an account travel with it, so a mobile typed into the holder's or the bank's
+name reached the other side the same way: refused by the same CHECKs
+(`bb_text_has_a_mobile`), and in a cash QR's name and note (`pn`, `tn`), which
+the player's UPI app shows. And the spelling: an IFSC typed in lower case or
+with a space, or a number written 0091…, slipped past the first version of the
+rule; both are normalised before the comparison now (§32 S29).
+
+**Accept before pay (security review, 2026-10-03).** The first build showed the
+player where to pay as soon as the order was ASSIGNED. ASSIGNED is the state in
+which the member may still decline and an admin may still move the order (the
+reject route and the admin reassign both say so), so a player could pay member
+A's account, A decline, and the order and its tokens go to member B while the
+money sat with A. The player is now shown the account, the QR or the USDT
+address only from PROCESSING, the member's accept; "I've paid" before it is
+refused by name before the reference is claimed (so the player can still use
+it); the cash scan waits for the accept too; and the Paid move names the member
+the player was shown on every rail, not only cash. A buy the member never
+accepted gave the player nothing to pay, so its lapse counts on the member
+alone. The player's screen says "Waiting for the member to accept…".
+
 ---
 
 ## 25. USDT is one token on several chains
@@ -1109,6 +1149,13 @@ machine's limit applied where there is no machine.
 
 A refusal on either rail **names that rail's own choices**: a player told only
 "invalid amount" tries again and again.
+
+**Step 2d (owner, 2026-10-02 and 2026-10-03).** The ₹40,000 payout leg went with
+withdrawal splitting: one size, one order, one payment. A USDT buy is priced in
+the USDT the player sends (100 to 10,000 in steps of 100, the bounds
+admin-editable), and the tokens follow from the frozen rate; before 2d it was
+one of three token sizes and the USDT figure followed, so a player could not
+ask for a round USDT amount.
 
 ---
 

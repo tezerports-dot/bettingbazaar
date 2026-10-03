@@ -188,33 +188,33 @@ describePg('the configuration store', () => {
   });
 
   it('refuses a stale write rather than silently overwriting another admin', async () => {
-    const first = await applyConfig({ scope: 'system', docKey: KEY, patch: { minDeposit: 200 } });
+    const first = await applyConfig({ scope: 'system', docKey: KEY, patch: { maxBalanceAdjustment: 200 } });
     expect(first.version).toBe(1);
 
     // A second admin held a form open across the first admin's save.
     const stale = await applyConfig({
-      scope: 'system', docKey: KEY, patch: { minDeposit: 999 }, expectedVersion: 0,
+      scope: 'system', docKey: KEY, patch: { maxBalanceAdjustment: 999 }, expectedVersion: 0,
     });
     expect(stale).toEqual({ ok: false, reason: 'STALE', currentVersion: 1 });
-    expect((await getConfig('system', { docKey: KEY, fresh: true })).minDeposit).toBe(200);
+    expect((await getConfig('system', { docKey: KEY, fresh: true })).maxBalanceAdjustment).toBe(200);
 
     // With the version it actually read, the same write goes through.
     const ok = await applyConfig({
-      scope: 'system', docKey: KEY, patch: { minDeposit: 999 }, expectedVersion: 1,
+      scope: 'system', docKey: KEY, patch: { maxBalanceAdjustment: 999 }, expectedVersion: 1,
     });
     expect(ok.ok).toBe(true);
     expect(ok.version).toBe(2);
   });
 
   it('restores an earlier version as a NEW version, not by rewinding', async () => {
-    await applyConfig({ scope: 'system', docKey: KEY, patch: { minDeposit: 111 }, actor: 'a' });
-    await applyConfig({ scope: 'system', docKey: KEY, patch: { minDeposit: 222 }, actor: 'b' });
-    expect((await getConfig('system', { docKey: KEY, fresh: true })).minDeposit).toBe(222);
+    await applyConfig({ scope: 'system', docKey: KEY, patch: { maxBalanceAdjustment: 111 }, actor: 'a' });
+    await applyConfig({ scope: 'system', docKey: KEY, patch: { maxBalanceAdjustment: 222 }, actor: 'b' });
+    expect((await getConfig('system', { docKey: KEY, fresh: true })).maxBalanceAdjustment).toBe(222);
 
     const restored = await restoreConfigVersion('system', 1, { docKey: KEY, actor: 'c' });
     expect(restored.ok).toBe(true);
     expect(restored.version).toBe(3);   // forward, never backward
-    expect((await getConfig('system', { docKey: KEY, fresh: true })).minDeposit).toBe(111);
+    expect((await getConfig('system', { docKey: KEY, fresh: true })).maxBalanceAdjustment).toBe(111);
 
     // The trail describes what happened, including the restore itself.
     const history = await getConfigHistory('system', { docKey: KEY });
@@ -226,7 +226,7 @@ describePg('the configuration store', () => {
   });
 
   it('will not let anything rewrite the audit trail', async () => {
-    await applyConfig({ scope: 'system', docKey: KEY, patch: { minDeposit: 300 } });
+    await applyConfig({ scope: 'system', docKey: KEY, patch: { maxBalanceAdjustment: 300 } });
     await expect(pgQuery(
       `UPDATE config_document_versions SET changed_by = 'someone-else'
         WHERE scope = 'system' AND doc_key = $1`, [KEY],
@@ -240,9 +240,9 @@ describePg('the configuration store', () => {
   it('applies a change IMMEDIATELY — a stale limit is worse than a stale banner', async () => {
     // The read below populates the cache. The write must invalidate it rather
     // than let the old limit stand until the TTL expires.
-    expect((await getConfig('system', { docKey: KEY })).maxWithdrawal).toBe(50000);
-    await applyConfig({ scope: 'system', docKey: KEY, patch: { maxWithdrawal: 10000 } });
-    expect((await getConfig('system', { docKey: KEY })).maxWithdrawal).toBe(10000);
+    expect((await getConfig('system', { docKey: KEY })).maxBalanceAdjustment).toBe(1000000);
+    await applyConfig({ scope: 'system', docKey: KEY, patch: { maxBalanceAdjustment: 10000 } });
+    expect((await getConfig('system', { docKey: KEY })).maxBalanceAdjustment).toBe(10000);
   });
 
   // ── Other scopes ──────────────────────────────────────────────────────────

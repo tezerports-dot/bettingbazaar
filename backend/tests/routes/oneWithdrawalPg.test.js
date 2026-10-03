@@ -2,22 +2,18 @@
 /**
  * One withdrawal is ONE order — and the money it locks.
  *
- * ── What this suite used to be, and why it changed ─────────────────────────
- * It was "a cash withdrawal that becomes several withdrawals": an ATM
- * dispenses denominations, so ₹100,000 on the cash rail became four ordinary
- * withdrawals sharing a batch label. The owner removed splitting
- * (PROJECT_STATUS §3.10, 2026-10-02): an order's rail is derived from its
- * size — up to ₹10,000 is CASH, above it UPI/bank — and one withdrawal is one
- * payout. The split, its batch label and the fee-sharing arithmetic went with
- * it, and so did the cases that tested them.
+ * ── Why it is one ───────────────────────────────────────────────────────────
+ * The owner removed splitting (PROJECT_STATUS §3.10, 2026-10-02) and, in 2d,
+ * made every order exactly one of a fixed list of sizes: the size puts it on
+ * its rail, and one withdrawal is one bank payout (2026-10-03).
  *
  * ── What is still protected here, and why it is the same worry ─────────────
  * Every failure here is a MONEY failure and none of them looks like an error:
  *
  *   • a withdrawal locked more or less than once — the split's old risk, and
  *     still the risk of any path that writes more than one order per request;
- *   • a cash amount no machine dispenses accepted onto the cash rail, where it
- *     can never be served, with the player's tokens locked behind it;
+ *   • an amount that is not an order size accepted onto a rail, where no team
+ *     is organised to serve it, with the player's tokens locked behind it;
  *   • a waiting withdrawal that refunds nothing when it is cancelled;
  *   • a withdrawal nobody has taken that no queue shows anybody.
  *
@@ -26,7 +22,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { pgConfigured, applySchema, closePg, pgQuery } from '#db/client.js';
 import {
-  getOrderRecord, withdrawalBatch, stalledWithdrawals, pendingWithdrawalTotal,
+  getOrderRecord, stalledWithdrawals, pendingWithdrawalTotal,
 } from '#db/repositories/orders.record.js';
 import { getBalances } from '#db/repositories/wallets.js';
 import { updateUser } from '#db/repositories/users.js';
@@ -90,52 +86,52 @@ describePg('one withdrawal is one order', () => {
     await closePg();
   });
 
-  it('creates ONE withdrawal above the cash ceiling, on the UPI rail, for the whole amount', async () => {
-    // ₹45,000 is no cash denomination and well above the ₹10,000 a machine
-    // dispenses. It used to become a ₹40,000 leg plus a refusal; now it is one
-    // bank payout.
-    const player = await withdrawer(100_000);
-    const result = await createWithdrawalOrder(player.userId, 45_000);
+  /** The order a withdrawal request produced: there is exactly one. */
+  const orderOf = (result) => {
+    expect(result.order, 'a withdrawal answered with no order').toBeTruthy();
+    // One request, one order: nothing in the answer may describe siblings.
+    expect(result).not.toHaveProperty('parts');
+    return result.order.orderId ?? result.order._id;
+  };
 
-    expect(result.parts).toHaveLength(1);
-    expect(result.parts[0].amount).toBe(45_000);
-    const row = await getOrderRecord(result.parts[0].orderId);
+  it('creates ONE withdrawal of a bank-rail size, for the whole amount', async () => {
+    // 50,000 tokens is the smallest UPI/bank size (PROJECT_STATUS §3.10, 2d).
+    const player = await withdrawer(100_000);
+    const row = await getOrderRecord(orderOf(await createWithdrawalOrder(player.userId, 50_000)));
     expect(row.type).toBe('WITHDRAWAL');
     expect(row.paymentMode).toBe(PAYMENT_MODES.P2P_UPI);
-    expect(row.tokenAmount).toBe(45_000);
+    expect(row.tokenAmount).toBe(50_000);
     expect(row.escrowLocked).toBe(true);
-    // No label: there are no siblings to group, so a screen must not offer an
-    // expander promising some.
-    expect(row.withdrawalBatchRef).toBeNull();
-    expect(result.partial).toBeUndefined();
   });
 
   it('locks exactly the withdrawal, once', async () => {
     const player = await withdrawer(100_000);
     const before = await getBalances(player.userId);
-    await createWithdrawalOrder(player.userId, 45_000);
+    await createWithdrawalOrder(player.userId, 50_000);
     const after = await getBalances(player.userId);
 
     // Both sides of the one movement: out of winnings, into locked. Not twice
     // the amount (a second write for the same request) and not none.
-    expect(Number(before.winningsBalance) - Number(after.winningsBalance)).toBe(45_000);
-    expect(Number(after.lockedBalance) - Number(before.lockedBalance)).toBe(45_000);
+    expect(Number(before.winningsBalance) - Number(after.winningsBalance)).toBe(50_000);
+    expect(Number(after.lockedBalance) - Number(before.lockedBalance)).toBe(50_000);
   });
 
   it('counts the withdrawal once — there is nothing to double-count', async () => {
     const player = await withdrawer(100_000);
-    await createWithdrawalOrder(player.userId, 45_000);
-    expect(await pendingWithdrawalTotal(player.userId)).toBe(45_000);
+    await createWithdrawalOrder(player.userId, 50_000);
+    expect(await pendingWithdrawalTotal(player.userId)).toBe(50_000);
   });
 
-  it('refuses a cash-rail amount no machine dispenses, before taking any money', async () => {
-    const player = await withdrawer(20_000);
+  it.each([
+    ['under the cash ceiling', 7_700],
+    ['between the two rails', 45_000],
+    ['above every size', 600_000],
+  ])('refuses an amount that is not an order size (%s), before taking any money', async (_, amount) => {
+    const player = await withdrawer(700_000);
     const before = await getBalances(player.userId);
 
-    // ₹7,700 is under the cash ceiling, so it is a CASH withdrawal — and no
-    // ATM pays it.
-    await expect(createWithdrawalOrder(player.userId, 7_700)).rejects.toMatchObject({
-      code: 'NOT_A_CASH_AMOUNT', status: 400,
+    await expect(createWithdrawalOrder(player.userId, amount)).rejects.toMatchObject({
+      code: 'NOT_AN_ORDER_SIZE', status: 400,
     });
 
     // Nothing moved. Discovering this after a debit means unwinding a lock that
@@ -146,20 +142,18 @@ describePg('one withdrawal is one order', () => {
     expect(await pendingWithdrawalTotal(player.userId)).toBe(0);
   });
 
-  it('creates a single CASH withdrawal for a cash denomination, with no batch label', async () => {
+  it('creates a single CASH-rail withdrawal for a cash size', async () => {
+    // The cash team serves it; the member still pays by bank transfer (owner,
+    // 2026-10-03: every sell is paid to the player's bank account).
     const player = await withdrawer(20_000);
-    const result = await createWithdrawalOrder(player.userId, 10_000);
-    expect(result.parts).toHaveLength(1);
-    const row = await getOrderRecord(result.parts[0].orderId);
+    const row = await getOrderRecord(orderOf(await createWithdrawalOrder(player.userId, 10_000)));
     expect(row.paymentMode).toBe(PAYMENT_MODES.CASH_ATM);
-    expect(result.order.withdrawalBatchRef).toBeNull();
-    expect(await withdrawalBatch(null)).toEqual([]);
+    expect(row.tokenAmount).toBe(10_000);
   });
 
   it('gives the money back when a waiting withdrawal is cancelled', async () => {
     const player = await withdrawer(20_000);
-    const result = await createWithdrawalOrder(player.userId, 5_000);
-    const orderId = result.parts[0].orderId;
+    const orderId = orderOf(await createWithdrawalOrder(player.userId, 5_000));
     expect((await getOrderRecord(orderId)).status).toBe('PENDING_QUEUE');
 
     const before = await getBalances(player.userId);
@@ -176,8 +170,7 @@ describePg('one withdrawal is one order', () => {
 
   it('lists a withdrawal nobody has taken, so somebody is accountable for the lock', async () => {
     const player = await withdrawer(20_000);
-    const result = await createWithdrawalOrder(player.userId, 5_000);
-    const orderId = result.parts[0].orderId;
+    const orderId = orderOf(await createWithdrawalOrder(player.userId, 5_000));
 
     // Zero minutes — "everything waiting right now", the question an incident
     // asks and the one a falsy default silently answers differently.

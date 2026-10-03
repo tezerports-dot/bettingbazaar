@@ -43,7 +43,7 @@ import {
   expireOrders, sweepUnansweredPaidDeposits, tryAssignMerchant, markOrderPaid,
   createDepositOrder, createWithdrawalOrder,
 } from '../../domains/payment/paymentProcessing.service.js';
-import { teamFixture } from '../teamFixture.js';
+import { teamFixture, readyToPay } from '../teamFixture.js';
 import { mountRouter, actor, merchantActor, as } from './_harness.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
@@ -96,7 +96,12 @@ describePg('a buy order nobody paid for', () => {
     return bench.shift();
   };
 
-  /** A buy, queued as `createDepositOrder` writes it, routed to `m` alone. */
+  /**
+   * A buy, queued as `createDepositOrder` writes it, routed to `m` alone and
+   * accepted by them: from then on the player has somewhere to pay, so an
+   * unpaid lapse is theirs (one the member never accepted is the member's,
+   * `acceptBeforePayPg.test.js`).
+   */
   const routedBuy = async (m, owner = null) => {
     seq += 1;
     const who = owner || await player();
@@ -109,10 +114,11 @@ describePg('a buy order nobody paid for', () => {
     await teams.onlyOnline([m.merchantId]);
     expect(await tryAssignMerchant(order), `the buy was not routed to ${m.merchantId}`).toBe(true);
     expect((await getOrderRecord(orderId)).merchantId).toBe(String(m.merchantId));
+    await readyToPay(orderId);
     return { orderId, who };
   };
 
-  /** An ASSIGNED buy, already past its deadline, that the player never paid. */
+  /** An accepted buy, already past its deadline, that the player never paid. */
   const lapsedBuy = async (m, owner = null) => {
     const b = await routedBuy(m, owner);
     // The window closing: assignment set the deadline from the rail's own

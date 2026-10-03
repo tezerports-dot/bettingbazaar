@@ -56,6 +56,7 @@ import { getSystemConfig } from '#db/repositories/config.js';
 import { systemConfigPayload } from '../configuration/systemConfigPayload.js';
 import { INR_TOKEN_RATE } from '../configuration/tokenRates.js';
 import { serverError } from '../../shared/httpError.js';
+import { isAccountMobileRefusal, ACCOUNT_IS_A_MOBILE_MESSAGE } from '../payment/payoutAccount.js';
 
 const router = express.Router();
 
@@ -285,6 +286,11 @@ router.put('/user/:userId/bank-details', authenticatePlayer, async (req, res) =>
 
     res.json({ success: true });
   } catch (error) {
+    // The member who pays a sell is shown this account, so one whose number
+    // is the player's mobile is refused by the row (§24, Step 2d).
+    if (isAccountMobileRefusal(error)) {
+      return res.status(400).json({ success: false, code: 'ACCOUNT_IS_A_MOBILE', message: ACCOUNT_IS_A_MOBILE_MESSAGE });
+    }
     console.error('Update bank details error:', error);
     res.status(500).json({ success: false, message: 'Failed to update bank details' });
   }

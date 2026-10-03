@@ -56,13 +56,17 @@ import { creditWinnings } from '../../domains/wallet/walletAuthority.service.js'
 import {
   tryAssignMerchant, markOrderPaid, createWithdrawalOrder,
 } from '../../domains/payment/paymentProcessing.service.js';
-import { teamFixture } from '../teamFixture.js';
+import { teamFixture, readyToPay } from '../teamFixture.js';
 import { mountRouter, actor, merchantActor, as, request } from './_harness.js';
+
+// Every sell is paid by bank transfer, so the member gives its UTR (2d).
+let payoutSeq = 0;
+const payoutUtr = () => `UTRMP${String(Date.now()).slice(-7)}${String(++payoutSeq).padStart(4, '0')}`;
 
 const describePg = pgConfigured() ? describe : describe.skip;
 
 // Above the cash ceiling: a UPI_BANK buy, so no Ready press is involved.
-const UPI_TOKENS = 20_000;
+const UPI_TOKENS = 50_000;
 // A cash denomination: the CASH rail.
 const CASH_TOKENS = 1_000;
 // The smallest USDT size (§25).
@@ -117,7 +121,7 @@ describePg('merchant panel routes', () => {
   // count against a cap and no earlier refusal bars them. A team works only
   // at ten (2a), so members come in tens: a working team on the rail, its
   // pool funded through the supervisor's request and the admin's fulfilment.
-  const POOL = { UPI_BANK: 300_000, CASH: 50_000, USDT: 500_000 };
+  const POOL = { UPI_BANK: 1_000_000, CASH: 50_000, USDT: 500_000 };
   const bench = { UPI_BANK: [], CASH: [], USDT: [] };
   const member = async (rail = 'UPI_BANK') => {
     if (!bench[rail].length) {
@@ -180,6 +184,7 @@ describePg('merchant panel routes', () => {
   const paidBuy = async (opts) => {
     const b = await buy(opts);
     b.utr = utr();
+    await readyToPay(b.orderId);
     expect((await markOrderPaid(b.who.userId, b.orderId, b.utr)).status).toBe('PAID');
     return b;
   };
@@ -502,6 +507,7 @@ describePg('merchant panel routes', () => {
     const m = await member('CASH');
     expect((await as(app, m).put('/cash-ready').send({ ready: true })).status).toBe(200);
     const { orderId, who } = await buy({ to: m, tokens: CASH_TOKENS });
+    await readyToPay(orderId);
     expect((await markOrderPaid(who.userId, orderId)).status).toBe('PAID');
     expect((await getOrderRecord(orderId)).utrNumber ?? null).toBeNull();
     const before = await getBalancesPaise(who.userId);
@@ -568,7 +574,7 @@ describePg('merchant panel routes', () => {
     // confirming a deposit created tokens out of nothing. The tokens now leave
     // the team's pool — the hold the router took — and arrive at the player.
     const m = await member();
-    const { orderId, who } = await paidBuy({ to: m, betting: 16_000, reserve: 4_000 });
+    const { orderId, who } = await paidBuy({ to: m, betting: 40_000, reserve: 10_000 });
 
     const poolBefore = await poolTotal(m.team.teamId);
     const before = await getBalancesPaise(who.userId);
@@ -583,8 +589,8 @@ describePg('merchant panel routes', () => {
 
     expect(poolOut).toBe(UPI_TOKENS);
     expect(playerIn, 'the pool and the player did not move the same amount').toBe(poolOut);
-    expect(after.depositBalance - before.depositBalance).toBe(16_000_00);
-    expect(after.reserveBalance - before.reserveBalance).toBe(4_000_00);
+    expect(after.depositBalance - before.depositBalance).toBe(40_000_00);
+    expect(after.reserveBalance - before.reserveBalance).toBe(10_000_00);
   });
 
   it('CREDITS ONCE when a merchant double-taps confirm', async () => {
@@ -609,7 +615,7 @@ describePg('merchant panel routes', () => {
 
   it('survives four confirms racing each other', async () => {
     const m = await member();
-    const { orderId, who } = await paidBuy({ to: m, betting: 16_000, reserve: 4_000 });
+    const { orderId, who } = await paidBuy({ to: m, betting: 40_000, reserve: 10_000 });
     const before = await getBalancesPaise(who.userId);
     const poolBefore = await poolTotal(m.team.teamId);
 
@@ -617,8 +623,8 @@ describePg('merchant panel routes', () => {
       as(app, m).post(`/confirm/${orderId}`)));
 
     const after = await getBalancesPaise(who.userId);
-    expect(after.depositBalance - before.depositBalance).toBe(16_000_00);
-    expect(after.reserveBalance - before.reserveBalance).toBe(4_000_00);
+    expect(after.depositBalance - before.depositBalance).toBe(40_000_00);
+    expect(after.reserveBalance - before.reserveBalance).toBe(10_000_00);
     expect(poolBefore - await poolTotal(m.team.teamId)).toBe(UPI_TOKENS * 100);
     expect((await getOrderRecord(orderId)).state).toBe('COMPLETED');
   });
@@ -631,7 +637,7 @@ describePg('merchant panel routes', () => {
     expect(s.row.state).toBe('ASSIGNED');
     expect(s.row.merchantId).toBe(String(m.merchantId));
     expect((await as(app, m).post(`/accept/${s.orderId}`).send({})).status).toBe(200);
-    const first = await as(app, m).post(`/confirm/${s.orderId}`).send({});
+    const first = await as(app, m).post(`/confirm/${s.orderId}`).send({ utrNumber: payoutUtr() });
     expect(first.status, first.body.message).toBe(200);
     expect((await getOrderRecord(s.orderId)).state).toBe('PAID');
 

@@ -87,13 +87,15 @@ the principle stated still holds.
 | Cycle phase defaults | `DEFAULT_CYCLE_PHASES` (the schema default); runtime `SystemConfig.cyclePhases`. |
 | Cycle-history feed | `domains/markets/cycleHistory.service.js`, the one query; rows via `publicCycleView`; the server caps the window. |
 | Analytics window | `ANALYTICS_WINDOW` (`user-panel/src/constants.ts`), a target; the server caps it. |
-| Platform deposit/withdrawal limits | `SystemConfig` |
+| Platform deposit/withdrawal limits | The order sizes and the USDT bounds below; nothing else. |
 | Whether a number is admin-editable | Declared in `SYSTEM_CONFIG_SPEC`; the admin GET/PUT derive from the spec. Never a hand-written field list. |
 | A config value the PLATFORM writes ⚠2c | Marked `internal(…)` in the spec; derived accept lists skip it. |
 | A board's earliest-phase ceiling | `maxMergeBeforeEndSec` on the cycle META (§18). |
-| Order floor | `SystemConfig.minDeposit` / `minWithdrawal` (500 tokens each). |
+| Order sizes | An INR order, buy or sell, is exactly one of `ORDER_SIZES` (`domains/merchant/denominations.js`): CASH 500 · 1,000 · 5,000 · 10,000, UPI_BANK 50,000 · 100,000 · 500,000. The size derives the rail (`railForSize` → `orderRails.paymentModeFor`). Which are on offer: `SystemConfig.orderSizes` (admin; only those seven are legal). No min/max, no splitting: one size, one order, one payment. |
+| How each rail is paid | A CASH buy: the ATM QR the member scans (below). A UPI_BANK buy: bank transfer into the member's own account, so routing skips a member without holder, account number and IFSC (`routingCandidates`). Every sell, on every rail: bank transfer to the player's account, the member gives the UTR. No CDM slips, no UPI handle as a destination. Where to pay is shown only once the member has ACCEPTED (`PAY_DETAIL_STATES`, `playerOrderView.js`), Paid is taken only then (`NOT_ACCEPTED_YET`), and the Paid move names that member on every rail (`expectMerchant`). |
+| A cash buy's QR | `order_states.cash_link`, written only by `setCashLink` (`orders.record.js`), guards in its WHERE (assigned member, CASH_ATM deposit, PROCESSING: accepted and not yet paid; the route answers `ACCEPT_FIRST` before); checked by `checkCashLink` (`domains/payment/cashLink.js`: `upi://pay`, the order's exact amount, one of each parameter, no mobile in the handle, name or note). Cleared by trigger when the member changes. No Paid tap before it (`CASH_LINK_PENDING`), and the tap pins the member (`expectMerchant`). A cash buy lapsing with no QR is the member's, not the player's (`playerCouldPay`). Scanned, never typed. |
 | Order ceiling ⚠2c | The tokens held, enforced by a hold taken at assignment. No per-merchant order range. |
-| Refusals; who may not serve whom | `domains/merchant/merchantRefusal.service.js`. A BUY expiring before PAID is the player's, not a refusal; an unanswered PAID buy, an expired SELL and any decline count on one streak. Cap `merchantOrderLimits.maxConsecutiveRejections`; bars in `order_rejections`. Advanced and read in one statement; only COMPLETED resets; no timer, an admin lifts it. |
+| Refusals; who may not serve whom | `domains/merchant/merchantRefusal.service.js`. A BUY the member accepted that expires before PAID is the player's, not a refusal (one never accepted, or a cash buy never scanned, is the member's: `playerCouldPay`); an unanswered PAID buy, an expired SELL and any decline count on one streak. Cap `merchantOrderLimits.maxConsecutiveRejections`; bars in `order_rejections`. Advanced and read in one statement; only COMPLETED resets; no timer, an admin lifts it. |
 | Supervisor and rail | `merchants.is_supervisor` + `supervisor_rail`, set only by `PUT /api/admin/merchants/:id/supervisor`. Rail fixed while running a team. A supervisor is never a member, and vice versa. |
 | Team membership, limits | `database/repositories/teams.js`, the one writer; one team per merchant (PK). `MAX_TEAMS` 4, `TEAM_SIZE` 10, counted inside the write under a parent-row lock (S6). Supervisor proposes, admin approves. |
 | Whether a team may work | `strength` in `teams.js` (`WORKING`/`GRACE`/`STOPPED`) from the DATABASE clock in IST; below ten it works until midnight IST, then stops until full. Only routing reads it. |
@@ -137,10 +139,10 @@ the principle stated still holds.
 | Who lost a dispute | `dispute_faults` via `database/repositories/disputeFaults.js`, called only by `recordDisputeLoser` from all three deciding routes. Only a PAYMENT dispute counts: raised by the player or the platform (a member's red flag suspends nobody), from a buy `PAID`/`REJECTED` or a sell `PAID`/`COMPLETED` (`disputedFromState`). Loser (`partyAtFault`): buy completed or sell cancelled → member (on a buy, only if they rejected it or were shown a reference); else player. The Dispute Manager shows the server's answer, never its own copy. Record, count and suspension in one transaction keyed by order. At 3 losses only a full admin may lift (`mayLiftHighRisk` in the WHERE). |
 | Window after a rejected BUY | `order_states.dispute_window_until` (DATABASE clock, set in the reject transition), `domains/payment/rejectedBuyWindow.service.js`, `SystemConfig.rejectedBuyDisputeMinutes` (whole minutes, `int(…)`). The member cannot red-flag their own rejection. The hold stays until the window lapses or a dispute is decided. |
 | Window after a SELL is marked paid | `SystemConfig.withdrawalHoldMinutes` (default and floor 60), via `withdrawalHold.service.js`; the player sees `disputeUntil`. |
-| Cash denominations, USDT sizes | `domains/merchant/denominations.js` (SQL CHECKs mirror it, tested). Not admin-editable. |
+| USDT buy amount | A whole multiple of `USDT_BUY_STEP` (100, fixed) between `SystemConfig.usdtBuy.minUsdt` and `maxUsdt` (admin; defaults 100 and 10,000; min ≤ max). The tokens follow from the frozen rate. |
 | Referral rewards | `REFERRAL_REWARD_PAISE` (flat ₹25) + `referral_programmes`; ledger and payout via `domains/referral/referral.service.js` only. Never a share of losses or tied to settlement. |
 | Player identity | A Telegram-proven mobile plus a password. No email, no KYC, no Aadhaar, no identity document or upload path (owner, 2026-10-02; `identitySurfaceRemoved.test.js`). `users.mobile` is immutable. |
-| Upload categories | `services/cdn.service.js`: chat attachments, payment proofs, branding assets, CDM receipts, Android APKs. Nothing else. |
+| Upload categories | `services/cdn.service.js`: chat attachments, payment proofs, branding assets, Android APKs. Nothing else. |
 | Live bot and channel | `activeConfig()` (`domains/telegram/telegramClient.js`) over `telegram_configs` + the bot registry; the registry wins; its 30 s cache is the only cache. |
 | Which panel a bot/channel/link serves | `audience` on the Telegram tables, equal to `users.account_type`; each panel has its own fleet, recovery bot and channel. A deciding read requires an audience. |
 | Panel origins for minted links | `panelOrigin()` (`backend/config/panelOrigins.js`). |
@@ -409,8 +411,17 @@ the interface and let `tsc` find the call sites. Read `userId`, not
 
 ## 24. Privacy points BOTH ways
 
-A merchant sees only the payout account and the name on it. A player sees where
-to pay, an opaque `Merchant #<ref>` and a deadline.
+A merchant sees only the player's payout account and the name on it. A player
+sees where to pay, an opaque `Merchant #<ref>` and a deadline. Where to pay is
+the member's bank account on a UPI_BANK buy (`PLAYER_PAY_TO_BANK_FIELDS`), the
+scanned ATM QR on a cash buy, the order's chain address on USDT. **Nobody is
+ever shown another person's mobile number or UPI handle**, in a view, a
+timeline message or a display name (owner, 2026-10-03). So an account number
+that is a mobile (payments-bank IFSC, or the holder's own mobile, in any
+spelling) or a holder or bank name containing one is refused by the row
+(`bb_account_number_is_a_mobile`, `bb_text_has_a_mobile`; message
+`payoutAccount.js`), and a cash QR with a mobile in its handle, name or note by
+`checkCashLink`.
 
 1. Each projection is an allowlist in one file (`merchantOrderView.js`,
    `playerOrderView.js`, `playerLedgerView.js`).
@@ -424,14 +435,14 @@ to pay, an opaque `Merchant #<ref>` and a deadline.
 
 ## 25. USDT
 
-- A USDT buy is exactly 50,000, 100,000 or 500,000 tokens; the USDT amount is
-  derived from the admin rate at creation and frozen with the order. Unpriced is
-  refused by name (`USDT_RATE_UNSET`), no fallback.
+- A USDT buy is a whole number of 100 USDT within `SystemConfig.usdtBuy`; the
+  tokens are derived from the admin rate at creation and frozen with the order.
+  Buy only. Unpriced is refused by name (`USDT_RATE_UNSET`), no fallback.
 - Chains are not interchangeable: an address per chain; the player picks the
   network before the order; address and network always travel together; only
   the order's chain is sent; the chain is frozen; a merchant without that
   chain's address is not a candidate (guard in the assignment query).
-- ₹10,000 (one CASH_ATM buy) and ₹40,000 (one payout leg) are ATM limits only.
+- ₹10,000 (the largest CASH size) is the ATM limit; it is not a USDT limit.
 - A refusal names that rail's own valid choices.
 
 ## 26. Merchant commission ⚠2c (2e replaces)
@@ -444,8 +455,7 @@ nothing and is reported; read the mark from the idempotency key; key separator
 
 ## 27. One payment, one claim
 
-UTRs, chain hashes and CDM slips share `utr_registry`; one reference, one order,
-for good. `claimPaymentReference()` throws; `check:payment-references` checks
+UTRs and chain hashes share `utr_registry`; one reference, one order, for good. `claimPaymentReference()` throws; `check:payment-references` checks
 per field. References are uppercased first. Refusals use the submitter's words.
 
 ## 28. Shipped means reachable

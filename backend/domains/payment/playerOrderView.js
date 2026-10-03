@@ -6,27 +6,23 @@
  * because a denylist protecting the PLAYER failed open; this one exists because
  * nothing at all was protecting the MERCHANT.
  *
- * ── What was being sent ────────────────────────────────────────────────────
- * `buildMerchantSnapshot` put on every order, and every player-facing response
- * carried:
+ * ── The rule (owner, 2026-10-03) ─────────────────────────────────────────
+ * A player sees WHERE TO PAY and an opaque `Merchant #<ref>`, nothing else
+ * about the member:
  *
- *     upiId          the merchant's UPI handle
- *     bankName       ┐
- *     accountNo      │ their BANK ACCOUNT
- *     ifsc           │
- *     accountHolder  ┘ and the name on it
- *     usdtAddress    their settlement wallet
+ *   • on an INR bank-transfer buy (the 50,000 / 100,000 / 500,000 sizes), the
+ *     assigned member's bank account (holder name, account number, IFSC, bank)
+ *     is where to pay, so it is sent, inside `payTo.bankAccount` and only on
+ *     that buy;
+ *   • on a cash buy, the ATM QR the member scanned;
+ *   • on a USDT buy, the address for the order's chain.
  *
- * The player's screen rendered the handle in a copy-to-clipboard row. None of
- * the bank fields is needed to pay a UPI handle — they were pure disclosure, and
- * a player could read, copy and keep a merchant's account number and IFSC from
- * a single deposit.
- *
- * The rule is the reverse of the merchant one and just as short: **a player sees
- * where to pay and nothing about who they are paying.** They get a payment link
- * and an opaque reference; the merchant's identity, credentials and account are
- * not theirs to have.
- *
+ * Never the member's mobile number, and never their UPI handle, which is
+ * usually that number. Before this rule every response carried the whole
+ * snapshot (handle, QR, bank account, wallets) on every order and every
+ * direction; it is the allowlist below that keeps each piece to the one order
+ * that needs it.
+
  * ── An allowlist, for the reason the other one is ──────────────────────────
  * A denylist admits the next field added to the snapshot by default, and the
  * mistake is always "too much". This admits nothing it does not name, so a new
@@ -39,6 +35,8 @@
  * refuses to pass it on: the admin and the disputes desk read the row, the
  * player reads this.
  */
+
+import { PAYMENT_MODES } from '#db/repositories/orderRails.js';
 
 /**
  * Top-level fields a player may see of their own order. Anything absent here
@@ -86,10 +84,6 @@ export const PLAYER_ORDER_FIELDS = Object.freeze([
   // Their own escrow, so a sell screen can say the tokens are held.
   'escrowStatus', 'escrowLocked', 'escrowAmount',
 
-  // The label grouping the separate withdrawals one request produced, so the
-  // player is told "part 2 of 4" instead of finding four unexplained orders.
-  'withdrawalBatchRef',
-
   // Where in the queue, and whether this was a second attempt — both about
   // their own order, and both things a screen explains to them.
   'assignmentPriority', 'retryOfOrderId',
@@ -115,7 +109,11 @@ export const PLAYER_FORBIDDEN_ORDER_FIELDS = Object.freeze([
   // payment destination, the wallet equivalent of the UPI intent. These two are
   // the merchant's credentials for BOTH chains and are not.
   'usdtAddressTrc20', 'usdtAddressBep20', 'usdtWalletAddress',
+  // Never at the top level of an order: the member's account travels only in
+  // `payTo.bankAccount`, and only on the bank-transfer buy it is paid on.
   'bankName', 'accountNo', 'ifsc', 'accountHolder',
+  // Nobody learns another person's number (owner, 2026-10-03).
+  'mobile', 'merchantMobile', 'phone',
   'merchantPanelUrl', 'merchantResponseMinutes',
   // The merchant's credit standing with the platform, and the batch the
   // platform pays them in. Neither is about this player's order.
@@ -138,11 +136,6 @@ export const PLAYER_FORBIDDEN_ORDER_FIELDS = Object.freeze([
   // ── Who acted on it, inside the company ───────────────────────────────────
   'assignedBy', 'approvedBy', 'rejectedBy', 'disputeResolvedBy',
   'disputeEscalationNotes', 'mediatorId', 'orderHmac',
-
-  // ── Admin and disputes only ───────────────────────────────────────────────
-  // The CDM slip, including from the player whose account it names. `toOrder`
-  // does not map it; this says so too.
-  'cdmTransactionId', 'cdmReceiptUrl', 'cdmReceiptAt',
 ]);
 
 /*
@@ -155,35 +148,69 @@ export const PLAYER_FORBIDDEN_ORDER_FIELDS = Object.freeze([
  */
 
 /**
- * What a player is told about the merchant serving their order: a payment link,
- * an opaque reference, and when the link stops being good for.
- *
- * The reference is `Merchant #<publicRef>` — a label that names nobody. It
- * exists so a player and support can talk about the same order without the
- * player learning who the person is.
+ * The member's bank account a player pays on an INR bank-transfer buy, and
+ * nothing that arrived alongside it (owner, 2026-10-03). The four fields a
+ * transfer needs. NOT the member's UPI handle and never a mobile number: a UPI
+ * handle is usually the phone number, and nobody on this platform learns
+ * another person's number.
  */
+export const PLAYER_PAY_TO_BANK_FIELDS = Object.freeze([
+  'accountHolder', 'accountNo', 'ifsc', 'bankName',
+]);
+
+/**
+ * Where a player pays, by rail, and an opaque reference and deadline:
+ *
+ *   CASH buy       `paymentLink`, the ATM QR the member scanned (Step 2d).
+ *                  It names the machine's bank, not the member. Until the scan
+ *                  there is none, and the screen waits.
+ *   UPI/bank buy   `bankAccount`, the assigned member's account, paid by bank
+ *                  transfer (IMPS/NEFT/RTGS) with the UTR given back (owner,
+ *                  2026-10-03). Absent when the member has no full account on
+ *                  file, which routing does not allow (`routingCandidates`).
+ *   USDT buy       `usdtAddress` with its chain, always together.
+ *   any sell       nothing to pay: the member pays the player.
+ *
+ * The reference is `Merchant #<publicRef>`, a label that names nobody, so a
+ * player and support can talk about the same order.
+ *
+ * Where to pay is sent only once the member has ACCEPTED (`PAY_DETAIL_STATES`).
+ * While an order is ASSIGNED the member may still decline it and an admin may
+ * still move it, so a destination shown then could take the player's money to
+ * a member the order then leaves. And not after the order has ended: a
+ * finished order's history does not keep handing out a member's account.
+ */
+/** The states in which the player is shown where to pay, and may have paid. */
+export const PAY_DETAIL_STATES = Object.freeze(['PROCESSING', 'PAID', 'REJECTED', 'DISPUTED']);
+
 function counterpartyFor(order) {
   const snapshot = order?.merchantSnapshot;
   if (!snapshot || typeof snapshot !== 'object') return undefined;
+  const isBuy = order.type === 'DEPOSIT';
 
   const view = {};
-  // Built at assignment by `buildMerchantSnapshot`, from the merchant's own
-  // credentials, on the server. The player never sees the parts it was built
-  // from — see the module header on what a UPI intent does and does not hide.
-  if (snapshot.paymentLink) view.paymentLink = snapshot.paymentLink;
   if (snapshot.merchantRef) view.merchantRef = snapshot.merchantRef;
   if (snapshot.expiresAt) view.expiresAt = snapshot.expiresAt;
+  const accepted = PAY_DETAIL_STATES.includes(order.status);
+
+  if (!accepted) {
+    // Nothing to pay yet: the reference and the deadline only.
+  } else if (isBuy && order.paymentMode === PAYMENT_MODES.CASH_ATM) {
+    if (order.cashLink) view.paymentLink = order.cashLink;
+  } else if (isBuy && order.currency !== 'USDT' && snapshot.accountNo) {
+    const bank = {};
+    for (const key of PLAYER_PAY_TO_BANK_FIELDS) {
+      if (snapshot[key]) bank[key] = snapshot[key];
+    }
+    view.bankAccount = bank;
+  }
 
   // ── The USDT rail's payment destination ────────────────────────────────
-  // A wallet address IS where to pay, exactly as the UPI intent is on the INR
-  // rail — so it belongs in `payTo` and nowhere else in the payload. What stays
-  // out is the merchant's address on the OTHER chain, which is not part of this
-  // order.
-  //
-  // The chain travels WITH the address, always. An address on its own is how
-  // somebody sends on the wrong network and loses the tokens, and this is the
-  // one field on this platform where the mistake cannot be undone.
-  if (snapshot.usdtPayTo && snapshot.usdtChain) {
+  // ONLY the chain this order asked for; the merchant's address on the other
+  // chain is not part of this order. The chain travels WITH the address,
+  // always: an address on its own is how somebody sends on the wrong network
+  // and loses the tokens.
+  if (accepted && isBuy && snapshot.usdtPayTo && snapshot.usdtChain) {
     view.usdtAddress = snapshot.usdtPayTo;
     view.usdtChain = snapshot.usdtChain;
     if (snapshot.usdtChainLabel) view.usdtChainLabel = snapshot.usdtChainLabel;

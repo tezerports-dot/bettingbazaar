@@ -31,15 +31,12 @@ import { getBackend, setCdnBaseUrl } from './backend.service';
 import { applyBranding } from './branding';
 
 
-// All components that need minBet / minDeposit / tokenRates should read from here.
+// All components that need minBet / tokenRates should read from here. The order
+// sizes are read by the wallet itself (Step 2d), not cached here.
 interface SysConfig {
   minBet:        number;
   maxBet:        number;
   maxFullDayBet: number;
-  minDeposit:    number;
-  maxDeposit:    number;
-  minWithdrawal: number;
-  maxWithdrawal: number;
   tokenBuyRate:  number;
   tokenSellRate: number;
   // Admin-editable footer tabs (SystemConfig.footerPages) — page keys, ordered.
@@ -47,9 +44,6 @@ interface SysConfig {
 }
 const DEFAULT_SYS_CONFIG: SysConfig = {
   minBet: 10, maxBet: 100000, maxFullDayBet: 500000,
-  // schema default: 500 (SystemConfig.minDeposit) — a loading placeholder only.
-  minDeposit: 500, maxDeposit: 50000,
-  minWithdrawal: 100, maxWithdrawal: 50000,
   tokenBuyRate: 1, tokenSellRate: 1,
   footerPages: ['home', 'results', 'winners', 'promo', 'profile'], // schema default
 };
@@ -805,10 +799,6 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
         minBet:        data.minBet        ?? prev.minBet,
         maxBet:        data.maxBet        ?? prev.maxBet,
         maxFullDayBet: data.maxFullDayBet  ?? prev.maxFullDayBet,
-        minDeposit:    data.minDeposit    ?? prev.minDeposit,
-        maxDeposit:    data.maxDeposit    ?? prev.maxDeposit,
-        minWithdrawal: data.minWithdrawal ?? prev.minWithdrawal,
-        maxWithdrawal: data.maxWithdrawal ?? prev.maxWithdrawal,
         tokenBuyRate:  data.tokenBuyRate  ?? prev.tokenBuyRate,
         tokenSellRate: data.tokenSellRate ?? prev.tokenSellRate,
         footerPages:   Array.isArray(data.footerPages) && data.footerPages.length ? data.footerPages : prev.footerPages,

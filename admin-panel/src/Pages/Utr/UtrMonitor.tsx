@@ -2,8 +2,8 @@
 /**
  * Payment references — the operator's side of "one payment, one claim" (§27).
  *
- * A UTR, a chain transaction hash or a CDM slip reference proves ONE real
- * transfer, so `utr_registry` gives each one to exactly one order, for good. A
+ * A UTR or a chain transaction hash proves ONE real transfer, so
+ * `utr_registry` gives each one to exactly one order, for good. A
  * second order quoting it is refused, and the refusal is COUNTED on the row
  * rather than lost in a 400 — because somebody quoting a reference that is
  * already spent is either a mistake or a fraud attempt, and both are what this
@@ -209,7 +209,7 @@ export const UtrMonitor: React.FC = () => {
           <h2 className="text-base font-semibold">Look up a reference</h2>
         </div>
         <p className="text-xs text-gray-400 mb-3">
-          A bank UTR, a USDT transaction hash or a CDM slip reference — as the player typed it.
+          A bank UTR or a USDT transaction hash — as it was typed.
           Case and spaces do not matter.
         </p>
         <div className="flex gap-2">

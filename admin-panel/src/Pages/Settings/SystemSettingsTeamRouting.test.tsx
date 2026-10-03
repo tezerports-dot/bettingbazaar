@@ -38,12 +38,11 @@ const { SystemSettings } = await import('./SystemSettings');
 // The shape the GET serves for these two groups (config.spec.js), with values
 // that differ from every default so a test can tell served from fallback.
 const served = {
-  minDeposit: 500, maxDeposit: 50000, minWithdrawal: 500, maxWithdrawal: 50000,
   withdrawalHoldMinutes: 90, rejectedBuyDisputeMinutes: 20,
   merchantOrderLimits: {
     maxConsecutiveRejections: 4, paidResponseMinutes: 31, utrAfterPaidMinutes: 16,
     maxConsecutivePlayerPaymentFailures: 4, playerOrderLockMinutes: 61,
-    maxConsecutiveMerchantExpiries: 4, minUserTokenPurchaseUsdt: 100, maxUserTokenPurchaseUsdt: 0,
+    maxConsecutiveMerchantExpiries: 4,
   },
   teamRouting: {
     concurrency: { CASH: 2, UPI_BANK: 5, USDT: 4 },

@@ -28,6 +28,7 @@
  * A default declared here is the value a fresh install starts from AND the
  * value a reader falls back to when the key is absent — one constant, not two.
  */
+import { ORDER_SIZES, USDT_BUY_STEP } from '../../backend/domains/merchant/denominations.js';
 
 /**
  * Cycle phase offsets, in seconds BEFORE a cycle's end, per type.
@@ -115,21 +116,16 @@ export const SYSTEM_CONFIG_SPEC = group({
     fullDay:   group({ min: n(100, 0), max: n(500000, 0) }),
   }),
 
-  // ── The platform floor on a BUY, in tokens ──────────────────────────────
-  // 500, the same as `minWithdrawal`, because it is the same rule read from
-  // either end: no order below 500 tokens, whichever way it points. It was 100
-  // on the buy side and 500 on the sell side — one number for the same policy,
-  // written twice and drifted.
-  //
-  // A floor exists at all because every buy order HOLDS a merchant's tokens for
-  // the length of its window (F-018). An order small enough to be free to place
-  // still takes real inventory out of circulation while it waits, so the floor
-  // is what stops the queue being filled with them.
-  minDeposit:            n(500, 0),
-  maxDeposit:            n(50000, 0),
-  minWithdrawal:         n(500, 0),
-  maxWithdrawal:         n(50000, 0),
-  maxWinningsWithdrawal: n(500000, 0),
+  // ── The sizes an INR order may be (Step 2d, owner 2026-10-02) ─────────────
+  // Which of the seven fixed sizes are ON OFFER, buys and sells alike: 500,
+  // 1,000, 5,000 and 10,000 tokens on the cash rail; 50,000, 100,000 and
+  // 500,000 on UPI/bank. The seven are owned by `denominations.js` and are the
+  // only legal values; the admin chooses which are offered. At least one, so
+  // there is always some size a player can sell. This replaces the old
+  // min/max deposit and withdrawal limits: a list of sizes IS the limit, and a
+  // second pair of bounds beside it would be a second owner of the same
+  // question (§2).
+  orderSizes: { type: 'number[]', default: [...ORDER_SIZES], allowed: ORDER_SIZES, minItems: 1 },
 
   // ── The most one admin may move in one balance adjustment ────────────────
   // ₹10,00,000, owner-set 2026-09-23.
@@ -224,8 +220,14 @@ export const SYSTEM_CONFIG_SPEC = group({
     // Counted separately from `maxConsecutiveRejections` on purpose: an expiry
     // is not a refusal, and mixing them would suspend an honest merchant.
     maxConsecutiveMerchantExpiries:      n(3, 1, 20),
-    minUserTokenPurchaseUsdt:  n(100, 100),
-    maxUserTokenPurchaseUsdt:  n(0, 0),      // 0 = unlimited
+  }),
+  // ── A USDT buy, in whole USDT (Step 2d, owner 2026-10-02) ───────────────
+  // Buy only. A multiple of 100 USDT (`USDT_BUY_STEP`, fixed) from `minUsdt` to
+  // `maxUsdt`; the admin edits both. Each is itself a multiple of the step,
+  // and min <= max (paired bounds, config.js).
+  usdtBuy: group({
+    minUsdt: { ...int(100, USDT_BUY_STEP, 100000), multipleOf: USDT_BUY_STEP },
+    maxUsdt: { ...int(10000, USDT_BUY_STEP, 100000), multipleOf: USDT_BUY_STEP },
   }),
   // ── Team routing (redesign Step 2c) ─────────────────────────────────────
   // An order goes to a TEAM member on the rail its amount and currency put it

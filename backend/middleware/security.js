@@ -526,19 +526,6 @@ export const utrGraceLimiter = moneyLimiter(
 );
 
 /**
- * Submitting a CDM deposit slip.
- *
- * 'attempts', for the same reason as the grace claim: one per order, so a
- * caller walking other orders to find one without a receipt produces refusals
- * and nothing else.
- */
-export const cdmReceiptLimiter = moneyLimiter(
-    'rl:cdm:', RATE_LIMIT_TIERS.cdmReceipt,
-    'Too many receipt submissions. Please wait before trying again.',
-    { bounds: 'attempts' },
-);
-
-/**
  * Creating a deposit order — ADMIN-EDITABLE, unlike every limiter above it.
  *
  * ── Why this one is configurable and the others are not ────────────────────

@@ -40,6 +40,10 @@ import { settleDueHolds, settleHold } from '../../domains/payment/withdrawalHold
 import { teamFixture } from '../teamFixture.js';
 import { mountRouter, actor, merchantActor, as } from './_harness.js';
 
+// Every sell is paid by bank transfer, so the member gives its UTR (2d).
+let payoutSeq = 0;
+const payoutUtr = () => `UTRDH${String(Date.now()).slice(-7)}${String(++payoutSeq).padStart(4, '0')}`;
+
 const describePg = pgConfigured() ? describe : describe.skip;
 
 describePg('a disputed withdrawal hold', () => {
@@ -106,7 +110,7 @@ describePg('a disputed withdrawal hold', () => {
     expect((await getOrderRecord(orderId)).merchantId, 'routed to somebody else').toBe(merchant.merchantId);
 
     expect((await as(merchantApp, merchant).post(`/accept/${orderId}`)).status).toBe(200);
-    const confirmed = await as(merchantApp, merchant).post(`/confirm/${orderId}`);
+    const confirmed = await as(merchantApp, merchant).post(`/confirm/${orderId}`).send({ utrNumber: payoutUtr() });
     expect(confirmed.status, JSON.stringify(confirmed.body)).toBe(200);
     // The window passes.
     await setOrderFields(orderId, { merchantCreditHoldUntil: new Date(Date.now() - 60 * 1000) });

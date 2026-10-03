@@ -44,7 +44,7 @@ import { getBalancesPaise } from '#db/repositories/wallets.core.js';
 import { getPool } from '#db/repositories/teamPools.js';
 import { setCashReady } from '#db/repositories/teamRouting.js';
 import { tryAssignMerchant, markOrderPaid } from '../../domains/payment/paymentProcessing.service.js';
-import { teamFixture } from '../teamFixture.js';
+import { teamFixture, readyToPay } from '../teamFixture.js';
 import { mountRouter, actor, merchantActor, as } from './_harness.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
@@ -108,6 +108,7 @@ describePg('a released dispute moves tokens between two parties', () => {
     expect(await tryAssignMerchant(order), 'team routing did not take the buy').toBe(true);
     expect(await getOrderRecord(orderId)).toMatchObject({ merchantId: merchant.merchantId, poolHeldPaise: rupees * 100 });
     expect((await transitionOrder(orderId, 'PROCESSING', { set: { processingAt: new Date() } })).ok).toBe(true);
+    await readyToPay(orderId);
     await markOrderPaid(player.userId, orderId, `UTRDRC${Date.now()}${seq}`);
     // What the player's dispute route writes, on a PAID buy.
     expect((await transitionOrder(orderId, 'DISPUTED', {

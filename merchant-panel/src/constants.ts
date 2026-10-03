@@ -36,19 +36,6 @@ export const ENDPOINTS = {
     // backend/domains/merchant/merchant.routes.js PUT /cash-ready.
     CASH_READY: '/api/merchant/cash-ready',
   },
-  CDM_RECEIPT: {
-    // `/api`, not `/api/upload` — upload.routes.js is mounted at `/api`
-    // (server.js), so the prefix its filename suggests does not exist. This
-    // read `/api/upload/...` and 404'd, and the dialog would have caught it
-    // and rendered a failed upload.
-    UPLOAD_URL: (orderId: string) => `/api/merchant/cdm-receipt/${orderId}/upload-url`,
-    SUBMIT: (orderId: string) => `/api/merchant/orders/${orderId}/cdm-receipt`,
-    // The way BACK to a payout whose slip never got sent. There is no read of a
-    // submitted receipt here and there never will be — a submitted slip is
-    // admin-and-disputes-manager only, including from the merchant who
-    // uploaded it. This lists what is still owed, nothing more.
-    OUTSTANDING: '/api/merchant/cdm-receipts/outstanding',
-  },
   ORDERS: {
     LIST: '/api/merchant/orders',
     ACCEPT: (id: string) => `/api/merchant/accept/${id}`,
@@ -72,6 +59,8 @@ export const ENDPOINTS = {
   },
   ORDERS_EXTRA: {
     RED_FLAG: (id: string) => `/api/merchant/orders/${id}/red-flag`,
+    // A cash buy's ATM QR, scanned at the machine (Step 2d).
+    CASH_LINK: (id: string) => `/api/merchant/orders/${id}/cash-link`,
   },
   // Supervisors and teams (redesign Step 2a). Backend:
   // backend/domains/team/team.merchant.routes.js.

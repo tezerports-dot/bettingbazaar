@@ -25,7 +25,7 @@ import { getOrderRecord } from '#db/repositories/orders.record.js';
 import { PAYMENT_MODES, setCashReady } from '#db/repositories/teamRouting.js';
 import { createDepositOrder, markOrderPaid } from '../../domains/payment/paymentProcessing.service.js';
 import router from '../../domains/payment/payment.routes.js';
-import { teamFixture } from '../teamFixture.js';
+import { teamFixture, readyToPay } from '../teamFixture.js';
 import { mountRouter, actor, as } from './_harness.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
@@ -48,7 +48,7 @@ describePg('a cash player submits the payment reference after Paid', () => {
     await applySchema();
     app = mountRouter(router);
     cashTeam = await teams.workingTeam({ rail: 'CASH', poolTokens: 10_000 });
-    upiTeam = await teams.workingTeam({ rail: 'UPI_BANK', poolTokens: 20_000 });
+    upiTeam = await teams.workingTeam({ rail: 'UPI_BANK', poolTokens: 50_000 });
   }, 120_000);
 
   afterAll(async () => {
@@ -83,6 +83,7 @@ describePg('a cash player submits the payment reference after Paid', () => {
     const routed = await getOrderRecord(orderId);
     expect(routed.status, 'the cash buy was not routed to the ready member').toBe('ASSIGNED');
     expect(routed.paymentMode).toBe(PAYMENT_MODES.CASH_ATM);
+    await readyToPay(orderId);
     await markOrderPaid(p.userId, orderId, undefined);
     const paid = await getOrderRecord(orderId);
     expect(paid.status).toBe('PAID');
@@ -132,10 +133,11 @@ describePg('a cash player submits the payment reference after Paid', () => {
     const [member] = upiTeam.members;
     await teams.onlyOnline([member]);
     const p = await player();
-    const { order } = await createDepositOrder(p.userId, 20_000);
+    const { order } = await createDepositOrder(p.userId, 50_000);
     const orderId = order.orderId ?? order._id;
     expect((await getOrderRecord(orderId)).paymentMode).toBe(PAYMENT_MODES.P2P_UPI);
     const original = utr();
+    await readyToPay(orderId);
     await markOrderPaid(p.userId, orderId, original);
     expect(await claimsFor(orderId)).toEqual([original.toUpperCase()]);
 

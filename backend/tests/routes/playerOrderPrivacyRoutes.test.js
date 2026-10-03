@@ -1,35 +1,32 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * A player never learns who the merchant is.
+ * A player sees where to pay, and nothing else about the member.
  *
- * ── What was shipped ────────────────────────────────────────────────────────
- * `merchantOrderView.js` protected the player from the merchant. NOTHING
- * protected the merchant from the player. `buildMerchantSnapshot` writes the
- * merchant's UPI handle, their QR image, their bank name, account number, IFSC,
- * account-holder name and their USDT settlement address onto the order — and
- * every player-facing response passed the whole object through:
+ * ── The rule (owner, 2026-10-03) ────────────────────────────────────────────
+ * Where to pay depends on the rail: the member's BANK ACCOUNT on a bank-
+ * transfer buy (the 50,000 / 100,000 / 500,000 sizes), the ATM QR the member
+ * scanned on a cash buy, the order chain's address on a USDT buy. Nothing
+ * else: never the member's mobile number, never their UPI handle (usually the
+ * same number), never a QR image, never the other chain's address, and on a
+ * sell nothing at all, because the player pays nobody.
  *
- *     order creation · GET /order/:id · the dispute response · the assignment
- *     socket push · and the STATUS POLL, which fires every few seconds
- *
- * The player's screen rendered the handle in a copy-to-clipboard row. A player
- * could read, copy and keep a merchant's bank account from a single deposit.
+ * ── What was shipped once ───────────────────────────────────────────────────
+ * `buildMerchantSnapshot` writes every credential the member has onto the
+ * order, and every player-facing response passed the whole object through, on
+ * every order and every rail. The row still keeps it (a dispute is decided
+ * from it); the projection is what chooses the one piece an order needs.
  *
  * ── Why these assertions are shaped this way ────────────────────────────────
- * "merchantSnapshot is absent" one field at a time is a denylist written as a
- * test. So the assertions are CLOSED: the response's key set must be a SUBSET
- * of `PLAYER_ORDER_FIELDS` (plus `payTo`), and the `payTo` object's keys a
- * subset of the three it may carry. A column added to `order_states` and mapped
- * by `toOrder` cannot reach a player without failing this, and nobody has to
- * remember to add a line.
+ * CLOSED: the response's key set must be a SUBSET of `PLAYER_ORDER_FIELDS`
+ * (plus `payTo`), and `payTo`'s keys exactly what the rail calls for. A column
+ * added to `order_states` cannot reach a player without failing this.
  *
- * Driven through the real routers against a real database, for the reason its
- * mirror is: the projection is a pure function, and testing it in isolation
- * would prove only that the function is right — not that the handler calls it,
- * which is the half that was broken.
+ * Driven through the real routers against a real database: the projection is
+ * a pure function, and the half that was once broken is whether the handler
+ * calls it.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { pgConfigured, applySchema, closePg } from '#db/client.js';
+import { pgConfigured, applySchema, closePg, withTransaction } from '#db/client.js';
 import { createOrderRecord, setOrderFields } from '#db/repositories/orders.record.js';
 import {
   PLAYER_ORDER_FIELDS, PLAYER_FORBIDDEN_ORDER_FIELDS,
@@ -41,7 +38,12 @@ const describePg = pgConfigured() ? describe : describe.skip;
 describePg('what a player is told about a merchant', () => {
   let app;
   let seq = 0;
-  const oid = () => `pp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}-${seq += 1}`;
+  const made = [];
+  const oid = () => {
+    const id = `pp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}-${seq += 1}`;
+    made.push(id);
+    return id;
+  };
 
   // Every credential `buildMerchantSnapshot` puts on the row. The row KEEPS
   // them — a dispute months later is decided from what was true at assignment —
@@ -50,26 +52,22 @@ describePg('what a player is told about a merchant', () => {
   const MERCHANT_ACC  = '50100123456789';
   const MERCHANT_IFSC = 'HDFC0000123';
   const MERCHANT_NAME = 'Ravi Kumar';
-  // BOTH chains. A merchant may hold an address on each, and a player is
-  // entitled to the one THEIR order named and nothing else — so the fixture
-  // carries both and the assertions below refuse both as stored columns.
+  // Planted, as if a future snapshot carried it: nobody learns a number.
+  const MERCHANT_MOBILE = '9876501234';
+  // BOTH chains. A player is entitled to the one THEIR order named.
   const MERCHANT_USDT_TRC20 = 'TQ5NMqJjW8sT1u9dCUnMcGbmVpFmvbwrsi';
   const MERCHANT_USDT_BEP20 = '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0';
-  // The QR was REMOVED from the platform on 2026-09-10 — a merchant supplies a
-  // UPI ID and `upiPaymentLink()` builds a dynamic intent per order. This value
-  // deliberately STAYS in the fixture: it is now a regression guard rather than
-  // a live field. The player projection is an ALLOWLIST (§24.1), so the property
-  // being proved is that an unknown key planted in the snapshot is dropped —
-  // which is exactly what must still hold if anybody ever puts a QR back.
+  // The QR was removed on 2026-09-10. It stays in the fixture as a planted
+  // unknown key: the projection is an allowlist, so it must be dropped.
   const MERCHANT_QR   = 'https://cdn.example/qr/ravi.png';
 
   const SNAPSHOT = {
     merchantRef: 'Merchant #7731',
-    paymentLink: 'upi://pay?pa=ravi%40okhdfcbank&pn=Merchant+%237731&am=1500.00&cu=INR',
     merchantId: 'MER-7731',
     merchantName: 'Merchant #7731',
     merchantType: 'INR',
     upiId: MERCHANT_UPI,
+    mobile: MERCHANT_MOBILE,
     qrCodeUrl: MERCHANT_QR,
     bankName: 'HDFC Bank',
     accountNo: MERCHANT_ACC,
@@ -81,13 +79,20 @@ describePg('what a player is told about a merchant', () => {
     expiresAt: new Date(Date.now() + 900_000).toISOString(),
   };
 
-  /** An assigned deposit carrying the full snapshot, exactly as assignment writes it. */
-  const assignedDeposit = async (player, extra = {}) => {
+  /** What the player is given on a bank-transfer buy: the account, nothing more. */
+  const BANK = { accountHolder: MERCHANT_NAME, accountNo: MERCHANT_ACC, ifsc: MERCHANT_IFSC, bankName: 'HDFC Bank' };
+
+  /**
+   * A buy its member has ACCEPTED, carrying the full snapshot exactly as
+   * assignment writes it. Accepted, because that is when the player is shown
+   * where to pay (`PAY_DETAIL_STATES`); `state` overrides it.
+   */
+  const assignedDeposit = async (player, { tokens = 50_000, state = 'PROCESSING', ...extra } = {}) => {
     const orderId = oid();
     await createOrderRecord({
       orderId, userId: player.userId, type: 'DEPOSIT',
-      tokenAmountRupees: 1500, fiatAmountRupees: 1500,
-      state: 'ASSIGNED',
+      tokenAmountRupees: tokens, fiatAmountRupees: tokens,
+      state,
       ...extra,
     });
     await setOrderFields(orderId, {
@@ -97,19 +102,18 @@ describePg('what a player is told about a merchant', () => {
     return orderId;
   };
 
-  /** Every credential that must never appear, in any form, anywhere. */
-  const CREDENTIALS = [
-    MERCHANT_UPI, MERCHANT_ACC, MERCHANT_IFSC, MERCHANT_NAME,
-    MERCHANT_USDT_TRC20, MERCHANT_USDT_BEP20, MERCHANT_QR,
-  ];
+  /** What must never appear, in any form, anywhere a player reads. */
+  const NEVER = [MERCHANT_UPI, MERCHANT_MOBILE, MERCHANT_USDT_TRC20, MERCHANT_USDT_BEP20, MERCHANT_QR];
+  /** The account itself: allowed only inside `payTo.bankAccount` on a bank-transfer buy. */
+  const ACCOUNT = [MERCHANT_ACC, MERCHANT_IFSC, MERCHANT_NAME];
 
-  const carriesNoCredential = (payload) => {
+  const carriesNoCredential = (payload, { bankBuy = false } = {}) => {
     const body = JSON.stringify(payload);
-    for (const secret of CREDENTIALS) {
-      // `paymentLink` is the one place a handle may appear: it IS the payment
-      // instruction, and a `upi://pay` intent carries the payee by protocol.
-      const withoutLink = body.replace(/"paymentLink":"[^"]*"/g, '"paymentLink":""');
-      expect(withoutLink, `${secret} reached the player`).not.toContain(secret);
+    for (const secret of NEVER) expect(body, `${secret} reached the player`).not.toContain(secret);
+    const outsideAccount = body.replace(/"bankAccount":\{[^}]*\}/g, '"bankAccount":{}');
+    for (const secret of ACCOUNT) {
+      expect(outsideAccount, `${secret} reached the player outside payTo.bankAccount`).not.toContain(secret);
+      if (!bankBuy) expect(body, `${secret} reached the player on an order that pays no bank account`).not.toContain(secret);
     }
   };
 
@@ -129,23 +133,74 @@ describePg('what a player is told about a merchant', () => {
     app = mountRouter((await import('../../domains/payment/payment.routes.js')).default);
   }, 60_000);
 
-  afterAll(async () => { await closePg(); });
+  afterAll(async () => {
+    // Trap 10: this run's orders. A queued one left behind sits ahead of every
+    // other suite's cash buy in the assignment queue.
+    await withTransaction(async (c) => {
+      await c.query('SET LOCAL session_replication_role = replica');
+      await c.query('DELETE FROM order_transitions WHERE order_id = ANY($1)', [made]);
+      await c.query('DELETE FROM order_states WHERE order_id = ANY($1)', [made]);
+    });
+    await closePg();
+  });
 
-  it('gives a payment link and an opaque reference — not the merchant', async () => {
+  it('gives a bank-transfer buy the member\'s bank account and an opaque reference — nothing else', async () => {
     const player = await actor({});
     const orderId = await assignedDeposit(player);
 
     const res = await as(app, player).get(`/order/${orderId}`);
     expect(res.status).toBe(200);
 
-    // The player CAN pay: they have the link and can talk to support about
-    // "Merchant #7731" without knowing who that is.
-    expect(res.body.order.payTo.paymentLink).toBe(SNAPSHOT.paymentLink);
+    // The player CAN pay: the account to transfer to, and "Merchant #7731"
+    // to talk to support about.
+    expect(res.body.order.paymentMode).toBe('P2P_UPI');
+    expect(res.body.order.payTo.bankAccount).toEqual(BANK);
     expect(res.body.order.payTo.merchantRef).toBe('Merchant #7731');
     expect(Object.keys(res.body.order.payTo).sort())
-      .toEqual(['expiresAt', 'merchantRef', 'paymentLink']);
+      .toEqual(['bankAccount', 'expiresAt', 'merchantRef']);
 
     withinTheAllowlist(res.body.order);
+    carriesNoCredential(res.body.order, { bankBuy: true });
+  });
+
+  it('shows nowhere to pay while the member may still decline, and nothing once the order has ended', async () => {
+    // ASSIGNED: the member has not accepted, and may decline or be moved. A
+    // transfer made now could reach a member the order then leaves.
+    const player = await actor({});
+    for (const state of ['ASSIGNED', 'COMPLETED', 'CANCELLED']) {
+      const orderId = await assignedDeposit(player, { state });
+      const res = await as(app, player).get(`/order/${orderId}`);
+      expect(res.status).toBe(200);
+      expect(Object.keys(res.body.order.payTo ?? {}).sort(), state).toEqual(['expiresAt', 'merchantRef']);
+      expect(JSON.stringify(res.body), state).not.toContain(MERCHANT_ACC);
+    }
+  });
+
+  it('gives a cash buy no account at all: it is paid through the machine', async () => {
+    const player = await actor({});
+    const orderId = await assignedDeposit(player, { tokens: 1000 });
+
+    const res = await as(app, player).get(`/order/${orderId}`);
+    expect(res.status).toBe(200);
+    expect(res.body.order.paymentMode).toBe('CASH_ATM');
+    // Before the member scans there is nothing to pay.
+    expect(Object.keys(res.body.order.payTo).sort()).toEqual(['expiresAt', 'merchantRef']);
+    carriesNoCredential(res.body.order);
+  });
+
+  it('gives a sell nothing about the member: the player pays nobody', async () => {
+    const player = await actor({});
+    const orderId = oid();
+    await createOrderRecord({
+      orderId, userId: player.userId, type: 'WITHDRAWAL',
+      tokenAmountRupees: 50_000, fiatAmountRupees: 50_000, state: 'ASSIGNED',
+      userBankDetails: { accountNumber: '000111222333', ifscCode: 'ICIC0000001', bankName: 'ICICI Bank', accountHolderName: 'Asha Rao' },
+    });
+    await setOrderFields(orderId, { merchantSnapshot: SNAPSHOT });
+
+    const res = await as(app, player).get(`/order/${orderId}`);
+    expect(res.status).toBe(200);
+    expect(res.body.order.payTo.bankAccount).toBeUndefined();
     carriesNoCredential(res.body.order);
   });
 
@@ -159,7 +214,7 @@ describePg('what a player is told about a merchant', () => {
     await createOrderRecord({
       orderId, userId: player.userId, type: 'DEPOSIT',
       tokenAmountRupees: 50_000, fiatAmountRupees: 50_000,
-      state: 'ASSIGNED', currency: 'USDT', usdtChain: 'BEP20',
+      state: 'PROCESSING', currency: 'USDT', usdtChain: 'BEP20',
     });
     await setOrderFields(orderId, {
       merchantSnapshot: {
@@ -181,6 +236,22 @@ describePg('what a player is told about a merchant', () => {
     // And the other chain's address is nowhere in the response.
     expect(JSON.stringify(res.body)).not.toContain(MERCHANT_USDT_TRC20);
     withinTheAllowlist(res.body.order);
+
+    // Before the member accepts, not even their own chain's address: USDT sent
+    // to a member who then declines is not recoverable.
+    const waitingId = oid();
+    await createOrderRecord({
+      orderId: waitingId, userId: player.userId, type: 'DEPOSIT',
+      tokenAmountRupees: 50_000, fiatAmountRupees: 50_000,
+      state: 'ASSIGNED', currency: 'USDT', usdtChain: 'BEP20',
+    });
+    await setOrderFields(waitingId, {
+      merchantSnapshot: { ...SNAPSHOT, usdtChain: 'BEP20', usdtPayTo: MERCHANT_USDT_BEP20, usdtChainLabel: 'BNB Smart Chain (BEP-20)' },
+    });
+    const waiting = await as(app, player).get(`/order/${waitingId}`);
+    expect(waiting.status).toBe(200);
+    expect(waiting.body.order.payTo.usdtAddress).toBeUndefined();
+    expect(JSON.stringify(waiting.body)).not.toContain(MERCHANT_USDT_BEP20);
   });
 
   it('keeps the snapshot ON THE ROW for the disputes desk', async () => {
@@ -204,8 +275,8 @@ describePg('what a player is told about a merchant', () => {
 
     const res = await as(app, player).get(`/order/${orderId}/status`);
     expect(res.status).toBe(200);
-    expect(res.body.payTo.paymentLink).toBe(SNAPSHOT.paymentLink);
-    carriesNoCredential(res.body);
+    expect(res.body.payTo.bankAccount).toEqual(BANK);
+    carriesNoCredential(res.body, { bankBuy: true });
     for (const field of PLAYER_FORBIDDEN_ORDER_FIELDS) {
       expect(res.body[field], `${field} reached the player`).toBeUndefined();
     }
@@ -221,7 +292,7 @@ describePg('what a player is told about a merchant', () => {
     expect(res.body.orders.length).toBeGreaterThanOrEqual(2);
     for (const order of res.body.orders) {
       withinTheAllowlist(order);
-      carriesNoCredential(order);
+      carriesNoCredential(order, { bankBuy: true });
     }
   });
 
@@ -271,20 +342,20 @@ describePg('what a player is told about a merchant', () => {
     // makes every responder safe by construction rather than by review.
     const { toPlayerOrderView } = await import('../../domains/payment/playerOrderView.js');
     const view = toPlayerOrderView({
-      orderId: 'ORD-1', status: 'ASSIGNED', tokenAmount: 1500,
+      orderId: 'ORD-1', type: 'DEPOSIT', status: 'PROCESSING', tokenAmount: 50_000,
+      currency: 'INR', paymentMode: 'P2P_UPI',
       merchantSnapshot: SNAPSHOT,
       merchantId: 'MER-7731',
       merchantProfit: 45,
       redFlagged: true,
       orderHmac: 'deadbeef',
-      cdmReceiptUrl: 'https://cdn/slip.png',
     });
     expect(view.payTo).toEqual({
       merchantRef: 'Merchant #7731',
-      paymentLink: SNAPSHOT.paymentLink,
+      bankAccount: BANK,
       expiresAt: SNAPSHOT.expiresAt,
     });
-    carriesNoCredential(view);
+    carriesNoCredential(view, { bankBuy: true });
     for (const field of PLAYER_FORBIDDEN_ORDER_FIELDS) {
       expect(view[field], `${field} survived the projection`).toBeUndefined();
     }

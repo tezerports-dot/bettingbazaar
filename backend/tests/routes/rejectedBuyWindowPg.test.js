@@ -31,7 +31,7 @@ import { completeOrder, disputeOrder } from '../../domains/payment/orderLifecycl
 import { closeRejectedBuyWindows } from '../../domains/payment/rejectedBuyWindow.service.js';
 import { toPlayerOrderView } from '../../domains/payment/playerOrderView.js';
 import { toMerchantOrderView } from '../../domains/merchant/merchantOrderView.js';
-import { teamFixture } from '../teamFixture.js';
+import { teamFixture, readyToPay } from '../teamFixture.js';
 import { mountRouter, actor, merchantActor, as } from './_harness.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
@@ -97,6 +97,7 @@ describePg('the window after a member rejects a buy as unpaid', () => {
     });
     expect(await tryAssignMerchant(order), 'the router did not assign the buy').toBe(true);
     expect((await getOrderRecord(orderId)).merchantId).toBe(member.merchantId);
+    await readyToPay(orderId);
     expect((await markOrderPaid(player.userId, orderId, nextUtr())).status).toBe('PAID');
     return { member, player, orderId, team };
   };

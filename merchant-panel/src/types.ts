@@ -82,25 +82,6 @@ export interface ChatMessage {
 // database/repositories/orderRails.js (§5: change them together).
 export type PaymentMode = 'P2P_UPI' | 'CASH_ATM';
 
-/**
- * A completed cash payout whose CDM slip has not been submitted.
- *
- * The confirm completes the order and the receipt is chased afterwards, so the
- * moment to submit passes — an upload that failed or an app closed at the
- * machine leaves the order gone from every screen. This is the way back to it.
- *
- * Deliberately not a `PaymentOrder`: three facts, and the player is not among
- * them. It is also NOT a way to read a submitted receipt — a row appearing here
- * means one is still owed, and a row that disappears is all the merchant ever
- * learns about the one they sent.
- */
-export interface OutstandingCdmReceipt {
-  orderId: string;
-  /** The cash the merchant deposited, in RUPEES. */
-  fiatAmount: number;
-  completedAt: string;
-}
-
 export interface PaymentOrder {
   id: string;
   _id: string; // always present on orders from the backend (the public id)
@@ -118,6 +99,10 @@ export interface PaymentOrder {
   // money is denominated in, this is how it moves. Branch on THIS — it is the
   // order's own answer. Sent by backend/domains/merchant/merchantOrderView.js.
   paymentMode?: PaymentMode;
+  // On a CASH buy, the cash machine's QR this member scanned and when (Step
+  // 2d); null until they scan. Sent by merchantOrderView.js.
+  cashLink?: string | null;
+  cashLinkAt?: string | null;
   // On a USDT order, the chain the PLAYER chose to send on. The merchant has to
   // watch the right network — a payment on BNB Smart Chain never appears in a
   // Tron explorer — and it decides which of their addresses is shown.

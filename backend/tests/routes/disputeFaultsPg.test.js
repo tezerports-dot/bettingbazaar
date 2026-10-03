@@ -36,8 +36,12 @@ import { creditWinnings } from '../../domains/wallet/walletAuthority.service.js'
 import { partyAtFault, recordDisputeLoser } from '../../domains/disputes/disputeOutcome.service.js';
 import { cancelOrder } from '../../domains/payment/orderLifecycle.service.js';
 import { releaseBuyHold } from '#db/repositories/teamPools.js';
-import { teamFixture } from '../teamFixture.js';
+import { teamFixture, readyToPay } from '../teamFixture.js';
 import { mountRouter, actor, merchantActor, as } from './_harness.js';
+
+// Every sell is paid by bank transfer, so the member gives its UTR (2d).
+let payoutSeq = 0;
+const payoutUtr = () => `UTRDF${String(Date.now()).slice(-7)}${String(++payoutSeq).padStart(4, '0')}`;
 
 const describePg = pgConfigured() ? describe : describe.skip;
 
@@ -99,6 +103,7 @@ describePg('a decided dispute suspends whoever was wrong', () => {
       depositAllocation: TOKENS, reserveAllocation: 0,
     });
     expect(await tryAssignMerchant(order)).toBe(true);
+    await readyToPay(orderId);
     expect((await markOrderPaid(player.userId, orderId, nextUtr())).status).toBe('PAID');
     expect((await as(merchantApp, member).post(`/orders/${orderId}/reject`).send(REJECT)).status).toBe(200);
     const disputed = await as(playerApp, player).post(`/order/${orderId}/dispute`).send({ reason: 'I paid; the UTR is on the order' });
@@ -119,7 +124,7 @@ describePg('a decided dispute suspends whoever was wrong', () => {
     made.push(orderId);
     expect((await getOrderRecord(orderId)).merchantId).toBe(member.merchantId);
     expect((await as(merchantApp, member).post(`/accept/${orderId}`)).status).toBe(200);
-    expect((await as(merchantApp, member).post(`/confirm/${orderId}`)).status).toBe(200);
+    expect((await as(merchantApp, member).post(`/confirm/${orderId}`).send({ utrNumber: payoutUtr() })).status).toBe(200);
     // Ten minutes after Paid, the player says nothing arrived.
     await pgQuery(`UPDATE order_states SET paid_at = now() - interval '11 minutes' WHERE order_id = $1`, [orderId]);
     const disputed = await as(playerApp, player).post(`/order/${orderId}/dispute`).send({ reason: 'Nothing reached my bank' });
@@ -199,6 +204,7 @@ describePg('a decided dispute suspends whoever was wrong', () => {
       depositAllocation: TOKENS, reserveAllocation: 0,
     });
     expect(await tryAssignMerchant(order)).toBe(true);
+    await readyToPay(orderId);
     expect((await markOrderPaid(player.userId, orderId, nextUtr())).status).toBe('PAID');
     expect((await as(pccApp, admin).post(`/payment-orders/${orderId}/action`).send({ action: 'APPROVE' })).status).toBe(200);
     expect(await memberState(member.merchantId)).toMatchObject({ status: 'ACTIVE', lost: 0 });
@@ -218,6 +224,7 @@ describePg('a decided dispute suspends whoever was wrong', () => {
       depositAllocation: TOKENS, reserveAllocation: 0,
     });
     expect(await tryAssignMerchant(order)).toBe(true);
+    await readyToPay(orderId);
     expect((await markOrderPaid(player.userId, orderId, nextUtr())).status).toBe('PAID');
     expect((await resolve(orderId, 'RELEASE_TO_MERCHANT')).status).toBe(200);
     expect(await playerState(player.userId)).toMatchObject({ blocked: false, lost: 0 });
@@ -381,6 +388,7 @@ describePg('a decided dispute suspends whoever was wrong', () => {
       depositAllocation: TOKENS, reserveAllocation: 0,
     });
     expect(await tryAssignMerchant(order)).toBe(true);
+    await readyToPay(orderId);
     expect((await markOrderPaid(player.userId, orderId, nextUtr())).status).toBe('PAID');
     return { member, player, orderId };
   };

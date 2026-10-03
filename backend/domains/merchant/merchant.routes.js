@@ -14,12 +14,7 @@ import { merchantAuth } from '../../middleware/merchantAuth.js';
 import { verificationEndpoint } from '../identity/verificationEndpoint.js';
 import { issueChallenge, verifyChallenge, CHALLENGE_AUDIENCE } from '../identity/twoFactorChallenge.js';
 import { verifySecondFactor, SECOND_FACTOR_RESULT } from '../identity/verifySecondFactor.js';
-import {
-  twoFactorLimiter, loginPaceLimiter,
-  // Submitting a CDM slip shipped with no limit. It is not a login route, so
-  // no auth tier covered it; it writes to a queue an admin reads.
-  cdmReceiptLimiter,
-} from '../../middleware/security.js';
+import { twoFactorLimiter, loginPaceLimiter } from '../../middleware/security.js';
 import {
   generateSecret, buildOtpauthUri, encryptSecret, decryptSecret,
   verifyToken, generateBackupCodes, hashBackupCode,
@@ -50,12 +45,9 @@ import { publish as publishDomainEvent, EVENTS as DOMAIN_EVENTS } from '../../se
 // Only the order's own timeline now — the record a dispute is decided from.
 // listMessages/postMessage went with the merchant order chat above.
 import { postSystemMessage } from '#db/repositories/chat.js';
-// Every external payment reference — a UTR, a chain transaction hash, a CDM
-// slip's bank id — is claimed through ONE registry, so the same payment cannot
-// be presented twice.
-import {
-  claimPaymentReference, referenceSpecFor, CDM_REFERENCE_SPEC,
-} from '../payment/paymentReference.js';
+// Every external payment reference — a UTR, a chain transaction hash — is
+// claimed through ONE registry, so the same payment cannot be presented twice.
+import { claimPaymentReference, referenceSpecFor } from '../payment/paymentReference.js';
 import cdnService from '../../services/cdn.service.js';
 import { respondError } from '../../shared/httpError.js';
 
@@ -65,7 +57,10 @@ import {
   USDT_CHAINS, USDT_CHAIN_SPEC, isUsdtAddress, usdtAddressFor, usdtChainsHeldBy,
 } from './merchantCurrency.js';
 import { toMerchantOrderView, toMerchantOrderViews } from './merchantOrderView.js';
-import { PAYMENT_MODES, railOf, routingSettings } from '#db/repositories/teamRouting.js';
+import { railOf, routingSettings, PAYMENT_MODES } from '#db/repositories/teamRouting.js';
+// What a cash buy's ATM link may be (Step 2d).
+import { checkCashLink } from '../payment/cashLink.js';
+import { isAccountMobileRefusal, ACCOUNT_IS_A_MOBILE_MESSAGE } from '../payment/payoutAccount.js';
 import { getSystemConfig } from '#db/repositories/config.js';
 import { recordMerchantRefusal, REFUSAL } from './merchantRefusal.service.js';
 import { assertStaffPassword } from '../identity/passwordPolicy.js';
@@ -200,6 +195,9 @@ router.post('/auth/signup', async (req, res) => {
             } : null,
         });
 
+        if (!created.ok && created.reason === 'ACCOUNT_IS_A_MOBILE') {
+            return res.status(400).json({ success: false, code: 'ACCOUNT_IS_A_MOBILE', message: ACCOUNT_IS_A_MOBILE_MESSAGE });
+        }
         if (!created.ok) {
             // Named, because "signup failed" tells an applicant nothing they
             // can act on — and a payment credential already registered to
@@ -484,171 +482,6 @@ router.post('/2fa/activate', merchantAuth, twoFactorLimiter, async (req, res) =>
 
 // ─── PROFILE ─────────────────────────────────────────────────────────────────
 
-/**
- * POST /api/merchant/orders/:id/cdm-receipt — the evidence for a cash payout.
- *
- * On the cash rail a SELL is settled by depositing cash at a CDM into the
- * player's bank account. The merchant's confirm already completed the order —
- * the player is not held up waiting for paperwork — and this is the evidence
- * that follows.
- *
- * ── Write-only, and this route is the write half ───────────────────────────
- * Once submitted, NEITHER the merchant who uploaded it nor the player can read
- * it back. Only an admin or a disputes manager can, through
- * `GET /api/admin/orders/:orderId/cdm-receipt`.
- *
- * That is enforced in the data layer, not here: `toOrder` does not map these
- * columns, so no projection built on it can carry them. This handler writes
- * them and never reads them back in its own response.
- *
- * The consequence for the merchant is real and worth stating: they cannot check
- * what they uploaded afterwards. So the proof is verified against THIS merchant
- * and THIS order before it is stored, and the response confirms exactly what
- * was accepted — that confirmation is the only look they get.
- */
-router.post('/orders/:id/cdm-receipt', merchantAuth, cdmReceiptLimiter, async (req, res) => {
-    try {
-        const { transactionId, receiptFileKey, receiptCdnUrl } = req.body || {};
-
-        if (!transactionId || !String(transactionId).trim()) {
-            return res.status(400).json({
-                success: false, reason: 'TRANSACTION_ID_REQUIRED',
-                message: CDM_REFERENCE_SPEC.hint,
-            });
-        }
-        if (!receiptFileKey) {
-            return res.status(400).json({
-                success: false, reason: 'RECEIPT_REQUIRED',
-                message: 'A photo of the CDM receipt is required. A transaction id with no image is an assertion with no evidence.',
-            });
-        }
-
-        // SCOPED to the merchant making the request. An unscoped read here let
-        // ANY merchant attach their slip to ANY payout — claiming somebody
-        // else's cash deposit and, with it, the evidence a dispute is decided
-        // on. It was scoped when this handler was written and lost in a later
-        // edit; the suite caught it, which is why the assertion is a 404 on
-        // another merchant's order rather than a happy-path check.
-        const order = await db.orders.getMerchantOrder(req.params.id, req.merchantId);
-        if (!order) return res.status(404).json({ success: false, message: 'Order not found.' });
-        if (order.type !== 'WITHDRAWAL') {
-            return res.status(400).json({
-                success: false, reason: 'NOT_A_WITHDRAWAL',
-                message: 'A CDM receipt belongs to a payout, not a purchase.',
-            });
-        }
-        if (order.paymentMode !== PAYMENT_MODES.CASH_ATM) {
-            return res.status(400).json({
-                success: false, reason: 'WRONG_RAIL',
-                message: 'This order was created on the UPI rail and is not settled at a CDM.',
-            });
-        }
-
-        // ── The bank reference is CLAIMED, not merely recorded ───────────
-        // A CDM slip's transaction id is a bank's reference for one real cash
-        // deposit, exactly as a UTR is for one real transfer. It used to be
-        // written into a column with nothing stopping the same id appearing on
-        // a second payout — one deposit presented as two, with every check
-        // green. It goes through the same registry as every other reference,
-        // and a duplicate is refused by name.
-        //
-        // Before the receipt is verified or stored, so a refused id leaves
-        // nothing behind.
-        try {
-            await claimPaymentReference({
-                reference: transactionId,
-                orderId: order.orderId,
-                amountRupees: order.fiatAmount,
-                spec: CDM_REFERENCE_SPEC,
-            });
-        } catch (e) {
-            return res.status(e.status || 400).json({
-                success: false, reason: e.code || 'INVALID_REFERENCE',
-                message: e.message, originalOrderId: e.originalOrderId ?? null,
-            });
-        }
-
-        // Bound to THIS merchant and THIS order — without it a merchant could
-        // name a key they never uploaded, or one staged against a different
-        // order, and the stored evidence would point at somebody else's.
-        let verified;
-        try {
-            verified = await cdnService.verifyUploadedObject({
-                fileKey: String(receiptFileKey).trim(),
-                cdnUrl: receiptCdnUrl || undefined,
-                expectedUserId: String(req.merchantId),
-                expectedOrderId: order.orderId,
-                expectedCategory: 'cdm-receipt',
-            });
-        } catch (e) {
-            return res.status(400).json({ success: false, message: `Receipt could not be verified: ${e.message}` });
-        }
-
-        const submittedAt = new Date();
-        await db.orders.setOrderFields(order.orderId, {
-            cdmTransactionId: String(transactionId).trim(),
-            cdmReceiptUrl: verified.cdnUrl,
-            cdmReceiptAt: submittedAt,
-        });
-
-        await db.audit.recordDetailed({
-            performedBy: req.merchantId, performedByRole: 'merchant',
-            action: 'CDM_RECEIPT_SUBMITTED', category: 'MERCHANT',
-            targetType: 'PaymentOrder', targetId: order.orderId,
-            // The URL is NOT recorded here. An audit row is read by more people
-            // than the receipt is, and putting it in one would be a second way
-            // to reach the thing this route exists to keep narrow.
-            details: { transactionId: String(transactionId).trim(), submittedAt },
-        });
-
-        res.json({
-            success: true,
-            // The only look the merchant gets. Echoed deliberately, because
-            // they cannot open it again to check what they sent.
-            submitted: { transactionId: String(transactionId).trim(), submittedAt },
-            message: 'Receipt recorded. It is visible only to an admin or a disputes manager from now on.',
-        });
-    } catch (err) {
-        console.error('POST /merchant/orders/:id/cdm-receipt error:', err);
-        res.status(500).json({ success: false, message: 'Failed to record the CDM receipt.' });
-    }
-});
-
-/**
- * GET /api/merchant/cdm-receipts/outstanding — the slips this merchant owes.
- *
- * The confirm completes the order and the receipt is chased afterwards, which
- * is the right order for the PLAYER — they are not held up waiting for
- * paperwork. The cost is that the moment to submit passes: an upload that
- * failed, an app closed at the machine, a slip not yet in hand, and the order
- * is gone from every screen the merchant has.
- *
- * This is the way back to it. `GET /api/admin/orders/cdm-receipts/missing`
- * asks the same question from the other side — who is not evidencing their
- * payouts — so without this route that admin queue fills with items the only
- * person who can clear them cannot reach.
- *
- * ── Why this does not go through `toMerchantOrderView` ─────────────────────
- * It is not an order. It is three columns — which payout, how much cash, when
- * it completed — chosen in the query itself, and the player is deliberately
- * not among them. Passing an order shape through here would mean assembling
- * one first, and the safest identity is the one never read.
- *
- * `cdm_receipt_url` is read only as IS NULL. A merchant learns THAT they still
- * owe a receipt; they never learn what a submitted one says. The slip becomes
- * unreadable to its own uploader the moment it is stored, and that is the
- * whole point of the feature.
- */
-router.get('/cdm-receipts/outstanding', merchantAuth, async (req, res) => {
-    try {
-        const outstanding = await db.orders.merchantWithdrawalsMissingCdmReceipt(req.merchantId);
-        res.json({ success: true, outstanding });
-    } catch (err) {
-        console.error('GET /merchant/cdm-receipts/outstanding error:', err);
-        res.status(500).json({ success: false, message: 'Failed to list the receipts you still owe.' });
-    }
-});
-
 router.get('/profile', merchantAuth, async (req, res) => {
     try {
         const merchant = await db.merchants.getMerchant(req.merchantId);
@@ -767,6 +600,9 @@ router.put('/profile', merchantAuth, async (req, res) => {
                     message: 'Those payment details are already registered to another merchant. Money sent to them would reach the wrong account.',
                 });
             }
+            if (isAccountMobileRefusal(e)) {
+                return res.status(400).json({ success: false, code: 'ACCOUNT_IS_A_MOBILE', message: ACCOUNT_IS_A_MOBILE_MESSAGE });
+            }
             if (e.code === '23514') {
                 return res.status(400).json({ success: false, message: 'Those payment details are not in a valid format.' });
             }
@@ -878,8 +714,9 @@ router.put('/preferences', merchantAuth, async (req, res) => {
  * Both columns are gone now, and nothing replaced them, because the two things
  * they were trying to express already have owners: an order's CEILING is what
  * the team's pool holds, enforced by the hold taken the moment an order is
- * assigned (§3.10), and the FLOOR is the platform's — `SystemConfig.minDeposit`
- * / `minWithdrawal`, 500 tokens, the same for everyone.
+ * assigned (§3.10), and the SIZE is the platform's — one of the fixed order
+ * sizes the admin has on offer (`SystemConfig.orderSizes`, Step 2d), the same
+ * for everyone.
  */
 // ─── ORDERS ──────────────────────────────────────────────────────────────────
 
@@ -966,10 +803,10 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
                 assignedAt:       order.assignedAt || now,
                 processingAt:     now,
                 expiresAt,
-                // The ORDER is passed so the snapshot carries a per-order
-                // payment link. Without it the link is null and the player's
-                // screen has nothing to render — the panel no longer builds one
-                // from the merchant's handle, because it is no longer given it.
+                // What the player is shown to pay is built from this snapshot
+                // (`playerOrderView`): the member's bank account on a bank
+                // buy, the order's chain address on USDT. A cash buy's QR is
+                // not in it; the member scans that onto the order.
                 merchantSnapshot: buildMerchantSnapshot(merchant, expiresAt, order),
                 ...(responseMinutes === null ? {} : { merchantResponseMinutes: responseMinutes }),
             },
@@ -1006,10 +843,15 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
         const payAmount   = formatOrderFiat(order);
 
         if (isDeposit) {
+            // The timeline is read by the player, so it names where to pay the
+            // way their screen does, never the member's UPI handle (usually
+            // their mobile number; owner, 2026-10-03).
             const payTo = isUsdtOrder
                 ? `merchant USDT address on ${USDT_CHAIN_SPEC[order.usdtChain]?.label ?? 'the order chain'}: `
                   + `${usdtAddressFor(merchant, order.usdtChain) || 'See payment details'}`
-                : `merchant UPI: ${merchant.bankDetails?.upiId || 'See payment details'}`;
+                : order.paymentMode === PAYMENT_MODES.CASH_ATM
+                    ? 'the cash machine QR the member scans'
+                    : 'the member\'s bank account shown on the order, by bank transfer';
             await sendSystemMessage(oid,
                 `✅ Order Accepted by Merchant\n` +
                 `📋 Order: ${order.orderId}\n` +
@@ -1031,8 +873,7 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
                 `📋 Order: ${order.orderId}\n` +
                 `💸 Merchant must send ${payAmount} to user's bank:\n` +
                 `   🏦 ${bank.bankName || ''} | AC: ${bank.accountNumber || 'N/A'} | IFSC: ${bank.ifscCode || 'N/A'}\n` +
-                `   Account Holder: ${bank.accountHolderName || 'N/A'}\n` +
-                `   UPI ID: ${order.upiId || 'N/A'}`,
+                `   Account Holder: ${bank.accountHolderName || 'N/A'}`,
                 io
             );
         }
@@ -1124,18 +965,20 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
         //         The reference for that transfer exists only on their receipt,
         //         so it is theirs to give and there is nobody else who could.
         //
-        // Not asked at a cash machine: a CASH_ATM payout is evidenced by the CDM
-        // slip, which has its own route and its own claim (§27), and no bank UTR
-        // exists for a note handed over a counter.
+        // Asked on EVERY rail. A sell is paid by bank transfer to the player's
+        // account whether a cash team or a UPI/bank team serves it (owner,
+        // 2026-10-03), so a cash-team payout has a bank UTR like any other. The
+        // CDM slip that used to stand in for it went with the cash-machine
+        // payout (Step 2d).
         //
         // CLAIMED, not merely stored. A merchant's payout reference is a real
         // bank transfer exactly as a player's is, so the same registry decides
         // whether it has been spent — otherwise one transfer could be presented
-        // as proof of two payouts, which is the defect §27 records for the CDM
-        // slip. `claimPaymentReference` throws rather than returning a flag, and
-        // it runs BEFORE the transition so a refusal leaves the order untouched.
+        // as proof of two payouts (§27). `claimPaymentReference` throws rather
+        // than returning a flag, and it runs BEFORE the transition so a refusal
+        // leaves the order untouched.
         let payoutReference = null;
-        if (!isDeposit && order.paymentMode !== PAYMENT_MODES.CASH_ATM) {
+        if (!isDeposit) {
             const submitted = String(req.body?.utrNumber ?? '').trim();
             if (!submitted) {
                 return res.status(400).json({
@@ -1644,6 +1487,88 @@ router.post('/orders/:id/red-flag', merchantAuth, async (req, res) => {
     }
 });
 
+// ─── CASH LINK (Step 2d) ─────────────────────────────────────────────────────
+//
+// A cash buy is paid through the ATM. The member picks the order amount on a
+// machine that offers UPI cash withdrawal and scans the QR it shows; the link
+// decoded from it is what the player pays, and the machine hands the member the
+// cash. The member's panel decodes the QR from the camera (or a photo of it);
+// typing a link is not offered, and the server holds whatever arrives to the
+// shape of a real one (`checkCashLink`) before a player is shown it.
+//
+// A second scan REPLACES the first until the player says they paid: the member
+// may have picked the wrong amount, or the machine timed out and showed a new
+// QR. After that the link is what was paid, and `setCashLink` moves nothing.
+
+router.post('/orders/:id/cash-link', merchantAuth, async (req, res) => {
+    try {
+        const order = await db.orders.getMerchantOrder(req.params.id, req.merchantId);
+        if (!order) return res.status(404).json({ success: false, message: 'Order not found.' });
+        if (order.type !== 'DEPOSIT' || order.paymentMode !== PAYMENT_MODES.CASH_ATM) {
+            return res.status(400).json({ success: false, code: 'NOT_A_CASH_BUY', message: 'Only a cash buy is paid through a cash machine\'s QR.' });
+        }
+        if (order.status === 'ASSIGNED') {
+            // The player is shown the QR only once the member has accepted
+            // (`playerOrderView`), so the scan waits for the accept too.
+            return res.status(409).json({
+                success: false,
+                code: 'ACCEPT_FIRST',
+                message: 'Accept the order first, then scan the machine\'s QR.',
+            });
+        }
+        if (order.status !== 'PROCESSING') {
+            return res.status(409).json({
+                success: false,
+                code: 'CASH_LINK_CLOSED',
+                message: order.status === 'PAID'
+                    ? 'The player has already said they paid this QR, so it can no longer be changed.'
+                    : `This order is ${order.status}, so there is nothing to scan for.`,
+            });
+        }
+
+        // Throws 400 INVALID_CASH_LINK naming what is wrong with the scan.
+        const link = checkCashLink(req.body?.link, order.fiatAmount);
+
+        const updated = await db.orders.setCashLink(order.orderId, req.merchantId, link);
+        if (!updated) {
+            // Every condition was in the UPDATE's WHERE; read the row to say
+            // which one moved between the check above and the write.
+            const now = await db.orders.getOrderRecord(order.orderId);
+            const moved = !now || String(now.merchantId) !== String(req.merchantId);
+            return res.status(409).json({
+                success: false,
+                code: moved ? 'merchant_changed' : 'CASH_LINK_CLOSED',
+                message: moved ? NO_LONGER_YOURS : `This order is ${now.status} now, so the QR was not changed.`,
+            });
+        }
+
+        await postSystemMessage(
+            updated.orderId,
+            `🏧 The member scanned the cash machine's QR for ${formatOrderFiat(updated)}. The player can pay it now.`,
+            { senderId: req.userId },
+        );
+
+        // The player's screen turns "waiting for the member" into the Pay
+        // button. `payTo` only, the one shape a player receives.
+        emitOrderUpdate(String(updated.userId), 'order_update', {
+            orderId:   updated.orderId,
+            _id:       updated.orderId,
+            status:    updated.status,
+            payTo:     toPlayerOrderView(updated).payTo ?? null,
+            expiresAt: updated.expiresAt,
+            server_ts: Date.now(),
+        });
+        emitMerchantUpdate(String(req.merchantId), 'order_update', {
+            orderId: updated.orderId, cashLinkAt: updated.cashLinkAt, server_ts: Date.now(),
+        });
+        emitAdminUpdate('queue_order_update', { orderId: updated.orderId, status: updated.status, server_ts: Date.now() });
+
+        res.json({ success: true, order: toMerchantOrderView(updated) });
+    } catch (err) {
+        return respondError(res, err, 'POST /merchant/orders/:id/cash-link', { message: 'Failed to attach the cash machine QR.' });
+    }
+});
+
 // Merchant BULK PAYOUTS was here — three routes, removed 2026-09-10 at the
 // owner's decision. It is not a feature that was working and got dropped:
 //
@@ -1654,10 +1579,7 @@ router.post('/orders/:id/red-flag', merchantAuth, async (req, res) => {
 //   and it takes explicit order ids rather than reading the batch.
 //
 // The columns, the repository readers, the CSV builder, the feature flag and
-// the `bulk_payout_completed` event go with it. `withdrawal_batch_ref` STAYS —
-// that is the withdrawal SPLITTER's label (a payout too large for one
-// denomination becomes several orders) and two admin screens read it. The two
-// are unrelated despite both being called a batch.
+// the `bulk_payout_completed` event go with it.
 //
 // A merchant closes payouts one at a time through `/confirm/:id`, which is the
 // path that takes the withdrawal hold, writes the transition and moves the

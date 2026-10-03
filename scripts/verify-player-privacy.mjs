@@ -15,14 +15,14 @@
  *
  * — on order creation, on the order fetch, on the dispute response, on the
  * assignment socket push, and every few seconds on the status poll. The
- * player's screen rendered the handle in a copy-to-clipboard row. None of the
- * bank fields is needed to pay a UPI handle; they were pure disclosure.
+ * player's screen rendered the handle in a copy-to-clipboard row.
  *
- * The rule is as short as the other one: **a player sees where to pay and
- * nothing about who they are paying.** A payment link, an opaque reference, a
- * deadline.
+ * The rule (owner, 2026-10-03): **a player sees where to pay, an opaque
+ * reference and a deadline.** Where to pay is the ATM QR on a cash buy, the
+ * member's bank account on a bank-transfer buy, the order chain's address on
+ * a USDT buy. Never a mobile number, and never a UPI handle.
  *
- * Five things are checked, all mechanical:
+ * Six things are checked, all mechanical:
  *   1. The allowlist and the forbidden list do not overlap.
  *   2. Every player-facing responder that sends an order projects it.
  *   3. No payload pushed on the PLAYER's channel names a forbidden field —
@@ -31,7 +31,8 @@
  *      a service and an SSE stream.
  *   4. The player panel's own type declares no forbidden field. A field the
  *      panel names is a field somebody will render.
- *   5. The payment link has ONE owner, and the client is not it.
+ *   5. Nobody builds a payment link: the cash machine's is only checked.
+ *   6. The member's bank account a player pays carries no contact detail.
  */
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -48,7 +49,7 @@ const rel = (p) => relative(ROOT, p);
 const read = (p) => blankComments(readFileSync(p, 'utf8'));
 
 const VIEW_MODULE  = join(ROOT, 'backend/domains/payment/playerOrderView.js');
-const LINK_MODULE  = join(ROOT, 'backend/domains/payment/paymentLink.js');
+const LINK_MODULE  = join(ROOT, 'backend/domains/payment/cashLink.js');
 const SERVICE      = join(ROOT, 'backend/domains/payment/paymentProcessing.service.js');
 const PLAYER_ROUTES = [join(ROOT, 'backend/domains/payment/payment.routes.js')];
 const PANEL_TYPES  = join(ROOT, 'user-panel/src/types.ts');
@@ -273,14 +274,15 @@ for (const file of jsFiles(join(ROOT, 'backend'))) {
   }
 }
 
-// ── 5. The payment link has one owner, and the client is not it ──────────────
+// ── 5. Nobody builds a payment link; the cash machine's is only checked ─────
 //
-// The panel used to assemble the intent itself from `merchantSnapshot.upiId`
-// and the merchant's name, which is why it had to be given both. Building it on
-// the server is what makes the rule structural rather than a thing the screen
-// politely omits: there is nothing left in the payload to build one FROM.
+// The panel once assembled a UPI intent from the merchant's handle, which is
+// why it had to be given the handle. Nothing builds one now: a cash buy is
+// paid through the ATM QR the member scans (Step 2d), and `cashLink.js` is the
+// one backend file that names the scheme, to check a scanned link's shape. A
+// UPI/bank buy is paid by bank transfer (owner, 2026-10-03).
 {
-  const INTENT = /upi:\/\/pay\?/;
+  const INTENT = /upi:\/\/pay\?/i;
   const panelSrc = join(ROOT, 'user-panel/src');
   for (const file of jsFiles(panelSrc).concat(
     readdirSync(panelSrc, { recursive: true })
@@ -288,13 +290,28 @@ for (const file of jsFiles(join(ROOT, 'backend'))) {
       .map((f) => join(panelSrc, f)),
   )) {
     if (INTENT.test(read(file))) {
-      fail(rel(file), 'builds a upi://pay intent — the link is built by backend/domains/payment/paymentLink.js');
+      fail(rel(file), 'builds a upi://pay intent — a player pays the link the server sends, never one the panel makes');
     }
   }
   for (const file of jsFiles(join(ROOT, 'backend'))) {
     if (file === LINK_MODULE) continue;
     if (INTENT.test(read(file))) {
-      fail(rel(file), `builds a upi://pay intent — ${rel(LINK_MODULE)} is the one owner`);
+      fail(rel(file), `names a upi://pay intent — ${rel(LINK_MODULE)} is the one file that checks one`);
+    }
+  }
+}
+
+// ── 6. The member's bank account carries the account and nothing else ───────
+//
+// On a bank-transfer buy the player is sent where to pay (owner, 2026-10-03).
+// Never a phone number, and never a UPI handle, which is usually one.
+{
+  const bankFields = frozenList(viewSrc, 'PLAYER_PAY_TO_BANK_FIELDS');
+  if (!bankFields || !bankFields.length) {
+    fail(rel(VIEW_MODULE), 'could not read PLAYER_PAY_TO_BANK_FIELDS');
+  } else {
+    for (const f of bankFields) {
+      if (/mobile|phone|upi|email/i.test(f)) fail(rel(VIEW_MODULE), `PLAYER_PAY_TO_BANK_FIELDS sends '${f}', a contact detail`);
     }
   }
 }

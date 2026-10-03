@@ -57,6 +57,10 @@ import { approveMerchant } from '#db/repositories/merchants.js';
 import { teamFixture } from '../teamFixture.js';
 import { mountRouter, actor, merchantActor, as } from './_harness.js';
 
+// Every sell is paid by bank transfer, so the member gives its UTR (2d).
+let payoutSeq = 0;
+const payoutUtr = () => `UTRWR${String(Date.now()).slice(-7)}${String(++payoutSeq).padStart(4, '0')}`;
+
 const describePg = pgConfigured() ? describe : describe.skip;
 const RUPEES = 1_000;     // a cash denomination: the CASH rail
 const A = RUPEES * 100;   // in paise
@@ -140,8 +144,9 @@ describePg('ending a withdrawal, in every state its money can be in', () => {
     const accepted = await as(merchantApp, merchant).post(`/accept/${orderId}`).send({});
     expect(accepted.status, JSON.stringify(accepted.body)).toBe(200);
     if (held) {
-      // No reference: a cash payout is evidenced by its CDM slip, not a UTR.
-      const confirmed = await as(merchantApp, merchant).post(`/confirm/${orderId}`).send({});
+      // Every sell is a bank transfer, so the member gives its UTR (2d).
+      const confirmed = await as(merchantApp, merchant).post(`/confirm/${orderId}`)
+        .send({ utrNumber: `UTRRES${String(Date.now()).slice(-6)}${String(seq).padStart(4, '0')}` });
       expect(confirmed.status, JSON.stringify(confirmed.body)).toBe(200);
       const row = await getOrderRecord(orderId);
       expect(row.status).toBe('PAID');
@@ -397,7 +402,7 @@ describePg('ending a withdrawal, in every state its money can be in', () => {
     it('holds the stake and the team\'s credit for the window, and tells the player until when', async () => {
       const s = await sell({ state: 'PROCESSING' });
       const before = await snapshot(s);
-      const res = await as(merchantApp, s.merchant).post(`/confirm/${s.orderId}`).send({});
+      const res = await as(merchantApp, s.merchant).post(`/confirm/${s.orderId}`).send({ utrNumber: payoutUtr() });
       expect(res.status, JSON.stringify(res.body)).toBe(200);
       const row = await getOrderRecord(s.orderId);
       expect(row.status).toBe('PAID');

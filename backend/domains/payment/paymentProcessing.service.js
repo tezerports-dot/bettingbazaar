@@ -37,7 +37,7 @@ import crypto from 'crypto';
 import { db } from '#db';
 // One owner for what a token is worth: the INR peg, and the two USDT legs.
 import {
-  INR_TOKEN_RATE, tokensPerUsdt, usdtForTokens,
+  INR_TOKEN_RATE, tokensForUsdt,
 } from '../configuration/tokenRates.js';
 import { debitWinningsForWithdrawal, refundWithdrawal } from '../wallet/walletAuthority.service.js';
 import {
@@ -47,8 +47,8 @@ import {
 // Risk Platform (Phase 010): the single validation authority for funding orders.
 import { assessFundingOrder, getRiskRules, computePayoutFeeMinor } from '../risk/riskValidation.service.js';
 // What a valid payment reference looks like on this order, what to call it, and
-// the ONE place any of them is claimed. A UTR, a chain transaction hash and a
-// CDM slip's bank id are the same fact — this payment happened, once.
+// the ONE place any of them is claimed. A UTR and a chain transaction hash are
+// the same fact — this payment happened, once.
 import { referenceSpecFor, claimPaymentReference } from './paymentReference.js';
 // The order state machine. Every status change goes through here so an illegal
 // move is refused by the database rather than by whichever check ran first.
@@ -62,15 +62,7 @@ import { getSystemConfig } from '#db/repositories/config.js';
 import {
   PAYMENT_MODES, paymentModeFor, railOf, routingSettings,
 } from '#db/repositories/teamRouting.js';
-// The denomination ladder. One owner — the same module the risk gate validates
-// buys against and `systemConfigPayload` builds the picker from, so the amounts
-// a screen offers and the amounts the gate accepts cannot disagree.
-import {
-  USDT_BUY_DENOMINATIONS_PAISE, BUY_DENOMINATIONS_PAISE, MAX_CASH_BUY_PAISE, isBuyDenomination,
-} from '../merchant/denominations.js';
 import { rupeesToPaise, paiseToRupees } from '../../shared/money.js';
-// The per-order payment link has one owner, and it is not the client.
-import { upiPaymentLink } from './paymentLink.js';
 // The only shape of an order a player receives.
 import { toPlayerOrderView } from './playerOrderView.js';
 // The mirror of it, pointing the other way: the one shape a MERCHANT receives.
@@ -133,18 +125,11 @@ function buildMerchantSnapshot(merchant, expiresAt, order = null) {
   const merchantRef = merchantDisplayRef(merchant);
   return {
     // ── For the player, through `toPlayerOrderView` ─────────────────────
+    // An opaque label, and on an INR bank-transfer buy the member's bank
+    // account below (`bankName`…`accountHolder`, owner 2026-10-03). A CASH buy
+    // is paid through the ATM the member scans (`cash_link`, Step 2d), never
+    // to the member; the USDT rail through the address for the order's chain.
     merchantRef,
-    // Null on the USDT rail and when the merchant has no handle on file, which
-    // a screen must render as "waiting for details" rather than as a button
-    // that does nothing.
-    paymentLink: order
-      ? upiPaymentLink({
-          payeeUpiId: upiId,
-          payeeName: merchantRef,
-          amountRupees: order.fiatAmount ?? order.amount,
-          orderId: order.orderId,
-        })
-      : null,
 
     // ── For the player, on the USDT rail ───────────────────────────────
     // Where to send, and on WHICH network. Both, always together: an address
@@ -336,37 +321,16 @@ export async function createDepositOrder(userId, tokenAmount, attempt = {}) {
     );
   }
 
-  // Risk Platform gate (Phase 010): positive/numeric/multiples-of-10,
-  // min/max, velocity — the single validation authority.
-  // The rail this order is ABOUT to be created on. `createOrderRecord` stamps
-  // the same active policy a moment later, so the amount is judged against the
-  // rail the order will actually run on. Omitting it here would leave the
-  // denomination rule silently never firing — the failure mode this whole
-  // guard exists to prevent, one layer up.
-  // ── The min and max, from the rail this buy is actually on ─────────────
-  // `minDeposit`/`maxDeposit` are the INR rail's, and the INR rail's maximum is
-  // ₹50,000 by default — BELOW the larger USDT denomination. Judging a USDT buy
-  // against them refused every ₹100,000 purchase with "Maximum purchase is
-  // 50000 BB tokens", a sentence about a limit that does not govern that rail.
-  //
-  // On USDT the DENOMINATIONS are the limit: there are exactly two amounts and
-  // `assertBuyIsLegal` refuses everything else, so the bounds are derived from
-  // that list rather than being a second, looser statement of it.
-  const usdtBounds = {
-    min: Math.min(...USDT_BUY_DENOMINATIONS_PAISE) / 100,
-    max: Math.max(...USDT_BUY_DENOMINATIONS_PAISE) / 100,
-  };
-  const minDeposit = currency === MERCHANT_CURRENCY.USDT ? usdtBounds.min : (cfg?.minDeposit || 500); // schema default: 500
-  const maxDeposit = currency === MERCHANT_CURRENCY.USDT ? usdtBounds.max : (cfg?.maxDeposit || 50000);
+  // ── The USDT a USDT buy is priced in ────────────────────────────────────
+  // A USDT buy is chosen in what the player SENDS — whole steps of 100 USDT
+  // (Step 2d) — and the tokens follow from the admin's rate. `tokenAmount` is
+  // ignored on this rail: a client cannot name its own token count.
+  const usdtAmount = currency === MERCHANT_CURRENCY.USDT ? attempt.usdtAmount : null;
 
-  await assessFundingOrder({
-    userId, tokenAmount, type: 'DEPOSIT', min: minDeposit, max: maxDeposit,
-    // The CURRENCY decides which rules apply: the USDT rail has two fixed
-    // amounts and no cash denominations, the INR rail has its ceiling. Omitting
-    // it here would judge a USDT buy against the INR rules and refuse every one
-    // for being over the ceiling.
-    currency,
-  });
+  // Risk Platform gate (Phase 010): the size on offer (INR) or the USDT step
+  // and bounds, one open buy per currency, velocity — the single validation
+  // authority. It reads the same config row the picker is built from.
+  await assessFundingOrder({ userId, tokenAmount, type: 'DEPOSIT', currency, usdtAmount });
 
   const user = await db.users.getUser(userId);
   if (!user) throw Object.assign(new Error('User not found'), { status: 404 });
@@ -400,19 +364,19 @@ export async function createDepositOrder(userId, tokenAmount, attempt = {}) {
   let fiatAmount = tokenAmount * INR_TOKEN_RATE;
   let rateUsed = INR_TOKEN_RATE;
   if (currency === MERCHANT_CURRENCY.USDT) {
-    const quoted = usdtForTokens(tokenAmount, cfg);
-    const rate = tokensPerUsdt(cfg);
-    // NO FALLBACK. The schema default is 0 and 0 is not a rate: dividing by it
-    // gives Infinity USDT, and substituting 1 would sell 50,000 tokens for
-    // 50,000 USDT. A caller that cannot price a purchase must refuse it.
-    if (quoted === null || rate === null) {
+    const quoted = tokensForUsdt(usdtAmount, cfg);
+    // NO FALLBACK. The schema default is 0 and 0 is not a rate: substituting 1
+    // would sell 100 USDT's worth of tokens for 100 tokens, and a band breach
+    // is a misplaced decimal. A caller that cannot price a purchase refuses it.
+    if (quoted === null) {
       throw Object.assign(
         new Error('USDT pricing has not been set. Contact support.'),
         { status: 503, code: 'USDT_RATE_UNSET' },
       );
     }
-    fiatAmount = quoted;
-    rateUsed = rate;
+    tokenAmount = quoted.tokens;
+    fiatAmount = usdtAmount;
+    rateUsed = quoted.rate;
   }
 
   // ── The split, computed HERE ────────────────────────────────────────────
@@ -485,20 +449,20 @@ export async function createDepositOrder(userId, tokenAmount, attempt = {}) {
 // createWithdrawalOrder
 // ═════════════════════════════════════════════════════════════════════════════
 /**
- * @param attempt `{ priority, retryOf }` — see `createDepositOrder`. On a split
- *   the label goes on the FIRST part only, because a partial unique index
- *   allows one retry per expired order and every part is a separate withdrawal.
- *   The priority goes on all of them: they are all second attempts.
+ * A sell is ONE order of one size on offer (Step 2d, owner 2026-10-02): no
+ * splitting. Whatever its rail, the member pays it by bank transfer to the
+ * player's account (owner, 2026-10-03), so the payout need not be a note a
+ * machine dispenses; it is the size less any payout fee.
+ *
+ * @param attempt `{ priority, retryOf }` — see `createDepositOrder`.
  */
 export async function createWithdrawalOrder(userId, tokenAmount, attempt = {}) {
   // The same cool-off. A player locked out of buying who could still sell has
   // simply found the way around it.
   await assertNotInCoolOff(userId);
-  const cfg         = await getSystemConfig();
-  const minWithdraw = cfg?.minWithdrawal || 500;
-  const maxWithdraw = cfg?.maxWithdrawal || 50000;
 
-  await assessFundingOrder({ userId, tokenAmount, type: 'WITHDRAWAL', min: minWithdraw, max: maxWithdraw });
+  // The size on offer, and velocity — the single validation authority.
+  await assessFundingOrder({ userId, tokenAmount, type: 'WITHDRAWAL' });
 
   const user = await db.users.getUser(userId);
   if (!user) throw Object.assign(new Error('User not found'), { status: 404 });
@@ -520,207 +484,97 @@ export async function createWithdrawalOrder(userId, tokenAmount, attempt = {}) {
   const payoutFee      = payoutFeeMinor / 100;
   const fiatAmount     = tokenAmount - payoutFee;
 
-  // ── The cash rail pays fixed amounts, checked BEFORE any money moves ────
-  //
-  // A withdrawal up to the cash ceiling runs on the CASH rail (`paymentModeFor`,
-  // the same rule the order writer stamps with), and a member pays it at a
-  // machine, which pays out a denomination, not an amount. There is no
-  // splitting (owner, 2026-10-02): one withdrawal is one payout, so an amount a
-  // machine cannot make is refused by name rather than written and stranded.
-  // Discovering that AFTER the debit would mean unwinding a committed lock.
-  const fiatPaise = rupeesToPaise(fiatAmount);
-  const tokenPaiseTotal = rupeesToPaise(tokenAmount);
-  if (paymentModeFor({ currency: 'INR', tokenAmountPaise: tokenPaiseTotal }) === PAYMENT_MODES.CASH_ATM
-      && !isBuyDenomination(fiatPaise)) {
-    const tiers = BUY_DENOMINATIONS_PAISE.map((p) => `₹${paiseToRupees(p).toLocaleString('en-IN')}`);
-    throw Object.assign(
-      new Error(
-        `A withdrawal up to ₹${paiseToRupees(MAX_CASH_BUY_PAISE).toLocaleString('en-IN')} is paid in cash at an ATM, `
-        + `so the payout must be one of ${tiers.join(', ')}. ₹${fiatAmount.toLocaleString('en-IN')} is not.`,
-      ),
-      { status: 400, code: 'NOT_A_CASH_AMOUNT' },
-    );
-  }
-
-  // One part. The loop below is the shape the split left behind; 2d removes it.
-  const parts = [{ tokenPaise: tokenPaiseTotal, fiatPaise }];
-  const batchRef = null;
-
-  // ── ADMISSION, once per part ────────────────────────────────────────────
-  // The escrow debit IS the gate, and it is the whole gate: winnings → locked
+  // ── ADMISSION ───────────────────────────────────────────────────────────
+  // The stake debit IS the gate, and it is the whole gate: winnings → locked
   // under `SELECT … FOR UPDATE` on the wallet row, in one transaction with its
   // ledger entry, refusing what the row cannot fund. Idempotent on `wd_<id>`.
   //
   // ── The lock and its order are ONE commit ───────────────────────────────
-  // They used to be two: the debit, then `createOrderRecord`, on the stated
-  // assumption that only the debit could fail. The INSERT can fail too — the
-  // partial UNIQUE on `retry_of_order_id` refuses a second retry of the same
-  // expired withdrawal there — and when it did, the winnings stayed locked
-  // against an order that was never written. No expiry, cancel or refund could
-  // ever find them, because every one of those starts from the order, and the
-  // player was told "you have already retried this order". Measured: a second
-  // retry and a concurrent double-tap each stranded the full amount.
-  //
-  // So the order is PREPARED first — every field validated, the rail stamped,
-  // the tag computed, all before any money moves — and its INSERT runs inside
-  // the debit's own transaction, under the wallet row lock. A refused INSERT
-  // unwinds the lock with it; a refused debit writes no order. Neither fact can
-  // exist without the other, and nothing needs compensating.
-  //
-  // The three checks that used to precede it are gone. See the module header:
-  // they raced each other AND double-counted the escrow, so they admitted
-  // overdrafts under concurrency and refused legitimate withdrawals otherwise.
-  //
-  // ── Part by part, and a refusal partway is not a broken state ───────────
-  // Each part debits its OWN amount against its OWN order id. There is no
-  // pooled lock to reconcile and no compensating refund to get wrong: if the
-  // wallet refuses part three, parts one and two are complete withdrawals the
-  // player actually has, and the money for part three never left winnings.
-  //
-  // That is the whole reliability argument for flat siblings, and it is why
-  // this does not pre-check the total. A pre-check is exactly what the module
-  // header says was removed for racing the debit and double-counting escrow;
-  // the debit under the row lock is the only honest gate, and running it N
-  // times just means the gate is consulted N times.
-  const created = [];
-  let debitResult = null;
-  let refusal = null;
+  // They used to be two: the debit, then `createOrderRecord`. The INSERT can
+  // fail too — the partial UNIQUE on `retry_of_order_id` refuses a second retry
+  // of the same expired withdrawal — and when it did, the winnings stayed
+  // locked against an order that was never written. So the order is PREPARED
+  // first — every field validated, the rail stamped, the tag computed — and its
+  // INSERT runs inside the debit's own transaction, under the wallet row lock.
+  // A refused INSERT unwinds the lock with it; a refused debit writes no order.
+  const orderId = `WD_${crypto.randomBytes(12).toString('hex')}`;
+  const insertOrder = await db.orders.prepareOrderRecord({
+    orderId,
+    userId:            user.userId,
+    type:              'WITHDRAWAL',
+    tokenAmountRupees: tokenAmount,
+    fiatAmountRupees:  fiatAmount,
+    // The gap between the tokens debited and the money paid out.
+    payoutFee,
+    rateUsed:          INR_TOKEN_RATE,
+    escrowLocked:      true,
+    escrowStatus:      'LOCKED',
+    escrowAmount:      tokenAmount,
+    assignmentPriority: attempt.priority ?? 0,
+    retryOfOrderId:     attempt.retryOf ?? null,
+    // A merchant verifies a payout against these. `userKycSnapshot` was removed
+    // 2026-08-25: it was stripped from every response before it reached anyone,
+    // and its `aadhaar` field was never a real path on the model.
+    userBankDetails: {
+      accountNumber:     user.bankDetails?.accountNumber || '',
+      ifscCode:          user.bankDetails?.ifscCode      || '',
+      bankName:          user.bankDetails?.bankName      || '',
+      accountHolderName: user.bankDetails?.accountHolderName || user.username || '',
+      upiId:             user.bankDetails?.upiId || '',
+    },
+    userPhone: user.mobile,
+  });
 
-  for (const [index, part] of parts.entries()) {
-    const partOrderId = `WD_${crypto.randomBytes(12).toString('hex')}`;
-    const partTokens = paiseToRupees(part.tokenPaise);
-    const partFiat   = paiseToRupees(part.fiatPaise);
-
-    // The order this part locks money FOR — prepared, not yet written. It is
-    // written by the debit below, in the same transaction.
-    const insertPart = await db.orders.prepareOrderRecord({
-      orderId:           partOrderId,
-      userId:            user.userId,
-      type:              'WITHDRAWAL',
-      tokenAmountRupees: partTokens,
-      fiatAmountRupees:  partFiat,
-      // The fee this part carries — its own share, not the whole. It is the
-      // gap between the tokens debited and the cash paid out, part by part.
-      payoutFee:         partTokens - partFiat,
-      rateUsed:          INR_TOKEN_RATE,
-      escrowLocked:      true,
-      escrowStatus:      'LOCKED',
-      escrowAmount:      partTokens,
-      withdrawalBatchRef: batchRef,
-      // Every part of a retried withdrawal is a second attempt, so all of them
-      // carry the rank. The retry LABEL goes on the first part only: the
-      // partial unique index allows one retry per expired order, and each part
-      // is a separate withdrawal that would otherwise collide on it.
-      assignmentPriority: attempt.priority ?? 0,
-      retryOfOrderId:     index === 0 ? (attempt.retryOf ?? null) : null,
-      // A merchant verifies a payout against these. `userKycSnapshot` was removed
-      // 2026-08-25: it was stripped from every response before it reached anyone,
-      // and its `aadhaar` field was never a real path on the model.
-      userBankDetails: {
-        accountNumber:     user.bankDetails?.accountNumber || '',
-        ifscCode:          user.bankDetails?.ifscCode      || '',
-        bankName:          user.bankDetails?.bankName      || '',
-        accountHolderName: user.bankDetails?.accountHolderName || user.username || '',
-        upiId:             user.bankDetails?.upiId || '',
-      },
-      userPhone: user.mobile,
-    });
-
-    let debited;
-    try {
-      debited = await debitWinningsForWithdrawal(String(user.userId), partTokens, partOrderId, { within: insertPart });
-    } catch (err) {
-      if (err.code === 'INSUFFICIENT_WITHDRAWABLE') {
-        // Nothing was taken for this part. If earlier parts succeeded they are
-        // real withdrawals and stay — reversing them would be a compensating
-        // action that can itself fail, over money the player is entitled to.
-        if (created.length) { refusal = err; break; }
-
-        // The figures come off the refusal, from the rows the debit locked —
-        // never from a record read separately, which is how a player was once
-        // told an available balance no wallet ever held.
-        const pending = await db.orders.pendingWithdrawalTotal(user.userId);
-        throw Object.assign(
-          new Error(
-            `Insufficient winnings balance. Available: ${err.availableWinnings} tokens`
-            + (pending > 0 ? ` (${pending} already committed to withdrawals in progress).` : '.'),
-          ),
-          {
-            status: 400,
-            balance: { winnings: err.availableWinnings, pending },
-          },
-        );
-      }
-      throw err;
+  let debited;
+  try {
+    debited = await debitWinningsForWithdrawal(String(user.userId), tokenAmount, orderId, { within: insertOrder });
+  } catch (err) {
+    if (err.code === 'INSUFFICIENT_WITHDRAWABLE') {
+      // The figures come off the refusal, from the rows the debit locked —
+      // never from a record read separately, which is how a player was once
+      // told an available balance no wallet ever held.
+      const pending = await db.orders.pendingWithdrawalTotal(user.userId);
+      throw Object.assign(
+        new Error(
+          `Insufficient winnings balance. Available: ${err.availableWinnings} tokens`
+          + (pending > 0 ? ` (${pending} already committed to withdrawals in progress).` : '.'),
+        ),
+        {
+          status: 400,
+          balance: { winnings: err.availableWinnings, pending },
+        },
+      );
     }
-    // The LAST successful debit's balances are what the response reports, so
-    // the figure the player is shown is the one the wallet holds after
-    // everything this request did.
-    debitResult = debited;
+    throw err;
+  }
 
-    // Written in the debit's own transaction. A replayed debit (same key)
-    // wrote nothing this time, and its order is the one written the first time.
-    const partOrder = debited.record ?? await db.orders.getOrderRecord(partOrderId);
+  // Written in the debit's own transaction. A replayed debit (same key) wrote
+  // nothing this time, and its order is the one written the first time.
+  const order = debited.record ?? await db.orders.getOrderRecord(orderId);
 
-    emitAdminUpdate('new_order', adminOrderPayload(partOrder, user));
+  emitAdminUpdate('new_order', adminOrderPayload(order, user));
 
-    // Offered to the teams now; if nobody is free it waits PENDING_QUEUE for
-    // the assignment sweep, its stake locked, until it is served or expires.
-    if (await tryAssignMerchant(partOrder)) {
-      emitAdminUpdate('queue_order_update', { orderId: partOrder.orderId, status: 'ASSIGNED', server_ts: Date.now() });
-    }
-
-    created.push({ ...partOrder, partIndex: index + 1 });
+  // Offered to the teams now; if nobody is free it waits PENDING_QUEUE for the
+  // assignment sweep, its stake locked, until it is served or expires.
+  if (await tryAssignMerchant(order)) {
+    emitAdminUpdate('queue_order_update', { orderId: order.orderId, status: 'ASSIGNED', server_ts: Date.now() });
   }
 
   await emitWalletUpdate(user.userId);
 
-  // The first part is what the caller has always been handed back. On an
-  // ordinary withdrawal it is the only one.
-  const order = created[0];
-  const paidOut = created.reduce((sum, o) => sum + Number(o.fiatAmount || 0), 0);
-
   return {
     // Through the projection, for the reason the deposit above is: one owner of
     // the player's shape. It carries `userBankDetails` (their own account, which
-    // the sell screen renders masked) and `withdrawalBatchRef` (the label that
-    // groups the siblings of this request — a screen says "part 1 of 4" from it;
-    // nothing decides anything by it).
+    // the sell screen renders masked).
     order: toPlayerOrderView(order),
-    // Every withdrawal this request actually created, as PARTS — deliberately
-    // not `orders`, and deliberately not order-shaped. Four fields a progress
-    // list needs, so nothing here has to be projected or kept in step with the
-    // player's view. One entry on an ordinary withdrawal: the shape does not
-    // change, so a caller never has to ask whether this was a split.
-    parts: created.map((o) => ({
-      orderId:   o.orderId,
-      partIndex: o.partIndex,
-      amount:    o.fiatAmount,
-      status:    o.status,
-    })),
     // From the movement that actually happened, not from a record read before
-    // it. `debitResult.balances` is what the wallet holds now.
+    // it. `debited.balances` is what the wallet holds now.
     remainingBalance: {
-      deposit:  debitResult.balances?.depositBalance ?? 0,
-      winnings: debitResult.balances?.winningsBalance ?? 0,
-      total:    (debitResult.balances?.depositBalance ?? 0) + (debitResult.balances?.winningsBalance ?? 0),
+      deposit:  debited.balances?.depositBalance ?? 0,
+      winnings: debited.balances?.winningsBalance ?? 0,
+      total:    (debited.balances?.depositBalance ?? 0) + (debited.balances?.winningsBalance ?? 0),
     },
-    note: created.length > 1
-      ? `An ATM pays fixed amounts, so this is ${created.length} separate withdrawals`
-        + ` totalling ₹${paidOut.toLocaleString('en-IN')}. Each is paid by its own merchant.`
-      : `You will receive ₹${paidOut.toLocaleString('en-IN')} from merchant`,
-    // Said plainly, and only when it happened. Some parts were created and the
-    // wallet refused the rest — those are real withdrawals the player has, and
-    // reversing them would be a compensating action over money they are owed.
-    ...(refusal ? {
-      partial: {
-        requested: fiatAmount,
-        created: paidOut,
-        message: `Only ₹${paidOut.toLocaleString('en-IN')} of ₹${fiatAmount.toLocaleString('en-IN')} could be`
-          + ' withdrawn — your balance changed while this was being set up.'
-          + ' The parts that were created are being paid; request the rest again.',
-      },
-    } : {}),
+    note: `You will receive ₹${Number(order.fiatAmount).toLocaleString('en-IN')} from merchant`,
   };
 }
 
@@ -802,6 +656,15 @@ export async function retryOrder(userId, orderId) {
   }
 
   const attempt = { priority: 1, retryOf: original.orderId };
+  // A USDT buy is retried AS a USDT buy, for the USDT it asked for, on the
+  // chain it named: it is priced in USDT (Step 2d), and its token count is not
+  // an INR size, so retrying it on the INR rail would be refused — or worse,
+  // be a different purchase. The new order is quoted at today's rate.
+  if (original.type === 'DEPOSIT' && String(original.currency).toUpperCase() === MERCHANT_CURRENCY.USDT) {
+    Object.assign(attempt, {
+      currency: MERCHANT_CURRENCY.USDT, usdtChain: original.usdtChain, usdtAmount: original.fiatAmount,
+    });
+  }
   const result = original.type === 'DEPOSIT'
     ? await createDepositOrder(userId, original.tokenAmount, attempt)
     : await createWithdrawalOrder(userId, original.tokenAmount, attempt);
@@ -867,16 +730,31 @@ export async function claimUtrGrace(userId, orderId) {
   return extended;
 }
 
+/** A buy moved to another member between the player's read and their tap. */
+const MOVED_TO_ANOTHER_MEMBER = 'This order has moved to another member, so what you were shown is not where to pay. Wait for the new payment details.';
+
 export async function markOrderPaid(userId, orderId, utrNumber) {
   const order = await db.orders.getOrderRecord(orderId);
   if (!order) throw Object.assign(new Error('Order not found'), { status: 404 });
 
   if (String(order.userId) !== String(userId))
     throw Object.assign(new Error('Access denied'), { status: 403 });
-  if (!['ASSIGNED', 'PROCESSING'].includes(order.status))
-    throw Object.assign(new Error(`Cannot mark paid — order is in ${order.status} status`), { status: 400 });
   if (order.type !== 'DEPOSIT')
     throw Object.assign(new Error('Only DEPOSIT orders can be marked paid by user'), { status: 400 });
+  // ── Nothing is paid before the member accepts ─────────────────────────
+  // ASSIGNED is the state a member may still decline and an admin may still
+  // move (`/reject`, the admin reassign), so the player is shown where to pay
+  // only from PROCESSING (`playerOrderView`), and "I've paid" is taken only
+  // there. Otherwise a member could take a transfer, decline, and leave the
+  // player's money with them and the order with somebody else.
+  if (order.status === 'ASSIGNED') {
+    throw Object.assign(
+      new Error('The member has not accepted this order yet. Wait for the payment details, pay them, then tap I\'ve paid.'),
+      { status: 409, code: 'NOT_ACCEPTED_YET' },
+    );
+  }
+  if (order.status !== 'PROCESSING')
+    throw Object.assign(new Error(`Cannot mark paid — order is in ${order.status} status`), { status: 400 });
 
   // ── The CASH rail reaches PAID on the TAP, with the reference to follow ──
   //
@@ -899,6 +777,27 @@ export async function markOrderPaid(userId, orderId, utrNumber) {
   // Any other rail still requires it up front. The ATM's clock is the whole
   // reason for the split, and there is no clock on a UPI transfer.
   const isCashRail = order.paymentMode === PAYMENT_MODES.CASH_ATM;
+
+  // ── A cash buy is paid through the machine's link, so there must BE one ──
+  // The member scans the ATM's QR and the player pays that (Step 2d). Before
+  // the scan there is nothing the player could have paid, so "I've paid" is a
+  // tap on a button the screen does not show, and accepting it would free the
+  // member to walk away from a machine nobody has paid.
+  //
+  // The link goes only when the order changes hands (the schema clears it with
+  // the member, `bb_cash_link_follows_member`), so the transition below names
+  // the member read here (`expectMerchant`, in its WHERE): a reassignment
+  // between this read and the move is refused rather than leaving a PAID cash
+  // buy with no link, or one paid to the previous member's machine.
+  if (isCashRail && !order.cashLink) {
+    throw Object.assign(
+      new Error('The member has not scanned the cash machine yet. Wait for the "Pay" button, pay it, then tap I\'ve paid.'),
+      { status: 409, code: 'CASH_LINK_PENDING' },
+    );
+  }
+  // The member whose account, address or machine the player was shown: the
+  // move names them in its WHERE, on every rail.
+  const sameMember = order.merchantId;
   const deferred = isCashRail && !String(utrNumber ?? '').trim();
 
   if (!deferred && !String(utrNumber ?? '').trim()) {
@@ -907,12 +806,15 @@ export async function markOrderPaid(userId, orderId, utrNumber) {
 
   if (deferred) {
     const paidNow = await markOrderPaidState(order.orderId, {
-      expectFrom: ['ASSIGNED', 'PROCESSING'],
+      expectFrom: ['PROCESSING'],
+      expectMerchant: sameMember,
       set: { paidAt: new Date() },
     });
     if (!paidNow.ok) {
       throw Object.assign(
-        new Error(`Cannot mark paid — order is in ${paidNow.status ?? 'unknown'} status`),
+        new Error(paidNow.reason === 'merchant_changed'
+          ? MOVED_TO_ANOTHER_MEMBER
+          : `Cannot mark paid — order is in ${paidNow.status ?? 'unknown'} status`),
         { status: 409, code: paidNow.reason },
       );
     }
@@ -966,7 +868,8 @@ export async function markOrderPaid(userId, orderId, utrNumber) {
   // refused here means the order moved under us between the status read and
   // now — a 409, not a 400: the request was understood and is no longer valid.
   const paid = await markOrderPaidState(order.orderId, {
-    expectFrom: ['ASSIGNED', 'PROCESSING'],
+    expectFrom: ['PROCESSING'],
+    expectMerchant: sameMember,
     set: {
       utrNumber:       normalizedUTR,
       paidAt:          new Date(),
@@ -974,7 +877,9 @@ export async function markOrderPaid(userId, orderId, utrNumber) {
   });
   if (!paid.ok) {
     throw Object.assign(
-      new Error(`Cannot mark paid — order is in ${paid.status ?? 'unknown'} status`),
+      new Error(paid.reason === 'merchant_changed'
+          ? MOVED_TO_ANOTHER_MEMBER
+          : `Cannot mark paid — order is in ${paid.status ?? 'unknown'} status`),
       { status: 409, code: paid.reason },
     );
   }
@@ -1139,12 +1044,6 @@ export async function cancelOrder(actorId, isAdmin, orderId) {
 
   if (String(order.userId) !== String(actorId) && !isAdmin)
     throw Object.assign(new Error('Access denied'), { status: 403 });
-
-  // A part of a split withdrawal needs nothing special here. It IS an ordinary
-  // withdrawal — its own escrow, its own state, its own refund — so cancelling
-  // one cancels one, and the parts already with a merchant are untouched. That
-  // is the whole reason the split is flat: this function had a branch for
-  // containers and a branch for legs, and now it has neither.
 
   // ORDER INVERTED, deliberately. This refunded the escrow FIRST and set the
   // status afterwards, guarded only by a stale status read. A user
@@ -1444,13 +1343,24 @@ export async function expireOrders() {
           //
           // Both counts are advanced by one function, so an expiry cannot be
           // recorded against one party and forgotten against the other.
+          //
+          // A buy the member never accepted, or a cash buy whose member never
+          // scanned the machine's QR, gave the player nothing to pay (Step
+          // 2d), so it is not the player's: only the member's count moves.
           const { recordPlayerPaymentFailure } =
             await import('./playerPaymentFailure.service.js');
+          const neverAccepted = order.status === 'ASSIGNED';
+          const noCashLink = order.paymentMode === PAYMENT_MODES.CASH_ATM && !order.cashLink;
           await recordPlayerPaymentFailure({
             orderId: order.orderId,
             userId: String(order.userId),
             merchantId: order.merchantId ?? null,
-            reason: 'The buy order expired before any payment was made.',
+            reason: neverAccepted
+              ? 'The member never accepted this buy.'
+              : noCashLink
+                ? 'The member never scanned the cash machine for this buy.'
+                : 'The buy order expired before any payment was made.',
+            playerCouldPay: !neverAccepted && !noCashLink,
           });
         } else {
           const { recordMerchantRefusal, REFUSAL } =

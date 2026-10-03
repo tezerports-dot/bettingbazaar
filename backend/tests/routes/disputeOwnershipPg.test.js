@@ -43,8 +43,12 @@ import {
   tryAssignMerchant, markOrderPaid, createWithdrawalOrder,
 } from '../../domains/payment/paymentProcessing.service.js';
 import { settleHold } from '../../domains/payment/withdrawalHold.service.js';
-import { teamFixture } from '../teamFixture.js';
+import { teamFixture, readyToPay } from '../teamFixture.js';
 import { mountRouter, actor, merchantActor, as } from './_harness.js';
+
+// Every sell is paid by bank transfer, so the member gives its UTR (2d).
+let payoutSeq = 0;
+const payoutUtr = () => `UTRDO${String(Date.now()).slice(-7)}${String(++payoutSeq).padStart(4, '0')}`;
 
 const describePg = pgConfigured() ? describe : describe.skip;
 
@@ -117,10 +121,11 @@ describePg('a dispute belongs to the player', () => {
 
     if (state !== 'PROCESSING') {
       if (type === 'DEPOSIT') {
+        await readyToPay(orderId);
         await markOrderPaid(who.userId, orderId, `UTRDSP${RUN}${Date.now()}${seq}`);
       } else {
         // The member says they paid the player: PAID, the team's credit HELD.
-        const confirmed = await as(merchantApp, merchant).post(`/confirm/${orderId}`);
+        const confirmed = await as(merchantApp, merchant).post(`/confirm/${orderId}`).send({ utrNumber: payoutUtr() });
         expect(confirmed.status, JSON.stringify(confirmed.body)).toBe(200);
       }
     }

@@ -37,7 +37,7 @@ import { getBalancesPaise } from '#db/repositories/wallets.core.js';
 import { getPool } from '#db/repositories/teamPools.js';
 import { setCashReady } from '#db/repositories/teamRouting.js';
 import { tryAssignMerchant, markOrderPaid } from '../../domains/payment/paymentProcessing.service.js';
-import { teamFixture } from '../teamFixture.js';
+import { teamFixture, readyToPay } from '../teamFixture.js';
 import { mountRouter, actor, merchantActor, as } from './_harness.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
@@ -101,7 +101,10 @@ describePg('disputes are raised and resolved, not half-written', () => {
     expect(await tryAssignMerchant(created), 'team routing did not take the buy').toBe(true);
     expect((await getOrderRecord(orderId)).merchantId).toBe(member.merchantId);
     expect((await transitionOrder(orderId, 'PROCESSING', { set: { processingAt: new Date() } })).ok).toBe(true);
-    if (state === 'PAID') await markOrderPaid(player.userId, orderId, `UTRDRP${Date.now()}${seq}`);
+    if (state === 'PAID') {
+      await readyToPay(orderId);
+      await markOrderPaid(player.userId, orderId, `UTRDRP${Date.now()}${seq}`);
+    }
     expect((await getOrderRecord(orderId)).status).toBe(state);
     return { orderId, team, merchant: member };
   };

@@ -34,12 +34,14 @@ describePg('team routing and pool holds (PostgreSQL)', () => {
   const orders = [];
   let seq = 0;
 
+  // With the bank account a UPI/bank buy is paid into (owner, 2026-10-03).
   const merchant = async () => {
     const merchantId = newMerchantId();
     seq += 1;
     await createMerchant({
       merchantId, name: `TR ${merchantId.slice(-6)}`, publicRef: generateMerchantPublicRef(),
       mobile: `5${String(Date.now()).slice(-6)}${String(seq).padStart(3, '0')}`, status: 'ACTIVE',
+      bankDetails: { accountHolderName: `TR Holder ${seq}`, bankName: 'Test Bank', accountNo: `5030${String(Date.now()).slice(-6)}${seq}`, ifsc: 'TEST0000001' },
     });
     await updateMerchant(merchantId, { merchantApprovalStatus: 'APPROVED' });
     made.push(merchantId);
@@ -134,6 +136,23 @@ describePg('team routing and pool holds (PostgreSQL)', () => {
     expect(await getPool(t.teamId)).toMatchObject({ availablePaise: T(50000), heldPaise: T(50000) });
     // A hold moves nothing between accounts: the tokens are still the team's.
     expect((await getTreasuryBalances())[ACCOUNTS.TEAM_FLOAT]).toBe(before[ACCOUNTS.TEAM_FLOAT]);
+  });
+
+  it('a bank-transfer buy is never routed to a member with no bank account on file', async () => {
+    // The player would be shown nowhere to pay, and take the expiry for it.
+    const t = await workingTeam('UPI_BANK', 100000);
+    await pgQuery(
+      `UPDATE merchants SET bank_account_no = NULL WHERE merchant_id = ANY($1)`, [t.members.slice(1)]);
+    const o = await order('DEPOSIT', 50000);
+    const cands = await routingCandidates(await getOrderRecord(o.orderId), { cap: 3, limit: 50 });
+    const inTeam = cands.filter((c) => c.teamId === t.teamId).map((c) => c.merchantId);
+    expect(inTeam).toEqual([t.members[0]]);
+    // The opposite case: a SELL is paid by the member, so their own account is
+    // not what it needs, and every member of the team is still a candidate.
+    const sell = await order('WITHDRAWAL', 50000);
+    const sellers = (await routingCandidates(await getOrderRecord(sell.orderId), { cap: 3, limit: 50 }))
+      .filter((c) => c.teamId === t.teamId);
+    expect(sellers.length).toBe(t.members.length);
   });
 
   it('a team below ten that has never been full takes nothing', async () => {

@@ -34,7 +34,7 @@ import {
   tryAssignMerchant, markOrderPaid, createWithdrawalOrder,
 } from '../../domains/payment/paymentProcessing.service.js';
 import { settleHold } from '../../domains/payment/withdrawalHold.service.js';
-import { teamFixture } from '../teamFixture.js';
+import { teamFixture, readyToPay } from '../teamFixture.js';
 import { mountRouter, actor, merchantActor, as } from './_harness.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
@@ -102,6 +102,7 @@ describePg('merchant platform stats', () => {
     await teams.onlyOnline([m.merchantId]);
     expect(await tryAssignMerchant(order), 'the buy was not routed').toBe(true);
     const reference = currency === 'USDT' ? hex64() : utr();
+    await readyToPay(orderId);
     expect((await markOrderPaid(who.userId, orderId, reference)).status).toBe('PAID');
     const res = await as(panel, m).post(`/confirm/${orderId}`);
     expect(res.status, res.body.message).toBe(200);
@@ -136,15 +137,15 @@ describePg('merchant platform stats', () => {
 
   it('counts an INR merchant\'s completed work, in rupees, and says so', async () => {
     const m = await member('UPI_BANK');
-    await completedBuy(m, { tokens: 20_000 });
-    await completedBuy(m, { tokens: 30_000 });
-    await completedSell(m, { tokens: 15_000 });
+    await completedBuy(m, { tokens: 50_000 });
+    await completedBuy(m, { tokens: 100_000 });
+    await completedSell(m, { tokens: 50_000 });
     const res = await as(app, admin).get(`/merchant-platform/${m.merchantId}/funding-stats`);
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.stats).toMatchObject({
       currency: 'INR',
-      depositsCompleted: 2, depositVolume: 50_000,
-      withdrawalsCompleted: 1, withdrawalVolume: 15_000,
+      depositsCompleted: 2, depositVolume: 150_000,
+      withdrawalsCompleted: 1, withdrawalVolume: 50_000,
     });
     // A member holds no tokens: the funding picture carries no balance at all,
     // rather than a zero a screen would render as "0 BB".
@@ -168,15 +169,15 @@ describePg('merchant platform stats', () => {
 
   it('charts each day of the window, the completed order on today', async () => {
     const m = await member('UPI_BANK');
-    await completedBuy(m, { tokens: 20_000 });
+    await completedBuy(m, { tokens: 50_000 });
     const res = await as(app, admin).get(`/merchant-platform/${m.merchantId}/performance-history`).query({ days: 7 });
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.days).toBe(7);
     expect(res.body.history).toHaveLength(7);
     const today = res.body.history[res.body.history.length - 1];
     expect(today.totalOrders).toBe(1);
-    expect(today.totalVolume).toBe(20_000);
-    expect(today.byType.find((t) => t.type === 'DEPOSIT')).toMatchObject({ orders: 1, volume: 20_000 });
+    expect(today.totalVolume).toBe(50_000);
+    expect(today.byType.find((t) => t.type === 'DEPOSIT')).toMatchObject({ orders: 1, volume: 50_000 });
     expect(res.body.history.slice(0, -1).every((d) => d.totalOrders === 0)).toBe(true);
   });
 

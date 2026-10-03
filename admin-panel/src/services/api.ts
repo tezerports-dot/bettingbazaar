@@ -949,46 +949,11 @@ export const disputes = {
   // the same endpoints that nothing used (§5).
 
   /**
-   * The CDM slip for one cash payout — the only read of one that exists.
-   *
-   * Neither the player nor the merchant who uploaded it can see it again; the
-   * order mapper does not carry the columns, so no other projection can either.
-   * `canResolveDisputes` gates it, and EVERY call is written to the audit log:
-   * a record nobody may see is one whose access has to be accountable.
-   *
-   * So this must only ever be called from a deliberate click. Fetching it when
-   * a screen opens would record a slip view for every dispute anybody glanced
-   * at, and "who looked at this player's bank slip" would stop meaning
-   * anything.
-   *
-   * `receipt: null` is a real and expected answer, not an error: the merchant's
-   * confirm completes the order and the slip is chased afterwards.
-   */
-  getCdmReceipt: async (orderId: string) => {
-    const res = await api.get<any>(`/api/admin/orders/${orderId}/cdm-receipt`);
-    return res.data;
-  },
-
-  /**
-   * Cash payouts settled without a slip.
-   *
-   * `olderThanMinutes` accepts 0 — "everything missing one right now", which is
-   * what an incident needs — so it is passed through explicitly rather than
-   * left to a falsy default.
-   */
-  missingCdmReceipts: async (olderThanMinutes: number) => {
-    const res = await api.get<any>('/api/admin/orders/cdm-receipts/missing', { params: { olderThanMinutes } });
-    return res.data;
-  },
-
-  /**
    * Withdrawals no merchant has taken.
    *
-   * One that cannot find a merchant WAITS rather than failing — on the cash
-   * rail a large payout is several separate withdrawals, and the ones already
-   * paid cannot be clawed back. The price is an unbounded token lock, which is
-   * why this queue exists: an order with no deadline and no owner is one nobody
-   * is answerable for.
+   * One that cannot find a team member WAITS rather than failing. The price is
+   * an unbounded token lock, which is why this queue exists: an order with no
+   * deadline and no owner is one nobody is answerable for.
    *
    * `olderThanMinutes` accepts 0 — "everything waiting right now".
    */
@@ -999,8 +964,8 @@ export const disputes = {
 };
 
 // ─── UTR MONITOR ───────────────────────────────────────────────────────────
-// The payment-reference registry (`canManageUtr`). A UTR, chain hash or CDM
-// slip reference belongs to exactly one order, for good (CLAUDE.md §27); this is
+// The payment-reference registry (`canManageUtr`). A UTR or chain hash
+// belongs to exactly one order, for good (CLAUDE.md §27); this is
 // the operator's side of that rule: who claimed what, which references somebody
 // tried to REUSE, and the flag a human puts on one.
 //

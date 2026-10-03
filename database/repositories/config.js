@@ -130,15 +130,15 @@ function validatePatch(node, patch, path = []) {
  * Settings that come in pairs, where the floor may never rise above the ceiling.
  *
  * ── Why a per-field `max` could not do this ────────────────────────────────
- * `SYSTEM_CONFIG_SPEC` declares `minDeposit: n(500, 0)` — a floor of 0 and no
- * ceiling — and the same for `minWithdrawal` and every bet limit. Measured
- * against the live route:
+ * `SYSTEM_CONFIG_SPEC` declared `minDeposit: n(500, 0)` — a floor of 0 and no
+ * ceiling — and the same for every bet limit. Measured against the live route
+ * (the deposit pair has since become the size list, Step 2d):
  *
  *     PUT minDeposit = -5           ->  400  "must be >= 0, got -5"
  *     PUT minDeposit = 999999999    ->  200  "System config updated"
  *
- * So one extra digit in the Min Deposit box sets the platform's minimum
- * deposit to ₹999,999,999 and NO PLAYER CAN DEPOSIT AGAIN. The save succeeds,
+ * So one extra digit in the Min Deposit box set the platform's minimum
+ * deposit to ₹999,999,999 and NO PLAYER COULD DEPOSIT AGAIN. The save succeeds,
  * the screen says "System config updated", and nothing anywhere objects.
  *
  * An arbitrary per-field ceiling would be a number nobody chose. The real
@@ -147,8 +147,7 @@ function validatePatch(node, patch, path = []) {
  * merged document rather than against the patch.
  */
 const PAIRED_BOUNDS = Object.freeze([
-  { scope: 'system', min: 'minDeposit',           max: 'maxDeposit' },
-  { scope: 'system', min: 'minWithdrawal',        max: 'maxWithdrawal' },
+  { scope: 'system', min: 'usdtBuy.minUsdt',      max: 'usdtBuy.maxUsdt' },
   { scope: 'system', min: 'betLimits.oneMin.min', max: 'betLimits.oneMin.max' },
   { scope: 'system', min: 'betLimits.thirtyMin.min', max: 'betLimits.thirtyMin.max' },
   { scope: 'system', min: 'betLimits.fullDay.min', max: 'betLimits.fullDay.max' },
@@ -186,6 +185,9 @@ function coerce(field, value, path) {
       const num = Number(value);
       if (!Number.isFinite(num)) throw invalidConfig(`config: '${path}' must be a number, got ${JSON.stringify(value)}`);
       if (field.integer && !Number.isInteger(num)) throw invalidConfig(`config: '${path}' must be a whole number, got ${num}`);
+      if (field.multipleOf && num % field.multipleOf !== 0) {
+        throw invalidConfig(`config: '${path}' must be a multiple of ${field.multipleOf}, got ${num}`);
+      }
       if (field.min !== null && field.min !== undefined && num < field.min) {
         throw invalidConfig(`config: '${path}' must be >= ${field.min}, got ${num}`);
       }
@@ -205,11 +207,26 @@ function coerce(field, value, path) {
         throw invalidConfig(`config: '${path}' must be an array of strings`);
       }
       return value;
-    case 'number[]':
+    case 'number[]': {
       if (!Array.isArray(value) || value.some((v) => !Number.isFinite(Number(v)))) {
         throw invalidConfig(`config: '${path}' must be an array of numbers`);
       }
-      return value.map(Number);
+      const nums = value.map(Number);
+      // A list drawn from a fixed set (`allowed`): every value one of them, none
+      // twice, stored in the set's own order so two saves of the same choice
+      // are the same document.
+      if (field.allowed) {
+        const bad = nums.filter((v) => !field.allowed.includes(v));
+        if (bad.length) {
+          throw invalidConfig(`config: '${path}' may only contain ${field.allowed.join(', ')}; got ${bad.join(', ')}`);
+        }
+        if (new Set(nums).size !== nums.length) throw invalidConfig(`config: '${path}' lists a value twice`);
+      }
+      if (field.minItems && nums.length < field.minItems) {
+        throw invalidConfig(`config: '${path}' needs at least ${field.minItems} value${field.minItems === 1 ? '' : 's'}`);
+      }
+      return field.allowed ? field.allowed.filter((v) => nums.includes(v)) : nums;
+    }
     default:
       throw invalidConfig(`config: '${path}' has an unknown spec type '${field.type}'`);
   }

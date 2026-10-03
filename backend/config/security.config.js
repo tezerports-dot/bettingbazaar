@@ -256,9 +256,6 @@ export const RATE_LIMIT_TIERS = {
   // construction (`utr_grace_at IS NULL`), so this bounds how fast a caller can
   // sweep across orders looking for one that has not claimed it.
   utrGrace: tier(60 * 60 * 1000, 30),
-  // A CDM receipt carries an uploaded image reference and is read only by an
-  // admin. One per order, so this bounds the sweep.
-  cdmReceipt: tier(60 * 60 * 1000, 30),
 };
 
 // ── Global-limiter exemption for phantom (ghost) bet placement ──────────────

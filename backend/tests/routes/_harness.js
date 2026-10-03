@@ -166,6 +166,12 @@ export async function merchantActor({
   await createMerchant({
     merchantId, name: name || `RT Merchant ${merchantId.slice(-6)}`,
     publicRef: generateMerchantPublicRef(), mobile,
+    // The account a bank-transfer buy is paid into. A member without one is
+    // never routed a UPI/bank buy (owner, 2026-10-03), as in production.
+    bankDetails: {
+      accountHolderName: `RT Holder ${merchantId.slice(-6)}`, bankName: 'Test Bank',
+      accountNo: `5010${merchantId.replace(/\D/g, '').slice(-8).padStart(8, '0')}`, ifsc: 'TEST0000001',
+    },
     // A merchant created straight into SUSPENDED needs the reason the CHECK
     // insists on: a suspension nobody can explain is one nobody can appeal.
     ...(status === 'SUSPENDED' ? { status: 'ACTIVE' } : { status }),

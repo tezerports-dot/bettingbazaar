@@ -3,7 +3,8 @@
  * The USDT rail, end to end, against a real database.
  *
  * ── What this rail is ──────────────────────────────────────────────────────
- * A USDT buy is denominated in what the player RECEIVES — 50,000, 100,000 or
+ * (Step 2d: a USDT buy is now chosen in whole steps of 100 USDT, and the
+ * tokens follow from the rate.) It was denominated in what the player RECEIVES — 50,000, 100,000 or
  * 500,000 PLATFORM TOKENS — and served by a member of a USDT TEAM (a team
  * whose supervisor is approved for the USDT rail, PROJECT_STATUS §3.10 2c).
  * What the player SENDS is derived from the admin's rate at creation: at 100
@@ -36,8 +37,7 @@ import { getPool } from '#db/repositories/teamPools.js';
 import { routingCandidates } from '#db/repositories/teamRouting.js';
 import { PAYMENT_MODES, railOf } from '#db/repositories/orderRails.js';
 import { createDepositOrder, markOrderPaid, tryAssignMerchant } from '../../domains/payment/paymentProcessing.service.js';
-import { USDT_BUY_DENOMINATIONS_PAISE } from '../../domains/merchant/denominations.js';
-import { teamFixture } from '../teamFixture.js';
+import { teamFixture, readyToPay } from '../teamFixture.js';
 import { actor, merchantActor, mountRouter, as } from './_harness.js';
 import { getSystemConfig, applySystemConfig } from '#db/repositories/config.js';
 import { tokensPerUsdt } from '../../domains/configuration/tokenRates.js';
@@ -119,51 +119,73 @@ describePg('the USDT merchant rail', () => {
 
   // ══ Pricing and admission — nobody is online, so every buy waits queued ══
   describe('what a player may buy, and at what price', () => {
-    const buyUsdt = async (who, tokens, chain = 'TRC20') => {
-      const out = await createDepositOrder(who.userId, tokens, { currency: 'USDT', usdtChain: chain });
+    /** A USDT buy of `usdt` whole USDT, as the route makes it (Step 2d). */
+    const buyUsdt = async (who, usdt, chain = 'TRC20') => {
+      const out = await createDepositOrder(who.userId, null, { currency: 'USDT', usdtChain: chain, usdtAmount: usdt });
       orders.push(out.order.orderId);
       return out;
     };
 
     beforeAll(async () => { await teams.onlyOnline([]); });
 
-    // ── The three sizes, in TOKENS ─────────────────────────────────────────
-    it('serves exactly 50,000, 100,000 and 500,000 tokens, on the USDT rail whatever the size', async () => {
-      expect(USDT_BUY_DENOMINATIONS_PAISE).toEqual([5_000_000, 10_000_000, 50_000_000]);
-      for (const paise of USDT_BUY_DENOMINATIONS_PAISE) {
+    // ── Whole steps of USDT, between the admin's bounds (Step 2d) ─────────
+    it('serves any whole step of 100 USDT inside the bounds, on the USDT rail whatever the size', async () => {
+      for (const usdt of [100, 300, 10_000]) {
         const who = await actor({});
-        const { order } = await buyUsdt(who, paise / 100);
-        expect(order.tokenAmount).toBe(paise / 100);
-        // The size never moves a USDT order onto an INR rail: 50,000 is above
-        // the cash ceiling and still not UPI_BANK.
+        const { order } = await buyUsdt(who, usdt);
+        // At 100 tokens per USDT.
+        expect(order.tokenAmount).toBe(usdt * 100);
+        // The size never moves a USDT order onto an INR rail.
         const row = await getOrderRecord(order.orderId);
         expect(row.paymentMode).toBe(PAYMENT_MODES.P2P_UPI);
         expect(railOf(row)).toBe('USDT');
       }
     });
 
-    it('quotes the USDT to send from the admin’s rate, at CREATION', async () => {
-      // The denomination is what the player RECEIVES; the USDT is what they SEND.
-      // At 100 tokens per USDT: 50,000 → 500, 100,000 → 1,000, 500,000 → 5,000.
-      for (const [tokens, usdt] of [[50_000, 500], [100_000, 1_000], [500_000, 5_000]]) {
+    it('prices the TOKENS from the admin’s rate, at CREATION', async () => {
+      // The USDT is what the player SENDS; the tokens are what they receive.
+      for (const [usdt, tokens] of [[100, 10_000], [1_000, 100_000]]) {
         const who = await actor({});
-        const { order, note } = await buyUsdt(who, tokens);
+        const { order, note } = await buyUsdt(who, usdt);
         // `fiatAmount` is what the player sends, in the ORDER's currency.
         expect(order.fiatAmount).toBe(usdt);
+        expect(order.tokenAmount).toBe(tokens);
         expect(order.rateUsed).toBe(100);
-        // And the sentence names USDT, not rupees — "you will pay ₹500" to
-        // somebody about to transfer 500 USDT names the wrong thing entirely.
-        expect(note).toMatch(new RegExp(`send ${usdt.toLocaleString('en-IN')} USDT`));
+        // And the sentence names USDT, not rupees.
+        expect(note).toMatch(new RegExp(`send ${usdt.toLocaleString('en-IN')} USDT to receive ${tokens.toLocaleString('en-IN')} BB tokens`));
         expect(note).not.toMatch(/₹/);
       }
     });
 
-    it('REFUSES a size it does not serve, and names the sizes in TOKENS', async () => {
+    it('takes the token count from the rate, never from the client', async () => {
+      // A hand-made request naming its own token count is ignored on this rail.
       const who = await actor({});
-      await expect(createDepositOrder(who.userId, 30_000, { currency: 'USDT', usdtChain: 'TRC20' }))
-        .rejects.toMatchObject({ code: 'NOT_A_USDT_DENOMINATION' });
-      await expect(createDepositOrder(who.userId, 30_000, { currency: 'USDT', usdtChain: 'TRC20' }))
-        .rejects.toThrow(/50,000, 1,00,000, 5,00,000 tokens/);
+      const { order } = await createDepositOrder(who.userId, 999_999,
+        { currency: 'USDT', usdtChain: 'TRC20', usdtAmount: 200 });
+      orders.push(order.orderId);
+      expect(order.tokenAmount).toBe(20_000);
+    });
+
+    it('REFUSES an amount off the step or outside the bounds, names them, and writes nothing', async () => {
+      const who = await actor({});
+      for (const bad of [150, 50, 0, 10_100, null, 'abc']) {
+        await expect(buyUsdt(who, bad)).rejects.toMatchObject({ code: 'NOT_A_USDT_AMOUNT', status: 400 });
+      }
+      await expect(buyUsdt(who, 150)).rejects.toThrow(/100 to 10,000 USDT, in steps of 100/);
+      expect(await db.orders.countOpenDeposits(who.userId, { currency: 'USDT' })).toBe(0);
+    });
+
+    it('follows the bounds the admin sets', async () => {
+      const prior = (await getSystemConfig()).usdtBuy;
+      await applySystemConfig({ usdtBuy: { minUsdt: 500, maxUsdt: 1_000 } }, { actor: 'usdt-rail-suite' });
+      try {
+        const who = await actor({});
+        await expect(buyUsdt(who, 400)).rejects.toThrow(/500 to 1,000 USDT, in steps of 100/);
+        await expect(buyUsdt(who, 1_100)).rejects.toMatchObject({ code: 'NOT_A_USDT_AMOUNT' });
+        expect((await buyUsdt(who, 500)).order.tokenAmount).toBe(50_000);
+      } finally {
+        await applySystemConfig({ usdtBuy: prior }, { actor: 'usdt-rail-suite' });
+      }
     });
 
     it('does NOT re-price a purchase already quoted', async () => {
@@ -171,7 +193,7 @@ describePg('the USDT merchant rail', () => {
       // to read the rate again and overwrite `rateUsed`, so an admin edit in
       // between silently re-priced a purchase the player had already agreed to.
       const who = await actor({});
-      const { order } = await buyUsdt(who, 50_000);
+      const { order } = await buyUsdt(who, 500);
       expect(order.fiatAmount).toBe(500);
 
       // The admin doubles the rate. The order in flight must not move.
@@ -195,7 +217,7 @@ describePg('the USDT merchant rail', () => {
       await setRate(0);
       try {
         const who = await actor({});
-        await expect(createDepositOrder(who.userId, 50_000, { currency: 'USDT', usdtChain: 'TRC20' }))
+        await expect(buyUsdt(who, 500))
           .rejects.toMatchObject({ code: 'USDT_RATE_UNSET' });
         expect(await db.orders.countOpenDeposits(who.userId, { currency: 'USDT' })).toBe(0);
       } finally {
@@ -205,8 +227,8 @@ describePg('the USDT merchant rail', () => {
 
     it('allows ONE open USDT buy at a time, per rail', async () => {
       const who = await actor({});
-      await buyUsdt(who, 50_000);
-      await expect(createDepositOrder(who.userId, 100_000, { currency: 'USDT', usdtChain: 'TRC20' }))
+      await buyUsdt(who, 500);
+      await expect(buyUsdt(who, 1_000))
         .rejects.toMatchObject({ code: 'BUY_ALREADY_OPEN' });
     });
 
@@ -260,6 +282,19 @@ describePg('the USDT merchant rail', () => {
           scope: 'system', actor: 'test', patch: { usdtPricing: { merchantAdminBuyInr: restore } },
         }).catch(() => {});
       }
+    });
+
+    it('refuses a rate with a third decimal, on both legs (Step 2d)', async () => {
+      // A buy's tokens are its USDT times the rate, in paise: a third decimal
+      // would price a purchase in fractions of a paisa.
+      const adminApp = mountRouter((await import('../../routes/admin/system.admin.routes.js')).default);
+      const admin = await actor({ isAdmin: true });
+      for (const leg of ['userMerchantBuyInr', 'merchantAdminBuyInr']) {
+        const res = await as(adminApp, admin).put('/system/config').send({ usdtPricing: { [leg]: 88.555 } });
+        expect(res.status).toBe(400);
+        expect(res.body.message).toMatch(/at most 2 decimals/);
+      }
+      expect(tokensPerUsdt(await getSystemConfig())).toBe(100);
     });
 
     // ── The chain, at the door ─────────────────────────────────────────────
@@ -387,6 +422,7 @@ describePg('the USDT merchant rail', () => {
      * holding both chains. The team is built once and put back online on every
      * call, because a team built by another test takes this one offline.
      */
+    /** A USDT buy its member has accepted: from then on the player is given the address. */
     const assignedUsdtBuy = async (owner, chain = 'TRC20') => {
       if (!hashTeam) {
         const members = [];
@@ -397,6 +433,7 @@ describePg('the USDT merchant rail', () => {
       const order = await queuedUsdtBuy({ owner, chain });
       expect(await tryAssignMerchant(order)).toBe(true);
       expect((await getOrderRecord(order.orderId)).status).toBe('ASSIGNED');
+      await readyToPay(order.orderId);
       return order.orderId;
     };
 
@@ -440,7 +477,7 @@ describePg('the USDT merchant rail', () => {
         .rejects.toThrow(/transaction ID has already been used/i);
 
       // And the second order did NOT move: a refused claim leaves nothing behind.
-      expect((await getOrderRecord(secondOrder)).state).toBe('ASSIGNED');
+      expect((await getOrderRecord(secondOrder)).state).toBe('PROCESSING');
     });
 
     it('lets the SAME order resubmit its own hash', async () => {

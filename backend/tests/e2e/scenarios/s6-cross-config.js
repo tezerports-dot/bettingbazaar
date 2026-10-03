@@ -57,19 +57,25 @@ export default async function run() {
     }
   }
 
-  // ══ 2. Order floors and ceilings ═════════════════════════════════════════
+  // ══ 2. The order sizes on offer (Step 2d) ════════════════════════════════
   {
     const before = (await GET(aT, '/api/admin/system/config')).body?.config ?? {};
     try {
-      await PUT(aT, '/api/admin/system/config', { minDeposit: 600, maxDeposit: 44000 });
+      // Switch one cash size and one bank size off: the player is told only
+      // the rest, per rail, and the USDT bounds the admin chose.
+      await PUT(aT, '/api/admin/system/config', {
+        orderSizes: [1000, 5000, 10000, 50000, 500000],
+        usdtBuy: { minUsdt: 200, maxUsdt: 5000 },
+      });
       const pub = await publicConfig();
-      check(A, 'player', 'the player panel is told the new order floor and ceiling', '600 / 44000',
-        `${pub.minDeposit} / ${pub.maxDeposit}`,
-        pub.minDeposit === 600 && pub.maxDeposit === 44000,
-        '§2: the FLOOR is one policy read from either end — a panel with its own number offers what the gate refuses');
+      const shown = `${pub.orderSizes?.CASH?.join(',')} | ${pub.orderSizes?.UPI_BANK?.join(',')} | ${pub.usdtBuy?.minUsdt}-${pub.usdtBuy?.maxUsdt}`;
+      check(A, 'player', 'the player panel is told the sizes on offer and the USDT bounds', '1000,5000,10000 | 50000,500000 | 200-5000',
+        shown, shown === '1000,5000,10000 | 50000,500000 | 200-5000',
+        '§2: the SIZES are one policy read from either end — a panel with its own list offers what the gate refuses');
     } finally {
       await PUT(aT, '/api/admin/system/config', {
-        minDeposit: before.minDeposit ?? 500, maxDeposit: before.maxDeposit ?? 50000,
+        orderSizes: before.orderSizes ?? [500, 1000, 5000, 10000, 50000, 100000, 500000], // schema default: all seven
+        usdtBuy: before.usdtBuy ?? { minUsdt: 100, maxUsdt: 10000 },                     // schema default
       });
     }
   }

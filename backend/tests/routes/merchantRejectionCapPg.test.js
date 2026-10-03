@@ -40,13 +40,13 @@ import { creditWinnings } from '../../domains/wallet/walletAuthority.service.js'
 import {
   expireOrders, tryAssignMerchant, markOrderPaid, createWithdrawalOrder, cancelOrder,
 } from '../../domains/payment/paymentProcessing.service.js';
-import { teamFixture } from '../teamFixture.js';
+import { teamFixture, readyToPay } from '../teamFixture.js';
 import { mountRouter, actor, merchantActor, as } from './_harness.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 
 // Above the cash ceiling: the UPI_BANK rail, so no Ready press is involved.
-const TOKENS = 20_000;
+const TOKENS = 50_000;
 
 describePg('a merchant who keeps refusing', () => {
   let app;
@@ -86,7 +86,7 @@ describePg('a merchant who keeps refusing', () => {
       const ms = [];
       for (let i = 0; i < 10; i += 1) ms.push(await merchantActor());
       const team = await teams.workingTeam({
-        rail: 'UPI_BANK', poolTokens: 400_000, include: ms.map((m) => m.merchantId),
+        rail: 'UPI_BANK', poolTokens: 1_000_000, include: ms.map((m) => m.merchantId),
       });
       bench.push(...ms.map((m) => ({ ...m, team })));
     }
@@ -101,7 +101,7 @@ describePg('a merchant who keeps refusing', () => {
     const order = await createOrderRecord({
       orderId, userId: who.userId, type: 'DEPOSIT',
       tokenAmountRupees: TOKENS, fiatAmountRupees: TOKENS,
-      depositAllocation: 18_000, reserveAllocation: 2_000,
+      depositAllocation: 45_000, reserveAllocation: 5_000,
     });
     await teams.onlyOnline(to ? [to.merchantId] : []);
     const routed = await tryAssignMerchant(order);
@@ -206,6 +206,7 @@ describePg('a merchant who keeps refusing', () => {
       // A buy they DO serve: routed, paid by the player, confirmed.
       const served = await assigned(m);
       const utr = String(530000000000 + (seq * 7919) + Math.floor(Math.random() * 7000));
+      await readyToPay(served.orderId);
       expect((await markOrderPaid(served.who.userId, served.orderId, utr)).status).toBe('PAID');
       const confirmed = await as(app, m).post(`/confirm/${served.orderId}`);
       expect(confirmed.status, confirmed.body.message).toBe(200);
