@@ -637,7 +637,8 @@ Owner answers, 2026-10-02 (two rounds; the second replaced the security deposit 
   **Parts 2–3 IN PROGRESS (2026-10-02), saved unfinished on branch
   `claude/busy-wright-cy111a-2c-wip`** — not on the PR branch, so #201 stays
   green. Work moved from the Project thread to a plain session (owner: the
-  Project's usage limit was reached). What the branch holds:
+  Project's usage limit was reached; then the owner chose to stay in the
+  Project with ONE FRESH THREAD PER STEP instead). What the branch holds:
   - DONE and green when last run: every order path switched onto routing and
     pool holds; per-merchant wallets, escrow, scorer, cash-link queue,
     payment-mode policy, gateway settings, merchant token orders and
@@ -707,6 +708,35 @@ Owner answers, 2026-10-02 (two rounds; the second replaced the security deposit 
     payment-mode policy and its screens, the gateway settings, merchant token
     orders, admin fund/deduct of a merchant, and every test, mutation and
     panel control that existed only for them.
+- **2c+ Escrow windows and disputes (owner, 2026-10-02 21:13).** The team
+  pool works as the per-merchant escrow did: an order's tokens are LOCKED in
+  escrow for the order's life and released only by a window or a decision.
+  - *Buy.* At assignment the order's tokens leave the team pool into escrow
+    (the 2c hold). Confirmed: the player is credited. If the player tapped
+    Paid with a UTR and the member REJECTS it (not received / looks fake), the
+    player is told by a pop-up and has **15 minutes** from the rejection to
+    raise a dispute. No dispute in the window: the tokens go back to the team
+    pool. Dispute raised: the tokens stay in escrow with NO time limit until
+    the dispute manager decides — player was right → escrow to the player;
+    member was right → escrow back to the team pool.
+  - *Sell.* The player's tokens are locked in escrow. When the member says
+    they paid, the tokens stay in escrow for **at least 1 hour**
+    (`withdrawalHoldMinutes`, default 60) and the player may raise a dispute
+    in that window; same decision path. No dispute: released to the team pool.
+  - *Who was wrong is suspended completely* (player or member), and only a
+    sub-admin (or admin) lifts it. Every lost dispute is a red flag on the
+    account; a THIRD lost dispute suspends again and sends the account to admin
+    review as high risk.
+  - Both windows are `SystemConfig` values an admin edits (defaults 15 and 60
+    minutes), with their consumers in the same change (§3).
+  - *Notifications.* A team of **five Telegram bots** messages players about
+    their transaction: completed, rejected, and the time until which they can
+    raise a dispute. This changes Step 3, which kept bots silent: Step 3 keeps
+    the five notification bots (rotated like the sign-in fleet; a bot can only
+    message a player who has opened a chat with it, §33.2) alongside the Mini App.
+  - *USDT rates are admin-set*: the rate a player pays (USDT per token) and the
+    rate a team buys pool tokens at, both in `SystemConfig.usdtPricing`,
+    bounded, frozen on each order and each pool sale (§25).
 - **2d Orders.** Global admin-editable denomination list; CASH 500–10,000 and
   UPI_BANK 50,000–500,000 for both directions; no splitting (split payouts and
   CDM receipts deleted); USDT 100–10,000 step 100; the QR cash link.
