@@ -71,10 +71,10 @@ export async function transitionOrder(orderId, to, { set = {}, expectFrom = null
   // `expectFrom` narrows the allowed set for a caller that knows more than the
   // rule table does. It may only ever be a SUBSET: passing a state the table
   // does not allow is a programming error and throws, rather than quietly
-  // widening the machine. Validated HERE, before the call, because the
-  // repository deliberately ignores it — the row lock and ALLOWED_FROM are the
-  // real guard, and a narrowing that the table already forbids is a bug in the
-  // caller, not a rule to enforce twice.
+  // widening the machine. Validated HERE, before the call; the repository then
+  // APPLIES it, in the UPDATE's WHERE under the row lock. It once ignored it,
+  // and a narrowing nobody enforces is a comment: a member's "rejected as
+  // unpaid" (only from PAID or PROCESSING) cancelled a DISPUTED buy.
   if (expectFrom) {
     const wanted = Array.isArray(expectFrom) ? expectFrom : [expectFrom];
     const illegal = wanted.filter((state) => !allowed.includes(state));

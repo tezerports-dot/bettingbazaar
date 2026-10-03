@@ -171,6 +171,8 @@ export interface PaymentOrder {
   
   // Other
   rejectedReason?: string;
+  /** A buy this member rejected as unpaid: until when the player may dispute it (`merchantOrderView.js`, 2c+). */
+  disputeWindowUntil?: string | null;
   bbTokenAmount?: number; // alias for tokenAmount
 }
 

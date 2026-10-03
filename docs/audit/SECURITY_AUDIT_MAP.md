@@ -3387,9 +3387,9 @@ checked and is correct; the evidence is named.
 
 | Measure | Count |
 |---|---|
-| Route declarations in `backend/**` | 317 |
+| Route declarations in `backend/**` | 287 |
 | Reachable with **no auth middleware** | 34 |
-| Staff routes carrying an **area** (permission key) | 199 |
+| Staff routes carrying an **area** (permission key) | 175 |
 | Staff routes a sub-admin can **never** be given (full admin only) | 7 |
 
 A count moving is not by itself a defect — it is a prompt to read the
@@ -3450,9 +3450,9 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 466 |
-| Parameters only (safe by construction) | 308 |
-| Interpolating into statement text (each needs a reading) | 154 |
+| `pgQuery` call sites | 415 |
+| Parameters only (safe by construction) | 268 |
+| Interpolating into statement text (each needs a reading) | 143 |
 | Statement text built elsewhere and passed in (each needs a reading) | 4 |
 
 <details><summary>Call sites whose statement text is built elsewhere</summary>
@@ -3468,9 +3468,9 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Panel | .ts/.tsx files | `dangerouslySetInnerHTML` | `.innerHTML =` |
 |---|---|---|---|
-| `user-panel` | 86 | 0 | 0 |
-| `admin-panel` | 112 | 0 | 0 |
-| `merchant-panel` | 47 | 0 | 0 |
+| `user-panel` | 88 | 0 | 0 |
+| `admin-panel` | 111 | 0 | 0 |
+| `merchant-panel` | 44 | 0 | 0 |
 
 <!-- END GENERATED -->
 

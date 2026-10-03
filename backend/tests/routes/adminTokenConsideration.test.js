@@ -83,7 +83,7 @@ describePg('what the platform got, or gave, for a team\'s tokens', () => {
     // happened to hold — a USDT assertion that passes only on a database
     // somebody had already priced is asserting nothing.
     const before = await db.config.getSystemConfig();
-    restoreRate = before?.usdtPricing?.merchantAdminBuyInr ?? 1; // schema default: 1
+    restoreRate = before?.usdtPricing?.merchantAdminBuyInr ?? 0; // schema default: 0 (unset)
     await db.config.applyConfig({
       scope: 'system', actor: 'test', patch: { usdtPricing: { merchantAdminBuyInr: 90 } },
     });
@@ -229,14 +229,18 @@ describePg('what the platform got, or gave, for a team\'s tokens', () => {
     }
   });
 
-  it('refuses a USDT receipt BY NAME when the rate is unset, rather than pricing it at the peg', async () => {
-    // The schema default is 1, which means "1 USDT = ₹1" — not a price. §25's
-    // precedent: a purchase that cannot be priced is refused by name, because
-    // the fallback is worse than the refusal.
+  it.each([
+    ['unset (0, the schema default)', 0],
+    ['1, which used to mean unset', 1],
+    ['outside the band, written past the route (a misplaced decimal)', 9000],
+  ])('refuses a USDT receipt BY NAME when the rate is %s, rather than pricing it', async (_label, rate) => {
+    // §25's precedent: a purchase that cannot be priced is refused by name,
+    // because the fallback is worse than the refusal. The band is the one
+    // `tokenRates.js` owns; the reader enforces it as well as the route.
     const requestId = await ask(team, 'BUY', 1000);
     const before = await snapshot(team, requestId);
     await db.config.applyConfig({
-      scope: 'system', actor: 'test', patch: { usdtPricing: { merchantAdminBuyInr: 1 } },
+      scope: 'system', actor: 'test', patch: { usdtPricing: { merchantAdminBuyInr: rate } },
     });
     try {
       const res = await fulfil(requestId, { settlementAmount: 11, settlementCurrency: 'USDT' });

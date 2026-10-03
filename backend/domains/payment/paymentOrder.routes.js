@@ -11,6 +11,7 @@ import { creditDeposit, creditReserve } from '../wallet/walletAuthority.service.
 // The one owner of how an admin decision ends a withdrawal's money, and of a
 // cancelled buy's merchant hold. Both routes below end orders both ways.
 import { endWithdrawal } from './withdrawalHold.service.js';
+import { recordDisputeLoser } from '../disputes/disputeOutcome.service.js';
 // The one owner of a confirmed deposit's money movement. The merchant confirm
 // route calls the same function; that is what keeps the two from disagreeing.
 import { moveDepositMoney } from './depositCredit.js';
@@ -88,13 +89,21 @@ router.post('/payment-orders/:orderId/action', authenticate, hasPermission('canR
     // threw on EVERY call, so this route 500'd on every approve, reject and
     // cancel an admin has ever clicked. The reason belongs in `cancelReason`,
     // which the allowlist does carry.
+    // A decision taken on a DISPUTED order is a dispute OUTCOME (2c+): it is
+    // pinned to the state it was read in, so whoever it suspends below is the
+    // party this decision actually went against, not one another admin's
+    // decision already settled.
+    const wasDispute = order.status === 'DISPUTED';
+    const pin = wasDispute ? { expectFrom: 'DISPUTED' } : {};
     let moved;
     if (action === 'APPROVE') {
       moved = await completeOrder(order._id, {
+        ...pin,
         set: { completedAt: new Date(), approvedBy: req.user.userId, approvedAt: new Date() },
       });
     } else {
       moved = await cancelOrder(order._id, {
+        ...pin,
         set: {
           cancelledAt: new Date(),
           cancelReason: reason || `${action === 'REJECT' ? 'Rejected' : 'Cancelled'} by admin`,
@@ -143,6 +152,16 @@ router.post('/payment-orders/:orderId/action', authenticate, hasPermission('canR
       // A buy that will not be served gives its team's held tokens back to the
       // pool, here, rather than leaving them for the stranded-hold report.
       await db.teamPools.releaseBuyHold(order.orderId, { actor: `admin:${req.user.userId}`, reason: reason || `${action} by admin` });
+    }
+
+    // Whoever lost the dispute is suspended — the same consequence the two
+    // resolve routes apply (§32 S3). Keyed by the order, so a replay is a no-op.
+    if (wasDispute) {
+      await recordDisputeLoser(order, {
+        completed: action === 'APPROVE',
+        decision: action === 'APPROVE' ? 'RELEASE_TO_USER' : 'CANCEL_ORDER',
+        by: req.user.userId,
+      });
     }
 
     const settled = moved.order ?? order;
@@ -222,8 +241,18 @@ router.post('/payment-orders/:orderId/resolve', authenticate, hasPermission('can
     const endWithdrawalAs = (decision) => endWithdrawal(order.orderId, decision, {
       reason: reason.trim(), by: req.user.userId,
     });
+    // Whoever lost the dispute is suspended (2c+) — the same consequence the
+    // Dispute Manager applies, through the same owner (§32 S3). The order as
+    // read is DISPUTED (checked above); the record is keyed by the order.
+    const asDecided = { ...order };
+    const outcome = {
+      completed: resolution === 'release',
+      decision: resolution === 'release' ? 'RELEASE_TO_USER' : 'CANCEL_ORDER',
+      by: req.user.userId,
+    };
     if (resolved.idempotent) {
       if (order.type === 'WITHDRAWAL') await endWithdrawalAs(resolution === 'release' ? 'RELEASE' : 'REFUND');
+      await recordDisputeLoser(asDecided, outcome);
       return res.json({ success: true, message: 'Dispute already resolved', order: resolved.order ?? order });
     }
 
@@ -345,6 +374,10 @@ router.post('/payment-orders/:orderId/resolve', authenticate, hasPermission('can
         orderId: order.orderId, _id: order.orderId, status: 'CANCELLED', server_ts: Date.now(),
       });
     }
+
+    // After the money: the suspension narrates a decision that has committed
+    // and its money that has moved (§21), and must not stand in front of them.
+    await recordDisputeLoser(asDecided, outcome);
 
     emitAdminUpdate('queue_order_update', {
       orderId: order.orderId, status: order.status, server_ts: Date.now(),

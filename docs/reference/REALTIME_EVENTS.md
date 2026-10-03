@@ -62,9 +62,9 @@ reuse a name on a different transport for a different meaning.
 | `new_order` | emitter | server→merchant | `paymentProcessing.service.js`, `merchant.assignment.routes.js` |
 | `order_assigned` | emitter | server→user | `merchant.routes.js`, `merchant.assignment.routes.js` |
 | `order_paid` | emitter | server→merchant | `paymentProcessing.service.js` — listened for by the merchant panel since 2026-10-01; before that it was sent and never delivered |
-| `order_update` | emitter (merchant SSE) + socket.io (`user-<id>` room) | server→user/merchant | `merchant.routes.js`, `disputeResolution.admin.routes.js`, `paymentProcessing.service.js` (a moved UTR deadline — this was the unregistered typo `order_updated` until 2026-10-01) |
+| `order_update` | emitter (merchant SSE) + socket.io (`user-<id>` room) | server→user/merchant | `merchant.routes.js`, `disputeResolution.admin.routes.js`, `paymentProcessing.service.js` (a moved UTR deadline — this was the unregistered typo `order_updated` until 2026-10-01), `rejectedBuyWindow.service.js` (a rejected buy's window closed: CANCELLED, 2c+) |
 | `order_completed` | emitter | server→user | `merchant.routes.js`, `paymentOrder.routes.js` |
-| `order_rejected` | emitter | server→user | `merchant.routes.js` |
+| `order_rejected` | emitter (SSE name; on socket.io it arrives as `order_update` with `event: 'order_rejected'`, which is what the player panel listens to) | server→user | `merchant.routes.js` — carries `status: 'REJECTED'` and `disputeUntil` since 2c+ (2026-10-03); the player panel's `RejectedBuyPopup` counts down to it |
 | `order_expired` | emitter | server→user | `paymentProcessing.service.js` |
 | `order_red_flagged` | SSE | server→admin | `merchant.routes.js` |
 | `queue_order_update` | SSE | server→admin | `disputeResolution.admin.routes.js` and others |

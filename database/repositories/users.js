@@ -47,7 +47,7 @@ const COLUMNS = `
   joining_number, referral_code, referral_clicks, referred_by,
   status, wallet_address, profile_pic, warning_count,
   payment_flagged, payment_flag_reason, payment_flagged_at, payment_flag_count,
-  consecutive_payment_failures, order_lock_until,
+  consecutive_payment_failures, order_lock_until, lost_disputes, high_risk_at,
   is_admin, is_sub_admin, is_queue_manager, is_mediator,
   sub_admin_role, sub_admin_permissions, phantom_access,
   two_factor_enabled, two_factor_secret, two_factor_pending_secret,
@@ -154,6 +154,10 @@ function toUser(row) {
     paymentFlagCount: row.payment_flag_count,
     consecutivePaymentFailures: row.consecutive_payment_failures,
     orderLockUntil: row.order_lock_until,
+    // Lost payment disputes and, from the third, when high-risk review opened
+    // (2c+, `disputeFaults.js`). Only a full admin lifts a block while it is set.
+    lostDisputes: toInt(row.lost_disputes) ?? 0,
+    highRiskAt: row.high_risk_at ?? null,
     isAdmin: row.is_admin,
     isSubAdmin: row.is_sub_admin,
     isQueueManager: row.is_queue_manager,
@@ -622,7 +626,7 @@ export async function claimJoiningNumber(userId) {
  * without them (`users_blocked_has_reason`). "Blocked, reason unknown" is a
  * support ticket nobody can answer and an appeal nobody can review.
  */
-export async function setBlocked(userId, { blocked, reason = null, actor = null }) {
+export async function setBlocked(userId, { blocked, reason = null, actor = null, mayLiftHighRisk = false }) {
   if (blocked && !reason) throw new Error('setBlocked: a block requires a reason');
   const { rows } = await pgQuery(
     `UPDATE users
@@ -645,10 +649,18 @@ export async function setBlocked(userId, { blocked, reason = null, actor = null 
               WHEN $2 AND status = 'ACTIVE'  THEN 'BLOCKED'
               WHEN NOT $2 AND status = 'BLOCKED' THEN 'ACTIVE'
               ELSE status END,
+            -- A full admin's lift closes the high-risk review it answers; the
+            -- lost-dispute count stays, so the next loss reopens it at once.
+            high_risk_at = CASE WHEN NOT $2 AND $5 THEN NULL ELSE high_risk_at END,
             updated_at   = now()
       WHERE user_id = $1
+        -- ── High-risk review: only a full admin lifts it (owner, 2c+) ─────
+        -- In the WHERE, not in the route: a third lost dispute can land
+        -- between a sub-admin opening the account and pressing Unblock, and
+        -- a read in the route would let that press through (§32 S6).
+        AND ($2 OR $5 OR high_risk_at IS NULL)
       RETURNING ${COLUMNS}`,
-    [String(userId), Boolean(blocked), reason, actor ? String(actor) : null],
+    [String(userId), Boolean(blocked), reason, actor ? String(actor) : null, Boolean(mayLiftHighRisk)],
     'user_set_blocked',
   );
   return toUser(rows[0]);

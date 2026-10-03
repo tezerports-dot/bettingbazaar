@@ -204,7 +204,27 @@ export function toPlayerOrderView(order) {
   const counterparty = counterpartyFor(plain);
   if (counterparty) view.payTo = counterparty;
 
+  const until = disputeDeadline(plain);
+  if (until) view.disputeUntil = until;
+
   return view;
+}
+
+/**
+ * Until when the player can still dispute this order while its tokens are in
+ * escrow (2c+), or null when no window is running.
+ *
+ *   a BUY the member rejected as unpaid   the rejected-buy window
+ *   a SELL the member marked paid         the hold, at least an hour
+ *
+ * DERIVED, and only the instant: the hold is the merchant's credit standing
+ * (`merchantCreditHoldUntil`, forbidden above), and the player is told when
+ * their own chance ends, not what the platform owes the team.
+ */
+function disputeDeadline(order) {
+  if (order.status === 'REJECTED' && order.type === 'DEPOSIT') return order.disputeWindowUntil ?? null;
+  if (order.type === 'WITHDRAWAL' && order.merchantCreditStatus === 'HELD') return order.merchantCreditHoldUntil ?? null;
+  return null;
 }
 
 export function toPlayerOrderViews(orders) {

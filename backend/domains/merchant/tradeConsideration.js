@@ -63,12 +63,11 @@ export async function resolveConsideration(body, direction) {
   let rateUsed = null;
   if (currency === 'USDT') {
     const cfg  = await getSystemConfig();
+    // null when unset or outside the sanity band (`tokenRates.js`, the owner).
     const rate = adminToMerchantUsdtRate(cfg);
-    // adminToMerchantUsdtRate falls back to 1 when unset, which is correct for
-    // quoting a purchase and wrong for valuing one: 1 means "1 USDT = ₹1".
-    if (!Number.isFinite(rate) || rate <= 1) {
+    if (rate === null) {
       refuse(
-        'The admin USDT buy rate is not set, so a USDT receipt cannot be valued in rupees. '
+        'The admin USDT buy rate is not set to a usable price (₹10–₹1,000 per USDT), so a USDT receipt cannot be valued in rupees. '
         + 'Set it in System Settings → USDT Pricing, or record this settlement in INR.',
       );
     }

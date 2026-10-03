@@ -224,8 +224,8 @@ router.put('/system/config', authenticate, hasPermission('canManageSystemSetting
       const userMerchantBuy = usdtPricing.userMerchantBuyInr;
       const merchantAdminBuy = usdtPricing.merchantAdminBuyInr;
       if ((userMerchantBuy !== undefined && (typeof userMerchantBuy !== 'number' || !Number.isFinite(userMerchantBuy) || userMerchantBuy < 0)) ||
-          (merchantAdminBuy !== undefined && (typeof merchantAdminBuy !== 'number' || !Number.isFinite(merchantAdminBuy) || merchantAdminBuy <= 0))) {
-        return res.status(400).json({ success: false, message: 'USDT buy rates must be non-negative; merchant/admin buy rate must be greater than zero.' });
+          (merchantAdminBuy !== undefined && (typeof merchantAdminBuy !== 'number' || !Number.isFinite(merchantAdminBuy) || merchantAdminBuy < 0))) {
+        return res.status(400).json({ success: false, message: 'USDT rates must be numbers of 0 or more (0 leaves a rate unset).' });
       }
       // ── A misplaced decimal here is a rail somebody drains ────────────────
       // `userMerchantBuyInr` prices EVERY USDT purchase, and the sizes are
@@ -237,12 +237,16 @@ router.put('/system/config', authenticate, hasPermission('canManageSystemSetting
       // The band comes from `tokenRates.js`, the one owner of what a USDT rate
       // means. A second copy of those numbers here would be a bound that
       // disagrees with the one the pricing path enforces.
-      if (userMerchantBuy !== undefined && userMerchantBuy !== 0 && !isSaneUsdtRate(userMerchantBuy)) {
-        return res.status(400).json({
-          success: false,
-          message: `A USDT rate must be between ₹${USDT_RATE_MIN_INR} and ₹${USDT_RATE_MAX_INR} per USDT, or 0 to leave it unset. `
-            + `Got ₹${userMerchantBuy} — check for a misplaced decimal.`,
-        });
+      // The team pool rate is held to the same band: it values every USDT
+      // payment for pool tokens, frozen on the record (2c+).
+      for (const [label, rate] of [['player', userMerchantBuy], ['team pool', merchantAdminBuy]]) {
+        if (rate !== undefined && rate !== 0 && !isSaneUsdtRate(rate)) {
+          return res.status(400).json({
+            success: false,
+            message: `The ${label} USDT rate must be between ₹${USDT_RATE_MIN_INR} and ₹${USDT_RATE_MAX_INR} per USDT, or 0 to leave it unset. `
+              + `Got ₹${rate} — check for a misplaced decimal.`,
+          });
+        }
       }
     }
     if (merchantOrderLimits !== undefined) {

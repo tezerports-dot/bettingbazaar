@@ -98,7 +98,7 @@ export async function transitionOrder(orderId, to, { set = {}, expectFrom = null
   const result = await pgTransition({
     orderId: String(orderId), to, actor, reason,
     merchantId: set.merchantId ? String(set.merchantId) : null,
-    txId: key, within,
+    txId: key, within, onlyFrom: expectFrom,
   });
 
   if (!result.ok) {
@@ -111,10 +111,10 @@ export async function transitionOrder(orderId, to, { set = {}, expectFrom = null
     };
   }
 
-  // `expectFrom` is deliberately NOT passed down: it may only ever NARROW what
-  // ALLOWED_FROM permits, and narrowing is a convenience for callers that know
-  // more than the table does. The transition already ran under the row lock and
-  // the table has refused anything it forbids.
+  // `expectFrom` IS passed down (as `onlyFrom`), and applied in the UPDATE's
+  // WHERE. It once was not, on the belief that narrowing was a convenience:
+  // a route that meant "only from PAID" then moved an order from any state
+  // the table allows, and a member's unpaid-reject cancelled a DISPUTED buy.
   const state = result.order?.state ?? to;
 
   // ── The fields that travel WITH the transition ──────────────────────────

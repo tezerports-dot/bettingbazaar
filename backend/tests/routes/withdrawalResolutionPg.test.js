@@ -52,6 +52,8 @@ import {
 } from '../../domains/wallet/walletAuthority.service.js';
 import { createWithdrawalOrder } from '../../domains/payment/paymentProcessing.service.js';
 import { endWithdrawal } from '../../domains/payment/withdrawalHold.service.js';
+import { toPlayerOrderView } from '../../domains/payment/playerOrderView.js';
+import { approveMerchant } from '#db/repositories/merchants.js';
 import { teamFixture } from '../teamFixture.js';
 import { mountRouter, actor, merchantActor, as } from './_harness.js';
 
@@ -112,6 +114,10 @@ describePg('ending a withdrawal, in every state its money can be in', () => {
    */
   const sell = async ({ state, held = false }) => {
     const merchant = nextMember();
+    // A member who lost an earlier test's dispute is suspended (2c+,
+    // disputeFaultsPg); reinstated here as an admin would, so the rotation
+    // reaches them again.
+    await approveMerchant(merchant.merchantId, { actor: 'test', mayLiftHighRisk: true });
     const player = await actor({});
     players.push(player.userId);
     await updateUser(player.userId, {
@@ -382,29 +388,25 @@ describePg('ending a withdrawal, in every state its money can be in', () => {
     });
   });
 
-  // ── The member's own confirm, with the hold switched off ─────────────────
-  // `withdrawalHoldMinutes` is admin-editable down to 0. That path completed the
-  // order FIRST and then released the stake and credited the merchant — a write
-  // after the commit. It now takes the held path with a window that is already
-  // over and settles through `settleHold`, money before status.
-  describe('the member confirm with the hold disabled', () => {
-    let restoreSuiteHold = null;
-    beforeAll(async () => {
-      restoreSuiteHold = (await getSystemConfig({ fresh: true }))?.withdrawalHoldMinutes ?? null;
-      await applySystemConfig({ withdrawalHoldMinutes: 0 });
-    }, 60_000);
-    // Outside any assertion (trap 10): the config row is shared by every suite.
-    afterAll(async () => {
-      if (restoreSuiteHold !== null) await applySystemConfig({ withdrawalHoldMinutes: restoreSuiteHold });
-    });
-
-    it('settles both sides before the order reads COMPLETED', async () => {
+  // ── The member's own confirm always holds, for at least an hour ──────────
+  // `withdrawalHoldMinutes` could be set to 0, and the confirm then settled at
+  // once — no window in which the player could say nothing arrived. The owner's
+  // rule (2c+, 2026-10-02) is "at least 1 hour": the spec's floor is 60 and the
+  // zero-hold path is gone. rejectedBuyWindowPg asserts the floor itself.
+  describe('the member confirm', () => {
+    it('holds the stake and the team\'s credit for the window, and tells the player until when', async () => {
       const s = await sell({ state: 'PROCESSING' });
       const before = await snapshot(s);
       const res = await as(merchantApp, s.merchant).post(`/confirm/${s.orderId}`).send({});
       expect(res.status, JSON.stringify(res.body)).toBe(200);
-      await expectReleased(s, before);
-      expect((await getOrderRecord(s.orderId)).merchantCreditStatus).toBe('RELEASED');
+      const row = await getOrderRecord(s.orderId);
+      expect(row.status).toBe('PAID');
+      expect(row.merchantCreditStatus).toBe('HELD');
+      expect(new Date(row.merchantCreditHoldUntil).getTime()).toBeGreaterThan(Date.now() + 59 * 60_000);
+      // Nothing moved yet: the stake is still locked and the pool untouched.
+      expect(await snapshot(s)).toEqual(before);
+      expect(new Date(toPlayerOrderView(row).disputeUntil).getTime())
+        .toBe(new Date(row.merchantCreditHoldUntil).getTime());
     });
   });
 });

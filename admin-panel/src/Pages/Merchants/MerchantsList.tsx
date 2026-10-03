@@ -11,6 +11,7 @@ import React, { useEffect, useState } from 'react';
 import { Eye, Ban, CheckCircle, Plus, Settings, History, RefreshCw, DollarSign, ExternalLink } from 'lucide-react';
 import { DataTable } from '../../components/DataTable';
 import { StatusBadge } from '../../components/StatusBadge';
+import { DisputeRecordBadge } from '../../components/DisputeRecordBadge';
 import { SearchBar } from '../../components/SearchBar';
 import { Kpis, Toolbar, AvatarCell } from '../../components/design';
 import { Modal } from '../../components/Modal';
@@ -140,7 +141,9 @@ export const MerchantsList: React.FC = () => {
   };
 
   const handleSuspend  = async (merchantId: string) => { try { await api.merchants.suspend(merchantId, 'Suspended by admin'); toast.success('Suspended'); loadMerchants(); } catch { toast.error('Failed'); } };
-  const handleActivate = async (merchantId: string) => { try { await api.merchants.activate(merchantId); toast.success('Activated'); loadMerchants(); } catch { toast.error('Failed'); } };
+  // The server's own sentence on a refusal: a member in high-risk review is
+  // reinstated by a full admin only, and "Failed" would not say so (§32 S14).
+  const handleActivate = async (merchantId: string) => { try { await api.merchants.activate(merchantId); toast.success('Activated'); loadMerchants(); } catch (e: any) { toast.error(e.response?.data?.message || 'Failed to activate'); } };
 
   const handleApproveMerchant = async (merchantId: string) => {
     try {
@@ -148,7 +151,7 @@ export const MerchantsList: React.FC = () => {
       toast.success('Merchant approved');
       loadMerchants();
       if (selectedMerchant) openDetails(merchantId);
-    } catch { toast.error('Failed to approve'); }
+    } catch (e: any) { toast.error(e.response?.data?.message || 'Failed to approve'); }
   };
 
   // FIX A3: Reject merchant -- backend PUT /merchants/:id/reject added in Batch 1
@@ -211,6 +214,7 @@ export const MerchantsList: React.FC = () => {
         <div className="space-y-1">
           <StatusBadge status={m.status} type="merchant" />
           <StatusBadge status={m.merchantApprovalStatus} type="merchant" />
+          <DisputeRecordBadge lostDisputes={m.lostDisputes} highRiskAt={m.highRiskAt} />
         </div>
       ),
     },

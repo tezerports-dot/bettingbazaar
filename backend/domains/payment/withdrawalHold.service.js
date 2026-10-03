@@ -34,19 +34,22 @@ import { emitOrderUpdate, emitAdminUpdate } from '../notification/realtimeEmitte
 import { sendAlert } from '../../services/alerting.service.js';
 import { getSystemConfig } from '#db/repositories/config.js';
 
-/** Fallback matches the SystemConfig schema default (60). */
+/** Fallback matches the SystemConfig schema default (60), which is also its floor. */
 const DEFAULT_HOLD_MINUTES = 60;
 
 /**
- * Admin-configured hold window, in minutes. 0 means settle immediately on
- * confirm (the pre-2026-07-30 behaviour).
+ * Admin-configured hold window, in minutes — the SELL escrow window. At least
+ * an hour (owner, 2026-10-02): the player is told the member says they paid
+ * and has that long to say the money never arrived. The spec refuses less;
+ * a value below the floor that reached the row some other way reads as the
+ * floor, never as "settle now".
  */
 export async function holdMinutes() {
   try {
     const cfg = await getSystemConfig();
     const m = cfg?.withdrawalHoldMinutes;
-    // schema default: 60 — an explicit 0 is meaningful and must survive.
-    if (Number.isFinite(m) && m >= 0 && m <= 1440) return m;
+    // schema default: 60, and the spec's minimum.
+    if (Number.isFinite(m) && m >= DEFAULT_HOLD_MINUTES && m <= 1440) return m;
   } catch { /* fall through to the schema default */ }
   return DEFAULT_HOLD_MINUTES;
 }

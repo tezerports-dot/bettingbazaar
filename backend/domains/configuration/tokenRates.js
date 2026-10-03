@@ -49,14 +49,17 @@ function isUsableRate(rate) {
 }
 
 /**
- * What a merchant pays the platform per token, in USDT terms.
+ * The INR price of one USDT when a supervisor pays for team pool tokens in USDT.
  *
- * Defaults to 1 when unset, which is the schema default and the value this
- * always fell back to.
+ * Returns null when it has never been set, and equally when what is stored is
+ * not a price at all — the same rule, and the same band, as the player rate
+ * below. It used to default to 1 ("1 USDT = ₹1") and had no band, so the one
+ * reader had to know that 1 meant "unset", and 1.5 or 15,000 valued a pool
+ * purchase at whatever was typed (2c+, owner: the admin sets USDT rates).
  */
 export function adminToMerchantUsdtRate(config) {
   const rate = config?.usdtPricing?.merchantAdminBuyInr;
-  return isUsableRate(rate) ? Number(rate) : 1;
+  return isUsableRate(rate) && isSaneUsdtRate(rate) ? Number(rate) : null;
 }
 
 /**

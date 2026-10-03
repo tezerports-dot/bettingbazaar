@@ -95,6 +95,10 @@ export interface User {
   isMerchant: boolean;
   merchantApprovalStatus?: 'PENDING' | 'APPROVED' | 'REJECTED' | 'SUSPENDED';
 
+  /** Lost payment disputes, and when high-risk review opened (users repository mapper). */
+  lostDisputes?: number;
+  highRiskAt?: string | null;
+
   joinedAt: string;
   lastLogin: string;
 }
@@ -227,6 +231,10 @@ export interface Merchant {
     monthlyProcessed: number;
     totalOrdersProcessed: number;
   };
+  /** Lost payment disputes, and when high-risk review opened (GET /api/admin/merchants). */
+  lostDisputes?: number;
+  highRiskAt?: string | null;
+  suspensionReason?: string | null;
   createdAt: string;
 }
 

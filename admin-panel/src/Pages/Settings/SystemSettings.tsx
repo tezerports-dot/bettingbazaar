@@ -125,7 +125,7 @@ export const SystemSettings: React.FC = () => {
     betReservePercent: 1,      // schema default: 1
     winningsFeePercent: 1,     // schema default: 1
     payoutFeePercent: 0,       // schema default: 0
-    usdtPricing: { userMerchantBuyInr: 0, merchantAdminBuyInr: 1 },
+    usdtPricing: { userMerchantBuyInr: 0, merchantAdminBuyInr: 0 },
     // Every key the spec declares, so every one is sent back on save. The
     // operational half is seeded from MERCHANT_ORDER_RULES rather than restated.
     merchantOrderLimits: {
@@ -146,8 +146,10 @@ export const SystemSettings: React.FC = () => {
       thirtyMin: { mergeBeforeEndSec: 180, equalizerBeforeEndSec: 120, closeBeforeEndSec: 30, celebrateBeforeEndSec: 10 },
       fullDay:   { mergeBeforeEndSec: 300, equalizerBeforeEndSec: 120, closeBeforeEndSec: 30, celebrateBeforeEndSec: 10 },
     },
-    // How long a withdrawal freezes before the worker settles it.
-    withdrawalHoldMinutes: 60,  // schema default: 60
+    // How long a sell stays in escrow after the member marks it paid.
+    withdrawalHoldMinutes: 60,  // schema default: 60 (also the floor)
+    // How long a player has to dispute a buy the member rejected as unpaid.
+    rejectedBuyDisputeMinutes: 15,  // schema default: 15
     // Overload ceilings — past either one the server answers 503 fast rather
     // than admitting work into a queue that will never drain.
     loadShedding: { enabled: true, maxInFlight: 300, maxEventLoopLagMs: 0 },  // schema defaults: true / 300 / 0
@@ -213,7 +215,7 @@ export const SystemSettings: React.FC = () => {
           payoutFeePercent:   response.data.payoutFeePercent   ?? 0, // schema default: 0
           usdtPricing: {
             userMerchantBuyInr:  response.data.usdtPricing?.userMerchantBuyInr  ?? 0, // schema default: 0
-            merchantAdminBuyInr: response.data.usdtPricing?.merchantAdminBuyInr ?? 1, // schema default: 1
+            merchantAdminBuyInr: response.data.usdtPricing?.merchantAdminBuyInr ?? 0, // schema default: 0 (unset)
           },
           // The GET derives from the spec and fills EVERY key with its default,
           // so the server's object is taken whole. The placeholders underneath
@@ -265,6 +267,7 @@ export const SystemSettings: React.FC = () => {
             maxWarnings:              response.data.riskRules?.maxWarnings              ?? 3,
           },
           withdrawalHoldMinutes: response.data.withdrawalHoldMinutes ?? 60, // schema default: 60
+          rejectedBuyDisputeMinutes: response.data.rejectedBuyDisputeMinutes ?? 15, // schema default: 15
           loadShedding: {
             enabled:           response.data.loadShedding?.enabled           ?? true, // schema default: true
             maxInFlight:       response.data.loadShedding?.maxInFlight       ?? 300,  // schema default: 300
@@ -698,7 +701,7 @@ export const SystemSettings: React.FC = () => {
           </div>
 
           <div className="pt-4 border-t border-dark-700">
-            <label className="label" htmlFor="usdt-buy-price-user-merchant-inr">USDT Buy Price: User ↔ Merchant (INR)</label>
+            <label className="label" htmlFor="usdt-buy-price-user-merchant-inr">USDT Price: Players Buying Tokens (INR per USDT)</label>
             <input id="usdt-buy-price-user-merchant-inr"
               type="number" min={0} step={0.01}
               value={formData.usdtPricing.userMerchantBuyInr}
@@ -706,23 +709,24 @@ export const SystemSettings: React.FC = () => {
               className="input"
             />
             <p className="text-xs text-gray-500 mt-1">
-              Admin-owned INR price for one USDT on the future buy-only user/merchant USDT rail.
-              There is no USDT sell option for users or merchants; BB token conversion stays fixed at 1 token = ₹1.
+              What a player pays in USDT when buying tokens: one USDT buys this many tokens (1 token = ₹1).
+              Frozen on each order when it is placed. Must be ₹10–₹1,000, or 0 to stop USDT buys.
+              There is no USDT sell option.
             </p>
           </div>
 
           <div className="pt-4 border-t border-dark-700">
             <label className="label" htmlFor="usdt-buy-price-merchant-admin-inr">USDT Price: Team Pool Purchases (INR)</label>
             <input id="usdt-buy-price-merchant-admin-inr"
-              type="number" min={0.01} step={0.01}
+              type="number" min={0} step={0.01}
               value={formData.usdtPricing.merchantAdminBuyInr}
-              onChange={(e) => setFormData({ ...formData, usdtPricing: { ...formData.usdtPricing, merchantAdminBuyInr: Math.max(0.01, Number(e.target.value)) } })}
+              onChange={(e) => setFormData({ ...formData, usdtPricing: { ...formData.usdtPricing, merchantAdminBuyInr: Math.max(0, Number(e.target.value) || 0) } })}
               className="input"
             />
             <p className="text-xs text-gray-500 mt-1">
               Admin-owned INR price for one USDT when a supervisor pays for team pool tokens in USDT.
               Read when a pool request is fulfilled and frozen on that record, so a later change cannot
-              restate a trade that has settled.
+              restate a trade that has settled. Must be ₹10–₹1,000, or 0 to refuse USDT pool payments.
             </p>
           </div>
 
@@ -1058,20 +1062,44 @@ export const SystemSettings: React.FC = () => {
           of saving — nothing here needs a restart.
         </p>
 
-        <div>
-          <label className="label" htmlFor="withdrawal-hold-minutes">Withdrawal Hold (minutes)</label>
-          <input id="withdrawal-hold-minutes"
-            type="number" min={0} max={1440} step={1}
-            value={formData.withdrawalHoldMinutes}
-            onChange={(e) => setFormData({
-              ...formData,
-              withdrawalHoldMinutes: Math.min(1440, Math.max(0, Math.floor(Number(e.target.value) || 0))),
-            })}
-            className="input"
-          />
-          <p className="text-xs text-gray-500 mt-1">
-            How long a withdrawal is frozen on both sides before the worker settles it. 0 settles immediately.
-          </p>
+        {/* Both escrow windows (owner, 2026-10-02). Bounds are the spec's
+            (database/spec/config.spec.js): 60–1440 and 5–1440. The hold may
+            not go below an hour: it is the player's chance to dispute a sell
+            the member says they paid. */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className="label" htmlFor="withdrawal-hold-minutes">Sell escrow after "paid" (minutes)</label>
+            <input id="withdrawal-hold-minutes"
+              type="number" min={60} max={1440} step={1}
+              value={formData.withdrawalHoldMinutes}
+              onChange={(e) => setFormData({
+                ...formData,
+                withdrawalHoldMinutes: Math.min(1440, Math.max(60, Math.floor(Number(e.target.value) || 60))),
+              })}
+              className="input"
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              After a team member marks a sell paid, the player's tokens stay in escrow this long so the
+              player can raise a dispute. At least 60 minutes.
+            </p>
+          </div>
+          <div>
+            <label className="label" htmlFor="rejected-buy-dispute-minutes">Dispute window after a rejected buy (minutes)</label>
+            <input id="rejected-buy-dispute-minutes"
+              type="number" min={5} max={1440} step={1}
+              value={formData.rejectedBuyDisputeMinutes}
+              onChange={(e) => setFormData({
+                ...formData,
+                rejectedBuyDisputeMinutes: Math.min(1440, Math.max(5, Math.floor(Number(e.target.value) || 15))),
+              })}
+              className="input"
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              When a team member rejects a paid buy as unpaid, the team's tokens stay in escrow this long.
+              If the player disputes in time they stay until the dispute is decided; if not, they go back
+              to the team pool.
+            </p>
+          </div>
         </div>
 
         <div className="pt-4 mt-4 border-t border-dark-700">

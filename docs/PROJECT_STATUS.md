@@ -656,7 +656,11 @@ Owner answers, 2026-10-02 (two rounds; the second replaced the security deposit 
     disputes, withdrawals and merchant/player routes; the e2e/browser
     harnesses (`backend/tests/e2e`, `backend/tests/browser`, including
     `mutate.js`'s dynamic import of the deleted `depositEscrow`).
-  - OPEN DEFECT, fix first (a 2c regression, measured): `endWithdrawal(id,
+  - FIXED 2026-10-03 (c5f2d8a; `withdrawalResolutionPg`, M307–M310): the
+    defect below. A stake is now returned through `returnWithdrawalStake`,
+    which reads the ledger under the wallet lock, and the release and the
+    refund each refuse the other's key (`excludes`).
+  - WAS AN OPEN DEFECT (a 2c regression, measured): `endWithdrawal(id,
     'REFUND')` replayed on a settled sell pays the player twice. The first
     refund's `mirrorSettlement(…, 'CANCELLED')` rewrites
     `merchantCreditStatus` from RELEASED to REVERSED, so the replay
@@ -737,6 +741,37 @@ Owner answers, 2026-10-02 (two rounds; the second replaced the security deposit 
   - *USDT rates are admin-set*: the rate a player pays (USDT per token) and the
     rate a team buys pool tokens at, both in `SystemConfig.usdtPricing`,
     bounded, frozen on each order and each pool sale (§25).
+- **2c+ status (2026-10-03): BUILT on `claude/busy-wright-cy111a`.** What runs:
+  - *Buy window.* The member's "rejected as unpaid" moves the buy to
+    `REJECTED` (was `CANCELLED`) with the pool hold intact and writes
+    `dispute_window_until` on the database clock. The player's dispute route
+    checks the same column under the order lock; the `rejected-buy-window`
+    sweep (every minute) cancels an undisputed buy and releases the hold.
+    `rejectedBuyDisputeMinutes` 15 (5–1440). A REJECTED buy cannot be retried
+    while its window is open. Player: a pop-up on the push, and a countdown
+    with a Raise-a-dispute button on the order card. Member: the deadline on
+    the Rejected banner.
+  - *Sell window.* `withdrawalHoldMinutes` is 60 with a floor of 60; the
+    zero-hold "settle at once" path in the member confirm is gone. The player's
+    order shows `disputeUntil` (the hold's end) with the same dispute button.
+  - *Who was wrong is suspended* by all three routes that decide a dispute
+    (`disputeOutcome.service.js` → `disputeFaults.js`), once per order. Third
+    loss → high-risk review; a sub-admin's lift is then refused in the write
+    and a full admin's goes through. Admin Users and Merchants lists show
+    the lost-dispute count and a High risk badge; the Dispute Manager says
+    who will be suspended before the press.
+  - *USDT rates.* Both `usdtPricing` rates are held to ₹10–₹1,000 per USDT
+    on save and on read; the team pool rate's default is now 0 (unset).
+  - *Fixed on the way:* `expectFrom` was ignored by the order writer, so a
+    member's reject could close a buy the player had DISPUTED (and the
+    paid-timeout sweep could dispute a just-completed buy); the Dispute
+    Manager's decision menu sent values the route refuses, so no dispute
+    could be decided for the team.
+  - *Defaults chosen:* the loser is suspended automatically on the decision
+    (no separate admin step); lifting high risk is admin-only, lifting a
+    first or second loss is admin or sub-admin; a sell can still be disputed
+    after its hour (the refund then comes out of the team pool, as in 2c).
+  - *Deferred to Step 3:* the five Telegram notification bots.
 - **2d Orders.** Global admin-editable denomination list; CASH 500–10,000 and
   UPI_BANK 50,000–500,000 for both directions; no splitting (split payouts and
   CDM receipts deleted); USDT 100–10,000 step 100; the QR cash link.

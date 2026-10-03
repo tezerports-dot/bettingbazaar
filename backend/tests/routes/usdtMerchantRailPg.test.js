@@ -237,6 +237,31 @@ describePg('the USDT merchant rail', () => {
       expect(tokensPerUsdt(await getSystemConfig())).toBe(100);
     });
 
+    it('holds the TEAM POOL rate to the same band at the door (2c+)', async () => {
+      // It values every USDT payment for pool tokens and had no band at all:
+      // only "greater than zero". Same owner, same bound, same message.
+      const adminApp = mountRouter((await import('../../routes/admin/system.admin.routes.js')).default);
+      const admin = await actor({ isAdmin: true });
+      const restore = (await getSystemConfig())?.usdtPricing?.merchantAdminBuyInr ?? 0; // schema default: 0
+      try {
+        for (const bad of [10_000, 1, 0.5]) {
+          const res = await as(adminApp, admin).put('/system/config').send({ usdtPricing: { merchantAdminBuyInr: bad } });
+          expect(res.status, `₹${bad}/USDT must be refused`).toBe(400);
+          expect(res.body.message).toMatch(/team pool USDT rate/i);
+          expect(res.body.message).toMatch(/misplaced decimal/i);
+        }
+        // 0 means unset and is accepted; a real rate goes through and is read.
+        expect((await as(adminApp, admin).put('/system/config').send({ usdtPricing: { merchantAdminBuyInr: 0 } })).status).toBe(200);
+        const ok = await as(adminApp, admin).put('/system/config').send({ usdtPricing: { merchantAdminBuyInr: 92 } });
+        expect(ok.status).toBe(200);
+        expect((await getSystemConfig()).usdtPricing.merchantAdminBuyInr).toBe(92);
+      } finally {
+        await db.config.applyConfig({
+          scope: 'system', actor: 'test', patch: { usdtPricing: { merchantAdminBuyInr: restore } },
+        }).catch(() => {});
+      }
+    });
+
     // ── The chain, at the door ─────────────────────────────────────────────
     it('refuses a USDT buy that names no chain', async () => {
       // A USDT order with no chain matches no member, so it would sit in the

@@ -7,6 +7,7 @@ import { moveDepositMoney } from '../payment/depositCredit.js';
 // The one owner of how an admin decision ends a withdrawal's money (F-027),
 // and of a cancelled buy's merchant hold.
 import { endWithdrawal } from '../payment/withdrawalHold.service.js';
+import { recordDisputeLoser } from './disputeOutcome.service.js';
 import { releaseUTR } from '../../middleware/utrValidation.js';
 import { emitMerchantUpdate } from '../notification/realtimeEmitters.js';
 // The order state machine. Resolving a dispute is a guarded transition, and it
@@ -253,7 +254,7 @@ router.post('/dispute-orders/:orderId/chat', authenticate, hasPermission('canRes
 //     CANCEL_ORDER        → refund tokens to user (safe default)
 router.post('/dispute-orders/:orderId/resolve', authenticate, hasPermission('canResolveDisputes'), async (req, res) => {
   try {
-    const { decision, resolution, penaltyUser, penaltyMerchant } = req.body;
+    const { decision, resolution } = req.body;
     
     const validDecisions = ['RELEASE_TO_USER', 'RELEASE_TO_MERCHANT', 'CANCEL_ORDER'];
     if (!validDecisions.includes(decision)) {
@@ -271,6 +272,9 @@ router.post('/dispute-orders/:orderId/resolve', authenticate, hasPermission('can
 
     const adminName = req.user?.username || req.user?.mobile || 'Admin';
     let systemMessage = '';
+    // The order as it stood when the decision was taken: whoever lost a
+    // DISPUTE is suspended (2c+), and only a DISPUTED order was one.
+    const asDecided = { ...order };
 
     // ── THE TRANSITION IS THE GATE, and it runs before the money ─────────────
     //
@@ -314,10 +318,14 @@ router.post('/dispute-orders/:orderId/resolve', authenticate, hasPermission('can
     // A withdrawal's money step is keyed end to end: replaying it repairs a
     // first click that failed part-way and moves nothing when it succeeded.
     const withdrawalDecision = releasesToMerchant ? 'RELEASE' : 'REFUND';
+    const outcome = { completed: newStatus === 'COMPLETED', decision, by: req.user.userId };
     if (moved.idempotent) {
       if (order.type === 'WITHDRAWAL') {
         await endWithdrawal(order.orderId, withdrawalDecision, { reason: resolution, by: req.user.userId });
       }
+      // Keyed by the order: repairs a first decision whose suspension did not
+      // land, and records nothing twice.
+      await recordDisputeLoser(asDecided, outcome);
       return res.json({ success: true, message: 'Dispute already resolved', order: moved.order ?? order });
     }
 
@@ -406,13 +414,16 @@ router.post('/dispute-orders/:orderId/resolve', authenticate, hasPermission('can
       }
     }
 
-    // ── Handle optional penalties ─────────────────────────────────────────────
-    if (penaltyUser > 0) {
-      // Future: deduct penalty from user balance via walletAuthority
-      systemMessage += `\n⚠️ User penalty noted: ${penaltyUser} tokens (manual action required)`;
-    }
-    if (penaltyMerchant > 0) {
-      systemMessage += `\n⚠️ Merchant penalty noted: ${penaltyMerchant} tokens (manual action required)`;
+    // ── Whoever was wrong is suspended (2c+) ──────────────────────────────────
+    // This was an optional "penalty" the panel sent under a name the route
+    // never read, which then moved nothing and said "manual action required".
+    // The owner's rule replaces it: the party the decision went against is
+    // suspended until staff lift it, and a third lost dispute opens high-risk
+    // review that only an admin can close.
+    const fault = await recordDisputeLoser(asDecided, outcome);
+    if (fault.ok && !fault.already) {
+      systemMessage += `\n⛔ ${fault.party === 'PLAYER' ? 'The player' : 'The team member'} lost this dispute and is suspended`
+        + (fault.highRisk ? ` (lost disputes: ${fault.lostCount} — high-risk admin review)` : '') + '.';
     }
 
     // The order was written by the transition above, decision fields and all —

@@ -248,6 +248,9 @@ export const OrderCard: React.FC<{
         {order.status === OrderStatus.REJECTED && (
           <Banner tone="danger" title="Rejected" style={{ marginBottom: 13 }}>
             {order.rejectedReason || order.disputeReason || 'This order was rejected.'}
+            {order.disputeWindowUntil && new Date(order.disputeWindowUntil).getTime() > Date.now() && (
+              <> The team's tokens stay held until {new Date(order.disputeWindowUntil).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} in case the player disputes. If they do not, the tokens return to the team pool.</>
+            )}
           </Banner>
         )}
 

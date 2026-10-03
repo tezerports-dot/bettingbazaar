@@ -783,7 +783,17 @@ export async function retryOrder(userId, orderId) {
   // Only an order that ended with nothing having happened. A COMPLETED order
   // has been paid, a PAID one is being worked, and a DISPUTED one is somebody
   // else's decision — "try again" is not the right offer for any of them.
-  const retryable = ['CANCELLED', 'FAILED', 'REJECTED'].includes(original.status);
+  // REJECTED is no longer an end (2c+): a buy the member rejected as unpaid
+  // waits there, with the team's tokens in escrow, for the player to dispute
+  // it. A retry beside it would hold a second team's tokens for the same
+  // purchase. Once the window closes the buy is CANCELLED and may be retried.
+  if (original.status === 'REJECTED') {
+    throw Object.assign(
+      new Error('This buy was rejected as unpaid. If you paid, raise a dispute before the window closes; otherwise you can try again once it has closed.'),
+      { status: 409, code: 'DISPUTE_WINDOW_OPEN' },
+    );
+  }
+  const retryable = ['CANCELLED', 'FAILED'].includes(original.status);
   if (!retryable) {
     throw Object.assign(
       new Error(`This order is ${original.status}. Only an order that ended without being served can be retried.`),

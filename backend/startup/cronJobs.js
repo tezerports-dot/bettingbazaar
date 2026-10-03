@@ -108,6 +108,22 @@ export function registerCronJobs(rebuildLeaderboard) {
   // 60s granularity against a hold measured in minutes: a settlement landing up
   // to a minute late is invisible, and polling faster only adds load for orders
   // that are, by definition, deliberately waiting.
+  // The BUY escrow window (2c+): a buy the member rejected as unpaid keeps
+  // its team pool hold while the player may dispute; when the window closes
+  // with no dispute, the buy is cancelled and the hold goes back to the pool.
+  registerRecurring('rejected-buy-window', 60 * 1000, async () => {
+    try {
+      const { closeRejectedBuyWindows } = await import('../domains/payment/rejectedBuyWindow.service.js');
+      const n = await closeRejectedBuyWindows();
+      if (n > 0) console.log(`[reject-window] Closed ${n} rejected buy window(s); holds returned to their pools`);
+    } catch (e) {
+      console.error('[reject-window] cron error:', e.message);
+      sendAlert('rejected-buy-window-failed',
+        'Rejected-buy window sweep failed — team tokens stay in escrow after their window closed', { error: e.message })
+        .catch(() => {});
+    }
+  });
+
   registerRecurring('withdrawal-hold-settle', 60 * 1000, async () => {
     try {
       const { settleDueHolds } = await import('../domains/payment/withdrawalHold.service.js');

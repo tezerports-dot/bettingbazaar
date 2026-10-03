@@ -304,8 +304,22 @@ router.put('/users/:userId/unblock', authenticate, hasPermission('canManageUsers
 
     // `status` comes back to ACTIVE inside `setBlocked` now. It used to be a
     // second `updateUser` from here, and the pair could come apart.
-    const user = await db.users.setBlocked(req.params.userId, { blocked: false });
-    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+    //
+    // A player in high-risk review (a third lost dispute, 2c+) is lifted by a
+    // full admin only. The write refuses it in its WHERE; the read before it
+    // is only there to say why, rather than "not found".
+    const mayLiftHighRisk = req.user.isAdmin === true;
+    const user = await db.users.setBlocked(req.params.userId, { blocked: false, mayLiftHighRisk });
+    if (!user) {
+      const existing = await db.users.getUser(req.params.userId);
+      if (existing?.highRiskAt && !mayLiftHighRisk) {
+        return res.status(403).json({
+          success: false, code: 'HIGH_RISK_REVIEW',
+          message: `This player has lost ${existing.lostDisputes} disputes and is in high-risk review. Only an admin can lift this suspension.`,
+        });
+      }
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
 
     // Resetting warnings is the admin saying "this user is cleared", so the
     // explicit payment-complaint flag goes with it (owner directive 2026-07-14).

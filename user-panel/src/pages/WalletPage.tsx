@@ -12,6 +12,7 @@
  */
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import apiClient from '../services/apiClient';
+import { DisputeWindowPanel } from '../components/DisputeWindow';
 import { PAYMENT_STATE_LABELS, PAYMENT_STATE_COLOR, isActive, type PaymentOrderState } from '../services/paymentStateMachine';
 // M-05: WalletTransactionDTO normalizer — GOVERNANCE §4: this module must have consumers.
 import { normalizeTransaction } from '../services/walletTransactionDTO';
@@ -51,6 +52,10 @@ interface PaymentOrder {
   _id: string; orderId: string; type: 'DEPOSIT' | 'WITHDRAWAL'; status: string;
   tokenAmount: number; fiatAmount: number; rateUsed: number; createdAt: string;
   expiresAt?: string; paidAt?: string;
+  // Until when the player may dispute while the tokens are in escrow: a buy the
+  // member rejected as unpaid, or a sell the member marked paid. Derived by the
+  // server (`playerOrderView.js`, 2c+).
+  disputeUntil?: string | null;
   /**
    * Where to pay, and nothing about who is being paid.
    *
@@ -1004,7 +1009,10 @@ const WalletPage: React.FC = () => {
             // `retriedAway` hides the button once they have used it: the server
             // allows one retry per order and a button that 409s is worse than
             // no button.
-            const canRetry = ['CANCELLED', 'FAILED', 'REJECTED'].includes(order.status)
+            // Not REJECTED: a buy rejected as unpaid waits there for the
+            // player to dispute it, and the server refuses a retry beside it
+            // until the window closes and the buy is CANCELLED (2c+).
+            const canRetry = ['CANCELLED', 'FAILED'].includes(order.status)
               && !retriedAway.includes(order.orderId || order._id);
             return (
               <div key={order._id} style={{ ...card, padding: 14 }}>
@@ -1019,6 +1027,11 @@ const WalletPage: React.FC = () => {
                 </div>
                 {order.utrNumber && <div style={{ fontSize: 10, color: 'var(--text3)', marginBottom: 8 }}>UTR: <span className="font-grotesk" style={{ color: 'var(--text2)' }}>{order.utrNumber}</span></div>}
                 {order.expiresAt && ['ASSIGNED', 'PROCESSING'].includes(order.status) && <div style={{ marginBottom: 8 }}><CountdownTimer expiresAt={order.expiresAt} /></div>}
+                {order.disputeUntil && (
+                  <div style={{ marginBottom: 8 }}>
+                    <DisputeWindowPanel order={{ ...order, orderId: order.orderId || order._id }} onDisputed={() => { void loadOrders(); }} />
+                  </div>
+                )}
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderTop: '1px solid var(--line)', paddingTop: 9 }}>
                   <span style={{ fontSize: 9, color: 'var(--text3)' }}>Order {order.orderId || order._id}</span>
                   <span style={{ display: 'flex', gap: 8 }}>

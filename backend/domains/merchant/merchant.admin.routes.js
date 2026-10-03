@@ -59,6 +59,11 @@ router.get('/merchants', authenticate, hasPermission('canManageMerchants'), asyn
       merchantType:           m.merchantType,
       panelUrl:               m.panelUrl,
       merchantStats:          m.merchantStats,
+      // Lost payment disputes; from the third, high-risk review is open and
+      // only a full admin can reinstate (2c+).
+      lostDisputes:           m.lostDisputes,
+      highRiskAt:             m.highRiskAt,
+      suspensionReason:       m.suspensionReason ?? null,
       createdAt:              m.createdAt,
     }));
 
@@ -127,6 +132,28 @@ router.put('/merchants/:merchantId/suspend', authenticate, hasPermission('canMan
   }
 });
 
+/**
+ * Reinstate a merchant — the activate and approve screens share it, so they
+ * admit the same things (§32 S3).
+ *
+ * A team member in high-risk review (a third lost dispute, 2c+) is reinstated
+ * by a full admin only. `approveMerchant` refuses it in its WHERE; the read
+ * after a refusal is only there to say why, rather than "not found".
+ */
+async function reinstate(req, merchantId) {
+  const mayLiftHighRisk = req.user.isAdmin === true;
+  const merchant = await db.merchants.approveMerchant(merchantId, { actor: req.user.userId, mayLiftHighRisk });
+  if (merchant) return merchant;
+  const existing = await db.merchants.getMerchant(merchantId);
+  if (existing?.highRiskAt && !mayLiftHighRisk) {
+    return { refused: true, status: 403, body: {
+      success: false, code: 'HIGH_RISK_REVIEW',
+      message: `This team member has lost ${existing.lostDisputes} disputes and is in high-risk review. Only an admin can reinstate them.`,
+    } };
+  }
+  return { refused: true, status: 404, body: { success: false, message: 'Merchant not found' } };
+}
+
 // Activate a merchant, clearing any stale suspension reason in the same statement.
 router.put('/merchants/:merchantId/activate', authenticate, hasPermission('canManageMerchants'), async (req, res) => {
   try {
@@ -136,8 +163,8 @@ router.put('/merchants/:merchantId/activate', authenticate, hasPermission('canMa
     // that is ACTIVE while still carrying "suspended for chargebacks" is a row
     // that says two things at once, and an operator reading it cannot tell
     // which is current.
-    const merchant = await db.merchants.approveMerchant(merchantId, { actor: req.user.userId });
-    if (!merchant) return res.status(404).json({ success: false, message: 'Merchant not found' });
+    const merchant = await reinstate(req, merchantId);
+    if (merchant.refused) return res.status(merchant.status).json(merchant.body);
 
     await db.audit.recordDetailed({
       performedBy: req.user.userId, action: 'MERCHANT_ACTIVATED', category: 'MERCHANT',
@@ -294,8 +321,8 @@ router.put('/merchants/:merchantId/approve', authenticate, hasPermission('canMan
     // Approval sets the status, records WHO approved it and WHEN, and clears
     // any stale suspension or rejection reason — one statement, so an ACTIVE
     // merchant cannot still be carrying "rejected: documents did not verify".
-    const merchant = await db.merchants.approveMerchant(merchantId, { actor: req.user.userId });
-    if (!merchant) return res.status(404).json({ success: false, message: 'Merchant not found' });
+    const merchant = await reinstate(req, merchantId);
+    if (merchant.refused) return res.status(merchant.status).json(merchant.body);
 
     // The linked account carries the merchant role so it is excluded from the
     // player list. Signup already sets it; this is the repair for accounts

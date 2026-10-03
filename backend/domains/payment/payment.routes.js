@@ -416,13 +416,17 @@ router.post('/order/:orderId/dispute', authenticatePlayer, orderAccessGuard, asy
     if (!reason?.trim()) return res.status(400).json({ success: false, message: 'reason is required' });
 
     const order = req.p2pOrder;
-    const DISPUTABLE = ['PAID', 'COMPLETED'];
-    if (!DISPUTABLE.includes(order.status)) {
+    // REJECTED (2c+): a buy the member rejected as unpaid. The player may
+    // dispute it until its window closes, and the team's tokens stay in escrow
+    // until then; the deadline is checked below, inside the transition.
+    const rejectedBuy = order.status === 'REJECTED' && order.type === 'DEPOSIT';
+    const DISPUTABLE = rejectedBuy ? ['REJECTED'] : ['PAID', 'COMPLETED'];
+    if (!rejectedBuy && !DISPUTABLE.includes(order.status)) {
       return res.status(400).json({
         success: false,
         // Names the states, because "cannot dispute" alone sends a player to
         // support to ask which ones they are.
-        message: 'A dispute can be raised once an order is paid or completed.',
+        message: 'A dispute can be raised once an order is paid or completed, or within the window after a payment is rejected.',
       });
     }
 
@@ -442,8 +446,17 @@ router.post('/order/:orderId/dispute', authenticatePlayer, orderAccessGuard, asy
       }
     }
 
+    const windowClosed = Object.assign(new Error('window_closed'), { windowClosed: true });
     const disputed = await disputeOrder(order.orderId, {
       expectFrom: DISPUTABLE,
+      // The rejected-buy window, asked on the DATABASE clock under the order's
+      // row lock — the same clock and the same instant the window sweep reads,
+      // so a dispute and the window closing cannot both win.
+      ...(rejectedBuy ? {
+        within: async (client) => {
+          if (!await db.orders.rejectedBuyWindowOpenWithin(client, order.orderId)) throw windowClosed;
+        },
+      } : {}),
       set: {
         // Capped. `dispute_reason` is TEXT, so an oversized reason does not
         // error — it is stored whole, and an admin's dispute queue renders it.
@@ -453,7 +466,16 @@ router.post('/order/:orderId/dispute', authenticatePlayer, orderAccessGuard, asy
         disputeRaisedAt: new Date(),
         disputeRaisedBy: 'user',
       },
+    }).catch((err) => {
+      if (err === windowClosed) return { ok: false, windowClosed: true };
+      throw err;
     });
+    if (disputed.windowClosed) {
+      return res.status(409).json({
+        success: false,
+        message: 'The window to dispute this rejected payment has closed. Contact support if you paid.',
+      });
+    }
     if (!disputed.ok) {
       // 409, not 400: understood and refused because the order moved on — a
       // merchant confirming while the user was typing is the ordinary case.

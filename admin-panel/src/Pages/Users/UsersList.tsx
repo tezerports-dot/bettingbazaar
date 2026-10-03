@@ -2,6 +2,7 @@
 import React, { useEffect, useState } from 'react';
 import { Users, Eye, Ban, CheckCircle, Plus, Minus, CreditCard, History, Ghost, Trash2 } from 'lucide-react';
 import { DataTable } from '../../components/DataTable';
+import { DisputeRecordBadge } from '../../components/DisputeRecordBadge';
 import { StatusBadge } from '../../components/StatusBadge';
 import { SearchBar } from '../../components/SearchBar';
 import { Modal } from '../../components/Modal';
@@ -102,7 +103,9 @@ export const UsersList: React.FC = () => {
   };
 
   const handleBlockUser   = async (id: string) => { try { await api.users.blockUser(id, 'Blocked by admin'); toast.success('Blocked'); loadUsers(); } catch { toast.error('Failed'); } };
-  const handleUnblockUser = async (id: string) => { try { await api.users.unblockUser(id); toast.success('Unblocked'); loadUsers(); } catch { toast.error('Failed'); } };
+  // The server's own sentence on a refusal: a player in high-risk review is
+  // lifted by a full admin only, and "Failed" would not say so (§32 S14).
+  const handleUnblockUser = async (id: string) => { try { await api.users.unblockUser(id); toast.success('Unblocked'); loadUsers(); } catch (e: any) { toast.error(e.response?.data?.message || 'Failed to unblock'); } };
   // Closing an account. The server refuses one with an open order or money
   // locked in escrow, and names which (409) — that sentence IS what the admin
   // has to act on, so it is shown, not replaced with "Failed".
@@ -145,7 +148,12 @@ export const UsersList: React.FC = () => {
     { key: 'deposit',  label: 'Deposit',  render: (u: User) => <div className="text-right"><Money value={formatters.currency(u.depositBalance)} /></div> },
     { key: 'winnings', label: 'Winnings', render: (u: User) => <div className="text-right"><Money value={formatters.currency(u.winningsBalance)} /></div> },
     { key: 'locked',   label: 'Locked',   render: (u: User) => <div className="text-right"><Money value={formatters.currency(u.lockedBalance)} tone={(u.lockedBalance || 0) > 0 ? 'warning' : 'muted'} /></div> },
-    { key: 'status',    label: 'Status', render: (u: User) => <StatusBadge status={u.status}    type="user" /> },
+    { key: 'status',    label: 'Status', render: (u: User) => (
+      <div className="space-y-1">
+        <StatusBadge status={u.status} type="user" />
+        <DisputeRecordBadge lostDisputes={u.lostDisputes} highRiskAt={u.highRiskAt} />
+      </div>
+    ) },
     {
       key: 'actions', label: '',
       render: (u: User) => (

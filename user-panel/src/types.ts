@@ -271,6 +271,8 @@ export interface PaymentOrder {
   // and refuses all of them.
   payTo?:             PayTo | null;
   expiresAt?:         string;
+  /** Until when the player may dispute while the tokens are in escrow (`playerOrderView.js`, 2c+). */
+  disputeUntil?:      string | null;
   createdAt:          number | string;
   paidAt?:            string;
   completedAt?:       string;

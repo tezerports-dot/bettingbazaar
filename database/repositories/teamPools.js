@@ -563,11 +563,16 @@ export async function reverseSellFromPool(orderId, { actor = 'system', reason = 
  * forgot. A COMPLETED buy still holding is NOT here: its player was credited
  * and the hold is owed to them, so releasing it would hand the tokens back
  * to the team. `findCompletedUnspentBuys` reports those for a person.
+ *
+ * Nor is a REJECTED buy (2c+): it is a buy the member rejected as unpaid,
+ * whose tokens stay in escrow while the player may still dispute. Releasing
+ * it here would hand the team the tokens inside the player's window; the
+ * window sweep (`rejectedBuyWindow.service.js`) releases it when it closes.
  */
 export async function findStrandedBuyHolds({ limit = 200 } = {}) {
   const { rows } = await pgQuery(
     `SELECT order_id, team_id, pool_held_paise, state FROM order_states
-      WHERE pool_held_paise > 0 AND state IN ('CANCELLED', 'FAILED', 'REJECTED', 'PENDING_QUEUE')
+      WHERE pool_held_paise > 0 AND state IN ('CANCELLED', 'FAILED', 'PENDING_QUEUE')
       LIMIT $1`, [limit], 'team_pool_stranded_holds');
   return rows.map((r) => ({ orderId: r.order_id, teamId: r.team_id, heldPaise: toNum(r.pool_held_paise), state: r.state }));
 }

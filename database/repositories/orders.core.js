@@ -99,7 +99,9 @@ export const ALLOWED_FROM = Object.freeze({
   [ORDER_STATES.COMPLETED]:  [ORDER_STATES.PAID, ORDER_STATES.PROCESSING, ORDER_STATES.DISPUTED],
   // A dispute can be raised on anything not yet final, including COMPLETED —
   // that is precisely when disputes happen.
-  [ORDER_STATES.DISPUTED]:   [ORDER_STATES.PROCESSING, ORDER_STATES.PAID, ORDER_STATES.COMPLETED],
+  // REJECTED: a buy the member rejected as unpaid, inside the window in which
+  // the player may still say they paid (2c+, owner 2026-10-02).
+  [ORDER_STATES.DISPUTED]:   [ORDER_STATES.PROCESSING, ORDER_STATES.PAID, ORDER_STATES.COMPLETED, ORDER_STATES.REJECTED],
   // Abandonment paths. An order that has already COMPLETED cannot be cancelled;
   // undoing settled value is a reversal, which is the settlement domain's job.
   // PAID is here to match what the merchant reject route already does. The
@@ -112,9 +114,12 @@ export const ALLOWED_FROM = Object.freeze({
   // docs/ORDERS_REQUEUE_CYCLE.md as follow-up.
   // DISPUTED, for the same reason as COMPLETED above: a dispute resolved in the
   // payer's favour cancels the order and refunds it.
-  [ORDER_STATES.CANCELLED]:  [ORDER_STATES.PENDING_QUEUE, ORDER_STATES.ASSIGNED, ORDER_STATES.PROCESSING, ORDER_STATES.PAID, ORDER_STATES.DISPUTED],
+  // REJECTED, when its dispute window closes with no dispute raised.
+  [ORDER_STATES.CANCELLED]:  [ORDER_STATES.PENDING_QUEUE, ORDER_STATES.ASSIGNED, ORDER_STATES.PROCESSING, ORDER_STATES.PAID, ORDER_STATES.DISPUTED, ORDER_STATES.REJECTED],
   [ORDER_STATES.FAILED]:     [ORDER_STATES.PENDING_QUEUE, ORDER_STATES.ASSIGNED, ORDER_STATES.PROCESSING, ORDER_STATES.PAID],
-  [ORDER_STATES.REJECTED]:   [ORDER_STATES.PENDING_QUEUE, ORDER_STATES.ASSIGNED, ORDER_STATES.PROCESSING],
+  // PAID: the member says the player's payment never arrived. The buy waits
+  // here, its pool hold intact, until the player disputes or the window closes.
+  [ORDER_STATES.REJECTED]:   [ORDER_STATES.PENDING_QUEUE, ORDER_STATES.ASSIGNED, ORDER_STATES.PROCESSING, ORDER_STATES.PAID],
 });
 
 /**
@@ -284,14 +289,22 @@ export async function transition({
   // row, after the transition is recorded. A throw unwinds the move with it;
   // the caller sees the throw, never a half-applied assignment.
   within = null,
+  // A caller's narrowing of ALLOWED_FROM (`expectFrom`). It used to be checked
+  // for being a subset and then IGNORED, so a route that meant "only from
+  // PAID" moved the order from any state the table allows: a member's
+  // "rejected as unpaid" cancelled a DISPUTED buy and took the dispute away.
+  // Applied in the UPDATE's WHERE with the table, under the row lock.
+  onlyFrom = null,
 }) {
   if (!ORDER_STATES[to]) {
     throw new Error(`Unknown order state '${to}'. Known: ${Object.keys(ORDER_STATES).join(', ')}`);
   }
-  const allowedFrom = ALLOWED_FROM[to];
-  if (!allowedFrom) {
+  const permitted = ALLOWED_FROM[to];
+  if (!permitted) {
     throw new Error(`Nothing may transition INTO '${to}' — an order is opened there, not moved there.`);
   }
+  const narrowing = onlyFrom ? (Array.isArray(onlyFrom) ? onlyFrom : [onlyFrom]) : null;
+  const allowedFrom = narrowing ? permitted.filter((state) => narrowing.includes(state)) : permitted;
   const mayRepeat = REVISITABLE.includes(to);
 
   return withOrderLock(orderId, async ({ client, oid, order }) => {

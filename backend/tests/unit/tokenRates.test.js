@@ -173,13 +173,25 @@ describe('the rate that prices every USDT purchase is bounded', () => {
   });
 });
 
-describe('the admin-to-merchant leg', () => {
-  it('falls back to the schema default of 1 when unset', () => {
-    // Unlike the other leg this one HAS a meaningful default — it is the value
-    // the route it feeds has always used — so a fallback here is not a guess.
-    expect(adminToMerchantUsdtRate({})).toBe(1);
-    expect(adminToMerchantUsdtRate(null)).toBe(1);
-    expect(adminToMerchantUsdtRate({ usdtPricing: { merchantAdminBuyInr: 0 } })).toBe(1);
+describe('the team pool leg', () => {
+  it('is null when unset — 0 is the schema default and is not a price', () => {
+    // It fell back to 1 ("1 USDT = ₹1"), so its one reader had to know that 1
+    // meant unset. Unset now reads as unset, as the player leg always has.
+    expect(adminToMerchantUsdtRate({})).toBeNull();
+    expect(adminToMerchantUsdtRate(null)).toBeNull();
+    expect(adminToMerchantUsdtRate({ usdtPricing: { merchantAdminBuyInr: 0 } })).toBeNull();
+  });
+
+  it('is held to the same sanity band as the player leg, at both ends', () => {
+    // A value that reached the row some other way (a direct write, an old
+    // backup) fails closed instead of valuing a pool payment at it.
+    expect(adminToMerchantUsdtRate({ usdtPricing: { merchantAdminBuyInr: 1 } })).toBeNull();
+    expect(adminToMerchantUsdtRate({ usdtPricing: { merchantAdminBuyInr: 9.99 } })).toBeNull();
+    expect(adminToMerchantUsdtRate({ usdtPricing: { merchantAdminBuyInr: 1000.01 } })).toBeNull();
+    // The legitimate case still prices, including both edges of the band.
+    expect(adminToMerchantUsdtRate({ usdtPricing: { merchantAdminBuyInr: 10 } })).toBe(10);
+    expect(adminToMerchantUsdtRate({ usdtPricing: { merchantAdminBuyInr: 90 } })).toBe(90);
+    expect(adminToMerchantUsdtRate({ usdtPricing: { merchantAdminBuyInr: 1000 } })).toBe(1000);
   });
 });
 

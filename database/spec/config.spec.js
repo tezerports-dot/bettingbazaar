@@ -274,11 +274,20 @@ export const SYSTEM_CONFIG_SPEC = group({
   // the hold — a deliberate escape hatch, not a recommendation: at 0 a
   // dishonest merchant holds liquid tokens the instant they press confirm.
   // Capped at 24h because the player is waiting on money they have given up.
-  withdrawalHoldMinutes: n(60, 0, 1440),
+  // The SELL escrow window: after a member says they paid, the player's tokens
+  // stay in escrow at least this long and the player may dispute inside it.
+  // Floor 60 — "at least 1 hour" (owner, 2026-10-02); 0 no longer settles at once.
+  withdrawalHoldMinutes: n(60, 60, 1440),
+  // The BUY escrow window: after a member rejects a paid buy as unpaid, the
+  // player has this long to dispute before the hold returns to the team pool
+  // (owner, 2026-10-02: 15 minutes).
+  rejectedBuyDisputeMinutes: n(15, 5, 1440),
 
   usdtPricing: group({
     userMerchantBuyInr:  n(0, 0),
-    merchantAdminBuyInr: n(1, 0.01),
+    // 0 = not set: a USDT pool payment is refused until an admin sets it,
+    // inside the band `tokenRates.js` owns (₹10–₹1,000 per USDT).
+    merchantAdminBuyInr: n(0, 0),
   }),
 
   // MUST divide 60 evenly so blocks tile the hour cleanly. The type label

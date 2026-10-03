@@ -58,6 +58,7 @@ const COLUMNS = `merchant_id, user_id, name, public_ref, username, mobile, email
   stats_last_reset_at,
   success_rate, avg_response_minutes, dispute_rate, consecutive_rejections,
   consecutive_expiries, assignment_paused_at, assignment_pause_reason, cash_ready,
+  lost_disputes, high_risk_at,
   total_orders_completed, total_orders_all, is_supervisor, supervisor_rail,
   created_at, updated_at`;
 
@@ -161,6 +162,10 @@ function toMerchant(row) {
     consecutiveRejections: toInt(row.consecutive_rejections),
     consecutiveExpiries: toInt(row.consecutive_expiries),
     assignmentPausedAt: row.assignment_paused_at,
+    // Lost payment disputes and, from the third, when high-risk review opened
+    // (2c+, `disputeFaults.js`). Only a full admin reinstates while it is set.
+    lostDisputes: toInt(row.lost_disputes) ?? 0,
+    highRiskAt: row.high_risk_at ?? null,
     // A CASH member at the machine, ready for a buy (§3.10). Switched off by
     // the assignment that hands them one.
     cashReady: row.cash_ready === true,
@@ -692,7 +697,7 @@ export async function suspendMerchant(merchantId, reason, { actor = null } = {})
  * is ACTIVE while still carrying "suspended for fraud" is a row that says two
  * things at once, and an operator reading it cannot tell which is current.
  */
-export async function approveMerchant(merchantId, { actor = null } = {}) {
+export async function approveMerchant(merchantId, { actor = null, mayLiftHighRisk = false } = {}) {
   const { rows } = await pgQuery(
     `UPDATE merchants SET
        merchant_approval_status = 'APPROVED', status = 'ACTIVE',
@@ -716,9 +721,16 @@ export async function approveMerchant(merchantId, { actor = null } = {}) {
        consecutive_expiries = 0,
        assignment_paused_at = NULL,
        assignment_pause_reason = NULL,
+       -- A full admin's reinstatement closes the high-risk review it answers;
+       -- the lost-dispute count stays, so the next loss reopens it at once.
+       high_risk_at = CASE WHEN $3 THEN NULL ELSE high_risk_at END,
        updated_at = now()
-     WHERE merchant_id = $1 RETURNING ${COLUMNS}`,
-    [String(merchantId), actor ? String(actor) : null], 'merchant_approve',
+     WHERE merchant_id = $1
+       -- High-risk review: only a full admin reinstates (owner, 2c+). In the
+       -- WHERE so a third loss landing mid-review is not passed (§32 S6).
+       AND ($3 OR high_risk_at IS NULL)
+     RETURNING ${COLUMNS}`,
+    [String(merchantId), actor ? String(actor) : null, Boolean(mayLiftHighRisk)], 'merchant_approve',
   );
   return toMerchant(rows[0]);
 }

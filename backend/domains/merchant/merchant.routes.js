@@ -33,11 +33,12 @@ import {
 // where money moves the transition runs FIRST and gates it.
 import {
   startOrder, markOrderPaid as markOrderPaidState, completeOrder,
-  disputeOrder, cancelOrder as cancelOrderState, requeueOrder,
+  disputeOrder, rejectOrder as rejectOrderState, requeueOrder,
 } from '../payment/orderLifecycle.service.js';
 // Withdrawal settlement hold — confirm asserts payment, the worker settles it
 // once the dispute window passes. See withdrawalHold.service.js.
-import { holdMinutes, settleHold } from '../payment/withdrawalHold.service.js';
+import { holdMinutes } from '../payment/withdrawalHold.service.js';
+import { rejectedBuyDisputeMinutes } from '../payment/rejectedBuyWindow.service.js';
 // A push to the PLAYER's socket goes through the player projection, like every
 // other thing a player receives.
 import { toPlayerOrderView } from '../payment/playerOrderView.js';
@@ -1157,9 +1158,9 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
         // from the decision. Now exactly one caller matches a row, and only that
         // caller goes on to move money.
         //
-        // Which target this is depends on the branch: a deposit completes, a
-        // withdrawal under hold only reaches PAID (asserted, not settled), and a
-        // withdrawal with the hold disabled completes inline.
+        // Which target this is depends on the branch: a deposit completes, and
+        // a withdrawal only reaches PAID (asserted, not settled) and is held for
+        // at least an hour — the player's window to dispute (2c+).
         const holdFor = isDeposit ? 0 : await holdMinutes();
 
         // ── DEPOSIT: the money moves BEFORE the status, through the one owner ──
@@ -1208,16 +1209,10 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
                 set: { completedAt: new Date() },
             });
         } else {
-            // ── A hold of zero minutes is still a HOLD ─────────────────────────
-            // With the hold disabled this completed the order FIRST and then
-            // released the stake and credited the merchant — a write after the
-            // commit (§21). If the release threw, the confirm answered 500 and
-            // every retry was told "already confirmed", so the merchant who paid
-            // the player was never credited and the stake stayed locked for good.
-            // It also admitted only PROCESSING where the held path admits
-            // ASSIGNED too (§32 S3). So both are the same transition now; a zero
-            // window is simply already due, and it is settled below by the same
-            // `settleHold` the sweep uses — money first, COMPLETED after.
+            // ── Always a HOLD ───────────────────────────────────────────────────
+            // There was a "hold disabled" path that completed the order inline.
+            // The window is now at least an hour (owner, 2026-10-02), so every
+            // confirm holds and the sweep settles — money first, COMPLETED after.
             moved = await markOrderPaidState(order._id, {
                 expectFrom: ['PROCESSING', 'ASSIGNED'],
                 set: {
@@ -1264,15 +1259,6 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
             // the transition above — this branch is now only the side effects
             // that follow it.
             //
-            if (holdFor === 0) {
-                // Hold disabled by admin: the window is already over, so settle
-                // now — through the same function the sweep runs, which moves the
-                // money and only then marks the order COMPLETED. If it fails the
-                // order stays PAID and due, and the next sweep settles it.
-                await settleHold(order.orderId)
-                    .catch(e => console.error('[Merchant confirm] immediate settlement failed; the sweep will retry:', e.message));
-            }
-
             // Emit wallet update so user sees updated balance
             await emitWalletUpdate(order.userId);
         }
@@ -1816,33 +1802,41 @@ router.post('/orders/:id/reject', merchantAuth, async (req, res) => {
             return res.status(400).json({ success: false, message: `Proof could not be verified: ${e.message}` });
         }
 
-        // ── Transition order to CANCELLED (with rejection metadata) ───────────
+        // ── Transition order to REJECTED, and open the player's window ────────
         // The guard is the transition. Everything after this point — the
         // user's warning count and the payment flag — is a consequence of the
         // rejection, and a merchant retrying a failed request used to run all
         // of it a second time and increment the warning count again.
-        const rejected = await cancelOrderState(order.orderId, {
+        //
+        // ── The tokens stay in ESCROW (2c+, owner 2026-10-02) ─────────────────
+        // This CANCELLED the buy and gave the team its tokens back at once, on
+        // the member's word alone. Now the buy waits in REJECTED with its pool
+        // hold intact, and the player has `rejectedBuyDisputeMinutes` (default
+        // 15) to say they paid. No dispute: the window sweep cancels it and the
+        // hold goes back to the pool. A dispute: the hold stays until the
+        // dispute manager decides. The deadline is written by the DATABASE
+        // clock in the same transaction, so the sweep, the dispute route and
+        // the screen all read one instant.
+        //
+        // `expectFrom` is applied now (it was ignored), so a member cannot use
+        // this button to close a buy the player has already DISPUTED.
+        const windowMinutes = await rejectedBuyDisputeMinutes();
+        const rejected = await rejectOrderState(order.orderId, {
             expectFrom: ['PAID', 'PROCESSING'],
             set: {
                 rejectedBy:     req.merchantId,
                 rejectedAt:     new Date(),
                 rejectedReason: reason.trim(),
                 rejectionProofUrl: verifiedProof.cdnUrl,
-                cancelReason:   'MERCHANT_REJECTED',
-                cancelledAt:    new Date(),
                 // `updatedAt` was here and `setOrderFields` refuses it — the
                 // column is maintained by the write itself, not by callers — so
                 // this route threw on EVERY call and 500'd. No screen called it,
                 // so nothing noticed that the endpoint had never once worked.
             },
-            // The team's tokens held for this buy go back to its pool in the
-            // same commit that cancels it. This released nothing before, and
-            // the hold sat until a sweep found it.
-            within: async (client) => {
-                await db.teamPools.releaseBuyHoldWithin(client, order.orderId, {
-                    actor: `merchant:${req.merchantId}`, reason: 'Rejected as unpaid by the member',
-                });
-            },
+            within: async (client, moved) => ({
+                ...moved,
+                disputeWindowUntil: await db.orders.openRejectedBuyWindowWithin(client, order.orderId, windowMinutes),
+            }),
         });
         if (!rejected.ok || rejected.idempotent) {
             return res.status(409).json({
@@ -1851,6 +1845,7 @@ router.post('/orders/:id/reject', merchantAuth, async (req, res) => {
             });
         }
         Object.assign(order, rejected.order);
+        const disputeUntil = order.disputeWindowUntil;
 
         // ── Warning and flag — but NOT a block ───────────────────────────────
         // A merchant rejecting a PAID order IS "the merchant says the payment
@@ -1895,15 +1890,19 @@ router.post('/orders/:id/reject', merchantAuth, async (req, res) => {
         const hitThreshold = flagged?.autoBlocked ?? false;
 
         // ── SSE: notify user (Finding 3) ──────────────────────────────────────
+        // `disputeUntil` is what the player's pop-up counts down to: the one
+        // thing they can do about a rejection is dispute it before then.
         emitOrderUpdate(order.userId.toString(), 'order_rejected', {
             orderId:      order.orderId,
             _id:          order.orderId,
+            status:       'REJECTED',
             reason:       order.rejectedReason,
+            disputeUntil,
             warningCount: newCount,
             isBlocked:    hitThreshold,
             server_ts:    Date.now(),
         });
-        emitAdminUpdate('queue_order_update', { orderId: order.orderId, status: 'CANCELLED', server_ts: Date.now() });
+        emitAdminUpdate('queue_order_update', { orderId: order.orderId, status: 'REJECTED', server_ts: Date.now() });
         // Explicit flag event so the admin console can surface the flagged user.
         emitAdminUpdate('user_flagged', {
             userId:          order.userId,
@@ -1917,7 +1916,8 @@ router.post('/orders/:id/reject', merchantAuth, async (req, res) => {
 
         res.json({
             success: true,
-            message: 'Order rejected.',
+            message: 'Order rejected. The player can dispute it until the window closes; the tokens stay held until then.',
+            disputeUntil,
             warningCount: newCount,
             paymentFlagged: true,
             autoBlocked:  hitThreshold,

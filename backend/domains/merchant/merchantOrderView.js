@@ -49,6 +49,9 @@ export const MERCHANT_ORDER_FIELDS = Object.freeze([
   'escrowStatus', 'escrowLocked', 'escrowAmount',
   'merchantCreditStatus', 'merchantCreditHoldUntil',
   'merchantCreditReversedAt', 'merchantCreditReversedReason',
+  // A buy this member rejected as unpaid: until when the player may dispute
+  // it, with the team's tokens still in escrow (2c+).
+  'disputeWindowUntil',
 
   // Payment evidence the merchant verifies against.
   'utr', 'utrNumber', 'proofScreenshot', 'proofExpiresAt',

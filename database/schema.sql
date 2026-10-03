@@ -3715,3 +3715,50 @@ ALTER TABLE merchants DROP COLUMN IF EXISTS max_concurrent_orders;
 ALTER TABLE merchants DROP COLUMN IF EXISTS max_concurrent_deposit_orders;
 ALTER TABLE merchants DROP COLUMN IF EXISTS max_concurrent_withdrawal_orders;
 ALTER TABLE merchants DROP COLUMN IF EXISTS cash_denomination_paise;
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Step 2c+ (owner, 2026-10-02 21:13): escrow windows and dispute outcomes.
+--
+-- A buy the member REJECTS as unpaid waits in REJECTED, its team pool hold
+-- intact, until `dispute_window_until` (SystemConfig.rejectedBuyDisputeMinutes,
+-- written by the DATABASE clock in the transition that rejects it). A dispute
+-- inside the window keeps the hold until the dispute manager decides; no
+-- dispute, and the sweep cancels the order and the hold goes back to the pool.
+-- ═══════════════════════════════════════════════════════════════════════════
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS dispute_window_until TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS order_states_rejected_window_idx ON order_states (dispute_window_until)
+  WHERE state = 'REJECTED';
+
+-- Whoever LOST a dispute: one row per decided dispute, keyed by the order, so
+-- a decision replayed (two admins, a retried request) records it once. The
+-- count and the suspension it causes are written in the same transaction.
+CREATE TABLE IF NOT EXISTS dispute_faults (
+  order_id     TEXT PRIMARY KEY,
+  party        TEXT NOT NULL,
+  user_id      TEXT,
+  merchant_id  TEXT,
+  decision     TEXT NOT NULL,
+  decided_by   TEXT,
+  lost_count   INTEGER NOT NULL,
+  high_risk    BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT dispute_faults_party_known CHECK (party IN ('PLAYER', 'MERCHANT')),
+  -- The party at fault is named: a player fault names the player, a member
+  -- fault names the member.
+  CONSTRAINT dispute_faults_party_named CHECK (
+    (party = 'PLAYER' AND user_id IS NOT NULL) OR (party = 'MERCHANT' AND merchant_id IS NOT NULL)),
+  CONSTRAINT dispute_faults_count_positive CHECK (lost_count >= 1)
+);
+CREATE INDEX IF NOT EXISTS dispute_faults_user_idx ON dispute_faults (user_id) WHERE user_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS dispute_faults_merchant_idx ON dispute_faults (merchant_id) WHERE merchant_id IS NOT NULL;
+
+-- Lost disputes, lifetime, and the HIGH-RISK review a third one opens. Only a
+-- full admin lifts a suspension while `high_risk_at` is set; that lift clears it.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS lost_disputes INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS high_risk_at TIMESTAMPTZ;
+ALTER TABLE merchants ADD COLUMN IF NOT EXISTS lost_disputes INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE merchants ADD COLUMN IF NOT EXISTS high_risk_at TIMESTAMPTZ;
+ALTER TABLE users DROP CONSTRAINT IF EXISTS users_lost_disputes_nonneg;
+ALTER TABLE users ADD CONSTRAINT users_lost_disputes_nonneg CHECK (lost_disputes >= 0);
+ALTER TABLE merchants DROP CONSTRAINT IF EXISTS merchants_lost_disputes_nonneg;
+ALTER TABLE merchants ADD CONSTRAINT merchants_lost_disputes_nonneg CHECK (lost_disputes >= 0);

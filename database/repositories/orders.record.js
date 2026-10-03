@@ -90,6 +90,7 @@ export function toOrder(r) {
     disputeResolvedAt: r.dispute_resolved_at,
     disputeDecision: r.dispute_decision,
     disputeResolution: r.dispute_resolution,
+    disputeWindowUntil: r.dispute_window_until ?? null,
     refundedAmount: rupees(r.refunded_amount_paise),
     mediatorId: r.mediator_id,
 
@@ -1105,6 +1106,54 @@ export async function findDueHolds({ limit = 200 } = {}) {
     [], 'order_find_due_holds',
   );
   return rows.map(toOrder);
+}
+
+/**
+ * Buys a member rejected as unpaid whose dispute window has CLOSED with no
+ * dispute raised (2c+). Compared on the database clock, as `findDueHolds` is:
+ * this decides when a team gets its escrowed tokens back.
+ *
+ * A REJECTED row with no deadline cannot be produced (the reject writes it in
+ * the same transaction); it is swept rather than left holding a team's tokens
+ * forever with nothing to say why.
+ */
+export async function findClosedRejectedWindows({ limit = 200 } = {}) {
+  const { rows } = await pgQuery(
+    `SELECT * FROM order_states
+      WHERE state = 'REJECTED' AND order_type = 'DEPOSIT'
+        AND (dispute_window_until IS NULL OR dispute_window_until <= now())
+      ORDER BY dispute_window_until ASC NULLS FIRST
+      LIMIT ${Math.min(Math.max(Number(limit) || 200, 1), 500)}`,
+    [], 'order_find_closed_reject_windows',
+  );
+  return rows.map(toOrder);
+}
+
+/**
+ * Open a rejected buy's dispute window, inside the transition that rejects it
+ * (2c+). The deadline is the DATABASE clock plus `minutes`, so the dispute
+ * route, the window sweep and the screens all read one instant.
+ *
+ * @param {import('pg').PoolClient} client  the transition's own transaction
+ * @returns {Promise<Date|null>} the deadline written
+ */
+export async function openRejectedBuyWindowWithin(client, orderId, minutes) {
+  const { rows } = await client.query(
+    `UPDATE order_states SET dispute_window_until = now() + make_interval(mins => $2)
+      WHERE order_id = $1 RETURNING dispute_window_until`,
+    [String(orderId), Math.trunc(Number(minutes))]);
+  return rows[0]?.dispute_window_until ?? null;
+}
+
+/**
+ * Whether a rejected buy's dispute window is still open, asked inside the
+ * transition that would dispute it — under the order's row lock, on the same
+ * clock the sweep reads, so a dispute and the window closing cannot both win.
+ */
+export async function rejectedBuyWindowOpenWithin(client, orderId) {
+  const { rows } = await client.query(
+    'SELECT 1 FROM order_states WHERE order_id = $1 AND dispute_window_until > now()', [String(orderId)]);
+  return rows.length > 0;
 }
 
 /**
