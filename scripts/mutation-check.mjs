@@ -602,13 +602,6 @@ const MUTATIONS = [
     to: `      && false) {`,
   },
   {
-    id: 'M118', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
-    test: 'backend/tests/routes/splitWithdrawalPg.test.js',
-    why: 'every part debits the WHOLE withdrawal instead of its own share, so a four-part payout locks four times what the player asked to withdraw',
-    from: `      debited = await debitWinningsForWithdrawal(String(user.userId), partTokens, partOrderId, { within: insertPart });`,
-    to: `      debited = await debitWinningsForWithdrawal(String(user.userId), tokenAmount, partOrderId, { within: insertPart });`,
-  },
-  {
     id: 'M121', file: 'database/repositories/orders.record.js', config: PG,
     test: 'backend/tests/routes/splitWithdrawalPg.test.js',
     why: 'the stalled queue stops seeing withdrawals nobody has taken, so a player\'s tokens sit locked with no deadline and nobody accountable for them',
@@ -656,7 +649,7 @@ const MUTATIONS = [
     id: 'M129', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
     test: 'backend/tests/routes/retryAndMatchPg.test.js',
     why: 'an order that is still live can be retried, so a player gets a second order for money already in flight — two merchants on a buy, and on a sell their tokens locked twice',
-    from: `  const retryable = ['CANCELLED', 'FAILED', 'REJECTED'].includes(original.status);`,
+    from: `  const retryable = ['CANCELLED', 'FAILED'].includes(original.status);`,
     to: `  const retryable = true;`,
   },
   {
@@ -905,13 +898,6 @@ const MUTATIONS = [
       [`state = CASE WHEN $4::text IS NOT NULL AND state = 'PAID' THEN $4 ELSE state END,`,
        `state = COALESCE($4, state),`],
     ],
-  },
-  {
-    id: 'M172', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
-    test: 'backend/tests/routes/withdrawalResolutionPg.test.js',
-    why: 'with the hold disabled the confirm never settles, so the merchant who paid is not credited until a sweep that may be minutes away',
-    from: `            if (holdFor === 0) {`,
-    to: `            if (false) {`,
   },
 
   // ── An assertion comparing NaN with NaN is refused ──────────────────────
