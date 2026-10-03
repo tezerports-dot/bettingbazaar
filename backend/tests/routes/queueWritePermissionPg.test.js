@@ -1,12 +1,18 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * The three queue WRITES are gated on a permission, not on a tier (R6, F-042).
+ * The queue WRITES are gated on a permission, not on a tier (R6, F-042).
  *
- * Assigning a queued order, reassigning an order and editing the merchant pool
- * decide which merchant a player's money goes to. They carried
+ * Offering a queued order to the teams now and taking an assigned order off
+ * its member decide who serves a player's money. They carried
  * `isAdminOrSubAdminOrQueueManager`, a TIER check, so a sub-admin holding only
- * `canModerateChatPublic` could send any player's order anywhere — F-001's
- * shape, on a middleware name the audit gate did not count.
+ * `canModerateChatPublic` could move any player's order — F-001's shape, on a
+ * middleware name the audit gate did not count.
+ *
+ * Neither takes a merchant any more: every order is routed through the teams
+ * (PROJECT_STATUS §3.10, 2c), so the bodies below are empty. The third write
+ * this file once covered — `PUT /queue/merchant-pool`, the hand-kept pool of
+ * merchants a queue manager could pick from — was deleted with the picker, and
+ * the route is gone (404 to everybody), so it is no longer listed here.
  *
  * Admission only: an order id that does not exist gets past the gate and is
  * refused by the handler (not 403), which is the line this test draws.
@@ -18,9 +24,8 @@ import { actor, mountRouter, as } from './_harness.js';
 const describePg = pgConfigured() ? describe : describe.skip;
 
 const WRITES = [
-  ['post', '/payment-orders/ORD-does-not-exist/reassign', { merchantId: 'nobody' }],
-  ['post', '/queue/assign/ORD-does-not-exist', { merchantId: 'nobody' }],
-  ['put', '/queue/merchant-pool', { merchantIds: [] }],
+  ['post', '/payment-orders/ORD-does-not-exist/reassign', {}],
+  ['post', '/queue/assign/ORD-does-not-exist', {}],
 ];
 
 describePg('queue writes require canManageMerchants (or the queue-manager role)', () => {
@@ -53,8 +58,9 @@ describePg('queue writes require canManageMerchants (or the queue-manager role)'
     // so the Queue Manager screen the panel offered them failed on load. Owner,
     // 2026-10-01: a sub-admin works in the areas they were given. It is now
     // the gate alone; past it, the handler answers on the ORDER.
-    const res = await as(app, who.merchantManager).post('/queue/assign/ORD-does-not-exist').send({ merchantId: 'nobody' });
+    const res = await as(app, who.merchantManager).post('/queue/assign/ORD-does-not-exist').send({});
     expect(res.status).toBe(404);
+    expect(res.body.message).toBe('Order not found');
   });
 
   it.each(WRITES)('admits a queue manager, whose role this screen is for: %s %s', async (method, path, body) => {

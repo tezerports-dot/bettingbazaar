@@ -4,8 +4,8 @@
  *
  * ── Why a sell needs its own suite ─────────────────────────────────────────
  * `retryAndMatchPg.test.js` retries BUYS, and on a buy the one-open-buy rule
- * refuses a duplicate before anything is written. A SELL has no such rule —
- * splits create several at once, deliberately — so the only thing standing
+ * refuses a duplicate before anything is written. A SELL has no such rule — a
+ * player may hold several withdrawals at once — so the only thing standing
  * between one expired withdrawal and two retries of it is the partial UNIQUE
  * on `retry_of_order_id`.
  *
@@ -19,13 +19,11 @@
  * winnings and locked balance exactly where the first retry left them.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { pgConfigured, applySchema, closePg } from '#db/client.js';
+import { pgConfigured, applySchema, closePg, pgQuery } from '#db/client.js';
 import { createOrderRecord, getOrderRecord } from '#db/repositories/orders.record.js';
 import { getBalances } from '#db/repositories/wallets.js';
 import { updateUser } from '#db/repositories/users.js';
-import {
-  PAYMENT_MODES, getActivePolicy, publishPolicyVersion,
-} from '#db/repositories/paymentModePolicy.js';
+import { PAYMENT_MODES } from '#db/repositories/teamRouting.js';
 import { retryOrder } from '../../domains/payment/paymentProcessing.service.js';
 import { cancelOrder as cancelState } from '../../domains/payment/orderLifecycle.service.js';
 import { actor } from './_harness.js';
@@ -33,15 +31,17 @@ import { actor } from './_harness.js';
 const describePg = pgConfigured() ? describe : describe.skip;
 
 describePg('retrying an expired withdrawal', () => {
-  let restore = null;
   let seq = 0;
+  // Every player this run made, so their orders can be removed afterwards: a
+  // queued withdrawal left behind is offered to the next suite's team (trap 10).
+  const players = [];
   const oid = () => `wr-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}-${seq += 1}`;
 
-  /** A player who can withdraw: KYC approved, bank details, and winnings. */
+  /** A player who can withdraw: bank details, and winnings. */
   const withdrawer = async (winningsRupees) => {
     const player = await actor({});
+    players.push(player.userId);
     await updateUser(player.userId, {
-      kycStatus: 'APPROVED',
       bankDetails: {
         accountNumber: '000111222333', ifscCode: 'HDFC0000001',
         bankName: 'HDFC Bank', accountHolderName: 'Test Player',
@@ -66,24 +66,21 @@ describePg('retrying an expired withdrawal', () => {
     return orderId;
   };
 
-  beforeAll(async () => {
-    await applySchema();
-    // ₹1,000 is an amount on both rails, but the suite pins the UPI rail so
-    // that what it measures is the retry, not a split.
-    restore = await getActivePolicy();
-    await publishPolicyVersion({
-      activeMode: PAYMENT_MODES.P2P_UPI,
-      justification: 'Withdrawal retry suite.', changedByName: 'test setup',
-    });
-  }, 60_000);
+  // ₹1,000 is a cash denomination, so the rail is CASH — derived from the size
+  // of the order, never from a switch (PROJECT_STATUS §3.10, 2c). There is no
+  // splitting any more, so one withdrawal is one order and one lock, and what
+  // this measures is the retry and nothing else.
+  beforeAll(async () => { await applySchema(); }, 60_000);
 
   afterAll(async () => {
-    if (restore) {
-      await publishPolicyVersion({
-        activeMode: restore.activeMode,
-        justification: 'Restoring the rail this suite found in force.',
-        changedByName: 'test teardown',
-      });
+    await pgQuery('SET session_replication_role = replica');
+    try {
+      await pgQuery(
+        'DELETE FROM order_transitions WHERE order_id IN (SELECT order_id FROM order_states WHERE user_id = ANY($1))',
+        [players]);
+      await pgQuery('DELETE FROM order_states WHERE user_id = ANY($1)', [players]);
+    } finally {
+      await pgQuery('SET session_replication_role = DEFAULT');
     }
     await closePg();
   });
@@ -96,6 +93,9 @@ describePg('retrying an expired withdrawal', () => {
     const result = await retryOrder(player.userId, expired);
     const fresh = await getOrderRecord(result.order.orderId ?? result.order._id);
     expect(fresh.retryOfOrderId).toBe(expired);
+    // One order, on the rail its size names — not parts of a split.
+    expect(result.parts).toHaveLength(1);
+    expect(fresh.paymentMode).toBe(PAYMENT_MODES.CASH_ATM);
 
     const after = await getBalances(player.userId);
     expect(Number(before.winningsBalance) - Number(after.winningsBalance)).toBe(1_000);

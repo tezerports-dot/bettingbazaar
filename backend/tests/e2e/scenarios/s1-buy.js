@@ -1,39 +1,51 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 // ── Scenario 1: the BUY rail (player buys platform tokens with INR/UPI) ──────
 // Driven over real HTTP as three different actors, with the database consulted
-// directly for the facts a panel cannot show (escrow holds, ledger rows).
+// directly for the facts a panel cannot show (the team pool's hold, ledger rows).
+//
+// Since Step 2c an order is served by a MEMBER of a working team on the order's
+// rail, and the tokens come out of the team's POOL — held when the order is
+// assigned, spent when the member confirms. Above ₹10,000 an INR buy runs on the
+// UPI/bank rail (`orderRails.js`), so this buy is 20,000 tokens.
 import { db } from '#db';
 import { pgQuery } from '#db/client.js';
-import { seedPlayer, seedMerchant, seedAdmin } from '../seed.js';
+import { seedPlayer, seedMerchant, seedTeam, seedAdmin, orderPoolTrail } from '../seed.js';
 import { playerToken, merchantToken, adminToken, GET, POST, PUT, check, note } from '../harness.js';
 
 const A = 'BUY';
 export default async function run() {
   const player = await seedPlayer({ balancePaise: 0 });
   const other  = await seedPlayer({ balancePaise: 0 });
-  const m      = await seedMerchant({ currency: 'INR', tokensPaise: 500000000 });
-  const m2     = await seedMerchant({ currency: 'INR', tokensPaise: 500000000 });
+  const m      = await seedMerchant({ currency: 'INR' });
+  const m2     = await seedMerchant({ currency: 'INR' });
+  // The two named members are the only ones online on the rail (`exclusive`),
+  // so the buy lands on one of them and the other is the stranger.
+  const team   = await seedTeam({ rail: 'UPI_BANK', poolTokens: 100000, include: [m, m2], online: [m, m2] });
   const admin  = await seedAdmin();
   const pT = playerToken(player), oT = playerToken(other);
   const mT = merchantToken(m), m2T = merchantToken(m2), aT = adminToken(admin);
 
-  // ── The floor (§2: minDeposit, 500 tokens, same rule from either end) ──────
-  const notTen = await POST(pT, '/api/payment/deposit/create', { tokenAmount: 1 });
+  // ── The step and the floor ─────────────────────────────────────────────────
+  // 20,005 is above the cash ceiling, so it reaches the multiple-of-10 rule;
+  // a small odd amount would stop earlier, at the cash denomination rule.
+  const notTen = await POST(pT, '/api/payment/deposit/create', { tokenAmount: 20005 });
   check(A, 'player', 'buy an amount that is not a multiple of 10', '4xx naming the step',
     `${notTen.status} ${notTen.body.message ?? ''}`,
     notTen.status === 400 && /multiple of 10/i.test(notTen.body.message ?? ''));
 
-  // 490 is a multiple of 10 and below the 500-token floor, so this reaches the
-  // floor check rather than stopping at the step check above.
+  // 490 is a multiple of 10 and below the 500-token floor. At that size the
+  // buy is cash-sized, so the refusal that names it is the denomination rule
+  // (500 is the smallest amount a machine dispenses) — the floor from the
+  // other end.
   const tooSmall = await POST(pT, '/api/payment/deposit/create', { tokenAmount: 490 });
-  check(A, 'player', 'buy below the 500-token floor', '4xx naming the floor',
-    `${tooSmall.status} ${tooSmall.body.message ?? ''}`,
-    tooSmall.status >= 400 && tooSmall.status < 500);
+  check(A, 'player', 'buy below the 500-token floor', '400 NOT_A_DENOMINATION',
+    `${tooSmall.status} ${tooSmall.body.code ?? ''} ${tooSmall.body.message ?? ''}`,
+    tooSmall.status === 400 && tooSmall.body.code === 'NOT_A_DENOMINATION');
 
   // ── Create a real buy ─────────────────────────────────────────────────────
-  const created = await POST(pT, '/api/payment/deposit/create', { tokenAmount: 1000 });
+  const created = await POST(pT, '/api/payment/deposit/create', { tokenAmount: 20000 });
   const order = created.body.order;
-  check(A, 'player', 'create a 1,000-token buy', '200 with an order', `${created.status} ${order?.orderId ?? JSON.stringify(created.body).slice(0,120)}`,
+  check(A, 'player', 'create a 20,000-token buy', '200 with an order', `${created.status} ${order?.orderId ?? JSON.stringify(created.body).slice(0,120)}`,
     created.status === 200 && !!order?.orderId);
   if (!order?.orderId) return;
   const oid = order.orderId;
@@ -50,7 +62,7 @@ export default async function run() {
     ?? (await pgQuery('SELECT merchant_id FROM order_states WHERE order_id=$1', [oid], 'e2e')).rows[0]?.merchant_id;
   const assignedT = assignedId === m.merchantId ? mT : assignedId === m2.merchantId ? m2T : null;
   const strangerT = assignedT === mT ? m2T : mT;
-  check(A, 'system', 'the buy is ASSIGNED to one of the two merchants', 'one of the seeded merchants',
+  check(A, 'system', 'the buy is ASSIGNED to one of the two team members', 'one of the seeded members',
     assignedId ?? 'nobody', !!assignedT);
   if (!assignedT) return;
 
@@ -62,12 +74,21 @@ export default async function run() {
   const crossListed = (theirs.body.orders ?? []).some(o => o.orderId === oid);
   check(A, 'merchant', 'a different merchant does NOT see it', 'absent', crossListed ? 'PRESENT' : 'absent', !crossListed);
 
-  // ── §2/F-018: the tokens are HELD at attachment, not merely checked ───────
-  const hold = await pgQuery(
-    `SELECT state, amount_paise FROM merchant_settlements
-      WHERE order_id = $1 AND direction = 'DEPOSIT'`, [oid], 'e2e');
-  check(A, 'system', 'a deposit escrow hold exists on assignment', 'one live DEPOSIT hold',
-    hold.rows.length ? `${hold.rows.length} row(s), state ${hold.rows[0].state}` : 'NO HOLD', hold.rows.length === 1);
+  // ── The tokens are HELD in the team's pool at assignment, not merely checked
+  // `holdForBuyWithin`, in the same transaction that assigned the order: the
+  // order names its team and the amount it holds, and the pool's ledger has
+  // one BUY_HOLD entry for this order moving available → held.
+  const row = (await pgQuery(
+    'SELECT team_id, pool_held_paise FROM order_states WHERE order_id = $1', [oid], 'e2e')).rows[0] ?? {};
+  check(A, 'system', 'the order is held by the routing team\'s pool', `team ${team.teamId}, 2000000 paise held`,
+    `team ${row.team_id ?? 'none'}, ${row.pool_held_paise ?? 'none'} paise held`,
+    row.team_id === team.teamId && Number(row.pool_held_paise) === 2000000);
+  const held = (await orderPoolTrail(oid)).entries;
+  const holdEntry = held.filter(e => e.kind === 'BUY_HOLD');
+  check(A, 'system', 'one BUY_HOLD pool entry moves the tokens available → held', 'available -2000000, held +2000000',
+    holdEntry.map(e => `${e.kind} avail ${e.available}, held ${e.held}`).join('; ') || 'NO HOLD ENTRY',
+    holdEntry.length === 1 && holdEntry[0].teamId === team.teamId
+      && holdEntry[0].available === -2000000 && holdEntry[0].held === 2000000);
 
   // ── §24 the other way: the merchant is told the payout account, not the player
   const mOrder = (mine.body.orders ?? []).find(o => o.orderId === oid) ?? {};
@@ -89,7 +110,14 @@ export default async function run() {
   // ── §27: that UTR now belongs to this order, for good ────────────────────
   const dupPlayer = await seedPlayer({});
   const dupT = playerToken(dupPlayer);
-  const dup = await POST(dupT, '/api/payment/deposit/create', { tokenAmount: 1000 });
+  const dup = await POST(dupT, '/api/payment/deposit/create', { tokenAmount: 20000 });
+  // Only an ASSIGNED order can be marked paid at all; a refusal of an order
+  // nobody held would pass this check for the wrong reason.
+  const dupState = dup.body.order?.orderId
+    ? (await pgQuery('SELECT state FROM order_states WHERE order_id = $1', [dup.body.order.orderId], 'e2e')).rows[0]?.state
+    : null;
+  check(A, 'system', 'the second buy is ASSIGNED, so only the UTR can refuse it', 'ASSIGNED',
+    dupState ?? `no order: ${dup.status} ${JSON.stringify(dup.body).slice(0, 120)}`, dupState === 'ASSIGNED');
   if (dup.body.order?.orderId) {
     const reuse = await POST(dupT, `/api/payment/order/${dup.body.order.orderId}/mark-paid`, { utrNumber: utr });
     check(A, 'player', 'reusing the same UTR on a second order', '4xx refusal',
@@ -105,7 +133,7 @@ export default async function run() {
     `${early.status} ${early.body.message ?? ''}`,
     early.status >= 400 && /10 minutes/i.test(early.body.message ?? ''));
 
-  // ── Merchant confirms; the player is credited and the hold is consumed ────
+  // ── Member confirms; the player is credited and the pool hold is spent ────
   // Balances from the LIMITS endpoint, which is what `WalletPage` reads and the
   // only one that reports all four pockets. `/api/v1/user/profile` carries
   // deposit/winnings/locked but NOT reserve, so measuring there would read a
@@ -121,16 +149,27 @@ export default async function run() {
   // §2: the split is owned by `deposit_policies`, one ACTIVE per currency
   // (90/10 by default). Asserting only the deposit pocket would read a correct
   // 900 as a 100-token shortfall — the pockets have to be added up.
-  check(A, 'player', 'the tokens bought arrive, split per the deposit policy', '1000 across the pockets',
-    `deposit +${dDep}, reserve +${dRes} = ${dDep + dRes}`, dDep + dRes === 1000,
+  check(A, 'player', 'the tokens bought arrive, split per the deposit policy', '20000 across the pockets',
+    `deposit +${dDep}, reserve +${dRes} = ${dDep + dRes}`, dDep + dRes === 20000,
     'cross-panel: merchant confirms, player sees it');
-  check(A, 'player', 'the split matches the ACTIVE policy, not a hardcoded number', 'deposit 900 / reserve 100',
-    `${dDep} / ${dRes}`, dDep === 900 && dRes === 100);
+  check(A, 'player', 'the split matches the ACTIVE policy, not a hardcoded number', 'deposit 18000 / reserve 2000',
+    `${dDep} / ${dRes}`, dDep === 18000 && dRes === 2000);
 
-  const holdAfter = await pgQuery(
-    `SELECT state FROM merchant_settlements WHERE order_id=$1 AND direction='DEPOSIT'`, [oid], 'e2e');
-  check(A, 'system', 'the escrow hold is consumed by the confirm', 'not still HELD',
-    holdAfter.rows.map(r => r.state).join(',') || 'none', !holdAfter.rows.some(r => r.state === 'HELD'));
+  // `spendForBuy`: the hold leaves the pool (BUY_PAID, held -amount), the order
+  // holds nothing, and the treasury moves the tokens TEAM_FLOAT → USER_FLOAT
+  // under the movement named after this order. Read by the order's id, never by
+  // diffing the floats (trap 10 — the crons move them underneath).
+  const trail = await orderPoolTrail(oid);
+  const paidEntry = trail.entries.filter(e => e.kind === 'BUY_PAID');
+  check(A, 'system', 'the pool hold is spent by the confirm', 'one BUY_PAID entry, held -2000000',
+    paidEntry.map(e => `${e.kind} avail ${e.available}, held ${e.held}`).join('; ') || 'NO BUY_PAID ENTRY',
+    paidEntry.length === 1 && paidEntry[0].available === 0 && paidEntry[0].held === -2000000);
+  const heldAfter = (await pgQuery(
+    'SELECT pool_held_paise FROM order_states WHERE order_id = $1', [oid], 'e2e')).rows[0]?.pool_held_paise;
+  check(A, 'system', 'the order no longer holds pool tokens', '0', String(heldAfter), Number(heldAfter) === 0);
+  const legs = trail.legs[`team_buy_${oid}`] ?? {};
+  check(A, 'system', 'the treasury moves the tokens from the team float to the players', 'TEAM_FLOAT -2000000, USER_FLOAT +2000000',
+    JSON.stringify(legs), legs.TEAM_FLOAT === -2000000 && legs.USER_FLOAT === 2000000 && Object.keys(legs).length === 2);
 
   // ── Admin sees the completed order ───────────────────────────────────────
   const adminOrders = await GET(aT, `/api/admin/payment-queue`);
@@ -139,5 +178,5 @@ export default async function run() {
     adminOrders.status === 200 ? (adminSees ? 'present' : 'ABSENT') : `HTTP ${adminOrders.status}`,
     adminOrders.status === 200 && adminSees);
 
-  return { player, m, m2, admin, oid };
+  return { player, m, m2, team, admin, oid };
 }

@@ -10,7 +10,7 @@
  * suspended is a 404 discovered during the outage it exists to fix.
  *
  * ── Shadowing, specifically ─────────────────────────────────────────────────
- * `/kyc/bulk/stats` and `/kyc/:userId/approve` live in the same mount. Express
+ * A concrete path and a parameter pattern can live in the same mount. Express
  * matches in registration order, so whether `bulk` is read as a userId depends
  * on which sub-router was mounted first — a property no source-text assertion
  * can see. This walks the ACTUAL router stack.
@@ -58,9 +58,6 @@ describe('the identity and payout control plane is reachable', () => {
     'POST /telegram/bots/:id/retire',
     'GET /telegram/templates',
     'PUT /telegram/templates/:key',
-    'GET /kyc/bulk/stats',
-    'GET /kyc/bulk/export',
-    'POST /kyc/bulk/import',
     'GET /referral/stats',
     'POST /referral/disburse',
   ];
@@ -79,92 +76,44 @@ describe('the shadowing check can actually fail', () => {
   // Without this the matcher could quietly become a no-op — matching nothing,
   // and therefore passing no matter what order the routes are mounted in.
   it('sees a wildcard swallowing a concrete path', () => {
-    expect(toRegExp('/kyc/:userId/approve').test('/kyc/bulk/approve')).toBe(true);
+    expect(toRegExp('/users/:userId/approve').test('/users/bulk/approve')).toBe(true);
   });
 
   it('does not cry wolf when the literal segments differ', () => {
-    expect(toRegExp('/kyc/:userId/approve').test('/kyc/bulk/import')).toBe(false);
+    expect(toRegExp('/users/:userId/approve').test('/users/bulk/import')).toBe(false);
   });
 
   it('does not match across a segment boundary', () => {
-    expect(toRegExp('/kyc/:userId/approve').test('/kyc/a/b/approve')).toBe(false);
+    expect(toRegExp('/users/:userId/approve').test('/users/a/b/approve')).toBe(false);
   });
 });
 
-describe('the KYC review routes are reachable and unshadowed', () => {
-  it('serves the queue and both decisions', () => {
-    expect(paths).toContain('GET /kyc/queue');
-    expect(paths).toContain('POST /kyc/:userId/approve');
-    expect(paths).toContain('POST /kyc/:userId/reject');
+describe('no route is shadowed by an earlier pattern', () => {
+  it('serves no KYC route — KYC was removed (owner, 2026-10-02)', () => {
+    expect(paths.filter((p) => /\/kyc(\/|$)/.test(p))).toEqual([]);
   });
 
-  it('has no earlier pattern that swallows a /kyc/bulk/* path', () => {
-    // Express matches in registration order, and `/kyc/:userId/approve` sits in
-    // the same mount as `/kyc/bulk/import`. Whether `bulk` gets read as a user
-    // id depends on which sub-router was mounted first — a property no
-    // source-text assertion can see, so the concrete paths are matched against
-    // the real patterns here.
-    const concrete = paths
-      .map((p, i) => ({ p, i }))
-      .filter(({ p }) => p.split(' ')[1].startsWith('/kyc/bulk/'));
-    expect(concrete.length).toBe(3);
-
-    for (const { p, i } of concrete) {
+  it('has no earlier pattern that swallows a concrete path', () => {
+    // Express matches in registration order. Whether `/x/bulk/stats` is read
+    // as `/x/:id/stats` depends on which sub-router was mounted first — a
+    // property no source-text assertion can see, so every concrete path is
+    // matched against the real patterns registered before it.
+    const swallowed = [];
+    paths.forEach((p, i) => {
       const [method, path] = p.split(' ');
+      if (path.includes(':')) return;
       const swallower = paths.slice(0, i).find((earlier) => {
         const [m, pattern] = earlier.split(' ');
         return m === method && pattern.includes(':') && toRegExp(pattern).test(path);
       });
-      expect(swallower, `${swallower} is registered before ${p} and matches it`).toBeUndefined();
-    }
+      if (swallower) swallowed.push(`${swallower} is registered before ${p} and matches it`);
+    });
+    expect(swallowed).toEqual([]);
   });
-
-  it('no longer serves a document endpoint', () => {
-    expect(paths.some((p) => p.includes('/document/'))).toBe(false);
-  });
-});
-
-describe('the Telegram control plane is unshadowed', () => {
-  it('has no earlier wildcard swallowing a concrete /telegram/* path', () => {
-    // `/telegram/templates/:key` and `/telegram/bots/:id/promote` sit in the
-    // same mount as the concrete `/telegram/config`, `/telegram/channel`,
-    // `/telegram/bots` and `/telegram/templates`. These are the routes an
-    // operator reaches for during an outage — a shadowed one would 404 at
-    // exactly the moment nobody can sign in, which is the worst possible time
-    // to discover it.
-    const concrete = paths
-      .map((p, i) => ({ p, i }))
-      .filter(({ p }) => {
-        const path = p.split(' ')[1];
-        return path.startsWith('/telegram/') && !path.includes(':');
-      });
-    // Guard against this degenerating into a check over an empty set.
-    expect(concrete.length).toBeGreaterThanOrEqual(6);
-
-    for (const { p, i } of concrete) {
-      const [method, path] = p.split(' ');
-      const swallower = paths.slice(0, i).find((earlier) => {
-        const [m, pattern] = earlier.split(' ');
-        return m === method && pattern.includes(':') && toRegExp(pattern).test(path);
-      });
-      expect(swallower, `${swallower} is registered before ${p} and matches it`).toBeUndefined();
-    }
-  });
-});
-
-describe('the removed systems are not still mounted', () => {
-  it('has no account-recovery routes', () => {
-    expect(paths.some((p) => p.includes('account-recovery'))).toBe(false);
-  });
-
   it('has no withdrawal-request routes', () => {
     // Removed with the orphaned parallel withdrawal system; the live path is
     // the P2P escrow flow under /api/payment.
     expect(paths.some((p) => p.includes('withdrawal-request'))).toBe(false);
   });
 
-  it('has no kyc/link-documents route', () => {
-    // One-account-per-Aadhaar is the unique index on KycVerification.aadhaarHash.
-    expect(paths.some((p) => p.includes('link-documents'))).toBe(false);
-  });
 });

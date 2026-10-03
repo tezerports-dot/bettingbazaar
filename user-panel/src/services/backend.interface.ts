@@ -41,7 +41,7 @@ export interface Backend {
   /**
    * Create an account from the SIGNUP FORM.
    *
-   * Aadhaar, the Aadhaar-linked mobile, a password, and the invite code if the
+   * The mobile on the player's Telegram account, a password, and the invite code if the
    * player arrived through a referral link. The captcha token rides along when
    * Turnstile is configured; the server treats its absence as "not configured"
    * rather than as a refusal, which is how every integration in this repo ships.
@@ -52,7 +52,7 @@ export interface Backend {
    * exists only to be completed.
    */
   register(form: {
-    aadhaar: string; mobile: string; password: string; confirmPassword: string;
+    mobile: string; password: string; confirmPassword: string;
     referralCode?: string; captchaToken?: string;
   }): Promise<{ success: boolean; token?: string; user?: User; message?: string }>;
 
@@ -103,11 +103,7 @@ export interface Backend {
   resetPassword(token: string, password: string, confirmPassword: string): Promise<{
     success: boolean; message?: string }>;
 
-  /** A REJECTED player submits a corrected Aadhaar, from the panel. */
-  resubmitAadhaar(aadhaar: string): Promise<{ success: boolean; message?: string; last4?: string }>;
-
   // --- CORE SERVICES ---
-  getServerTime(): Promise<{ unixtime: number }>;
   
   getUserData(userId: string): Promise<{ 
     user: User; 
@@ -123,12 +119,8 @@ export interface Backend {
   getSystemConfig(): Promise<SystemConfigData>;
 
   // AI ANALYSIS
-  getAIAnalysis(): Promise<{ text: string, cached: boolean }>;
 
-  // KYC & BANKING
-  // uploadKYC removed 2026-08-25 with POST /api/user/:userId/kyc. The bot takes
-  // the Aadhaar number before the account exists; there is nothing for a
-  // signed-in player to submit.
+  // BANKING
   updateBankDetails(userId: string, details: User['bankDetails']): Promise<User>;
 
   placeBet(userId: string, cycleId: string, amount: number, side: BettingSide): Promise<{
@@ -138,23 +130,11 @@ export interface Backend {
 
   placePhantomBet(userId: string, cycleId: string, amount: number, side: BettingSide): Promise<{ bet: Bet }>;
 
-  getCycleState(type: CycleType, startTime: number): Promise<{
-    totalDelhi: number;
-    totalBombay: number;
-    realDelhi: number; 
-    realBombay: number; 
-    status?: GameState;
-    isPaused?: boolean;
-    pendingResult?: BettingSide;
-    winner?: BettingSide;
-  }>;
   
   getCycleHistory(): Promise<GameCycle[]>;
-  getBetHistory(userId: string): Promise<Bet[]>;
 
   // --- REAL-TIME SUBSCRIPTIONS ---
 
-  subscribeToTicker(callback: (data: { id: string, text: string, side: 'DELHI' | 'BOMBAY', amount: number }) => void): () => void;
   subscribeToUserUpdates(userId: string, callback: (data: any) => void): () => void;
   subscribeToBranding(callback: (branding: any) => void): () => void;
 

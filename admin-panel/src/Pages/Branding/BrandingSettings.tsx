@@ -8,7 +8,7 @@ import toast from 'react-hot-toast';
  * Upload one branding image and resolve to its CDN URL.
  *
  * Branding uploads are a THREE-step presigned flow, matching every other upload
- * in the platform (KYC, chat, payment proof): ask the backend for a presigned
+ * in the platform (chat, payment proof): ask the backend for a presigned
  * URL, PUT the bytes straight to S3, then tell the backend it landed. The file
  * never passes through the API server.
  *

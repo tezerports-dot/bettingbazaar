@@ -1,17 +1,14 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * merchantPlatform.admin.routes.js — Merchant Platform analytics surface
- * (BBEPS Phase 008): leaderboard, funding statistics, performance history,
- * wallet ledger, and an on-demand bonus-engine trigger. Read-only except the
- * engine trigger, which is idempotent by construction.
+ * (BBEPS Phase 008): leaderboard, funding statistics and performance history.
+ * Read-only.
  * Mounted at /api/admin via routes/admin/index.js.
  */
 import {
   authenticate, express, hasPermission,
 } from '../../routes/admin/_adminShared.js';
 import { getMerchantLeaderboard, getMerchantFundingStats, getMerchantPerformanceHistory } from './merchantAnalytics.service.js';
-import { getMerchantWalletLedger } from './merchantWallet.service.js';
-import { runCommissionEngine } from './merchantCommission.service.js';
 
 const router = express.Router();
 
@@ -30,8 +27,7 @@ router.get('/merchant-platform/leaderboard', authenticate, hasPermission('canMan
 });
 
 // GET /api/admin/merchant-platform/:merchantId/funding-stats
-// Same screen as `/merchant-platform/leaderboard` and `/wallet-ledger`, which
-// derive `canManageMerchants` from it.
+// Same screen as `/merchant-platform/leaderboard`.
 router.get('/merchant-platform/:merchantId/funding-stats', authenticate, hasPermission('canManageMerchants'), async (req, res) => {
   try {
     const stats = await getMerchantFundingStats(req.params.merchantId);
@@ -44,8 +40,7 @@ router.get('/merchant-platform/:merchantId/funding-stats', authenticate, hasPerm
 });
 
 // GET /api/admin/merchant-platform/:merchantId/performance-history?days=30
-// Same screen as `/merchant-platform/leaderboard` and `/wallet-ledger`, which
-// derive `canManageMerchants` from it.
+// Same screen as `/merchant-platform/leaderboard`.
 router.get('/merchant-platform/:merchantId/performance-history', authenticate, hasPermission('canManageMerchants'), async (req, res) => {
   try {
     const days = Math.min(365, Math.max(1, parseInt(req.query.days) || 30));
@@ -54,31 +49,6 @@ router.get('/merchant-platform/:merchantId/performance-history', authenticate, h
   } catch (error) {
     console.error('Merchant performance history error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch performance history' });
-  }
-});
-
-// GET /api/admin/merchant-platform/:merchantId/wallet-ledger?page=&limit=
-router.get('/merchant-platform/:merchantId/wallet-ledger', authenticate, hasPermission('canManageMerchants'), async (req, res) => {
-  try {
-    const page  = Math.max(1, parseInt(req.query.page) || 1);
-    const limit = Math.min(200, Math.max(1, parseInt(req.query.limit) || 50));
-    const ledger = await getMerchantWalletLedger(req.params.merchantId, { page, limit });
-    res.json({ success: true, ...ledger });
-  } catch (error) {
-    console.error('Merchant wallet ledger error:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch merchant wallet ledger' });
-  }
-});
-
-// POST /api/admin/merchant-platform/commission-engine/run — on-demand pass of
-// the commission engine (same code the 10-min cron runs; idempotent, pool-capped).
-router.post('/merchant-platform/commission-engine/run', authenticate, hasPermission('canManageCommission'), async (req, res) => {
-  try {
-    const outcome = await runCommissionEngine();
-    res.json({ success: true, ...outcome });
-  } catch (error) {
-    console.error('Commission engine run error:', error);
-    res.status(500).json({ success: false, message: 'Failed to run commission engine' });
   }
 });
 

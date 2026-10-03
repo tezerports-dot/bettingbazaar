@@ -305,10 +305,13 @@ async function replayedBalances(txIds) {
  *   A ledger row's `field` must be a field the movement actually touched: the
  *   reverse mirror reads it to know which balance the row describes.
  * @param {boolean} [args.allowNegative=false] blanket override for every leg.
+ * @param {string[]} [args.excludes] ledger keys of the movement's RIVALS — the
+ *   other answer to the same question. If any of them exists for this user the
+ *   movement is refused (`excluded`), under the same lock as the replay probe.
  *
- * @returns {Promise<{ok, idempotent, insufficient?, balancesAfterPaise, replayedLedger?}>}
+ * @returns {Promise<{ok, idempotent, insufficient?, excluded?, balancesAfterPaise, replayedLedger?}>}
  */
-export async function applyMovementPaise({ userId, legs, ledger, allowNegative = false }) {
+export async function applyMovementPaise({ userId, legs, ledger, allowNegative = false, excludes = [] }) {
   if (!Array.isArray(legs) || !legs.length) {
     throw new Error('applyMovementPaise requires at least one balance leg');
   }
@@ -319,7 +322,7 @@ export async function applyMovementPaise({ userId, legs, ledger, allowNegative =
   const merged = mergeLegs(legs, allowNegative);
 
   const outcome = await withWalletLock(userId, async (ctx) => {
-    const value = await applyMovementWithin(ctx, { merged, ledger });
+    const value = await applyMovementWithin(ctx, { merged, ledger, excludes });
     return { commit: value.ok && !value.idempotent, value };
   });
 
@@ -349,7 +352,7 @@ export async function applyMovementPaise({ userId, legs, ledger, allowNegative =
  * `merged` is pre-normalised leg output from mergeLegs(); callers outside this
  * module should pass `legs`/`allowNegative` and let it normalise.
  */
-export async function applyMovementWithin({ client, uid }, { legs, merged, ledger, allowNegative = false }) {
+export async function applyMovementWithin({ client, uid }, { legs, merged, ledger, allowNegative = false, excludes = [] }) {
   if (!merged) {
     if (!Array.isArray(legs) || !legs.length) {
       throw new Error('applyMovementWithin requires at least one balance leg');
@@ -384,6 +387,23 @@ export async function applyMovementWithin({ client, uid }, { legs, merged, ledge
   );
   if (replayed.length) {
     return { ok: true, idempotent: true, balancesAfterPaise: null };
+  }
+
+  // ── A RIVAL MOVEMENT, ALREADY MADE ──────────────────────────────────────
+  // Some movements are two answers to ONE question: a withdrawal's locked
+  // stake is either CONSUMED (it went to the team) or RETURNED (refunded to
+  // the player), never both. Each has its own key, so neither key's UNIQUE can
+  // see the other, and the balance guard cannot either while the lock holds
+  // somebody else's stake as well. Asked here, under the wallet lock, so the
+  // answer cannot change before the write.
+  if (excludes.length) {
+    const { rows: rival } = await client.query(
+      `SELECT tx_id FROM wallet_ledger WHERE user_id = $1 AND tx_id = ANY($2) LIMIT 1`,
+      [uid, excludes],
+    );
+    if (rival.length) {
+      return { ok: false, excluded: rival[0].tx_id, idempotent: false, balancesAfterPaise: null };
+    }
   }
 
   const after = await moveBalances(client, uid, columns);

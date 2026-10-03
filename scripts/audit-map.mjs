@@ -83,7 +83,7 @@ function routes() {
 }
 
 const AUTH = new Set(['authenticate', 'merchantAuth', 'isAdmin', 'hasPermission',
-  'orderAccessGuard', 'orderAccessGuardOrAdmin', 'paymentActorAuth',
+  'orderAccessGuard',
   'requireChannelMembership', 'optionalAuth', 'queueManagerOrPermission']);
 
 /**

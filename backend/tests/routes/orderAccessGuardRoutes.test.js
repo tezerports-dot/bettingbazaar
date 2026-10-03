@@ -10,17 +10,20 @@
  * evidenced nothing, twice over. The first test below is the one that would
  * have caught the second time.
  *
- * `orderAccessGuard` was written to check it and was mounted on nothing. Two
- * defects had therefore never been exercised, and both are asserted below
- * because both would have shipped:
+ * `orderAccessGuard` was written to check it and was mounted on nothing. It
+ * answered 403 for "not yours" while the helper it replaces answered 404 for
+ * both that and "no such order". Order ids travel in URLs, and a
+ * distinguishable answer tells someone probing which ids are real — asserted
+ * below.
  *
- *   1. It recognised a merchant by `req.user.isMerchant`. A merchant arrives
- *      through `merchantAuth`, which sets `req.merchantId` and does NOT set
- *      `req.user` — so mounting it as written would have refused EVERY
- *      merchant confirm on the deposit path.
- *   2. It answered 403 for "not yours" while the helper it replaces answered
- *      404 for both that and "no such order". Order ids travel in URLs, and a
- *      distinguishable answer tells someone probing which ids are real.
+ * ── Whose order (2026-10-01) ───────────────────────────────────────────────
+ * The guard admits the order's OWNER and nobody else. Every route it guards is
+ * behind `authenticatePlayer`, so a staff or merchant session is refused at the
+ * door, before the guard runs, with the panel it belongs to (403 WRONG_PANEL).
+ * The guard's "assigned merchant" and "full admin" branches existed for the
+ * second deposit-confirm route, which no screen called and which was deleted;
+ * a merchant's own session reaching the player's order through them is in
+ * merchantSessionDoorPg.test.js.
  *
  * ── What the tag is and is not ──────────────────────────────────────────────
  * It is NOT authorisation: a forged id fails the ownership test regardless. It
@@ -36,7 +39,7 @@ import { verifyOrderHmac } from '../../middleware/order-crypto-access.js';
 // statement lives under database/ where check:db-boundary allows it — see the
 // note in that file for why no repository offers this.
 import { corruptOrderHmac, clearOrderHmac } from '#db/tests/_tamperFixtures.js';
-import { mountRouter, actor, merchantActor, as, request } from './_harness.js';
+import { mountRouter, actor, as, request } from './_harness.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 
@@ -141,43 +144,26 @@ describePg('order access guard', () => {
     expect(stripped.body.success).toBe(false);
   });
 
-  it('recognises the assigned merchant, who arrives with no req.user at all', async () => {
-    // The defect this replaces: the guard read `req.user.isMerchant`, which
-    // merchantAuth never sets, so every merchant was refused. A 404 here would
-    // mean the deposit confirm path is dead for every merchant on the platform.
-    const alice = await actor({});
-    const merchant = await merchantActor({ tokensRupees: 10_000 });
-    const orderId = await deposit(alice, merchant, { state: 'PAID' });
-
-    const res = await as(app, merchant).post(`/deposit/${orderId}/confirm`).send({});
-    expect(res.status).not.toBe(404);
-    expect(res.status).not.toBe(403);
-  });
-
-  it('refuses a merchant the order is not assigned to', async () => {
-    const alice = await actor({});
-    const mine = await merchantActor({ tokensRupees: 10_000 });
-    const theirs = await merchantActor({ tokensRupees: 10_000 });
-    const orderId = await deposit(alice, mine, { state: 'PAID' });
-
-    const res = await as(app, theirs).post(`/deposit/${orderId}/confirm`).send({});
-    expect(res.status).toBe(404);
-    expect((await getOrderRecord(orderId)).status).toBe('PAID');
-  });
-
   // ── Staff on the PLAYER's order routes (2026-10-01) ─────────────────────
-  // These routes are the player's and the assigned merchant's. They admitted
-  // any staff account, so a sub-admin trusted with nothing but chat could read
-  // any player's order and raise a dispute recorded as raised by the player.
+  // These routes are the player's. They admitted any staff account, so a
+  // sub-admin trusted with nothing but chat could read any player's order and
+  // raise a dispute recorded as raised by the player. A staff session is now
+  // refused at the door, by name, before the guard is asked anything.
+  const refusedAtTheDoor = (res) => {
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.code).toBe('WRONG_PANEL');
+    expect(res.body.message).toMatch(/admin panel/);
+    expect(res.body.order).toBeUndefined();
+  };
+
   it('refuses a sub-admin, whatever they were given, on the player\'s order routes', async () => {
     const alice = await actor({});
     const orderId = await deposit(alice, null, { state: 'COMPLETED' });
     const chatOnly = await actor({ isSubAdmin: true, permissions: { canModerateChat: true } });
     const disputes = await actor({ isSubAdmin: true, permissions: { canResolveDisputes: true } });
     for (const staff of [chatOnly, disputes]) {
-      expect((await as(app, staff).get(`/order/${orderId}`)).status).toBe(404);
-      const raised = await as(app, staff).post(`/order/${orderId}/dispute`).send({ reason: 'not mine to raise' });
-      expect(raised.status).toBe(404);
+      refusedAtTheDoor(await as(app, staff).get(`/order/${orderId}`));
+      refusedAtTheDoor(await as(app, staff).post(`/order/${orderId}/dispute`).send({ reason: 'not mine to raise' }));
     }
     // The order is exactly as the player left it: nobody raised anything for them.
     const after = await getOrderRecord(orderId);
@@ -189,8 +175,8 @@ describePg('order access guard', () => {
     const alice = await actor({});
     const admin = await actor({ isAdmin: true });
     const orderId = await deposit(alice, null, { state: 'COMPLETED' });
-    expect((await as(app, admin).get(`/order/${orderId}`)).status).toBe(404);
-    expect((await as(app, admin).post(`/order/${orderId}/dispute`).send({ reason: 'x' })).status).toBe(404);
+    refusedAtTheDoor(await as(app, admin).get(`/order/${orderId}`));
+    refusedAtTheDoor(await as(app, admin).post(`/order/${orderId}/dispute`).send({ reason: 'x' }));
     expect((await getOrderRecord(orderId)).status).toBe('COMPLETED');
   });
 
@@ -200,20 +186,6 @@ describePg('order access guard', () => {
     const res = await as(app, alice).post(`/order/${orderId}/dispute`).send({ reason: 'not credited' });
     expect(res.status).toBe(200);
     expect((await getOrderRecord(orderId)).status).toBe('DISPUTED');
-  });
-
-  it('on the deposit confirm, admits a full admin past the guard and refuses a sub-admin', async () => {
-    const alice = await actor({});
-    const merchant = await merchantActor({ tokensRupees: 10_000 });
-    const orderId = await deposit(alice, merchant, { state: 'ASSIGNED' });
-    const sub = await actor({ isSubAdmin: true, permissions: { canResolveDisputes: true } });
-    expect((await as(app, sub).post(`/deposit/${orderId}/confirm`).send({})).status).toBe(404);
-    // Past the guard, the handler answers on the ORDER (not paid yet), which a
-    // refused caller would never reach.
-    const admin = await actor({ isAdmin: true });
-    const res = await as(app, admin).post(`/deposit/${orderId}/confirm`).send({});
-    expect(res.status).not.toBe(404);
-    expect((await getOrderRecord(orderId)).status).toBe('ASSIGNED');
   });
 
   it('guards every :orderId route, not just the read', async () => {

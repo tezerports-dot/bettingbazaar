@@ -79,8 +79,8 @@ async function ledgerConserves() {
  * Every job `registerCronJobs` registers. The list is written out here rather
  * than read off the registry deliberately: reading the registry would make
  * this harness agree with whatever the server happens to register, and the
- * question being asked is whether the fourteen jobs the file declares each
- * do their work. A job added to `cronJobs.js` and not to this list shows up
+ * question being asked is whether the jobs the file declares each do their
+ * work. A job added to `cronJobs.js` and not to this list shows up
  * as the count disagreeing, which is the point (§28 — derive what a gate
  * checks from the thing it is checking, but a LIST of expectations is the one
  * thing that must not be derived from the code under test).
@@ -93,8 +93,8 @@ async function cron() {
   const player = async () => {
     const userId = rid('u');
     await pgQuery(
-      `INSERT INTO users (user_id, username, mobile, account_type, status, kyc_status)
-       VALUES ($1, $1, $2, 'PLAYER', 'ACTIVE', 'APPROVED')`,
+      `INSERT INTO users (user_id, username, mobile, account_type, status)
+       VALUES ($1, $1, $2, 'PLAYER', 'ACTIVE')`,
       [userId, String(6000000000 + Math.floor(Math.random() * 999999999))],
     );
     await pgQuery('INSERT INTO wallets (user_id) VALUES ($1) ON CONFLICT DO NOTHING', [userId]);
@@ -114,10 +114,13 @@ async function cron() {
   const order = async (fields) => {
     const id = rid('o');
     // The tamper tag, as `createOrderRecord` writes it with every row — an
-    // untagged order is one production cannot produce (§32 S16).
+    // untagged order is one production cannot produce (§32 S16). And the rail
+    // its SIZE implies: since Step 2c the rail is derived from the amount
+    // (`orderRails.js`), so a 500-token INR order is CASH_ATM. It was stamped
+    // P2P_UPI here, a pairing the order writer can no longer produce.
     const cols = { order_id: id, order_type: 'DEPOSIT', state: 'PENDING_QUEUE',
       token_amount_paise: 50000, fiat_amount_paise: 50000, currency: 'INR',
-      payment_mode: 'P2P_UPI', order_hmac: deriveOrderHmac(id), ...fields };
+      payment_mode: 'CASH_ATM', order_hmac: deriveOrderHmac(id), ...fields };
     const keys = Object.keys(cols);
     await pgQuery(
       `INSERT INTO order_states (${keys.join(', ')}) VALUES (${keys.map((_, i) => `$${i + 1}`).join(', ')})`,
@@ -172,8 +175,10 @@ async function cron() {
         });
         // And a UPI order in the same state, which this sweep must NOT touch:
         // the split between the two sweeps is the §2 rule being checked here.
+        // 20,000 tokens, because above ₹10,000 is what makes an order UPI.
         const bystander = await order({
           user_id: userId, merchant_id: merchantId, state: 'PAID',
+          token_amount_paise: 2000000, fiat_amount_paise: 2000000,
           payment_mode: 'P2P_UPI', paid_at: new Date(Date.now() - 120 * 60000),
         });
         const { sweepUtrAfterPaid } =
@@ -210,42 +215,6 @@ async function cron() {
       },
     },
     {
-      id: 'cash-link-expiry',
-      what: 'sweepExpiredLinks retires a LIVE link past its expiry and leaves a fresh one',
-      async go() {
-        // TWO merchants, because `cash_link_one_live_per_merchant` allows one
-        // LIVE link each — the platform will not hold two for one merchant, so
-        // a fixture that does is refused by name (§32 S16, twice on this case:
-        // first the `expires_at > created_at` CHECK, then this index).
-        const merchantId = await merchant();
-        const otherMerchant = await merchant();
-        const dead = rid('link');
-        const live = rid('link');
-        // `created_at` is set explicitly on the DUE link: the CHECK is
-        // `expires_at > created_at`, so a link that expired a minute ago has to
-        // have been created before that — which is exactly how a real one got
-        // there, and a fixture that ignores it is refused by name (§32 S16).
-        await pgQuery(
-          `INSERT INTO cash_link_queue (link_id, merchant_id, denomination_paise, payment_link,
-                                        status, created_at, expires_at)
-           VALUES ($1, $3, 50000, 'https://example.test/atm/dead', 'LIVE',
-                   now() - interval '5 minutes', now() - interval '1 minute'),
-                  ($2, $4, 50000, 'https://example.test/atm/live', 'LIVE',
-                   now(), now() + interval '10 minutes')`,
-          [dead, live, merchantId, otherMerchant],
-        );
-        const { sweepExpiredLinks } = await import('../../domains/merchant/cashLink.service.js');
-        const { expired } = await sweepExpiredLinks();
-        const { rows } = await pgQuery(
-          'SELECT link_id, status FROM cash_link_queue WHERE link_id = ANY($1::text[])', [[dead, live]]);
-        const by = Object.fromEntries(rows.map((r) => [r.link_id, r.status]));
-        if (by[dead] === 'EXPIRED' && by[live] === 'LIVE') {
-          return ['PASS', `the due link EXPIRED and the fresh one is still LIVE (swept ${expired})`];
-        }
-        return ['FAIL', `due=${by[dead]} fresh=${by[live]} after sweeping ${expired}`];
-      },
-    },
-    {
       id: 'withdrawal-hold-settle',
       what: 'settleDueHolds finds a hold whose window has passed',
       async go() {
@@ -256,8 +225,9 @@ async function cron() {
           merchant_credit_status: 'HELD', merchant_credit_hold_until: new Date(Date.now() - 60000),
         });
         // What is asserted is that the QUERY SELECTS IT — the settlement itself
-        // moves a player's locked stake and a merchant's wallet, and asserting
-        // that needs the money set up through the real withdrawal path, which
+        // consumes a player's locked stake and credits the serving team's pool,
+        // and asserting that needs the money set up through the real withdrawal
+        // path (a team, its member, the order routed to them), which
         // `test:pg` already does. This closes the half `test:pg` cannot: that
         // the SWEEP's own WHERE finds the row the workflow leaves behind (§7).
         const due = await db.orders.findDueHolds({ limit: 500 });
@@ -280,24 +250,50 @@ async function cron() {
       },
     },
     {
-      id: 'deposit-escrow-sweep',
-      what: 'sweepDepositHolds runs and reports',
+      id: 'team-pool-hold-sweep',
+      what: 'the hold sweep releases stranded buy holds and reports completed-but-unspent ones',
+      // RUN only. Its trigger is an ENDED buy still holding a team's tokens,
+      // and a producible one needs a team, a pool funded through a request, and
+      // a routed order — rows this phase could not clean up, because a team
+      // with pool history is held in place by its append-only ledger. So this
+      // runs the same three calls the cron makes, on the real data, and says
+      // what they found.
       seededTrigger: false,
       async go() {
-        const { sweepDepositHolds } = await import('../../domains/merchant/depositEscrow.service.js');
-        const report = await sweepDepositHolds();
-        return ['RAN', `report ${JSON.stringify(report)}`];
+        const stranded = await db.teamPools.findStrandedBuyHolds();
+        const failed = [];
+        for (const h of stranded) {
+          await db.teamPools.releaseBuyHold(h.orderId, { actor: 'system:hold-sweep', reason: `Order ended ${h.state} still holding` })
+            .catch((e) => failed.push(`${h.orderId}: ${e.message.slice(0, 60)}`));
+        }
+        const unspent = await db.teamPools.findCompletedUnspentBuys();
+        // A COMPLETED buy still holding is the one thing this sweep exists to
+        // shout about: the player was credited and the pool never charged.
+        if (failed.length || unspent.length) {
+          return ['FAIL', `${failed.length} release(s) failed [${failed.join('; ')}], `
+            + `${unspent.length} COMPLETED buy(s) still holding [${unspent.map((u) => u.orderId).join(', ').slice(0, 120)}]`];
+        }
+        return ['RAN', `${stranded.length} stranded hold(s) released, no completed buy still holding`];
       },
     },
     {
-      id: 'cash-link-match',
-      what: 'matchWaitingOrdersToLinks runs and reports',
-      seededTrigger: false,
+      id: 'order-assignment',
+      what: 'assignQueuedOrders finds a queued order and offers the queue to the teams',
       async go() {
-        const { matchWaitingOrdersToLinks } =
-          await import('../../domains/payment/paymentProcessing.service.js');
-        const r = await matchWaitingOrdersToLinks();
-        return ['RAN', `matched ${r.matched}`];
+        const userId = await player();
+        const id = await order({ user_id: userId });
+        // The same claim as withdrawal-hold-settle: the sweep's own query
+        // SELECTS the row the workflow leaves behind (§7) — an order nobody was
+        // free for, waiting at PENDING_QUEUE.
+        const queued = await db.orders.queuedOrdersForAssignment({ limit: 500 });
+        const seen = queued.some((o) => String(o.orderId) === id);
+        // Removed before the worker runs: offered to the teams, this harness's
+        // order would be routed to a real member and hold a real team's tokens.
+        await pgQuery('DELETE FROM order_states WHERE order_id = $1', [id]);
+        if (!seen) return ['FAIL', `queuedOrdersForAssignment did not return ${id} — the sweep cannot see its own trigger`];
+        const { assignQueuedOrders } = await import('../../domains/payment/paymentProcessing.service.js');
+        const r = await assignQueuedOrders();
+        return ['PASS', `the queue query returned ${id}; the worker then ran on the real queue and assigned ${r.assigned} of ${r.considered}`];
       },
     },
     {
@@ -328,20 +324,6 @@ async function cron() {
         return [failures.length ? 'FAIL' : 'RAN',
           `${recorded} event(s) recorded, ${failures.length} failure(s)`
           + (failures.length ? `: ${String(failures[0].error).slice(0, 90)}` : '; ledger conserves')];
-      },
-    },
-    {
-      id: 'commission-engine',
-      what: 'runCommissionEngine runs and reports',
-      seededTrigger: false,
-      async go() {
-        const { runCommissionEngine } =
-          await import('../../domains/merchant/merchantCommission.service.js');
-        const o = await runCommissionEngine();
-        if (!o.ran) return ['RAN', `did not run: ${o.reason ?? 'no ACTIVE priced policy'}`];
-        const bad = o.results.filter((r) => r.error);
-        return [bad.length ? 'FAIL' : 'RAN',
-          `${o.results.filter((r) => r.issued).length} issued, ${bad.length} failed`];
       },
     },
     {
@@ -402,15 +384,14 @@ async function cron() {
   // `order_transitions` is append-only (`bb_forbid_change()`) and holds a plain
   // FK to `order_states`, so the parent DELETE is refused for every order a
   // sweep actually touched. The first version swallowed that refusal and left
-  // the rows behind — six of them, which the escrow sweep then reported as
-  // UNHELD buy orders on the next run. So: take anything still live to a
-  // terminal state, and delete only what never transitioned.
+  // the rows behind — six of them, which a sweep then reported as broken buy
+  // orders on the next run. So: take anything still live to a terminal state,
+  // and delete only what never transitioned.
   for (const sql of [
     `UPDATE order_states SET state = 'CANCELLED', cancel_reason = 'OPS_HARNESS', cancelled_at = now()
       WHERE order_id LIKE 'ops-%' AND state NOT IN ('COMPLETED', 'CANCELLED', 'FAILED', 'REJECTED')`,
     `DELETE FROM order_states o WHERE o.order_id LIKE 'ops-%'
        AND NOT EXISTS (SELECT 1 FROM order_transitions t WHERE t.order_id = o.order_id)`,
-    "DELETE FROM cash_link_queue WHERE link_id LIKE 'ops-%'",
     "DELETE FROM merchants WHERE merchant_id LIKE 'ops-%'",
     "DELETE FROM wallets WHERE user_id LIKE 'ops-%'",
     "DELETE FROM users WHERE user_id LIKE 'ops-%'",
@@ -639,8 +620,8 @@ async function crash() {
       const userId = rid('cu');
       userIds.push(userId);
       await pgQuery(
-        `INSERT INTO users (user_id, username, mobile, account_type, status, kyc_status)
-         VALUES ($1, $1, $2, 'PLAYER', 'ACTIVE', 'APPROVED')`,
+        `INSERT INTO users (user_id, username, mobile, account_type, status)
+         VALUES ($1, $1, $2, 'PLAYER', 'ACTIVE')`,
         [userId, String(6500000000 + Math.floor(Math.random() * 499999999))],
       );
       await pgQuery(

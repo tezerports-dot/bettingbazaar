@@ -80,6 +80,7 @@ function mapRow(row) {
   return {
     movementId:         row.movement_id,
     merchantId:         row.merchant_id,
+    teamId:             row.team_id ?? null,
     direction:          row.direction,
     // BIGINT arrives as a string from node-postgres (trap 5). Cast here, at the
     // boundary, once — an uncast '900' compares wrong against every number.
@@ -114,6 +115,11 @@ function mapRow(row) {
 export async function recordConsideration({
   movementId, merchantId, direction, tokenAmountPaise,
   currency, fiatAmountMinor, rateUsed = null, recordedBy, note = null,
+  // A team pool trade (Step 2b): `merchantId` is the supervisor, this the pool.
+  teamId = null,
+  // Inside a caller's transaction the row commits with the token movement, so
+  // the §21 gap above does not exist for that caller at all.
+  client = null,
 }) {
   assertRecordable({
     movementId, merchantId, direction, tokenAmountPaise,
@@ -121,11 +127,14 @@ export async function recordConsideration({
   });
   const inrEquivalentPaise = valueInInrPaise({ currency, fiatAmountMinor, rateUsed });
 
-  const { rows } = await pgQuery(
+  const run = client
+    ? (text, params) => client.query(text, params)
+    : (text, params) => pgQuery(text, params, 'admin_consideration_record');
+  const { rows } = await run(
     `INSERT INTO admin_token_considerations
        (movement_id, merchant_id, direction, token_amount_paise,
-        currency, fiat_amount_minor, inr_equivalent_paise, rate_used, recorded_by, note)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        currency, fiat_amount_minor, inr_equivalent_paise, rate_used, recorded_by, note, team_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
      ON CONFLICT (movement_id) DO NOTHING
      RETURNING *`,
     [
@@ -133,11 +142,16 @@ export async function recordConsideration({
       currency, Math.round(toNum(fiatAmountMinor)), inrEquivalentPaise,
       currency === 'INR' ? null : Number(rateUsed), String(recordedBy),
       note === null || note === undefined ? null : String(note),
+      teamId === null ? null : String(teamId),
     ],
-    'admin_consideration_record',
   );
 
   if (rows.length) return { consideration: mapRow(rows[0]), idempotent: false };
+  if (client) {
+    const { rows: existing } = await client.query(
+      'SELECT * FROM admin_token_considerations WHERE movement_id = $1', [String(movementId)]);
+    return { consideration: mapRow(existing[0]), idempotent: true };
+  }
   return { consideration: await considerationFor(movementId), idempotent: true };
 }
 

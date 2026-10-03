@@ -3,9 +3,10 @@
  * A merchant saying "the money never arrived" must say why, and show it.
  *
  * ── Why this route needed both, and had neither ─────────────────────────────
- * `POST /api/merchant/orders/:id/reject` cancels an order the player has
- * already claimed to pay and adds a warning to that player's account. It is the
- * heaviest thing a merchant can do to a player.
+ * `POST /api/merchant/orders/:id/reject` rejects an order the player has
+ * already claimed to pay — it waits in REJECTED for the player's dispute window
+ * (2c+) — and adds a warning to that player's account. It is the heaviest thing
+ * a merchant can do to a player.
  *
  * It USED to auto-block them once they crossed the admin's threshold, with no
  * admin in the loop — see the last describe block, which is the test that keeps
@@ -81,7 +82,10 @@ describePg('merchant rejects a paid order', () => {
     expect(res.status).toBe(200);
 
     const row = await getOrderRecord(orderId);
-    expect(row.status).toBe('CANCELLED');
+    // REJECTED, not CANCELLED (2c+): the buy waits for the player's dispute
+    // window, which rejectedBuyWindowPg.test.js covers with real pool holds.
+    expect(row.status).toBe('REJECTED');
+    expect(row.disputeWindowUntil).toBeTruthy();
     // The merchant's own words, not a canned string.
     expect(row.rejectedReason).toBe(REASON);
     // And the evidence, stored with it.

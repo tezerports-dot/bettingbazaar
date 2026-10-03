@@ -450,19 +450,30 @@ const toGame = (r) => (r ? {
   createdBy: r.created_by, updatedBy: r.updated_by,
 } : null);
 
-export async function upsertCategory({ slug, name, icon = null, order = 0, enabled = true, updatedBy = null }) {
+/**
+ * Write a category. `createOnly` is for a CREATE: an existing slug writes
+ * nothing and answers null, so the caller can say it exists. Without it this is
+ * the seed's idempotent upsert — and the admin "create" route used it, so
+ * creating a category whose slug existed silently OVERWROTE it, re-enabling a
+ * disabled one on the way (2026-10-01). The slug's uniqueness is the primary
+ * key's to decide, in this statement, not a read made before it.
+ */
+export async function upsertCategory(
+  { slug, name, icon = null, order = 0, enabled = true, updatedBy = null },
+  { createOnly = false } = {},
+) {
   const { rows } = await pgQuery(
     `INSERT INTO game_categories (slug, name, icon, sort_order, enabled, updated_by)
      VALUES ($1,$2,$3,$4,$5,$6)
-     ON CONFLICT (slug) DO UPDATE SET
+     ${createOnly ? 'ON CONFLICT (slug) DO NOTHING' : `ON CONFLICT (slug) DO UPDATE SET
        name = EXCLUDED.name, icon = EXCLUDED.icon, sort_order = EXCLUDED.sort_order,
-       enabled = EXCLUDED.enabled, updated_by = EXCLUDED.updated_by, updated_at = now()
+       enabled = EXCLUDED.enabled, updated_by = EXCLUDED.updated_by, updated_at = now()`}
      RETURNING *`,
     [String(slug), String(name), icon, Number(order) || 0, Boolean(enabled), updatedBy],
-    'category_upsert',
+    createOnly ? 'category_create' : 'category_upsert',
   );
   const r = rows[0];
-  return { slug: r.slug, name: r.name, icon: r.icon, order: r.sort_order, enabled: r.enabled };
+  return r ? { slug: r.slug, name: r.name, icon: r.icon, order: r.sort_order, enabled: r.enabled } : null;
 }
 
 export async function listCategories({ enabledOnly = true } = {}) {
@@ -489,13 +500,19 @@ function parseRtp(value) {
   return Number.isFinite(n) && n >= 0 && n <= 100 ? n : null;
 }
 
-export async function upsertGame(spec) {
+/**
+ * Write a game. `createOnly` is for a CREATE, exactly as for a category: an
+ * existing slug writes nothing and answers null. The admin create route read
+ * `getGame` first and then upserted, so two creates of one slug both passed the
+ * read and the second overwrote the first, each told 200 (§32 S6, 2026-10-01).
+ */
+export async function upsertGame(spec, { createOnly = false } = {}) {
   const { rows } = await pgQuery(
     `INSERT INTO games (slug, name, provider_key, category_slug, launch_strategy,
        external_game_id, launch_url, thumbnail, banner, badge, rtp, tags,
        min_bet_paise, max_bet_paise, status, featured, sort_order, created_by, updated_by)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
-     ON CONFLICT (slug) DO UPDATE SET
+     ${createOnly ? 'ON CONFLICT (slug) DO NOTHING' : `ON CONFLICT (slug) DO UPDATE SET
        name = EXCLUDED.name, provider_key = EXCLUDED.provider_key,
        category_slug = EXCLUDED.category_slug, launch_strategy = EXCLUDED.launch_strategy,
        external_game_id = EXCLUDED.external_game_id, launch_url = EXCLUDED.launch_url,
@@ -503,7 +520,7 @@ export async function upsertGame(spec) {
        rtp = EXCLUDED.rtp, tags = EXCLUDED.tags,
        min_bet_paise = EXCLUDED.min_bet_paise, max_bet_paise = EXCLUDED.max_bet_paise,
        status = EXCLUDED.status, featured = EXCLUDED.featured,
-       sort_order = EXCLUDED.sort_order, updated_by = EXCLUDED.updated_by, updated_at = now()
+       sort_order = EXCLUDED.sort_order, updated_by = EXCLUDED.updated_by, updated_at = now()`}
      RETURNING *`,
     [String(spec.slug), String(spec.name), spec.providerKey ?? null, spec.categorySlug ?? null,
       String(spec.launchStrategy || 'PROVIDER'), spec.externalGameId ?? null, spec.launchUrl ?? null,
@@ -515,7 +532,7 @@ export async function upsertGame(spec) {
       // rather than the unpublished game it asked for. INACTIVE IS unpublished.
       String(spec.status || 'INACTIVE'), Boolean(spec.featured), Number(spec.order) || 0,
       spec.createdBy ?? null, spec.updatedBy ?? null],
-    'game_upsert',
+    createOnly ? 'game_create' : 'game_upsert',
   );
   return toGame(rows[0]);
 }

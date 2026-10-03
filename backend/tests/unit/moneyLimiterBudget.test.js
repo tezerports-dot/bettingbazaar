@@ -46,7 +46,7 @@ import express from 'express';
 import request from 'supertest';
 import { readFileSync } from 'node:fs';
 import {
-  usdtDepositLimiter, orderRetryLimiter, cashLinkSupplyLimiter,
+  usdtDepositLimiter, orderRetryLimiter,
   utrGraceLimiter, cdmReceiptLimiter,
   ipBetLimiter, withdrawalLimiter, depositCreateLimiter,
 } from '../../middleware/security.js';
@@ -116,10 +116,9 @@ describe('a money limiter that bounds EFFECTS does not charge for refusals', () 
     expect((await post(app, who, 200)).status).toBe(429);
   });
 
-  it('applies to the retry and cash-link rails too', async () => {
+  it('applies to the retry rail too', async () => {
     for (const [name, limiter, tier] of [
       ['orderRetry', orderRetryLimiter, RATE_LIMIT_TIERS.orderRetry],
-      ['cashLinkSupply', cashLinkSupplyLimiter, RATE_LIMIT_TIERS.cashLinkSupply],
     ]) {
       const app = appWith(limiter);
       const who = actor();
@@ -197,7 +196,10 @@ describe('the declaration cannot be omitted', () => {
     // the decision, and a call site is the only place that shows.
     const src = readFileSync(new URL('../../middleware/security.js', import.meta.url), 'utf8');
     const calls = src.match(/moneyLimiter\(\s*'rl:[^)]*?\)/gs) ?? [];
-    expect(calls.length, 'money limiters found').toBeGreaterThanOrEqual(8);
+    // Seven since Step 2c removed the cash-link supply limiter with the queue it
+    // guarded. A floor, so a regex that stops matching fails here instead of
+    // asserting over nothing.
+    expect(calls.length, 'money limiters found').toBeGreaterThanOrEqual(7);
     for (const call of calls) {
       expect(call, call.slice(0, 60)).toMatch(/bounds:\s*'(effects|attempts)'/);
     }

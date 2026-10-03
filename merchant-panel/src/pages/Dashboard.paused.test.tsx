@@ -29,13 +29,15 @@ vi.mock('../hooks/useOrders', () => ({
   useOrders: () => ({ orders: [], state: 'ready', counts: {} }),
   needsAction: () => false,
 }));
-vi.mock('../components/SettlementRailBanner', () => ({ SettlementRailBanner: () => null }));
+// The Ready card has its own suite (components/CashReadyCard.test.tsx); here it
+// is a stand-in so this file asserts only what the Dashboard itself says.
+vi.mock('../components/CashReadyCard', () => ({ CashReadyCard: () => null }));
 vi.mock('react-hot-toast', () => ({ default: { success: vi.fn(), error: vi.fn() } }));
 
 import Dashboard from './Dashboard';
 
 const show = (merchant: Record<string, unknown>) => {
-  auth.merchant = { id: 'm-1', merchantId: 'm-1', isOnline: true, acceptedCurrencies: ['INR'], tokenBalance: 1000, ...merchant };
+  auth.merchant = { id: 'm-1', merchantId: 'm-1', isOnline: true, acceptedCurrencies: ['INR'], ...merchant };
   return render(<MemoryRouter><Dashboard /></MemoryRouter>);
 };
 
@@ -54,5 +56,20 @@ describe('the Dashboard and a paused assignment', () => {
     show({ assignmentPausedAt: null });
     expect(await screen.findByText(/Online · Accepting orders/)).toBeInTheDocument();
     expect(screen.queryByText(/New buy orders are paused/i)).not.toBeInTheDocument();
+  });});
+
+/**
+ * A merchant holds no tokens — the team's pool does (PROJECT_STATUS §3.10) —
+ * and the profile carries no balance. The Dashboard had a "BB Token balance"
+ * tile and a "Largest buy you can serve" tile, both reading `tokenBalance`;
+ * with the field gone they would have rendered "0 BB" as if it were a fact.
+ */
+describe('the Dashboard shows no merchant balance', () => {
+  it('has no balance tile, even if a stale cached profile still carries one', async () => {
+    show({ tokenBalance: 1000 });
+    expect(await screen.findByText(/Online · Accepting orders/)).toBeInTheDocument();
+    expect(screen.queryByText(/BB Token balance/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Largest buy you can serve/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/1,000 BB/)).not.toBeInTheDocument();
   });
 });

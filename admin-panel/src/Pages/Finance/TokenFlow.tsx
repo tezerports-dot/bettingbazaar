@@ -1,16 +1,21 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * Token Flow — where tokens entered the platform, where they left, and what
- * the operator put in to make that possible.
+ * the platform sold into team pools to make that possible.
  *
  * ── Why these are three views and not one ───────────────────────────────────
  * The backend keeps them deliberately apart, and the separation is the point:
  *
  *   deposit-dashboard     ONLY real player INR -> token purchases
  *   withdrawal-dashboard  ONLY real player token -> INR sells
- *   merchant-funding      ONLY merchant topup / reserve / liquidity
+ *   merchant-funding      ONLY team pool purchases and buy-backs — what the
+ *                         platform sold to supervisors' pools, bought back,
+ *                         and was paid (analytics.admin.routes.js)
  *
- * Adding merchant funding into a "total deposits" figure would inflate player
+ * A merchant holds no tokens (PROJECT_STATUS §3.10, 2c): a team's pool does,
+ * so there is no merchant top-up, reserve or liquidity figure any more.
+ *
+ * Adding pool funding into a "total deposits" figure would inflate player
  * volume with the operator's own float — a number that flatters the platform
  * and answers no question anyone actually has. They are rendered side by side
  * and never summed.
@@ -34,12 +39,14 @@ interface WithdrawalData {
   totalTokensSold: number; totalINRWithdrawn: number;
   numberOfSellers: number; transactionCount: number; dailyBreakdown: DailyPoint[];
 }
+/** `GET /api/admin/analytics/merchant-funding` — `data`, as the route builds it. */
 interface FundingData {
-  merchantTopup: number; merchantReserve: number;
-  merchantLiquidity: number; activeMerchants: number;
-  // What the platform GOT for that float. The three figures above count tokens
-  // handed out; these are the money side of the same trades, which nothing
-  // recorded until the top-up and deduct forms began capturing it.
+  /** The route fills this from `merchantStats().total`: EVERY merchant row, not only active ones. */
+  activeMerchants: number;
+  // Tokens moved between the platform and team pools, and the money side of the
+  // same trades. Rupees: `receivedInr`/`paidInr`/`netInr` are INR-equivalents
+  // and the only figures that may be added; `byCurrency` keeps what was actually
+  // settled apart (trap 15).
   tokenTrade?: {
     receivedInr: number; paidInr: number; netInr: number;
     tokensSold: number; tokensBoughtBack: number; movements: number;
@@ -124,7 +131,7 @@ export const TokenFlow: React.FC = () => {
     ]);
     if (d.status === 'fulfilled') setDeposits(d.value.data?.data ?? null); else toast.error('Deposit flow failed to load');
     if (w.status === 'fulfilled') setWithdrawals(w.value.data?.data ?? null); else toast.error('Withdrawal flow failed to load');
-    if (f.status === 'fulfilled') setFunding(f.value.data?.data ?? null); else toast.error('Merchant funding failed to load');
+    if (f.status === 'fulfilled') setFunding(f.value.data?.data ?? null); else toast.error('Team pool funding failed to load');
     if (t.status === 'fulfilled') setTrends(t.value.data?.trends ?? null);
     setLoading(false);
   };
@@ -137,7 +144,7 @@ export const TokenFlow: React.FC = () => {
         <div>
           <h1 className="text-2xl font-bold">Token Flow</h1>
           <p className="text-gray-400 text-sm mt-1">
-            Player purchases, player sells and merchant funding — kept apart on purpose, and never added together
+            Player purchases, player sells and team pool funding — kept apart on purpose, and never added together
           </p>
         </div>
         <div className="flex flex-wrap items-end gap-3">
@@ -164,7 +171,7 @@ export const TokenFlow: React.FC = () => {
       <Section
         icon={<ArrowDownCircle size={18} className="text-green-400" />}
         title="Player purchases"
-        note="Real INR → token buys only. Merchant funding is excluded and shown separately below."
+        note="Real INR → token buys only. Team pool funding is excluded and shown separately below."
       >
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <Tile label="INR received" value={formatters.currency(deposits?.totalINRDeposited ?? 0)} tone="text-green-400" />
@@ -178,7 +185,7 @@ export const TokenFlow: React.FC = () => {
       <Section
         icon={<ArrowUpCircle size={18} className="text-orange-400" />}
         title="Player sells"
-        note="Real token → INR redemptions only. Merchant reserve and liquidity movements are excluded."
+        note="Real token → INR redemptions only. Team pool buy-backs are excluded."
       >
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <Tile label="INR paid out" value={formatters.currency(withdrawals?.totalINRWithdrawn ?? 0)} tone="text-orange-400" />
@@ -191,29 +198,28 @@ export const TokenFlow: React.FC = () => {
 
       <Section
         icon={<Landmark size={18} className="text-blue-400" />}
-        title="Merchant funding"
-        note="The operator's own float: topup, reserve and liquidity. Never part of player volume."
+        title="Team pool funding"
+        note="Tokens the platform sold into supervisors' team pools and bought back. Never part of player volume."
       >
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <Tile label="Topup" value={formatters.currency(funding?.merchantTopup ?? 0)} tone="text-blue-400" />
-          <Tile label="Reserve" value={formatters.currency(funding?.merchantReserve ?? 0)} tone="text-blue-400" />
-          <Tile label="Liquidity" value={formatters.currency(funding?.merchantLiquidity ?? 0)} tone="text-blue-400" />
-          <Tile label="Active merchants" value={funding?.activeMerchants ?? 0} />
+          <Tile label="Tokens sold to pools" value={formatters.currency(funding?.tokenTrade?.tokensSold ?? 0)} tone="text-blue-400" />
+          <Tile label="Tokens bought back" value={formatters.currency(funding?.tokenTrade?.tokensBoughtBack ?? 0)} tone="text-blue-400" />
+          <Tile label="Trades recorded" value={funding?.tokenTrade?.movements ?? 0} />
+          <Tile label="Merchants" value={funding?.activeMerchants ?? 0} />
         </div>
 
-        {/* The money side of the same float. Separate row and separate heading
-            because these are rupees the platform RECEIVED, not tokens it
-            issued, and a reader who adds one to the other gets nothing real. */}
+        {/* The money side of the same trades. Separate row and separate heading
+            because these are rupees the platform RECEIVED or PAID, not tokens
+            it moved, and a reader who adds one to the other gets nothing real. */}
         {funding?.tokenTrade && (
           <div className="mt-4 pt-4 border-t border-dark-700 space-y-3">
             <p className="text-xs uppercase tracking-wider text-gray-400">
-              Paid for that float
+              Paid for those tokens
             </p>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <Tile label="Received from merchants" value={formatters.currency(funding.tokenTrade.receivedInr)} tone="text-green-400" />
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+              <Tile label="Received from supervisors" value={formatters.currency(funding.tokenTrade.receivedInr)} tone="text-green-400" />
               <Tile label="Paid on buy-backs" value={formatters.currency(funding.tokenTrade.paidInr)} tone="text-red-400" />
               <Tile label="Net to platform" value={formatters.currency(funding.tokenTrade.netInr)} tone={funding.tokenTrade.netInr >= 0 ? 'text-green-400' : 'text-red-400'} />
-              <Tile label="Trades recorded" value={funding.tokenTrade.movements} />
             </div>
             {Object.keys(funding.tokenTrade.byCurrency ?? {}).length > 0 && (
               <p className="text-xs text-gray-500">

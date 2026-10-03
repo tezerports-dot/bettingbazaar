@@ -30,6 +30,18 @@ interface Dispute {
   disputeResolvedBy?: { username: string };
   utrNumber?: string;
   proofScreenshot?: string;
+  /** Who each decision suspends, from the server's one rule
+   *  (backend/domains/disputes/disputeOutcome.service.js): 'PLAYER', 'MERCHANT'
+   *  (the team member), or null when it is not a dispute about a payment. */
+  suspendsIfToUser?: 'PLAYER' | 'MERCHANT' | null;
+  suspendsIfToMerchant?: 'PLAYER' | 'MERCHANT' | null;
+}
+
+/** The note under the decision: who the server will suspend if it is taken. */
+function suspensionNote(party: 'PLAYER' | 'MERCHANT' | null | undefined): string {
+  if (party === 'MERCHANT') return 'The team member on this order will be suspended. A sub-admin or admin must lift it; after a third lost dispute only an admin can.';
+  if (party === 'PLAYER') return 'The player will be suspended. A sub-admin or admin must lift it; after a third lost dispute only an admin can.';
+  return 'Nobody is suspended by this decision: it is not a dispute over whether a payment was made (a member\'s red flag, or a buy disputed after it completed).';
 }
 
 /**
@@ -88,8 +100,6 @@ export const DisputeManager: React.FC = () => {
   // Resolve tab state
   const [decision, setDecision]           = useState('RELEASE_TO_USER');
   const [resolution, setResolution]       = useState('');
-  const [refundAmt, setRefundAmt]         = useState('');
-  const [penaltyAmt, setPenaltyAmt]       = useState('');
   const [isSaving, setIsSaving]           = useState(false);
 
   const [filterStatus, setFilterStatus]   = useState('all');
@@ -160,12 +170,10 @@ export const DisputeManager: React.FC = () => {
     setActiveTab('chat');
     setDecision('RELEASE_TO_USER');
     setResolution('');
-    setRefundAmt('');
-    setPenaltyAmt('');
     // Cleared with the rest of the per-dispute state. A slip left behind from
     // the previously opened dispute would render this player's decision against
-    // another player's bank slip — the same shape as the KYC screen matching
-    // the first row every time, and worse, because this one is evidence.
+    // another player's bank slip — the same shape as a list screen matching
+    // the first row every time (§23), and worse, because this one is evidence.
     setSlip(null);
     setSlipNote('');
     await loadChat(d);
@@ -200,8 +208,6 @@ export const DisputeManager: React.FC = () => {
       await api.post(`/api/admin/dispute-orders/${selected._id}/resolve`, {
         decision,
         resolution: resolution.trim(),
-        refundAmount:  refundAmt  ? parseFloat(refundAmt)  : undefined,
-        penaltyAmount: penaltyAmt ? parseFloat(penaltyAmt) : undefined,
       });
       toast.success('Dispute resolved');
       setSelected(null);
@@ -449,32 +455,30 @@ export const DisputeManager: React.FC = () => {
             {/* Resolve tab */}
             {activeTab === 'resolve' && (
               <div className="space-y-4 overflow-y-auto flex-1">
+                {/* The values are the three the resolve route accepts
+                    (disputeResolution.admin.routes.js). The options used to be
+                    FAVOR_USER / FAVOR_MERCHANT / SPLIT, which the route refuses
+                    as "Invalid decision", so only the untouched default could
+                    ever be sent: no dispute could be decided for the team. */}
                 <div>
                   <label className="label" htmlFor="decision">Decision</label>
                   <select id="decision" value={decision} onChange={e => setDecision(e.target.value)} className="input">
-                    <option value="FAVOR_USER">✓ APPROVE — Refund user, penalise merchant</option>
-                    <option value="FAVOR_MERCHANT">✗ REJECT — No refund, favour merchant</option>
-                    <option value="SPLIT">↔ SPLIT — Partial refund</option>
+                    {selected.type === 'DEPOSIT' ? (<>
+                      <option value="RELEASE_TO_USER">The player paid: credit the player's tokens</option>
+                      <option value="RELEASE_TO_MERCHANT">The player did not pay: tokens go back to the team pool</option>
+                    </>) : (<>
+                      <option value="RELEASE_TO_MERCHANT">The member paid: the player's tokens go to the team pool</option>
+                      <option value="RELEASE_TO_USER">The member did not pay: return the tokens to the player</option>
+                    </>)}
                   </select>
                 </div>
 
-                {(decision === 'RELEASE_TO_USER' || decision === 'SPLIT') && (
-                  <div>
-                    <label className="label">
-                      Refund Amount (₹) {decision === 'RELEASE_TO_USER' ? '— blank = full amount' : ''}
-                    </label>
-                    <input type="number" value={refundAmt} onChange={e => setRefundAmt(e.target.value)}
-                      className="input" placeholder={decision === 'RELEASE_TO_USER' ? 'Full amount by default' : 'Enter split amount'} />
-                  </div>
-                )}
-
-                {decision === 'RELEASE_TO_MERCHANT' && (
-                  <div>
-                    <label className="label" htmlFor="merchant-penalty-optional">Merchant Penalty (₹) — optional</label>
-                    <input id="merchant-penalty-optional" type="number" value={penaltyAmt} onChange={e => setPenaltyAmt(e.target.value)}
-                      className="input" placeholder="0" />
-                  </div>
-                )}
+                {/* Whoever the decision goes against is suspended by the server
+                    (disputeOutcome.service.js), so the admin is told before
+                    pressing, not after. */}
+                <p role="note" className="text-xs text-amber-300 bg-amber-900/20 border border-amber-700/40 rounded-lg p-2">
+                  {suspensionNote(decision === 'RELEASE_TO_USER' ? selected.suspendsIfToUser : selected.suspendsIfToMerchant)}
+                </p>
 
                 <div>
                   <label className="label" htmlFor="resolution-notes">Resolution Notes *</label>
@@ -487,10 +491,7 @@ export const DisputeManager: React.FC = () => {
                   <button onClick={() => setSelected(null)} className="flex-1 btn-secondary">Cancel</button>
                   <button onClick={handleResolve} disabled={isSaving || !resolution.trim()}
                     className="flex-1 btn-primary disabled:opacity-50">
-                    {isSaving ? 'Processing…'
-                      : decision === 'RELEASE_TO_USER'     ? '✓ Approve — Refund User'
-                      : decision === 'RELEASE_TO_MERCHANT'  ? '✗ Reject — No Refund'
-                      : '↔ Apply Split'}
+                    {isSaving ? 'Processing…' : 'Decide dispute'}
                   </button>
                 </div>
               </div>

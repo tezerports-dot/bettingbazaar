@@ -27,12 +27,11 @@ import { db } from '#db';
 import { signToken, verifyJwt, decodeTokenClaims } from './domains/identity/jwt.util.js';
 // AQ-8: password hashing authority (argon2id + bcrypt verify-fallback).
 import { hashPassword, verifyPassword } from './domains/identity/password.util.js';
-import { buildPublicKycData } from './domains/user/kycPublicData.js';
 import { isTokenRevoked, revokeToken } from '#db/repositories/identity.js';
 import { issueChallenge, verifyChallenge, CHALLENGE_AUDIENCE } from './domains/identity/twoFactorChallenge.js';
 import { verifySecondFactor, SECOND_FACTOR_RESULT } from './domains/identity/verifySecondFactor.js';
 import { requires2FA } from './domains/identity/twoFactor.routes.js';
-import { sessionSuperseded, refuseSupersededSession } from './domains/identity/auth.middleware.js';
+import { sessionSuperseded, refuseSupersededSession, accountClosed, refuseClosedAccount, belongsElsewhere, refuseWrongPanel } from './domains/identity/auth.middleware.js';
 
 const router = express.Router();
 
@@ -135,6 +134,7 @@ export async function loginHandler(req, res) {
 
     if (user.status === 'BLOCKED' || user.isBlocked)
       return res.status(403).json({ success: false, message: 'Account blocked. Contact support.' });
+    if (accountClosed(user)) return refuseClosedAccount(res);
 
     // The hash comes from the credentials read, which is the ONLY function that
     // returns it. An ordinary user read cannot leak a password hash into a
@@ -259,8 +259,7 @@ export async function issueSession(user, res, { secondFactorPresented = false } 
     // bets the engine then refused. GET /api/user/bet-limits publishes the true
     // ceiling, computed by the same rule the bet route enforces.
     reserveBalance: balances.reserveBalance,
-    walletBalance: dep + win, kycStatus: user.kycStatus,
-    kycData: await buildPublicKycData(user),
+    walletBalance: dep + win,
     bankDetails: user.bankDetails || null, profilePic: user.profilePic || '',
     status: user.status || 'ACTIVE', joinedAt: user.joinedAt || null,
     lastLogin: lastLogin?.lastLogin ?? new Date(),
@@ -306,6 +305,7 @@ export async function loginTwoFactorHandler(req, res) {
     // between the two requests.
     if (user.status === 'BLOCKED' || user.isBlocked)
       return res.status(403).json({ success: false, message: 'Account blocked. Contact support.' });
+    if (accountClosed(user)) return refuseClosedAccount(res);
     // The SAME door the password leg applied, on the account type AND the role.
     // A challenge minted at one door and redeemed at the other is the shape
     // this re-check exists to refuse: without it a player's valid challenge,
@@ -386,7 +386,12 @@ router.get('/me', async (req, res) => {
     // implementation would be the thing that drifts. Measured before it
     // existed: a password reset left the pre-reset session answering 200 here,
     // on the endpoint every page load calls to restore a session.
+    if (accountClosed(user)) return refuseClosedAccount(res);
     if (sessionSuperseded(user, decoded)) return refuseSupersededSession(res);
+    // The same door `authenticate` keeps (S32: the same check in both paths).
+    // `/me` serves the player app and the admin panel; a merchant session
+    // belongs to `merchantAuth` and restores itself through the merchant routes.
+    if (belongsElsewhere(user, ['PLAYER', 'STAFF'])) return refuseWrongPanel(res, user);
 
     if (user.isBlocked || user.status === 'BLOCKED')
       return res.status(403).json({ success: false, message: 'Account blocked' });
@@ -402,8 +407,7 @@ router.get('/me', async (req, res) => {
         isQueueManager: user.isQueueManager || false, permissions: user.subAdminPermissions || {},
         depositBalance: dep, winningsBalance: win, lockedBalance: balances.lockedBalance || 0,
         reserveBalance: balances.reserveBalance || 0,
-        walletBalance: dep + win, kycStatus: user.kycStatus,
-        kycData: await buildPublicKycData(user),
+        walletBalance: dep + win,
         bankDetails: user.bankDetails || null, profilePic: user.profilePic || '',
         status: user.status || 'ACTIVE', joinedAt: user.joinedAt || null,
         lastLogin: user.lastLogin || null, phantomAccess: user.phantomAccess || 'NONE',
@@ -460,6 +464,7 @@ router.post('/logout', async (req, res) => {
   }
 });
 
-router.get('/health', (_, res) => res.json({ success: true, status: 'ok', timestamp: new Date().toISOString() }));
+// `GET /api/v1/auth/health` was removed 2026-10-01: nothing called it, and
+// `/health` and `/health/ready` are the probes a balancer uses.
 
 export default router;

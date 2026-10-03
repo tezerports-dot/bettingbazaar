@@ -5,12 +5,12 @@ import {
   AuthResponse,
   Earnings,
   Stats,
-  PaymentModeView,
-  CashLinkState,
-  CashLink,
   OutstandingCdmReceipt,
-  AdminTokenOrder,
-  AdminTokenQuote,
+  MyTeam,
+  Team,
+  PoolDirection,
+  TeamPool,
+  TeamPoolEntry,
 } from '../types';
 import { ENDPOINTS, ERROR_MESSAGES } from '../constants';
 
@@ -253,102 +253,6 @@ export const getVerification = async (opts: { verify?: boolean } = {}): Promise<
 export const getMerchantProfile = async (): Promise<MerchantProfile> => {
   const data = await request<any>(ENDPOINTS.AUTH.PROFILE);
   return data.merchant || data;
-};
-
-/**
- * Which settlement rail this merchant is on, and the windows they are held to.
- *
- * Read on panel load. The rail can change under a merchant mid-shift, and the
- * notification and the SSE push are both best-effort — a merchant with no
- * linked player account has no inbox, and a dropped socket misses the
- * broadcast. This read is the one that is always correct.
- */
-export const getPaymentMode = async (): Promise<PaymentModeView> => {
-  const data = await request<any>(ENDPOINTS.AUTH.PAYMENT_MODE);
-  return {
-    activeMode: data.activeMode ?? null,
-    version: data.version ?? null,
-    label: data.label ?? '',
-    merchantMessage: data.merchantMessage ?? '',
-    timers: data.timers ?? null,
-  };
-};
-
-/**
- * The ATM cash rail: what this merchant is holding, and whether a trip is
- * worth making.
- *
- * `worthGoing` is computed by the SERVER using the same function that decides
- * who the demand broadcast reaches. Deciding it here from `waiting > 0` would
- * put a different answer on the screen than in the notification, and an
- * expired link earns a merchant nothing — so a wrong "yes" costs them a
- * journey.
- */
-export const getCashLinkState = async (): Promise<CashLinkState> => {
-  const data = await request<any>(ENDPOINTS.CASH_LINKS.CURRENT);
-  return {
-    approved: Boolean(data.approved),
-    denomination: data.denomination ?? null,
-    live: data.live ?? null,
-    waiting: data.waiting ?? 0,
-    worthGoing: Boolean(data.worthGoing),
-  };
-};
-
-/** Supply the link the ATM just produced. Amount and lifetime are the server's. */
-export const supplyCashLink = async (paymentLink: string): Promise<CashLink> => {
-  const data = await request<any>(ENDPOINTS.CASH_LINKS.SUPPLY, {
-    method: 'POST',
-    body: JSON.stringify({ paymentLink }),
-  });
-  return data.link;
-};
-
-/** Withdraw a link this merchant can no longer honour. */
-export const cancelCashLink = async (linkId: string): Promise<void> => {
-  await request<any>(`${ENDPOINTS.CASH_LINKS.SUPPLY}/${encodeURIComponent(linkId)}`, {
-    method: 'DELETE',
-  });
-};
-
-// =======================================================================
-// TOKEN SUPPLY — buying platform tokens from the platform, in USDT
-// =======================================================================
-
-/** This merchant's own purchase requests, newest first (server caps at 30). */
-export const getAdminTokenOrders = async (): Promise<AdminTokenOrder[]> => {
-  const data = await request<any>(ENDPOINTS.TOKEN_SUPPLY.LIST);
-  return data.orders ?? [];
-};
-
-/**
- * Price an amount before committing to it.
- *
- * The panel does NOT compute this. The rate, the rounding to whole tens of
- * USDT and the min/max band all live in one function on the server, because a
- * second copy here would drift the first time any of them changed (§5) — and
- * the figure decides how much real USDT a merchant sends.
- */
-export const quoteAdminTokenPurchase = async (tokenAmount: number): Promise<AdminTokenQuote> => {
-  const params = new URLSearchParams({ tokenAmount: String(tokenAmount) });
-  const data = await request<any>(`${ENDPOINTS.TOKEN_SUPPLY.QUOTE}?${params.toString()}`);
-  return data.quote as AdminTokenQuote;
-};
-
-/**
- * File the request. The transaction id is required — the platform claims it, so
- * one USDT payment can fund exactly one purchase, and the row refuses an
- * approval that does not name the transaction that paid for it.
- */
-export const createAdminTokenOrder = async (
-  tokenAmount: number,
-  usdtTxHash: string,
-): Promise<AdminTokenOrder> => {
-  const data = await request<any>(ENDPOINTS.TOKEN_SUPPLY.CREATE, {
-    method: 'POST',
-    body: JSON.stringify({ tokenAmount, usdtTxHash }),
-  });
-  return data.order as AdminTokenOrder;
 };
 
 // =======================================================================
@@ -654,6 +558,25 @@ export const updatePreferences = async (preferences: {
   return data.merchant || data;
 };
 
+/**
+ * A CASH team member says they are at the machine (or no longer are).
+ *
+ * A cash buy is routed only to a member who is Ready, and the assignment that
+ * hands them one switches Ready off in the same transaction — so the value the
+ * panel shows is the PROFILE's `cashReady`, refreshed after this call and when
+ * a new order arrives, never a flag kept here. A merchant who is not an
+ * approved member of a CASH team is refused 409 with a sentence naming what to
+ * do; the error carries it (`request` puts the server's message on the Error).
+ * backend/domains/merchant/merchant.routes.js PUT /cash-ready.
+ */
+export const setCashReady = async (ready: boolean): Promise<boolean> => {
+  const data = await request<{ success: boolean; ready: boolean }>(ENDPOINTS.AUTH.CASH_READY, {
+    method: 'PUT',
+    body: JSON.stringify({ ready }),
+  });
+  return data.ready === true;
+};
+
 // =======================================================================
 // PROFILE UPDATE (FIX M6)
 // =======================================================================
@@ -703,6 +626,48 @@ export const formatTime = (dateString: string | number): string => {
 // EXPORT ALL API FUNCTIONS
 // =======================================================================
 
+// =======================================================================
+// SUPERVISORS AND TEAMS (redesign Step 2a)
+// =======================================================================
+
+export const getMyTeam = async (): Promise<MyTeam> => request<MyTeam>(ENDPOINTS.TEAM.MINE);
+
+export const createTeam = async (name: string): Promise<Team> =>
+  (await request<{ team: Team }>(ENDPOINTS.TEAM.CREATE, { method: 'POST', body: JSON.stringify({ name }) })).team;
+
+export const renameTeam = async (teamId: string, name: string): Promise<Team> =>
+  (await request<{ team: Team }>(ENDPOINTS.TEAM.RENAME(teamId), { method: 'PUT', body: JSON.stringify({ name }) })).team;
+
+export const deleteTeam = async (teamId: string): Promise<void> => {
+  await request(ENDPOINTS.TEAM.DELETE(teamId), { method: 'DELETE' });
+};
+
+/** By merchant ID or the public ref shown on their Profile. PENDING until an admin approves. */
+export const addTeamMember = async (teamId: string, merchantRef: string): Promise<string> =>
+  (await request<{ message: string }>(ENDPOINTS.TEAM.ADD_MEMBER(teamId), {
+    method: 'POST', body: JSON.stringify({ merchantRef }),
+  })).message;
+
+export const removeTeamMember = async (teamId: string, merchantId: string): Promise<void> => {
+  await request(ENDPOINTS.TEAM.REMOVE_MEMBER(teamId, merchantId), { method: 'DELETE' });
+};
+
+/** A team's pool and its ledger, newest first (Step 2b). */
+export const getTeamPool = async (teamId: string): Promise<{ pool: TeamPool; entries: TeamPoolEntry[] }> =>
+  request<{ pool: TeamPool; entries: TeamPoolEntry[] }>(ENDPOINTS.TEAM.POOL(teamId));
+
+/** BUY asks the platform for tokens; SELL asks it to buy pool tokens back. Whole tokens. */
+export const requestTeamPool = async (
+  teamId: string, direction: PoolDirection, tokenAmount: number, note: string,
+): Promise<string> =>
+  (await request<{ message: string }>(ENDPOINTS.TEAM.POOL_REQUEST(teamId), {
+    method: 'POST', body: JSON.stringify({ direction, tokenAmount, note: note || null }),
+  })).message;
+
+export const cancelTeamPoolRequest = async (requestId: string): Promise<void> => {
+  await request(ENDPOINTS.TEAM.POOL_CANCEL(requestId), { method: 'DELETE' });
+};
+
 export const api = {
   // Auth
   isAuthenticated,
@@ -717,11 +682,6 @@ export const api = {
   getMerchantProfile,
   getVerification,
   
-  // Token supply
-  getAdminTokenOrders,
-  quoteAdminTokenPurchase,
-  createAdminTokenOrder,
-
   // Orders
   getOrders,
   acceptOrder,

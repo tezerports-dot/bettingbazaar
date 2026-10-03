@@ -86,8 +86,7 @@ const COPY: Record<string, { icon: string; title: string; body: string; blamePla
     icon: '📣',
     title: 'Join the merchant channel',
     body: 'Membership of the merchant channel is required to accept orders and move tokens. '
-      + 'Your request is approved automatically. Your balance, held tokens and commission '
-      + 'position are unchanged.',
+      + 'Your request is approved automatically. Your orders and your team are unchanged.',
   },
 };
 

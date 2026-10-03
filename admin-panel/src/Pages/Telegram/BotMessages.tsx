@@ -4,8 +4,8 @@
  *
  * The welcome message is the first sentence anybody reads from this platform,
  * and it is the one most likely to need changing after launch: it carries the
- * requirement that a player's Telegram account be on the mobile linked to their
- * Aadhaar. Getting that wording wrong does not arrive as a bug report — it
+ * requirement that a player's Telegram account be on the mobile they signed up
+ * with. Getting that wording wrong does not arrive as a bug report — it
  * arrives weeks later as a pile of failed verifications.
  *
  * ── Two safeties, so this is safe to hand to an operator ────────────────────

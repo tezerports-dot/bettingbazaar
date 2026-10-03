@@ -1,6 +1,5 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import React, { useEffect, useState } from 'react';
-import { Link } from 'react-router';
 import { Save, Power, AlertTriangle } from 'lucide-react';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import api from '../../services/api';
@@ -23,18 +22,15 @@ import TwoFactorSetup from '../../components/TwoFactorSetup';
 const MERCHANT_ORDER_RULES: Array<{
   key: string; label: string; min: number; max: number; fallback: number; help: string;
 }> = [
-  { key: 'maxConcurrentDepositOrders', label: 'Concurrent Buy Orders per Merchant',
-    min: 1, max: 10, fallback: 1,   // spec default: 1
-    help: 'How many buy (deposit) orders one merchant may hold at once. Each one holds their tokens for its whole window.' },
-  { key: 'maxConcurrentWithdrawalOrders', label: 'Concurrent Sell Orders per Merchant',
-    min: 1, max: 10, fallback: 1,   // spec default: 1
-    help: 'How many sell (withdrawal) orders one merchant may hold at once.' },
   { key: 'maxConsecutiveRejections', label: 'Consecutive Refusals Before Suspension',
     min: 1, max: 20, fallback: 3,   // spec default: 3
     help: 'Declines and unanswered PAID buys in a row before the merchant is suspended. Any completed order resets the streak. Lifted by an admin, never by a timer.' },
   { key: 'paidResponseMinutes', label: 'Merchant Response Window on a PAID Buy (minutes)',
     min: 5, max: 1440, fallback: 30,   // spec default: 30
     help: 'The player has already paid. After this long with no answer the order goes to the dispute queue for a human, and the silence counts as a refusal.' },
+  { key: 'utrAfterPaidMinutes', label: 'Cash Buy: Reference Due After Paid (minutes)',
+    min: 2, max: 60, fallback: 15,   // spec default: 15
+    help: 'On the cash rail the player taps Paid at the machine and the bank reference follows. Missing this window sends the order to the admin queue, never to cancelled — the cash may have been dispensed.' },
   { key: 'maxConsecutivePlayerPaymentFailures', label: 'Player Unpaid Buys Before Cool-off',
     min: 1, max: 50, fallback: 3,   // spec default: 3
     help: 'Buy orders a player lets expire without paying, in a row, before they are flagged and cannot open a new order. Cleared when a payment actually arrives.' },
@@ -43,11 +39,64 @@ const MERCHANT_ORDER_RULES: Array<{
     help: 'How long that player cannot open a new order, on BOTH rails. It lifts itself; no admin action is needed.' },
   { key: 'maxConsecutiveMerchantExpiries', label: 'Expiries Before Assignment is Paused',
     min: 1, max: 20, fallback: 3,   // spec default: 3
-    help: 'Buy orders sent to one merchant that expired unpaid, in a row. Most often it means that merchant cannot BE paid (dead QR, closed handle). NOT a suspension: they keep their orders, balance and standing, and an admin resumes them.' },
-  { key: 'minAdminTokenPurchase', label: 'Merchant Minimum Token Top-up (tokens)',
-    min: 1, max: Number.MAX_SAFE_INTEGER, fallback: 50000,   // spec default: 50000
-    help: 'Smallest quantity of platform tokens a merchant may buy from the admin in one order.' },
+    help: 'Buy orders sent to one merchant that expired unpaid, in a row. Most often it means that merchant cannot BE paid (dead QR, closed handle). NOT a suspension: they keep their orders and standing, and an admin resumes them from the merchant\'s profile.' },
 ];
+
+// §5 MIRROR — `SYSTEM_CONFIG_SPEC.fields.teamRouting` in
+// `database/spec/config.spec.js`, read by `routingSettings` in
+// `database/repositories/teamRouting.js`. An order goes to a member of a
+// working team on its own rail, so each rail has its own cap and window.
+// `min`/`max` repeat the spec's bounds for the input; the server validates
+// against the spec and refuses an out-of-range value by name. `fallback` is a
+// LOADING placeholder equal to the spec default beside it (§4).
+//
+// There is no per-rail dispute window here. The two windows a player has to
+// dispute in are `rejectedBuyDisputeMinutes` and `withdrawalHoldMinutes`,
+// offered beside the withdrawal hold below; a per-rail copy that nothing read
+// was removed from the spec (§3).
+type RoutingRail = 'CASH' | 'UPI_BANK' | 'USDT';
+const ROUTING_RAILS: Array<{
+  rail: RoutingRail; label: string;
+  concurrency: { min: number; max: number; fallback: number };
+  processing: { min: number; max: number; fallback: number };
+}> = [
+  { rail: 'CASH',     label: 'Cash (ATM)',
+    concurrency: { min: 1, max: 10, fallback: 1 },     // spec default: 1
+    processing:  { min: 60, max: 7200, fallback: 900 } }, // spec default: 900
+  { rail: 'UPI_BANK', label: 'UPI / bank',
+    concurrency: { min: 1, max: 20, fallback: 3 },     // spec default: 3
+    processing:  { min: 60, max: 7200, fallback: 900 } }, // spec default: 900
+  { rail: 'USDT',     label: 'USDT',
+    concurrency: { min: 1, max: 20, fallback: 3 },     // spec default: 3
+    processing:  { min: 60, max: 7200, fallback: 900 } }, // spec default: 900
+];
+const ROUTING_TIMERS: Array<{
+  key: 'assignmentWaitSeconds' | 'utrSubmitSeconds'; label: string;
+  min: number; max: number; fallback: number; help: string;
+}> = [
+  { key: 'assignmentWaitSeconds', label: 'Queue Wait Before Expiry (seconds)',
+    min: 60, max: 86400, fallback: 1500,   // spec default: 1500
+    help: 'How long a queued order nobody could take waits for a team member before it expires.' },
+  { key: 'utrSubmitSeconds', label: 'Extra Time to Submit a Reference (seconds)',
+    min: 15, max: 3600, fallback: 60,   // spec default: 60
+    help: 'The one-off grace a player can claim to fetch their payment reference.' },
+];
+
+interface TeamRoutingForm {
+  concurrency: Record<RoutingRail, number>;
+  processingWindowSeconds: Record<RoutingRail, number>;
+  assignmentWaitSeconds: number;
+  utrSubmitSeconds: number;
+  [other: string]: unknown;   // declared keys this screen does not offer, kept as served
+}
+
+const routingDefaults = (): TeamRoutingForm => ({
+  concurrency: Object.fromEntries(ROUTING_RAILS.map((r) => [r.rail, r.concurrency.fallback])) as Record<RoutingRail, number>,
+  processingWindowSeconds: Object.fromEntries(ROUTING_RAILS.map((r) => [r.rail, r.processing.fallback])) as Record<RoutingRail, number>,
+  ...Object.fromEntries(ROUTING_TIMERS.map((t) => [t.key, t.fallback])),
+} as TeamRoutingForm);
+
+const outOfRange = (v: number, b: { min: number; max: number }) => !Number.isFinite(v) || v < b.min || v > b.max;
 
 export const SystemSettings: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
@@ -77,14 +126,16 @@ export const SystemSettings: React.FC = () => {
     betReservePercent: 1,      // schema default: 1
     winningsFeePercent: 1,     // schema default: 1
     payoutFeePercent: 0,       // schema default: 0
-    usdtPricing: { userMerchantBuyInr: 0, merchantAdminBuyInr: 1 },
+    usdtPricing: { userMerchantBuyInr: 0, merchantAdminBuyInr: 0 },
     // Every key the spec declares, so every one is sent back on save. The
     // operational half is seeded from MERCHANT_ORDER_RULES rather than restated.
     merchantOrderLimits: {
-      minUserTokenPurchaseUsdt: 100, maxUserTokenPurchaseUsdt: 0,
-      minAdminTokenPurchaseUsdt: 100, maxAdminTokenPurchaseUsdt: 0,
+      minUserTokenPurchaseUsdt: 100, maxUserTokenPurchaseUsdt: 0,   // spec defaults: 100 / 0
       ...Object.fromEntries(MERCHANT_ORDER_RULES.map((r) => [r.key, r.fallback])),
     } as Record<string, number>,
+    // Per-rail caps and windows for team routing, seeded from ROUTING_RAILS /
+    // ROUTING_TIMERS rather than restated.
+    teamRouting: routingDefaults(),
     cycleDurationMinutes: 30,  // schema default: 30 (Phase X X-5)
     // Business Config Audit (2026-07-11) — formerly-hardcoded business values
     payoutMultiplier: 2,       // schema default: 2 (2x)
@@ -96,8 +147,10 @@ export const SystemSettings: React.FC = () => {
       thirtyMin: { mergeBeforeEndSec: 180, equalizerBeforeEndSec: 120, closeBeforeEndSec: 30, celebrateBeforeEndSec: 10 },
       fullDay:   { mergeBeforeEndSec: 300, equalizerBeforeEndSec: 120, closeBeforeEndSec: 30, celebrateBeforeEndSec: 10 },
     },
-    // How long a withdrawal freezes before the worker settles it.
-    withdrawalHoldMinutes: 60,  // schema default: 60
+    // How long a sell stays in escrow after the member marks it paid.
+    withdrawalHoldMinutes: 60,  // schema default: 60 (also the floor)
+    // How long a player has to dispute a buy the member rejected as unpaid.
+    rejectedBuyDisputeMinutes: 15,  // schema default: 15
     // Overload ceilings — past either one the server answers 503 fast rather
     // than admitting work into a queue that will never drain.
     loadShedding: { enabled: true, maxInFlight: 300, maxEventLoopLagMs: 0 },  // schema defaults: true / 300 / 0
@@ -163,17 +216,28 @@ export const SystemSettings: React.FC = () => {
           payoutFeePercent:   response.data.payoutFeePercent   ?? 0, // schema default: 0
           usdtPricing: {
             userMerchantBuyInr:  response.data.usdtPricing?.userMerchantBuyInr  ?? 0, // schema default: 0
-            merchantAdminBuyInr: response.data.usdtPricing?.merchantAdminBuyInr ?? 1, // schema default: 1
+            merchantAdminBuyInr: response.data.usdtPricing?.merchantAdminBuyInr ?? 0, // schema default: 0 (unset)
           },
           // The GET derives from the spec and fills EVERY key with its default,
           // so the server's object is taken whole. The placeholders underneath
           // it exist only for a response that predates a newly declared field.
           merchantOrderLimits: {
-            minUserTokenPurchaseUsdt: 100, maxUserTokenPurchaseUsdt: 0,
-            minAdminTokenPurchaseUsdt: 100, maxAdminTokenPurchaseUsdt: 0,
+            minUserTokenPurchaseUsdt: 100, maxUserTokenPurchaseUsdt: 0,   // spec defaults: 100 / 0
             ...Object.fromEntries(MERCHANT_ORDER_RULES.map((r) => [r.key, r.fallback])),
             ...(response.data.merchantOrderLimits ?? {}),
           } as Record<string, number>,
+          // Taken whole, like merchantOrderLimits: the GET fills every declared
+          // key from the spec, and a key this screen does not offer goes back
+          // exactly as it came.
+          teamRouting: (() => {
+            const served = response.data.teamRouting ?? {};
+            const d = routingDefaults();
+            return {
+              ...d, ...served,
+              concurrency: { ...d.concurrency, ...(served.concurrency ?? {}) },
+              processingWindowSeconds: { ...d.processingWindowSeconds, ...(served.processingWindowSeconds ?? {}) },
+            } as TeamRoutingForm;
+          })(),
           cycleDurationMinutes: response.data.cycleDurationMinutes ?? 30, // schema default: 30
           payoutMultiplier:   response.data.payoutMultiplier   ?? 2,  // schema default: 2
           cyclePhases: {
@@ -204,6 +268,7 @@ export const SystemSettings: React.FC = () => {
             maxWarnings:              response.data.riskRules?.maxWarnings              ?? 3,
           },
           withdrawalHoldMinutes: response.data.withdrawalHoldMinutes ?? 60, // schema default: 60
+          rejectedBuyDisputeMinutes: response.data.rejectedBuyDisputeMinutes ?? 15, // schema default: 15
           loadShedding: {
             enabled:           response.data.loadShedding?.enabled           ?? true, // schema default: true
             maxInFlight:       response.data.loadShedding?.maxInFlight       ?? 300,  // schema default: 300
@@ -637,7 +702,7 @@ export const SystemSettings: React.FC = () => {
           </div>
 
           <div className="pt-4 border-t border-dark-700">
-            <label className="label" htmlFor="usdt-buy-price-user-merchant-inr">USDT Buy Price: User ↔ Merchant (INR)</label>
+            <label className="label" htmlFor="usdt-buy-price-user-merchant-inr">USDT Price: Players Buying Tokens (INR per USDT)</label>
             <input id="usdt-buy-price-user-merchant-inr"
               type="number" min={0} step={0.01}
               value={formData.usdtPricing.userMerchantBuyInr}
@@ -645,22 +710,24 @@ export const SystemSettings: React.FC = () => {
               className="input"
             />
             <p className="text-xs text-gray-500 mt-1">
-              Admin-owned INR price for one USDT on the future buy-only user/merchant USDT rail.
-              There is no USDT sell option for users or merchants; BB token conversion stays fixed at 1 token = ₹1.
+              What a player pays in USDT when buying tokens: one USDT buys this many tokens (1 token = ₹1).
+              Frozen on each order when it is placed. Must be ₹10–₹1,000, or 0 to stop USDT buys.
+              There is no USDT sell option.
             </p>
           </div>
 
           <div className="pt-4 border-t border-dark-700">
-            <label className="label" htmlFor="usdt-buy-price-merchant-admin-inr">USDT Buy Price: Merchant ↔ Admin (INR)</label>
+            <label className="label" htmlFor="usdt-buy-price-merchant-admin-inr">USDT Price: Team Pool Purchases (INR)</label>
             <input id="usdt-buy-price-merchant-admin-inr"
-              type="number" min={0.01} step={0.01}
+              type="number" min={0} step={0.01}
               value={formData.usdtPricing.merchantAdminBuyInr}
-              onChange={(e) => setFormData({ ...formData, usdtPricing: { ...formData.usdtPricing, merchantAdminBuyInr: Math.max(0.01, Number(e.target.value)) } })}
+              onChange={(e) => setFormData({ ...formData, usdtPricing: { ...formData.usdtPricing, merchantAdminBuyInr: Math.max(0, Number(e.target.value) || 0) } })}
               className="input"
             />
             <p className="text-xs text-gray-500 mt-1">
-              Admin-owned INR price for one USDT when merchants buy admin tokens with USDT.
-              This is also buy-only; merchant top-ups/security deposits remain cash flow, not platform revenue.
+              Admin-owned INR price for one USDT when a supervisor pays for team pool tokens in USDT.
+              Read when a pool request is fulfilled and frozen on that record, so a later change cannot
+              restate a trade that has settled. Must be ₹10–₹1,000, or 0 to refuse USDT pool payments.
             </p>
           </div>
 
@@ -686,26 +753,6 @@ export const SystemSettings: React.FC = () => {
               />
               <p className="text-xs text-gray-500 mt-1">Optional maximum buy-only user USDT deposit. Use 0 for unlimited; users cannot sell tokens for USDT.</p>
             </div>
-            <div>
-              <label className="label" htmlFor="merchant-admin-token-min-order-usdt">Merchant Admin Token Min Order (USDT)</label>
-              <input id="merchant-admin-token-min-order-usdt"
-                type="number" min={100} step={10}
-                value={formData.merchantOrderLimits.minAdminTokenPurchaseUsdt}
-                onChange={(e) => setFormData({ ...formData, merchantOrderLimits: { ...formData.merchantOrderLimits, minAdminTokenPurchaseUsdt: Math.max(100, Math.ceil((Number(e.target.value) || 100) / 10) * 10) } })}
-                className="input"
-              />
-              <p className="text-xs text-gray-500 mt-1">Minimum merchant admin-token purchase value. Multiple of 10 USDT and cannot be below 100 USDT.</p>
-            </div>
-            <div>
-              <label className="label" htmlFor="merchant-admin-token-max-order-usdt">Merchant Admin Token Max Order (USDT)</label>
-              <input id="merchant-admin-token-max-order-usdt"
-                type="number" min={0} step={10}
-                value={formData.merchantOrderLimits.maxAdminTokenPurchaseUsdt}
-                onChange={(e) => setFormData({ ...formData, merchantOrderLimits: { ...formData.merchantOrderLimits, maxAdminTokenPurchaseUsdt: Math.max(0, Math.ceil((Number(e.target.value) || 0) / 10) * 10) } })}
-                className="input"
-              />
-              <p className="text-xs text-gray-500 mt-1">Optional maximum merchant admin-token purchase value. Use 0 for unlimited; merchants cannot sell tokens for USDT.</p>
-            </div>
           </div>
 
           {/* ── Merchant and player order rules ──────────────────────────────
@@ -720,9 +767,10 @@ export const SystemSettings: React.FC = () => {
           <div className="pt-4 border-t border-dark-700">
             <h3 className="font-semibold mb-1">Merchant &amp; Player Order Rules</h3>
             <p className="text-xs text-gray-500 mb-4">
-              These govern who may be handed the next order and what happens when one is not served.
-              A merchant&apos;s order CEILING is not here — it is the tokens they hold, reserved by the
-              deposit escrow at assignment. The FLOOR is Minimum Deposit / Minimum Withdrawal above.
+              These govern what happens when an order is not served. A buy&apos;s CEILING is not here —
+              it is the tokens in the serving team&apos;s pool, held when the order is assigned. The FLOOR
+              is Minimum Deposit / Minimum Withdrawal above. Per-rail caps and windows are under Team
+              Routing below.
             </p>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {MERCHANT_ORDER_RULES.map((rule) => (
@@ -747,6 +795,86 @@ export const SystemSettings: React.FC = () => {
                   <p className="text-xs text-gray-500 mt-1">{rule.help}</p>
                 </div>
               ))}
+            </div>
+          </div>
+
+          {/* ── Team routing ─────────────────────────────────────────────────
+              Every order is offered to a member of a working team on the
+              order's own rail. These are that rail's numbers; there is no
+              platform-wide rail switch any more. Rendered from the §5 mirror
+              above and sent back as `teamRouting`, which the PUT accepts by
+              declaration. */}
+          <div className="pt-4 border-t border-dark-700">
+            <h3 className="font-semibold mb-1">Team Routing</h3>
+            <p className="text-xs text-gray-500 mb-4">
+              An order goes to a member of a working team on its rail: USDT orders to USDT teams, INR orders up
+              to the cash ceiling to Cash teams, larger INR orders to UPI / bank teams. Each rail has its own cap
+              and window.
+            </p>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {ROUTING_RAILS.map((r) => {
+                const conc = formData.teamRouting.concurrency[r.rail];
+                const proc = formData.teamRouting.processingWindowSeconds[r.rail];
+                return (
+                  <div key={r.rail} className="space-y-3 p-3 bg-dark-800 rounded-lg">
+                    <p className="text-sm font-medium">{r.label}</p>
+                    <div>
+                      <label className="label" htmlFor={`tr-conc-${r.rail}`}>Open orders per member ({r.concurrency.min}–{r.concurrency.max})</label>
+                      <input id={`tr-conc-${r.rail}`} type="number" step={1}
+                        min={r.concurrency.min} max={r.concurrency.max}
+                        value={Number.isFinite(conc) ? conc : ''}
+                        onChange={(e) => setFormData({
+                          ...formData,
+                          teamRouting: {
+                            ...formData.teamRouting,
+                            concurrency: { ...formData.teamRouting.concurrency, [r.rail]: Math.floor(Number(e.target.value)) },
+                          },
+                        })}
+                        className="input" />
+                      {outOfRange(conc, r.concurrency) && (
+                        <p role="alert" className="text-xs text-red-400 mt-1">Must be {r.concurrency.min}–{r.concurrency.max}.</p>
+                      )}
+                    </div>
+                    <div>
+                      <label className="label" htmlFor={`tr-proc-${r.rail}`}>Window to serve an assigned order (seconds)</label>
+                      <input id={`tr-proc-${r.rail}`} type="number" step={1}
+                        min={r.processing.min} max={r.processing.max}
+                        value={Number.isFinite(proc) ? proc : ''}
+                        onChange={(e) => setFormData({
+                          ...formData,
+                          teamRouting: {
+                            ...formData.teamRouting,
+                            processingWindowSeconds: { ...formData.teamRouting.processingWindowSeconds, [r.rail]: Math.floor(Number(e.target.value)) },
+                          },
+                        })}
+                        className="input" />
+                      {outOfRange(proc, r.processing)
+                        ? <p role="alert" className="text-xs text-red-400 mt-1">Must be {r.processing.min}–{r.processing.max} seconds.</p>
+                        : <p className="text-xs text-gray-500 mt-1">{Math.round(proc / 60)} min</p>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+              {ROUTING_TIMERS.map((t) => {
+                const v = formData.teamRouting[t.key];
+                return (
+                  <div key={t.key}>
+                    <label className="label" htmlFor={`tr-${t.key}`}>{t.label}</label>
+                    <input id={`tr-${t.key}`} type="number" step={1} min={t.min} max={t.max}
+                      value={Number.isFinite(v) ? v : ''}
+                      onChange={(e) => setFormData({
+                        ...formData,
+                        teamRouting: { ...formData.teamRouting, [t.key]: Math.floor(Number(e.target.value)) },
+                      })}
+                      className="input" />
+                    {outOfRange(v, t)
+                      ? <p role="alert" className="text-xs text-red-400 mt-1">Must be {t.min}–{t.max} seconds.</p>
+                      : <p className="text-xs text-gray-500 mt-1">{t.help}</p>}
+                  </div>
+                );
+              })}
             </div>
           </div>
 
@@ -849,19 +977,6 @@ export const SystemSettings: React.FC = () => {
               </p>
             </div>
 
-            {/* The payment order window lives on the settlement rail now: the
-                two rails have different timelines by design and one global
-                number could not express that. Pointing at its new home rather
-                than deleting the field silently — an operator who came here to
-                change it needs to be told where it went. */}
-            <div>
-              <label className="label">Payment Order Expiry</label>
-              <p className="text-xs text-gray-500 mt-1">
-                Moved to <Link to="/business-policy/settlement-rail" className="underline">Settlement Rail</Link>,
-                where it is set per rail: paying a merchant&rsquo;s UPI and drawing cash at an ATM
-                do not take the same time. Your existing value was carried over.
-              </p>
-            </div>
           </div>
         </div>
       </div>
@@ -948,20 +1063,44 @@ export const SystemSettings: React.FC = () => {
           of saving — nothing here needs a restart.
         </p>
 
-        <div>
-          <label className="label" htmlFor="withdrawal-hold-minutes">Withdrawal Hold (minutes)</label>
-          <input id="withdrawal-hold-minutes"
-            type="number" min={0} max={1440} step={1}
-            value={formData.withdrawalHoldMinutes}
-            onChange={(e) => setFormData({
-              ...formData,
-              withdrawalHoldMinutes: Math.min(1440, Math.max(0, Math.floor(Number(e.target.value) || 0))),
-            })}
-            className="input"
-          />
-          <p className="text-xs text-gray-500 mt-1">
-            How long a withdrawal is frozen on both sides before the worker settles it. 0 settles immediately.
-          </p>
+        {/* Both escrow windows (owner, 2026-10-02). Bounds are the spec's
+            (database/spec/config.spec.js): 60–1440 and 5–1440. The hold may
+            not go below an hour: it is the player's chance to dispute a sell
+            the member says they paid. */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className="label" htmlFor="withdrawal-hold-minutes">Sell escrow after "paid" (minutes)</label>
+            <input id="withdrawal-hold-minutes"
+              type="number" min={60} max={1440} step={1}
+              value={formData.withdrawalHoldMinutes}
+              onChange={(e) => setFormData({
+                ...formData,
+                withdrawalHoldMinutes: Math.min(1440, Math.max(60, Math.floor(Number(e.target.value) || 60))),
+              })}
+              className="input"
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              After a team member marks a sell paid, the player's tokens stay in escrow this long so the
+              player can raise a dispute. At least 60 minutes.
+            </p>
+          </div>
+          <div>
+            <label className="label" htmlFor="rejected-buy-dispute-minutes">Dispute window after a rejected buy (minutes)</label>
+            <input id="rejected-buy-dispute-minutes"
+              type="number" min={5} max={1440} step={1}
+              value={formData.rejectedBuyDisputeMinutes}
+              onChange={(e) => setFormData({
+                ...formData,
+                rejectedBuyDisputeMinutes: Math.min(1440, Math.max(5, Math.floor(Number(e.target.value) || 15))),
+              })}
+              className="input"
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              When a team member rejects a paid buy as unpaid, the team's tokens stay in escrow this long.
+              If the player disputes in time they stay until the dispute is decided; if not, they go back
+              to the team pool.
+            </p>
+          </div>
         </div>
 
         <div className="pt-4 mt-4 border-t border-dark-700">
@@ -1287,7 +1426,10 @@ export const SystemSettings: React.FC = () => {
         disabled={isSaving
           || (formData.minBet > formData.maxBet)
           || (formData.minDeposit > formData.maxDeposit)
-          || (formData.minWithdrawal > formData.maxWithdrawal)}
+          || (formData.minWithdrawal > formData.maxWithdrawal)
+          || ROUTING_RAILS.some((r) => outOfRange(formData.teamRouting.concurrency[r.rail], r.concurrency)
+            || outOfRange(formData.teamRouting.processingWindowSeconds[r.rail], r.processing))
+          || ROUTING_TIMERS.some((t) => outOfRange(formData.teamRouting[t.key], t))}
         className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed flex items-center"
       >
         {isSaving ? (

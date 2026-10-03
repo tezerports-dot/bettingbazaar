@@ -50,9 +50,7 @@ export const ACCOUNTS = Object.freeze({
   MERCHANT_BONUS_POOL: { code: 'MERCHANT_BONUS_POOL', normalBalance: 'CREDIT',
     description: 'Platform-funded pool for Merchant Performance Bonuses' },
 
-  // What the platform owes merchants — issued bonuses land here as a
-  // liability, mirrored 1:1 by the merchant-wallet credit executed via
-  // merchantWallet.service.js (Merchant Platform, Phase 008).
+  // What the platform owes merchants for issued commission — a liability.
   MERCHANT_FUNDS: { code: 'MERCHANT_FUNDS', normalBalance: 'CREDIT',
     description: 'Aggregate merchant liability from issued Performance Bonuses' },
 });

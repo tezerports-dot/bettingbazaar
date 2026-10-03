@@ -95,10 +95,12 @@ const ADAPTER_BINDINGS = new Map([
  * Responders whose audience is NOT a player, with the reason. Adding a line
  * here is a decision somebody made, not a check somebody silenced.
  */
-const RESPONDER_ALLOW = new Map([
-  ['/deposit/:orderId/confirm',
-   'merchant-or-admin only — it 403s a player before reaching a handler. A merchant is answered through toMerchantOrderView; an admin sees the order unredacted, which is the point of being an admin.'],
-]);
+//
+// Empty since 2026-10-01: its one entry, `/deposit/:orderId/confirm`, named a
+// route that was deleted (owner decision — a second confirm route no screen
+// called). An entry naming no route is now a FAILURE below: a stale allow-list
+// is how a gate starts passing things nobody listed.
+const RESPONDER_ALLOW = new Map([]);
 
 const failures = [];
 const fail = (file, msg) => failures.push(`${file}: ${msg}`);
@@ -191,11 +193,12 @@ function routeOf(src, index) {
   return m ? m[1] : '';
 }
 
+const allowSeen = new Set();
 for (const file of PLAYER_ROUTES) {
   const src = read(file);
   for (const call of callsTo(src, 'res.json')) {
     const route = routeOf(src, call.index);
-    if (RESPONDER_ALLOW.has(route)) continue;
+    if (RESPONDER_ALLOW.has(route)) { allowSeen.add(route); continue; }
 
     const keys = topLevelKeys(call.args);
     const where = `${rel(file)}:${call.line}`;
@@ -294,6 +297,10 @@ for (const file of jsFiles(join(ROOT, 'backend'))) {
       fail(rel(file), `builds a upi://pay intent — ${rel(LINK_MODULE)} is the one owner`);
     }
   }
+}
+
+for (const route of RESPONDER_ALLOW.keys()) {
+  if (!allowSeen.has(route)) fail('RESPONDER_ALLOW', `'${route}' matches no responder — remove it, or the list stops meaning anything`);
 }
 
 report();

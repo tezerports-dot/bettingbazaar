@@ -52,11 +52,8 @@ export interface User {
   rating?: number;
   totalOrders?: number;
   realName?: string;
-  aadhaarNumber?: string;
-  kycDocumentUrl?: string;
   bankDetails?: BankDetails;
   status?: string;
-  kycStatus?: string;
 }
 
 export interface ChatMessage {
@@ -76,56 +73,14 @@ export interface ChatMessage {
   createdAt?: number | string;
 }
 
-// ── The settlement rail ──────────────────────────────────────────────────────
-// The platform runs one of two P2P rails and an admin switches between them.
-// Backend authority: database/repositories/paymentModePolicy.js, whose CHECK is
-// what makes these the only two. Orders already held keep the rail they were
-// created on — see order_states.payment_mode, which the database refuses to
-// change.
+// ── The process an ORDER settles under ───────────────────────────────────────
+// Stamped on the order at creation from the order itself — a CASH buy (INR up
+// to the platform's cash ceiling) is CASH_ATM, a larger INR order P2P_UPI — and
+// never rewritten: the database refuses to change order_states.payment_mode.
+// There is no platform-wide switch any more; the rail belongs to the order and
+// to the team that serves it. Backend authority: PAYMENT_MODES in
+// database/repositories/orderRails.js (§5: change them together).
 export type PaymentMode = 'P2P_UPI' | 'CASH_ATM';
-
-export interface PaymentModeTimers {
-  assignmentWaitSeconds: number;
-  processingWindowSeconds: number;
-  utrSubmitSeconds: number;
-  disputeWindowSeconds: number;
-  linkExpirySeconds: number;
-  linkMinRemainingSeconds: number;
-}
-
-export interface PaymentModeView {
-  activeMode: PaymentMode | null;
-  version: number | null;
-  label: string;
-  merchantMessage: string;
-  timers: PaymentModeTimers | null;
-}
-
-// ── The ATM cash rail ────────────────────────────────────────────────────────
-// A merchant stands at a machine, initiates a UPI cash withdrawal, and supplies
-// the payment link it produces. A player pays that link, the ATM dispenses, and
-// the merchant collects the notes.
-export interface CashLink {
-  linkId: string;
-  paymentLink: string;
-  expiresAt: string;
-}
-
-export interface CashLinkState {
-  approved: boolean;
-  /** In RUPEES, and exactly one — a merchant serves a single denomination. */
-  denomination: number | null;
-  live: CashLink | null;
-  /** Orders waiting at THIS merchant's denomination, and no other. */
-  waiting: number;
-  /**
-   * The SERVER's answer to "is a trip worth making". Never derived on the
-   * client from `waiting`: a merchant without the tokens to serve the order
-   * cannot take it however close the machine is, and an expired link earns
-   * them nothing.
-   */
-  worthGoing: boolean;
-}
 
 /**
  * A completed cash payout whose CDM slip has not been submitted.
@@ -160,12 +115,8 @@ export interface PaymentOrder {
 
   // The settlement PROCESS this order was born under, stamped at creation and
   // never rewritten. Not the same question as `currency`: that is what the
-  // money is denominated in, this is how it moves.
-  //
-  // Branch on THIS, never on the live policy. An admin can switch rails at any
-  // moment and both then run side by side until the last pre-flip order
-  // settles, so an order held across a switch keeps asking for what it always
-  // asked for. Sent by backend/domains/merchant/merchantOrderView.js.
+  // money is denominated in, this is how it moves. Branch on THIS — it is the
+  // order's own answer. Sent by backend/domains/merchant/merchantOrderView.js.
   paymentMode?: PaymentMode;
   // On a USDT order, the chain the PLAYER chose to send on. The merchant has to
   // watch the right network — a payment on BNB Smart Chain never appears in a
@@ -220,6 +171,8 @@ export interface PaymentOrder {
   
   // Other
   rejectedReason?: string;
+  /** A buy this member rejected as unpaid: until when the player may dispute it (`merchantOrderView.js`, 2c+). */
+  disputeWindowUntil?: string | null;
   bbTokenAmount?: number; // alias for tokenAmount
 }
 
@@ -262,13 +215,17 @@ export interface MerchantProfile {
     sellPrice: number;
   };
   
-  // Balances (REAL)
-  walletBalance?: number;
-  fiatBalance?: number;
-  tokenBalance?: number;  // BB token wallet — funded by admin, shown on Dashboard
+  // No balance of any kind: a merchant holds no tokens — their team's pool
+  // does, and its supervisor sees it on the Team page (§3.10). formatMerchant
+  // sends none.
+  //
   // Set when the platform stopped offering them new buy orders (three unpaid in
   // a row); null otherwise. GET /api/merchant/profile, formatMerchant.
   assignmentPausedAt?: string | null;
+  // A CASH team member's Ready: at the machine and free for a cash buy. Only a
+  // Ready member is offered one, and being assigned one switches it off — so
+  // this is re-read from the profile, never toggled locally. formatMerchant.
+  cashReady?: boolean;
   
   // Limits (REAL from backend Merchant.limits)
   limits?: {
@@ -307,7 +264,8 @@ export interface MerchantProfile {
   totalProcessedVolume?: number;
   rating?: number; // Merchant rating
 
-  // Scoring figures maintained by merchantScoring.service.js (read-only here)
+  // Figures maintained by the order lifecycle (recordCompletedOrder in
+  // database/repositories/merchants.js) — read-only here.
   successRate?: number;        // ratio 0-1
   avgResponseMinutes?: number;
   disputeRate?: number;        // ratio 0-1
@@ -439,40 +397,35 @@ export interface Settlement {
   createdAt: string | number;
 }
 
-/**
- * A request to buy platform tokens from the platform, paid in USDT.
- *
- * Mirrors `toOrder` in database/repositories/paymentConfig.js — the mapper that
- * emits it — per CLAUDE.md §5. `tokenAmount` is in whole tokens (the row holds
- * paise); `usdtAmount` is the USDT the merchant sent, at `usdtRate` INR/USDT
- * frozen when the request was filed.
- */
-export interface AdminTokenOrder {
-  orderId: string;
-  merchantId: string;
-  tokenAmount: number;
-  usdtRate: number | null;
-  usdtAmount: number | null;
-  usdtTxHash: string | null;
-  status: 'PENDING' | 'APPROVED' | 'REJECTED' | 'CANCELLED';
-  requestedAt: string;
-  reviewedAt: string | null;
-  reviewedBy: string | null;
-  reviewNote: string | null;
+// ── Supervisors and teams (redesign Step 2a) ─────────────────────────────────
+// Mirrors database/repositories/teams.js (`toTeam`, `toMember`) and the
+// GET /api/merchant/team response — §5: change them together.
+export type SupervisorRail = 'CASH' | 'UPI_BANK' | 'USDT';
+export interface Team {
+  teamId: string; supervisorId: string; supervisorName: string; supervisorRef: string;
+  name: string; rail: SupervisorRail; approvedCount: number; pendingCount: number; size: number;
+  strength: 'WORKING' | 'GRACE' | 'STOPPED'; shortSince: string | null; wasFull: boolean; createdAt: string;
+  /** The team's token pool, in paise (Step 2b). */
+  poolAvailablePaise: number; poolHeldPaise: number;
 }
-
-/**
- * What the server says an amount costs, read before the request exists.
- *
- * A refusal arrives as `ok: false` with the reason and (when the amount merely
- * fell outside the band) the bounds, so the screen can show the merchant what
- * would be accepted while they are still typing.
- */
-export interface AdminTokenQuote {
-  ok: boolean;
-  message?: string;
-  usdtRate?: number;
-  usdtAmount?: number;
-  minPurchaseUsdt?: number;
-  maxPurchaseUsdt?: number;
+// Team token pools (Step 2b). Mirrors `toPool`, `toEntry`, `toRequest` and
+// POOL_DIRECTIONS in database/repositories/teamPools.js — §5.
+export type PoolDirection = 'BUY' | 'SELL';
+export interface TeamPool { teamId: string; availablePaise: number; heldPaise: number; totalPaise: number }
+export interface TeamPoolEntry {
+  id: number; kind: 'ADMIN_SALE' | 'ADMIN_BUYBACK'; availableDeltaPaise: number; heldDeltaPaise: number;
+  availableAfterPaise: number; heldAfterPaise: number; createdAt: string;
 }
+export interface TeamPoolRequest {
+  requestId: string; teamId: string; direction: PoolDirection; tokenAmountPaise: number;
+  status: 'PENDING' | 'FULFILLED' | 'REJECTED' | 'CANCELLED';
+  note: string | null; decisionNote: string | null; decidedAt: string | null; createdAt: string;
+}
+export interface TeamMember {
+  merchantId: string; teamId: string; name: string; publicRef: string;
+  status: 'PENDING' | 'APPROVED'; isOnline: boolean;
+}
+export type MyTeam =
+  | { role: 'SUPERVISOR'; rail: SupervisorRail; publicRef: string; teams: Team[]; members: TeamMember[]; poolRequests: TeamPoolRequest[] }
+  | { role: 'MEMBER'; publicRef: string; status: 'PENDING' | 'APPROVED'; team: Team }
+  | { role: 'NONE'; publicRef: string };

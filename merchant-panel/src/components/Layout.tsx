@@ -9,7 +9,7 @@
 // (on desktop) the profile chip and sign-out.
 import React, { useMemo } from 'react';
 import { useLocation, useNavigate } from 'react-router';
-import { Home, Package, History, User, LogOut, Power, Bell, Sun, Moon, Banknote, Coins } from 'lucide-react';
+import { Home, Package, History, User, LogOut, Power, Bell, Sun, Moon, Users } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useAuth } from '../services/AuthContext';
 import { availabilityOf } from '../utils/availability';
@@ -24,9 +24,8 @@ import { useTheme } from '../services/ThemeContext';
 const NAV = [
   { path: ROUTES.DASHBOARD, icon: Home,    label: 'Dashboard', title: 'Dashboard',        sub: 'Settlement operations' },
   { path: ROUTES.ORDERS,    icon: Package, label: 'Orders',    title: 'Order Management', sub: 'Live queue' },
-  { path: ROUTES.CASH_LINKS, icon: Banknote, label: 'Cash links', title: 'ATM Cash Links', sub: 'Supply a link from a machine' },
-  { path: ROUTES.TOKEN_SUPPLY, icon: Coins, label: 'Token supply', title: 'Token Supply', sub: 'Buy the float you trade with' },
   { path: ROUTES.HISTORY,   icon: History, label: 'History',   title: 'History',          sub: 'Reports & completed orders' },
+  { path: ROUTES.TEAM,      icon: Users,   label: 'Team',      title: 'Team',             sub: 'Your team, or the teams you supervise' },
   { path: ROUTES.PROFILE,   icon: User,    label: 'Profile',   title: 'Profile',          sub: 'Identity & payment details' },
 ];
 

@@ -72,12 +72,12 @@ import * as social from './repositories/social.js';
 import * as referrals from './repositories/referrals.js';
 import * as audit from './repositories/audit.js';
 import * as operations from './repositories/operations.js';
-import * as paymentConfig from './repositories/paymentConfig.js';
 import * as supportDocuments from './repositories/supportDocuments.js';
 import * as depositPolicy from './repositories/depositPolicy.js';
-import * as merchantCommissionPolicy from './repositories/merchantCommissionPolicy.js';
-import * as paymentModePolicy from './repositories/paymentModePolicy.js';
-import * as cashLinks from './repositories/cashLinks.js';
+import * as teams from './repositories/teams.js';
+import * as teamPools from './repositories/teamPools.js';
+import * as teamRouting from './repositories/teamRouting.js';
+import * as disputeFaults from './repositories/disputeFaults.js';
 import * as stats from './repositories/stats.js';
 import * as utr from './repositories/utr.js';
 
@@ -94,15 +94,9 @@ import * as casinoCore from './repositories/casino.core.js';
 import * as casinoApi from './repositories/casino.js';
 import * as bonusesCore from './repositories/bonuses.core.js';
 import * as bonusesApi from './repositories/bonuses.js';
-import * as kycCore from './repositories/kyc.core.js';
-import * as kycApi from './repositories/kyc.js';
-import * as merchantWalletsCore from './repositories/merchantWallets.core.js';
-import * as merchantWalletsApi from './repositories/merchantWallets.js';
 
 import * as settlements from './repositories/settlements.js';
-import * as merchantSettlements from './repositories/merchantSettlements.js';
 import * as treasury from './repositories/treasury.js';
-import * as adminIssuance from './repositories/adminIssuance.js';
 import * as adminTokenConsiderations from './repositories/adminTokenConsiderations.js';
 
 /** Mechanism + vocabulary under one name. The caller does not need the split. */
@@ -132,14 +126,9 @@ export const db = Object.freeze({
   // Payments and counterparties
   orders: Object.freeze({ ...ordersCore, ...ordersApi, ...ordersRecord }),
   merchants,
-  merchantWallets: merge(merchantWalletsCore, merchantWalletsApi),
-  merchantSettlements,
-  adminIssuance,
-  paymentConfig,
   utr,
 
   // Compliance
-  kyc: merge(kycCore, kycApi),
   audit,
 
   // Catalogue and content
@@ -156,9 +145,10 @@ export const db = Object.freeze({
   // Platform
   config,
   depositPolicy,
-  merchantCommissionPolicy,
-  paymentModePolicy,
-  cashLinks,
+  teams,
+  teamPools,
+  teamRouting,
+  disputeFaults,
   operations,
   supportDocuments,
   stats,
@@ -168,7 +158,7 @@ export default db;
 
 // Named re-exports for the call sites that read better without the namespace.
 export { users, identity, ipBlocks, telegram, merchants, chat, config };
-export { treasury, settlements, merchantSettlements, adminIssuance, balanceAdjustments };
+export { treasury, settlements, balanceAdjustments };
 export { adminTokenConsiderations };
 export { markets, games, content, androidReleases, engagement, social, referrals };
-export { audit, cashLinks, depositPolicy, merchantCommissionPolicy, paymentModePolicy, operations, paymentConfig, supportDocuments, stats, utr };
+export { audit, teams, depositPolicy, operations, supportDocuments, stats, utr };

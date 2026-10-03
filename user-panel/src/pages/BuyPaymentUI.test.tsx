@@ -212,6 +212,9 @@ describe('the buy-token payment step', () => {
     renderUI({ ...ORDER, payTo: null });
     expect(screen.queryByRole('link', { name: /UPI app/i })).toBeNull();
     expect(screen.getByText(/Waiting for merchant details/)).toBeInTheDocument();
+    // Nor a field and button for reporting a payment to nobody (§32 S22).
+    expect(screen.queryByPlaceholderText(/Enter after paying/)).toBeNull();
+    expect(screen.queryByRole('button', { name: /I've Paid/ })).toBeNull();
   });
 
   it('surfaces a rejected claim instead of pretending it landed', async () => {
@@ -228,17 +231,14 @@ describe('the buy-token payment step', () => {
 
 describe('the ATM cash rail', () => {
   /**
-   * ── Two states that must not look alike ──────────────────────────────────
-   * On this rail an order exists BEFORE any merchant has reached a machine, so
-   * there is a real period with no link. Rendering the payment screen with an
-   * empty link would show a "pay now" affordance that does nothing — the
-   * empty-state-as-success failure this codebase has shipped repeatedly, where
-   * a request fails, a component catches it, and the screen looks like "no
-   * data".
+   * A cash order is decided by the ORDER's own `paymentMode` — stamped by the
+   * server at creation from the order's size — and paid to the same `payTo`
+   * link as every other order. There is no second link: the cash-link queue the
+   * panel used to poll for was removed with its routes.
    *
-   * And when a link DOES arrive it must be used verbatim. It is what the ATM
-   * agreed to dispense; building anything from it would change the amount the
-   * machine is holding.
+   * What still differs is the ORDER of the two steps. The merchant is at a cash
+   * machine whose session times out, so the player taps "I've paid" first and
+   * the reference follows; the merchant cannot confirm until it does.
    */
   const CASH_ORDER: any = {
     orderId: 'ORD-CASH-1',
@@ -247,34 +247,84 @@ describe('the ATM cash rail', () => {
     tokenAmount: 5000,
     paymentMode: 'CASH_ATM',
     expiresAt: new Date(Date.now() + 90_000).toISOString(),
-    // Deliberately present: on the cash rail this must be IGNORED. Falling
-    // back to a merchant UPI intent would send the player to pay a person
-    // instead of the machine that is holding their cash.
+    payTo: {
+      paymentLink: 'upi://pay?pa=member%40okaxis&pn=Merchant+%234411&am=5000.00&cu=INR'
+        + '&tn=BettingBazaar-ORD-CASH-1&tr=ORD-CASH-1',
+      merchantRef: 'Merchant #4411',
+    },
+    // Deliberately present, as a row from before the projection would carry
+    // it: it must be IGNORED. The player pays the link and never learns who
+    // the merchant is.
     merchantSnapshot: { upiId: 'merchant@bank', merchantName: 'Someone' },
   };
 
-  it('says a machine is being found, rather than showing a dead pay screen', () => {
-    render(<BuyPaymentUI order={CASH_ORDER} cashLink={null} onPaid={() => {}} onExpire={() => {}} />);
-    expect(screen.getByText(/Finding you a machine/i)).toBeInTheDocument();
-    // No UTR field yet: there is nothing to have paid.
-    expect(screen.queryByPlaceholderText(/UTR/i)).not.toBeInTheDocument();
+  it('offers nothing to tap until a member is assigned', () => {
+    // Before a member takes the order there is no `payTo`. An "I've paid" tap
+    // then would report a payment nobody could have received.
+    render(<BuyPaymentUI order={{ ...CASH_ORDER, status: 'PENDING_QUEUE', payTo: null }} onPaid={vi.fn()} onExpire={vi.fn()} />);
+    expect(screen.getByRole('status')).toHaveTextContent(/Waiting for merchant details/);
+    expect(screen.queryByRole('button', { name: /I've Paid/ })).toBeNull();
+    expect(screen.queryByPlaceholderText(/Enter after paying/)).toBeNull();
+    expect(screen.queryByRole('link')).toBeNull();
   });
 
-  it('uses the ATM link verbatim, and never the merchant UPI intent', () => {
-    const atmLink = 'upi://pay?pa=atm-issuer&am=5000.00&tn=ATM-REF-99';
-    render(
-      <BuyPaymentUI
-        order={CASH_ORDER}
-        cashLink={{ paymentLink: atmLink, expiresAt: CASH_ORDER.expiresAt }}
-        onPaid={() => {}}
-        onExpire={() => {}}
-      />,
-    );
-    const link = screen.getAllByRole('link').find((a) => a.getAttribute('href') === atmLink);
-    expect(link).toBeTruthy();
-    // The merchant's own UPI id must appear nowhere: the player pays the
-    // machine, and never learns who the merchant is.
+  it('pays the payTo link verbatim, and never the merchant snapshot', () => {
+    render(<BuyPaymentUI order={CASH_ORDER} onPaid={vi.fn()} onExpire={vi.fn()} />);
+    expect(payLink().getAttribute('href')).toBe(CASH_ORDER.payTo.paymentLink);
     expect(document.body.innerHTML).not.toContain('merchant@bank');
   });
-});
 
+  it('asks for the TAP first, with no reference field yet', async () => {
+    const onPaid = vi.fn();
+    post.mockResolvedValue({ success: true, order: { orderId: 'ORD-CASH-1', status: 'PAID', utrNumber: null } });
+    render(<BuyPaymentUI order={CASH_ORDER} onPaid={onPaid} onExpire={vi.fn()} />);
+
+    expect(screen.queryByPlaceholderText(/Enter after paying/)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /I've Paid — tell the merchant/ }));
+
+    await waitFor(() => expect(post).toHaveBeenCalledWith('/api/payment/order/ORD-CASH-1/mark-paid', {}));
+    // The server's word on the order: PAID, and no reference — the state that
+    // asks for one next.
+    expect(onPaid).toHaveBeenCalledWith(expect.objectContaining({ status: 'PAID', utrNumber: null }));
+  });
+
+  it('then asks for the REFERENCE — PAID with no UTR is not "payment submitted"', async () => {
+    // This branch was unreachable: the PAID screen returned first, so a tapped
+    // cash buy showed "Payment submitted" with an empty UTR and never offered
+    // the field the merchant's Confirm is waiting on.
+    const onPaid = vi.fn();
+    const paid = { ...CASH_ORDER, status: 'PAID', paidAt: new Date().toISOString(), utrNumber: null };
+    render(<BuyPaymentUI order={paid} onPaid={onPaid} onExpire={vi.fn()} />);
+
+    expect(screen.queryByText('Payment submitted')).toBeNull();
+    // Already paid, so the link is not offered a second time.
+    expect(screen.queryByRole('link', { name: /UPI app/i })).toBeNull();
+    expect(screen.getByText(/cannot release your tokens until this reference arrives/)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText(/Enter after paying/), { target: { value: 'UTR123456789012' } });
+    fireEvent.click(screen.getByRole('button', { name: /Submit reference/ }));
+
+    await waitFor(() => expect(post).toHaveBeenCalledWith(
+      '/api/payment/order/ORD-CASH-1/payment-reference', { utrNumber: 'UTR123456789012' },
+    ));
+    expect(post).not.toHaveBeenCalledWith('/api/payment/order/ORD-CASH-1/mark-paid', expect.anything());
+    // The reference is on the order now, so the screen above moves on without
+    // waiting for the next poll.
+    expect(onPaid).toHaveBeenCalledWith(expect.objectContaining({ status: 'PAID', utrNumber: 'UTR123456789012' }));
+  });
+
+  it('shows "payment submitted" once the reference is on the order', () => {
+    const done = { ...CASH_ORDER, status: 'PAID', paidAt: new Date().toISOString(), utrNumber: 'UTR123456789012' };
+    render(<BuyPaymentUI order={done} onPaid={vi.fn()} onExpire={vi.fn()} />);
+    expect(screen.getByText('Payment submitted')).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText(/Enter after paying/)).toBeNull();
+  });
+
+  it('a UPI order at a cash-sized amount is still a UPI order — the ORDER decides', () => {
+    // The rail is the one stamped on the order, not the amount re-judged here.
+    // An order the server created on P2P_UPI keeps the one-step UTR flow.
+    render(<BuyPaymentUI order={{ ...CASH_ORDER, paymentMode: 'P2P_UPI' }} onPaid={vi.fn()} onExpire={vi.fn()} />);
+    expect(screen.getByPlaceholderText(/Enter after paying/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /tell the merchant/ })).toBeNull();
+  });
+});

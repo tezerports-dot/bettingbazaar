@@ -3,7 +3,7 @@
  * ProfilePage.tsx — 2026 "Bazaar" redesign.
  *
  * Wired to live GameContext data: profile identity + balances, settled-bet stats
- * (net placed / winnings / win-rate / cycles), KYC status (KYCModal), bank/UPI
+ * (net placed / winnings / win-rate / cycles), bank/UPI
  * details (backend.updateBankDetails), theme appearance toggle, and logout.
  */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
@@ -13,16 +13,8 @@ import { useTheme } from '../redesign/ThemeContext';
 import { getBackend } from '../services/backend.service';
 import { fmt } from '../redesign/format';
 import ScreenShell, { card, capLabel, goldButton, inputStyle, fieldLabel } from '../redesign/Screen';
-import KYCModal from '../components/Modals/KYCModal';
 
 const backend = getBackend();
-
-const kycMeta: Record<string, { label: string; color: string; bg: string }> = {
-  APPROVED:          { label: 'VERIFIED',  color: 'var(--green)', bg: 'color-mix(in srgb,var(--green) 16%,transparent)' },
-  PENDING_APPROVAL:  { label: 'IN REVIEW', color: '#FB8C00', bg: 'color-mix(in srgb,#FB8C00 16%,transparent)' },
-  REJECTED:          { label: 'REJECTED',  color: 'var(--red)', bg: 'color-mix(in srgb,var(--red) 16%,transparent)' },
-  PENDING_SUBMISSION:{ label: 'PENDING',   color: '#FB8C00', bg: 'color-mix(in srgb,#FB8C00 16%,transparent)' },
-};
 
 const ProfilePage: React.FC = () => {
   const { user, userBets, updateProfile, logout } = useGame();
@@ -30,7 +22,6 @@ const ProfilePage: React.FC = () => {
   const navigate = useNavigate();
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const [kycOpen, setKycOpen] = useState(false);
   const [bankOpen, setBankOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [localPic, setLocalPic] = useState<string | null>(null);
@@ -52,7 +43,6 @@ const ProfilePage: React.FC = () => {
   }, [userBets]);
 
   const initials = (user?.username || 'U').slice(0, 2).toUpperCase();
-  const kyc = kycMeta[user?.kycStatus || 'PENDING_SUBMISSION'] || kycMeta.PENDING_SUBMISSION;
 
   const openBank = () => {
     const d = user?.bankDetails as any;
@@ -146,13 +136,6 @@ const ProfilePage: React.FC = () => {
         ))}
       </div>
 
-      {/* KYC */}
-      <button onClick={() => setKycOpen(true)} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 12, background: 'var(--surface)', border: '1px solid var(--line2)', borderRadius: 16, padding: '14px 15px', boxShadow: 'var(--shadow-sm)', marginBottom: 14, cursor: 'pointer', textAlign: 'left' }}>
-        <span style={{ width: 40, height: 40, flex: 'none', borderRadius: 11, background: 'color-mix(in srgb,var(--gold) 12%,var(--surface3))', border: '1px solid var(--line2)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18 }}>🪪</span>
-        <span style={{ flex: 1 }}><span style={{ display: 'block', fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>KYC Verification</span><span style={{ display: 'block', fontSize: 11, color: 'var(--text3)' }}>Aadhaar verification status</span></span>
-        <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.06em', padding: '4px 10px', borderRadius: 999, color: kyc.color, background: kyc.bg }}>{kyc.label}</span>
-      </button>
-
       {/* Bank */}
       <button onClick={openBank} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 12, background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 16, padding: '14px 15px', boxShadow: 'var(--shadow-sm)', marginBottom: 14, cursor: 'pointer', textAlign: 'left' }}>
         <span style={{ width: 40, height: 40, flex: 'none', borderRadius: 11, background: 'var(--surface3)', border: '1px solid var(--line)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18 }}>🏦</span>
@@ -201,7 +184,6 @@ const ProfilePage: React.FC = () => {
         </div>
       )}
 
-      {kycOpen && <KYCModal onClose={() => setKycOpen(false)} />}
     </ScreenShell>
   );
 };

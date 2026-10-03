@@ -138,11 +138,3 @@ export const CDM_REFERENCE_SPEC = Object.freeze({
   hint: 'Enter the bank transaction id from the CDM slip — it is what a dispute is matched against.',
 });
 
-/** The reference rule for a merchant paying the platform in USDT. */
-export const MERCHANT_TOKEN_REFERENCE_SPEC = Object.freeze({
-  label: 'transaction ID',
-  // Either chain's shape. A merchant pays the platform's own wallet and the
-  // platform accepts both networks, so this cannot narrow to one of them.
-  valid: (value) => USDT_CHAINS.some((chain) => isUsdtTxHash(chain, value)),
-  hint: 'Enter the USDT transaction ID for your payment — 64 hexadecimal characters, with or without a leading 0x.',
-});

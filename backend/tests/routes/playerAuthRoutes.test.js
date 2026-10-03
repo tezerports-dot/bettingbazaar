@@ -3,7 +3,7 @@
  * The signup form and the login form, through a real database.
  *
  * ── Why this tier, and what it can and cannot see ──────────────────────────
- * The unit suite proves the rules (what a valid Aadhaar looks like, what the
+ * The unit suite proves the rules (what a valid mobile looks like, what the
  * password policy refuses). This one proves the HANDLER: that a submitted form
  * writes a row, that a duplicate is refused by the index rather than by a read
  * the route did first, and that the refusal a player is shown names the field
@@ -34,8 +34,6 @@ import { dirname, join } from 'path';
 import { pgConfigured, applySchema, closePg, pgQuery } from '#db/client.js';
 import { getUser, getUserByMobile, getUserCredentials } from '#db/repositories/users.js';
 import { verifyPassword } from '../../domains/identity/password.util.js';
-import { hashAadhaarCandidates } from '../../domains/identity/aadhaarHash.util.js';
-import { findRegisteredAadhaar } from '#db/repositories/identity.js';
 import playerAuthRoutes from '../../domains/identity/playerAuth.routes.js';
 import { mountRouter, actor, as, request } from './_harness.js';
 
@@ -82,8 +80,6 @@ const form = (over = {}) => {
   seq += 1;
   const n = String(seq).padStart(4, '0');
   return {
-    // 12 digits: 3 fixed + 5 run + 4 counter.
-    aadhaar: `777${RUN}${n}`,
     // 10 digits, starting 6-9 as an Indian mobile must: 1 + 5 run + 4 counter.
     mobile: `9${RUN}${n}`,
     password: 'a-long-enough-phrase',
@@ -104,10 +100,10 @@ describePg('POST /api/v1/auth/register — the signup form', () => {
 
     const user = await getUserByMobile(f.mobile, 'PLAYER');
     expect(user).not.toBeNull();
-    expect(user.kycStatus).toBe('PENDING_APPROVAL');
-    // The Aadhaar is queued, hashed. Looked up through the candidate hashes so
-    // the assertion survives an HMAC secret rotation the way the route does.
-    expect(await findRegisteredAadhaar(hashAadhaarCandidates(f.aadhaar))).toBeTruthy();
+    expect(user.status).toBe('ACTIVE');
+    // No Aadhaar was asked for and none is held (owner, 2026-10-02): the row
+    // carries no KYC field at all.
+    expect(Object.keys(user).filter((k) => /kyc|aadhaar/i.test(k))).toEqual([]);
   });
 
   it('stores a VERIFIABLE hash, not the password', async () => {
@@ -138,7 +134,6 @@ describePg('POST /api/v1/auth/register — the signup form', () => {
     // wrong box — the mobile, where they typed +91 as well — looks identical to
     // a correct one.
     const cases = [
-      [{ aadhaar: '123' }, /aadhaar/i],
       [{ mobile: '12345' }, /mobile/i],
       [{ confirmPassword: 'something-else' }, /passwords do not match/i],
       [{ password: 'short', confirmPassword: 'short' }, /at least 8 characters/i],
@@ -165,12 +160,13 @@ describePg('POST /api/v1/auth/register — the signup form', () => {
     expect(again.body.message).toMatch(/log in instead/i);
   });
 
-  it('refuses a second account on one Aadhaar', async () => {
-    const f = form();
-    await post('/register', f);
-    const again = await post('/register', form({ aadhaar: f.aadhaar }));
-    expect(again.status).toBe(409);
-    expect(again.body.message).toMatch(/one account/i);
+  it('ignores an Aadhaar a stale client still sends, and stores nothing of it', async () => {
+    // A panel built before 2026-10-02 still posts one. It must neither refuse
+    // the signup nor land anywhere.
+    const f = form({ aadhaar: '123456789012' });
+    expect((await post('/register', f)).status).toBe(200);
+    const user = await getUserByMobile(f.mobile, 'PLAYER');
+    expect(JSON.stringify(user)).not.toContain('123456789012');
   });
 
   it('attributes a referral, and REFUSES a code that matches nobody', async () => {
@@ -270,7 +266,7 @@ describePg('POST /api/v1/auth/login — the login form', () => {
     const staff = await createUser({
       userId: newUserId(), username: 'staff twin', mobile: f.mobile,
       passwordHash: await hashPassword('the-staff-only-passphrase'),
-      status: 'ACTIVE', kycStatus: 'APPROVED', isAdmin: true, accountType: 'STAFF',
+      status: 'ACTIVE', isAdmin: true, accountType: 'STAFF',
     });
     expect(staff.created, 'a STAFF account on the same mobile').toBe(true);
     await setRoles(staff.user.userId, ['admin']);

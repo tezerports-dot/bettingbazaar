@@ -3,11 +3,12 @@
  * An order cannot change rails. The database is what says so.
  *
  * ── Why this is a trigger and not a rule in the writer ──────────────────────
- * The platform runs one of two P2P settlement rails and an admin switches
- * between them. The dangerous moment is the orders already in flight: each was
- * created under a rail, with its own timers, assignment path and obligation on
- * the merchant. A switch that reached them would leave a player waiting on a
- * process nobody started.
+ * An order's rail is DERIVED when it is created — from its size and currency
+ * (`paymentModeFor`, PROJECT_STATUS §3.10 2c) — and decides which teams can
+ * serve it, its timers and the member's obligation. An order that changed rail
+ * while a member was serving it would put the player in front of a process the
+ * member never started, and a CASH member at a machine would be holding a UPI
+ * order.
  *
  * `setOrderFields` is an allowlist and does not name `payment_mode` today. That
  * is a property of one object literal in one file, and it is one edit away from
@@ -30,27 +31,39 @@ describePg('an order stays on the rail it was born on', () => {
   const oid = () => `pmi-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}-${seq += 1}`;
   const uniqueUtr = () => `${Date.now()}`.slice(-9) + String(Math.floor(Math.random() * 900) + 100);
 
-  const seed = async (mode, version = 1) => {
+  const made = [];
+  const seed = async (mode) => {
     const orderId = oid();
+    made.push(orderId);
     await pgQuery(
       `INSERT INTO order_states
-         (order_id, user_id, order_type, state, token_amount_paise, payment_mode, payment_mode_version)
-       VALUES ($1, 'pmi-user', 'DEPOSIT', 'PENDING_QUEUE', 50000, $2, $3)`,
-      [orderId, mode, version],
+         (order_id, user_id, order_type, state, token_amount_paise, payment_mode)
+       VALUES ($1, 'pmi-user', 'DEPOSIT', 'PENDING_QUEUE', 50000, $2)`,
+      [orderId, mode],
     );
     return orderId;
   };
 
   const modeOf = async (orderId) => {
     const { rows } = await pgQuery(
-      'SELECT payment_mode, payment_mode_version, state FROM order_states WHERE order_id = $1',
+      'SELECT payment_mode, state FROM order_states WHERE order_id = $1',
       [orderId],
     );
     return rows[0];
   };
 
   beforeAll(async () => { await applySchema(); }, 60_000);
-  afterAll(async () => { await closePg(); });
+  afterAll(async () => {
+    // Trap 10: this run's own rows, removed outside any assertion.
+    await pgQuery('SET session_replication_role = replica');
+    try {
+      await pgQuery('DELETE FROM order_transitions WHERE order_id = ANY($1)', [made]);
+      await pgQuery('DELETE FROM order_states WHERE order_id = ANY($1)', [made]);
+    } finally {
+      await pgQuery('SET session_replication_role = DEFAULT');
+    }
+    await closePg();
+  });
 
   it('refuses a write that moves an order to the other rail', async () => {
     const orderId = await seed('P2P_UPI');
@@ -61,16 +74,7 @@ describePg('an order stays on the rail it was born on', () => {
     expect((await modeOf(orderId)).payment_mode).toBe('P2P_UPI');
   });
 
-  it('refuses a write that re-points an order at another policy version', async () => {
-    const orderId = await seed('CASH_ATM', 7);
-    await expect(pgQuery(
-      'UPDATE order_states SET payment_mode_version = $1 WHERE order_id = $2',
-      [8, orderId],
-    )).rejects.toThrow(/cannot be re-pointed/);
-    expect(Number((await modeOf(orderId)).payment_mode_version)).toBe(7);
-  });
-
-  it('lets every other column move freely — this guards two columns, not the row', async () => {
+  it('lets every other column move freely — this guards one column, not the row', async () => {
     // A trigger that refused ordinary updates would freeze the lifecycle, which
     // is a far worse failure than the one it prevents: every transition on the
     // order would 500 and the money would strand.

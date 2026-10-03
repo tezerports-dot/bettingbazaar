@@ -30,7 +30,7 @@ import { getSystemConfig } from '#db/repositories/config.js';
  * normally "the author forgot to update me" reporting the author (§28); here
  * forgetting only tightens the guard, never loosens it.
  */
-const SESSION_PATHS = new Set(['/me', '/logout', '/health']);
+const SESSION_PATHS = new Set(['/me', '/logout']);
 
 // Stricter rate limiting for authentication endpoints
 // Prevents brute force password attacks
@@ -57,9 +57,9 @@ export const authLimiter = rateLimit({
      * — and every 4xx counted, including the 401 a panel gets when its token
      * has simply expired.
      *
-     * The router it guards (`/api/v1/auth`) holds `/me`, `/logout` and
-     * `/health`, and NOT ONE of them checks a credential. Measured on a running
-     * server:
+     * The router it guards (`/api/v1/auth`) held `/me`, `/logout` and
+     * `/health` (deleted 2026-10-01: no client), and NOT ONE of them checks a
+     * credential. Measured on a running server:
      *
      *     four unauthenticated GET /me   →  /me, /logout AND /health all 429,
      *                                       from that IP, for thirty minutes
@@ -523,13 +523,6 @@ export const utrGraceLimiter = moneyLimiter(
     'rl:utrgrace:', RATE_LIMIT_TIERS.utrGrace,
     'Too many requests. Please wait a moment.',
     { bounds: 'attempts' },
-);
-
-/** A merchant supplying a cash link from an ATM. */
-export const cashLinkSupplyLimiter = moneyLimiter(
-    'rl:cashlink:', RATE_LIMIT_TIERS.cashLinkSupply,
-    'Too many links supplied. Please wait before supplying another.',
-    { bounds: 'effects' },
 );
 
 /**

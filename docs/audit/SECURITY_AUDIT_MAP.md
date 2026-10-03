@@ -1667,6 +1667,14 @@ There are **two** deposit-confirm implementations, not one:
 | `POST /api/payment/deposit/:orderId/confirm` | `paymentActorAuth` (merchant **or** admin) | calls `moveDepositMoney()` | **16**, in `paymentRoutes.test.js` — conservation, the split, idempotency, a 4-way confirm race |
 | `POST /api/merchant/confirm/:id` | `merchantAuth` | **reimplements** debit-then-credit inline, sharing only `depositCreditSplit()` | authorization and validation only |
 
+> **Closed 2026-10-01.** Both routes now move the money through
+> `moveDepositMoney()`. The first route — the one no screen called — was
+> DELETED (owner decision), after every money assertion it carried was ported
+> to the second: `merchantConfirmMoneyPg.test.js` (split, double delivery, the
+> 4-way race, the accounting event, the reference release, the merchant's
+> redacted view), beside `depositConfirmConservationPg` and
+> `depositConfirmUnderfundedPg`. The table above records how it stood.
+
 **The first is on `check:ui-coverage --unused` — no screen calls it. The second
 is what the merchant panel uses.** So every assertion that a deposit conserves,
 that a double-tap credits once, and that four racing confirms do not overpay is
@@ -2575,7 +2583,7 @@ The dispense was completed before the debit, so the stranded-hold sweep never
 saw it either: the double charge was permanent.
 
 **The four other doors** that complete a buy — the admin approve, both dispute
-releases, and `POST /api/payment/deposit/:id/confirm` (which no panel calls) —
+releases, and `POST /api/payment/deposit/:id/confirm` (which no panel called; deleted 2026-10-01) —
 never dispensed at all. They debited `available` beside a live hold, so the
 merchant was charged twice until `sweepDepositHolds` released the hold on the
 now-COMPLETED order fifteen minutes later; the two without an overdraft refused
@@ -3379,10 +3387,10 @@ checked and is correct; the evidence is named.
 
 | Measure | Count |
 |---|---|
-| Route declarations in `backend/**` | 322 |
-| Reachable with **no auth middleware** | 44 |
-| Staff routes carrying an **area** (permission key) | 198 |
-| Staff routes a sub-admin can **never** be given (full admin only) | 8 |
+| Route declarations in `backend/**` | 287 |
+| Reachable with **no auth middleware** | 34 |
+| Staff routes carrying an **area** (permission key) | 175 |
+| Staff routes a sub-admin can **never** be given (full admin only) | 7 |
 
 A count moving is not by itself a defect — it is a prompt to read the
 new route and decide. Each of the three questions is defined in §2.
@@ -3393,14 +3401,12 @@ new route and decide. Each of the three questions is defined in §2.
 - `GET /announcements  (backend/routes/retention.routes.js)`
 - `GET /app/android/update  (backend/domains/distribution/androidRelease.routes.js)`
 - `GET /assetlinks.json  (backend/routes/wellKnown.routes.js)`
-- `GET /bootstrap  (backend/routes/app-bootstrap.routes.js)`
 - `GET /categories  (backend/domains/gameRegistry/gameRegistry.routes.js)`
 - `GET /cycles/:cycleId  (backend/domains/user/user.routes.js)`
 - `GET /cycles/active  (backend/domains/user/user.routes.js)`
 - `GET /download/android  (backend/domains/distribution/androidRelease.routes.js)`
 - `GET /events  (backend/routes/sse.routes.js)`
 - `GET /games  (backend/domains/gameRegistry/gameRegistry.routes.js)`
-- `GET /health  (backend/routes.js)`
 - `GET /invite/:code  (backend/domains/identity/playerAuth.routes.js)`
 - `GET /leaderboard/:period  (backend/routes/retention.routes.js)`
 - `GET /me  (backend/routes.js)`
@@ -3408,19 +3414,11 @@ new route and decide. Each of the three questions is defined in §2.
 - `GET /providers  (backend/domains/casino/gameProvider.routes.js)`
 - `GET /public-config  (backend/domains/telegram/telegram.routes.js)`
 - `GET /r/:code  (backend/routes/referralRedirect.routes.js)`
-- `GET /stats  (backend/routes/sse.routes.js)`
 - `GET /status  (backend/domains/support/support.routes.js)`
-- `GET /v1/branding  (backend/domains/user/user.routes.js)`
-- `GET /v1/content/ai-analysis  (backend/domains/user/user.routes.js)`
 - `GET /v1/content/faq  (backend/domains/user/user.routes.js)`
-- `GET /v1/content/promo/:location  (backend/domains/user/user.routes.js)`
 - `GET /v1/content/support-links  (backend/domains/user/user.routes.js)`
-- `GET /v1/game/cycle/:type/:startTime  (backend/domains/user/user.routes.js)`
 - `GET /v1/game/cycles/history  (backend/domains/user/user.routes.js)`
 - `GET /v1/system/config  (backend/domains/user/user.routes.js)`
-- `GET /v1/system/time  (backend/domains/user/user.routes.js)`
-- `GET /v1/token/rates  (backend/domains/user/user.routes.js)`
-- `GET /v1/tokens/rate  (backend/domains/user/user.routes.js)`
 - `GET /v1/winners  (backend/routes/winners.routes.js)`
 - `POST /auth/login  (backend/domains/merchant/merchant.routes.js)`
 - `POST /auth/login/2fa  (backend/domains/merchant/merchant.routes.js)`
@@ -3445,7 +3443,6 @@ new route and decide. Each of the three questions is defined in §2.
 - `POST /sub-admins  (backend/routes/admin/subadmins.admin.routes.js)`
 - `POST /users/:userId/queue-manager  (backend/routes/admin/users.admin.routes.js)`
 - `PUT /sub-admins/:subAdminId/permissions  (backend/routes/admin/subadmins.admin.routes.js)`
-- `PUT /users/:userId/roles  (backend/routes/admin/users.admin.routes.js)`
 
 </details>
 
@@ -3453,14 +3450,15 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 476 |
-| Parameters only (safe by construction) | 320 |
-| Interpolating into statement text (each needs a reading) | 153 |
-| Statement text built elsewhere and passed in (each needs a reading) | 3 |
+| `pgQuery` call sites | 416 |
+| Parameters only (safe by construction) | 269 |
+| Interpolating into statement text (each needs a reading) | 143 |
+| Statement text built elsewhere and passed in (each needs a reading) | 4 |
 
 <details><summary>Call sites whose statement text is built elsewhere</summary>
 
 - `database/client.js — sql`
+- `database/repositories/adminTokenConsiderations.js — text`
 - `database/repositories/merchants.js — text`
 - `database/repositories/users.js — text`
 
@@ -3470,8 +3468,8 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Panel | .ts/.tsx files | `dangerouslySetInnerHTML` | `.innerHTML =` |
 |---|---|---|---|
-| `user-panel` | 87 | 0 | 0 |
-| `admin-panel` | 110 | 0 | 0 |
+| `user-panel` | 88 | 0 | 0 |
+| `admin-panel` | 111 | 0 | 0 |
 | `merchant-panel` | 44 | 0 | 0 |
 
 <!-- END GENERATED -->

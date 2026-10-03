@@ -24,10 +24,10 @@ secrets first.
 **Required env** (see `.env.example` for the full annotated list). Each secret must
 be **≥32 chars and non-placeholder** — the boot gate rejects weak ones:
 
-- Secrets: `JWT_SECRET`, `ORDER_HMAC_SECRET`, `AADHAAR_HMAC_SECRET`, `METRICS_TOKEN`
+- Secrets: `JWT_SECRET`, `ORDER_HMAC_SECRET`, `METRICS_TOKEN`
   (generate with `openssl rand -base64 48`)
 - Data: `DATABASE_URL`, `REDIS_URL`, `S3_BUCKET_NAME` (+ S3 creds/endpoint)
-- Web: `ALLOWED_ORIGINS`, `PUBLIC_APP_ORIGIN`, `PUBLIC_APP_ALLOWED_ORIGINS`
+- Web: `ALLOWED_ORIGINS`, `PUBLIC_APP_ORIGIN`
 - Money-DB TLS: set `PG_CA_CERT` (verified TLS). `PG_SSL=no-verify` is **refused in
   production** unless `ALLOW_INSECURE_PG_TLS=true`; `PG_SSL=false` is for local plaintext only.
 

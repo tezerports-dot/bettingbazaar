@@ -68,6 +68,15 @@ function assertAdjustable(field) {
 }
 
 /**
+ * The wallet-ledger id prefix every admin adjustment carries (`admin_<id>`).
+ * Exported so the player's projection of their ledger can tell an adjustment
+ * from every other movement without guessing at its text: an adjustment's
+ * description is the admin's own note, written for the audit trail, and it
+ * names the staff account — neither is for the player (playerLedgerView.js).
+ */
+export const ADJUSTMENT_TX_PREFIX = 'admin_';
+
+/**
  * Apply an adjustment.
  *
  * @returns {{ok:true, adjustment, balances}}                     applied
@@ -95,7 +104,7 @@ export async function applyAdjustment({
   const uidStr = String(userId);
   const adminStr = String(adminId);
   const idStr = String(adjustmentId);
-  const txId = `admin_${idStr}`;
+  const txId = `${ADJUSTMENT_TX_PREFIX}${idStr}`;
   const fullReason = `[Admin:${adminStr}] ${String(reason).trim()}`;
 
   // A retry of the same adjustment is a retry, not a second adjustment. Checked

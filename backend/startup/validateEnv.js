@@ -24,13 +24,11 @@ const REQUIRED = [
   ['JWT_SECRET',  'signs/verifies every auth token — a fallback would let anyone forge sessions'],
   ['DATABASE_URL', 'the datastore — every balance, order, bet and identity lives in PostgreSQL and there is no second store to fall back on'],
   ['ORDER_HMAC_SECRET', 'dedicated payment-order HMAC secret; prevents JWT key reuse for order signing'],
-  ['AADHAAR_HMAC_SECRET', 'dedicated Aadhaar HMAC secret; prevents reversible duplicate-document hashes'],
   // Encrypts the values that must be RECOVERABLE rather than merely comparable:
-  // Aadhaar numbers (the outside verifier needs the number) and Telegram bot
-  // tokens (whoever holds one can speak as the platform). Missing it does not
-  // fail at boot without this line — it fails at the first signup, which is a
-  // far worse place to discover it.
-  ['IDENTITY_ENCRYPTION_KEY', 'AES-256 key for Aadhaar + bot-token ciphertext; a wrong or absent key makes every stored identity unreadable'],
+  // Telegram bot tokens (whoever holds one can speak as the platform) and
+  // casino provider credentials. Missing it does not fail at boot without this
+  // line — it fails at the first bot registration, a worse place to find out.
+  ['IDENTITY_ENCRYPTION_KEY', 'AES-256 key for bot-token and provider-credential ciphertext; a wrong or absent key makes every stored credential unreadable'],
   ['REDIS_URL',         'cross-instance rate limits, realtime fan-out, and job queue need Redis at >1 replica'],
   ['ALLOWED_ORIGINS',   'CORS allow-list; production must explicitly name trusted origins'],
   // All four S3 vars, not just the bucket. server.js refuses to boot production
@@ -44,8 +42,11 @@ const REQUIRED = [
   ['S3_SECRET_KEY',     'S3 credentials; production storage refuses the local-disk fallback'],
   ['S3_ENDPOINT',       'S3-compatible endpoint URL (e.g. Cloudflare R2, Vultr, AWS)'],
   ['METRICS_TOKEN',     'protects Prometheus metrics from public disclosure'],
-  ['PUBLIC_APP_ORIGIN', 'official public application origin advertised to native clients'],
-  ['PUBLIC_APP_ALLOWED_ORIGINS', 'explicit public application origin allow-list advertised to native clients'],
+  // The player app's origin: the links the platform mints (password reset,
+  // panelOrigin()) and the Android App Links association are built from it.
+  // PUBLIC_APP_ALLOWED_ORIGINS was required beside it and read only by
+  // GET /api/app/bootstrap, which nothing called; both went 2026-10-01.
+  ['PUBLIC_APP_ORIGIN', 'the player app origin: minted links (panelOrigin) and Android App Links'],
 ];
 
 // Only meaningful in a real deployment; absence is a warning, not a failure.
@@ -56,11 +57,6 @@ const METRICS_TOKEN_PLACEHOLDERS = new Set([
   'change-this-to-a-random-metrics-token',
   'change-me',
   'changeme',
-]);
-
-const AADHAAR_HMAC_PLACEHOLDERS = new Set([
-  'change-this-to-a-dedicated-random-string',
-  'change-this-to-a-random-string',
 ]);
 
 // Signing/HMAC secrets that must never reach production weak. A forgeable
@@ -99,11 +95,6 @@ function hasBadIdentityKey(value) {
   } catch { return true; }
 }
 
-function hasWeakAadhaarHmacSecret(value) {
-  const secret = String(value || '').trim();
-  return secret.length < 32 || AADHAAR_HMAC_PLACEHOLDERS.has(secret.toLowerCase());
-}
-
 export function csv(value) {
   return String(value || '').split(',').map((entry) => entry.trim()).filter(Boolean);
 }
@@ -125,9 +116,8 @@ function isOrigin(value, { requireHttps = false } = {}) {
  */
 export function validateEnv(env = process.env, isProd = env.NODE_ENV === 'production') {
   const missing = REQUIRED.filter(([k]) => !env[k] || String(env[k]).trim() === '').map(([k]) => k);
-  const weakAadhaarHmacSecret = hasWeakAadhaarHmacSecret(env.AADHAAR_HMAC_SECRET);
   const weakMetricsToken = hasWeakMetricsToken(env.METRICS_TOKEN);
-  const invalidOrigins = ['PUBLIC_APP_ORIGIN', 'PUBLIC_APP_ALLOWED_ORIGINS'].filter((key) => {
+  const invalidOrigins = ['PUBLIC_APP_ORIGIN'].filter((key) => {
     const origins = csv(env[key]);
     return env[key] && (!origins.length || !origins.every((origin) => isOrigin(origin, { requireHttps: isProd })));
   });
@@ -153,9 +143,6 @@ export function validateEnv(env = process.env, isProd = env.NODE_ENV === 'produc
     throw new Error('FATAL: PG_SSL=no-verify disables money-DB TLS certificate verification. Pin the provider CA via PG_CA_CERT, or set ALLOW_INSECURE_PG_TLS=true to explicitly accept the risk.');
   }
 
-  if (weakAadhaarHmacSecret && !missing.includes('AADHAAR_HMAC_SECRET') && isProd) {
-    throw new Error('FATAL: AADHAAR_HMAC_SECRET must be a non-placeholder secret of at least 32 characters');
-  }
   if (hasBadIdentityKey(env.IDENTITY_ENCRYPTION_KEY) && !missing.includes('IDENTITY_ENCRYPTION_KEY') && isProd) {
     throw new Error('FATAL: IDENTITY_ENCRYPTION_KEY must decode to exactly 32 bytes. Generate one with: openssl rand -base64 32');
   }

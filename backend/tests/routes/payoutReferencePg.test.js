@@ -27,68 +27,122 @@
  * same registry decides whether it has been spent. Without that, one transfer
  * could be presented as proof of two payouts, which is the defect §27 records
  * against the CDM slip.
+ *
+ * ── How the orders get to the merchant (PROJECT_STATUS §3.10, 2c) ───────────
+ * Through the real path: the player's withdrawal (or buy) is created by the
+ * service, ROUTED to the one online member of a working team on the order's
+ * rail, and accepted through the merchant's own route. The rail is the order's
+ * size — ₹20,000 is UPI/bank, ₹1,000 is cash — never a switch.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { pgConfigured, applySchema, closePg } from '#db/client.js';
-import { createOrderRecord, getOrderRecord } from '#db/repositories/orders.record.js';
-import { updateMerchant } from '#db/repositories/merchants.js';
-import { PAYMENT_MODES } from '#db/repositories/paymentModePolicy.js';
-import { holdForOrder } from '../../domains/merchant/depositEscrow.service.js';
+import { pgConfigured, applySchema, closePg, pgQuery } from '#db/client.js';
+import { getOrderRecord } from '#db/repositories/orders.record.js';
+import { updateUser } from '#db/repositories/users.js';
+import { getBalancesPaise } from '#db/repositories/wallets.core.js';
+import { getPool } from '#db/repositories/teamPools.js';
+import { getTreasuryBalances, ACCOUNTS } from '#db/repositories/treasury.js';
+import { PAYMENT_MODES } from '#db/repositories/teamRouting.js';
+import {
+  createWithdrawalOrder, createDepositOrder, markOrderPaid,
+} from '../../domains/payment/paymentProcessing.service.js';
+import { teamFixture } from '../teamFixture.js';
 import { mountRouter, actor, merchantActor, as } from './_harness.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 
 describePg('the payout reference is the MERCHANT\'s, and it is claimed', () => {
+  const teams = teamFixture();
   let app;
   let seq = 0;
-  const oid = (p) => `${p}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}-${seq += 1}`;
   // Unique per order: a reference belongs to exactly one order, by index (§27).
-  const utr = () => `UTRPAY${String(Date.now()).slice(-6)}${String(seq).padStart(4, '0')}`;
+  const utr = () => `UTRPAY${String(Date.now()).slice(-6)}${String(seq += 1).padStart(4, '0')}`;
+
+  const UPI_RUPEES = 20_000;   // above the ₹10,000 cash ceiling: UPI/bank
+  const CASH_RUPEES = 1_000;   // a cash denomination: CASH
+
+  const players = [];
+  // One member per case, so no case finds its member at the rail's cap with
+  // an earlier case's open order.
+  const upiMembers = [];
+  let cashMember;
+  let upiTeam;
 
   beforeAll(async () => {
     await applySchema();
     app = mountRouter((await import('../../domains/merchant/merchant.routes.js')).default);
-  }, 60_000);
-
-  afterAll(async () => { await closePg(); });
-
-  const seller = async () => {
-    const m = await merchantActor({ tokensRupees: 50_000 });
-    await updateMerchant(m.merchantId, {
-      isOnline: true, acceptsWithdrawals: true, acceptsDeposits: true,
-      maxConcurrentDepositOrders: 10, maxConcurrentWithdrawalOrders: 10,
+    for (let i = 0; i < 5; i += 1) upiMembers.push(await merchantActor({}));
+    cashMember = await merchantActor({});
+    upiTeam = await teams.workingTeam({
+      rail: 'UPI_BANK', poolTokens: 50_000, include: upiMembers.map((m) => m.merchantId),
     });
-    return m;
+    await teams.workingTeam({ rail: 'CASH', include: [cashMember.merchantId] });
+  }, 120_000);
+
+  afterAll(async () => {
+    await pgQuery('SET session_replication_role = replica');
+    try {
+      await pgQuery(
+        'DELETE FROM order_transitions WHERE order_id IN (SELECT order_id FROM order_states WHERE user_id = ANY($1))',
+        [players]);
+      await pgQuery('DELETE FROM order_states WHERE user_id = ANY($1)', [players]);
+    } finally {
+      await pgQuery('SET session_replication_role = DEFAULT');
+    }
+    await teams.cleanup();
+    await closePg();
+  });
+
+  const player = async () => {
+    const p = await actor({});
+    players.push(p.userId);
+    return p;
   };
 
-  /** A withdrawal sitting where the merchant presses "I've sent the money". */
-  const payout = async (merchant, { paymentMode = PAYMENT_MODES.P2P_UPI } = {}) => {
-    const player = await actor({ kycStatus: 'APPROVED' });
-    const orderId = oid('wd');
-    await createOrderRecord({
-      orderId, userId: player.userId, type: 'WITHDRAWAL',
-      tokenAmountRupees: 500, fiatAmountRupees: 500,
-      state: 'PROCESSING', merchantId: merchant.merchantId,
-      depositAllocation: 0, reserveAllocation: 0,
-      paymentMode,
+  /**
+   * A withdrawal sitting where the merchant presses "I've sent the money":
+   * created by the player, routed to `merchant` (the only member online),
+   * accepted by them.
+   */
+  const payout = async (merchant, rupees = UPI_RUPEES) => {
+    const p = await player();
+    await updateUser(p.userId, {
+      bankDetails: {
+        accountNumber: '000111222333', ifscCode: 'HDFC0000001',
+        bankName: 'HDFC Bank', accountHolderName: 'Test Player',
+      },
     });
-    return { orderId, player };
+    const { creditWinnings } = await import('../../domains/wallet/walletAuthority.service.js');
+    await creditWinnings(p.userId, rupees, 'payout reference suite seed', 'Test',
+      `seed_${p.userId}`, `pr_seed_${p.userId}`);
+    await teams.onlyOnline([merchant.merchantId]);
+    const { order } = await createWithdrawalOrder(p.userId, rupees);
+    const orderId = order.orderId ?? order._id;
+    const routed = await getOrderRecord(orderId);
+    expect(routed.status, 'the withdrawal was not routed to the member').toBe('ASSIGNED');
+    expect(routed.merchantId).toBe(String(merchant.merchantId));
+    const accepted = await as(app, merchant).post(`/accept/${orderId}`).send({});
+    expect(accepted.status, JSON.stringify(accepted.body)).toBe(200);
+    return { orderId, player: p };
   };
 
   it('refuses a UPI payout with no reference, and moves nothing', async () => {
-    const m = await seller();
-    const { orderId } = await payout(m);
+    const m = upiMembers[0];
+    const { orderId, player: p } = await payout(m);
+    const before = await getBalancesPaise(p.userId);
 
     const res = await as(app, m).post(`/confirm/${orderId}`).send({});
     expect(res.status, JSON.stringify(res.body)).toBe(400);
     expect(res.body.code).toBe('PAYOUT_REFERENCE_REQUIRED');
     // The refusal lands BEFORE the transition, so the order is untouched and
     // the merchant can try again with the reference in hand.
-    expect((await getOrderRecord(orderId)).state).toBe('PROCESSING');
+    const row = await getOrderRecord(orderId);
+    expect(row.state).toBe('PROCESSING');
+    expect(row.paymentMode).toBe(PAYMENT_MODES.P2P_UPI);
+    expect(await getBalancesPaise(p.userId)).toEqual(before);
   });
 
   it('records the merchant\'s reference on the order', async () => {
-    const m = await seller();
+    const m = upiMembers[1];
     const { orderId } = await payout(m);
     const reference = utr();
 
@@ -105,7 +159,7 @@ describePg('the payout reference is the MERCHANT\'s, and it is claimed', () => {
   });
 
   it('CLAIMS it — the same transfer cannot pay two withdrawals', async () => {
-    const m = await seller();
+    const m = upiMembers[2];
     const first = await payout(m);
     const second = await payout(m);
     const reference = utr();
@@ -121,7 +175,7 @@ describePg('the payout reference is the MERCHANT\'s, and it is claimed', () => {
   });
 
   it('refuses a reference too short to be a UTR', async () => {
-    const m = await seller();
+    const m = upiMembers[3];
     const { orderId } = await payout(m);
 
     const res = await as(app, m).post(`/confirm/${orderId}`).send({ utrNumber: 'SHORT' });
@@ -130,35 +184,55 @@ describePg('the payout reference is the MERCHANT\'s, and it is claimed', () => {
   });
 
   it('does NOT ask for one at a cash machine — that payout is evidenced by the slip', async () => {
-    const m = await seller();
-    const { orderId } = await payout(m, { paymentMode: PAYMENT_MODES.CASH_ATM });
+    const { orderId } = await payout(cashMember, CASH_RUPEES);
+    expect((await getOrderRecord(orderId)).paymentMode).toBe(PAYMENT_MODES.CASH_ATM);
 
     // No body at all. A CASH_ATM payout is notes handed over a counter; there
     // is no bank UTR for it, and its evidence is the CDM slip, which has its
     // own route and its own claim.
-    const res = await as(app, m).post(`/confirm/${orderId}`).send({});
+    const res = await as(app, cashMember).post(`/confirm/${orderId}`).send({});
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(['PAID', 'COMPLETED']).toContain((await getOrderRecord(orderId)).state);
   });
 
   // ── The other half of the asymmetry, so it cannot be collapsed ───────────
-  it('a DEPOSIT still takes no reference from the merchant', async () => {
-    const m = await seller();
-    const player = await actor({ kycStatus: 'APPROVED' });
-    const orderId = oid('dep');
-    const players = utr();
-    await createOrderRecord({
-      orderId, userId: player.userId, type: 'DEPOSIT',
-      tokenAmountRupees: 500, fiatAmountRupees: 500,
-      state: 'PAID', merchantId: m.merchantId, utrNumber: players,
-    });
-    await holdForOrder(await getOrderRecord(orderId), m.merchantId);
+  it('a DEPOSIT still takes no reference from the merchant — and the pool pays the player once', async () => {
+    const m = upiMembers[4];
+    const p = await player();
+    await teams.onlyOnline([m.merchantId]);
+    const { order } = await createDepositOrder(p.userId, UPI_RUPEES);
+    const orderId = order.orderId ?? order._id;
+    expect((await getOrderRecord(orderId)).merchantId).toBe(String(m.merchantId));
+    expect((await as(app, m).post(`/accept/${orderId}`).send({})).status).toBe(200);
+    const playersReference = utr();
+    await markOrderPaid(p.userId, orderId, playersReference);
+
+    const poolBefore = await getPool(upiTeam.teamId);
+    const treasuryBefore = await getTreasuryBalances();
+    const walletBefore = await getBalancesPaise(p.userId);
 
     // The merchant posting a DIFFERENT reference on a buy. The player's is
     // already claimed against this order; writing the merchant's over it would
     // leave the row naming a reference nothing had claimed.
     const res = await as(app, m).post(`/confirm/${orderId}`).send({ utrNumber: 'MERCHANTSUPPLIED9999' });
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect((await getOrderRecord(orderId)).utrNumber).toBe(players);
+    const row = await getOrderRecord(orderId);
+    expect(row.utrNumber).toBe(playersReference.toUpperCase());
+    expect(row.state).toBe('COMPLETED');
+
+    // Both sides of the money (§9, §19): the team pool's HOLD is spent, the
+    // treasury moves it from TEAM_FLOAT to USER_FLOAT, and the player is
+    // credited the same amount, split between their pockets.
+    const A = UPI_RUPEES * 100;
+    const poolAfter = await getPool(upiTeam.teamId);
+    expect(poolBefore.heldPaise - poolAfter.heldPaise).toBe(A);
+    expect(poolAfter.availablePaise).toBe(poolBefore.availablePaise);
+    const treasuryAfter = await getTreasuryBalances();
+    expect(treasuryBefore[ACCOUNTS.TEAM_FLOAT] - treasuryAfter[ACCOUNTS.TEAM_FLOAT]).toBe(A);
+    expect(treasuryAfter[ACCOUNTS.USER_FLOAT] - treasuryBefore[ACCOUNTS.USER_FLOAT]).toBe(A);
+    const walletAfter = await getBalancesPaise(p.userId);
+    const credited = (walletAfter.depositBalance - walletBefore.depositBalance)
+      + (walletAfter.reserveBalance - walletBefore.reserveBalance);
+    expect(credited).toBe(A);
   });
 });

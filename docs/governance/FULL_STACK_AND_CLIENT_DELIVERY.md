@@ -319,10 +319,9 @@ Order state lives in `hooks/useOrders.ts` fed by `services/sse.ts`.
 
 The backend already advertises both mobile targets: `GET /api/download/android`
 302s to the newest Android release published on the admin Android App page
-(`android_releases`), `/api/download/ios` to `SystemConfig.iosUrl`, and
-`GET /api/app/bootstrap` returns the official origin, allow-list, package IDs and
-a compliance block for a native shell to verify **before** opening its WebView
-(`NATIVE_APP_DISTRIBUTION_POLICY.md`). The iOS half of that contract has no client.
+(`android_releases`) and `/api/download/ios` to `SystemConfig.iosUrl`. The
+`GET /api/app/bootstrap` handshake this paragraph used to describe was never
+called by any shell and was removed 2026-10-01 (`NATIVE_APP_DISTRIBUTION_POLICY.md`).
 
 ## 3.2 The routing decision that gates everything else
 
@@ -791,7 +790,7 @@ Anything in the user panel is W+P+A today; merchant and admin are W only.
 | Referral / invite — code, share, team, commissions (**F1 only**) | `/invite` | `/api/referral/me`, `/team`, `/commissions`, `/apply` | — |
 | VIP — tier, progress, benefits | `/vip` | `/api/vip/config`, `/api/vip/my`, `/api/bonuses/my` | — |
 | **Account recovery** — REMOVED 2026-08-25. There is no in-app recovery screen and no `/api/auth/check-aadhaar`, `/recover` or `/recover/status`. Recovery runs entirely in a SECOND Telegram bot and requires the same mobile AND the same Aadhaar to match. | — | — | — |
-| Profile — username, avatar, bank/UPI, KYC status, sign-out. **No password, no email** — the only editable field is the username; Aadhaar and mobile are proved, not typed. | `/profile` | profile, bank, avatar-upload endpoints | `kyc_update` |
+| Profile — username, avatar, bank/UPI, sign-out. **No password, no email** — the only editable field is the username; the mobile is proved, not typed. There is no KYC (removed 2026-10-02). | `/profile` | profile, bank, avatar-upload endpoints | — |
 | Transaction / order history — timeline, filters, proof & dispute links | `/history` | `/api/payment/orders`, `/order/:id` | `order_update` |
 | My bets — list, cycle/side/amount/status filters | `/my-bets` | `GET /api/user/:userId/bets` | `bet_placed` |
 | Results — cycle timeline, winner/pool summary | `/results` | `/api/v1/game/cycles/history` | `cycle_result` |

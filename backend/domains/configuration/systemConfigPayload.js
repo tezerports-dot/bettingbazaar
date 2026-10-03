@@ -8,7 +8,7 @@
  * over HTTP. Copies drift, and these already had:
  *
  *   only the socket sent  webUrl, androidUrl (since removed), iosUrl
- *   only the HTTP route sent  kycRequired, registrationEnabled
+ *   only the HTTP route sent  registrationEnabled
  *
  * So the answer to "what is this platform configured to do" depended on which
  * transport a client happened to ask over. §1 — one owner per value. This is
@@ -49,24 +49,19 @@ import {
   BUY_DENOMINATIONS_PAISE, MAX_CASH_BUY_PAISE, USDT_BUY_DENOMINATIONS_PAISE,
 } from '../merchant/denominations.js';
 
-export function systemConfigPayload(cfg, rail = null) {
+export function systemConfigPayload(cfg) {
   return {
-    // ── The settlement rail, and the amounts it allows ────────────────────
-    // The player app must not decide either of these. It ships as an APK
-    // containing the whole bundle, so a picker built from a client-side list
-    // is a list an attacker can edit — and a list that drifts from the server's
-    // is a player being offered an amount the gate will refuse.
-    //
-    // So the SERVER says what rail is live and which amounts are legal, from
-    // the same module `assessFundingOrder` validates against. The picker
-    // renders what it is told; it does not know the numbers.
-    //
-    // `null` when the rail cannot be read, which a client must render as "not
-    // available" rather than falling back to a guess.
-    paymentMode:         rail?.activeMode ?? null,
+    // ── The amounts a player may buy ──────────────────────────────────────
+    // The player app must not decide these. It ships as an APK containing the
+    // whole bundle, so a picker built from a client-side list is a list an
+    // attacker can edit — and a list that drifts from the server's is a player
+    // being offered an amount the gate will refuse. So the SERVER says which
+    // amounts are legal, from the same module `assessFundingOrder` validates
+    // against. There is no platform-wide rail any more: an order's rail is
+    // derived from its own size and currency (`paymentModeFor`), so up to
+    // `maxCashBuy` a buy is paid in cash and must be one of `buyDenominations`.
     buyDenominations:    BUY_DENOMINATIONS_PAISE.map((p) => p / 100),
-    // The CASH rail's ceiling, and only the cash rail's. It was published as
-    // `maxInrBuy` and the panel hid the buy button above it on EVERY rail.
+    // The largest buy paid in cash. Above it a buy runs on the UPI/bank rail.
     maxCashBuy:          MAX_CASH_BUY_PAISE / 100,
     // The USDT rail's three sizes — in TOKENS, which is what a player buys —
     // and the rate that turns each into the USDT they send. From the SERVER,
@@ -117,7 +112,6 @@ export function systemConfigPayload(cfg, rail = null) {
 
     // Signup gating. Only the HTTP route used to carry these. `!== false` keeps
     // an unset flag meaning "on", which is what both copies already did.
-    kycRequired:         cfg?.kycRequired         !== false,
     registrationEnabled: cfg?.registrationEnabled !== false,
   };
 }

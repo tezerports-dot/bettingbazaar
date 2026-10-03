@@ -15,7 +15,7 @@
  * real PostgreSQL. A handler that throws in production throws here.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { pgConfigured, applySchema, closePg } from '#db/client.js';
+import { pgConfigured, applySchema, closePg, pgQuery } from '#db/client.js';
 import { getBalancesPaise, applyMovementPaise } from '#db/repositories/wallets.core.js';
 import { createOrderRecord } from '#db/repositories/orders.record.js';
 import { getUser, flagPaymentWarning, softDeleteUser } from '#db/repositories/users.js';
@@ -38,7 +38,7 @@ describePg('admin user routes', () => {
 
   // A fresh subject per test: these handlers mutate the account they name, and
   // a shared one would make the order of the tests part of their meaning.
-  const subject = () => actor({ kycStatus: 'APPROVED' });
+  const subject = () => actor({});
 
   // ── Authorisation is the first thing, not an afterthought ────────────────
   it('refuses every admin route without a token', async () => {
@@ -269,14 +269,94 @@ describePg('admin user routes', () => {
     expect(after.deletedAt).toBeTruthy();
   });
 
-  it('sets roles, and the row carries them', async () => {
+  // ── Staff authority lives on STAFF rows only ─────────────────────────────
+  // `isAdmin`, `hasPermission` and `queueManagerOrPermission` read the FLAGS on
+  // the session's row and never its `account_type`. The doors keep a PLAYER row
+  // out of the admin LOGIN, but a player's own session, from the player app,
+  // carries whatever flags its row holds. So a flag written onto a PLAYER row
+  // was staff authority riding a player's password and a player's session.
+  // `PUT /users/:id/roles` (no screen) and `POST /users/:id/queue-manager`
+  // (the Sub-admins screen takes a typed user id) both wrote one.
+  it('refuses to make a PLAYER account a queue manager, and the player gains nothing', async () => {
     plain = await subject();
     const res = await as(app, admin)
-      .put(`/users/${plain.userId}/roles`)
-      .send({ roles: ['subadmin'] });
+      .post(`/users/${plain.userId}/queue-manager`).send({ enable: true });
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.message).toMatch(/staff account/i);
+    expect((await getUser(plain.userId)).isQueueManager).toBe(false);
 
-    expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect((await getUser(plain.userId)).roles).toContain('subadmin');
+    const queue = mountRouter((await import('../../domains/payment/paymentOrder.routes.js')).default);
+    expect((await as(queue, plain).get('/payment-queue')).status).toBe(403);
+  });
+
+  it('still grants and revokes queue-manager access on a STAFF account', async () => {
+    const colleague = await actor({ isSubAdmin: true, permissions: {} });
+    const on = await as(app, admin).post(`/users/${colleague.userId}/queue-manager`).send({ enable: true });
+    expect(on.status, JSON.stringify(on.body)).toBe(200);
+    expect((await getUser(colleague.userId)).isQueueManager).toBe(true);
+    const off = await as(app, admin).post(`/users/${colleague.userId}/queue-manager`).send({ enable: false });
+    expect(off.status, JSON.stringify(off.body)).toBe(200);
+    expect((await getUser(colleague.userId)).isQueueManager).toBe(false);
+  });
+
+  // Both database probes put the row back in a `finally`. Under a mutant that
+  // disables the CHECK the probe's write LANDS, the assertion fails, and a row
+  // left behind is one the restored CHECK then refuses to be re-added over —
+  // the schema apply stops there and every later suite on that database
+  // fails to start (trap 10, measured 2026-10-01: M261 left exactly that).
+  it('the DATABASE refuses a staff flag on a non-staff row, whatever path writes it', async () => {
+    plain = await subject();
+    try {
+      for (const flag of ['is_admin', 'is_sub_admin', 'is_queue_manager', 'is_mediator']) {
+        await expect(pgQuery(`UPDATE users SET ${flag} = TRUE WHERE user_id = $1`, [plain.userId]))
+          .rejects.toThrow(/users_staff_flags_need_staff/);
+      }
+    } finally {
+      // Clearing one is always allowed: revoking must never be refused.
+      await pgQuery(`UPDATE users SET is_admin = FALSE, is_sub_admin = FALSE, is_queue_manager = FALSE,
+        is_mediator = FALSE WHERE user_id = $1`, [plain.userId]);
+    }
+  });
+
+  // ── Phantom access is a PLAYER's (2026-10-01) ──────────────────────────
+  // Phantom bets are placed from the player app, whose routes admit a player's
+  // session only. The grant took any id, so a staff account could hold access
+  // it could never use — the same shape as the queue-manager grant above.
+  it('refuses phantom access on a STAFF account, and the row is unchanged', async () => {
+    const colleague = await actor({ isSubAdmin: true, permissions: {} });
+    const res = await as(app, admin)
+      .post(`/users/${colleague.userId}/phantom-access`).send({ accessLevel: 'BOTH' });
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.code).toBe('NOT_A_PLAYER_ACCOUNT');
+    expect(res.body.message).toMatch(/player account/i);
+    expect((await getUser(colleague.userId)).phantomAccess).toBe('NONE');
+  });
+
+  it('still grants and revokes phantom access on a PLAYER account (the opposite behaviour)', async () => {
+    plain = await subject();
+    const on = await as(app, admin).post(`/users/${plain.userId}/phantom-access`).send({ accessLevel: '1_MIN' });
+    expect(on.status, JSON.stringify(on.body)).toBe(200);
+    expect((await getUser(plain.userId)).phantomAccess).toBe('1_MIN');
+    const off = await as(app, admin).post(`/users/${plain.userId}/phantom-access`).send({ accessLevel: 'NONE' });
+    expect(off.status, JSON.stringify(off.body)).toBe(200);
+    expect((await getUser(plain.userId)).phantomAccess).toBe('NONE');
+  });
+
+  it('the DATABASE refuses phantom access on a non-player row, and always allows a revoke', async () => {
+    const colleague = await actor({ isSubAdmin: true, permissions: {} });
+    try {
+      await expect(pgQuery(`UPDATE users SET phantom_access = 'BOTH' WHERE user_id = $1`, [colleague.userId]))
+        .rejects.toThrow(/users_phantom_access_needs_player/);
+    } finally {
+      await pgQuery(`UPDATE users SET phantom_access = 'NONE' WHERE user_id = $1`, [colleague.userId]);
+    }
+  });
+
+  it('no longer serves PUT /users/:id/roles — the second, unscoped way to make an admin', async () => {
+    plain = await subject();
+    const res = await as(app, admin).put(`/users/${plain.userId}/roles`).send({ roles: ['admin'] });
+    expect(res.status).toBe(404);
+    expect((await getUser(plain.userId)).isAdmin).toBe(false);
   });
 
   // ── The read ones: a list and its count must describe one instant ────────

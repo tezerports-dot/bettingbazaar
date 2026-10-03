@@ -8,11 +8,12 @@
  * handler work" (a route test answers that) but "does anything ask it".
  *
  * The separation is the other half. deposit-dashboard counts ONLY player INR →
- * token buys; merchant-funding counts the operator's own float. Summing them
- * inflates player volume with the platform's own money — a number that
- * flatters and answers nothing. A test that only checked totals rendered would
- * pass on a page that added them together, so the assertion here is that the
- * merchant figure never appears inside the player section.
+ * token buys; merchant-funding counts the tokens the platform sold into team
+ * pools (merchants hold none of their own since 2c). Summing them inflates
+ * player volume with the platform's own float — a number that flatters and
+ * answers nothing. A test that only checked totals rendered would pass on a
+ * page that added them together, so the assertion here is that the pool figure
+ * never appears inside the player section.
  */
 import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -37,9 +38,14 @@ const WITHDRAWALS = {
   numberOfSellers: 11, transactionCount: 13,
   dailyBreakdown: [{ date: '2026-01-02', tokens: 40000, count: 13 }],
 };
+// Exactly what GET /api/admin/analytics/merchant-funding sends (analytics.admin.routes.js).
 const FUNDING = {
-  merchantTopup: 900000, merchantReserve: 300000,
-  merchantLiquidity: 100000, activeMerchants: 6,
+  activeMerchants: 6,
+  tokenTrade: {
+    receivedInr: 880000, paidInr: 20000, netInr: 860000,
+    tokensSold: 900000, tokensBoughtBack: 20000, movements: 4,
+    byCurrency: { INR: { received: 380000, paid: 20000, movements: 3 }, USDT: { received: 5750, paid: 0, movements: 1 } },
+  },
 };
 const TRENDS = {
   growth: {
@@ -83,7 +89,7 @@ describe('Token Flow reaches every endpoint it exists for', () => {
   });
 
   it('survives one endpoint failing without losing the others', async () => {
-    // Promise.allSettled, not Promise.all: merchant funding going down must not
+    // Promise.allSettled, not Promise.all: pool funding going down must not
     // blank the player figures, which is what a rejected Promise.all would do.
     get.mockImplementation((url: string) => {
       if (url.includes('merchant-funding')) return Promise.reject(new Error('down'));
@@ -107,16 +113,24 @@ describe('the three flows stay apart', () => {
     const inrTile = screen.getByText('INR received').closest('div')!;
     expect(within(inrTile).getByText('₹1,25,000')).toBeInTheDocument();
 
-    // And it IS shown, in its own section.
-    expect(screen.getByText('Merchant funding')).toBeInTheDocument();
-    expect(screen.getByText('Active merchants')).toBeInTheDocument();
+    // And it IS shown, in its own section — the shape the route now sends.
+    expect(screen.getByText('Team pool funding')).toBeInTheDocument();
+    const sold = screen.getByText('Tokens sold to pools').closest('div')!;
+    expect(within(sold).getByText('₹9,00,000')).toBeInTheDocument();
+    const received = screen.getByText('Received from supervisors').closest('div')!;
+    expect(within(received).getByText('₹8,80,000')).toBeInTheDocument();
+    expect(screen.getByText('Merchants')).toBeInTheDocument();
     expect(screen.getByText('6')).toBeInTheDocument();
+    // What was settled stays apart by currency: 5,750 USDT is never "₹5,750".
+    expect(screen.getByText(/USDT 5,750 in/)).toBeInTheDocument();
+    // Nothing on the page names the merchant float that no longer exists.
+    expect(screen.queryByText(/Topup|Liquidity|Reserve$/)).not.toBeInTheDocument();
   });
 
   it('labels each section with what it excludes', async () => {
     render(<TokenFlow />);
     await screen.findByText('42');
-    expect(screen.getByText(/Merchant funding is excluded/)).toBeInTheDocument();
+    expect(screen.getByText(/Team pool funding is excluded/)).toBeInTheDocument();
     expect(screen.getByText(/Never part of player volume/)).toBeInTheDocument();
   });
 

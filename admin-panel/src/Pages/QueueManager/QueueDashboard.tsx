@@ -1,24 +1,55 @@
-import sseService from '../../services/sse';
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * QueueDashboard.tsx — AUDIT FIX
- * Pending Queue tab: GET /api/admin/queue/pending-orders (live WS, assign orders)
- * All Orders tab:    GET /api/admin/payment-queue (all statuses grouped — was orphaned)
+ * QueueDashboard.tsx — the live payment order queue.
+ *
+ * Pending Queue tab: GET /api/admin/queue/pending-orders (live over SSE)
+ * All Orders tab:    GET /api/admin/payment-queue (every status, grouped)
+ *
+ * Nobody hand-picks a merchant. Every order is ROUTED to a member of a working
+ * team on the order's own rail (database/repositories/teamRouting.js), and the
+ * queue manager's two controls ask routing to act now instead of waiting for
+ * the sweep:
+ *
+ *   Offer to teams now — POST /api/admin/queue/assign/:orderId, no body, on a
+ *                        PENDING_QUEUE order. 409 NO_MEMBER_FREE carries a
+ *                        sentence naming why nobody could take it.
+ *   Reassign           — POST /api/admin/payment-orders/:id/reassign, no body,
+ *                        on an ASSIGNED order. Takes it off its member and
+ *                        offers it to the next; the answer says whether
+ *                        anybody took it.
+ *
+ * The merchant picker, the "available merchants" list and the merchant pool
+ * were removed with the routes behind them: none of them decide anything now.
  */
+import sseService from '../../services/sse';
 import React, { useEffect, useState, useCallback } from 'react';
-import { Layers, Store, Clock, CheckCircle, XCircle, RefreshCw, List, Users } from 'lucide-react';
+import { Layers, Clock, RefreshCw, List, Send, Repeat } from 'lucide-react';
 import { LoadingSpinner } from '../../components/LoadingSpinner';
 import { Kpis, Toolbar } from '../../components/design';
 import api from '../../services/api';
 import { usePermissions } from '../../hooks/usePermission';
-import type { PaymentOrder, Merchant } from '../../types';
+import type { PaymentOrder } from '../../types';
 import toast from 'react-hot-toast';
 
-type Tab = 'pending' | 'all' | 'pool';
+type Tab = 'pending' | 'all';
+
+/**
+ * The rail an order runs on, from its own row.
+ * §5 MIRROR of `railOf` in database/repositories/orderRails.js — a USDT order
+ * is the USDT rail; an INR order stamped CASH_ATM is CASH; every other INR
+ * order is UPI_BANK. Display only: the server decides routing from the row.
+ */
+function orderRail(order: PaymentOrder): 'CASH' | 'UPI_BANK' | 'USDT' {
+  if (String(order.currency ?? 'INR').toUpperCase() === 'USDT') return 'USDT';
+  return order.paymentMode === 'CASH_ATM' ? 'CASH' : 'UPI_BANK';
+}
+const RAIL_LABEL: Record<ReturnType<typeof orderRail>, string> = {
+  CASH: 'Cash (ATM)', UPI_BANK: 'UPI / bank', USDT: 'USDT',
+};
 
 export const QueueDashboard: React.FC = () => {
   // Approve / Reject / Cancel decide an order's money, which is the disputes
-  // area (canResolveDisputes) — a queue manager ASSIGNS. They were offered to
+  // area (canResolveDisputes) — a queue manager ROUTES. They were offered to
   // every viewer and refused on press for the queue manager this screen is for
   // (measured: the cross-area sweep of every admin screen).
   const { can } = usePermissions();
@@ -27,31 +58,15 @@ export const QueueDashboard: React.FC = () => {
   const [pendingOrders, setPendingOrders]       = useState<PaymentOrder[]>([]);
   const [groupedOrders, setGroupedOrders]       = useState<Record<string, PaymentOrder[]>>({});
   const [groupedStats, setGroupedStats]         = useState<Record<string, number>>({});
-  const [merchants, setMerchants]               = useState<Merchant[]>([]);
   const [isLoading, setIsLoading]               = useState(true);
   const [filterType, setFilterType]             = useState<'ALL'|'DEPOSIT'|'WITHDRAWAL'>('ALL');
   const [allStatusFilter, setAllStatusFilter]   = useState('ALL');
-  const [assigningId, setAssigningId]           = useState<string|null>(null);
+  const [routingId, setRoutingId]               = useState<string|null>(null);
   const [loadError, setLoadError]               = useState(false);
 
-  // ── Merchant Pool state (BBEPS F2 redesign) ──────────────────────────────
-  const [poolMerchants, setPoolMerchants]       = useState<any[]>([]);
-  const [eligibleMerchants, setEligibleMerchants] = useState<any[]>([]);
-  const [selectedPoolIds, setSelectedPoolIds]   = useState<Set<string>>(new Set());
-  const [poolLoading, setPoolLoading]           = useState(false);
-  const [poolSaving, setPoolSaving]             = useState(false);
-  const [poolLoaded, setPoolLoaded]             = useState(false);
-
   const loadPending = useCallback(async () => {
-    const [ordRes, depRes, witRes] = await Promise.all([
-      api.queueManager.getPendingOrders(),
-      api.queueManager.getAvailableMerchants('DEPOSIT'),
-      api.queueManager.getAvailableMerchants('WITHDRAWAL'),
-    ]);
-    if (ordRes.success && ordRes.data) setPendingOrders(ordRes.data);
-    const seen = new Set<string>();
-    const all  = [...(depRes.data||[]), ...(witRes.data||[])];
-    setMerchants(all.filter(m => { if (seen.has(m._id)) return false; seen.add(m._id); return true; }));
+    const res = await api.queueManager.getPendingOrders();
+    if (res.success && res.data) setPendingOrders(res.data);
   }, []);
 
   const loadGrouped = useCallback(async () => {
@@ -68,12 +83,17 @@ export const QueueDashboard: React.FC = () => {
 
   useEffect(() => {
     loadData();
-    const onNew    = (o: PaymentOrder)     => setPendingOrders(p => [o, ...p]);
-    const onUpdate = (u: PaymentOrder)     => {
+    const onNew    = (o: PaymentOrder) => setPendingOrders(p => [o, ...p]);
+    // `queue_order_update` carries `{ orderId, status }` — no `_id` — so the
+    // match is on the order id. Matching on `_id` compared undefined with
+    // undefined and the pending list never moved on an update.
+    const onUpdate = (u: PaymentOrder) => {
+      const key = u.orderId ?? u._id;
+      const same = (o: PaymentOrder) => (o.orderId ?? o._id) === key;
       setPendingOrders(p =>
-        ['ASSIGNED','PROCESSING','COMPLETED'].includes(u.status)
-          ? p.filter(o => o._id !== u._id)
-          : p.map(o => o._id === u._id ? { ...o, ...u } : o)
+        u.status && u.status !== 'PENDING_QUEUE'
+          ? p.filter(o => !same(o))
+          : p.map(o => same(o) ? { ...o, ...u } : o)
       );
       loadGrouped();
     };
@@ -82,73 +102,30 @@ export const QueueDashboard: React.FC = () => {
     return () => { sseService.off('new_order', onNew); sseService.off('queue_order_update', onUpdate); };
   }, [loadData, loadGrouped]);
 
-  const loadPool = useCallback(async () => {
-    setPoolLoading(true);
+  /**
+   * Ask routing to act on this order now. A PENDING_QUEUE order is offered to
+   * the teams; an ASSIGNED one is taken off its member and offered to the next.
+   * The server's own sentence is shown either way, because it is the only thing
+   * that says WHY nobody took it — a cap, a team not ready, a pool short of
+   * tokens — and so whether to wait or to call a supervisor.
+   */
+  const handleRoute = async (order: PaymentOrder) => {
+    const id = order._id || order.orderId;
+    setRoutingId(id);
     try {
-      const [poolRes, eligRes] = await Promise.all([
-        api.queueManager.getMerchantPool(),
-        api.queueManager.getEligibleMerchants(),
-      ]);
-      if (poolRes.success) {
-        setPoolMerchants(poolRes.pool || []);
-        setSelectedPoolIds(new Set((poolRes.pool || []).map((m: any) => m._id)));
-      }
-      if (eligRes.success) setEligibleMerchants(eligRes.merchants || []);
-      setPoolLoaded(true);
-    } catch {
-      toast.error('Failed to load merchant pool');
-    } finally {
-      setPoolLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (tab === 'pool' && !poolLoaded) loadPool();
-  }, [tab, poolLoaded, loadPool]);
-
-  const togglePoolSelection = (merchantId: string) => {
-    setSelectedPoolIds(prev => {
-      const next = new Set(prev);
-      if (next.has(merchantId)) next.delete(merchantId);
-      else if (next.size < 5) next.add(merchantId);
-      else toast.error('Pool can hold at most 5 merchants — remove one first');
-      return next;
-    });
-  };
-
-  const handleSavePool = async () => {
-    if (selectedPoolIds.size < 3 || selectedPoolIds.size > 5) {
-      toast.error('Select 3 to 5 merchants for the pool');
-      return;
-    }
-    setPoolSaving(true);
-    try {
-      const res = await api.queueManager.setMerchantPool(Array.from(selectedPoolIds));
-      if (res.success) {
-        toast.success(res.message || 'Merchant pool updated');
-        setPoolLoaded(false);
-        await loadPool();
-        await loadPending(); // refresh assign dropdowns with the new pool
-      } else {
-        toast.error(res.message || 'Failed to update pool');
-      }
-    } catch (e: any) {
-      toast.error(e.response?.data?.message || 'Failed to update pool');
-    } finally {
-      setPoolSaving(false);
-    }
-  };
-
-  const handleAssign = async (orderId: string, merchantId: string, fromGrouped = false) => {
-    setAssigningId(orderId);
-    try {
-      const res = fromGrouped
-        ? await api.queueManager.reassignOrder(orderId, merchantId)
-        : await api.queueManager.assignOrder(orderId, merchantId);
-      if (res.success) { toast.success('Order assigned!'); await loadData(); }
+      const res = order.status === 'ASSIGNED'
+        ? await api.queueManager.reassignOrder(id)
+        : await api.queueManager.assignOrder(id);
+      if (res.success) { toast.success(res.message || 'Order assigned'); await loadData(); }
       else toast.error(res.message || 'Assignment failed');
-    } catch (e: any) { toast.error(e.response?.data?.message || 'Failed to assign'); }
-    finally { setAssigningId(null); }
+    } catch (e: any) {
+      const data = e?.response?.data;
+      toast.error(data?.message || 'Failed to assign');
+      // NO_MEMBER_FREE leaves the order queued, which is a state worth
+      // re-reading: the sweep may have moved it in the meantime.
+      if (data?.code === 'NO_MEMBER_FREE') await loadData();
+    }
+    finally { setRoutingId(null); }
   };
 
   const handleOrderAction = async (orderId: string, action: 'APPROVE'|'REJECT'|'CANCEL') => {
@@ -185,11 +162,20 @@ export const QueueDashboard: React.FC = () => {
     .flatMap(([,os]) => os)
     .sort((a,b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
-  const OrderCard = ({ order, grouped }: { order: PaymentOrder; grouped?: boolean }) => {
+  // A render FUNCTION, not a component declared in this one: a nested
+  // component is a new type on every render and React remounts it (§32 S23).
+  const renderOrderCard = (order: PaymentOrder) => {
     const id = order._id || order.orderId;
-    const canAssign = !grouped || ['PENDING_QUEUE','ASSIGNED'].includes(order.status);
+    const rail = orderRail(order);
+    // On a USDT order the fiat column is in USDT (trap 15) — never "₹".
+    const fiat = rail === 'USDT'
+      ? `${(order.fiatAmount||0).toLocaleString()} USDT`
+      : `₹${(order.fiatAmount||0).toLocaleString()}`;
+    const canOffer    = order.status === 'PENDING_QUEUE';
+    const canReassign = order.status === 'ASSIGNED';
+    const busy = routingId === id;
     return (
-      <div className="bg-dark-700 rounded-lg p-4 space-y-3">
+      <div key={id} className="bg-dark-700 rounded-lg p-4 space-y-3">
         <div className="flex flex-wrap items-center gap-2 mb-1">
           {tBadge(order.type)}{sBadge(order.status)}
           <span className="text-xs text-gray-500 font-mono">{order.orderId}</span>
@@ -197,21 +183,26 @@ export const QueueDashboard: React.FC = () => {
         <div className="grid grid-cols-2 md:grid-cols-4 gap-x-6 gap-y-1 text-sm">
           <div><p className="text-gray-400 text-xs">User</p><p className="font-medium">{(order as any).userName||'—'}</p></div>
           <div><p className="text-gray-400 text-xs">Tokens</p><p className="font-medium text-yellow-400">{(order.tokenAmount||0).toLocaleString()} BB</p></div>
-          <div><p className="text-gray-400 text-xs">Fiat</p><p className="font-medium">₹{(order.fiatAmount||0).toLocaleString()}</p></div>
-          <div><p className="text-gray-400 text-xs">Profit</p><p className="font-medium text-green-400">₹{(order.merchantProfit||0).toLocaleString()}</p></div>
+          <div><p className="text-gray-400 text-xs">Fiat</p><p className="font-medium">{fiat}</p></div>
+          <div><p className="text-gray-400 text-xs">Rail</p><p className="font-medium">{RAIL_LABEL[rail]}</p></div>
         </div>
         <div className="flex items-center text-xs text-gray-500 gap-1">
           <Clock size={11}/>{new Date(order.createdAt).toLocaleString()}
         </div>
-        {canAssign && (
+        {(canOffer || canReassign) && (
           <div className="flex items-center gap-2">
-            <select className="flex-1 input text-sm" defaultValue=""
-              onChange={e => { if (e.target.value) { handleAssign(id, e.target.value, grouped); e.currentTarget.value=''; } }}
-              disabled={assigningId===id}>
-              <option value="">{grouped ? 'Reassign to merchant…' : 'Assign to merchant…'}</option>
-              {merchants.map(m => <option key={m._id} value={m._id}>{m.name} {m.isOnline?'🟢':'🔴'}</option>)}
-            </select>
-            {assigningId===id && <RefreshCw className="animate-spin text-yellow-400 shrink-0" size={18}/>}
+            <button
+              onClick={() => handleRoute(order)}
+              disabled={busy}
+              className="btn-secondary flex items-center gap-1.5 text-sm disabled:opacity-50"
+              title={canOffer
+                ? 'Offer this order to a member of a working team on its rail now'
+                : 'Take this order off its member and offer it to the next one'}
+            >
+              {canOffer ? <Send size={14}/> : <Repeat size={14}/>}
+              {canOffer ? 'Offer to teams now' : 'Reassign'}
+            </button>
+            {busy && <RefreshCw className="animate-spin text-yellow-400 shrink-0" size={18}/>}
           </div>
         )}
         {/* Decisions on the order's money — the disputes area only */}
@@ -239,9 +230,8 @@ export const QueueDashboard: React.FC = () => {
   if (isLoading) return <LoadingSpinner size="lg" />;
 
   const TAB_CFG = [
-    { id: 'pending' as Tab, label: 'Pending Queue', count: pendingOrders.length, color: 'text-yellow-400' },
-    { id: 'all'     as Tab, label: 'All Orders',    count: groupedStats.total,   color: 'text-blue-400'   },
-    { id: 'pool'    as Tab, label: 'Merchant Pool', count: poolMerchants.length, color: 'text-purple-400' },
+    { id: 'pending' as Tab, label: 'Pending Queue', count: pendingOrders.length },
+    { id: 'all'     as Tab, label: 'All Orders',    count: groupedStats.total   },
   ];
 
   return (
@@ -258,7 +248,6 @@ export const QueueDashboard: React.FC = () => {
             { label: 'Pending', value: pendingOrders.length, tone: 'var(--warning)' },
             { label: 'Deposits', value: pendingOrders.filter((o) => o.type === 'DEPOSIT').length, tone: 'var(--success)' },
             { label: 'Withdrawals', value: pendingOrders.filter((o) => o.type === 'WITHDRAWAL').length, tone: 'var(--danger)' },
-            { label: 'Online Merchants', value: merchants.filter((m) => m.isOnline).length, tone: 'var(--info)' },
           ]} />
 
           <div className="flex items-center gap-3 flex-wrap">
@@ -271,62 +260,18 @@ export const QueueDashboard: React.FC = () => {
           </div>
 
           <div className="card">
-            <h3 className="text-lg font-semibold mb-4">
+            <h3 className="text-lg font-semibold mb-1">
               Pending Orders
               {loadError && <span className="text-red-400 text-sm ml-2">(load error — check backend)</span>}
             </h3>
+            <p className="text-xs text-gray-500 mb-4">
+              Each order is offered automatically to a member of a working team on its rail. An order
+              still here means nobody could take it yet — a team at its cap, not ready, or a pool short
+              of tokens. Teams and pools are on the Supervisors &amp; Teams screen.
+            </p>
             {filteredPending.length===0
               ? <div className="text-center py-10 text-gray-500"><Layers size={40} className="mx-auto mb-3 opacity-40"/><p>No pending orders</p></div>
-              : <div className="space-y-3">{filteredPending.map(o => <OrderCard key={o._id} order={o}/>)}</div>}
-          </div>
-
-          <div className="card">
-            <h3 className="text-lg font-semibold mb-4">Available Merchants ({merchants.length})</h3>
-            {merchants.length===0
-              ? <div className="text-center py-8 text-gray-500">
-                  <Store size={40} className="mx-auto mb-3 opacity-40"/>
-                  <p>No merchants available</p>
-                  <button onClick={() => setTab('pool')} className="text-purple-400 text-sm underline mt-2">
-                    Set up the Merchant Pool →
-                  </button>
-                </div>
-              : <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {merchants.map(m => (
-                    <div key={m._id} className="bg-dark-700 rounded-lg p-4 space-y-1.5">
-                      <div className="flex items-center justify-between">
-                        <h4 className="font-semibold">{m.name}</h4>
-                        <span className={`w-2 h-2 rounded-full ${m.isOnline?'bg-green-500':'bg-gray-500'}`}/>
-                      </div>
-                      <p className="text-sm text-gray-400">{(m as any).mobile||'—'}</p>
-                      <div className="text-xs text-gray-400 space-y-0.5">
-                        {/* The number an assignment is actually gated on, and
-                            the two halves it comes from. A merchant serving an
-                            open buy order has those tokens promised, so they
-                            can drop off this list while still holding a healthy
-                            balance — without both figures on screen that reads
-                            as the page being broken. Backend: F-018,
-                            getSpendablePaiseFor. */}
-                        <div className="flex justify-between">
-                          <span>Spendable</span>
-                          <span>{((m as any).walletAvailableTokens ?? 0).toLocaleString()} BB</span>
-                        </div>
-                        {((m as any).walletCommittedTokens ?? 0) > 0 && (
-                          <div className="flex justify-between text-gray-500">
-                            <span>Held · committed</span>
-                            <span>
-                              {((m as any).walletHeldTokens ?? 0).toLocaleString()} · −{((m as any).walletCommittedTokens ?? 0).toLocaleString()}
-                            </span>
-                          </div>
-                        )}
-                        <div className="flex justify-between"><span>Daily vol.</span><span>₹{(m.merchantStats?.dailyProcessed||0).toLocaleString()}</span></div>
-                        <div className="flex justify-between"><span>Total orders</span><span>{m.merchantStats?.totalOrdersProcessed||0}</span></div>
-                        <div className="flex justify-between"><span>Accepts</span>
-                          <span>{[m.acceptsDeposits&&'Dep', m.acceptsWithdrawals&&'With'].filter(Boolean).join(', ')||'None'}</span>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>}
+              : <div className="space-y-3">{filteredPending.map(o => renderOrderCard(o))}</div>}
           </div>
         </>
       )}
@@ -359,87 +304,8 @@ export const QueueDashboard: React.FC = () => {
             </h3>
             {allFlat.length===0
               ? <div className="text-center py-10 text-gray-500"><List size={40} className="mx-auto mb-3 opacity-40"/><p>No orders found</p></div>
-              : <div className="space-y-3">{allFlat.map(o => <OrderCard key={o._id||o.orderId} order={o} grouped/>)}</div>}
+              : <div className="space-y-3">{allFlat.map(o => renderOrderCard(o))}</div>}
           </div>
-        </>
-      )}
-      {/* ─── MERCHANT POOL TAB ─── */}
-      {tab==='pool' && (
-        <>
-          <div className="card bg-purple-500/5 border border-purple-500/20">
-            <p className="text-sm text-gray-300">
-              These 3–5 merchants are the only ones eligible for <strong>manual or forced order assignment</strong>
-              {' '}(the "Assign to merchant" dropdown and "Reassign" actions above). This keeps manual assignment
-              separate from the automatic assignment algorithm, which scores and picks from the full merchant pool
-              on its own. Changing this list does not affect automatic assignment at all.
-            </p>
-          </div>
-
-          {poolLoading ? <LoadingSpinner size="lg" /> : (
-            <>
-              <div className="card">
-                <h3 className="text-lg font-semibold mb-4">Current Pool ({poolMerchants.length}/5)</h3>
-                {poolMerchants.length === 0
-                  ? <div className="text-center py-6 text-gray-500">
-                      <Users size={36} className="mx-auto mb-3 opacity-40"/>
-                      <p>No pool configured yet. Select 3–5 merchants below and save.</p>
-                    </div>
-                  : <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                      {poolMerchants.map((m: any) => (
-                        <div key={m._id} className="bg-dark-700 rounded-lg p-3 flex items-center justify-between">
-                          <div>
-                            <p className="font-medium">{m.name}</p>
-                            <p className="text-xs text-gray-400">{m.mobile || '—'} · {(m.tokenBalance||0).toLocaleString()} BB</p>
-                          </div>
-                          <span className={`w-2 h-2 rounded-full shrink-0 ${m.isOnline?'bg-green-500':'bg-gray-500'}`}/>
-                        </div>
-                      ))}
-                    </div>}
-              </div>
-
-              <div className="card">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-lg font-semibold">
-                    Select Pool Merchants
-                    <span className="ml-2 text-sm text-gray-400">({selectedPoolIds.size}/5 selected, min 3)</span>
-                  </h3>
-                  <button
-                    onClick={handleSavePool}
-                    disabled={poolSaving || selectedPoolIds.size < 3 || selectedPoolIds.size > 5}
-                    className="btn-primary flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
-                  >
-                    {poolSaving ? <RefreshCw size={15} className="animate-spin"/> : <CheckCircle size={15}/>}
-                    Save Pool
-                  </button>
-                </div>
-                {eligibleMerchants.length === 0
-                  ? <div className="text-center py-8 text-gray-500">
-                      <Store size={40} className="mx-auto mb-3 opacity-40"/>
-                      <p>No ACTIVE, approved merchants available to pool yet.</p>
-                    </div>
-                  : <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                      {eligibleMerchants.map((m: any) => {
-                        const selected = selectedPoolIds.has(m._id);
-                        return (
-                          <button
-                            key={m._id}
-                            onClick={() => togglePoolSelection(m._id)}
-                            className={`text-left rounded-lg p-3 border transition-colors ${
-                              selected ? 'bg-purple-500/10 border-purple-500' : 'bg-dark-700 border-transparent hover:border-dark-500'
-                            }`}
-                          >
-                            <div className="flex items-center justify-between">
-                              <p className="font-medium">{m.name}</p>
-                              <span className={`w-2 h-2 rounded-full shrink-0 ${m.isOnline?'bg-green-500':'bg-gray-500'}`}/>
-                            </div>
-                            <p className="text-xs text-gray-400">{m.mobile || '—'} · {(m.tokenBalance||0).toLocaleString()} BB · {m.totalOrdersProcessed||0} orders</p>
-                          </button>
-                        );
-                      })}
-                    </div>}
-              </div>
-            </>
-          )}
         </>
       )}
     </div>

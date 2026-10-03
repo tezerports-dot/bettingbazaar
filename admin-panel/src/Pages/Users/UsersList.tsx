@@ -1,7 +1,8 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import React, { useEffect, useState } from 'react';
-import { Users, Eye, Ban, CheckCircle, Plus, Minus, CreditCard, History, Ghost } from 'lucide-react';
+import { Users, Eye, Ban, CheckCircle, Plus, Minus, CreditCard, History, Ghost, Trash2 } from 'lucide-react';
 import { DataTable } from '../../components/DataTable';
+import { DisputeRecordBadge } from '../../components/DisputeRecordBadge';
 import { StatusBadge } from '../../components/StatusBadge';
 import { SearchBar } from '../../components/SearchBar';
 import { Modal } from '../../components/Modal';
@@ -27,6 +28,10 @@ export const UsersList: React.FC = () => {
   const { can } = usePermissions();
   const canAdjust = can('canAdjustBalances');
   const canPhantom = can('canManagePhantomAgents');
+  // And only on an account it can act on. A balance and phantom access are a
+  // PLAYER's: the routes refuse a staff or merchant login (409), so offering
+  // the control on those rows is a button that can only be refused.
+  const isPlayer = (u: User) => u.accountType === 'PLAYER' && u.status !== 'DELETED';
   const [users, setUsers] = useState<User[]>([]);
   const [total, setTotal] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
@@ -98,7 +103,19 @@ export const UsersList: React.FC = () => {
   };
 
   const handleBlockUser   = async (id: string) => { try { await api.users.blockUser(id, 'Blocked by admin'); toast.success('Blocked'); loadUsers(); } catch { toast.error('Failed'); } };
-  const handleUnblockUser = async (id: string) => { try { await api.users.unblockUser(id); toast.success('Unblocked'); loadUsers(); } catch { toast.error('Failed'); } };
+  // The server's own sentence on a refusal: a player in high-risk review is
+  // lifted by a full admin only, and "Failed" would not say so (§32 S14).
+  const handleUnblockUser = async (id: string) => { try { await api.users.unblockUser(id); toast.success('Unblocked'); loadUsers(); } catch (e: any) { toast.error(e.response?.data?.message || 'Failed to unblock'); } };
+  // Closing an account. The server refuses one with an open order or money
+  // locked in escrow, and names which (409) — that sentence IS what the admin
+  // has to act on, so it is shown, not replaced with "Failed".
+  const handleDeleteUser = async (id: string) => {
+    try {
+      await api.users.deleteUser(id);
+      toast.success('Account closed');
+      loadUsers();
+    } catch (e: any) { toast.error(e.response?.data?.message || 'Failed to delete the account'); }
+  };
 
   const openBalanceModal = (user: User, type: 'add' | 'deduct') => {
     setBalanceTarget(user); setBalanceType(type);
@@ -131,22 +148,30 @@ export const UsersList: React.FC = () => {
     { key: 'deposit',  label: 'Deposit',  render: (u: User) => <div className="text-right"><Money value={formatters.currency(u.depositBalance)} /></div> },
     { key: 'winnings', label: 'Winnings', render: (u: User) => <div className="text-right"><Money value={formatters.currency(u.winningsBalance)} /></div> },
     { key: 'locked',   label: 'Locked',   render: (u: User) => <div className="text-right"><Money value={formatters.currency(u.lockedBalance)} tone={(u.lockedBalance || 0) > 0 ? 'warning' : 'muted'} /></div> },
-    { key: 'kycStatus', label: 'KYC',    render: (u: User) => <StatusBadge status={u.kycStatus} type="kyc"  /> },
-    { key: 'status',    label: 'Status', render: (u: User) => <StatusBadge status={u.status}    type="user" /> },
+    { key: 'status',    label: 'Status', render: (u: User) => (
+      <div className="space-y-1">
+        <StatusBadge status={u.status} type="user" />
+        <DisputeRecordBadge lostDisputes={u.lostDisputes} highRiskAt={u.highRiskAt} />
+      </div>
+    ) },
     {
       key: 'actions', label: '',
       render: (u: User) => (
         <div className="flex items-center justify-end space-x-1">
           <button onClick={() => openUserDetails(u, 'profile')} className="p-1.5 hover:bg-dark-700 rounded-sm" title="Details"><Eye size={14} /></button>
-          {canAdjust && <button onClick={() => openBalanceModal(u, 'add')}    className="p-1.5 hover:bg-green-600/20 text-green-500 rounded-sm" title="Add Balance"><Plus size={14} /></button>}
-          {canAdjust && <button onClick={() => openBalanceModal(u, 'deduct')} className="p-1.5 hover:bg-red-600/20   text-red-400   rounded-sm" title="Deduct"><Minus size={14} /></button>}
+          {canAdjust && isPlayer(u) && <button onClick={() => openBalanceModal(u, 'add')}    className="p-1.5 hover:bg-green-600/20 text-green-500 rounded-sm" title="Add Balance"><Plus size={14} /></button>}
+          {canAdjust && isPlayer(u) && <button onClick={() => openBalanceModal(u, 'deduct')} className="p-1.5 hover:bg-red-600/20   text-red-400   rounded-sm" title="Deduct"><Minus size={14} /></button>}
           <button onClick={() => openUserDetails(u, 'history')} className="p-1.5 hover:bg-blue-600/20  text-blue-400  rounded-sm" title="Tx History"><History size={14} /></button>
           <button onClick={() => openUserDetails(u, 'bank')}    className="p-1.5 hover:bg-purple-600/20 text-purple-400 rounded-sm" title="Bank"><CreditCard size={14} /></button>
-          {canPhantom && <button onClick={() => { setPhantomUser(u); setPhantomLevel((u as any).phantomAccess || 'NONE'); }} className="p-1.5 hover:bg-yellow-600/20 text-yellow-400 rounded-sm" title="Phantom Access"><Ghost size={14} /></button>}
+          {canPhantom && isPlayer(u) && <button onClick={() => { setPhantomUser(u); setPhantomLevel((u as any).phantomAccess || 'NONE'); }} className="p-1.5 hover:bg-yellow-600/20 text-yellow-400 rounded-sm" title="Phantom Access"><Ghost size={14} /></button>}
           {u.status === 'BLOCKED' ? (
             <button onClick={() => setConfirmAction({ type: 'unblock', user: u })} className="p-1.5 hover:bg-green-600/20 text-green-500 rounded-sm" title="Unblock"><CheckCircle size={14} /></button>
           ) : (
             <button onClick={() => setConfirmAction({ type: 'block', user: u })}   className="p-1.5 hover:bg-red-600/20   text-red-500   rounded-sm" title="Block"><Ban size={14} /></button>
+          )}
+          {/* PLAYER rows only — the route refuses a staff or merchant login. */}
+          {isPlayer(u) && (
+            <button onClick={() => setConfirmAction({ type: 'delete', user: u })} className="p-1.5 hover:bg-red-600/20 text-red-500 rounded-sm" title="Delete Account"><Trash2 size={14} /></button>
           )}
         </div>
       ),
@@ -159,7 +184,6 @@ export const UsersList: React.FC = () => {
         { label: 'Total Users', value: total.toLocaleString('en-IN') },
         { label: 'Active', value: users.filter((u) => u.status === 'ACTIVE').length, tone: 'var(--success)' },
         { label: 'Blocked', value: users.filter((u) => u.status === 'BLOCKED').length, tone: 'var(--danger)' },
-        { label: 'Pending KYC', value: users.filter((u) => u.kycStatus !== 'APPROVED').length, tone: 'var(--warning)' },
       ]} />
 
       <Toolbar
@@ -168,7 +192,6 @@ export const UsersList: React.FC = () => {
           { label: 'Active', active: statusFilter === 'ACTIVE', onClick: () => setStatusFilter('ACTIVE') },
           { label: 'Blocked', active: statusFilter === 'BLOCKED', onClick: () => setStatusFilter('BLOCKED') },
           { label: 'Suspended', active: statusFilter === 'SUSPENDED', onClick: () => setStatusFilter('SUSPENDED') },
-          { label: 'Pending KYC', active: statusFilter === 'PENDING_KYC', onClick: () => setStatusFilter('PENDING_KYC') },
         ]}
         search={{ value: search, onChange: setSearch, placeholder: 'Search name, mobile, ID…' }}
       />
@@ -208,28 +231,12 @@ export const UsersList: React.FC = () => {
 
               <div className="grid grid-cols-2 gap-3">
                 <div><p className="text-xs text-gray-400 mb-1">Status</p><StatusBadge status={selectedUser.status} type="user" /></div>
-                <div><p className="text-xs text-gray-400 mb-1">KYC</p><StatusBadge status={selectedUser.kycStatus} type="kyc" /></div>
               </div>
-
-              {(selectedUser.verification || selectedUser.kycData?.rejectionReason) && (
-                <div className="bg-dark-700 rounded-lg p-4 text-sm">
-                  <p className="font-semibold mb-3 text-gray-300">Identity verification</p>
-                  <div className="grid grid-cols-2 gap-2">
-                    <div><p className="text-gray-400">Aadhaar</p><p className="font-mono">{selectedUser.verification?.aadhaarLast4 ? `XXXX-${selectedUser.verification.aadhaarLast4}` : '—'}</p></div>
-                    <div><p className="text-gray-400">Verifier</p><p className="font-mono">{selectedUser.verification?.status || '—'}</p></div>
-                    <div><p className="text-gray-400">Batch</p><p className="font-mono">{selectedUser.verification?.exportBatchId || 'Not exported'}</p></div>
-                    <div><p className="text-gray-400">Submitted</p><p>{selectedUser.kycData?.submittedAt ? formatters.date(selectedUser.kycData.submittedAt) : '—'}</p></div>
-                  </div>
-                  {selectedUser.kycData?.rejectionReason && (
-                    <p className="mt-3 text-red-400">{selectedUser.kycData.rejectionReason}</p>
-                  )}
-                </div>
-              )}
 
               <p className="text-sm text-gray-400">Joined: {formatters.datetime(selectedUser.joinedAt)}</p>
 
               <div className="flex gap-3 pt-2 border-t border-dark-700">
-                {canAdjust && (<>
+                {canAdjust && isPlayer(selectedUser) && (<>
                 <button onClick={() => openBalanceModal(selectedUser, 'add')} className="flex-1 flex items-center justify-center bg-green-600 hover:bg-green-700 py-2 rounded-lg text-sm font-medium"><Plus size={14} className="mr-1" />Add Balance</button>
                 <button onClick={() => openBalanceModal(selectedUser, 'deduct')} className="flex-1 flex items-center justify-center bg-red-600 hover:bg-red-700 py-2 rounded-lg text-sm font-medium"><Minus size={14} className="mr-1" />Deduct</button>
                 </>)}
@@ -335,11 +342,18 @@ export const UsersList: React.FC = () => {
 
       {confirmAction && (
         <ConfirmDialog isOpen={!!confirmAction} onClose={() => setConfirmAction(null)}
-          onConfirm={() => { confirmAction.type === 'block' ? handleBlockUser(confirmAction.user.userId) : handleUnblockUser(confirmAction.user.userId); }}
-          title={confirmAction.type === 'block' ? 'Block User' : 'Unblock User'}
-          message={`Are you sure you want to ${confirmAction.type} ${confirmAction.user.username}?`}
-          type={confirmAction.type === 'block' ? 'danger' : 'warning'}
-          confirmText={confirmAction.type === 'block' ? 'Block' : 'Unblock'}
+          onConfirm={() => {
+            const id = confirmAction.user.userId;
+            if (confirmAction.type === 'block') handleBlockUser(id);
+            else if (confirmAction.type === 'delete') handleDeleteUser(id);
+            else handleUnblockUser(id);
+          }}
+          title={confirmAction.type === 'block' ? 'Block User' : confirmAction.type === 'delete' ? 'Delete Account' : 'Unblock User'}
+          message={confirmAction.type === 'delete'
+            ? `Close ${confirmAction.user.username}'s account? They will be signed out everywhere and cannot sign in again. Their bets, orders and ledger are kept. This cannot be undone from the panel.`
+            : `Are you sure you want to ${confirmAction.type} ${confirmAction.user.username}?`}
+          type={confirmAction.type === 'unblock' ? 'warning' : 'danger'}
+          confirmText={confirmAction.type === 'block' ? 'Block' : confirmAction.type === 'delete' ? 'Delete' : 'Unblock'}
         />
       )}
 

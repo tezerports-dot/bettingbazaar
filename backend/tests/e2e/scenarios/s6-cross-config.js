@@ -19,10 +19,11 @@
 // the same process. Every case that writes config takes a baseline and puts it
 // back in a `finally`, outside any assertion: a restore that only runs when the
 // case passed is the one that matters least.
+import { db } from '#db';
 import { pgQuery } from '#db/client.js';
-import { seedPlayer, seedMerchant, seedAdmin } from '../seed.js';
+import { seedMerchant, seedTeam, seedAdmin } from '../seed.js';
 import {
-  playerToken, merchantToken, adminToken, GET, POST, PUT, check, note, idemKey,
+  merchantToken, adminToken, GET, POST, PUT, check,
 } from '../harness.js';
 
 const A = 'CONFIG';
@@ -106,50 +107,99 @@ export default async function run() {
     }
   }
 
-  // ══ 4. Admin FUNDS a merchant — the merchant's own panel shows the tokens ══
+  // ══ 4. A supervisor asks for tokens, the admin sells them, the pool shows ═
+  // Since Step 2c tokens belong to a TEAM's pool, not to a merchant, and they
+  // reach it through a request the supervisor raises and an admin fulfils
+  // (`teamPools.js`). Driven over both HTTP routes, and read back through the
+  // SUPERVISOR's own pool screen — never the admin's fulfil response.
+  //
+  // Every member is offline and no other team is touched (`exclusive: false`),
+  // so no order can be routed into this pool while the case reads it: the only
+  // things that move it are the two requests below.
   {
-    const m = await seedMerchant({ currency: 'INR', tokensPaise: 0 });
-    const mT = merchantToken(m);
+    const team = await seedTeam({ rail: 'UPI_BANK', online: [], exclusive: false });
+    const sT = merchantToken(team.supervisor);
+    const poolPath = `/api/merchant/supervisor/teams/${team.teamId}/pool`;
+    const read = async () => (await GET(sT, poolPath)).body ?? {};
 
-    const before = await GET(mT, '/api/merchant/profile');
-    const had = Number(before.body?.merchant?.tokenBalance ?? 0);
+    const before = await read();
+    const had = Number(before.pool?.availablePaise ?? NaN);
+    check(A, 'merchant', 'the supervisor can read their team\'s pool', 'a number',
+      String(had), Number.isFinite(had));
 
-    const funded = await POST(aT, `/api/admin/merchants/${m.merchantId}/fund`, {
-      tokenAmount: 25000, settlementAmount: 25000, settlementCurrency: 'INR',
-      note: 'e2e cross-panel',
-    }, idemKey());
-    check(A, 'admin', 'fund a merchant with 25,000 tokens', '200',
-      `${funded.status} ${JSON.stringify(funded.body).slice(0, 140)}`, funded.status === 200,
-      '§32 S26: this route REQUIRES an Idempotency-Key and answers 400 without one');
+    const asked = await POST(sT, `/api/merchant/supervisor/teams/${team.teamId}/pool-requests`, {
+      direction: 'BUY', tokenAmount: 25000, note: 'e2e cross-panel',
+    });
+    const buyReq = asked.body?.request;
+    check(A, 'merchant', 'the supervisor asks to buy 25,000 tokens for the pool', '201 PENDING',
+      `${asked.status} ${buyReq?.status ?? JSON.stringify(asked.body).slice(0, 120)}`,
+      asked.status === 201 && buyReq?.status === 'PENDING');
+    if (!buyReq?.requestId) return;
 
-    const after = await GET(mT, '/api/merchant/profile');
-    const now = Number(after.body?.merchant?.tokenBalance ?? 0);
-    check(A, 'merchant', 'the merchant panel shows the tokens the admin sent', `${had + 25000}`,
-      String(now), now === had + 25000,
-      'trap 19: a 404 is not a rollback — the recipient is read BEFORE the record says they received');
+    const queue = await GET(aT, '/api/admin/team-pool-requests?status=PENDING');
+    const queued = (queue.body?.requests ?? []).some(r => r.requestId === buyReq.requestId);
+    check(A, 'admin', 'the admin queue shows the supervisor\'s request', 'present',
+      queue.status === 200 ? (queued ? 'present' : 'ABSENT') : `HTTP ${queue.status}`, queued,
+      '§32 S17: a request the admin never sees is half a feature');
 
-    // ── And the DEDUCT, which had never once worked from the panel ────────
-    // A REASON is required and the route says so — taking tokens back off a
-    // merchant without one would leave an audit trail nobody can read. The
-    // first draft omitted it and got a 400 naming exactly what was missing,
-    // which is the refusal working (§32 S14: actionable).
-    const ded = await POST(aT, `/api/admin/merchants/${m.merchantId}/deduct`, {
-      tokenAmount: 5000, settlementAmount: 5000, settlementCurrency: 'INR',
-      reason: 'e2e cross-panel deduction',
-    }, idemKey());
-    check(A, 'admin', 'deduct 5,000 tokens, with the reason the route demands', '200',
-      `${ded.status} ${JSON.stringify(ded.body).slice(0, 140)}`, ded.status === 200,
-      '§32 S26: the call has to carry what the handler REQUIRES, not just hit the path');
+    const sold = await POST(aT, `/api/admin/team-pool-requests/${buyReq.requestId}/fulfil`, {
+      settlementCurrency: 'INR', settlementAmount: 25000,
+    });
+    check(A, 'admin', 'fulfil the request, recording what was paid', '200',
+      `${sold.status} ${sold.body?.message ?? JSON.stringify(sold.body).slice(0, 120)}`, sold.status === 200);
 
-    const end = await GET(mT, '/api/merchant/profile');
-    check(A, 'merchant', 'the merchant panel shows the deduction too', `${had + 20000}`,
-      String(end.body?.merchant?.tokenBalance),
-      Number(end.body?.merchant?.tokenBalance) === had + 20000);
+    const after = await read();
+    const nowHas = Number(after.pool?.availablePaise ?? NaN);
+    check(A, 'merchant', 'the supervisor\'s pool shows the tokens the admin sold', `${had + 2500000} paise`,
+      `${nowHas} paise`, nowHas === had + 2500000,
+      'trap 19: the recipient is read through its OWN screen, not the sender\'s receipt');
+    const sale = (after.entries ?? []).filter(e => e.kind === 'ADMIN_SALE' && e.refId === buyReq.requestId);
+    check(A, 'merchant', 'the pool ledger names the sale', 'one ADMIN_SALE +2500000 for the request',
+      sale.map(e => `${e.kind} ${e.availableDeltaPaise}`).join('; ') || 'NONE',
+      sale.length === 1 && sale[0].availableDeltaPaise === 2500000);
+    const buyDone = (after.requests ?? []).find(r => r.requestId === buyReq.requestId);
+    check(A, 'merchant', 'the supervisor sees the request fulfilled', 'FULFILLED',
+      String(buyDone?.status ?? 'ABSENT'), buyDone?.status === 'FULFILLED');
+
+    // ── And the BUYBACK: the platform takes tokens out of the pool ──────────
+    const back = await POST(sT, `/api/merchant/supervisor/teams/${team.teamId}/pool-requests`, {
+      direction: 'SELL', tokenAmount: 5000, note: 'e2e cross-panel buyback',
+    });
+    const sellReq = back.body?.request;
+    check(A, 'merchant', 'the supervisor asks the platform to buy 5,000 tokens back', '201 PENDING',
+      `${back.status} ${sellReq?.status ?? JSON.stringify(back.body).slice(0, 120)}`,
+      back.status === 201 && sellReq?.status === 'PENDING');
+    if (!sellReq?.requestId) return;
+    const bought = await POST(aT, `/api/admin/team-pool-requests/${sellReq.requestId}/fulfil`, {
+      settlementCurrency: 'INR', settlementAmount: 5000,
+    });
+    check(A, 'admin', 'fulfil the buyback, recording what was paid out', '200',
+      `${bought.status} ${bought.body?.message ?? JSON.stringify(bought.body).slice(0, 120)}`, bought.status === 200);
+    const end = await read();
+    const left = Number(end.pool?.availablePaise ?? NaN);
+    check(A, 'merchant', 'the supervisor\'s pool shows the buyback too', `${had + 2000000} paise`,
+      `${left} paise`, left === had + 2000000);
+
+    // ── And the MONEY record beside each token movement ─────────────────────
+    // A pool that moved with no record of what was paid for it is half a
+    // trade: the consideration (`admin_token_considerations`) is the other
+    // side, written in the fulfilment's own transaction against the team and
+    // its supervisor. Read back from the table, not from the fulfil response.
+    const money = (await db.adminTokenConsiderations.listForMerchant(team.supervisor.merchantId))
+      .filter((c) => c.teamId === team.teamId);
+    const got = money.find((c) => c.direction === 'RECEIVED');
+    const paid = money.find((c) => c.direction === 'PAID');
+    check(A, 'system', 'each pool movement carries what the platform was paid, or paid', 'RECEIVED ₹25,000 for 25,000 tokens; PAID ₹5,000 for 5,000',
+      money.map((c) => `${c.direction} ${c.currency} ${c.fiatAmountMinor} for ${c.tokenAmountPaise}`).join('; ') || 'NO RECORD',
+      money.length === 2
+        && got?.currency === 'INR' && got.fiatAmountMinor === 2500000 && got.tokenAmountPaise === 2500000
+        && paid?.currency === 'INR' && paid.fiatAmountMinor === 500000 && paid.tokenAmountPaise === 500000,
+      'trap 19: the sender\'s receipt is not the record — the table is');
   }
 
   // ══ 5. Admin changes a merchant's CAPABILITIES ═══════════════════════════
   {
-    const m = await seedMerchant({ currency: 'INR', tokensPaise: 100000000 });
+    const m = await seedMerchant({ currency: 'INR' });
     const mT = merchantToken(m);
 
     const set = await PUT(aT, `/api/admin/merchants/${m.merchantId}/capabilities`, {
@@ -164,17 +214,20 @@ export default async function run() {
       prof.body?.merchant?.acceptsDeposits === false,
       '§32 S17: an admin decision the merchant never sees is half a feature');
 
+    // The stored flag agrees with the panel. Its consumer is team routing:
+    // `teamRouting.routingCandidates` reads it per direction, so a member who
+    // stops taking deposits is not routed buys (merchantPanelRoutes, M329).
     const candidate = await pgQuery(
       `SELECT accepts_deposits FROM merchants WHERE merchant_id = $1`, [m.merchantId]);
-    check(A, 'system', 'and the assignment side agrees with the panel', 'false',
+    check(A, 'system', 'and the stored flag agrees with the panel', 'false',
       String(candidate.rows[0]?.accepts_deposits),
       candidate.rows[0]?.accepts_deposits === false,
-      'one owner: the column the query filters on is the column the panel renders');
+      'one owner: the column the admin wrote is the column the panel renders');
   }
 
   // ══ 6. A merchant goes OFFLINE — the platform stops sending them work ════
   {
-    const m = await seedMerchant({ currency: 'INR', tokensPaise: 100000000, online: true });
+    const m = await seedMerchant({ currency: 'INR', online: true });
     const mT = merchantToken(m);
 
     const off = await PUT(mT, '/api/merchant/online-status', { isOnline: false });

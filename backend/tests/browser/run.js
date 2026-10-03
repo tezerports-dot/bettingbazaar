@@ -47,7 +47,7 @@ import { check, note, summary } from '../e2e/harness.js';
 // inventory (this file) is the DENOMINATOR the coverage report divides by, and
 // it was being taken under a DIFFERENT platform configuration from the drive
 // that divides into it. Four corrections `drive.js` had paid for were missing
-// here — the cached merchant profile, the cash denomination, the rate-limit
+// here — the cached merchant profile, the merchant's cash rail, the rate-limit
 // budget wait, and the enabled game providers — so this pass under-counted by
 // exactly the controls those arrange for, and the drive then pressed controls
 // the manifest did not know existed. §5, in the form §5 names: the same thing
@@ -270,9 +270,9 @@ if (!await waitFor(`${API}/health/live`, 'the backend')) process.exit(1);
 // One actor per panel, seeded fresh, so a screen that shows "no data" is showing
 // this run's data and not a leftover (trap 10) — and seeded by the SAME
 // function the drive uses, so the two halves describe one platform. Seeding it
-// here independently is what left the merchant a non-cash merchant, so
-// `/cash-links` was inventoried as its "not approved for the ATM cash rail"
-// empty state while the drive opened the working screen.
+// here independently is what once left the merchant a non-cash merchant, so
+// the cash side of the merchant panel was inventoried as its empty state while
+// the drive opened the working screen.
 // Telegram FIRST for a profile too: a seed verifies its account against the
 // live generation, and one seeded before the channel exists is left behind a
 // gate modal that would be inventoried as the whole panel (see seedActors).

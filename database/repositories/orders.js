@@ -54,7 +54,17 @@ const REASON = Object.freeze({
   ILLEGAL_TRANSITION: 'illegal_transition',
   ALREADY_THERE:      'already_there',
   NOT_FOUND:          'not_found',
+  // A buy whose team tokens were already paid out: it may only be completed.
+  POOL_PAID:          'pool_paid',
+  // The member acting no longer holds the order (`expectMerchant`).
+  MERCHANT_CHANGED:   'merchant_changed',
 });
+
+/** The refusal a caller branches on, from the writer's own reason. */
+const refusalReason = (r) => (
+  { not_found: REASON.NOT_FOUND, pool_paid: REASON.POOL_PAID, merchant_changed: REASON.MERCHANT_CHANGED }[r]
+    ?? REASON.ILLEGAL_TRANSITION
+);
 
 /**
  * The key for a transition that may legitimately repeat.
@@ -93,28 +103,28 @@ async function keyForRepeatableMove(orderId, to, txId) {
  * cutover and no second store: an order without a row does not exist, and
  * saying so is the correct answer rather than conjuring one.
  */
-export async function transitionOrder(orderId, to, { set = {}, expectFrom = null, actor = null, reason = null, txId = null } = {}) {
+export async function transitionOrder(orderId, to, { set = {}, expectFrom = null, expectMerchant = null, actor = null, reason = null, txId = null, within = null } = {}) {
   const key = await keyForRepeatableMove(orderId, to, txId);
   const result = await pgTransition({
     orderId: String(orderId), to, actor, reason,
     merchantId: set.merchantId ? String(set.merchantId) : null,
-    txId: key,
+    txId: key, within, onlyFrom: expectFrom, onlyMerchant: expectMerchant,
   });
 
   if (!result.ok) {
     return {
       ok: false,
-      reason: result.reason === 'not_found' ? REASON.NOT_FOUND : REASON.ILLEGAL_TRANSITION,
+      reason: refusalReason(result.reason),
       status: result.state ?? null,
       attempted: to,
       allowedFrom: result.allowedFrom ?? [],
     };
   }
 
-  // `expectFrom` is deliberately NOT passed down: it may only ever NARROW what
-  // ALLOWED_FROM permits, and narrowing is a convenience for callers that know
-  // more than the table does. The transition already ran under the row lock and
-  // the table has refused anything it forbids.
+  // `expectFrom` IS passed down (as `onlyFrom`), and applied in the UPDATE's
+  // WHERE. It once was not, on the belief that narrowing was a convenience:
+  // a route that meant "only from PAID" then moved an order from any state
+  // the table allows, and a member's unpaid-reject cancelled a DISPUTED buy.
   const state = result.order?.state ?? to;
 
   // ── The fields that travel WITH the transition ──────────────────────────
@@ -158,7 +168,7 @@ export async function reassignOrder(orderId, { set = {}, from, actor = null, rea
   if (!result.ok) {
     return {
       ok: false,
-      reason: result.reason === 'not_found' ? REASON.NOT_FOUND : REASON.ILLEGAL_TRANSITION,
+      reason: refusalReason(result.reason),
       status: result.state ?? null,
       attempted: 'ASSIGNED',
       allowedFrom: result.allowedFrom ?? [],

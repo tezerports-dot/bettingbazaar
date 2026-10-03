@@ -164,8 +164,11 @@ describePg('a staff session says whether a second factor is still owed', () => {
     meApp.use(express.json()); meApp.use(cookieParser());
     meApp.use('/api/v1/auth', authRoutes);
 
-    // Signed in as an ordinary account — nothing owed.
-    const who = await staff({});
+    // A STAFF account that owes nothing yet: a queue manager, whose authority
+    // carries no mandatory factor. Never a player account changed into staff —
+    // a staff member holds a SEPARATE account of their own (owner, 2026-10-01),
+    // and `users_staff_flags_need_staff` refuses staff authority on any other type.
+    const who = await actor({ isQueueManager: true, twoFactorEnabled: false });
     const before = await request(meApp).get('/api/v1/auth/me').set('Authorization', who.auth);
     expect(before.status, before.body?.message).toBe(200);
     expect(before.body.mustEnroll2FA ?? false).toBe(false);

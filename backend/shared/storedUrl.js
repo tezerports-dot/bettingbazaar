@@ -7,7 +7,6 @@
  * to somebody else. Five fields did that with no validation at all, and two of
  * them are PAYMENT INSTRUCTIONS shown to a player:
  *
- *   `cash_links.payment_link`    the ATM intent — where the player pays
  *
  * An upload flow exists for the QR (`POST /api/merchant/qr/upload-url`), but
  * nothing bound the stored value to it: the route handed back a presigned URL

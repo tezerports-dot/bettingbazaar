@@ -16,133 +16,59 @@
  * user `depositAllocation + reserveAllocation`, so on EVERY deposit with a
  * non-zero reserve share it credits more than it debits.
  *
- * These tests drive the real route handlers, pulled out of the Express router,
- * with the wallet and merchant services stubbed so the amounts each one is
- * ASKED for are observable. The invariant asserted is the one the platform's
- * closing check depends on: tokens debited from the merchant == tokens credited
- * to the user.
+ * These tests drive `moveDepositMoney` — the ONE function every route that
+ * completes a buy goes through (§2) — with its money movers passed in as stubs,
+ * so the amount each one is ASKED for is observable. The invariant asserted is
+ * the one the platform's closing check depends on: tokens taken from the
+ * team's pool == tokens credited to the user.
+ *
+ * They drove `POST /api/payment/deposit/:orderId/confirm`'s handler until
+ * 2026-10-01, when that route was deleted: a second confirm route no screen or
+ * workflow called (owner decision). The arithmetic lives in the owner, so the
+ * owner is what is tested — no router, no request, no mock list of every
+ * middleware a route happened to mount. The movements themselves are proven
+ * against a real database on the route merchants use
+ * (`merchantConfirmMoneyPg`, `depositConfirmConservationPg`).
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
-const calls = vi.hoisted(() => ({ debit: [], deposit: [], reserve: [], merchantCredit: [] }));
-const order = vi.hoisted(() => ({ value: null }));
-
-// The ORDER is supplied on the request, because these tests are about the
-// arithmetic that pairs a merchant debit with a user credit — not about where
-// the order was read from. The wallet writers are observed rather than executed for the same
-// reason: what is asserted is the AMOUNT each one is asked for.
-//
-// The movements themselves are proven against a real database in
-// `database/tests/depositConservationPg.test.js`. A suite that mocked the
-// settlement writer once reported settlement working while the real function
-// threw on every call, so the boundary that carries money is exercised for
-// real somewhere — just not here, where a stub is what makes the amounts
-// visible.
-vi.mock('#db', () => ({
-  db: {
-    orders: {
-      getOrderRecord: async () => order.value,
-      findOrders: async () => ({ orders: [], total: 0 }),
-    },
-  },
+// The player's unpaid streak is cleared once the money has arrived; that is a
+// database write this suite has no database for.
+vi.mock('../../domains/payment/playerPaymentFailure.service.js', () => ({
+  clearPlayerPaymentFailures: async () => {},
 }));
 
-vi.mock('../../domains/wallet/walletAuthority.service.js', () => ({
+const { moveDepositMoney } = await import('../../domains/payment/depositCredit.js');
+
+const calls = { debit: [], deposit: [], reserve: [] };
+
+/**
+ * The team's side. `spendForBuy` spends the order's WHOLE token amount from
+ * its team's pool — the hold taken at assignment, or `available` when nothing
+ * was held — and nothing else: it reads the amount off the order row itself,
+ * so the split fields cannot change it. So the stub records the order's token
+ * amount as what left the team; that it really is the whole amount, and that
+ * TEAM_FLOAT and USER_FLOAT move by it, is proven against a real database in
+ * `teamRoutingPg` and `depositConfirmConservationPg`.
+ */
+let current = null;
+const movers = {
+  spendPool: async (orderId) => {
+    expect(orderId).toBe(current.orderId);
+    calls.debit.push(current.tokenAmount);
+    return { ok: true, taken: 'held' };
+  },
   creditDeposit: async (userId, amount) => { calls.deposit.push(amount); },
   creditReserve: async (userId, amount) => { calls.reserve.push(amount); },
-}));
-
-vi.mock('../../domains/merchant/merchantWallet.service.js', () => ({
-  debitMerchantTokens: async ({ amount }) => { calls.debit.push(amount); return { merchant: { _id: 'm1' } }; },
-  creditMerchantTokens: async ({ amount }) => { calls.merchantCredit.push(amount); return { merchant: { _id: 'm1' } }; },
-}));
-
-// An order nothing held for this merchant, so its tokens come out of
-// `available` — the debit these amounts are read from. A HELD order is paid out
-// of its hold instead, and moves no `available` at all; that path is proven
-// against a real database in `depositConfirmConservationPg`.
-vi.mock('../../domains/merchant/depositEscrow.service.js', () => ({
-  dispenseForOrder: async () => ({ ok: true, noHold: true }),
-  holdForOrder: async () => ({ ok: true }),
-  releaseForOrder: async () => ({ ok: true, noHold: true }),
-}));
-
-vi.mock('../../domains/payment/orderLifecycle.service.js', () => ({
-  completeOrder: async () => ({ ok: true, idempotent: false, order: order.value }),
-  disputeOrder: async () => ({ ok: true }),
-}));
-
-vi.mock('../../domains/identity/auth.middleware.js', () => ({
-  authenticate: (req, res, next) => next(),
-  // BOTH gates. Money in needs only linked identity; money out needs an
-  // approved one (owner decision 2026-09-08). A mock missing either does not
-  // fail an assertion — the module fails to load at all, which is how this
-  // caught the new export the moment it existed.
-  requireApprovedKyc: (req, res, next) => next(),
-  requireLinkedKyc: (req, res, next) => next(),
-}));
-vi.mock('../../domains/identity/jwt.util.js', () => ({ tryVerifyJwt: () => null }));
-vi.mock('../../middleware/merchantAuth.js', () => ({ merchantAuth: (req, res, next) => next() }));
-// A pass-through for every limiter this router mounts. Listed rather than
-// spread from the real module, because importing it pulls in the rate-limit
-// store and a Redis client that this unit suite deliberately does not have.
-// A limiter added to a route without a line here fails loudly at import —
-// which is the right failure: a missing mock is visible, a silently unmocked
-// limiter would rate-limit the test suite.
-const passThrough = (req, res, next) => next();
-vi.mock('../../middleware/security.js', () => ({
-  withdrawalLimiter: passThrough,
-  orderRetryLimiter: passThrough,
-  utrGraceLimiter: passThrough,
-  usdtDepositLimiter: passThrough,
-  // Paces new purchases per minute, admin-editable. Passed through here for the
-  // same reason as its siblings: this suite is about the money arithmetic, and a
-  // real limiter would make the second call in a test 429 instead of exercising
-  // the path under test.
-  depositCreateLimiter: passThrough,
-}));
-vi.mock('../../middleware/ipDefense.js', () => ({
-  createSubnetLimiter: () => (req, res, next) => next(),
-  globalSurgeBreaker: () => (req, res, next) => next(),
-}));
-vi.mock('../../domains/payment/paymentProcessing.service.js', () => ({
-  markOrderPaid: async () => ({ ok: true }), cancelOrder: async () => ({ ok: true }),
-}));
-vi.mock('../../domains/funding/fundingAuthority.service.js', () => ({
-  requestDeposit: async () => ({ ok: true }), requestWithdrawal: async () => ({ ok: true }),
-}));
-vi.mock('../../middleware/utrValidation.js', () => ({ releaseUTR: async () => {} }));
-vi.mock('../../domains/notification/realtimeEmitters.js', () => ({
-  emitWalletUpdate: async () => {}, emitAdminUpdate: async () => {}, emitOrderUpdate: async () => {},
-}));
-
-const paymentRouter = (await import('../../domains/payment/payment.routes.js')).default;
-
-/** The LAST handler registered for a route — the one after the middleware. */
-function handlerFor(router, method, path) {
-  for (const layer of router.stack) {
-    if (layer.route?.path === path && layer.route.methods[method]) {
-      const stack = layer.route.stack;
-      return stack[stack.length - 1].handle;
-    }
-  }
-  throw new Error(`no ${method.toUpperCase()} ${path} in this router`);
-}
-
-function fakeRes() {
-  const res = { statusCode: 200, body: null };
-  res.status = (c) => { res.statusCode = c; return res; };
-  res.json = (b) => { res.body = b; return res; };
-  return res;
-}
+  releaseUTR: async () => {},
+  requireState: 'PAID',
+};
 
 /**
  * A PAID deposit carries the player's payment reference, always: `mark-paid`
  * is the only route to PAID and it claims the reference against the order
- * (§27). The stub left it out, which is a row the platform cannot produce —
- * and the confirm route now refuses one, as the merchant panel's route always
- * has. A fixture in a state production cannot reach is a fixture that stops
- * testing the handler and starts testing the absence of a guard.
+ * (§27). A fixture in a state production cannot reach stops testing the
+ * function and starts testing the absence of a guard.
  */
 const makeOrder = (over = {}) => ({
   orderId: 'ORD1',
@@ -162,40 +88,27 @@ const totalCredited = () =>
 const totalDebited = () => calls.debit.reduce((a, b) => a + b, 0);
 
 beforeEach(() => {
-  calls.debit.length = 0; calls.deposit.length = 0;
-  calls.reserve.length = 0; calls.merchantCredit.length = 0;
+  calls.debit.length = 0; calls.deposit.length = 0; calls.reserve.length = 0;
 });
 
-describe('POST /deposit/:orderId/confirm — tokens moved, not minted', () => {
+describe('moveDepositMoney — tokens moved, not minted', () => {
   const run = async (o) => {
-    order.value = o;
-    const handler = handlerFor(paymentRouter, 'post', '/deposit/:orderId/confirm');
-    const res = fakeRes();
-    // `p2pOrder` is how the handler receives the order now: `orderAccessGuard`
-    // resolves it, verifies its tamper tag and decides who may act on it before
-    // the handler runs. Passing it here is the handler's real contract, not a
-    // convenience — a handler reached without the guard has no order at all,
-    // which is the point of moving the check to middleware. The guard's own
-    // behaviour is covered against a real database in
-    // backend/tests/routes/orderAccessGuardRoutes.test.js.
-    await handler({
-      params: { orderId: 'o1' }, body: {}, user: { _id: 'u1' }, merchantId: 'm1',
-      headers: {}, cookies: {}, p2pOrder: o,
-    }, res);
-    return res;
+    current = o;
+    const result = await moveDepositMoney(o, movers);
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    return result;
   };
-
-  it('debits the merchant exactly what it credits the user (90/10 policy)', async () => {
+  it('takes from the team exactly what it credits the user (90/10 policy)', async () => {
     await run(makeOrder());
 
     // The user receives the whole token amount, split across two pockets…
     expect(totalCredited()).toBe(1000);
-    // …so the merchant must part with the whole token amount.
+    // …so the team must part with the whole token amount.
     expect(totalDebited()).toBe(totalCredited());
   });
 
   it('conserves under a reserve-heavy policy too', async () => {
-    // 50/50. Nothing about the split should change how much leaves the merchant.
+    // 50/50. Nothing about the split should change how much leaves the team.
     await run(makeOrder({ depositAllocation: 500, reserveAllocation: 500 }));
 
     expect(totalCredited()).toBe(1000);
@@ -222,7 +135,7 @@ describe('POST /deposit/:orderId/confirm — tokens moved, not minted', () => {
   });
 
   it('conserves for an order with NO recorded split — read hydrated (0/0)', async () => {
-    // An order predating the split fields. The merchant is debited the full
+    // An order predating the split fields. The team parts with the full
     // amount either way, so a fallback that credited nothing would BURN tokens
     // — the same invariant broken in the opposite direction from the bug this
     // file was written for, and just as invisible without this assertion.

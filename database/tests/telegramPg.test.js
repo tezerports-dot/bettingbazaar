@@ -20,10 +20,10 @@ import {
   activateConfig, listConfigHistory,
   listBots, getLiveBot, getLiveBotSecrets, addBot, promoteBot, recordBotError,
   getTemplates, setTemplate, listTemplateRows, deleteTemplate,
-  getIdentityByTelegramId, getIdentityByUserId, createIdentity, relinkIdentity,
+  getIdentityByTelegramId, getIdentityByUserId, createIdentity,
   listIdentitiesForUser,
   setChannelStatus, deactivateContact,
-  sweepExpired, putRecoverySession, getRecoverySession,
+  sweepExpired,
   retireBot, assignSigninBot, signinBotLoads, linkTelegramToAccount,
   issuePasswordReset, consumePasswordReset,
 } from '../repositories/telegram.js';
@@ -700,30 +700,13 @@ describePg('the Telegram sign-in surface (PostgreSQL)', () => {
       // TTL is expired by the next run, and the count came back 16.
       await sweepExpired();
 
-      // TWO tables now. Three others (pending links, login tokens, login codes)
-      // were swept here until 2026-09-23 and no longer exist — and the shape
-      // assertion below is exactly what made that safe to do: a sweep still
+      // ONE table now. Recovery sessions went with the Aadhaar-based recovery
+      // (2026-10-02), and three others (pending links, login tokens, login
+      // codes) on 2026-09-23. The exact SHAPE is asserted because a sweep still
       // naming a dropped table throws 42P01 on every pass and takes the whole
-      // retention job down, and this test is what says so before deploy.
-      await putRecoverySession({ audience: 'PLAYER', telegramUserId: 't-rec-live', aadhaarHashes: ['h'], ttlSeconds: 600 });
-      await putRecoverySession({ audience: 'PLAYER', telegramUserId: 't-rec-dead', aadhaarHashes: ['h'], ttlSeconds: 600 });
-      await pgQuery(`UPDATE telegram_recovery_sessions SET expires_at = now() - interval '1 s'
-                      WHERE telegram_user_id = 't-rec-dead'`);
-
-      // Exact SHAPE, not just the count — and it earned that this run: adding
-      // `password_resets` to the sweep changed the object, and this assertion
-      // is what said so. A new expiring table reclaimed silently would make
-      // "how much did we delete" quietly stop describing the sweep.
-      expect(await sweepExpired()).toEqual({ recoverySessions: 1, passwordResets: 0 });
-      expect(await getRecoverySession('t-rec-live', 'PLAYER')).not.toBeNull();
-      // Reconstructed per pass: a second pass finds nothing, rather than
-      // reporting a total it accumulated (trap 6).
-      expect(await sweepExpired()).toEqual({ recoverySessions: 0, passwordResets: 0 });
-
-      // The live row this test made is removed rather than left to expire: see
-      // the drain above for why a leftover here comes back as somebody else's
-      // failure ten minutes later.
-      await pgQuery("DELETE FROM telegram_recovery_sessions WHERE telegram_user_id = 't-rec-live'");
+      // retention job down — this is what says so before deploy. And a second
+      // pass reports zero rather than an accumulated total (trap 6).
+      expect(await sweepExpired()).toEqual({ passwordResets: 0 });
     });
   });
 
@@ -773,44 +756,32 @@ describePg('the Telegram sign-in surface (PostgreSQL)', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 // Signup: a FORM, and nothing else.
 //
-// `createAccountFromOnboarding` is gone with the conversation that fed it. The
-// account is written by `createAccountFromSignup`, which takes what a person
-// typed — Aadhaar, the Aadhaar-linked mobile, a password — and writes the
-// account and the queued Aadhaar in ONE transaction. No Telegram identity is
-// created here, by design: the contact share proves the number AFTERWARDS, and
-// an identity written at signup would be an unproven one that the gate would
-// then have to distinguish from a proven one.
+// `createAccountFromSignup` takes what a person typed — the mobile on their
+// Telegram account and a password — and writes the account. There is no
+// Aadhaar (KYC removed, owner 2026-10-02). No Telegram identity is created
+// here, by design: the contact share proves the number AFTERWARDS, and an
+// identity written at signup would be an unproven one that the gate would then
+// have to distinguish from a proven one.
 // ─────────────────────────────────────────────────────────────────────────────
 import { createAccountFromSignup } from '../repositories/identity.js';
 import { getUser, newUserId } from '../repositories/users.js';
-import { getVerification, isAadhaarRegistered } from '../repositories/identity.js';
 
 const signup = (over = {}) => ({
   userId: newUserId(), mobile: '9990001111', username: 'newplayer',
-  passwordHash: '$argon2id$fake', referralCode: 'MYCODE01',
-  aadhaarHash: 'ah-1', aadhaarEncrypted: 'ac-1', aadhaarLast4: '4321', ...over,
+  passwordHash: '$argon2id$fake', referralCode: 'MYCODE01', ...over,
 });
 
 describePg('signup (PostgreSQL)', () => {
   beforeAll(async () => { await applySchema(); });
   afterAll(async () => { await closePg(); });
   beforeEach(async () => {
-    await pgQuery(`TRUNCATE kyc_verifications, telegram_identities, users
-                   RESTART IDENTITY CASCADE`);
+    await pgQuery(`TRUNCATE telegram_identities, users RESTART IDENTITY CASCADE`);
   });
 
-  it('writes the account and the queued Aadhaar together', async () => {
+  it('writes an ACTIVE player account', async () => {
     const r = await createAccountFromSignup(signup());
     expect(r.ok).toBe(true);
-
-    const user = await getUser(r.userId);
-    expect(user).toMatchObject({
-      mobile: '9990001111', status: 'ACTIVE', kycStatus: 'PENDING_APPROVAL',
-      // The signup IS submission one. Counted in the same INSERT, so the
-      // reapply cap cannot silently allow one more attempt than it advertises.
-      kycSubmissionCount: 1,
-    });
-    expect((await getVerification(r.userId)).status).toBe('PENDING_VERIFICATION');
+    expect(await getUser(r.userId)).toMatchObject({ mobile: '9990001111', status: 'ACTIVE' });
   });
 
   it('creates NO Telegram identity — that is the next step, and it is separate', async () => {
@@ -842,47 +813,27 @@ describePg('signup (PostgreSQL)', () => {
       .rejects.toThrow(/passwordHash/);
   });
 
-  it('leaves NOTHING behind when the Aadhaar is already registered', async () => {
+  it('refuses a second account on one mobile, and leaves nothing behind', async () => {
     await createAccountFromSignup(signup());
-    const second = await createAccountFromSignup(signup({
-      userId: newUserId(), mobile: '9990002222', referralCode: 'MYCODE02',
-    }));
-    expect(second).toEqual({ ok: false, reason: 'aadhaar_taken' });
-
-    // The account insert comes FIRST in the transaction, so a partial signup
-    // here would leave an account nobody can verify and an Aadhaar that can
-    // never be registered again.
-    const { rows } = await pgQuery(`SELECT count(*)::int AS n FROM users`);
-    expect(rows[0].n).toBe(1);
-  });
-
-  it('reports the mobile and the Aadhaar as DIFFERENT refusals', async () => {
-    // They send the person to different places — "log in instead" versus "each
-    // Aadhaar can hold one account" — so the constraint name is read rather
-    // than every collision being collapsed into one message.
-    await createAccountFromSignup(signup());
-    expect(await createAccountFromSignup(signup({
-      userId: newUserId(), aadhaarHash: 'ah-2', aadhaarEncrypted: 'ac-2', referralCode: 'MYCODE03',
-    }))).toEqual({ ok: false, reason: 'mobile_taken' });
-    expect(await isAadhaarRegistered('ah-2')).toBe(false);
+    expect(await createAccountFromSignup(signup({ userId: newUserId(), referralCode: 'MYCODE03' })))
+      .toEqual({ ok: false, reason: 'mobile_taken' });
+    expect((await pgQuery(`SELECT count(*)::int AS n FROM users`)).rows[0].n).toBe(1);
   });
 
   it('10 concurrent submissions of one form produce ONE account', async () => {
-    // Somebody double-tapping Sign Up on a slow connection. The unique indexes
-    // decide, not a read the route did first.
+    // Somebody double-tapping Sign Up on a slow connection. The unique index
+    // decides, not a read the route did first.
     const attempts = Array.from({ length: 10 }, () =>
       createAccountFromSignup(signup({ userId: newUserId(), referralCode: null })));
     const results = await Promise.all(attempts);
     expect(results.filter((r) => r.ok)).toHaveLength(1);
     expect((await pgQuery(`SELECT count(*)::int AS n FROM users`)).rows[0].n).toBe(1);
-    expect((await pgQuery(`SELECT count(*)::int AS n FROM kyc_verifications`)).rows[0].n).toBe(1);
   });
 
   it('carries the referral attribution the form captured', async () => {
     const first = await createAccountFromSignup(signup());
     const second = await createAccountFromSignup(signup({
-      userId: newUserId(), mobile: '9990002222', aadhaarHash: 'ah-2',
-      aadhaarEncrypted: 'ac-2', referralCode: 'MYCODE02', referredBy: first.userId,
+      userId: newUserId(), mobile: '9990002222', referralCode: 'MYCODE02', referredBy: first.userId,
     }));
     expect((await getUser(second.userId)).referredBy).toBe(first.userId);
   });
@@ -894,106 +845,5 @@ describePg('signup (PostgreSQL)', () => {
     expect(r.userId).toMatch(/^[0-9a-f]{24}$/);
     expect(r.userId).not.toContain('9990001111');
     expect(newUserId()).not.toBe(newUserId());
-  });
-});
-
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Account recovery — handing an account to a DIFFERENT Telegram identity.
-//
-// Every assertion here is about a constraint that must not be briefly violated.
-// The swap satisfies three unique indexes at once: the account's identity, the
-// phone's active slot, and the Telegram id itself.
-// ─────────────────────────────────────────────────────────────────────────────
-describePg('recovering an account onto a new Telegram identity', () => {
-  beforeAll(async () => { await applySchema(); });
-  afterAll(async () => { await closePg(); });
-  beforeEach(async () => {
-    await pgQuery('TRUNCATE telegram_identities, users RESTART IDENTITY CASCADE');
-    // The identity's user_id is a foreign key: an identity cannot point at an
-    // account that does not exist, which is the constraint that stops a
-    // recovery from linking a Telegram account to nothing.
-    await createUser({ userId: 'u-1', username: 'a', mobile: '9990000001' });
-    await createUser({ userId: 'u-2', username: 'b', mobile: '9990000002' });
-    await createUser({ userId: 'u-9', username: 'i', mobile: '9990000009' });
-  });
-
-  it('moves the account to the new identity and stands the old one down', async () => {
-    await createIdentity({ audience: 'PLAYER', telegramUserId: 't-old', userId: 'u-1', phone: '9990000001' });
-
-    const result = await relinkIdentity({ audience: 'PLAYER',
-      telegramUserId: 't-new', userId: 'u-1', phone: '9990000001', generation: 3,
-    });
-
-    expect(result.ok).toBe(true);
-    expect(result.identity).toMatchObject({ telegramUserId: 't-new', userId: 'u-1' });
-    // Which identity LOST the account — the detail a takeover review needs.
-    expect(result.displacedTelegramUserId).toBe('t-old');
-
-    // The account resolves to the new identity. An unfiltered read would
-    // return whichever row the planner reached first — usually the OLD one —
-    // and messaging the identity that just lost the account is the failure
-    // recovery exists to prevent.
-    expect(await getIdentityByUserId('u-1')).toMatchObject({ telegramUserId: 't-new' });
-
-    // The displaced row SURVIVES as history rather than being deleted. It is
-    // the first thing a takeover review asks for.
-    const old = await getIdentityByTelegramId('t-old', 'PLAYER');
-    expect(old.contactActive).toBe(false);
-    expect(old.channelStatus).toBe('left');
-    expect(old.userId).toBe('u-1');
-    expect((await listIdentitiesForUser('u-1')).map((i) => i.telegramUserId).sort())
-      .toEqual(['t-new', 't-old']);
-  });
-
-  it('frees the phone slot, so the new identity can claim the same number', async () => {
-    await createIdentity({ audience: 'PLAYER', telegramUserId: 't-old', userId: 'u-1', phone: '9990000001' });
-    // `one_active_identity_per_phone` is partial on contact_active. Two steps
-    // would either be refused outright or leave the account with no active
-    // identity between them.
-    const result = await relinkIdentity({ audience: 'PLAYER',
-      telegramUserId: 't-new', userId: 'u-1', phone: '9990000001',
-    });
-    expect(result.ok).toBe(true);
-    expect(result.identity.contactActive).toBe(true);
-  });
-
-  it('refuses to hand a second account to one Telegram identity', async () => {
-    await createIdentity({ audience: 'PLAYER', telegramUserId: 't-1', userId: 'u-1', phone: '9990000001' });
-    await createIdentity({ audience: 'PLAYER', telegramUserId: 't-2', userId: 'u-2', phone: '9990000002' });
-
-    // t-2 already holds u-2. Giving it u-1 as well would create exactly the
-    // duplicate the design exists to prevent — and it is a REFUSAL rather than
-    // a thrown duplicate-key error, so the caller answers with a message.
-    const result = await relinkIdentity({ audience: 'PLAYER',
-      telegramUserId: 't-2', userId: 'u-1', phone: '9990000001',
-    });
-    expect(result).toEqual({ ok: false, reason: 'TELEGRAM_ALREADY_LINKED' });
-
-    // Nothing moved.
-    expect(await getIdentityByUserId('u-1')).toMatchObject({ telegramUserId: 't-1' });
-    expect(await getIdentityByUserId('u-2')).toMatchObject({ telegramUserId: 't-2' });
-  });
-
-  it('is idempotent when the same identity asks twice', async () => {
-    await createIdentity({ audience: 'PLAYER', telegramUserId: 't-1', userId: 'u-1', phone: '9990000001' });
-    const again = await relinkIdentity({ audience: 'PLAYER',
-      telegramUserId: 't-1', userId: 'u-1', phone: '9990000001',
-    });
-    // The same Telegram account re-points its own row rather than colliding
-    // with itself, and displaces nobody.
-    expect(again.ok).toBe(true);
-    expect(again.displacedTelegramUserId).toBeNull();
-    expect(await getIdentityByUserId('u-1')).toMatchObject({ telegramUserId: 't-1' });
-  });
-
-  it('links a first identity when the account has none', async () => {
-    const first = await relinkIdentity({ audience: 'PLAYER',
-      telegramUserId: 't-fresh', userId: 'u-9', phone: '9990000009',
-    });
-    expect(first.ok).toBe(true);
-    // A recovery that displaced nobody is a first link, not a recovery — and
-    // the caller can tell the two apart.
-    expect(first.displacedTelegramUserId).toBeNull();
   });
 });

@@ -1,6 +1,6 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * A player is an Aadhaar and a Telegram-linked mobile. Nothing else.
+ * A player is a Telegram-verified mobile and a password. Nothing else.
  *
  * ── Why absence needs a test ────────────────────────────────────────────────
  * Every removal in this area is invisible to a feature test. A suite that
@@ -16,8 +16,8 @@
  * 1. `User.email` and the EMAIL notification channel. The bot never asks for an
  *    email, so the field was empty for every player who could exist, and the
  *    channel's only reachable answer was "user has no email on file".
- * 2. Every KYC document upload path. The platform collects a NUMBER, verified
- *    in bulk — no ID scan, no address proof, no selfie. The strongest
+ * 2. Every KYC document upload path — and, since 2026-10-02, KYC itself: no
+ *    Aadhaar number, no ID scan, no address proof, no selfie. The strongest
  *    protection for an identity document is not holding one.
  */
 import { describe, it, expect } from 'vitest';
@@ -175,67 +175,50 @@ describe('no KYC document can be uploaded, because none is collected', () => {
   });
 });
 
-describe('a failed Aadhaar does not stay held', () => {
+describe('no Aadhaar is collected, because there is no KYC', () => {
   /**
-   * `aadhaarHash` is UNIQUE. That is correct while a submission is live and
-   * actively harmful once it has failed: a player who mistyped one digit has
-   * parked a STRANGER's Aadhaar in that index, and the stranger is then refused
-   * at signup with "already registered" for a number they never gave us.
-   *
-   * Asserted against the source because the behaviour needs a real database to
-   * exercise (the integration suite does that); what is pinned here is that the
-   * release exists at all, runs in the right order, and is bounded.
+   * KYC was removed entirely (owner, 2026-10-02): a player is a mobile, proved
+   * by a Telegram contact share, and a password. An Aadhaar field that survives
+   * in a route, a repository or a form is the platform collecting a national
+   * identity number again without a decision ever being taken — so its ABSENCE
+   * is asserted here, the same way the email removal is above.
    */
-  const bulk = readFileSync(join(repo, 'backend/domains/identity/kycBulk.service.js'), 'utf8');
-
-  it('deletes the submission rows a batch failed', () => {
-    expect(bulk).toMatch(/releaseFailedSubmissions/);
-    // ONE statement, joined against the accounts. The three-query version this
-    // replaced filtered between them in JavaScript, so an account that moved
-    // between the read and the delete had its evidence destroyed on a verdict
-    // that was no longer true.
-    expect(bulk).toMatch(/db\.identity\.releaseFailedBatch\(batchId\)/);
+  it('no code reads an Aadhaar number off a request', () => {
+    const offenders = sources.filter((f) => /req\.body[^\n]*aadhaar|\{[^}]*\baadhaar\b[^}]*\}\s*=\s*req\.body/i.test(code(f)));
+    expect(offenders.map((f) => f.slice(repo.length))).toEqual([]);
   });
 
-  it('releases only AFTER the verdicts reach the users', () => {
-    // syncDecidedUsers finds its work by querying these rows. Deleting first
-    // would leave every failed player stuck on PENDING_APPROVAL with nothing
-    // left to explain why.
-    const sync = bulk.indexOf('await syncDecidedUsers(batchId)');
-    const release = bulk.indexOf('releaseFailedSubmissions(batchId)');
-    expect(sync).toBeGreaterThan(-1);
-    expect(release).toBeGreaterThan(sync);
+  it('no code names a KYC status, an Aadhaar hash or the KYC tables', () => {
+    const offenders = sources.filter((f) => /kyc_status|kycStatus|aadhaar_hash|aadhaarHash|user_kyc|kyc_verifications|kyc_batches/.test(code(f)));
+    expect(offenders.map((f) => f.slice(repo.length))).toEqual([]);
   });
 
-  it('counts failures from the accounts, not from the deleted rows', () => {
-    // A failed submission's row is deleted so the Aadhaar it holds is released,
-    // which means counting verification rows would report zero failures forever
-    // no matter how many there were. The verdict lives on the account.
-    expect(bulk).toMatch(/countUsers\(\{ kycStatus: 'REJECTED' \}\)/);
-  });
-
-  it('bounds how many Aadhaar numbers one account may submit', async () => {
-    const { MAX_KYC_SUBMISSIONS } = await import('../../domains/identity/aadhaarResubmission.service.js');
-    // "Submit a number, be told whether it is registered" is an enumeration
-    // oracle if it can be repeated freely.
-    expect(MAX_KYC_SUBMISSIONS).toBeGreaterThan(1);
-    expect(MAX_KYC_SUBMISSIONS).toBeLessThanOrEqual(5);
-  });
-
-  it('holds the attempt counter in a column, so the cap cannot be silently dropped', () => {
-    // The document model lost `reviewedBy` to exactly this trap: a write to an
-    // undeclared path reported success and stored nothing, so the cap counted
-    // to zero forever. A column cannot be written and then not exist.
+  it('the schema declares no KYC table or column, and drops the old ones', () => {
     const schema = readFileSync(join(repo, 'database/schema.sql'), 'utf8');
-    expect(schema).toMatch(/users ADD COLUMN IF NOT EXISTS kyc_submission_count/);
-    expect(schema).toMatch(/users_kyc_submission_count_check/);
+    for (const t of ['user_kyc', 'kyc_transitions', 'kyc_verifications', 'kyc_batches', 'telegram_recovery_sessions']) {
+      expect(schema, t).not.toMatch(new RegExp(['CREATE', 'TABLE', 'IF', 'NOT', 'EXISTS', t, ''].join(' ')));
+      expect(schema, t).toContain(`DROP TABLE IF EXISTS ${t};`);
+    }
+    expect(schema).not.toMatch(/ADD COLUMN IF NOT EXISTS kyc_/);
+    expect(schema).toContain('ALTER TABLE users DROP COLUMN IF EXISTS kyc_status;');
+    expect(schema).not.toMatch(/'PENDING_KYC'/);
+  });
 
-    // And the claim is a conditional UPDATE, not a read-then-write: the cap is
-    // in the WHERE clause, so two simultaneous submissions cannot both pass it.
-    // `userPg.test.js` proves it against a real database.
-    const users = readFileSync(join(repo, 'database/repositories/users.js'), 'utf8');
-    const claim = users.slice(users.indexOf('export async function claimKycSubmission'));
-    expect(claim.slice(0, claim.indexOf('\n}'))).toMatch(/kyc_submission_count\s*<\s*\$2/);
+  it('the KYC services, routes and repositories are gone', () => {
+    for (const f of [
+      'backend/domains/identity/aadhaarHash.util.js',
+      'backend/domains/identity/aadhaarResubmission.service.js',
+      'backend/domains/identity/kycBulk.service.js',
+      'backend/domains/identity/kycGates.js',
+      'backend/domains/user/kycDecision.service.js',
+      'backend/domains/user/kycPublicData.js',
+      'backend/routes/admin/kyc.admin.routes.js',
+      'backend/domains/telegram/telegramRecovery.service.js',
+      'database/repositories/kyc.js',
+      'database/repositories/kyc.core.js',
+    ]) {
+      expect(() => statSync(join(repo, f)), f).toThrow();
+    }
   });
 });
 

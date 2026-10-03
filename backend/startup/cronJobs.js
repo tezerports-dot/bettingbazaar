@@ -72,23 +72,31 @@ export function registerCronJobs(rebuildLeaderboard) {
     } catch (e) { console.error('[utr-timeout] cron error:', e.message); }
   });
 
-  // ── Deposit escrow sweep — runs every 5 minutes ─────────────────────────────
-  // The net under every path that takes a merchant's tokens for a buy order.
-  // Releases holds whose order has finished, and REPORTS orders that still owe
-  // tokens with no hold behind them (see sweepDepositHolds for why the second
-  // is reported and not repaired).
-  //
-  // Five minutes, not sixty seconds: both faults are rare by construction, and
-  // the 15-minute grace means a faster sweep would find nothing new while
-  // joining two large tables on every pass.
-  registerRecurring('deposit-escrow-sweep', 5 * 60 * 1000, async () => {
+  // ── Team pool hold sweep — runs every 5 minutes ─────────────────────────────
+  // The net under every path that ends a buy. A hold whose order ended without
+  // spending it is RELEASED back to the team's pool (a path forgot); a
+  // COMPLETED buy still holding is REPORTED, never fixed, because its player
+  // was credited and the tokens are owed to them, not to the team.
+  registerRecurring('team-pool-hold-sweep', 5 * 60 * 1000, async () => {
     try {
-      const { sweepDepositHolds } = await import('../domains/merchant/depositEscrow.service.js');
-      const report = await sweepDepositHolds();
-      if (report.released || report.unheld || report.failures) {
-        console.warn('[deposit-escrow] sweep:', JSON.stringify(report));
+      const stranded = await db.teamPools.findStrandedBuyHolds();
+      let released = 0;
+      for (const h of stranded) {
+        try {
+          await db.teamPools.releaseBuyHold(h.orderId, { actor: 'system:hold-sweep', reason: `Order ended ${h.state} still holding` });
+          released += 1;
+        } catch (e) { console.error(`[team-pool] release of ${h.orderId} failed:`, e.message); }
       }
-    } catch (e) { console.error('[deposit-escrow] cron error:', e.message); }
+      const unspent = await db.teamPools.findCompletedUnspentBuys();
+      if (released || unspent.length) {
+        console.warn('[team-pool] hold sweep:', JSON.stringify({ released, unspent: unspent.map((u) => u.orderId) }));
+      }
+      if (unspent.length) {
+        sendAlert('team-pool-unspent-completed',
+          'Completed buy orders still hold team pool tokens — the player was credited but the pool was never charged',
+          { orders: unspent.map((u) => u.orderId) }).catch(() => {});
+      }
+    } catch (e) { console.error('[team-pool] cron error:', e.message); }
   });
 
   // ── Withdrawal settlement worker — runs every 60 seconds ────────────────────
@@ -100,6 +108,22 @@ export function registerCronJobs(rebuildLeaderboard) {
   // 60s granularity against a hold measured in minutes: a settlement landing up
   // to a minute late is invisible, and polling faster only adds load for orders
   // that are, by definition, deliberately waiting.
+  // The BUY escrow window (2c+): a buy the member rejected as unpaid keeps
+  // its team pool hold while the player may dispute; when the window closes
+  // with no dispute, the buy is cancelled and the hold goes back to the pool.
+  registerRecurring('rejected-buy-window', 60 * 1000, async () => {
+    try {
+      const { closeRejectedBuyWindows } = await import('../domains/payment/rejectedBuyWindow.service.js');
+      const n = await closeRejectedBuyWindows();
+      if (n > 0) console.log(`[reject-window] Closed ${n} rejected buy window(s); holds returned to their pools`);
+    } catch (e) {
+      console.error('[reject-window] cron error:', e.message);
+      sendAlert('rejected-buy-window-failed',
+        'Rejected-buy window sweep failed — team tokens stay in escrow after their window closed', { error: e.message })
+        .catch(() => {});
+    }
+  });
+
   registerRecurring('withdrawal-hold-settle', 60 * 1000, async () => {
     try {
       const { settleDueHolds } = await import('../domains/payment/withdrawalHold.service.js');
@@ -113,53 +137,20 @@ export function registerCronJobs(rebuildLeaderboard) {
     }
   });
 
-  // ── ATM cash-link expiry sweeper — runs every 20 seconds ───────────────────
-  // Retires links whose time has run out and re-broadcasts demand at the
-  // denominations that lost supply.
-  //
-  // A SWEPT state rather than a timer, for the same reason the withdrawal hold
-  // is one: expiry has to survive a restart and outlive any single request.
-  // Idempotent and leader-locked, so several instances retire each link once.
-  //
-  // 20s against a link measured in a couple of minutes, and deliberately
-  // tighter than the 60s workers above: a link lives for `linkExpirySeconds`
-  // (120 by default), so a sweep a minute late would leave a dead link
-  // claimable for half its own lifetime — and the player handed it cannot
-  // reach the machine.
-  // ── Waiting buy orders, and the links that appeared after them ─────────
-  //
-  // `claimLinkFor` runs at order creation. An order created when no merchant
-  // held a link at its denomination therefore never got one — nothing looked
-  // again when the link it was waiting for was supplied a minute later. Both
-  // sides waiting for each other.
-  //
-  // `supplyCashLink` matches immediately, which is the fast path. This is the
-  // guarantee: a notification can be missed and a request can die between the
-  // supply and the match, but the sweep always runs. Frequent, because a link
-  // lives about two minutes and a match arriving late is a player who cannot
-  // reach the machine in time.
-  registerRecurring('cash-link-match', 15 * 1000, async () => {
+  // ── Queued orders, offered to the teams again — runs every 30 seconds ──────
+  // An order created while every member on its rail was busy, not Ready, or
+  // short of pool tokens waits PENDING_QUEUE. Nothing else looks at it again
+  // when a member frees up, so this sweep does, until the order is taken or
+  // its assignment wait runs out and the expiry sweep ends it.
+  registerRecurring('order-assignment', 30 * 1000, async () => {
     try {
-      const { matchWaitingOrdersToLinks } = await import('../domains/payment/paymentProcessing.service.js');
-      const { matched } = await matchWaitingOrdersToLinks();
-      if (matched > 0) console.log(`🔗 Matched ${matched} waiting order(s) to cash links`);
+      const { assignQueuedOrders } = await import('../domains/payment/paymentProcessing.service.js');
+      const { assigned } = await assignQueuedOrders();
+      if (assigned > 0) console.log(`[order-assignment] Assigned ${assigned} queued order(s) to team members`);
     } catch (e) {
-      sendAlert('cash-link-matcher-failed',
-        'ATM cash-link matcher failed — buy orders may sit waiting while links go unused', { error: e.message })
-        .catch(() => {});
-      console.error('cash-link matcher error:', e.message);
-    }
-  });
-
-  registerRecurring('cash-link-expiry', 20 * 1000, async () => {
-    try {
-      const { sweepExpiredLinks } = await import('../domains/merchant/cashLink.service.js');
-      const { expired } = await sweepExpiredLinks();
-      if (expired > 0) console.log(`[cash-link] Retired ${expired} expired ATM link(s)`);
-    } catch (e) {
-      console.error('[cash-link] cron error:', e.message);
-      sendAlert('cash-link-sweeper-failed',
-        'ATM cash-link sweeper failed — expired links may still be offered to players', { error: e.message })
+      console.error('[order-assignment] cron error:', e.message);
+      sendAlert('order-assignment-failed',
+        'Queued order assignment failed — orders may sit waiting while members are free', { error: e.message })
         .catch(() => {});
     }
   });
@@ -222,29 +213,6 @@ export function registerCronJobs(rebuildLeaderboard) {
       console.error('[ledger-reconcile] cron error:', e.message);
       sendAlert('ledger-reconcile-cron', 'Ledger reconciliation cron crashed', { error: e.message });
     }
-  });
-
-  // ── Merchant commission engine — runs every 10 minutes ─────────────────────
-  // Merchant Platform (BBEPS Phase 008). No-ops unless an admin has enabled an
-  // ACTIVE merchant commission policy with at least one variety priced (Business
-  // Policy Platform). Issuance is idempotent (deterministic keys) and
-  // pool-capped — re-running is always safe. Per-variety failures logged, never
-  // thrown.
-  registerRecurring('commission-engine', 10 * 60 * 1000, async () => {
-    try {
-      const { runCommissionEngine } = await import('../domains/merchant/merchantCommission.service.js');
-      const outcome = await runCommissionEngine();
-      if (!outcome.ran) return;
-      for (const r of outcome.results) {
-        if (r.error) console.error(`[commission-engine] merchant ${r.merchantId} (${r.variety}) failed:`, r.error);
-        else if (!r.issued && r.reason) console.warn(`[commission-engine] merchant ${r.merchantId} (${r.variety}) skipped: ${r.reason}`);
-      }
-      const issued = outcome.results.filter(r => r.issued);
-      if (issued.length > 0) {
-        console.log(`[commission-engine] Issued ${issued.length} merchant commission(s):`,
-          issued.map(r => `${r.merchantId} ${r.variety}: ₹${r.commissionRupees}`).join(', '));
-      }
-    } catch (e) { console.error('[commission-engine] cron error:', e.message); }
   });
 
   // ── Data retention worker — runs daily (Phase X X-7) ────────────────────────

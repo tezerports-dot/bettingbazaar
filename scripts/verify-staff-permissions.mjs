@@ -25,10 +25,20 @@
  *   4. A permission string the ADMIN PANEL uses that the server does not
  *      declare, or a panel mirror (`utils/permissions.ts`) that differs from
  *      the server's list (§5).
+ *   5. A SCREEN that calls a route in ANOTHER area without asking `can()` for
+ *      that area. The screen is gated on its own area (`<PermRoute>`), so a
+ *      sub-admin holding only that area opens it and is refused on press —
+ *      measured 2026-10-01 on Users (Add/Deduct/Phantom), Merchants and
+ *      Disputes, found by a sweep run once by hand. Read per screen: the page
+ *      file and every local component it imports, every call resolved to the
+ *      route it reaches and that route's area, and the file asked whether it
+ *      names `can('<area>')` / `canAny([... '<area>' ...])` anywhere. File-level
+ *      on purpose: it proves the screen KNOWS the call is another area's, not
+ *      that the guard wraps the right control; the panel tests own that.
  *
  * Usage: npm run check:staff-permissions
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { randomBytes } from 'node:crypto';
@@ -71,6 +81,8 @@ function walk(stack, mount) {
       for (const method of Object.keys(layer.route.methods)) {
         routes.push({
           key: `${method.toUpperCase()} ${layer.route.path}`,
+          method: method.toUpperCase(),
+          full: `${mount}${layer.route.path}`.replace(/\/+$/, '') || '/',
           mount,
           permission: handles.find((h) => h.permission)?.permission ?? null,
           adminOnly: handles.some((h) => h.adminOnly === true),
@@ -127,6 +139,93 @@ for (const [f, k] of usedInPanel) {
   if (!declared.has(k)) failures.push(`admin-panel/src/${f} gates a screen on '${k}', which no route asks for.`);
 }
 
+// ── 5. Each screen calls only its own area, or asks can() for the other ─────
+// The client: `export const <obj> = { <method>: async (…) => { … api.<verb>('/path') } }`.
+const clientSrc = panel('services/api.ts');
+const clientObjects = [...clientSrc.matchAll(/^export const (\w+)\s*=\s*\{/gm)];
+const clientCalls = new Map();          // 'obj.method' → [{ verb, path }]
+const callRe = /\bapi\.(get|post|put|delete|patch)\s*(?:<[^>(]*>)?\(\s*(['`])(\/[^'`]*)\2/g;
+for (let i = 0; i < clientObjects.length; i++) {
+  const obj = clientObjects[i][1];
+  const body = clientSrc.slice(clientObjects[i].index, clientObjects[i + 1]?.index ?? clientSrc.length);
+  const methods = [...body.matchAll(/^ {2}(\w+)\s*:\s*async\b/gm)];
+  for (let j = 0; j < methods.length; j++) {
+    const chunk = body.slice(methods[j].index, methods[j + 1]?.index ?? body.length);
+    const calls = [...chunk.matchAll(callRe)].map((m) => ({ verb: m[1].toUpperCase(), path: m[3] }));
+    if (calls.length) clientCalls.set(`${obj}.${methods[j][1]}`, calls);
+  }
+}
+
+// A client path → the route that serves it, by Express's own pattern.
+const patterns = routes.map((r) => ({
+  ...r,
+  re: new RegExp(`^${r.full.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\\\*\w*|:\w+/g, '[^/]+')}$`),
+}));
+const routeFor = (verb, path) => {
+  const concrete = path.split('?')[0].replace(/\$\{[^}]+\}/g, 'x');
+  return patterns.find((r) => r.method === verb && r.re.test(concrete)) ?? null;
+};
+
+// The screens, from App.tsx: path → component → the permission(s) it is gated on.
+const appSrc = panel('App.tsx');
+const componentFile = new Map();
+for (const m of appSrc.matchAll(/^import\s+\{\s*([\w\s,]+)\}\s+from\s+'(\.\/Pages\/[^']+)'/gm)) {
+  for (const name of m[1].split(',').map((x) => x.trim()).filter(Boolean)) componentFile.set(name, m[2]);
+}
+const screens = [];
+for (const m of appSrc.matchAll(/<Route\s+path="([^"]+)"\s+element=\{\s*<PermRoute\s+permission=\{?\[?([^}>\]]+)\]?\}?\s*>[\s\S]*?<(\w+)\s*\/>/g)) {
+  const areas = [...m[2].matchAll(/'?"?(\w+)'?"?/g)].map((x) => x[1]).filter((k) => declared.has(k));
+  const file = componentFile.get(m[3]);
+  if (areas.length && file) screens.push({ path: m[1], component: m[3], areas, file });
+}
+if (screens.length < 30) failures.push(`cross-area: read only ${screens.length} gated screens from App.tsx — the parse is broken, refusing to report a pass.`);
+
+const SRC = join(ROOT, 'admin-panel/src');
+const resolveLocal = (fromFile, spec) => {
+  const base = resolve(dirname(fromFile), spec);
+  for (const c of [`${base}.tsx`, `${base}.ts`, join(base, 'index.tsx'), join(base, 'index.ts')]) if (existsSync(c)) return c;
+  return null;
+};
+/** The page and every LOCAL component it pulls in — not services, hooks or utils. */
+const filesOf = (entry) => {
+  const out = new Set(); const todo = [entry];
+  while (todo.length) {
+    const f = todo.pop();
+    if (!f || out.has(f)) continue;
+    out.add(f);
+    const src = readFileSync(f, 'utf8');
+    for (const m of src.matchAll(/^import\s+[^;]*?from\s+'(\.{1,2}\/[^']+)'/gm)) {
+      if (/\/(services|hooks|utils|types)(\/|$)|\.test$/.test(m[1])) continue;
+      const r = resolveLocal(f, m[1]);
+      if (r && (r.includes('/Pages/') || r.includes('/components/')) && !/Layout\.tsx$/.test(r)) todo.push(r);
+    }
+  }
+  return [...out];
+};
+const blank = (src) => src.replace(/(^|[\s{;(])\/\*[\s\S]*?\*\//g, '$1').replace(/^\s*\/\/.*$/gm, '');
+const crossArea = [];
+for (const sc of screens) {
+  for (const f of filesOf(resolve(SRC, sc.file.replace(/^\.\//, '')) + '.tsx').filter(existsSync)) {
+    const src = blank(readFileSync(f, 'utf8'));
+    const asks = new Set([...src.matchAll(/\bcan(?:Any|All)?\(\s*\[?([^)]*)\)/g)]
+      .flatMap((m) => [...m[1].matchAll(/'(\w+)'/g)].map((x) => x[1])));
+    const calls = [
+      ...[...src.matchAll(/\bapi\.(\w+)\.(\w+)\s*\(/g)].flatMap((m) => clientCalls.get(`${m[1]}.${m[2]}`) ?? []),
+      ...[...src.matchAll(callRe)].map((m) => ({ verb: m[1].toUpperCase(), path: m[3] })),
+    ];
+    for (const c of calls) {
+      const route = routeFor(c.verb, c.path);
+      if (!route) continue;                       // unresolved paths are check:ui-coverage's job
+      const area = route.adminOnly ? '(full admin only)' : route.permission;
+      if (!area || sc.areas.includes(area) || asks.has(area)) continue;
+      if (route.adminOnly && /\bisAdmin\b/.test(src)) continue;
+      crossArea.push(`${sc.path} (${sc.areas.join('|')}) — ${relativeTo(f)} calls ${c.verb} ${route.full}, which needs ${area}, and never asks can('${area}'). A sub-admin holding only this screen's area is shown a control the server refuses.`);
+    }
+  }
+}
+function relativeTo(f) { return f.slice(ROOT.length + 1); }
+failures.push(...new Set(crossArea));
+
 const staffRoutes = routes.filter((r) => r.permission || r.adminOnly).length;
 if (failures.length) {
   console.error(`check:staff-permissions FAILED (${failures.length}):\n  - ${failures.join('\n  - ')}`);
@@ -134,5 +233,6 @@ if (failures.length) {
 }
 console.log(`check:staff-permissions: ${routes.length} routes read across ${mounts.length} routers; `
   + `${staffRoutes} staff routes, every one asks for one of ${declared.size} areas or is one of `
-  + `${adminOnlyListed.size} listed admin-only routes; ${usedInPanel.length} panel gates all declared.`);
+  + `${adminOnlyListed.size} listed admin-only routes; ${usedInPanel.length} panel gates all declared; `
+  + `${screens.length} gated screens call only their own area or ask can() for the other.`);
 process.exit(0);

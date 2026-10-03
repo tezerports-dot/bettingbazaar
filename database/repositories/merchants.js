@@ -3,24 +3,22 @@
  * postgres/merchantPg.js — the merchant record.
  *
  * A merchant settles real INR and USDT. This module owns the row that says who
- * they are, which rail they settle on, what credentials money is sent to, and
- * the scoring inputs that decide which merchant an order is routed to.
+ * they are, which currency they settle in, and what credentials money is sent
+ * to.
  *
  * ── What is NOT here, and why ───────────────────────────────────────────────
  *
- * THE TOKEN BALANCE. It lives in `merchant_wallets`, behind the row lock its
- * movements take (`merchantWalletPg.js`). A copy on this row would be a second
- * writer waiting to disagree with the first — which is exactly the defect found
- * in `merchantScoring.service.js`, where assignment filtered candidates by a
- * stored `tokenBalance` while the debit moved the wallet. Read balances through
- * `getAvailablePaiseFor`, never from a merchant record.
+ * A TOKEN BALANCE. A merchant holds none: their team's pool does
+ * (`teamPools.js`, PROJECT_STATUS §3.10 2c). Which member an order goes to is
+ * `teamRouting.js`.
  *
  * THE ACTIVE ORDER COUNT. The document store kept `activeOrderCount` as an
  * accumulator: incremented on assign, decremented on finish. That counts passes
  * rather than rows, so a crash between the two loses the decrement permanently
  * and the merchant is throttled forever by a number nothing can correct. It is
- * derived from `order_states` here (`getActiveOrderCounts`), which is the same
- * rule the money counters follow.
+ * derived from `order_states` where it is used (`teamRouting.js` counts a
+ * member's open orders under their row lock), which is the same rule the money
+ * counters follow.
  *
  * ── Two things the row enforces that a schema flag could not ────────────────
  * `public_ref` is immutable by TRIGGER, because the document store's
@@ -51,7 +49,6 @@ const COLUMNS = `merchant_id, user_id, name, public_ref, username, mobile, email
   bank_account_holder_name, bank_upi_id, bank_name, bank_account_no, bank_ifsc,
   usdt_address_trc20, usdt_address_bep20,
   min_deposit_paise, max_deposit_paise, min_withdraw_paise, max_withdraw_paise,
-  cash_denomination_paise,
   total_processed_volume_paise, earnings_paise, total_deposit_amount_paise,
   total_withdrawal_amount_paise, total_deposits_processed, total_withdrawals_processed,
   rating, last_online_toggle, panel_url,
@@ -60,9 +57,10 @@ const COLUMNS = `merchant_id, user_id, name, public_ref, username, mobile, email
   monthly_processed_paise, daily_processed_paise, total_orders_processed,
   stats_last_reset_at,
   success_rate, avg_response_minutes, dispute_rate, consecutive_rejections,
-  consecutive_expiries, assignment_paused_at, assignment_pause_reason, max_concurrent_orders,
-  max_concurrent_deposit_orders, max_concurrent_withdrawal_orders,
-  total_orders_completed, total_orders_all, created_at, updated_at`;
+  consecutive_expiries, assignment_paused_at, assignment_pause_reason, cash_ready,
+  lost_disputes, high_risk_at,
+  total_orders_completed, total_orders_all, is_supervisor, supervisor_rail,
+  created_at, updated_at`;
 
 /**
  * The same columns, qualified. A join against a CTE that also has
@@ -135,15 +133,6 @@ function toMerchant(row) {
       minWithdraw: rupees(row.min_withdraw_paise),
       maxWithdraw: rupees(row.max_withdraw_paise),
     },
-    // The ONE denomination this merchant is approved for on the cash rail, or
-    // null when they are not approved for it. Exposed in paise as well as
-    // rupees because the queue matches on the exact integer — a rupee float
-    // cannot be compared for equality, and this is an equality match.
-    cashDenominationPaise: row.cash_denomination_paise === null
-      ? null : Number(row.cash_denomination_paise),
-    cashDenomination: row.cash_denomination_paise === null
-      ? null : rupees(row.cash_denomination_paise),
-
     totalProcessedVolume: rupees(row.total_processed_volume_paise),
     earnings: rupees(row.earnings_paise),
     totalDepositAmount: rupees(row.total_deposit_amount_paise),
@@ -173,12 +162,20 @@ function toMerchant(row) {
     consecutiveRejections: toInt(row.consecutive_rejections),
     consecutiveExpiries: toInt(row.consecutive_expiries),
     assignmentPausedAt: row.assignment_paused_at,
+    // Lost payment disputes and, from the third, when high-risk review opened
+    // (2c+, `disputeFaults.js`). Only a full admin reinstates while it is set.
+    lostDisputes: toInt(row.lost_disputes) ?? 0,
+    highRiskAt: row.high_risk_at ?? null,
+    // A CASH member at the machine, ready for a buy (§3.10). Switched off by
+    // the assignment that hands them one.
+    cashReady: row.cash_ready === true,
     assignmentPauseReason: row.assignment_pause_reason,
-    maxConcurrentOrders: toInt(row.max_concurrent_orders),
-    maxConcurrentDepositOrders: toInt(row.max_concurrent_deposit_orders),
-    maxConcurrentWithdrawalOrders: toInt(row.max_concurrent_withdrawal_orders),
     totalOrdersCompleted: toInt(row.total_orders_completed),
     totalOrdersAll: toInt(row.total_orders_all),
+    // A supervisor runs teams and serves no orders; its rail is what every
+    // team under it settles on (teams.js).
+    isSupervisor: row.is_supervisor === true,
+    supervisorRail: row.supervisor_rail ?? null,
 
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -263,370 +260,6 @@ export async function getMerchantCredentials(merchantId) {
     twoFactorLastCounter: toInt(r.two_factor_last_counter),
     backupCodes: r.backup_codes ?? [],
   } : null;
-}
-
-/**
- * How many orders each merchant is currently working.
- *
- * DERIVED from `order_states`, never accumulated. The document store's
- * `activeOrderCount` was incremented on assign and decremented on finish, so a
- * crash between the two throttled that merchant permanently — and no repair was
- * possible, because nothing else knew the true number. Here the rows ARE the
- * number.
- *
- * Returns a Map so a caller scoring N candidates makes one query, not N.
- */
-export async function getActiveOrderCounts(merchantIds = []) {
-  const ids = [...new Set(merchantIds.filter(Boolean).map(String))];
-  const counts = new Map(ids.map((id) => [id, { total: 0, deposit: 0, withdrawal: 0 }]));
-  if (!ids.length) return counts;
-
-  const { rows } = await pgQuery(
-    `SELECT merchant_id, order_type, COUNT(*)::int AS n
-       FROM order_states
-      WHERE merchant_id = ANY($1::text[])
-        AND state IN ('ASSIGNED', 'PROCESSING', 'PAID')
-      GROUP BY merchant_id, order_type`,
-    [ids], 'merchant_active_orders',
-  );
-  for (const r of rows) {
-    const c = counts.get(r.merchant_id);
-    if (!c) continue;
-    c.total += r.n;
-    if (r.order_type === 'DEPOSIT') c.deposit += r.n;
-    else if (r.order_type === 'WITHDRAWAL') c.withdrawal += r.n;
-  }
-  return counts;
-}
-
-/**
- * Candidates for assignment, filtered by the things the ROW can decide.
- *
- * Deliberately does NOT filter on token balance. A merchant's spendable tokens
- * live in `merchant_wallets` and the caller must read them there — a balance
- * predicate written into this query would be the same defect as the stored
- * `tokenBalance` filter it replaces, one layer down. `merchantScoring` fetches
- * the balances for these candidates and excludes on them afterwards.
- */
-export async function listAssignableMerchants({
-  currency = 'INR', direction = 'DEPOSIT', limit = 200,
-} = {}) {
-  const acceptsColumn = direction === 'WITHDRAWAL' ? 'accepts_withdrawals' : 'accepts_deposits';
-  const { rows } = await pgQuery(
-    `SELECT ${COLUMNS} FROM merchants
-      WHERE status = 'ACTIVE'
-        AND merchant_approval_status = 'APPROVED'
-        AND is_online
-        AND ${acceptsColumn}
-        AND merchant_type = $1
-      ORDER BY created_at ASC
-      LIMIT $2`,
-    [String(currency), Math.min(Math.max(Number(limit) || 200, 1), 1000)],
-    'merchant_list_assignable',
-  );
-  return rows.map(toMerchant);
-}
-
-/**
- * Candidates for automatic assignment, with the counts the scorer needs.
- *
- * ── The filter that never filtered ──────────────────────────────────────────
- * The document query gated on `activeOrderCount < maxConcurrentOrders` with an
- * `$ifNull` default of 0. `activeOrderCount` is not a field on a merchant —
- * this table deliberately has no such column, because the number is DERIVED
- * from the orders themselves — so the left side was always 0 and the filter
- * always passed. A merchant at their concurrency limit was offered every order
- * anyway, and the same read fed `scoreMerchant`'s load component, which was
- * therefore a constant.
- *
- * Counted here, per direction, from `order_states`. A merchant's own
- * `max_concurrent_*` overrides the platform default when set, which is what the
- * per-merchant caps in the admin panel are for.
- *
- * The token balance is deliberately NOT here. It lives in `merchant_wallets`
- * and the caller reads it there — a balance predicate in this query would be
- * the same defect as the stored `tokenBalance` filter it replaced.
- */
-/**
- * Merchants who could supply a link at ONE denomination, with the tokens they
- * have coming back to them shortly.
- *
- * This is who the broadcast reaches. It is a DISPLAY decision, not a transfer
- * gate — nothing moves money on the strength of it — so it is a batched read
- * rather than a locked one. What it must not do is send a merchant to an ATM
- * for work they cannot take: they would drive there, supply a link, and be
- * refused, and an expired link earns them nothing.
- *
- * `soonPaise` is tokens currently HELD on withdrawals they have already paid,
- * whose hold expires within the lookahead. Those become spendable without the
- * merchant doing anything, so a merchant who is briefly short is still worth
- * telling — they will be able to serve by the time they reach the machine.
- *
- * The AVAILABLE balance is deliberately NOT read here. `getAvailablePaiseFor`
- * owns that number; a second reader of the same column is a second answer
- * waiting to disagree with it.
- */
-export async function cashSuppliersFor(denominationPaise, { lookaheadSeconds = 120 } = {}) {
-  const denomination = Number(denominationPaise);
-  if (!Number.isInteger(denomination) || denomination <= 0) {
-    throw new TypeError(`cashSuppliersFor: denominationPaise must be a positive integer of paise, got ${denominationPaise}`);
-  }
-  const lookahead = Math.max(Number(lookaheadSeconds) || 0, 0);
-
-  const { rows } = await pgQuery(
-    `WITH releasing AS (
-       SELECT merchant_id,
-              COALESCE(SUM(token_amount_paise), 0) AS soon
-         FROM order_states
-        WHERE merchant_id IS NOT NULL
-          AND merchant_credit_status = 'HELD'
-          AND merchant_credit_hold_until IS NOT NULL
-          AND merchant_credit_hold_until <= now() + make_interval(secs => $2)
-        GROUP BY merchant_id
-     )
-     SELECT m.merchant_id, COALESCE(r.soon, 0) AS soon
-       FROM merchants m
-       LEFT JOIN releasing r ON r.merchant_id = m.merchant_id
-       LEFT JOIN LATERAL (
-         SELECT COUNT(*)::int AS total
-           FROM order_states o
-          WHERE o.merchant_id = m.merchant_id
-            AND o.state IN ('ASSIGNED', 'PROCESSING', 'PAID')
-       ) a ON TRUE
-      WHERE m.status = 'ACTIVE'
-        AND m.merchant_approval_status = 'APPROVED'
-        AND m.is_online
-        AND m.accepts_deposits
-        AND m.assignment_paused_at IS NULL
-        AND m.cash_denomination_paise = $1
-        -- Under their concurrency cap. This list decides who is TOLD to walk to
-        -- a cash machine, and a merchant already holding an order cannot serve
-        -- another on this rail — the notes are the same notes. Telling them
-        -- anyway costs them the trip, which is the one thing this rail cannot
-        -- give back.
-        AND COALESCE(a.total, 0) < COALESCE(m.max_concurrent_orders, 1)`,
-    [denomination, lookahead], 'cash_suppliers_for_denomination',
-  );
-  return rows.map((r) => ({
-    merchantId: r.merchant_id,
-    // BIGINT arrives as a string. Uncast, adding it to a number concatenates.
-    soonPaise: Number(r.soon),
-  }));
-}
-
-export async function assignmentCandidates({
-  currency = 'INR', direction = 'DEPOSIT',
-  defaultDepositLimit = 1, defaultWithdrawalLimit = 1, defaultTotalLimit = 3,
-  imbalanceDays = 30,
-  // On the CASH_ATM rail an order is served at a fixed amount, and a merchant
-  // is approved for exactly ONE. Passing it here rather than filtering after
-  // the query is the same reason the concurrency caps are applied here: a
-  // merchant who cannot serve this amount is not a candidate at all, rather
-  // than a candidate the caller is trusted to drop.
-  //
-  // NULL means the UPI rail, where amounts are a range and this column plays
-  // no part — so the clause is absent rather than matching NULL, which would
-  // exclude every merchant.
-  cashDenominationPaise = null,
-  // Merchants who have already refused this order, or any order from this
-  // player. Applied HERE rather than filtered by the caller for the same reason
-  // as the concurrency caps: a merchant who must not be given this order is not
-  // a candidate at all, rather than a candidate the caller is trusted to drop.
-  // An empty list adds no clause, so the ordinary case costs nothing.
-  barredMerchantIds = [],
-  // On the USDT rail an order names the CHAIN the player will send on, and a
-  // merchant can only be paid on a chain they hold an address for. Applied
-  // here for the same reason the caps and the cash denomination are: a merchant
-  // who cannot receive this order is not a candidate at all.
-  //
-  // A merchant on the USDT rail holding NO address is excluded by this in every
-  // case, which is where the "must hold an address" rule actually lives — a row
-  // constraint could not see WHICH chain the order asked for.
-  usdtChain = null,
-} = {}) {
-  const withdrawal = direction === 'WITHDRAWAL';
-  const acceptsColumn = withdrawal ? 'accepts_withdrawals' : 'accepts_deposits';
-  const typeColumn = withdrawal ? 'withdrawals' : 'deposits';
-  const capColumn = withdrawal ? 'max_concurrent_withdrawal_orders' : 'max_concurrent_deposit_orders';
-  const since = new Date(Date.now() - Math.max(Number(imbalanceDays) || 30, 1) * 86_400_000);
-
-  // Only the limit for THIS direction is bound. Passing both would leave one
-  // parameter referenced by no expression, and PostgreSQL cannot infer the type
-  // of a parameter nothing uses — it refuses the statement rather than guessing.
-  //
-  // `nonNegative` rather than `Number(x) || 1`: a concurrency cap of ZERO is
-  // meaningful — it is how an operator stops assigning to anybody while they
-  // investigate — and `||` treats it as absent and substitutes the default,
-  // silently re-opening the tap. The same falsy-zero trap the withdrawal hold
-  // window and the settlement lease both had.
-  const typeLimit = nonNegative(withdrawal ? defaultWithdrawalLimit : defaultDepositLimit, 1);
-
-  // Normalised once: a denomination that is not a whole positive number of
-  // paise cannot match any row, and binding it would silently return nobody
-  // rather than saying the caller passed something wrong.
-  const denomination = cashDenominationPaise === null || cashDenominationPaise === undefined
-    ? null : Number(cashDenominationPaise);
-  if (denomination !== null && (!Number.isInteger(denomination) || denomination <= 0)) {
-    throw new TypeError(`assignmentCandidates: cashDenominationPaise must be a positive integer of paise, got ${cashDenominationPaise}`);
-  }
-
-  // The column is chosen from a FIXED map, never interpolated from the caller's
-  // string. `usdtChain` reaches this from a request body, and a column name
-  // spliced into SQL is an injection whatever the surrounding clause looks
-  // like. An unknown chain is a THROW, not an empty result: silently matching
-  // nobody would read as "no merchant is available" on a screen.
-  // De-duplicated and stringified once. `<> ALL($n)` over a text[] is one
-  // index-friendly clause however long the list is — an OR chain would grow the
-  // statement with the list and defeat the plan cache.
-  const barred = [...new Set((barredMerchantIds || []).filter(Boolean).map(String))];
-
-  let chainColumn = null;
-  if (usdtChain !== null && usdtChain !== undefined) {
-    chainColumn = USDT_CHAIN_SPEC[usdtChain]?.column ?? null;
-    if (!chainColumn) {
-      throw new TypeError(`assignmentCandidates: unknown usdtChain '${usdtChain}'`);
-    }
-  }
-
-  // The parameter list is built ONCE, so the placeholder numbers in the SQL and
-  // the values here cannot drift apart — the shape that put `denomination` at
-  // $5 in one branch and nowhere in the other, and would put `barred` at $5 or
-  // $6 depending on a condition several lines away.
-  const params = [String(currency), since, nonNegative(defaultTotalLimit, 3), typeLimit];
-  if (denomination !== null) params.push(denomination);
-  const barredIndex = params.length + 1;
-  if (barred.length) params.push(barred);
-
-  const { rows } = await pgQuery(
-    `WITH active AS (
-       SELECT merchant_id,
-              COUNT(*)::int AS total,
-              COUNT(*) FILTER (WHERE order_type = 'DEPOSIT')::int    AS deposits,
-              COUNT(*) FILTER (WHERE order_type = 'WITHDRAWAL')::int AS withdrawals
-         FROM order_states
-        WHERE merchant_id IS NOT NULL AND state IN ('ASSIGNED', 'PROCESSING', 'PAID')
-        GROUP BY merchant_id
-     ), imbalance AS (
-       SELECT merchant_id,
-              COALESCE(SUM(token_amount_paise) FILTER (WHERE order_type = 'DEPOSIT'), 0)    AS deposit_paise,
-              COALESCE(SUM(token_amount_paise) FILTER (WHERE order_type = 'WITHDRAWAL'), 0) AS withdrawal_paise
-         FROM order_states
-        WHERE merchant_id IS NOT NULL AND state = 'COMPLETED'
-          AND completed_at IS NOT NULL AND completed_at >= $2
-        GROUP BY merchant_id
-     )
-     SELECT ${M_COLUMNS},
-            COALESCE(a.total, 0)       AS active_total,
-            COALESCE(a.deposits, 0)    AS active_deposits,
-            COALESCE(a.withdrawals, 0) AS active_withdrawals,
-            COALESCE(i.deposit_paise, 0)    AS thirty_day_deposit_paise,
-            COALESCE(i.withdrawal_paise, 0) AS thirty_day_withdrawal_paise
-       FROM merchants m
-       LEFT JOIN active a    ON a.merchant_id = m.merchant_id
-       LEFT JOIN imbalance i ON i.merchant_id = m.merchant_id
-      WHERE m.status = 'ACTIVE'
-        AND m.merchant_approval_status = 'APPROVED'
-        AND m.is_online
-        AND m.${acceptsColumn}
-        AND m.merchant_type = $1
-        -- Paused pending a conversation. Three buy orders in a row expired with
-        -- nobody paying, which says nothing about this merchant's honesty and
-        -- quite a lot about whether they are reachable — so no further player is
-        -- sent to find out until an admin has asked. In the WHERE, like every
-        -- other rule here: a merchant who must not be given an order is not a
-        -- candidate at all.
-        AND m.assignment_paused_at IS NULL
-        -- The concurrency caps, applied where the counts are. A merchant at
-        -- their limit is not a candidate at all, rather than a candidate the
-        -- caller is trusted to filter out afterwards.
-        AND COALESCE(a.total, 0) < COALESCE(m.max_concurrent_orders, $3)
-        AND COALESCE(a.${typeColumn}, 0) < COALESCE(m.${capColumn}, $4)
-        ${denomination === null ? '' : 'AND m.cash_denomination_paise = $5'}
-        ${chainColumn === null ? '' : `AND m.${chainColumn} IS NOT NULL`}
-        ${barred.length === 0 ? '' : `AND m.merchant_id <> ALL($${barredIndex})`}`,
-    params,
-    'merchant_assignment_candidates',
-  );
-
-  return rows.map((r) => ({
-    ...toMerchant(r),
-    activeOrderCount: Number(r.active_total),
-    activeDepositOrderCount: Number(r.active_deposits),
-    activeWithdrawalOrderCount: Number(r.active_withdrawals),
-    thirtyDayDepositValue: rupees(r.thirty_day_deposit_paise),
-    thirtyDayWithdrawalValue: rupees(r.thirty_day_withdrawal_paise),
-    thirtyDayBuySellDelta: rupees(r.thirty_day_deposit_paise) - rupees(r.thirty_day_withdrawal_paise),
-  }));
-}
-
-/**
- * The curated queue-manager pool, by id, in the order given.
- *
- * `IN (…)` returns rows in whatever order the planner likes, and the settings
- * screen shows the pool as an ordered list an admin arranged. `ORDER BY
- * array_position` preserves it.
- *
- * A missing id comes back as nothing rather than as an error, and the caller
- * compares lengths — a merchant deleted after being pooled should be reported
- * as gone, not crash the settings page.
- */
-export async function getPoolMerchants(merchantIds = []) {
-  const ids = [...new Set((merchantIds || []).filter(Boolean).map(String))];
-  if (!ids.length) return [];
-  const { rows } = await pgQuery(
-    `SELECT ${COLUMNS} FROM merchants
-      WHERE merchant_id = ANY($1::text[])
-      ORDER BY array_position($1::text[], merchant_id)`,
-    [ids], 'merchant_pool_get',
-  );
-  return rows.map(toMerchant);
-}
-
-/**
- * Pool members a queue manager may actually assign to, right now.
- *
- * The eligibility the ROW can decide — approved, active, online, and accepting
- * this direction — is in the WHERE clause. What it deliberately does NOT decide
- * is the token balance: that lives in `merchant_wallets` and the caller reads it
- * there. A balance predicate written into this query would be the same defect as
- * the stored `tokenBalance` filter it replaced, one layer down.
- */
-export async function getAssignablePoolMerchants(merchantIds = [], { direction = null } = {}) {
-  const ids = [...new Set((merchantIds || []).filter(Boolean).map(String))];
-  if (!ids.length) return [];
-  const clauses = [
-    'merchant_id = ANY($1::text[])',
-    "status = 'ACTIVE'",
-    "merchant_approval_status = 'APPROVED'",
-    'is_online',
-  ];
-  if (direction === 'DEPOSIT') clauses.push('accepts_deposits');
-  if (direction === 'WITHDRAWAL') clauses.push('accepts_withdrawals');
-  const { rows } = await pgQuery(
-    `SELECT ${COLUMNS} FROM merchants WHERE ${clauses.join(' AND ')}
-      ORDER BY array_position($1::text[], merchant_id)`,
-    [ids], 'merchant_pool_assignable',
-  );
-  return rows.map(toMerchant);
-}
-
-/**
- * Every merchant eligible to BE pooled — the list an admin picks the pool from.
- *
- * Distinct from `getAssignablePoolMerchants`: an offline merchant is a valid
- * pool member (they come back online), but not a valid assignment target right
- * now. Conflating the two either shrinks the pool every night or hands orders
- * to merchants who cannot take them.
- */
-export async function listPoolCandidates({ limit = 500 } = {}) {
-  const { rows } = await pgQuery(
-    `SELECT ${COLUMNS} FROM merchants
-      WHERE status = 'ACTIVE' AND merchant_approval_status = 'APPROVED'
-      ORDER BY name
-      LIMIT ${Math.min(Math.max(Number(limit) || 500, 1), 2000)}`,
-    [], 'merchant_pool_candidates',
-  );
-  return rows.map(toMerchant);
 }
 
 /**
@@ -736,12 +369,10 @@ const UPDATABLE = new Set([
   'bank_account_holder_name', 'bank_upi_id', 'bank_name', 'bank_account_no', 'bank_ifsc',
   'usdt_address_trc20', 'usdt_address_bep20',
   'min_deposit_paise', 'max_deposit_paise', 'min_withdraw_paise', 'max_withdraw_paise',
-  'cash_denomination_paise',
   'rating', 'last_online_toggle', 'panel_url',
   'merchant_approval_status', 'merchant_approved_by', 'merchant_approved_at',
   'merchant_rejection_reason',
   'success_rate', 'avg_response_minutes', 'dispute_rate',
-  'max_concurrent_orders', 'max_concurrent_deposit_orders', 'max_concurrent_withdrawal_orders',
 ]);
 
 /** camelCase → column, derived from the allowlist so the two cannot drift. */
@@ -1066,7 +697,7 @@ export async function suspendMerchant(merchantId, reason, { actor = null } = {})
  * is ACTIVE while still carrying "suspended for fraud" is a row that says two
  * things at once, and an operator reading it cannot tell which is current.
  */
-export async function approveMerchant(merchantId, { actor = null } = {}) {
+export async function approveMerchant(merchantId, { actor = null, mayLiftHighRisk = false } = {}) {
   const { rows } = await pgQuery(
     `UPDATE merchants SET
        merchant_approval_status = 'APPROVED', status = 'ACTIVE',
@@ -1090,9 +721,16 @@ export async function approveMerchant(merchantId, { actor = null } = {}) {
        consecutive_expiries = 0,
        assignment_paused_at = NULL,
        assignment_pause_reason = NULL,
+       -- A full admin's reinstatement closes the high-risk review it answers;
+       -- the lost-dispute count stays, so the next loss reopens it at once.
+       high_risk_at = CASE WHEN $3 THEN NULL ELSE high_risk_at END,
        updated_at = now()
-     WHERE merchant_id = $1 RETURNING ${COLUMNS}`,
-    [String(merchantId), actor ? String(actor) : null], 'merchant_approve',
+     WHERE merchant_id = $1
+       -- High-risk review: only a full admin reinstates (owner, 2c+). In the
+       -- WHERE so a third loss landing mid-review is not passed (§32 S6).
+       AND ($3 OR high_risk_at IS NULL)
+     RETURNING ${COLUMNS}`,
+    [String(merchantId), actor ? String(actor) : null, Boolean(mayLiftHighRisk)], 'merchant_approve',
   );
   return toMerchant(rows[0]);
 }
@@ -1198,9 +836,9 @@ export async function createMerchantAccount({
     // panels are separate accounts by the owner's decision; this is where the
     // merchant one says so.
     const account = await client.query(
-      `INSERT INTO users (user_id, username, mobile, password_hash, status, kyc_status,
+      `INSERT INTO users (user_id, username, mobile, password_hash, status,
                           roles, account_type)
-       VALUES ($1, $2, $3, $4, 'ACTIVE', 'PENDING_SUBMISSION', ARRAY['merchant'], 'MERCHANT')
+       VALUES ($1, $2, $3, $4, 'ACTIVE', ARRAY['merchant'], 'MERCHANT')
        ON CONFLICT (mobile, account_type) DO NOTHING
        RETURNING user_id`,
       [String(userId), username ?? '', String(mobile), passwordHash],
@@ -1218,13 +856,6 @@ export async function createMerchantAccount({
       client,
     });
 
-    // A merchant with no wallet row is EXCLUDED from assignment, so it belongs
-    // in the same transaction as the merchant itself.
-    await client.query(
-      `INSERT INTO merchant_wallets (merchant_id) VALUES ($1)
-       ON CONFLICT (merchant_id) DO NOTHING`, [merchant.merchantId],
-    );
-
     await client.query('COMMIT');
     return { ok: true, merchant, userId: uid };
   } catch (error) {
@@ -1238,40 +869,6 @@ export async function createMerchantAccount({
     }
     throw error;
   } finally {
-    client.release(failure ?? undefined);
-  }
-}
-
-/**
- * Create a merchant and its wallet row together, or neither.
- *
- * A merchant with no wallet row is EXCLUDED from assignment (that is
- * merchantScoring's rule — a merchant whose spendable balance is unknown must
- * not be routed an order), so a half-created merchant is not a merchant. One
- * transaction.
- */
-export async function createMerchantWithWallet(spec) {
-  const pool = await getPool();
-  if (!pool) throw new Error('Postgres not configured (DATABASE_URL unset)');
-  const client = await connectGuarded(pool);
-  let failure = null;
-  try {
-    await client.query('BEGIN');
-    const merchant = await createMerchant({ ...spec, client });
-    await client.query(
-      `INSERT INTO merchant_wallets (merchant_id) VALUES ($1)
-       ON CONFLICT (merchant_id) DO NOTHING`,
-      [merchant.merchantId],
-    );
-    await client.query('COMMIT');
-    return merchant;
-  } catch (error) {
-    failure = error;
-    try { await client.query('ROLLBACK'); } catch { /* already unwound */ }
-    throw error;
-  } finally {
-    // Pass the error so a dead socket is DESTROYED rather than returned to the
-    // pool for the next caller to inherit. See pgClient.connectGuarded.
     client.release(failure ?? undefined);
   }
 }

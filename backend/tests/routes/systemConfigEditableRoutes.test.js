@@ -27,13 +27,21 @@
  * PUT's 200 would pass against a handler that validated and wrote nothing.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { pgConfigured, applySchema, closePg } from '#db/client.js';
+import { pgConfigured, applySchema, closePg, pgQuery } from '#db/client.js';
 import { SYSTEM_CONFIG_SPEC } from '#db/spec/config.spec.js';
+import { getSystemConfig, invalidateConfigCache } from '#db/repositories/config.js';
+import { routingSettings } from '#db/repositories/teamRouting.js';
 import { mountRouter, actor, as } from './_harness.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 
 const FIELDS = SYSTEM_CONFIG_SPEC.fields.merchantOrderLimits?.fields ?? {};
+
+/** Every leaf the spec declares, with its dotted path. */
+function leavesOf(node, path = []) {
+  if (node.type !== 'group') return [{ path, decl: node }];
+  return Object.entries(node.fields).flatMap(([k, v]) => leavesOf(v, [...path, k]));
+}
 
 /**
  * A legal value for one field that differs from what is STORED right now.
@@ -65,6 +73,7 @@ describePg('every declared merchantOrderLimits field is admin-editable', () => {
   let app;
   let admin;
   let original;
+  let originalRouting;
 
   beforeAll(async () => {
     await applySchema();
@@ -82,6 +91,7 @@ describePg('every declared merchantOrderLimits field is admin-editable', () => {
     // baseline, cause your delta, put the shared table back.
     const seed = await as(app, admin).get('/system/config');
     original = { ...seed.body.config.merchantOrderLimits };
+    originalRouting = structuredClone(seed.body.config.teamRouting);
   }, 60_000);
 
   afterAll(async () => {
@@ -90,17 +100,23 @@ describePg('every declared merchantOrderLimits field is admin-editable', () => {
     if (original && app && admin) {
       await as(app, admin).put('/system/config').send({ merchantOrderLimits: original });
     }
+    if (originalRouting && app && admin) {
+      await as(app, admin).put('/system/config').send({ teamRouting: originalRouting });
+    }
     await closePg();
   });
 
-  it('declares at least the eight operational limits the workers read', () => {
+  it('declares at least the six operational limits the workers read', () => {
     // Not a count — a count drifts the moment a field is added. These are the
     // names live code reads; if one is renamed away this test says which.
+    //
+    // The per-merchant concurrency pair is not here any more: a member's cap is
+    // per RAIL, `teamRouting.concurrency` (PROJECT_STATUS §3.10, 2c), asserted
+    // below against the code that reads it.
     expect(Object.keys(FIELDS)).toEqual(expect.arrayContaining([
-      'maxConcurrentDepositOrders', 'maxConcurrentWithdrawalOrders',
-      'maxConsecutiveRejections', 'paidResponseMinutes',
+      'maxConsecutiveRejections', 'paidResponseMinutes', 'utrAfterPaidMinutes',
       'maxConsecutivePlayerPaymentFailures', 'playerOrderLockMinutes',
-      'maxConsecutiveMerchantExpiries', 'minAdminTokenPurchase',
+      'maxConsecutiveMerchantExpiries',
     ]));
   });
 
@@ -131,6 +147,42 @@ describePg('every declared merchantOrderLimits field is admin-editable', () => {
     }
   });
 
+  it('writes every teamRouting field, and routing READS what was written', async () => {
+    // The per-member caps moved here from `merchantOrderLimits.maxConcurrent*`
+    // when orders started going to teams (§3.10, 2c), with the per-rail timers
+    // the payment-mode policy used to hold. Declared is not enough (§3): the
+    // value has to reach the code that routes — `routingSettings` — or the
+    // operator raising a cap is told it saved and nothing routes differently.
+    const routing = SYSTEM_CONFIG_SPEC.fields.teamRouting;
+    expect(routing, 'teamRouting is no longer declared').toBeTruthy();
+    const leaves = leavesOf(routing);
+    expect(leaves.map(({ path }) => path.join('.'))).toEqual(expect.arrayContaining([
+      'concurrency.CASH', 'concurrency.UPI_BANK', 'concurrency.USDT',
+    ]));
+
+    const stored = (await as(app, admin).get('/system/config')).body.config.teamRouting;
+    const at = (obj, path) => path.reduce((n, k) => n?.[k], obj);
+    const wanted = {};
+    for (const { path, decl } of leaves) {
+      let node = wanted;
+      for (const k of path.slice(0, -1)) node = (node[k] ??= {});
+      node[path.at(-1)] = distinctLegalValue(path.at(-1), decl, at(stored, path));
+    }
+
+    const put = await as(app, admin).put('/system/config').send({ teamRouting: wanted });
+    expect(put.status, put.body?.message).toBe(200);
+
+    const served = (await as(app, admin).get('/system/config')).body.config.teamRouting;
+    invalidateConfigCache('system');
+    const read = routingSettings(await getSystemConfig());
+    for (const { path } of leaves) {
+      const label = `teamRouting.${path.join('.')}`;
+      expect(at(wanted, path), `${label} was written the value it already held`).not.toBe(at(stored, path));
+      expect(at(served, path), `${label} did not survive the round trip`).toBe(at(wanted, path));
+      expect(at(read, path), `${label} saved, and routing still reads the old value`).toBe(at(wanted, path));
+    }
+  });
+
   it('serves EVERY declared setting, not just the ones with a line', async () => {
     // The sweep that followed the merchantOrderLimits fix, written down so it
     // stays true. `withdrawalHoldMinutes`, both `loadShedding` ceilings and all
@@ -138,14 +190,10 @@ describePg('every declared merchantOrderLimits field is admin-editable', () => {
     // middleware, served by no GET and written by no PUT — two of them under a
     // source comment that called them "admin-editable". Nothing failed, because
     // nothing compared the three lists.
-    const leaves = [];
-    const walk = (node, path = []) => {
-      if (node.type !== 'group') { leaves.push({ path, decl: node }); return; }
-      for (const [k, v] of Object.entries(node.fields)) walk(v, [...path, k]);
-    };
-    walk(SYSTEM_CONFIG_SPEC);
-
-    const settable = leaves.filter(({ decl }) => !decl.internal);
+    // Every leaf: the spec no longer holds a value the platform writes for
+    // itself (the issuance counter was the only one, and it is derived from
+    // the treasury now — see the case below).
+    const settable = leavesOf(SYSTEM_CONFIG_SPEC);
     expect(settable.length).toBeGreaterThan(60);
 
     const seed = await as(app, admin).get('/system/config');
@@ -162,25 +210,51 @@ describePg('every declared merchantOrderLimits field is admin-editable', () => {
     expect(missing.map(({ path }) => path.join('.')).join(' | '), 'declared settings the GET does not serve').toBe('');
   });
 
-  it('does NOT offer the running issuance total as a setting', async () => {
-    // `adminTokenSupply.transferred` is the count of tokens ever issued, checked
-    // against a 10-billion cap. Setting it back to 0 does not correct a count —
-    // it re-authorises minting the entire supply again. It is marked `internal`
-    // in the spec, which is what keeps it out of BOTH derived lists; this
-    // asserts the marker is doing its job rather than that somebody remembered.
-    const { getSystemConfig } = await import('#db/repositories/config.js');
-    const was = (await getSystemConfig()).adminTokenSupply?.transferred ?? 0;
+  it('serves none of the settings the redesign removed, and a save naming one stores nothing', async () => {
+    // Each of these had a consumer once and has none now (PROJECT_STATUS §3.10,
+    // 2c): the per-merchant caps became per-rail `teamRouting.concurrency`; the
+    // merchant token-purchase bounds went with merchant token orders; the
+    // manual-assignment pool went with hand-picking; and the issuance counter
+    // is DERIVED from the treasury, so an operator who could set it would be
+    // telling the platform it still held tokens it had handed out. A setting
+    // with no consumer is §3's violation, and a counter on a settings screen is
+    // a number somebody types over (F-022).
+    const removed = [
+      ['merchantOrderLimits', 'maxConcurrentDepositOrders'],
+      ['merchantOrderLimits', 'maxConcurrentWithdrawalOrders'],
+      ['merchantOrderLimits', 'minAdminTokenPurchase'],
+      ['merchantOrderLimits', 'minAdminTokenPurchaseUsdt'],
+      ['merchantOrderLimits', 'maxAdminTokenPurchaseUsdt'],
+      ['queueManagerPool'],
+      ['adminTokenSupply', 'transferred'],
+    ];
+    const declared = new Set(leavesOf(SYSTEM_CONFIG_SPEC).map(({ path }) => path.join('.')));
+    const at = (obj, path) => path.reduce((n, k) => n?.[k], obj);
 
-    const seed = await as(app, admin).get('/system/config');
-    expect(seed.body.config.adminTokenSupply?.transferred, 'minted is served as an editable field').toBeUndefined();
+    const served = (await as(app, admin).get('/system/config')).body.config;
+    for (const path of removed) {
+      expect(declared.has(path.join('.')), `${path.join('.')} is declared again`).toBe(false);
+      expect(at(served, path), `${path.join('.')} is served as a setting`).toBeUndefined();
+    }
 
-    await as(app, admin).put('/system/config')
-      .send({ adminTokenSupply: { transferred: was + 1234, cap: 10000000000 } });
+    // The save an out-of-date screen would send. Whatever it answers, it must
+    // not be a 5xx, and none of these may land in the stored document.
+    const res = await as(app, admin).put('/system/config').send({
+      merchantOrderLimits: {
+        maxConcurrentDepositOrders: 7, maxConcurrentWithdrawalOrders: 7,
+        minAdminTokenPurchase: 12345, minAdminTokenPurchaseUsdt: 200, maxAdminTokenPurchaseUsdt: 900,
+      },
+      queueManagerPool: ['MRC-somebody'],
+      adminTokenSupply: { transferred: 1234 },
+    });
+    expect(res.status, res.body?.message).toBeLessThan(500);
 
-    expect(
-      (await getSystemConfig()).adminTokenSupply?.transferred ?? 0,
-      'an admin PUT moved the issuance counter',
-    ).toBe(was);
+    const { rows } = await pgQuery(
+      `SELECT settings FROM config_documents WHERE scope = 'system' AND doc_key = 'main'`);
+    const stored = rows[0]?.settings ?? {};
+    for (const path of removed) {
+      expect(at(stored, path), `a save wrote the removed setting ${path.join('.')}`).toBeUndefined();
+    }
   });
 
   it('checks EVERY board\'s phases fit its own block, the one-minute one included', async () => {

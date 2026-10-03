@@ -5,7 +5,7 @@
  * ── Why this file exists ────────────────────────────────────────────────────
  * This object was assembled twice — Socket.IO on connect, HTTP on request — and
  * the copies had already drifted in both directions: only the socket carried
- * webUrl/androidUrl/iosUrl, only the HTTP route carried kycRequired and
+ * webUrl/androidUrl/iosUrl, only the HTTP route carried kycRequired (removed with KYC, 2026-10-02) and
  * registrationEnabled. What a client believed about the platform depended on
  * which transport it asked over.
  *
@@ -35,7 +35,7 @@ describe('the system-config payload', () => {
     // Both transports render the same object, so a field added for one reaches
     // the other. The two used to differ by five fields.
     const keys = Object.keys(systemConfigPayload(null)).sort();
-    for (const gone of ['webUrl', 'iosUrl', 'kycRequired', 'registrationEnabled']) {
+    for (const gone of ['webUrl', 'iosUrl', 'registrationEnabled']) {
       expect(keys, `${gone} must be in the one payload, not one transport's copy`).toContain(gone);
     }
     expect(Object.keys(systemConfigFallback()).sort()).toEqual(keys);
@@ -72,7 +72,6 @@ describe('the system-config payload', () => {
   it('treats false and empty string as configured, not missing', () => {
     expect(systemConfigPayload({ maintenanceMode: false }).maintenanceMode).toBe(false);
     expect(systemConfigPayload({ maintenanceMessage: '' }).maintenanceMessage).toBe('');
-    expect(systemConfigPayload({ kycRequired: false }).kycRequired).toBe(false);
     expect(systemConfigPayload({ registrationEnabled: false }).registrationEnabled).toBe(false);
   });
 
@@ -162,16 +161,16 @@ describe('the settlement rail, and the amounts it allows', () => {
     expect(systemConfigPayload({ usdtPricing: { userMerchantBuyInr: 0 } }).usdtTokensPerUnit).toBeNull();
   });
 
-  it('names the live rail, and says nothing rather than guessing when it cannot', () => {
-    expect(systemConfigPayload(null, { activeMode: 'P2P_UPI' }).paymentMode).toBe('P2P_UPI');
-    // A client must render "not available" rather than falling back to a rail
-    // the platform may not be on — picking a default here would put a screen
-    // in front of a player for a workflow that is not running.
-    expect(systemConfigPayload(null, null).paymentMode).toBeNull();
-    expect(systemConfigFallback().paymentMode).toBeNull();
+  it('names no platform-wide rail, and says where cash ends instead', () => {
+    // There is no rail switch any more: an order's rail is derived from its own
+    // size and currency (`paymentModeFor`, §3.10 2c). A `paymentMode` field
+    // here would be a second answer a panel could believe instead.
+    expect(systemConfigPayload(null)).not.toHaveProperty('paymentMode');
+    expect(systemConfigFallback()).not.toHaveProperty('paymentMode');
+    expect(systemConfigPayload(null).maxCashBuy).toBe(MAX_CASH_BUY_PAISE / 100);
   });
 
-  it('still carries the amounts when the rail cannot be read', () => {
+  it('still carries the amounts when the config cannot be read', () => {
     // The rail being unknown does not make the ladder unknown. A payload that
     // dropped these would leave the picker empty and the player unable to buy
     // for a reason unrelated to what failed.

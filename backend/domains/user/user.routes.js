@@ -24,20 +24,21 @@
  * BUG-U12 — New: GET /v1/game/winners  → real top-winners from settled bets
  *                (was 100% random mock data in WinnersPage.tsx)
  *
- * BUG-U14 — New: GET /v1/content/ai-analysis  → last-10-cycles pattern summary
 
  *
  * BUG-U19 — New: GET /v1/content/support-links  → admin-configured WhatsApp /
  *                Telegram / email so users can reach support in-app.
  *
- * CROSS-2 — New: GET /v1/branding  → CDN base URL + all asset names so the
- *                frontend getAssetUrl() works without manual localStorage setup.
+ * GET /v1/branding and the two token-rate routes were deleted 2026-10-01: no
+ * client called them. Branding reaches every panel through `sendBranding()`
+ * (socket) and the public SSE stream (§13); token conversion is a fixed 1:1.
  *
  */
 
 import express from 'express';
 import { db } from '#db';
-import { authenticate } from '../identity/auth.middleware.js';
+import { authenticatePlayer } from '../identity/auth.middleware.js';
+import { toPlayerLedgerEntry } from '../wallet/playerLedgerView.js';
 import { getUserLedger, getBalances } from '../wallet/walletAuthority.service.js';
 // The withdrawal rate limiters (withdrawalLimiter, createSubnetLimiter,
 // globalSurgeBreaker) and the alerting import were removed with the withdrawal
@@ -47,7 +48,6 @@ import { getUserLedger, getBalances } from '../wallet/walletAuthority.service.js
 // here any more: KYC submission was the last caller of both in this file, and a
 // module that cannot reach them cannot accidentally publish or presign an
 // identity document.
-import { buildPublicKycData } from './kycPublicData.js';
 // The one public projection of a cycle. Real/phantom pools reveal the winner,
 // so every user-facing cycle response goes through here (cyclePublicView.js).
 import { publicCycleView } from '../markets/cyclePublicView.js';
@@ -55,7 +55,6 @@ import { fetchCycleHistory } from '../markets/cycleHistory.service.js';
 import { getSystemConfig } from '#db/repositories/config.js';
 import { systemConfigPayload } from '../configuration/systemConfigPayload.js';
 import { INR_TOKEN_RATE } from '../configuration/tokenRates.js';
-import { getActivePolicy as getActivePaymentModePolicy } from '#db/repositories/paymentModePolicy.js';
 import { serverError } from '../../shared/httpError.js';
 
 const router = express.Router();
@@ -106,30 +105,6 @@ router.get('/cycles/:cycleId', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// GET /api/v1/game/cycle/:type/:startTime  (public)
-// Used by realBackend.getCycleState()
-// ─────────────────────────────────────────────────────────────────────────────
-router.get('/v1/game/cycle/:type/:startTime', async (req, res) => {
-  try {
-    const { type, startTime } = req.params;
-    const startMs = parseInt(startTime, 10);
-
-    // The tolerance and the celebration-window fallback both live in the
-    // repository now: a page loading on a cycle boundary must still find the
-    // round it is showing, and during the celebration the current cycle has
-    // completed while the next has not opened — returning nothing there blanks
-    // the page mid-animation.
-    const cycle = await db.markets.getCycleAt(type, startMs);
-
-    if (!cycle) return res.status(404).json({ success: false, message: 'Cycle not found' });
-    res.json({ success: true, cycle: sanitiseCycleForUser(cycle) });
-  } catch (error) {
-    console.error('Get cycle state error:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch cycle state' });
-  }
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
 // GET /api/v1/game/cycles/history  (public)
 // BUG-U2 FIX: Returns both delhiPool AND totalDelhi (aliases).
 // ─────────────────────────────────────────────────────────────────────────────
@@ -160,47 +135,11 @@ router.get('/v1/game/cycles/history', async (req, res) => {
 // The new endpoint merges real winners + admin-curated fake winners (FakeWinner model).
 
 // ─────────────────────────────────────────────────────────────────────────────
-// GET /api/user/:userId/bets  (auth required)
-// Users can only fetch their own bets. isPhantom:false enforced.
-// ─────────────────────────────────────────────────────────────────────────────
-router.get('/user/:userId/bets', authenticate, async (req, res) => {
-  try {
-    const { userId } = req.params;
-    const { limit = 50, skip = 0, cycleId, status } = req.query;
-    // SEC 2.7 FIX: cap pagination to prevent DoS
-    const parsedLimit = Math.min(Math.max(parseInt(limit) || 50, 1), 100);
-    const parsedSkip  = Math.max(parseInt(skip) || 0, 0);
-
-    if (req.user.userId.toString() !== userId) {
-      return res.status(403).json({ success: false, message: 'Access denied' });
-    }
-
-    // Phantom bets are house liquidity placed under a managed account. They
-    // are excluded by DEFAULT in the repository — showing a player wagers they
-    // never made is not a display bug, it is a dispute.
-    const { bets, total } = await db.bets.listUserBets(userId, {
-      cycleId: cycleId || null,
-      status: status || null,
-      limit: parsedLimit,
-    });
-
-    res.json({
-      success: true,
-      bets,
-      pagination: { total, limit: parsedLimit, skip: parsedSkip }
-    });
-  } catch (error) {
-    console.error('Get user bets error:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch bets' });
-  }
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
 // GET /api/v1/user/:id/data  (auth required)
 // BUG-U5 FIX: Now returns bets[], history[], kycData, bankDetails.
 // BUG-U6 FIX: Now returns walletBalance = depositBalance + winningsBalance.
 // ─────────────────────────────────────────────────────────────────────────────
-router.get('/v1/user/:id/data', authenticate, async (req, res) => {
+router.get('/v1/user/:id/data', authenticatePlayer, async (req, res) => {
   try {
     const { id } = req.params;
     if (req.user.userId.toString() !== id) {
@@ -230,8 +169,6 @@ router.get('/v1/user/:id/data', authenticate, async (req, res) => {
     // history = last 20 cycle IDs the user bet in (for LiveTicker dots)
     const historyCycleIds = [...new Set(normalizedBets.map(b => b.cycleId))].slice(0, 20);
 
-    const publicKycData = await buildPublicKycData(user);
-
     res.json({
       success: true,
       user: {
@@ -243,10 +180,6 @@ router.get('/v1/user/:id/data', authenticate, async (req, res) => {
         lockedBalance,
         walletBalance,    // BUG-U6 fix — Header now shows real balance
         totalBalance:     walletBalance,
-        kycStatus:        user.kycStatus,
-        // KYC documents/PII are admin-only after submission; users get status
-        // plus rejection reason only when they must resubmit.
-        kycData:          publicKycData,
         bankDetails: user.bankDetails || null,
         profilePic:       user.profilePic || '',
         joinedAt:         user.joinedAt,
@@ -269,7 +202,7 @@ router.get('/v1/user/:id/data', authenticate, async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 // PUT /api/user/:userId/profile  (auth required, atomic)
 // ─────────────────────────────────────────────────────────────────────────────
-router.put('/user/:userId/profile', authenticate, async (req, res) => {
+router.put('/user/:userId/profile', authenticatePlayer, async (req, res) => {
   try {
     const { userId } = req.params;
     if (req.user.userId.toString() !== userId) {
@@ -328,7 +261,7 @@ router.put('/user/:userId/profile', authenticate, async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 // PUT /api/user/:userId/bank-details  (auth required, atomic)
 // ─────────────────────────────────────────────────────────────────────────────
-router.put('/user/:userId/bank-details', authenticate, async (req, res) => {
+router.put('/user/:userId/bank-details', authenticatePlayer, async (req, res) => {
   try {
     const { userId } = req.params;
     if (req.user.userId.toString() !== userId) {
@@ -358,10 +291,6 @@ router.put('/user/:userId/bank-details', authenticate, async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// GET /api/user/:userId/transactions  (auth required)
-// BUG-U11 FIX: Transaction history for WalletModal
-// ─────────────────────────────────────────────────────────────────────────────
-// ─────────────────────────────────────────────────────────────────────────────
 // GET /api/user/referrals — a referrer's own report
 //
 // Deliberately NOT on the wallet screen. Only the DISBURSED portion ever
@@ -369,7 +298,7 @@ router.put('/user/:userId/bank-details', authenticate, async (req, res) => {
 // other people's KYC, and mixing an unrealised promise into a balance is how a
 // player comes to believe they hold money they cannot withdraw.
 // ─────────────────────────────────────────────────────────────────────────────
-router.get('/user/referrals', authenticate, async (req, res) => {
+router.get('/user/referrals', authenticatePlayer, async (req, res) => {
   try {
     const { referralSummaryFor } = await import('../referral/referral.service.js');
     const summary = await referralSummaryFor(req.user.userId);
@@ -395,7 +324,7 @@ router.get('/user/referrals', authenticate, async (req, res) => {
 // a second copy of a money rule, and the first divergence would show a player a
 // maximum that gets refused.
 // ─────────────────────────────────────────────────────────────────────────────
-router.get('/user/bet-limits', authenticate, async (req, res) => {
+router.get('/user/bet-limits', authenticatePlayer, async (req, res) => {
   try {
     const { computeMaxStake } = await import('../risk/riskValidation.service.js');
     const { getRiskRules } = await import('../risk/riskValidation.service.js');
@@ -435,48 +364,6 @@ router.get('/user/bet-limits', authenticate, async (req, res) => {
   }
 });
 
-router.get('/user/:userId/transactions', authenticate, async (req, res) => {
-  try {
-    const { userId } = req.params;
-    if (req.user.userId.toString() !== userId) {
-      return res.status(403).json({ success: false, message: 'Access denied' });
-    }
-
-    const { limit = 30, skip = 0 } = req.query;
-    // SEC 2.7 FIX: cap pagination to prevent DoS
-    const parsedLimit = Math.min(Math.max(parseInt(limit) || 30, 1), 100);
-    const parsedSkip  = Math.max(parseInt(skip) || 0, 0);
-
-    // The player's funding history comes from their ORDERS, which is where a
-    // deposit or a withdrawal actually lives. The separate transaction
-    // collection this read was a projection written alongside them, and a
-    // projection of one store by another is a second record that can disagree
-    // with the first — it is deleted.
-    const { orders, total } = await db.orders.findOrders({
-      userId,
-      states: null,
-      limit: parsedLimit,
-    });
-
-    res.json({
-      success: true,
-      transactions: orders.map((o) => ({
-        id:        o.orderId,
-        type:      o.type,
-        amount:    o.tokenAmount,
-        status:    o.status,
-        reference: o.utr || o.orderId || '',
-        note:      o.cancelReason || o.rejectedReason || '',
-        createdAt: o.createdAt,
-      })),
-      pagination: { total, limit: parsedLimit, skip: parsedSkip }
-    });
-  } catch (error) {
-    console.error('Get transactions error:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch transactions' });
-  }
-});
-
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/v1/system/config  (public)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -486,41 +373,18 @@ router.get('/v1/system/config', async (req, res) => {
     // The literal that used to sit here was a copy of the socket's, written with
     // `||` where that one used `??`, so an operator who set a limit to 0 ("no
     // minimum") was served the default over HTTP and the real 0 over the socket.
-    res.json({ success: true, config: systemConfigPayload(await getSystemConfig(), await getActivePaymentModePolicy()) });
+    res.json({ success: true, config: systemConfigPayload(await getSystemConfig()) });
   } catch (error) {
     console.error('System config error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch config' });
   }
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// GET /api/v1/system/time  (public)
-// ─────────────────────────────────────────────────────────────────────────────
-router.get('/v1/system/time', (req, res) => {
-  res.json({
-    success:    true,
-    serverTime: Date.now(),
-    unixtime:   Date.now(),
-    iso:        new Date().toISOString()
-  });
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// GET /api/v1/content/promo/:location  (public)
-// ─────────────────────────────────────────────────────────────────────────────
-router.get('/v1/content/promo/:location', async (req, res) => {
-  try {
-    const { location } = req.params;
-    // PUBLISHED and active, not merely active. A draft with `isActive` left
-    // on was reaching the home page — the two flags mean different things and
-    // the query only checked one of them.
-    const content = await db.content.listLivePromos(location);
-    res.json({ success: true, content });
-  } catch (error) {
-    console.error('Promo content error:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch promo content' });
-  }
-});
+// `GET /api/v1/content/promo/:location` was removed 2026-10-01. No client
+// called it: the player app asks over the socket (`request_promo` →
+// `promo_data`, socketHandlers.js), which reads the same `listLivePromos` and
+// also upper-cases the location this route did not. Two doors to one read is a
+// second one to keep correct for nobody.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/v1/content/faq  (public)
@@ -576,125 +440,6 @@ router.get('/v1/content/support-links', async (req, res) => {
   }
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// GET /api/v1/content/ai-analysis  (public)
-// BUG-U14 FIX: Reads last 10 completed cycles and returns a structured
-// pattern summary (streak, dominant side, win rates, prediction confidence).
-// ─────────────────────────────────────────────────────────────────────────────
-router.get('/v1/content/ai-analysis', async (req, res) => {
-  try {
-    const { type = 'THIRTY_MIN' } = req.query;
-    // Filtered on the WINNER, not the status: a cycle whose result is in is
-    // what this reads, and a status filter would miss a declared cycle whose
-    // settlement is still running.
-    const cycles = await db.markets.recentResults(type, { limit: 10 });
-
-    if (!cycles.length) {
-      return res.json({
-        success: true,
-        cached: false,
-        text: 'Insufficient data for analysis. Play more cycles to unlock AI predictions.',
-        data: null
-      });
-    }
-
-    const delhiWins  = cycles.filter(c => c.winner === 'DELHI').length;
-    const bombayWins = cycles.filter(c => c.winner === 'BOMBAY').length;
-    const total      = cycles.length;
-
-    // Streak: how many consecutive times the same side won (from most recent)
-    let streak = 1;
-    for (let i = 1; i < cycles.length; i++) {
-      if (cycles[i].winner === cycles[0].winner) streak++;
-      else break;
-    }
-
-    const dominant    = delhiWins >= bombayWins ? 'DELHI' : 'BOMBAY';
-    const dominantPct = Math.round((Math.max(delhiWins, bombayWins) / total) * 100);
-    const recentSide  = cycles[0].winner;
-    const streakWord  = streak >= 3 ? `on a ${streak}-game winning streak` : `won the last game`;
-    const confidence  = streak >= 3 ? 'High' : dominantPct >= 70 ? 'Moderate' : 'Low';
-
-    const text =
-      `📊 Last ${total} cycles — Delhi: ${delhiWins} wins | Bombay: ${bombayWins} wins. ` +
-      `${dominant} is dominant at ${dominantPct}% win rate. ` +
-      `${recentSide} ${streakWord}. ` +
-      `Prediction confidence: ${confidence}. ` +
-      `⚠️ Past performance does not guarantee future results.`;
-
-    res.json({
-      success: true,
-      cached: false,
-      text,
-      data: {
-        delhiWins,
-        bombayWins,
-        total,
-        dominant,
-        dominantPct,
-        streak,
-        streakSide: cycles[0].winner,
-        confidence,
-        lastResult: cycles[0].winner
-      }
-    });
-  } catch (error) {
-    console.error('AI analysis error:', error);
-    res.status(500).json({ success: false, message: 'Failed to generate analysis' });
-  }
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// GET /api/v1/branding  (public)
-// CROSS-2 FIX: Frontend getAssetUrl() reads app_branding from localStorage.
-// This route fills that localStorage key on app init.
-// ─────────────────────────────────────────────────────────────────────────────
-router.get('/v1/branding', async (req, res) => {
-  try {
-    // Branding is a configuration scope, so every key reads as its declared
-    // default when nothing has been set — no `|| {}` and no per-field fallback
-    // scattered through the response below.
-    const b = await db.config.getConfig('branding');
-
-    // The environment variable is the BOOTSTRAP value; an admin setting one
-    // here overrides it without a redeploy.
-    const cdnBaseUrl = b.cdnBaseUrl || process.env.CDN_URL || '';
-
-    res.json({
-      success: true,
-      branding: {
-        appName:      b.appName,
-        cdnBaseUrl,
-        primaryColor: b.primaryColor,
-        assets: {
-          logo:    'logo.jpeg',
-          appIcon: 'App icon.jpeg',
-          delhi:   'Delhi.jpg',
-          bombay:  'Bomabay.jpg',
-          popup:   'Popup.jpeg',
-          rules:   'Rules.jpeg',
-          tipsBg:  'tips.jpeg'
-        }
-      }
-    });
-  } catch (error) {
-    // Even on DB error, return CDN_URL from env so images always work
-    console.error('Branding fetch error:', error);
-    res.json({
-      success: true,
-      branding: {
-        appName:      'BettingBazaar',
-        cdnBaseUrl:   process.env.CDN_URL || '',
-        primaryColor: '#D4AF37',
-        assets: {
-          logo: 'logo.jpeg', appIcon: 'App icon.jpeg', delhi: 'Delhi.jpg',
-          bombay: 'Bomabay.jpg', popup: 'Popup.jpeg', rules: 'Rules.jpeg', tipsBg: 'tips.jpeg'
-        }
-      }
-    });
-  }
-});
-
 // ── Withdrawals live in the P2P funding platform, not here ──────────────────
 // A second, parallel withdrawal implementation used to sit at this spot:
 // POST /v1/user/withdraw + GET /v1/user/withdrawals, backed by a
@@ -715,58 +460,15 @@ router.get('/v1/branding', async (req, res) => {
 
 // ── WALLET LEDGER — user's personal transaction history ──────────────────────
 // GET /api/v1/wallet/ledger  — append-only audit trail of every balance change
-router.get('/v1/wallet/ledger', authenticate, async (req, res) => { // paginated
+router.get('/v1/wallet/ledger', authenticatePlayer, async (req, res) => { // paginated
   try {
     const { page = 1, limit = 30 } = req.query;
     const result = await getUserLedger(req.user.userId, Number(page), Number(limit));
-    res.json({ success: true, ...result });
+    // The player's view of each entry: an admin adjustment's note and the
+    // staff id in it are for the audit trail, not the player (playerLedgerView).
+    res.json({ success: true, ...result, entries: result.entries.map(toPlayerLedgerEntry) });
   } catch (err) {
     return serverError(res, err, 'GET /v1/wallet/ledger');
-  }
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// GET /api/v1/tokens/rate  — public token exchange rates.
-// Fixed 1:1 internal conversion (Phase 006 flattening, 2026-07-08): 1 BB
-// token = ₹1, no buy/sell spread. Response shape kept for client compat.
-// ─────────────────────────────────────────────────────────────────────────────
-router.get('/v1/tokens/rate', async (req, res) => {
-  try {
-    const config = await getSystemConfig();
-    res.json({
-      success:        true,
-      buyRate:        INR_TOKEN_RATE,
-      sellRate:       INR_TOKEN_RATE,
-      ratesConfigured: true, // the INR peg is not configurable — see tokenRates.js
-      minExchange:    config?.minWithdrawal ?? 500  /* schema default — was incorrectly 100 (GOVERNANCE.md M-5) */,
-      maxExchange:    config?.maxWithdrawal ?? 50000,
-      currency:       'INR',
-      updatedAt:      null,
-    });
-  } catch (err) {
-    return serverError(res, err, 'GET /v1/tokens/rate');
-  }
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// GET /api/v1/token/rates  — canonical alias used by WalletModal + WalletPage
-// (WalletModal calls /api/v1/token/rates; old route was /v1/tokens/rate)
-// Both return the same fixed 1:1 values.
-// ─────────────────────────────────────────────────────────────────────────────
-router.get('/v1/token/rates', async (req, res) => {
-  try {
-    const config = await getSystemConfig();
-    res.json({
-      success:  true,
-      rates: { buyRate: INR_TOKEN_RATE, sellRate: INR_TOKEN_RATE, updatedAt: null },
-      minExchange: config?.minWithdrawal ?? 500  /* schema default — was incorrectly 100 (GOVERNANCE.md M-5) */,
-      maxExchange: config?.maxWithdrawal ?? 50000,
-      // Flat fields for back-compat
-      buyRate:  INR_TOKEN_RATE,
-      sellRate: INR_TOKEN_RATE,
-    });
-  } catch (err) {
-    return serverError(res, err, 'GET /v1/token/rates');
   }
 });
 
@@ -786,7 +488,7 @@ router.get('/v1/token/rates', async (req, res) => {
  * user id and scope by it, so a caller cannot read or acknowledge somebody
  * else's notification even by id.
  */
-router.get('/user/notifications', authenticate, async (req, res) => {
+router.get('/user/notifications', authenticatePlayer, async (req, res) => {
   try {
     const unreadOnly = String(req.query.unreadOnly || '') === 'true';
     // The repository clamps this to 1..200; parsing here keeps a bad query
@@ -810,7 +512,7 @@ router.get('/user/notifications', authenticate, async (req, res) => {
  * is the rarer act — asking for fifty rows to show one integer is the kind of
  * read that looks free until there are players.
  */
-router.get('/user/notifications/unread-count', authenticate, async (req, res) => {
+router.get('/user/notifications/unread-count', authenticatePlayer, async (req, res) => {
   try {
     res.json({ success: true, unreadCount: await db.engagement.unreadCount(String(req.user.userId)) });
   } catch (err) {
@@ -826,7 +528,7 @@ router.get('/user/notifications/unread-count', authenticate, async (req, res) =>
  * from "those were already read" — and so an id belonging to somebody else
  * reports 0 rather than succeeding silently.
  */
-router.post('/user/notifications/read', authenticate, async (req, res) => {
+router.post('/user/notifications/read', authenticatePlayer, async (req, res) => {
   try {
     const raw = req.body?.ids;
     if (raw !== undefined && !Array.isArray(raw)) {
@@ -854,7 +556,7 @@ export default router;
 // GET /api/v1/user/profile  — self-profile from JWT (no userId in URL)
 // Called by WalletPage and WalletModal to load balance + bankDetails.
 // ─────────────────────────────────────────────────────────────────────────────
-router.get('/v1/user/profile', authenticate, async (req, res) => {
+router.get('/v1/user/profile', authenticatePlayer, async (req, res) => {
   try {
     // The wallet page reads this for the balance it shows. From `wallets`, not
     // the account — the accounts table has no balance columns.
@@ -872,7 +574,6 @@ router.get('/v1/user/profile', authenticate, async (req, res) => {
         depositBalance:   balances.depositBalance  || 0,
         winningsBalance:  balances.winningsBalance || 0,
         lockedBalance:    balances.lockedBalance   || 0,
-        kycStatus:        user.kycStatus,
         bankDetails:      user.bankDetails     || null,
         profilePic:       user.profilePic      || null,
         joinedAt:         user.joinedAt,

@@ -341,44 +341,6 @@ export async function fundMerchantBonusPool({ amountMinor, actor, justification,
   });
 }
 
-/**
- * issueMerchantBonus — record the accounting side of a Merchant Performance
- * Bonus: MERCHANT_BONUS_POOL → MERCHANT_FUNDS. Called by the Merchant
- * Platform's bonus engine (which computes WHO earns WHAT from completed
- * buy→sell cycles); this function owns the accounting rules:
- *   - the pool is the ONLY source — structurally, bonuses can never touch
- *     USER_FUNDS / PLATFORM_RESERVE / deposits / withdrawals;
- *   - an issue cannot exceed the pool's current balance (the pool itself is
- *     fundable only from distributable platform revenue);
- *   - idempotent via the caller's deterministic key.
- * The matching merchant-wallet credit is executed by the Merchant Platform
- * (merchantWallet.service.js) with the SAME idempotency key.
- */
-export async function issueMerchantBonus({ merchantId, amountMinor, idempotencyKey, description, metadata }) {
-  const postings = buildBonusIssuePostings(amountMinor); // validates amount
-  if (!merchantId) throw new Error('merchantId is required to issue a merchant bonus.');
-  if (!idempotencyKey) throw new Error('A deterministic idempotencyKey is required to issue a merchant bonus.');
-
-  const poolMinor = await getAccountBalanceMinor(ACCOUNTS.MERCHANT_BONUS_POOL.code);
-  if (amountMinor > poolMinor) {
-    throw new Error(
-      `Cannot issue ₹${(amountMinor / 100).toFixed(2)} — merchant bonus pool holds ₹${(poolMinor / 100).toFixed(2)}. ` +
-      'Fund the pool from distributable platform revenue first (POST /api/admin/revenue/bonus-pool/fund).'
-    );
-  }
-
-  return recordAccountingEvent({
-    eventType: EVENT_TYPES.MERCHANT_BONUS_ISSUED,
-    idempotencyKey,
-    postings,
-    refModel: 'Merchant',
-    refId: String(merchantId),
-    occurredAt: new Date(),
-    description: description || `Merchant Performance Bonus issued to merchant ${merchantId}`,
-    metadata,
-  });
-}
-
 // ═════════════════════════════════════════════════════════════════════════════
 // Reconciliation — derive the ledger from completed source records
 // ═════════════════════════════════════════════════════════════════════════════

@@ -6,18 +6,41 @@
 // ACCESS, and where the effect has to land on two panels at once.
 //
 // These are the expensive half. A config change that does not propagate makes a
-// screen wrong; a KYC approval that does not propagate leaves somebody unable
-// to withdraw with no way to find out why, and a dispute resolution that lands
+// screen wrong, and a dispute resolution that lands
 // on one side only leaves a player and a merchant looking at the same order and
 // disagreeing about what happened to it.
 //
 // Every case reads the OTHER panel's own endpoint. Every case that changes
 // something platform-wide puts it back in a `finally` (trap 10).
 import { pgQuery } from '#db/client.js';
-import { seedPlayer, seedMerchant, seedAdmin } from '../seed.js';
+import { seedPlayer, seedMerchant, seedTeam, seedAdmin } from '../seed.js';
 import {
-  playerToken, merchantToken, adminToken, GET, POST, PUT, check, note, idemKey,
+  playerToken, merchantToken, adminToken, GET, POST, PUT, check, note, idemKey, BASE,
 } from '../harness.js';
+
+/**
+ * The `branding` event a fresh client receives on the public SSE stream — how
+ * the panels actually get branding. This read `GET /api/v1/branding`, a route
+ * no panel called that built its own payload with hard-coded file names
+ * (§13); it was deleted 2026-10-01.
+ */
+async function brandingOverSse() {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 8000);
+  try {
+    const res = await fetch(`${BASE}/api/sse/events`, { signal: ctrl.signal, headers: { Accept: 'text/event-stream' } });
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) return null;
+      buf += dec.decode(value, { stream: true });
+      const m = buf.match(/event: branding\ndata: (.*)\n/);
+      if (m) return JSON.parse(m[1]);
+    }
+  } catch { return null; } finally { clearTimeout(timer); ctrl.abort(); }
+}
 
 const A = 'LIFECYCLE';
 
@@ -25,46 +48,20 @@ export default async function run() {
   const admin = await seedAdmin();
   const aT = adminToken(admin);
 
-  // ══ 1. KYC: the admin approves, the PLAYER's own profile says so ═════════
+  // ══ 1. There is no KYC: the player's own profile carries none ════════════
+  // KYC was removed (owner, 2026-10-02). A field that survives on the profile
+  // is a panel somewhere still rendering an identity status nobody decides.
   {
-    const p = await seedPlayer({ kycStatus: 'PENDING_APPROVAL' });
+    const p = await seedPlayer();
     const pT = playerToken(p);
-
-    const before = await GET(pT, '/api/v1/user/profile');
-    check(A, 'player', 'a pending player reads their own KYC status', 'PENDING_APPROVAL',
-      String(before.body?.user?.kycStatus), before.body?.user?.kycStatus === 'PENDING_APPROVAL');
-
-    const ok = await POST(aT, `/api/admin/kyc/${p.userId}/approve`, {});
-    check(A, 'admin', 'approve the Aadhaar', '200',
-      `${ok.status} ${ok.body?.message ?? ''}`, ok.status === 200);
-
-    const after = await GET(pT, '/api/v1/user/profile');
-    check(A, 'player', 'the PLAYER panel shows the approval', 'APPROVED',
-      String(after.body?.user?.kycStatus), after.body?.user?.kycStatus === 'APPROVED',
-      'approving grants withdrawal access — a player who cannot see it cannot act on it');
-  }
-
-  // ══ 2. KYC rejection carries a REASON the player can act on ══════════════
-  {
-    const p = await seedPlayer({ kycStatus: 'PENDING_APPROVAL' });
-    const pT = playerToken(p);
-
-    const no = await POST(aT, `/api/admin/kyc/${p.userId}/reject`,
-      { reason: 'The Aadhaar number did not match the name on file.' });
-    check(A, 'admin', 'reject an Aadhaar with a reason', '200',
-      `${no.status} ${no.body?.message ?? ''}`, no.status === 200);
-
-    // `/v1/user/:id/data`, not `/v1/user/profile`. The wallet profile carries
-    // the STATUS and deliberately not the reason; this is the route that
-    // projects `kycData`, and it is the one the resubmission screen reads.
-    const seen = await GET(pT, `/api/v1/user/${p.userId}/data`);
-    const kyc = seen.body?.user ?? seen.body ?? {};
-    const reason = JSON.stringify(kyc.kycData ?? {});
-    check(A, 'player', 'the player is told WHY, not just that it failed', 'the reason text',
-      `${kyc.kycStatus} :: ${reason.slice(0, 140)}`,
-      kyc.kycStatus === 'REJECTED' && /did not match/.test(reason),
-      '§32 S4: this read `user.kycData.rejectionReason` — a field on a row that has no such '
-      + 'column — so it returned null for EVERY rejected player, on login, on /me and here');
+    const me = await GET(pT, '/api/v1/user/profile');
+    const keys = Object.keys(me.body?.user ?? {});
+    check(A, 'player', 'the profile carries no KYC field', 'no kyc* key',
+      `${me.status} ${keys.filter((k) => /kyc|aadhaar/i.test(k)).join(',') || 'none'}`,
+      me.status === 200 && !keys.some((k) => /kyc|aadhaar/i.test(k)));
+    const gone = await POST(aT, `/api/admin/kyc/${p.userId}/approve`, {});
+    check(A, 'admin', 'the KYC approval route is gone', '404',
+      String(gone.status), gone.status === 404);
   }
 
   // ══ 3. Branding: one document, three panels ══════════════════════════════
@@ -76,10 +73,10 @@ export default async function run() {
       check(A, 'admin', 'save a brand name', '200',
         `${saved.status} ${saved.body?.message ?? ''}`, saved.status === 200);
 
-      const pub = await GET(null, '/api/v1/branding');
-      check(A, 'player', 'the branding every panel reads carries the new name', mark,
-        String(pub.body?.branding?.appName ?? pub.body?.appName),
-        JSON.stringify(pub.body).includes(mark),
+      const pub = await brandingOverSse();
+      check(A, 'player', 'the branding a fresh panel receives carries the new name', mark,
+        String(pub?.appName),
+        pub?.appName === mark,
         '§13: sendBranding is the SOLE constructor of this payload — a panel with a literal never updates');
     } finally {
       if (before.appName) await PUT(aT, '/api/admin/branding', { appName: before.appName });
@@ -93,8 +90,12 @@ export default async function run() {
   // wrong — which is why this case reads the PLAYER and the MERCHANT, not the
   // admin route's own answer.
   {
-    const p = await seedPlayer({ kycStatus: 'APPROVED' });
-    const m = await seedMerchant({ currency: 'INR', tokensPaise: 500000000 });
+    const p = await seedPlayer();
+    // A cash-team member who has pressed Ready, so the 1,000-token buy below is
+    // routed to `m` and its tokens are held in the team's pool — the hold a
+    // release then spends (Step 2c: a merchant holds no tokens of their own).
+    const m = await seedMerchant({ currency: 'INR' });
+    await seedTeam({ rail: 'CASH', poolTokens: 10000, include: [m], online: [m], ready: [m] });
     const pT = playerToken(p);
     const mT = merchantToken(m);
 
@@ -105,10 +106,18 @@ export default async function run() {
         'could not stage the dispute case');
     } else {
       const orderId = made.body?.order?.orderId ?? made.body?.orderId;
-      await pgQuery(
-        `UPDATE order_states SET state = 'DISPUTED', merchant_id = $2,
-                dispute_raised_by = 'system', dispute_reason = 'e2e cross-panel'
-          WHERE order_id = $1`, [orderId, m.merchantId]);
+      // Reached through the routes a player uses, not a raw UPDATE to DISPUTED:
+      // only a PAYMENT dispute (one raised from PAID with a reference, or from a
+      // rejection) suspends anybody, and a row staged straight from ASSIGNED is
+      // one production cannot make (§32 S16). The one thing moved by hand is
+      // the clock: `paid_at` goes back past the player's ten-minute wait.
+      const utr = String(Date.now()).slice(-12).padStart(12, '6');
+      const paidRes = await POST(pT, `/api/payment/order/${orderId}/mark-paid`, { utrNumber: utr });
+      await pgQuery(`UPDATE order_states SET paid_at = now() - interval '11 minutes' WHERE order_id = $1`, [orderId]);
+      const raised = await POST(pT, `/api/payment/order/${orderId}/dispute`, { reason: 'e2e cross-panel: nothing credited' });
+      check(A, 'player', 'mark the buy paid, then dispute it after the wait', '200 then 200',
+        `${paidRes.status} then ${raised.status} ${raised.body?.message ?? ''}`,
+        paidRes.status === 200 && raised.status === 200);
 
       const res = await POST(aT, `/api/admin/dispute-orders/${orderId}/resolve`, {
         decision: 'RELEASE_TO_USER', resolution: 'e2e: released to the player',
@@ -132,11 +141,23 @@ export default async function run() {
         String(asPlayer.body?.order?.status ?? asPlayer.body?.order?.state),
         JSON.stringify(asPlayer.body).includes('COMPLETED'));
 
+      // Released to the player on a BUY means the member was wrong, and whoever
+      // was wrong is suspended until staff lift it (2c+, owner 2026-10-02). So
+      // what the member's panel shows is the suspension, not the order list.
       const asMerchant = await GET(mT, '/api/merchant/orders?status=COMPLETED');
-      check(A, 'merchant', 'the MERCHANT’s own order list agrees', 'the order is there',
-        JSON.stringify(asMerchant.body).includes(orderId) ? 'present' : 'absent',
-        JSON.stringify(asMerchant.body).includes(orderId),
-        '§32 S17: one order, two panels — they must not disagree about what happened to it');
+      check(A, 'merchant', 'the MEMBER who lost the dispute is suspended out of their panel', '403 Account suspended',
+        `${asMerchant.status} ${asMerchant.body?.message ?? ''}`,
+        asMerchant.status === 403 && /suspended/i.test(asMerchant.body?.message ?? ''),
+        '§32 S17: an admin decision the merchant never sees is half a feature');
+      const fault = await pgQuery(
+        `SELECT m.status, m.lost_disputes, f.party
+           FROM merchants m JOIN dispute_faults f ON f.merchant_id = m.merchant_id AND f.order_id = $2
+          WHERE m.merchant_id = $1`, [m.merchantId, orderId]);
+      check(A, 'system', 'and the loss is recorded against that member, once', 'SUSPENDED / 1 / MERCHANT',
+        `${fault.rows[0]?.status} / ${fault.rows[0]?.lost_disputes} / ${fault.rows[0]?.party}`,
+        fault.rows[0]?.status === 'SUSPENDED' && Number(fault.rows[0]?.lost_disputes) === 1
+        && fault.rows[0]?.party === 'MERCHANT',
+        'one decision, one fault row: a replayed resolve must not count twice');
     }
   }
 
@@ -198,7 +219,7 @@ export default async function run() {
 
   // ══ 5c. Referral disbursal: the admin pays, the PLAYER's report shows it ══
   {
-    const p = await seedPlayer({ kycStatus: 'APPROVED' });
+    const p = await seedPlayer();
     const pT = playerToken(p);
 
     const before = await GET(pT, '/api/user/referrals');
@@ -243,7 +264,7 @@ export default async function run() {
           tokenEncrypted: encryptField('000:FAKE'), webhookSecret: `s-${botId}`, status: 'ACTIVE',
         });
       }
-      const p = await seedPlayer({ kycStatus: 'APPROVED' });
+      const p = await seedPlayer();
       const first = await db.telegram.assignSigninBot(p.userId, 'PLAYER');
       check(A, 'system', 'a player is assigned one of the live sign-in bots', 'one of the two',
         String(first), ids.includes(first));

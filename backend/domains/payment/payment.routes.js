@@ -3,9 +3,7 @@
  * Moved from backend/routes/payment.routes.js on 2026-07-01 (BBEPS Phase 004 migration). */
 import express   from 'express';
 import { db }    from '#db';
-import { authenticate, requireApprovedKyc, requireLinkedKyc } from '../identity/auth.middleware.js';
-import { tryVerifyJwt } from '../identity/jwt.util.js';
-import { merchantAuth } from '../../middleware/merchantAuth.js';
+import { authenticatePlayer } from '../identity/auth.middleware.js';
 import {
   withdrawalLimiter,
   // Creating a USDT purchase reaches the merchant queue and holds a price.
@@ -30,37 +28,17 @@ import { markOrderPaid, submitPaymentReference, cancelOrder, claimUtrGrace, retr
 import { toPlayerOrderView, toPlayerOrderViews } from './playerOrderView.js';
 // The ONE system-config payload. The USDT rail's amounts and networks are money
 // rules, so the panel is told them rather than holding its own copy.
-// The mirror of it. `deposit/:orderId/confirm` answers a merchant or an admin,
-// so this file needs both projections.
-import { toMerchantOrderView } from '../merchant/merchantOrderView.js';
 // The order state machine — every status change is a guarded transition.
-import { completeOrder, disputeOrder } from './orderLifecycle.service.js';
+import { disputeOrder } from './orderLifecycle.service.js';
 // Phase 009: money movement enters ONLY via the Funding Platform authority.
 import { requestDeposit, requestWithdrawal } from '../funding/fundingAuthority.service.js';
-import { creditDeposit, creditReserve } from '../wallet/walletAuthority.service.js';
-// One rule for how a confirmed deposit splits across the user's two pockets,
-// and for what the merchant is debited against it.
-import { moveDepositMoney } from './depositCredit.js';
-import { debitMerchantTokens } from '../merchant/merchantWallet.service.js';
-import { releaseUTR } from '../../middleware/utrValidation.js';
 // The one owner of order access: it verifies the tamper tag AND decides who
 // may act on the order, so a route cannot be added without both.
-import { orderAccessGuard, orderAccessGuardOrAdmin } from '../../middleware/order-crypto-access.js';
+import { orderAccessGuard } from '../../middleware/order-crypto-access.js';
 import { emitWalletUpdate, emitAdminUpdate, emitOrderUpdate } from '../notification/realtimeEmitters.js';
 import { serverError, respondError } from '../../shared/httpError.js';
 
 const router = express.Router();
-
-function extractBearer(req) {
-  const h = req.headers.authorization || '';
-  return h.startsWith('Bearer ') ? h.slice(7) : null;
-}
-
-function paymentActorAuth(req, res, next) {
-  const decoded = tryVerifyJwt(extractBearer(req) || req.cookies?.auth_token || '');
-  if (decoded?.isMerchant) return merchantAuth(req, res, next);
-  return authenticate(req, res, next);
-}
 
 /**
  * The ONE shape a player receives. See `playerOrderView.js` for what was being
@@ -71,25 +49,10 @@ function forPlayer(order) {
   return toPlayerOrderView(order);
 }
 
-/*
- * ── The last denylist on this route, removed ────────────────────────────────
- * A `sanitize...ForMerchant` helper stood here and `delete`d four field names
- * from a copy of the order. That is the shape of the leak `merchantOrderView.js`
- * was built to end: a denylist admits the next column added to `order_states`
- * by default, and the mistake is always "too much". `deposit/:orderId/confirm`
- * answers a merchant, so it answers through `toMerchantOrderView` like every
- * other merchant-facing responder on the platform.
- */
-
-// Money IN needs only LINKED identity, not an approved one (owner decision
-// 2026-09-08). Verification runs in batches and can take a day; holding a
-// player at the door for it loses the player without protecting anyone, and the
-// deposit lands in their own wallet either way.
-//
-// `requireApprovedKyc` stays on the withdrawal below. That is the whole of the
-// stricter rule and it is where it belongs: money leaving is the irreversible
-// direction.
-router.post('/deposit/create', authenticate, requireLinkedKyc, requireChannelMembership({ action: 'add funds' }), depositCreateLimiter, async (req, res) => {
+// No KYC gate on any money route: KYC was removed 2026-10-02 (owner). The
+// channel-membership gate, which requires the Telegram contact share, is the
+// identity check.
+router.post('/deposit/create', authenticatePlayer, requireChannelMembership({ action: 'add funds' }), depositCreateLimiter, async (req, res) => {
   try {
     const result = await requestDeposit({ userId: req.user.userId, tokenAmount: Number(req.body.tokenAmount) });
     res.json({ success: true, message: 'Deposit request created. Waiting for merchant assignment.', ...result });
@@ -109,15 +72,9 @@ router.post('/deposit/create', authenticate, requireLinkedKyc, requireChannelMem
  * The SERVER still decides what each rail serves: `assertBuyIsLegal` refuses a
  * ₹5,000 purchase here and a ₹50,000 one on the INR route, whatever a client
  * asks for.
- *
- * `requireLinkedKyc`, matching the INR deposit exactly — money IN needs linked
- * identity, and holding a player at the door while verification runs in batches
- * loses the player without protecting anyone. The stricter rule belongs on
- * withdrawal, where the money leaves.
  */
 router.post('/usdt/deposit/create',
-  authenticate,
-  requireLinkedKyc,
+  authenticatePlayer,
   requireChannelMembership({ action: 'add funds' }),
   usdtDepositLimiter,
   async (req, res) => {
@@ -143,11 +100,7 @@ router.post('/usdt/deposit/create',
 // builders of one payload is exactly how the config object drifted the first
 // time; the answer then was one owner, and it is the answer here.
 
-// APPROVED, not merely linked. Every withdrawal here draws from the WINNINGS
-// balance — `debitWinningsForWithdrawal` is the only debit path — so "approved
-// KYC to withdraw winnings" and "approved KYC to withdraw" are the same rule on
-// this platform, and this line is it.
-router.post('/withdrawal/create', authenticate, requireApprovedKyc, requireChannelMembership({ action: 'withdraw' }), withdrawalLimiter, createSubnetLimiter('withdrawal'), globalSurgeBreaker('withdrawal'), async (req, res) => {
+router.post('/withdrawal/create', authenticatePlayer, requireChannelMembership({ action: 'withdraw' }), withdrawalLimiter, createSubnetLimiter('withdrawal'), globalSurgeBreaker('withdrawal'), async (req, res) => {
   try {
     const result = await requestWithdrawal({ userId: req.user.userId, tokenAmount: Number(req.body.tokenAmount) });
     res.json({ success: true, message: 'Withdrawal request created. Waiting for merchant assignment.', ...result });
@@ -176,7 +129,7 @@ router.post('/withdrawal/create', authenticate, requireApprovedKyc, requireChann
  * retry passes too — including, on a sell, the escrow debit under the wallet's
  * row lock. The database refuses a second retry of the same order.
  */
-router.post('/order/:orderId/retry', authenticate, orderRetryLimiter, orderAccessGuard, async (req, res) => {
+router.post('/order/:orderId/retry', authenticatePlayer, orderRetryLimiter, orderAccessGuard, async (req, res) => {
   try {
     const result = await retryOrder(req.user.userId, req.params.orderId);
     res.json({ success: true, ...result });
@@ -184,14 +137,18 @@ router.post('/order/:orderId/retry', authenticate, orderRetryLimiter, orderAcces
     // A duplicate retry is refused by a unique index, which surfaces as a
     // driver error rather than one of ours. Said plainly, because the player's
     // second tap is an ordinary thing to do and the answer is "you already did".
-    const duplicate = err?.code === '23505';
-    res.status(duplicate ? 409 : (err.status || 500)).json({
-      success: false,
-      code: duplicate ? 'ALREADY_RETRIED' : err.code,
-      message: duplicate
-        ? 'You have already retried this order — look for the newer one in your list.'
-        : err.message,
-    });
+    if (err?.code === '23505') {
+      return res.status(409).json({
+        success: false,
+        code: 'ALREADY_RETRIED',
+        message: 'You have already retried this order — look for the newer one in your list.',
+      });
+    }
+    // A refusal keeps its own wording; anything else is logged in full and
+    // answered with nothing (§2, httpError.js). This used `err.status || 500`
+    // with `err.message`, so an unexpected failure handed the player the
+    // server's internal text.
+    return respondError(res, err, 'POST /payment/order/:orderId/retry');
   }
 });
 
@@ -219,7 +176,7 @@ router.post('/order/:orderId/retry', authenticate, orderRetryLimiter, orderAcces
  * limited on ATTEMPTS: a caller guessing references against somebody else's
  * order produces nothing but refusals, and those refusals ARE the sweep.
  */
-router.post('/order/:orderId/payment-reference', authenticate, utrGraceLimiter, orderAccessGuard, async (req, res) => {
+router.post('/order/:orderId/payment-reference', authenticatePlayer, utrGraceLimiter, orderAccessGuard, async (req, res) => {
   try {
     const order = await submitPaymentReference(req.user.userId, req.params.orderId, req.body?.utrNumber);
     res.json({ success: true, message: 'Reference received. Awaiting merchant review.', order: forPlayer(order) });
@@ -230,7 +187,7 @@ router.post('/order/:orderId/payment-reference', authenticate, utrGraceLimiter, 
   }
 });
 
-router.post('/order/:orderId/utr-grace', authenticate, utrGraceLimiter, orderAccessGuard, async (req, res) => {
+router.post('/order/:orderId/utr-grace', authenticatePlayer, utrGraceLimiter, orderAccessGuard, async (req, res) => {
   try {
     const order = await claimUtrGrace(req.user.userId, req.params.orderId);
     res.json({ success: true, expiresAt: order.expiresAt, graceTakenAt: order.utrGraceAt });
@@ -244,7 +201,7 @@ router.post('/order/:orderId/utr-grace', authenticate, utrGraceLimiter, orderAcc
   }
 });
 
-router.post('/order/:orderId/mark-paid', authenticate, orderAccessGuard, async (req, res) => {
+router.post('/order/:orderId/mark-paid', authenticatePlayer, orderAccessGuard, async (req, res) => {
   try {
     // The UTR alone. A screenshot proved nothing — it is trivially forged and no
     // approval read it, while the merchant matches the UTR against their own
@@ -267,137 +224,17 @@ router.post('/order/:orderId/mark-paid', authenticate, orderAccessGuard, async (
   }
 });
 
-/**
- * POST /api/payment/:orderId/confirm — the merchant (or an admin) asserts the
- * player's money arrived, and the tokens are dispensed.
- *
- * ── Ordering, and what a failure leaves behind ──────────────────────────────
- * The money moves BEFORE the status does. Every movement is idempotent on a
- * deterministic key, so a failure part-way through leaves a retryable position
- * rather than something to unwind: the order is still PAID, the next confirm
- * replays the movements as no-ops and completes it.
- *
- * The other order — status first, then money — is what this was, and it has a
- * worse failure: the order reads COMPLETED while the merchant was never debited
- * and the player never credited, and nothing in the system is looking for that.
- *
- * The TRANSITION is still the gate for the RESPONSE. Two confirms in flight (a
- * merchant clicking while an admin force-approves is the real case) both move
- * no money the second time, and exactly one is told it completed the order.
- *
- * The `session` this used to open is gone. `safeSession` caught a failure to
- * start a transaction and carried on WITHOUT one, so the atomicity it appeared
- * to provide was conditional on nobody looking.
+/*
+ * `POST /deposit/:orderId/confirm` was deleted 2026-10-01 (owner decision:
+ * delete a stale duplicate once shown unused). It was a second way to
+ * complete a buy, for a merchant or an admin, and no screen or workflow called
+ * it: merchants confirm on `POST /api/merchant/confirm/:id`, admins through the
+ * admin order actions, and every one of them moves the money through
+ * `moveDepositMoney`. The money assertions that existed only here were ported
+ * to the live route first (merchantConfirmMoneyPg.test.js).
  */
-router.post('/deposit/:orderId/confirm', paymentActorAuth, orderAccessGuardOrAdmin, async (req, res) => {
-  const isMerchantActor = Boolean(req.merchantId);
-  const isAdminActor = Boolean(req.user?.isAdmin);
-  if (!isMerchantActor && !isAdminActor) {
-    return res.status(403).json({ success: false, message: 'Only merchants or admins can confirm deposits' });
-  }
-  try {
-    // The guard already refused anyone who is not this order's player, its
-    // assigned merchant, or an admin — and it verified the tamper tag. What is
-    // left is this route's own rule: it confirms DEPOSITS.
-    const order = req.p2pOrder;
-    if (order.type !== 'DEPOSIT') {
-      return res.status(404).json({ success: false, message: 'Order not found' });
-    }
-    if (order.status !== 'PAID') {
-      // A read, not the gate — the transition below settles the race. This
-      // exists so an already-completed order gets a clear answer instead of a
-      // 409 the merchant panel renders as a failure.
-      if (order.status === 'COMPLETED') {
-        return res.json({
-          success: true, message: 'Deposit already completed',
-          order: isMerchantActor ? toMerchantOrderView(order) : order,
-        });
-      }
-      return res.status(409).json({ success: false, message: `Cannot confirm in ${order.status} status` });
-    }
 
-    // ── PAID only, and the player's reference must be on the row ────────────
-    //
-    // This admitted PROCESSING as well, and never looked at the reference —
-    // while `/api/merchant/confirm/:id`, the route the panel's button calls,
-    // required both. Two confirms for one money movement with different
-    // admission is F-017's other half, and it was the weaker one that nothing
-    // called, so nothing noticed.
-    //
-    // PROCESSING is the state an order sits in AFTER a merchant accepts it and
-    // BEFORE the player has paid. Driven on a live server as the assigned
-    // merchant, on the same order:
-    //
-    //   /api/merchant/confirm/:id        -> 400 "Deposit can only be confirmed
-    //                                            in PAID status. Current:
-    //                                            PROCESSING"
-    //   /api/payment/deposit/:id/confirm -> 200 "Deposit completed"
-    //   state COMPLETED | utr NONE | player 0 -> 1000 tokens
-    //
-    // A player credited with no payment made and no reference recorded, leaving
-    // a COMPLETED deposit `utr_registry` never saw — so a later dispute has
-    // nothing to match against (§27). The merchant's own float pays for it,
-    // which is what makes it a collusion route rather than a mistake.
-    //
-    // The reference is READ FROM THE ROW, never taken from this request, for
-    // the same reason the merchant route does it: it belongs to the PLAYER,
-    // who bound it to this order at mark-paid (§27).
-    if (!String(order.utrNumber ?? '').trim()) {
-      return res.status(400).json({
-        success: false,
-        message: 'This order has no payment reference from the user yet.',
-      });
-    }
-
-    // The player's pockets are split; the merchant's side is not. `depositCredit.js`
-    // owns both the split and the movement — the admin queue override calls the
-    // same function, which is the only reason the two can no longer disagree.
-    const moved = await moveDepositMoney(order, {
-      debitMerchantTokens, creditDeposit, creditReserve, releaseUTR,
-    });
-    if (!moved.ok) {
-      return res.status(400).json({ success: false, message: 'Merchant insufficient token balance' });
-    }
-
-    // ── The gate, and the record that the money moved ───────────────────────
-    // `completeOrder` posts the DEPOSIT_COMPLETED accounting event in the SAME
-    // transaction as the state change, so a completed order always has its
-    // ledger entry.
-    const confirmed = await completeOrder(order.orderId, {
-      expectFrom: ['PAID', 'PROCESSING'],
-      set: {
-        completedAt: new Date(),
-        approvedBy: req.merchantId || req.user.userId,
-        approvedAt: new Date(),
-      },
-    });
-    if (!confirmed.ok) {
-      // The money moved and the order would not advance. That is a repair case,
-      // not a rollback: the movements are keyed, so the next confirm replays
-      // them as no-ops. It must be loud rather than silent.
-      console.error(`[deposit-confirm] ${order.orderId} money moved but transition refused:`, confirmed.reason);
-      return res.status(409).json({
-        success: false,
-        message: `Cannot confirm in ${confirmed.status ?? 'unknown'} status`,
-      });
-    }
-
-    await emitWalletUpdate(order.userId);
-
-    // The POST-transition order, not the one read at the top.
-    const settled = confirmed.order ?? order;
-    res.json({
-      success: true,
-      message: confirmed.idempotent ? 'Deposit already completed' : 'Deposit completed',
-      order: isMerchantActor ? toMerchantOrderView(settled) : settled,
-    });
-  } catch (err) {
-    console.error('POST /deposit/:orderId/confirm error:', err);
-    res.status(500).json({ success: false, message: 'Failed to confirm deposit' });
-  }
-});
-
-router.get('/orders', authenticate, async (req, res) => {
+router.get('/orders', authenticatePlayer, async (req, res) => {
   try {
     const { status, type, limit = 20, skip = 0 } = req.query;
     const parsedLimit = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
@@ -439,28 +276,11 @@ router.get('/orders', authenticate, async (req, res) => {
  * rather than silently skipping the check.
  */
 
-router.get('/order/:orderId', authenticate, orderAccessGuard, async (req, res) => {
+router.get('/order/:orderId', authenticatePlayer, orderAccessGuard, async (req, res) => {
   try {
     const order = req.p2pOrder;
 
-    // ── The ATM link, for the order's owner and nobody else ────────────────
-    // On the cash rail this link IS the payment: the player opens it, pays,
-    // and the machine dispenses to the merchant standing there. So it has to
-    // reach them — and only them.
-    //
-    // `orderAccessGuard` has already established that this caller owns the
-    // order, which is why the link can be resolved here rather than behind a
-    // second ownership check that could disagree with the first.
-    //
-    // The merchant is NOT named. A player sees where to pay, never who they
-    // are paying — the same rule the merchant side obeys in reverse.
-    let cashLink = null;
-    if (order?.cashLinkId) {
-      const link = await db.cashLinks.getLinkForOrder(order.orderId);
-      if (link) cashLink = { paymentLink: link.paymentLink, expiresAt: link.expiresAt };
-    }
-
-    res.json({ success: true, order: forPlayer(order), cashLink });
+    res.json({ success: true, order: forPlayer(order) });
   } catch (err) {
     console.error('GET /payment/order/:orderId error:', err);
     res.status(500).json({ success: false, message: 'Failed to fetch order' });
@@ -488,7 +308,7 @@ router.get('/order/:orderId', authenticate, orderAccessGuard, async (req, res) =
  * was not split" is a true answer, and a screen forced to tell that apart from
  * "not found" will get it wrong.
  */
-router.get('/order/:orderId/batch', authenticate, orderAccessGuard, async (req, res) => {
+router.get('/order/:orderId/batch', authenticatePlayer, orderAccessGuard, async (req, res) => {
   try {
     const order = req.p2pOrder;
     const siblings = order?.withdrawalBatchRef
@@ -533,7 +353,7 @@ router.get('/order/:orderId/batch', authenticate, orderAccessGuard, async (req, 
  * was "kept for client compatibility"; no client was reading it. §1.
  */
 
-router.post('/order/cancel', authenticate, async (req, res) => {
+router.post('/order/cancel', authenticatePlayer, async (req, res) => {
   try {
     await cancelOrder(req.user.userId, req.user.isAdmin, req.body.orderId);
     res.json({ success: true, message: 'Order cancelled' });
@@ -542,7 +362,7 @@ router.post('/order/cancel', authenticate, async (req, res) => {
 
 // ─── GET /api/payment/order/:orderId/status — lightweight poll (Section 2B) ──
 // Returns only the fields the frontend needs to poll during active payment flow.
-router.get('/order/:orderId/status', authenticate, orderAccessGuard, async (req, res) => {
+router.get('/order/:orderId/status', authenticatePlayer, orderAccessGuard, async (req, res) => {
   try {
     const order = req.p2pOrder;
 
@@ -590,19 +410,23 @@ router.get('/order/:orderId/status', authenticate, orderAccessGuard, async (req,
 // DISPUTED from PROCESSING, PAID and COMPLETED — its own comment says "that is
 // precisely when disputes happen" — so the rule table was right and this route
 // was narrower than it.
-router.post('/order/:orderId/dispute', authenticate, orderAccessGuard, async (req, res) => {
+router.post('/order/:orderId/dispute', authenticatePlayer, orderAccessGuard, async (req, res) => {
   try {
     const { reason } = req.body;
     if (!reason?.trim()) return res.status(400).json({ success: false, message: 'reason is required' });
 
     const order = req.p2pOrder;
-    const DISPUTABLE = ['PAID', 'COMPLETED'];
-    if (!DISPUTABLE.includes(order.status)) {
+    // REJECTED (2c+): a buy the member rejected as unpaid. The player may
+    // dispute it until its window closes, and the team's tokens stay in escrow
+    // until then; the deadline is checked below, inside the transition.
+    const rejectedBuy = order.status === 'REJECTED' && order.type === 'DEPOSIT';
+    const DISPUTABLE = rejectedBuy ? ['REJECTED'] : ['PAID', 'COMPLETED'];
+    if (!rejectedBuy && !DISPUTABLE.includes(order.status)) {
       return res.status(400).json({
         success: false,
         // Names the states, because "cannot dispute" alone sends a player to
         // support to ask which ones they are.
-        message: 'A dispute can be raised once an order is paid or completed.',
+        message: 'A dispute can be raised once an order is paid or completed, or within the window after a payment is rejected.',
       });
     }
 
@@ -622,8 +446,17 @@ router.post('/order/:orderId/dispute', authenticate, orderAccessGuard, async (re
       }
     }
 
+    const windowClosed = Object.assign(new Error('window_closed'), { windowClosed: true });
     const disputed = await disputeOrder(order.orderId, {
       expectFrom: DISPUTABLE,
+      // The rejected-buy window, asked on the DATABASE clock under the order's
+      // row lock — the same clock and the same instant the window sweep reads,
+      // so a dispute and the window closing cannot both win.
+      ...(rejectedBuy ? {
+        within: async (client) => {
+          if (!await db.orders.rejectedBuyWindowOpenWithin(client, order.orderId)) throw windowClosed;
+        },
+      } : {}),
       set: {
         // Capped. `dispute_reason` is TEXT, so an oversized reason does not
         // error — it is stored whole, and an admin's dispute queue renders it.
@@ -633,7 +466,16 @@ router.post('/order/:orderId/dispute', authenticate, orderAccessGuard, async (re
         disputeRaisedAt: new Date(),
         disputeRaisedBy: 'user',
       },
+    }).catch((err) => {
+      if (err === windowClosed) return { ok: false, windowClosed: true };
+      throw err;
     });
+    if (disputed.windowClosed) {
+      return res.status(409).json({
+        success: false,
+        message: 'The window to dispute this rejected payment has closed. Contact support if you paid.',
+      });
+    }
     if (!disputed.ok) {
       // 409, not 400: understood and refused because the order moved on — a
       // merchant confirming while the user was typing is the ordinary case.

@@ -60,7 +60,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
           // First, set stale localStorage data so the UI isn't blank
           const cachedData = api.getCurrentMerchant();
           if (cachedData) setMerchant(cachedData);
-          // Then immediately refresh from server so tokenBalance and status are live
+          // Then immediately refresh from server so status, pause and Ready are live
           try {
             const freshData = await api.getMerchantProfile();
             if (freshData) {
@@ -116,8 +116,8 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
               setUnreachable(true);
             }
             // Otherwise: keep the session and whatever profile was cached. A
-            // stale token balance for a few seconds beats being signed out
-            // mid-order over a refusal that was never about this merchant.
+            // stale online or Ready flag for a few seconds beats being signed
+            // out mid-order over a refusal that was never about this merchant.
           }
         }
       } catch (error) {
