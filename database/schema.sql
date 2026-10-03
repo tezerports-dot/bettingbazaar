@@ -3729,6 +3729,13 @@ ALTER TABLE order_states ADD COLUMN IF NOT EXISTS dispute_window_until TIMESTAMP
 CREATE INDEX IF NOT EXISTS order_states_rejected_window_idx ON order_states (dispute_window_until)
   WHERE state = 'REJECTED';
 
+-- When a buy's team tokens were PAID to the player (`teamPools.spendForBuy`,
+-- under the order's row lock). From then on the order's only way forward is
+-- COMPLETED: the transition writer refuses any other move in its UPDATE's
+-- WHERE, so a reject, cancel or dispute that loses the race with a confirm
+-- cannot leave a buy paid out and not completed (security review, 2026-10-03).
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS pool_paid_at TIMESTAMPTZ;
+
 -- Whoever LOST a dispute: one row per decided dispute, keyed by the order, so
 -- a decision replayed (two admins, a retried request) records it once. The
 -- count and the suspension it causes are written in the same transaction.

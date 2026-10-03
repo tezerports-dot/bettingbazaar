@@ -288,6 +288,63 @@ describePg('team routing and pool holds (PostgreSQL)', () => {
     expect(await spendForBuy(o.orderId)).toMatchObject({ ok: true, taken: 'available' });
   });
 
+  // ── Security review, 2026-10-03: the money moved before the state did ─────
+  /** As the player's mark-paid leaves a buy: PROCESSING, then PAID. */
+  const paid = async (o) => {
+    expect((await transitionOrder(o.orderId, 'PROCESSING', { actor: 'test' })).ok).toBe(true);
+    expect((await transitionOrder(o.orderId, 'PAID', { actor: 'test' })).ok).toBe(true);
+  };
+  it('a spend asked for one state refuses an order that has moved on, and moves nothing', async () => {
+    const t = await workingTeam('UPI_BANK', 100000);
+    const o = await order('DEPOSIT', 100000);
+    expect((await assign(o)).teamId).toBe(t.teamId);
+    await paid(o);
+    // Cancelled since the confirm read it as PAID (a member's reject, an expiry).
+    expect((await transitionOrder(o.orderId, 'CANCELLED', { actor: 'test' })).ok).toBe(true);
+    const pool = await getPool(t.teamId);
+    const before = await getTreasuryBalances();
+
+    expect(await spendForBuy(o.orderId, { requireState: 'PAID' })).toEqual({ ok: false, reason: 'order_state' });
+
+    expect(await getPool(t.teamId)).toEqual(pool);
+    const after = await getTreasuryBalances();
+    expect(after[ACCOUNTS.USER_FLOAT]).toBe(before[ACCOUNTS.USER_FLOAT]);
+    expect((await getOrderRecord(o.orderId)).poolPaidAt).toBeNull();
+  });
+
+  it('a spend in the state the caller named goes through, and marks the buy paid out', async () => {
+    // The opposite behaviour: the check must not refuse the ordinary confirm.
+    const t = await workingTeam('UPI_BANK', 100000);
+    const o = await order('DEPOSIT', 100000);
+    expect((await assign(o)).teamId).toBe(t.teamId);
+    await paid(o);
+    expect(await spendForBuy(o.orderId, { requireState: ['DISPUTED', 'PAID'] })).toMatchObject({ ok: true, taken: 'hold' });
+    expect((await getOrderRecord(o.orderId)).poolPaidAt).not.toBeNull();
+  });
+
+  it('once its tokens are paid out, a buy may only go on to COMPLETED', async () => {
+    const t = await workingTeam('UPI_BANK', 100000);
+    const o = await order('DEPOSIT', 100000);
+    expect((await assign(o)).teamId).toBe(t.teamId);
+    await paid(o);
+    expect(await spendForBuy(o.orderId, { requireState: 'PAID' })).toMatchObject({ ok: true });
+
+    // A reject, a cancel or a dispute landing between the spend and the
+    // completion would leave a REJECTED, CANCELLED or open buy whose player
+    // was paid anyway.
+    for (const to of ['REJECTED', 'CANCELLED', 'FAILED', 'DISPUTED']) {
+      expect(await transitionOrder(o.orderId, to, { actor: 'test' }), to).toMatchObject({ ok: false, reason: 'pool_paid' });
+    }
+    expect((await getOrderRecord(o.orderId)).status).toBe('PAID');
+
+    expect((await transitionOrder(o.orderId, 'COMPLETED', { actor: 'test' })).ok).toBe(true);
+    // A COMPLETED buy can still be disputed, and that dispute can only end
+    // COMPLETED again: no cancel can take delivered tokens back.
+    expect((await transitionOrder(o.orderId, 'DISPUTED', { actor: 'test' })).ok).toBe(true);
+    expect(await transitionOrder(o.orderId, 'CANCELLED', { actor: 'test' })).toMatchObject({ ok: false, reason: 'pool_paid' });
+    expect((await getOrderRecord(o.orderId)).status).toBe('DISPUTED');
+  });
+
   it('the sweep finds a hold left on a cancelled order, and not one on a live order', async () => {
     const t = await workingTeam('UPI_BANK', 200000);
     const live = await order('DEPOSIT', 100000);

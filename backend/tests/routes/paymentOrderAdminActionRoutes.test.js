@@ -46,7 +46,8 @@ import { createOrderRecord, getOrderRecord } from '#db/repositories/orders.recor
 import { transitionOrder } from '#db/repositories/orders.js';
 import { getPool, spendForBuy } from '#db/repositories/teamPools.js';
 import { setCashReady } from '#db/repositories/teamRouting.js';
-import { getBalances, creditDeposit } from '../../domains/wallet/walletAuthority.service.js';
+import { getBalances, creditDeposit, creditReserve } from '../../domains/wallet/walletAuthority.service.js';
+import { moveDepositMoney } from '../../domains/payment/depositCredit.js';
 import { tryAssignMerchant, markOrderPaid } from '../../domains/payment/paymentProcessing.service.js';
 import { teamFixture } from '../teamFixture.js';
 import { mountRouter, actor, merchantActor, as } from './_harness.js';
@@ -200,11 +201,70 @@ describePg('admin force-action on a payment order', () => {
       .post(`/payment-orders/${orderId}/action`).send({ action: 'APPROVE' });
 
     expect(res.status).toBe(409);
-    // The refusal says why, in the admin's terms.
-    expect(res.body.message).toMatch(/pool cannot cover/i);
+    // The refusal says why, in the admin's terms: a queued buy is not an
+    // order an approval can complete (asked before any money is touched).
+    expect(res.body.message).toMatch(/Cannot APPROVE an order that is PENDING_QUEUE/);
     const after = await getBalances(player.userId);
     expect(Number(after.depositBalance)).toBe(Number(before.depositBalance));
     expect((await getOrderRecord(orderId)).status).toBe('PENDING_QUEUE');
+    expect(await legsFor(orderId)).toEqual({});
+  });
+
+  it('refuses to approve a buy a member rejected, before any money moves', async () => {
+    // Security review, 2026-10-03: the money moved FIRST and the transition
+    // refused second, so approving a REJECTED buy credited the player, spent
+    // the team's hold and then answered 409 — tokens delivered on an order
+    // that still read REJECTED. The state is asked before the spend now, and
+    // again by the spend under the order's lock.
+    const { player, team, orderId } = await paidDeposit({ tokenAmount: 1000, deposit: 1000, reserve: 0 });
+    expect((await transitionOrder(orderId, 'REJECTED', { actor: 'test' })).ok).toBe(true);
+    const poolBefore = await getPool(team.teamId);
+    const before = await getBalances(player.userId);
+
+    const res = await as(app, await admin())
+      .post(`/payment-orders/${orderId}/action`).send({ action: 'APPROVE' });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.message).toMatch(/Cannot APPROVE an order that is REJECTED/);
+    const after = await getBalances(player.userId);
+    expect(Number(after.depositBalance)).toBe(Number(before.depositBalance));
+    expect(await getPool(team.teamId)).toEqual(poolBefore);
+    expect(await legsFor(orderId)).toEqual({});
+    expect(await getOrderRecord(orderId)).toMatchObject({ status: 'REJECTED', poolHeldPaise: 100_000 });
+  });
+
+  it('a confirm that read the buy as PAID pays nothing once a reject has landed', async () => {
+    // The race itself, at the one function every completing route calls: the
+    // member's confirm read PAID, a reject (or expiry, or dispute) committed,
+    // and only then did the money move. The spend asks the state again under
+    // the order's lock.
+    const { player, team, orderId } = await paidDeposit({ tokenAmount: 1000, deposit: 1000, reserve: 0 });
+    const readAsPaid = await getOrderRecord(orderId);
+    expect((await transitionOrder(orderId, 'REJECTED', { actor: 'test' })).ok).toBe(true);
+    const poolBefore = await getPool(team.teamId);
+    const before = await getBalances(player.userId);
+
+    const moved = await moveDepositMoney(readAsPaid, {
+      creditDeposit, creditReserve, releaseUTR: async () => {}, requireState: 'PAID',
+    });
+
+    expect(moved).toMatchObject({ ok: false, reason: 'order_state' });
+    expect(Number((await getBalances(player.userId)).depositBalance)).toBe(Number(before.depositBalance));
+    expect(await getPool(team.teamId)).toEqual(poolBefore);
+    expect(await legsFor(orderId)).toEqual({});
+  });
+
+  it('a REJECT on a disputed buy still works: the refusal is about paid-out tokens only', async () => {
+    // The opposite behaviour (§37 step 6). Nothing was paid out on a buy the
+    // player disputes, so the admin may still decide it either way.
+    const { orderId } = await paidDeposit({ tokenAmount: 1000, deposit: 1000, reserve: 0 });
+    expect((await transitionOrder(orderId, 'DISPUTED', { actor: 'test' })).ok).toBe(true);
+
+    const res = await as(app, await admin())
+      .post(`/payment-orders/${orderId}/action`).send({ action: 'REJECT', reason: 'no payment arrived' });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect((await getOrderRecord(orderId)).status).toBe('CANCELLED');
     expect(await legsFor(orderId)).toEqual({});
   });
 

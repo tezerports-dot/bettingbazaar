@@ -129,6 +129,8 @@ export function toOrder(r) {
     // The team serving it, and what a buy holds in that team's pool (Step 2c).
     teamId: r.team_id ?? null,
     poolHeldPaise: Number(r.pool_held_paise ?? 0),
+    // When the team's tokens were paid to the player for this buy (2c).
+    poolPaidAt: r.pool_paid_at ?? null,
     // On a USDT order, the chain the PLAYER chose to pay on. Fixed at creation:
     // the merchant snapshot carries the address for this chain and nothing
     // else, and a chain that moved after assignment would point a player at an

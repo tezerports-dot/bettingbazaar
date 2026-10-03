@@ -390,25 +390,38 @@ export async function detachFromTeamWithin(client, orderId, { actor = 'system', 
  * the tokens from `available`, refused by the UPDATE's WHERE if the pool is
  * short. Once per order: a BUY_PAID entry for this order means it is done.
  *
+ * `requireState` is the state (or states) the caller read the order in and is
+ * about to complete it from. It is asked under the order's row lock, so an
+ * order a member rejected, an expiry cancelled or a player disputed since the
+ * caller read it is refused here (`order_state`) rather than paid out
+ * underneath (§32 S6; security review, 2026-10-03). The spend also stamps
+ * `pool_paid_at`, after which the order may only move to COMPLETED.
+ *
  * Returns { ok, taken: 'hold' | 'available' } or { ok, alreadyTaken },
- * or { ok: false, reason: 'no_team' | 'pool_short' } with nothing moved.
+ * or { ok: false, reason: 'no_team' | 'pool_short' | 'order_state' } with
+ * nothing moved.
  */
-export async function spendForBuy(orderId, { actor = 'system' } = {}) {
+export async function spendForBuy(orderId, { actor = 'system', requireState = null } = {}) {
   const oid = String(orderId);
+  const states = requireState ? (Array.isArray(requireState) ? requireState : [requireState]) : null;
   try {
     return await withTransaction(async (client) => {
       const { rows: o } = await client.query(
-        `SELECT team_id, pool_held_paise, token_amount_paise FROM order_states WHERE order_id = $1 FOR UPDATE`, [oid]);
+        `SELECT team_id, pool_held_paise, token_amount_paise, state FROM order_states WHERE order_id = $1 FOR UPDATE`, [oid]);
       if (!o[0]) throw new Refused('not_found');
       const { rows: done } = await client.query(
         `SELECT 1 FROM team_pool_entries WHERE ref_id = $1 AND kind = 'BUY_PAID' LIMIT 1`, [oid]);
       if (done[0]) return { ok: true, alreadyTaken: true };
+      if (states && !states.includes(o[0].state)) throw new Refused('order_state');
       const teamId = o[0].team_id;
       if (!teamId) throw new Refused('no_team');
       const amount = toNum(o[0].token_amount_paise);
       const held = toNum(o[0].pool_held_paise);
 
       let pool; let taken;
+      // The marker that holds the order to COMPLETED from here on, on the row
+      // the transition writer re-reads under its lock.
+      await client.query('UPDATE order_states SET pool_paid_at = now() WHERE order_id = $1', [oid]);
       if (held > 0) {
         await client.query('UPDATE order_states SET pool_held_paise = 0 WHERE order_id = $1', [oid]);
         ({ rows: pool } = await client.query(

@@ -71,7 +71,7 @@ describePg('a confirmed deposit conserves tokens', () => {
 
   /** The confirm, with the real writers, exactly as every completing route calls it. */
   const confirm = (order) => moveDepositMoney(order, {
-    creditDeposit, creditReserve, releaseUTR: async () => {},
+    creditDeposit, creditReserve, releaseUTR: async () => {}, requireState: order.status,
   });
 
   for (const [label, depositAllocation, reserveAllocation] of [

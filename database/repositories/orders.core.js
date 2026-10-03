@@ -219,6 +219,9 @@ function rowToOrder(row) {
     // The team serving it, and what a buy holds in that team's pool (Step 2c).
     teamId: row.team_id ?? null,
     poolHeldPaise: toPaise(row.pool_held_paise ?? 0),
+    // When the team's tokens were paid to the player for this buy. Set, the
+    // order may only move to COMPLETED (see `transition`).
+    poolPaidAt: row.pool_paid_at ?? null,
     createdAt:  row.created_at,
     updatedAt:  row.updated_at,
   };
@@ -278,6 +281,8 @@ async function withOrderLock(orderId, fn) {
  *   { ok: true,  idempotent: true  }  someone already did; nothing moved
  *   { ok: false, reason: 'not_found' }
  *   { ok: false, reason: 'invalid_transition', state, allowedFrom }
+ *   { ok: false, reason: 'pool_paid', state }   a buy whose team tokens were
+ *                                               paid out goes only to COMPLETED
  *
  * Collapsing "already done" into a failure is how a retry-safe API stops being
  * retry-safe: the caller compensates for something that actually succeeded.
@@ -318,6 +323,21 @@ export async function transition({
         value: { ok: false, reason: 'invalid_transition', state: order.state, allowedFrom },
       };
     }
+    // ── A buy whose team tokens were paid out only goes on to COMPLETED ──────
+    // `spendForBuy` pays the pool's tokens BEFORE the confirm or approval moves
+    // the order, so a reject, cancel or dispute could land in between: a
+    // REJECTED or CANCELLED buy whose player was credited anyway. Once paid,
+    // nothing but COMPLETED may follow from a live state — and a COMPLETED
+    // buy may still be disputed, but that dispute ends COMPLETED again, since
+    // no cancel can take delivered tokens back. Read here for the message; the
+    // same rule is in the UPDATE's WHERE for correctness, where it sees the
+    // row as the spend left it (security review, 2026-10-03).
+    if (order.poolPaidAt && to !== ORDER_STATES.COMPLETED && order.state !== ORDER_STATES.COMPLETED) {
+      return {
+        commit: false,
+        value: { ok: false, reason: 'pool_paid', state: order.state, allowedFrom: [ORDER_STATES.COMPLETED] },
+      };
+    }
 
     // ── The default key is only safe on a FIRST visit ────────────────────────
     // `ord_<order>_<state>` is fine until the order reaches that state a second
@@ -355,6 +375,7 @@ export async function transition({
           SET state = $2, updated_at = now(),
               merchant_id = COALESCE($3, merchant_id)
         WHERE order_id = $1 AND state = ANY($4)
+          AND (pool_paid_at IS NULL OR $2 = 'COMPLETED' OR state = 'COMPLETED')
         RETURNING *`,
       [oid, to, merchantId ? String(merchantId) : null, allowedFrom],
     );
@@ -460,6 +481,11 @@ export async function reassign({
         value: { ok: false, reason: 'invalid_transition', state: order.state, allowedFrom: from },
       };
     }
+    // A buy an admin is approving from PROCESSING has had its tokens paid out
+    // already; handing it to someone else would strand it (see `transition`).
+    if (order.poolPaidAt) {
+      return { commit: false, value: { ok: false, reason: 'pool_paid', state: order.state, allowedFrom: [] } };
+    }
     // Reassigning to the merchant who already holds it is a no-op, not an
     // error: an admin double-clicking must not produce a 409.
     if (String(order.merchantId) === String(merchantId)) {
@@ -469,7 +495,7 @@ export async function reassign({
     const moved = await client.query(
       `UPDATE order_states
           SET merchant_id = $2, state = $3, updated_at = now()
-        WHERE order_id = $1 AND state = ANY($4)
+        WHERE order_id = $1 AND state = ANY($4) AND pool_paid_at IS NULL
         RETURNING *`,
       [oid, String(merchantId), ORDER_STATES.ASSIGNED, from],
     );

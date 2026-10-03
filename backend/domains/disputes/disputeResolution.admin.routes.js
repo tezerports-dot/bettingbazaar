@@ -312,7 +312,8 @@ router.post('/dispute-orders/:orderId/resolve', authenticate, hasPermission('can
       // a state this resolution applies to.
       return res.status(409).json({
         success: false,
-        message: `Cannot resolve order in status: ${moved.status ?? 'missing'}`,
+        message: moved.reason === 'pool_paid'
+          ? 'The team\'s tokens for this buy were already paid to the player, so it can only be completed.' : `Cannot resolve order in status: ${moved.status ?? 'missing'}`,
       });
     }
     // A withdrawal's money step is keyed end to end: replaying it repairs a
@@ -365,8 +366,9 @@ router.post('/dispute-orders/:orderId/resolve', authenticate, hasPermission('can
         // A DISPUTED buy keeps its pool hold, so this spends it. If the hold
         // is somehow gone and the pool cannot cover it, `moveDepositMoney`
         // reports it and the log below makes it a case a person sees.
+        // Completed by the transition above, so it is paid out from COMPLETED.
         const moved = await moveDepositMoney(order, {
-          creditDeposit, creditReserve, releaseUTR,
+          creditDeposit, creditReserve, releaseUTR, requireState: 'COMPLETED',
         });
         if (!moved.ok) {
           console.error(`[dispute resolve] ${order.orderId} released but money did not move:`, moved.reason);

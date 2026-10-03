@@ -49,6 +49,7 @@ export const LIFECYCLE = Object.freeze({
   ILLEGAL_TRANSITION: 'illegal_transition',
   ALREADY_THERE:      'already_there',
   NOT_FOUND:          'not_found',
+  POOL_PAID:          'pool_paid',
 });
 
 /**

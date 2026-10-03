@@ -176,11 +176,24 @@ export async function moveDepositMoney(order, {
    * substitute it; defaults to the real one, so no caller can forget it.
    */
   spendPool = null,
+  /**
+   * The state the caller read the order in and will complete it from. Asked
+   * under the order's row lock: an order that moved since is refused
+   * (`order_state`) with nothing moved. Required — a caller that forgot it
+   * would pay out a buy that was rejected or cancelled meanwhile.
+   */
+  requireState,
 }) {
+  if (!requireState) throw new Error('moveDepositMoney requires requireState: the state the order is completed from');
   const { depositCredit, reserveCredit, total } = depositCreditSplit(order);
 
   const spend = spendPool ?? (await import('#db')).db.teamPools.spendForBuy;
-  const taken = await spend(order.orderId, { actor: 'deposit-credit' });
+  const taken = await spend(order.orderId, { actor: 'deposit-credit', requireState });
+  if (!taken.ok && taken.reason === 'order_state') {
+    // Not a funding problem: the order moved since the caller read it. Nothing
+    // moved, and there is nothing for the operator to fund.
+    return { ok: false, reason: 'order_state', depositCredit, reserveCredit, total };
+  }
   if (!taken.ok) {
     // `pool_short` / `no_team`: nothing held and nothing spendable. The player
     // has paid, so it is reported, and the order stays PAID to retry.

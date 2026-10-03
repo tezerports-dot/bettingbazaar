@@ -1189,7 +1189,16 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
         if (isDeposit) {
             // ── The pool's hold IS the payment, and `moveDepositMoney` takes it ──
             // Spent once, from the team pool, keyed on the order (§2).
-            deposited = await moveDepositMoney(order, { creditDeposit, creditReserve, releaseUTR });
+            // `requireState`: asked under the order's lock, so a buy the player
+            // disputed (or an admin decided) since it was read is not paid out
+            // underneath them (security review, 2026-10-03).
+            deposited = await moveDepositMoney(order, { creditDeposit, creditReserve, releaseUTR, requireState: 'PAID' });
+            if (!deposited.ok && deposited.reason === 'order_state') {
+                return res.status(409).json({
+                    success: false,
+                    message: 'This buy changed while you were confirming it (it may have been disputed), so nothing was credited. Refresh to see where it stands.',
+                });
+            }
             if (!deposited.ok) {
                 // Reported to the operator and to the player by
                 // `moveDepositMoney` itself (F-015). The order stays PAID, so it

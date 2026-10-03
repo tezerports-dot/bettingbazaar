@@ -38,6 +38,7 @@ const paidOrder = () => ({
 const refusingMovers = () => ({
   spendPool: vi.fn(() => Promise.resolve({ ok: false, reason: 'pool_short' })),
   creditDeposit: vi.fn(), creditReserve: vi.fn(), releaseUTR: vi.fn(),
+  requireState: 'PAID',
 });
 
 describe('a paid deposit that cannot be credited', () => {
@@ -114,12 +115,36 @@ describe('a paid deposit that cannot be credited', () => {
     expect(result).toMatchObject({ ok: false, reason: 'pool_short' });
   });
 
+  it('treats an order that moved since it was read as nothing to report', async () => {
+    // `order_state` is a race the route answers with 409, not a pool to fund:
+    // alerting on it would page an operator about a buy that is fine.
+    const movers = {
+      ...refusingMovers(),
+      spendPool: vi.fn(() => Promise.resolve({ ok: false, reason: 'order_state' })),
+    };
+    const result = await moveDepositMoney(paidOrder(), movers);
+
+    expect(result).toMatchObject({ ok: false, reason: 'order_state' });
+    expect(movers.creditDeposit).not.toHaveBeenCalled();
+    expect(movers.creditReserve).not.toHaveBeenCalled();
+    expect(sendAlert).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it('refuses a call that does not say which state it completes from', async () => {
+    const movers = refusingMovers();
+    delete movers.requireState;
+    await expect(moveDepositMoney(paidOrder(), movers)).rejects.toThrow(/requireState/);
+    expect(movers.spendPool).not.toHaveBeenCalled();
+  });
+
   it('reports NOTHING when the pool spend succeeds', async () => {
     // The mirror. An alert on a healthy deposit is worse than no alert: it
     // trains whoever reads them to ignore the channel.
     const movers = {
       spendPool: vi.fn(() => Promise.resolve({ ok: true, taken: 'held' })),
       creditDeposit: vi.fn(), creditReserve: vi.fn(), releaseUTR: vi.fn(),
+      requireState: 'PAID',
     };
     const result = await moveDepositMoney(paidOrder(), movers);
 

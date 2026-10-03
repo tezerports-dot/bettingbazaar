@@ -18,7 +18,7 @@ import { moveDepositMoney } from './depositCredit.js';
 import { releaseUTR } from '../../middleware/utrValidation.js';
 // The order state machine. Every status change goes through here so an illegal
 // move is refused by the database rather than by whichever check ran first.
-import { completeOrder, cancelOrder } from './orderLifecycle.service.js';
+import { completeOrder, cancelOrder, canTransition } from './orderLifecycle.service.js';
 import { emitAdminUpdate, emitOrderUpdate, emitWalletUpdate } from '../notification/realtimeEmitters.js';
 
 const router = express.Router();
@@ -71,11 +71,21 @@ router.post('/payment-orders/:orderId/action', authenticate, hasPermission('canR
     // is keyed on the order id, so a crash between the money and the transition
     // leaves a retryable PAID order rather than a COMPLETED one that paid
     // nobody.
+    // An APPROVE the order cannot take is refused BEFORE any money moves: a
+    // REJECTED buy approved here paid the player out and then answered 409
+    // (security review, 2026-10-03). The read answers the common case; the
+    // spend asks the same question again under the order's lock.
+    if (action === 'APPROVE' && !canTransition(order.status, 'COMPLETED')) {
+      return res.status(409).json({ success: false, message: `Cannot APPROVE an order that is ${order.status}` });
+    }
     let deposited = null;
     if (action === 'APPROVE' && order.type === 'DEPOSIT') {
       deposited = await moveDepositMoney(order, {
-        creditDeposit, creditReserve, releaseUTR,
+        creditDeposit, creditReserve, releaseUTR, requireState: order.status,
       });
+      if (!deposited.ok && deposited.reason === 'order_state') {
+        return res.status(409).json({ success: false, message: 'The order changed while this was being approved. Nothing was credited; refresh and decide again.' });
+      }
       if (!deposited.ok) {
         return res.status(409).json({ success: false, message: 'The team\'s token pool cannot cover this buy. Nothing was credited; the order stays as it is.' });
       }
@@ -123,7 +133,8 @@ router.post('/payment-orders/:orderId/action', authenticate, hasPermission('canR
       // refused because the order is not in a state this action is valid from.
       return res.status(409).json({
         success: false,
-        message: `Cannot ${action} an order that is ${moved.status ?? 'missing'}`,
+        message: moved.reason === 'pool_paid'
+          ? 'The team\'s tokens for this buy were already paid to the player, so it can only be completed.' : `Cannot ${action} an order that is ${moved.status ?? 'missing'}`,
         reason: moved.reason,
       });
     }
@@ -231,7 +242,8 @@ router.post('/payment-orders/:orderId/resolve', authenticate, hasPermission('can
     if (!resolved.ok) {
       return res.status(409).json({
         success: false,
-        message: `Can only resolve DISPUTED orders. Current: ${resolved.status ?? 'missing'}`,
+        message: resolved.reason === 'pool_paid'
+          ? 'The team\'s tokens for this buy were already paid to the player, so it can only be completed.' : `Can only resolve DISPUTED orders. Current: ${resolved.status ?? 'missing'}`,
       });
     }
     // A withdrawal's money step is keyed end to end, so replaying it on a
@@ -284,8 +296,9 @@ router.post('/payment-orders/:orderId/resolve', authenticate, hasPermission('can
         // A DISPUTED buy keeps its pool hold, so this spends it. If the hold is
         // somehow gone and the pool cannot cover it, `moveDepositMoney` reports
         // it and the log below makes it a case a person sees.
+        // Completed by the transition above, so it is paid out from COMPLETED.
         const moved = await moveDepositMoney(order, {
-          creditDeposit, creditReserve, releaseUTR,
+          creditDeposit, creditReserve, releaseUTR, requireState: 'COMPLETED',
         });
         if (!moved.ok) {
           // `moveDepositMoney` has already reported it. Loud here too: the

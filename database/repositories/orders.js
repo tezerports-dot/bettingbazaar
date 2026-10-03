@@ -54,7 +54,14 @@ const REASON = Object.freeze({
   ILLEGAL_TRANSITION: 'illegal_transition',
   ALREADY_THERE:      'already_there',
   NOT_FOUND:          'not_found',
+  // A buy whose team tokens were already paid out: it may only be completed.
+  POOL_PAID:          'pool_paid',
 });
+
+/** The refusal a caller branches on, from the writer's own reason. */
+const refusalReason = (r) => (
+  r === 'not_found' ? REASON.NOT_FOUND : r === 'pool_paid' ? REASON.POOL_PAID : REASON.ILLEGAL_TRANSITION
+);
 
 /**
  * The key for a transition that may legitimately repeat.
@@ -104,7 +111,7 @@ export async function transitionOrder(orderId, to, { set = {}, expectFrom = null
   if (!result.ok) {
     return {
       ok: false,
-      reason: result.reason === 'not_found' ? REASON.NOT_FOUND : REASON.ILLEGAL_TRANSITION,
+      reason: refusalReason(result.reason),
       status: result.state ?? null,
       attempted: to,
       allowedFrom: result.allowedFrom ?? [],
@@ -158,7 +165,7 @@ export async function reassignOrder(orderId, { set = {}, from, actor = null, rea
   if (!result.ok) {
     return {
       ok: false,
-      reason: result.reason === 'not_found' ? REASON.NOT_FOUND : REASON.ILLEGAL_TRANSITION,
+      reason: refusalReason(result.reason),
       status: result.state ?? null,
       attempted: 'ASSIGNED',
       allowedFrom: result.allowedFrom ?? [],

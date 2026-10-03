@@ -2108,6 +2108,42 @@ const MUTATIONS = [
     from: "        AND (CASE WHEN $3 THEN m.accepts_deposits ELSE m.accepts_withdrawals END)\n",
     to: "\n",
   },
+  // ── Security review 2026-10-03, F1: a buy's money moved before its state ──
+  {
+    id: 'M330', file: 'database/repositories/teamPools.js', config: PG,
+    test: 'database/tests/teamRoutingPg.test.js',
+    why: 'a confirm that read PAID pays the team\'s tokens out on a buy a member rejected or an expiry cancelled meanwhile',
+    from: "      if (states && !states.includes(o[0].state)) throw new Refused('order_state');\n",
+    to: "\n",
+  },
+  {
+    id: 'M331', file: 'backend/domains/payment/depositCredit.js', config: PG,
+    test: 'backend/tests/routes/paymentOrderAdminActionRoutes.test.js',
+    why: 'the state the route read never reaches the spend, so the check under the lock asks nothing',
+    from: "  const taken = await spend(order.orderId, { actor: 'deposit-credit', requireState });\n",
+    to: "  const taken = await spend(order.orderId, { actor: 'deposit-credit' });\n",
+  },
+  {
+    id: 'M332', file: 'database/repositories/teamPools.js', config: PG,
+    test: 'database/tests/teamRoutingPg.test.js',
+    why: 'a buy whose tokens were paid out can still be rejected, cancelled or disputed before the confirm completes it',
+    from: "      await client.query('UPDATE order_states SET pool_paid_at = now() WHERE order_id = $1', [oid]);\n",
+    to: "\n",
+  },
+  {
+    id: 'M333', file: 'database/repositories/orders.core.js', config: PG,
+    test: 'database/tests/teamRoutingPg.test.js',
+    why: 'the paid-out rule is not asked under the lock, so the caller is told an illegal move rather than why',
+    from: "    if (order.poolPaidAt && to !== ORDER_STATES.COMPLETED && order.state !== ORDER_STATES.COMPLETED) {\n",
+    to: "    if (false) {\n",
+  },
+  {
+    id: 'M334', file: 'backend/domains/payment/paymentOrder.routes.js', config: PG,
+    test: 'backend/tests/routes/paymentOrderAdminActionRoutes.test.js',
+    why: 'an admin APPROVE on a REJECTED buy credits the player and spends the pool, then answers 409',
+    from: "    if (action === 'APPROVE' && !canTransition(order.status, 'COMPLETED')) {\n",
+    to: "    if (false) {\n",
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

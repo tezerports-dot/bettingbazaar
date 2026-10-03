@@ -61,6 +61,7 @@ const movers = {
   creditDeposit: async (userId, amount) => { calls.deposit.push(amount); },
   creditReserve: async (userId, amount) => { calls.reserve.push(amount); },
   releaseUTR: async () => {},
+  requireState: 'PAID',
 };
 
 /**
