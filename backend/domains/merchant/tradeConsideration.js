@@ -3,8 +3,10 @@
  * tradeConsideration.js — what the platform got, or gave, for tokens it moved
  * to or from a merchant or a team pool, read off an admin's request.
  *
- * Shared by the merchant top-up/deduct routes and the team-pool fulfilment
- * route, so the two cannot come to different conclusions about one input (§5).
+ * Read by the team-pool fulfilment route (`team.admin.routes.js`), the one
+ * place tokens now move between the platform and the merchant side. The
+ * per-merchant top-up/deduct routes it used to be shared with were removed
+ * with merchant wallets in Step 2c.
  */
 import { rupeesToPaise } from '../../shared/money.js';
 import { getSystemConfig } from '#db/repositories/config.js';

@@ -22,17 +22,18 @@
  * Through the real path, so the row is one the platform can produce (§32
  * S16): the player's ₹5,000 withdrawal is a CASH order by its size, it is
  * ROUTED to the one online member of a working CASH team, the member accepts
- * and confirms through their own routes, and — with the withdrawal hold set to
- * zero for this suite — the confirm settles it there and then: the team pool
- * is credited, the player's stake consumed, the order COMPLETED.
+ * and confirms through their own routes. The confirm HOLDS it for at least an
+ * hour (2c+, owner 2026-10-02 — there is no zero-hold setting any more), and
+ * the suite then settles it through `settleHold`, the sweep's own settler: the
+ * team pool is credited, the player's stake consumed, the order COMPLETED.
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { pgConfigured, applySchema, closePg, pgQuery } from '#db/client.js';
 import { getOrderRecord, getCdmReceipt } from '#db/repositories/orders.record.js';
 import { updateUser } from '#db/repositories/users.js';
-import { getSystemConfig, applySystemConfig } from '#db/repositories/config.js';
 import { PAYMENT_MODES } from '#db/repositories/teamRouting.js';
 import { createWithdrawalOrder } from '../../domains/payment/paymentProcessing.service.js';
+import { settleHold } from '../../domains/payment/withdrawalHold.service.js';
 import { teamFixture } from '../teamFixture.js';
 import { mountRouter, actor, merchantActor, as } from './_harness.js';
 
@@ -52,7 +53,6 @@ describePg('the CDM receipt', () => {
   const teams = teamFixture();
   let merchantApp;
   let adminApp;
-  let restoreHold = null;
   const players = [];
   // The members of one working CASH team. A cash member holds ONE open order
   // at a time, and every payout here completes before the next is made — so
@@ -102,6 +102,8 @@ describePg('the CDM receipt', () => {
     if (state === 'COMPLETED') {
       const confirmed = await as(merchantApp, merchant).post(`/confirm/${orderId}`).send({});
       expect(confirmed.status, JSON.stringify(confirmed.body)).toBe(200);
+      expect((await getOrderRecord(orderId)).merchantCreditStatus).toBe('HELD');
+      expect(await settleHold(orderId)).toBe(true);
       expect((await getOrderRecord(orderId)).status).toBe('COMPLETED');
     }
     return { orderId, player };
@@ -113,15 +115,9 @@ describePg('the CDM receipt', () => {
     adminApp = mountRouter((await import('../../routes/admin/index.js')).default);
     for (let i = 0; i < 6; i += 1) members.push(await merchantActor({}));
     await teams.workingTeam({ rail: 'CASH', include: members.map((m) => m.merchantId) });
-    // The hold switched off (admin-editable down to 0): the confirm settles the
-    // payout itself, which is the moment a slip becomes owed. Put back after,
-    // outside any assertion — the config row is shared by every suite (trap 10).
-    restoreHold = (await getSystemConfig({ fresh: true }))?.withdrawalHoldMinutes ?? null;
-    await applySystemConfig({ withdrawalHoldMinutes: 0 });
   }, 120_000);
 
   afterAll(async () => {
-    if (restoreHold !== null) await applySystemConfig({ withdrawalHoldMinutes: restoreHold });
     await pgQuery('SET session_replication_role = replica');
     try {
       await pgQuery(

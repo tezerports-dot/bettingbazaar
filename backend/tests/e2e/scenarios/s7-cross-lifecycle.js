@@ -133,11 +133,23 @@ export default async function run() {
         String(asPlayer.body?.order?.status ?? asPlayer.body?.order?.state),
         JSON.stringify(asPlayer.body).includes('COMPLETED'));
 
+      // Released to the player on a BUY means the member was wrong, and whoever
+      // was wrong is suspended until staff lift it (2c+, owner 2026-10-02). So
+      // what the member's panel shows is the suspension, not the order list.
       const asMerchant = await GET(mT, '/api/merchant/orders?status=COMPLETED');
-      check(A, 'merchant', 'the MERCHANT’s own order list agrees', 'the order is there',
-        JSON.stringify(asMerchant.body).includes(orderId) ? 'present' : 'absent',
-        JSON.stringify(asMerchant.body).includes(orderId),
-        '§32 S17: one order, two panels — they must not disagree about what happened to it');
+      check(A, 'merchant', 'the MEMBER who lost the dispute is suspended out of their panel', '403 Account suspended',
+        `${asMerchant.status} ${asMerchant.body?.message ?? ''}`,
+        asMerchant.status === 403 && /suspended/i.test(asMerchant.body?.message ?? ''),
+        '§32 S17: an admin decision the merchant never sees is half a feature');
+      const fault = await pgQuery(
+        `SELECT m.status, m.lost_disputes, f.party
+           FROM merchants m JOIN dispute_faults f ON f.merchant_id = m.merchant_id AND f.order_id = $2
+          WHERE m.merchant_id = $1`, [m.merchantId, orderId]);
+      check(A, 'system', 'and the loss is recorded against that member, once', 'SUSPENDED / 1 / MERCHANT',
+        `${fault.rows[0]?.status} / ${fault.rows[0]?.lost_disputes} / ${fault.rows[0]?.party}`,
+        fault.rows[0]?.status === 'SUSPENDED' && Number(fault.rows[0]?.lost_disputes) === 1
+        && fault.rows[0]?.party === 'MERCHANT',
+        'one decision, one fault row: a replayed resolve must not count twice');
     }
   }
 
