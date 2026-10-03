@@ -50,9 +50,10 @@ const MERCHANT_ORDER_RULES: Array<{
 // against the spec and refuses an out-of-range value by name. `fallback` is a
 // LOADING placeholder equal to the spec default beside it (§4).
 //
-// `disputeWindowSeconds` is declared in the spec and deliberately NOT offered:
-// nothing reads it (`routingSettings` maps it and no caller uses it), and §3
-// forbids a setting with no consumer. It round-trips unchanged.
+// There is no per-rail dispute window here. The two windows a player has to
+// dispute in are `rejectedBuyDisputeMinutes` and `withdrawalHoldMinutes`,
+// offered beside the withdrawal hold below; a per-rail copy that nothing read
+// was removed from the spec (§3).
 type RoutingRail = 'CASH' | 'UPI_BANK' | 'USDT';
 const ROUTING_RAILS: Array<{
   rail: RoutingRail; label: string;

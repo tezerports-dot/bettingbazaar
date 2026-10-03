@@ -115,7 +115,6 @@ describePg('team routing and pool holds (PostgreSQL)', () => {
       assignmentWaitSeconds: 1500,
       processingWindowSeconds: { CASH: 900, UPI_BANK: 900, USDT: 900 },
       utrSubmitSeconds: 60,
-      disputeWindowSeconds: 1800,
     });
     const s = routingSettings({ teamRouting: { concurrency: { UPI_BANK: '5' }, utrSubmitSeconds: 90 } });
     expect(s.concurrency).toEqual({ CASH: 1, UPI_BANK: 5, USDT: 3 });

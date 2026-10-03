@@ -54,8 +54,7 @@ export function routingSettings(cfg) {
       UPI_BANK: Number(p.UPI_BANK ?? 900),  // schema default: 900
       USDT: Number(p.USDT ?? 900),          // schema default: 900
     },
-    utrSubmitSeconds: Number(t.utrSubmitSeconds ?? 60),            // schema default: 60
-    disputeWindowSeconds: Number(t.disputeWindowSeconds ?? 1800),  // schema default: 1800
+    utrSubmitSeconds: Number(t.utrSubmitSeconds ?? 60),  // schema default: 60
   };
 }
 

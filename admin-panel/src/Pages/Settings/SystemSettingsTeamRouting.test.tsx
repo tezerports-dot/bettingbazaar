@@ -11,9 +11,10 @@
  *      merchant↔admin token purchase limits) are neither shown nor SENT. The PUT
  *      skips an undeclared key silently, so a panel still sending one would
  *      look like it saved.
- *   3. `disputeWindowSeconds` is declared with no consumer, so it is not
- *      offered (§3) — and it round-trips exactly as served rather than being
- *      dropped or reset.
+ *   3. There is no per-rail dispute window: the spec's `disputeWindowSeconds`
+ *      had no consumer and was removed (§3). The two windows a player really
+ *      has — a rejected buy's and a paid sell's hold (2c+) — are offered with
+ *      the served values and go back in the PUT.
  *
  * The mock returns what `api.system.getConfig` returns — `{ success, data }`
  * — so the served values are actually applied.
@@ -38,6 +39,7 @@ const { SystemSettings } = await import('./SystemSettings');
 // that differ from every default so a test can tell served from fallback.
 const served = {
   minDeposit: 500, maxDeposit: 50000, minWithdrawal: 500, maxWithdrawal: 50000,
+  withdrawalHoldMinutes: 90, rejectedBuyDisputeMinutes: 20,
   merchantOrderLimits: {
     maxConsecutiveRejections: 4, paidResponseMinutes: 31, utrAfterPaidMinutes: 16,
     maxConsecutivePlayerPaymentFailures: 4, playerOrderLockMinutes: 61,
@@ -48,7 +50,6 @@ const served = {
     assignmentWaitSeconds: 1200,
     processingWindowSeconds: { CASH: 600, UPI_BANK: 1200, USDT: 1800 },
     utrSubmitSeconds: 90,
-    disputeWindowSeconds: 2400,
   },
 };
 
@@ -76,16 +77,23 @@ describe('System Settings — team routing', () => {
     expect(field('mol-utrAfterPaidMinutes').value).toBe('16');
   });
 
-  it('offers none of the removed settings and no dispute window', async () => {
+  it('offers none of the removed settings and no per-rail dispute window', async () => {
     await paint();
     expect(screen.queryByText(/Concurrent (Buy|Sell) Orders per Merchant/)).not.toBeInTheDocument();
     expect(screen.queryByText(/Merchant Admin Token/)).not.toBeInTheDocument();
     expect(screen.queryByText(/Minimum Token Top-up/)).not.toBeInTheDocument();
     expect(screen.queryByText(/Settlement Rail/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/dispute window/i)).not.toBeInTheDocument();
+    expect(document.querySelector('[id^="tr-dispute"]')).toBeNull();
+    expect(screen.queryByText(/Dispute Window \(seconds\)/i)).not.toBeInTheDocument();
   });
 
-  it('sends teamRouting back, the dispute window as served, and no undeclared key', async () => {
+  it('offers the two real dispute windows with the served values', async () => {
+    await paint();
+    expect(screen.getByLabelText(/Dispute window after a rejected buy/i)).toHaveValue(20);
+    expect(screen.getByLabelText(/Sell escrow after "paid"/i)).toHaveValue(90);
+  });
+
+  it('sends teamRouting and both escrow windows back, and no undeclared key', async () => {
     await paint();
     updateConfig.mockResolvedValue({ success: true });
     fireEvent.change(field('tr-conc-UPI_BANK'), { target: { value: '7' } });
@@ -93,6 +101,9 @@ describe('System Settings — team routing', () => {
     await waitFor(() => expect(updateConfig).toHaveBeenCalled());
     const body = updateConfig.mock.calls[0][0];
     expect(body.teamRouting).toEqual({ ...served.teamRouting, concurrency: { CASH: 2, UPI_BANK: 7, USDT: 4 } });
+    expect(body.teamRouting).not.toHaveProperty('disputeWindowSeconds');
+    expect(body.withdrawalHoldMinutes).toBe(90);
+    expect(body.rejectedBuyDisputeMinutes).toBe(20);
     for (const gone of ['maxConcurrentDepositOrders', 'maxConcurrentWithdrawalOrders', 'minAdminTokenPurchase',
       'minAdminTokenPurchaseUsdt', 'maxAdminTokenPurchaseUsdt']) {
       expect(Object.keys(body.merchantOrderLimits), gone).not.toContain(gone);

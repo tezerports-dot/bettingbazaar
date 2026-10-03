@@ -237,8 +237,10 @@ export const SYSTEM_CONFIG_SPEC = group({
     }),
     // Seconds. A queued order nobody could take expires after assignmentWait;
     // an assigned order after processingWindow; a cash player's reference is
-    // due utrSubmit after they tap Paid; disputeWindow is how long a player
-    // may dispute after the deadline.
+    // due utrSubmit after they tap Paid. How long a player may DISPUTE is not
+    // a routing number: it is `rejectedBuyDisputeMinutes` (a rejected buy) and
+    // `withdrawalHoldMinutes` (a paid sell), each read by the code that holds
+    // the tokens (2c+, owner 2026-10-02).
     assignmentWaitSeconds:   n(1500, 60, 86400),
     processingWindowSeconds: group({
       CASH:     n(900, 60, 7200),
@@ -246,7 +248,6 @@ export const SYSTEM_CONFIG_SPEC = group({
       USDT:     n(900, 60, 7200),
     }),
     utrSubmitSeconds:      n(60, 15, 3600),
-    disputeWindowSeconds:  n(1800, 60, 86400),
   }),
 
   riskRules: group({
