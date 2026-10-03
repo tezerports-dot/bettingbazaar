@@ -144,6 +144,16 @@ export async function refundWithdrawal(userId, amount, withdrawalId) {
 }
 
 /**
+ * Give a withdrawal's stake back to the player, from wherever it is — still
+ * locked or already consumed — exactly once. The ledger decides the branch,
+ * under the wallet lock; see the repository function. Every admin refund of a
+ * withdrawal goes through this one (withdrawalHold.endWithdrawal).
+ */
+export async function returnWithdrawalStake(userId, amount, withdrawalId) {
+  return pushBalances(userId, await pg.returnWithdrawalStake(userId, amount, withdrawalId));
+}
+
+/**
  * releaseLockedStake — settle-time release of a bet's locked stake (F-2,
  * 2026-07-10). THE sanctioned writer for lockedBalance/lockedDepositAmount/
  * lockedWinningsAmount at settlement (§7) — replaces the raw `$inc`s that

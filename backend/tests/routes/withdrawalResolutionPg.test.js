@@ -40,15 +40,18 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { pgConfigured, applySchema, closePg, pgQuery } from '#db/client.js';
-import { getOrderRecord } from '#db/repositories/orders.record.js';
+import { getOrderRecord, mirrorSettlementState } from '#db/repositories/orders.record.js';
 import { getBalancesPaise } from '#db/repositories/wallets.core.js';
 import { updateUser } from '#db/repositories/users.js';
-import { getPool } from '#db/repositories/teamPools.js';
+import { getPool, creditSellToPool } from '#db/repositories/teamPools.js';
 import { getTreasuryBalances, ACCOUNTS } from '#db/repositories/treasury.js';
 import { getSystemConfig, applySystemConfig } from '#db/repositories/config.js';
 import { PAYMENT_MODES } from '#db/repositories/teamRouting.js';
-import { creditWinnings } from '../../domains/wallet/walletAuthority.service.js';
+import {
+  creditWinnings, lockWithdrawal, releaseWithdrawal, refundWithdrawal,
+} from '../../domains/wallet/walletAuthority.service.js';
 import { createWithdrawalOrder } from '../../domains/payment/paymentProcessing.service.js';
+import { endWithdrawal } from '../../domains/payment/withdrawalHold.service.js';
 import { teamFixture } from '../teamFixture.js';
 import { mountRouter, actor, merchantActor, as } from './_harness.js';
 
@@ -286,6 +289,96 @@ describePg('ending a withdrawal, in every state its money can be in', () => {
         .post(`/dispute-orders/${s.orderId}/resolve`).send({ decision: 'RELEASE_TO_MERCHANT', resolution: 'payout seen' });
       expect(res.status, JSON.stringify(res.body)).toBe(200);
       await expectReleased(s, before);
+    });
+  });
+
+  // ── A SETTLED withdrawal, refunded — and the refund replayed ─────────────
+  // A dispute can land after the hold worker has settled: it waits on the
+  // settlement's lock, then moves PAID -> DISPUTED, and the order is DISPUTED
+  // with its pool credited and its stake consumed. Refunding it gives the
+  // stake back as winnings, once. The replay — a second admin resolving the
+  // same dispute, or the route's own `idempotent` branch — read the MIRRORED
+  // status, which the first refund had rewritten (RELEASED -> REVERSED), and
+  // took the "stake still locked" branch: `refundWithdrawal` on a different
+  // key, paying the player a second time out of ANOTHER order's locked stake.
+  // The bystander lock below is that other order; it must survive.
+  describe('a settled withdrawal refunded, then refunded again', () => {
+    const settledDispute = async () => {
+      const s = await sell({ state: 'DISPUTED', held: true });
+      // The settlement, as the worker commits it when the dispute arrives
+      // behind its lock: the pool credited, the stake consumed, and the order
+      // left DISPUTED (the mirror moves state only from PAID).
+      expect((await creditSellToPool(s.orderId, { actor: 'settlement-worker' })).ok).toBe(true);
+      await releaseWithdrawal(s.player.userId, RUPEES, s.orderId);
+      await mirrorSettlementState(s.orderId, 'SETTLED');
+      const row = await getOrderRecord(s.orderId);
+      expect(row.status).toBe('DISPUTED');
+      expect(row.merchantCreditStatus).toBe('RELEASED');
+      // Another withdrawal's stake, still locked — what a second refund drained.
+      seq += 1;
+      await creditWinnings(s.player.userId, RUPEES, 'resolution suite float', 'Test',
+        `seed_${s.player.userId}`, `wres_seed_${s.player.userId}_${seq}`);
+      await lockWithdrawal(s.player.userId, RUPEES, `bystander_${s.orderId}`);
+      return s;
+    };
+
+    const expectRefundedOnce = async (s, before) => {
+      const after = await snapshot(s);
+      expect(after.winnings - before.winnings, 'the player was not refunded exactly once').toBe(A);
+      expect(after.locked, 'another withdrawal\'s locked stake paid this refund').toBe(before.locked);
+      expect(before.poolAvailable - after.poolAvailable, 'the pool did not give the tokens back').toBe(A);
+      expect(before.teamFloat - after.teamFloat).toBe(A);
+      expect(after.userFloat - before.userFloat).toBe(A);
+      expect((await getOrderRecord(s.orderId)).status).toBe('CANCELLED');
+    };
+
+    it('the Dispute Manager, then its replay branch, refunds once', async () => {
+      const s = await settledDispute();
+      const before = await snapshot(s);
+      const res = await as(disputeApp, await admin())
+        .post(`/dispute-orders/${s.orderId}/resolve`).send({ decision: 'CANCEL_ORDER', resolution: 'no payout' });
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      // What a route does when its transition reports the decision was already
+      // made (`moved.idempotent`, `resolved.idempotent`): the money step again.
+      const replay = await endWithdrawal(s.orderId, 'REFUND', { reason: 'second admin' });
+      expect(replay.ok).toBe(true);
+      await expectRefundedOnce(s, before);
+    });
+
+    it('admins on two screens at once refund once', async () => {
+      const s = await settledDispute();
+      const before = await snapshot(s);
+      const press = async (i) => (i % 2
+        ? as(disputeApp, await admin())
+          .post(`/dispute-orders/${s.orderId}/resolve`).send({ decision: 'CANCEL_ORDER', resolution: 'no payout' })
+        : as(adminApp, await admin())
+          .post(`/payment-orders/${s.orderId}/resolve`).send({ resolution: 'refund', reason: 'no payout' }));
+      const answers = await Promise.all([0, 1, 2, 3].map(press));
+      expect(answers.some((r) => r.status === 200), JSON.stringify(answers.map((r) => r.body))).toBe(true);
+      // Whichever lost the transition replays the money step; either way, once.
+      await expectRefundedOnce(s, before);
+    });
+
+    // The opposite behaviour (§37 step 6): the stake is consumed, so returning
+    // it as LOCKED is refused outright — and a stake that IS still locked is
+    // still returned, the ordinary refund the matrix above covers.
+    it('a consumed stake cannot be returned from the lock', async () => {
+      const s = await settledDispute();
+      const before = await snapshot(s);
+      await expect(refundWithdrawal(s.player.userId, RUPEES, s.orderId)).rejects.toThrow(/already/i);
+      const after = await snapshot(s);
+      expect(after.locked).toBe(before.locked);
+      expect(after.winnings).toBe(before.winnings);
+    });
+
+    it('a refunded stake cannot then be consumed', async () => {
+      const s = await sell({ state: 'DISPUTED', held: true });
+      const res = await as(disputeApp, await admin())
+        .post(`/dispute-orders/${s.orderId}/resolve`).send({ decision: 'CANCEL_ORDER', resolution: 'no payout' });
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      const before = await snapshot(s);
+      await expect(releaseWithdrawal(s.player.userId, RUPEES, s.orderId)).rejects.toThrow(/already/i);
+      expect(await snapshot(s)).toEqual(before);
     });
   });
 

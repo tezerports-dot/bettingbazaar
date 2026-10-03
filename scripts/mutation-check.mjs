@@ -871,11 +871,11 @@ const MUTATIONS = [
     test: 'backend/tests/routes/withdrawalResolutionPg.test.js',
     why: 'an admin refund never takes the stake out of the lock, so the player holds the amount twice and the token total no longer adds up',
     from: `  if (order.escrowLocked) {
-    await refundWithdrawal(order.userId, order.tokenAmount, order.orderId);
+    await returnWithdrawalStake(order.userId, order.tokenAmount, order.orderId);
   }
   if (order.merchantCreditStatus === 'HELD') {`,
     to: `  if (false) {
-    await refundWithdrawal(order.userId, order.tokenAmount, order.orderId);
+    await returnWithdrawalStake(order.userId, order.tokenAmount, order.orderId);
   }
   if (order.merchantCreditStatus === 'HELD') {`,
   },
@@ -1952,6 +1952,39 @@ const MUTATIONS = [
     why: 'a refund of a sell the team already used is not covered by the platform, so the player is credited tokens no account moved and USER_FLOAT stops describing the wallets',
     from: "      if (!pool[0] && coverShortfall) {",
     to: "      if (!pool[0] && false) {",
+  },
+
+  // ── A withdrawal's stake is consumed OR returned, never both ─────────────
+  // A replayed refund of a SETTLED withdrawal branched on the order's mirrored
+  // status, which the first refund had rewritten, and paid the player a second
+  // time out of another order's locked stake (2c regression, 2026-10-03).
+  {
+    id: 'M307', file: 'database/repositories/wallets.js', config: PG,
+    test: 'backend/tests/routes/withdrawalResolutionPg.test.js',
+    why: 'a refund of a settled withdrawal takes the stake from the lock it already left, draining another order\'s locked stake',
+    from: "    const consumed = rows.length > 0;",
+    to: "    const consumed = false;",
+  },
+  {
+    id: 'M308', file: 'database/repositories/wallets.js', config: PG,
+    test: 'backend/tests/routes/withdrawalResolutionPg.test.js',
+    why: 'a consumed stake can still be returned from the lock, so a replayed refund pays the player twice',
+    from: "    excludes: [`wd_release_${withdrawalId}`],",
+    to: "    excludes: [],",
+  },
+  {
+    id: 'M309', file: 'database/repositories/wallets.js', config: PG,
+    test: 'backend/tests/routes/withdrawalResolutionPg.test.js',
+    why: 'a refunded stake can still be consumed, so the team is credited for tokens the player already has back',
+    from: "    excludes: [`refund_${withdrawalId}`],",
+    to: "    excludes: [],",
+  },
+  {
+    id: 'M310', file: 'database/repositories/wallets.core.js', config: PG,
+    test: 'backend/tests/routes/withdrawalResolutionPg.test.js',
+    why: 'rival movements are never checked, so a stake is both consumed and returned',
+    from: "  if (excludes.length) {",
+    to: "  if (false) {",
   },
 ];
 

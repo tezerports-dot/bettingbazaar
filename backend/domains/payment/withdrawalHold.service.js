@@ -29,7 +29,7 @@
  * several instances, settles each order exactly once.
  */
 import { db } from '#db';
-import { releaseWithdrawal, refundWithdrawal, creditWinnings } from '../wallet/walletAuthority.service.js';
+import { releaseWithdrawal, returnWithdrawalStake } from '../wallet/walletAuthority.service.js';
 import { emitOrderUpdate, emitAdminUpdate } from '../notification/realtimeEmitters.js';
 import { sendAlert } from '../../services/alerting.service.js';
 import { getSystemConfig } from '#db/repositories/config.js';
@@ -164,7 +164,10 @@ function mirrorSettlement(order, settlementStatus, extra = {}) {
  * the release key, `dispute_wd_refund_<id>`), so calling this again for the
  * same decision repairs a partial failure rather than paying twice — and the
  * routes do call it again when their transition reports the decision was
- * already made.
+ * already made. Releasing and returning the stake are RIVALS: each refuses
+ * when the other's key exists, so a stake is consumed or returned, never both.
+ * Which way a refund returns it is read from the ledger, never from the
+ * order's flags, which this function itself rewrites.
  *
  * @param {string} orderId
  * @param {'REFUND'|'RELEASE'} decision
@@ -220,18 +223,13 @@ export async function endWithdrawal(orderId, decision, { reason = null, by = nul
     throw Object.assign(new Error(`The refund could not be made: ${reversed.reason}`), { status: 409 });
   }
   if (reversed.ok) {
-    if (order.merchantCreditStatus === 'RELEASED') {
-      await creditWinnings(
-        order.userId, order.tokenAmount,
-        `Dispute resolved — withdrawal refunded after settlement: ${order.orderId}`,
-        'PaymentOrder', order.orderId, `dispute_wd_refund_${order.orderId}`,
-      );
-    } else {
-      // Credited to the pool, but the stake was never consumed (a release that
-      // failed and was not compensated): it is still locked, so return it.
-      await refundWithdrawal(order.userId, order.tokenAmount, order.orderId);
-    }
-    if (reversed.covered) {
+    // Where the STAKE is — consumed by the settlement, or still locked because
+    // a release failed — is the ledger's answer, asked under the wallet lock.
+    // Never the mirrored status: the first refund rewrites it (RELEASED ->
+    // REVERSED), and a replay that branched on it took the "still locked" path
+    // on another key and paid the player twice, out of another order's stake.
+    await returnWithdrawalStake(order.userId, order.tokenAmount, order.orderId);
+    if (reversed.covered && !reversed.alreadyCovered) {
       // The team has already spent what this sell brought in. The player is
       // made whole now, from the platform's holding (above), and the team is
       // recovered from by hand — said plainly, rather than silently.
@@ -247,7 +245,7 @@ export async function endWithdrawal(orderId, decision, { reason = null, by = nul
   // locked, so returning it is locked -> winnings, on the one refund key every
   // path uses.
   if (order.escrowLocked) {
-    await refundWithdrawal(order.userId, order.tokenAmount, order.orderId);
+    await returnWithdrawalStake(order.userId, order.tokenAmount, order.orderId);
   }
   if (order.merchantCreditStatus === 'HELD') {
     await mirrorSettlement(order, 'CANCELLED', { keepState: true, reason, actor });
