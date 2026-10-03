@@ -22,7 +22,7 @@ import {
 } from '../repositories/teamPools.js';
 import { assignToTeam, routingCandidates, railOf, setCashReady, routingSettings } from '../repositories/teamRouting.js';
 import { createOrderRecord, getOrderRecord } from '../repositories/orders.record.js';
-import { transitionOrder } from '../repositories/orders.js';
+import { transitionOrder, reassignOrder } from '../repositories/orders.js';
 import { getTreasuryBalances, ACCOUNTS } from '../repositories/treasury.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
@@ -343,6 +343,34 @@ describePg('team routing and pool holds (PostgreSQL)', () => {
     expect((await transitionOrder(o.orderId, 'DISPUTED', { actor: 'test' })).ok).toBe(true);
     expect(await transitionOrder(o.orderId, 'CANCELLED', { actor: 'test' })).toMatchObject({ ok: false, reason: 'pool_paid' });
     expect((await getOrderRecord(o.orderId)).status).toBe('DISPUTED');
+  });
+
+  // ── Security review, 2026-10-03, F3: a member acting on an order an admin
+  //    handed to somebody else ──────────────────────────────────────────────
+  it('a member cannot move an order that was handed to another member since they read it', async () => {
+    const t = await workingTeam('UPI_BANK', 100000);
+    const o = await order('DEPOSIT', 100000);
+    const got = await assign(o);
+    expect(got.teamId).toBe(t.teamId);
+    const first = got.merchantId;
+    const second = t.members.find((m) => m !== first);
+    expect((await reassignOrder(o.orderId, { set: { merchantId: second }, actor: 'admin-1' })).ok).toBe(true);
+
+    // The first member's accept, decline and red flag all read the order as
+    // theirs a moment ago. None of them may move it now.
+    for (const to of ['PROCESSING', 'PENDING_QUEUE']) {
+      expect(await transitionOrder(o.orderId, to, { expectMerchant: first, set: { merchantId: first } }), to)
+        .toMatchObject({ ok: false, reason: 'merchant_changed' });
+    }
+    expect(await getOrderRecord(o.orderId)).toMatchObject({ status: 'ASSIGNED', merchantId: second });
+
+    // The member who holds it may (the opposite behaviour)…
+    expect((await transitionOrder(o.orderId, 'PROCESSING', { expectMerchant: second, set: { merchantId: second } })).ok).toBe(true);
+    // …and a late accept by the first is refused, NOT answered "already
+    // there" — which wrote its `set` and took the order back.
+    expect(await transitionOrder(o.orderId, 'PROCESSING', { expectMerchant: first, set: { merchantId: first } }))
+      .toMatchObject({ ok: false, reason: 'merchant_changed' });
+    expect(await getOrderRecord(o.orderId)).toMatchObject({ status: 'PROCESSING', merchantId: second });
   });
 
   it('the sweep finds a hold left on a cancelled order, and not one on a live order', async () => {

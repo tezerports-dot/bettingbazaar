@@ -79,7 +79,7 @@ export async function recordDisputeFault({ orderId, party, userId = null, mercha
               high_risk_at  = CASE WHEN lost_disputes + 1 >= $4 THEN COALESCE(high_risk_at, now()) ELSE high_risk_at END,
               updated_at    = now()
             WHERE user_id = $1
-            RETURNING lost_disputes, high_risk_at`,
+            RETURNING lost_disputes, high_risk_at, high_risk_at = now() AS newly_high_risk`,
           [String(userId), reason, decidedBy ? String(decidedBy) : null, HIGH_RISK_LOSSES])
         : await client.query(
           `UPDATE merchants SET
@@ -91,7 +91,7 @@ export async function recordDisputeFault({ orderId, party, userId = null, mercha
               high_risk_at = CASE WHEN lost_disputes + 1 >= $3 THEN COALESCE(high_risk_at, now()) ELSE high_risk_at END,
               updated_at = now()
             WHERE merchant_id = $1
-            RETURNING lost_disputes, high_risk_at`,
+            RETURNING lost_disputes, high_risk_at, high_risk_at = now() AS newly_high_risk`,
           [String(merchantId), reason, HIGH_RISK_LOSSES]);
       if (!loser[0]) throw new Refused('party_missing');
 
@@ -100,7 +100,12 @@ export async function recordDisputeFault({ orderId, party, userId = null, mercha
       await client.query(
         'UPDATE dispute_faults SET lost_count = $2, high_risk = $3 WHERE order_id = $1',
         [oid, lostCount, highRisk]);
-      return { ok: true, party, lostCount, highRisk, newlyHighRisk: highRisk && lostCount === HIGH_RISK_LOSSES };
+      // Newly high-risk when THIS statement set the mark (now() is the
+      // transaction's instant; a mark already standing keeps its older time).
+      // Not "the count is exactly three": after a full admin lifts a review the
+      // count stays, so the next loss re-opens review at four, and the alert
+      // must go out again (security review, 2026-10-03).
+      return { ok: true, party, lostCount, highRisk, newlyHighRisk: loser[0].newly_high_risk === true };
     });
   } catch (e) {
     if (e instanceof Refused) return { ok: false, reason: e.reason };

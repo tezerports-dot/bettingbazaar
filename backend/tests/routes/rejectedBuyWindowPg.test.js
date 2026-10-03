@@ -281,6 +281,8 @@ describePg('the window after a member rejects a buy as unpaid', () => {
     try {
       await expect(applyConfig({ scope: 'system', actor: 'test', patch: { rejectedBuyDisputeMinutes: 4 } })).rejects.toThrow(/rejectedBuyDisputeMinutes/);
       await expect(applyConfig({ scope: 'system', actor: 'test', patch: { rejectedBuyDisputeMinutes: 1441 } })).rejects.toThrow(/rejectedBuyDisputeMinutes/);
+      // A fraction is refused by name, not stored and then read as the default.
+      await expect(applyConfig({ scope: 'system', actor: 'test', patch: { rejectedBuyDisputeMinutes: 7.5 } })).rejects.toThrow(/rejectedBuyDisputeMinutes' must be a whole number/);
       await applyConfig({ scope: 'system', actor: 'test', patch: { rejectedBuyDisputeMinutes: 5 } });
       expect((await getSystemConfig()).rejectedBuyDisputeMinutes).toBe(5);
     } finally {
@@ -292,6 +294,7 @@ describePg('the window after a member rejects a buy as unpaid', () => {
     try {
       await expect(applyConfig({ scope: 'system', actor: 'test', patch: { withdrawalHoldMinutes: 59 } })).rejects.toThrow(/withdrawalHoldMinutes/);
       await expect(applyConfig({ scope: 'system', actor: 'test', patch: { withdrawalHoldMinutes: 0 } })).rejects.toThrow(/withdrawalHoldMinutes/);
+      await expect(applyConfig({ scope: 'system', actor: 'test', patch: { withdrawalHoldMinutes: 90.5 } })).rejects.toThrow(/withdrawalHoldMinutes' must be a whole number/);
       await applyConfig({ scope: 'system', actor: 'test', patch: { withdrawalHoldMinutes: 60 } });
       expect((await getSystemConfig()).withdrawalHoldMinutes).toBe(60);
     } finally {

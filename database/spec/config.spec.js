@@ -58,6 +58,11 @@ export const DEFAULT_CYCLE_PHASES = Object.freeze({
 
 /** A number setting: `n(default, min, max)`. Bounds are inclusive. */
 const n = (def, min = null, max = null) => ({ type: 'number', default: def, min, max });
+// A count of whole units — minutes the database turns into an interval. 7.5
+// minutes would pass `n` and then be read as the default by a reader that
+// insists on an integer: the operator told it saved, the platform running
+// another number (§3).
+const int = (def, min = null, max = null) => ({ ...n(def, min, max), integer: true });
 /** A boolean setting. */
 const b = (def) => ({ type: 'boolean', default: def });
 /** A string setting. */
@@ -278,11 +283,11 @@ export const SYSTEM_CONFIG_SPEC = group({
   // The SELL escrow window: after a member says they paid, the player's tokens
   // stay in escrow at least this long and the player may dispute inside it.
   // Floor 60 — "at least 1 hour" (owner, 2026-10-02); 0 no longer settles at once.
-  withdrawalHoldMinutes: n(60, 60, 1440),
+  withdrawalHoldMinutes: int(60, 60, 1440),
   // The BUY escrow window: after a member rejects a paid buy as unpaid, the
   // player has this long to dispute before the hold returns to the team pool
   // (owner, 2026-10-02: 15 minutes).
-  rejectedBuyDisputeMinutes: n(15, 5, 1440),
+  rejectedBuyDisputeMinutes: int(15, 5, 1440),
 
   usdtPricing: group({
     userMerchantBuyInr:  n(0, 0),

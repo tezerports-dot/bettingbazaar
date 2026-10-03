@@ -779,6 +779,19 @@ Owner answers, 2026-10-02 (two rounds; the second replaced the security deposit 
     first or second loss is admin or sub-admin; a sell can still be disputed
     after its hour (the refund then comes out of the team pool, as in 2c).
   - *Deferred to Step 3:* the five Telegram notification bots.
+  - *Security review before the push (2026-10-03), four findings, all fixed
+    with tests and mutations M330–M343:* (1) every route that completes a buy
+    moved the money before the guarded transition, so an admin APPROVE on a
+    REJECTED buy paid the player and answered 409, and a confirm racing a
+    reject could pay out a buy that ended REJECTED — now the spend asks the
+    state under the order lock and stamps `pool_paid_at`, after which only
+    COMPLETED may follow; (2) any decided dispute suspended somebody — now only
+    a payment dispute the player or platform raised counts, and a member cannot
+    red-flag their own rejection; (3) a member's accept/decline could act on an
+    order an admin had just handed to a colleague — every member transition now
+    pins the member; (4) fractional window minutes were accepted and silently
+    read as the default, and a high-risk review re-opened after an admin lift
+    raised no alert.
 - **2d Orders.** Global admin-editable denomination list; CASH 500–10,000 and
   UPI_BANK 50,000–500,000 for both directions; no splitting (split payouts and
   CDM receipts deleted); USDT 100–10,000 step 100; the QR cash link.

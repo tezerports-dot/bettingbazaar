@@ -71,6 +71,13 @@ import { recordMerchantRefusal, REFUSAL } from './merchantRefusal.service.js';
 import { assertStaffPassword } from '../identity/passwordPolicy.js';
 
 const router     = express.Router();
+
+/**
+ * What a member is told when an admin handed the order to somebody else between
+ * their read and their action: every member transition below pins the member
+ * (`expectMerchant`), so nothing was changed (security review, 2026-10-03).
+ */
+const NO_LONGER_YOURS = 'This order has been moved to another member, so nothing was changed. Refresh your orders.';
 // JWT secret + expiry owned by jwt.util.js — removed a '|| fallback-secret'
 // default here (AQ-1): a missing secret must fail-fast, never sign with a
 // public string that would let anyone forge merchant tokens.
@@ -953,6 +960,7 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
         const responseMinutes = order.assignedAt ? (now - new Date(order.assignedAt)) / 60000 : null;
 
         const accepted = await startOrder(order.orderId, {
+            expectMerchant: req.merchantId,
             set: {
                 merchantId:       req.merchantId,
                 assignedAt:       order.assignedAt || now,
@@ -970,7 +978,8 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
             // A double-tap, or the order expired between the read and the move.
             return res.status(409).json({
                 success: false,
-                message: `Order is ${accepted.status ?? 'missing'} and cannot be accepted.`,
+                message: accepted.reason === 'merchant_changed'
+                    ? NO_LONGER_YOURS : `Order is ${accepted.status ?? 'missing'} and cannot be accepted.`,
             });
         }
         Object.assign(order, accepted.order);
@@ -1215,6 +1224,7 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
         if (isDeposit) {
             moved = await completeOrder(order._id, {
                 expectFrom: 'PAID',
+                expectMerchant: req.merchantId,
                 set: { completedAt: new Date() },
             });
         } else {
@@ -1224,6 +1234,7 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
             // confirm holds and the sweep settles — money first, COMPLETED after.
             moved = await markOrderPaidState(order._id, {
                 expectFrom: ['PROCESSING', 'ASSIGNED'],
+                expectMerchant: req.merchantId,
                 set: {
                     ...(payoutReference ? { utrNumber: payoutReference } : {}),
                     merchantCreditStatus:    'HELD',
@@ -1235,7 +1246,8 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
         if (!moved.ok) {
             return res.status(409).json({
                 success: false,
-                message: `Order is ${moved.status ?? 'missing'} and cannot be confirmed.`,
+                message: moved.reason === 'merchant_changed'
+                    ? NO_LONGER_YOURS : `Order is ${moved.status ?? 'missing'} and cannot be confirmed.`,
             });
         }
         if (moved.idempotent) {
@@ -1418,6 +1430,7 @@ router.post('/reject/:id', merchantAuth, async (req, res) => {
         // persist both at once, which is also why a failed reassignment left the
         // order's requeue unsaved unless the else-branch happened to save it.
         const requeued = await requeueOrder(order.orderId, {
+            expectMerchant: req.merchantId,
             set: { merchantId: null, merchantSnapshot: null, expiresAt: null, rejectedReason: reason },
             // ── The pool's hold comes off IN the requeue's own transaction ──
             // This member's team held the player's tokens from the moment the
@@ -1434,7 +1447,8 @@ router.post('/reject/:id', merchantAuth, async (req, res) => {
         if (!requeued.ok) {
             return res.status(409).json({
                 success: false,
-                message: `Order can only be rejected in ASSIGNED status. Current: ${requeued.status ?? 'missing'}`,
+                message: requeued.reason === 'merchant_changed'
+                    ? NO_LONGER_YOURS : `Order can only be rejected in ASSIGNED status. Current: ${requeued.status ?? 'missing'}`,
             });
         }
         Object.assign(order, requeued.order);
@@ -1583,6 +1597,7 @@ router.post('/orders/:id/red-flag', merchantAuth, async (req, res) => {
         // this is, so a decision on it suspends nobody (disputeOutcome.service.js).
         const flagged = await disputeOrder(order._id, {
             expectFrom: ['PROCESSING', 'PAID'],
+            expectMerchant: req.merchantId,
             set: {
                 redFlagged:      true,
                 redFlagReason:   reason.trim(),
@@ -1596,7 +1611,8 @@ router.post('/orders/:id/red-flag', merchantAuth, async (req, res) => {
         if (!flagged.ok) {
             return res.status(409).json({
                 success: false,
-                message: `Cannot red-flag an order that is ${flagged.status ?? 'missing'}.`,
+                message: flagged.reason === 'merchant_changed'
+                    ? NO_LONGER_YOURS : `Cannot red-flag an order that is ${flagged.status ?? 'missing'}.`,
             });
         }
         Object.assign(order, flagged.order);
@@ -1843,6 +1859,7 @@ router.post('/orders/:id/reject', merchantAuth, async (req, res) => {
         const windowMinutes = await rejectedBuyDisputeMinutes();
         const rejected = await rejectOrderState(order.orderId, {
             expectFrom: ['PAID', 'PROCESSING'],
+            expectMerchant: req.merchantId,
             set: {
                 rejectedBy:     req.merchantId,
                 rejectedAt:     new Date(),
@@ -1861,7 +1878,8 @@ router.post('/orders/:id/reject', merchantAuth, async (req, res) => {
         if (!rejected.ok || rejected.idempotent) {
             return res.status(409).json({
                 success: false,
-                message: `Cannot reject order in ${rejected.status ?? 'unknown'} status`,
+                message: rejected.reason === 'merchant_changed'
+                    ? NO_LONGER_YOURS : `Cannot reject order in ${rejected.status ?? 'unknown'} status`,
             });
         }
         Object.assign(order, rejected.order);

@@ -2020,8 +2020,8 @@ const MUTATIONS = [
     id: 'M317', file: 'database/spec/config.spec.js', config: PG,
     test: 'backend/tests/routes/rejectedBuyWindowPg.test.js',
     why: 'the sell hold may be set under the owner\'s one-hour floor',
-    from: "  withdrawalHoldMinutes: n(60, 60, 1440),",
-    to: "  withdrawalHoldMinutes: n(60, 0, 1440),",
+    from: "  withdrawalHoldMinutes: int(60, 60, 1440),",
+    to: "  withdrawalHoldMinutes: int(60, 0, 1440),",
   },
   {
     id: 'M318', file: 'backend/domains/disputes/disputeOutcome.service.js', config: PG,
@@ -2179,6 +2179,35 @@ const MUTATIONS = [
     why: 'a red flag is not recorded as the member\'s, so the record cannot say whose report it was',
     from: "                disputeRaisedBy: 'merchant',\n",
     to: "\n",
+  },
+  // ── Security review 2026-10-03, F3 and F4 ─────────────────────────────────
+  {
+    id: 'M340', file: 'database/repositories/orders.core.js', config: PG,
+    test: 'database/tests/teamRoutingPg.test.js',
+    why: 'a member accepts or declines an order an admin handed to a colleague, and their write takes it back',
+    from: "    if (onlyMerchant && String(order.merchantId ?? '') !== String(onlyMerchant)) {\n",
+    to: "    if (false) {\n",
+  },
+  {
+    id: 'M341', file: 'database/repositories/orders.js', config: PG,
+    test: 'database/tests/teamRoutingPg.test.js',
+    why: 'the member a route acts as never reaches the writer, so the pin asks nothing',
+    from: "    txId: key, within, onlyFrom: expectFrom, onlyMerchant: expectMerchant,\n",
+    to: "    txId: key, within, onlyFrom: expectFrom,\n",
+  },
+  {
+    id: 'M342', file: 'database/repositories/config.js', config: PG,
+    test: 'backend/tests/routes/rejectedBuyWindowPg.test.js',
+    why: 'an operator saves 7.5 minutes, is told it saved, and the platform runs the default',
+    from: "      if (field.integer && !Number.isInteger(num)) throw",
+    to: "      if (false) throw",
+  },
+  {
+    id: 'M343', file: 'database/repositories/disputeFaults.js', config: PG,
+    test: 'backend/tests/routes/disputeFaultsPg.test.js',
+    why: 'a high-risk review re-opened after an admin closed it raises no alert',
+    from: "      return { ok: true, party, lostCount, highRisk, newlyHighRisk: loser[0].newly_high_risk === true };\n",
+    to: "      return { ok: true, party, lostCount, highRisk, newlyHighRisk: highRisk && lostCount === HIGH_RISK_LOSSES };\n",
   },
 ];
 

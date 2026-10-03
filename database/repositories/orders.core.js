@@ -297,6 +297,7 @@ async function withOrderLock(orderId, fn) {
  *   { ok: false, reason: 'invalid_transition', state, allowedFrom }
  *   { ok: false, reason: 'pool_paid', state }   a buy whose team tokens were
  *                                               paid out goes only to COMPLETED
+ *   { ok: false, reason: 'merchant_changed' }   `onlyMerchant` no longer holds it
  *
  * Collapsing "already done" into a failure is how a retry-safe API stops being
  * retry-safe: the caller compensates for something that actually succeeded.
@@ -314,6 +315,13 @@ export async function transition({
   // "rejected as unpaid" cancelled a DISPUTED buy and took the dispute away.
   // Applied in the UPDATE's WHERE with the table, under the row lock.
   onlyFrom = null,
+  // The member the caller acts as (`expectMerchant`). A member's accept,
+  // decline, confirm or reject read the order as theirs; an admin may have
+  // handed it to somebody else since. Asked under the lock — BEFORE the
+  // idempotent answer, or a member accepting an order a colleague had already
+  // accepted was told it worked and their `set` took the order back — and
+  // again in the WHERE (security review, 2026-10-03).
+  onlyMerchant = null,
 }) {
   if (!ORDER_STATES[to]) {
     throw new Error(`Unknown order state '${to}'. Known: ${Object.keys(ORDER_STATES).join(', ')}`);
@@ -328,6 +336,9 @@ export async function transition({
 
   return withOrderLock(orderId, async ({ client, oid, order }) => {
     if (!order) return { commit: false, value: { ok: false, reason: 'not_found' } };
+    if (onlyMerchant && String(order.merchantId ?? '') !== String(onlyMerchant)) {
+      return { commit: false, value: { ok: false, reason: 'merchant_changed', state: order.state, allowedFrom } };
+    }
     if (order.state === to) {
       return { commit: false, value: { ok: true, idempotent: true, order } };
     }
@@ -390,8 +401,9 @@ export async function transition({
               merchant_id = COALESCE($3, merchant_id)
         WHERE order_id = $1 AND state = ANY($4)
           AND (pool_paid_at IS NULL OR $2 = 'COMPLETED' OR state = 'COMPLETED')
+          AND ($5::text IS NULL OR merchant_id = $5)
         RETURNING *`,
-      [oid, to, merchantId ? String(merchantId) : null, allowedFrom],
+      [oid, to, merchantId ? String(merchantId) : null, allowedFrom, onlyMerchant ? String(onlyMerchant) : null],
     );
     if (!moved.rowCount) {
       return { commit: false, value: { ok: false, reason: 'invalid_transition', state: order.state, allowedFrom } };

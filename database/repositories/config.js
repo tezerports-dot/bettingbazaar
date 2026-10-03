@@ -185,6 +185,7 @@ function coerce(field, value, path) {
     case 'number': {
       const num = Number(value);
       if (!Number.isFinite(num)) throw invalidConfig(`config: '${path}' must be a number, got ${JSON.stringify(value)}`);
+      if (field.integer && !Number.isInteger(num)) throw invalidConfig(`config: '${path}' must be a whole number, got ${num}`);
       if (field.min !== null && field.min !== undefined && num < field.min) {
         throw invalidConfig(`config: '${path}' must be >= ${field.min}, got ${num}`);
       }

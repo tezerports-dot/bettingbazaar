@@ -302,6 +302,23 @@ describePg('a decided dispute suspends whoever was wrong', () => {
     expect(await playerState(player.userId)).toEqual({ blocked: false, status: 'ACTIVE', lost: 3, highRisk: false });
   });
 
+  it('a review an admin closed and a later loss re-opened is reported as new', async () => {
+    // Security review, 2026-10-03: "newly high-risk" was "the count is exactly
+    // three", so the loss that re-opened review at four alerted nobody.
+    const player = await actor({});
+    const lose = async () => {
+      const id = `${oid()}-loss`; made.push(id);
+      return recordDisputeFault({ orderId: id, party: 'PLAYER', userId: player.userId, decision: 'CANCEL_ORDER' });
+    };
+    expect(await lose()).toMatchObject({ lostCount: 1, newlyHighRisk: false });
+    expect(await lose()).toMatchObject({ lostCount: 2, newlyHighRisk: false });
+    expect(await lose()).toMatchObject({ lostCount: 3, highRisk: true, newlyHighRisk: true });
+    expect((await as(usersApp, admin).put(`/users/${player.userId}/unblock`).send({})).status).toBe(200);
+    expect(await lose()).toMatchObject({ lostCount: 4, highRisk: true, newlyHighRisk: true });
+    // Still open: the next loss is not news.
+    expect(await lose()).toMatchObject({ lostCount: 5, highRisk: true, newlyHighRisk: false });
+  });
+
   it('the same rule for a team member: a sub-admin cannot reinstate one in high-risk review', async () => {
     const member = await merchantActor();
     for (let i = 0; i < HIGH_RISK_LOSSES; i += 1) {

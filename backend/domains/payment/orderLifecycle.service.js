@@ -50,6 +50,7 @@ export const LIFECYCLE = Object.freeze({
   ALREADY_THERE:      'already_there',
   NOT_FOUND:          'not_found',
   POOL_PAID:          'pool_paid',
+  MERCHANT_CHANGED:   'merchant_changed',
 });
 
 /**
@@ -65,7 +66,7 @@ export const LIFECYCLE = Object.freeze({
  * table does not allow is a programming error and throws, rather than quietly
  * widening the machine.
  */
-export async function transitionOrder(orderId, to, { set = {}, expectFrom = null, actor = null, reason = null, txId = null, within = null } = {}) {
+export async function transitionOrder(orderId, to, { set = {}, expectFrom = null, expectMerchant = null, actor = null, reason = null, txId = null, within = null } = {}) {
   const allowed = ALLOWED_FROM[to];
   if (!allowed) throw new Error(`transitionOrder: '${to}' is not a state anything transitions into`);
 
@@ -98,7 +99,7 @@ export async function transitionOrder(orderId, to, { set = {}, expectFrom = null
   // document-store transaction could stay on that store; a transaction spanning
   // two stores was the hazard the whole migration exists to remove, and no
   // caller passes one.
-  return pgTransitionOrder(orderId, to, { set, expectFrom, actor, reason, txId, within });
+  return pgTransitionOrder(orderId, to, { set, expectFrom, expectMerchant, actor, reason, txId, within });
 }
 
 // ── Named transitions ────────────────────────────────────────────────────────

@@ -56,11 +56,14 @@ const REASON = Object.freeze({
   NOT_FOUND:          'not_found',
   // A buy whose team tokens were already paid out: it may only be completed.
   POOL_PAID:          'pool_paid',
+  // The member acting no longer holds the order (`expectMerchant`).
+  MERCHANT_CHANGED:   'merchant_changed',
 });
 
 /** The refusal a caller branches on, from the writer's own reason. */
 const refusalReason = (r) => (
-  r === 'not_found' ? REASON.NOT_FOUND : r === 'pool_paid' ? REASON.POOL_PAID : REASON.ILLEGAL_TRANSITION
+  { not_found: REASON.NOT_FOUND, pool_paid: REASON.POOL_PAID, merchant_changed: REASON.MERCHANT_CHANGED }[r]
+    ?? REASON.ILLEGAL_TRANSITION
 );
 
 /**
@@ -100,12 +103,12 @@ async function keyForRepeatableMove(orderId, to, txId) {
  * cutover and no second store: an order without a row does not exist, and
  * saying so is the correct answer rather than conjuring one.
  */
-export async function transitionOrder(orderId, to, { set = {}, expectFrom = null, actor = null, reason = null, txId = null, within = null } = {}) {
+export async function transitionOrder(orderId, to, { set = {}, expectFrom = null, expectMerchant = null, actor = null, reason = null, txId = null, within = null } = {}) {
   const key = await keyForRepeatableMove(orderId, to, txId);
   const result = await pgTransition({
     orderId: String(orderId), to, actor, reason,
     merchantId: set.merchantId ? String(set.merchantId) : null,
-    txId: key, within, onlyFrom: expectFrom,
+    txId: key, within, onlyFrom: expectFrom, onlyMerchant: expectMerchant,
   });
 
   if (!result.ok) {
