@@ -135,8 +135,9 @@ const PER_NAME = 3;
 /**
  * A screen with no controls is judged by what `<main>` SAYS. Below this it is
  * a shell that failed to render; above it, an empty state explaining itself.
- * Deliberately generous — the shortest real empty state measured here is the
- * merchant cash-links one at 205 characters, and a shell renders 0.
+ * Deliberately generous — the shortest real empty state measured here was the
+ * merchant cash-links screen's (deleted in Step 2c) at 205 characters, and a
+ * shell renders 0.
  */
 const EMPTY_STATE_MIN_CHARS = 40;
 
@@ -602,7 +603,7 @@ try {
        * gone through one IP, so its profile call was 429'd and the panel fell
        * back to its sign-in screen. The pass then collected the LOGIN FORM's
        * five controls and filed them under `/dashboard`, `/orders`,
-       * `/cash-links` and the rest — seven screens' worth of results, every one
+       * `/history` and the rest — every screen's worth of results, every one
        * measured on a screen nobody asked for. Results attributed to the wrong
        * screen are worse than no results, because the coverage table counts
        * them as pressed.
@@ -741,8 +742,8 @@ try {
             'measured inside <main>, after the screen settled');
         } else {
           // An empty state that EXPLAINS itself is a working screen. The
-          // merchant cash-links screen is the case that taught this: no
-          // controls, because the account is not approved for the ATM rail,
+          // merchant cash-links screen (deleted in Step 2c) taught this: no
+          // controls, because the account was not approved for the ATM rail,
           // and a sentence saying so and naming who fixes it. Failing that
           // would be the harness accusing correct code again — so the verdict
           // records the SENTENCE, for a person to judge (§14/S14).

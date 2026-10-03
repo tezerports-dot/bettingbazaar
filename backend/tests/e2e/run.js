@@ -19,10 +19,13 @@
  *
  * ── It writes to whatever DATABASE_URL names ────────────────────────────────
  * Scenarios seed their own actors with a per-run id and assert on deltas, not
- * on global invariants (trap 10). The one shared thing any of them touches is
- * `payment_mode_policies`, and the cash scenario restores the rail it found in
- * a `finally` — outside any assertion, because a restore that only runs when
- * the suite passed is the one that matters least.
+ * on global invariants (trap 10). The shared things they touch are the live
+ * config documents (the USDT price, bet limits, order floors, support links),
+ * and every scenario that writes one restores what it found in a `finally` —
+ * outside any assertion, because a restore that only runs when the suite
+ * passed is the one that matters least. Teams are never deleted; `seedTeam`
+ * takes the members of other teams on its rail offline instead, so an order
+ * reaches the team the scenario seeded and nobody left over from a past run.
  *
  *   npm run test:e2e            every scenario
  *   npm run test:e2e -- s1 s5   only those

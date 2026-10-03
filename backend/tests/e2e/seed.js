@@ -281,6 +281,40 @@ export async function seedTeam({
   return { ...team, byId: (id) => byId.get(String(id)) ?? null };
 }
 
+/**
+ * What one ORDER did to a team pool and to the treasury, read by the order's
+ * own id rather than by diffing totals.
+ *
+ * Trap 10: the pool totals and the treasury floats are shared — the server's
+ * `order-assignment` and `team-pool-hold-sweep` crons run underneath every
+ * scenario and can move them (a PENDING_QUEUE order left by an earlier run is
+ * assigned to the first team that comes online on its rail). So a scenario
+ * asserts the rows THIS order wrote: its `team_pool_entries` (ref_id = the
+ * order) and the two treasury movements named after it, `team_buy_<oid>`
+ * (spendForBuy) and `team_sell_<oid>` (creditSellToPool).
+ *
+ * Returns { entries: [{kind, teamId, available, held}], legs: {movementId: {ACCOUNT: paise}} }.
+ */
+export async function orderPoolTrail(orderId) {
+  const oid = String(orderId);
+  const { rows: e } = await pgQuery(
+    `SELECT kind, team_id, available_delta_paise, held_delta_paise
+       FROM team_pool_entries WHERE ref_id = $1 ORDER BY id`, [oid], 'e2e_order_pool_entries');
+  const { rows: t } = await pgQuery(
+    `SELECT movement_id, account, amount_paise FROM treasury_entries
+      WHERE movement_id = ANY($1::text[]) ORDER BY id`,
+    [[`team_buy_${oid}`, `team_sell_${oid}`]], 'e2e_order_treasury_legs');
+  const legs = {};
+  for (const r of t) (legs[r.movement_id] ??= {})[r.account] = Number(r.amount_paise);
+  return {
+    entries: e.map((r) => ({
+      kind: r.kind, teamId: r.team_id,
+      available: Number(r.available_delta_paise), held: Number(r.held_delta_paise),
+    })),
+    legs,
+  };
+}
+
 /** The pool's two halves and the treasury's two floats, as one snapshot to diff. */
 export async function poolAndFloats(teamId) {
   const pool = await getPool(teamId);

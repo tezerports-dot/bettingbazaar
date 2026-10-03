@@ -13,7 +13,7 @@
 // Every case reads the OTHER panel's own endpoint. Every case that changes
 // something platform-wide puts it back in a `finally` (trap 10).
 import { pgQuery } from '#db/client.js';
-import { seedPlayer, seedMerchant, seedAdmin } from '../seed.js';
+import { seedPlayer, seedMerchant, seedTeam, seedAdmin } from '../seed.js';
 import {
   playerToken, merchantToken, adminToken, GET, POST, PUT, check, note, idemKey, BASE,
 } from '../harness.js';
@@ -91,7 +91,11 @@ export default async function run() {
   // admin route's own answer.
   {
     const p = await seedPlayer();
-    const m = await seedMerchant({ currency: 'INR', tokensPaise: 500000000 });
+    // A cash-team member who has pressed Ready, so the 1,000-token buy below is
+    // routed to `m` and its tokens are held in the team's pool — the hold a
+    // release then spends (Step 2c: a merchant holds no tokens of their own).
+    const m = await seedMerchant({ currency: 'INR' });
+    await seedTeam({ rail: 'CASH', poolTokens: 10000, include: [m], online: [m], ready: [m] });
     const pT = playerToken(p);
     const mT = merchantToken(m);
 
