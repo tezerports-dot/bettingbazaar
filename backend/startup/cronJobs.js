@@ -99,6 +99,19 @@ export function registerCronJobs(rebuildLeaderboard) {
     } catch (e) { console.error('[team-pool] cron error:', e.message); }
   });
 
+  // ── Team commission sweep — runs every 5 minutes ───────────────────────────
+  // Commission is paid the moment an order completes (Step 2e); this pays what
+  // that missed: a payment that failed after the completion committed, or one
+  // the commission pool could not cover until an admin topped it up.
+  registerRecurring('team-commission-sweep', 5 * 60 * 1000, async () => {
+    try {
+      const { payOwedCommissions } = await import('../domains/team/teamCommission.service.js');
+      const results = await payOwedCommissions();
+      const paid = results.filter((r) => r.paid).length;
+      if (paid > 0) console.log(`[team-commission] Paid ${paid} team commission(s) in the sweep`);
+    } catch (e) { console.error('[team-commission] cron error:', e.message); }
+  });
+
   // ── Withdrawal settlement worker — runs every 60 seconds ────────────────────
   // Settles confirmed withdrawals whose dispute-hold window has passed: consumes
   // the player's locked stake and credits the merchant. Until this runs, neither

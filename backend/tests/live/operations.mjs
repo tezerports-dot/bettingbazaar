@@ -277,6 +277,25 @@ async function cron() {
       },
     },
     {
+      id: 'team-commission-sweep',
+      what: 'the commission sweep pays every team whose matched volume passed its mark',
+      // RUN only, for the reason team-pool-hold-sweep gives: a producible
+      // trigger is a team with completed buys and sells, held in place by its
+      // append-only pool ledger. `teamCommissionPg` drives the money through
+      // the real order paths; this runs the cron's own call on the real data.
+      seededTrigger: false,
+      async go() {
+        const { payOwedCommissions } = await import('../../domains/team/teamCommission.service.js');
+        const results = await payOwedCommissions({ actor: 'ops-harness' });
+        const failed = results.filter((r) => !r.ok && r.reason !== 'pool_short');
+        if (failed.length) {
+          return ['FAIL', `${failed.length} team(s) not paid: ${failed.map((r) => `${r.teamId} ${r.reason}`).join('; ').slice(0, 160)}`];
+        }
+        const short = results.filter((r) => r.reason === 'pool_short').length;
+        return ['RAN', `${results.filter((r) => r.paid).length} paid, ${short} waiting for the commission pool`];
+      },
+    },
+    {
       id: 'order-assignment',
       what: 'assignQueuedOrders finds a queued order and offers the queue to the teams',
       async go() {

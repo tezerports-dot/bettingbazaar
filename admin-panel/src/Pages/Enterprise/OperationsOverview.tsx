@@ -171,7 +171,7 @@ export const OperationsOverview: React.FC = () => {
             <KV k="External fiat (net in)" v={inr(overview.treasury.externalFiat)} />
             <KV k="User funds liability" v={inr(overview.treasury.userFundsLiability)} />
             <KV k="Platform reserve" v={inr(overview.treasury.platformReserve)} />
-            <KV k="Merchant bonus pool" v={inr(overview.treasury.merchantBonusPool)} />
+            <KV k="Team commission pool" v={inr(overview.treasury.merchantBonusPool)} />
             <KV k="Merchant funds liability" v={inr(overview.treasury.merchantFundsLiability)} />
           </Section>
 

@@ -344,8 +344,8 @@ export async function createDepositOrder(userId, tokenAmount, attempt = {}) {
   // ── What the player actually pays, and in what ──────────────────────────
   //
   // On the INR rails: the peg. 1 BB token = ₹1, no buy/sell spread (Phase 006
-  // flattening, 2026-07-08) — merchant earnings come from the cycle-completion
-  // Merchant Performance Bonus, never from a rate spread. Named rather than a
+  // flattening, 2026-07-08) — merchant earnings come from team commission on
+  // matched volume (2e), never from a rate spread. Named rather than a
   // bare 1 so the rule is legible and has one owner.
   //
   // On the USDT rail: a USDT amount, derived from the admin's rate. The

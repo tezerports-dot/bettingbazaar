@@ -11,7 +11,9 @@ const listing = {
   supervisors: [{ merchantId: 's-1', name: 'Sup One', publicRef: 'MSUP1', rail: 'UPI_BANK', isOnline: true }],
   teams: [{ teamId: 't-1', supervisorId: 's-1', supervisorName: 'Sup One', supervisorRef: 'MSUP1', name: 'Alpha',
     rail: 'UPI_BANK', approvedCount: 1, pendingCount: 2, size: 10, strength: 'STOPPED', shortSince: null, wasFull: false, createdAt: '',
-    poolAvailablePaise: 0, poolHeldPaise: 0 }],
+    poolAvailablePaise: 0, poolHeldPaise: 0,
+    commission: { teamId: 't-1', buysPaise: 0, sellsPaise: 0, matchedPaise: 0, highPaise: 0, paidPaise: 0, owedPaise: 0,
+      commissionPercent: 10, supervisorSharePercent: 16 } }],
   members: [
     { merchantId: 'm-1', teamId: 't-1', name: 'Asha', publicRef: 'MA', status: 'APPROVED', isOnline: false, addedBy: 's-1', addedAt: '', approvedBy: 'a', approvedAt: '' },
     { merchantId: 'm-2', teamId: 't-1', name: 'Bhanu', publicRef: 'MB', status: 'PENDING', isOnline: false, addedBy: 's-1', addedAt: '', approvedBy: null, approvedAt: null },

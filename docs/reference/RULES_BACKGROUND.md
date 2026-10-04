@@ -201,7 +201,7 @@ wrong owner gets working code deleted by the next reader.
 | USDT buy pricing | `SystemConfig.usdtPricing` — admin-set, both rates: `userMerchantBuyInr` (what a player pays, frozen on the order) and `merchantAdminBuyInr` (what a team pays for pool tokens, frozen on the pool sale). Both held to ONE sanity band, ₹10–₹1,000 per USDT, owned by `domains/configuration/tokenRates.js`, enforced by the admin route on save AND by the reader, which answers null (unset) outside it. 0 is the schema default for both and means unset; a USDT payment is then refused by name. There is no USDT sell rail. |
 | The settlement rail in force | `payment_mode_policies` — one ACTIVE version, append-only, justified. **Not** a feature flag (`featureFlags.service.js` is an env var and an in-process Map: it does not survive a restart and cannot say which rail was live when an order was created). **Not** `payment_gateway_configs.active_mode`, which is P2P vs a third-party gateway — both rails here are P2P. |
 | The rail an ORDER runs under | `order_states.payment_mode`, stamped at creation by `stampForNewOrder` and **immutable by trigger**. Every worker and screen branches on the order's own value, never the current policy. |
-| Merchant earnings | `merchant_commission_policies` + `merchant_commission_rates` (one row per variety), read by `domains/merchant/merchantCommission.service.js`, which owns no numbers. Platform-funded from `MERCHANT_BONUS_POOL`, never deducted from users. Do not reintroduce `commissionRate`, a buy/sell spread, or a deposit-triggered commission. See §26. |
+| Merchant earnings | Before 2e: `merchant_commission_policies` + `merchant_commission_rates` (one row per variety), read by `domains/merchant/merchantCommission.service.js`, which owned no numbers. Since 2e: team commission (§26). Platform-funded from `MERCHANT_BONUS_POOL`, never deducted from users. Do not reintroduce `commissionRate`, a buy/sell spread, or a deposit-triggered commission. |
 | **How many tokens exist, and where they are** | **`SystemConfig.adminTokenSupply.total` — 20,000,000,000, and NONE ARE EVER CREATED** (owner, 2026-09-23). The platform starts holding all of them; every movement after that is a TRANSFER — platform → merchant when a merchant buys inventory, merchant → player when a player buys, and back the other way when they sell. So `platform holding + every merchant wallet + every player wallet = total`, always, and that is an invariant the double-entry books prove rather than a promise a counter makes. `transferred` is what has left the platform's own holding (`internal`: an operator who could set it to 0 would be telling the platform it still holds tokens it has already given away); what it still holds is `total - transferred`. **Do not reintroduce minting.** The word survived in `reserveAdminMint`, "Approving one mints supply", and a 10-billion "cap" that read as a ceiling on creation — all of which described a model this platform does not have. |
 | Merchant token balance mutations | `domains/merchant/merchantWallet.service.js` exclusively — idempotent `tx_id`. |
 | **What the platform GOT, or GAVE, for an admin↔merchant token movement** | `admin_token_considerations` via `database/repositories/adminTokenConsiderations.js` — one row per movement, keyed BY the movement, so the money fact inherits the token movement's idempotency instead of inventing its own. The treasury says the tokens moved; nothing said what they moved FOR, so every P&L reading of the admin↔merchant leg was missing its revenue side and the books balanced in tokens while saying nothing about money. **Two amounts, deliberately** (trap 15): `fiat_amount_minor` is hundredths of the currency actually transacted — what a human is shown and what reconciles against a bank line or a chain explorer — and must NEVER be summed across currencies; `inr_equivalent_paise` is the same event in rupees and is the ONLY column anything may aggregate. `rate_used` is frozen on the row for §25's reason: an operator editing the USDT price must not restate a settled trade. The figure is **REQUIRED** on both routes and **0 is a real answer** meaning "no money changed hands" — absence and zero are different facts, and a nullable column could not tell them apart. USDT comes IN only; the platform buys its tokens back in rupees (owner, 2026-09-23), stated as a CHECK so the rule survives the next route that writes here. Validated BEFORE any token moves, because the row is written after the movement commits (§21). |
@@ -1159,7 +1159,37 @@ ask for a round USDT amount.
 
 ---
 
-## 26. Merchant commission is paid per variety of work
+## 26. Team commission
+
+Owner, 2026-10-02 (`PROJECT_STATUS.md` §3.10, built in 2e, 2026-10-04). Merchants
+hold no tokens after 2c, so pay goes to the TEAM: 10% of each rise in the team's
+matched volume, into its pool, with a recorded 16/84 split so each person sees
+what they earned. It replaced the per-variety engine below, which was deleted in
+2c; the lessons that carried over are rules 3 and 4 (the mark is the rows, never
+partial).
+
+- **Why instant, and why a sweep too.** The owner wanted commission the moment
+  the match rises, "even by 500". The payment runs after the order's commit, so
+  it can fail on its own (pool short, a database error); the mark moves only
+  with a payment, so nothing is lost and the 5-minute sweep and every funding
+  pay what is owed.
+- **Why an advisory lock.** The pool balance is read and then spent, and two
+  teams completing at once both read the same balance. Taking one lock before
+  the read makes it a serialised write (S6, trap 18); the UNIQUE keys on
+  `(team, from)` and `(team, to)` still refuse a second payment of one rise if
+  the lock is ever removed.
+- **Why the split is a record.** The tokens are the team's, in its pool; the
+  shares say who earned them. Paise that do not divide go one each to the first
+  members by id, so the record adds up to exactly what was paid.
+- **A reversal claws nothing back.** A settled sell can still be disputed and
+  cancelled, which lowers matched volume below the mark. What was paid stays
+  paid; the mark does not move down, so the team earns nothing again until its
+  matched volume passes the old mark, which recovers the difference.
+- **USDT.** There is no USDT sell rail, so a USDT team's sells are 0 and its
+  matched volume never rises: it earns no commission. The owner was asked
+  (2026-10-04) whether USDT buys should earn anything instead.
+
+### Before 2e: merchant commission paid per variety of work
 
 A merchant is paid on **matched buy→sell volume** — `min(deposits, withdrawals)`
 — paid **once**, above a high-water mark, from the platform-funded pool. Never

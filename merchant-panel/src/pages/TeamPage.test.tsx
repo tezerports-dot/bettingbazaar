@@ -27,7 +27,10 @@ import TeamPage from './TeamPage';
 const team = (teamId: string, name: string, extra = {}) => ({
   teamId, supervisorId: 's-1', supervisorName: 'Sup', supervisorRef: 'MSUP', name, rail: 'UPI_BANK',
   approvedCount: 0, pendingCount: 0, size: 10, strength: 'STOPPED', shortSince: null, wasFull: false, createdAt: '',
-  poolAvailablePaise: 0, poolHeldPaise: 0, ...extra,
+  poolAvailablePaise: 0, poolHeldPaise: 0,
+  commission: { teamId, buysPaise: 0, sellsPaise: 0, matchedPaise: 0, highPaise: 0, paidPaise: 0, owedPaise: 0,
+    commissionPercent: 10, supervisorSharePercent: 16 },
+  ...extra,
 });
 
 describe('merchant Team screen', () => {
@@ -41,20 +44,20 @@ describe('merchant Team screen', () => {
   });
 
   it('a pending member is told an admin still has to approve', async () => {
-    api.getMyTeam.mockResolvedValue({ role: 'MEMBER', publicRef: 'M1', status: 'PENDING', team: team('t-1', 'Alpha') });
+    api.getMyTeam.mockResolvedValue({ role: 'MEMBER', commissions: [], myCommissionPaise: 0, publicRef: 'M1', status: 'PENDING', team: team('t-1', 'Alpha') });
     render(<TeamPage />);
     expect(await screen.findByText('Waiting for an admin')).toBeInTheDocument();
   });
 
   it('a member of a team in its grace day is told it stops at midnight', async () => {
-    api.getMyTeam.mockResolvedValue({ role: 'MEMBER', publicRef: 'M1', status: 'APPROVED', team: team('t-1', 'Alpha', { strength: 'GRACE', approvedCount: 9 }) });
+    api.getMyTeam.mockResolvedValue({ role: 'MEMBER', commissions: [], myCommissionPaise: 0, publicRef: 'M1', status: 'APPROVED', team: team('t-1', 'Alpha', { strength: 'GRACE', approvedCount: 9 }) });
     render(<TeamPage />);
     expect(await screen.findByText(/until midnight IST/)).toBeInTheDocument();
   });
 
   it('a supervisor adds a member to the team whose form they typed into — the second team, not the first', async () => {
     api.getMyTeam.mockResolvedValue({
-      role: 'SUPERVISOR', rail: 'UPI_BANK', publicRef: 'MSUP',
+      role: 'SUPERVISOR', commissions: [], myCommissionPaise: 0, rail: 'UPI_BANK', publicRef: 'MSUP',
       teams: [team('t-1', 'Alpha'), team('t-2', 'Bravo')], members: [],
     });
     render(<TeamPage />);
@@ -66,7 +69,7 @@ describe('merchant Team screen', () => {
 
   it('a supervisor removes the member on the row pressed', async () => {
     api.getMyTeam.mockResolvedValue({
-      role: 'SUPERVISOR', rail: 'UPI_BANK', publicRef: 'MSUP',
+      role: 'SUPERVISOR', commissions: [], myCommissionPaise: 0, rail: 'UPI_BANK', publicRef: 'MSUP',
       teams: [team('t-1', 'Alpha', { approvedCount: 2 })],
       members: [
         { merchantId: 'm-1', teamId: 't-1', name: 'Asha', publicRef: 'MA', status: 'APPROVED', isOnline: false },
@@ -79,7 +82,7 @@ describe('merchant Team screen', () => {
   });
 
   it('shows the server refusal verbatim', async () => {
-    api.getMyTeam.mockResolvedValue({ role: 'SUPERVISOR', rail: 'CASH', publicRef: 'MSUP', teams: [], members: [] });
+    api.getMyTeam.mockResolvedValue({ role: 'SUPERVISOR', commissions: [], myCommissionPaise: 0, rail: 'CASH', publicRef: 'MSUP', teams: [], members: [] });
     api.createTeam.mockRejectedValueOnce(new Error('A supervisor can run at most 4 teams.'));
     render(<TeamPage />);
     const box = await screen.findByLabelText('New team name');
@@ -90,7 +93,7 @@ describe('merchant Team screen', () => {
 
   // ── Team token pools (Step 2b) ───────────────────────────────────────────
   const supervisorWith = (poolRequests: unknown[] = []) => api.getMyTeam.mockResolvedValue({
-    role: 'SUPERVISOR', rail: 'UPI_BANK', publicRef: 'MSUP',
+    role: 'SUPERVISOR', commissions: [], myCommissionPaise: 0, rail: 'UPI_BANK', publicRef: 'MSUP',
     teams: [team('t-1', 'Alpha', { poolAvailablePaise: 250000 }), team('t-2', 'Bravo')], members: [], poolRequests,
   });
 
@@ -130,6 +133,55 @@ describe('merchant Team screen', () => {
     expect(await screen.findByText(/No payment seen/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Cancel this request' }));
     await waitFor(() => expect(api.cancelTeamPoolRequest).toHaveBeenCalledWith('pr-1'));
+  });
+
+  // ── Team commission (Step 2e) ────────────────────────────────────────────
+  it('a member sees their own commission, their share of each payment, and what is waiting', async () => {
+    api.getMyTeam.mockResolvedValue({
+      role: 'MEMBER', publicRef: 'M1', status: 'APPROVED',
+      team: team('t-1', 'Alpha', {
+        strength: 'WORKING', approvedCount: 10,
+        commission: { teamId: 't-1', buysPaise: 15000000, sellsPaise: 10000000, matchedPaise: 10000000, highPaise: 5000000,
+          paidPaise: 500000, owedPaise: 500000, commissionPercent: 10, supervisorSharePercent: 16 },
+      }),
+      commissions: [{ commissionId: 'c-1', teamId: 't-1', fromHighPaise: 0, toHighPaise: 5000000, commissionPaise: 500000,
+        mySharePaise: 42000, createdAt: '2026-10-03T10:00:00Z' }],
+      myCommissionPaise: 42000,
+    });
+    render(<TeamPage />);
+    expect(await screen.findByText('420 tokens')).toBeInTheDocument();
+    expect(screen.getByText('your share 420')).toBeInTheDocument();
+    expect(screen.getByText(/5,000 tokens earned and waiting/)).toBeInTheDocument();
+    expect(screen.getByText(/10% of the rise is paid into the pool/)).toBeInTheDocument();
+  });
+
+  it('a supervisor sees each team its own commission and their total', async () => {
+    api.getMyTeam.mockResolvedValue({
+      role: 'SUPERVISOR', rail: 'UPI_BANK', publicRef: 'MSUP', members: [], poolRequests: [],
+      teams: [team('t-1', 'Alpha', { commission: { teamId: 't-1', buysPaise: 0, sellsPaise: 0, matchedPaise: 0, highPaise: 0,
+        paidPaise: 300000, owedPaise: 0, commissionPercent: 10, supervisorSharePercent: 16 } }), team('t-2', 'Bravo')],
+      commissions: [{ commissionId: 'c-1', teamId: 't-1', fromHighPaise: 0, toHighPaise: 3000000, commissionPaise: 300000,
+        mySharePaise: 48000, createdAt: '2026-10-03T10:00:00Z' }],
+      myCommissionPaise: 48000,
+    });
+    render(<TeamPage />);
+    expect(await screen.findByText('Your commission 480 tokens')).toBeInTheDocument();
+    expect(screen.getByText('3,000 tokens paid')).toBeInTheDocument();
+    expect(screen.getByText('0 tokens paid')).toBeInTheDocument();
+    // The payment is listed under Alpha only.
+    expect(screen.getAllByText('your share 480')).toHaveLength(1);
+  });
+
+  it('labels every pool movement, a commission included', async () => {
+    supervisorWith();
+    api.getTeamPool.mockResolvedValue({ pool: {}, entries: [
+      { id: 2, kind: 'COMMISSION', availableDeltaPaise: 500000, heldDeltaPaise: 0, availableAfterPaise: 750000, heldAfterPaise: 0, createdAt: '2026-10-03T10:00:00Z' },
+      { id: 1, kind: 'BUY_PAID', availableDeltaPaise: 0, heldDeltaPaise: -5000000, availableAfterPaise: 250000, heldAfterPaise: 0, createdAt: '2026-10-03T09:00:00Z' },
+    ] });
+    render(<TeamPage />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Show Alpha pool history' }));
+    expect(await screen.findByText(/^Team commission ·/)).toBeInTheDocument();
+    expect(screen.getByText(/^Paid to a player \(buy\) ·/)).toBeInTheDocument();
   });
 
   it('loads the pool history of the team pressed', async () => {

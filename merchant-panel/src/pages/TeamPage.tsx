@@ -9,7 +9,9 @@
 //                and buy tokens into each team's pool or sell them back
 //                (Step 2b) — an admin fulfils once the money has moved.
 //   MEMBER     — the team they are in, whether an admin has approved them yet,
-//                and whether the team is working.
+//                whether the team is working, and its commission with their
+//                own share of each payment (Step 2e).
+//   Supervisors also see each team's commission and their 16% of it.
 //   NONE       — not in a team; shows the ID to hand to a supervisor.
 //
 // Every cap is the server's. A refusal is shown as the server worded it,
@@ -21,7 +23,9 @@ import {
   getMyTeam, createTeam, renameTeam, deleteTeam, addTeamMember, removeTeamMember,
   getTeamPool, requestTeamPool, cancelTeamPoolRequest,
 } from '../services/api';
-import type { MyTeam, PoolDirection, Team, TeamMember, TeamPoolEntry, TeamPoolRequest } from '../types';
+import type {
+  MyTeam, PoolDirection, Team, TeamCommission, TeamMember, TeamPoolEntry, TeamPoolRequest,
+} from '../types';
 import { Banner, Button, Card, CardTitle, CopyRow, ErrorState, Skeleton, inputStyle } from '../components/ui';
 
 const STRENGTH: Record<Team['strength'], { label: string; tone: 'ok' | 'warn' | 'danger'; body: string }> = {
@@ -45,6 +49,56 @@ const StrengthTag: React.FC<{ team: Team }> = ({ team }) => {
 };
 
 const tokens = (paise: number) => (paise / 100).toLocaleString('en-IN');
+
+/** What each pool movement was, in the supervisor's words. Every kind `teamPools.js` writes. */
+const POOL_KIND: Record<TeamPoolEntry['kind'], string> = {
+  ADMIN_SALE: 'Bought from the platform',
+  ADMIN_BUYBACK: 'Sold back to the platform',
+  BUY_HOLD: 'Held for a buy order',
+  BUY_RELEASE: 'Hold released',
+  BUY_PAID: 'Paid to a player (buy)',
+  SELL_SETTLED: 'Received from a player (sell)',
+  SELL_REVERSED: 'Sell reversed',
+  COMMISSION: 'Team commission',
+};
+
+/**
+ * A team's commission (Step 2e): its matched volume, what has been paid into
+ * the pool, anything earned and waiting, and the reader's own share of each
+ * recent payment. Module level (§32 S23).
+ */
+const CommissionSection: React.FC<{ team: Team; commissions: TeamCommission[] }> = ({ team, commissions }) => {
+  const c = team.commission;
+  const mine = commissions.filter((x) => x.teamId === team.teamId);
+  return (
+    <div style={{ borderTop: '1px solid var(--border)', paddingTop: 12, marginBottom: 12 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6 }}>
+        <span style={{ fontSize: 13, fontWeight: 800 }}>Commission</span>
+        <span className="bb-mono" style={{ fontSize: 14, fontWeight: 800 }}>{tokens(c.paidPaise)} tokens paid</span>
+      </div>
+      <p style={{ fontSize: 12.5, color: 'var(--text-2)', margin: '0 0 8px' }}>
+        Matched volume {tokens(c.matchedPaise)} (completed buys {tokens(c.buysPaise)}, sells {tokens(c.sellsPaise)}).
+        Each time it passes its highest so far, {c.commissionPercent}% of the rise is paid into the pool:
+        {' '}{c.supervisorSharePercent}% is the supervisor&apos;s, {100 - c.supervisorSharePercent}% is shared equally by the members.
+      </p>
+      {c.owedPaise > 0 && (
+        <Banner tone="warn" style={{ marginBottom: 8 }}>
+          {tokens(c.owedPaise)} tokens earned and waiting for the platform&apos;s commission pool. They are paid automatically once it is topped up.
+        </Banner>
+      )}
+      {mine.length > 0 && (
+        <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+          {mine.map((x) => (
+            <li key={x.commissionId} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5, padding: '4px 0' }}>
+              <span>{new Date(x.createdAt).toLocaleString('en-IN')} · +{tokens(x.commissionPaise)} into the pool</span>
+              <span className="bb-mono">your share {tokens(x.mySharePaise)}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+};
 const labelStyle: React.CSSProperties = { display: 'block', fontSize: 12, fontWeight: 700, color: 'var(--text-2)', marginBottom: 6 };
 
 /**
@@ -140,7 +194,7 @@ const TeamPoolSection: React.FC<{
           <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
             {history.map((h) => (
               <li key={h.id} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5, padding: '4px 0' }}>
-                <span>{h.kind === 'ADMIN_SALE' ? 'Bought from the platform' : 'Sold back to the platform'} · {new Date(h.createdAt).toLocaleString('en-IN')}</span>
+                <span>{POOL_KIND[h.kind] ?? h.kind} · {new Date(h.createdAt).toLocaleString('en-IN')}</span>
                 <span className="bb-mono">{h.availableDeltaPaise > 0 ? '+' : ''}{tokens(h.availableDeltaPaise)} → {tokens(h.availableAfterPaise)}</span>
               </li>
             ))}
@@ -154,9 +208,9 @@ const TeamPoolSection: React.FC<{
 
 /** One team, as its supervisor manages it. Declared at module level so typing does not remount it (§32 S23). */
 const SupervisorTeamCard: React.FC<{
-  team: Team; members: TeamMember[]; poolRequests: TeamPoolRequest[]; busy: string;
+  team: Team; members: TeamMember[]; poolRequests: TeamPoolRequest[]; commissions: TeamCommission[]; busy: string;
   run: (key: string, fn: () => Promise<unknown>, ok: string) => Promise<void>;
-}> = ({ team, members, poolRequests, busy, run }) => {
+}> = ({ team, members, poolRequests, commissions, busy, run }) => {
   const [ref, setRef] = useState('');
   const [name, setName] = useState(team.name);
   const inputId = `add-${team.teamId}`;
@@ -166,6 +220,7 @@ const SupervisorTeamCard: React.FC<{
       <CardTitle title={team.name} sub={`${team.approvedCount} approved · ${team.pendingCount} waiting for an admin`} action={<StrengthTag team={team} />} />
       <Banner tone={STRENGTH[team.strength].tone} style={{ marginBottom: 12 }}>{STRENGTH[team.strength].body}</Banner>
       <TeamPoolSection team={team} requests={poolRequests} busy={busy} run={run} />
+      <CommissionSection team={team} commissions={commissions} />
 
       <ul style={{ listStyle: 'none', padding: 0, margin: '0 0 12px' }}>
         {members.length === 0 && <li style={{ fontSize: 12.5, color: 'var(--muted)' }}>No members yet.</li>}
@@ -291,6 +346,11 @@ const TeamPage: React.FC = () => {
           {data.status === 'PENDING'
             ? <Banner tone="warn" title="Waiting for an admin">Your supervisor added you. You join the team once an admin approves.</Banner>
             : <Banner tone={STRENGTH[t.strength].tone}>{STRENGTH[t.strength].body}</Banner>}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', margin: '12px 0' }}>
+            <span style={{ fontSize: 13, fontWeight: 800 }}>Your commission so far</span>
+            <span className="bb-mono" style={{ fontSize: 14, fontWeight: 800 }}>{tokens(data.myCommissionPaise)} tokens</span>
+          </div>
+          <CommissionSection team={t} commissions={data.commissions} />
         </Card>
       </div>
     );
@@ -300,7 +360,8 @@ const TeamPage: React.FC = () => {
     <div>
       {header}
       <Card style={{ marginBottom: 14 }}>
-        <CardTitle title="Your teams" sub={`Supervisor · rail ${data.rail} · up to 4 teams of 10`} />
+        <CardTitle title="Your teams" sub={`Supervisor · rail ${data.rail} · up to 4 teams of 10`}
+          action={<span className="bb-mono" style={{ fontSize: 13, fontWeight: 800 }}>Your commission {tokens(data.myCommissionPaise)} tokens</span>} />
         <form
           style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}
           onSubmit={(e) => {
@@ -321,7 +382,8 @@ const TeamPage: React.FC = () => {
       {data.teams.map((t) => (
         <SupervisorTeamCard key={t.teamId} team={t} busy={busy} run={run}
           members={data.members.filter((m) => m.teamId === t.teamId)}
-          poolRequests={(data.poolRequests ?? []).filter((r) => r.teamId === t.teamId)} />
+          poolRequests={(data.poolRequests ?? []).filter((r) => r.teamId === t.teamId)}
+          commissions={data.commissions ?? []} />
       ))}
     </div>
   );

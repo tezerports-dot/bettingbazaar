@@ -668,7 +668,7 @@ app.use('/api',           uploadRoutes);
 app.use('/api',           retentionRoutes);
 // Referral and VIP were removed from the platform on 2026-07-30 (owner
 // decision). No /api/referral or /api/vip routes exist; the models, the
-// commission engine and the panel pages went with them.
+// referral commission and the panel pages went with them.
 } else {
   app.use('/api', (_req, res) => res.status(404).json({ success: false, message: `API disabled on ${runtime.role} runtime role` }));
 }

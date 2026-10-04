@@ -35,13 +35,29 @@ router.get('/team', merchantAuth, async (req, res) => {
       const teams = await db.teams.listTeams({ supervisorId: me.merchantId });
       const members = (await Promise.all(teams.map((t) => db.teams.listMembers({ teamId: t.teamId })))).flat();
       const poolRequests = await db.teamPools.listRequests({ supervisorId: me.merchantId, limit: 50 });
-      return res.json({ success: true, role: 'SUPERVISOR', rail: me.supervisorRail, publicRef: me.publicRef, teams, members, poolRequests });
+      // Team commission (Step 2e): each team's recent payments with this
+      // supervisor's 16% of each, and their total across every team.
+      const [commissions, myCommissionPaise] = await Promise.all([
+        Promise.all(teams.map((t) => db.teamCommission.listCommissions(t.teamId, { merchantId: me.merchantId, limit: 10 })))
+          .then((lists) => lists.flat()),
+        db.teamCommission.earnedBy(me.merchantId),
+      ]);
+      return res.json({
+        success: true, role: 'SUPERVISOR', rail: me.supervisorRail, publicRef: me.publicRef,
+        teams, members, poolRequests, commissions, myCommissionPaise,
+      });
     }
     const membership = await db.teams.membershipOf(me.merchantId);
     if (!membership) return res.json({ success: true, role: 'NONE', publicRef: me.publicRef });
+    // A member sees their team's payments and their own share of each — never
+    // anyone else's share (each reads only their own row).
+    const [commissions, myCommissionPaise] = await Promise.all([
+      db.teamCommission.listCommissions(membership.team.teamId, { merchantId: me.merchantId, limit: 10 }),
+      db.teamCommission.earnedBy(me.merchantId),
+    ]);
     res.json({
       success: true, role: 'MEMBER', publicRef: me.publicRef,
-      status: membership.member.status, team: membership.team,
+      status: membership.member.status, team: membership.team, commissions, myCommissionPaise,
     });
   } catch (err) { respondError(res, err, 'GET /merchant/team'); }
 });

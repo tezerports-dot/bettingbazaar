@@ -3582,7 +3582,8 @@ ALTER TABLE admin_token_considerations ADD COLUMN IF NOT EXISTS team_id TEXT;
 -- The kind list grew (S31: a CHECK whose definition moves is dropped and re-added).
 ALTER TABLE team_pool_entries DROP CONSTRAINT IF EXISTS team_pool_entries_kind_known;
 ALTER TABLE team_pool_entries ADD CONSTRAINT team_pool_entries_kind_known CHECK (kind IN (
-  'ADMIN_SALE', 'ADMIN_BUYBACK', 'BUY_HOLD', 'BUY_RELEASE', 'BUY_PAID', 'SELL_SETTLED', 'SELL_REVERSED'));
+  'ADMIN_SALE', 'ADMIN_BUYBACK', 'BUY_HOLD', 'BUY_RELEASE', 'BUY_PAID', 'SELL_SETTLED', 'SELL_REVERSED',
+  'COMMISSION'));
 -- An order's pool movements name the order; an admin trade names its request.
 CREATE INDEX IF NOT EXISTS team_pool_entries_ref_idx ON team_pool_entries (ref_id);
 
@@ -3785,3 +3786,62 @@ ALTER TABLE users ADD CONSTRAINT users_bank_account_not_a_mobile
   CHECK (NOT bb_account_number_is_a_mobile(bank_details->>'accountNumber', bank_details->>'ifscCode', mobile)
      AND NOT bb_text_has_a_mobile(bank_details->>'accountHolderName')
      AND NOT bb_text_has_a_mobile(bank_details->>'bankName'));
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Step 2e (owner, 2026-10-02): the team commission, instant and per team.
+--
+-- A team's MATCHED volume is min(completed buys, completed sells), in tokens.
+-- Every time it rises above the team's high-water mark, 10% of the rise is paid
+-- as tokens into the team's pool, out of the platform's commission pool
+-- (MERCHANT_BONUS_POOL in the accounting ledger, which an admin funds from
+-- distributable revenue). The mark is the highest `to_high_paise` recorded for
+-- the team: one row per rise, written by `teamCommission.js` alone, in the
+-- transaction that credits the pool. Volume that falls (a completed sell
+-- disputed and refunded) is never clawed back; it has to climb back past the
+-- mark before anything is paid again.
+--
+-- `team_commissions_from_once` is the double-payment guard (§32 S6, S45): two
+-- payments racing from the same mark cannot both land, whatever read them.
+-- ═══════════════════════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS team_commissions (
+  commission_id    TEXT PRIMARY KEY,
+  team_id          TEXT NOT NULL REFERENCES teams (team_id),
+  supervisor_id    TEXT NOT NULL REFERENCES merchants (merchant_id),
+  from_high_paise  BIGINT NOT NULL,
+  to_high_paise    BIGINT NOT NULL,
+  buys_paise       BIGINT NOT NULL,
+  sells_paise      BIGINT NOT NULL,
+  commission_paise BIGINT NOT NULL,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT team_commissions_rises CHECK (from_high_paise >= 0 AND to_high_paise > from_high_paise),
+  CONSTRAINT team_commissions_is_matched CHECK (to_high_paise = LEAST(buys_paise, sells_paise)),
+  -- 10% of the rise, rounded down to the paisa; a rise worth nothing is not a row.
+  CONSTRAINT team_commissions_tenth CHECK (
+    commission_paise = (to_high_paise - from_high_paise) / 10 AND commission_paise > 0),
+  CONSTRAINT team_commissions_from_once UNIQUE (team_id, from_high_paise),
+  CONSTRAINT team_commissions_to_once UNIQUE (team_id, to_high_paise)
+);
+CREATE OR REPLACE TRIGGER team_commissions_append_only
+  BEFORE UPDATE OR DELETE ON team_commissions FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
+
+-- Who earned what of each payment: 16% to the supervisor, 84% equally to the
+-- team's approved members at that moment. A RECORD, not money: the tokens sit
+-- in the team's pool. The shares of one payment add up to it exactly.
+CREATE TABLE IF NOT EXISTS team_commission_shares (
+  commission_id TEXT NOT NULL REFERENCES team_commissions (commission_id),
+  merchant_id   TEXT NOT NULL REFERENCES merchants (merchant_id),
+  role          TEXT NOT NULL,
+  share_paise   BIGINT NOT NULL,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (commission_id, merchant_id),
+  CONSTRAINT team_commission_shares_role_known CHECK (role IN ('SUPERVISOR', 'MEMBER')),
+  CONSTRAINT team_commission_shares_nonneg CHECK (share_paise >= 0)
+);
+CREATE INDEX IF NOT EXISTS team_commission_shares_merchant_idx
+  ON team_commission_shares (merchant_id, created_at DESC);
+CREATE OR REPLACE TRIGGER team_commission_shares_append_only
+  BEFORE UPDATE OR DELETE ON team_commission_shares FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
+
+-- A team's completed volume, read on every completion: summed from this index alone.
+CREATE INDEX IF NOT EXISTS order_states_team_completed_idx
+  ON order_states (team_id, order_type) INCLUDE (token_amount_paise) WHERE state = 'COMPLETED';

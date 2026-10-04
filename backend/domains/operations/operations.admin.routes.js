@@ -112,7 +112,7 @@ router.get('/operations/overview', authenticate, hasPermission('canViewAnalytics
 router.get('/operations/config-catalog', authenticate, hasPermission('canViewAnalytics'), async (req, res) => {
   res.json({ success: true, catalog: [
     { value: 'Deposit/reserve split + reserve usage rules (per currency)', owner: 'Business Policy — DepositPolicy', edit: 'PUT /api/admin/deposit-policy/:currency' },
-    { value: 'Merchant Performance Bonus (enabled, %, min matched volume)', owner: 'Business Policy — MerchantBonusPolicy', edit: 'PUT /api/admin/merchant-bonus-policy' },
+    { value: 'Team commission (10% of each rise in matched volume; 16% supervisor / 84% members)', owner: 'Fixed rule — database/repositories/teamCommission.js (PROJECT_STATUS §3.10, 2e); paid from the team commission pool', edit: 'POST /api/admin/revenue/bonus-pool/fund (funds the pool; the percentages are not editable)' },
     { value: 'Bet limits (per cycle type)', owner: 'Business Policy — SystemConfig.betLimits', edit: 'PUT /api/admin/system/config' },
     { value: 'Deposit/withdrawal min/max', owner: 'Business Policy — SystemConfig', edit: 'PUT /api/admin/system/config' },
     { value: 'Payout fee %', owner: 'Business Policy — SystemConfig.payoutFeePercent (enforced by Risk, recorded by R&S)', edit: 'PUT /api/admin/system/config' },
@@ -131,7 +131,7 @@ router.get('/operations/config-catalog', authenticate, hasPermission('canViewAna
     { value: 'Cycle duration (short-block betting window, minutes)', owner: 'Business Policy — SystemConfig.cycleDurationMinutes (read by markets/cycleGenerator)', edit: 'PUT /api/admin/system/config' },
     // Phase X X-7: operational-data retention window.
     { value: 'Data retention (months of crash reports kept; expired referral clicks and notifications go after 30 days; bets, cycles, money and audit are never pruned)', owner: 'Business Policy — SystemConfig.retentionMonths (read by operations/retention.service)', edit: 'PUT /api/admin/system/config' },
-    { value: 'Merchant bonus pool funding', owner: 'Revenue & Settlement (from distributable revenue only)', edit: 'POST /api/admin/revenue/bonus-pool/fund' },
+    { value: 'Team commission pool funding', owner: 'Revenue & Settlement (from distributable revenue only)', edit: 'POST /api/admin/revenue/bonus-pool/fund' },
     { value: 'Team pool tokens (supervisor requests, admin fulfils)', owner: 'Team pools — teamPools.js', edit: 'POST /api/admin/team-pool-requests/:id/fulfil' },
     { value: 'Funding providers (P2P / USDT / gateways)', owner: 'Funding Platform — providerRegistry adapters', edit: 'code adapter + registry entry (activation is a deploy, not a constant)' },
     { value: 'Casino game providers (Evolution, Pragmatic, ...)', owner: 'Casino Platform — GameProvider documents', edit: 'PUT /api/admin/game-providers/:key' },

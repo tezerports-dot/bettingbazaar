@@ -488,7 +488,7 @@ router.get('/profile', merchantAuth, async (req, res) => {
         if (!merchant) return res.status(404).json({ success: false, message: 'Merchant profile not found.' });
         // Fixed 1:1 internal conversion (Phase 006 flattening, 2026-07-08):
         // no buy/sell spread. Shape kept for merchant-panel compatibility;
-        // merchant earnings move to the future Merchant Performance Bonus.
+        // merchant earnings are team commission (2e, teamCommission.js).
         res.json({
             success: true,
             merchant: {

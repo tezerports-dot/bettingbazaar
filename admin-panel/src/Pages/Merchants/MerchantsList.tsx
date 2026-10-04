@@ -463,8 +463,8 @@ export const MerchantsList: React.FC = () => {
               and the lifetime volume of COMPLETED orders, in tokens (1 token
               = ₹1). It never sent earnings figures — this tab rendered
               totalEarnings / monthlyEarnings / avgPerOrder, read undefined,
-              and showed ₹0 for every merchant. Merchant pay arrives with the
-              team commission (Step 2e); nothing here claims to show it. */}
+              and showed ₹0 for every merchant. Merchant pay is team commission,
+              shown per team in Teams; nothing here claims to show it. */}
           {detailTab === 'earnings' && (
             <div className="space-y-4">
               {merchantEarnings ? (

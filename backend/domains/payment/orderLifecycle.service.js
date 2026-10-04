@@ -40,6 +40,7 @@
  */
 import { ORDER_STATES, ALLOWED_FROM } from '#db/repositories/orders.core.js';
 import { transitionOrder as pgTransitionOrder, reassignOrder as pgReassignOrder } from '#db/repositories/orders.js';
+import { payCommissionFor } from '../team/teamCommission.service.js';
 
 export { ORDER_STATES };
 
@@ -99,7 +100,16 @@ export async function transitionOrder(orderId, to, { set = {}, expectFrom = null
   // document-store transaction could stay on that store; a transaction spanning
   // two stores was the hazard the whole migration exists to remove, and no
   // caller passes one.
-  return pgTransitionOrder(orderId, to, { set, expectFrom, expectMerchant, actor, reason, txId, within });
+  const result = await pgTransitionOrder(orderId, to, { set, expectFrom, expectMerchant, actor, reason, txId, within });
+
+  // ── A completed order may have earned its team commission (Step 2e) ────────
+  // Asked after the move committed, and never able to fail it: a payment that
+  // does not run here is paid by the sweep, because the mark moves only when
+  // a payment lands. A replayed completion asks again, which pays nothing twice.
+  if (to === ORDER_STATES.COMPLETED && result.ok && result.order?.teamId) {
+    await payCommissionFor(result.order.teamId, { actor: actor ?? 'system' });
+  }
+  return result;
 }
 
 // ── Named transitions ────────────────────────────────────────────────────────

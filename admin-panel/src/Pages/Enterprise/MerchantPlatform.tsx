@@ -11,8 +11,8 @@
  * A merchant holds no tokens (PROJECT_STATUS §3.10, 2c): their team's pool
  * does. So there is no wallet column, no wallet ledger and no admin top-up
  * here. The old commission policy, its per-variety rate editor and the engine
- * run went with the routes behind them; the instant team commission arrives in
- * Step 2e and is not built here.
+ * run went with the routes behind them; team commission (2e) is paid into team
+ * pools and shown in Teams, not here.
  */
 import React, { useCallback, useEffect, useState } from 'react';
 import { RefreshCw, Trophy, ScrollText } from 'lucide-react';

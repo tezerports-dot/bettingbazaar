@@ -315,6 +315,14 @@ export const TeamsManager: React.FC = () => {
                   <span className="text-xs text-gray-400">
                     Pool: {tokens(t.poolAvailablePaise)} tokens{t.poolHeldPaise ? ` · ${tokens(t.poolHeldPaise)} held` : ''}
                   </span>
+                  <span className="text-xs text-gray-400">
+                    Commission: {tokens(t.commission.paidPaise)} paid on matched volume {tokens(t.commission.matchedPaise)}
+                  </span>
+                  {t.commission.owedPaise > 0 && (
+                    <span className="text-xs px-2 py-0.5 rounded-lg bg-yellow-500/10 text-yellow-400">
+                      {tokens(t.commission.owedPaise)} waiting: fund the team commission pool (Revenue Ledger)
+                    </span>
+                  )}
                 </div>
                 <ul className="text-sm space-y-1">
                   {members.filter((m) => m.teamId === t.teamId && m.status === 'APPROVED').map((m) => (

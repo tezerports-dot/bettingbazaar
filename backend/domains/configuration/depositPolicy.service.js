@@ -24,8 +24,8 @@
  *    index — after the other had already been made ACTIVE.
  *
  * SCOPE: this policy governs ONLY the deposit/reserve wallet split and reserve
- * usage rules. Merchant incentive pay is a separate mechanism (the Merchant
- * Performance Bonus) triggered by completed buy+sell cycles.
+ * usage rules. Merchant pay is a separate mechanism: team commission (2e,
+ * `database/repositories/teamCommission.js`) on each rise in matched volume.
  */
 import { db } from '#db';
 

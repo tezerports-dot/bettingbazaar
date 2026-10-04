@@ -23,6 +23,7 @@
  */
 import { pgQuery, withTransaction } from '../client.js';
 import { randomBytes } from 'node:crypto';
+import { teamVolumeSql, teamMarkSql, toSummary } from './teamCommission.js';
 
 export const MAX_TEAMS = 4;
 export const TEAM_SIZE = 10;
@@ -49,10 +50,13 @@ const TEAM_SELECT = `
          c.approved_count, c.pending_count,
          COALESCE(p.available_paise, 0) AS pool_available_paise,
          COALESCE(p.held_paise, 0)      AS pool_held_paise,
+         v.buys_paise, v.sells_paise, k.high_paise, k.paid_paise,
          ${STRENGTH_SQL} AS strength
     FROM teams t
     JOIN merchants s ON s.merchant_id = t.supervisor_id
     LEFT JOIN team_pools p ON p.team_id = t.team_id
+    CROSS JOIN LATERAL (${teamVolumeSql('t.team_id')}) v
+    CROSS JOIN LATERAL (${teamMarkSql('t.team_id')}) k
     CROSS JOIN LATERAL (
       SELECT count(*) FILTER (WHERE status = 'APPROVED')::int AS approved_count,
              count(*) FILTER (WHERE status = 'PENDING')::int  AS pending_count
@@ -74,6 +78,9 @@ function toTeam(row) {
     // The team's tokens (Step 2b). BIGINT arrives as a string (trap 5).
     poolAvailablePaise: Number(row.pool_available_paise ?? 0),
     poolHeldPaise: Number(row.pool_held_paise ?? 0),
+    // Step 2e: matched volume, the high-water mark, what has been paid, and
+    // what is earned but waiting for the commission pool.
+    commission: toSummary(row.team_id, row),
     shortSince: row.short_since,
     wasFull: row.was_full,
     createdAt: row.created_at,

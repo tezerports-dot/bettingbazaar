@@ -112,9 +112,9 @@ the principle stated still holds.
 | USDT chain and quote | `order_states.usdt_chain`, `rate_used`, `fiat_amount_paise`: written with the order, frozen by trigger (§25). |
 | USDT pricing | `SystemConfig.usdtPricing` (`userMerchantBuyInr`, `merchantAdminBuyInr`); band ₹10–₹1,000 owned by `domains/configuration/tokenRates.js`, enforced on save and on read; 0 = unset = refused by name. No USDT sell rail. |
 | An order's payment rail ⚠2c | Fixed on the order; everything branches on the order's own value, never a feature flag or `payment_gateway_configs.active_mode`. |
-| Merchant earnings ⚠2c (2e) | Platform-funded; never from users, a spread or a deposit trigger (§26). |
+| Merchant earnings | Team commission (§26): `database/repositories/teamCommission.js`, the one writer of `team_commissions` + `team_commission_shares`. Paid into the TEAM's pool from the platform-funded team commission pool (`MERCHANT_BONUS_POOL`); never from users, a spread or a deposit trigger. Every screen reads `toSummary` and the shares; none keeps its own percentages. |
 | Token supply | `SystemConfig.adminTokenSupply.total` (20 billion). None are ever created; every movement is a transfer, and the books prove holding + pools + wallets = total. |
-| Merchant/pool token movements ⚠2c | One writer, idempotent `tx_id`. |
+| Pool token movements | `teamPools.js`, the one writer; idempotent `tx_id`. A commission joins the pool as a `COMMISSION` entry with its `TOKEN_SUPPLY` → `TEAM_FLOAT` movement, in the paying transaction (`creditCommissionWithin`). |
 | What an admin↔merchant/team token movement was FOR | `admin_token_considerations` (`database/repositories/adminTokenConsiderations.js`), one row keyed by the movement. Never sum `fiat_amount_minor` across currencies; aggregate `inr_equivalent_paise`. Figure required, 0 allowed. USDT in only. Validated before tokens move. |
 | Tokens held for an order ⚠2c | One owner holds them from attachment, releases on every terminal outcome, consumes on confirm; one live hold per order. Never admit an order by reading a balance: taking the hold IS the check. An unheld order is reported, never silently re-held. |
 | Player balance changes | `domains/wallet/walletAuthority.service.js` only, stake locks included. |
@@ -445,13 +445,26 @@ spelling) or a holder or bank name containing one is refused by the row
 - ₹10,000 (the largest CASH size) is the ATM limit; it is not a USDT limit.
 - A refusal names that rail's own valid choices.
 
-## 26. Merchant commission ⚠2c (2e replaces)
+## 26. Team commission
 
-Step 2e's team commission (`PROJECT_STATUS.md` §3.10) replaces this engine.
-Until then: paid once on matched volume above a high-water mark from a
-platform-funded pool; match and mark per variety; an unpriced variety earns
-nothing and is reported; read the mark from the idempotency key; key separator
-`~`; never partial-issue; check the recipient exists first.
+1. A team's matched volume is `min(completed buys, completed sells)` in tokens
+   over its own orders (`teamVolumeSql`, the one query; trap 15).
+2. Each rise above the team's high-water mark pays `COMMISSION_PERCENT` (10) of
+   the rise, rounded down to the paisa, into the team's pool from
+   `MERCHANT_BONUS_POOL` (funded only from distributable revenue).
+3. The mark is the rows: the highest `team_commissions.to_high_paise`. It moves
+   only with a payment. UNIQUE `(team, from)` and `(team, to)` plus the advisory
+   lock pay each rise once; the CHECKs hold the row to the rule.
+4. Never partial: a pool short of the whole amount pays nothing, and the rise
+   waits for the next completion, the 5-minute sweep or the next funding.
+5. Paid after commit from every path that completes an order (the lifecycle
+   and the sell settlement); a failure is alerted and the sweep pays it (§21).
+   The payment, its shares, the ledger event, the pool entry and the treasury
+   movement are one transaction.
+6. The split is a RECORD, adding up to the payment exactly:
+   `SUPERVISOR_SHARE_PERCENT` (16) to the supervisor, the rest equally to the
+   approved members at the time of payment. The tokens stay in the pool.
+7. A member sees only their own share; the team's totals are team-level.
 
 ## 27. One payment, one claim
 

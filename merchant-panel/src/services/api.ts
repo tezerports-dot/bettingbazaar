@@ -437,13 +437,13 @@ export const getEarnings = async (params?: {
     //
     // This read `today.deposits.totalFees`, which came from
     // `order_states.merchant_profit_paise` — written as the literal 0 at order
-    // creation and never set again, because commission moved to
-    // `merchant_commission_*` and the wallet ledger (§26). So the "Today's
+    // creation and never set again, because merchant pay is team commission
+    // (2e): each member's share in `team_commission_shares`. So the "Today's
     // earnings" tile was a structural zero for every merchant on every rail,
     // on a platform that does pay commission. It was also only the DEPOSIT
     // half, so even against a live column it would have under-reported.
     //
-    // `todayEarned` is the commission ledger's own figure and needs no
+    // `todayEarned` is the commission shares' own figure and needs no
     // reshaping here. Where a mapper has nothing to do, it should do nothing:
     // arithmetic in this file is a second owner of a money number.
     return {

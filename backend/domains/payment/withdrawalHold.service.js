@@ -32,6 +32,7 @@ import { db } from '#db';
 import { releaseWithdrawal, returnWithdrawalStake } from '../wallet/walletAuthority.service.js';
 import { emitOrderUpdate, emitAdminUpdate } from '../notification/realtimeEmitters.js';
 import { sendAlert } from '../../services/alerting.service.js';
+import { payCommissionFor } from '../team/teamCommission.service.js';
 import { getSystemConfig } from '#db/repositories/config.js';
 
 /** Fallback matches the SystemConfig schema default (60), which is also its floor. */
@@ -112,6 +113,8 @@ export async function settleHold(orderId) {
   }
 
   await mirrorSettlement(order, 'SETTLED');
+  // The sell is COMPLETED now: its team may have earned commission (Step 2e).
+  await payCommissionFor(order.teamId, { actor: 'settlement-worker' });
 
   emitOrderUpdate(String(order.userId), 'order_completed', {
     orderId: order.orderId, _id: order.orderId, status: 'COMPLETED', server_ts: Date.now(),

@@ -571,6 +571,37 @@ export async function reverseSellFromPool(orderId, { actor = 'system', reason = 
 }
 
 /**
+ * A team commission (Step 2e) joins the team's pool, INSIDE the transaction
+ * that records it (`teamCommission.js`), so the commission row, its shares,
+ * the ledger event and these tokens commit together or not at all (§21). The
+ * tokens come from the platform's own holding, TOKEN_SUPPLY → TEAM_FLOAT: a
+ * transfer, never a creation (§2); the accounting ledger's commission pool is
+ * what pays for them. Throws `PoolRefused` to unwind the caller.
+ */
+export async function creditCommissionWithin(client, { teamId, commissionId, amountPaise, actor = 'system' }) {
+  const paise = Number(amountPaise);
+  if (!Number.isInteger(paise) || paise <= 0) throw new Error(`creditCommissionWithin: amount must be positive paise, got ${amountPaise}`);
+  await client.query('INSERT INTO team_pools (team_id) VALUES ($1) ON CONFLICT (team_id) DO NOTHING', [teamId]);
+  const { rows: pool } = await client.query(
+    `UPDATE team_pools SET available_paise = available_paise + $2, updated_at = now()
+      WHERE team_id = $1 RETURNING available_paise, held_paise`, [teamId, paise]);
+  await writeEntry(client, {
+    txId: `pool_commission_${commissionId}`, teamId, kind: 'COMMISSION',
+    availableDelta: paise, heldDelta: 0, pool: pool[0], actor, refId: commissionId,
+  });
+  const moved = await postMovement({
+    client, movementId: `team_commission_${commissionId}`, operation: 'TEAM_COMMISSION',
+    legs: { [ACCOUNTS.TOKEN_SUPPLY]: -paise, [ACCOUNTS.TEAM_FLOAT]: paise },
+    actor: String(actor), refModel: 'Team', refId: teamId, reason: 'Team commission paid into the pool',
+  });
+  if (!moved.ok) throw new Refused(moved.reason);
+  // The movement already exists: this commission was paid. Reachable only if
+  // the commission row's own once-only key was bypassed; never pay twice.
+  if (moved.idempotent) throw new Refused('already_paid');
+  return toPool(teamId, pool[0]);
+}
+
+/**
  * Holds whose order has ended without spending them — a path that forgot to
  * release. Released by the sweep; the list is the evidence of which path
  * forgot. A COMPLETED buy still holding is NOT here: its player was credited

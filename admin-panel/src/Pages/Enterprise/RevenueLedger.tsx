@@ -128,7 +128,7 @@ export const RevenueLedger: React.FC = () => {
                 </p>
                 <p className="text-xs text-gray-400">
                   Distributable platform revenue: <span className="text-gold-400 font-semibold">{inr(summary.distributableRevenue)}</span>
-                  {' · '}Merchant bonus pool: <span className="text-gold-400 font-semibold">{inr(summary.merchantBonusPool)}</span>
+                  {' · '}Team commission pool: <span className="text-gold-400 font-semibold">{inr(summary.merchantBonusPool)}</span>
                 </p>
               </div>
             </div>
@@ -145,12 +145,13 @@ export const RevenueLedger: React.FC = () => {
       {canFundPool && (
         <div className="card border border-gold-500/30">
           <h3 className="text-lg font-semibold mb-1 flex items-center gap-2">
-            <PiggyBank size={18} className="text-gold-500" /> Fund Merchant Bonus Pool
+            <PiggyBank size={18} className="text-gold-500" /> Fund Team Commission Pool
           </h3>
           <p className="text-xs text-gray-400 mb-3">
-            Moves distributable platform revenue into the pool that pays Merchant Performance
-            Bonuses. Hard rule: never funded from user money — the backend refuses anything
-            beyond distributable revenue.
+            Moves distributable platform revenue into the pool team commission is paid from:
+            a share of each rise in a team&apos;s matched volume, as tokens into its pool. Commission
+            the pool could not cover is paid as soon as it is funded. Hard rule: never funded
+            from user money — the backend refuses anything beyond distributable revenue.
           </p>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             <input type="number" min={1} className="input" placeholder="Amount (₹)"

@@ -428,8 +428,8 @@ export const DEPOSIT_POLICY_SPEC = group({
 
 // A `merchantBonusPolicy` scope used to sit here, declaring a per-order spread
 // (depositBonusPercent / withdrawalBonusPercent / maxBonusPerOrder). Nothing
-// ever read it, and what a merchant earns is owned by
-// `merchant_commission_policies` — a versioned, justified, append-only table.
+// ever read it, and what a merchant earns is owned by team commission
+// (`database/repositories/teamCommission.js`, 2e): a fixed rule, not a policy.
 // A second set of earnings fields an admin could reach was a second owner
 // waiting to disagree with the first, so it is gone rather than left dormant.
 

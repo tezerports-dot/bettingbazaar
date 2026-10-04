@@ -305,12 +305,12 @@ export interface LoginCredentials {
  * they were about to render did not exist.
  */
 export interface Earnings {
-  /** Commission credited today, from the ledger. Rupees, 1:1 with tokens. */
+  /** This merchant's team commission share today. Tokens (1 token = ₹1). */
   today: number;
-  /** Commission credited over the requested range — lifetime when unbounded. */
+  /** Their shares over the requested range — lifetime when unbounded. */
   total: number;
   lifetime?: {
-    /** Commission actually issued: `MERCHANT_BONUS_ISSUED` events. */
+    /** Their shares actually recorded: `team_commission_shares` rows. */
     totalEarnings: number;
     /**
      * Matched volume, in TOKENS on both rails — never the order's own currency,
@@ -392,13 +392,29 @@ export interface Team {
   strength: 'WORKING' | 'GRACE' | 'STOPPED'; shortSince: string | null; wasFull: boolean; createdAt: string;
   /** The team's token pool, in paise (Step 2b). */
   poolAvailablePaise: number; poolHeldPaise: number;
+  /** Team commission (Step 2e): `toSummary` in database/repositories/teamCommission.js. */
+  commission: TeamCommissionSummary;
+}
+// Team commission (Step 2e). Mirrors `toSummary` and `listCommissions` in
+// database/repositories/teamCommission.js — §5. Paise throughout.
+export interface TeamCommissionSummary {
+  teamId: string; buysPaise: number; sellsPaise: number; matchedPaise: number;
+  highPaise: number; paidPaise: number; owedPaise: number;
+  /** The rule, from the server: of each rise, and the supervisor's part of each payment. */
+  commissionPercent: number; supervisorSharePercent: number;
+}
+export interface TeamCommission {
+  commissionId: string; teamId: string; fromHighPaise: number; toHighPaise: number;
+  commissionPaise: number; mySharePaise: number; createdAt: string;
 }
 // Team token pools (Step 2b). Mirrors `toPool`, `toEntry`, `toRequest` and
 // POOL_DIRECTIONS in database/repositories/teamPools.js — §5.
 export type PoolDirection = 'BUY' | 'SELL';
 export interface TeamPool { teamId: string; availablePaise: number; heldPaise: number; totalPaise: number }
 export interface TeamPoolEntry {
-  id: number; kind: 'ADMIN_SALE' | 'ADMIN_BUYBACK'; availableDeltaPaise: number; heldDeltaPaise: number;
+  id: number;
+  kind: 'ADMIN_SALE' | 'ADMIN_BUYBACK' | 'BUY_HOLD' | 'BUY_RELEASE' | 'BUY_PAID' | 'SELL_SETTLED' | 'SELL_REVERSED' | 'COMMISSION';
+  availableDeltaPaise: number; heldDeltaPaise: number;
   availableAfterPaise: number; heldAfterPaise: number; createdAt: string;
 }
 export interface TeamPoolRequest {
@@ -411,6 +427,8 @@ export interface TeamMember {
   status: 'PENDING' | 'APPROVED'; isOnline: boolean;
 }
 export type MyTeam =
-  | { role: 'SUPERVISOR'; rail: SupervisorRail; publicRef: string; teams: Team[]; members: TeamMember[]; poolRequests: TeamPoolRequest[] }
-  | { role: 'MEMBER'; publicRef: string; status: 'PENDING' | 'APPROVED'; team: Team }
+  | { role: 'SUPERVISOR'; rail: SupervisorRail; publicRef: string; teams: Team[]; members: TeamMember[]; poolRequests: TeamPoolRequest[];
+      commissions: TeamCommission[]; myCommissionPaise: number }
+  | { role: 'MEMBER'; publicRef: string; status: 'PENDING' | 'APPROVED'; team: Team;
+      commissions: TeamCommission[]; myCommissionPaise: number }
   | { role: 'NONE'; publicRef: string };

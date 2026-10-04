@@ -77,7 +77,7 @@ export const STAFF_PERMISSIONS = Object.freeze([
   { key: 'canFundMerchants', group: 'merchants', label: 'Team pool requests', money: true,
     description: 'Fulfil or reject a supervisor\'s request to buy tokens into a team\'s pool or sell them back, recording what was paid.' },
   { key: 'canManageCommission', group: 'merchants', label: 'Merchant commission', money: true,
-    description: 'Fund the bonus pool merchant commission is paid from.' },
+    description: 'Fund the pool team commission is paid from.' },
 
   // ── Payments & disputes ──────────────────────────────────────────────────
   { key: 'canResolveDisputes', group: 'payments', label: 'Resolve disputes', money: true,

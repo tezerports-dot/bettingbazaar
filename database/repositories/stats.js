@@ -280,16 +280,17 @@ export async function leaderboard({ since = null, limit = 50 } = {}) {
 export async function merchantActivityReport({ from = null, to = null } = {}) {
   const params = [];
   const orderWhere = ["state = 'COMPLETED'", 'merchant_id IS NOT NULL'];
-  const bonusWhere = ["e.event_type = 'MERCHANT_BONUS_ISSUED'"];
+  // What each merchant EARNED: their recorded share of team commission (Step 2e).
+  const bonusWhere = ['TRUE'];
   if (from) {
     params.push(new Date(from));
     orderWhere.push(`completed_at >= $${params.length}`);
-    bonusWhere.push(`e.created_at >= $${params.length}`);
+    bonusWhere.push(`s.created_at >= $${params.length}`);
   }
   if (to) {
     params.push(new Date(to));
     orderWhere.push(`completed_at <= $${params.length}`);
-    bonusWhere.push(`e.created_at <= $${params.length}`);
+    bonusWhere.push(`s.created_at <= $${params.length}`);
   }
 
   const { rows } = await pgQuery(
@@ -307,13 +308,12 @@ export async function merchantActivityReport({ from = null, to = null } = {}) {
         WHERE ${orderWhere.join(' AND ')}
         GROUP BY merchant_id
      ), bonuses AS (
-       SELECT e.ref_id AS merchant_id,
-              COUNT(DISTINCT e.id)::int AS issuances,
-              COALESCE(SUM(ABS((p->>'amountPaise')::BIGINT)), 0) AS bonus_paise
-         FROM accounting_events e
-         CROSS JOIN LATERAL jsonb_array_elements(e.postings) p
-        WHERE ${bonusWhere.join(' AND ')} AND p->>'account' = 'MERCHANT_FUNDS'
-        GROUP BY e.ref_id
+       SELECT s.merchant_id,
+              COUNT(*)::int AS issuances,
+              COALESCE(SUM(s.share_paise), 0) AS bonus_paise
+         FROM team_commission_shares s
+        WHERE ${bonusWhere.join(' AND ')}
+        GROUP BY s.merchant_id
      )
      SELECT COALESCE(o.merchant_id, b.merchant_id) AS merchant_id,
             COALESCE(m.username, m.name, 'unknown') AS username,
@@ -550,14 +550,11 @@ export async function merchantLeaderboard({ days = 30, limit = 20, sortBy = 'vol
         WHERE merchant_id IS NOT NULL AND created_at >= $1
         GROUP BY merchant_id
      ), bonuses AS (
-       SELECT e.ref_id AS merchant_id,
-              COALESCE(SUM(ABS((p->>'amountPaise')::BIGINT)), 0) AS bonus_paise
-         FROM accounting_events e
-         CROSS JOIN LATERAL jsonb_array_elements(e.postings) p
-        WHERE e.event_type = 'MERCHANT_BONUS_ISSUED'
-          AND e.created_at >= $1
-          AND p->>'account' = 'MERCHANT_FUNDS'
-        GROUP BY e.ref_id
+       -- Their recorded share of team commission (Step 2e).
+       SELECT merchant_id, COALESCE(SUM(share_paise), 0) AS bonus_paise
+         FROM team_commission_shares
+        WHERE created_at >= $1
+        GROUP BY merchant_id
      )
      SELECT o.merchant_id, o.total_orders, o.completed_orders, o.failed_orders,
             o.completed_volume,
@@ -592,8 +589,8 @@ export async function merchantLeaderboard({ days = 30, limit = 20, sortBy = 'vol
  * One merchant's funding picture.
  *
  * `matchedCycleVolume` is the smaller of the deposit and withdrawal volumes —
- * the amount that actually went round a buy→sell cycle, which is what the
- * performance bonus is calculated from.
+ * the amount this merchant took round a buy→sell cycle. Commission is paid on
+ * the TEAM's matched volume (`teamCommission.js`), not on this.
  */
 export async function merchantFundingStats(merchantId) {
   const { rows } = await pgQuery(
@@ -612,13 +609,11 @@ export async function merchantFundingStats(merchantId) {
          WHERE merchant_id = $1 AND state = 'COMPLETED' AND order_type = 'WITHDRAWAL') AS withdrawals,
        (SELECT COALESCE(SUM(fiat_amount_paise), 0) FROM order_states
          WHERE merchant_id = $1 AND state = 'COMPLETED' AND order_type = 'WITHDRAWAL') AS withdrawal_volume,
-       (SELECT COALESCE(SUM(ABS((p->>'amountPaise')::BIGINT)), 0)
-          FROM accounting_events e
-          CROSS JOIN LATERAL jsonb_array_elements(e.postings) p
-         WHERE e.event_type = 'MERCHANT_BONUS_ISSUED' AND e.ref_id = $1
-           AND p->>'account' = 'MERCHANT_FUNDS')                                       AS bonus_paise,
-       (SELECT COUNT(*)::int FROM accounting_events
-         WHERE event_type = 'MERCHANT_BONUS_ISSUED' AND ref_id = $1)                   AS bonus_count`,
+       -- Their recorded share of team commission (Step 2e).
+       (SELECT COALESCE(SUM(share_paise), 0) FROM team_commission_shares
+         WHERE merchant_id = $1)                                                       AS bonus_paise,
+       (SELECT COUNT(*)::int FROM team_commission_shares
+         WHERE merchant_id = $1)                                                       AS bonus_count`,
     [String(merchantId)], 'stats_merchant_funding',
   );
   const r = rows[0];
@@ -729,16 +724,16 @@ export async function merchantEarnings(merchantId, { from = null, to = null } = 
        -- because trap 17 says those are not the same question.
        WHERE merchant_id = $1 AND state = 'COMPLETED' AND completed_at IS NOT NULL
      ), paid AS (
-       -- WHAT THEY EARNED: the commission ledger, which is where merchant pay
-       -- actually lives — MERCHANT_BONUS_ISSUED events from the platform-funded
-       -- pool, keyed to the merchant.
+       -- WHAT THEY EARNED: their recorded share of each team commission
+       -- payment (Step 2e) — 16% for a supervisor, an equal part of 84% for a
+       -- member. The tokens sit in the team's pool; this is what each person
+       -- is told they earned.
        SELECT
-         COALESCE(SUM(amount_paise) FILTER (WHERE created_at >= CURRENT_DATE), 0) AS today_paid,
-         COALESCE(SUM(amount_paise) FILTER (WHERE ($2::timestamptz IS NULL OR created_at >= $2)
+         COALESCE(SUM(share_paise) FILTER (WHERE created_at >= CURRENT_DATE), 0) AS today_paid,
+         COALESCE(SUM(share_paise) FILTER (WHERE ($2::timestamptz IS NULL OR created_at >= $2)
                             AND ($3::timestamptz IS NULL OR created_at <= $3)), 0) AS range_paid
-       FROM accounting_events
-       WHERE event_type = 'MERCHANT_BONUS_ISSUED'
-         AND ref_model = 'Merchant' AND ref_id = $1
+       FROM team_commission_shares
+       WHERE merchant_id = $1
      )
      SELECT * FROM work, paid`,
     params, 'stats_merchant_earnings',
@@ -747,9 +742,9 @@ export async function merchantEarnings(merchantId, { from = null, to = null } = 
   return {
     today: {
       // ONE figure, because commission is not attributed per order and cannot
-      // honestly be split across the two directions. It is paid on MATCHED
-      // volume — min(deposits, withdrawals) within a variety — so a deposit's
-      // "share" of it does not exist to be reported.
+      // honestly be split across the two directions. It is paid on the TEAM's
+      // matched volume — min(buys, sells) — so a deposit's "share" of it does
+      // not exist to be reported.
       earned: rupees(r.today_paid),
       deposits: {
         count: r.today_deposit_count,
@@ -786,12 +781,10 @@ export async function merchantDailyEarnings(merchantId, { days = 7, timezone = '
      )
      SELECT span.day,
             COUNT(o.order_id)::int AS orders,
-            -- What the merchant was actually PAID that day, from the commission
-            -- ledger. This summed "merchant_profit_paise", which is written as
-            -- the literal 0 at order creation and never set again — commission
-            -- moved to "merchant_commission_*" and the wallet ledger (§26) — so
-            -- the weekly chart was a flat zero on every rail, for every
-            -- merchant, and looked like a merchant who had earned nothing.
+            -- What the merchant EARNED that day: their share of team
+            -- commission (Step 2e). This once summed "merchant_profit_paise",
+            -- which is written as the literal 0 at order creation and never
+            -- set again, so the weekly chart was a flat zero for everyone.
             --
             -- A LATERAL rather than a second LEFT JOIN: joining two independent
             -- sets to "span" multiplies their rows, so a day with three orders
@@ -810,11 +803,10 @@ export async function merchantDailyEarnings(merchantId, { days = 7, timezone = '
         -- here keys off "completed_at", which a PAID order does not have.
         AND o.state = 'COMPLETED'
        LEFT JOIN LATERAL (
-         SELECT COALESCE(SUM(e.amount_paise), 0) AS amount
-           FROM accounting_events e
-          WHERE e.event_type = 'MERCHANT_BONUS_ISSUED'
-            AND e.ref_model = 'Merchant' AND e.ref_id = $1
-            AND (e.created_at AT TIME ZONE $2)::date = span.day
+         SELECT COALESCE(SUM(s.share_paise), 0) AS amount
+           FROM team_commission_shares s
+          WHERE s.merchant_id = $1
+            AND (s.created_at AT TIME ZONE $2)::date = span.day
        ) paid ON TRUE
       GROUP BY span.day, paid.amount
       ORDER BY span.day ASC`,

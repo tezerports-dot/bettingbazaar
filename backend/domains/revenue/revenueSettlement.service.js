@@ -171,17 +171,6 @@ export function buildBonusFundingPostings(amountMinor) {
   ];
 }
 
-/** Postings for issuing a Merchant Performance Bonus from the pool. */
-export function buildBonusIssuePostings(amountMinor) {
-  if (!Number.isInteger(amountMinor) || amountMinor <= 0) {
-    throw new Error('Bonus issue amount must be a positive integer minor-unit amount.');
-  }
-  return [
-    { account: ACCOUNTS.MERCHANT_BONUS_POOL.code, amountMinor: amountMinor },
-    { account: ACCOUNTS.MERCHANT_FUNDS.code,      amountMinor: -amountMinor },
-  ];
-}
-
 // ═════════════════════════════════════════════════════════════════════════════
 // The write path
 // ═════════════════════════════════════════════════════════════════════════════
@@ -311,10 +300,10 @@ export async function getLedger({ page = 1, limit = 50, eventType } = {}) {
  */
 export async function fundMerchantBonusPool({ amountMinor, actor, justification, idempotencyKey }) {
   if (!justification || !justification.trim()) {
-    throw new Error('businessJustification is required to fund the merchant bonus pool.');
+    throw new Error('businessJustification is required to fund the team commission pool.');
   }
   if (!actor?.userId) {
-    throw new Error('An acting admin is required to fund the merchant bonus pool.');
+    throw new Error('An acting admin is required to fund the team commission pool.');
   }
   const postings = buildBonusFundingPostings(amountMinor); // validates amount
 
@@ -335,7 +324,7 @@ export async function fundMerchantBonusPool({ amountMinor, actor, justification,
     refModel: 'Manual',
     refId: String(actor.userId),
     occurredAt: new Date(),
-    description: `Merchant bonus pool funded from distributable platform revenue: ${justification.trim()}`,
+    description: `Team commission pool funded from distributable platform revenue: ${justification.trim()}`,
     metadata: { amountMinor, justification: justification.trim() },
     recordedBy: String(actor.userId),
   });

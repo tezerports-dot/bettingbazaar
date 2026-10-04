@@ -59,6 +59,10 @@ function reported(code, raw) {
 export async function recordEvent({
   eventType, idempotencyKey, postings, refModel = null, refId = null,
   description = null, amountPaise = null, createdAt = null,
+  // A caller inside a transaction passes its client, so the event commits or
+  // unwinds WITH the money it records (a team commission, Step 2e) — never a
+  // second write that can fail after the first committed (§21).
+  client = null,
 }) {
   if (!Object.values(EVENT_TYPES).includes(eventType)) {
     throw new Error(`Unknown accounting event type '${eventType}'. Add it to chartOfAccounts.js first.`);
@@ -91,7 +95,8 @@ export async function recordEvent({
   // ON CONFLICT DO NOTHING + RETURNING: the row comes back only when THIS
   // statement inserted it, so an empty result IS the idempotency signal. No
   // pre-read, therefore no window two concurrent callers can both pass.
-  const { rows } = await pgQuery(
+  const run = client ? (text, params) => client.query(text, params) : pgQuery;
+  const { rows } = await run(
     `INSERT INTO accounting_events
        (idempotency_key, event_type, amount_paise, ref_model, ref_id, postings, description, created_at)
      VALUES ($1,$2,$3,$4,$5,$6,$7,COALESCE($8, now()))
@@ -104,7 +109,7 @@ export async function recordEvent({
   );
 
   if (!rows.length) {
-    const existing = await getEvent(idempotencyKey);
+    const existing = await getEvent(idempotencyKey, { client });
     return { ok: true, idempotent: true, event: existing };
   }
   return { ok: true, idempotent: false, event: rowToEvent(rows[0]) };
@@ -126,8 +131,9 @@ function rowToEvent(row) {
 }
 
 /** One event by its idempotency key, or null. */
-export async function getEvent(idempotencyKey) {
-  const { rows } = await pgQuery(
+export async function getEvent(idempotencyKey, { client = null } = {}) {
+  const run = client ? (text, params) => client.query(text, params) : pgQuery;
+  const { rows } = await run(
     `SELECT * FROM accounting_events WHERE idempotency_key = $1`,
     [idempotencyKey], 'ledger_read_event',
   );
@@ -213,11 +219,13 @@ export async function trialBalance() {
 }
 
 /** Reported balance of one account, in paise. */
-export async function accountBalancePaise(code) {
+export async function accountBalancePaise(code, { client = null } = {}) {
   if (!ACCOUNT_CODES.includes(code)) {
     throw new Error(`Unknown ledger account '${code}'. Known: ${ACCOUNT_CODES.join(', ')}`);
   }
-  const { rows } = await pgQuery(
+  // On a caller's client when the balance GATES a write in that transaction.
+  const run = client ? (text, params) => client.query(text, params) : pgQuery;
+  const { rows } = await run(
     `SELECT COALESCE(SUM((p->>'amountPaise')::BIGINT), 0) AS raw_paise
        FROM accounting_events, jsonb_array_elements(postings) p
       WHERE p->>'account' = $1`,

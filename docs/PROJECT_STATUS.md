@@ -837,8 +837,32 @@ Owner answers, 2026-10-02 (two rounds; the second replaced the security deposit 
     `acceptBeforePayPg` (4), `orderTimelineNoMobilePg` (2), `orderSizesPg`,
     privacy suites rewritten, `CashLinkScanner` (11), `BuyPaymentUI` (22);
     mutations M349–M382; e2e s1/s3/s4/s7 accept before paying.
-- **2e Commission.** Instant, per-team high-water mark, 10% into the pool,
-  16/84 attribution. DELETE the per-variety engine.
+- **2e Commission. DONE (2026-10-04).** `database/repositories/teamCommission.js`
+  (rules in CLAUDE.md §26, background in RULES_BACKGROUND §26).
+  - *The rule.* Matched volume = min(completed buys, completed sells) in
+    tokens per team; each rise above the team's mark pays 10% of the rise into
+    the team's pool from `MERCHANT_BONUS_POOL`, recorded 16% supervisor / 84%
+    equally to the approved members (`team_commissions`,
+    `team_commission_shares`, both append-only, CHECKs hold each row to the
+    rule). The per-variety engine was already deleted in 2c.
+  - *When it pays.* At once, after an order completes (lifecycle hook and the
+    sell settlement worker); a 5-minute sweep (`team-commission-sweep`) and
+    every pool funding pay anything left owed. One advisory lock and two
+    UNIQUE keys pay each rise once.
+  - *Defaults chosen.* The platform pool is the existing accounting account
+    `MERCHANT_BONUS_POOL`, relabelled "team commission pool" and funded from
+    the same admin screen. A pool too small for the whole commission pays
+    nothing and the rise waits (never partial); admins see "waiting: fund the
+    team commission pool" on the team. A USDT team earns nothing (no USDT
+    sells, so no match) — asked of the owner.
+  - *Screens.* Merchant Team page: matched volume, paid, waiting, and the
+    reader's own recent shares (supervisor per team, member their own only);
+    "Your commission" totals. Admin Teams: paid and matched per team. Earnings
+    and leaderboards read the shares.
+  - *Tests.* `teamCommissionPg` (8: pool short, funding pays, completion pays
+    the smaller side, 16/84, treasury + ledger + pool entry, 6-way race,
+    lifecycle hook, member sees only their share), unit `teamCommission` (7),
+    `merchantEarningsPg` rebuilt on shares, TeamPage (+3); mutations M383–M391.
 - **2f Oversight.** Daily red flag (threshold admin-editable, 25%) from
   transaction count and online time; member online-time log; team
   performance for members; supervisor sees member logs and joins their
