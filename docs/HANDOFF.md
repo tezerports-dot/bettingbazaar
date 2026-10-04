@@ -23,8 +23,8 @@ A prompt to start the new session is at the end (section 9).
   - PR #202 (2026-10-04, merge commit `83cd311`, head `bf12206`, CI 9/9
     green): **Step 2f, red flags and oversight**, from branch
     `claude/2f-red-flags-wip`.
-- **Step 2g is done**: the close-out PR from branch `ccr-4027856e-w3uqtr`
-  (built on `claude/2g-close-out-wip`). See section 2. **Step 2 is complete.**
+- **Step 2g is done**: PR #203 from branch `ccr-4027856e-w3uqtr` (built on
+  `claude/2g-close-out-wip`), merged with a merge commit once CI is green. See section 2. **Step 2 is complete.**
 - **Next: Step 3** (section 3), in a fresh session, after Vikram answers the
   two questions in section 2.
 - **Step 2f is done.** It contains:

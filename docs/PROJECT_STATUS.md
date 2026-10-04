@@ -912,7 +912,7 @@ Owner answers, 2026-10-02 (two rounds; the second replaced the security deposit 
   - *Tests.* `teamOversightPg` (7), unit `teamOversight` (11), `mobileInText`
     unit and `mobileInTextPg` (one list), TeamPage (+6), TeamsManager (+2),
     SystemSettingsRedFlags (2); mutations M392–M393, M397–M400, M402–M423.
-- **2g Close-out. DONE (2026-10-04).**
+- **2g Close-out. DONE (2026-10-04), PR #203.**
   - *Rules and docs.* CLAUDE.md §2's seven "⚠2c" rows rewritten for the new
     owners (§25 and §26 were already current) and RULES_BACKGROUND with them;
     domain READMEs and the env templates cleared of deleted settings;
