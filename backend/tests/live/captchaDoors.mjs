@@ -77,7 +77,7 @@ async function probe(path, body) {
 const stamp = String(Date.now()).slice(-6);
 const PW = `Cap7cha-Pr0be-${stamp}!`;
 const DOORS = [
-  ['player signup',   '/api/v1/auth/register',     { mobile: `91${stamp}1`.slice(0, 10), aadhaar: `2${stamp}00001`.slice(0, 12), password: PW, confirmPassword: PW }],
+  ['player signup',   '/api/v1/auth/register',     { mobile: `91${stamp}1`.slice(0, 10), password: PW, confirmPassword: PW }],
   ['player login',    '/api/v1/auth/login',        { mobile: `92${stamp}2`.slice(0, 10), password: PW }],
   ['staff login',     '/api/admin/login',          { mobile: `93${stamp}3`.slice(0, 10), password: PW }],
   ['merchant login',  '/api/merchant/auth/login',  { mobile: `94${stamp}4`.slice(0, 10), password: PW }],

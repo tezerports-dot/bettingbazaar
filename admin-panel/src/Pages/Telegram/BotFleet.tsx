@@ -26,7 +26,7 @@
  * A player's identity is keyed on THEIR Telegram user id, which belongs to
  * Telegram. Which of our bots they happen to be messaging is not part of who
  * they are, so adding, promoting or retiring one changes no account, no
- * balance, no KYC state and no referral position — and, unlike a channel
+ * balance and no referral position — and, unlike a channel
  * change, it does not make anyone re-join anything. Retiring a sign-in bot
  * simply moves the players it carried onto the remaining ones, the next time
  * each of them is asked to verify.

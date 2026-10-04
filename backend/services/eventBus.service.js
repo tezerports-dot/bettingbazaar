@@ -80,8 +80,6 @@ export const EVENTS = Object.freeze({
 
   // ── User / KYC ───────────────────────────────────────────────────────────
   USER_BLOCKED:             'user.blocked',
-  KYC_APPROVED:             'kyc.approved',
-  KYC_REJECTED:             'kyc.rejected',
 
   // ── System ───────────────────────────────────────────────────────────────
   MAINTENANCE_MODE_CHANGED: 'system.maintenance.changed',

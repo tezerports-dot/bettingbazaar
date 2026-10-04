@@ -23,56 +23,127 @@
  *   at a time it looks like an ordinary abandonment. They stop being assigned
  *   until an admin has spoken to them — not suspended, and lifted by a person,
  *   because a clock cannot tell whether the QR was fixed.
+ *
+ * ── On the team model (PROJECT_STATUS §3.10, Step 2c) ────────────────────────
+ * Every buy here is one production makes (§32 S16): created queued with its
+ * split and ROUTED by `tryAssignMerchant` to the one online member of a
+ * working UPI team, whose pool holds its tokens. A lapse is that order's
+ * deadline passing — moved into the past rather than waited for. A PAID buy
+ * is the player's own `markOrderPaid` with a bank reference. "Is this member
+ * still being sent orders" is asked of the router (`routingCandidates`).
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { pgConfigured, applySchema, closePg } from '#db/client.js';
+import { pgConfigured, applySchema, closePg, withTransaction } from '#db/client.js';
 import { createOrderRecord, setOrderFields, merchantsBarredFrom, getOrderRecord } from '#db/repositories/orders.record.js';
-import {
-  getMerchant, updateMerchant, assignmentCandidates, resumeAssignment,
-} from '#db/repositories/merchants.js';
+import { getMerchant, resumeAssignment } from '#db/repositories/merchants.js';
 import { getUser } from '#db/repositories/users.js';
 import { setConfigPath, getSystemConfig, invalidateConfigCache } from '#db/repositories/config.js';
+import { routingCandidates, routingSettings } from '#db/repositories/teamRouting.js';
 import {
-  expireOrders, sweepUnansweredPaidDeposits, updateMerchantStatsOnComplete,
+  expireOrders, sweepUnansweredPaidDeposits, tryAssignMerchant, markOrderPaid,
   createDepositOrder, createWithdrawalOrder,
 } from '../../domains/payment/paymentProcessing.service.js';
-import { clearPlayerPaymentFailures } from '../../domains/payment/playerPaymentFailure.service.js';
-import { actor, merchantActor } from './_harness.js';
+import { teamFixture, readyToPay } from '../teamFixture.js';
+import { mountRouter, actor, merchantActor, as } from './_harness.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
+
+// Above the cash ceiling: the UPI_BANK rail, whose reference comes with the Paid tap.
+const TOKENS = 20_000;
 
 describePg('a buy order nobody paid for', () => {
   const RUN = Math.random().toString(36).slice(2, 8);
   let seq = 0;
+  let app;
+  const teams = teamFixture();
+  const players = [];
 
-  beforeAll(async () => { await applySchema(); }, 60_000);
-  afterAll(async () => { await closePg(); });
+  beforeAll(async () => {
+    await applySchema();
+    app = mountRouter((await import('../../domains/merchant/merchant.routes.js')).default);
+  }, 60_000);
 
-  const merchant = async () => {
-    const m = await merchantActor({ tokensRupees: 50_000 });
-    await updateMerchant(m.merchantId, { isOnline: true, acceptsDeposits: true });
-    return m;
+  afterAll(async () => {
+    await withTransaction(async (c) => {
+      await c.query('SET LOCAL session_replication_role = replica');
+      await c.query(
+        'DELETE FROM order_transitions WHERE order_id IN (SELECT order_id FROM order_states WHERE user_id = ANY($1))',
+        [players]);
+      await c.query('DELETE FROM order_states WHERE user_id = ANY($1)', [players]);
+    });
+    await teams.cleanup();
+    await closePg();
+  });
+
+  const player = async () => {
+    const who = await actor({});
+    players.push(who.userId);
+    return who;
   };
 
-  /** An ASSIGNED buy, already past its deadline, that the player never paid. */
-  const lapsedBuy = async (merchantId, owner = null) => {
+  // Members come in tens — a team works only at ten (2a) — and each test
+  // takes ones nobody has used, so no earlier expiry or refusal is theirs.
+  const bench = [];
+  const merchant = async () => {
+    if (!bench.length) {
+      const ms = [];
+      for (let i = 0; i < 10; i += 1) ms.push(await merchantActor());
+      const team = await teams.workingTeam({
+        rail: 'UPI_BANK', poolTokens: 400_000, include: ms.map((m) => m.merchantId),
+      });
+      bench.push(...ms.map((m) => ({ ...m, team })));
+    }
+    return bench.shift();
+  };
+
+  /**
+   * A buy, queued as `createDepositOrder` writes it, routed to `m` alone and
+   * accepted by them: from then on the player has somewhere to pay, so an
+   * unpaid lapse is theirs (one the member never accepted is the member's,
+   * `acceptBeforePayPg.test.js`).
+   */
+  const routedBuy = async (m, owner = null) => {
     seq += 1;
-    const who = owner || await actor({});
+    const who = owner || await player();
     const orderId = `PPF-${RUN}-${seq}`;
-    await createOrderRecord({
+    const order = await createOrderRecord({
       orderId, userId: who.userId, type: 'DEPOSIT',
-      tokenAmountRupees: 500, fiatAmountRupees: 500, state: 'ASSIGNED',
-      depositAllocation: 450, reserveAllocation: 50, merchantId,
+      tokenAmountRupees: TOKENS, fiatAmountRupees: TOKENS,
+      depositAllocation: 18_000, reserveAllocation: 2_000,
     });
-    await setOrderFields(orderId, { expiresAt: new Date(Date.now() - 60 * 1000) });
+    await teams.onlyOnline([m.merchantId]);
+    expect(await tryAssignMerchant(order), `the buy was not routed to ${m.merchantId}`).toBe(true);
+    expect((await getOrderRecord(orderId)).merchantId).toBe(String(m.merchantId));
+    await readyToPay(orderId);
     return { orderId, who };
+  };
+
+  /** An accepted buy, already past its deadline, that the player never paid. */
+  const lapsedBuy = async (m, owner = null) => {
+    const b = await routedBuy(m, owner);
+    // The window closing: assignment set the deadline from the rail's own
+    // window, and it is moved into the past rather than waited for.
+    await setOrderFields(b.orderId, { expiresAt: new Date(Date.now() - 60 * 1000) });
+    return b;
+  };
+
+  /** A buy the player paid and the member confirmed — the money ARRIVED. */
+  const servedBuy = async (m, owner = null) => {
+    const b = await routedBuy(m, owner);
+    const utr = String(540000000000 + (seq * 7919) + Math.floor(Math.random() * 7000));
+    expect((await markOrderPaid(b.who.userId, b.orderId, utr)).status).toBe('PAID');
+    const res = await as(app, m).post(`/confirm/${b.orderId}`);
+    expect(res.status, res.body.message).toBe(200);
+    expect((await getOrderRecord(b.orderId)).state).toBe('COMPLETED');
+    return b;
   };
 
   it('does NOT count against the merchant — not the streak, not the bar', async () => {
     const m = await merchant();
-    const { orderId, who } = await lapsedBuy(m.merchantId);
+    const { orderId, who } = await lapsedBuy(m);
 
     await expireOrders();
+    expect((await getOrderRecord(orderId)).state, 'the sweep never reached it').toBe('CANCELLED');
 
     expect((await getMerchant(m.merchantId)).consecutiveRejections,
       'the merchant was charged for a payment the player never made').toBe(0);
@@ -88,7 +159,7 @@ describePg('a buy order nobody paid for', () => {
     // The exact scenario the old rule suspended an honest merchant for.
     const m = await merchant();
     for (let i = 0; i < 3; i += 1) {
-      await lapsedBuy(m.merchantId);
+      await lapsedBuy(m);
       await expireOrders();
     }
     const row = await getMerchant(m.merchantId);
@@ -98,8 +169,8 @@ describePg('a buy order nobody paid for', () => {
 
   it('advances the PLAYER\'s count instead', async () => {
     const m = await merchant();
-    const who = await actor({});
-    await lapsedBuy(m.merchantId, who);
+    const who = await player();
+    await lapsedBuy(m, who);
     await expireOrders();
 
     expect((await getUser(who.userId)).consecutivePaymentFailures).toBe(1);
@@ -131,16 +202,16 @@ describePg('a buy order nobody paid for', () => {
   it('locks the player out of new orders after THREE in a row', async () => {
     await withPlayerCap(3, async () => {
     const m = await merchant();
-    const who = await actor({});
+    const who = await player();
 
     for (let i = 1; i <= 2; i += 1) {
-      await lapsedBuy(m.merchantId, who);
+      await lapsedBuy(m, who);
       await expireOrders();
       expect((await getUser(who.userId)).orderLockUntil ?? null,
         `locked after only ${i}`).toBeNull();
     }
 
-    await lapsedBuy(m.merchantId, who);
+    await lapsedBuy(m, who);
     await expireOrders();
 
     const row = await getUser(who.userId);
@@ -162,9 +233,9 @@ describePg('a buy order nobody paid for', () => {
   it('refuses a new order while the cool-off is running, and names the time', async () => {
     await withPlayerCap(3, async () => {
       const m = await merchant();
-      const who = await actor({});
+      const who = await player();
       for (let i = 0; i < 3; i += 1) {
-        await lapsedBuy(m.merchantId, who);
+        await lapsedBuy(m, who);
         await expireOrders();
       }
 
@@ -188,16 +259,16 @@ describePg('a buy order nobody paid for', () => {
      *
      * The pattern is the only evidence, and it points at Anil.
      */
-    const threeDifferentPlayersFailOn = async (merchantId) => {
+    const threeDifferentPlayersFailOn = async (m) => {
       for (let i = 0; i < 3; i += 1) {
-        await lapsedBuy(merchantId, await actor({}));   // a DIFFERENT player each time
+        await lapsedBuy(m, await player());   // a DIFFERENT player each time
         await expireOrders();
       }
     };
 
     it('pauses the merchant after three, without suspending them', async () => {
       const anil = await merchant();
-      await threeDifferentPlayersFailOn(anil.merchantId);
+      await threeDifferentPlayersFailOn(anil);
 
       const row = await getMerchant(anil.merchantId);
       expect(row.consecutiveExpiries).toBe(3);
@@ -212,18 +283,23 @@ describePg('a buy order nobody paid for', () => {
 
     it('stops sending him new orders while paused', async () => {
       const anil = await merchant();
-      const candidate = async () => (await assignmentCandidates({
-        currency: 'INR', direction: 'DEPOSIT',
-      })).some((c) => String(c.merchantId) === anil.merchantId);
+      // Asked of the router with only Anil online, so the answer is about him.
+      const candidate = async () => {
+        await teams.onlyOnline([anil.merchantId]);
+        const probe = { orderId: `probe-${RUN}`, type: 'DEPOSIT', currency: 'INR', tokenAmountPaise: TOKENS * 100 };
+        const { concurrency } = routingSettings(await getSystemConfig());
+        return (await routingCandidates(probe, { cap: concurrency.UPI_BANK, limit: 500 }))
+          .some((c) => String(c.merchantId) === anil.merchantId);
+      };
 
       expect(await candidate(), 'not a candidate even before pausing — vacuous').toBe(true);
-      await threeDifferentPlayersFailOn(anil.merchantId);
+      await threeDifferentPlayersFailOn(anil);
       expect(await candidate(), 'a merchant nobody can pay was still being assigned').toBe(false);
     });
 
     it('an admin lifts it, and the count goes with it', async () => {
       const anil = await merchant();
-      await threeDifferentPlayersFailOn(anil.merchantId);
+      await threeDifferentPlayersFailOn(anil);
 
       await resumeAssignment(anil.merchantId);
 
@@ -237,13 +313,14 @@ describePg('a buy order nobody paid for', () => {
     it('a completed order clears the run on its own', async () => {
       // Anil fixes his QR and serves somebody. Nothing needed an admin.
       const anil = await merchant();
-      await lapsedBuy(anil.merchantId, await actor({}));
+      await lapsedBuy(anil, await player());
       await expireOrders();
-      await lapsedBuy(anil.merchantId, await actor({}));
+      await lapsedBuy(anil, await player());
       await expireOrders();
       expect((await getMerchant(anil.merchantId)).consecutiveExpiries).toBe(2);
 
-      await updateMerchantStatsOnComplete(anil.merchantId, true, { direction: 'DEPOSIT', amountRupees: 500 });
+      // Routed, paid, and confirmed through his own panel.
+      await servedBuy(anil, await player());
 
       expect((await getMerchant(anil.merchantId)).consecutiveExpiries).toBe(0);
     });
@@ -260,28 +337,23 @@ describePg('a buy order nobody paid for', () => {
      * out was the player noticing and pressing dispute. The one window where
      * the money is ALREADY GONE was the one with no clock on it.
      */
-    const paidAndIgnored = async (merchantId, minutesAgo = 120) => {
-      seq += 1;
-      const who = await actor({});
-      const orderId = `PPF-${RUN}-p${seq}`;
-      await createOrderRecord({
-        orderId, userId: who.userId, type: 'DEPOSIT',
-        tokenAmountRupees: 500, fiatAmountRupees: 500, state: 'PAID',
-        depositAllocation: 450, reserveAllocation: 50, merchantId,
-        // The reference matters to THIS test, not as decoration: the merchant's
-        // silence is a refusal only on an order they could act on, and their
-        // Confirm refuses one carrying no reference. Without it the sweep
-        // correctly skips this row — a cash buy waiting on the PLAYER, which
-        // `sweepUtrAfterPaid` owns — and the merchant is never blamed.
-        utrNumber: `UTRPPF${RUN}${String(seq).padStart(5, '0')}`.toUpperCase(),
-      });
+    const paidAndIgnored = async (m, minutesAgo = 120) => {
+      const { orderId, who } = await routedBuy(m);
+      // The reference matters to THIS test, not as decoration: the merchant's
+      // silence is a refusal only on an order they could act on, and their
+      // Confirm refuses one carrying no reference. Without it the sweep
+      // correctly skips this row — a cash buy waiting on the PLAYER, which
+      // `sweepUtrAfterPaid` owns — and the merchant is never blamed.
+      const utr = String(550000000000 + (seq * 7919) + Math.floor(Math.random() * 7000));
+      expect((await markOrderPaid(who.userId, orderId, utr)).status).toBe('PAID');
+      // The member's silence: paid this long ago, and never answered.
       await setOrderFields(orderId, { paidAt: new Date(Date.now() - minutesAgo * 60_000) });
       return { orderId, who };
     };
 
     it('sends it to the admin queue and counts the silence against the merchant', async () => {
       const m = await merchant();
-      const { orderId } = await paidAndIgnored(m.merchantId);
+      const { orderId } = await paidAndIgnored(m);
 
       expect(await sweepUnansweredPaidDeposits()).toBeGreaterThan(0);
 
@@ -302,7 +374,7 @@ describePg('a buy order nobody paid for', () => {
       // The grace is what makes the sweep usable: a merchant checking a bank
       // app needs longer than a page refresh.
       const m = await merchant();
-      const { orderId } = await paidAndIgnored(m.merchantId, 1);
+      const { orderId } = await paidAndIgnored(m, 1);
       await sweepUnansweredPaidDeposits();
       expect((await getOrderRecord(orderId)).state).toBe('PAID');
       expect((await getMerchant(m.merchantId)).consecutiveRejections).toBe(0);
@@ -310,7 +382,7 @@ describePg('a buy order nobody paid for', () => {
 
     it('counts one silence once, however often the sweep runs', async () => {
       const m = await merchant();
-      await paidAndIgnored(m.merchantId);
+      await paidAndIgnored(m);
       await sweepUnansweredPaidDeposits();
       await sweepUnansweredPaidDeposits();
       await sweepUnansweredPaidDeposits();
@@ -321,16 +393,22 @@ describePg('a buy order nobody paid for', () => {
 
   it('a real payment clears the streak', async () => {
     const m = await merchant();
-    const who = await actor({});
-    await lapsedBuy(m.merchantId, who);
+    const who = await player();
+    await lapsedBuy(m, who);
     await expireOrders();
     expect((await getUser(who.userId)).consecutivePaymentFailures).toBe(1);
 
     // `clearPlayerPaymentFailures` is called from the deposit-credit path — the
-    // one place both confirm routes agree the money ARRIVED. Reaching PAID is
-    // only the player saying so, and resetting there would let a false UTR wipe
-    // the record the count exists to keep.
-    await clearPlayerPaymentFailures(who.userId);
+    // one place the money is known to have ARRIVED. Reaching PAID is only the
+    // player saying so, and resetting there would let a false UTR wipe the
+    // record the count exists to keep — so the count stands at PAID, and goes
+    // only when the member confirms.
+    const next = await routedBuy(m, who);
+    const utr = String(560000000000 + (seq * 7919) + Math.floor(Math.random() * 7000));
+    expect((await markOrderPaid(who.userId, next.orderId, utr)).status).toBe('PAID');
+    expect((await getUser(who.userId)).consecutivePaymentFailures, 'cleared by the Paid tap alone').toBe(1);
+    const res = await as(app, m).post(`/confirm/${next.orderId}`);
+    expect(res.status, res.body.message).toBe(200);
     expect((await getUser(who.userId)).consecutivePaymentFailures).toBe(0);
   });
 });

@@ -93,10 +93,10 @@ import telegramRoutes     from './domains/telegram/telegram.routes.js';
 import referralRedirect   from './routes/referralRedirect.routes.js';
 import userRoutes         from './domains/user/user.routes.js';
 import merchantRoutes     from './domains/merchant/merchant.routes.js';
+import teamMerchantRoutes from './domains/team/team.merchant.routes.js';
 import paymentRoutes      from './domains/payment/payment.routes.js';
 import supportRoutes      from './domains/support/support.routes.js'; // CAP-71: RAG support assistant
 import uploadRoutes       from './routes/upload.routes.js';
-import paymentCfgRoutes   from './routes/payment-config.routes.js';
 import retentionRoutes, { rebuildLeaderboard } from './routes/retention.routes.js';
 import gameProviderRoutes from './domains/casino/gameProvider.routes.js';
 import gameRegistryRoutes from './domains/gameRegistry/gameRegistry.routes.js';
@@ -122,7 +122,6 @@ import { S3StorageProvider } from './providers/storage/S3StorageProvider.js';
 import { LocalDiskStorageProvider } from './providers/storage/LocalDiskStorageProvider.js';
 import twoFactorRoutes from './domains/identity/twoFactor.routes.js';
 import winnersRoutes      from './routes/winners.routes.js';
-import appBootstrapRoutes from './routes/app-bootstrap.routes.js';
 import wellKnownRoutes from './routes/wellKnown.routes.js';
 
 
@@ -571,7 +570,6 @@ app.use('/api/v1/auth', authLimiter, authRoutes);
 // manages enrolment.
 app.use('/api/2fa', twoFactorRoutes);
 app.use('/api', winnersRoutes);
-app.use('/api/app', appBootstrapRoutes);
 
 // `loginPaceLimiter` runs FIRST, deliberately. A paced request never reaches
 // the credential check, so it is not a failed attempt and must not consume the
@@ -663,14 +661,14 @@ app.use(
   requireCaptcha('merchant-signup'),
 );
 app.use('/api/merchant',  merchantRoutes);
+app.use('/api/merchant',  teamMerchantRoutes);
 app.use('/api/payment', paymentRoutes);
 app.use('/api/support',   supportRoutes); // CAP-71: RAG support assistant (dormant until keys set)
 app.use('/api',           uploadRoutes);
-app.use('/api/payment',   paymentCfgRoutes);
 app.use('/api',           retentionRoutes);
 // Referral and VIP were removed from the platform on 2026-07-30 (owner
 // decision). No /api/referral or /api/vip routes exist; the models, the
-// commission engine and the panel pages went with them.
+// referral commission and the panel pages went with them.
 } else {
   app.use('/api', (_req, res) => res.status(404).json({ success: false, message: `API disabled on ${runtime.role} runtime role` }));
 }
@@ -680,10 +678,14 @@ const sseManager     = new SSEManager();
 const gameEngine     = new GameEngine(io);
 const cycleGenerator = new CycleGenerator(io, sseManager);
 
-if (runtime.runsSchedulers) {
-  gameEngine.start();
-  cycleGenerator.start();
-} else {
+// NOT started here. They start below, once the PostgreSQL chain has applied
+// the schema — beside the cron jobs, which always waited for it. Started at
+// module load they raced `applySchema()`: on a fresh database the generator's
+// first ticks hit `relation "cycles" does not exist`, and on an existing one
+// PostgreSQL logged a DEADLOCK between the generator's read and the schema
+// apply's AccessExclusiveLock (measured 2026-10-01). The settlement engine was
+// started the same way, against whatever half of the schema had landed.
+if (!runtime.runsSchedulers) {
   console.log(`⏸️ Runtime role ${runtime.role}: game engine and cycle scheduler are not started.`);
 }
 
@@ -801,6 +803,10 @@ Promise.allSettled([
   // error about a table that was never created.
   import('#db/client.js')
     .then((m) => m.applySchema())
+    // Once more now the tables exist. The call at the top of this file runs
+    // before the schema on a fresh database and fails closed (logged); without
+    // this the frame-src waited for the 60-second timer.
+    .then(() => refreshProviderFrameSources())
     .then(() => seedAdminAccount())
     .then(() => seedGameRegistry())
     .then(() => startTlsFingerprintDefenseConfigRefresh())
@@ -831,6 +837,8 @@ Promise.allSettled([
   }
   console.log('✅ DB services initialized');
   if (runtime.runsSchedulers) {
+    gameEngine.start();
+    cycleGenerator.start();
     registerCronJobs(rebuildLeaderboard);
   } else {
     console.log(`⏸️ Runtime role ${runtime.role}: cron jobs are not registered.`);

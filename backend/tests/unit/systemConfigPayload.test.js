@@ -5,7 +5,7 @@
  * ── Why this file exists ────────────────────────────────────────────────────
  * This object was assembled twice — Socket.IO on connect, HTTP on request — and
  * the copies had already drifted in both directions: only the socket carried
- * webUrl/androidUrl/iosUrl, only the HTTP route carried kycRequired and
+ * webUrl/androidUrl/iosUrl, only the HTTP route carried kycRequired (removed with KYC, 2026-10-02) and
  * registrationEnabled. What a client believed about the platform depended on
  * which transport it asked over.
  *
@@ -23,9 +23,7 @@ import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { systemConfigPayload, systemConfigFallback } from '../../domains/configuration/systemConfigPayload.js';
-import {
-  BUY_DENOMINATIONS_PAISE, MAX_CASH_BUY_PAISE, USDT_BUY_DENOMINATIONS_PAISE,
-} from '../../domains/merchant/denominations.js';
+import { CASH_SIZES, UPI_BANK_SIZES } from '../../domains/merchant/denominations.js';
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), '../../..');
 const read = (p) => readFileSync(join(repo, p), 'utf8');
@@ -35,7 +33,7 @@ describe('the system-config payload', () => {
     // Both transports render the same object, so a field added for one reaches
     // the other. The two used to differ by five fields.
     const keys = Object.keys(systemConfigPayload(null)).sort();
-    for (const gone of ['webUrl', 'iosUrl', 'kycRequired', 'registrationEnabled']) {
+    for (const gone of ['webUrl', 'iosUrl', 'registrationEnabled']) {
       expect(keys, `${gone} must be in the one payload, not one transport's copy`).toContain(gone);
     }
     expect(Object.keys(systemConfigFallback()).sort()).toEqual(keys);
@@ -45,11 +43,9 @@ describe('the system-config payload', () => {
     // The whole point of the `??`/`||` distinction. With `||` every one of
     // these silently became the default.
     const zeroed = systemConfigPayload({
-      minDeposit: 0, maxDeposit: 0, minWithdrawal: 0, maxWithdrawal: 0,
       payoutMultiplier: 0, betLimits: { thirtyMin: { min: 0, max: 0 }, fullDay: { max: 0 } },
     });
-    for (const k of ['minDeposit', 'maxDeposit', 'minWithdrawal', 'maxWithdrawal',
-                     'payoutMultiplier', 'minBet', 'maxBet', 'maxFullDayBet']) {
+    for (const k of ['payoutMultiplier', 'minBet', 'maxBet', 'maxFullDayBet']) {
       expect(zeroed[k], `${k}: a configured 0 must survive, not fall back`).toBe(0);
     }
   });
@@ -57,14 +53,8 @@ describe('the system-config payload', () => {
   it('still fills an ABSENT value with its declared default', () => {
     // The other half: `??` must not turn into "pass everything through".
     const empty = systemConfigPayload(null);
-    // 500 on BOTH sides. The buy floor was 100 and the sell floor 500 — one
-    // policy written as two numbers, and they had drifted. A buy order holds a
-    // merchant's tokens for the length of its window (F-018), so the floor
-    // exists to stop the queue filling with orders too small to be worth the
-    // inventory they take out of circulation, and that is the same argument in
-    // either direction.
-    expect(empty.minDeposit).toBe(500);
-    expect(empty.minWithdrawal).toBe(500);
+    expect(empty.orderSizes).toEqual({ CASH: [...CASH_SIZES], UPI_BANK: [...UPI_BANK_SIZES] });
+    expect(empty.usdtBuy).toEqual({ minUsdt: 100, maxUsdt: 10_000, stepUsdt: 100 });
     expect(empty.payoutMultiplier).toBe(2);
     expect(empty.minBet).toBe(10);
   });
@@ -72,7 +62,6 @@ describe('the system-config payload', () => {
   it('treats false and empty string as configured, not missing', () => {
     expect(systemConfigPayload({ maintenanceMode: false }).maintenanceMode).toBe(false);
     expect(systemConfigPayload({ maintenanceMessage: '' }).maintenanceMessage).toBe('');
-    expect(systemConfigPayload({ kycRequired: false }).kycRequired).toBe(false);
     expect(systemConfigPayload({ registrationEnabled: false }).registrationEnabled).toBe(false);
   });
 
@@ -135,23 +124,29 @@ describe('the settlement rail, and the amounts it allows', () => {
    * `assessFundingOrder` validates against — and are asserted here to BE that
    * module's list rather than a copy that happens to match today.
    */
-  it('tells the client exactly the amounts the risk gate accepts', () => {
-    const payload = systemConfigPayload(null, { activeMode: 'CASH_ATM' });
-    expect(payload.buyDenominations).toEqual(BUY_DENOMINATIONS_PAISE.map((p) => p / 100));
-    expect(payload.maxCashBuy).toBe(MAX_CASH_BUY_PAISE / 100);
-    // The withdrawal-only tier is never offered as a purchase.
-    expect(payload.buyDenominations).not.toContain(40_000);
+  it('tells the client exactly the sizes the risk gate accepts, per rail', () => {
+    // Only the sizes the admin has on offer, split by the rail each one runs on
+    // (Step 2d). The same list serves buys and sells.
+    const payload = systemConfigPayload({ orderSizes: [1_000, 10_000, 100_000] });
+    expect(payload.orderSizes).toEqual({ CASH: [1_000, 10_000], UPI_BANK: [100_000] });
   });
 
-  it('tells the client the USDT sizes in TOKENS, and the rate to price them', () => {
-    // The denomination is what a player RECEIVES; what they SEND is derived
-    // from the rate. A panel given one without the other cannot show a price,
-    // and a panel holding its own copy of either would offer a size the gate
-    // refuses or quote a number the order will not honour.
-    const payload = systemConfigPayload({ usdtPricing: { userMerchantBuyInr: 100 } });
-    expect(payload.usdtBuyDenominations).toEqual(USDT_BUY_DENOMINATIONS_PAISE.map((p) => p / 100));
-    expect(payload.usdtBuyDenominations).toEqual([50_000, 100_000, 500_000]);
+  it('ignores a stored size that is not one of the seven', () => {
+    // A row edited around the spec (a direct UPDATE, an old backup) is not a
+    // size a team is organised to serve, so it is not offered.
+    expect(systemConfigPayload({ orderSizes: [500, 7_777, 40_000] }).orderSizes)
+      .toEqual({ CASH: [500], UPI_BANK: [] });
+  });
+
+  it('tells the client the USDT bounds in USDT, and the rate to price them', () => {
+    // A USDT buy is chosen in what the player SENDS; the tokens follow from the
+    // rate. A panel given one without the other cannot show what they receive.
+    const payload = systemConfigPayload({
+      usdtPricing: { userMerchantBuyInr: 100 }, usdtBuy: { minUsdt: 200, maxUsdt: 5_000 },
+    });
+    expect(payload.usdtBuy).toEqual({ minUsdt: 200, maxUsdt: 5_000, stepUsdt: 100 });
     expect(payload.usdtTokensPerUnit).toBe(100);
+    expect(payload).not.toHaveProperty('usdtBuyDenominations');
   });
 
   it('says the USDT rate is UNSET rather than guessing one', () => {
@@ -162,20 +157,22 @@ describe('the settlement rail, and the amounts it allows', () => {
     expect(systemConfigPayload({ usdtPricing: { userMerchantBuyInr: 0 } }).usdtTokensPerUnit).toBeNull();
   });
 
-  it('names the live rail, and says nothing rather than guessing when it cannot', () => {
-    expect(systemConfigPayload(null, { activeMode: 'P2P_UPI' }).paymentMode).toBe('P2P_UPI');
-    // A client must render "not available" rather than falling back to a rail
-    // the platform may not be on — picking a default here would put a screen
-    // in front of a player for a workflow that is not running.
-    expect(systemConfigPayload(null, null).paymentMode).toBeNull();
-    expect(systemConfigFallback().paymentMode).toBeNull();
+  it('names no platform-wide rail and no min/max limits', () => {
+    // There is no rail switch: an order's rail is derived from its own size
+    // and currency (`paymentModeFor`, §3.10 2c). And the size list replaced
+    // the min/max buy and sell limits (2d): either beside it would be a second
+    // answer a panel could believe instead.
+    for (const gone of ['paymentMode', 'minDeposit', 'maxDeposit', 'minWithdrawal', 'maxWithdrawal',
+                        'buyDenominations', 'maxCashBuy']) {
+      expect(systemConfigPayload(null)).not.toHaveProperty(gone);
+      expect(systemConfigFallback()).not.toHaveProperty(gone);
+    }
   });
 
-  it('still carries the amounts when the rail cannot be read', () => {
-    // The rail being unknown does not make the ladder unknown. A payload that
-    // dropped these would leave the picker empty and the player unable to buy
-    // for a reason unrelated to what failed.
-    expect(systemConfigFallback().buyDenominations.length).toBeGreaterThan(0);
+  it('still carries the sizes when the config cannot be read', () => {
+    // A payload that dropped these would leave the picker empty and the player
+    // unable to buy for a reason unrelated to what failed.
+    expect(systemConfigFallback().orderSizes.CASH.length).toBeGreaterThan(0);
+    expect(systemConfigFallback().orderSizes.UPI_BANK.length).toBeGreaterThan(0);
   });
 });
-

@@ -23,7 +23,7 @@ import { refreshProviderFrameSources } from './providerFrameSources.js';
 // Balances go to a third-party provider. They come from the wallet.
 import { db } from '#db';
 import crypto from 'crypto';
-import { authenticate, hasPermission } from '../identity/auth.middleware.js';
+import { authenticate, authenticatePlayer, hasPermission } from '../identity/auth.middleware.js';
 import { networkClient } from '../../services/networkClient.js';
 import { verifyWebhookSignature } from './webhookSignature.js';
 // Credentials are ciphertext in the row; they become usable only here.
@@ -135,7 +135,7 @@ router.get('/providers', async (req, res) => {
 
 // POST /api/game/launch
 // Body: { providerKey, gameId?, gameName?, mode? }
-router.post('/launch', authenticate, async (req, res) => {
+router.post('/launch', authenticatePlayer, async (req, res) => {
   try {
     const { providerKey, gameId = '', gameName = '', mode = 'real' } = req.body;
 

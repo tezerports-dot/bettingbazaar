@@ -17,16 +17,14 @@ Generate every secret with: `openssl rand -base64 48`
 | `JWT_SECRET` | Signs/verifies every auth token (PASETO Ed25519 seed). A weak/fallback value lets anyone forge sessions. |
 | `DATABASE_URL` | **The** datastore — money, identity, configuration, content, engagement. `postgresql://user:pass@host:5432/db`. The boot gate refuses to start without it; there is no local-only fallback and no second store to degrade to. |
 | `ORDER_HMAC_SECRET` | Dedicated payment-order integrity HMAC (separate from the auth key). |
-| `AADHAAR_HMAC_SECRET` | Dedicated Aadhaar dedup HMAC (prevents reversible document hashes). |
 | `REDIS_URL` | Cross-instance rate limits, realtime fan-out, job queue. Required at >1 replica. |
 | `ALLOWED_ORIGINS` | CORS allow-list — production must name trusted origins explicitly (comma-separated). **Include `https://localhost` while shipping the Android app** — it is the origin the app runs at on the phone; production refuses to boot with `ANDROID_PACKAGE_ID` set and it missing. |
-| `S3_BUCKET_NAME` | Durable asset/upload storage (KYC, proofs, branding). Local disk is not production-safe. |
+| `S3_BUCKET_NAME` | Durable asset/upload storage (proofs, chat attachments, branding, APKs). Local disk is not production-safe. |
 | `S3_ACCESS_KEY` | S3 credential. Required: production refuses the local-disk fallback. |
 | `S3_SECRET_KEY` | S3 credential. Required: production refuses the local-disk fallback. |
 | `S3_ENDPOINT` | S3-compatible endpoint URL. Required **even on AWS S3** — see §2. |
 | `METRICS_TOKEN` | Bearer token protecting `GET /metrics` from public disclosure. |
 | `PUBLIC_APP_ORIGIN` | Official public app origin advertised to native clients (a valid `https://…` origin). |
-| `PUBLIC_APP_ALLOWED_ORIGINS` | Public app origin allow-list advertised to native clients (comma-separated origins). |
 
 **`TRUST_PROXY` — set this whenever anything terminates TLS in front of Node.**
 Not in the required table because the app boots without it, but leaving it
@@ -46,8 +44,8 @@ prepend PROXY v2.
 
 **Secret-strength rules the gate enforces (production):**
 - `JWT_SECRET`, `PASETO_SECRET_KEY` (if used instead of `JWT_SECRET`), `ORDER_HMAC_SECRET`,
-  `AADHAAR_HMAC_SECRET`, `METRICS_TOKEN` must each be **≥ 32 characters and non-placeholder**.
-- `PUBLIC_APP_ORIGIN` / `PUBLIC_APP_ALLOWED_ORIGINS` must be valid **https** origins in production.
+  `METRICS_TOKEN` must each be **≥ 32 characters and non-placeholder**.
+- `PUBLIC_APP_ORIGIN` must be a valid **https** origin in production.
 
 ## 2. Object storage (S3-compatible) — all four vars are required
 
@@ -56,7 +54,7 @@ Works with any S3-compatible provider (AWS S3, Cloudflare R2, Backblaze B2, iDri
 `server.js` refuses to boot production unless `isS3Configured()` is true, and
 that requires **`S3_BUCKET_NAME` + `S3_ACCESS_KEY` + `S3_SECRET_KEY` +
 `S3_ENDPOINT`** all to be set (`services/cdn.service.js`). There is no partial
-configuration and no local-disk fallback in production — losing KYC documents on
+configuration and no local-disk fallback in production — losing payment proofs on
 a redeploy is not an acceptable degradation.
 
 > **`S3_ENDPOINT` is required even on AWS S3.** This section previously said to
@@ -125,7 +123,6 @@ after the overlap (token TTL / order lifetime). Verification accepts current **o
 |---|---|
 | Auth key (`JWT_SECRET`/`PASETO_SECRET_KEY`) | `JWT_PREVIOUS_SECRETS` (alias `PASETO_PREVIOUS_SECRETS`), comma-separated |
 | Order integrity (`ORDER_HMAC_SECRET`) | `ORDER_HMAC_PREVIOUS_SECRETS` |
-| Aadhaar dedup (`AADHAAR_HMAC_SECRET`) | `AADHAAR_HMAC_PREVIOUS_SECRETS` |
 | `METRICS_TOKEN`, alert webhook | Rotate from System Settings / env; no `PREVIOUS` needed |
 
 ## 5. Common optional (safe defaults; see `.env.example` for the exhaustive list)
@@ -208,8 +205,9 @@ System Settings.
 | `BACKEND_MTLS_CERT` / `BACKEND_MTLS_KEY` / `BACKEND_MTLS_CA` | Enable mutual TLS on the backend listener. All three are required together. |
 | `TLS_FINGERPRINT_EDGE_SECRET` | Shared secret that lets the app trust a TLS-fingerprint header from the edge. Without it the header is ignored — correct default. |
 
-**Native app identifiers** (used by the app-distribution endpoints — see `NATIVE_APP_DISTRIBUTION_POLICY.md`):
-`ANDROID_PACKAGE_ID`, `IOS_BUNDLE_ID`, `DESKTOP_APP_ID`, `PUBLIC_APP_NAME`.
+**Native app identifier** (Android release policy and App Links — see `NATIVE_APP_DISTRIBUTION_POLICY.md`):
+`ANDROID_PACKAGE_ID`. `IOS_BUNDLE_ID`, `DESKTOP_APP_ID` and `PUBLIC_APP_NAME` were read only by
+`GET /api/app/bootstrap`, which nothing called; all three and the route were removed 2026-10-01.
 
 **Support RAG service** (dormant until an API key is set — §19):
 `RAG_CHAT_API_KEY`, `RAG_CHAT_BASE_URL`, `RAG_CHAT_MODEL`, `RAG_MODEL`,
@@ -283,8 +281,6 @@ not a circumvention mechanism (`CLAUDE.md` §20, 2026-07-28).
 |---|---|---|
 | `IDENTITY_ENCRYPTION_KEY` | **yes — the server refuses to boot in production without it** | AES-256-GCM key over the stored Aadhaar ciphertext and the Telegram bot tokens. Must decode to exactly **32 bytes**: `openssl rand -base64 32`. A wrong or absent key makes every stored identity unreadable. |
 | `IDENTITY_ENCRYPTION_PREVIOUS_KEYS` | no | Comma-separated retired keys, **decrypt-only**. Their presence is what makes a rotation possible without a migration window. |
-| `AADHAAR_HMAC_SECRET` | yes | Keyed hash enforcing one account per Aadhaar. Not reversible — it cannot serve the bulk export, which is why the ciphertext exists too. |
-| `AADHAAR_HMAC_PREVIOUS_SECRETS` | no | Comma-separated rotation candidates, checked on lookup so a rotation does not lock existing players out of account recovery. |
 
 **Why two forms of the same number.** The HMAC is one-way, so it cannot produce
 the value the verification provider needs; GCM is randomised, so the same Aadhaar
@@ -323,9 +319,8 @@ verification failure, whereas a 404 leaves the next attempt free to succeed).
 
 | Variable | Required | Purpose |
 |---|---|---|
-| `ANDROID_PACKAGE_ID` | for the APK | Package name; must equal `appId` in `user-panel/capacitor.config.ts` (`com.bettingbazaar.app`). Also advertised by `GET /api/app/bootstrap`. |
+| `ANDROID_PACKAGE_ID` | for the APK | Package name; must equal `appId` in `user-panel/capacitor.config.ts` (`com.bettingbazaar.app`). |
 | `ANDROID_SHA256_CERT_FINGERPRINTS` | for the APK | Comma-separated SHA-256 signing-certificate fingerprints. Colons and case are normalised. **List both the upload key and the Play-held key** once published: Play App Signing re-signs the APK, so a site naming only the upload fingerprint verifies for sideloads and fails for every store install. |
-| `IOS_BUNDLE_ID` | no | Advertised by `/api/app/bootstrap`. There is no iOS client — see `NATIVE_APP_DISTRIBUTION_POLICY.md`. |
 
 The build side of the same association lives in GitHub, not here: the release
 workflow needs an `ANDROID_APP_ORIGIN` repository **variable** (the same value

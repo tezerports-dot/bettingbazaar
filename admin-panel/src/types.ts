@@ -10,7 +10,6 @@
 /**
  * All 8 sub-admin permissions and what they control:
  *
- * canVerifyKYC        → /kyc page: approve and reject user KYC submissions
  * canManageUsers      → /users page: view users, block/unblock, adjust balance
  * canManageMerchants  → /merchants page: view, suspend/activate, update limits
  * canResolveDisputes  → dispute resolution on payment orders
@@ -71,25 +70,11 @@ export interface User {
   walletAddress?: string;
   profilePic?: string;
 
-  status: 'ACTIVE' | 'BLOCKED' | 'SUSPENDED' | 'PENDING_KYC';
-  kycStatus: 'PENDING_SUBMISSION' | 'PENDING_APPROVAL' | 'APPROVED' | 'REJECTED';
-
-  // Decision metadata only. There is no name, Aadhaar number or document here:
-  // identity lives in KycVerification and reaches this panel as `verification`
-  // below, masked to its last four digits.
-  kycData?: {
-    submittedAt?: string;
-    rejectionReason?: string;
-    reviewedAt?: string;
-  };
-
-  /** Joined by GET /api/admin/kyc/queue — why this user is still waiting. */
-  verification?: {
-    status?: 'PENDING_VERIFICATION' | 'VERIFIED' | 'FAILED';
-    aadhaarLast4?: string;
-    exportBatchId?: string | null;
-    failureReason?: string;
-  };
+  // DELETED is a status the server sends: the list includes closed accounts.
+  status: 'ACTIVE' | 'BLOCKED' | 'SUSPENDED' | 'DELETED';
+  // `users.account_type`, from the repository mapper. The list holds staff as
+  // well as players, and only a PLAYER can be deleted from this screen.
+  accountType?: 'PLAYER' | 'STAFF' | 'MERCHANT';
 
   bankDetails?: {
     accountHolderName: string;
@@ -109,6 +94,10 @@ export interface User {
   isMediator: boolean;
   isMerchant: boolean;
   merchantApprovalStatus?: 'PENDING' | 'APPROVED' | 'REJECTED' | 'SUSPENDED';
+
+  /** Lost payment disputes, and when high-risk review opened (users repository mapper). */
+  lostDisputes?: number;
+  highRiskAt?: string | null;
 
   joinedAt: string;
   lastLogin: string;
@@ -181,39 +170,6 @@ export interface Bet {
 // backend/domains/configuration/depositPolicy.model.js for the source of truth.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// ── Settlement rail ──────────────────────────────────────────────────────────
-// The platform runs ONE of two P2P rails at a time and an admin switches
-// between them. Backend authority: database/repositories/paymentModePolicy.js
-// (payment_mode_policies), whose CHECK is what makes these the only two.
-export type PaymentMode = 'P2P_UPI' | 'CASH_ATM';
-
-export interface PaymentModeTimers {
-  assignmentWaitSeconds: number;
-  processingWindowSeconds: number;
-  utrSubmitSeconds: number;
-  disputeWindowSeconds: number;
-  linkExpirySeconds: number;
-  linkMinRemainingSeconds: number;
-}
-
-export interface PaymentModePolicy extends PaymentModeTimers {
-  _id: string;
-  version: number;
-  status: 'ACTIVE' | 'SUPERSEDED';
-  activeMode: PaymentMode;
-  justification: string;
-  changedBy: string | null;
-  changedByName: string;
-  createdAt: string;
-  supersededAt: string | null;
-}
-
-export interface PaymentModeOption {
-  mode: PaymentMode;
-  label: string;
-  merchantMessage: string;
-}
-
 export type DepositPolicyCurrency = 'INR' | 'USDT';
 
 export interface DepositPolicyReserveUsageRules {
@@ -250,8 +206,11 @@ export interface DepositPolicyVersion {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Merchants
-// Merchants earn from the buy/sell rate SPREAD (merchantProfit on PaymentOrder).
-// There is no commission % — do not show or edit a commission rate.
+// A merchant holds no tokens of their own: they work in a team whose POOL holds
+// them, and routing hands each order to a member of a working team on the
+// order's rail. Checked against the list route's row and `toMerchant`
+// (backend/domains/merchant/merchant.admin.routes.js,
+// database/repositories/merchants.js).
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface Merchant {
@@ -265,15 +224,25 @@ export interface Merchant {
   isOnline: boolean;
   acceptsDeposits: boolean;
   acceptsWithdrawals: boolean;
+  /** Which credential set the merchant keeps — never which orders they get. */
+  merchantType?: 'INR' | 'USDT';
   merchantStats: {
     dailyProcessed: number;
     monthlyProcessed: number;
     totalOrdersProcessed: number;
   };
+  /** Lost payment disputes, and when high-risk review opened (GET /api/admin/merchants). */
+  lostDisputes?: number;
+  highRiskAt?: string | null;
+  suspensionReason?: string | null;
   createdAt: string;
 }
 
 export interface MerchantProfile extends Merchant {
+  acceptedCurrencies?: string[];
+  /** Set when three buys in a row expired unpaid; routing skips them until an admin resumes. */
+  assignmentPausedAt?: string | null;
+  assignmentPauseReason?: string | null;
   statistics: {
     totalOrders: number;
     completedOrders: number;
@@ -323,6 +292,12 @@ export interface PaymentOrder {
   fiatAmount: number;
   rateUsed: number;
   merchantProfit: number; // spread retired 2026-07-08 (fixed 1:1) — 0 for new orders, historical audit only
+  /** 'INR' or 'USDT'. On a USDT order `fiatAmount` is in USDT (trap 15). */
+  currency?: 'INR' | 'USDT';
+  /** Stamped at creation and frozen: 'CASH_ATM' or 'P2P_UPI' (orderRails.js). */
+  paymentMode?: 'CASH_ATM' | 'P2P_UPI';
+  /** The team serving it, once routed. */
+  teamId?: string | null;
   status: OrderStatus;
   assignedBy?: string;
   assignedAt?: string;
@@ -412,7 +387,7 @@ export interface Branding {
 export interface CDNImage {
   _id: string;
   url: string;
-  category: 'promo' | 'banner' | 'avatar' | 'kyc' | 'payment_proof' | 'logo' | 'icon' | 'other';
+  category: 'promo' | 'banner' | 'avatar' | 'payment_proof' | 'logo' | 'icon' | 'other';
   title: string;
   description?: string;
   tags: string[];
@@ -427,7 +402,7 @@ export interface FAQ {
   _id: string;
   question: string;
   answer: string;
-  category: 'general' | 'account' | 'betting' | 'payments' | 'kyc' | 'security' | 'technical';
+  category: 'general' | 'account' | 'betting' | 'payments' | 'security' | 'technical';
   order: number;
   isPublished: boolean;
   views: number;
@@ -467,7 +442,7 @@ export interface PromoContent {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface DashboardStats {
-  users: { total: number; active: number; blocked: number; kycPending: number };
+  users: { total: number; active: number; blocked: number };
   merchants: { total: number; active: number; pending: number; online: number };
   finance: {
     totalDeposits: number;
@@ -518,4 +493,40 @@ export interface PaginatedResponse<T> {
     limit: number;
     pages: number;
   };
+}
+
+// ── Supervisors and teams (redesign Step 2a) ─────────────────────────────────
+// Mirrors database/repositories/teams.js (`toTeam`, `toMember`,
+// SUPERVISOR_RAILS) — §5: change them together.
+export type SupervisorRail = 'CASH' | 'UPI_BANK' | 'USDT';
+export interface TeamSupervisor {
+  merchantId: string; name: string; publicRef: string; rail: SupervisorRail; isOnline: boolean;
+}
+export interface TeamView {
+  teamId: string; supervisorId: string; supervisorName: string; supervisorRef: string;
+  name: string; rail: SupervisorRail; approvedCount: number; pendingCount: number; size: number;
+  strength: 'WORKING' | 'GRACE' | 'STOPPED'; shortSince: string | null; wasFull: boolean; createdAt: string;
+  /** The team's token pool, in paise (Step 2b). */
+  poolAvailablePaise: number; poolHeldPaise: number;
+  /** Team commission (Step 2e): mirrors `toSummary` in database/repositories/teamCommission.js — §5. */
+  commission: {
+    teamId: string; buysPaise: number; sellsPaise: number; matchedPaise: number;
+    highPaise: number; paidPaise: number; owedPaise: number;
+    commissionPercent: number; supervisorSharePercent: number;
+  };
+}
+// Mirrors `toRequest` and POOL_DIRECTIONS in database/repositories/teamPools.js
+// — §5: change them together.
+export interface TeamPoolRequest {
+  requestId: string; teamId: string; teamName: string | null;
+  supervisorId: string; supervisorName: string | null;
+  direction: 'BUY' | 'SELL'; tokenAmountPaise: number;
+  status: 'PENDING' | 'FULFILLED' | 'REJECTED' | 'CANCELLED';
+  note: string | null; decidedBy: string | null; decidedAt: string | null;
+  decisionNote: string | null; createdAt: string;
+}
+export interface TeamMemberView {
+  merchantId: string; teamId: string; name: string; publicRef: string;
+  status: 'PENDING' | 'APPROVED'; isOnline: boolean;
+  addedBy: string; addedAt: string; approvedBy: string | null; approvedAt: string | null;
 }

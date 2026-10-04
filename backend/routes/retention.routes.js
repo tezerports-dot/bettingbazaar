@@ -23,10 +23,12 @@ import {
   adminAdjustment, getBalanceAdjustments, ADJUSTABLE_FIELDS,
 } from '../domains/wallet/walletAuthority.service.js';
 import {
-  authenticate, hasPermission,
+  authenticate, authenticatePlayer, hasPermission,
 } from '../domains/identity/auth.middleware.js';
 import { publicLeaderboard } from '../domains/analytics/leaderboardPublicView.js';
 import { emitToStaff } from '../domains/notification/staffEventAreas.js';
+import { toPlayerBonus } from '../domains/wallet/playerLedgerView.js';
+import { getBalancesRupees } from '#db/repositories/wallets.core.js';
 
 const router = express.Router();
 
@@ -201,6 +203,14 @@ router.put('/admin/announcements/:id', authenticate, hasPermission('canManageCon
     const patch = normalizeAnnouncementBody(req.body, { partial: true });
     const announcement = await db.content.updateAnnouncement(req.params.id, patch);
     if (!announcement) return res.status(404).json({ success: false, message: 'Announcement not found' });
+    // Audited like the create and the delete. An edit can rewrite every word
+    // players are shown, and it was the one change to an announcement with no
+    // record of who made it (§32 S3).
+    await db.audit.recordDetailed({
+      performedBy: req.user.userId, action: 'ANNOUNCEMENT_UPDATED', category: 'CONTENT',
+      targetType: 'Announcement', targetId: announcement.announcementId,
+      details: { fields: Object.keys(patch) },
+    });
     res.json({ success: true, announcement });
   } catch (err) {
     if (err.status) return res.status(err.status).json({ success: false, message: err.message });
@@ -233,13 +243,15 @@ router.delete('/admin/announcements/:id', authenticate, hasPermission('canManage
 
 // ── BONUS HISTORY ────────────────────────────────────────────────────────────
 
-router.get('/bonuses/my', authenticate, async (req, res) => {
+router.get('/bonuses/my', authenticatePlayer, async (req, res) => {
   try {
     const { page = 1, limit = 30 } = req.query;
     // Page and total from one query, so a bonus credited between them cannot
     // make the footer disagree with the rows above it.
     const result = await db.engagement.pageBonuses({ userId: req.user.userId, page, limit });
-    res.json({ success: true, ...result });
+    // Never the record's description: for a support credit it is the admin's
+    // note for the audit trail (playerLedgerView.js).
+    res.json({ success: true, ...result, records: result.records.map(toPlayerBonus) });
   } catch (err) {
     console.error('GET /bonuses/my error:', err);
     res.status(500).json({ success: false, message: 'Could not load your bonus history.' });
@@ -286,6 +298,15 @@ router.post('/admin/balance-adjust', authenticate, hasPermission('canAdjustBalan
 
     const user = await db.users.getUser(userId);
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+    // A PLAYER account only. Staff and merchant logins are separate accounts
+    // for their own panels (owner, 2026-10-01); money moved onto one sits in a
+    // wallet no player screen shows and nothing can play or withdraw from.
+    if (user.accountType !== 'PLAYER') {
+      return res.status(409).json({
+        success: false,
+        message: 'Only a player account can be adjusted. That id is a staff or merchant login.',
+      });
+    }
 
     // Held, not generated inline: the bonus record below is keyed on it, and a
     // second call to the generator would key the retry differently and pay the
@@ -342,6 +363,39 @@ router.post('/admin/balance-adjust', authenticate, hasPermission('canAdjustBalan
   } catch (err) {
     console.error('POST /admin/balance-adjust error:', err);
     res.status(500).json({ success: false, message: 'Could not apply that adjustment.' });
+  }
+});
+
+/**
+ * GET /api/admin/balance-adjust/players — this area's own player lookup.
+ *
+ * The Balance Adjust screen found players through `GET /api/admin/users` (the
+ * Users area) and read its ceiling from System Settings, so a sub-admin given
+ * balance adjustment alone could find nobody (check:staff-permissions, rule
+ * 5). This answers both from inside the area: PLAYERS only, each with the
+ * wallet the adjustment would move, and the one ceiling the POST enforces.
+ * With no search it lists nobody and still answers the ceiling.
+ */
+router.get('/admin/balance-adjust/players', authenticate, hasPermission('canAdjustBalances'), async (req, res) => {
+  try {
+    const search = String(req.query.search ?? '').trim();
+    const limit = Math.min(Math.max(Number(req.query.limit) || 10, 1), 25);
+    const { maxBalanceAdjustment } = await db.config.getSystemConfig();
+    let players = [];
+    if (search) {
+      const { users } = await db.users.listUsers({ search, accountType: 'PLAYER', limit });
+      players = await Promise.all(users.map(async (u) => {
+        const b = await getBalancesRupees(u.userId);
+        return {
+          userId: u.userId, username: u.username, mobile: u.mobile, status: u.status,
+          depositBalance: b.depositBalance ?? 0, winningsBalance: b.winningsBalance ?? 0,
+        };
+      }));
+    }
+    res.json({ success: true, players, maxBalanceAdjustment: Number(maxBalanceAdjustment) });
+  } catch (err) {
+    console.error('GET /admin/balance-adjust/players error:', err);
+    res.status(500).json({ success: false, message: 'Could not search players.' });
   }
 });
 

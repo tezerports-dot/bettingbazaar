@@ -28,7 +28,7 @@ export const PlatformUnreachable: React.FC<{ onRetry: () => Promise<void> | void
         <h2 style={{ fontSize: 18, marginBottom: 8 }}>Cannot reach the platform</h2>
         <p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 18, lineHeight: 1.5 }}>
           You are still signed in — this is the platform, not your account. It is
-          busy or restarting. Your orders and your token balance are untouched.
+          busy or restarting. Your orders and your team are untouched.
         </p>
         <Button
           disabled={retrying}

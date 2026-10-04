@@ -6,13 +6,13 @@
  * of them created tokens.
  *
  * ── What went wrong ─────────────────────────────────────────────────────────
- * A confirmed deposit debits the merchant's token inventory and credits the
+ * A confirmed deposit spends the team pool's held tokens and credits the
  * user. The user's credit is SPLIT across two pockets — `depositBalance` (usable
  * for betting) and `reserveBalance` — by the active DepositPolicy, locked onto
  * the order at creation by paymentOrder.model.js's pre-save hook.
  *
- * The split is a question about the USER's side. The merchant's side is not
- * split at all: whatever the user receives in total, the merchant parts with.
+ * The split is a question about the USER's side. The team's side is not
+ * split at all: whatever the user receives in total, the pool parts with.
  * Two of the three routes had that right and debited `order.tokenAmount`. The
  * third debited `order.depositAllocation` and then credited
  * `depositAllocation + reserveAllocation`, so on every deposit with a non-zero
@@ -41,8 +41,8 @@
  * amount goes to `depositBalance`, which is where it went before the split
  * existed and is the only answer that neither creates nor destroys tokens.
  *
- * `total` is what the merchant is debited. Callers use it rather than reaching
- * for `order.tokenAmount` themselves, so the two sides cannot drift apart again.
+ * `total` is what the pool parts with. Callers use it rather than reaching for
+ * `order.tokenAmount` themselves, so the two sides cannot drift apart again.
  */
 
 /**
@@ -72,52 +72,26 @@ export function depositCreditSplit(order) {
 /**
  * A deposit that cannot be credited is REPORTED — F-015.
  *
- * EXPORTED because `moveDepositMoney` is not the only path that debits a
- * merchant for a deposit. `POST /api/merchant/confirm/:id` — the route the
- * merchant panel actually uses — reimplements the same debit-then-credit
- * sequence inline and has its own `if (!debited)` refusal, so a reporter living
- * only inside `moveDepositMoney` would cover the ADMIN override and miss the
- * common path entirely. That the two paths are separate at all is a §5 problem
- * in its own right and is recorded as F-017; this export makes the reporting
- * correct in the meantime rather than waiting on that decision.
+ * EXPORTED so the reporting has one owner whichever route met the refusal.
  *
- * ── Why this exists ─────────────────────────────────────────────────────────
- * `{ ok: false, reason: 'merchant_insufficient' }` was returned and nothing in
- * the platform read it. Both call sites answered 400 and did nothing else: no
- * alert, no notification, not one log line.
- *
- * The money was never at risk — the refusal happens BEFORE the order advances,
- * every movement is keyed on the order id, and the order stays PAID and
- * retryable. What was wrong is who found out. `PAID` means the player has
- * ALREADY SENT REAL MONEY and submitted a UTR, and at that moment the merchant
- * was told (they see the 400 and can top up), while the player saw an order
- * that simply stopped and the platform learned nothing at all. `expireOrders`
- * deliberately does not cover PAID — auto-cancelling a paid order would strand
- * the payment — so nothing swept it either, and the only route out was the
- * player noticing and pressing dispute.
- *
- * The argument for fixing it was eight lines below the call site: the sibling
- * branch, for the rarer and less consequential case of a refused transition,
- * carries the comment "It must be loud rather than silent" and logs. Within one
- * function the exotic failure shouted and the ordinary one was quiet.
- *
- * ── How an order reaches a merchant who cannot fund it ───────────────────────
- * Assignment is a check-then-act — `inventoryRefusal()` reads the balance and
- * the caller assigns in a separate statement — but `maxConcurrentDepositOrders`
- * defaults to 1, so that race needs two assignments in the same instant. The
- * ordinary path needs no race at all: the balance falls between assignment and
- * confirmation because the merchant funded a withdrawal, an admin deducted, or
- * a token order settled.
+ * ── When it happens ─────────────────────────────────────────────────────────
+ * Every buy HOLDS its tokens in the team's pool at assignment (§3.10, 2c), and
+ * a DISPUTED buy keeps its hold, so a paid buy finding nothing to spend means
+ * the hold is missing — an anomaly, not the ordinary case. The order stays
+ * PAID and retryable: the refusal happens BEFORE the order advances, and every
+ * movement is keyed on the order id. What matters is who finds out: the player
+ * has ALREADY SENT REAL MONEY, so they are told it is in hand, and the
+ * operator is alerted to top the team up or resolve it.
  *
  * ── Three deliberate choices ────────────────────────────────────────────────
  * 1. **Nothing here may throw.** This runs on the money path, immediately
  *    before a refusal the caller must still return. A reporting failure that
  *    became an exception would turn a clean 400 into a 500 and lose the reason
  *    the caller needs — reporting a problem must never create a worse one.
- * 2. **The alert key is per MERCHANT, not global and not per order.**
+ * 2. **The alert key is per TEAM, not global and not per order.**
  *    `sendAlert` holds a 10-minute cooldown per key. A global key would swallow
- *    a second merchant running dry; a per-order key would defeat the cooldown
- *    entirely and page on every retry. One merchant being short IS one
+ *    a second team running dry; a per-order key would defeat the cooldown
+ *    entirely and page on every retry. One team's pool being short IS one
  *    incident, however many orders hit it.
  * 3. **`console.error` as well as the alert**, because `sendAlert` returns
  *    silently when no webhook is configured — by design — and a deployment
@@ -126,20 +100,21 @@ export function depositCreditSplit(order) {
 export async function reportUncreditableDeposit(order, total) {
   try {
     console.error(
-      `[deposit-credit] ${order.orderId}: merchant ${order.merchantId} cannot cover ${total} tokens.`
-      + ' The player has already paid; this order stays PAID and retryable.',
+      `[deposit-credit] ${order.orderId}: team ${order.teamId} cannot cover ${total} tokens `
+      + `(member ${order.merchantId}). The player has already paid; this order stays PAID and retryable.`,
     );
 
     const { sendAlert } = await import('../../services/alerting.service.js');
     // Not awaited into the money path's latency: fire it and let it settle.
     sendAlert(
-      `deposit-uncreditable-${order.merchantId}`,
-      'A paid deposit cannot be credited — merchant is out of tokens',
+      `deposit-uncreditable-${order.teamId}`,
+      'A paid deposit cannot be credited — the team pool cannot cover it',
       {
+        teamId: String(order.teamId),
         merchantId: String(order.merchantId),
         orderId: String(order.orderId),
         tokensRequired: total,
-        note: 'The player has already sent payment. Top the merchant up or reassign.',
+        note: 'The player has already sent payment. Fund the team pool, or resolve the order.',
       },
     ).catch(() => { /* alerting is best-effort by design */ });
 
@@ -169,43 +144,23 @@ export async function reportUncreditableDeposit(order, total) {
 /**
  * Move the money for a confirmed deposit. THE one place it happens.
  *
- * ── Why this is a function and not two copies ───────────────────────────────
- * Two routes force-complete a deposit — the merchant/admin confirm
- * (`POST /api/payment/deposit/:orderId/confirm`) and the admin queue override
- * (`POST /api/admin/payment-orders/:orderId/action`) — and they did not agree.
- * The override credited `tokenAmount` in one lump, never debited the merchant,
- * and never released the UTR, so an admin approval MINTED tokens: the merchant
- * kept their float and the player got tokens that came from nowhere.
+ * Every route that completes a buy — the member's confirm, the admin queue
+ * override, a dispute released to the player — comes here, so no route can
+ * invent its own arithmetic (§2: one owner of "the money for a completed buy").
  *
- * It also passed a sentence where `creditDeposit` expects an order id. That
- * argument builds the idempotency key (`dep_complete_<orderId>`), so the two
- * routes wrote DIFFERENT keys for the same deposit and each could credit the
- * player once. The unique-tx_id gate was open for exactly as long as both
- * routes existed.
- *
- * The split above already had one owner. The movement it belongs to did not.
- * Now it does, and a third caller cannot invent a fourth arithmetic.
- *
- * ── The merchant's side is taken ONCE, and from the HOLD ────────────────────
- * Every buy HOLDS the merchant's tokens from the moment it becomes theirs
- * (`depositEscrow.holdForOrder`, §2). That hold is the payment: completing it
- * (`dispenseForOrder`) spends the tokens out of `reserved`. This function used
- * to debit `available` as well, so the merchant paid twice — measured, 2,000
- * for a 1,000-token buy on the confirm route — and a merchant whose tokens were
- * all held for this order was refused after the hold had already been spent.
- * The other four completion routes never dispensed at all and charged
- * `available` beside a hold the sweep returned fifteen minutes later.
- *
- * So the hold is consumed FIRST and `available` is debited only when nothing
- * was held for this merchant (`noHold`) — the one case where it is the right
- * pocket. `alreadyTaken` (a retry, or a double-tap) moves nothing.
+ * ── The team's side is taken ONCE, from the HOLD ────────────────────────────
+ * Every buy HOLDS its tokens in the team's pool from the moment it becomes a
+ * member's (`teamRouting.assignToTeam`). `spendForBuy` spends that hold
+ * (held −a), posts the treasury movement TEAM_FLOAT → USER_FLOAT with it, and
+ * writes the pool's ledger line, all in one transaction keyed on the order — a
+ * retry or a double-tap finds `alreadyTaken` and moves nothing. Only an order
+ * that somehow holds nothing is taken from `available`, and only if it covers
+ * it.
  *
  * ── Ordering ────────────────────────────────────────────────────────────────
- * The merchant's side comes FIRST, because refusing (a merchant confirming more
- * than they hold, on an order nothing held) is the ordinary case and must
- * refuse before anything else moves. Every movement is keyed on the order, so a
- * failure part-way through leaves a retryable position rather than something to
- * unwind.
+ * The team's side comes FIRST, because refusing must happen before anything
+ * else moves. Every movement is keyed on the order, so a failure part-way
+ * through leaves a retryable position rather than something to unwind.
  *
  * The caller applies the state transition AFTER this returns ok — money before
  * status, so a crash between them leaves a PAID order whose next confirm
@@ -215,54 +170,35 @@ export async function reportUncreditableDeposit(order, total) {
  * @returns {Promise<{ok: boolean, reason?: string, depositCredit, reserveCredit, total}>}
  */
 export async function moveDepositMoney(order, {
-  debitMerchantTokens, creditDeposit, creditReserve, releaseUTR,
+  creditDeposit, creditReserve, releaseUTR,
   /**
-   * Let the merchant's balance go negative rather than refusing the movement.
-   *
-   * FALSE everywhere a merchant is choosing to confirm: they are asserting the
-   * money arrived, and a merchant who cannot fund it must be refused so the
-   * order stays PAID and retryable.
-   *
-   * TRUE for exactly one caller — an ADMIN resolving a dispute in the player's
-   * favour. There the decision has already been made by a person who looked at
-   * the evidence, and the transition has already committed; refusing the money
-   * afterwards would leave the order resolved and the player uncredited, which
-   * is the §21 shape this whole module exists to avoid. The merchant going
-   * negative is the correct outcome: they owe it.
+   * Spends the order's hold. Injected like the movers above so a caller can
+   * substitute it; defaults to the real one, so no caller can forget it.
    */
-  allowOverdraft = false,
+  spendPool = null,
   /**
-   * Takes the tokens out of the order's hold. Injected like the movers above so
-   * a caller can substitute it; defaults to the real one, so no caller can
-   * forget it — forgetting it is exactly how four routes charged twice.
+   * The state the caller read the order in and will complete it from. Asked
+   * under the order's row lock: an order that moved since is refused
+   * (`order_state`) with nothing moved. Required — a caller that forgot it
+   * would pay out a buy that was rejected or cancelled meanwhile.
    */
-  dispenseHold = null,
+  requireState,
 }) {
+  if (!requireState) throw new Error('moveDepositMoney requires requireState: the state the order is completed from');
   const { depositCredit, reserveCredit, total } = depositCreditSplit(order);
 
-  const dispense = dispenseHold
-    ?? (await import('../merchant/depositEscrow.service.js')).dispenseForOrder;
-  const fromHold = await dispense(order, { actor: 'deposit-credit' });
-  if (!fromHold.ok) {
-    // Unknown, not refused: the settlement could not say whether it paid. Both
-    // guesses move money, so move none and leave the order PAID to retry.
-    return { ok: false, reason: 'hold_unavailable', depositCredit, reserveCredit, total };
+  const spend = spendPool ?? (await import('#db')).db.teamPools.spendForBuy;
+  const taken = await spend(order.orderId, { actor: 'deposit-credit', requireState });
+  if (!taken.ok && taken.reason === 'order_state') {
+    // Not a funding problem: the order moved since the caller read it. Nothing
+    // moved, and there is nothing for the operator to fund.
+    return { ok: false, reason: 'order_state', depositCredit, reserveCredit, total };
   }
-
-  if (fromHold.noHold) {
-    // Nothing was held for this merchant, so the tokens come out of what they
-    // can spend — the only case where `available` is the right pocket.
-    const { merchant: debited } = await debitMerchantTokens({
-      merchantId: order.merchantId, amount: total,
-      reason: `Deposit ${order.orderId} confirmed — tokens dispensed to user`,
-      refModel: 'PaymentOrder', refId: order.orderId,
-      txId: `mw_dep_deduct_${order.orderId}`,
-      ...(allowOverdraft ? { allowOverdraft: true } : {}),
-    });
-    if (!debited) {
-      await reportUncreditableDeposit(order, total);
-      return { ok: false, reason: 'merchant_insufficient', depositCredit, reserveCredit, total };
-    }
+  if (!taken.ok) {
+    // `pool_short` / `no_team`: nothing held and nothing spendable. The player
+    // has paid, so it is reported, and the order stays PAID to retry.
+    await reportUncreditableDeposit(order, total);
+    return { ok: false, reason: taken.reason, depositCredit, reserveCredit, total };
   }
 
   // Both keyed on the ORDER ID, not on a message. A sentence here would make a
@@ -273,17 +209,13 @@ export async function moveDepositMoney(order, {
 
   // ── The player's unpaid streak is cleared HERE, and only here ─────────────
   // This is the one point on the platform where the money is known to have
-  // arrived: both confirm routes reach it, and reaching it means a merchant
-  // looked at the payment and released their tokens for it.
+  // arrived: every completion reaches it, and reaching it means a member looked
+  // at the payment and released the team's tokens for it.
   //
   // Deliberately NOT when the order reaches PAID. PAID is the player SAYING
   // they paid — clearing the count there would let anyone wipe their record by
   // submitting a false UTR, which is exactly the behaviour the count exists to
   // notice.
-  //
-  // Imported where it is used, like `sendAlert` and `notify` below: this module
-  // is the deposit SPLIT rule and takes its money movers as arguments, so a
-  // static import would give it a dependency its callers cannot substitute.
   const { clearPlayerPaymentFailures } = await import('./playerPaymentFailure.service.js');
   await clearPlayerPaymentFailures(order.userId);
 

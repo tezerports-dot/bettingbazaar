@@ -5,25 +5,23 @@
  * A UTR is the reference a player quotes to prove they paid. One reference
  * belongs to one order — reusing one is either a mistake or an attempt to claim
  * a single transfer twice. This router is the operator's side of that control:
- * the registry, the flag, the review queue, and the decision that clears or
- * cancels a held order.
+ * the registry, the flag, the contested queue, the totals and a player's
+ * history.
  *
  * ── Why over HTTP and against a real database ───────────────────────────────
- * The defects this file's handlers shipped were not logic errors. The resolve
- * route read an order through the repository, mutated seven fields on the plain
- * object it got back, and called `.save()` on it — a method that does not
- * exist. Every fraud resolution therefore threw a TypeError after appearing to
- * do its work. A mocked data layer has whatever method the handler reaches for,
- * so it would have reported that route working.
+ * The defects this file's handlers shipped were not logic errors. A resolve
+ * route (deleted 2026-10-01) called `.save()` on a plain repository row and
+ * threw on every call; a mocked data layer has whatever method the handler
+ * reaches for, so it would have reported that route working.
  *
- * The other one: flagging wrote `{ status: 'FRAUD' }` with no actor and no
+ * Another: flagging wrote `{ status: 'FRAUD' }` with no actor and no
  * reason. A fraud marking nobody signed is one nobody can defend in a dispute,
  * and it blocks a real customer who then has nobody to appeal to.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { pgConfigured, applySchema, closePg } from '#db/client.js';
 import { claimUtr, getUtr, releaseUtr } from '#db/repositories/utr.js';
-import { createOrderRecord, getOrderRecord, setOrderFields, listOrderTransitions } from '#db/repositories/orders.record.js';
+import { createOrderRecord, getOrderRecord } from '#db/repositories/orders.record.js';
 import { historyFor } from '#db/repositories/audit.js';
 import { mountRouter, actor, as, request } from './_harness.js';
 
@@ -68,7 +66,9 @@ describePg('UTR admin routes', () => {
       () => request(app).get('/utr-registry'),
       () => request(app).get('/utr/stats'),
       () => request(app).put('/utr-registry/ABC/flag').send({ reason: 'x' }),
-      () => request(app).post('/utr/resolve/whatever').send({ action: 'approve' }),
+      () => request(app).put('/utr-registry/ABC/clear').send({}),
+      () => request(app).get('/utr/contested'),
+      () => request(app).get('/utr/user-history/whoever'),
     ]) {
       expect((await call()).status, 'an unauthenticated call must never reach a handler').toBe(401);
     }
@@ -280,101 +280,7 @@ describePg('UTR admin routes', () => {
     expect(res.body.history.map((h) => h.utr).sort()).toEqual([a.utr, b.utr].sort());
   });
 
-  it('lists only the orders actually held for review', async () => {
-    const held = await claimed();
-    const loose = await claimed();
-    await setOrderFields(held.orderId, { requiresReview: true });
-
-    const res = await as(app, admin).get('/utr/flagged?limit=200');
-    expect(res.status).toBe(200);
-    const ids = res.body.flaggedOrders.map((o) => o.orderId);
-    expect(ids).toContain(held.orderId);
-    expect(ids).not.toContain(loose.orderId);
-    expect(res.body.pagination.total).toBeGreaterThanOrEqual(1);
-  });
-
-  // ── Resolving a held order ────────────────────────────────────────────────
-  it('rejects an unknown action before it touches anything', async () => {
-    const { orderId } = await claimed();
-    for (const action of [undefined, '', 'APPROVE', 'delete', 'reject ']) {
-      const res = await as(app, admin).post(`/utr/resolve/${orderId}`).send({ action });
-      expect(res.status, `action=${JSON.stringify(action)} was accepted`).toBe(400);
-    }
-  });
-
-  it('404s resolving an order that does not exist', async () => {
-    const res = await as(app, admin).post(`/utr/resolve/NOSUCH-${RUN}`).send({ action: 'approve' });
-    expect(res.status).toBe(404);
-  });
-
-  it('APPROVE clears the hold and records who decided', async () => {
-    const { orderId } = await claimed({ state: 'PROCESSING' });
-    await setOrderFields(orderId, { requiresReview: true });
-
-    const res = await as(app, admin).post(`/utr/resolve/${orderId}`).send({ action: 'approve', notes: 'Bank statement matches.' });
-    expect(res.status).toBe(200);
-
-    const order = await getOrderRecord(orderId);
-    expect(order.requiresReview).toBe(false);
-    expect(order.reviewedBy).toBe(admin.userId);
-    expect(order.reviewAction).toBe('approve');
-    expect(order.reviewNotes).toBe('Bank statement matches.');
-    expect(order.reviewedAt).toBeTruthy();
-    // An approval releases the hold. It does not advance the order.
-    expect(order.state).toBe('PROCESSING');
-  });
-
-  it('REJECT cancels the order THROUGH the state machine — the .save() defect', async () => {
-    // This route used to write `status = 'CANCELLED'` onto the plain object the
-    // repository returned and then call `.save()` on it. The cancellation
-    // neither happened nor was recorded, and the handler threw.
-    const { orderId } = await claimed({ state: 'PROCESSING', extra: { utrWarningMessage: 'Reference already spent' } });
-    await setOrderFields(orderId, { requiresReview: true });
-
-    const res = await as(app, admin).post(`/utr/resolve/${orderId}`).send({ action: 'reject', notes: 'Screenshot is a forgery.' });
-    expect(res.status).toBe(200);
-    expect(res.body.order.state).toBe('CANCELLED');
-
-    const order = await getOrderRecord(orderId);
-    expect(order.state).toBe('CANCELLED');
-    expect(order.requiresReview).toBe(false);
-    expect(order.reviewedBy).toBe(admin.userId);
-    expect(order.reviewAction).toBe('reject');
-    expect(order.cancelReason).toContain('Reference already spent');
-  });
-
-  it('leaves the cancellation in the order’s own history', async () => {
-    // An order cannot be found CANCELLED without the transition that cancelled
-    // it — that is what makes the audit reconstructable from the rows.
-    const { orderId } = await claimed({ state: 'PROCESSING' });
-    await as(app, admin).post(`/utr/resolve/${orderId}`).send({ action: 'reject' });
-    const last = (await listOrderTransitions(orderId)).at(-1);
-    expect(last).toMatchObject({ fromState: 'PROCESSING', toState: 'CANCELLED' });
-  });
-
-  it('409s rather than cancelling an order that is already final', async () => {
-    // COMPLETED has no edge to CANCELLED: undoing settled value is a reversal,
-    // which belongs to the settlement domain. Refusing is the correct answer.
-    const { orderId } = await claimed({ state: 'COMPLETED' });
-    const res = await as(app, admin).post(`/utr/resolve/${orderId}`).send({ action: 'reject' });
-    expect(res.status).toBe(409);
-    expect(res.body.message).toMatch(/COMPLETED/);
-    expect((await getOrderRecord(orderId)).state).toBe('COMPLETED');
-  });
-
-  it('audits both outcomes with the reference that caused the review', async () => {
-    const approved = await claimed({ state: 'PROCESSING' });
-    const rejected = await claimed({ state: 'PROCESSING' });
-    await as(app, admin).post(`/utr/resolve/${approved.orderId}`).send({ action: 'approve', notes: 'ok' });
-    await as(app, admin).post(`/utr/resolve/${rejected.orderId}`).send({ action: 'reject', notes: 'no' });
-
-    const entries = [
-      ...await historyFor(approved.orderId),
-      ...await historyFor(rejected.orderId),
-    ].filter((e) => e.action.startsWith('UTR_REVIEW_'));
-    const byAction = Object.fromEntries(entries.map((e) => [e.action, e]));
-    expect(Object.keys(byAction).sort()).toEqual(['UTR_REVIEW_APPROVED', 'UTR_REVIEW_REJECTED']);
-    expect(byAction.UTR_REVIEW_APPROVED.details).toMatchObject({ notes: 'ok', utr: approved.utr });
-    expect(byAction.UTR_REVIEW_REJECTED.details).toMatchObject({ notes: 'no', utr: rejected.utr });
-  });
+  // The held-for-review queue and its resolve route were deleted 2026-10-01:
+  // nothing ever set `requires_review`, so these tests set it by hand — a row
+  // production could not produce (§32 S16).
 });

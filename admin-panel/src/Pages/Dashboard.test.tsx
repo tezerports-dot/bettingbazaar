@@ -23,7 +23,7 @@ vi.mock('../services/api', () => ({
       getDashboard: vi.fn().mockResolvedValue({
         success: true,
         data: {
-          users: { total: 10, active: 9, blocked: 1, kycPending: 0 },
+          users: { total: 10, active: 9, blocked: 1 },
           merchants: { total: 3, active: 2, pending: 0, online: 2 },
           finance: {
             totalDeposits: 500000, totalWithdrawals: 100000,

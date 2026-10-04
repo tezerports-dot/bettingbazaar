@@ -54,16 +54,22 @@ import { emitAdminUpdate } from '../notification/realtimeEmitters.js';
  * so both are asked here — one place, so an expiry cannot be recorded against
  * one party and forgotten against the other.
  *
+ * `playerCouldPay: false` is a cash buy whose member never scanned the
+ * machine's QR (Step 2d): the player was never given anything to pay, so the
+ * expiry is not theirs. Only the member's count moves.
+ *
  * @returns {Promise<{playerStreak:number, locked:boolean, merchantStreak:number, paused:boolean}>}
  */
-export async function recordPlayerPaymentFailure({ orderId, userId, merchantId = null, reason = '' }) {
+export async function recordPlayerPaymentFailure({ orderId, userId, merchantId = null, reason = '', playerCouldPay = true }) {
   if (!orderId || !userId) {
     return { playerStreak: 0, locked: false, merchantStreak: 0, paused: false };
   }
   const config = await getSystemConfig();
   const limits = config?.merchantOrderLimits ?? {};
 
-  const player = await countAgainstPlayer(orderId, userId, limits, reason);
+  const player = playerCouldPay
+    ? await countAgainstPlayer(orderId, userId, limits, reason)
+    : { playerStreak: 0, locked: false };
   const merchant = await countAgainstMerchant(orderId, merchantId, limits);
   return { ...player, ...merchant };
 }

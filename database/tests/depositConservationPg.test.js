@@ -2,10 +2,12 @@
 /**
  * A confirmed deposit MOVES tokens. It never creates them.
  *
- * The merchant parts with exactly what the player receives, whatever the
+ * The team's pool parts with exactly what the player receives, whatever the
  * deposit/reserve policy splits it into. The unit suite asserts that pairing by
  * observing the amounts each writer is ASKED for; this one runs the real
- * writers against a real database and checks the money afterwards.
+ * writers — `moveDepositMoney` over the real pool spend and the real wallet
+ * credits — against a real database and checks the money afterwards, on both
+ * sides and in the treasury that summarises them.
  *
  * Both exist deliberately. A stub makes the amounts visible; only the real
  * writers prove they move. A suite that mocked the settlement writer once
@@ -14,10 +16,12 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { pgConfigured, pgQuery, applySchema, closePg } from '../client.js';
 import { creditDeposit, creditReserve, getBalances } from '../repositories/wallets.js';
-import {
-  debitMerchantTokens, creditMerchantTokens, getMerchantTokenBalance,
-} from '../repositories/merchantWallets.js';
-import { createMerchantWithWallet } from '../repositories/merchants.js';
+import { createOrderRecord, getOrderRecord } from '../repositories/orders.record.js';
+import { assignToTeam } from '../repositories/teamRouting.js';
+import { getPool, releaseBuyHold } from '../repositories/teamPools.js';
+import { getTreasuryBalances, ACCOUNTS } from '../repositories/treasury.js';
+import { teamFixture } from '../../backend/tests/teamFixture.js';
+import { moveDepositMoney } from '../../backend/domains/payment/depositCredit.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 
@@ -26,129 +30,142 @@ const RUN = Math.random().toString(36).slice(2, 8);
 let n = 0;
 const next = () => (n += 1);
 
-/** A merchant funded with tokens to dispense. */
-async function fundedMerchant(tokens) {
-  const id = `dc-m-${RUN}-${next()}`;
-  await createMerchantWithWallet({
-    merchantId: id, name: `M${id}`, username: id,
-    mobile: `7${String(Date.now()).slice(-6)}${String(next()).padStart(3, '0')}`,
-    bankUpiId: `${id}@test`,
-  });
-  await creditMerchantTokens({
-    merchantId: id, amount: tokens, reason: 'test float',
-    refModel: 'Test', refId: id, txId: `float_${id}`,
-  });
-  return id;
-}
+/** The pool's whole holding, in tokens. */
+const poolTokens = async (teamId) => {
+  const p = await getPool(teamId);
+  return (p.availablePaise + p.heldPaise) / 100;
+};
 
 describePg('a confirmed deposit conserves tokens', () => {
-  beforeAll(async () => { await applySchema(); });
-  afterAll(async () => { await closePg(); });
+  const teams = teamFixture();
+  const orders = [];
+
+  beforeAll(async () => { await applySchema(); }, 60_000);
+  afterAll(async () => {
+    await pgQuery('SET session_replication_role = replica');
+    try {
+      await pgQuery('DELETE FROM order_transitions WHERE order_id = ANY($1)', [orders]);
+      await pgQuery('DELETE FROM order_states WHERE order_id = ANY($1)', [orders]);
+    } finally {
+      await pgQuery('SET session_replication_role = DEFAULT');
+    }
+    await teams.cleanup();
+    await closePg();
+  });
 
   /**
-   * The move a deposit confirm makes, with the real writers, in the order the
-   * route makes it: the merchant's side first — because refusing there is the
-   * ordinary case and must refuse before anything else moves — then the
-   * player's two pockets.
+   * A UPI buy (above the 10,000-token cash ceiling) assigned to the team, so
+   * its tokens are HELD in the pool — the position every confirm starts from.
    */
-  async function confirmDeposit({ merchantId, userId, orderId, depositCredit, reserveCredit }) {
-    const total = depositCredit + reserveCredit;
-    const { merchant } = await debitMerchantTokens({
-      merchantId, amount: total,
-      reason: `Deposit ${orderId} confirmed`,
-      refModel: 'PaymentOrder', refId: orderId,
-      txId: `mw_dep_deduct_${orderId}`,
+  async function heldBuy(team, tokens, split = {}) {
+    const orderId = `DC_${RUN}_${next()}`;
+    orders.push(orderId);
+    const order = await createOrderRecord({
+      orderId, userId: `dc-u-${RUN}-${next()}`, type: 'DEPOSIT', tokenAmountRupees: tokens, currency: 'INR',
+      ...split,
     });
-    if (!merchant) return { ok: false };
-    if (depositCredit > 0) await creditDeposit(userId, depositCredit, orderId);
-    if (reserveCredit > 0) await creditReserve(userId, reserveCredit, orderId);
-    return { ok: true };
+    const got = await assignToTeam(order, { cap: 3, buildSet: async () => ({}) });
+    expect(got, JSON.stringify(got)).toMatchObject({ ok: true, teamId: team.teamId });
+    return getOrderRecord(orderId);
   }
 
-  for (const [label, depositCredit, reserveCredit] of [
-    ['a 90/10 policy', 900, 100],
-    ['a 50/50 policy', 500, 500],
-    ['the whole deposit to reserve', 0, 1000],
-    ['no reserve share at all', 1000, 0],
-    ['an awkward split', 931, 69],
+  /** The confirm, with the real writers, exactly as every completing route calls it. */
+  const confirm = (order) => moveDepositMoney(order, {
+    creditDeposit, creditReserve, releaseUTR: async () => {}, requireState: order.status,
+  });
+
+  for (const [label, depositAllocation, reserveAllocation] of [
+    ['a 90/10 policy', 18000, 2000],
+    ['a 50/50 policy', 10000, 10000],
+    ['the whole deposit to reserve', 0, 20000],
+    ['no reserve share at all', 20000, 0],
+    ['an awkward split', 18621, 1379],
   ]) {
     it(`moves exactly what it takes, under ${label}`, async () => {
-      const total = depositCredit + reserveCredit;
-      const merchantId = await fundedMerchant(5000);
-      const userId = `dc-u-${RUN}-${next()}`;
-      const orderId = `DC_${RUN}_${next()}`;
+      const total = depositAllocation + reserveAllocation;
+      const team = await teams.workingTeam({ rail: 'UPI_BANK', poolTokens: 100_000 });
+      const order = await heldBuy(team, total, { depositAllocation, reserveAllocation });
 
-      const merchantBefore = await getMerchantTokenBalance(merchantId);
-      expect(await confirmDeposit({ merchantId, userId, orderId, depositCredit, reserveCredit }))
-        .toMatchObject({ ok: true });
+      const poolBefore = await poolTokens(team.teamId);
+      const before = await getTreasuryBalances();
+      expect(await confirm(order)).toMatchObject({ ok: true });
 
-      const merchantAfter = await getMerchantTokenBalance(merchantId);
-      const player = await getBalances(userId);
+      const poolAfter = await poolTokens(team.teamId);
+      const after = await getTreasuryBalances();
+      const player = await getBalances(order.userId);
 
-      // The merchant parted with the total…
-      expect(merchantBefore - merchantAfter).toBe(total);
+      // The team parted with the total…
+      expect(poolBefore - poolAfter).toBe(total);
       // …the player received it, across whichever pockets the policy chose…
-      expect(player.depositBalance).toBe(depositCredit);
-      expect(player.reserveBalance).toBe(reserveCredit);
-      // …and the two figures are the same number. This is the invariant the
-      // platform's closing check depends on: one route once debited
+      expect(player.depositBalance).toBe(depositAllocation);
+      expect(player.reserveBalance).toBe(reserveAllocation);
+      // …and the two figures are the same number. One route once debited
       // `depositAllocation` and credited `depositAllocation + reserveAllocation`,
       // so every deposit with a reserve share created tokens out of nothing.
-      expect(player.depositBalance + player.reserveBalance).toBe(merchantBefore - merchantAfter);
+      expect(player.depositBalance + player.reserveBalance).toBe(poolBefore - poolAfter);
+      // The treasury records the same transfer, team float to user float.
+      expect(after[ACCOUNTS.TEAM_FLOAT] - before[ACCOUNTS.TEAM_FLOAT]).toBe(-total * 100);
+      expect(after[ACCOUNTS.USER_FLOAT] - before[ACCOUNTS.USER_FLOAT]).toBe(total * 100);
     });
   }
 
-  it('refuses before anything moves when the merchant is short', async () => {
-    const merchantId = await fundedMerchant(100);
-    const userId = `dc-u-${RUN}-${next()}`;
-    const orderId = `DC_${RUN}_${next()}`;
+  it('refuses before anything moves when the pool cannot cover it', async () => {
+    // The one way a paid buy can find nothing to spend: its hold was released
+    // (it expired, then a dispute found the player had paid) and the team has
+    // since committed the tokens to another buy.
+    const team = await teams.workingTeam({ rail: 'UPI_BANK', poolTokens: 20_000 });
+    const first = await heldBuy(team, 20_000);
+    expect((await releaseBuyHold(first.orderId)).ok).toBe(true);
+    await heldBuy(team, 20_000);                      // takes the whole pool
+    const stale = await getOrderRecord(first.orderId);
 
-    expect(await confirmDeposit({ merchantId, userId, orderId, depositCredit: 900, reserveCredit: 100 }))
-      .toMatchObject({ ok: false });
+    const before = await getTreasuryBalances();
+    expect(await confirm(stale)).toMatchObject({ ok: false, reason: 'pool_short' });
 
-    // The merchant's side is checked FIRST for exactly this reason: a refusal
-    // must leave the player uncredited, not credited from a merchant who could
-    // not fund it.
-    expect(await getMerchantTokenBalance(merchantId)).toBe(100);
-    const player = await getBalances(userId);
+    // The team's side is taken FIRST for exactly this reason: a refusal must
+    // leave the player uncredited, not credited from a pool that could not fund it.
+    expect(await getPool(team.teamId)).toMatchObject({ availablePaise: 0, heldPaise: 2_000_000 });
+    const player = await getBalances(stale.userId);
     expect(player.depositBalance).toBe(0);
     expect(player.reserveBalance).toBe(0);
+    expect(await getTreasuryBalances()).toEqual(before);
   });
 
   it('moves once when the same confirm is delivered twice', async () => {
-    const merchantId = await fundedMerchant(5000);
-    const userId = `dc-u-${RUN}-${next()}`;
-    const orderId = `DC_${RUN}_${next()}`;
+    const team = await teams.workingTeam({ rail: 'UPI_BANK', poolTokens: 100_000 });
+    const order = await heldBuy(team, 20_000, { depositAllocation: 18_000, reserveAllocation: 2_000 });
 
-    await confirmDeposit({ merchantId, userId, orderId, depositCredit: 900, reserveCredit: 100 });
-    // A merchant clicking while an admin force-approves is the real case. Every
+    // A member clicking while an admin force-approves is the real case. Every
     // movement is keyed on the order, so the second delivery is a no-op rather
     // than a second dispensation.
-    await confirmDeposit({ merchantId, userId, orderId, depositCredit: 900, reserveCredit: 100 });
+    await Promise.all([confirm(order), confirm(order)]);
+    await confirm(order);
 
-    expect(await getMerchantTokenBalance(merchantId)).toBe(4000);
-    const player = await getBalances(userId);
-    expect(player.depositBalance).toBe(900);
-    expect(player.reserveBalance).toBe(100);
+    expect(await poolTokens(team.teamId)).toBe(80_000);
+    const player = await getBalances(order.userId);
+    expect(player.depositBalance).toBe(18_000);
+    expect(player.reserveBalance).toBe(2_000);
   });
 
-  it('conserves across concurrent deposits from one merchant', async () => {
-    const merchantId = await fundedMerchant(5000);
-    const users = Array.from({ length: 8 }, () => `dc-u-${RUN}-${next()}`);
+  it('conserves across concurrent deposits from one team', async () => {
+    const team = await teams.workingTeam({ rail: 'UPI_BANK', poolTokens: 150_000 });
+    const buys = [];
+    for (let i = 0; i < 8; i += 1) {
+      buys.push(await heldBuy(team, 15_000, { depositAllocation: 13_500, reserveAllocation: 1_500 }));
+    }
+    const before = await getTreasuryBalances();
 
-    await Promise.all(users.map((userId) => confirmDeposit({
-      merchantId, userId, orderId: `DC_${RUN}_${next()}`,
-      depositCredit: 450, reserveCredit: 50,
-    })));
+    await Promise.all(buys.map(confirm));
 
-    const merchantAfter = await getMerchantTokenBalance(merchantId);
-    const credited = (await Promise.all(users.map((u) => getBalances(u))))
+    const credited = (await Promise.all(buys.map((o) => getBalances(o.userId))))
       .reduce((sum, b) => sum + b.depositBalance + b.reserveBalance, 0);
+    const after = await getTreasuryBalances();
 
-    // Eight × 500 against a 5,000 float: all eight fit. What is asserted is
-    // that the merchant's loss equals the players' gain to the paisa, whatever
-    // order the eight interleaved in.
-    expect(5000 - merchantAfter).toBe(credited);
-    expect(credited).toBe(4000);
+    // Eight × 15,000 against a 150,000 pool: all eight fit. What is asserted is
+    // that the team's loss equals the players' gain to the paisa, whatever
+    // order the eight interleaved in — and that the treasury says so too.
+    expect(150_000 - await poolTokens(team.teamId)).toBe(credited);
+    expect(credited).toBe(120_000);
+    expect(after[ACCOUNTS.USER_FLOAT] - before[ACCOUNTS.USER_FLOAT]).toBe(credited * 100);
   });
 });

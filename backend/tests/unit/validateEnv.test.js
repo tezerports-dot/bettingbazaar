@@ -9,12 +9,12 @@ const STRONG_JWT   = 'a-strong-random-jwt-signing-secret-value';
 const STRONG_ORDER = 'a-strong-random-order-hmac-secret-value';
 
 const full = {
-  JWT_SECRET: STRONG_JWT, ORDER_HMAC_SECRET: STRONG_ORDER, AADHAAR_HMAC_SECRET: 'a-secure-aadhaar-hmac-secret-value', IDENTITY_ENCRYPTION_KEY: 'Ej8mQ2xVbn5rT9wYzA1cD3eF6gH0iJkLmNoPqRsTuVw=', DATABASE_URL: 'postgresql://u:p@localhost:5432/bb',
+  JWT_SECRET: STRONG_JWT, ORDER_HMAC_SECRET: STRONG_ORDER, IDENTITY_ENCRYPTION_KEY: 'Ej8mQ2xVbn5rT9wYzA1cD3eF6gH0iJkLmNoPqRsTuVw=', DATABASE_URL: 'postgresql://u:p@localhost:5432/bb',
   REDIS_URL: 'r', ALLOWED_ORIGINS: 'o', METRICS_TOKEN: 'a-secure-random-metrics-token-value',
   // All four S3 vars: production boot requires isS3Configured(), which needs
   // bucket + access key + secret key + endpoint, not the bucket alone.
   S3_BUCKET_NAME: 'b', S3_ACCESS_KEY: 'ak', S3_SECRET_KEY: 'sk', S3_ENDPOINT: 'https://s3.example.test',
-  PUBLIC_APP_ORIGIN: 'https://app.example.test', PUBLIC_APP_ALLOWED_ORIGINS: 'https://app.example.test',
+  PUBLIC_APP_ORIGIN: 'https://app.example.test',
   // Both must be STATED in production (2026-09-30): see the two cases below.
   TRUST_PROXY: '1', TURNSTILE_SECRET_KEY: 'a-turnstile-secret-for-tests',
 };
@@ -61,7 +61,7 @@ describe('validateEnv', () => {
   });
 
   it('requires IDENTITY_ENCRYPTION_KEY in production', () => {
-    // Without it, Aadhaar numbers and bot tokens cannot be encrypted — and the
+    // Without it, bot tokens and 2FA secrets cannot be encrypted — and the
     // failure would otherwise surface at the first signup rather than at boot.
     const { IDENTITY_ENCRYPTION_KEY, ...without } = full;
     expect(() => validateEnv({ ...without, NODE_ENV: 'production' }, true)).toThrow(/IDENTITY_ENCRYPTION_KEY/);
@@ -74,14 +74,8 @@ describe('validateEnv', () => {
       .toThrow(/IDENTITY_ENCRYPTION_KEY/);
   });
 
-  it('requires AADHAAR_HMAC_SECRET in production', () => {
-    const { AADHAAR_HMAC_SECRET, ...withoutAadhaarSecret } = full;
-    expect(() => validateEnv({ ...withoutAadhaarSecret, NODE_ENV: 'production' }, true)).toThrow(/AADHAAR_HMAC_SECRET/);
-  });
-
-  it('rejects weak or placeholder Aadhaar HMAC secrets in production', () => {
-    expect(() => validateEnv({ ...full, AADHAAR_HMAC_SECRET: 'change-this-to-a-dedicated-random-string', NODE_ENV: 'production' }, true))
-      .toThrow(/AADHAAR_HMAC_SECRET/);
+  it('no longer asks for AADHAAR_HMAC_SECRET — KYC was removed (owner, 2026-10-02)', () => {
+    expect(() => validateEnv({ ...full, NODE_ENV: 'production' }, true)).not.toThrow(/AADHAAR/);
   });
 
   it('rejects a weak or placeholder JWT signing secret in production', () => {

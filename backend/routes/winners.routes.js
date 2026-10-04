@@ -100,8 +100,27 @@ router.post('/admin/fake-winners', authenticate, hasPermission('canManageContent
 
 router.put('/admin/fake-winners/:id', authenticate, hasPermission('canManageContent'), async (req, res) => {
   try {
-    const winner = await db.engagement.updateFakeWinner(req.params.id, req.body || {});
+    // The create's rule, on the edit too (§32 S3). The edit took any amount, so
+    // an entry created at ₹500 could be edited to -5 and published that way —
+    // the table has no CHECK — and a value that was not a number threw a bare
+    // TypeError in the paise conversion, which left as a 500 (S35).
+    const patch = { ...(req.body || {}) };
+    if (patch.amount !== undefined) {
+      const rupees = Number(patch.amount);
+      if (!(Number.isFinite(rupees) && rupees > 0)) {
+        return res.status(400).json({ success: false, message: 'amount must be positive' });
+      }
+      patch.amount = rupees;
+    }
+    const winner = await db.engagement.updateFakeWinner(req.params.id, patch);
     if (!winner) return res.status(404).json({ success: false, message: 'Not found' });
+    // An edit to a public payout claim is recorded like the add and the delete
+    // beside it; it was the one change to this feed that left no trail.
+    await db.audit.recordDetailed({
+      performedBy: req.user.userId, action: 'CURATED_WINNER_UPDATED', category: 'CONTENT',
+      targetType: 'FakeWinner', targetId: String(winner.id),
+      details: { fields: Object.keys(patch), displayName: winner.displayName, amount: winner.amount },
+    });
     res.json({ success: true, winner });
   } catch (err) {
     // `respondError`, not a hand-written 500. A malformed id is the CALLER's

@@ -58,7 +58,7 @@ describePg('admin balance adjustment — the single writer path', () => {
   afterAll(async () => { await closePg(); });
 
   /** A fresh subject per test: these handlers mutate the account they name. */
-  const subject = () => actor({ kycStatus: 'APPROVED' });
+  const subject = () => actor({});
 
   const seed = async (userId, field, paise) => applyMovementPaise({
     userId,

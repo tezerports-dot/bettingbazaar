@@ -27,13 +27,10 @@ import { db } from '#db';
 // Shared trading vocabulary (Phase 011) — canonical sides, no local strings.
 import { oppositeSide } from '../trading/tradingModels.js';
 import { getSystemConfig } from '#db/repositories/config.js';
-import { PAYMENT_MODES } from '#db/repositories/paymentModePolicy.js';
 import { MERCHANT_CURRENCY } from '../merchant/merchantCurrency.js';
 import {
-  BUY_DENOMINATIONS_PAISE, MAX_CASH_BUY_PAISE, isBuyDenomination,
-  USDT_BUY_DENOMINATIONS_PAISE, isUsdtBuyDenomination,
+  offeredSizes, railForSize, usdtBuyBounds, isUsdtBuyAmount, USDT_BUY_STEP,
 } from '../merchant/denominations.js';
-import { rupeesToPaise } from '../../shared/money.js';
 
 function reject(message, code = 'RISK_VALIDATION') {
   return Object.assign(new Error(message), { status: 400, code });
@@ -59,26 +56,12 @@ export function assertMultipleOf10(amount, label = 'Amount') {
 }
 
 /**
- * validateTokenPurchase / validateTokenSale / validateBetAmount — pure rule
- * cores. Limits come from the caller (read from SystemConfig — Business
- * Policy owns the numbers); enforceMultiples comes from riskRules config.
+ * validateBetAmount — a pure rule core. Limits come from the caller (read from
+ * SystemConfig — Business Policy owns the numbers); enforceMultiples comes from
+ * riskRules config. Buys and sells have no min/max any more: an INR order is
+ * one of the sizes on offer and a USDT buy is a step of USDT (Step 2d), both
+ * judged by `assessFundingOrder` below.
  */
-export function validateTokenPurchase({ amount, min, max, enforceMultiples = true }) {
-  assertPositiveNumber(amount, 'Purchase amount');
-  if (enforceMultiples) assertMultipleOf10(amount, 'Purchase amount');
-  if (amount < min) throw reject(`Minimum purchase is ${min} BB tokens`);
-  if (amount > max) throw reject(`Maximum purchase is ${max} BB tokens`);
-  return true;
-}
-
-export function validateTokenSale({ amount, min, max, enforceMultiples = true }) {
-  assertPositiveNumber(amount, 'Withdrawal amount');
-  if (enforceMultiples) assertMultipleOf10(amount, 'Withdrawal amount');
-  if (amount < min) throw reject(`Minimum withdrawal is ${min} BB tokens`);
-  if (amount > max) throw reject(`Maximum withdrawal is ${max} BB tokens`);
-  return true;
-}
-
 export function validateBetAmount({ amount, min, max, enforceMultiples = true }) {
   assertPositiveNumber(amount, 'Bet amount');
   if (!Number.isInteger(amount)) throw reject('Bet amount must be a whole number.');
@@ -344,158 +327,94 @@ export { getRiskRules };
 /**
  * assessFundingOrder — full Risk gate for a deposit/withdrawal intent.
  * Called by paymentProcessing (behind the Funding Platform facade).
+ *
+ * ── What a player may order, enforced on the SERVER ────────────────────────
+ * The player app ships as an Android build, and a Capacitor APK contains the
+ * whole JavaScript bundle: anyone who unzips it can send whatever body they
+ * like. A rule that lives only in a picker is a suggestion, so the sizes are
+ * judged here, from the same module and the same config row the picker is
+ * built from (`systemConfigPayload`).
+ *
+ * ── The rules (owner, 2026-10-02; Step 2d) ─────────────────────────────────
+ * 1. **An INR order, buy or sell, is one of the sizes on offer.** Seven fixed
+ *    sizes exist (`denominations.js`); the admin chooses which are offered
+ *    (`SystemConfig.orderSizes`). The size decides the rail: 500 to 10,000 is
+ *    paid in cash at a machine, 50,000 and up by bank transfer. One size per order,
+ *    no splitting, so an amount between sizes is unservable by construction.
+ * 2. **A USDT buy is a whole number of 100 USDT** between the admin's minimum
+ *    and maximum (`SystemConfig.usdtBuy`). There is no USDT sell.
+ * 3. **One open buy per currency at a time.** Two at once would let one player
+ *    occupy several members' capacity during a shortage.
+ *
+ * Every refusal is a 400 (or 409) that names what the player CAN choose (§25):
+ * a player told only "invalid amount" tries again and again.
  */
-/**
- * What a player is allowed to buy, enforced on the SERVER.
- *
- * ── Why this is not a UI concern ───────────────────────────────────────────
- * The player app ships as an Android build (`user-panel/capacitor.config.ts`),
- * and a Capacitor APK contains the whole JavaScript bundle. Anyone who unzips
- * it has the full API surface and can send whatever body they like. A rule that
- * lives only in a picker component is not a rule — it is a suggestion the
- * client is free to decline.
- *
- * Before this existed, `createDepositOrder` accepted any amount that passed
- * min/max and multiples-of-ten, so a hand-made request could buy ₹7,777 on a
- * rail where the only amounts an ATM dispenses are 500, 1,000, 5,000 and
- * 10,000 — and no merchant could ever have served it.
- *
- * ── The three rules, and why each is here ──────────────────────────────────
- *
- * 1. **₹10,000 is the ceiling on a CASH buy**, and only on the cash rail. It is
- *    the largest amount an ATM dispenses, derived from the denomination list
- *    rather than written as its own number so the two cannot drift apart. It
- *    used to apply to every INR buy including the UPI rail, where there is no
- *    machine and nothing to dispense.
- *
- *    The USDT rail is separate and not a consequence of that ceiling: it serves
- *    three fixed TOKEN counts — 50,000, 100,000 and 500,000 — for the reason
- *    the cash amounts are fixed. A merchant sending tokens from their own
- *    wallet knows what they are being asked for before they accept.
- *
- * 2. **On the cash rail the amount must BE a denomination.** Not "within a
- *    range" — a cash machine dispenses one of a fixed set, so an amount between
- *    them is unservable by construction.
- *
- * 3. **One open INR buy at a time.** The ceiling is about what a machine
- *    dispenses, not about limiting the player, so they may place another as
- *    soon as this one finishes — but two at once would let one player occupy
- *    several merchants' entire capacity during a shortage.
- */
-async function assertBuyIsLegal({ userId, tokenAmount, paymentMode, currency }) {
-  // ── An amount that is not a number is the CALLER's mistake, not a fault ──
-  //
-  // `rupeesToPaise` throws a bare `TypeError` on a NaN, and a TypeError carries
-  // no `status` — so `respondError` routes it to `serverError`, which logs in
-  // full and answers "Something went wrong. Please try again." by design (§2).
-  //
-  // MEASURED: a deposit request with the amount under any key but `tokenAmount`
-  // answered **500**. Every refusal below this line is a 400 that names what to
-  // do instead, exactly as §25 requires — "a player told only 'invalid amount'
-  // tries again and again" — and this one case skipped all of them and told
-  // them the platform had broken.
-  //
-  // It is the first thing checked because it is the first thing used: every
-  // rule after this reads `paise`.
+function sizesLabel(sizes) {
+  return sizes.map((t) => t.toLocaleString('en-IN')).join(', ');
+}
+
+function assertSizeIsOffered({ tokenAmount, type, cfg }) {
+  const offered = offeredSizes(cfg);
+  const verb = type === 'DEPOSIT' ? 'buy' : 'sell';
+  // The first thing checked because it is the first thing used, and a caller's
+  // mistake: a missing or non-numeric amount is a 400 that names the sizes,
+  // never a TypeError answered as a 500 (S35).
   if (typeof tokenAmount !== 'number' || !Number.isFinite(tokenAmount) || tokenAmount <= 0) {
-    throw Object.assign(
-      // The sizes for THIS rail, in TOKENS — which is what a player buys on
-      // both of them (§25). Naming the other rail's sizes would send somebody
-      // to an amount their own rail refuses.
-      new Error(`Choose an amount to buy — ${(
-        currency === MERCHANT_CURRENCY.USDT ? USDT_BUY_DENOMINATIONS_PAISE : BUY_DENOMINATIONS_PAISE
-      ).map((p) => (p / 100).toLocaleString('en-IN')).join(', ')} tokens.`),
-      { status: 400, code: 'AMOUNT_REQUIRED' },
-    );
+    throw Object.assign(new Error(`Choose an amount to ${verb}: ${sizesLabel(offered)} tokens.`),
+      { status: 400, code: 'AMOUNT_REQUIRED' });
   }
-  const paise = rupeesToPaise(tokenAmount);
+  if (!offered.includes(tokenAmount)) {
+    // A size that exists but is switched off is told apart from a number that
+    // is not a size at all, so the sentence is true either way.
+    const why = railForSize(tokenAmount)
+      ? `${tokenAmount.toLocaleString('en-IN')} tokens is not on offer right now.`
+      : `${tokenAmount.toLocaleString('en-IN')} tokens is not an order size.`;
+    throw Object.assign(new Error(`${why} Choose one of ${sizesLabel(offered)} tokens.`),
+      { status: 400, code: 'NOT_AN_ORDER_SIZE', sizes: offered });
+  }
+}
 
-  // ── The USDT rail: three fixed sizes, in TOKENS ─────────────────────────
-  // What a player receives is one of three token counts; what they SEND is
-  // derived from the admin's rate at creation. The concurrency rule is the same
-  // one applied per currency — a player may hold one open buy on each rail,
-  // because the two are served by different merchants out of different
-  // inventory.
+async function assertBuyIsLegal({ userId, tokenAmount, usdtAmount, currency, cfg }) {
   if (currency === MERCHANT_CURRENCY.USDT) {
-    if (!isUsdtBuyDenomination(paise)) {
+    // ── The USDT rail: whole steps of USDT, inside the admin's bounds ─────
+    // Priced in what the player SENDS; the tokens they receive follow from the
+    // admin's rate (`tokensForUsdt`).
+    const bounds = usdtBuyBounds(cfg);
+    if (!isUsdtBuyAmount(usdtAmount, bounds)) {
       throw Object.assign(
-        // The sizes, in the unit the player is buying. Saying "₹50,000" here
-        // would describe a rupee amount nobody pays on this rail.
-        new Error(
-          'A USDT purchase is '
-          + `${USDT_BUY_DENOMINATIONS_PAISE.map((p) => (p / 100).toLocaleString('en-IN')).join(', ')} tokens.`,
-        ),
-        { status: 400, code: 'NOT_A_USDT_DENOMINATION' },
+        new Error(`A USDT purchase is ${bounds.min.toLocaleString('en-IN')} to ${bounds.max.toLocaleString('en-IN')} USDT, `
+          + `in steps of ${USDT_BUY_STEP}.`),
+        { status: 400, code: 'NOT_A_USDT_AMOUNT', usdt: { min: bounds.min, max: bounds.max, step: USDT_BUY_STEP } },
       );
     }
-    const openUsdt = await db.orders.countOpenDeposits(userId, { currency });
-    if (openUsdt > 0) {
-      throw Object.assign(
-        new Error('You already have a USDT purchase in progress. Finish or cancel it before starting another.'),
-        { status: 409, code: 'BUY_ALREADY_OPEN' },
-      );
-    }
-    return;
-  }
-
-  // ── The CASH rail's ceiling, on the cash rail only ──────────────────────
-  // ₹10,000 is the largest amount a machine dispenses, so it is the largest a
-  // merchant standing at one can serve. It is not a limit on buying: this
-  // refused ₹12,000 on the UPI rail too, where there is no machine and nothing
-  // to dispense — a rule enforced somewhere it does not apply.
-  //
-  // On the UPI rail a purchase is bounded by the configured min/max deposit,
-  // like any other.
-  if (paymentMode === PAYMENT_MODES.CASH_ATM && paise > MAX_CASH_BUY_PAISE) {
-    throw Object.assign(
-      new Error(`A cash purchase is capped at ₹${(MAX_CASH_BUY_PAISE / 100).toLocaleString('en-IN')} — a machine does not dispense more in one go.`),
-      { status: 400, code: 'CASH_BUY_CEILING' },
-    );
-  }
-
-  if (paymentMode === PAYMENT_MODES.CASH_ATM && !isBuyDenomination(paise)) {
-    throw Object.assign(
-      new Error(`Choose one of ₹${BUY_DENOMINATIONS_PAISE.map((p) => p / 100).join(', ₹')} — a cash machine does not dispense other amounts.`),
-      { status: 400, code: 'NOT_A_DENOMINATION' },
-    );
+  } else {
+    assertSizeIsOffered({ tokenAmount, type: 'DEPOSIT', cfg });
   }
 
   const open = await db.orders.countOpenDeposits(userId, { currency });
   if (open > 0) {
     throw Object.assign(
-      new Error('You already have a purchase in progress. Finish or cancel it before starting another.'),
+      new Error(currency === MERCHANT_CURRENCY.USDT
+        ? 'You already have a USDT purchase in progress. Finish or cancel it before starting another.'
+        : 'You already have a purchase in progress. Finish or cancel it before starting another.'),
       { status: 409, code: 'BUY_ALREADY_OPEN' },
     );
   }
 }
 
 export async function assessFundingOrder({
-  userId, tokenAmount, type, min, max,
-  // The rail this order will be created on, and what it settles in. Both
-  // decide what amounts are legal, so both are gated HERE rather than in the
-  // handler: this is the single validation authority, and a rule enforced in a
-  // route is a rule the next route forgets.
-  paymentMode = null, currency = 'INR',
+  userId, tokenAmount, type,
+  // What the order settles in, and on USDT the USDT it is priced in. Gated
+  // HERE rather than in the handler: this is the single validation authority.
+  currency = 'INR', usdtAmount = null,
 }) {
+  const cfg = await getSystemConfig();
   const rules = await getRiskRules();
 
   if (type === 'DEPOSIT') {
-    // The RAIL's own rule first, then the generic bounds.
-    //
-    // Both are true, and when both would refuse an amount the rail's answer is
-    // the useful one. A ₹30,000 USDT buy hit the generic minimum and was told
-    // "Minimum purchase is 50000 BB tokens" — a limit that does not govern that
-    // rail, and a sentence that does not tell the player what they CAN buy. It
-    // now says "₹50,000 or ₹100,000; for less, buy with UPI or cash up to
-    // ₹10,000". Same for a ₹7,777 cash order, which now names the
-    // denominations instead of the multiple-of-ten rule.
-    //
-    // Neither check is removed. The generic bounds still catch everything the
-    // rail rule does not speak to.
-    await assertBuyIsLegal({ userId, tokenAmount, paymentMode, currency });
-    validateTokenPurchase({ amount: tokenAmount, min, max, enforceMultiples: rules.enforceMultiplesOf10 });
+    await assertBuyIsLegal({ userId, tokenAmount, usdtAmount, currency, cfg });
   } else {
-    validateTokenSale({ amount: tokenAmount, min, max, enforceMultiples: rules.enforceMultiplesOf10 });
+    assertSizeIsOffered({ tokenAmount, type: 'WITHDRAWAL', cfg });
   }
 
   // Velocity limit: orders created in the trailing hour (any status —

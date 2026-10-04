@@ -20,10 +20,10 @@ import { ACCOUNTS, toRupees } from '../revenue/chartOfAccounts.js';
 import { listProviders } from '../funding/providerRegistry.js';
 import { getRiskRules } from '../risk/riskValidation.service.js';
 import { getActivePolicy } from '../configuration/depositPolicy.service.js';
-import { getActiveCommissionPolicy } from '../configuration/merchantCommissionPolicy.service.js';
 import { getMerchantLeaderboard } from '../merchant/merchantAnalytics.service.js';
 import { listChannels } from '../communication/communication.service.js';
 import { FLAGS, isEnabled } from '../../services/featureFlags.service.js';
+import { serverError } from '../../shared/httpError.js';
 
 const router = express.Router();
 
@@ -32,7 +32,7 @@ router.get('/operations/overview', authenticate, hasPermission('canViewAnalytics
   try {
     // EIGHT names were destructured from SEVEN promises here. `orderCounts()`
     // landed in `pendingOrders` — the whole `{total, pending, active,
-    // completed, disputed, flagged, awaitingReview, completedValue}` object —
+    // completed, disputed, flagged, completedValue}` object —
     // and `openDisputes` got nothing at all.
     //
     // Both were then rendered straight into the page, so React threw
@@ -45,12 +45,11 @@ router.get('/operations/overview', authenticate, hasPermission('canViewAnalytics
     // is why the second query was dropped in the first place — only the
     // destructuring was never updated to match. Named `counts` now, so the
     // shape is visible at the call site instead of implied by a position.
-    const [trial, distributableMinor, depositPolicy, commissionPolicy, riskRules,
+    const [trial, distributableMinor, depositPolicy, riskRules,
            topMerchants, counts] = await Promise.all([
       getTrialBalance(),
       getDistributableRevenueMinor(),
       getActivePolicy('INR'),
-      getActiveCommissionPolicy(),
       getRiskRules(),
       getMerchantLeaderboard({ days: 7, limit: 5 }),
       db.orders.orderCounts(),
@@ -89,12 +88,6 @@ router.get('/operations/overview', authenticate, hasPermission('canViewAnalytics
           depositPolicy: depositPolicy
             ? { version: depositPolicy.version, deposit: depositPolicy.depositAllocationPercent, reserve: depositPolicy.reserveAllocationPercent }
             : null,
-          merchantCommissionPolicy: commissionPolicy
-            ? { version: commissionPolicy.version, enabled: commissionPolicy.enabled,
-                // How many varieties are priced, not a single rate: there is no
-                // one percentage to show once the rate depends on the work.
-                pricedVarieties: commissionPolicy.rates.length }
-            : null,
         },
         // ── Merchant operations (Merchant Platform) ───────────────────────
         merchants: { top7d: topMerchants },
@@ -119,7 +112,7 @@ router.get('/operations/overview', authenticate, hasPermission('canViewAnalytics
 router.get('/operations/config-catalog', authenticate, hasPermission('canViewAnalytics'), async (req, res) => {
   res.json({ success: true, catalog: [
     { value: 'Deposit/reserve split + reserve usage rules (per currency)', owner: 'Business Policy — DepositPolicy', edit: 'PUT /api/admin/deposit-policy/:currency' },
-    { value: 'Merchant Performance Bonus (enabled, %, min matched volume)', owner: 'Business Policy — MerchantBonusPolicy', edit: 'PUT /api/admin/merchant-bonus-policy' },
+    { value: 'Team commission (10% of each rise in matched volume; 16% supervisor / 84% members)', owner: 'Fixed rule — database/repositories/teamCommission.js (PROJECT_STATUS §3.10, 2e); paid from the team commission pool', edit: 'POST /api/admin/revenue/bonus-pool/fund (funds the pool; the percentages are not editable)' },
     { value: 'Bet limits (per cycle type)', owner: 'Business Policy — SystemConfig.betLimits', edit: 'PUT /api/admin/system/config' },
     { value: 'Deposit/withdrawal min/max', owner: 'Business Policy — SystemConfig', edit: 'PUT /api/admin/system/config' },
     { value: 'Payout fee %', owner: 'Business Policy — SystemConfig.payoutFeePercent (enforced by Risk, recorded by R&S)', edit: 'PUT /api/admin/system/config' },
@@ -131,15 +124,15 @@ router.get('/operations/config-catalog', authenticate, hasPermission('canViewAna
     // knob (was hardcoded 2x in gameEngine); the winnings fee % remains separate.
     { value: 'Payout multiplier (winning bet pays stake × N, before fee)', owner: 'Business Policy — SystemConfig.payoutMultiplier (arithmetic in Risk computeWinningsPayout, paid by gameEngine)', edit: 'PUT /api/admin/system/config' },
     // Business Config Audit (2026-07-11): payment order window, was hardcoded 15m.
-    { value: 'Payment order expiry (time to pay the assigned merchant)', owner: 'Business Policy — payment_mode_policies.processing_window_seconds, per settlement rail (read by payment/paymentProcessing)', edit: 'POST /api/admin/payment-mode' },
+    { value: 'Payment order windows and per-member concurrency, per rail', owner: 'Business Policy — SystemConfig.teamRouting (read by teamRouting.routingSettings)', edit: 'PUT /api/admin/system/config' },
     // Business Config Audit (2026-07-11): cycle phase timings, were hardcoded.
     { value: 'Cycle phase timings (merge/equalizer/close/celebrate offsets, per type)', owner: 'Business Policy — SystemConfig.cyclePhases (read cached by markets/cycleGenerator)', edit: 'PUT /api/admin/system/config' },
     // Phase X X-5: short-block cycle duration, previously hardcoded.
     { value: 'Cycle duration (short-block betting window, minutes)', owner: 'Business Policy — SystemConfig.cycleDurationMinutes (read by markets/cycleGenerator)', edit: 'PUT /api/admin/system/config' },
     // Phase X X-7: operational-data retention window.
-    { value: 'Data retention (months of settled bets/cycles/error-reports kept)', owner: 'Business Policy — SystemConfig.retentionMonths (read by operations/retention.service)', edit: 'PUT /api/admin/system/config' },
-    { value: 'Merchant bonus pool funding', owner: 'Revenue & Settlement (from distributable revenue only)', edit: 'POST /api/admin/revenue/bonus-pool/fund' },
-    { value: 'Per-merchant order limits + wallet top-ups', owner: 'Merchant Platform', edit: 'PUT /api/admin/merchants/:id (limits) / POST /api/admin/merchants/:id/fund' },
+    { value: 'Data retention (months of crash reports kept; expired referral clicks and notifications go after 30 days; bets, cycles, money and audit are never pruned)', owner: 'Business Policy — SystemConfig.retentionMonths (read by operations/retention.service)', edit: 'PUT /api/admin/system/config' },
+    { value: 'Team commission pool funding', owner: 'Revenue & Settlement (from distributable revenue only)', edit: 'POST /api/admin/revenue/bonus-pool/fund' },
+    { value: 'Team pool tokens (supervisor requests, admin fulfils)', owner: 'Team pools — teamPools.js', edit: 'POST /api/admin/team-pool-requests/:id/fulfil' },
     { value: 'Funding providers (P2P / USDT / gateways)', owner: 'Funding Platform — providerRegistry adapters', edit: 'code adapter + registry entry (activation is a deploy, not a constant)' },
     { value: 'Casino game providers (Evolution, Pragmatic, ...)', owner: 'Casino Platform — GameProvider documents', edit: 'PUT /api/admin/game-providers/:key' },
     { value: 'Communication channels', owner: 'Communication Platform — channelRegistry adapters', edit: 'code adapter (activation gated by config/flags)' },
@@ -156,17 +149,35 @@ router.get('/operations/config-catalog', authenticate, hasPermission('canViewAna
 
 // POST /api/admin/operations/retention/run — prune operational data now.
 // Body: { dryRun?: boolean, months?: number }. dryRun (default true) only
-// COUNTS; pass dryRun:false to actually delete. Admin-only. Financial/audit/
-// user data is never reachable from the retention service (X-7).
+// COUNTS; pass dryRun:false to actually delete. Financial/audit/user data is
+// never reachable from the retention service (X-7). The Operations screen's
+// Maintenance section calls it: preview first, then prune (2026-10-01).
 router.post('/operations/retention/run', authenticate, hasPermission('canRunMaintenance'), async (req, res) => {
   try {
     const dryRun = req.body?.dryRun !== false; // default to a safe preview
     const months = req.body?.months;
     const outcome = await runRetention({ months, dryRun });
+    // `runRetention` never throws — it runs from cron — so a failure arrives
+    // as a VALUE, `results.error`. This answered it `success: true`, and the
+    // screen would have reported a prune that never ran as one that did.
+    if (outcome.results?.error) {
+      return serverError(res, new Error(outcome.results.error), 'POST /operations/retention/run',
+        dryRun
+          ? 'The preview could not be counted. Please try again.'
+          : 'Retention stopped before it finished. Run a preview to see what is left.');
+    }
+    // A prune deletes rows for good, so who ran it, and what went, is kept —
+    // in the audit trail, which retention can never reach.
+    if (!dryRun) {
+      await db.audit.recordDetailed({
+        performedBy: req.user.userId, action: 'RETENTION_RUN', category: 'SYSTEM',
+        targetType: 'Retention', targetId: 'operational-data',
+        details: { cutoff: outcome.cutoff, results: outcome.results, totalDeleted: outcome.totalDeleted },
+      });
+    }
     res.json({ success: true, ...outcome });
   } catch (error) {
-    console.error('Retention run error:', error);
-    res.status(500).json({ success: false, message: 'Failed to run retention' });
+    return serverError(res, error, 'POST /operations/retention/run', 'Failed to run retention');
   }
 });
 

@@ -19,9 +19,9 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { pgConfigured, pgQuery, applySchema, closePg } from '../client.js';
 import {
-  createMerchant, createMerchantWithWallet, getMerchant, getMerchants,
+  createMerchant, getMerchant, getMerchants,
   getMerchantByUserId, getMerchantByPublicRef, getMerchantByLogin,
-  getMerchantCredentials, getActiveOrderCounts, listAssignableMerchants,
+  getMerchantCredentials,
   listMerchants, merchantCounts, updateMerchant, setOnline,
   recordCompletedOrder, resetPeriodicStats, suspendMerchant, approveMerchant,
   rejectMerchant, deleteMerchant, generateMerchantPublicRef, newMerchantId,
@@ -276,60 +276,6 @@ describePg('the merchant record', () => {
     })).rejects.toThrow(/merchants_limits_ordered/);
   });
 
-  // ── Assignment ────────────────────────────────────────────────────────────
-  it('offers only merchants that can actually take the order', async () => {
-    const base = { name: 'Cand', status: 'ACTIVE' };
-    const mk = async (suffix, over) => {
-      const id = `${ID}-${suffix}`;
-      await createMerchant({ merchantId: id, ...base, ...over });
-      await approveMerchant(id);
-      await updateMerchant(id, { is_online: true, ...(over.after || {}) });
-      return id;
-    };
-    const ok       = await mk('ok', {});
-    const offline  = await mk('off', { after: { is_online: false } });
-    const noDep    = await mk('nodep', { after: { accepts_deposits: false } });
-    const usdt     = await mk('usdt', { currency: 'USDT', usdtAddressTrc20: trc20() });
-    const pending  = `${ID}-pending`;
-    await createMerchant({ merchantId: pending, ...base });   // never approved
-
-    const inr = (await listAssignableMerchants({ currency: 'INR', direction: 'DEPOSIT' }))
-      .map((m) => m.merchantId);
-    expect(inr).toContain(ok);
-    expect(inr).not.toContain(offline);
-    expect(inr).not.toContain(noDep);
-    expect(inr).not.toContain(usdt);
-    expect(inr).not.toContain(pending);
-
-    expect((await listAssignableMerchants({ currency: 'USDT' })).map((m) => m.merchantId))
-      .toContain(usdt);
-  });
-
-  it('DERIVES the active order count from rows, never from an accumulator', async () => {
-    // The document store incremented on assign and decremented on finish, so a
-    // crash between the two throttled the merchant permanently — and nothing
-    // else knew the true number, so no repair was possible.
-    await make();
-    const order = async (state, type) => pgQuery(
-      `INSERT INTO order_states (order_id, user_id, merchant_id, order_type, state, token_amount_paise)
-       VALUES ($1, 'u1', $2, $3, $4, 10000)`,
-      [`o-${RUN}-${seq}-${Math.random().toString(36).slice(2, 8)}`, ID, type, state],
-    );
-    await order('ASSIGNED', 'DEPOSIT');
-    await order('PROCESSING', 'DEPOSIT');
-    await order('PAID', 'WITHDRAWAL');
-    await order('COMPLETED', 'DEPOSIT');   // finished — not active
-    await order('CANCELLED', 'DEPOSIT');   // finished — not active
-
-    const counts = await getActiveOrderCounts([ID]);
-    expect(counts.get(ID)).toEqual({ total: 3, deposit: 2, withdrawal: 1 });
-
-    // A merchant with no orders is present with zeros rather than missing: a
-    // caller scoring candidates must not have to distinguish the two.
-    expect((await getActiveOrderCounts(['nobody'])).get('nobody'))
-      .toEqual({ total: 0, deposit: 0, withdrawal: 0 });
-  });
-
   // ── Counters ──────────────────────────────────────────────────────────────
   it('records a completed order with the arithmetic in the statement', async () => {
     await make();
@@ -476,19 +422,6 @@ describePg('the merchant record', () => {
     expect(await deleteMerchant(ID)).toEqual({ ok: true });
     expect(await getMerchant(ID)).toBeNull();
     expect(await deleteMerchant(ID)).toEqual({ ok: false, reason: 'NOT_FOUND' });
-  });
-
-  it('creates a merchant and its wallet row together, or neither', async () => {
-    // A merchant with no wallet row is EXCLUDED from assignment, so a
-    // half-created merchant is not a merchant.
-    const m = await createMerchantWithWallet({ merchantId: ID, name: 'Atomic' });
-    expect(m.merchantId).toBe(ID);
-    const { rows } = await pgQuery(
-      'SELECT merchant_id FROM merchant_wallets WHERE merchant_id = $1', [ID],
-    );
-    expect(rows).toHaveLength(1);
-
-    await expect(createMerchantWithWallet({ merchantId: ID, name: 'Duplicate' })).rejects.toThrow();
   });
 
   // ── Listing ───────────────────────────────────────────────────────────────

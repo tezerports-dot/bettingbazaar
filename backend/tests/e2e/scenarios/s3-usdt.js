@@ -1,10 +1,12 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 // ── Scenario 3: the USDT rail ───────────────────────────────────────────────
 // §25. A player buys PLATFORM TOKENS by sending USDT to a USDT merchant's own
-// wallet. The USDT never touches the platform: the merchant's balance is
-// tokens, and what moves here is the token side of that trade.
+// wallet. The USDT never touches the platform: what the platform moves is the
+// token side of that trade, out of the serving TEAM's pool (Step 2c — a member
+// of a working team on the USDT rail serves it, and holds an address on the
+// order's chain).
 import { pgQuery } from '#db/client.js';
-import { seedPlayer, seedMerchant, seedAdmin, trc20, bep20 } from '../seed.js';
+import { seedPlayer, seedMerchant, seedTeam, seedAdmin, trc20, bep20, orderPoolTrail } from '../seed.js';
 import { playerToken, merchantToken, adminToken, GET, POST, PUT, check, note } from '../harness.js';
 
 const A = 'USDT';
@@ -56,34 +58,42 @@ async function drivePricedRail() {
   const rate = cfg.usdtTokensPerUnit;
   check(A, 'player', 'the player panel is told the rate the admin set', '90',
     String(rate), Number(rate) === 90,
-    '§25: there is no fallback — 0 gives Infinity USDT and 1 sells 50,000 tokens for 50,000 USDT');
+    '§25: there is no fallback — 0 prices nothing and 1 sells 500 tokens for 500 USDT');
 
-  // A TRC-20 merchant with tokens to sell, holding an address on that chain only.
-  const tron = await seedMerchant({
-    currency: 'USDT', tokensPaise: 100000000000, usdtAddressTrc20: trc20(),
-  });
+  // Two members of one USDT team, each holding an address on ONE chain: `tron`
+  // on TRC-20, `bnb` on BEP-20. They are the only members online on the rail
+  // (`exclusive`), and the pool can cover the buy.
+  const tron = await seedMerchant({ currency: 'USDT', usdtAddressTrc20: trc20() });
+  const bnb  = await seedMerchant({ currency: 'USDT', usdtAddressBep20: bep20() });
+  const team = await seedTeam({ rail: 'USDT', poolTokens: 100000, include: [tron, bnb], online: [tron, bnb] });
+  // Routing's tie-break is least recently assigned, never-assigned first. So
+  // `tron` is marked as just assigned: if the chain guard were missing, `bnb`
+  // would be the member chosen, and the check below would catch it.
+  await pgQuery('UPDATE merchants SET last_assigned_at = now() WHERE merchant_id = $1', [tron.merchantId], 'e2e');
+  await pgQuery('UPDATE merchants SET last_assigned_at = NULL WHERE merchant_id = $1', [bnb.merchantId], 'e2e');
   const player = await seedPlayer({});
-  const pT = playerToken(player), tT = merchantToken(tron);
+  const pT = playerToken(player);
 
-  // ── The denominations are the only sizes (§25) ───────────────────────────
-  const odd = await POST(pT, '/api/payment/usdt/deposit/create', { tokenAmount: 60000, usdtChain: 'TRC20' });
-  check(A, 'player', 'a size that is not a denomination', '4xx naming the sizes',
-    `${odd.status} ${odd.body.message ?? ''}`, odd.status >= 400 && odd.status < 500);
+  // ── A USDT buy is whole steps of 100 USDT, inside the bounds (Step 2d) ──
+  const odd = await POST(pT, '/api/payment/usdt/deposit/create', { usdtAmount: 150, usdtChain: 'TRC20' });
+  check(A, 'player', 'a USDT amount that is not a step of 100', '400 NOT_A_USDT_AMOUNT',
+    `${odd.status} ${odd.body.code ?? ''} ${odd.body.message ?? ''}`,
+    odd.status === 400 && odd.body.code === 'NOT_A_USDT_AMOUNT');
 
   // ── The chain is required, and must be one that exists ───────────────────
-  const noChain = await POST(pT, '/api/payment/usdt/deposit/create', { tokenAmount: 50000 });
+  const noChain = await POST(pT, '/api/payment/usdt/deposit/create', { usdtAmount: 500 });
   check(A, 'player', 'no chain named', '4xx', `${noChain.status} ${noChain.body.message ?? ''}`,
     noChain.status >= 400 && noChain.status < 500,
     '§25: USDT sent to the wrong chain is the one unrecoverable mistake this platform can make');
 
-  const badChain = await POST(pT, '/api/payment/usdt/deposit/create', { tokenAmount: 50000, usdtChain: 'ERC20' });
+  const badChain = await POST(pT, '/api/payment/usdt/deposit/create', { usdtAmount: 500, usdtChain: 'ERC20' });
   check(A, 'player', 'a chain the platform does not run', '4xx',
     `${badChain.status} ${badChain.body.message ?? ''}`, badChain.status >= 400 && badChain.status < 500);
 
   // ── A real USDT buy ──────────────────────────────────────────────────────
-  const created = await POST(pT, '/api/payment/usdt/deposit/create', { tokenAmount: 50000, usdtChain: 'TRC20' });
+  const created = await POST(pT, '/api/payment/usdt/deposit/create', { usdtAmount: 500, usdtChain: 'TRC20' });
   const order = created.body.order;
-  check(A, 'player', 'create a 50,000-token USDT buy on TRC-20', '200 with an order',
+  check(A, 'player', 'create a 500 USDT buy on TRC-20 (45,000 tokens at 90)', '200 with an order',
     `${created.status} ${order?.orderId ?? JSON.stringify(created.body).slice(0,160)}`,
     created.status === 200 && !!order?.orderId);
   if (!order?.orderId) return;
@@ -103,10 +113,10 @@ async function drivePricedRail() {
   // Trap 15: `fiat_amount_paise` is in the ORDER's currency. On a USDT order it
   // holds USDT, and `token_amount_paise` is what the ledger and any aggregate
   // must use.
-  check(A, 'system', 'the token amount is recorded separately from the USDT figure', '50,000 tokens',
+  check(A, 'system', 'the token amount is recorded separately from the USDT figure', '45,000 tokens',
     `tokens ${Number(r.token_amount_paise) / 100}, fiat ${Number(r.fiat_amount_paise) / 100}`,
-    Number(r.token_amount_paise) === 5000000,
-    'trap 15: a 50,000-token USDT deposit must never be aggregated as ₹500');
+    Number(r.token_amount_paise) === 4500000 && Number(r.fiat_amount_paise) === 50000,
+    'trap 15: a 45,000-token USDT deposit must never be aggregated as ₹500');
 
   // ── The chain is FROZEN by trigger ───────────────────────────────────────
   let frozen = false; let why = '';
@@ -126,33 +136,46 @@ async function drivePricedRail() {
     rateFrozen ? 'refused' : 'RE-PRICED', rateFrozen);
 
   // ── §24: the player is told where to pay and nothing about who ───────────
-  const view = JSON.stringify(order);
+  // Not before the member accepts: until then an admin may still move the
+  // order, and USDT sent to the first member's address is not recoverable.
+  check(A, 'player', 'before the member accepts, the player is given no address', 'no payTo.usdtAddress',
+    order.payTo?.usdtAddress ?? 'none', !order.payTo?.usdtAddress);
+  if (r.merchant_id === tron.merchantId) {
+    const accepted = await POST(merchantToken(tron), `/api/merchant/accept/${oid}`, {});
+    check(A, 'merchant', 'the TRC-20 member accepts the USDT buy', '200', `${accepted.status} ${accepted.body.message ?? ''}`, accepted.status === 200);
+  }
+  const shown = (await GET(pT, `/api/payment/order/${oid}`)).body.order ?? {};
+  const tronAddress = (await pgQuery('SELECT usdt_address_trc20 FROM merchants WHERE merchant_id = $1', [tron.merchantId], 'e2e')).rows[0]?.usdt_address_trc20;
+  check(A, 'player', 'once accepted, the player is given the member\'s TRC-20 address', tronAddress ?? 'the seeded address',
+    shown.payTo?.usdtAddress ?? 'none', !!tronAddress && shown.payTo?.usdtAddress === tronAddress);
+  const view = JSON.stringify(shown);
   check(A, 'player', 'the player is given an address AND its network together', 'both present',
     /TRC20|Tron/i.test(view) ? 'chain named' : 'CHAIN MISSING', /TRC20|Tron/i.test(view),
     '§25: an address on its own is the mistake');
 
-  // ── A merchant with no address on THAT chain is not a candidate ──────────
-  const bnb = await seedMerchant({
-    currency: 'USDT', tokensPaise: 100000000000, usdtAddressBep20: bep20(),
-  });
+  // ── A member with no address on THAT chain is not a candidate ────────────
   const bnbClaim = await POST(merchantToken(bnb), `/api/merchant/accept/${oid}`, {});
-  check(A, 'merchant', 'a BEP-20-only merchant cannot take this order', '4xx',
+  check(A, 'merchant', 'a BEP-20-only teammate cannot take this order', '4xx',
     `${bnbClaim.status} ${bnbClaim.body.message ?? ''}`, bnbClaim.status >= 400,
-    'NOTE: once the order is assigned, ANY other merchant is refused, so this '
+    'NOTE: once the order is assigned, ANY other member is refused, so this '
     + 'does not on its own prove the CHAIN guard. §25 puts that guard in the '
-    + 'assignment query (a row cannot see which chain an order asked for); the '
-    + 'assignment below landing on a TRC-20 holder is the evidence for it.');
+    + 'routing query (a row cannot see which chain an order asked for); the '
+    + 'assignment below landing on the TRC-20 holder is the evidence for it.');
 
-  // ── The merchant's wallet is TOKENS, not USDT (owner correction) ─────────
-  const prof = await GET(tT, '/api/merchant/profile');
-  check(A, 'merchant', 'the USDT merchant\'s balance is platform tokens', 'a token balance',
-    String(prof.body.merchant?.tokenBalance ?? 'ABSENT'),
-    Number(prof.body.merchant?.tokenBalance) > 0,
-    'the USDT goes to the merchant\'s own wallet against tokens; the platform moves the tokens');
+  // ── The team's pool holds TOKENS, not USDT (owner correction; trap 15) ───
+  // The USDT goes to the member's own wallet; the platform holds the 45,000
+  // TOKENS the player is buying in the team's pool, at assignment.
+  const hold = (await orderPoolTrail(oid)).entries.filter(e => e.kind === 'BUY_HOLD');
+  check(A, 'system', 'the team pool holds the TOKENS bought, not the USDT figure', `BUY_HOLD held +4500000 in ${team.teamId}`,
+    hold.map(e => `${e.kind} avail ${e.available}, held ${e.held}, team ${e.teamId}`).join('; ') || 'NO HOLD',
+    hold.length === 1 && hold[0].teamId === team.teamId && hold[0].held === 4500000 && hold[0].available === -4500000,
+    'trap 15: 45,000 tokens is 4,500,000 paise; the order\'s USDT figure is a different unit');
 
   // The real proof of the chain guard: whoever the platform CHOSE holds an
   // address on the order's chain. A merchant with only a BEP-20 address must
   // never be selected for a TRC-20 order — the money would be unrecoverable.
+  check(A, 'system', 'the TRC-20 member is chosen over the BEP-20 one routing would otherwise prefer', tron.merchantId,
+    r.merchant_id ?? 'nobody', r.merchant_id === tron.merchantId);
   if (r.merchant_id) {
     const who = await pgQuery(
       `SELECT usdt_address_trc20, usdt_address_bep20 FROM merchants WHERE merchant_id = $1`,
@@ -174,7 +197,7 @@ async function drivePricedRail() {
   const assigned = r.merchant_id;
   if (!assigned) {
     note(A, 'system', 'the USDT buy reached a merchant', 'assigned', 'still queued',
-      'no USDT merchant was free — the hash-claim half of this scenario needs an assigned order');
+      'no USDT member was free — the hash-claim half of this scenario needs an assigned order');
     return;
   }
   const paid = await POST(pT, `/api/payment/order/${oid}/mark-paid`, { utrNumber: hash });

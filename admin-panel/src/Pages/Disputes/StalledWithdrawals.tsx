@@ -3,30 +3,23 @@
  * Withdrawals no merchant has taken.
  *
  * ── Why a payout can wait forever, and why that needs a screen ─────────────
- * A withdrawal that cannot find a merchant WAITS rather than failing. On the
- * cash rail that is the only safe answer: a payout too large for one
- * denomination is created as SEVERAL separate withdrawals, and the ones already
- * paid cannot be clawed back, so failing the outstanding one would mean
- * unwinding a payout that has partly happened.
- *
- * Deliberately not split-specific. One of those siblings is an ordinary queued
- * withdrawal, so the general question — which payouts have nobody working them
- * — covers it and every other stuck payout in one list.
+ * A withdrawal that cannot find a team member WAITS rather than failing: the
+ * player's tokens are locked behind it, and a member may come online.
  *
  * The price is a token lock with no deadline on it. An order with no deadline
  * and no owner is an order nobody is answerable for, which is exactly the shape
  * that goes unnoticed for weeks. This queue is the owner.
  *
- * The player has the other half of it: they can cancel a waiting part
+ * The player has the other half of it: they can cancel a waiting withdrawal
  * themselves and take those tokens back. The two together are what make "wait
  * indefinitely" a decision rather than a leak.
  *
  * ── This screen does not act ───────────────────────────────────────────────
- * There is deliberately no button here. What unblocks a stalled leg is merchant
- * capacity at that denomination — approving one, or asking an approved one to
- * go to a machine — and neither is something to fake with a force-assign that
- * hands an order to somebody who cannot serve it. What an admin needs is to
- * KNOW, and to see which denomination is starved.
+ * There is deliberately no button here. What unblocks a stalled withdrawal is
+ * team capacity at that size — a working team on its rail with a member online
+ * — and that is not something to fake with a force-assign that hands an order
+ * to somebody who cannot serve it. What an admin needs is to KNOW, and to see
+ * which size is starved.
  */
 import React, { useCallback, useEffect, useState } from 'react';
 import { Clock, Hourglass, RefreshCw } from 'lucide-react';
@@ -42,13 +35,11 @@ interface StalledWithdrawal {
   amount: number;
   tokenAmount: number;
   createdAt: string;
-  /** The label grouping siblings of one request, when there was one. Context. */
-  batchRef: string | null;
 }
 
 /**
  * The windows an admin asks for. ZERO is one of them and is the point of the
- * list during an incident — "every leg waiting right now" — which a falsy
+ * list during an incident — "everything waiting right now" — which a falsy
  * default would silently answer differently.
  */
 const WINDOWS: Array<{ minutes: number; label: string }> = [
@@ -91,8 +82,8 @@ export const StalledWithdrawals: React.FC = () => {
 
   useEffect(() => { void load(); }, [load]);
 
-  // Which denomination is starved. A list of twenty legs says "something is
-  // wrong"; "eleven of them are ₹40,000" says which merchants to approve.
+  // Which size is starved. A list of twenty withdrawals says "something is
+  // wrong"; "eleven of them are ₹50,000" says which rail's teams to look at.
   const byAmount = legs.reduce<Record<string, number>>((acc, leg) => {
     const key = String(leg.amount);
     acc[key] = (acc[key] ?? 0) + 1;
@@ -112,7 +103,7 @@ export const StalledWithdrawals: React.FC = () => {
             <select
               value={olderThan}
               onChange={(e) => setOlderThan(Number(e.target.value))}
-              aria-label="How long the part has been waiting"
+              aria-label="How long the withdrawal has been waiting"
               className="bg-dark-700 border border-dark-600 rounded-lg px-3 py-1.5 text-xs"
             >
               {WINDOWS.map((w) => <option key={w.minutes} value={w.minutes}>{w.label}</option>)}
@@ -123,17 +114,16 @@ export const StalledWithdrawals: React.FC = () => {
           </div>
         </div>
         <p className="text-xs text-gray-400 mb-3">
-          A payout that cannot find a merchant waits rather than failing — on the
-          cash rail a large one is several separate withdrawals, and the ones
-          already paid cannot be clawed back. Each row here is a player&apos;s tokens
-          locked with no deadline on them. What clears it is merchant capacity at
-          that denomination; the player can also cancel and take the tokens back.
+          A payout that cannot find a team member waits rather than failing. Each
+          row here is a player&apos;s tokens locked with no deadline on them. What
+          clears it is a working team online at that size; the player can also
+          cancel and take the tokens back.
         </p>
 
         {legs.length > 0 && (
           <div className="flex flex-wrap gap-2 mb-3">
             <span className="text-xs px-2.5 py-1 rounded-lg bg-dark-700 text-gray-300">
-              {formatters.currency(locked)} locked across {legs.length} part{legs.length === 1 ? '' : 's'}
+              {formatters.currency(locked)} locked across {legs.length} withdrawal{legs.length === 1 ? '' : 's'}
             </span>
             {Object.entries(byAmount)
               .sort((a, b) => Number(b[0]) - Number(a[0]))
@@ -161,7 +151,6 @@ export const StalledWithdrawals: React.FC = () => {
                   <th className="py-2 pr-3 font-medium">Withdrawal</th>
                   <th className="py-2 pr-3 font-medium">Player</th>
                   <th className="py-2 pr-3 font-medium">Amount</th>
-                  <th className="py-2 pr-3 font-medium">Part of</th>
                   <th className="py-2 pr-3 font-medium">Waiting</th>
                   <th className="py-2 font-medium">Since</th>
                 </tr>
@@ -172,10 +161,6 @@ export const StalledWithdrawals: React.FC = () => {
                     <td className="py-2 pr-3 font-mono text-xs">{leg.orderId}</td>
                     <td className="py-2 pr-3 font-mono text-xs">{leg.userId}</td>
                     <td className="py-2 pr-3">{formatters.currency(leg.amount)}</td>
-                    {/* Context only: it says this player asked for a large
-                        payout rather than several small ones. Nothing here or
-                        anywhere else decides anything by it. */}
-                    <td className="py-2 pr-3 font-mono text-xs text-gray-500">{leg.batchRef ?? '—'}</td>
                     <td className="py-2 pr-3 text-yellow-400 text-xs">{waitedFor(leg.createdAt)}</td>
                     <td className="py-2 text-xs text-gray-400">{when(leg.createdAt)}</td>
                   </tr>

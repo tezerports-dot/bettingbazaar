@@ -220,7 +220,7 @@ export async function listRegistry({ status = null, page = 1, limit = 50 } = {})
 
   const { rows } = await pgQuery(
     `SELECT ${COLUMNS.split(',').map((c) => `r.${c.trim()}`).join(', ')},
-            u.username, u.mobile, u.kyc_status,
+            u.username, u.mobile,
             o.order_type, o.state AS order_state,
             o.fiat_amount_paise, o.token_amount_paise, o.proof_screenshot,
             COUNT(*) OVER () AS total_rows
@@ -240,7 +240,7 @@ export async function listRegistry({ status = null, page = 1, limit = 50 } = {})
     entries: rows.map((r) => ({
       ...toEntry(r),
       user: r.username === null ? null : {
-        username: r.username, mobile: r.mobile, kycStatus: r.kyc_status,
+        username: r.username, mobile: r.mobile,
       },
       order: r.order_type === null ? null : {
         orderId: r.order_id, type: r.order_type, status: r.order_state,
@@ -258,7 +258,7 @@ export async function getRegistryEntry(utr) {
   if (!normalized) return null;
   const { rows } = await pgQuery(
     `SELECT ${COLUMNS.split(',').map((c) => `r.${c.trim()}`).join(', ')},
-            u.username, u.mobile, u.kyc_status,
+            u.username, u.mobile,
             o.order_type, o.state AS order_state,
             o.fiat_amount_paise, o.token_amount_paise, o.proof_screenshot
        FROM utr_registry r
@@ -272,7 +272,7 @@ export async function getRegistryEntry(utr) {
   return {
     ...toEntry(r),
     user: r.username === null ? null : {
-      username: r.username, mobile: r.mobile, kycStatus: r.kyc_status,
+      username: r.username, mobile: r.mobile,
     },
     order: r.order_type === null ? null : {
       orderId: r.order_id, type: r.order_type, status: r.order_state,

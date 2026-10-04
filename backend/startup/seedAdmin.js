@@ -97,7 +97,6 @@ export async function seedAdminAccount() {
       mobile: adminMobile,
       passwordHash: await hashPassword(adminPassword),
       status: 'ACTIVE',
-      kycStatus: 'APPROVED',
       isAdmin: true,
       // STAFF. Without it the seeded admin is written as a PLAYER and the staff
       // door — which scopes its read by account type — cannot find it: the

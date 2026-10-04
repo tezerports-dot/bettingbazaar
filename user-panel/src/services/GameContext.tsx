@@ -31,15 +31,12 @@ import { getBackend, setCdnBaseUrl } from './backend.service';
 import { applyBranding } from './branding';
 
 
-// All components that need minBet / minDeposit / tokenRates should read from here.
+// All components that need minBet / tokenRates should read from here. The order
+// sizes are read by the wallet itself (Step 2d), not cached here.
 interface SysConfig {
   minBet:        number;
   maxBet:        number;
   maxFullDayBet: number;
-  minDeposit:    number;
-  maxDeposit:    number;
-  minWithdrawal: number;
-  maxWithdrawal: number;
   tokenBuyRate:  number;
   tokenSellRate: number;
   // Admin-editable footer tabs (SystemConfig.footerPages) — page keys, ordered.
@@ -47,9 +44,6 @@ interface SysConfig {
 }
 const DEFAULT_SYS_CONFIG: SysConfig = {
   minBet: 10, maxBet: 100000, maxFullDayBet: 500000,
-  // schema default: 500 (SystemConfig.minDeposit) — a loading placeholder only.
-  minDeposit: 500, maxDeposit: 50000,
-  minWithdrawal: 100, maxWithdrawal: 50000,
   tokenBuyRate: 1, tokenSellRate: 1,
   footerPages: ['home', 'results', 'winners', 'promo', 'profile'], // schema default
 };
@@ -69,7 +63,6 @@ interface LiveStats { totalDelhi: number; totalBombay: number; }
  * filled in.
  */
 export interface RegisterForm {
-  aadhaar: string;
   mobile: string;
   password: string;
   confirmPassword: string;
@@ -288,7 +281,7 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
   }, []);
 
   // ── SESSION RESTORE: Rehydrate user from stored JWT on every page load ────
-  // /auth/me now returns the full profile (balances, kycData, bankDetails etc.)
+  // /auth/me now returns the full profile (balances, bankDetails etc.)
   // so wallet never shows 0 after refresh.
   // We also call getUserData immediately after to load the 50 most recent bets
   // and double-confirm balances from the DB.
@@ -806,10 +799,6 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
         minBet:        data.minBet        ?? prev.minBet,
         maxBet:        data.maxBet        ?? prev.maxBet,
         maxFullDayBet: data.maxFullDayBet  ?? prev.maxFullDayBet,
-        minDeposit:    data.minDeposit    ?? prev.minDeposit,
-        maxDeposit:    data.maxDeposit    ?? prev.maxDeposit,
-        minWithdrawal: data.minWithdrawal ?? prev.minWithdrawal,
-        maxWithdrawal: data.maxWithdrawal ?? prev.maxWithdrawal,
         tokenBuyRate:  data.tokenBuyRate  ?? prev.tokenBuyRate,
         tokenSellRate: data.tokenSellRate ?? prev.tokenSellRate,
         footerPages:   Array.isArray(data.footerPages) && data.footerPages.length ? data.footerPages : prev.footerPages,
@@ -921,18 +910,6 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
   }, [user?.id]);
 
   // ── AUTH ──────────────────────────────────────────────────────────────────
-  /**
-   * Redeem a one-time bot link and adopt the session it grants.
-   *
-   * There is no password leg and no OTP leg any more: the bot proved the phone
-   * number with a contact share and took the Aadhaar before it ever issued this
-   * token, so by the time it arrives the only question left is whether the
-   * token is still good. The server answers that, sets the httpOnly cookie, and
-   * hands back the player — this just seats them.
-   *
-   * Throws on failure so the calling screen can show why; every failure reason
-   * comes back as one message on purpose, and the fix is always a fresh /start.
-   */
   /**
    * Take the seat a successful auth call grants.
    *

@@ -3,7 +3,8 @@
  * A number that GATES money is read from the wallet.
  *
  * Four gates were decided from a stored copy of a balance while the movement
- * itself touched `wallets` / `merchant_wallets`:
+ * itself touched the wallet it was about (player wallets, and the merchant
+ * wallets Step 2c replaced with team pools):
  *
  *   - withdrawal admission          (the path where money LEAVES the platform)
  *   - merchant assignment           (which merchant is handed a deposit)
@@ -49,10 +50,10 @@ const SITES = [
     // amount against its own order id. The gate is unchanged in kind: the
     // wallet's row lock still decides, it is simply consulted once per
     // withdrawal being created, which is what one-withdrawal-per-part means.
-    // The debit carries the part's prepared INSERT (`within`), so the lock and
+    // The debit carries the order's prepared INSERT (`within`), so the lock and
     // the order it is for commit together — a lock with no order is money no
     // expiry or refund can ever find.
-    gates: [/debited = await debitWinningsForWithdrawal\(String\(user\.userId\), partTokens, partOrderId, \{ within: insertPart \}\)/,
+    gates: [/debited = await debitWinningsForWithdrawal\(String\(user\.userId\), tokenAmount, orderId, \{ within: insertOrder \}\)/,
             /err\.code === 'INSUFFICIENT_WITHDRAWABLE'/],
     // The figures in the refusal come off the refusal itself — from the rows
     // the debit locked — never from a record read separately.
@@ -67,78 +68,19 @@ const SITES = [
     ],
   },
   {
-    name: 'merchant assignment',
-    file: 'domains/merchant/merchantScoring.service.js',
-    gates: [/candidates\.filter\(\(m\) => paiseOf\(m\) >= neededPaise\)/],
-    source: /await getSpendablePaiseFor\(candidates\.map/,
-    forbidden: [
-      // The eligibility query must not gain a balance predicate. The merchant
-      // row has no balance column, so one written here would be reading
-      // something that is not a merchant's money — the same defect as the
-      // stored `tokenBalance` filter it replaced, one layer down.
-      /baseQuery\.tokenBalance/,
-      /token_balance/,
-      /m\.tokenBalance\s*[<>]/,
-      // The RAW pocket, at a site that GATES an assignment. It answers "what
-      // does this merchant hold", and admission needs "what have they not
-      // already promised" — the two differ by exactly the orders in flight,
-      // which is the whole of F-018. Forbidden by name so a later edit cannot
-      // quietly swap the reader back and stay green.
-      /getAvailablePaiseFor/,
-    ],
-  },
-  {
-    // ── This gate is no longer a READ ────────────────────────────────────────
-    // It compared a balance and then accepted the order in a later statement.
-    // Any such pair is a snapshot however good the number is, and two merchants
-    // claiming from the open pool in the same instant both passed it. Taking
-    // the HOLD is the question: its refusal is in the reserve leg's own
-    // `UPDATE … WHERE available_paise + $n >= 0` under the merchant's row lock.
-    //
-    // So what is asserted here is that no balance READ has come back to this
-    // gate — the entry is kept in this file precisely so that reintroducing one
-    // fails.
-    name: 'merchant accept guard',
-    file: 'domains/merchant/merchant.routes.js',
-    gates: [/if \(!held\.ok\) \{/],
-    source: /const held = await holdDepositTokens\(order, merchant\.merchantId/,
-    // A COMPARISON of a balance against an order amount is a gate wherever it
-    // appears, so this one is banned across the whole file.
-    forbidden: [
-      /\(merchant\.tokenBalance \|\| 0\) < order\.tokenAmount/,
-    ],
-    // ── The reader names are banned INSIDE THE HANDLER, not file-wide ────────
-    // They were banned across the file, and that was a proxy standing in for
-    // what this entry actually means: no balance read has come back to THIS
-    // GATE. The proxy held only while nothing else in the file had a reason to
-    // read a balance — and then something did. `formatMerchant` and
-    // `issueMerchantSession` project the merchant's own wallet figure onto
-    // their panel, which is a DISPLAY read (§9) feeding a screen, not a gate
-    // deciding anything. The file-wide ban failed it, and a gate that fails a
-    // correct change is how a gate loses trust and gets silenced (§28).
-    //
-    // So the ban is scoped to the accept handler's own body — "derive what a
-    // gate checks from the thing it is checking". A read reintroduced AT the
-    // gate still fails; a read used to paint a number on a screen does not.
-    //
-    // §9 is what makes this safe to narrow: every balance read is classified
-    // display or decision, and `check:balance-reads` audits that classification
-    // across the whole backend independently of this file. This entry is the
-    // one-site belt; that script is the braces.
-    forbiddenWithin: {
-      // Both ends are asserted below, so a rename that makes this select
-      // nothing is a FAILURE rather than a silent pass over zero lines
-      // (§24.6 — a check that measures nothing reads exactly like a check).
-      from: /^router\.post\('\/accept\/:id'/m,
-      to:   /^router\.post\('\/confirm\/:id'/m,
-      patterns: [
-        // All three answer "what does this merchant have", and admission needs
-        // "are these tokens now MINE" — which only a write can answer (F-018).
-        /await getMerchantTokenBalance\(/,
-        /getMerchantSpendableTokens\(/,
-        /getAvailablePaiseFor\(/,
-      ],
-    },
+    // ── A buy's cover is a WRITE, not a read (Step 2c) ───────────────────────
+    // Merchant wallets are gone: a buy is served from its TEAM's pool, and the
+    // pool's cover is taken by `holdForBuyWithin` inside the same transaction
+    // that assigns the order — `UPDATE team_pools … WHERE available_paise >= $n`
+    // under the pool's row lock. The candidate query's pool predicate is only a
+    // filter; the hold is the decision. What is asserted is that the hold is
+    // still taken inside the assignment, and that no per-merchant balance has
+    // come back as a gate.
+    name: 'team assignment',
+    file: '../database/repositories/teamRouting.js',
+    gates: [/await holdForBuyWithin\(client, \{/],
+    source: /if \(isBuy\) \{\s*\n\s*await holdForBuyWithin/,
+    forbidden: [/getSpendablePaiseFor/, /getAvailablePaiseFor/, /tokenBalance/],
   },
   {
     // ── This entry pointed at a file NOTHING IMPORTED ────────────────────────
@@ -156,54 +98,6 @@ const SITES = [
     gates: [/if \(lockedBalance > 0\)/],
     source: /const \{ lockedBalance \} = await getBalancesPaise\(/,
     forbidden: [/if \(user\.lockedBalance > 0\)/],
-  },
-  {
-    name: 'queue-manager assignment list',
-    file: 'domains/merchant/merchant.assignment.routes.js',
-    gates: [/return m\.walletAvailableTokens >= amount;/],
-    // SPENDABLE, because this list is what a queue manager assigns FROM.
-    //
-    // The regex used to be `getAvailablePaiseFor\(merchants\.map`, and after
-    // this site moved to the spendable reader it still MATCHED — the two pool
-    // LISTINGS further down the same file call it with the same argument name,
-    // and they are display reads that correctly keep it. The assertion went on
-    // passing while measuring a different site than the one it names. Anchored
-    // on the reader that only the gating site uses.
-    source: /await getSpendablePaiseFor\(merchants\.map/,
-    forbidden: [
-      /if \(m\.tokenBalance < amount\)/,
-      // The pool and candidate listings quote a balance too, and an admin
-      // curating the pool picks from that figure. Reading a stored
-      // `tokenBalance` there showed them a number no transfer would find.
-      /tokenBalance: m\.tokenBalance/,
-    ],
-  },
-  {
-    // The manual-assign and reassign gate. It is the only assignment path with
-    // no concurrency query behind it, so it is the only thing standing between
-    // a merchant and a second order they cannot fund.
-    // Same change, at the manual-assign gate — the one assignment path with no
-    // concurrency query behind it, so the only thing between a merchant and an
-    // order they cannot fund.
-    name: 'queue-manager inventory refusal',
-    file: 'domains/merchant/merchant.assignment.routes.js',
-    gates: [/const held = await holdDepositTokens\(order, merchantId, \{ actor \}\);\s*\n\s*if \(held\.ok\) return null;/],
-    source: /async function inventoryRefusal\(order, merchantId/,
-    forbidden: [
-      /await getMerchantTokenBalance\(/,
-      /getMerchantSpendableTokens\(/,
-      /getAvailablePaiseFor\(merchantId/,
-    ],
-  },
-  {
-    // Who is told to walk to a cash machine. A merchant already serving a buy
-    // order has those tokens promised; sending them out for work they cannot
-    // fund wastes a trip they cannot get back.
-    name: 'cash link suppliers',
-    file: 'domains/merchant/cashLink.service.js',
-    gates: [/return row\.spendable \+ c\.soonPaise >= needed;/],
-    source: /await getSpendablePaiseFor\(candidates\.map/,
-    forbidden: [/getAvailablePaiseFor/],
   },
 ];
 

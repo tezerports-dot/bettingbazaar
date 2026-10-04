@@ -50,6 +50,7 @@ import { getBackend } from './services/backend.service';
 import { startAppUpdate, webBundleOutdated } from './services/appUpdate';
 import { brandLogo, fallBackToMark, uploadedAsset } from './services/brandAssets';
 import NativeUpdateGate from './components/NativeUpdateGate';
+import { RejectedBuyPopup } from './components/DisputeWindow';
 import { isNativeShell } from './services/nativeLifecycle';
 const APP_VERSION = import.meta.env.VITE_APP_VERSION ?? '0.0.0';
 
@@ -232,6 +233,9 @@ const App: React.FC = () => (
                 <MotionConfig reducedMotion="user">
                   <HashRouter>
                     <RedesignShell>
+                      {/* The pop-up when a member rejects a buy as unpaid,
+                          wherever the player is in the app (2c+). */}
+                      <RejectedBuyPopup />
                       <ErrorBoundary panel="user">
                         <Routes>
                           <Route path="/"                element={<GamePage />} />

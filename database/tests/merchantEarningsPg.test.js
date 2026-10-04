@@ -6,10 +6,10 @@
  * `merchantEarnings` and `merchantDailyEarnings` summed
  * `order_states.merchant_profit_paise`. That column is written as the LITERAL
  * ZERO at order creation and never set again — measured on a working database,
- * 0 non-zero rows out of 5,731 — because merchant pay moved to
- * `merchant_commission_policies`/`_rates` and the wallet ledger (CLAUDE.md
- * §26): matched buy→sell volume, above a per-variety high-water mark, from the
- * platform-funded pool.
+ * 0 non-zero rows out of 5,731 — because merchant pay moved elsewhere. Since
+ * Step 2e it is team commission: 10% of each rise in a TEAM's matched volume,
+ * paid into its pool, with each person's share recorded in
+ * `team_commission_shares`. That record is what a merchant is told they earned.
  *
  * So the merchant panel's entire earnings surface was a structural zero on
  * every rail: the "Today's earnings" tile, the weekly bars, the weekly total
@@ -36,8 +36,13 @@ import {
   merchantEarnings, merchantDailyEarnings,
   platformFinance, merchantLeaderboard, tokenFlow,
 } from '../repositories/stats.js';
+import { teamFixture } from '../../backend/tests/teamFixture.js';
 
-const M = 'earn-merchant-1';
+// The merchant whose earnings are read: a team's supervisor, so the payments
+// below are recorded to a real merchant in a real team (§32 S16).
+let M;
+let TEAM;
+const teams = teamFixture();
 
 async function order({ id, type = 'DEPOSIT', state = 'COMPLETED', tokens, fiat, currency = 'INR', completedAt = 'now()' }) {
   await pgQuery(
@@ -52,34 +57,48 @@ async function order({ id, type = 'DEPOSIT', state = 'COMPLETED', tokens, fiat, 
   );
 }
 
-/** A commission payment, exactly as `issueMerchantBonus` records one. */
+/**
+ * A team commission payment of which `paise` is this merchant's share, as
+ * `teamCommission.payTeamCommission` records one (Step 2e): each payment
+ * starts at the mark the last one left, and is a tenth of its rise.
+ */
+let mark = 0;
 async function paid({ key, paise, at = 'now()' }) {
+  const from = mark;
+  mark += paise * 10;
   await pgQuery(
-    `INSERT INTO accounting_events
-       (idempotency_key, event_type, amount_paise, ref_model, ref_id, postings, description, created_at)
-     VALUES ($1, 'MERCHANT_BONUS_ISSUED', $2, 'Merchant', $3,
-             $4::jsonb, 'Merchant commission', ${at})`,
-    [key, paise, M, JSON.stringify([
-      { account: 'MERCHANT_BONUS_POOL', amountPaise: -paise },
-      { account: 'MERCHANT_PAYABLE', amountPaise: paise },
-    ])],
-  );
+    `INSERT INTO team_commissions
+       (commission_id, team_id, supervisor_id, from_high_paise, to_high_paise,
+        buys_paise, sells_paise, commission_paise, created_at)
+     VALUES ($1, $2, $3, $4, $5, $5, $5, $6, ${at})`,
+    [key, TEAM, M, from, mark, paise]);
+  await pgQuery(
+    `INSERT INTO team_commission_shares (commission_id, merchant_id, role, share_paise, created_at)
+     VALUES ($1, $2, 'SUPERVISOR', $3, ${at})`,
+    [key, M, paise]);
 }
 
 describe('a merchant’s earnings', () => {
-  beforeAll(async () => { await applySchema(); }, 60_000);
-  afterAll(async () => { await closePg(); });
+  beforeAll(async () => {
+    await applySchema();
+    const team = await teams.workingTeam({ rail: 'UPI_BANK' });
+    M = team.supervisorId;
+    TEAM = team.teamId;
+  }, 60_000);
+  afterAll(async () => { await teams.cleanup(); await closePg(); });
   beforeEach(async () => {
-    await pgQuery(`TRUNCATE order_states, order_transitions, accounting_events
+    await pgQuery(`TRUNCATE order_states, order_transitions, accounting_events,
+                            team_commission_shares, team_commissions
                    RESTART IDENTITY CASCADE`);
+    mark = 0;
   });
 
-  it('reports what the commission ledger paid, not a column nothing writes', async () => {
+  it('reports the merchant\'s recorded share of team commission, not a column nothing writes', async () => {
     // Two completed orders. Under the old query their `merchant_profit_paise`
     // is 0 and so is every earnings figure — which is what a real merchant saw.
     await order({ id: 'e1', tokens: 50_000_00, fiat: 50_000_00 });
     await order({ id: 'e2', type: 'WITHDRAWAL', tokens: 50_000_00, fiat: 50_000_00 });
-    await paid({ key: 'acct_commission_earn-merchant-1~INR:P2P_UPI:none~5000000', paise: 250_00 });
+    await paid({ key: 'tcm-earn-1', paise: 250_00 });
 
     const e = await merchantEarnings(M);
     expect(e.today.earned).toBe(250);

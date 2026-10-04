@@ -114,21 +114,9 @@ export async function eligibilityFor(earning) {
     return { ok: false, reason: 'Referrer account is blocked' };
   }
 
-  // The referrer's own KYC must have come back YES.
-  const earnerKyc = await db.identity.getVerification(earning.earnerId);
-  if (earnerKyc?.status !== 'VERIFIED') {
-    return { ok: false, reason: 'Referrer KYC is not verified' };
-  }
-
-  // And the JOINER's KYC must have passed — a failed KYC invalidates the
-  // commissions that signup generated, for every level above it.
-  const sourceKyc = await db.identity.getVerification(earning.sourceUserId);
-  if (sourceKyc?.status === 'FAILED') {
-    return { ok: false, reason: 'Referred user failed KYC — commission void' };
-  }
-  if (sourceKyc?.status !== 'VERIFIED') {
-    return { ok: false, reason: 'Referred user KYC is not yet verified' };
-  }
+  // No KYC condition (removed 2026-10-02 with KYC itself). The joiner earned
+  // this only by completing the Telegram step — that is what claims the joining
+  // number — and the referrer's own Telegram link is checked below.
 
   // The referrer must still be in the channel, on the number they verified.
   const identity = await db.telegram.getIdentityByUserId(earning.earnerId);
@@ -153,8 +141,8 @@ export async function eligibilityFor(earning) {
  * programme defensible to the people waiting in it.
  *
  * Ineligible rows are marked BLOCKED with a reason and SKIPPED WITHOUT
- * consuming pool: a failed KYC upstream must not deprive the next eligible
- * person of their turn.
+ * consuming pool: an ineligible row upstream must not deprive the next
+ * eligible person of their turn.
  *
  * @param {object} args
  * @param {number} args.poolPaise  what the admin authorised
@@ -329,17 +317,10 @@ export async function programmeStats() {
  * of it is waiting.
  *
  * ── What a referrer may see about the people they invited ───────────────────
- * Their JOINING NUMBER and nothing else. Not a username, not a phone, not an
- * Aadhaar — a referrer has no business identifying the people beneath them, and
+ * Their JOINING NUMBER and nothing else. Not a username, not a phone — a referrer has no business identifying the people beneath them, and
  * a leaderboard of "who did I recruit" is exactly the data a scraped referral
  * tree would want. The joining number is already the queue key, so it is the
  * one identifier that has to be visible for the ordering to be checkable.
- *
- * ── Why an earning is not income until the JOINER's KYC clears ──────────────
- * `eligibilityFor` refuses to pay a row whose source user is not VERIFIED, and
- * voids it outright on FAILED. Counting those ₹25s as "earned" would show a
- * referrer a number they may never receive, so they are reported separately as
- * awaiting verification.
  */
 /**
  * Someone opened a referral link.
@@ -411,31 +392,24 @@ export async function referralSummaryFor(userId, { limit = 200 } = {}) {
 
   const rows = await db.referrals.listEarnings({ earnerId: userId, limit });
 
-  // One query for every source, rather than one per row. A referral report can
-  // list two hundred joiners, and a lookup each would be two hundred round
-  // trips to render one page.
-  const sourceIds = [...new Set(rows.map((r) => String(r.sourceUserId)))];
-  const kycBySource = await db.identity.verificationStatusFor(sourceIds);
-
   // Per level, and per state within it. `confirmed` is the only figure a
   // referrer should treat as theirs.
-  const empty = () => ({ count: 0, confirmedPaise: 0, awaitingKycPaise: 0, disbursedPaise: 0, blockedPaise: 0 });
+  const empty = () => ({ count: 0, confirmedPaise: 0, disbursedPaise: 0, blockedPaise: 0 });
   const byLevel = { 1: empty(), 2: empty() };
 
   const detail = rows.map((r) => {
-    const sourceKyc = kycBySource.get(String(r.sourceUserId)) || 'PENDING_VERIFICATION';
     const bucket = byLevel[r.level] || (byLevel[r.level] = empty());
     bucket.count += 1;
 
     if (r.status === 'DISBURSED') {
       bucket.disbursedPaise += r.amountPaise;
       bucket.confirmedPaise += r.amountPaise;
-    } else if (r.status === 'BLOCKED' || sourceKyc === 'FAILED') {
+    } else if (r.status === 'BLOCKED') {
       bucket.blockedPaise += r.amountPaise;
-    } else if (sourceKyc === 'VERIFIED') {
-      bucket.confirmedPaise += r.amountPaise;
     } else {
-      bucket.awaitingKycPaise += r.amountPaise;
+      // An earning exists only for a joiner who completed the Telegram step
+      // (that claims the joining number), so there is nothing left to wait on.
+      bucket.confirmedPaise += r.amountPaise;
     }
 
     return {
@@ -443,7 +417,6 @@ export async function referralSummaryFor(userId, { limit = 200 } = {}) {
       joiningNumber: r.queuePosition,
       level: r.level,
       amount: paiseToRupees(r.amountPaise),
-      kyc: sourceKyc,
       status: r.status,
       reason: r.blockedReason || '',
       disbursedAt: r.disbursedAt || null,
@@ -454,7 +427,6 @@ export async function referralSummaryFor(userId, { limit = 200 } = {}) {
   const level = (n) => ({
     count: byLevel[n].count,
     confirmed:    paiseToRupees(byLevel[n].confirmedPaise),
-    awaitingKyc:  paiseToRupees(byLevel[n].awaitingKycPaise),
     disbursed:    paiseToRupees(byLevel[n].disbursedPaise),
     blocked:      paiseToRupees(byLevel[n].blockedPaise),
   });
@@ -467,14 +439,12 @@ export async function referralSummaryFor(userId, { limit = 200 } = {}) {
     level2: level(2),
     totals: {
       referrals:   detail.length,
-      // Earned and confirmed — the joiner's KYC came back verified.
+      // Earned and confirmed — not blocked.
       confirmed:   paiseToRupees(sum('confirmedPaise')),
       // Already paid into the winnings wallet.
       disbursed:   paiseToRupees(sum('disbursedPaise')),
       // Confirmed but not yet paid — this is what the next disbursal draws on.
       nextDisbursal: paiseToRupees(sum('confirmedPaise') - sum('disbursedPaise')),
-      // Waiting on the invited player's KYC. Not yours yet.
-      awaitingKyc: paiseToRupees(sum('awaitingKycPaise')),
       blocked:     paiseToRupees(sum('blockedPaise')),
       // How many people opened the link, deduplicated per viewer per day.
       // Shown beside the signup count because the gap between the two is the

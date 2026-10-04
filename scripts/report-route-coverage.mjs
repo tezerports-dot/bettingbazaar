@@ -209,18 +209,45 @@ for (const [panel, file] of CLIENTS) {
   if (!existsSync(abs)) continue;
   const src = readFileSync(abs, 'utf8');
   const others = walk(join(ROOT, panel, 'src')).filter((f) => f !== abs && !/backend\.interface\.ts$/.test(f))
-    .map((f) => readFileSync(f, 'utf8')).join('\n');
-  const defs = [...src.matchAll(/^\s+(?:async\s+)?([a-zA-Z_]\w*)\s*(?:\(|:\s*(?:async\s*)?\()/gm)];
+    .map((f) => readFileSync(f, 'utf8'));
+  // A definition, not a call: `resolve(res.data);` inside a Promise is
+  // indented and opens with a name and a bracket too, but it ends the line.
+  const defs = [...src.matchAll(/^\s+(?:async\s+)?([a-zA-Z_]\w*)\s*(?:\(|:\s*(?:async\s*)?\()(.*)$/gm)]
+    .filter((m) => !/[;,]\s*$/.test(m[2]));
   const skip = new Set(['if', 'for', 'while', 'switch', 'catch', 'constructor', 'request', 'return', 'function', 'get', 'set', 'onUploadProgress']);
+  // Which `export const <obj> = {` a definition sits in, if any. The admin and
+  // merchant clients are objects of methods, and a bare name is not enough:
+  // `utr.getFlagged` was reported called because `users.getFlagged` is.
+  const objects = [...src.matchAll(/^export const (\w+)\s*=\s*\{/gm)];
+  const ownerOf = (idx) => objects.filter((o) => o.index < idx).pop()?.[1] ?? null;
+  // Blanked, so a name a comment mentions is not taken for a caller (§22.3).
+  // A block comment must OPEN like one: `accept="image/*"` is a string, and
+  // taken for an opener it blanked every file up to the next `*/`.
+  const code = (s) => s.replace(/(^|[\s{;(])\/\*[\s\S]*?\*\//g, '$1').replace(/^\s*\/\/.*$/gm, '');
+  const othersCode = others.map(code).join('\n');
   defs.forEach((m, i) => {
     const name = m[1];
-    if (skip.has(name) || new RegExp(`\\b${name}\\b`).test(others)) return;
-    if (uncalled.some((u) => u.panel === panel && u.name === name)) return;
+    if (skip.has(name)) return;
+    const end = defs[i + 1]?.index ?? src.length;
+    const obj = ownerOf(m.index);
+    // `import { paymentMode as paymentModeApi }` and `(api.merchants as any).x`
+    // both reach the object under another spelling.
+    const aliases = obj ? [obj, ...[...othersCode.matchAll(new RegExp(`\\b${obj}\\s+as\\s+(\\w+)`, 'g'))].map((a) => a[1])] : [];
+    const named = obj
+      ? new RegExp(`\\b(?:${aliases.join('|')})\\b(?:\\s+as\\s+\\w+)?\\)?\\s*\\??\\.\\s*${name}\\b`)
+      : new RegExp(`\\b${name}\\b`);
+    if (named.test(othersCode)) return;
+    // A helper the client itself calls (`clearAuthData` on a 401) is used:
+    // look for the name in the client OUTSIDE its own definition.
+    const rest = code(src.slice(0, m.index) + src.slice(end));
+    const self = obj ? named : new RegExp(`(?<![\\w.])${name}\\s*\\(|\\bthis\\.${name}\\b`);
+    if (self.test(rest)) return;
+    if (uncalled.some((u) => u.panel === panel && u.obj === obj && u.name === name)) return;
     // Comments blanked, so a path a comment mentions is not taken for the request.
-    const body = src.slice(m.index, defs[i + 1]?.index ?? src.length)
+    const body = src.slice(m.index, end)
       .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
     const path = body.match(/['\`](\/(?:api|v1)[^'\`]*)['\`]/)?.[1] ?? '';
-    uncalled.push({ panel, file: relative(ROOT, abs), name, path });
+    uncalled.push({ panel, file: relative(ROOT, abs), obj, name, path });
   });
 }
 L.push(`## Client methods no screen calls — ${uncalled.length}`);
@@ -229,7 +256,7 @@ L.push('A method in a panel\'s API client that nothing else in that panel names.
 L.push('its request as reaching a route; no person can make it. Each is either a feature with no button');
 L.push('(wire it) or code nothing needs (delete it, §30).');
 L.push('');
-table(uncalled, [['Panel', (r) => r.panel], ['Method', (r) => `\`${r.name}\``], ['Requests', (r) => (r.path ? `\`${r.path}\`` : '—')]]);
+table(uncalled, [['Panel', (r) => r.panel], ['Method', (r) => `\`${r.obj ? `${r.obj}.` : ''}${r.name}\``], ['Requests', (r) => (r.path ? `\`${r.path}\`` : '—')]]);
 
 L.push('## Every route');
 L.push('');

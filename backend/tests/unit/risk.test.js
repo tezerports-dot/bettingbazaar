@@ -2,8 +2,7 @@
 // Unit tests for the Risk Platform validators + reserve split (pure, no DB).
 import { describe, it, expect } from 'vitest';
 import {
-  assertPositiveNumber, assertMultipleOf10, validateTokenPurchase,
-  validateTokenSale, validateBetAmount, computeReserveSplit, computePayoutFeeMinor,
+  assertPositiveNumber, assertMultipleOf10, validateBetAmount, computeReserveSplit, computePayoutFeeMinor,
   computeBetFundingPlan, computeWinningsPayout,
 } from '../../domains/risk/riskValidation.service.js';
 
@@ -25,15 +24,7 @@ describe('multiples of 10', () => {
   it('accepts 500', () => expect(assertMultipleOf10(500)).toBe(true));
 });
 
-describe('purchase / sale / bet gates', () => {
-  it('enforces multiples when on', () =>
-    expect(() => validateTokenPurchase({ amount: 105, min: 100, max: 50000, enforceMultiples: true })).toThrow());
-  it('allows non-multiples when off', () =>
-    expect(validateTokenPurchase({ amount: 105, min: 100, max: 50000, enforceMultiples: false })).toBe(true));
-  it('enforces min and max', () => {
-    expect(() => validateTokenPurchase({ amount: 90, min: 100, max: 50000 })).toThrow();
-    expect(() => validateTokenSale({ amount: 60000, min: 500, max: 50000 })).toThrow();
-  });
+describe('bet gate', () => {
   it('bet rejects 15 with multiples on, accepts 50', () => {
     expect(() => validateBetAmount({ amount: 15, min: 10, max: 100000, enforceMultiples: true })).toThrow();
     expect(validateBetAmount({ amount: 50, min: 10, max: 100000 })).toBe(true);

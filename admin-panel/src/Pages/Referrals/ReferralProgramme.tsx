@@ -12,7 +12,7 @@
  *
  * ── What the numbers mean ───────────────────────────────────────────────────
  * Pending is money owed and not yet paid. Blocked is money owed to referrers
- * who are not currently eligible — unverified KYC, a blocked account — and it
+ * who are not currently eligible — Telegram not verified, a blocked account — and it
  * is shown separately because it is NOT a shortfall: a blocked row does not
  * consume the pool, so funding ₹1,00,000 pays ₹1,00,000 of eligible earnings
  * regardless of how much sits blocked behind it.
@@ -179,7 +179,7 @@ export const ReferralProgramme: React.FC = () => {
             {formatters.number(stats?.blockedCount || 0)} earner(s) currently ineligible
           </div>
           <p style={{ fontSize: 12, color: 'var(--muted)', lineHeight: 1.65 }}>
-            Owed to referrers who cannot be paid right now — KYC not verified, or the account
+            Owed to referrers who cannot be paid right now — Telegram not verified, or the account
             blocked. This is <strong>not</strong> a shortfall: a blocked row does not consume
             the pool, so funding a disbursal pays that full amount to eligible earners and
             simply steps over these. They become payable the moment their eligibility returns,

@@ -51,15 +51,6 @@ export function isValidMobile(raw) {
   return /^[6-9]\d{9}$/.test(normalisePhone(raw) || '');
 }
 
-/** Twelve digits, spaces and dashes forgiven — that is the whole format. */
-export function isValidAadhaar(raw) {
-  return /^\d{12}$/.test(String(raw || '').replace(/[\s-]/g, ''));
-}
-
-/** The 12 digits with nothing around them — what is hashed and encrypted. */
-export function normaliseAadhaar(raw) {
-  return String(raw || '').replace(/[\s-]/g, '');
-}
 
 /**
  * Normalise a referral code.

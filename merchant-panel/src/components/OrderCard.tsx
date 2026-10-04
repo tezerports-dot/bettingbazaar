@@ -8,7 +8,7 @@
 // ₹ / UPI / UTR and a USDT merchant sees USDT / TRC-20 / Tx ID from the same
 // component — the merchant's rail is fixed by the backend, never chosen here.
 import React from 'react';
-import { ArrowDownLeft, ArrowUpRight, Check, Clock, Copy, ChevronRight, ShieldCheck } from 'lucide-react';
+import { ArrowDownLeft, ArrowUpRight, Check, Clock, Copy, ChevronRight, QrCode, ShieldCheck } from 'lucide-react';
 import { OrderStatus, type MerchantProfile, type PaymentOrder } from '../types';
 import { counterpartyOf, formatMoney, railCopy, railOf, receivingAddressFor, tokenColumn, truncateMiddle, type MerchantRail } from '../utils/rail';
 import { formatCountdown, secondsLeft, URGENT_SECONDS } from '../hooks/useCountdown';
@@ -24,6 +24,8 @@ export interface OrderActions {
   /** Withdrawal: record that the payout has been sent. */
   onPayout: (order: PaymentOrder) => void;
   onRedFlag: (order: PaymentOrder) => void;
+  /** Cash buy: scan the cash machine's QR the player will pay (Step 2d). */
+  onScanCashLink: (order: PaymentOrder) => void;
   onOpen: (order: PaymentOrder) => void;
 }
 
@@ -47,8 +49,19 @@ export function paymentDestination(
         ? { label: `Your ${receiving.label} address — user sends here`, value: receiving.address, sub: receiving.label }
         : null;
     }
-    const upi = merchant?.settlementDetails?.upiId || merchant?.bankDetails?.upiId || '';
-    return upi ? { label: 'Your UPI — user pays here', value: upi } : null;
+    // A cash buy is paid to the cash machine the member scans, never to them.
+    if (order.paymentMode === 'CASH_ATM') return null;
+    // A bank-transfer buy is paid into the member's own account (owner,
+    // 2026-10-03); the player is shown exactly these details.
+    const accountNo = merchant?.bankDetails?.accountNo || merchant?.settlementDetails?.accountNumber || '';
+    if (!accountNo) return null;
+    const bankName = merchant?.bankDetails?.bankName || merchant?.settlementDetails?.bankName || '';
+    const ifsc = merchant?.bankDetails?.ifsc || merchant?.settlementDetails?.ifsc || '';
+    return {
+      label: 'Your bank account — user transfers here',
+      value: accountNo,
+      sub: [bankName, ifsc].filter(Boolean).join(' · ') || undefined,
+    };
   }
 
   // Money going out — the user's payout destination, carried on the order.
@@ -84,7 +97,12 @@ export const OrderCard: React.FC<{
   const canAccept = order.status === OrderStatus.ASSIGNED || order.status === OrderStatus.PENDING_QUEUE;
   const canRelease = order.status === OrderStatus.PAID && isDeposit;
   const canPayout = order.status === OrderStatus.PROCESSING && !isDeposit;
-  const awaitingUser = order.status === OrderStatus.PROCESSING && isDeposit;
+  // A cash buy waits on THIS member first: the player has nothing to pay until
+  // they accept and scan the machine's QR (Step 2d). Re-scannable until the
+  // player taps. The server refuses a scan before the accept (`ACCEPT_FIRST`).
+  const cashBuy = isDeposit && order.paymentMode === 'CASH_ATM';
+  const canScan = cashBuy && order.status === OrderStatus.PROCESSING;
+  const awaitingUser = order.status === OrderStatus.PROCESSING && isDeposit && (!cashBuy || Boolean(order.cashLink));
 
   const destination = OPEN_STATUSES.includes(order.status) ? paymentDestination(order, merchant, rail) : null;
   const token = tokenColumn(order, rail);
@@ -201,6 +219,27 @@ export const OrderCard: React.FC<{
           </div>
         )}
 
+        {/* Cash buy: the machine's QR comes first */}
+        {canScan && (
+          <div style={{ marginBottom: 13 }}>
+            {order.cashLink ? (
+              <Banner tone="ok" title="QR sent to the player" style={{ marginBottom: 9 }}
+                icon={<QrCode size={16} style={{ color: 'var(--ok)', flexShrink: 0, marginTop: 1 }} />}>
+                Scanned{order.cashLinkAt ? ` at ${new Date(order.cashLinkAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ''}.
+                Wait at the machine for the player to pay it. If the machine showed a new QR, scan again.
+              </Banner>
+            ) : (
+              <Banner tone="warn" title="Scan the cash machine" style={{ marginBottom: 9 }}
+                icon={<QrCode size={16} style={{ color: 'var(--warn)', flexShrink: 0, marginTop: 1 }} />}>
+                At a machine with UPI cash withdrawal, enter {formatMoney(order.fiatAmount ?? order.amount, rail)} and scan the QR it shows. The player has nothing to pay until you do.
+              </Banner>
+            )}
+            <Button variant={order.cashLink ? 'outline' : 'solid'} full onClick={() => actions.onScanCashLink(order)}>
+              <QrCode size={16} /> {order.cashLink ? 'Scan again' : 'Scan the machine\'s QR'}
+            </Button>
+          </div>
+        )}
+
         {/* Status narration */}
         {awaitingUser && (
           <Banner tone="warn" style={{ marginBottom: 13 }} icon={<Clock size={16} style={{ color: 'var(--warn)', flexShrink: 0, marginTop: 1 }} />}>
@@ -248,6 +287,9 @@ export const OrderCard: React.FC<{
         {order.status === OrderStatus.REJECTED && (
           <Banner tone="danger" title="Rejected" style={{ marginBottom: 13 }}>
             {order.rejectedReason || order.disputeReason || 'This order was rejected.'}
+            {order.disputeWindowUntil && new Date(order.disputeWindowUntil).getTime() > Date.now() && (
+              <> The team's tokens stay held until {new Date(order.disputeWindowUntil).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} in case the player disputes. If they do not, the tokens return to the team pool.</>
+            )}
           </Banner>
         )}
 

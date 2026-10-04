@@ -25,8 +25,8 @@
  * ── What a merchant is NOT told ────────────────────────────────────────────
  * Beyond the player's identity: the platform's treasury split
  * (`depositAllocation`, `reserveAllocation`, `depositPolicySnapshot`), the risk
- * verdicts on their own conduct (`redFlagged*`, `requiresReview`, the review
- * notes), the admin actors behind a decision (`assignedBy`, `reviewedBy`,
+ * verdicts on their own conduct (`redFlagged*`, the red-flag
+ * notes), the admin actors behind a decision (`assignedBy`, `approvedBy`,
  * `disputeResolvedBy`, `mediatorId`), and the tamper tag (`orderHmac`). A
  * merchant told they are red-flagged is a merchant told to change behaviour
  * before an investigation finishes.
@@ -49,6 +49,9 @@ export const MERCHANT_ORDER_FIELDS = Object.freeze([
   'escrowStatus', 'escrowLocked', 'escrowAmount',
   'merchantCreditStatus', 'merchantCreditHoldUntil',
   'merchantCreditReversedAt', 'merchantCreditReversedReason',
+  // A buy this member rejected as unpaid: until when the player may dispute
+  // it, with the team's tokens still in escrow (2c+).
+  'disputeWindowUntil',
 
   // Payment evidence the merchant verifies against.
   'utr', 'utrNumber', 'proofScreenshot', 'proofExpiresAt',
@@ -65,13 +68,16 @@ export const MERCHANT_ORDER_FIELDS = Object.freeze([
   'disputeEscalated', 'disputeResolvedAt',
   'disputeDecision', 'disputeResolution', 'refundedAmount',
 
-  // The rail this order was BORN on — not the rail that is live now. The two
-  // rails ask different things of a merchant (a UTR against their own UPI, or
-  // cash at a machine and a CDM slip), and after an admin switches, both run
-  // side by side until the last pre-flip order settles. A panel that branched
-  // on the LIVE rail would put yesterday's workflow on today's order, so the
-  // order carries its own answer.
+  // The rail this order was BORN on, fixed with it: its size named it (Step
+  // 2d). The rails ask different things of a member (a cash buy waits for the
+  // payment link they scan at the machine), so the panel branches on the
+  // order's own answer, never on anything live.
   'paymentMode',
+
+  // On a CASH buy, the ATM link this member scanned and when, so their screen
+  // can show what the player was given and let them scan again (Step 2d). The
+  // member's own scan of a public machine; nothing about the player.
+  'cashLink', 'cashLinkAt',
 
   // On a USDT order, the chain the PLAYER chose. The merchant has to watch the
   // right network: a payment on BNB Smart Chain never appears in a Tron
@@ -107,10 +113,9 @@ export const MERCHANT_FORBIDDEN_ORDER_FIELDS = Object.freeze([
   'userPhone', 'upiId', 'userUsdtAddress', 'merchantSnapshot',
   'depositAllocation', 'reserveAllocation', 'depositPolicySnapshot',
   'redFlagged', 'redFlagReason', 'redFlaggedBy', 'redFlaggedAt',
-  'requiresReview', 'reviewedBy', 'reviewedAt', 'reviewAction', 'reviewNotes',
   'assignedBy', 'approvedBy', 'rejectedBy', 'disputeResolvedBy',
   'disputeEscalationNotes', 'mediatorId', 'orderHmac',
-  'warningIssued', 'requiresVideoKYC', 'utrWarningData', 'platformFeeRate',
+  'warningIssued', 'utrWarningData', 'platformFeeRate',
 ]);
 
 /** The four permitted bank fields, and nothing that arrived alongside them. */

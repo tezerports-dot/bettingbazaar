@@ -9,12 +9,12 @@
  * reason, and BIGINT columns come back as NUMBERS rather than the strings the
  * driver actually returns. None of those can be asserted against a fake.
  */
-import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll } from 'vitest';
 import { pgConfigured, pgQuery, applySchema, closePg } from '../client.js';
 import {
   createUser, getUser, getUserByMobile, getUserByReferralCode, getUsers,
   getUserCredentials, updateUser, bumpReferralClicks, claimJoiningNumber,
-  setKycStatus, setBlocked, listUsers, countUsers, withUserTransaction,
+  setBlocked, listUsers, countUsers,
   setRoles, softDeleteUser,
 } from '../repositories/users.js';
 
@@ -43,7 +43,7 @@ describePg('accounts (PostgreSQL)', () => {
       expect(created).toBe(true);
       expect(user).toMatchObject({
         userId: 'u-1', username: 'alice', mobile: '9990000001',
-        status: 'ACTIVE', kycStatus: 'PENDING_SUBMISSION', isAdmin: false,
+        status: 'ACTIVE', isAdmin: false,
       });
       expect(await getUser('u-1')).toMatchObject({ mobile: '9990000001' });
     });
@@ -196,6 +196,47 @@ describePg('accounts (PostgreSQL)', () => {
           WHERE joining_number IS NOT NULL GROUP BY 1 HAVING count(*) > 1`);
       expect(rows).toEqual([]);
     });
+
+    // KYC removed 2026-10-02: completing verification is now what counts a
+    // referral-programme member, and it must count each account exactly once.
+    describe('the referral programme member count', () => {
+      const members = async () => Number((await pgQuery(
+        `SELECT verified_members FROM referral_programmes WHERE programme_key = 'main'`)).rows[0].verified_members);
+      let saved;
+      beforeEach(async () => {
+        saved = (await pgQuery(`SELECT member_cap, verified_members FROM referral_programmes WHERE programme_key = 'main'`)).rows[0];
+        await pgQuery(`INSERT INTO referral_programmes (programme_key) VALUES ('main') ON CONFLICT DO NOTHING`);
+        await pgQuery(`UPDATE referral_programmes SET member_cap = 0, verified_members = 0 WHERE programme_key = 'main'`);
+      });
+      afterEach(async () => {
+        if (saved) {
+          await pgQuery(`UPDATE referral_programmes SET member_cap = $1, verified_members = $2 WHERE programme_key = 'main'`,
+            [saved.member_cap, saved.verified_members]);
+        }
+      });
+
+      it('counts a member when their number is claimed, and not again on a repeat', async () => {
+        await createUser(mk());
+        await claimJoiningNumber('u-1');
+        await claimJoiningNumber('u-1');
+        expect(await members()).toBe(1);
+      });
+
+      it('counts once when the same completion arrives 10 times at once', async () => {
+        await createUser(mk());
+        await Promise.all(Array.from({ length: 10 }, () => claimJoiningNumber('u-1')));
+        expect(await members()).toBe(1);
+      });
+
+      it('stops counting at the cap, and still hands out the number', async () => {
+        await pgQuery(`UPDATE referral_programmes SET member_cap = 1 WHERE programme_key = 'main'`);
+        await createUser(mk());
+        await createUser(mk({ userId: 'u-2', mobile: '9990000002' }));
+        expect(await claimJoiningNumber('u-1')).toBeGreaterThan(0);
+        expect(await claimJoiningNumber('u-2')).toBeGreaterThan(0);
+        expect(await members()).toBe(1);
+      });
+    });
   });
 
   describe('the patch vocabulary', () => {
@@ -249,37 +290,6 @@ describePg('accounts (PostgreSQL)', () => {
       await expect(pgQuery(
         `UPDATE users SET is_blocked = true WHERE user_id = $1`, ['u-1'],
       )).rejects.toThrow(/users_blocked_has_reason/);
-    });
-  });
-
-  describe('the denormalised KYC status', () => {
-    it('is written in the SAME transaction as the decision it copies', async () => {
-      await createUser(mk());
-      await withUserTransaction(async (client) => {
-        await client.query(
-          `INSERT INTO user_kyc (user_id, kyc_status) VALUES ($1, $2)
-           ON CONFLICT (user_id) DO UPDATE SET kyc_status = EXCLUDED.kyc_status`,
-          ['u-1', 'APPROVED'],
-        );
-        await setKycStatus(client, 'u-1', 'APPROVED');
-      });
-      expect((await getUser('u-1')).kycStatus).toBe('APPROVED');
-    });
-
-    it('rolls back with the decision, so the two cannot diverge', async () => {
-      await createUser(mk());
-      await expect(withUserTransaction(async (client) => {
-        await setKycStatus(client, 'u-1', 'APPROVED');
-        throw new Error('the decision failed after the copy was written');
-      })).rejects.toThrow(/decision failed/);
-      // The copy authorisation reads must not survive a decision that did not.
-      expect((await getUser('u-1')).kycStatus).toBe('PENDING_SUBMISSION');
-    });
-
-    it('REFUSES to be written outside a transaction', async () => {
-      await createUser(mk());
-      await expect(setKycStatus(null, 'u-1', 'APPROVED'))
-        .rejects.toThrow(/inside the transaction/);
     });
   });
 
@@ -389,7 +399,10 @@ describePg('accounts (PostgreSQL)', () => {
     });
 
     it('derives the authorisation flags from the roles it is given', async () => {
-      const admin = await setRoles('u-4', ['admin', 'queue_manager']);
+      // A STAFF row: `users_staff_flags_need_staff` refuses these flags on any
+      // other type, and the listing fixtures are players (§32 S16).
+      await createUser(mk({ userId: 'u-staff', username: 'staff4', mobile: '9770000099', accountType: 'STAFF' }));
+      const admin = await setRoles('u-staff', ['admin', 'queue_manager']);
       expect(admin.roles.sort()).toEqual(['admin', 'queue_manager']);
       expect(admin.isAdmin).toBe(true);
       expect(admin.isQueueManager).toBe(true);
@@ -398,80 +411,16 @@ describePg('accounts (PostgreSQL)', () => {
       // Removing the role removes the flag in the same statement. The four
       // separate assignments this replaced could leave `roles` saying one thing
       // and `is_admin` — which every authorisation check reads — saying another.
-      const stripped = await setRoles('u-4', []);
+      const stripped = await setRoles('u-staff', []);
       expect(stripped.roles).toEqual([]);
       expect(stripped.isAdmin).toBe(false);
       expect(stripped.isQueueManager).toBe(false);
     });
-  });
-});
 
-// ─────────────────────────────────────────────────────────────────────────────
-// The KYC reapply cap. It is the only thing stopping "submit a number, be told
-// whether it is registered" from being a repeatable enumeration oracle.
-// ─────────────────────────────────────────────────────────────────────────────
-import { claimKycSubmission, releaseKycSubmission, newUserId } from '../repositories/users.js';
-
-describePg('the KYC submission cap', () => {
-  beforeAll(async () => { await applySchema(); });
-  afterAll(async () => { await closePg(); });
-  beforeEach(async () => {
-    await pgQuery('TRUNCATE users RESTART IDENTITY CASCADE');
-    await createUser(mk());
-  });
-
-  it('hands out attempts up to the cap and then refuses', async () => {
-    expect(await claimKycSubmission('u-1', 3)).toBe(1);
-    expect(await claimKycSubmission('u-1', 3)).toBe(2);
-    expect(await claimKycSubmission('u-1', 3)).toBe(3);
-    expect(await claimKycSubmission('u-1', 3)).toBeNull();
-  });
-
-  it('20 concurrent reapplies consume exactly the cap, never more', async () => {
-    // The hole this closes: the previous implementation READ the count near the
-    // top of the flow and incremented at the very bottom, with the whole
-    // submission in between. Requests arriving together all read the same count
-    // and all passed, so the cap was exceeded by the number in flight — which
-    // is exactly the oracle it exists to prevent.
-    const results = await Promise.all(
-      Array.from({ length: 20 }, () => claimKycSubmission('u-1', 3)));
-    expect(results.filter((r) => r !== null)).toHaveLength(3);
-
-    const { rows } = await pgQuery(
-      'SELECT kyc_submission_count AS n FROM users WHERE user_id = $1', ['u-1']);
-    expect(Number(rows[0].n)).toBe(3);
-  });
-
-  it('gives an attempt back when the submission never entered the queue', async () => {
-    await claimKycSubmission('u-1', 3);
-    expect(await releaseKycSubmission('u-1')).toBe(0);
-    // …and the freed attempt is genuinely usable again.
-    expect(await claimKycSubmission('u-1', 3)).toBe(1);
-  });
-
-  it('a release that runs twice does not hand out a free attempt', async () => {
-    await claimKycSubmission('u-1', 3);
-    await releaseKycSubmission('u-1');
-    await releaseKycSubmission('u-1');   // a retry, or a crash between paths
-    const { rows } = await pgQuery(
-      'SELECT kyc_submission_count AS n FROM users WHERE user_id = $1', ['u-1']);
-    expect(Number(rows[0].n)).toBe(0);   // floored, never negative
-  });
-
-  it('the count SURVIVES the verification row being deleted', async () => {
-    // This is why the counter lives on `users` and not on `kyc_verifications`:
-    // releaseFailedSubmission DELETES that row to free the unique Aadhaar hash,
-    // and a counter living there would be deleted with it — resetting the cap
-    // and making it unlimited by construction.
-    await claimKycSubmission('u-1', 3);
-    await claimKycSubmission('u-1', 3);
-    await pgQuery(
-      `INSERT INTO kyc_verifications (user_id, aadhaar_hash, aadhaar_encrypted, aadhaar_last4, phone, status)
-       VALUES ($1,'h','c','1234','999','FAILED')`, ['u-1']);
-    await pgQuery(`DELETE FROM kyc_verifications WHERE user_id = $1`, ['u-1']);
-
-    expect(await claimKycSubmission('u-1', 3)).toBe(3);
-    expect(await claimKycSubmission('u-1', 3)).toBeNull();
+    it('refuses an authorisation flag on a PLAYER row, and still lets it be cleared', async () => {
+      await expect(setRoles('u-4', ['admin'])).rejects.toThrow(/users_staff_flags_need_staff/);
+      expect((await setRoles('u-4', [])).isAdmin).toBe(false);
+    });
   });
 });
 

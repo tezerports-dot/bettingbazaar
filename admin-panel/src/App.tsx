@@ -10,19 +10,16 @@ import { Dashboard } from './Pages/Dashboard';
 import { UsersList } from './Pages/Users/UsersList';
 import { FlaggedPlayers } from './Pages/Users/FlaggedPlayers';
 import { PhantomAgents } from './Pages/Users/PhantomAgents';
+import { TeamsManager } from './Pages/Teams/TeamsManager';
 import { MerchantsList } from './Pages/Merchants/MerchantsList';
-import { MerchantTokenOrders } from './Pages/Merchants/MerchantTokenOrders';
 import { LiveCycles } from './Pages/Cycles/LiveCycles';
 import { CycleHistory } from './Pages/Cycles/CycleHistory';
 import { DepositPolicy } from './Pages/BusinessPolicy/DepositPolicy';
-import { SettlementRail } from './Pages/BusinessPolicy/SettlementRail';
 import { TransactionsList } from './Pages/Finance/TransactionsList';
 import { ProfitLoss } from './Pages/Finance/ProfitLoss';
 import { TokenFlow } from './Pages/Finance/TokenFlow';
 import { SupportAssistant } from './Pages/Support/SupportAssistant';
 import { QueueDashboard } from './Pages/QueueManager/QueueDashboard';
-import { KYCQueue } from './Pages/KYC/KYCQueue';
-import { KycBulk } from './Pages/KYC/KycBulk';
 import { TelegramConfig } from './Pages/Telegram/TelegramConfig';
 import { ReferralProgramme } from './Pages/Referrals/ReferralProgramme';
 import { SubAdminsList } from './Pages/SubAdmins/SubAdminsList';
@@ -35,13 +32,12 @@ import { SystemSettings } from './Pages/Settings/SystemSettings';
 import { AuditLogs } from './Pages/Settings/AuditLogs';
 import ErrorLogs from './Pages/Settings/ErrorLogs';
 import { DisputeManager } from './Pages/Disputes/DisputeManager';
-import { CdmReceiptQueue } from './Pages/Disputes/CdmReceiptQueue';
 import { StalledWithdrawals } from './Pages/Disputes/StalledWithdrawals';
+import { UtrMonitor } from './Pages/Utr/UtrMonitor';
 import { AppAssetsPage } from './Pages/AppAssets/AppAssetsPage';
 import { AndroidAppPage } from './Pages/AndroidApp/AndroidAppPage';
 import { BlockedIpsPage } from './Pages/Security/BlockedIpsPage';
 // ── NEW FEATURE PAGES ──────────────────────────────────────────────────────
-import { PaymentControlCenter } from './Pages/Payment/PaymentControlCenter';
 import { AnnouncementsPage } from './Pages/Promotions/AnnouncementsPage';
 import { BalanceAdjustment } from './Pages/Users/BalanceAdjustment';
 import { GameProviders }           from './Pages/GameProviders/GameProviders';
@@ -247,28 +243,13 @@ const App: React.FC = () => {
           </PermRoute>
         } />
 
-        {/* KYC — canVerifyKYC */}
-        <Route path="/kyc" element={
-          <PermRoute permission="canVerifyKYC">
-            <Layout><KYCQueue /></Layout>
-          </PermRoute>
-        } />
-
-        {/* Identity and payout control plane. Each screen is its own area, so an
-            admin decides who works in it (owner, 2026-10-01). These release
-            national identity numbers, move tokens and pay real money; every
-            staff account owes a second factor (twoFactorPolicy), sub-admins
-            included, and the routes refuse by the same keys. */}
-        <Route path="/merchant-token-orders" element={
-          <PermRoute permission="canManageMerchantTokenOrders"><Layout><MerchantTokenOrders /></Layout></PermRoute>
-        } />
         {/* Reading back who can place cosmetic bets. The grant is made from the
             Users list; this is the roster and the way to take it away. */}
+        <Route path="/teams" element={
+          <PermRoute permission="canManageTeams"><Layout><TeamsManager /></Layout></PermRoute>
+        } />
         <Route path="/users/phantom-agents" element={
           <PermRoute permission="canManagePhantomAgents"><Layout><PhantomAgents /></Layout></PermRoute>
-        } />
-        <Route path="/kyc/bulk" element={
-          <PermRoute permission="canBulkVerifyKYC"><Layout><KycBulk /></Layout></PermRoute>
         } />
         <Route path="/telegram" element={
           <PermRoute permission="canManageTelegram"><Layout><TelegramConfig /></Layout></PermRoute>
@@ -371,11 +352,6 @@ const App: React.FC = () => {
         <Route path="/business-policy/deposit" element={
           <PermRoute permission="canManageBusinessPolicy"><Layout><DepositPolicy /></Layout></PermRoute>
         } />
-        {/* The settlement rail: one switch moves the whole platform between the
-            UPI rail and the ATM cash rail. Orders in flight keep their own. */}
-        <Route path="/business-policy/settlement-rail" element={
-          <PermRoute permission="canManageBusinessPolicy"><Layout><SettlementRail /></Layout></PermRoute>
-        } />
         <Route path="/sub-admins" element={
           <AdminOnly><Layout><SubAdminsList /></Layout></AdminOnly>
         } />
@@ -394,14 +370,6 @@ const App: React.FC = () => {
             <Layout><DisputeManager /></Layout>
           </PermRoute>
         } />
-        {/* Gated on the SAME permission as the dispute queue, because it is the
-            same job: the slip is the evidence a cash-payout dispute is decided
-            from, and reading one is audited either way. */}
-        <Route path="/disputes/cdm-receipts" element={
-          <PermRoute permission="canResolveDisputes">
-            <Layout><CdmReceiptQueue /></Layout>
-          </PermRoute>
-        } />
         {/* Same gate again: a stalled withdrawal is a player's tokens locked
             with no deadline, which is what the disputes desk answers for. */}
         <Route path="/disputes/stalled-withdrawals" element={
@@ -409,13 +377,18 @@ const App: React.FC = () => {
             <Layout><StalledWithdrawals /></Layout>
           </PermRoute>
         } />
+        {/* The payment-reference registry (§27). Its own area: a sub-admin can be
+            given references without the disputes desk, and the reverse. */}
+        <Route path="/payment-references" element={
+          <PermRoute permission="canManageUtr">
+            <Layout><UtrMonitor /></Layout>
+          </PermRoute>
+        } />
         {/* UTR REMOVED: route /utr-monitor stripped per product decision */}
 
-        {/* Account recovery is no longer an admin queue. It runs unattended on a
-            second Telegram bot that requires BOTH the registered phone (proved
-            by a contact share) and the Aadhaar on file — see
-            backend/domains/telegram/telegramRecovery.service.js. Every grant
-            raises an alert. */}
+        {/* Account recovery is not an admin queue: a forgotten password is
+            reset through the panel's Telegram bot, which issues a link to a
+            number Telegram has verified (passwordReset.service.js). */}
 
         {/* ── WINNERS MANAGEMENT */}
         <Route path="/winners-manager" element={
@@ -437,11 +410,6 @@ const App: React.FC = () => {
         {/* ── GAME REGISTRY (catalogue + categories) — admin only */}
         <Route path="/games" element={
           <PermRoute permission="canManageGames"><Layout><GamesManager /></Layout></PermRoute>
-        } />
-
-        {}
-        <Route path="/payment-control" element={
-          <PermRoute permission="canManagePaymentSystem"><Layout><PaymentControlCenter /></Layout></PermRoute>
         } />
 
         {/* ── PROMOTIONS — canManageContent sub-admins can manage these ── */}

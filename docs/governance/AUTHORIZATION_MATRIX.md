@@ -17,11 +17,18 @@ bodies. Re-run the scan commands in the appendix after adding any route.
 | Tier | Middleware | Ownership rule | Where |
 |---|---|---|---|
 | **Public** | none (some rate-limited) | n/a — read-only only | see list below |
-| **User** | `authenticate` | `resource.userId === req.user.userId` — the player's order routes admit the player and the assigned merchant ONLY (`orderAccessGuard`); a full admin only on the deposit confirm (`orderAccessGuardOrAdmin`) | user/payment/bet/wallet routes |
+| **User** | `authenticatePlayer` — a PLAYER session only; a staff or merchant session is refused `403 WRONG_PANEL`, naming the panel it belongs to (2026-10-01) | `resource.userId === req.user.userId` — the order routes admit the order's OWNER only (`orderAccessGuard`). The guard's "assigned merchant" and "full admin" branches went with the second deposit-confirm route, which nothing called | user/payment/bet/wallet/support routes, game launch, profile picture, `/bonuses/my`, `/v1/auth/verification`, `/v1/auth/kyc/resubmit`; and the socket `join_user_room` (own room, PLAYER only) |
 | **Merchant** | `merchantAuth` | `order.merchantId === req.merchantId` | `domains/merchant/*` |
 | **Queue manager** | `authenticate` + `queueManagerOrPermission('canManageMerchants')` | the payment queue, nothing else | queue admin routes |
 | **Sub-admin** | `authenticate` + `hasPermission(<area>)` | exactly the areas an admin granted — one key per area, `backend/domains/identity/staffPermissions.js` | every staff route |
-| **Admin** | `authenticate` + `hasPermission(<area>)` (passes all) or `isAdmin` | full; `isAdmin` alone guards the 8 routes in `ADMIN_ONLY_AREAS` (granting authority) | every staff route |
+| **Admin** | `authenticate` + `hasPermission(<area>)` (passes all) or `isAdmin` | full; `isAdmin` alone guards the 7 routes in `ADMIN_ONLY_AREAS` (granting authority) | every staff route |
+
+`authenticate` — the shared door the staff tiers use — admits a PLAYER or a
+STAFF session and refuses a MERCHANT's (merchants have `merchantAuth`). It no
+longer copies `req.merchantId` out of a merchant's token. Staff authority
+lives on STAFF rows only (`users_staff_flags_need_staff`), and phantom access
+on PLAYER rows only (`users_phantom_access_needs_player`), so a flag read off
+a session's row is always read off the right population.
 
 **Since 2026-10-01 this table is enforced, not described.** `npm run
 check:staff-permissions` reads the live route stacks and fails the build on a
@@ -77,12 +84,13 @@ All GET unless noted; all read-only:
   link, which are public the moment the bot exists. Carries no secret
 - `GET /api/cycles/active`, `/cycles/:id`, `/v1/game/cycle/:type/:startTime`,
   `/v1/game/cycles/history` — public game state
-- `GET /api/v1/system/config`, `/v1/system/time` — public config/time
-- `GET /api/v1/content/{promo,faq,support-links,ai-analysis}`, `/v1/branding`
-  — public content/branding
-- `GET /api/v1/tokens/rate`, `/v1/token/rates`, `/api/payment/rates`,
-  `/api/payment-config/config` — public rates (constant 1/1 since the 1:1
-  flattening)
+- `GET /api/v1/system/config` — public config
+- `GET /api/v1/content/{promo,faq,support-links}` — public content (branding
+  reaches panels by socket and SSE, §13)
+- `GET /api/payment/rates`, `/api/payment-config/config` — public rates
+  (constant 1/1 since the 1:1 flattening). `/v1/tokens/rate`, `/v1/token/rates`,
+  `/v1/branding`, `/v1/system/time` and `/v1/content/ai-analysis` were removed
+  2026-10-01 — nothing called them.
 - `GET /api/v1/winners` — public winners feed
 
 None expose another user's private data or accept a state mutation.

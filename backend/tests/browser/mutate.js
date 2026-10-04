@@ -4,7 +4,7 @@
  *
  * ── Why these were not in the drive pass ───────────────────────────────────
  * `drive.js` presses everything that cannot do harm and DEFERS the rest with a
- * reason: pressing "Approve" on a live KYC queue is not a test, it is an
+ * reason: pressing "Approve" on a live payment queue is not a test, it is an
  * incident, and pressing "Save" on System Settings publishes whatever the form
  * happened to hold to the whole platform. Eighty-five controls came back
  * DEFERRED, and a deferral is an admission, not a result — this is the pass
@@ -36,7 +36,7 @@
  * of things nobody pressed is visible.
  *
  *   node backend/tests/browser/mutate.js            every case
- *   node backend/tests/browser/mutate.js kyc        cases whose id matches
+ *   node backend/tests/browser/mutate.js games      cases whose id matches
  *
  * Wants its OWN database (`bb_drive`) and a backend on it — these cases block
  * merchants, delete games and rewrite config documents, which is not something
@@ -48,10 +48,14 @@ import {
   API, EXECUTABLE, PANELS, children, stopAll, waitFor, startVite, settle, clickThrough,
   configureTelegram,
 } from './stack.js';
-import { seedPlayer, seedMerchant, seedAdmin } from '../e2e/seed.js';
+import { seedPlayer, seedMerchant, seedTeam, seedAdmin, seedStaff } from '../e2e/seed.js';
 import { playerToken, adminToken, merchantToken } from '../e2e/harness.js';
 import { db } from '#db';
 import { pgQuery } from '#db/client.js';
+import { setOnline } from '#db/repositories/merchants.js';
+// The order state machine, so the harness ends what it started through the
+// same guarded transition the platform uses rather than a raw UPDATE.
+import { cancelOrder as cancelOrderState } from '../../domains/payment/orderLifecycle.service.js';
 // Every order the platform writes carries its tamper tag, written with the row
 // (`createOrderRecord`). A fixture inserted without one is a row production
 // cannot produce (§32 S16) — and the player's order routes refuse it.
@@ -263,12 +267,42 @@ const words = (page) => page.locator('body').innerText()
 // ── Server-side readers, each naming the ONE owner of what it reads ─────────
 
 // ── Scalars, like every other reader here ─────────────────────────────────
-// This one returned the ROW while `merchantStatus`, `kycStatus` and
-// `orderStatus` beside it return a string. A case that treated it like its
+// This one returned the ROW while `merchantStatus` and
+// `orderState` beside it return a string. A case that treated it like its
 // neighbours compared an OBJECT to 'ACTIVE' — true for every object — and
 // reported "pressed ONE Block on row 5 and 5 accounts changed". The database
 // said one. A finding that size cost a database read to disprove, and the
 // cause was one helper that did not match the idiom next to it (§5).
+/**
+ * Two claimed references, each on a real PAID deposit with its tamper tag, and
+ * a REFUSED reuse of the first one from a second order — the signal the
+ * Payment References screen exists to show. Claimed through the one registry
+ * (`claimUtr`), so the rows are ones production can produce (§32 S16).
+ */
+async function seedReferences() {
+  const player = await seedPlayer({ balancePaise: 0 });
+  const merchant = await seedMerchant({ currency: 'INR' });
+  const mk = async () => {
+    const orderId = rid('UTRO');
+    await pgQuery(
+      `INSERT INTO order_states
+         (order_id, user_id, merchant_id, order_type, state, token_amount_paise, fiat_amount_paise, order_hmac)
+       VALUES ($1, $2, $3, 'DEPOSIT', 'PAID', 50000, 50000, $4)`,
+      [orderId, player.userId, merchant.merchantId, deriveOrderHmac(orderId)],
+    );
+    return orderId;
+  };
+  const digits = () => String(Math.floor(Math.random() * 1e12)).padStart(12, '7');
+  const ref = digits(); const bystanderRef = digits();
+  await db.utr.claimUtr({ utr: ref, orderId: await mk(), userId: player.userId, amountRupees: 500 });
+  await db.utr.claimUtr({ utr: bystanderRef, orderId: await mk(), userId: player.userId, amountRupees: 500 });
+  const reuse = await db.utr.claimUtr({ utr: ref, orderId: await mk(), userId: player.userId, amountRupees: 500 });
+  if (reuse.ok !== false) {
+    throw new Error(`seedReferences: the reuse of ${ref} was not refused (${JSON.stringify(reuse)})`);
+  }
+  return { ref, bystanderRef };
+}
+
 const userStatus = async (userId) => {
   const { rows } = await pgQuery('SELECT status FROM users WHERE user_id = $1', [userId]);
   return rows[0]?.status ?? null;
@@ -285,18 +319,9 @@ const gameExists = async (slug) => {
   const { rows } = await pgQuery('SELECT 1 FROM games WHERE slug = $1', [String(slug)]);
   return rows.length > 0;
 };
-const kycStatus = async (userId) => {
-  const { rows } = await pgQuery('SELECT kyc_status FROM users WHERE user_id = $1', [userId]);
-  return rows[0]?.kyc_status ?? null;
-};
 const isSubAdmin = async (userId) => {
   const { rows } = await pgQuery('SELECT is_sub_admin FROM users WHERE user_id = $1', [userId]);
   return rows[0]?.is_sub_admin === true;
-};
-const orderStatus = async (orderId) => {
-  const { rows } = await pgQuery(
-    'SELECT status FROM merchant_admin_token_orders WHERE order_id = $1', [String(orderId)]);
-  return rows[0]?.status ?? null;
 };
 const orderState = async (orderId) => {
   const { rows } = await pgQuery('SELECT state FROM order_states WHERE order_id = $1', [String(orderId)]);
@@ -329,13 +354,6 @@ const telegramGeneration = async () => {
     `SELECT generation, channel_username FROM telegram_configs
       ORDER BY generation DESC LIMIT 1`).catch(() => ({ rows: [] }));
   return rows[0] ?? null;
-};
-/** The gateway mode — P2P vs a third-party gateway (§2), not the settlement rail. */
-const gatewayMode = async () => {
-  const { rows } = await pgQuery(
-    `SELECT active_mode FROM payment_gateway_configs ORDER BY config_key LIMIT 1`)
-    .catch(() => ({ rows: [] }));
-  return rows[0]?.active_mode ?? null;
 };
 const cdnImageExists = async (id) => {
   const { rows } = await pgQuery('SELECT 1 FROM cdn_images WHERE image_id = $1', [String(id)]);
@@ -389,7 +407,7 @@ function configSave({ id, screen, selector, button, scope, key, value, label, al
         const typed = await fill(page, selector, value);
         if (!typed.ok) return ['NOT DRIVEN', typed.why];
         // Some screens will not ARM their Save until a second field is filled —
-        // the settlement rail wants the justification recorded against the
+        // a versioned policy wants the justification recorded against the
         // version, and the button stays disabled without it. A case that only
         // typed the value reported "Save is disabled with a valid value", which
         // blames the screen for a field it was never given.
@@ -471,6 +489,101 @@ const CASES = [
     },
   },
 
+  // ── Closing an account (the Delete Account control, 2026-10-01) ───────────
+  {
+    id: 'admin/users/delete',
+    panel: 'admin-panel',
+    what: 'Close a player account from the users list',
+    async run(page, cfg, base) {
+      const target = await seedPlayer({ balancePaise: 0 });
+      const bystander = await seedPlayer({ balancePaise: 0 });
+
+      await go(page, cfg, base, '/users');
+      if (!await search(page, target.userId)) return ['NOT DRIVEN', 'no search box on /users'];
+      const row = await rowFor(page, target.userId);
+      if (!row) return ['NOT DRIVEN', `seeded player ${target.userId} never appeared in the table`];
+
+      const hit = await pressInRow(row, 'Delete Account');
+      if (!hit.ok) return ['NOT DRIVEN', hit.why];
+      await settle(page, 4000);
+      const answered = await confirmWith(page, 'Delete');
+      if (answered === 'stuck') return ['FAILED', 'the Delete confirmation could not be pressed'];
+      if (answered === 'none') return ['FAILED', 'Delete Account raised no confirmation'];
+
+      const after = await userStatus(target.userId);
+      const neighbour = await userStatus(bystander.userId);
+      if (after !== 'DELETED') return ['FAILED', `status is ${after}, not DELETED`];
+      if (neighbour === 'DELETED') return ['FAILED', 'the BYSTANDER was deleted too'];
+      // Closed means closed: the deleted player's own session is refused.
+      const me = await fetch(`${API}/api/v1/auth/me`, { headers: { Authorization: `Bearer ${playerToken(target)}` } });
+      if (me.status !== 403) return ['FAILED', `deleted, but their session still answers ${me.status} on /me`];
+      if (!/account closed/i.test(await words(page))) return ['FAILED', 'server closed it; the screen never said so'];
+      return ['DROVE', `${target.userId} DELETED and its session refused (403); bystander still ${neighbour}`];
+    },
+  },
+
+  // ── Payment references (the canManageUtr screen, 2026-10-01) ──────────────
+  {
+    id: 'admin/utr/flag',
+    panel: 'admin-panel',
+    what: 'Flag a reused payment reference as fraud',
+    async run(page, cfg, base) {
+      const { ref, bystanderRef } = await seedReferences();
+
+      await go(page, cfg, base, '/payment-references');
+      const typed = await fill(page, '#utr-lookup', ref.toLowerCase());
+      if (!typed.ok) return ['NOT DRIVEN', typed.why];
+      const look = page.getByRole('button', { name: /^\s*Look up\s*$/i }).first();
+      if (await look.count() === 0) return ['NOT DRIVEN', 'no Look up button'];
+      await look.click({ timeout: 8000 });
+      await settle(page, 6000);
+
+      const reason = await fill(page, '#utr-flag-reason', 'mutating drive: same slip quoted twice');
+      if (!reason.ok) return ['FAILED', `looked ${ref} up; no flag form appeared — ${reason.why}`];
+      const flag = page.getByRole('button', { name: /Flag as fraud/i }).first();
+      if (await flag.isDisabled()) return ['FAILED', 'Flag as fraud stayed disabled with a reason typed'];
+      await flag.click({ timeout: 8000 });
+      await settle(page, 6000);
+
+      const after = await db.utr.getUtr(ref);
+      const neighbour = await db.utr.getUtr(bystanderRef);
+      if (after?.status !== 'FRAUD') return ['FAILED', `status is ${after?.status}, not FRAUD`];
+      if (after.flagReason !== 'mutating drive: same slip quoted twice') return ['FAILED', `reason stored as '${after.flagReason}'`];
+      if (neighbour?.status !== 'ACTIVE') return ['FAILED', `the BYSTANDER reference is ${neighbour?.status}`];
+      if (await page.getByRole('button', { name: /Clear the flag/i }).count() === 0) {
+        return ['FAILED', 'server flagged it; the screen still offers Flag'];
+      }
+      return ['DROVE', `${ref} FRAUD with its reason, flagged by ${after.flaggedBy}; bystander ACTIVE`];
+    },
+  },
+  {
+    id: 'admin/utr/clear',
+    panel: 'admin-panel',
+    what: 'Clear a fraud flag on a payment reference',
+    async run(page, cfg, base) {
+      const { ref, bystanderRef } = await seedReferences();
+      await db.utr.flagFraud(ref, { actor: 'mutating-drive', reason: 'seeded flag' });
+      await db.utr.flagFraud(bystanderRef, { actor: 'mutating-drive', reason: 'seeded bystander flag' });
+
+      await go(page, cfg, base, '/payment-references');
+      const typed = await fill(page, '#utr-lookup', ref);
+      if (!typed.ok) return ['NOT DRIVEN', typed.why];
+      await page.getByRole('button', { name: /^\s*Look up\s*$/i }).first().click({ timeout: 8000 });
+      await settle(page, 6000);
+      const clear = page.getByRole('button', { name: /Clear the flag/i }).first();
+      if (await clear.count() === 0) return ['FAILED', `looked up a FRAUD reference; no Clear the flag button`];
+      await clear.click({ timeout: 8000 });
+      await settle(page, 6000);
+
+      const after = await db.utr.getUtr(ref);
+      const neighbour = await db.utr.getUtr(bystanderRef);
+      if (after?.status !== 'ACTIVE') return ['FAILED', `status is ${after?.status}, not ACTIVE`];
+      if (neighbour?.status !== 'FRAUD') return ['FAILED', `the BYSTANDER flag was lifted too (${neighbour?.status})`];
+      if (!/flag cleared/i.test(await words(page))) return ['FAILED', 'server cleared it; the screen never said so'];
+      return ['DROVE', `${ref} back to ACTIVE; bystander still FRAUD`];
+    },
+  },
+
   // ── Player money, straight from the users list ────────────────────────────
   {
     id: 'admin/users/deduct',
@@ -515,8 +628,8 @@ const CASES = [
     panel: 'admin-panel',
     what: 'Suspend a merchant',
     async run(page, cfg, base) {
-      const target = await seedMerchant({ currency: 'INR', tokensPaise: 1000000, cashDenominationPaise: 500000 });
-      const bystander = await seedMerchant({ currency: 'INR', tokensPaise: 1000000, cashDenominationPaise: 500000 });
+      const target = await seedMerchant({ currency: 'INR' });
+      const bystander = await seedMerchant({ currency: 'INR' });
 
       await go(page, cfg, base, '/merchants');
       await search(page, target.name);
@@ -640,67 +753,6 @@ const CASES = [
     },
   },
 
-  // ── Access: approving KYC is what lets a player withdraw ─────────────────
-  {
-    id: 'admin/kyc/approve',
-    panel: 'admin-panel',
-    what: 'Approve a KYC submission',
-    async run(page, cfg, base) {
-      // ── Seed the state the PLATFORM can actually produce (S16) ───────────
-      // Two different fields are in play: the queue LISTS by `users.kyc_status`,
-      // and the decision GATES on the `user_kyc` submission row. Setting only
-      // the first produces a player who appears in the queue and cannot be
-      // approved — the route answers 409 "Cannot approve KYC from unknown
-      // status", which is correct, and a case that staged that row would be
-      // reporting the platform for refusing a row a real submission never
-      // creates. So both, at the state a submitted player is really in.
-      const target = await seedPlayer({ kycStatus: 'PENDING_APPROVAL' });
-      const bystander = await seedPlayer({ kycStatus: 'PENDING_APPROVAL' });
-      for (const u of [target, bystander]) {
-        await pgQuery(
-          `INSERT INTO user_kyc (user_id, kyc_status, submitted_at)
-           VALUES ($1, 'PENDING_APPROVAL', now())
-           ON CONFLICT (user_id) DO UPDATE SET kyc_status = 'PENDING_APPROVAL'`,
-          [u.userId],
-        );
-      }
-
-      await go(page, cfg, base, '/kyc');
-      // ── Not a table ───────────────────────────────────────────────────────
-      // The queue renders cards, not `tbody tr`, so looking for a row found
-      // nothing and reported "0 rows on the queue" — which reads like the queue
-      // is empty (the exact false alarm §28 warns about) when in fact the query
-      // is right and the harness was looking for the wrong shape. The control
-      // names its own player, so address it directly.
-      const review = page
-        .getByRole('button', { name: new RegExp(`Review KYC for ${target.userId}`, 'i') }).first();
-      if (await review.count() === 0) {
-        const n = await page.getByRole('button', { name: /Review KYC for/i }).count();
-        return ['NOT DRIVEN',
-          `${target.userId} is not among the ${n} players the queue is offering for review`];
-      }
-      await review.click({ timeout: 8000 });
-      await settle(page, 6000);
-
-      // Both the panel's button and the confirmation's read "Approve KYC" — the
-      // dialog is given `confirmText="Approve KYC"`. An anchored /^Approve$/
-      // matched neither, so the dialog opened and was never answered and the
-      // case reported the platform as failing to approve. It had not been asked.
-      const approve = page.getByRole('button', { name: /^\s*Approve KYC\s*$/i }).last();
-      if (await approve.count() === 0) return ['NOT DRIVEN', 'the review panel offered no Approve KYC'];
-      await approve.click({ timeout: 8000 });
-      await settle(page, 4000);
-      const said = await confirmWith(page, 'Approve KYC');
-      if (said === 'stuck') return ['FAILED', 'the Approve KYC confirmation could not be pressed'];
-      if (said === 'none') return ['FAILED', 'the approve dialog offered no Approve KYC button'];
-
-      const after = await kycStatus(target.userId);
-      const neighbour = await kycStatus(bystander.userId);
-      if (after !== 'APPROVED') return ['FAILED', `KYC is ${after}, not APPROVED`];
-      if (neighbour === 'APPROVED') return ['FAILED', 'the BYSTANDER was approved too'];
-      return ['DROVE', `${target.userId} APPROVED, bystander still ${neighbour}`];
-    },
-  },
 
   // ── Taking staff access away ─────────────────────────────────────────────
   {
@@ -708,14 +760,11 @@ const CASES = [
     panel: 'admin-panel',
     what: 'Remove a sub-admin',
     async run(page, cfg, base) {
-      const target = await seedPlayer({});
-      const bystander = await seedPlayer({});
-      for (const u of [target, bystander]) {
-        await pgQuery(
-          `UPDATE users SET is_sub_admin = true, sub_admin_permissions = '{"canViewAnalytics":true}'::jsonb
-            WHERE user_id = $1`, [u.userId],
-        );
-      }
+      // STAFF accounts, made the way the Sub-admins screen makes them. This
+      // wrote `is_sub_admin` onto two PLAYER rows, which the database refuses
+      // since 2026-10-01 (`users_staff_flags_need_staff`, seedStaff).
+      const target = await seedStaff({ subAdmin: true, permissions: { canViewAnalytics: true } });
+      const bystander = await seedStaff({ subAdmin: true, permissions: { canViewAnalytics: true } });
 
       await go(page, cfg, base, '/sub-admins');
       const row = await rowFor(page, target.userId);
@@ -774,47 +823,6 @@ const CASES = [
   },
 
 
-  // ── Money: the platform hands a merchant inventory ───────────────────────
-  {
-    id: 'admin/merchant-token-orders/approve',
-    panel: 'admin-panel',
-    what: 'Approve a merchant token purchase',
-    async run(page, cfg, base) {
-      const target = await seedMerchant({ currency: 'USDT', tokensPaise: 0 });
-      const bystander = await seedMerchant({ currency: 'USDT', tokensPaise: 0 });
-      const mineId = rid('TO');
-      const theirsId = rid('TO');
-      for (const [orderId, m] of [[mineId, target], [theirsId, bystander]]) {
-        await pgQuery(
-          `INSERT INTO merchant_admin_token_orders
-             (order_id, merchant_id, token_paise, usdt_rate, usdt_amount, usdt_tx_hash, status)
-           VALUES ($1, $2, $3, 90, 100, $4, 'PENDING')`,
-          [orderId, m.merchantId, 900000, `0xDRIVE${orderId}`],
-        );
-      }
-
-      await go(page, cfg, base, '/merchant-token-orders');
-      const row = await rowFor(page, target.merchantId) ?? await rowFor(page, target.name);
-      if (!row) return ['NOT DRIVEN', `seeded PENDING order for ${target.name} never appeared`];
-      const hit = await pressInRow(row, 'Approve — transfers tokens from the platform\'s holding to the merchant');
-      if (!hit.ok) return ['NOT DRIVEN', hit.why];
-      await settle(page, 8000);
-
-      // BOTH sides, against the database: the merchant's wallet AND the
-      // platform's own holding. A credit that came from nowhere would pass an
-      // assertion that only looked at the wallet.
-      const got = await db.merchantWallets.getMerchantTokenBalance(target.merchantId);
-      const neighbour = await db.merchantWallets.getMerchantTokenBalance(bystander.merchantId);
-      const state = await orderStatus(mineId);
-      if (Number(got) !== 9000) return ['FAILED', `merchant holds ${got} tokens, expected 9000`];
-      if (Number(neighbour) !== 0) return ['FAILED', `the BYSTANDER merchant was credited ${neighbour}`];
-      if (state !== 'APPROVED') return ['FAILED', `the order is ${state}, not APPROVED`];
-      if (await orderStatus(theirsId) !== 'PENDING') return ['FAILED', "the BYSTANDER's order was decided too"];
-      return ['DROVE', `9,000 tokens transferred, order APPROVED, bystander still PENDING at 0`];
-    },
-  },
-
-
   // ── Money: an admin decides a disputed deposit ───────────────────────────
   {
     id: 'admin/payment-control/release',
@@ -823,7 +831,7 @@ const CASES = [
     async run(page, cfg, base) {
       const player = await seedPlayer({ balancePaise: 0 });
       const other = await seedPlayer({ balancePaise: 0 });
-      const merchant = await seedMerchant({ currency: 'INR', tokensPaise: 100000000 });
+      const merchant = await seedMerchant({ currency: 'INR' });
       const mine = rid('DISP');
       const theirs = rid('DISP');
       for (const [orderId, u] of [[mine, player], [theirs, other]]) {
@@ -958,46 +966,6 @@ const CASES = [
 
 
   // ── The other half of each money decision ────────────────────────────────
-  {
-    id: 'admin/merchant-token-orders/reject',
-    panel: 'admin-panel',
-    what: 'Reject a merchant token purchase',
-    async run(page, cfg, base) {
-      const target = await seedMerchant({ currency: 'USDT', tokensPaise: 0 });
-      const orderId = rid('TOR');
-      await pgQuery(
-        `INSERT INTO merchant_admin_token_orders
-           (order_id, merchant_id, token_paise, usdt_rate, usdt_amount, usdt_tx_hash, status)
-         VALUES ($1, $2, 900000, 90, 100, $3, 'PENDING')`,
-        [orderId, target.merchantId, `0xREJ${orderId}`],
-      );
-
-      await go(page, cfg, base, '/merchant-token-orders');
-      const row = await rowFor(page, target.merchantId) ?? await rowFor(page, target.name);
-      if (!row) return ['NOT DRIVEN', `seeded PENDING order for ${target.name} never appeared`];
-      const hit = await pressInRow(row, 'Reject — needs a reason');
-      if (!hit.ok) return ['NOT DRIVEN', hit.why];
-      await settle(page, 4000);
-
-      // A rejection with no reason is refused by the platform on purpose — the
-      // merchant is shown it — so the case supplies one rather than pressing a
-      // button that was always going to decline.
-      const typed = await fill(page, '#reason', 'mutating drive: no transaction at that hash');
-      if (!typed.ok) return ['NOT DRIVEN', `the reject modal never opened — ${typed.why}`];
-      // "Reject request" — the row's control says "Reject", the modal's says
-      // something else again. Three screens, three vocabularies for one verb.
-      const said = await confirmWith(page, 'Reject request');
-      if (said === 'stuck') return ['FAILED', 'the Reject request button could not be pressed'];
-      if (said === 'none') return ['FAILED', 'the reject modal offered no Reject request button'];
-
-      const state = await orderStatus(orderId);
-      const held = await db.merchantWallets.getMerchantTokenBalance(target.merchantId);
-      if (state !== 'REJECTED') return ['FAILED', `the order is ${state}, not REJECTED`];
-      // The decisive assertion: a rejection must move NO tokens.
-      if (Number(held) !== 0) return ['FAILED', `a REJECTED purchase credited ${held} tokens`];
-      return ['DROVE', `order REJECTED and not one token moved`];
-    },
-  },
 
   {
     id: 'admin/payment-control/refund',
@@ -1005,7 +973,7 @@ const CASES = [
     what: 'Refund a disputed deposit to the merchant',
     async run(page, cfg, base) {
       const player = await seedPlayer({ balancePaise: 0 });
-      const merchant = await seedMerchant({ currency: 'INR', tokensPaise: 100000000 });
+      const merchant = await seedMerchant({ currency: 'INR' });
       const mine = rid('DISP');
       await pgQuery(
         `INSERT INTO order_states
@@ -1046,139 +1014,6 @@ const CASES = [
     },
   },
 
-  {
-    id: 'admin/kyc/reject',
-    panel: 'admin-panel',
-    what: 'Reject a KYC submission',
-    async run(page, cfg, base) {
-      const target = await seedPlayer({ kycStatus: 'PENDING_APPROVAL' });
-      await pgQuery(
-        `INSERT INTO user_kyc (user_id, kyc_status, submitted_at)
-         VALUES ($1, 'PENDING_APPROVAL', now())
-         ON CONFLICT (user_id) DO UPDATE SET kyc_status = 'PENDING_APPROVAL'`, [target.userId],
-      );
-
-      await go(page, cfg, base, '/kyc');
-      const review = page
-        .getByRole('button', { name: new RegExp(`Review KYC for ${target.userId}`, 'i') }).first();
-      if (await review.count() === 0) return ['NOT DRIVEN', `${target.userId} is not on the queue`];
-      await review.click({ timeout: 8000 });
-      await settle(page, 6000);
-
-      const reject = page.getByRole('button', { name: /^\s*Reject\s*$/i }).last();
-      if (await reject.count() === 0) return ['NOT DRIVEN', 'the review panel offered no Reject'];
-      await reject.click({ timeout: 8000 });
-      await settle(page, 4000);
-
-      const typed = await fill(page, '#rejection-reason', 'mutating drive: unreadable submission');
-      if (!typed.ok) return ['NOT DRIVEN', `the reject modal never opened — ${typed.why}`];
-      const said = await confirmWith(page, 'Reject KYC');
-      if (said === 'stuck') return ['FAILED', 'the Reject KYC button could not be pressed'];
-      if (said === 'none') return ['FAILED', 'the reject modal offered no Reject KYC button'];
-
-      const after = await kycStatus(target.userId);
-      if (after !== 'REJECTED') return ['FAILED', `KYC is ${after}, not REJECTED`];
-      // The reason is what the player is shown — a rejection without one is the
-      // defect the transition module exists to refuse.
-      const { rows } = await pgQuery(
-        'SELECT rejection_reason FROM user_kyc WHERE user_id = $1', [target.userId]);
-      if (!String(rows[0]?.rejection_reason ?? '').trim()) {
-        return ['FAILED', 'REJECTED with no reason stored — the player is told nothing'];
-      }
-      return ['DROVE', `REJECTED, and the reason was stored for the player to read`];
-    },
-  },
-
-  // ── Config saves, each through the one declared factory ──────────────────
-  // ── Not a config document, so not the factory ────────────────────────────
-  // The rail's timers live in `payment_mode_policies` — one ACTIVE version,
-  // APPEND-ONLY and justified (§2) — not in `config_documents`. Putting it
-  // through configSave would have read the wrong owner and reported a save that
-  // worked as a save that vanished. A different owner is a different case.
-  //
-  // There is deliberately no restore: the table is append-only by design, so
-  // "putting it back" means writing a THIRD version, which is a worse record of
-  // what happened than leaving the two. This runs on its own database.
-  {
-    id: 'admin/settlement-rail/save-timers',
-    panel: 'admin-panel',
-    what: 'Save the settlement rail timers',
-    async run(page, cfg, base) {
-      const before = await db.paymentModePolicy.getActivePolicy();
-      const was = Number(before?.assignmentWaitSeconds ?? 0);
-      const target = was === 91 ? 92 : 91;
-
-      await go(page, cfg, base, '/business-policy/settlement-rail');
-      const typed = await fill(page, '#timer-assignmentWaitSeconds', String(target));
-      if (!typed.ok) return ['NOT DRIVEN', typed.why];
-      // The Save stays DISABLED until the justification is filled — it is
-      // recorded against the version, and the screen says so. A case that typed
-      // only the number reported "Save is disabled with a valid value", which
-      // blames the screen for a field it was never given.
-      const why = await fill(page, '#rail-justification', 'mutating drive: timer check');
-      if (!why.ok) return ['NOT DRIVEN', why.why];
-      await settle(page, 1500);
-
-      const save = page.getByRole('button', { name: /^\s*Save timers\s*$/i }).first();
-      if (await save.count() === 0) return ['NOT DRIVEN', 'no "Save timers" button'];
-      if (await save.isDisabled()) return ['NOT DRIVEN', 'Save timers is still disabled with both fields filled'];
-      await save.click({ timeout: 8000 });
-      await settle(page, 6000);
-      const answered = await confirmWith(page, 'Save');
-      if (answered === 'stuck') return ['FAILED', 'the Save confirmation could not be pressed'];
-      if (answered === 'none') return ['FAILED', 'pressing Save timers raised no confirmation'];
-
-      const after = await db.paymentModePolicy.getActivePolicy();
-      if (Number(after?.assignmentWaitSeconds) !== target) {
-        return ['FAILED', `assignmentWaitSeconds is ${after?.assignmentWaitSeconds}, expected ${target}`
-          + ` — screen said: ${(await words(page)).slice(-140)}`];
-      }
-      // A new ACTIVE version, not an edit of the old one — that is what
-      // append-only means, and a save that mutated v1 in place would be wrong
-      // in a way the value alone cannot show.
-      if (Number(after?.version) <= Number(before?.version ?? 0)) {
-        return ['FAILED', `the policy stayed at v${after?.version}; the timers were edited in place`];
-      }
-      return ['DROVE', `assignmentWaitSeconds ${was} → ${target} as v${after.version} (was v${before?.version})`];
-    },
-  },
-
-
-  // ── A commission policy version, which is also append-only ───────────────
-  {
-    id: 'admin/merchant-platform/save-policy',
-    panel: 'admin-panel',
-    what: 'Publish a new merchant commission policy version',
-    async run(page, cfg, base) {
-      const before = await db.merchantCommissionPolicy.getActivePolicy().catch(() => null);
-      const wasVersion = Number(before?.version ?? 0);
-      const wasFloor = Number(before?.minMatchedVolumePaise ?? before?.minMatchedVolume ?? 0);
-
-      await go(page, cfg, base, '/merchant-platform');
-      const typed = await fill(page, '#min-matched-volume', String(wasFloor === 1234 ? 1235 : 1234));
-      if (!typed.ok) return ['NOT DRIVEN', typed.why];
-      // Same shape as the settlement rail: the version is JUSTIFIED, and the
-      // route refuses without one ("Business justification required").
-      const why = await fill(page, '#justification-required', 'mutating drive: floor check');
-      if (!why.ok) return ['NOT DRIVEN', why.why];
-      await settle(page, 1500);
-
-      const save = page.getByRole('button', { name: /^\s*Save New Policy Version\s*$/i }).first();
-      if (await save.count() === 0) return ['NOT DRIVEN', 'no "Save New Policy Version" button'];
-      if (await save.isDisabled()) return ['NOT DRIVEN', 'Save New Policy Version is disabled with both fields filled'];
-      await save.click({ timeout: 8000 });
-      await settle(page, 8000);
-      await confirmWith(page, 'Save');
-
-      const after = await db.merchantCommissionPolicy.getActivePolicy().catch(() => null);
-      if (!after) return ['FAILED', 'no active commission policy after the save'];
-      if (Number(after.version) <= wasVersion) {
-        return ['FAILED', `the policy stayed at v${after.version} — a version was not published`
-          + ` — screen said: ${(await words(page)).slice(-140)}`];
-      }
-      return ['DROVE', `published v${after.version} (was v${wasVersion || 'none'})`];
-    },
-  },
 
   // ── Deleting a branding asset ────────────────────────────────────────────
   {
@@ -1415,38 +1250,6 @@ const CASES = [
     },
   },
 
-
-  // ── The payment gateway configuration ────────────────────────────────────
-  {
-    id: 'admin/payment-control/save',
-    panel: 'admin-panel',
-    what: 'Save the payment system configuration',
-    async run(page, cfg, base) {
-      await go(page, cfg, base, '/payment-control');
-      const save = page.getByRole('button', { name: /^\s*Save\s*$/i }).first();
-      if (await save.count() === 0) return ['NOT DRIVEN', 'no Save button on /payment-control'];
-
-      const answered = page.waitForResponse(
-        (r) => /\/payment\/admin\/config/.test(r.url()) && r.request().method() === 'PUT',
-        { timeout: 15000 },
-      ).catch(() => null);
-      await save.click({ timeout: 8000 });
-      const reply = await answered;
-      await settle(page, 8000);
-
-      if (!reply) return ['FAILED', 'pressing Save sent no PUT at all — the control is inert'];
-      const body = (await reply.text().catch(() => '')).replace(/\s+/g, ' ');
-      if (reply.status() >= 500) return ['FAILED', `Save answered ${reply.status()} — ${body.slice(0, 140)}`];
-
-      // The row the route owns, read back. §2: this is `active_mode` — P2P vs a
-      // third-party gateway — and NOT the settlement rail, which lives in
-      // `payment_mode_policies`. Confusing the two is how a screen comes to
-      // report a rail it does not control.
-      const stored = await gatewayMode();
-      if (!stored) return ['FAILED', `Save answered ${reply.status()} but no gateway config row exists`];
-      return ['DROVE', `answered ${reply.status()}, active_mode is '${stored}'`];
-    },
-  },
 
   // ── Deferred by NAME, and not a mutation at all ──────────────────────────
   // `drive.js` defers on the first word of a control's name, which is the right
@@ -1798,8 +1601,8 @@ const CASES = [
   // that screen. Pressing all 574 is not the answer; the ASSUMPTION is, and
   // the assumption is that row 40's button acts on row 40.
   //
-  // §23 is this codebase's own record of that assumption failing: the KYC
-  // screen's `find(u => u._id === selectedId)` matched the FIRST row every
+  // §23 is this codebase's own record of that assumption failing: the (since
+  // removed) KYC screen's `find(u => u._id === selectedId)` matched the FIRST row every
   // time, so a reviewer clicking the fifth player read the first player's
   // record — and approving grants withdrawal access. Every check was green.
   //
@@ -1876,70 +1679,6 @@ const CASES = [
     },
   },
 
-  {
-    id: 'admin/kyc/approve-a-later-row',
-    panel: 'admin-panel',
-    what: 'Approve KYC from a row that is NOT the first — the screen §23 was found on',
-    async run(page, cfg, base) {
-      const seeded = [];
-      for (let i = 0; i < 4; i++) seeded.push(await seedPlayer({ kycStatus: 'PENDING_APPROVAL', balancePaise: 0 }));
-      const target = seeded[seeded.length - 1];
-
-      await go(page, cfg, base, '/kyc');
-      await settle(page, 8000);
-
-      const review = page.getByRole('button', { name: new RegExp(`Review KYC for ${target.userId}`, 'i') }).first();
-      if (await review.count() === 0) {
-        const n = await page.getByRole('button', { name: /Review KYC for/i }).count();
-        return ['NOT DRIVEN', `${target.userId} is not among the ${n} reviewable row(s) on screen`];
-      }
-      const index = await page.evaluate((id) => {
-        const btns = [...document.querySelectorAll('button')]
-          .filter((b) => /Review KYC for/i.test(b.getAttribute('aria-label') || b.title || ''));
-        return btns.findIndex((b) => (b.getAttribute('aria-label') || b.title || '').includes(id));
-      }, target.userId);
-      if (index <= 0) return ['NOT DRIVEN', `${target.userId} is queue position ${index + 1} — not a later row`];
-
-      await clickThrough(review, { timeout: 8000 });
-      await settle(page, 5000);
-
-      // ── The record on screen must be the one whose row was pressed ───────
-      // This is the half §23 says was silently wrong: the row highlighted and
-      // the record shown were different people, and the reviewer could not
-      // tell. Asserting the id is on screen BEFORE approving is the check.
-      const shown = await words(page);
-      if (!shown.includes(target.userId)) {
-        const other = seeded.find((u) => u.userId !== target.userId && shown.includes(u.userId));
-        return ['FAILED', `opened the review for queue position ${index + 1} (${target.userId})`
-          + (other ? ` and the screen is showing ${other.userId} — §23, exactly` : ' and their id is not on the screen')];
-      }
-
-      const approve = page.getByRole('button', { name: /^\s*Approve KYC\s*$/i }).last();
-      if (await approve.count() === 0) return ['NOT DRIVEN', 'no "Approve KYC" in the opened review'];
-      const hit = await clickThrough(approve, { timeout: 8000 });
-      if (!hit.ok) return ['FAILED', `Approve KYC could not be pressed: ${hit.why}`];
-      await settle(page, 4000);
-      // The dialog is given `confirmText="Approve KYC"` — both the panel's
-      // button and the confirmation read the same words, and an anchored
-      // /^Approve$/ matches neither. The working case already records this;
-      // asking for the wrong verb left the dialog open and reported the
-      // platform as failing to approve something it was never asked to.
-      const said = await confirmWith(page, 'Approve KYC');
-      if (said === 'stuck') return ['FAILED', 'the Approve KYC confirmation could not be pressed'];
-      if (String(said).startsWith('unanswered')) return ['FAILED', `the approve dialog was not answered — ${said}`];
-
-      const after = await Promise.all(seeded.map((u) => kycStatus(u.userId)));
-      const moved = seeded.filter((u, i) => after[i] === 'APPROVED').map((u) => u.userId);
-
-      if (moved.length === 0) return ['FAILED', `approved queue position ${index + 1} and nobody is APPROVED`];
-      if (moved.length > 1) return ['FAILED', `ONE approval and ${moved.length} accounts are APPROVED: ${moved.join(', ')}`];
-      if (moved[0] !== target.userId) {
-        return ['FAILED', `approved queue position ${index + 1} (${target.userId})`
-          + ` and ${moved[0]} got withdrawal access instead — §23's exact defect`];
-      }
-      return ['DROVE', `queue position ${index + 1}: approved ${target.userId} and nobody else`];
-    },
-  },
 
   {
     id: 'admin/merchants/suspend-a-later-row',
@@ -2144,65 +1883,42 @@ const CASES = [
     what: 'Accept an order from a card that is NOT the first — the merchant side of §23',
     async run(page, cfg, base) {
       // ── THREE ASSIGNED orders has to be a state the platform can produce ──
-      // It refused the first version by name — "Merchant has reached DEPOSIT
-      // active order limit (1)" — which is the ceiling working, and a fixture
-      // of three ASSIGNED deposits under a cap of 1 is §32 S16: a row
-      // assignment itself would never create. So the case raises the cap the
-      // way the platform supports raising it, per merchant, and puts it back.
+      // So the platform produces them. Each is a real 20,000-token buy through
+      // `POST /api/payment/deposit/create`, which routes it (Step 2c) to a
+      // member of a working UPI/bank team and HOLDS its tokens in that team's
+      // pool in the same transaction. `main()` put the drive merchant in such a
+      // team with a pool, as the only member online on the rail, and the rail's
+      // cap is three — so all three land on this merchant's queue, each with
+      // its hold, and none is a row assignment itself would never write
+      // (§32 S16). Inserting ASSIGNED rows and bolting a hold on afterwards was
+      // the old version, and it was the shape the cron sweeps shout about.
       //
-      // It also switches buy orders back ON for itself rather than trusting
-      // that the preferences case put them back: a case that needs a state
-      // ESTABLISHES it (§32 S19), or it is reading whatever the run before it
-      // happened to leave.
-      const before = (await pgQuery(
-        `SELECT max_concurrent_deposit_orders AS c, accepts_deposits AS d
-           FROM merchants WHERE merchant_id = $1`,
-        [page.__bbMerchantId],
-      )).rows[0] ?? {};
-      await pgQuery(
-        `UPDATE merchants SET max_concurrent_deposit_orders = 3, accepts_deposits = true
-           WHERE merchant_id = $1`,
-        [page.__bbMerchantId],
-      );
-
-      // Several ASSIGNED orders on one merchant's queue, so "a later card" is
-      // a real position rather than the only card on screen.
+      // Online is ESTABLISHED, not trusted (§32 S19): a case before this one
+      // may have taken the merchant offline.
+      await setOnline(page.__bbMerchantId, true);
       const made = [];
+      const refused = [];
       for (let i = 0; i < 3; i++) {
-        const player = await seedPlayer({ balancePaise: 100000 });
-        const orderId = rid('mrow');
-        await pgQuery(
-          `INSERT INTO order_states
-             (order_id, user_id, merchant_id, order_type, state, token_amount_paise, fiat_amount_paise, order_hmac)
-           VALUES ($1, $2, $3, 'DEPOSIT', 'ASSIGNED', 50000, 50000, $4)`,
-          [orderId, player.userId, page.__bbMerchantId, deriveOrderHmac(orderId)],
-        );
-        made.push(orderId);
+        const player = await seedPlayer({});
+        const res = await fetch(`${API}/api/payment/deposit/create`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${playerToken(player)}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tokenAmount: 50000 }), // the smallest UPI/bank size (2d)
+        });
+        const body = await res.json().catch(() => ({}));
+        if (body.order?.orderId) made.push(body.order.orderId);
+        else refused.push(`${res.status} ${String(body.message ?? '').slice(0, 80)}`);
       }
-
-      // ── AND THE HOLD, because an ASSIGNED buy without one cannot exist ────
-      // Every route that attaches a merchant takes the escrow hold at
-      // attachment (§2), so three ASSIGNED deposits with nothing reserved is
-      // §32 S16 again — and this one was not theoretical: the escrow sweep in
-      // `test:operations --cron` reported exactly these rows as "UNHELD buy
-      // order … the player is promised tokens the merchant is free to spend
-      // elsewhere", which is the one thing that sweep exists to shout about.
-      const { holdForOrder } = await import('../../domains/merchant/depositEscrow.service.js');
-      const unheld = [];
-      for (const id of made) {
-        const rec = await db.orders.getOrderRecord(id);
-        const held = rec
-          ? await holdForOrder(rec, page.__bbMerchantId, { actor: 'drive-fixture' }).catch((e) => ({ ok: false, reason: e.message }))
-          : { ok: false, reason: 'the seeded order could not be read back' };
-        if (!held.ok) unheld.push(`${id}: ${held.reason}`);
-      }
+      const placed = (await pgQuery(
+        'SELECT order_id, state, merchant_id FROM order_states WHERE order_id = ANY($1::text[])', [made],
+      )).rows;
+      const notOurs = placed.filter((r) => r.state !== 'ASSIGNED' || r.merchant_id !== page.__bbMerchantId);
       try {
-        // A refused hold means the merchant cannot fund three orders, and
-        // pressing on would be driving against the impossible row again rather
-        // than reporting it.
-        if (unheld.length) {
-          return ['NOT DRIVEN', `the escrow hold was refused, so the fixture is not one the platform`
-            + ` could produce — ${unheld.join('; ').slice(0, 160)}`];
+        // Routing that did not reach this merchant means the fixture is not the
+        // state the case is about; driving on would test something else.
+        if (refused.length || notOurs.length || placed.length !== 3) {
+          return ['NOT DRIVEN', `the three buys did not all reach the drive merchant — refused [${refused.join('; ')}],`
+            + ` elsewhere [${notOurs.map((r) => `${r.order_id} ${r.state} ${r.merchant_id ?? 'nobody'}`).join('; ')}]`];
         }
         await go(page, cfg, base, '/orders');
         await settle(page, 8000);
@@ -2261,37 +1977,20 @@ const CASES = [
       } finally {
         // ── Putting these back is not a DELETE, and that is the point ──────
         // `order_transitions` is append-only, enforced by `bb_forbid_change()`,
-        // and it holds a plain FK to `order_states` — so an order that has
-        // actually MOVED can never be deleted, and the `.catch(() => {})` that
-        // used to wrap this swallowed the refusal silently. So: release the
-        // hold through its one owner, take anything still live to a terminal
-        // state so no sweep is left holding it, and delete only the rows that
-        // never transitioned at all.
-        const { releaseForOrder } = await import('../../domains/merchant/depositEscrow.service.js');
+        // and it holds a plain FK to `order_states` — so these orders, which
+        // every one MOVED (created, then assigned), can never be deleted. Each
+        // still-live one is taken to CANCELLED through the state machine, and
+        // its pool hold released through the pool's one owner, so no sweep is
+        // left holding it and the team's tokens come back.
         for (const id of made) {
-          const rec = await db.orders.getOrderRecord(id).catch(() => null);
-          if (rec) {
-            await releaseForOrder(rec, { actor: 'drive-fixture', reason: 'harness cleanup' })
-              .catch(() => {});
-          }
+          await cancelOrderState(id, {
+            expectFrom: ['PENDING_QUEUE', 'ASSIGNED', 'PROCESSING'],
+            set: { cancelReason: 'HARNESS_CLEANUP', cancelledAt: new Date() },
+            actor: 'drive-fixture', reason: 'harness cleanup',
+          }).catch((e) => console.error(`   ! could not cancel ${id}:`, e.message));
+          await db.teamPools.releaseBuyHold(id, { actor: 'drive-fixture', reason: 'harness cleanup' })
+            .catch((e) => console.error(`   ! could not release ${id}:`, e.message));
         }
-        await pgQuery(
-          `UPDATE order_states
-              SET state = 'CANCELLED', cancel_reason = 'HARNESS_CLEANUP', cancelled_at = now()
-            WHERE order_id = ANY($1::text[])
-              AND state NOT IN ('COMPLETED', 'CANCELLED', 'FAILED', 'REJECTED')`,
-          [made],
-        ).catch(() => {});
-        await pgQuery(
-          `DELETE FROM order_states o WHERE o.order_id = ANY($1::text[])
-             AND NOT EXISTS (SELECT 1 FROM order_transitions t WHERE t.order_id = o.order_id)`,
-          [made],
-        ).catch(() => {});
-        await pgQuery(
-          `UPDATE merchants SET max_concurrent_deposit_orders = $2, accepts_deposits = $3
-             WHERE merchant_id = $1`,
-          [page.__bbMerchantId, before.c ?? null, before.d ?? true],
-        ).catch(() => {});
       }
     },
   },
@@ -2338,97 +2037,18 @@ const CASES = [
     },
   },
 
-  {
-    id: 'merchant/token-supply/price-this-amount',
-    panel: 'merchant-panel',
-    what: 'Price this amount, once an amount is typed',
-    async run(page, cfg, base) {
-      await go(page, cfg, base, '/token-supply');
-      const button = page.getByRole('button', { name: /^\s*Price this amount\s*$/i }).first();
-      if (await button.count() === 0) return ['NOT DRIVEN', 'no "Price this amount" on /token-supply'];
-      if (!await button.isDisabled()) return ['FAILED', 'it is enabled with no amount entered'];
-
-      const field = page.locator('input[type="number"]').first();
-      if (await field.count() === 0) return ['NOT DRIVEN', 'no amount field beside it'];
-      await field.fill('100000');
-      await settle(page, 2000);
-
-      if (await button.isDisabled()) {
-        return ['FAILED', 'an amount was entered and "Price this amount" stayed disabled'];
-      }
-      const hit = await clickThrough(button, { timeout: 8000 });
-      if (!hit.ok) return ['FAILED', `enabled but could not be pressed: ${hit.why}`];
-      await settle(page, 8000);
-
-      const said = await words(page);
-      // Either it quotes, or it refuses BY NAME (§25 — a rail that cannot be
-      // priced says so rather than inventing a number). Both are the control
-      // working; silence is not.
-      if (!/₹|inr|usdt|rate|price|unavailable|not set|unable|cannot/i.test(said.slice(-400))) {
-        return ['FAILED', 'pressed it and the screen neither quoted nor refused — it said nothing'];
-      }
-      return ['DROVE', 'disabled empty, enabled with an amount, and it answered'];
-    },
-  },
-
-  {
-    id: 'merchant/cash-links/supply-link',
-    panel: 'merchant-panel',
-    what: 'Supply link, once a link is typed',
-    async run(page, cfg, base) {
-      await go(page, cfg, base, '/cash-links');
-      const button = page.getByRole('button', { name: /^\s*Supply link\s*$/i }).first();
-      if (await button.count() === 0) return ['NOT DRIVEN', 'no "Supply link" on /cash-links'];
-      if (!await button.isDisabled()) return ['FAILED', 'it is enabled with no link entered'];
-
-      const field = page.locator('input[type="text"], input:not([type])').first();
-      if (await field.count() === 0) return ['NOT DRIVEN', 'no payment-link field beside it'];
-      const link = `upi://pay?pa=drive-${rid('x')}@upi&am=500`;
-      await field.fill(link);
-      await settle(page, 2000);
-      // Recorded before the press, because the refusal below depends on it.
-      const rail = await db.paymentModePolicy.getActivePaymentMode();
-
-      if (await button.isDisabled()) {
-        return ['FAILED', 'a link was entered and "Supply link" stayed disabled'];
-      }
-      const before = Number((await pgQuery(
-        'SELECT count(*)::int AS n FROM cash_link_queue WHERE merchant_id = $1', [page.__bbMerchantId])).rows[0].n);
-      const hit = await clickThrough(button, { timeout: 8000 });
-      if (!hit.ok) return ['FAILED', `enabled but could not be pressed: ${hit.why}`];
-      await settle(page, 8000);
-      const after = Number((await pgQuery(
-        'SELECT count(*)::int AS n FROM cash_link_queue WHERE merchant_id = $1', [page.__bbMerchantId])).rows[0].n);
-
-      if (after === before) {
-        const said = await words(page);
-        // ── A refusal that names the platform's own state is the control ───
-        // WORKING, not failing. Measured: with the rail on P2P_UPI the screen
-        // answers "The platform is not on the ATM cash rail right now, so a
-        // cash link cannot be used" — which is §25's rule exactly, a refusal
-        // that names the rail's own choices instead of "invalid".
-        //
-        // A cash link supplied while the platform is on UPI would be inventory
-        // nobody can claim, so refusing is the correct behaviour and storing
-        // it would be the defect. What must NOT happen is silence.
-        if (rail !== 'CASH_ATM' && /cash rail|not on the ATM|cannot be used/i.test(said)) {
-          return ['DROVE', `enabled with a link, and correctly REFUSED on the ${rail} rail — "${said.slice(-110).trim()}"`];
-        }
-        return ['FAILED', `pressed Supply link on the ${rail} rail and cash_link_queue is still ${before}`
-          + ` — screen said: ${said.slice(-140)}`];
-      }
-      await pgQuery('DELETE FROM cash_link_queue WHERE merchant_id = $1 AND payment_link = $2',
-        [page.__bbMerchantId, link]).catch(() => {});
-      return ['DROVE', `disabled empty, enabled with a link, and cash_link_queue went ${before} → ${after}`];
-    },
-  },
 
   {
     id: 'admin/sub-admins/grant',
     panel: 'admin-panel',
-    what: 'Grant, once a person is chosen',
+    what: 'Grant, once a person is chosen — to a STAFF account, never a player',
     async run(page, cfg, base) {
-      const target = await seedPlayer({ balancePaise: 0 });
+      // A staff login holding no authority yet. Queue-manager access routes
+      // players' payments, so it goes on a STAFF account only: the route
+      // refuses a player id with 409 and the database refuses the flag
+      // (owner, 2026-10-01 — separate accounts). This granted it to a PLAYER.
+      const target = await seedStaff({});
+      const player = await seedPlayer({ balancePaise: 0 });
       await go(page, cfg, base, '/sub-admins');
       const grant = page.getByRole('button', { name: /^\s*Grant\s*$/i }).first();
       if (await grant.count() === 0) return ['NOT DRIVEN', 'no Grant control on /sub-admins'];
@@ -2459,60 +2079,29 @@ const CASES = [
       const granted = Boolean((await pgQuery(
         'SELECT is_queue_manager FROM users WHERE user_id = $1', [target.userId],
       )).rows[0]?.is_queue_manager);
-      if (!granted) return ['FAILED', 'pressed Grant and the player is still not a queue manager'];
+      if (!granted) return ['FAILED', 'pressed Grant and the staff account is still not a queue manager'];
       await pgQuery('UPDATE users SET is_queue_manager = FALSE WHERE user_id = $1',
         [target.userId]).catch(() => {});
-      return ['DROVE', `disabled with the field empty, enabled once filled, and ${target.userId} became a queue manager`];
-    },
-  },
 
-  {
-    id: 'admin/kyc/bulk/nothing-pending',
-    panel: 'admin-panel',
-    what: 'The bulk-KYC action, once something IS pending',
-    async run(page, cfg, base) {
-      await go(page, cfg, base, '/kyc/bulk');
-      const idle = page.getByRole('button', { name: /^\s*Nothing pending\s*$/i }).first();
-      if (await idle.count() === 0) {
-        return ['NOT DRIVEN', 'the screen is not in its "Nothing pending" state — something is already queued'];
-      }
-      if (!await idle.isDisabled()) return ['FAILED', '"Nothing pending" is offered as a pressable control'];
-
-      // ── PENDING_VERIFICATION, not PENDING_APPROVAL ─────────────────────
-      // `kycStats()` returns `pending: counts.PENDING_VERIFICATION`, counted
-      // off `kyc_verifications` — the queue an operator EXPORTS to an outside
-      // verifier. `users.kyc_status = 'PENDING_APPROVAL'` is the admin's own
-      // review and a different question entirely. Seeding the wrong one made
-      // the screen look wrong while it was reporting its own queue correctly,
-      // which is §32 S19: a precondition the case never established.
-      // Through the repository's own writer, not a hand-made row: every
-      // column here is NOT NULL and the Aadhaar is an HMAC plus ciphertext
-      // (§2), so an INSERT that invents them is a fixture the platform cannot
-      // produce (§32 S16).
-      const target = await seedPlayer({ kycStatus: 'PENDING_APPROVAL', balancePaise: 0 });
-      await db.identity.submitVerification({
-        userId: target.userId,
-        aadhaarHash: `drive-${rid('hash')}`,
-        aadhaarEncrypted: `drive-${rid('ct')}`,
-        aadhaarLast4: '9999',
-        phone: target.mobile,
-      });
-      await go(page, cfg, base, '/kyc/bulk');
+      // The opposite case, on the same control: a PLAYER id is refused, the
+      // player gains nothing, and the screen says why.
+      await field.fill(player.userId);
+      await settle(page, 2000);
+      const again = await clickThrough(grant, { timeout: 8000 });
+      if (!again.ok) return ['FAILED', `Grant could not be pressed for the player id: ${again.why}`];
       await settle(page, 6000);
-
-      const still = page.getByRole('button', { name: /^\s*Nothing pending\s*$/i }).first();
-      if (await still.count() > 0) {
-        return ['FAILED', `${target.userId} is PENDING_APPROVAL and the screen still says "Nothing pending"`];
+      await confirmWith(page, 'Grant');
+      const playerGot = Boolean((await pgQuery(
+        'SELECT is_queue_manager FROM users WHERE user_id = $1', [player.userId],
+      )).rows[0]?.is_queue_manager);
+      if (playerGot) return ['FAILED', 'a PLAYER account was made a queue manager'];
+      if (!/staff account/i.test(await words(page))) {
+        return ['FAILED', 'the player id was refused, but the screen never said why'];
       }
-      const action = page.locator('main').getByRole('button').filter({ hasNotText: /back|cancel|close/i }).first();
-      if (await action.count() === 0) return ['FAILED', 'the label changed and no pressable action appeared'];
-      if (await action.isDisabled()) {
-        return ['FAILED', 'a submission is pending and the bulk action is still disabled'];
-      }
-      await pgQuery('DELETE FROM kyc_verifications WHERE user_id = $1', [target.userId]).catch(() => {});
-      return ['DROVE', `"Nothing pending" while nothing was, and a live action once ${target.userId} was queued`];
+      return ['DROVE', `${target.userId} (STAFF) became a queue manager; a PLAYER id was refused and the screen said why`];
     },
   },
+
 
   // ── Log out: the one control that ends the pass that presses it ─────────
   // `ownContext` is the whole point. Pressing this on the shared page would
@@ -2584,34 +2173,6 @@ const CASES = [
     },
   },
 
-  // ── A file PICKER can be driven; Playwright sets the files directly ──────
-  {
-    id: 'admin/kyc/bulk/choose-csv',
-    panel: 'admin-panel',
-    what: 'Choose a CSV on the bulk KYC screen',
-    async run(page, cfg, base) {
-      await go(page, cfg, base, '/kyc/bulk');
-      const input = page.locator('input[type="file"]').first();
-      if (await input.count() === 0) return ['NOT DRIVEN', 'no file input on /kyc/bulk'];
-
-      // A REAL shape, not an empty file: the screen's job is to parse it and
-      // say what it found, and an empty upload cannot tell "parsed nothing"
-      // from "never parsed".
-      const before = await words(page);
-      await input.setInputFiles({
-        name: 'drive-bulk-kyc.csv',
-        mimeType: 'text/csv',
-        buffer: Buffer.from('mobile,aadhaar\n9876500001,111122223333\n9876500002,444455556666\n'),
-      });
-      await settle(page, 6000);
-      const after = await words(page);
-
-      if (after === before) {
-        return ['FAILED', 'a CSV was chosen and the screen said nothing — no count, no preview, no error'];
-      }
-      return ['DROVE', 'a 2-row CSV was accepted and the screen responded to it'];
-    },
-  },
 
   // ── A DOWNLOAD can be driven too; the browser hands it over ──────────────
   {
@@ -2681,14 +2242,16 @@ const CASES = [
       // The WHOLE document, not the one field — restoring a field leaves every
       // other one at whatever the press wrote.
       const before = await db.config.getSystemConfig();
-      const wasMinDeposit = before?.minDeposit;
+      const wasSizes = before?.orderSizes;
       try {
         await go(page, cfg, base, '/settings');
-        const field = page.getByLabel(/Min Deposit/i).first();
-        if (await field.count() === 0) return ['NOT DRIVEN', 'no Min Deposit field on /settings'];
-
-        const target = Number(wasMinDeposit) === 501 ? 502 : 501;
-        await field.fill(String(target));
+        // One size on the Order Sizes card (Step 2d), addressed by its printed
+        // name (S24). Flipped from whatever it is now, so the press changes the
+        // document whichever state an earlier run left it in.
+        const box = page.getByLabel('5,000', { exact: true }).first();
+        if (await box.count() === 0) return ['NOT DRIVEN', 'no 5,000 order-size checkbox on /settings'];
+        const wasOn = await box.isChecked();
+        await box.setChecked(!wasOn);
         await settle(page, 1500);
 
         const save = page.getByRole('button', { name: /^Save Settings$/i }).first();
@@ -2698,19 +2261,20 @@ const CASES = [
         await settle(page, 8000);
 
         const after = await db.config.getSystemConfig();
-        if (Number(after?.minDeposit) !== target) {
-          return ['FAILED', `pressed Save; minDeposit is ${after?.minDeposit}, expected ${target}`];
+        const nowOn = (after?.orderSizes ?? []).map(Number).includes(5000);
+        if (nowOn === wasOn) {
+          return ['FAILED', `pressed Save; 5,000 is still ${wasOn ? 'on' : 'off'} offer (${JSON.stringify(after?.orderSizes)})`];
         }
         const said = await words(page);
         if (!/saved|updated|success/i.test(said)) {
           return ['FAILED', 'the document was written; the screen never confirmed it'];
         }
-        return ['DROVE', `minDeposit ${wasMinDeposit} → ${target}, confirmed on screen`];
+        return ['DROVE', `5,000 ${wasOn ? 'taken off' : 'put on'} offer, confirmed on screen`];
       } finally {
         // Outside the assertions, and outside the early returns above (trap 10).
         await db.config.applyConfig({
-          scope: 'system', actor: 'mutating-drive', patch: { minDeposit: wasMinDeposit },
-        }).catch((e) => console.error('   ! could not restore minDeposit:', e.message));
+          scope: 'system', actor: 'mutating-drive', patch: { orderSizes: wasSizes },
+        }).catch((e) => console.error('   ! could not restore orderSizes:', e.message));
       }
     },
   },
@@ -2844,12 +2408,13 @@ async function main() {
   const cached = {};
   let driveMerchant = null;
   if (panels.includes('merchant-panel')) {
-    // `cashDenominationPaise` makes it a CASH merchant so its screens render
-    // their working state rather than the "not approved for the ATM rail"
-    // empty one — the same seeding stack.js documents for the drive pass.
-    driveMerchant = await seedMerchant({
-      currency: 'INR', tokensPaise: 500000000, cashDenominationPaise: 500000,
-    });
+    // A MEMBER of a working UPI/bank team with tokens in its pool, and the
+    // only member online on that rail (`seedTeam`'s `exclusive`), so its
+    // screens render their working state and a buy created during the run is
+    // routed to it — `merchant/orders/accept-a-later-card` depends on exactly
+    // that. Since Step 2c a merchant outside a team is served no orders at all.
+    driveMerchant = await seedMerchant({ currency: 'INR' });
+    await seedTeam({ rail: 'UPI_BANK', poolTokens: 200000, include: [driveMerchant], online: [driveMerchant] });
     tokens['merchant-panel'] = merchantToken(driveMerchant);
     // A RETURNING merchant has a cached profile besides a token; seeding only
     // the token means one refused profile call renders the sign-in screen.

@@ -4,18 +4,16 @@
  *
  * ── The rule ───────────────────────────────────────────────────────────────
  * A UTR is a bank's reference for one real transfer. A transaction hash is a
- * blockchain's reference for one real transfer. A CDM slip carries the
- * machine's reference for one real cash deposit. They look nothing alike and
+ * blockchain's reference for one real transfer. They look nothing alike and
  * they mean the same thing, so they share ONE registry — and a reference may be
  * claimed by exactly one order, ever.
  *
  * ── What was actually happening ────────────────────────────────────────────
- * Only the player's UTR was ever claimed. Two other paths wrote a reference
- * into a column and claimed nothing:
+ * Only the player's UTR was ever claimed. Other paths wrote a reference into
+ * a column and claimed nothing:
  *
- *   • `cdm_transaction_id` — a merchant submits the bank's id from a CDM slip
- *     as proof they paid out a withdrawal in cash. Nothing stopped the same id
- *     appearing on a second payout.
+ *   • a CDM slip's bank id (a cash payout's evidence until Step 2d removed
+ *     it) — nothing stopped the same id appearing on a second payout.
  *   • `usdt_tx_hash` on a merchant's token purchase — nothing stopped one
  *     payment funding two purchases of the platform's own inventory.
  *
@@ -53,10 +51,10 @@ const OWNER = join(ROOT, 'backend/domains/payment/paymentReference.js');
  * The names an external payment reference arrives under, from a client.
  *
  * `utrNumber` is the player's bank reference or chain transaction hash on a
- * buy; `transactionId` the bank's id on a CDM slip; `usdtTxHash` the hash a
- * merchant gives when buying platform tokens with USDT.
+ * buy, and a member's payout UTR on a sell; `usdtTxHash` the hash a supervisor
+ * gives when buying platform tokens with USDT.
  */
-const REFERENCE_FIELDS = ['utrNumber', 'transactionId', 'usdtTxHash'];
+const REFERENCE_FIELDS = ['utrNumber', 'usdtTxHash'];
 
 /** Handlers that legitimately take one WITHOUT claiming, with the reason. */
 const NO_CLAIM_ALLOW = new Map([
@@ -95,9 +93,8 @@ function jsFiles(dir, out = []) {
 // From `req.body`, which is where one enters this system.
 //
 // Per FIELD, not per file. A first draft asked only whether the file contained
-// a claim anywhere, and `merchant.routes.js` has two — so deleting the CDM
-// slip's claim left the token purchase's behind and the gate stayed green. The
-// claim has to name the reference it is claiming.
+// a claim anywhere, and a file with two claims could lose one and stay green.
+// The claim has to name the reference it is claiming.
 function claimsFor(src) {
   return callsTo(src, CLAIM)
     .filter((c) => c.args.includes('{'))

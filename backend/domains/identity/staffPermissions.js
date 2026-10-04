@@ -62,10 +62,6 @@ export const STAFF_PERMISSIONS = Object.freeze([
     description: 'Player list and records, flagged players: block, unblock, clear a flag, delete an account.' },
   { key: 'canAdjustBalances', group: 'players', label: 'Adjust player balances', money: true,
     description: 'Credit or debit a player\'s wallet by hand, and read the adjustment history.' },
-  { key: 'canVerifyKYC', group: 'players', label: 'Verify KYC',
-    description: 'The KYC queue: approve or reject one player\'s Aadhaar.' },
-  { key: 'canBulkVerifyKYC', group: 'players', label: 'Bulk KYC',
-    description: 'Export pending Aadhaar numbers for verification and import the verdicts.' },
   { key: 'canViewTransactions', group: 'players', label: 'View transactions',
     description: 'The transaction history of every player, read only.' },
   { key: 'canManagePhantomAgents', group: 'players', label: 'Phantom agents',
@@ -75,17 +71,17 @@ export const STAFF_PERMISSIONS = Object.freeze([
 
   // ── Merchants ────────────────────────────────────────────────────────────
   { key: 'canManageMerchants', group: 'merchants', label: 'Manage merchants',
-    description: 'Merchant list and records, approve, reject, suspend, activate, limits and capabilities, create a merchant, Merchant Platform, and the payment queue.' },
-  { key: 'canFundMerchants', group: 'merchants', label: 'Top up and deduct merchant wallets', money: true,
-    description: 'Move tokens between the platform and a merchant\'s wallet.' },
-  { key: 'canManageMerchantTokenOrders', group: 'merchants', label: 'Merchant token purchases', money: true,
-    description: 'Approve or reject a merchant buying the float they trade with.' },
+    description: 'Merchant list and records, approve, reject, suspend, activate, capabilities, create a merchant, Merchant Platform, and the payment queue.' },
+  { key: 'canManageTeams', group: 'merchants', label: 'Supervisors and teams',
+    description: 'Make a merchant a supervisor and set their rail, and approve or remove the members supervisors propose for their teams.' },
+  { key: 'canFundMerchants', group: 'merchants', label: 'Team pool requests', money: true,
+    description: 'Fulfil or reject a supervisor\'s request to buy tokens into a team\'s pool or sell them back, recording what was paid.' },
   { key: 'canManageCommission', group: 'merchants', label: 'Merchant commission', money: true,
-    description: 'Commission rates and their history, run the commission engine, and fund the bonus pool it pays from.' },
+    description: 'Fund the pool team commission is paid from.' },
 
   // ── Payments & disputes ──────────────────────────────────────────────────
   { key: 'canResolveDisputes', group: 'payments', label: 'Resolve disputes', money: true,
-    description: 'The dispute queue, CDM slips and stalled payouts, and the decision to release or refund.' },
+    description: 'The dispute queue and stalled payouts, and the decision to release or refund.' },
   { key: 'canManageUtr', group: 'payments', label: 'Payment references (UTR)',
     description: 'The UTR registry: look a reference up, flag or clear it, resolve a contested one.' },
   { key: 'canManagePaymentSystem', group: 'payments', label: 'Payment system',
@@ -130,8 +126,6 @@ export const STAFF_PERMISSIONS = Object.freeze([
 export const ADMIN_ONLY_AREAS = Object.freeze([
   { area: 'Sub-admins', why: 'Creating a sub-admin or changing one\'s permissions grants authority; a holder could grant themselves everything.',
     routes: ['GET /sub-admins', 'POST /sub-admins', 'PUT /sub-admins/:subAdminId/permissions', 'DELETE /sub-admins/:subAdminId', 'GET /staff-permissions'] },
-  { area: 'Staff roles', why: 'Setting an account\'s roles can make it an admin.',
-    routes: ['PUT /users/:userId/roles'] },
   { area: 'Queue managers', why: 'The queue-manager role routes players\' payments; granting it is granting authority.',
     routes: ['GET /queue-managers', 'POST /users/:userId/queue-manager'] },
 ]);

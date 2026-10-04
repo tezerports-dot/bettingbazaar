@@ -5,7 +5,7 @@
 // panel carries on as before is the §28 shape.
 import { pgQuery } from '#db/client.js';
 import { seedPlayer, seedMerchant, seedAdmin } from '../seed.js';
-import { playerToken, merchantToken, adminToken, GET, POST, PUT, check, note } from '../harness.js';
+import { playerToken, merchantToken, adminToken, GET, PUT, check } from '../harness.js';
 
 const A = 'CROSS';
 export default async function run() {
@@ -14,7 +14,7 @@ export default async function run() {
 
   // ══ 1. Admin SUSPENDS a merchant ══════════════════════════════════════════
   {
-    const m = await seedMerchant({ currency: 'INR', tokensPaise: 500000000 });
+    const m = await seedMerchant({ currency: 'INR' });
     const mT = merchantToken(m);
 
     const before = await GET(mT, '/api/merchant/profile');
@@ -62,7 +62,7 @@ export default async function run() {
 
   // ══ 3. The assignment PAUSE is not a suspension, and has no timer ══════════
   {
-    const m = await seedMerchant({ currency: 'INR', tokensPaise: 500000000 });
+    const m = await seedMerchant({ currency: 'INR' });
     const mT = merchantToken(m);
     await pgQuery(
       `UPDATE merchants SET assignment_paused_at = now(), consecutive_expiries = 3,
@@ -135,24 +135,10 @@ export default async function run() {
       'the route the bell polls — this is the end-to-end half, not just the row');
   }
 
-  // ══ 5. The settlement rail an admin sets is what all three panels read ═════
-  {
-    const mode = await GET(aT, '/api/admin/payment-mode');
-    check(A, 'admin', 'admin can read the active settlement rail', '200 with a mode',
-      `${mode.status} ${JSON.stringify(mode.body).slice(0, 90)}`, mode.status === 200);
-
-    const p = await seedPlayer({});
-    const sys = await GET(playerToken(p), '/api/v1/system/config');
-    const playerMode = sys.body?.config?.paymentMode ?? null;
-    check(A, 'player', 'the player panel is told the same rail', 'a mode, not null',
-      String(playerMode), !!playerMode,
-      'WalletPage branches on this — a null here means the buy screen guesses');
-
-    const m = await seedMerchant({ currency: 'INR', tokensPaise: 100000 });
-    const mm = await GET(merchantToken(m), '/api/merchant/payment-mode');
-    const merchMode = mm.body?.activeMode ?? null;
-    check(A, 'merchant', 'the merchant panel is told the same rail', `${playerMode}`,
-      `${mm.status} ${merchMode}`, mm.status === 200 && merchMode === playerMode,
-      'one owner (§2 payment_mode_policies) — three panels must not disagree about which rail is live');
-  }
+  // The fifth case read one settlement rail from all three panels
+  // (`/api/admin/payment-mode`, `/api/merchant/payment-mode`, the player's
+  // `config.paymentMode`). Step 2c deleted that policy: an order's rail is
+  // derived from its own size and currency (`orderRails.js`) and stamped on the
+  // order, so there is no live rail for the panels to agree on. s4 covers the
+  // derivation and the stamp.
 }

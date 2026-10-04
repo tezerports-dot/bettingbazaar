@@ -1667,6 +1667,14 @@ There are **two** deposit-confirm implementations, not one:
 | `POST /api/payment/deposit/:orderId/confirm` | `paymentActorAuth` (merchant **or** admin) | calls `moveDepositMoney()` | **16**, in `paymentRoutes.test.js` — conservation, the split, idempotency, a 4-way confirm race |
 | `POST /api/merchant/confirm/:id` | `merchantAuth` | **reimplements** debit-then-credit inline, sharing only `depositCreditSplit()` | authorization and validation only |
 
+> **Closed 2026-10-01.** Both routes now move the money through
+> `moveDepositMoney()`. The first route — the one no screen called — was
+> DELETED (owner decision), after every money assertion it carried was ported
+> to the second: `merchantConfirmMoneyPg.test.js` (split, double delivery, the
+> 4-way race, the accounting event, the reference release, the merchant's
+> redacted view), beside `depositConfirmConservationPg` and
+> `depositConfirmUnderfundedPg`. The table above records how it stood.
+
 **The first is on `check:ui-coverage --unused` — no screen calls it. The second
 is what the merchant panel uses.** So every assertion that a deposit conserves,
 that a double-tap credits once, and that four racing confirms do not overpay is
@@ -2575,7 +2583,7 @@ The dispense was completed before the debit, so the stranded-hold sweep never
 saw it either: the double charge was permanent.
 
 **The four other doors** that complete a buy — the admin approve, both dispute
-releases, and `POST /api/payment/deposit/:id/confirm` (which no panel calls) —
+releases, and `POST /api/payment/deposit/:id/confirm` (which no panel called; deleted 2026-10-01) —
 never dispensed at all. They debited `available` beside a live hold, so the
 merchant was charged twice until `sweepDepositHolds` released the hold on the
 now-COMPLETED order fifteen minutes later; the two without an overdraft refused
@@ -3348,6 +3356,73 @@ by asking R7's neighbours rather than its own case.
   extra signers). The same-key v2+v3 APK is accepted — the opposite case — and
   the two refusals fail on main. **Mutation-proved:** M234, M235 KILLED.
 
+### F-051 — a mobile number or UPI handle could reach the other side of an order
+`FIXED` · medium (§24: the counterparty learns a contact detail) · Step 2d, owner's rule of 2026-10-03 · 2026-10-03
+
+Shape: *text written for one party carries a contact detail of another*. The
+order views were allowlists and clean; the leaks were in text built beside them.
+
+- **Found and fixed:** (1) the member's accept route wrote "UPI ID: <handle>"
+  into the order timeline, which the player reads; (2) an admin with no
+  username was named by their mobile in the dispute message the player reads;
+  (3) a merchant signing up without a username was NAMED after their mobile;
+  (4) a cash buy's QR is whatever the member scans, so a member could scan a
+  personal QR whose handle is their mobile and the player's UPI app would show
+  it. `checkCashLink` now refuses a payee handle containing a mobile number.
+- **Sweep:** every `postSystemMessage` / timeline write and every display-name
+  fallback in `backend/` (`rg "postSystemMessage|\|\| .*mobile|mobile \|\|"`):
+  the three above; the rest name a `merchantRef`, the order, or the player's own
+  account to the player. Team views (`teams.js`) select no mobile. Admin
+  screens show mobiles by design (staff, not a counterparty).
+- **Gate:** `check:player-privacy` check 6 fails if `PLAYER_PAY_TO_BANK_FIELDS`
+  names a contact detail; check 5 fails on a `upi://pay` built anywhere but
+  `cashLink.js`. Timeline TEXT is not mechanisable beyond that (it needs a
+  judgement about whose detail a sentence names), so the tests carry it:
+  `playerOrderPrivacyRoutes` scans every player payload for the member's mobile
+  and UPI handle.
+- **(5) An account number that is a mobile.** Payments banks issue the mobile
+  as the account number, and the account is shown across the order. Refused by
+  a CHECK on `merchants` and `users` (`bb_account_number_is_a_mobile`:
+  mobile-shaped at a payments-bank IFSC, or the holder's own mobile at any
+  bank), so every writer is covered; the three save paths name it
+  (`payoutAccount.js`). `payoutAccountNotAMobilePg`, with the opposite cases (a
+  ten-digit Kotak account, a twelve-digit India Post account).
+- **(6) Found by the pre-push review: the names, the spelling, the QR's text.**
+  A mobile in the account holder's or bank's name crossed the same way, and so
+  did one in a cash QR's `pn`/`tn`; an IFSC in lower case or with a space, and
+  a number written 0091…, slipped past (5). The CHECKs now also apply
+  `bb_text_has_a_mobile` to both names, the IFSC and prefix are normalised, and
+  `checkCashLink` reads `pn`/`tn`. Sweep: every column the member or player
+  views project from an account (`PLAYER_PAY_TO_BANK_FIELDS`, the merchant
+  view's payout fields): holder, number, IFSC, bank; all four covered. A
+  member's free text in the order chat is not covered by a rule (it is a
+  conversation; recorded, not mechanisable).
+- **Mutation-proved:** M349–M371, M378–M382.
+
+### F-052 — the player was shown where to pay before the member accepted
+`FIXED` · high (a member could take a transfer, decline, and the order and its tokens go to another member) · Step 2d security review · 2026-10-03
+
+Shape: *a detail shown in a state that can still be undone* (§32 S42: "assigned"
+read as "will be served"). `playerOrderView` sent `payTo` (account, QR, USDT
+address) from ASSIGNED, and `markOrderPaid` took Paid there, while the member
+may decline (`/reject`, ASSIGNED only) and an admin may reassign (ASSIGNED only).
+
+- **Fixed:** `PAY_DETAIL_STATES` (PROCESSING, PAID, REJECTED, DISPUTED) gates
+  every pay-to field; Paid is refused at ASSIGNED as `NOT_ACCEPTED_YET` before
+  the reference is claimed, and moves only from PROCESSING; the move names the
+  member read (`expectMerchant`) on every rail, not only cash; `setCashLink`
+  takes PROCESSING only and the route answers `ACCEPT_FIRST`; a lapse never
+  accepted counts on the member (`playerCouldPay`).
+- **Paths:** the player's order, status poll and history (all `playerOrderView`);
+  the HTTP mark-paid and the service; the scan route and its writer; the
+  expiry cron. The player panel shows "Waiting for the member to accept…"; the
+  merchant card hides Scan until accepted.
+- **Neighbours:** bank/cash/USDT rails (each tested at ASSIGNED and after);
+  the race of a Paid tap against a change of hands, bank and cash
+  (`acceptBeforePayPg`, `cashLinkPg`, a held row lock); the opposite case, an
+  accepted buy that lapses unpaid, still counts on the player.
+- **Mutation-proved:** M372–M377, with M353, M356, M357 repointed.
+
 ### The §37 neighbour pass over the follow-up's fixes (2026-10-01)
 Each fix was asked the §37.1 pairs that apply. "held" means the neighbour was
 checked and is correct; the evidence is named.
@@ -3379,10 +3454,10 @@ checked and is correct; the evidence is named.
 
 | Measure | Count |
 |---|---|
-| Route declarations in `backend/**` | 322 |
-| Reachable with **no auth middleware** | 44 |
-| Staff routes carrying an **area** (permission key) | 198 |
-| Staff routes a sub-admin can **never** be given (full admin only) | 8 |
+| Route declarations in `backend/**` | 282 |
+| Reachable with **no auth middleware** | 34 |
+| Staff routes carrying an **area** (permission key) | 173 |
+| Staff routes a sub-admin can **never** be given (full admin only) | 7 |
 
 A count moving is not by itself a defect — it is a prompt to read the
 new route and decide. Each of the three questions is defined in §2.
@@ -3393,14 +3468,12 @@ new route and decide. Each of the three questions is defined in §2.
 - `GET /announcements  (backend/routes/retention.routes.js)`
 - `GET /app/android/update  (backend/domains/distribution/androidRelease.routes.js)`
 - `GET /assetlinks.json  (backend/routes/wellKnown.routes.js)`
-- `GET /bootstrap  (backend/routes/app-bootstrap.routes.js)`
 - `GET /categories  (backend/domains/gameRegistry/gameRegistry.routes.js)`
 - `GET /cycles/:cycleId  (backend/domains/user/user.routes.js)`
 - `GET /cycles/active  (backend/domains/user/user.routes.js)`
 - `GET /download/android  (backend/domains/distribution/androidRelease.routes.js)`
 - `GET /events  (backend/routes/sse.routes.js)`
 - `GET /games  (backend/domains/gameRegistry/gameRegistry.routes.js)`
-- `GET /health  (backend/routes.js)`
 - `GET /invite/:code  (backend/domains/identity/playerAuth.routes.js)`
 - `GET /leaderboard/:period  (backend/routes/retention.routes.js)`
 - `GET /me  (backend/routes.js)`
@@ -3408,19 +3481,11 @@ new route and decide. Each of the three questions is defined in §2.
 - `GET /providers  (backend/domains/casino/gameProvider.routes.js)`
 - `GET /public-config  (backend/domains/telegram/telegram.routes.js)`
 - `GET /r/:code  (backend/routes/referralRedirect.routes.js)`
-- `GET /stats  (backend/routes/sse.routes.js)`
 - `GET /status  (backend/domains/support/support.routes.js)`
-- `GET /v1/branding  (backend/domains/user/user.routes.js)`
-- `GET /v1/content/ai-analysis  (backend/domains/user/user.routes.js)`
 - `GET /v1/content/faq  (backend/domains/user/user.routes.js)`
-- `GET /v1/content/promo/:location  (backend/domains/user/user.routes.js)`
 - `GET /v1/content/support-links  (backend/domains/user/user.routes.js)`
-- `GET /v1/game/cycle/:type/:startTime  (backend/domains/user/user.routes.js)`
 - `GET /v1/game/cycles/history  (backend/domains/user/user.routes.js)`
 - `GET /v1/system/config  (backend/domains/user/user.routes.js)`
-- `GET /v1/system/time  (backend/domains/user/user.routes.js)`
-- `GET /v1/token/rates  (backend/domains/user/user.routes.js)`
-- `GET /v1/tokens/rate  (backend/domains/user/user.routes.js)`
 - `GET /v1/winners  (backend/routes/winners.routes.js)`
 - `POST /auth/login  (backend/domains/merchant/merchant.routes.js)`
 - `POST /auth/login/2fa  (backend/domains/merchant/merchant.routes.js)`
@@ -3445,7 +3510,6 @@ new route and decide. Each of the three questions is defined in §2.
 - `POST /sub-admins  (backend/routes/admin/subadmins.admin.routes.js)`
 - `POST /users/:userId/queue-manager  (backend/routes/admin/users.admin.routes.js)`
 - `PUT /sub-admins/:subAdminId/permissions  (backend/routes/admin/subadmins.admin.routes.js)`
-- `PUT /users/:userId/roles  (backend/routes/admin/users.admin.routes.js)`
 
 </details>
 
@@ -3453,14 +3517,15 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 476 |
-| Parameters only (safe by construction) | 320 |
-| Interpolating into statement text (each needs a reading) | 153 |
-| Statement text built elsewhere and passed in (each needs a reading) | 3 |
+| `pgQuery` call sites | 415 |
+| Parameters only (safe by construction) | 268 |
+| Interpolating into statement text (each needs a reading) | 143 |
+| Statement text built elsewhere and passed in (each needs a reading) | 4 |
 
 <details><summary>Call sites whose statement text is built elsewhere</summary>
 
 - `database/client.js — sql`
+- `database/repositories/adminTokenConsiderations.js — text`
 - `database/repositories/merchants.js — text`
 - `database/repositories/users.js — text`
 

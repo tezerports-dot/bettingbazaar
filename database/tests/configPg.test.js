@@ -19,7 +19,7 @@ import { pgConfigured, pgQuery, applySchema, closePg } from '../client.js';
 import {
   setConfigPath,
   getConfig, getSystemConfig, getConfigs, applyConfig, applySystemConfig,
-  bumpConfigCounter, getConfigHistory, restoreConfigVersion, defaultsFor,
+  getConfigHistory, restoreConfigVersion, defaultsFor,
   invalidateConfigCache,
 } from '../repositories/config.js';
 import { DEFAULT_CYCLE_PHASES } from '../spec/config.spec.js';
@@ -109,13 +109,11 @@ describePg('the configuration store', () => {
       [{ payoutMultiplier: 0 }, /'payoutMultiplier' must be >= 1/],
       [{ withdrawalHoldMinutes: 100000 }, /'withdrawalHoldMinutes' must be <= 1440/],
       [{ cycleDurationMinutes: 5 }, /'cycleDurationMinutes' must be >= 10/],
-      // Concurrency has a FLOOR and no ceiling: on the UPI rail how many orders
-      // a merchant carries is the operator's judgement (3, 10, 100 — they are
-      // moving bank balance, not holding notes), and the cash rail's 1 is
-      // derived in `concurrencyCapFor` where no setting can reach it. The old
-      // 1..10 cap could only ever bind the rail with no physical constraint.
-      [{ merchantOrderLimits: { maxConcurrentDepositOrders: 0 } },
-        /'merchantOrderLimits\.maxConcurrentDepositOrders' must be >= 1/],
+      // A member always carries at least one order on their team's rail.
+      [{ teamRouting: { concurrency: { UPI_BANK: 0 } } },
+        /'teamRouting\.concurrency\.UPI_BANK' must be >= 1/],
+      [{ teamRouting: { concurrency: { CASH: 11 } } },
+        /'teamRouting\.concurrency\.CASH' must be <= 10/],
     ];
     for (const [patch, message] of bad) {
       await expect(applyConfig({ scope: 'system', docKey: KEY, patch })).rejects.toThrow(message);
@@ -124,21 +122,18 @@ describePg('the configuration store', () => {
     expect((await getConfig('system', { docKey: KEY, fresh: true })).version).toBe(0);
   });
 
-  it('lets an operator set a UPI concurrency well above the old ceiling', async () => {
+  it('lets an operator set a member UPI concurrency anywhere in its range', async () => {
     // The other half of the rule above. The refusal list only ever proves what
     // is refused; deleting the ACCEPTED range would leave it green.
-    //
-    // On the UPI rail this is the operator's judgement about a merchant moving
-    // bank balance. The cash rail's 1 is derived in `concurrencyCapFor`, where
-    // no setting reaches it — so the old 1..10 cap bound only the rail that has
-    // no physical constraint.
     const res = await applyConfig({
       scope: 'system', docKey: KEY,
-      patch: { merchantOrderLimits: { maxConcurrentDepositOrders: 100 } },
+      patch: { teamRouting: { concurrency: { UPI_BANK: 20 } } },
     });
-    expect(res.ok, 'an operator cannot set a UPI concurrency above ten').toBe(true);
+    expect(res.ok).toBe(true);
     const stored = await getConfig('system', { docKey: KEY, fresh: true });
-    expect(stored.merchantOrderLimits.maxConcurrentDepositOrders).toBe(100);
+    expect(stored.teamRouting.concurrency.UPI_BANK).toBe(20);
+    // The siblings keep their schema defaults.
+    expect(stored.teamRouting.concurrency.CASH).toBe(1);
   });
 
   it('refuses a value of the wrong type rather than coercing it into nonsense', async () => {
@@ -193,33 +188,33 @@ describePg('the configuration store', () => {
   });
 
   it('refuses a stale write rather than silently overwriting another admin', async () => {
-    const first = await applyConfig({ scope: 'system', docKey: KEY, patch: { minDeposit: 200 } });
+    const first = await applyConfig({ scope: 'system', docKey: KEY, patch: { maxBalanceAdjustment: 200 } });
     expect(first.version).toBe(1);
 
     // A second admin held a form open across the first admin's save.
     const stale = await applyConfig({
-      scope: 'system', docKey: KEY, patch: { minDeposit: 999 }, expectedVersion: 0,
+      scope: 'system', docKey: KEY, patch: { maxBalanceAdjustment: 999 }, expectedVersion: 0,
     });
     expect(stale).toEqual({ ok: false, reason: 'STALE', currentVersion: 1 });
-    expect((await getConfig('system', { docKey: KEY, fresh: true })).minDeposit).toBe(200);
+    expect((await getConfig('system', { docKey: KEY, fresh: true })).maxBalanceAdjustment).toBe(200);
 
     // With the version it actually read, the same write goes through.
     const ok = await applyConfig({
-      scope: 'system', docKey: KEY, patch: { minDeposit: 999 }, expectedVersion: 1,
+      scope: 'system', docKey: KEY, patch: { maxBalanceAdjustment: 999 }, expectedVersion: 1,
     });
     expect(ok.ok).toBe(true);
     expect(ok.version).toBe(2);
   });
 
   it('restores an earlier version as a NEW version, not by rewinding', async () => {
-    await applyConfig({ scope: 'system', docKey: KEY, patch: { minDeposit: 111 }, actor: 'a' });
-    await applyConfig({ scope: 'system', docKey: KEY, patch: { minDeposit: 222 }, actor: 'b' });
-    expect((await getConfig('system', { docKey: KEY, fresh: true })).minDeposit).toBe(222);
+    await applyConfig({ scope: 'system', docKey: KEY, patch: { maxBalanceAdjustment: 111 }, actor: 'a' });
+    await applyConfig({ scope: 'system', docKey: KEY, patch: { maxBalanceAdjustment: 222 }, actor: 'b' });
+    expect((await getConfig('system', { docKey: KEY, fresh: true })).maxBalanceAdjustment).toBe(222);
 
     const restored = await restoreConfigVersion('system', 1, { docKey: KEY, actor: 'c' });
     expect(restored.ok).toBe(true);
     expect(restored.version).toBe(3);   // forward, never backward
-    expect((await getConfig('system', { docKey: KEY, fresh: true })).minDeposit).toBe(111);
+    expect((await getConfig('system', { docKey: KEY, fresh: true })).maxBalanceAdjustment).toBe(111);
 
     // The trail describes what happened, including the restore itself.
     const history = await getConfigHistory('system', { docKey: KEY });
@@ -231,7 +226,7 @@ describePg('the configuration store', () => {
   });
 
   it('will not let anything rewrite the audit trail', async () => {
-    await applyConfig({ scope: 'system', docKey: KEY, patch: { minDeposit: 300 } });
+    await applyConfig({ scope: 'system', docKey: KEY, patch: { maxBalanceAdjustment: 300 } });
     await expect(pgQuery(
       `UPDATE config_document_versions SET changed_by = 'someone-else'
         WHERE scope = 'system' AND doc_key = $1`, [KEY],
@@ -245,29 +240,9 @@ describePg('the configuration store', () => {
   it('applies a change IMMEDIATELY — a stale limit is worse than a stale banner', async () => {
     // The read below populates the cache. The write must invalidate it rather
     // than let the old limit stand until the TTL expires.
-    expect((await getConfig('system', { docKey: KEY })).maxWithdrawal).toBe(50000);
-    await applyConfig({ scope: 'system', docKey: KEY, patch: { maxWithdrawal: 10000 } });
-    expect((await getConfig('system', { docKey: KEY })).maxWithdrawal).toBe(10000);
-  });
-
-  // ── The supply cap ────────────────────────────────────────────────────────
-  it('holds the token supply cap against concurrent mints', async () => {
-    // A read-modify-write lets two concurrent mints both read the same
-    // `minted` and both pass the cap check, which is how a ceiling stops being
-    // a ceiling. The arithmetic and the check are one statement.
-    await applyConfig({
-      scope: 'system', docKey: KEY,
-      patch: { adminTokenSupply: { total: 1000, transferred: 0 } },
-    });
-
-    const mints = await Promise.all(Array.from({ length: 20 }, () => bumpConfigCounter({
-      scope: 'system', docKey: KEY, path: 'adminTokenSupply.transferred', by: 100, cap: 1000,
-    })));
-    expect(mints.filter((m) => m.ok)).toHaveLength(10);
-    expect(mints.filter((m) => !m.ok).every((m) => m.reason === 'CAP_EXCEEDED')).toBe(true);
-
-    const cfg = await getConfig('system', { docKey: KEY, fresh: true });
-    expect(cfg.adminTokenSupply.transferred).toBe(1000);
+    expect((await getConfig('system', { docKey: KEY })).maxBalanceAdjustment).toBe(1000000);
+    await applyConfig({ scope: 'system', docKey: KEY, patch: { maxBalanceAdjustment: 10000 } });
+    expect((await getConfig('system', { docKey: KEY })).maxBalanceAdjustment).toBe(10000);
   });
 
   // ── Other scopes ──────────────────────────────────────────────────────────
@@ -287,7 +262,7 @@ describePg('the configuration store', () => {
   it('reads several scopes in one call for a panel that renders them all', async () => {
     const all = await getConfigs(['system', 'branding', 'supportLinks'], { docKey: KEY });
     expect(Object.keys(all).sort()).toEqual(['branding', 'supportLinks', 'system']);
-    expect(all.system.kycRequired).toBe(true);
+    expect(all.system.maintenanceMode).toBe(false);
   });
 
   it('keeps scopes apart', async () => {

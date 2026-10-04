@@ -1,0 +1,13 @@
+{
+  "_comment": "Advisories the dependency audit gate (scripts/audit-gate.mjs) tolerates. Each entry is an owner decision, applies only while the package is dev-only in the lockfile and the advisory's range is unchanged, and stops applying by itself once the package publishes a version outside that range. Remove the entry in the change that upgrades past it.",
+  "exceptions": [
+    {
+      "id": "GHSA-vfj7-8cjw-p6xm",
+      "package": "braces",
+      "range": "<=3.0.3",
+      "devOnly": true,
+      "decided": "Vikram (owner), 2026-10-03, on PR #201",
+      "reason": "Stack-exhaustion DoS through deeply nested brace patterns. 3.0.3 is the newest braces ever published, so no fixed version exists. braces reaches every lockfile only through build and dev tools (nodemon, stylelint, Tailwind 3 via chokidar, fast-glob and micromatch), and the patterns those tools expand come from this repository's own config, never from a request. npm audit fix --force would move two panels to Tailwind 4, a held major (CLAUDE.md section 17.1)."
+    }
+  ]
+}

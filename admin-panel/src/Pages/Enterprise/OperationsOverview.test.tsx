@@ -99,11 +99,68 @@ describe('the operations console', () => {
     expect(post.mock.calls[0][0]).toBe('/api/leaderboard/rebuild');
   });
 
-  it('does not offer the rebuild to a sub-admin who was not given maintenance', async () => {
+  it('does not offer the rebuild or retention to a sub-admin who was not given maintenance', async () => {
     useAuthStore.setState({ admin: { isAdmin: false, isSubAdmin: true, permissions: { canViewAnalytics: true } } as any });
     await openChannels();
     await screen.findByText(/admin actions|No admin actions/i).catch(() => undefined);
     expect(screen.queryByRole('button', { name: /Rebuild leaderboard/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Preview retention/ })).toBeNull();
+  });
+
+  // ── Retention (2026-10-01) ──────────────────────────────────────────────
+  // `POST /api/admin/operations/retention/run` had no screen: the nightly job
+  // was the only way it ever ran, and nobody could see what it would take.
+  const PREVIEW = {
+    success: true, dryRun: true, cutoff: '2026-04-01T00:00:00.000Z', totalDeleted: 7,
+    results: { frontendErrors: 4, referralClicks: 2, notifications: 1 },
+  };
+  const DONE = { ...PREVIEW, dryRun: false };
+
+  it('previews first, and offers Prune only after a preview', async () => {
+    post.mockResolvedValueOnce({ data: PREVIEW });
+    await openChannels();
+    expect(screen.queryByRole('button', { name: 'Prune now' })).toBeNull();
+    fireEvent.click(await screen.findByRole('button', { name: /Preview retention/ }));
+    await waitFor(() => expect(post).toHaveBeenCalledWith('/api/admin/operations/retention/run', { dryRun: true }));
+    const result = await screen.findByRole('status', { name: 'Retention result' });
+    expect(result).toHaveTextContent('Would delete 7 row(s)');
+    expect(result).toHaveTextContent('Crash reports');
+    expect(result).toHaveTextContent('Expired referral clicks');
+    expect(screen.getByRole('button', { name: 'Prune now' })).toBeEnabled();
+  });
+
+  it('prunes only once confirmed, with the count and cutoff the preview reported', async () => {
+    post.mockResolvedValueOnce({ data: PREVIEW }).mockResolvedValueOnce({ data: DONE });
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true);
+    await openChannels();
+    fireEvent.click(await screen.findByRole('button', { name: /Preview retention/ }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Prune now' }));
+    expect(confirm.mock.calls[0][0]).toMatch(/Delete 7 row\(s\) older than/);
+    expect(post).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Prune now' }));
+    await waitFor(() => expect(post).toHaveBeenLastCalledWith('/api/admin/operations/retention/run', { dryRun: false }));
+    expect(await screen.findByRole('status', { name: 'Retention result' })).toHaveTextContent('Deleted 7 row(s)');
+    const toast = (await import('react-hot-toast')).default;
+    expect(toast.success).toHaveBeenCalledWith('Retention pruned 7 row(s)');
+    // The result is no longer a preview, so the prune is not offered again on it.
+    expect(screen.queryByRole('button', { name: 'Prune now' })).toBeNull();
+  });
+
+  it('does not offer a prune when the preview found nothing', async () => {
+    post.mockResolvedValueOnce({ data: { ...PREVIEW, totalDeleted: 0, results: { frontendErrors: 0, referralClicks: 0, notifications: 0 } } });
+    await openChannels();
+    fireEvent.click(await screen.findByRole('button', { name: /Preview retention/ }));
+    expect(await screen.findByRole('button', { name: 'Prune now' })).toBeDisabled();
+  });
+
+  it("shows the server's refusal rather than a result", async () => {
+    post.mockRejectedValueOnce({ response: { data: { message: 'Retention stopped before it finished. Run a preview to see what is left.' } } });
+    await openChannels();
+    fireEvent.click(await screen.findByRole('button', { name: /Preview retention/ }));
+    const toast = (await import('react-hot-toast')).default;
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Retention stopped before it finished. Run a preview to see what is left.'));
+    expect(screen.queryByRole('status', { name: 'Retention result' })).toBeNull();
   });
 
   it('survives channels being unavailable without losing the rest', async () => {

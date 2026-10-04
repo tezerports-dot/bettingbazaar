@@ -54,7 +54,6 @@ const record = (name, ok, detail) => {
  */
 const RUN = String(Math.floor(Math.random() * 90000) + 10000);
 const MOBILE = `9${RUN}0001`;
-const AADHAAR = `777${RUN}0001`;
 const PASSWORD = 'a-long-enough-phrase';
 
 /** What the database says, which is the only thing that counts. */
@@ -116,7 +115,7 @@ async function main() {
     const signupTab = page.getByRole('tab', { name: /sign up/i }).first();
     if (await signupTab.count()) { await signupTab.click(); await page.waitForTimeout(300); }
 
-    const onForm = await page.getByLabel(/aadhaar number/i).count() > 0;
+    const onForm = await page.getByLabel(/confirm password/i).count() > 0;
     record('the signup form is reachable from the app', onForm);
     if (!onForm) {
       // Say WHAT is on screen instead. A pass that reports "never reached the
@@ -129,12 +128,11 @@ async function main() {
     }
 
     // ── THE DEFECT, typed ───────────────────────────────────────────────
-    const mobileBox = await type(page, /aadhaar-linked mobile/i, `+91 ${MOBILE}`);
+    const mobileBox = await type(page, /mobile number/i, `+91 ${MOBILE}`);
     const landed = await mobileBox.inputValue();
     record('a mobile typed WITH +91 lands as the ten digits', landed === MOBILE,
       `typed "+91 ${MOBILE}" → "${landed}"`);
 
-    await type(page, /aadhaar number/i, AADHAAR);
     await type(page, /^password$/i, PASSWORD);
     await type(page, /confirm password/i, PASSWORD);
 
@@ -160,14 +158,14 @@ async function main() {
     await settle(page, 10000);
 
     const account = await row(
-      `SELECT user_id, mobile, kyc_status, joining_number, telegram_bot_id, password_hash
+      `SELECT user_id, mobile, status, joining_number, telegram_bot_id, password_hash
          FROM users WHERE mobile = $1`, [MOBILE]);
     record('pressing Create account wrote the ACCOUNT', Boolean(account),
       account ? `${account.user_id} on ${account.mobile}` : 'no row');
     record('the mobile stored is the one they meant',
       account?.mobile === MOBILE, `stored ${account?.mobile}`);
-    record('it is queued for KYC, not approved',
-      account?.kyc_status === 'PENDING_APPROVAL', `kyc_status=${account?.kyc_status}`);
+    record('it is ACTIVE — there is no KYC queue to wait in',
+      account?.status === 'ACTIVE', `status=${account?.status}`);
     record('it has a password hash the login path can read',
       typeof account?.password_hash === 'string' && account.password_hash.length > 20);
     // The two the referral queue depends on.

@@ -76,10 +76,21 @@ export function verifyOrderHmac(orderId, stored) {
 
 
 /**
- * Guard a route that acts on somebody's funding order.
+ * Guard a route that acts on a player's funding order.
  *
  * Two checks, in this order: the order is one this system issued (the tag), and
- * the caller is entitled to it (buyer, its assigned merchant, or an admin).
+ * the caller is the PLAYER whose order it is.
+ *
+ * ── Only the owner (2026-10-01) ─────────────────────────────────────────────
+ * Every route this guards sits behind `authenticatePlayer`, so the only session
+ * that can arrive here is a player's. The guard used to recognise two more
+ * parties — the order's assigned merchant (from `req.merchantId`, which
+ * `authenticate` copied out of a merchant's token) and, on one route, a full
+ * admin — and both were how a session reached the PLAYER's actions on the
+ * player's order: a merchant read the player's projection of an order assigned
+ * to them, and a sub-admin could raise a dispute recorded as the player's. A
+ * merchant acts on orders through `merchantAuth` and the merchant routes; staff
+ * through the admin routes, gated by area. Neither is a party here.
  *
  * ── What changed with the store ────────────────────────────────────────────
  * The version this replaces looked the order up with `$or: [{orderId}, {_id:
@@ -102,23 +113,7 @@ export function verifyOrderHmac(orderId, stored) {
  * `deriveOrderHmac` warns at the first order and the guard degrades with it.
  * Production cannot be that deployment; `validateEnv` refuses to boot it.
  */
-export const orderAccessGuard = guardOrder({ admitAdmin: false });
-
-/**
- * The same guard for the ONE player-side route a staff member may use: the
- * deposit confirm, where a full admin force-completing a buy is a real case.
- *
- * Everywhere else the order routes are the PLAYER's and the assigned merchant's.
- * They used to admit any staff account, so a sub-admin holding nothing but
- * chat moderation could read any player's order, submit a payment reference on
- * it, or raise a dispute recorded as `disputeRaisedBy: 'user'` — a dispute the
- * player never raised, attributed to them (2026-10-01). A full admin acts on
- * orders through the admin routes, which are gated by area.
- */
-export const orderAccessGuardOrAdmin = guardOrder({ admitAdmin: true });
-
-function guardOrder({ admitAdmin }) {
-  return async function orderAccess(req, res, next) {
+export async function orderAccessGuard(req, res, next) {
   try {
     const orderId = req.params.orderId || req.body?.orderId;
     if (!orderId) return res.status(400).json({ success: false, message: 'orderId required' });
@@ -148,24 +143,10 @@ function guardOrder({ admitAdmin }) {
       return refuse();
     }
 
-    // A merchant arrives through `merchantAuth`, which sets `req.merchantId`
-    // and does NOT set `req.user`. This read `req.user?.isMerchant`, a field no
-    // middleware on this path populates, so the guard could never recognise a
-    // merchant — mounting it as written would have refused every merchant
-    // confirm on the deposit path.
     const uid = req.user?.userId ? String(req.user.userId) : null;
-    const isBuyer = uid !== null && String(order.userId) === uid;
-    const isMerchant = req.merchantId != null
-      && order.merchantId != null && String(order.merchantId) === String(req.merchantId);
-    // A FULL admin, and only on the route that asked for one. A sub-admin is
-    // never an order's party: what they may do with orders is decided by their
-    // area on the admin routes, not by this door.
-    const isAdmin = admitAdmin && req.user?.isAdmin === true && req.user?.isBlocked !== true;
-
-    if (!isBuyer && !isMerchant && !isAdmin) return refuse();
+    if (uid === null || String(order.userId) !== uid) return refuse();
 
     req.p2pOrder = order;
-    req.orderRole = isAdmin ? 'admin' : (isMerchant ? 'merchant' : 'buyer');
     next();
   } catch (e) {
     // FAILS CLOSED. This guard decides who may act on somebody else's money, so
@@ -174,5 +155,4 @@ function guardOrder({ admitAdmin }) {
     console.error('[orderAccessGuard] access check failed:', e.message);
     res.status(500).json({ success: false, message: 'Access check failed' });
   }
-  };
 }

@@ -11,15 +11,14 @@ import { creditDeposit, creditReserve } from '../wallet/walletAuthority.service.
 // The one owner of how an admin decision ends a withdrawal's money, and of a
 // cancelled buy's merchant hold. Both routes below end orders both ways.
 import { endWithdrawal } from './withdrawalHold.service.js';
-import { releaseForOrder } from '../merchant/depositEscrow.service.js';
+import { recordDisputeLoser } from '../disputes/disputeOutcome.service.js';
 // The one owner of a confirmed deposit's money movement. The merchant confirm
 // route calls the same function; that is what keeps the two from disagreeing.
 import { moveDepositMoney } from './depositCredit.js';
 import { releaseUTR } from '../../middleware/utrValidation.js';
 // The order state machine. Every status change goes through here so an illegal
 // move is refused by the database rather than by whichever check ran first.
-import { completeOrder, cancelOrder } from './orderLifecycle.service.js';
-import { debitMerchantTokens } from '../merchant/merchantWallet.service.js';
+import { completeOrder, cancelOrder, canTransition } from './orderLifecycle.service.js';
 import { emitAdminUpdate, emitOrderUpdate, emitWalletUpdate } from '../notification/realtimeEmitters.js';
 
 const router = express.Router();
@@ -61,24 +60,34 @@ router.post('/payment-orders/:orderId/action', authenticate, hasPermission('canR
     }
 
     // ── APPROVE on a deposit: money BEFORE status ───────────────────────────
-    // The merchant must be debited for what the player is credited, or an
+    // The team's pool must part with what the player is credited, or an
     // approval mints tokens. This route used to credit `tokenAmount` in one
     // lump, never debit the merchant and never release the UTR, so the books
     // did not close and nothing said so. It now moves the money through the
     // same function the merchant confirm route uses.
     //
-    // The order is deliberate: refusing (a merchant who cannot cover it) is the
-    // ordinary case and must refuse before the order advances. Every movement
+    // The order is deliberate: refusing (a pool that cannot cover it) must
+    // happen before the order advances. Every movement
     // is keyed on the order id, so a crash between the money and the transition
     // leaves a retryable PAID order rather than a COMPLETED one that paid
     // nobody.
+    // An APPROVE the order cannot take is refused BEFORE any money moves: a
+    // REJECTED buy approved here paid the player out and then answered 409
+    // (security review, 2026-10-03). The read answers the common case; the
+    // spend asks the same question again under the order's lock.
+    if (action === 'APPROVE' && !canTransition(order.status, 'COMPLETED')) {
+      return res.status(409).json({ success: false, message: `Cannot APPROVE an order that is ${order.status}` });
+    }
     let deposited = null;
     if (action === 'APPROVE' && order.type === 'DEPOSIT') {
       deposited = await moveDepositMoney(order, {
-        debitMerchantTokens, creditDeposit, creditReserve, releaseUTR,
+        creditDeposit, creditReserve, releaseUTR, requireState: order.status,
       });
+      if (!deposited.ok && deposited.reason === 'order_state') {
+        return res.status(409).json({ success: false, message: 'The order changed while this was being approved. Nothing was credited; refresh and decide again.' });
+      }
       if (!deposited.ok) {
-        return res.status(400).json({ success: false, message: 'Merchant insufficient token balance' });
+        return res.status(409).json({ success: false, message: 'The team\'s token pool cannot cover this buy. Nothing was credited; the order stays as it is.' });
       }
     }
 
@@ -90,13 +99,21 @@ router.post('/payment-orders/:orderId/action', authenticate, hasPermission('canR
     // threw on EVERY call, so this route 500'd on every approve, reject and
     // cancel an admin has ever clicked. The reason belongs in `cancelReason`,
     // which the allowlist does carry.
+    // A decision taken on a DISPUTED order is a dispute OUTCOME (2c+): it is
+    // pinned to the state it was read in, so whoever it suspends below is the
+    // party this decision actually went against, not one another admin's
+    // decision already settled.
+    const wasDispute = order.status === 'DISPUTED';
+    const pin = wasDispute ? { expectFrom: 'DISPUTED' } : {};
     let moved;
     if (action === 'APPROVE') {
       moved = await completeOrder(order._id, {
+        ...pin,
         set: { completedAt: new Date(), approvedBy: req.user.userId, approvedAt: new Date() },
       });
     } else {
       moved = await cancelOrder(order._id, {
+        ...pin,
         set: {
           cancelledAt: new Date(),
           cancelReason: reason || `${action === 'REJECT' ? 'Rejected' : 'Cancelled'} by admin`,
@@ -116,7 +133,8 @@ router.post('/payment-orders/:orderId/action', authenticate, hasPermission('canR
       // refused because the order is not in a state this action is valid from.
       return res.status(409).json({
         success: false,
-        message: `Cannot ${action} an order that is ${moved.status ?? 'missing'}`,
+        message: moved.reason === 'pool_paid'
+          ? 'The team\'s tokens for this buy were already paid to the player, so it can only be completed.' : `Cannot ${action} an order that is ${moved.status ?? 'missing'}`,
         reason: moved.reason,
       });
     }
@@ -142,10 +160,19 @@ router.post('/payment-orders/:orderId/action', authenticate, hasPermission('canR
         });
       }
     } else if (action !== 'APPROVE') {
-      // A buy that will not be served gives its merchant's tokens back. The
-      // stranded-hold sweep would find it in fifteen minutes and log it as a
-      // path that forgot — this route was that path.
-      await releaseForOrder(order, { actor: `admin:${req.user.userId}`, reason: reason || `${action} by admin` });
+      // A buy that will not be served gives its team's held tokens back to the
+      // pool, here, rather than leaving them for the stranded-hold report.
+      await db.teamPools.releaseBuyHold(order.orderId, { actor: `admin:${req.user.userId}`, reason: reason || `${action} by admin` });
+    }
+
+    // Whoever lost the dispute is suspended — the same consequence the two
+    // resolve routes apply (§32 S3). Keyed by the order, so a replay is a no-op.
+    if (wasDispute) {
+      await recordDisputeLoser(order, {
+        completed: action === 'APPROVE',
+        decision: action === 'APPROVE' ? 'RELEASE_TO_USER' : 'CANCEL_ORDER',
+        by: req.user.userId,
+      });
     }
 
     const settled = moved.order ?? order;
@@ -215,7 +242,8 @@ router.post('/payment-orders/:orderId/resolve', authenticate, hasPermission('can
     if (!resolved.ok) {
       return res.status(409).json({
         success: false,
-        message: `Can only resolve DISPUTED orders. Current: ${resolved.status ?? 'missing'}`,
+        message: resolved.reason === 'pool_paid'
+          ? 'The team\'s tokens for this buy were already paid to the player, so it can only be completed.' : `Can only resolve DISPUTED orders. Current: ${resolved.status ?? 'missing'}`,
       });
     }
     // A withdrawal's money step is keyed end to end, so replaying it on a
@@ -225,8 +253,18 @@ router.post('/payment-orders/:orderId/resolve', authenticate, hasPermission('can
     const endWithdrawalAs = (decision) => endWithdrawal(order.orderId, decision, {
       reason: reason.trim(), by: req.user.userId,
     });
+    // Whoever lost the dispute is suspended (2c+) — the same consequence the
+    // Dispute Manager applies, through the same owner (§32 S3). The order as
+    // read is DISPUTED (checked above); the record is keyed by the order.
+    const asDecided = { ...order };
+    const outcome = {
+      completed: resolution === 'release',
+      decision: resolution === 'release' ? 'RELEASE_TO_USER' : 'CANCEL_ORDER',
+      by: req.user.userId,
+    };
     if (resolved.idempotent) {
       if (order.type === 'WITHDRAWAL') await endWithdrawalAs(resolution === 'release' ? 'RELEASE' : 'REFUND');
+      await recordDisputeLoser(asDecided, outcome);
       return res.json({ success: true, message: 'Dispute already resolved', order: resolved.order ?? order });
     }
 
@@ -255,13 +293,12 @@ router.post('/payment-orders/:orderId/resolve', authenticate, hasPermission('can
         //                 and three of those stop them opening a new order for
         //                 an hour, on both rails (§2).
         //
-        // `allowOverdraft` keeps this site's documented semantics: an admin has
-        // already decided, and the transition above has already committed, so
-        // refusing the money now would leave the order resolved and the player
-        // uncredited. The merchant going negative is correct — they owe it.
+        // A DISPUTED buy keeps its pool hold, so this spends it. If the hold is
+        // somehow gone and the pool cannot cover it, `moveDepositMoney` reports
+        // it and the log below makes it a case a person sees.
+        // Completed by the transition above, so it is paid out from COMPLETED.
         const moved = await moveDepositMoney(order, {
-          debitMerchantTokens, creditDeposit, creditReserve, releaseUTR,
-          allowOverdraft: true,
+          creditDeposit, creditReserve, releaseUTR, requireState: 'COMPLETED',
         });
         if (!moved.ok) {
           // `moveDepositMoney` has already reported it. Loud here too: the
@@ -318,7 +355,7 @@ router.post('/payment-orders/:orderId/resolve', authenticate, hasPermission('can
         // No tokens were credited to the player yet, so none come back — but
         // the merchant's tokens held for this buy do. This route released
         // nothing, leaving them for the stranded-hold sweep.
-        await releaseForOrder(order, { actor: `admin:${req.user.userId}`, reason: reason.trim() });
+        await db.teamPools.releaseBuyHold(order.orderId, { actor: `admin:${req.user.userId}`, reason: reason.trim() });
       } else {
         // WITHDRAWAL: the stake goes back OUT OF THE LOCK. This credited
         // winnings and left the lock standing, so the wallet read the amount
@@ -350,6 +387,10 @@ router.post('/payment-orders/:orderId/resolve', authenticate, hasPermission('can
         orderId: order.orderId, _id: order.orderId, status: 'CANCELLED', server_ts: Date.now(),
       });
     }
+
+    // After the money: the suspension narrates a decision that has committed
+    // and its money that has moved (§21), and must not stand in front of them.
+    await recordDisputeLoser(asDecided, outcome);
 
     emitAdminUpdate('queue_order_update', {
       orderId: order.orderId, status: order.status, server_ts: Date.now(),

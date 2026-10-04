@@ -12,19 +12,13 @@
  * another. There is no balance column on `users`, not a cached one, not one
  * "just for the admin list". Every balance read goes to `walletPg`.
  *
- * **KYC decisions.** `user_kyc` owns them and `kyc_transitions` is their audit
- * trail. `users.kyc_status` is the denormalised copy the authorisation checks
- * read on every request — cheap, and correct only because `setKycStatus` below
- * is called inside the SAME transaction that writes the decision. Never write
- * one without the other.
- *
  * ── Integers cross the boundary here ─────────────────────────────────────────
  * node-postgres returns BIGINT as a STRING. Left uncast, `'900' >= 1000` is
  * true and every comparison against it is silently wrong. `toInt` is applied to
  * every BIGINT column on the way out, once, at this boundary.
  */
 import { randomBytes } from 'node:crypto';
-import { pgQuery, getPool, connectGuarded } from '../client.js';
+import { pgQuery } from '../client.js';
 
 /**
  * A new account id.
@@ -51,9 +45,9 @@ const toInt = (v) => (v == null ? null : Number(v));
 const COLUMNS = `
   user_id, username, mobile, password_hash,
   joining_number, referral_code, referral_clicks, referred_by,
-  status, kyc_status, kyc_submission_count, wallet_address, profile_pic, warning_count,
+  status, wallet_address, profile_pic, warning_count,
   payment_flagged, payment_flag_reason, payment_flagged_at, payment_flag_count,
-  consecutive_payment_failures, order_lock_until,
+  consecutive_payment_failures, order_lock_until, lost_disputes, high_risk_at,
   is_admin, is_sub_admin, is_queue_manager, is_mediator,
   sub_admin_role, sub_admin_permissions, phantom_access,
   two_factor_enabled, two_factor_secret, two_factor_pending_secret,
@@ -78,7 +72,7 @@ const COLUMNS = `
  */
 const UPDATABLE = Object.freeze(new Set([
   'username', 'password_hash', 'referral_code', 'referral_clicks', 'referred_by',
-  'status', 'kyc_status', 'wallet_address', 'profile_pic', 'warning_count',
+  'status', 'wallet_address', 'profile_pic', 'warning_count',
   'payment_flagged', 'payment_flag_reason', 'payment_flagged_at', 'payment_flag_count',
   'consecutive_payment_failures', 'order_lock_until',
   'is_admin', 'is_sub_admin', 'is_queue_manager', 'is_mediator',
@@ -151,8 +145,6 @@ function toUser(row) {
     referralClicks: toInt(row.referral_clicks),
     referredBy: row.referred_by,
     status: row.status,
-    kycStatus: row.kyc_status,
-    kycSubmissionCount: row.kyc_submission_count,
     walletAddress: row.wallet_address,
     profilePic: row.profile_pic,
     warningCount: row.warning_count,
@@ -162,6 +154,10 @@ function toUser(row) {
     paymentFlagCount: row.payment_flag_count,
     consecutivePaymentFailures: row.consecutive_payment_failures,
     orderLockUntil: row.order_lock_until,
+    // Lost payment disputes and, from the third, when high-risk review opened
+    // (2c+, `disputeFaults.js`). Only a full admin lifts a block while it is set.
+    lostDisputes: toInt(row.lost_disputes) ?? 0,
+    highRiskAt: row.high_risk_at ?? null,
     isAdmin: row.is_admin,
     isSubAdmin: row.is_sub_admin,
     isQueueManager: row.is_queue_manager,
@@ -357,7 +353,7 @@ export async function consumeTwoFactorBackupCode(userId, { expected, remaining }
 export async function createUser({
   userId, username, mobile, passwordHash = null, referralCode = null,
   referredBy = null, status = 'ACTIVE', isAdmin = false,
-  kycStatus = 'PENDING_SUBMISSION', kycSubmissionCount = 0, client = null,
+  client = null,
   // PLAYER unless a caller says otherwise. The default is safe here in a way it
   // is not on the READ: creating a player by accident is refused by the unique
   // index the moment that mobile already holds one, whereas READING the wrong
@@ -368,22 +364,19 @@ export async function createUser({
   if (!mobile) throw new Error('createUser requires a mobile');
 
   // `client` lets a caller enlist this insert in a transaction it already
-  // owns — the signup writes the account, the identity and the KYC row
-  // together or not at all.
+  // owns.
   const run = client
     ? (text, params) => client.query(text, params)
     : (text, params) => pgQuery(text, params, 'user_create');
 
   const { rows } = await run(
     `INSERT INTO users (user_id, username, mobile, password_hash, referral_code,
-                        referred_by, status, is_admin, kyc_status, kyc_submission_count,
-                        account_type)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                        referred_by, status, is_admin, account_type)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
      ON CONFLICT (mobile, account_type) DO NOTHING
      RETURNING ${COLUMNS}`,
     [String(userId), username ?? '', String(mobile), passwordHash, referralCode,
-     referredBy ? String(referredBy) : null, status, isAdmin,
-     kycStatus, kycSubmissionCount, accountType],
+     referredBy ? String(referredBy) : null, status, isAdmin, accountType],
   );
   if (rows[0]) return { user: toUser(rows[0]), created: true };
   // The row that won the race — of the SAME type. Reading by mobile alone would
@@ -591,76 +584,39 @@ export async function flagPaymentWarning(userId, { reason, maxWarnings = 0 }) {
  * Gaps in the numbering are fine: this is an ORDER, not a count. A gap costs
  * nothing; a collision costs a player their signup.
  *
- * Idempotent: an account that already holds a number keeps it — `COALESCE`
- * only calls `nextval` when the column is null. Onboarding can complete twice
+ * Idempotent: an account that already holds a number keeps it — `nextval`
+ * runs only when the column is null. Onboarding can complete twice
  * (a retried webhook, a resumed flow) and must not consume two.
  */
 export async function claimJoiningNumber(userId) {
+  // ── The referral programme's member count moves in the SAME statement ────
+  // `referral_programmes.verified_members` counted KYC approvals until KYC was
+  // removed (2026-10-02), and then nothing advanced it: the admin's "Verified
+  // members" read 0 forever (§32 S4). Verification is now the Telegram step,
+  // and this claim is the moment it completes — so the count rides on it.
+  // `joining_number IS NULL` in the WHERE is what makes it exactly-once: a
+  // redelivered join, or two arriving together, find no row on the second
+  // pass (the row lock re-evaluates the WHERE), so nothing is counted twice.
+  // The cap is in the counter's own WHERE; reaching it stops the count, as
+  // the KYC path did, and refuses nobody their number.
   const { rows } = await pgQuery(
-    `UPDATE users
-        SET joining_number = COALESCE(joining_number, nextval('joining_number_seq')),
-            updated_at = now()
-      WHERE user_id = $1
-      RETURNING joining_number`,
+    `WITH claimed AS (
+       UPDATE users
+          SET joining_number = nextval('joining_number_seq'), updated_at = now()
+        WHERE user_id = $1 AND joining_number IS NULL
+        RETURNING joining_number
+     ), counted AS (
+       UPDATE referral_programmes
+          SET verified_members = verified_members + 1, updated_at = now()
+        WHERE programme_key = 'main' AND EXISTS (SELECT 1 FROM claimed)
+          AND (member_cap = 0 OR verified_members < member_cap)
+        RETURNING 1
+     )
+     SELECT COALESCE((SELECT joining_number FROM claimed),
+                     (SELECT joining_number FROM users WHERE user_id = $1)) AS joining_number`,
     [String(userId)], 'user_claim_joining_number',
   );
   return toInt(rows[0]?.joining_number);
-}
-
-/**
- * Claim one KYC submission, refusing past the cap.
- *
- * The comparison and the increment are ONE statement, so two submissions
- * arriving together cannot both read the same count and both pass. A
- * read-then-write would let the cap be exceeded by exactly the number of
- * requests in flight — and the cap is what stops "submit a number, learn
- * whether it is registered" from being a repeatable enumeration oracle.
- *
- * @returns {Promise<number|null>} the new count, or null when the cap refused.
- */
-export async function claimKycSubmission(userId, cap) {
-  const { rows } = await pgQuery(
-    `UPDATE users SET kyc_submission_count = kyc_submission_count + 1, updated_at = now()
-      WHERE user_id = $1 AND kyc_submission_count < $2
-      RETURNING kyc_submission_count`,
-    [String(userId), cap], 'user_claim_kyc_submission',
-  );
-  return rows[0] ? Number(rows[0].kyc_submission_count) : null;
-}
-
-/**
- * Give a claimed submission back, because it never entered the queue.
- *
- * Floored at zero: a release that ran twice — a retry, a crash between the two
- * failure paths — must not hand out a free attempt.
- */
-export async function releaseKycSubmission(userId) {
-  const { rows } = await pgQuery(
-    `UPDATE users SET kyc_submission_count = GREATEST(kyc_submission_count - 1, 0),
-                      updated_at = now()
-      WHERE user_id = $1
-      RETURNING kyc_submission_count`,
-    [String(userId)], 'user_release_kyc_submission',
-  );
-  return rows[0] ? Number(rows[0].kyc_submission_count) : null;
-}
-
-/**
- * Set the denormalised KYC status.
- *
- * `client` is REQUIRED and is not a convenience: this column is a copy of a
- * decision `user_kyc` owns, and the only thing that makes a copy safe is that
- * it is written in the same transaction as the original. Called without one,
- * the two can diverge — and the one that authorisation reads is this one.
- */
-export async function setKycStatus(client, userId, kycStatus) {
-  if (!client) throw new Error('setKycStatus must run inside the transaction that records the decision');
-  const { rows } = await client.query(
-    `UPDATE users SET kyc_status = $2, updated_at = now()
-      WHERE user_id = $1 RETURNING kyc_status`,
-    [String(userId), kycStatus],
-  );
-  return rows[0]?.kyc_status ?? null;
 }
 
 /**
@@ -670,7 +626,7 @@ export async function setKycStatus(client, userId, kycStatus) {
  * without them (`users_blocked_has_reason`). "Blocked, reason unknown" is a
  * support ticket nobody can answer and an appeal nobody can review.
  */
-export async function setBlocked(userId, { blocked, reason = null, actor = null }) {
+export async function setBlocked(userId, { blocked, reason = null, actor = null, mayLiftHighRisk = false }) {
   if (blocked && !reason) throw new Error('setBlocked: a block requires a reason');
   const { rows } = await pgQuery(
     `UPDATE users
@@ -693,10 +649,18 @@ export async function setBlocked(userId, { blocked, reason = null, actor = null 
               WHEN $2 AND status = 'ACTIVE'  THEN 'BLOCKED'
               WHEN NOT $2 AND status = 'BLOCKED' THEN 'ACTIVE'
               ELSE status END,
+            -- A full admin's lift closes the high-risk review it answers; the
+            -- lost-dispute count stays, so the next loss reopens it at once.
+            high_risk_at = CASE WHEN NOT $2 AND $5 THEN NULL ELSE high_risk_at END,
             updated_at   = now()
       WHERE user_id = $1
+        -- ── High-risk review: only a full admin lifts it (owner, 2c+) ─────
+        -- In the WHERE, not in the route: a third lost dispute can land
+        -- between a sub-admin opening the account and pressing Unblock, and
+        -- a read in the route would let that press through (§32 S6).
+        AND ($2 OR $5 OR high_risk_at IS NULL)
       RETURNING ${COLUMNS}`,
-    [String(userId), Boolean(blocked), reason, actor ? String(actor) : null],
+    [String(userId), Boolean(blocked), reason, actor ? String(actor) : null, Boolean(mayLiftHighRisk)],
     'user_set_blocked',
   );
   return toUser(rows[0]);
@@ -746,10 +710,18 @@ export async function setRoles(userId, roles = []) {
  */
 export async function softDeleteUser(userId, { actor }) {
   if (!actor) throw new Error('softDeleteUser requires an actor');
+  // PLAYER rows only, in the WHERE. The route is the players area
+  // (`canManageUsers`), and without this a sub-admin holding it could close a
+  // STAFF account — the full admin's included — or a merchant's login.
+  //
+  // `sessions_valid_from = now()` in the same statement, for the reason a
+  // password reset moves it: sessions are stateless, so this cutoff is the only
+  // way to evict the ones already issued, and it is the one every path that
+  // verifies a token checks — sockets and SSE streams included.
   const { rows } = await pgQuery(
     `UPDATE users SET status = 'DELETED', deleted_at = now(), deleted_by = $2,
-            updated_at = now()
-      WHERE user_id = $1 AND status <> 'DELETED'
+            sessions_valid_from = now(), updated_at = now()
+      WHERE user_id = $1 AND status <> 'DELETED' AND account_type = 'PLAYER'
       RETURNING ${COLUMNS}`,
     [String(userId), String(actor)], 'user_soft_delete',
   );
@@ -767,8 +739,8 @@ export async function softDeleteUser(userId, { actor }) {
  */
 export async function listUsers({
   status = null, isAdmin = null, isSubAdmin = null, isQueueManager = null,
-  kycStatus = null, blocked = null, flagged = null, search = null,
-  excludeRole = null, limit = 50, cursor = null, page = null,
+  blocked = null, flagged = null, search = null,
+  excludeRole = null, accountType = null, limit = 50, cursor = null, page = null,
 } = {}) {
   const where = [];
   const params = [];
@@ -794,12 +766,14 @@ export async function listUsers({
   if (isAdmin !== null) add('is_admin = $?', Boolean(isAdmin));
   if (isSubAdmin !== null) add('is_sub_admin = $?', Boolean(isSubAdmin));
   if (isQueueManager !== null) add('is_queue_manager = $?', Boolean(isQueueManager));
-  if (kycStatus) add('kyc_status = $?', String(kycStatus));
   if (blocked !== null) add('is_blocked = $?', Boolean(blocked));
   if (flagged !== null) add('payment_flagged = $?', Boolean(flagged));
   // Merchants are a separate entity with their own record and login; the
   // player list excludes them by the role they were created with.
   if (excludeRole) add('NOT ($? = ANY(roles))', String(excludeRole));
+  // One population — PLAYER, STAFF or MERCHANT (`users.account_type`). A lookup
+  // that is about players' money asks for players and nothing else (§32 S30).
+  if (accountType) add('account_type = $?', String(accountType));
   // Anchored prefix match, so the index is usable and the pattern cannot be
   // turned into a leading-wildcard scan of every account by the search box.
   if (search) add('(username ILIKE $? || \'%\' OR mobile LIKE $? || \'%\')', String(search));
@@ -973,10 +947,9 @@ export async function listQueueManagers() {
 }
 
 /** How many accounts match a status. Counted from rows, never accumulated. */
-export async function countUsers({ status = null, kycStatus = null } = {}) {
+export async function countUsers({ status = null } = {}) {
   const where = []; const params = [];
   if (status) { params.push(String(status)); where.push(`status = $${params.length}`); }
-  if (kycStatus) { params.push(String(kycStatus)); where.push(`kyc_status = $${params.length}`); }
   const { rows } = await pgQuery(
     `SELECT count(*)::bigint AS n FROM users
       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}`,
@@ -985,23 +958,3 @@ export async function countUsers({ status = null, kycStatus = null } = {}) {
   return toInt(rows[0]?.n) ?? 0;
 }
 
-/**
- * Run `fn` inside a transaction, so a caller can write a user and something
- * else atomically — a KYC decision and the status copy it implies, an account
- * and its wallet row.
- */
-export async function withUserTransaction(fn) {
-  const pool = await getPool();
-  const client = await connectGuarded(pool);
-  try {
-    await client.query('BEGIN');
-    const value = await fn(client);
-    await client.query('COMMIT');
-    return value;
-  } catch (e) {
-    await client.query('ROLLBACK').catch(() => {});
-    throw e;
-  } finally {
-    client.release();
-  }
-}

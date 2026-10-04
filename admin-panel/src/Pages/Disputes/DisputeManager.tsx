@@ -4,7 +4,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import {
   AlertTriangle, CheckCircle, RefreshCw, Send,
-  MessageSquare, Scale, Image as ImgIcon, Clock, Banknote, Eye,
+  MessageSquare, Scale, Image as ImgIcon, Clock,
 } from 'lucide-react';
 import { Modal } from '../../components/Modal';
 import { StatusBadge } from '../../components/StatusBadge';
@@ -30,23 +30,18 @@ interface Dispute {
   disputeResolvedBy?: { username: string };
   utrNumber?: string;
   proofScreenshot?: string;
+  /** Who each decision suspends, from the server's one rule
+   *  (backend/domains/disputes/disputeOutcome.service.js): 'PLAYER', 'MERCHANT'
+   *  (the team member), or null when it is not a dispute about a payment. */
+  suspendsIfToUser?: 'PLAYER' | 'MERCHANT' | null;
+  suspendsIfToMerchant?: 'PLAYER' | 'MERCHANT' | null;
 }
 
-/**
- * A CDM deposit slip — account number, branch, timestamp, bank reference.
- *
- * The strongest evidence in a cash-payout dispute and the least appropriate
- * thing to hand back to either party, so neither the player nor the merchant
- * who uploaded it can read one. `toOrder` does not map the columns, which is
- * what makes that true by construction rather than by every reader remembering
- * to strip them.
- */
-interface CdmSlip {
-  orderId: string;
-  merchantId: string;
-  transactionId: string;
-  receiptUrl: string;
-  submittedAt: string;
+/** The note under the decision: who the server will suspend if it is taken. */
+function suspensionNote(party: 'PLAYER' | 'MERCHANT' | null | undefined): string {
+  if (party === 'MERCHANT') return 'The team member on this order will be suspended. A sub-admin or admin must lift it; after a third lost dispute only an admin can.';
+  if (party === 'PLAYER') return 'The player will be suspended. A sub-admin or admin must lift it; after a third lost dispute only an admin can.';
+  return 'Nobody is suspended by this decision: it is not a dispute over whether a payment was made (a member\'s red flag, or a buy disputed after it completed).';
 }
 
 interface ChatMsg {
@@ -88,35 +83,9 @@ export const DisputeManager: React.FC = () => {
   // Resolve tab state
   const [decision, setDecision]           = useState('RELEASE_TO_USER');
   const [resolution, setResolution]       = useState('');
-  const [refundAmt, setRefundAmt]         = useState('');
-  const [penaltyAmt, setPenaltyAmt]       = useState('');
   const [isSaving, setIsSaving]           = useState(false);
 
   const [filterStatus, setFilterStatus]   = useState('all');
-
-  // The CDM slip for a cash payout. NEVER fetched when the modal opens: every
-  // read is written to the audit log, so loading one because somebody glanced
-  // at a dispute would record a slip view for every order anybody opened, and
-  // "who looked at this player's bank slip" would stop having an answer. It is
-  // a click, and the click is the thing being recorded.
-  const [slip, setSlip]                   = useState<CdmSlip | null>(null);
-  const [slipNote, setSlipNote]           = useState('');
-  const [slipLoading, setSlipLoading]     = useState(false);
-
-  const readSlip = async (orderId: string) => {
-    setSlipLoading(true);
-    setSlip(null);
-    setSlipNote('');
-    try {
-      const res = await api.disputes.getCdmReceipt(orderId);
-      if (res?.receipt) setSlip(res.receipt);
-      // Not an error, and a different fact from "no such order": the merchant's
-      // confirm completes the payout and the slip is chased afterwards, so a
-      // settled order legitimately has none yet.
-      else setSlipNote(res?.message || 'No CDM receipt has been submitted for this order.');
-    } catch { toast.error('Failed to read that receipt'); }
-    finally { setSlipLoading(false); }
-  };
 
   // ── Load disputes list ────────────────────────────────────────────────────
   const load = async () => {
@@ -160,14 +129,6 @@ export const DisputeManager: React.FC = () => {
     setActiveTab('chat');
     setDecision('RELEASE_TO_USER');
     setResolution('');
-    setRefundAmt('');
-    setPenaltyAmt('');
-    // Cleared with the rest of the per-dispute state. A slip left behind from
-    // the previously opened dispute would render this player's decision against
-    // another player's bank slip — the same shape as the KYC screen matching
-    // the first row every time, and worse, because this one is evidence.
-    setSlip(null);
-    setSlipNote('');
     await loadChat(d);
   };
 
@@ -200,8 +161,6 @@ export const DisputeManager: React.FC = () => {
       await api.post(`/api/admin/dispute-orders/${selected._id}/resolve`, {
         decision,
         resolution: resolution.trim(),
-        refundAmount:  refundAmt  ? parseFloat(refundAmt)  : undefined,
-        penaltyAmount: penaltyAmt ? parseFloat(penaltyAmt) : undefined,
       });
       toast.success('Dispute resolved');
       setSelected(null);
@@ -350,39 +309,6 @@ export const DisputeManager: React.FC = () => {
               {selected.utrNumber && (
                 <div className="text-xs"><span className="text-gray-400">UTR: </span><span className="font-mono text-green-400">{selected.utrNumber}</span></div>
               )}
-
-              {/* On a cash payout the merchant deposits notes at a CDM and the
-                  slip is the evidence this dispute turns on. Offered on every
-                  withdrawal rather than gated on the rail: a UPI-rail payout
-                  simply has none, and the server answers that without recording
-                  a read. */}
-              {selected.type === 'WITHDRAWAL' && (
-                <div className="mt-2 pt-2 border-t border-dark-600">
-                  {slip ? (
-                    <div className="space-y-2">
-                      <div className="text-xs">
-                        <span className="text-gray-400">CDM bank txn: </span>
-                        <span className="font-mono text-green-400">{slip.transactionId}</span>
-                        <span className="text-gray-400"> · {fmtDate(slip.submittedAt)}</span>
-                      </div>
-                      <a href={slip.receiptUrl} target="_blank" rel="noreferrer" className="block">
-                        <img src={slip.receiptUrl} alt="CDM deposit slip" className="w-full max-h-64 object-contain rounded-lg border border-dark-600" />
-                      </a>
-                    </div>
-                  ) : slipNote ? (
-                    <div className="text-xs text-gray-400">{slipNote}</div>
-                  ) : (
-                    <button
-                      onClick={() => void readSlip(selected.orderId)}
-                      disabled={slipLoading}
-                      className="flex items-center gap-1.5 text-xs font-medium text-gold-500 hover:text-gold-400 disabled:opacity-40"
-                    >
-                      <Banknote size={13} /> <Eye size={13} />
-                      {slipLoading ? 'Reading…' : 'Read the CDM slip (recorded against you)'}
-                    </button>
-                  )}
-                </div>
-              )}
             </div>
 
             {/* Tabs */}
@@ -449,32 +375,30 @@ export const DisputeManager: React.FC = () => {
             {/* Resolve tab */}
             {activeTab === 'resolve' && (
               <div className="space-y-4 overflow-y-auto flex-1">
+                {/* The values are the three the resolve route accepts
+                    (disputeResolution.admin.routes.js). The options used to be
+                    FAVOR_USER / FAVOR_MERCHANT / SPLIT, which the route refuses
+                    as "Invalid decision", so only the untouched default could
+                    ever be sent: no dispute could be decided for the team. */}
                 <div>
                   <label className="label" htmlFor="decision">Decision</label>
                   <select id="decision" value={decision} onChange={e => setDecision(e.target.value)} className="input">
-                    <option value="FAVOR_USER">✓ APPROVE — Refund user, penalise merchant</option>
-                    <option value="FAVOR_MERCHANT">✗ REJECT — No refund, favour merchant</option>
-                    <option value="SPLIT">↔ SPLIT — Partial refund</option>
+                    {selected.type === 'DEPOSIT' ? (<>
+                      <option value="RELEASE_TO_USER">The player paid: credit the player's tokens</option>
+                      <option value="RELEASE_TO_MERCHANT">The player did not pay: tokens go back to the team pool</option>
+                    </>) : (<>
+                      <option value="RELEASE_TO_MERCHANT">The member paid: the player's tokens go to the team pool</option>
+                      <option value="RELEASE_TO_USER">The member did not pay: return the tokens to the player</option>
+                    </>)}
                   </select>
                 </div>
 
-                {(decision === 'RELEASE_TO_USER' || decision === 'SPLIT') && (
-                  <div>
-                    <label className="label">
-                      Refund Amount (₹) {decision === 'RELEASE_TO_USER' ? '— blank = full amount' : ''}
-                    </label>
-                    <input type="number" value={refundAmt} onChange={e => setRefundAmt(e.target.value)}
-                      className="input" placeholder={decision === 'RELEASE_TO_USER' ? 'Full amount by default' : 'Enter split amount'} />
-                  </div>
-                )}
-
-                {decision === 'RELEASE_TO_MERCHANT' && (
-                  <div>
-                    <label className="label" htmlFor="merchant-penalty-optional">Merchant Penalty (₹) — optional</label>
-                    <input id="merchant-penalty-optional" type="number" value={penaltyAmt} onChange={e => setPenaltyAmt(e.target.value)}
-                      className="input" placeholder="0" />
-                  </div>
-                )}
+                {/* Whoever the decision goes against is suspended by the server
+                    (disputeOutcome.service.js), so the admin is told before
+                    pressing, not after. */}
+                <p role="note" className="text-xs text-amber-300 bg-amber-900/20 border border-amber-700/40 rounded-lg p-2">
+                  {suspensionNote(decision === 'RELEASE_TO_USER' ? selected.suspendsIfToUser : selected.suspendsIfToMerchant)}
+                </p>
 
                 <div>
                   <label className="label" htmlFor="resolution-notes">Resolution Notes *</label>
@@ -487,10 +411,7 @@ export const DisputeManager: React.FC = () => {
                   <button onClick={() => setSelected(null)} className="flex-1 btn-secondary">Cancel</button>
                   <button onClick={handleResolve} disabled={isSaving || !resolution.trim()}
                     className="flex-1 btn-primary disabled:opacity-50">
-                    {isSaving ? 'Processing…'
-                      : decision === 'RELEASE_TO_USER'     ? '✓ Approve — Refund User'
-                      : decision === 'RELEASE_TO_MERCHANT'  ? '✗ Reject — No Refund'
-                      : '↔ Apply Split'}
+                    {isSaving ? 'Processing…' : 'Decide dispute'}
                   </button>
                 </div>
               </div>

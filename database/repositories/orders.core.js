@@ -85,11 +85,10 @@ export const ALLOWED_FROM = Object.freeze({
   // the queue to be offered to someone else.
   [ORDER_STATES.PENDING_QUEUE]: [ORDER_STATES.ASSIGNED],
   [ORDER_STATES.ASSIGNED]:   [ORDER_STATES.PENDING_QUEUE],
-  // PENDING_QUEUE is here because a merchant can take an order straight out of
-  // the open pool without it ever having been assigned to them —
-  // merchant.routes.js's accept handler admits both, and the rail is re-checked
-  // at that moment precisely because the order arrived unassigned.
-  [ORDER_STATES.PROCESSING]: [ORDER_STATES.ASSIGNED, ORDER_STATES.PENDING_QUEUE],
+  // From ASSIGNED only: every order reaches a member through team routing, so
+  // nothing is taken straight out of the queue (§3.10, 2c). The open sell pool
+  // that once made PENDING_QUEUE an entry here is gone.
+  [ORDER_STATES.PROCESSING]: [ORDER_STATES.ASSIGNED],
   [ORDER_STATES.PAID]:       [ORDER_STATES.PROCESSING, ORDER_STATES.ASSIGNED],
   // DISPUTED is here because resolving a dispute IS this transition. Without
   // it, DISPUTED had no outgoing edges at all and every admin resolution
@@ -100,7 +99,9 @@ export const ALLOWED_FROM = Object.freeze({
   [ORDER_STATES.COMPLETED]:  [ORDER_STATES.PAID, ORDER_STATES.PROCESSING, ORDER_STATES.DISPUTED],
   // A dispute can be raised on anything not yet final, including COMPLETED —
   // that is precisely when disputes happen.
-  [ORDER_STATES.DISPUTED]:   [ORDER_STATES.PROCESSING, ORDER_STATES.PAID, ORDER_STATES.COMPLETED],
+  // REJECTED: a buy the member rejected as unpaid, inside the window in which
+  // the player may still say they paid (2c+, owner 2026-10-02).
+  [ORDER_STATES.DISPUTED]:   [ORDER_STATES.PROCESSING, ORDER_STATES.PAID, ORDER_STATES.COMPLETED, ORDER_STATES.REJECTED],
   // Abandonment paths. An order that has already COMPLETED cannot be cancelled;
   // undoing settled value is a reversal, which is the settlement domain's job.
   // PAID is here to match what the merchant reject route already does. The
@@ -113,9 +114,12 @@ export const ALLOWED_FROM = Object.freeze({
   // docs/ORDERS_REQUEUE_CYCLE.md as follow-up.
   // DISPUTED, for the same reason as COMPLETED above: a dispute resolved in the
   // payer's favour cancels the order and refunds it.
-  [ORDER_STATES.CANCELLED]:  [ORDER_STATES.PENDING_QUEUE, ORDER_STATES.ASSIGNED, ORDER_STATES.PROCESSING, ORDER_STATES.PAID, ORDER_STATES.DISPUTED],
+  // REJECTED, when its dispute window closes with no dispute raised.
+  [ORDER_STATES.CANCELLED]:  [ORDER_STATES.PENDING_QUEUE, ORDER_STATES.ASSIGNED, ORDER_STATES.PROCESSING, ORDER_STATES.PAID, ORDER_STATES.DISPUTED, ORDER_STATES.REJECTED],
   [ORDER_STATES.FAILED]:     [ORDER_STATES.PENDING_QUEUE, ORDER_STATES.ASSIGNED, ORDER_STATES.PROCESSING, ORDER_STATES.PAID],
-  [ORDER_STATES.REJECTED]:   [ORDER_STATES.PENDING_QUEUE, ORDER_STATES.ASSIGNED, ORDER_STATES.PROCESSING],
+  // PAID: the member says the player's payment never arrived. The buy waits
+  // here, its pool hold intact, until the player disputes or the window closes.
+  [ORDER_STATES.REJECTED]:   [ORDER_STATES.PENDING_QUEUE, ORDER_STATES.ASSIGNED, ORDER_STATES.PROCESSING, ORDER_STATES.PAID],
 });
 
 /**
@@ -209,10 +213,15 @@ function rowToOrder(row) {
     // created before the column existed; a guard that refused those would lock
     // their owners out of their own money.
     orderHmac:  row.order_hmac ?? null,
-    // The rail this order was born on, not the one live now. Both run side by
-    // side after a switch, until the last pre-flip order settles.
+    // The rail this order runs on, derived from its size and currency at
+    // creation (`paymentModeFor`) and frozen by trigger.
     paymentMode: row.payment_mode,
-    paymentModeVersion: row.payment_mode_version === null ? null : Number(row.payment_mode_version),
+    // The team serving it, and what a buy holds in that team's pool (Step 2c).
+    teamId: row.team_id ?? null,
+    poolHeldPaise: toPaise(row.pool_held_paise ?? 0),
+    // When the team's tokens were paid to the player for this buy. Set, the
+    // order may only move to COMPLETED (see `transition`).
+    poolPaidAt: row.pool_paid_at ?? null,
     createdAt:  row.created_at,
     updatedAt:  row.updated_at,
   };
@@ -236,6 +245,20 @@ export async function getOrderHistory(orderId) {
     txId: r.tx_id, from: r.from_state, to: r.to_state,
     actor: r.actor, reason: r.reason, ledgerKey: r.ledger_key, at: r.created_at,
   }));
+}
+
+/**
+ * The state an order was last disputed FROM, or null if it never was. Read off
+ * the append-only history, so it survives the decision that moves the order on.
+ */
+export async function disputedFromState(orderId) {
+  const { rows } = await pgQuery(
+    `SELECT from_state FROM order_transitions
+      WHERE order_id = $1 AND to_state = 'DISPUTED'
+      ORDER BY id DESC LIMIT 1`,
+    [String(orderId)], 'order_disputed_from',
+  );
+  return rows[0]?.from_state ?? null;
 }
 
 async function withOrderLock(orderId, fn) {
@@ -272,24 +295,50 @@ async function withOrderLock(orderId, fn) {
  *   { ok: true,  idempotent: true  }  someone already did; nothing moved
  *   { ok: false, reason: 'not_found' }
  *   { ok: false, reason: 'invalid_transition', state, allowedFrom }
+ *   { ok: false, reason: 'pool_paid', state }   a buy whose team tokens were
+ *                                               paid out goes only to COMPLETED
+ *   { ok: false, reason: 'merchant_changed' }   `onlyMerchant` no longer holds it
  *
  * Collapsing "already done" into a failure is how a retry-safe API stops being
  * retry-safe: the caller compensates for something that actually succeeded.
  */
 export async function transition({
   orderId, to, actor = null, reason = null, merchantId = null, txId = null,
+  // Work that must commit WITH the move or not at all — a team pool hold on
+  // assignment (Step 2c). Called with the transaction's client and the moved
+  // row, after the transition is recorded. A throw unwinds the move with it;
+  // the caller sees the throw, never a half-applied assignment.
+  within = null,
+  // A caller's narrowing of ALLOWED_FROM (`expectFrom`). It used to be checked
+  // for being a subset and then IGNORED, so a route that meant "only from
+  // PAID" moved the order from any state the table allows: a member's
+  // "rejected as unpaid" cancelled a DISPUTED buy and took the dispute away.
+  // Applied in the UPDATE's WHERE with the table, under the row lock.
+  onlyFrom = null,
+  // The member the caller acts as (`expectMerchant`). A member's accept,
+  // decline, confirm or reject read the order as theirs; an admin may have
+  // handed it to somebody else since. Asked under the lock — BEFORE the
+  // idempotent answer, or a member accepting an order a colleague had already
+  // accepted was told it worked and their `set` took the order back — and
+  // again in the WHERE (security review, 2026-10-03).
+  onlyMerchant = null,
 }) {
   if (!ORDER_STATES[to]) {
     throw new Error(`Unknown order state '${to}'. Known: ${Object.keys(ORDER_STATES).join(', ')}`);
   }
-  const allowedFrom = ALLOWED_FROM[to];
-  if (!allowedFrom) {
+  const permitted = ALLOWED_FROM[to];
+  if (!permitted) {
     throw new Error(`Nothing may transition INTO '${to}' — an order is opened there, not moved there.`);
   }
+  const narrowing = onlyFrom ? (Array.isArray(onlyFrom) ? onlyFrom : [onlyFrom]) : null;
+  const allowedFrom = narrowing ? permitted.filter((state) => narrowing.includes(state)) : permitted;
   const mayRepeat = REVISITABLE.includes(to);
 
   return withOrderLock(orderId, async ({ client, oid, order }) => {
     if (!order) return { commit: false, value: { ok: false, reason: 'not_found' } };
+    if (onlyMerchant && String(order.merchantId ?? '') !== String(onlyMerchant)) {
+      return { commit: false, value: { ok: false, reason: 'merchant_changed', state: order.state, allowedFrom } };
+    }
     if (order.state === to) {
       return { commit: false, value: { ok: true, idempotent: true, order } };
     }
@@ -297,6 +346,21 @@ export async function transition({
       return {
         commit: false,
         value: { ok: false, reason: 'invalid_transition', state: order.state, allowedFrom },
+      };
+    }
+    // ── A buy whose team tokens were paid out only goes on to COMPLETED ──────
+    // `spendForBuy` pays the pool's tokens BEFORE the confirm or approval moves
+    // the order, so a reject, cancel or dispute could land in between: a
+    // REJECTED or CANCELLED buy whose player was credited anyway. Once paid,
+    // nothing but COMPLETED may follow from a live state — and a COMPLETED
+    // buy may still be disputed, but that dispute ends COMPLETED again, since
+    // no cancel can take delivered tokens back. Read here for the message; the
+    // same rule is in the UPDATE's WHERE for correctness, where it sees the
+    // row as the spend left it (security review, 2026-10-03).
+    if (order.poolPaidAt && to !== ORDER_STATES.COMPLETED && order.state !== ORDER_STATES.COMPLETED) {
+      return {
+        commit: false,
+        value: { ok: false, reason: 'pool_paid', state: order.state, allowedFrom: [ORDER_STATES.COMPLETED] },
       };
     }
 
@@ -336,8 +400,10 @@ export async function transition({
           SET state = $2, updated_at = now(),
               merchant_id = COALESCE($3, merchant_id)
         WHERE order_id = $1 AND state = ANY($4)
+          AND (pool_paid_at IS NULL OR $2 = 'COMPLETED' OR state = 'COMPLETED')
+          AND ($5::text IS NULL OR merchant_id = $5)
         RETURNING *`,
-      [oid, to, merchantId ? String(merchantId) : null, allowedFrom],
+      [oid, to, merchantId ? String(merchantId) : null, allowedFrom, onlyMerchant ? String(onlyMerchant) : null],
     );
     if (!moved.rowCount) {
       return { commit: false, value: { ok: false, reason: 'invalid_transition', state: order.state, allowedFrom } };
@@ -392,9 +458,12 @@ export async function transition({
       );
     }
 
+    let movedOrder = rowToOrder(moved.rows[0]);
+    if (within) movedOrder = (await within(client, movedOrder)) ?? movedOrder;
+
     return {
       commit: true,
-      value: { ok: true, idempotent: false, order: rowToOrder(moved.rows[0]), ledgerKey },
+      value: { ok: true, idempotent: false, order: movedOrder, ledgerKey },
     };
   });
 }
@@ -438,6 +507,11 @@ export async function reassign({
         value: { ok: false, reason: 'invalid_transition', state: order.state, allowedFrom: from },
       };
     }
+    // A buy an admin is approving from PROCESSING has had its tokens paid out
+    // already; handing it to someone else would strand it (see `transition`).
+    if (order.poolPaidAt) {
+      return { commit: false, value: { ok: false, reason: 'pool_paid', state: order.state, allowedFrom: [] } };
+    }
     // Reassigning to the merchant who already holds it is a no-op, not an
     // error: an admin double-clicking must not produce a 409.
     if (String(order.merchantId) === String(merchantId)) {
@@ -447,7 +521,7 @@ export async function reassign({
     const moved = await client.query(
       `UPDATE order_states
           SET merchant_id = $2, state = $3, updated_at = now()
-        WHERE order_id = $1 AND state = ANY($4)
+        WHERE order_id = $1 AND state = ANY($4) AND pool_paid_at IS NULL
         RETURNING *`,
       [oid, String(merchantId), ORDER_STATES.ASSIGNED, from],
     );

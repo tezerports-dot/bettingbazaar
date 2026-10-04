@@ -40,6 +40,7 @@
  */
 import { ORDER_STATES, ALLOWED_FROM } from '#db/repositories/orders.core.js';
 import { transitionOrder as pgTransitionOrder, reassignOrder as pgReassignOrder } from '#db/repositories/orders.js';
+import { payCommissionFor } from '../team/teamCommission.service.js';
 
 export { ORDER_STATES };
 
@@ -49,6 +50,8 @@ export const LIFECYCLE = Object.freeze({
   ILLEGAL_TRANSITION: 'illegal_transition',
   ALREADY_THERE:      'already_there',
   NOT_FOUND:          'not_found',
+  POOL_PAID:          'pool_paid',
+  MERCHANT_CHANGED:   'merchant_changed',
 });
 
 /**
@@ -64,17 +67,17 @@ export const LIFECYCLE = Object.freeze({
  * table does not allow is a programming error and throws, rather than quietly
  * widening the machine.
  */
-export async function transitionOrder(orderId, to, { set = {}, expectFrom = null, actor = null, reason = null, txId = null } = {}) {
+export async function transitionOrder(orderId, to, { set = {}, expectFrom = null, expectMerchant = null, actor = null, reason = null, txId = null, within = null } = {}) {
   const allowed = ALLOWED_FROM[to];
   if (!allowed) throw new Error(`transitionOrder: '${to}' is not a state anything transitions into`);
 
   // `expectFrom` narrows the allowed set for a caller that knows more than the
   // rule table does. It may only ever be a SUBSET: passing a state the table
   // does not allow is a programming error and throws, rather than quietly
-  // widening the machine. Validated HERE, before the call, because the
-  // repository deliberately ignores it — the row lock and ALLOWED_FROM are the
-  // real guard, and a narrowing that the table already forbids is a bug in the
-  // caller, not a rule to enforce twice.
+  // widening the machine. Validated HERE, before the call; the repository then
+  // APPLIES it, in the UPDATE's WHERE under the row lock. It once ignored it,
+  // and a narrowing nobody enforces is a comment: a member's "rejected as
+  // unpaid" (only from PAID or PROCESSING) cancelled a DISPUTED buy.
   if (expectFrom) {
     const wanted = Array.isArray(expectFrom) ? expectFrom : [expectFrom];
     const illegal = wanted.filter((state) => !allowed.includes(state));
@@ -97,7 +100,16 @@ export async function transitionOrder(orderId, to, { set = {}, expectFrom = null
   // document-store transaction could stay on that store; a transaction spanning
   // two stores was the hazard the whole migration exists to remove, and no
   // caller passes one.
-  return pgTransitionOrder(orderId, to, { set, expectFrom, actor, reason, txId });
+  const result = await pgTransitionOrder(orderId, to, { set, expectFrom, expectMerchant, actor, reason, txId, within });
+
+  // ── A completed order may have earned its team commission (Step 2e) ────────
+  // Asked after the move committed, and never able to fail it: a payment that
+  // does not run here is paid by the sweep, because the mark moves only when
+  // a payment lands. A replayed completion asks again, which pays nothing twice.
+  if (to === ORDER_STATES.COMPLETED && result.ok && result.order?.teamId) {
+    await payCommissionFor(result.order.teamId, { actor: actor ?? 'system' });
+  }
+  return result;
 }
 
 // ── Named transitions ────────────────────────────────────────────────────────

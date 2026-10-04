@@ -14,6 +14,7 @@ import type {
   CDNImage,
   FAQ,
   SupportLinks,
+  SupervisorRail, TeamSupervisor, TeamView, TeamMemberView, TeamPoolRequest,
 } from '../types';
 
 const _adminViteUrl = import.meta.env.VITE_API_URL as string | undefined;
@@ -29,25 +30,6 @@ const api: AxiosInstance = axios.create({
   withCredentials: false,  // Using JWT Bearer tokens -- cookies are not used
   headers: { 'Content-Type': 'application/json' },
 });
-
-/**
- * A fresh idempotency key for one financial intent.
- *
- * Financial endpoints that have no natural key of their own require the caller
- * to name the request, because only the caller can tell a RETRY from a second
- * deliberate action — "top up merchant X by 5000" is identical bytes either
- * way. The server refuses to guess and returns 400 without one.
- *
- * `randomUUID` is unavailable on insecure origins in some browsers, so there is
- * a fallback. It only needs to be unique per intent, not unpredictable — the
- * key is an identifier, not a secret, and the endpoints behind it are already
- * authenticated.
- */
-function newIdempotencyKey(): string {
-  const uuid = globalThis.crypto?.randomUUID?.();
-  if (uuid) return uuid;
-  return `k-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
-}
 
 api.interceptors.request.use(
   (config) => {
@@ -184,19 +166,6 @@ export const users = {
     return res.data;
   },
 
-  getById: async (userId: string) => {
-    const res = await api.get<any>(`/api/admin/users/${userId}`);
-    if (res.data?.success && res.data?.user) {
-      return { success: true, data: res.data.user };
-    }
-    return res.data;
-  },
-
-  updateRoles: async (userId: string, roles: string[]) => {
-    const res = await api.put(`/api/admin/users/${userId}/roles`, { roles });
-    return res.data;
-  },
-
   /**
    * Adjust a player's balance. ONE route, `POST /api/admin/balance-adjust`,
    * shared with the dedicated Balance Adjustment screen.
@@ -271,7 +240,7 @@ export const merchants = {
     return res.data;
   },
 
-  getProfile: async (merchantId: string) => { // returns { ..merchant, merchantLimits } flattened // returns { ..merchant, merchantLimits } flattened
+  getProfile: async (merchantId: string) => {
     const res = await api.get<any>(`/api/admin/merchants/${merchantId}/profile`);
     if (res.data?.success && res.data?.merchant) {
       return { success: true, data: res.data.merchant };
@@ -289,88 +258,10 @@ export const merchants = {
     return res.data;
   },
 
-  updateLimits: async (merchantId: string, limits: any) => {
-    const res = await api.put(`/api/admin/merchants/${merchantId}/limits`, limits);
-    return res.data;
-  },
-
-  // setCommission removed — commission model superseded by buy/sell spread.
-  // MerchantsList.tsx comment: 'commission handler removed — merchants earn via spread.'
   getEarnings: async (merchantId: string) => {
     const res = await api.get<any>(`/api/admin/merchants/${merchantId}/earnings`);
     return res.data;
   },
-  setPanelUrl: async (merchantId: string, panelUrl: string) => {
-    const res = await api.put(`/api/admin/merchants/${merchantId}/panel-url`, { panelUrl });
-    return res.data;
-  },
-  // FIX 8: Top up merchant token wallet (backend: POST /merchants/:id/fund)
-  //
-  // The Idempotency-Key is REQUIRED — the endpoint returns 400 without one.
-  // Only the caller can tell a retry from a second deliberate top-up, so the
-  // server refuses to guess. One invocation of this function is one intent, so
-  // the key is minted here: a transport-level retry inside axios reuses the
-  // same header and cannot double-fund, while a second click is a genuinely
-  // new request and gets a new key.
-  //
-  // Pass `idempotencyKey` explicitly to retry a call whose response was lost
-  // (a timeout, a dropped connection) — that is the case where reusing the
-  // ORIGINAL key is the whole point.
-  //
-  // `settlementAmount` is what the platform RECEIVED for these tokens, in the
-  // major unit — rupees, or whole USDT — and it is REQUIRED: the server refuses
-  // a top-up without one, so that the profit and loss is never missing the
-  // revenue side of a trade nobody can reconstruct afterwards. Zero is a valid
-  // answer and means "no money changed hands", which is a different fact from
-  // "nobody recorded it".
-  fundWallet: async (
-    merchantId: string,
-    tokenAmount: number,
-    settlement: { amount: number; currency: 'INR' | 'USDT' },
-    note?: string,
-    idempotencyKey?: string,
-  ) => {
-    const res = await api.post(
-      `/api/admin/merchants/${merchantId}/fund`,
-      {
-        tokenAmount, note,
-        settlementAmount: settlement.amount,
-        settlementCurrency: settlement.currency,
-      },
-      { headers: { 'Idempotency-Key': idempotencyKey || newIdempotencyKey() } },
-    );
-    return res.data;
-  },
-
-  // Phase B (2026-07-10): deduct merchant tokens — strict (no overdraft),
-  // reason required and audit-logged (backend: POST /merchants/:id/deduct)
-  //
-  // ── The Idempotency-Key was MISSING, and the button had never worked ──────
-  // The route requires one and answers 400 without it, so every press of
-  // "Deduct From Wallet" since this shipped returned "Idempotency-Key is
-  // required for this request" — a protocol message an operator cannot act on,
-  // rendered as the failure reason on a money screen. Confirmed against a
-  // running server: the same call with a key succeeds. One invocation is one
-  // intent, so the key is minted here, exactly as the top-up above does.
-  //
-  // `settlementAmount` is what the platform PAID to take the tokens back, in
-  // rupees. There is no currency argument: payouts are INR (owner, 2026-09-23),
-  // and the server and the table both refuse anything else.
-  deductWallet: async (
-    merchantId: string,
-    tokenAmount: number,
-    reason: string,
-    settlementAmount: number,
-    idempotencyKey?: string,
-  ) => {
-    const res = await api.post(
-      `/api/admin/merchants/${merchantId}/deduct`,
-      { tokenAmount, reason, settlementAmount, settlementCurrency: 'INR' },
-      { headers: { 'Idempotency-Key': idempotencyKey || newIdempotencyKey() } },
-    );
-    return res.data;
-  },
-
   create: async (data: { username: string; mobile: string; password: string; email?: string }) => {
     const res = await api.post('/api/admin/merchants/create', data);
     return res.data;
@@ -405,37 +296,6 @@ export const merchants = {
     if (res.data?.success && res.data?.transactions) {
       return { success: true, data: res.data.transactions };
     }
-    return res.data;
-  },
-};
-
-// --- MERCHANT TOKEN PURCHASES ------------------------------------------------
-//
-// A merchant buys the float they trade with from the platform, paying in USDT.
-// Approving one MINTS supply and credits their wallet, so this is treasury:
-// the routes are full-admin (isAdmin), never a sub-admin permission.
-export const merchantTokenOrders = {
-  /** `status` filters server-side; omit for every request, newest first. */
-  list: async (status?: string) => {
-    const res = await api.get<any>('/api/admin/merchant-token-orders', {
-      params: status && status !== 'ALL' ? { status } : undefined,
-    });
-    return res.data;
-  },
-
-  /**
-   * Mint, credit, then record the decision — in that order, server-side, all
-   * keyed on the order. Approving twice is the same act twice: the second call
-   * returns 404 rather than crediting again.
-   */
-  approve: async (orderId: string, note?: string) => {
-    const res = await api.post(`/api/admin/merchant-token-orders/${orderId}/approve`, { note });
-    return res.data;
-  },
-
-  /** The reason is required by the row — a merchant cannot fix what they cannot read. */
-  reject: async (orderId: string, reason: string) => {
-    const res = await api.post(`/api/admin/merchant-token-orders/${orderId}/reject`, { reason });
     return res.data;
   },
 };
@@ -529,32 +389,6 @@ export const depositPolicy = {
   },
 };
 
-// --- SETTLEMENT RAIL ----------------------------------------------------------
-// One button moves the whole platform between the UPI rail and the ATM cash
-// rail. Orders already in flight keep the rail they were created on — that is
-// enforced by the database, not by this client.
-
-export const paymentMode = {
-  getCurrent: async () => {
-    const res = await api.get<any>('/api/admin/payment-mode');
-    return res.data;
-  },
-
-  getHistory: async (limit = 50) => {
-    const res = await api.get<any>(`/api/admin/payment-mode/history?limit=${limit}`);
-    return res.data;
-  },
-
-  update: async (fields: {
-    activeMode?: string;
-    timers?: Record<string, number>;
-    justification: string;
-  }) => {
-    const res = await api.post('/api/admin/payment-mode', fields);
-    return res.data;
-  },
-};
-
 // --- QUEUE MANAGER ------------------------------------------------------------
 
 export const queueManager = {
@@ -566,38 +400,15 @@ export const queueManager = {
     return res.data;
   },
 
-  assignOrder: async (orderId: string, merchantId: string) => {
-    const res = await api.post(`/api/admin/queue/assign/${orderId}`, { merchantId });
+  // Offer one queued order to the teams NOW instead of waiting for the sweep.
+  // There is no merchant argument: routing picks the member (teamRouting), and
+  // the server answers 409 NO_MEMBER_FREE, with a sentence naming why, when no
+  // working team on the order's rail can take it.
+  assignOrder: async (orderId: string) => {
+    const res = await api.post(`/api/admin/queue/assign/${orderId}`);
     return res.data;
   },
 
-  getAvailableMerchants: async (type: 'DEPOSIT' | 'WITHDRAWAL') => {
-    const res = await api.get<any>('/api/admin/queue/available-merchants', { params: { type } });
-    if (res.data?.success && res.data?.merchants) {
-      return { success: true, data: res.data.merchants, isPoolConfigured: res.data.isPoolConfigured };
-    }
-    return res.data;
-  },
-
-  // Merchant pool: the curated merchants manual/forced assignment draws
-  // from, instead of searching every ACTIVE merchant. Configured by admin or
-  // queue_manager. See backend/routes/admin/queue.admin.routes.js.
-  getMerchantPool: async () => {
-    const res = await api.get<any>('/api/admin/queue/merchant-pool');
-    return res.data;
-  },
-
-  setMerchantPool: async (merchantIds: string[]) => {
-    const res = await api.put('/api/admin/queue/merchant-pool', { merchantIds });
-    return res.data;
-  },
-
-  getEligibleMerchants: async () => {
-    const res = await api.get<any>('/api/admin/queue/eligible-merchants');
-    return res.data;
-  },
-
-  
   getGroupedQueue: async (status?: string) => {
     // FIX: p2p-queue route no longer exists post P2P->Merchant migration; use payment-queue (same response shape)
     const res = await api.get<any>('/api/admin/payment-queue', { params: status ? { status } : {} });
@@ -605,40 +416,15 @@ export const queueManager = {
   },
 
   
-  reassignOrder: async (orderId: string, merchantId: string) => {
-    // FIX: p2p-queue route no longer exists; use payment-orders/:id/reassign (correct status guard for already-assigned orders)
-    const res = await api.post(`/api/admin/payment-orders/${orderId}/reassign`, { merchantId });
+  // Take an ASSIGNED order off its member and offer it to the next one. No
+  // body: the server routes it, and its message says whether anybody took it.
+  reassignOrder: async (orderId: string) => {
+    const res = await api.post(`/api/admin/payment-orders/${orderId}/reassign`);
     return res.data;
   },
 };
 
-// --- KYC ---------------------------------------------------------------------
-
-export const kyc = {
-  getQueue: async () => {
-    const res = await api.get<any>('/api/admin/kyc/queue');
-    if (res.data?.success && res.data?.queue) {
-      return { success: true, data: res.data.queue };
-    }
-    return res.data;
-  },
-
-  approve: async (userId: string) => {
-    const res = await api.post(`/api/admin/kyc/${userId}/approve`);
-    return res.data;
-  },
-
-  reject: async (userId: string, reason: string) => {
-    const res = await api.post(`/api/admin/kyc/${userId}/reject`, { reason });
-    return res.data;
-  },
-
-  // viewDocument removed 2026-08-25 with GET /api/admin/kyc/:userId/document/:docType.
-  // There are no KYC documents: the bot takes the Aadhaar number and it is
-  // verified in bulk, so nothing is uploaded and nothing is presigned for review.
-};
-
-// --- TELEGRAM, BULK KYC & REFERRALS -------------------------------------------
+// --- TELEGRAM & REFERRALS -------------------------------------------------
 /**
  * The identity and payout control plane. Every endpoint behind these is
  * `isAdmin`, never `isAdminOrSubAdmin`: they move the platform's identity root
@@ -850,8 +636,8 @@ export interface BotTemplate {
  * What the bot says.
  *
  * The welcome message is the first sentence anyone reads from this platform and
- * carries the requirement that their Telegram account be on the Aadhaar-linked
- * mobile. Getting it wrong shows up weeks later as failed verifications, so it
+ * carries the requirement that their Telegram account be on the mobile they
+ * signed up with. Getting it wrong shows up weeks later as failed verifications, so it
  * is editable here rather than in a deploy.
  */
 export const telegramTemplates = {
@@ -867,47 +653,35 @@ export const telegramTemplates = {
   },
 };
 
-export const kycBulk = {
-  stats: async () => {
-    const res = await api.get<any>('/api/admin/kyc/bulk/stats');
+// --- SUPERVISORS & TEAMS (redesign Step 2a) ----------------------------------
+// Backend: backend/domains/team/team.admin.routes.js, area canManageTeams.
+export const teams = {
+  list: async () => {
+    const res = await api.get<any>('/api/admin/teams');
     return res.data as {
-      success: boolean;
-      pending?: number;
-      verified?: number;
-      failed?: number;
-      recentBatches?: Array<{
-        batchId: string; kind: 'EXPORT' | 'IMPORT'; rowCount: number;
-        verified?: number; failed?: number; skipped?: number;
-        actor?: string; at?: string; note?: string;
-      }>;
-      message?: string;
+      success: boolean; supervisors: TeamSupervisor[]; teams: TeamView[]; members: TeamMemberView[];
     };
   },
+  /** rail null removes the role. */
+  setSupervisor: async (merchantId: string, rail: SupervisorRail | null) =>
+    (await api.put(`/api/admin/merchants/${merchantId}/supervisor`, { rail })).data,
+  approveMember: async (merchantId: string) =>
+    (await api.post(`/api/admin/team-members/${merchantId}/approve`)).data,
+  rejectMember: async (merchantId: string) =>
+    (await api.post(`/api/admin/team-members/${merchantId}/reject`)).data,
+  removeMember: async (merchantId: string) =>
+    (await api.delete(`/api/admin/team-members/${merchantId}`)).data,
 
-  /**
-   * Download the pending rows as CSV.
-   *
-   * Fetched as text and handed to the browser as a Blob rather than opened as a
-   * link: the request needs the Authorization header, and a plain <a href> would
-   * not carry it. The file is never written server-side, and every call writes
-   * an audit row naming the admin.
-   */
-  exportCsv: async (limit = 10000) => {
-    const res = await api.get<string>(`/api/admin/kyc/bulk/export?limit=${limit}`, {
-      responseType: 'text',
-      headers: { Accept: 'text/csv' },
-    });
-    return res.data;
+  // Team token pools (Step 2b) — area canFundMerchants, because they move money.
+  poolRequests: async (status: 'PENDING' | null = 'PENDING') => {
+    const res = await api.get<any>('/api/admin/team-pool-requests', { params: status ? { status } : {} });
+    return res.data as { success: boolean; requests: TeamPoolRequest[] };
   },
-
-  importCsv: async (csv: string) => {
-    const res = await api.post<any>('/api/admin/kyc/bulk/import', { csv });
-    return res.data as {
-      success: boolean; batchId?: string;
-      verified?: number; failed?: number; skipped?: number;
-      errors?: string[]; message?: string;
-    };
-  },
+  /** settlementAmount is in the MAJOR unit (rupees or whole USDT); 0 means no money changed hands. */
+  fulfilPoolRequest: async (requestId: string, body: { settlementCurrency: 'INR' | 'USDT'; settlementAmount: number }) =>
+    (await api.post(`/api/admin/team-pool-requests/${requestId}/fulfil`, body)).data as { success: boolean; message: string },
+  rejectPoolRequest: async (requestId: string, reason: string) =>
+    (await api.post(`/api/admin/team-pool-requests/${requestId}/reject`, { reason })).data,
 };
 
 export const referrals = {
@@ -1066,46 +840,12 @@ export const branding = {
     return res.data;
   },
 
-  uploadLogo: async (file: File) => {
-    // Step 1: Get presigned URL from backend
-    const urlRes = await api.post<any>('/api/admin/branding/upload-url', {
-      fileName: file.name,
-      contentType: file.type,
-      fileSize: file.size,
-      category: 'logo',
-    });
-    if (!urlRes.data?.success) throw new Error('Failed to get upload URL');
-    const { uploadUrl, cdnUrl, key } = urlRes.data;
-
-    // Step 2: Upload directly to S3 via presigned URL
-    await fetch(uploadUrl, {
-      method: 'PUT',
-      body: file,
-      headers: { 'Content-Type': file.type },
-    });
-
-    // FE 4.2 FIX: was sending key+fileName, backend requires fileKey+title -> always 400 -> logo upload fails
-    const confirmRes = await api.post<any>('/api/admin/branding/confirm-upload', {
-      fileKey: key,         // renamed from key
-      cdnUrl,
-      category: 'logo',
-      title: file.name,     // renamed from fileName
-      fileSize: file.size,
-    });
-    return confirmRes.data;
-  },
 };
 
 // --- CDN ----------------------------------------------------------------------
-// AUDIT FIX: cdn.uploadImage previously sent multipart/form-data to
-// POST /api/admin/branding/images, but that backend route expects JSON
-// { url, category, title } — it has no multer middleware and cannot parse
-// multipart bodies.  Result: req.body was always empty → url undefined → 400.
-//
-// Unified to the same 3-step S3 presigned-URL flow used by branding.uploadLogo:
-//   1. POST /branding/upload-url  → get { uploadUrl, cdnUrl, key } from backend
-//   2. PUT file → S3 via presigned uploadUrl
-//   3. POST /branding/images      → register cdnUrl in CDNImage model (JSON)
+// uploadImage (and branding.uploadLogo) removed 2026-10-01: no screen called
+// either. CDNManager registers an external URL (addUrl); branding assets are
+// uploaded through appAssets.
 
 export const cdn = {
   getImages: async (category?: string) => {
@@ -1114,41 +854,6 @@ export const cdn = {
       return { success: true, data: res.data.images };
     }
     return res.data;
-  },
-
-  /**
-   * Upload an image file to S3 via presigned URL, then register it in the
-   * CDNImage library.  All three steps share the same CDNImage model so
-   * images appear consistently in both CDNManager and BrandingSettings.
-   */
-  uploadImage: async (file: File, category: string, title: string, description?: string) => {
-    // Step 1: Get S3 presigned upload URL from backend
-    const urlRes = await api.post<any>('/api/admin/branding/upload-url', {
-      fileName:    file.name,
-      contentType: file.type,
-      fileSize:    file.size,
-      category,
-    });
-    if (!urlRes.data?.success) throw new Error(urlRes.data?.message || 'Failed to get upload URL');
-    const { uploadUrl, cdnUrl, key } = urlRes.data;
-
-    // Step 2: Upload directly to S3 (no backend bandwidth used)
-    const s3Res = await fetch(uploadUrl, {
-      method:  'PUT',
-      body:    file,
-      headers: { 'Content-Type': file.type },
-    });
-    if (!s3Res.ok) throw new Error(`S3 upload failed: ${s3Res.status}`);
-
-    // Step 3: Register the CDN URL in the CDNImage model (JSON body)
-    const confirmRes = await api.post<any>('/api/admin/branding/images', {
-      url:         cdnUrl,
-      fileKey:     key,
-      category,
-      title,
-      description: description || '',
-    });
-    return confirmRes.data;
   },
 
   deleteImage: async (imageId: string) => {
@@ -1239,64 +944,16 @@ export const system = {
 
 // ─── DISPUTES ──────────────────────────────────────────────────────────────
 export const disputes = {
-  getAll: async (status?: string) => {
-    const res = await api.get<any>('/api/admin/dispute-orders', { params: { status } });
-    return res.data;
-  },
-  getOne: async (id: string) => {
-    const res = await api.get<any>(`/api/admin/dispute-orders/${id}`);
-    return res.data;
-  },
-  resolve: async (id: string, data: { decision: string; resolution: string; refundAmount?: number; penaltyAmount?: number }) => {
-    const res = await api.post(`/api/admin/dispute-orders/${id}/resolve`, data);
-    return res.data;
-  },
-  escalate: async (id: string, notes: string) => {
-    const res = await api.post(`/api/admin/dispute-orders/${id}/escalate`, { notes });
-    return res.data;
-  },
-
-  /**
-   * The CDM slip for one cash payout — the only read of one that exists.
-   *
-   * Neither the player nor the merchant who uploaded it can see it again; the
-   * order mapper does not carry the columns, so no other projection can either.
-   * `canResolveDisputes` gates it, and EVERY call is written to the audit log:
-   * a record nobody may see is one whose access has to be accountable.
-   *
-   * So this must only ever be called from a deliberate click. Fetching it when
-   * a screen opens would record a slip view for every dispute anybody glanced
-   * at, and "who looked at this player's bank slip" would stop meaning
-   * anything.
-   *
-   * `receipt: null` is a real and expected answer, not an error: the merchant's
-   * confirm completes the order and the slip is chased afterwards.
-   */
-  getCdmReceipt: async (orderId: string) => {
-    const res = await api.get<any>(`/api/admin/orders/${orderId}/cdm-receipt`);
-    return res.data;
-  },
-
-  /**
-   * Cash payouts settled without a slip.
-   *
-   * `olderThanMinutes` accepts 0 — "everything missing one right now", which is
-   * what an incident needs — so it is passed through explicitly rather than
-   * left to a falsy default.
-   */
-  missingCdmReceipts: async (olderThanMinutes: number) => {
-    const res = await api.get<any>('/api/admin/orders/cdm-receipts/missing', { params: { olderThanMinutes } });
-    return res.data;
-  },
+  // getAll / getOne / resolve / escalate removed 2026-10-01: DisputeManager
+  // calls those four routes itself, so these were a second client surface for
+  // the same endpoints that nothing used (§5).
 
   /**
    * Withdrawals no merchant has taken.
    *
-   * One that cannot find a merchant WAITS rather than failing — on the cash
-   * rail a large payout is several separate withdrawals, and the ones already
-   * paid cannot be clawed back. The price is an unbounded token lock, which is
-   * why this queue exists: an order with no deadline and no owner is one nobody
-   * is answerable for.
+   * One that cannot find a team member WAITS rather than failing. The price is
+   * an unbounded token lock, which is why this queue exists: an order with no
+   * deadline and no owner is one nobody is answerable for.
    *
    * `olderThanMinutes` accepts 0 — "everything waiting right now".
    */
@@ -1307,21 +964,47 @@ export const disputes = {
 };
 
 // ─── UTR MONITOR ───────────────────────────────────────────────────────────
+// The payment-reference registry (`canManageUtr`). A UTR or chain hash
+// belongs to exactly one order, for good (CLAUDE.md §27); this is
+// the operator's side of that rule: who claimed what, which references somebody
+// tried to REUSE, and the flag a human puts on one.
+//
+// `GET /utr/flagged` and `POST /utr/resolve/:orderId` are NOT here. They work
+// orders with `requires_review` set, and nothing on the platform sets it, so a
+// screen for them would be a queue that is permanently empty (§32 S4). The old
+// `resolve` here also sent `{ resolution }` to a route that requires
+// `{ action }`, so it could never have worked (S26).
 export const utr = {
-  getFlagged: async (type?: string, page = 1) => {
-    const res = await api.get<any>('/api/admin/utr/flagged', { params: { type, page } });
-    return res.data;
-  },
   getStats: async () => {
     const res = await api.get<any>('/api/admin/utr/stats');
     return res.data;
   },
-  resolve: async (orderId: string, resolution?: string) => {
-    const res = await api.post(`/api/admin/utr/resolve/${orderId}`, { resolution });
+  /** References somebody tried to reuse, or that an operator flagged — newest contest first. */
+  getContested: async (page = 1, limit = 50) => {
+    const res = await api.get<any>('/api/admin/utr/contested', { params: { page, limit } });
+    return res.data;
+  },
+  /** The whole registry, optionally one status (ACTIVE | RELEASED | FRAUD). */
+  getRegistry: async (status?: string, page = 1, limit = 50) => {
+    const res = await api.get<any>('/api/admin/utr-registry', { params: { status, page, limit } });
+    return res.data;
+  },
+  /** One reference, as typed — the server normalises case and spaces. */
+  lookup: async (reference: string) => {
+    const res = await api.get<any>(`/api/admin/utr-registry/${encodeURIComponent(reference)}`);
+    return res.data;
+  },
+  /** The reason is REQUIRED: it is what the player is shown if they appeal. */
+  flag: async (reference: string, reason: string) => {
+    const res = await api.put<any>(`/api/admin/utr-registry/${encodeURIComponent(reference)}/flag`, { reason });
+    return res.data;
+  },
+  clear: async (reference: string) => {
+    const res = await api.put<any>(`/api/admin/utr-registry/${encodeURIComponent(reference)}/clear`, {});
     return res.data;
   },
   getUserHistory: async (userId: string) => {
-    const res = await api.get<any>(`/api/admin/utr/user-history/${userId}`);
+    const res = await api.get<any>(`/api/admin/utr/user-history/${encodeURIComponent(userId)}`);
     return res.data;
   },
 };
@@ -1438,9 +1121,7 @@ export const androidReleases = {
   fileHref: (r: Pick<AndroidRelease, 'fileUrl'>) => (/^https?:\/\//i.test(r.fileUrl) ? r.fileUrl : `${API_URL.replace(/\/$/, '')}${r.fileUrl}`),
 };
 
-  // ── Payment Order Actions (approve / reject / force-complete / video-KYC) ──────
-
-// Payment Order Actions — approve / reject / cancel / video-KYC
+// Payment Order Actions — approve / reject / cancel
 // FIX: was orphaned label-statement; esbuild rejected TS type annotations in label blocks
 // The path segment is `payment-orders`, NOT `p2p-orders`. It was the latter here
 // until 2026-08-24, which meant every approve / reject / cancel from the queue
@@ -1461,8 +1142,6 @@ export const orderActions = {
       const res = await api.post(`/api/admin/payment-orders/${orderId}/action`, { action: 'CANCEL', reason });
       return res.data;
     },
-    // There is no video-KYC action on payment orders: the button that threw
-    // here was removed (2026-10-01). Building it is a product decision.
 };
 
 // --- CHAT & SUPPORT (public chat moderation + support-ticket desk) -----------
@@ -1523,10 +1202,6 @@ export const twoFactor = {
     const res = await api.post<any>('/api/2fa/activate', { code });
     return res.data;
   },
-  disable: async (code: string) => {
-    const res = await api.post<any>('/api/2fa/disable', { code });
-    return res.data;
-  },
 };
 
 export default {
@@ -1535,15 +1210,13 @@ export default {
   analytics,
   users,
   merchants,
-  merchantTokenOrders,
   cycles,
   depositPolicy,
   queueManager,
-  kyc,
+  teams,
   telegram,
   telegramBots,
   telegramTemplates,
-  kycBulk,
   referrals,
   subAdmins,
   finance,

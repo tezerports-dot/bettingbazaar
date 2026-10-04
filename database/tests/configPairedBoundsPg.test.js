@@ -3,8 +3,10 @@
  * A floor may never rise above its own ceiling.
  *
  * ── What this is protecting ─────────────────────────────────────────────────
- * `SYSTEM_CONFIG_SPEC` declares `minDeposit: n(500, 0)` — a floor of 0 and NO
- * ceiling — and the same for `minWithdrawal` and every bet limit. Measured
+ * `SYSTEM_CONFIG_SPEC` declared `minDeposit: n(500, 0)` — a floor of 0 and NO
+ * ceiling — and the same for `minWithdrawal` and every bet limit (the deposit
+ * and withdrawal pairs became the size list in Step 2d; the USDT buy bounds
+ * are the pair here now). Measured
  * against the live admin route before this guard existed:
  *
  *     PUT minDeposit = -5           ->  400  "must be >= 0, got -5"
@@ -23,8 +25,8 @@
  * Any per-field ceiling would be a number nobody chose. The real invariant
  * needs BOTH values, and a patch may set only one of them — so it is checked
  * against the MERGED document inside the same transaction that writes it.
- * `maxDeposit: 1` on its own is refused against the stored `minDeposit`, which
- * a patch-only check could never see.
+ * `usdtBuy.maxUsdt: 100` on its own is refused against a stored
+ * `usdtBuy.minUsdt` of 500, which a patch-only check could never see.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { pgConfigured, applySchema, closePg } from '../client.js';
@@ -44,8 +46,7 @@ describePg('paired config bounds (PostgreSQL)', () => {
     await applyConfig({
       scope: 'system', actor: 'test-restore',
       patch: {
-        minDeposit: baseline.minDeposit, maxDeposit: baseline.maxDeposit,
-        minWithdrawal: baseline.minWithdrawal, maxWithdrawal: baseline.maxWithdrawal,
+        usdtBuy: baseline.usdtBuy,
         betLimits: baseline.betLimits,
       },
     }).catch(() => {});
@@ -54,25 +55,23 @@ describePg('paired config bounds (PostgreSQL)', () => {
   beforeEach(async () => {
     await applyConfig({
       scope: 'system', actor: 'test-setup',
-      patch: { minDeposit: 500, maxDeposit: 50000, minWithdrawal: 500, maxWithdrawal: 50000 },
+      patch: { usdtBuy: { minUsdt: 100, maxUsdt: 10000 } },
     });
   });
 
   const put = (patch) => applyConfig({ scope: 'system', patch, actor: 'test' });
 
-  it('refuses a minimum deposit above the maximum — the typo that closes the rail', async () => {
-    await expect(put({ minDeposit: 999999999 })).rejects.toMatchObject({ status: 400 });
-    // And it did not write: the whole transaction unwinds.
-    expect((await getConfig('system', { fresh: true })).minDeposit).toBe(500);
+  it('refuses a USDT buy minimum above the maximum — the typo that closes the rail', async () => {
+    // The deposit and withdrawal pairs became the size list (Step 2d); the
+    // USDT buy bounds are the pair a typo can still invert.
+    await expect(put({ usdtBuy: { minUsdt: 99900 } })).rejects.toMatchObject({ status: 400 });
+    // Nothing was written.
+    expect((await getConfig('system', { fresh: true })).usdtBuy.minUsdt).toBe(100);
   });
 
   it('names BOTH fields and BOTH values, so the operator knows what to type', async () => {
-    await expect(put({ minDeposit: 999999999 }))
-      .rejects.toThrow(/'minDeposit' \(999999999\) cannot be above 'maxDeposit' \(50000\)/);
-  });
-
-  it('refuses a minimum WITHDRAWAL above its maximum — every balance stranded', async () => {
-    await expect(put({ minWithdrawal: 60000 })).rejects.toMatchObject({ status: 400 });
+    await expect(put({ usdtBuy: { minUsdt: 99900 } }))
+      .rejects.toThrow(/'usdtBuy\.minUsdt' \(99900\) cannot be above 'usdtBuy\.maxUsdt' \(10000\)/);
   });
 
   it('refuses a bet minimum above its maximum, per board', async () => {
@@ -85,19 +84,21 @@ describePg('paired config bounds (PostgreSQL)', () => {
    * merged document: nothing in this patch is out of range BY ITSELF.
    */
   it('refuses lowering the MAXIMUM under a minimum that is already stored', async () => {
-    await expect(put({ maxDeposit: 1 })).rejects.toThrow(/'minDeposit' \(500\) cannot be above 'maxDeposit' \(1\)/);
+    await put({ usdtBuy: { minUsdt: 500 } });
+    await expect(put({ usdtBuy: { maxUsdt: 400 } })).rejects.toThrow(/'usdtBuy\.minUsdt' \(500\) cannot be above 'usdtBuy\.maxUsdt' \(400\)/);
   });
 
   it('accepts the pair moved together in one save', async () => {
-    const r = await put({ minDeposit: 1000, maxDeposit: 90000 });
+    const r = await put({ usdtBuy: { minUsdt: 20000, maxUsdt: 50000 } });
     expect(r.ok).toBe(true);
     const c = await getConfig('system', { fresh: true });
-    expect(c.minDeposit).toBe(1000);
-    expect(c.maxDeposit).toBe(90000);
+    expect(c.usdtBuy).toEqual({ minUsdt: 20000, maxUsdt: 50000 });
   });
 
-  it('still accepts an ordinary change, and still refuses a negative', async () => {
-    expect((await put({ minDeposit: 600 })).ok).toBe(true);
-    await expect(put({ minDeposit: -5 })).rejects.toThrow(/must be >= 0/);
+  it('still accepts an ordinary change, and refuses one off the 100 USDT step or below it', async () => {
+    expect((await put({ usdtBuy: { minUsdt: 600 } })).ok).toBe(true);
+    await expect(put({ usdtBuy: { minUsdt: 650 } })).rejects.toThrow(/must be a multiple of 100/);
+    await expect(put({ usdtBuy: { minUsdt: 0 } })).rejects.toThrow(/must be >= 100/);
+    await expect(put({ usdtBuy: { maxUsdt: 100100 } })).rejects.toThrow(/must be <= 100000/);
   });
 });

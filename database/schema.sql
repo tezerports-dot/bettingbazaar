@@ -154,241 +154,6 @@ CREATE TABLE IF NOT EXISTS utr_registry (
 );
 ALTER TABLE utr_registry ADD COLUMN IF NOT EXISTS amount_paise BIGINT;
 
--- ── USER KYC ────────────────────────────────────────────────────────────────
--- Held apart from the `users` row deliberately: a KYC decision needs an actor,
--- a reason and an append-only history, and a status string on the account can
--- carry none of those. `users.kyc_status` is the denormalised copy the
--- authorisation checks read, written only by the same transaction as the
--- decision itself.
-CREATE TABLE IF NOT EXISTS user_kyc (
-  user_id          TEXT PRIMARY KEY,
-  kyc_status       TEXT,
-  name_on_pan      TEXT,
-  pan_number       TEXT,
-  id_proof_url     TEXT,
-  photo_url        TEXT,
-  submitted_at     TIMESTAMPTZ,
-  rejection_reason TEXT,
-  updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
--- WHO decided, and WHEN. The route this replaced intended to record both, but
--- assigned them to a path its schema did not declare, so the write was silently
--- dropped and every approval was anonymous. A KYC
--- approval with no reviewer is not auditable, which is the one thing a KYC
--- decision has to be.
-ALTER TABLE user_kyc ADD COLUMN IF NOT EXISTS reviewed_by TEXT;
-ALTER TABLE user_kyc ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ;
--- Where the documents actually live. `id_proof_url`/`photo_url` are CDN URLs,
--- which are a delivery detail and can change with the CDN; the object key is
--- the durable identity of the blob in object storage. Kept separately so a
--- bucket or CDN migration does not lose the reference to the file itself.
-ALTER TABLE user_kyc ADD COLUMN IF NOT EXISTS id_proof_key TEXT;
-ALTER TABLE user_kyc ADD COLUMN IF NOT EXISTS photo_key    TEXT;
-
--- Every KYC decision, append-only. A status string alone has no history, so
--- "was this user ever rejected, and why?" — the question every compliance
--- review asks — cannot be answered from
--- it once a resubmission overwrites the field.
---
--- `tx_id` UNIQUE is the idempotency gate, same as order_transitions: a double
--- clicked approve collides inside the transaction and unwinds.
-CREATE TABLE IF NOT EXISTS kyc_transitions (
-  id          BIGSERIAL PRIMARY KEY,
-  tx_id       TEXT NOT NULL UNIQUE,
-  user_id     TEXT NOT NULL REFERENCES user_kyc (user_id),
-  from_status TEXT,
-  to_status   TEXT NOT NULL,
-  actor       TEXT,
-  reason      TEXT,
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-  CONSTRAINT kyc_transitions_moves CHECK (from_status IS NULL OR from_status <> to_status)
-);
-CREATE INDEX IF NOT EXISTS kyc_transitions_user_idx ON kyc_transitions (user_id, id);
-CREATE OR REPLACE TRIGGER kyc_transitions_append_only
-  BEFORE UPDATE OR DELETE ON kyc_transitions FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
-
-
--- ── MERCHANT WALLET (integer paise) ─────────────────────────────────────────
--- A merchant's money, in pockets, with an append-only entry per movement. It
--- replaced a single mutable counter on the merchant record: every user<->merchant
--- settlement and admin<->merchant issuance moves through here, and a counter
--- cannot say where the value came from or where it went.
---
--- Pockets, per the financial domain graph:
---   available_paise   spendable now
---   reserved_paise    committed to an in-flight settlement, not yet applied
---   settlement_paise  owed out, awaiting payout
--- liability = reserved + settlement; a merchant's obligation at any instant.
---
--- Integer paise only. The float-rupee round2() pattern stops at this wall, the
--- same as wallets/wallet_ledger.
-CREATE TABLE IF NOT EXISTS merchant_wallets (
-  merchant_id      TEXT PRIMARY KEY,
-  available_paise  BIGINT NOT NULL DEFAULT 0,
-  reserved_paise   BIGINT NOT NULL DEFAULT 0,
-  settlement_paise BIGINT NOT NULL DEFAULT 0,
-  updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-  -- Reserved and settlement can never go negative: they are counters of
-  -- outstanding obligations, and a negative obligation is not a state that
-  -- exists. `available` is deliberately NOT constrained here — an authorised
-  -- corrective adjustment may drive it below zero, and that decision belongs to
-  -- the caller, recorded in the ledger, not to a constraint that would make the
-  -- correction impossible to record.
-  CONSTRAINT merchant_wallets_reserved_non_negative   CHECK (reserved_paise   >= 0),
-  CONSTRAINT merchant_wallets_settlement_non_negative CHECK (settlement_paise >= 0)
-);
-
--- Every movement of a merchant pocket, append-only.
--- `tx_id` UNIQUE is the durable idempotency gate — the same contract the user
--- wallet uses, so a replay collides inside the transaction rather than relying
--- on a pre-read that a concurrent caller can pass simultaneously.
-CREATE TABLE IF NOT EXISTS merchant_wallet_entries (
-  id                   BIGSERIAL PRIMARY KEY,
-  tx_id                TEXT NOT NULL UNIQUE,
-  -- The caller's LOGICAL key. A movement that touches several pockets writes
-  -- one row per pocket, each with its own unique tx_id (`<key>:<pocket>`),
-  -- but all of them share this. Without it, "did movement K already happen?"
-  -- could only be asked with a prefix match — and a prefix is not an identity:
-  -- `bet_1` matches `bet_10:available`. That exact bug was found and fixed in
-  -- walletPg during this audit; this column is how the merchant side avoids
-  -- reintroducing it.
-  movement_id          TEXT,
-  merchant_id          TEXT NOT NULL,
-  pocket               TEXT NOT NULL,
-  amount_paise         BIGINT NOT NULL,
-  balance_before_paise BIGINT NOT NULL,
-  balance_after_paise  BIGINT NOT NULL,
-  entry_type           TEXT NOT NULL,
-  operation            TEXT NOT NULL,
-  actor                TEXT,
-  reason               TEXT,
-  ref_model            TEXT,
-  ref_id               TEXT,
-  correlation_id       TEXT,
-  reverses_tx_id       TEXT,
-  created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
-  CONSTRAINT merchant_wallet_entries_pocket_known
-    CHECK (pocket IN ('available', 'reserved', 'settlement')),
-  CONSTRAINT merchant_wallet_entries_type_known
-    CHECK (entry_type IN ('CREDIT', 'DEBIT')),
-  -- Amount is a positive magnitude; direction lives in entry_type. A signed
-  -- amount here would be counted twice in the same direction by every sum-based
-  -- check, which is how a conservation test starts disagreeing with the balances
-  -- it is computed from.
-  CONSTRAINT merchant_wallet_entries_amount_positive CHECK (amount_paise > 0),
-  -- The arithmetic must be internally consistent: a row that claims a before
-  -- and after which its own amount cannot explain is corrupt on its face.
-  CONSTRAINT merchant_wallet_entries_arithmetic CHECK (
-    (entry_type = 'CREDIT' AND balance_after_paise = balance_before_paise + amount_paise) OR
-    (entry_type = 'DEBIT'  AND balance_after_paise = balance_before_paise - amount_paise)
-  )
-);
-CREATE INDEX IF NOT EXISTS merchant_wallet_entries_merchant_idx
-  ON merchant_wallet_entries (merchant_id, created_at DESC, id DESC);
-CREATE INDEX IF NOT EXISTS merchant_wallet_entries_ref_idx
-  ON merchant_wallet_entries (ref_model, ref_id);
--- Existing deployments: the column is additive and nullable, so this is safe to
--- re-run and safe on a table that already has rows (they keep movement_id NULL,
--- which is correct — every one of them was a single-leg movement whose tx_id IS
--- its logical key). It MUST precede the index below: on a table that already
--- exists, CREATE TABLE IF NOT EXISTS is a no-op, so the column arrives here or
--- not at all and the index would fail with 42703.
-ALTER TABLE merchant_wallet_entries ADD COLUMN IF NOT EXISTS movement_id TEXT;
-CREATE INDEX IF NOT EXISTS merchant_wallet_entries_movement_idx
-  ON merchant_wallet_entries (movement_id);
-CREATE OR REPLACE TRIGGER merchant_wallet_entries_append_only
-  BEFORE UPDATE OR DELETE ON merchant_wallet_entries FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
-
--- ─────────────────────────────────────────────────────────────────────────────
--- MERCHANT SETTLEMENT (domain 2)
---
--- The lifecycle of one user↔merchant settlement, as a state machine the
--- database enforces rather than the application remembers.
---
--- This state used to live on the payment order (`merchantCreditStatus`), with
--- the money moved in SEPARATE operations after the transition committed.
--- withdrawalHold.settleHold documented the consequence in
--- its own comment: if the player-side release throws, "the merchant is not
--- credited and the next sweep cannot retry (the order has left HELD)". The
--- order is stranded and needs a human.
---
--- Here the transition and the merchant-side movement are ONE transaction, so
--- that window does not exist: either the state advanced and the pockets moved,
--- or neither did and the retry finds the settlement exactly where it was.
--- ─────────────────────────────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS merchant_settlements (
-  settlement_id TEXT PRIMARY KEY,
-  merchant_id   TEXT NOT NULL,
-  order_id      TEXT NOT NULL,
-  -- DEPOSIT  merchant dispenses tokens to the user (inventory leaves)
-  -- WITHDRAWAL  merchant receives tokens from the user (owed, then spendable)
-  direction     TEXT NOT NULL,
-  amount_paise  BIGINT NOT NULL,
-  state         TEXT NOT NULL DEFAULT 'RESERVED',
-  reason        TEXT,
-  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-  CONSTRAINT merchant_settlements_direction_known
-    CHECK (direction IN ('DEPOSIT', 'WITHDRAWAL')),
-  -- The complete set of states. A transition to anything else cannot be
-  -- written, so an application bug becomes a constraint violation rather than a
-  -- settlement sitting in a state nothing knows how to advance.
-  CONSTRAINT merchant_settlements_state_known
-    CHECK (state IN ('RESERVED', 'SETTLED', 'CANCELLED', 'REVERSED')),
-  CONSTRAINT merchant_settlements_amount_positive CHECK (amount_paise > 0)
-);
-CREATE INDEX IF NOT EXISTS merchant_settlements_merchant_idx
-  ON merchant_settlements (merchant_id, state);
-CREATE INDEX IF NOT EXISTS merchant_settlements_order_idx
-  ON merchant_settlements (order_id);
-
--- ── One live deposit reservation per order ──────────────────────────────────
--- A deposit reservation HOLDS the merchant's tokens for one player's buy order.
--- Two live reservations for the same order would hold twice the tokens for one
--- promise, and a reassignment that opened the new merchant's hold before
--- cancelling the old one would do exactly that.
---
--- Written as a partial unique index rather than checked in the service, because
--- the service cannot check it without a read-then-write race: the reassign path
--- and the retry path can arrive in the same instant. Here the second one is
--- refused by the database (§19 — make the impossible row impossible), and the
--- caller reads that refusal as "already held" rather than opening a second.
---
--- Scoped to RESERVED and to DEPOSIT: a settled or cancelled reservation is
--- history and an order may accumulate several across reassignments, while the
--- WITHDRAWAL direction is a different pocket and a different question.
-CREATE UNIQUE INDEX IF NOT EXISTS merchant_settlements_one_live_deposit
-  ON merchant_settlements (order_id)
-  WHERE direction = 'DEPOSIT' AND state = 'RESERVED';
-
--- Every state change, append-only. The settlements table holds the CURRENT
--- state; this holds how it got there, and it is the only place a duplicate
--- transition can be detected durably — `tx_id` UNIQUE is the idempotency gate,
--- the same contract the wallets use, so a replay collides inside the
--- transaction rather than relying on a pre-read a concurrent caller can pass.
-CREATE TABLE IF NOT EXISTS merchant_settlement_transitions (
-  id            BIGSERIAL PRIMARY KEY,
-  tx_id         TEXT NOT NULL UNIQUE,
-  settlement_id TEXT NOT NULL REFERENCES merchant_settlements (settlement_id),
-  from_state    TEXT,
-  to_state      TEXT NOT NULL,
-  actor         TEXT,
-  reason        TEXT,
-  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-  CONSTRAINT merchant_settlement_transitions_to_state_known
-    CHECK (to_state IN ('RESERVED', 'SETTLED', 'CANCELLED', 'REVERSED')),
-  -- A transition must actually change something. A row claiming X → X is not a
-  -- transition, it is a duplicate that escaped the idempotency gate.
-  CONSTRAINT merchant_settlement_transitions_moves
-    CHECK (from_state IS NULL OR from_state <> to_state)
-);
-CREATE INDEX IF NOT EXISTS merchant_settlement_transitions_settlement_idx
-  ON merchant_settlement_transitions (settlement_id, id);
-CREATE OR REPLACE TRIGGER merchant_settlement_transitions_append_only
-  BEFORE UPDATE OR DELETE ON merchant_settlement_transitions
-  FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
-
 -- ─────────────────────────────────────────────────────────────────────────────
 -- ADMIN TREASURY (domain 3)
 --
@@ -415,7 +180,6 @@ CREATE TABLE IF NOT EXISTS treasury_accounts (
   updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   CONSTRAINT treasury_accounts_known CHECK (account IN (
     'TOKEN_SUPPLY',      -- contra: -(every token in existence)
-    'MERCHANT_FLOAT',    -- tokens held by merchants
     'USER_FLOAT',        -- tokens held by users
     'HOUSE_RESERVE',     -- stakes the house won
     'COMMISSION_POOL',
@@ -759,11 +523,6 @@ CREATE INDEX IF NOT EXISTS bonus_grants_kind_idx ON bonus_grants (kind, status);
 -- WRITER waiting to disagree with the first. Every balance read, for display or
 -- for a decision, goes to `wallets`. Do not add a balance column here, not even
 -- a cached one, not even "just for the admin list".
---
--- The KYC decision fields are likewise not here: `user_kyc` owns them, with
--- `kyc_transitions` as its audit trail. `users.kyc_status` exists only as the
--- denormalised status the authorisation checks read on every request, and is
--- written by the same transaction that writes `user_kyc` — never independently.
 CREATE TABLE IF NOT EXISTS users (
   user_id            TEXT PRIMARY KEY,     -- the account's stable identity
   username           TEXT NOT NULL,
@@ -791,7 +550,6 @@ CREATE TABLE IF NOT EXISTS users (
 
   -- ── Account state ────────────────────────────────────────────────────────
   status             TEXT NOT NULL DEFAULT 'ACTIVE',
-  kyc_status         TEXT NOT NULL DEFAULT 'PENDING_SUBMISSION',
   wallet_address     TEXT UNIQUE,
   profile_pic        TEXT NOT NULL DEFAULT '',
   warning_count      INT  NOT NULL DEFAULT 0 CHECK (warning_count >= 0),
@@ -844,9 +602,7 @@ CREATE TABLE IF NOT EXISTS users (
   updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
 
   CONSTRAINT users_status_check
-    CHECK (status IN ('ACTIVE','BLOCKED','SUSPENDED','PENDING_KYC','DELETED')),
-  CONSTRAINT users_kyc_status_check
-    CHECK (kyc_status IN ('PENDING_SUBMISSION','PENDING_APPROVAL','APPROVED','REJECTED')),
+    CHECK (status IN ('ACTIVE','BLOCKED','SUSPENDED','DELETED')),
   CONSTRAINT users_phantom_access_check
     CHECK (phantom_access IN ('NONE','1_MIN','30_MIN','FULL_DAY','BOTH')),
   CONSTRAINT users_sub_admin_role_check
@@ -886,30 +642,7 @@ DO $$ BEGIN
     CHECK (status <> 'DELETED' OR (deleted_at IS NOT NULL AND deleted_by IS NOT NULL));
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
--- How many Aadhaar numbers this account has ever submitted.
---
--- ON `users`, NOT on `kyc_verifications`, and the placement is the whole point.
--- `releaseFailedSubmission` DELETES the verification row when a number comes
--- back rejected — that is what frees the unique hash so a mistyped digit does
--- not park a stranger's Aadhaar in the index forever. A counter living on that
--- row would be deleted with it and reset to zero, which defeats the cap
--- entirely: submit, fail, submit again, indefinitely.
---
--- The cap exists because "submit a number, be told whether it is already
--- registered" is an ENUMERATION ORACLE the moment it can be repeated freely.
--- Bounding it is what keeps this a correction path rather than a probe.
-ALTER TABLE users ADD COLUMN IF NOT EXISTS kyc_submission_count INT NOT NULL DEFAULT 0;
--- `ADD CONSTRAINT` has no IF NOT EXISTS, and this file is applied on EVERY
--- boot — so a bare ADD would fail the second start with "constraint already
--- exists". Swallowing just that error is the idempotent idiom.
-DO $$ BEGIN
-  ALTER TABLE users ADD CONSTRAINT users_kyc_submission_count_check
-    CHECK (kyc_submission_count >= 0);
-EXCEPTION WHEN duplicate_object THEN NULL;
-END $$;
-
 CREATE INDEX IF NOT EXISTS users_status_idx        ON users (status);
-CREATE INDEX IF NOT EXISTS users_kyc_status_idx    ON users (kyc_status);
 CREATE INDEX IF NOT EXISTS users_referred_by_idx   ON users (referred_by) WHERE referred_by IS NOT NULL;
 CREATE INDEX IF NOT EXISTS users_joined_at_idx     ON users (joined_at DESC);
 -- The admin user list filters on these two constantly and they are rare, so a
@@ -1153,55 +886,6 @@ CREATE INDEX IF NOT EXISTS telegram_identities_channel_idx
 -- reader's false lead (§3, §22), and this one would read as though the
 -- platform still took Aadhaar numbers over Telegram.
 
--- ── Telegram: a recovery in progress ─────────────────────────────────────────
---
--- Account recovery is two messages: the Aadhaar, then the contact share. This
--- holds the first while the platform waits for the second.
---
--- It replaces a process-local `Map` in telegram.routes.js (audit F-002). That
--- worked on one machine and failed on more than one: the two messages land on
--- different instances, the second finds no session, and the bot answers "please
--- send your Aadhaar first" to somebody who just did — intermittently, looking
--- like their mistake, on the one path a person reaches BECAUSE they have
--- already lost access. It also cleared itself wholesale at 10,000 entries,
--- wiping live recoveries rather than old ones, and a deploy dropped every one.
---
--- ── It stores HASHES, not the Aadhaar ───────────────────────────────────────
--- `attemptRecovery` only ever computes `hashAadhaarCandidates(aadhaar)` and
--- compares — it never needs the number itself. So the number is hashed at the
--- moment it arrives and the plaintext is never stored anywhere, which is
--- stronger than the ciphertext `telegram_pending_links` holds for onboarding.
--- An array because the HMAC secret can be rotated and both candidates must be
--- comparable.
---
--- NOT merged into `telegram_pending_links`: that table's `step` CHECK is the
--- ONBOARDING state machine, and both are keyed on `telegram_user_id`. A person
--- recovering from a fresh Telegram account could be onboarding on that same id,
--- and one row cannot own two workflows (CLAUDE.md §7).
-CREATE TABLE IF NOT EXISTS telegram_recovery_sessions (
-  telegram_user_id TEXT NOT NULL,
-  -- Part of the key for the same reason it is part of `telegram_identities`'s:
-  -- one person opens all three recovery bots from ONE Telegram account, and a
-  -- half-finished merchant recovery must not overwrite a half-finished player
-  -- one — which, with a bare `telegram_user_id` key, is exactly what the
-  -- ON CONFLICT DO UPDATE in `putRecoverySession` would do.
-  audience         TEXT NOT NULL DEFAULT 'PLAYER',
-  aadhaar_hashes   TEXT[] NOT NULL,
-  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-  expires_at       TIMESTAMPTZ NOT NULL,
-  PRIMARY KEY (telegram_user_id, audience),
-  CONSTRAINT telegram_recovery_sessions_has_hashes
-    CHECK (cardinality(aadhaar_hashes) > 0),
-  CONSTRAINT telegram_recovery_sessions_audience_check
-    CHECK (audience IN ('PLAYER','STAFF','MERCHANT'))
-);
-ALTER TABLE telegram_recovery_sessions
-  ADD COLUMN IF NOT EXISTS audience TEXT NOT NULL DEFAULT 'PLAYER';
--- The reads all filter on it, so expiry is a property of the QUERY and never
--- depends on the sweep having run (same posture as the login-code tables).
-CREATE INDEX IF NOT EXISTS telegram_recovery_sessions_expiry_idx
-  ON telegram_recovery_sessions (expires_at);
-
 -- ── The bot can no longer sign anybody in — REMOVED 2026-09-23 ────────────
 --
 -- Two tables went together, because they were two spellings of one thing: a
@@ -1230,67 +914,6 @@ CREATE TABLE IF NOT EXISTS token_blacklist (
   expires_at TIMESTAMPTZ NOT NULL DEFAULT (now() + interval '24 hours')
 );
 CREATE INDEX IF NOT EXISTS token_blacklist_expiry_idx ON token_blacklist (expires_at);
-
--- ── KYC verification ─────────────────────────────────────────────────────────
---
--- No identity DOCUMENTS are collected, stored or accepted anywhere: KYC is a
--- 12-digit number, held as an HMAC plus a ciphertext. See CLAUDE.md §1.
-CREATE TABLE IF NOT EXISTS kyc_verifications (
-  user_id          TEXT PRIMARY KEY REFERENCES users (user_id) ON DELETE CASCADE,
-  -- UNIQUE: the no-duplicate-accounts rule, enforced by the database. Two
-  -- people cannot register the same Aadhaar, and it is a hash, so the index
-  -- itself reveals nothing.
-  aadhaar_hash     TEXT NOT NULL UNIQUE,
-  -- Ciphertext. Read in exactly one place (the audited export), which is why
-  -- the repository never selects it by default.
-  aadhaar_encrypted TEXT NOT NULL,
-  -- Shown to operators instead of the number: enough to match a query, useless
-  -- to an attacker.
-  aadhaar_last4    TEXT NOT NULL,
-  phone            TEXT NOT NULL,
-  status           TEXT NOT NULL DEFAULT 'PENDING_VERIFICATION',
-
-  -- Which export a row went out in and which import decided it. Two rows
-  -- sharing an export batch went to the verifier together, which is what makes
-  -- a disputed result traceable to a specific file.
-  export_batch_id  TEXT,
-  exported_at      TIMESTAMPTZ,
-  import_batch_id  TEXT,
-  verified_at      TIMESTAMPTZ,
-  -- Verbatim from the verifier on a NO, so support can tell a player why
-  -- instead of guessing.
-  failure_reason   TEXT NOT NULL DEFAULT '',
-  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-
-  CONSTRAINT kyc_verifications_status_check
-    CHECK (status IN ('PENDING_VERIFICATION','VERIFIED','FAILED'))
-);
-CREATE INDEX IF NOT EXISTS kyc_verifications_phone_idx ON kyc_verifications (phone);
--- The export query: everything still awaiting a verdict, oldest first.
-CREATE INDEX IF NOT EXISTS kyc_verifications_pending_idx
-  ON kyc_verifications (created_at) WHERE status = 'PENDING_VERIFICATION';
-CREATE INDEX IF NOT EXISTS kyc_verifications_export_batch_idx ON kyc_verifications (export_batch_id);
-CREATE INDEX IF NOT EXISTS kyc_verifications_import_batch_idx ON kyc_verifications (import_batch_id);
-
--- ── KYC batches: one export or one import, as an auditable record ────────────
--- An EXPORT is Aadhaar numbers LEAVING the platform. Recording who asked and
--- when is the difference between a controlled disclosure and a leak nobody can
--- reconstruct afterwards.
-CREATE TABLE IF NOT EXISTS kyc_batches (
-  batch_id       TEXT PRIMARY KEY,
-  kind           TEXT NOT NULL,
-  actor_id       TEXT NOT NULL,
-  row_count      INT NOT NULL DEFAULT 0 CHECK (row_count >= 0),
-  verified_count INT NOT NULL DEFAULT 0 CHECK (verified_count >= 0),
-  failed_count   INT NOT NULL DEFAULT 0 CHECK (failed_count >= 0),
-  skipped_count  INT NOT NULL DEFAULT 0 CHECK (skipped_count >= 0),
-  note           TEXT NOT NULL DEFAULT '',
-  created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-
-  CONSTRAINT kyc_batches_kind_check CHECK (kind IN ('EXPORT','IMPORT'))
-);
-CREATE INDEX IF NOT EXISTS kyc_batches_kind_idx ON kyc_batches (kind, created_at DESC);
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- TWO TABLES FOR CODE THAT WAS ALREADY DEAD
@@ -1422,10 +1045,9 @@ CREATE INDEX IF NOT EXISTS balance_adjustments_admin_idx ON balance_adjustments 
 -- credentials that money is sent to, and the scoring inputs that decide which
 -- merchant a player's order is routed to.
 --
--- The token balance is NOT here. It lives in `merchant_wallets`, behind the row
--- lock its movements take — a second copy on this row would be a second writer
--- waiting to disagree with the first. That is the same rule the player wallet
--- follows and the reason `users` has no balance columns either.
+-- The token balance is NOT here. A merchant holds none: their team's pool does
+-- (`team_pools`). That is the same rule the player wallet follows and the
+-- reason `users` has no balance columns either.
 CREATE TABLE IF NOT EXISTS merchants (
   merchant_id  TEXT PRIMARY KEY,
   -- The player account this merchant is operated by, when there is one. UNIQUE:
@@ -1525,11 +1147,6 @@ CREATE TABLE IF NOT EXISTS merchants (
   success_rate         DOUBLE PRECISION NOT NULL DEFAULT 1.0,
   avg_response_minutes DOUBLE PRECISION NOT NULL DEFAULT 2,
   dispute_rate         DOUBLE PRECISION NOT NULL DEFAULT 0,
-  max_concurrent_orders            INTEGER NOT NULL DEFAULT 3,
-  -- NULL means "use the platform default from SystemConfig", which is a real
-  -- state and not the same as 0.
-  max_concurrent_deposit_orders    INTEGER,
-  max_concurrent_withdrawal_orders INTEGER,
   total_orders_completed BIGINT NOT NULL DEFAULT 0,
   total_orders_all       BIGINT NOT NULL DEFAULT 0,
 
@@ -1560,16 +1177,7 @@ CREATE TABLE IF NOT EXISTS merchants (
     min_deposit_paise  <= max_deposit_paise
     AND min_withdraw_paise <= max_withdraw_paise),
   CONSTRAINT merchants_limits_non_negative CHECK (
-    min_deposit_paise >= 0 AND min_withdraw_paise >= 0),
-  -- Positive, and not otherwise bounded — see the note on
-  -- `payment_mode_policies_concurrency_positive`. A per-merchant override is an
-  -- operator's judgement about one merchant's capacity; the platform has no
-  -- opinion about where that stops on the UPI rail, and on the cash rail the
-  -- answer is derived and unreachable from here.
-  CONSTRAINT merchants_concurrency_positive CHECK (
-    max_concurrent_orders > 0
-    AND (max_concurrent_deposit_orders    IS NULL OR max_concurrent_deposit_orders    > 0)
-    AND (max_concurrent_withdrawal_orders IS NULL OR max_concurrent_withdrawal_orders > 0))
+    min_deposit_paise >= 0 AND min_withdraw_paise >= 0)
 );
 ALTER TABLE merchants DROP COLUMN IF EXISTS password_hash;
 
@@ -2574,42 +2182,10 @@ CREATE INDEX IF NOT EXISTS frontend_error_reports_recent_idx ON frontend_error_r
 -- ═══════════════════════════════════════════════════════════════════════════
 DROP TABLE IF EXISTS pan_registry;
 
--- ═══════════════════════════════════════════════════════════════════════════
--- PAYMENTS — merchant token purchases from the platform
--- ═══════════════════════════════════════════════════════════════════════════
-CREATE TABLE IF NOT EXISTS merchant_admin_token_orders (
-  order_id      TEXT PRIMARY KEY,
-  merchant_id   TEXT NOT NULL,
-  token_paise   BIGINT NOT NULL,
-  usdt_rate     NUMERIC(18, 6),
-  usdt_amount   NUMERIC(18, 6),
-  usdt_tx_hash  TEXT,
-  status        TEXT NOT NULL DEFAULT 'PENDING',
-  requested_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-  reviewed_at   TIMESTAMPTZ,
-  reviewed_by   TEXT,
-  review_note   TEXT,
-  CONSTRAINT merchant_token_orders_status_known CHECK (
-    status IN ('PENDING', 'APPROVED', 'REJECTED', 'CANCELLED')),
-  CONSTRAINT merchant_token_orders_amount_positive CHECK (token_paise > 0),
-  -- A reviewed order records WHO and WHEN, or the decision has no owner.
-  CONSTRAINT merchant_token_orders_reviewed_has_actor CHECK (
-    status = 'PENDING' OR (reviewed_by IS NOT NULL AND reviewed_at IS NOT NULL)),
-  CONSTRAINT merchant_token_orders_rejected_has_note CHECK (
-    status <> 'REJECTED' OR review_note IS NOT NULL),
-  -- A settled USDT purchase names the transaction that paid for it.
-  CONSTRAINT merchant_token_orders_approved_has_hash CHECK (
-    status <> 'APPROVED' OR usdt_amount IS NULL OR usdt_tx_hash IS NOT NULL)
-);
-CREATE INDEX IF NOT EXISTS merchant_token_orders_merchant_idx
-  ON merchant_admin_token_orders (merchant_id, requested_at DESC);
-CREATE INDEX IF NOT EXISTS merchant_token_orders_queue_idx
-  ON merchant_admin_token_orders (requested_at) WHERE status = 'PENDING';
-
 -- ─────────────────────────────────────────────────────────────────────────────
 -- What the PLATFORM got, or gave, for an admin↔merchant token movement.
 --
--- The treasury already says the tokens moved: TOKEN_SUPPLY -N, MERCHANT_FLOAT
+-- The treasury already says the tokens moved: TOKEN_SUPPLY -N, TEAM_FLOAT
 -- +N, legs summing to zero. What it cannot say is the OTHER SIDE of that trade
 -- — the rupees that arrived in a bank account, or the USDT that arrived in a
 -- wallet, in exchange. Without it the books are internally consistent and the
@@ -2690,30 +2266,6 @@ CREATE INDEX IF NOT EXISTS admin_token_considerations_created_idx
 -- an audit cannot rely on.
 CREATE OR REPLACE TRIGGER admin_token_considerations_append_only
   BEFORE UPDATE OR DELETE ON admin_token_considerations FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
-
--- The payment-gateway credentials. One row, key 'main'.
-CREATE TABLE IF NOT EXISTS payment_gateway_configs (
-  config_key       TEXT PRIMARY KEY,
-  active_mode      TEXT NOT NULL DEFAULT 'P2P',
-  p2p_enabled      BOOLEAN NOT NULL DEFAULT TRUE,
-  gateway_enabled  BOOLEAN NOT NULL DEFAULT FALSE,
-  gateway_provider TEXT,
-  -- Encrypted at rest, and never selected by the general reader.
-  gateway_api_key_encrypted        TEXT,
-  gateway_api_secret_encrypted     TEXT,
-  gateway_webhook_secret_encrypted TEXT,
-  gateway_callback_url TEXT,
-  gateway_merchant_id  TEXT,
-  updated_by       TEXT,
-  updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-  CONSTRAINT payment_gateway_mode_known CHECK (active_mode IN ('P2P', 'GATEWAY', 'BOTH')),
-  -- Turning off both rails leaves no way for a player to fund an account, and
-  -- an admin doing it by accident finds out from the support queue.
-  CONSTRAINT payment_gateway_one_rail_live CHECK (p2p_enabled OR gateway_enabled),
-  -- A live gateway that names no provider cannot be called.
-  CONSTRAINT payment_gateway_enabled_has_provider CHECK (
-    NOT gateway_enabled OR gateway_provider IS NOT NULL)
-);
 
 -- The referral payout order.
 --
@@ -2800,7 +2352,6 @@ ALTER TABLE order_states ADD COLUMN IF NOT EXISTS merchant_credit_reversed_reaso
 ALTER TABLE order_states ADD COLUMN IF NOT EXISTS user_phone TEXT;
 ALTER TABLE order_states ADD COLUMN IF NOT EXISTS user_bank_details JSONB;
 ALTER TABLE order_states ADD COLUMN IF NOT EXISTS user_usdt_address TEXT;
-ALTER TABLE order_states ADD COLUMN IF NOT EXISTS requires_video_kyc BOOLEAN NOT NULL DEFAULT FALSE;
 
 -- The payment evidence.
 ALTER TABLE order_states ADD COLUMN IF NOT EXISTS utr TEXT;
@@ -2811,11 +2362,18 @@ ALTER TABLE order_states ADD COLUMN IF NOT EXISTS utr_warning_message TEXT;
 ALTER TABLE order_states ADD COLUMN IF NOT EXISTS utr_warning_data JSONB;
 
 -- Review, dispute and resolution. Every decision names WHO made it.
-ALTER TABLE order_states ADD COLUMN IF NOT EXISTS requires_review BOOLEAN NOT NULL DEFAULT FALSE;
-ALTER TABLE order_states ADD COLUMN IF NOT EXISTS reviewed_by TEXT;
-ALTER TABLE order_states ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ;
-ALTER TABLE order_states ADD COLUMN IF NOT EXISTS review_action TEXT;
-ALTER TABLE order_states ADD COLUMN IF NOT EXISTS review_notes TEXT;
+-- `requires_review` and its four `review_*` columns were DROPPED 2026-10-01
+-- (owner decision). They held an "orders held for review" queue that nothing
+-- ever filled: no path on the platform set `requires_review`, so the queue
+-- route answered an empty list forever and its resolve route had nothing to
+-- act on (§32 S4). Reused references are caught by `utr_registry` and worked
+-- on the Payment References screen. Dropped, not left: a column nothing writes
+-- is the next reader's false lead (§6).
+ALTER TABLE order_states DROP COLUMN IF EXISTS requires_review;
+ALTER TABLE order_states DROP COLUMN IF EXISTS reviewed_by;
+ALTER TABLE order_states DROP COLUMN IF EXISTS reviewed_at;
+ALTER TABLE order_states DROP COLUMN IF EXISTS review_action;
+ALTER TABLE order_states DROP COLUMN IF EXISTS review_notes;
 ALTER TABLE order_states ADD COLUMN IF NOT EXISTS rejected_reason TEXT;
 -- The merchant's evidence for rejecting a PAID order — a bank statement
 -- screenshot or a photo showing the credit never arrived. Rejecting a PAID
@@ -2868,10 +2426,6 @@ ALTER TABLE order_states ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
 -- Dropped rather than left in place, for the same reason as the split-leg
 -- columns further down: a column nothing writes is a column the next reader has
 -- to work out the status of. Do not accommodate; remove.
---
--- NOT to be confused with `withdrawal_batch_ref`, which is added below and
--- stays: that is the SPLITTER's label for the siblings of one oversized
--- withdrawal, and two admin screens read it.
 ALTER TABLE order_states DROP COLUMN IF EXISTS bulk_payout_date;
 ALTER TABLE order_states DROP COLUMN IF EXISTS bulk_paid_at;
 ALTER TABLE order_states DROP COLUMN IF EXISTS bulk_payout_batch;
@@ -2912,8 +2466,6 @@ CREATE INDEX IF NOT EXISTS order_states_expiring_idx ON order_states (expires_at
   WHERE expires_at IS NOT NULL AND state IN ('PENDING_QUEUE', 'ASSIGNED', 'PROCESSING');
 CREATE INDEX IF NOT EXISTS order_states_disputes_idx ON order_states (dispute_raised_at DESC)
   WHERE state = 'DISPUTED';
-CREATE INDEX IF NOT EXISTS order_states_review_idx ON order_states (created_at)
-  WHERE requires_review;
 
 -- ── UTR REGISTRY: the lifecycle, and why the rows are permanent ─────────────
 --
@@ -2985,19 +2537,6 @@ $$ LANGUAGE plpgsql;
 CREATE OR REPLACE TRIGGER utr_registry_no_delete
   BEFORE DELETE ON utr_registry FOR EACH ROW EXECUTE FUNCTION bb_forbid_utr_delete();
 
--- One admin token purchase request per merchant per day.
---
--- The route checked for today's request and then inserted, so two requests
--- arriving together both passed the check — a rate limit that stops nobody who
--- clicks twice. A unique index over `(merchant_id, requested_at::date)` makes
--- the rule a property of the table: the second INSERT collides.
---
--- CANCELLED and REJECTED requests are excluded, so a merchant whose request was
--- turned down is not locked out for the rest of the day by it.
-CREATE UNIQUE INDEX IF NOT EXISTS merchant_token_orders_one_per_day
-  ON merchant_admin_token_orders (merchant_id, (CAST(requested_at AT TIME ZONE 'UTC' AS DATE)))
-  WHERE status IN ('PENDING', 'APPROVED');
-
 -- The bet's cycle type, denormalised.
 --
 -- A player's bet history shows which market each bet was on, and joining
@@ -3033,317 +2572,11 @@ CREATE INDEX IF NOT EXISTS bets_recent_winners_idx
   ON bets (settled_at DESC, payout_paise DESC)
   WHERE status = 'WON' AND payout_paise > 0;
 
--- ── Merchant performance bonus policy ────────────────────────────────────────
---
--- The ONLY place the merchant bonus percentage and its enablement live. The
--- bonus engine READS this and never owns the number.
---
--- Whole-document versioning, mirroring deposit_policies: each row IS a version,
--- exactly one ACTIVE at a time, and a rollback is a NEW version copying an old
--- one's values forward rather than a mutation. History is therefore append-only
--- and a reviewer can always answer "what was in force at time T".
---
--- One ACTIVE row is the INDEX's rule, not the writer's. The document-store
--- version created the new ACTIVE row and only then superseded the old one,
--- leaving a window in which two policies were ACTIVE and the engine picked
--- whichever sorted first. Here the supersede and the insert are one
--- transaction and the partial unique index refuses the overlap outright.
-CREATE TABLE IF NOT EXISTS merchant_bonus_policies (
-  id            BIGSERIAL PRIMARY KEY,
-  version       BIGINT NOT NULL UNIQUE,
-  status        TEXT NOT NULL DEFAULT 'ACTIVE',
-
-  -- Master switch. The engine does nothing while false, which is the shipped
-  -- default: installing the policy changes no live behaviour until an admin
-  -- turns it on.
-  enabled       BOOLEAN NOT NULL DEFAULT FALSE,
-  -- % of newly matched buy->sell volume issued as bonus. Never derived from
-  -- buy/sell rates, never deducted from users: it draws only on the
-  -- platform-funded MERCHANT_BONUS_POOL.
-  bonus_percent NUMERIC(6,3) NOT NULL DEFAULT 0,
-  -- Minimum newly matched volume, in RUPEES, before an issuance triggers.
-  -- Rupees rather than paise because it is a policy threshold an admin types,
-  -- converted to minor units at the one place the engine compares it.
-  min_matched_volume NUMERIC(14,2) NOT NULL DEFAULT 100,
-
-  is_rollback   BOOLEAN NOT NULL DEFAULT FALSE,
-  rollback_of_version BIGINT,
-
-  justification TEXT NOT NULL,
-  changed_by    TEXT,
-  changed_by_name TEXT NOT NULL DEFAULT '',
-  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-  superseded_at TIMESTAMPTZ,
-
-  CONSTRAINT merchant_bonus_policies_status_known
-    CHECK (status IN ('ACTIVE', 'SUPERSEDED')),
-  CONSTRAINT merchant_bonus_policies_percent_range
-    CHECK (bonus_percent >= 0 AND bonus_percent <= 100),
-  CONSTRAINT merchant_bonus_policies_volume_range
-    CHECK (min_matched_volume >= 0),
-  -- An enabled policy at 0% does nothing while reading as switched on, which
-  -- is the shape most likely to be mistaken for a working bonus programme.
-  CONSTRAINT merchant_bonus_policies_enabled_has_percent
-    CHECK (NOT enabled OR bonus_percent > 0),
-  CONSTRAINT merchant_bonus_policies_justified
-    CHECK (length(btrim(justification)) > 0)
-);
-CREATE UNIQUE INDEX IF NOT EXISTS merchant_bonus_policies_one_active
-  ON merchant_bonus_policies (status) WHERE status = 'ACTIVE';
-CREATE INDEX IF NOT EXISTS merchant_bonus_policies_history_idx
-  ON merchant_bonus_policies (version DESC);
-
--- ── Merchant commission: the same basis, priced per VARIETY of work ─────────
---
--- Supersedes `merchant_bonus_policies` above, which paid ONE percentage for
--- every kind of work a merchant does. The table above is left defined because
--- this file is re-applied to deployed databases and nothing here renames or
--- drops; no code reads it any more.
---
--- What changed is the RATE, not the basis. A merchant is still paid on matched
--- buy->sell volume, still from the platform-funded pool, still once per unit of
--- volume. But a 500 rupee cash run to an ATM and a 500,000-token USDT transfer
--- are not the same job, and one number could not say so.
---
--- A VARIETY is (currency, payment_mode, denomination):
---
---   INR  / P2P_UPI  / NULL      a UPI transfer, any amount in the configured range
---   INR  / CASH_ATM / 50000     a 500 rupee run to a cash machine
---   USDT / P2P_UPI  / 5000000   a 50,000-token transfer (500 USDT at 100/USDT)
---
--- The denomination is NULL exactly where the rail is a RANGE rather than a
--- ladder, which is the UPI rail alone. Its unit is the minor unit of whatever
--- that variety is denominated in -- rupee paise on the cash rail, token paise on
--- USDT -- and the currency column is what disambiguates them, which is why it is
--- part of the key rather than a fact about the row.
-CREATE TABLE IF NOT EXISTS merchant_commission_policies (
-  id            BIGSERIAL PRIMARY KEY,
-  version       BIGINT NOT NULL UNIQUE,
-  status        TEXT NOT NULL DEFAULT 'ACTIVE',
-
-  -- Master switch. The engine does nothing while false, which is the shipped
-  -- default: installing the policy changes no live behaviour until an admin
-  -- turns it on AND prices at least one variety.
-  enabled       BOOLEAN NOT NULL DEFAULT FALSE,
-  -- Minimum NEWLY matched volume, in RUPEES, before an issuance triggers.
-  -- Rupees rather than paise because it is a threshold an admin types; it is
-  -- converted to minor units at the one place the engine compares it.
-  min_matched_volume NUMERIC(14,2) NOT NULL DEFAULT 100,
-
-  is_rollback   BOOLEAN NOT NULL DEFAULT FALSE,
-  rollback_of_version BIGINT,
-
-  justification TEXT NOT NULL,
-  changed_by    TEXT,
-  changed_by_name TEXT NOT NULL DEFAULT '',
-  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-  superseded_at TIMESTAMPTZ,
-
-  CONSTRAINT merchant_commission_policies_status_known
-    CHECK (status IN ('ACTIVE', 'SUPERSEDED')),
-  CONSTRAINT merchant_commission_policies_volume_range
-    CHECK (min_matched_volume >= 0),
-  CONSTRAINT merchant_commission_policies_justified
-    CHECK (length(btrim(justification)) > 0)
-);
--- One ACTIVE version is the INDEX's rule, not the writer's -- same reason as the
--- policy above it: a writer that inserts before superseding leaves a window in
--- which two are ACTIVE and the engine picks whichever sorted first.
-CREATE UNIQUE INDEX IF NOT EXISTS merchant_commission_policies_one_active
-  ON merchant_commission_policies (status) WHERE status = 'ACTIVE';
-CREATE INDEX IF NOT EXISTS merchant_commission_policies_history_idx
-  ON merchant_commission_policies (version DESC);
-
--- One row per variety per policy version. A version's rates are written with it
--- and never edited: changing a rate means a new version, so what a merchant was
--- paid under can always be read back.
-CREATE TABLE IF NOT EXISTS merchant_commission_rates (
-  id             BIGSERIAL PRIMARY KEY,
-  policy_version BIGINT NOT NULL
-    REFERENCES merchant_commission_policies (version) ON DELETE CASCADE,
-
-  currency       TEXT NOT NULL,
-  payment_mode   TEXT NOT NULL,
-  -- NULL means "this rail is a range, not a ladder". See the header above.
-  denomination_paise BIGINT,
-
-  -- The two legs of the SAME matched volume: a matched rupee came IN through a
-  -- deposit and went OUT through a withdrawal, and both are work. The engine
-  -- adds them. Two columns rather than one so an operator can price a rail that
-  -- is harder to serve in one direction than the other -- which is the ordinary
-  -- case on the cash rail, where a payout means standing at a machine.
-  buy_percent    NUMERIC(6,3) NOT NULL DEFAULT 0,
-  sell_percent   NUMERIC(6,3) NOT NULL DEFAULT 0,
-
-  CONSTRAINT merchant_commission_rates_currency_known
-    CHECK (currency IN ('INR', 'USDT')),
-  CONSTRAINT merchant_commission_rates_mode_known
-    CHECK (payment_mode IN ('P2P_UPI', 'CASH_ATM')),
-  CONSTRAINT merchant_commission_rates_percent_range
-    CHECK (buy_percent >= 0 AND buy_percent <= 100
-       AND sell_percent >= 0 AND sell_percent <= 100),
-  -- A row at 0/0 is a variety that reads as PRICED and pays nothing, which is
-  -- the shape most easily mistaken for a working rate. An unpriced variety is
-  -- the ABSENCE of a row, and the engine reports it as such.
-  CONSTRAINT merchant_commission_rates_pays_something
-    CHECK (buy_percent > 0 OR sell_percent > 0),
-  -- Which denominations exist is a property of the rail, so a row naming one
-  -- the rail does not deal in cannot be written. The five cash values are the
-  -- ATM ladder and the three USDT values are the token sizes -- both duplicated
-  -- from backend/domains/merchant/denominations.js, as the cash_link_queue and
-  -- merchants constraints already duplicate them, and asserted against that
-  -- module by merchantDenominationsPg.test.js so the copies cannot drift.
-  CONSTRAINT merchant_commission_rates_denomination_matches_rail
-    CHECK (
-      CASE
-        WHEN currency = 'USDT'          THEN denomination_paise IN (5000000, 10000000, 50000000)
-        WHEN payment_mode = 'CASH_ATM'  THEN denomination_paise IN (50000, 100000, 500000, 1000000, 4000000)
-        ELSE denomination_paise IS NULL
-      END
-    )
-);
--- Two rates for one variety is "which one pays?", so it is refused by the
--- database rather than by whichever writer remembers to check.
---
--- TWO partial indexes and not one four-column UNIQUE, because in SQL two NULLs
--- are DISTINCT: a plain UNIQUE would happily admit a second INR/P2P_UPI/NULL
--- row, which is the one variety whose denomination is always NULL. `NULLS NOT
--- DISTINCT` would also do it, and is left alone here because a partial index
--- states the intent in a form every version reads the same way.
-CREATE UNIQUE INDEX IF NOT EXISTS merchant_commission_rates_variety_idx
-  ON merchant_commission_rates (policy_version, currency, payment_mode, denomination_paise)
-  WHERE denomination_paise IS NOT NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS merchant_commission_rates_variety_range_idx
-  ON merchant_commission_rates (policy_version, currency, payment_mode)
-  WHERE denomination_paise IS NULL;
-
--- ── The settlement rail in force, and the timers that go with it ─────────────
---
--- The platform runs ONE of two P2P rails at a time, and an admin moves between
--- them from the panel:
---
---   P2P_UPI   the player pays a merchant UPI and submits a UTR; the merchant
---             pays a withdrawal into the player's bank. Amounts are a range.
---   CASH_ATM  the player draws cash at an ATM using a merchant-supplied link;
---             the merchant deposits cash at a CDM. Amounts are denominations.
---
--- ── Why this is a versioned row and not a feature flag ───────────────────────
--- featureFlags.service.js resolves from an env var and an in-process Map. It
--- does not survive a restart, it names nobody, and it cannot answer "which rail
--- was live when this order was created" — which is the question every dispute
--- about an in-flight order reduces to. A switch that decides where a player's
--- money goes is not a process-local boolean.
---
--- ── Why it is not payment_gateway_configs.active_mode ────────────────────────
--- That column is P2P / GATEWAY / BOTH: merchant settlement versus a third-party
--- gateway. BOTH of the modes here are P2P. They are orthogonal axes, and one
--- column holding two meanings is how the system-config payload came apart.
---
--- Whole-document versioning, mirroring deposit_policies and
--- merchant_bonus_policies: each row IS a version, exactly one ACTIVE at a time
--- enforced by the index rather than by the order two writers happen to run in,
--- and a switch back is a NEW version rather than a mutation. History is
--- therefore append-only and a reviewer can always answer "what was in force at
--- time T".
-CREATE TABLE IF NOT EXISTS payment_mode_policies (
-  id            BIGSERIAL PRIMARY KEY,
-  version       BIGINT NOT NULL UNIQUE,
-  status        TEXT NOT NULL DEFAULT 'ACTIVE',
-
-  active_mode   TEXT NOT NULL DEFAULT 'P2P_UPI',
-
-  -- ── Timers, in SECONDS, admin-editable per version ────────────────────────
-  -- Stored as integers rather than minutes: the UTR grace period is measured in
-  -- seconds and a minutes column cannot express it without a second unit
-  -- somewhere, which is how two of these drift apart.
-  --
-  -- How long an unassigned order waits for a merchant before it fails.
-  assignment_wait_seconds   INTEGER NOT NULL DEFAULT 1500,
-  -- How long an assigned merchant has to act.
-  processing_window_seconds INTEGER NOT NULL DEFAULT 900,
-  -- How long the player has to submit the UTR. A player who clicks Paid with
-  -- less than this left is given the full window from the click — the grace is
-  -- applied by the writer, but the number it grants comes from here.
-  utr_submit_seconds        INTEGER NOT NULL DEFAULT 60,
-  -- How long a merchant assertion is frozen before settlement, so a player has
-  -- a window to dispute. Silence completes the order.
-  dispute_window_seconds    INTEGER NOT NULL DEFAULT 1800,
-
-  -- ── CASH_ATM only ─────────────────────────────────────────────────────────
-  -- A scanned ATM link is short-lived, and a link with almost no time left is
-  -- worse than no link: the player is assigned one they cannot reach the
-  -- machine for. So a link is only assignable while it has at least
-  -- `link_min_remaining_seconds` remaining.
-  link_expiry_seconds        INTEGER NOT NULL DEFAULT 120,
-  link_min_remaining_seconds INTEGER NOT NULL DEFAULT 60,
-
-  justification TEXT NOT NULL,
-  changed_by    TEXT,
-  changed_by_name TEXT NOT NULL DEFAULT '',
-  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-  superseded_at TIMESTAMPTZ,
-
-  CONSTRAINT payment_mode_policies_status_known
-    CHECK (status IN ('ACTIVE', 'SUPERSEDED')),
-  CONSTRAINT payment_mode_policies_mode_known
-    CHECK (active_mode IN ('P2P_UPI', 'CASH_ATM')),
-  -- A zero timer is not "no limit", it is "expire immediately", and every one
-  -- of these gates something a human has to physically do.
-  CONSTRAINT payment_mode_policies_timers_positive CHECK (
-    assignment_wait_seconds   > 0
-    AND processing_window_seconds > 0
-    AND utr_submit_seconds        > 0
-    AND dispute_window_seconds    > 0
-    AND link_expiry_seconds       > 0
-    AND link_min_remaining_seconds > 0),
-  -- A link that is never assignable is a link the merchant supplied for
-  -- nothing: if the minimum remaining equals the whole life of the link, only a
-  -- claim in the same instant it was created could ever take it.
-  CONSTRAINT payment_mode_policies_link_window_usable
-    CHECK (link_min_remaining_seconds < link_expiry_seconds),
-  CONSTRAINT payment_mode_policies_justified
-    CHECK (length(btrim(justification)) > 0)
-);
--- One ACTIVE row is the INDEX's rule, not the writer's.
-CREATE UNIQUE INDEX IF NOT EXISTS payment_mode_policies_one_active
-  ON payment_mode_policies (status) WHERE status = 'ACTIVE';
-CREATE INDEX IF NOT EXISTS payment_mode_policies_history_idx
-  ON payment_mode_policies (version DESC);
-
--- There must ALWAYS be an active policy. A reader that has to cope with "no
--- policy" needs a fallback, and a fallback is a second owner of every number
--- above — which is how the two system-config payloads diverged. Seeded to the
--- rail that is already live, so installing this changes no behaviour.
---
--- The processing window CARRIES FORWARD from `SystemConfig.orderExpiryMinutes`,
--- which owned this number before the policy did. An operator who tuned it must
--- not have it silently reset to a default by the table that takes over.
--- The scalar subquery yields NULL when no config row exists or the key is
--- absent, and COALESCE supplies the schema default in that case.
-INSERT INTO payment_mode_policies
-  (version, status, active_mode, processing_window_seconds, justification, changed_by_name)
-SELECT 1, 'ACTIVE', 'P2P_UPI',
-       COALESCE((SELECT (c.settings->>'orderExpiryMinutes')::int * 60
-                   FROM config_documents c
-                  WHERE c.scope = 'system' AND c.doc_key = 'main'
-                    AND c.settings->>'orderExpiryMinutes' ~ '^[0-9]+$'
-                    AND (c.settings->>'orderExpiryMinutes')::int BETWEEN 1 AND 1440), 900),
-       'Initial policy: the UPI rail already in production, carrying forward the order expiry an admin had already set.',
-       'system'
- WHERE NOT EXISTS (SELECT 1 FROM payment_mode_policies);
-
--- ── The rail an order was born on ────────────────────────────────────────────
--- Snapshotted at creation and immutable thereafter.
---
--- An admin flipping the switch while orders are in flight must not change the
--- rules those orders are running under: their timers, their assignment path,
--- and what the merchant owes. An order finishes on the rail it started on; the
--- switch decides only what the NEXT order looks like. The consequence is that
--- both rails are live at once until the last pre-flip order settles, so every
--- worker and every screen branches on THIS column — never on the current
--- policy.
+-- ── The rail an order runs on ────────────────────────────────────────────────
+-- Derived at creation from the order's size and currency (`paymentModeFor` in
+-- database/repositories/orderRails.js) and immutable thereafter, so every
+-- worker and every screen branches on THIS column.
 ALTER TABLE order_states ADD COLUMN IF NOT EXISTS payment_mode TEXT NOT NULL DEFAULT 'P2P_UPI';
-ALTER TABLE order_states ADD COLUMN IF NOT EXISTS payment_mode_version BIGINT;
 DO $$ BEGIN
   ALTER TABLE order_states ADD CONSTRAINT order_states_payment_mode_known
     CHECK (payment_mode IN ('P2P_UPI', 'CASH_ATM'));
@@ -3372,11 +2605,6 @@ BEGIN
     RAISE EXCEPTION 'order % was created on the % rail and cannot be moved to %',
       OLD.order_id, OLD.payment_mode, NEW.payment_mode;
   END IF;
-  IF OLD.payment_mode_version IS NOT NULL
-     AND NEW.payment_mode_version IS DISTINCT FROM OLD.payment_mode_version THEN
-    RAISE EXCEPTION 'order % is governed by payment mode version % and cannot be re-pointed',
-      OLD.order_id, OLD.payment_mode_version;
-  END IF;
   IF OLD.usdt_chain IS NOT NULL AND NEW.usdt_chain IS DISTINCT FROM OLD.usdt_chain THEN
     RAISE EXCEPTION 'order % is being paid on % and cannot be moved to another chain',
       OLD.order_id, OLD.usdt_chain;
@@ -3395,257 +2623,14 @@ $$ LANGUAGE plpgsql;
 CREATE OR REPLACE TRIGGER order_states_mode_immutable
   BEFORE UPDATE ON order_states FOR EACH ROW EXECUTE FUNCTION bb_forbid_order_mode_change();
 
--- ── The cash rail: one merchant, one denomination ───────────────────────────
---
--- On CASH_ATM a buy is served by a merchant standing at an ATM: they initiate a
--- UPI cash withdrawal, the machine produces a payment link for a fixed amount,
--- the player pays it and the merchant collects the dispensed cash. The amounts
--- are therefore what an ATM DISPENSES — a range is not expressible at a cash
--- machine, which is why `min_order_paise`/`max_order_paise` cannot govern this
--- rail and this column exists instead.
---
--- A COLUMN and not a child table, deliberately. A merchant is approved for
--- exactly ONE denomination and works only that; making it a column means
--- "cannot hold two" is a property of the row rather than a rule some writer is
--- trusted to keep. NULL means not approved for the cash rail at all.
---
--- The five values are duplicated from backend/domains/merchant/denominations.js
--- because a CHECK has to spell them out in SQL. Two copies of a value drift, so
--- merchantDenominationsPg.test.js asserts the database accepts exactly that
--- module's set and refuses everything else.
---
--- ₹40,000 (4000000 paise) is a WITHDRAWAL tier. No buy is ever that large — the
--- INR buy ceiling is ₹10,000 — so it can only appear as a leg of a split
--- withdrawal. That is true by construction rather than by a rule here: the
--- denominations a player may choose exclude it, so a 40,000 deposit cannot be
--- created and no query has to filter one out.
-ALTER TABLE merchants ADD COLUMN IF NOT EXISTS cash_denomination_paise BIGINT;
-DO $$ BEGIN
-  ALTER TABLE merchants ADD CONSTRAINT merchants_cash_denomination_known
-    CHECK (cash_denomination_paise IS NULL
-           OR cash_denomination_paise IN (50000, 100000, 500000, 1000000, 4000000));
-EXCEPTION WHEN duplicate_object THEN NULL; END $$;
--- The assignment query filters candidates by this on the cash rail, and the
--- broadcast shows a merchant only their own denomination's queue depth.
-CREATE INDEX IF NOT EXISTS merchants_cash_denomination_idx
-  ON merchants (cash_denomination_paise, status) WHERE cash_denomination_paise IS NOT NULL;
-
--- ── How many orders a merchant may hold at once, per rail ───────────────────
---
--- On the cash rail the answer is ONE, in either direction, because the cash a
--- merchant is holding is the same cash: they take a buy, collect the notes,
--- and only then have something to settle a sell with. Holding two orders at
--- once would mean promising the same notes twice.
---
--- That is not true of the UPI rail, where a merchant is moving bank balance and
--- can genuinely run several at once. So this belongs to the POLICY, per rail,
--- rather than being one platform-wide number — and it defaults to 3, which is
--- what `assignmentCandidates` already used, so installing it changes nothing
--- until an admin switches rails.
---
--- `merchants.max_concurrent_orders` still overrides it per merchant; this is
--- the platform default that column falls back to.
-ALTER TABLE payment_mode_policies
-  ADD COLUMN IF NOT EXISTS max_concurrent_orders INTEGER NOT NULL DEFAULT 3;
--- POSITIVE, not capped at ten.
---
--- The ceiling was 1..10 and the owner's model is that the UPI rail's number is
--- whatever an operator sets — 3, 10, 100 — because a merchant moving bank
--- balance is not holding anything physical. The only hard number on this
--- platform is the CASH rail's 1, and that is DERIVED in `concurrencyCapFor`
--- rather than stored, so no configuration can raise it and this constraint
--- never governed it.
---
--- Zero is still refused: it would stop assigning to anybody, which is a pause,
--- and a pause has its own control (`assignment_paused_at`).
-DO $$ BEGIN
-  ALTER TABLE payment_mode_policies DROP CONSTRAINT IF EXISTS payment_mode_policies_concurrency_positive;
-  ALTER TABLE payment_mode_policies ADD CONSTRAINT payment_mode_policies_concurrency_positive
-    CHECK (max_concurrent_orders > 0);
-EXCEPTION WHEN duplicate_object THEN NULL; END $$;
-
--- The same widening on `merchants`, as an ALTER rather than only inline.
---
--- The inline CONSTRAINT in the CREATE TABLE above governs a database created
--- fresh and NOTHING ELSE: `CREATE TABLE IF NOT EXISTS` skips the whole
--- statement on an existing one, so an edit to an inline constraint silently
--- never reaches a database that already exists — including production. That is
--- why the thirty other constraint changes in this file are written as guarded
--- ALTERs, and this one needed to be too.
-DO $$ BEGIN
-  ALTER TABLE merchants DROP CONSTRAINT IF EXISTS merchants_concurrency_positive;
-  ALTER TABLE merchants ADD CONSTRAINT merchants_concurrency_positive CHECK (
-    max_concurrent_orders > 0
-    AND (max_concurrent_deposit_orders    IS NULL OR max_concurrent_deposit_orders    > 0)
-    AND (max_concurrent_withdrawal_orders IS NULL OR max_concurrent_withdrawal_orders > 0));
-EXCEPTION WHEN duplicate_object THEN NULL; END $$;
-
 -- ═══════════════════════════════════════════════════════════════════════════
--- THE ATM CASH-LINK QUEUE — supply arriving before demand
--- ═══════════════════════════════════════════════════════════════════════════
+-- 🧩 ONE WITHDRAWAL IS ONE ORDER
 --
--- Every other assignment on this platform is demand-pull: an order arrives,
--- `merchantScoring` ranks candidates, the best one wins. This inverts it.
---
--- A merchant stands at an ATM, initiates a UPI cash withdrawal, and the machine
--- produces a payment link for a fixed amount. That link is SUPPLY, and it
--- exists before any order has asked for it. A buy order of the same
--- denomination then claims it, the player pays it, the machine dispenses, and
--- the merchant collects the notes.
---
--- Nothing in this codebase modelled supply before now, which is why this is a
--- table of its own rather than a column on an order.
---
--- ── The rules that live in the table rather than in a writer ───────────────
---
--- 1. ONE LIVE LINK PER MERCHANT. They are standing at one machine doing one
---    withdrawal; a second live link would be a promise they cannot keep. The
---    partial unique index below is what makes that true, not a check some
---    handler performs.
---
--- 2. ONE ORDER PER LINK. Two orders taking the same link would send two players
---    to collect the same notes. The claim uses FOR UPDATE SKIP LOCKED so
---    concurrent claimants take different rows, and the unique index refuses the
---    overlap if one ever slips past.
---
--- 3. A CLAIMED LINK NAMES ITS ORDER. A row that says claimed with no order is a
---    link nobody can trace, and a row naming an order without being claimed is
---    a link that will be handed out twice.
---
--- ── An expired link owes nobody anything ───────────────────────────────────
--- No money moved: the ATM transaction simply times out. There is no
--- compensation and no priority — the broadcast is what keeps a merchant from
--- wasting the trip, which makes the broadcast's accuracy load-bearing.
-CREATE TABLE IF NOT EXISTS cash_link_queue (
-  link_id            TEXT PRIMARY KEY,
-  merchant_id        TEXT NOT NULL,
-  -- Copied from the merchant at supply time rather than joined at claim time.
-  -- An admin changing a merchant's approval must not silently re-price a link
-  -- already sitting in the queue — the same reason an order snapshots its rail.
-  denomination_paise BIGINT NOT NULL,
-  -- What the player is sent. Never shown to another merchant.
-  payment_link       TEXT NOT NULL,
-
-  status             TEXT NOT NULL DEFAULT 'LIVE',
-  claimed_by_order   TEXT,
-  claimed_at         TIMESTAMPTZ,
-
-  created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
-  expires_at         TIMESTAMPTZ NOT NULL,
-
-  CONSTRAINT cash_link_status_known
-    CHECK (status IN ('LIVE', 'CLAIMED', 'EXPIRED', 'CANCELLED')),
-  -- The same five amounts an ATM dispenses. Duplicated from denominations.js
-  -- because a CHECK must spell them out; the coherence test proves they agree.
-  CONSTRAINT cash_link_denomination_known
-    CHECK (denomination_paise IN (50000, 100000, 500000, 1000000, 4000000)),
-  -- Claimed and named-an-order are the same fact, so they move together.
-  CONSTRAINT cash_link_claim_names_order
-    CHECK ((status = 'CLAIMED') = (claimed_by_order IS NOT NULL)),
-  CONSTRAINT cash_link_claim_has_time
-    CHECK (claimed_by_order IS NULL OR claimed_at IS NOT NULL),
-  -- A link that expires before it exists is a link nobody can use.
-  CONSTRAINT cash_link_expiry_after_creation CHECK (expires_at > created_at),
-  CONSTRAINT cash_link_has_link CHECK (length(btrim(payment_link)) > 0)
-);
-
--- Rule 1, as a property of the table.
-CREATE UNIQUE INDEX IF NOT EXISTS cash_link_one_live_per_merchant
-  ON cash_link_queue (merchant_id) WHERE status = 'LIVE';
--- Rule 2, as a property of the table.
-CREATE UNIQUE INDEX IF NOT EXISTS cash_link_one_per_order
-  ON cash_link_queue (claimed_by_order) WHERE claimed_by_order IS NOT NULL;
--- The claim path: a live link of this denomination with enough time left.
-CREATE INDEX IF NOT EXISTS cash_link_claimable_idx
-  ON cash_link_queue (denomination_paise, expires_at) WHERE status = 'LIVE';
--- The sweeper, and a merchant's own view of what they supplied.
-CREATE INDEX IF NOT EXISTS cash_link_merchant_idx
-  ON cash_link_queue (merchant_id, created_at DESC);
-
--- The link an order is being served by. Written when the claim commits, and
--- never rewritten: a second link on one order would mean the player was sent
--- two places to collect the same money.
-ALTER TABLE order_states ADD COLUMN IF NOT EXISTS cash_link_id TEXT;
-CREATE INDEX IF NOT EXISTS order_states_cash_link_idx
-  ON order_states (cash_link_id) WHERE cash_link_id IS NOT NULL;
-
--- ── The CDM receipt: written by a merchant, read only by an admin ───────────
---
--- On the cash rail a SELL is settled by the merchant depositing cash at a Cash
--- Deposit Machine into the player's bank account. They then submit the bank
--- transaction id and a photograph of the receipt.
---
--- ── Write-only, and why that is a storage decision not a UI one ─────────────
--- Neither the player nor the merchant who uploaded it may read it back — only
--- an admin or a disputes manager. A CDM slip carries an account number, a
--- branch, a timestamp and a transaction reference; it is the strongest evidence
--- in a dispute and the least appropriate thing to hand back to either party.
---
--- The enforcement is that `toOrder` NEVER MAPS THESE COLUMNS. Every projection
--- on this platform is built from that mapper, so a field it does not name
--- cannot reach a merchant, a player, or a panel — by construction rather than
--- by each reader remembering to strip it. `getCdmReceipt` is a separate query,
--- and the admin route is its only caller.
---
--- That is deliberately the opposite shape to a denylist. A denylist admits the
--- next column by default and fails open; this admits nothing and fails closed.
-ALTER TABLE order_states ADD COLUMN IF NOT EXISTS cdm_transaction_id TEXT;
-ALTER TABLE order_states ADD COLUMN IF NOT EXISTS cdm_receipt_url TEXT;
-ALTER TABLE order_states ADD COLUMN IF NOT EXISTS cdm_receipt_at TIMESTAMPTZ;
-DO $$ BEGIN
-  -- A receipt image with no transaction id cannot be matched against a bank
-  -- statement, and a transaction id with no image is an assertion with no
-  -- evidence. They arrive together or not at all — the same rule the merchant
-  -- reject path already obeys with its proof.
-  ALTER TABLE order_states ADD CONSTRAINT order_states_cdm_receipt_complete
-    CHECK ((cdm_transaction_id IS NULL) = (cdm_receipt_url IS NULL));
-EXCEPTION WHEN duplicate_object THEN NULL; END $$;
-DO $$ BEGIN
-  ALTER TABLE order_states ADD CONSTRAINT order_states_cdm_receipt_timed
-    CHECK (cdm_receipt_url IS NULL OR cdm_receipt_at IS NOT NULL);
-EXCEPTION WHEN duplicate_object THEN NULL; END $$;
--- The admin queue of settled cash withdrawals still missing their receipt.
--- A partial index, because that is the only question ever asked of it.
-CREATE INDEX IF NOT EXISTS order_states_cdm_receipt_missing_idx
-  ON order_states (merchant_id, completed_at)
-  WHERE order_type = 'WITHDRAWAL' AND payment_mode = 'CASH_ATM' AND cdm_receipt_url IS NULL;
-
--- ═══════════════════════════════════════════════════════════════════════════
--- 🧩 WITHDRAWAL BATCH SPLITTING — several ORDINARY withdrawals, not a tree
---
--- An ATM dispenses denominations, not amounts. A ₹100,000 payout on the cash
--- rail is therefore not one job: it is 40,000 + 40,000 + 10,000 + 10,000, four
--- merchants at four machines.
---
--- ── This was a parent-and-legs relation, and it is not any more ────────────
--- The first version added `parent_order_id`, `leg_index` and `is_split_parent`:
--- one container row holding the escrow, several child rows doing the work. It
--- was correct and it was the wrong shape, for two reasons that only show up
--- once it exists:
---
---   1. **Every query had to choose.** Parent or legs? The answer differed for
---      the player's history, the sell pool, the pending total, the user stats,
---      the dispute queue and the delete guard — six places, each a silent
---      double-count or a silent omission if answered wrong, and one of them
---      (the delete guard) a money guard. A relation that every reader must
---      reason about is a tax on every future query, forever.
---
---   2. **A crash mid-creation left something incoherent.** A parent holding an
---      escrow with only some of its legs written is a withdrawal that does not
---      add up, and no row looks wrong.
---
--- Flat siblings have neither problem. Each order is an ORDINARY withdrawal:
--- its own escrow, its own assignment, its own cancel, its own dispute, its own
--- release. Nothing branches on anything. And a crash after two of four leaves
--- exactly two valid withdrawals — money conserved, nothing dangling, nothing
--- to unwind.
---
--- ── What is left is a LABEL, and nothing may branch on it ──────────────────
--- `withdrawal_batch_ref` groups the siblings that came from one request, so a
--- player sees "part of your ₹100,000 withdrawal" and support can find the set.
--- It is a display tag: no state is derived from it, no money reads it, no
--- assignment consults it. The moment something branches on this column it has
--- become the parent relation again wearing a different name.
+-- A cash payout used to be split into several withdrawals, first as a parent
+-- with legs and then as flat siblings sharing a label. Neither survives: the
+-- owner removed splitting (2026-10-02) and in Step 2d every order became one of
+-- a fixed list of sizes. The split's columns are dropped at the end of this
+-- file with the rest of 2d's removals.
 ALTER TABLE order_states DROP CONSTRAINT IF EXISTS order_states_leg_has_index;
 ALTER TABLE order_states DROP CONSTRAINT IF EXISTS order_states_leg_index_positive;
 ALTER TABLE order_states DROP CONSTRAINT IF EXISTS order_states_leg_holds_no_escrow;
@@ -3653,24 +2638,12 @@ ALTER TABLE order_states DROP CONSTRAINT IF EXISTS order_states_parent_unassigne
 ALTER TABLE order_states DROP CONSTRAINT IF EXISTS order_states_split_is_one_level;
 DROP INDEX IF EXISTS order_states_legs_idx;
 DROP INDEX IF EXISTS order_states_stalled_legs_idx;
--- Dropped rather than left in place. These were introduced on this same branch,
--- never carried production data, and a column nothing writes is a column the
--- next reader has to work out the status of. Do not accommodate; remove.
 ALTER TABLE order_states DROP COLUMN IF EXISTS parent_order_id;
 ALTER TABLE order_states DROP COLUMN IF EXISTS leg_index;
 ALTER TABLE order_states DROP COLUMN IF EXISTS is_split_parent;
 
-ALTER TABLE order_states ADD COLUMN IF NOT EXISTS withdrawal_batch_ref TEXT;
--- Find the siblings of one request. The only question ever asked of it, and it
--- is asked by a support screen rather than by anything that decides.
-CREATE INDEX IF NOT EXISTS order_states_withdrawal_batch_idx
-  ON order_states (withdrawal_batch_ref)
-  WHERE withdrawal_batch_ref IS NOT NULL;
--- Withdrawals still waiting for a merchant — the admin's stalled queue.
---
--- Not split-specific, deliberately. A sibling that finds no merchant IS an
--- ordinary queued withdrawal, so the question worth asking is the general one:
--- which payouts have nobody working them? A player's tokens are locked behind
+-- Withdrawals still waiting for a merchant — the admin's stalled queue: which
+-- payouts have nobody working them? A player's tokens are locked behind
 -- every row here, and an order with no deadline and no owner is one nobody is
 -- answerable for.
 CREATE INDEX IF NOT EXISTS order_states_stalled_withdrawals_idx
@@ -3686,11 +2659,8 @@ CREATE INDEX IF NOT EXISTS order_states_stalled_withdrawals_idx
 -- payment they have already made — the worst outcome this flow has, because the
 -- money is gone and the order is not.
 --
--- So tapping it claims `utr_submit_seconds` from that moment (admin-editable,
--- default 60). The number was already in `payment_mode_policies` and already on
--- the admin screen, described as "how long the player has to submit the UTR
--- after clicking Paid" — and nothing read it. A value an operator can edit is
--- only configuration if something consults it.
+-- So tapping it claims `SystemConfig.teamRouting.utrSubmitSeconds` from that
+-- moment (admin-editable, default 60).
 --
 -- ── Why the timestamp is a column and not a counter ───────────────────────
 -- The grace is claimable ONCE. Without that it is an unbounded extension: a
@@ -3740,17 +2710,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS order_states_one_retry_per_order_idx
   ON order_states (retry_of_order_id)
   WHERE retry_of_order_id IS NOT NULL;
 
--- Buy orders waiting for a cash link, best claim first.
---
--- This is the queue the matcher walks. Without it an order that found no link
--- when it was created never got one: the claim ran once, at creation, and
--- nothing looked again when a merchant supplied the link it had been waiting
--- for. The player watched a live order sit at PENDING_QUEUE until it expired
--- while merchants stood at machines with links nobody took.
-CREATE INDEX IF NOT EXISTS order_states_awaiting_link_idx
+-- Orders waiting for a team member, best first: the queue the assignment
+-- sweep walks (`queuedOrdersForAssignment`).
+DROP INDEX IF EXISTS order_states_awaiting_link_idx;
+CREATE INDEX IF NOT EXISTS order_states_queued_idx
   ON order_states (assignment_priority DESC, created_at ASC)
-  WHERE order_type = 'DEPOSIT' AND state = 'PENDING_QUEUE'
-    AND payment_mode = 'CASH_ATM' AND cash_link_id IS NULL;
+  WHERE state = 'PENDING_QUEUE';
 
 -- ── A USDT merchant holds an address PER CHAIN ──────────────────────────────
 --
@@ -3981,8 +2946,8 @@ ALTER TABLE merchants ADD COLUMN IF NOT EXISTS consecutive_rejections INTEGER NO
 --
 -- Both questions they were reaching for have owners. The CEILING is the tokens
 -- the merchant holds, and the deposit escrow ENFORCES it by reserving them at
--- assignment rather than checking a number (F-018). The FLOOR is platform-wide:
--- SystemConfig.minDeposit / minWithdrawal, 500 tokens for everyone.
+-- assignment rather than checking a number (F-018). The SIZE is platform-wide:
+-- one of the fixed order sizes on offer (SystemConfig.orderSizes, Step 2d).
 --
 -- Dropped rather than left in place, per §3: an admin-editable field with no
 -- consumer is a violation, and a column nothing reads is the next reader's
@@ -4234,6 +3199,34 @@ BEGIN
   END IF;
 END $$;
 
+-- ── Staff authority lives on STAFF rows, and nowhere else ─────────────────
+-- The doors keep a PLAYER row out of the staff LOGIN. They do not keep staff
+-- authority out of a PLAYER SESSION: `isAdmin`, `hasPermission` and
+-- `queueManagerOrPermission` read the flags on whatever row the session
+-- belongs to. So a flag written onto a player's row is staff authority riding
+-- a player's password, the player app's session and none of the staff
+-- door's 2FA. Measured 2026-10-01: `POST /api/admin/users/:id/queue-manager`
+-- with a PLAYER id answered 200, and that player's own session then read the
+-- whole payment queue (`GET /api/admin/payment-queue`, 200).
+--
+-- Stated here rather than in each route because two routes wrote these flags
+-- and neither asked, and the next one would not either. Clearing a flag is
+-- always allowed — a revoke must never be refused. Dropped and re-added: its
+-- definition names the flag set, which may grow.
+ALTER TABLE users DROP CONSTRAINT IF EXISTS users_staff_flags_need_staff;
+ALTER TABLE users ADD CONSTRAINT users_staff_flags_need_staff
+  CHECK (account_type = 'STAFF' OR NOT (is_admin OR is_sub_admin OR is_queue_manager OR is_mediator));
+
+-- The same rule from the other side: phantom access is a PLAYER's. Phantom
+-- bets are placed from the player app, and the player's routes admit a
+-- player's session only (`authenticatePlayer`), so a grant on a staff or
+-- merchant row is authority nobody can use — and the grant route took any id.
+-- A revoke (NONE) is always allowed. Dropped and re-added so a change to the
+-- level list converges (§32 S31).
+ALTER TABLE users DROP CONSTRAINT IF EXISTS users_phantom_access_needs_player;
+ALTER TABLE users ADD CONSTRAINT users_phantom_access_needs_player
+  CHECK (account_type = 'PLAYER' OR phantom_access = 'NONE');
+
 -- ── The bot's password reset ──────────────────────────────────────────────
 -- A player who has forgotten their password opens a bot, shares their contact,
 -- and — if that number matches an account — is sent a link that lets them SET a
@@ -4388,19 +3381,467 @@ DROP INDEX IF EXISTS one_active_identity_per_phone;
 CREATE UNIQUE INDEX one_active_identity_per_phone
   ON telegram_identities (phone, audience) WHERE contact_active;
 
--- ── telegram_recovery_sessions: one half-finished recovery PER PANEL ───────
-ALTER TABLE telegram_recovery_sessions DROP CONSTRAINT IF EXISTS telegram_recovery_sessions_audience_check;
-ALTER TABLE telegram_recovery_sessions ADD CONSTRAINT telegram_recovery_sessions_audience_check
-  CHECK (audience IN ('PLAYER','STAFF','MERCHANT'));
-DO $$ BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint con
-      JOIN pg_attribute a
-        ON a.attrelid = con.conrelid AND a.attnum = ANY (con.conkey)
-     WHERE con.conrelid = 'telegram_recovery_sessions'::regclass
-       AND con.contype = 'p' AND a.attname = 'audience'
-  ) THEN
-    ALTER TABLE telegram_recovery_sessions DROP CONSTRAINT IF EXISTS telegram_recovery_sessions_pkey;
-    ALTER TABLE telegram_recovery_sessions ADD PRIMARY KEY (telegram_user_id, audience);
+-- ═══════════════════════════════════════════════════════════════════════════
+-- KYC REMOVED (owner, 2026-10-02)
+-- ═══════════════════════════════════════════════════════════════════════════
+-- No Aadhaar number, hash or ciphertext is collected any more; the Telegram
+-- contact share is the only identity check (PROJECT_STATUS §3.10). The CREATE
+-- statements are gone from this file, and these DROPs make a database that
+-- already had them CONVERGE on what the file says (§32 S31) — a table left
+-- behind would hold every Aadhaar ever submitted, for nobody.
+DROP TABLE IF EXISTS kyc_transitions;
+DROP TABLE IF EXISTS user_kyc;
+DROP TABLE IF EXISTS kyc_batches;
+DROP TABLE IF EXISTS kyc_verifications;
+DROP TABLE IF EXISTS telegram_recovery_sessions;
+DROP INDEX IF EXISTS users_kyc_status_idx;
+ALTER TABLE users DROP CONSTRAINT IF EXISTS users_kyc_status_check;
+ALTER TABLE users DROP CONSTRAINT IF EXISTS users_kyc_submission_count_check;
+ALTER TABLE users DROP COLUMN IF EXISTS kyc_status;
+ALTER TABLE users DROP COLUMN IF EXISTS kyc_submission_count;
+ALTER TABLE order_states DROP COLUMN IF EXISTS requires_video_kyc;
+-- PENDING_KYC was an account status nothing wrote; dropped and re-added so the
+-- narrower list converges on an existing database too.
+ALTER TABLE users DROP CONSTRAINT IF EXISTS users_status_check;
+ALTER TABLE users ADD CONSTRAINT users_status_check
+  CHECK (status IN ('ACTIVE','BLOCKED','SUSPENDED','DELETED'));
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- SUPERVISORS AND TEAMS (owner, 2026-10-02 — PROJECT_STATUS §3.10, Step 2a)
+-- ═══════════════════════════════════════════════════════════════════════════
+-- A SUPERVISOR is a merchant login with a role and ONE rail, set by an admin.
+-- It runs up to four TEAMS of exactly ten member merchants. A member is in one
+-- team at most — `team_members.merchant_id` is the primary key, so a second
+-- team is unrepresentable rather than merely refused.
+--
+-- The caps (4 teams, 10 members) are not CHECKs — a row cannot count its
+-- siblings — so they are asked inside the statement that writes, under a lock
+-- on the parent row (teams.js). A read in one statement acted on in another
+-- is a snapshot (§32 S6).
+ALTER TABLE merchants ADD COLUMN IF NOT EXISTS is_supervisor BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE merchants ADD COLUMN IF NOT EXISTS supervisor_rail TEXT;
+ALTER TABLE merchants DROP CONSTRAINT IF EXISTS merchants_supervisor_rail;
+-- `IS NOT NULL` is load-bearing: `NULL IN (…)` is NULL, a CHECK passes
+-- anything that is not FALSE, and the first draft therefore admitted a
+-- supervisor with NO rail — measured by teamsPg before it shipped.
+ALTER TABLE merchants ADD CONSTRAINT merchants_supervisor_rail CHECK (
+  (NOT is_supervisor AND supervisor_rail IS NULL)
+  OR (is_supervisor AND supervisor_rail IS NOT NULL
+      AND supervisor_rail IN ('CASH', 'UPI_BANK', 'USDT')));
+
+CREATE TABLE IF NOT EXISTS teams (
+  team_id       TEXT PRIMARY KEY,
+  supervisor_id TEXT NOT NULL REFERENCES merchants (merchant_id),
+  name          TEXT NOT NULL,
+  -- When the team dropped below ten APPROVED members, having been at ten. It
+  -- keeps taking orders until the end of that day (IST) and then stops until
+  -- it is back at ten (owner). NULL while full, and for a team that has never
+  -- been full — which has never worked, so it has no grace day to use.
+  short_since   TIMESTAMPTZ,
+  -- Whether it has EVER been at ten. Distinguishes "dropped to nine today"
+  -- from "never had ten", which the grace rule treats differently.
+  was_full      BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT teams_name_present CHECK (length(btrim(name)) BETWEEN 1 AND 60)
+);
+CREATE INDEX IF NOT EXISTS teams_supervisor_idx ON teams (supervisor_id);
+
+CREATE TABLE IF NOT EXISTS team_members (
+  merchant_id TEXT PRIMARY KEY REFERENCES merchants (merchant_id),
+  team_id     TEXT NOT NULL REFERENCES teams (team_id) ON DELETE CASCADE,
+  status      TEXT NOT NULL DEFAULT 'PENDING',
+  added_by    TEXT NOT NULL,
+  added_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  approved_by TEXT,
+  approved_at TIMESTAMPTZ,
+  CONSTRAINT team_members_status_known CHECK (status IN ('PENDING', 'APPROVED')),
+  -- An approval names who made it and when; a PENDING row names neither.
+  CONSTRAINT team_members_approval_recorded CHECK (
+    (status = 'PENDING' AND approved_by IS NULL AND approved_at IS NULL)
+    OR (status = 'APPROVED' AND approved_by IS NOT NULL AND approved_at IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS team_members_team_idx ON team_members (team_id, status);
+
+-- A supervisor is never a member, and a member is never a supervisor. Both
+-- directions, in the data: a supervisor serving orders in a team they also
+-- supervise would be paid twice for one volume and judge their own red flags.
+CREATE OR REPLACE FUNCTION bb_team_roles_disjoint() RETURNS trigger AS $$
+BEGIN
+  IF TG_TABLE_NAME = 'team_members' THEN
+    IF EXISTS (SELECT 1 FROM merchants WHERE merchant_id = NEW.merchant_id AND is_supervisor) THEN
+      RAISE EXCEPTION 'a supervisor cannot be a team member' USING ERRCODE = '23514',
+        CONSTRAINT = 'team_roles_disjoint';
+    END IF;
+  ELSIF NEW.is_supervisor AND EXISTS (SELECT 1 FROM team_members WHERE merchant_id = NEW.merchant_id) THEN
+    RAISE EXCEPTION 'a team member cannot be a supervisor' USING ERRCODE = '23514',
+      CONSTRAINT = 'team_roles_disjoint';
   END IF;
-END $$;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS team_members_roles_disjoint ON team_members;
+CREATE TRIGGER team_members_roles_disjoint BEFORE INSERT OR UPDATE ON team_members
+  FOR EACH ROW EXECUTE FUNCTION bb_team_roles_disjoint();
+DROP TRIGGER IF EXISTS merchants_roles_disjoint ON merchants;
+CREATE TRIGGER merchants_roles_disjoint BEFORE INSERT OR UPDATE OF is_supervisor ON merchants
+  FOR EACH ROW EXECUTE FUNCTION bb_team_roles_disjoint();
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- TEAM TOKEN POOLS (owner, 2026-10-02 — PROJECT_STATUS §3.10, Step 2b)
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Each TEAM holds a pool of tokens; individual members hold none. A supervisor
+-- buys tokens from the platform for a team (paid off-platform, recorded by the
+-- admin) and can sell them back. `available` is what new orders may take;
+-- `held` is what open buys have promised (Step 2c). Neither may go negative,
+-- and the guard is the UPDATE's own WHERE, under the row lock (§32 S6).
+--
+-- TEAM_FLOAT in the treasury is the sum of every pool: `teamPools.js` writes
+-- both in one transaction, so they cannot disagree.
+--
+-- MERCHANT_FLOAT is gone with the merchant wallets (Step 2c): a merchant holds
+-- no tokens. An empty row for it is removed; the CHECK is NOT VALID so a
+-- development database still carrying a non-zero one keeps applying the rest
+-- of this file, while every new row is held to the list.
+DELETE FROM treasury_accounts WHERE account = 'MERCHANT_FLOAT' AND balance_paise = 0;
+ALTER TABLE treasury_accounts DROP CONSTRAINT IF EXISTS treasury_accounts_known;
+ALTER TABLE treasury_accounts ADD CONSTRAINT treasury_accounts_known CHECK (account IN (
+  'TOKEN_SUPPLY', 'USER_FLOAT', 'HOUSE_RESERVE', 'COMMISSION_POOL',
+  'BONUS_POOL', 'REFERRAL_POOL', 'OPERATIONAL_FLOAT', 'TEAM_FLOAT')) NOT VALID;
+
+CREATE TABLE IF NOT EXISTS team_pools (
+  team_id         TEXT PRIMARY KEY REFERENCES teams (team_id),
+  available_paise BIGINT NOT NULL DEFAULT 0,
+  held_paise      BIGINT NOT NULL DEFAULT 0,
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT team_pools_available_nonneg CHECK (available_paise >= 0),
+  CONSTRAINT team_pools_held_nonneg CHECK (held_paise >= 0)
+);
+
+-- Every change to a pool, append-only. `tx_id` is the idempotency key: a
+-- redelivered sale or buyback collides here and moves nothing a second time.
+CREATE TABLE IF NOT EXISTS team_pool_entries (
+  id                    BIGSERIAL PRIMARY KEY,
+  tx_id                 TEXT NOT NULL UNIQUE,
+  team_id               TEXT NOT NULL REFERENCES teams (team_id),
+  kind                  TEXT NOT NULL,
+  available_delta_paise BIGINT NOT NULL,
+  held_delta_paise      BIGINT NOT NULL DEFAULT 0,
+  available_after_paise BIGINT NOT NULL,
+  held_after_paise      BIGINT NOT NULL,
+  actor                 TEXT,
+  ref_id                TEXT,
+  note                  TEXT,
+  created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT team_pool_entries_kind_known CHECK (kind IN (
+    'ADMIN_SALE', 'ADMIN_BUYBACK', 'BUY_HOLD', 'BUY_RELEASE', 'BUY_PAID', 'SELL_SETTLED', 'SELL_REVERSED')),
+  CONSTRAINT team_pool_entries_moves CHECK (available_delta_paise <> 0 OR held_delta_paise <> 0)
+);
+CREATE INDEX IF NOT EXISTS team_pool_entries_team_idx ON team_pool_entries (team_id, created_at DESC, id DESC);
+CREATE OR REPLACE TRIGGER team_pool_entries_append_only
+  BEFORE UPDATE OR DELETE ON team_pool_entries FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
+
+-- A supervisor asks the platform to sell tokens into a team's pool (BUY) or to
+-- buy pool tokens back (SELL). An admin fulfils it, recording what was paid, or
+-- rejects it. At most one PENDING request per team and direction.
+CREATE TABLE IF NOT EXISTS team_pool_requests (
+  request_id         TEXT PRIMARY KEY,
+  team_id            TEXT NOT NULL REFERENCES teams (team_id),
+  supervisor_id      TEXT NOT NULL REFERENCES merchants (merchant_id),
+  direction          TEXT NOT NULL,
+  token_amount_paise BIGINT NOT NULL,
+  status             TEXT NOT NULL DEFAULT 'PENDING',
+  note               TEXT,
+  decided_by         TEXT,
+  decided_at         TIMESTAMPTZ,
+  decision_note      TEXT,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT team_pool_requests_direction_known CHECK (direction IN ('BUY', 'SELL')),
+  CONSTRAINT team_pool_requests_status_known CHECK (status IN ('PENDING', 'FULFILLED', 'REJECTED', 'CANCELLED')),
+  CONSTRAINT team_pool_requests_tokens_positive CHECK (token_amount_paise > 0),
+  CONSTRAINT team_pool_requests_decision_recorded CHECK (
+    (status = 'PENDING' AND decided_at IS NULL) OR (status <> 'PENDING' AND decided_at IS NOT NULL))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS team_pool_requests_one_pending
+  ON team_pool_requests (team_id, direction) WHERE status = 'PENDING';
+CREATE INDEX IF NOT EXISTS team_pool_requests_status_idx ON team_pool_requests (status, created_at);
+
+-- What the platform got, or paid, for a pool trade lives in the same table as
+-- a merchant's: `merchant_id` is the supervisor who traded, `team_id` the pool.
+ALTER TABLE admin_token_considerations ADD COLUMN IF NOT EXISTS team_id TEXT;
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- TEAM ROUTING (redesign Step 2c, PROJECT_STATUS §3.10)
+--
+-- An order is served by a MEMBER of a TEAM, and a buy's tokens are HELD in
+-- the team's pool while it is open. The order row carries which team and how
+-- much it holds: `pool_held_paise` is the guard every hold, release and spend
+-- writes in its own WHERE, so a hold is taken once and ended once (S6).
+-- ═══════════════════════════════════════════════════════════════════════════
+
+-- The kind list grew (S31: a CHECK whose definition moves is dropped and re-added).
+ALTER TABLE team_pool_entries DROP CONSTRAINT IF EXISTS team_pool_entries_kind_known;
+ALTER TABLE team_pool_entries ADD CONSTRAINT team_pool_entries_kind_known CHECK (kind IN (
+  'ADMIN_SALE', 'ADMIN_BUYBACK', 'BUY_HOLD', 'BUY_RELEASE', 'BUY_PAID', 'SELL_SETTLED', 'SELL_REVERSED',
+  'COMMISSION'));
+-- An order's pool movements name the order; an admin trade names its request.
+CREATE INDEX IF NOT EXISTS team_pool_entries_ref_idx ON team_pool_entries (ref_id);
+
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS team_id TEXT;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS pool_held_paise BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE order_states DROP CONSTRAINT IF EXISTS order_states_pool_held_nonneg;
+ALTER TABLE order_states ADD CONSTRAINT order_states_pool_held_nonneg CHECK (pool_held_paise >= 0);
+-- A hold names the team it is held in.
+ALTER TABLE order_states DROP CONSTRAINT IF EXISTS order_states_pool_hold_has_team;
+ALTER TABLE order_states ADD CONSTRAINT order_states_pool_hold_has_team CHECK (pool_held_paise = 0 OR team_id IS NOT NULL);
+CREATE INDEX IF NOT EXISTS order_states_team_open_idx ON order_states (team_id)
+  WHERE state IN ('ASSIGNED', 'PROCESSING', 'PAID', 'DISPUTED');
+
+-- Ready: a CASH member at the machine. Cleared by the assignment it attracts.
+ALTER TABLE merchants ADD COLUMN IF NOT EXISTS cash_ready BOOLEAN NOT NULL DEFAULT FALSE;
+-- Ties in routing go to whoever was assigned least recently.
+ALTER TABLE merchants ADD COLUMN IF NOT EXISTS last_assigned_at TIMESTAMPTZ;
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Step 2c (2026-10-02): orders route to TEAMS. Removed with what they served:
+-- the per-merchant wallet and its entries, the deposit escrow (merchant
+-- settlements), the pre-supplied cash-link queue (a QR scanned at the machine
+-- replaces it in 2d), the platform-wide payment-mode switch (an order's rail is
+-- derived from its size), the payment-gateway settings, merchants buying tokens
+-- from the platform (a supervisor buys into the team pool instead), the
+-- per-variety commission engine's policies (2e replaces it), and the
+-- per-merchant cash denomination and concurrency columns (the rail and the
+-- per-rail cap in SystemConfig.teamRouting replace them).
+-- ═══════════════════════════════════════════════════════════════════════════
+DROP TABLE IF EXISTS merchant_settlement_transitions;
+DROP TABLE IF EXISTS merchant_settlements;
+DROP TABLE IF EXISTS merchant_wallet_entries;
+DROP TABLE IF EXISTS merchant_wallets;
+DROP TABLE IF EXISTS cash_link_queue;
+DROP TABLE IF EXISTS payment_mode_policies;
+DROP TABLE IF EXISTS payment_gateway_configs;
+DROP TABLE IF EXISTS merchant_admin_token_orders;
+DROP TABLE IF EXISTS merchant_commission_rates;
+DROP TABLE IF EXISTS merchant_commission_policies;
+DROP TABLE IF EXISTS merchant_bonus_policies;
+ALTER TABLE order_states DROP COLUMN IF EXISTS payment_mode_version;
+ALTER TABLE order_states DROP COLUMN IF EXISTS cash_link_id;
+ALTER TABLE merchants DROP CONSTRAINT IF EXISTS merchants_concurrency_positive;
+ALTER TABLE merchants DROP COLUMN IF EXISTS max_concurrent_orders;
+ALTER TABLE merchants DROP COLUMN IF EXISTS max_concurrent_deposit_orders;
+ALTER TABLE merchants DROP COLUMN IF EXISTS max_concurrent_withdrawal_orders;
+ALTER TABLE merchants DROP COLUMN IF EXISTS cash_denomination_paise;
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Step 2c+ (owner, 2026-10-02 21:13): escrow windows and dispute outcomes.
+--
+-- A buy the member REJECTS as unpaid waits in REJECTED, its team pool hold
+-- intact, until `dispute_window_until` (SystemConfig.rejectedBuyDisputeMinutes,
+-- written by the DATABASE clock in the transition that rejects it). A dispute
+-- inside the window keeps the hold until the dispute manager decides; no
+-- dispute, and the sweep cancels the order and the hold goes back to the pool.
+-- ═══════════════════════════════════════════════════════════════════════════
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS dispute_window_until TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS order_states_rejected_window_idx ON order_states (dispute_window_until)
+  WHERE state = 'REJECTED';
+
+-- When a buy's team tokens were PAID to the player (`teamPools.spendForBuy`,
+-- under the order's row lock). From then on the order's only way forward is
+-- COMPLETED: the transition writer refuses any other move in its UPDATE's
+-- WHERE, so a reject, cancel or dispute that loses the race with a confirm
+-- cannot leave a buy paid out and not completed (security review, 2026-10-03).
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS pool_paid_at TIMESTAMPTZ;
+
+-- Whoever LOST a dispute: one row per decided dispute, keyed by the order, so
+-- a decision replayed (two admins, a retried request) records it once. The
+-- count and the suspension it causes are written in the same transaction.
+CREATE TABLE IF NOT EXISTS dispute_faults (
+  order_id     TEXT PRIMARY KEY,
+  party        TEXT NOT NULL,
+  user_id      TEXT,
+  merchant_id  TEXT,
+  decision     TEXT NOT NULL,
+  decided_by   TEXT,
+  lost_count   INTEGER NOT NULL,
+  high_risk    BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT dispute_faults_party_known CHECK (party IN ('PLAYER', 'MERCHANT')),
+  -- The party at fault is named: a player fault names the player, a member
+  -- fault names the member.
+  CONSTRAINT dispute_faults_party_named CHECK (
+    (party = 'PLAYER' AND user_id IS NOT NULL) OR (party = 'MERCHANT' AND merchant_id IS NOT NULL)),
+  CONSTRAINT dispute_faults_count_positive CHECK (lost_count >= 1)
+);
+CREATE INDEX IF NOT EXISTS dispute_faults_user_idx ON dispute_faults (user_id) WHERE user_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS dispute_faults_merchant_idx ON dispute_faults (merchant_id) WHERE merchant_id IS NOT NULL;
+
+-- Lost disputes, lifetime, and the HIGH-RISK review a third one opens. Only a
+-- full admin lifts a suspension while `high_risk_at` is set; that lift clears it.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS lost_disputes INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS high_risk_at TIMESTAMPTZ;
+ALTER TABLE merchants ADD COLUMN IF NOT EXISTS lost_disputes INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE merchants ADD COLUMN IF NOT EXISTS high_risk_at TIMESTAMPTZ;
+ALTER TABLE users DROP CONSTRAINT IF EXISTS users_lost_disputes_nonneg;
+ALTER TABLE users ADD CONSTRAINT users_lost_disputes_nonneg CHECK (lost_disputes >= 0);
+ALTER TABLE merchants DROP CONSTRAINT IF EXISTS merchants_lost_disputes_nonneg;
+ALTER TABLE merchants ADD CONSTRAINT merchants_lost_disputes_nonneg CHECK (lost_disputes >= 0);
+
+-- Step 2d (owner, 2026-10-02 / 2026-10-03): fixed order sizes, one withdrawal
+-- per order, and every sell paid by bank transfer. Removed with what they
+-- served: the split withdrawal's batch label, and the CDM slip a cash-machine
+-- payout was evidenced by (a cash-team sell now carries the member's bank UTR
+-- like any other). Dropped, not left in place (§0.0, §30).
+DROP INDEX IF EXISTS order_states_withdrawal_batch_idx;
+ALTER TABLE order_states DROP COLUMN IF EXISTS withdrawal_batch_ref;
+DROP INDEX IF EXISTS order_states_cdm_receipt_missing_idx;
+ALTER TABLE order_states DROP CONSTRAINT IF EXISTS order_states_cdm_receipt_complete;
+ALTER TABLE order_states DROP CONSTRAINT IF EXISTS order_states_cdm_receipt_timed;
+ALTER TABLE order_states DROP COLUMN IF EXISTS cdm_transaction_id;
+ALTER TABLE order_states DROP COLUMN IF EXISTS cdm_receipt_url;
+ALTER TABLE order_states DROP COLUMN IF EXISTS cdm_receipt_at;
+
+-- Step 2d (owner, 2026-10-02): a CASH buy is paid through the ATM's own QR.
+-- The member stands at a machine offering UPI cash withdrawal, picks the order
+-- amount there and scans the QR it shows; the link it decodes is what the
+-- player pays, and the machine hands the cash to the member. Written only by
+-- `setCashLink` (orders.record.js), after `domains/payment/cashLink.js` has
+-- checked it against the order amount. The CHECK holds the shape any writer
+-- must keep: only a CASH buy carries one, it is a `upi://pay` intent, it is
+-- bounded, and it says when it arrived.
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS cash_link TEXT;
+ALTER TABLE order_states ADD COLUMN IF NOT EXISTS cash_link_at TIMESTAMPTZ;
+ALTER TABLE order_states DROP CONSTRAINT IF EXISTS order_states_cash_link_shape;
+ALTER TABLE order_states ADD CONSTRAINT order_states_cash_link_shape CHECK (
+  cash_link IS NULL OR (
+    order_type = 'DEPOSIT' AND payment_mode = 'CASH_ATM'
+    AND cash_link LIKE 'upi://pay?%' AND length(cash_link) <= 1024
+    AND cash_link_at IS NOT NULL
+  )
+);
+
+-- The link is the machine the ASSIGNED member is standing at. When the order
+-- changes hands (reassignment, requeue, an admin move) the next member is at a
+-- different machine, so the old link is cleared in the same UPDATE, whichever
+-- path made it. A player is never shown a QR for cash somebody else collects.
+--
+-- This is also why a player's "I've paid" on a cash buy names the member it
+-- read (`markOrderPaid`, `expectMerchant`): the only way a link disappears is
+-- the order changing hands, and that move is refused in the transition's WHERE.
+CREATE OR REPLACE FUNCTION bb_cash_link_follows_member() RETURNS trigger AS $$
+BEGIN
+  IF NEW.merchant_id IS DISTINCT FROM OLD.merchant_id THEN
+    NEW.cash_link := NULL;
+    NEW.cash_link_at := NULL;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+CREATE OR REPLACE TRIGGER order_states_cash_link_follows_member
+  BEFORE UPDATE ON order_states FOR EACH ROW EXECUTE FUNCTION bb_cash_link_follows_member();
+
+-- ── An account number that is somebody's mobile (Step 2d, owner 2026-10-03) ──
+-- The member's bank account is shown to the player on a bank-transfer buy, and
+-- the player's to the member on a sell. "Make sure nowhere you expose anyone's
+-- mobile numbers": payments banks (Paytm, Airtel, Jio, Fino, NSDL, India Post)
+-- issue the customer's MOBILE as the account number, so such an account would
+-- show it to the other side. Refused on the row, for every writer:
+--   • a mobile-shaped number (10 digits from 6, optionally 91 or 0 first) at a
+--     payments bank's IFSC (its first four letters name the bank);
+--   • the account holder's OWN registered mobile, at any bank.
+-- A ten-digit number at a regular bank (Kotak's are ten digits) is allowed: it
+-- is an account number, not a phone number. Every spelling is read the same
+-- way: separators dropped, 91 / 091 / 0091 / 0 in front, an IFSC in any case
+-- or with stray spaces.
+CREATE OR REPLACE FUNCTION bb_account_number_is_a_mobile(account TEXT, ifsc TEXT, own_mobile TEXT)
+RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
+  WITH n AS (
+    SELECT regexp_replace(COALESCE(account, ''), '[^0-9]', '', 'g') AS digits,
+           right(regexp_replace(COALESCE(own_mobile, ''), '[^0-9]', '', 'g'), 10) AS own,
+           upper(left(regexp_replace(COALESCE(ifsc, ''), '[^A-Za-z0-9]', '', 'g'), 4)) AS bank
+  ), b AS (
+    SELECT CASE WHEN digits ~ '^(0{0,2}91|0)[6-9][0-9]{9}$' THEN right(digits, 10) ELSE digits END AS bare,
+           own, bank
+      FROM n
+  )
+  SELECT (bare ~ '^[6-9][0-9]{9}$'
+          AND bank IN ('PYTM', 'AIRP', 'JIOP', 'FINO', 'NSPB', 'IPOS'))
+      OR (length(own) = 10 AND bare = own)
+    FROM b
+$$;
+-- The NAMES on an account travel with it (the holder's name, the bank's name),
+-- so a mobile number typed into one reaches the other side the same way. A
+-- run of ten digits from 6, separators allowed, with 91 / +91 / 0091 / 0 or
+-- not, standing alone. Shorter numbers in a name are left alone.
+CREATE OR REPLACE FUNCTION bb_text_has_a_mobile(t TEXT)
+RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
+  SELECT COALESCE(t, '') ~ '(^|[^0-9])((00|[+])?91[ -]?|0)?[6-9]([ .-]?[0-9]){9}([^0-9]|$)'
+$$;
+ALTER TABLE merchants DROP CONSTRAINT IF EXISTS merchants_bank_account_not_a_mobile;
+ALTER TABLE merchants ADD CONSTRAINT merchants_bank_account_not_a_mobile
+  CHECK (NOT bb_account_number_is_a_mobile(bank_account_no, bank_ifsc, mobile)
+     AND NOT bb_text_has_a_mobile(bank_account_holder_name)
+     AND NOT bb_text_has_a_mobile(bank_name));
+ALTER TABLE users DROP CONSTRAINT IF EXISTS users_bank_account_not_a_mobile;
+ALTER TABLE users ADD CONSTRAINT users_bank_account_not_a_mobile
+  CHECK (NOT bb_account_number_is_a_mobile(bank_details->>'accountNumber', bank_details->>'ifscCode', mobile)
+     AND NOT bb_text_has_a_mobile(bank_details->>'accountHolderName')
+     AND NOT bb_text_has_a_mobile(bank_details->>'bankName'));
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Step 2e (owner, 2026-10-02): the team commission, instant and per team.
+--
+-- A team's MATCHED volume is min(completed buys, completed sells), in tokens.
+-- Every time it rises above the team's high-water mark, 10% of the rise is paid
+-- as tokens into the team's pool, out of the platform's commission pool
+-- (MERCHANT_BONUS_POOL in the accounting ledger, which an admin funds from
+-- distributable revenue). The mark is the highest `to_high_paise` recorded for
+-- the team: one row per rise, written by `teamCommission.js` alone, in the
+-- transaction that credits the pool. Volume that falls (a completed sell
+-- disputed and refunded) is never clawed back; it has to climb back past the
+-- mark before anything is paid again.
+--
+-- `team_commissions_from_once` is the double-payment guard (§32 S6, S45): two
+-- payments racing from the same mark cannot both land, whatever read them.
+-- ═══════════════════════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS team_commissions (
+  commission_id    TEXT PRIMARY KEY,
+  team_id          TEXT NOT NULL REFERENCES teams (team_id),
+  supervisor_id    TEXT NOT NULL REFERENCES merchants (merchant_id),
+  from_high_paise  BIGINT NOT NULL,
+  to_high_paise    BIGINT NOT NULL,
+  buys_paise       BIGINT NOT NULL,
+  sells_paise      BIGINT NOT NULL,
+  commission_paise BIGINT NOT NULL,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT team_commissions_rises CHECK (from_high_paise >= 0 AND to_high_paise > from_high_paise),
+  CONSTRAINT team_commissions_is_matched CHECK (to_high_paise = LEAST(buys_paise, sells_paise)),
+  -- 10% of the rise, rounded down to the paisa; a rise worth nothing is not a row.
+  CONSTRAINT team_commissions_tenth CHECK (
+    commission_paise = (to_high_paise - from_high_paise) / 10 AND commission_paise > 0),
+  CONSTRAINT team_commissions_from_once UNIQUE (team_id, from_high_paise),
+  CONSTRAINT team_commissions_to_once UNIQUE (team_id, to_high_paise)
+);
+CREATE OR REPLACE TRIGGER team_commissions_append_only
+  BEFORE UPDATE OR DELETE ON team_commissions FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
+
+-- Who earned what of each payment: 16% to the supervisor, 84% equally to the
+-- team's approved members at that moment. A RECORD, not money: the tokens sit
+-- in the team's pool. The shares of one payment add up to it exactly.
+CREATE TABLE IF NOT EXISTS team_commission_shares (
+  commission_id TEXT NOT NULL REFERENCES team_commissions (commission_id),
+  merchant_id   TEXT NOT NULL REFERENCES merchants (merchant_id),
+  role          TEXT NOT NULL,
+  share_paise   BIGINT NOT NULL,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (commission_id, merchant_id),
+  CONSTRAINT team_commission_shares_role_known CHECK (role IN ('SUPERVISOR', 'MEMBER')),
+  CONSTRAINT team_commission_shares_nonneg CHECK (share_paise >= 0)
+);
+CREATE INDEX IF NOT EXISTS team_commission_shares_merchant_idx
+  ON team_commission_shares (merchant_id, created_at DESC);
+CREATE OR REPLACE TRIGGER team_commission_shares_append_only
+  BEFORE UPDATE OR DELETE ON team_commission_shares FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
+
+-- A team's completed volume, read on every completion: summed from this index alone.
+CREATE INDEX IF NOT EXISTS order_states_team_completed_idx
+  ON order_states (team_id, order_type) INCLUDE (token_amount_paise) WHERE state = 'COMPLETED';

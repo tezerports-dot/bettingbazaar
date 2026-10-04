@@ -46,17 +46,14 @@ const MUTATIONS = [
   },
   // ── A deposit moves tokens; it must not create or destroy them ────────────
   {
-    // Retargeted 2026-09-07: this movement lived inline in payment.routes.js and
-    // now lives in depositCredit.js's `moveDepositMoney`, which BOTH routes that
-    // complete a deposit call — the merchant confirm and the admin queue
-    // override. The mutation therefore covers two call sites where it used to
-    // cover one. It was the admin override disagreeing with this arithmetic
-    // that minted tokens, so aiming it at the shared owner is the point.
+    // Retargeted 2026-10-02 (Step 2c): the team's pool parts with the order's
+    // whole amount by itself (`spendForBuy` reads it off the order row), so the
+    // pairing that can break is on the CREDIT side.
     id: 'M22', file: 'backend/domains/payment/depositCredit.js', config: UNIT,
     test: 'backend/tests/unit/depositCreditConservation.test.js',
-    why: 'the merchant is debited the DEPOSIT SHARE while the user is credited the whole amount',
-    from: `    merchantId: order.merchantId, amount: total,`,
-    to: `    merchantId: order.merchantId, amount: depositCredit,`,
+    why: 'the player is credited the whole deposit AND the reserve share while the pool parts with the total once: tokens created',
+    from: `  if (depositCredit > 0) await creditDeposit(order.userId, depositCredit, order.orderId);`,
+    to: `  if (depositCredit > 0) await creditDeposit(order.userId, total, order.orderId);`,
   },
   {
     id: 'M23', file: 'backend/domains/payment/depositCredit.js', config: UNIT,
@@ -89,34 +86,6 @@ const MUTATIONS = [
     to: `    \`SELECT bet_id FROM bets WHERE bet_id = $1 LIMIT 1\`,`,
   },
   // ── Money-domain READS follow authority (docs/MONEY_READS_MIGRATION.md) ───
-  {
-    id: 'M31', file: 'database/repositories/merchantWallets.js', config: UNIT,
-    test: 'backend/tests/unit/merchantEligibilityReads.test.js',
-    why: 'committed tokens are reported as spendable, admitting orders nobody can fund',
-    from: `const spendable = (balances) => paiseToRupees(balances.available);`,
-    to: `const spendable = (balances) => paiseToRupees(balances.available + balances.reserved + balances.settlement);`,
-  },
-  {
-    id: 'M32', file: 'backend/domains/merchant/merchant.assignment.routes.js', config: UNIT,
-    test: 'backend/tests/unit/merchantEligibilityReads.test.js',
-    why: 'the manual-assign gate goes back to READING a balance instead of taking the hold, so two admins assigning at once both pass it (F-018)',
-    // ── Retargeted 2026-09-16 ────────────────────────────────────────────────
-    // The anchor named `const balance = await getMerchantTokenBalance(...)`,
-    // and that line is gone because the defect it guarded was fixed properly:
-    // `inventoryRefusal` no longer READS a number and let the caller assign in
-    // a later statement. It TAKES the hold, and the refusal is the reserve
-    // leg's own `UPDATE … WHERE` under the merchant's row lock.
-    //
-    // So the mutation is now the real regression: put the read back. This is
-    // trap 18 — a number read in one statement and acted on in another is a
-    // snapshot however good the number is, and this is the one assignment path
-    // with no concurrency query behind it.
-    from: `  const held = await holdDepositTokens(order, merchantId, { actor });
-  if (held.ok) return null;`,
-    to: `  const balance = await getSpendablePaiseFor([merchantId]);
-  if ((balance.get(String(merchantId))?.spendable ?? 0) >= order.tokenAmount * 100) return null;
-  const held = { ok: false, reason: 'insufficient' };`,
-  },
   // ── The accounts table: four properties, each verified to be load-bearing ──
   {
     id: 'M43', file: 'database/repositories/users.js', config: PG,
@@ -142,13 +111,7 @@ const MUTATIONS = [
     from: `const toInt = (v) => (v == null ? null : Number(v));`,
     to: `const toInt = (v) => v;`,
   },
-  {
-    id: 'M46', file: 'database/repositories/users.js', config: PG,
-    test: 'database/tests/userPg.test.js',
-    why: 'the denormalised kyc_status can be written outside the decision transaction',
-    from: `  if (!client) throw new Error('setKycStatus must run inside the transaction that records the decision');`,
-    to: `  if (!client) return null;`,
-  },
+  // M46 (setKycStatus outside its transaction) deleted 2026-10-02 with KYC.
   // ── The sign-in surface: expiry, single use, and disclosure control ────────
   {
     id: 'M47', file: 'database/repositories/telegram.js', config: PG,
@@ -172,20 +135,9 @@ const MUTATIONS = [
     from: `WHERE token_hash = $1 AND consumed_at IS NULL AND expires_at > now()`,
     to: `WHERE token_hash = $1 AND consumed_at IS NULL`,
   },
-  {
-    id: 'M49', file: 'database/repositories/identity.js', config: PG,
-    test: 'database/tests/identityPg.test.js',
-    why: 'two concurrent exports disclose the same Aadhaar in two files',
-    from: `          FOR UPDATE SKIP LOCKED)`,
-    to: `          )`,
-  },
-  {
-    id: 'M50', file: 'database/repositories/identity.js', config: PG,
-    test: 'database/tests/identityPg.test.js',
-    why: 'a VERIFIED Aadhaar row can be deleted, freeing a number that is in use',
-    from: `WHERE user_id = $1 AND status = 'FAILED'`,
-    to: `WHERE user_id = $1`,
-  },
+  // M49 and M50 (the Aadhaar export lock; deleting only FAILED Aadhaar rows)
+  // deleted 2026-10-02 with KYC: the queue they guarded no longer exists.
+
   {
     id: 'M51', file: 'database/repositories/identity.js', config: PG,
     test: 'database/tests/identityPg.test.js',
@@ -209,26 +161,11 @@ const MUTATIONS = [
     why: 'withdrawal admission decided from a record field again — money leaves on this path',
     // The three pre-checks that used to stand here are gone: they raced each
     // other and double-counted the escrow. Admission IS the locked debit now —
-    // run once per part, since a cash payout too large for one denomination
-    // becomes several ordinary withdrawals — so the mutation is to put a
-    // record-field gate back in FRONT of the loop.
-    from: `  const created = [];
-  let debitResult = null;`,
+    // one withdrawal, one order (2d) — so the mutation is to put a
+    // record-field gate back in FRONT of it.
+    from: `  const orderId = \`WD_\${crypto.randomBytes(12).toString('hex')}\`;`,
     to: `  if (user.winningsBalance < tokenAmount) throw Object.assign(new Error('Insufficient winnings'), { status: 400 });
-  const created = [];
-  let debitResult = null;`,
-  },
-  {
-    id: 'M54', file: 'backend/domains/merchant/merchantScoring.service.js', config: UNIT,
-    test: 'backend/tests/unit/moneyDecisionsReadTheWallet.test.js',
-    why: 'assignment filters candidates on a stored balance, routing orders nobody can fund',
-    // The read moved from `availablePaise` (the available pocket) to
-    // `getSpendablePaiseFor` (available MINUS the buy orders already in
-    // flight), via a `paiseOf` helper — F-018's more accurate number. The
-    // mutation is unchanged in substance: go back to the stored balance on the
-    // merchant record, which is the defect this entry names.
-    from: `    candidates = candidates.filter((m) => paiseOf(m) >= neededPaise);`,
-    to: `    candidates = candidates.filter((m) => m.tokenBalance >= neededPaise);`,
+  const orderId = \`WD_\${crypto.randomBytes(12).toString('hex')}\`;`,
   },
   {
     id: 'M63', file: 'database/repositories/wallets.core.js', config: PG,
@@ -515,22 +452,13 @@ const MUTATIONS = [
   // The platform runs one of two P2P rails and an admin switches between them.
   // The orders already in flight must not move with it.
   {
+    // Retargeted 2026-10-02 (Step 2c): the rail is derived from the order's own
+    // currency and size, not read from a platform-wide policy.
     id: 'M92', file: 'database/repositories/orders.record.js', config: PG,
-    test: 'backend/tests/routes/paymentModeSwitchPg.test.js',
-    why: 'the order insert stops stamping the rail, so every order silently takes the column default',
-    // Retargeted 2026-09-30 (review C1): the stamp is now either the policy the
-    // caller validated against or a read of the live one. Both go.
-    from: `  const stamp = railPolicy
-    ? stampFromPolicy(railPolicy)
-    : await stampForNewOrder(paymentMode);`,
-    to: `  const stamp = { mode: 'P2P_UPI', version: null };`,
-  },
-  {
-    id: 'M93', file: 'database/repositories/paymentModePolicy.js', config: PG,
-    test: 'backend/tests/routes/paymentModeSwitchPg.test.js',
-    why: 'a rail switch silently resets every timer an admin tuned back to the column defaults',
-    from: `        timers[field] !== undefined ? timers[field] : (previous ? Number(previous[column]) : null)`,
-    to: `        timers[field] !== undefined ? timers[field] : null`,
+    test: 'database/tests/teamRoutingPg.test.js',
+    why: 'the order insert stops deriving the rail from the order, so a cash-sized buy is stamped UPI and routed to a team that pays no cash',
+    from: `  const paymentMode = paymentModeFor({ currency: detail.currency, tokenAmountPaise: tokenPaise });`,
+    to: `  const paymentMode = 'P2P_UPI';`,
   },
   {
     id: 'M94', file: 'database/schema.sql', config: PG,
@@ -539,270 +467,106 @@ const MUTATIONS = [
     from: `  IF NEW.payment_mode IS DISTINCT FROM OLD.payment_mode THEN`,
     to: `  IF FALSE THEN`,
   },
-  {
-    id: 'M95', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
-    test: 'backend/tests/routes/paymentModeRoutes.test.js',
-    why: 'the merchant payload is built by spreading the policy row, leaking who switched the rail and why',
-    from: `            ...modeCopy(policy?.activeMode),
-            timers: publicTimers(policy),`,
-    to: `            ...policy,
-            ...modeCopy(policy?.activeMode),
-            timers: publicTimers(policy),`,
-  },
-  {
-    id: 'M96', file: 'backend/domains/configuration/paymentMode.service.js', config: PG,
-    test: 'backend/tests/routes/paymentModeRoutes.test.js',
-    why: 'every merchant is interrupted by a timer edit that changes nothing they do',
-    from: `  if (railChanged) {`,
-    to: `  if (true) {`,
-  },
-  {
-    id: 'M97', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
-    test: 'backend/tests/routes/paymentModeSwitchPg.test.js',
-    why: 'the order window follows the rail live NOW, so a mid-flight switch re-deadlines an order under a workflow the player was never shown',
-    from: `  const policy = (order?.paymentModeVersion != null`,
-    to: `  const policy = (false`,
-  },
 
   // ── One merchant, one denomination ──────────────────────────────────────
   // On the cash rail a merchant stands at an ATM that dispenses one amount.
   // Offering them another is offering an order they physically cannot serve.
-  {
-    id: 'M98', file: 'backend/domains/merchant/merchantScoring.service.js', config: PG,
-    test: 'backend/tests/routes/merchantDenominationsPg.test.js',
-    why: 'the selector stops asking for a denomination, so a cash order reaches a merchant at the wrong machine',
-    from: `  const cashDenominationPaise = paymentMode === PAYMENT_MODES.CASH_ATM`,
-    to: `  const cashDenominationPaise = false && paymentMode === PAYMENT_MODES.CASH_ATM`,
-  },
-  {
-    id: 'M99', file: 'backend/domains/merchant/merchant.admin.routes.js', config: PG,
-    test: 'backend/tests/routes/merchantDenominationsPg.test.js',
-    why: 'a merchant denomination can be changed while they hold an order, altering the amount they were assigned under',
-    from: `      const open = counts.get(String(merchantId))?.total ?? 0;`,
-    to: `      const open = 0;`,
-  },
-  {
-    id: 'M100', file: 'backend/domains/merchant/denominations.js', config: PG,
-    test: 'backend/tests/routes/merchantDenominationsPg.test.js',
-    why: 'a split that cannot be completed returns its partial legs anyway, paying the player LESS than they asked for while reporting success',
-    from: `  if (left !== 0) return null;`,
-    to: `  if (false) return null;`,
-  },
 
   // ── The ATM cash-link queue ─────────────────────────────────────────────
   // A link is a claim on physical notes about to leave a machine.
-  {
-    id: 'M101', file: 'database/repositories/cashLinks.js', config: PG,
-    test: 'database/tests/cashLinkQueuePg.test.js',
-    why: 'the claim matches any denomination at or above the order, so a merchant at a 40,000 machine is handed a 5,000 order',
-    // ── Why this mutates the MERCHANT's column and not the link's ───────────
-    // The claim tests the denomination TWICE, and they are different
-    // questions: `l.denomination_paise` is the size the link was supplied for,
-    // `m.cash_denomination_paise` is the tier the merchant is on NOW, re-read
-    // because an admin can move them after they supplied it. Both are
-    // load-bearing and neither is a duplicate of the other.
-    //
-    // But it means loosening ONE of them changes no outcome: a merchant and
-    // their own link always agree at supply time, so the other condition still
-    // refuses and the mutation is unkillable BY CONSTRUCTION. This entry
-    // mutated `l.denomination_paise` alone and reported SURVIVED for as long as
-    // it has existed — read as a hole in the suite when it was a hole in the
-    // mutation. A test was written against it and still could not kill it,
-    // which is how the difference showed.
-    //
-    // Mutating the merchant's condition expresses the behaviour the entry
-    // NAMES — "the claim stops matching the size exactly" — because it is the
-    // one a claim for a smaller order actually reaches.
-    edits: [
-      [`            AND l.denomination_paise = $1`, `            AND l.denomination_paise >= $1`],
-      [`            AND m.cash_denomination_paise = $1`, `            AND m.cash_denomination_paise >= $1`],
-    ],
-  },
-  {
-    id: 'M102', file: 'database/repositories/cashLinks.js', config: PG,
-    test: 'database/tests/cashLinkQueuePg.test.js',
-    why: 'a link with seconds left is handed to a player who cannot reach the machine but now believes they have been served',
-    from: `            AND l.expires_at > now() + make_interval(secs => $2)`,
-    to: `            AND l.expires_at > now() + make_interval(secs => $2 * 0)`,
-  },
-  {
-    id: 'M103', file: 'database/repositories/cashLinks.js', config: PG,
-    test: 'database/tests/cashLinkQueuePg.test.js',
-    why: 'a claim whose order stamp wrote nothing still reports success, marking a link taken by an order that does not know it',
-    from: `      if (rowCount !== 1) {`,
-    to: `      if (false) {`,
-  },
-  {
-    id: 'M104', file: 'database/repositories/cashLinks.js', config: PG,
-    test: 'database/tests/cashLinkQueuePg.test.js',
-    why: 'a merchant whose last trip was wasted loses their priority, so the same merchant can be sent out for nothing repeatedly',
-    from: `            )) DESC,
-            l.expires_at ASC`,
-    to: `            )) ASC,
-            l.expires_at ASC`,
-  },
 
-  // ── What a player may buy, enforced on the server ───────────────────────
+  // ── What a player may buy or sell, enforced on the server ───────────────
   // The player app ships as an APK containing the whole JS bundle, so every
-  // one of these is reachable by a hand-made request.
+  // one of these is reachable by a hand-made request. Retargeted 2026-10-03
+  // (Step 2d): an order is one of the fixed sizes the admin has on offer.
   {
     id: 'M105', file: 'backend/domains/risk/riskValidation.service.js', config: PG,
-    test: 'backend/tests/routes/buyLimitsPg.test.js',
-    why: 'the ATM ceiling stops applying, so a hand-made request buys ₹40,000 on the cash rail — a sum no machine dispenses in one go and no cash merchant can serve',
-    from: `  if (paymentMode === PAYMENT_MODES.CASH_ATM && paise > MAX_CASH_BUY_PAISE) {`,
+    test: 'backend/tests/routes/orderSizesPg.test.js',
+    why: 'a buy for an amount that is not an order size is accepted, so it waits on a rail no team is organised to serve',
+    from: `  if (!offered.includes(tokenAmount)) {`,
     to: `  if (false) {`,
   },
   {
-    id: 'M106', file: 'backend/domains/risk/riskValidation.service.js', config: PG,
-    test: 'backend/tests/routes/buyLimitsPg.test.js',
-    why: 'any amount is accepted on the cash rail, creating orders no ATM can dispense and no merchant can serve',
-    from: `  if (paymentMode === PAYMENT_MODES.CASH_ATM && !isBuyDenomination(paise)) {`,
-    to: `  if (false) {`,
+    id: 'M106', file: 'backend/domains/merchant/denominations.js', config: PG,
+    test: 'backend/tests/routes/orderSizesPg.test.js',
+    why: 'a size the admin switched off is still accepted, so the admin cannot stop a rail being offered work its teams cannot take',
+    from: `  return ORDER_SIZES.filter((size) => list.includes(size));`,
+    to: `  return [...ORDER_SIZES];`,
   },
   {
     id: 'M107', file: 'backend/domains/risk/riskValidation.service.js', config: PG,
-    test: 'backend/tests/routes/buyLimitsPg.test.js',
+    test: 'backend/tests/routes/orderSizesPg.test.js',
     why: 'a player opens unlimited simultaneous buys and can occupy several merchants at once during a shortage',
     from: `  if (open > 0) {`,
     to: `  if (false) {`,
   },
   {
-    id: 'M108', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
-    test: 'backend/tests/routes/buyLimitsPg.test.js',
-    why: 'the buy path stops telling the gate which rail it is on, so the denomination rule silently never fires',
-    from: `    paymentMode: railNow.activeMode,`,
-    to: `    paymentMode: null,`,
-  },
-  {
     id: 'M109', file: 'backend/domains/configuration/systemConfigPayload.js', config: UNIT,
     test: 'backend/tests/unit/systemConfigPayload.test.js',
-    why: 'the client is told a different set of legal buy amounts than the gate enforces, so the picker offers what the server refuses',
-    from: `    buyDenominations:    BUY_DENOMINATIONS_PAISE.map((p) => p / 100),`,
-    to: `    buyDenominations:    [100, 200, 300],`,
+    why: 'the client is told a different set of sizes than the gate enforces, so the picker offers what the server refuses',
+    from: `      CASH:     offeredSizesFor(cfg, 'CASH'),`,
+    to: `      CASH:     [100, 200, 300],`,
+  },
+  {
+    id: 'M344', file: 'database/repositories/config.js', config: PG,
+    test: 'backend/tests/routes/orderSizesPg.test.js',
+    why: 'the admin can store a size that is not one of the seven, and the stored list stops saying what is on offer',
+    from: `        const bad = nums.filter((v) => !field.allowed.includes(v));`,
+    to: `        const bad = [];`,
+  },
+  {
+    id: 'M345', file: 'database/repositories/config.js', config: PG,
+    test: 'database/tests/configPairedBoundsPg.test.js',
+    why: 'a USDT bound that is not a whole step is stored, so the player is offered a range no step lands on',
+    from: `      if (field.multipleOf && num % field.multipleOf !== 0) {`,
+    to: `      if (false) {`,
+  },
+  {
+    id: 'M346', file: 'backend/domains/configuration/tokenRates.js', config: UNIT,
+    test: 'backend/tests/unit/tokenRates.test.js',
+    why: 'the tokens for a USDT buy are computed in floating point, so 100 USDT at ₹64.35 is priced a fraction of a paisa off and refused',
+    from: `  const ratePaise = Math.round(rate * 100);`,
+    to: `  const ratePaise = rate * 100;`,
+  },
+  {
+    id: 'M347', file: 'database/repositories/orderRails.js', config: PG,
+    test: 'backend/tests/routes/orderSizesPg.test.js',
+    why: 'the rail boundary moves, so a 50,000 buy is sent to a cash team at a machine that cannot pay it',
+    from: `const MAX_CASH_SIZE_PAISE = Math.max(...CASH_SIZES) * 100;`,
+    to: `const MAX_CASH_SIZE_PAISE = 50_000 * 100;`,
   },
 
-  // ── The CDM receipt is admin-only ───────────────────────────────────────
+  // ── Every sell is a bank transfer, with its UTR (2d) ────────────────────
   {
-    id: 'M110', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
-    test: 'backend/tests/routes/cdmReceiptRoutes.test.js',
-    why: 'a merchant can attach a CDM receipt to another merchant\'s payout, putting their evidence on somebody else\'s order',
-    from: `        const order = await db.orders.getMerchantOrder(req.params.id, req.merchantId);
-        if (!order) return res.status(404).json({ success: false, message: 'Order not found.' });
-        if (order.type !== 'WITHDRAWAL') {`,
-    to: `        const order = await db.orders.getOrderRecord(req.params.id);
-        if (!order) return res.status(404).json({ success: false, message: 'Order not found.' });
-        if (order.type !== 'WITHDRAWAL') {`,
-  },
-  {
-    id: 'M111', file: 'backend/domains/disputes/disputeResolution.admin.routes.js', config: PG,
-    test: 'backend/tests/routes/cdmReceiptRoutes.test.js',
-    why: 'the missing-receipt queue ignores a request for zero minutes and answers a different question during an incident',
-    from: `    const olderThanMinutes = Number.isFinite(asked) && asked >= 0 ? asked : 60;`,
-    to: `    const olderThanMinutes = asked || 60;`,
-  },
-  {
-    id: 'M112', file: 'database/repositories/orders.record.js', config: PG,
-    test: 'backend/tests/routes/cdmReceiptRoutes.test.js',
-    why: 'a receipt is reported for an order that has none, so an unevidenced payout reads as evidenced',
-    from: `  if (!r || !r.cdm_receipt_url) return null;`,
-    to: `  if (!r) return null;`,
-  },
-  {
-    id: 'M113', file: 'database/repositories/orders.record.js', config: PG,
-    test: 'backend/tests/routes/cdmReceiptRoutes.test.js',
-    why: 'every merchant is shown every other merchant\'s outstanding payouts — order ids, amounts and settlement times for business they have nothing to do with',
-    from: `      WHERE merchant_id = $1
-        AND order_type = 'WITHDRAWAL'
-        AND payment_mode = 'CASH_ATM'
-        AND cdm_receipt_url IS NULL`,
-    to: `      WHERE ($1 IS NOT NULL)
-        AND order_type = 'WITHDRAWAL'
-        AND payment_mode = 'CASH_ATM'
-        AND cdm_receipt_url IS NULL`,
-  },
-  {
-    id: 'M114', file: 'database/repositories/orders.record.js', config: PG,
-    test: 'backend/tests/routes/cdmReceiptRoutes.test.js',
-    why: 'a payout the merchant HAS evidenced never leaves their outstanding list, so the one confirmation they get that a slip landed never comes and they submit it again',
-    from: `      WHERE merchant_id = $1
-        AND order_type = 'WITHDRAWAL'
-        AND payment_mode = 'CASH_ATM'
-        AND cdm_receipt_url IS NULL
-        AND completed_at IS NOT NULL
-      ORDER BY completed_at ASC`,
-    to: `      WHERE merchant_id = $1
-        AND order_type = 'WITHDRAWAL'
-        AND payment_mode = 'CASH_ATM'
-        AND completed_at IS NOT NULL
-      ORDER BY completed_at ASC`,
-  },
-  {
-    id: 'M115', file: 'database/repositories/orders.record.js', config: PG,
-    test: 'backend/tests/routes/cdmReceiptRoutes.test.js',
-    why: 'the outstanding list re-identifies the player it was built to keep out of it, handing the merchant a user id alongside every payout',
-    from: `  return rows.map((r) => ({
-    orderId: r.order_id,
-    fiatAmount: rupees(r.fiat_amount_paise),
-    completedAt: r.completed_at,
-  }));
-}`,
-    to: `  return rows.map((r) => ({
-    orderId: r.order_id,
-    fiatAmount: rupees(r.fiat_amount_paise),
-    completedAt: r.completed_at,
-    userId: r.order_id,
-  }));
-}`,
+    id: 'M348', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
+    test: 'backend/tests/routes/payoutReferencePg.test.js',
+    why: 'a cash-team sell is confirmed with no bank reference, so the payout has nothing a dispute can be matched against and one transfer can be claimed twice',
+    from: `        let payoutReference = null;
+        if (!isDeposit) {`,
+    to: `        let payoutReference = null;
+        if (!isDeposit && order.paymentMode !== 'CASH_ATM') {`,
   },
   {
     id: 'M116', file: 'backend/domains/merchant/merchantOrderView.js', config: PG,
     test: 'backend/tests/routes/merchantOrderPrivacyRoutes.test.js',
-    why: 'the merchant panel stops being told which rail an order was born on, so an order held across a rail switch is worked with the wrong process — a UTR asked for on a payout settled at a machine',
+    why: 'the merchant panel stops being told which rail an order was born on, so a cash buy is worked as a UPI one — the member is never asked for the payment link the player is waiting on',
     from: `  'paymentMode',`,
     to: ``,
   },
 
-  // ── A cash withdrawal that becomes several withdrawals ──────────────────
+  // ── One withdrawal is one order, of one size ────────────────────────────
   {
-    id: 'M117', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
-    test: 'backend/tests/routes/splitWithdrawalPg.test.js',
-    why: 'a cash withdrawal is created for an amount no set of denominations can make, so no merchant can ever pay it at a machine and the tokens lock behind an order nobody can serve',
-    from: `    const cashParts = splitWithdrawal(fiatPaise);
-    if (!cashParts) {`,
-    to: `    const cashParts = splitWithdrawal(fiatPaise) ?? [fiatPaise];
-    if (false) {`,
-  },
-  {
-    id: 'M118', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
-    test: 'backend/tests/routes/splitWithdrawalPg.test.js',
-    why: 'every part debits the WHOLE withdrawal instead of its own share, so a four-part payout locks four times what the player asked to withdraw',
-    from: `      debited = await debitWinningsForWithdrawal(String(user.userId), partTokens, partOrderId, { within: insertPart });`,
-    to: `      debited = await debitWinningsForWithdrawal(String(user.userId), tokenAmount, partOrderId, { within: insertPart });`,
-  },
-  {
-    id: 'M119', file: 'backend/domains/merchant/denominations.js', config: PG,
-    test: 'backend/tests/routes/splitWithdrawalPg.test.js',
-    why: 'the payout fee lands on the CASH side, so a part becomes an amount no machine dispenses and no merchant can pay it',
-    from: `  const parts = partsPaise.map((paise) => ({
-    fiatPaise: Number(paise),
-    tokenPaise: Number(paise) + Math.floor((fee * Number(paise)) / cash),
-  }));`,
-    to: `  const parts = partsPaise.map((paise) => ({
-    fiatPaise: Number(paise) - Math.floor((fee * Number(paise)) / cash),
-    tokenPaise: Number(paise),
-  }));`,
-  },
-  {
-    id: 'M120', file: 'backend/domains/merchant/denominations.js', config: PG,
-    test: 'backend/tests/routes/splitWithdrawalPg.test.js',
-    why: 'the paise the fee share could not divide evenly are dropped, so the player is charged an amount no row adds up to',
-    from: `  const assigned = parts.reduce((sum, p) => sum + p.tokenPaise, 0) - cash;
-  parts[0].tokenPaise += fee - assigned;`,
-    to: ``,
+    // Retargeted 2026-10-03 (2d): every order is one of the fixed sizes, and a
+    // withdrawal that is not one is refused before any money moves.
+    id: 'M117', file: 'backend/domains/risk/riskValidation.service.js', config: PG,
+    test: 'backend/tests/routes/oneWithdrawalPg.test.js',
+    why: 'a withdrawal is created for an amount that is not an order size, so no team is organised to pay it and the tokens lock behind an order nobody can serve',
+    from: `  if (!offered.includes(tokenAmount)) {`,
+    to: `  if (false) {`,
   },
   {
     id: 'M121', file: 'database/repositories/orders.record.js', config: PG,
-    test: 'backend/tests/routes/splitWithdrawalPg.test.js',
+    test: 'backend/tests/routes/oneWithdrawalPg.test.js',
     why: 'the stalled queue stops seeing withdrawals nobody has taken, so a player\'s tokens sit locked with no deadline and nobody accountable for them',
     from: `      WHERE order_type = 'WITHDRAWAL'
         AND state = 'PENDING_QUEUE'
@@ -831,28 +595,12 @@ const MUTATIONS = [
   {
     id: 'M124', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
     test: 'backend/tests/routes/utrGracePg.test.js',
-    why: 'the window stops coming from the policy, so the number an admin edits on the settlement screen decides nothing again',
-    from: `  const graceSeconds = policy?.utrSubmitSeconds ?? 60;`,
+    why: 'the window stops coming from SystemConfig, so the number an admin edits on the settings screen decides nothing again',
+    from: `  const graceSeconds = routingSettings(await getSystemConfig()).utrSubmitSeconds;`,
     to: `  const graceSeconds = 60;`,
-  },
-  {
-    id: 'M125', file: 'database/repositories/paymentModePolicy.js', config: PG,
-    test: 'backend/tests/routes/paymentModeSwitchPg.test.js',
-    why: 'a timer passed at the top level is silently discarded and the publish reports success — an operator sets a window, is told it worked, and the old value stays live',
-    from: `  const stray = Object.keys(unknown);
-  if (stray.length) {`,
-    to: `  const stray = [];
-  if (stray.length) {`,
   },
 
   // ── Retry, and the link that arrives late ───────────────────────────────
-  {
-    id: 'M126', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
-    test: 'backend/tests/routes/retryAndMatchPg.test.js',
-    why: 'a supplied link is never handed to an order already waiting, so a player watches a live order expire while a merchant stands at a machine with a link nobody takes',
-    from: `  const waiting = await db.orders.ordersAwaitingCashLink({ limit });`,
-    to: `  const waiting = [];`,
-  },
   {
     id: 'M127', file: 'database/repositories/orders.record.js', config: PG,
     test: 'backend/tests/routes/retryAndMatchPg.test.js',
@@ -861,18 +609,10 @@ const MUTATIONS = [
     to: `      ORDER BY created_at ASC`,
   },
   {
-    id: 'M128', file: 'database/repositories/orders.record.js', config: PG,
-    test: 'backend/tests/routes/retryAndMatchPg.test.js',
-    why: 'an order that already holds a link stays in the waiting queue, so it is handed a second one and the first is stranded until it expires',
-    from: `        AND cash_link_id IS NULL
-      ORDER BY assignment_priority DESC`,
-    to: `      ORDER BY assignment_priority DESC`,
-  },
-  {
     id: 'M129', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
     test: 'backend/tests/routes/retryAndMatchPg.test.js',
     why: 'an order that is still live can be retried, so a player gets a second order for money already in flight — two merchants on a buy, and on a sell their tokens locked twice',
-    from: `  const retryable = ['CANCELLED', 'FAILED', 'REJECTED'].includes(original.status);`,
+    from: `  const retryable = ['CANCELLED', 'FAILED'].includes(original.status);`,
     to: `  const retryable = true;`,
   },
   {
@@ -883,69 +623,20 @@ const MUTATIONS = [
     to: `  const attempt = { priority: 0, retryOf: original.orderId };`,
   },
   {
-    id: 'M131', file: 'backend/domains/merchant/cashLink.service.js', config: PG,
-    test: 'backend/tests/routes/retryAndMatchPg.test.js',
-    why: 'a merchant supplies a new link while already working an order, so supply-claim-supply gives one merchant unbounded concurrent orders on a rail whose cap is ONE — the cash-link claim never goes through the scorer, so nothing else checks it',
-    from: `  if (open >= cap) {`,
-    to: `  if (false) {`,
-  },
-  {
-    id: 'M132', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
-    test: 'backend/tests/routes/retryAndMatchPg.test.js',
-    why: 'a claim whose order will not move is left standing, so the link is consumed and the order holds a link id while still queued — the link out of the queue so no merchant can be sent with it, the order showing a payment link nobody is working',
-    // Widened to name ONE site. The same release appears twice in this file —
-    // once when the HOLD fails and once when the transition does — and the
-    // narrow anchor mutated whichever came first, so the verdict described a
-    // different defect from the one this entry names (trap 13). The comment
-    // above the first one is what only it has.
-    from: `      // The link is given back for the same reason as below: it was claimed
-      // before this could fail, and a consumed link on an unassigned order is
-      // two people waiting on nothing.
-      await db.cashLinks.releaseClaim({ linkId: claim.link.linkId, orderId: order.orderId })`,
-    to: `      await Promise.resolve({ ok: true })`,
-  },
-  {
-    id: 'M133', file: 'database/repositories/cashLinks.js', config: PG,
-    test: 'backend/tests/routes/retryAndMatchPg.test.js',
-    why: 'a release can pull a link out from under an order that IS being served — a player mid-payment loses the link they were sent to pay',
-    from: `        WHERE link_id = $1 AND claimed_by_order = $2 AND status = 'CLAIMED'`,
-    to: `        WHERE link_id = $1 AND status = 'CLAIMED'`,
-  },
-  {
-    id: 'M134', file: 'database/repositories/cashLinks.js', config: PG,
-    test: 'backend/tests/routes/retryAndMatchPg.test.js',
-    why: 'the released link is put back without clearing the order, so the order looks served by a link that has gone to somebody else',
-    from: `    await client.query(
-      \`UPDATE order_states SET cash_link_id = NULL, updated_at = now()
-        WHERE order_id = $1 AND cash_link_id = $2\`,
-      [String(orderId), String(linkId)],
-    );`,
-    to: ``,
-  },
-  {
-    id: 'M135', file: 'database/repositories/paymentModePolicy.js', config: PG,
-    test: 'backend/tests/routes/retryAndMatchPg.test.js',
-    why: 'the cash rail takes its concurrency from the policy column again, which defaults to 3 and is carried across a rail switch — so a merchant at a machine is promised out three times over the same notes',
-    from: `  if (policy?.activeMode === PAYMENT_MODES.CASH_ATM) return 1;`,
-    to: ``,
-  },
-  {
     id: 'M136', file: 'database/repositories/orders.record.js', config: PG,
     test: 'backend/tests/routes/assignmentWindowPg.test.js',
-    why: 'an order no merchant ever took is never expired — creation sets no deadline, so it waits forever and a withdrawal\'s escrow locks a player\'s money with nothing scheduled to release it',
+    why: 'an order no member ever took is never expired: creation sets no deadline, so it waits forever and a withdrawal locks a player\'s money with nothing scheduled to release it',
     from: `              OR (o.expires_at IS NULL
-                  AND o.state = 'PENDING_QUEUE'
-                  AND o.created_at < now() - make_interval(
-                        secs => COALESCE(p.assignment_wait_seconds, $2)))`,
-    to: ``,
+                  AND o.state = 'PENDING_QUEUE'`,
+    to: `              OR (FALSE AND o.expires_at IS NULL
+                  AND o.state = 'PENDING_QUEUE'`,
   },
   {
     id: 'M137', file: 'database/repositories/orders.record.js', config: PG,
     test: 'backend/tests/routes/assignmentWindowPg.test.js',
-    why: 'an order is swept the moment it is created, so a buy a merchant was about to take is cancelled out from under both of them',
-    from: `                  AND o.created_at < now() - make_interval(
-                        secs => COALESCE(p.assignment_wait_seconds, $2)))`,
-    to: `                  )`,
+    why: 'an order is swept the moment it is created, so a buy a member was about to take is cancelled out from under both of them',
+    from: `                  AND o.created_at < now() - make_interval(secs => $2))`,
+    to: `                  AND o.created_at < now() - make_interval(secs => LEAST($2, 0)))`,
   },
 
   // ── A1: a player sees where to pay, not who they are paying ───────────────
@@ -966,11 +657,11 @@ const MUTATIONS = [
     // silently stopped applying — it was reported as ANCHOR MISSING for the
     // first time only after the harness started failing on that.
     from: `  const view = {};
-  // Built at assignment by \`buildMerchantSnapshot\`, from the merchant's own`,
+  if (snapshot.merchantRef) view.merchantRef = snapshot.merchantRef;`,
     to: `  return { ...snapshot };
   // eslint-disable-next-line no-unreachable
   const view = {};
-  // Built at assignment by \`buildMerchantSnapshot\`, from the merchant's own`,
+  if (snapshot.merchantRef) view.merchantRef = snapshot.merchantRef;`,
   },
   {
     id: 'M140', file: 'backend/domains/payment/payment.routes.js', config: PG,
@@ -979,34 +670,21 @@ const MUTATIONS = [
     from: `      payTo:           view.payTo ?? null,`,
     to: `      payTo:           order.merchantSnapshot,`,
   },
-  {
-    id: 'M141', file: 'backend/domains/payment/paymentLink.js', config: UNIT,
-    test: 'backend/tests/unit/paymentLink.test.js',
-    why: 'an empty payee builds `upi://pay?pa=` and the screen renders a live button to a payment that goes nowhere recoverable',
-    from: `  if (!payee || !Number.isFinite(amount) || amount <= 0) return null;`,
-    to: `  if (false) return null;`,
-  },
   // ── B7: the USDT merchant rail, and one payment claimed once ─────────────
   {
-    id: 'M143', file: 'database/repositories/merchants.js', config: PG,
-    test: 'backend/tests/routes/usdtMerchantRailPg.test.js',
-    why: 'the chain filter goes, so a USDT order is offered to a merchant with no address on that network — the player sends to a chain the address does not exist on and the tokens are gone',
-    // The anchor is the CLAUSE inside the interpolation, not the interpolation
-    // itself: `${…}` inside a mutation's own template literal is evaluated by
-    // this file rather than matched, so an anchor containing one never matches
-    // and the mutation reports NOT MEASURED — a hole in the suite that reads
-    // like a hole in the code.
-    from: `AND m.` + `$` + `{chainColumn} IS NOT NULL`,
-    to: `AND TRUE`,
+    // Retargeted 2026-10-02 (Step 2c): routing is to team members now.
+    id: 'M143', file: 'database/repositories/teamRouting.js', config: PG,
+    test: 'database/tests/teamRoutingPg.test.js',
+    why: 'the chain filter goes, so a USDT order is offered to a member with no address on that network: the player sends to a chain the address does not exist on and the tokens are gone',
+    from: "        ${chainColumn ? `AND m.${chainColumn} IS NOT NULL AND m.${chainColumn} <> ''` : ''}",
+    to: "        ${''}",
   },
   {
-    id: 'M144', file: 'database/repositories/merchants.js', config: PG,
-    test: 'backend/tests/routes/usdtMerchantRailPg.test.js',
-    why: 'an unknown chain matches nobody SILENTLY instead of throwing, which reads on a screen as "no merchant is available" and has a player wait through a malformed request',
-    from: `    if (!chainColumn) {
-      throw new TypeError(\`assignmentCandidates: unknown usdtChain '\${usdtChain}'\`);
-    }`,
-    to: `    if (!chainColumn) { chainColumn = null; }`,
+    id: 'M144', file: 'database/repositories/teamRouting.js', config: PG,
+    test: 'database/tests/teamRoutingPg.test.js',
+    why: 'an unknown chain matches nobody SILENTLY instead of throwing, which reads on a screen as "nobody is free" and has a player wait through a malformed request',
+    from: "    if (!chainColumn) throw new TypeError(`routingCandidates: unknown usdtChain '${order.usdtChain}'`);",
+    to: "    if (!chainColumn) chainColumn = 'usdt_address_trc20';",
   },
   {
     id: 'M145', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
@@ -1018,8 +696,8 @@ const MUTATIONS = [
   {
     id: 'M146', file: 'backend/domains/risk/riskValidation.service.js', config: PG,
     test: 'backend/tests/routes/usdtMerchantRailPg.test.js',
-    why: 'any size is accepted on the USDT rail, so the three fixed token denominations stop being fixed and a merchant is asked for a sum they never agreed to serve',
-    from: `    if (!isUsdtBuyDenomination(paise)) {`,
+    why: 'any USDT amount is accepted, so the admin bounds and the 100-USDT step stop holding and a member is asked for a sum the screen never offered',
+    from: `    if (!isUsdtBuyAmount(usdtAmount, bounds)) {`,
     to: `    if (false) {`,
   },
   {
@@ -1040,59 +718,32 @@ const MUTATIONS = [
     id: 'M149', file: 'backend/domains/payment/playerOrderView.js', config: PG,
     test: 'backend/tests/routes/playerOrderPrivacyRoutes.test.js',
     why: 'the player is handed the merchant’s address for BOTH chains instead of the one their own order named, so half of them send on a network that address does not exist on',
-    from: `  if (snapshot.usdtPayTo && snapshot.usdtChain) {
+    from: `  if (accepted && isBuy && snapshot.usdtPayTo && snapshot.usdtChain) {
     view.usdtAddress = snapshot.usdtPayTo;`,
-    to: `  if (snapshot.usdtAddressTrc20 || snapshot.usdtAddressBep20) {
+    to: `  if (accepted && isBuy && (snapshot.usdtAddressTrc20 || snapshot.usdtAddressBep20)) {
     view.usdtAddress = snapshot.usdtAddressTrc20 || snapshot.usdtAddressBep20;
     view.usdtAddressBep20 = snapshot.usdtAddressBep20;`,
   },
   {
-    id: 'M150', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
-    test: 'backend/tests/routes/cdmReceiptRoutes.test.js',
-    why: 'the CDM slip’s bank reference is recorded and never claimed, so one cash deposit can be presented as proof of two payouts',
-    from: `            await claimPaymentReference({
-                reference: transactionId,`,
-    to: `            await Promise.resolve({
-                reference: transactionId,`,
-  },
-  {
     id: 'M151', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
     test: 'backend/tests/routes/merchantPanelRoutes.test.js',
-    why: 'a merchant may accept a USDT order on a chain they hold no address for, so the player is shown nothing to send to — or worse, the other chain’s address',
-    from: `            if (!usdtAddressFor(merchant, chain)) {`,
+    why: 'a merchant may accept a USDT order on a chain they hold no address for, so the player is shown nothing to send to, or the other chain\'s address',
+    from: `            if (!usdtAddressFor(merchant, order.usdtChain)) {`,
     to: `            if (false) {`,
   },
   {
     id: 'M152', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
     test: 'backend/tests/routes/usdtMerchantRailPg.test.js',
     why: 'a USDT purchase with no rate set is priced at the INR peg instead of refused, so 50,000 tokens are sold for 50,000 USDT and a player might take it',
-    from: `    if (quoted === null || rate === null) {`,
+    from: `    if (quoted === null) {`,
     to: `    if (false) {`,
   },
   {
     id: 'M153', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
     test: 'backend/tests/routes/usdtMerchantRailPg.test.js',
-    why: 'the USDT figure stops coming from the rate, so the player is asked to send one USDT per token — the quote and the tokens become the same number',
-    from: `    fiatAmount = quoted;`,
-    to: `    fiatAmount = tokenAmount;`,
-  },
-  {
-    id: 'M154', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
-    test: 'backend/tests/routes/usdtMerchantRailPg.test.js',
-    why: 'assignment re-reads the rate minutes after the player agreed to a price, so an admin edit in between re-prices a purchase already made — and, with the row frozen, leaves the order unassignable instead',
-    from: `  const rateUsed = order.rateUsed ?? rateForMerchant(merchant, await getSystemConfig());`,
-    to: `  const rateUsed = rateForMerchant(merchant, await getSystemConfig());`,
-  },
-  {
-    id: 'M155', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
-    test: 'backend/tests/routes/cdmReceiptRoutes.test.js',
-    why: 'the CDM receipt handler reads the order unscoped, so ANY merchant can attach their slip to ANY payout — claiming somebody else’s cash deposit and the evidence a dispute is decided on',
-    from: `        const order = await db.orders.getMerchantOrder(req.params.id, req.merchantId);
-        if (!order) return res.status(404).json({ success: false, message: 'Order not found.' });
-        if (order.type !== 'WITHDRAWAL') {`,
-    to: `        const order = await db.orders.getOrderRecord(req.params.id);
-        if (!order) return res.status(404).json({ success: false, message: 'Order not found.' });
-        if (order.type !== 'WITHDRAWAL') {`,
+    why: 'the tokens stop coming from the rate, so a player who sends 100 USDT is credited 100 tokens — the USDT and the tokens become the same number',
+    from: `    tokenAmount = quoted.tokens;`,
+    to: `    tokenAmount = usdtAmount;`,
   },
   {
     id: 'M142', file: 'backend/domains/merchant/merchantOrderView.js', config: PG,
@@ -1113,8 +764,8 @@ const MUTATIONS = [
     id: 'M156', file: 'database/repositories/orders.record.js', config: PG,
     test: 'backend/tests/routes/orderAccessGuardRoutes.test.js',
     why: 'the one order insert stops writing the tamper tag, so every live order is untagged and the guard mounted on every order route checks nothing',
-    from: `    stamp.mode, stamp.version, usdtChain, deriveOrderHmac(orderId)];`,
-    to: `    stamp.mode, stamp.version, usdtChain, null];`,
+    from: `    paymentMode, usdtChain, deriveOrderHmac(orderId)];`,
+    to: `    paymentMode, usdtChain, null];`,
   },
   {
     id: 'M165', file: 'backend/middleware/order-crypto-access.js', config: PG,
@@ -1130,22 +781,14 @@ const MUTATIONS = [
   // twice, and a merchant whose tokens were all held for the order was refused
   // after the hold was spent. The four other completion doors never dispensed.
   {
-    id: 'M167', file: 'backend/domains/payment/depositCredit.js', config: PG,
-    test: 'backend/tests/routes/depositConfirmConservationPg.test.js',
-    why: 'the buy charges `available` even when its hold already paid for it, so the merchant pays twice and a fully-held merchant can never confirm',
-    from: `  if (fromHold.noHold) {`,
-    to: `  if (true) {`,
-  },
-  {
-    id: 'M168', file: 'backend/domains/merchant/depositEscrow.service.js', config: PG,
-    test: 'backend/tests/routes/depositConfirmConservationPg.test.js',
-    why: 'a retried confirm reads a spent hold as "never held" and takes the tokens again from `available`',
-    from: `    if (await dispensedDepositSettlementFor(order.orderId, merchantId)) {
-      return { ok: true, alreadyTaken: true };
-    }`,
-    to: `    if (false) {
-      return { ok: true, alreadyTaken: true };
-    }`,
+    // Retargeted 2026-10-02 (Step 2c): the hold lives in the team's pool.
+    id: 'M167', file: 'database/repositories/teamPools.js', config: PG,
+    test: 'database/tests/depositConservationPg.test.js',
+    why: "a confirmed buy is charged to the pool's available tokens even though its hold already paid for it, so the team pays twice and a fully committed team can never confirm",
+    from: `      if (held > 0) {
+        await client.query('UPDATE order_states SET pool_held_paise = 0 WHERE order_id = $1', [oid]);`,
+    to: `      if (false) {
+        await client.query('UPDATE order_states SET pool_held_paise = 0 WHERE order_id = $1', [oid]);`,
   },
 
   // ── An admin ends a withdrawal through ONE owner ────────────────────────
@@ -1156,12 +799,14 @@ const MUTATIONS = [
     id: 'M169', file: 'backend/domains/payment/withdrawalHold.service.js', config: PG,
     test: 'backend/tests/routes/withdrawalResolutionPg.test.js',
     why: 'an admin refund never takes the stake out of the lock, so the player holds the amount twice and the token total no longer adds up',
-    from: `  if (settlement || order.escrowLocked) {
-    await refundWithdrawal(order.userId, order.tokenAmount, order.orderId);
-  }`,
+    from: `  if (order.escrowLocked) {
+    await returnWithdrawalStake(order.userId, order.tokenAmount, order.orderId);
+  }
+  if (order.merchantCreditStatus === 'HELD') {`,
     to: `  if (false) {
-    await refundWithdrawal(order.userId, order.tokenAmount, order.orderId);
-  }`,
+    await returnWithdrawalStake(order.userId, order.tokenAmount, order.orderId);
+  }
+  if (order.merchantCreditStatus === 'HELD') {`,
   },
   {
     id: 'M170', file: 'backend/domains/payment/withdrawalHold.service.js', config: PG,
@@ -1189,13 +834,6 @@ const MUTATIONS = [
       [`state = CASE WHEN $4::text IS NOT NULL AND state = 'PAID' THEN $4 ELSE state END,`,
        `state = COALESCE($4, state),`],
     ],
-  },
-  {
-    id: 'M172', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
-    test: 'backend/tests/routes/withdrawalResolutionPg.test.js',
-    why: 'with the hold disabled the confirm never settles, so the merchant who paid is not credited until a sweep that may be minutes away',
-    from: `            if (holdFor === 0) {`,
-    to: `            if (false) {`,
   },
 
   // ── An assertion comparing NaN with NaN is refused ──────────────────────
@@ -1327,10 +965,9 @@ const MUTATIONS = [
   {
     id: 'M177', file: 'backend/domains/payment/withdrawalHold.service.js', config: PG,
     test: 'backend/tests/routes/disputeSettleRacePg.test.js',
-    why: 'the worker settles on a snapshot of the order: a dispute raised after the read is settled underneath, stake consumed and merchant credited',
-    from: `    orderStateIn: ['PAID'],
-  });`,
-    to: `  });`,
+    why: 'the worker settles on a snapshot of the order: a dispute raised after the read is settled underneath, stake consumed and the team credited',
+    from: `    actor: 'settlement-worker', requireState: 'PAID',`,
+    to: `    actor: 'settlement-worker',`,
   },
   {
     id: 'M178', file: 'database/repositories/orders.record.js', config: PG,
@@ -1340,24 +977,7 @@ const MUTATIONS = [
     to: `state = COALESCE($4, state),`,
   },
   // ── The cash matcher follows the ORDER's rail (review C2, 2026-09-30) ────
-  {
-    id: 'M179', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
-    test: 'backend/tests/routes/cashLinkRoutes.test.js',
-    why: 'the matcher branches on the rail in force, so a switch to UPI strands every cash buy already waiting and every link already supplied for them',
-    from: `  const waiting = await db.orders.ordersAwaitingCashLink({ limit });`,
-    to: `  const rail = await getActivePaymentModePolicy();
-  if (rail?.activeMode !== PAYMENT_MODES.CASH_ATM) return { matched: 0, considered: 0 };
-  const waiting = await db.orders.ordersAwaitingCashLink({ limit });`,
-  },
   // ── An order is stamped with the rail it was validated for (review C1) ───
-  {
-    id: 'M180', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
-    test: 'backend/tests/routes/railSnapshotPg.test.js',
-    why: 'the buy is stamped by a second read of the rail, so an admin switch in between births an order on a rail its amount was never checked for',
-    from: `    railPolicy:        railNow,
-`,
-    to: ``,
-  },
   // ── Android release uploads (review C4: P197-2, P197-3) ─────────────────
   {
     id: 'M181', file: 'backend/domains/distribution/apkInspector.js', config: UNIT,
@@ -1511,13 +1131,9 @@ const MUTATIONS = [
     from: `  if (!contactUserId || String(contactUserId) !== String(telegramUserId)) {`,
     to: `  if (contactUserId && String(contactUserId) !== String(telegramUserId)) {`,
   },
-  {
-    id: 'M202', file: 'backend/domains/telegram/telegramRecovery.service.js', config: UNIT,
-    test: 'backend/tests/unit/telegramRecoverySafety.test.js',
-    why: 'recovery accepts a contact card with no user_id, so a number the sender does not hold stands in for one they do',
-    from: `  if (!contactUserId || String(contactUserId) !== String(newTelegramUserId)) {`,
-    to: `  if (contactUserId && String(contactUserId) !== String(newTelegramUserId)) {`,
-  },  // ── A referral disbursal reserves its budget before it pays (R6) ────────
+  // M202 (Aadhaar recovery took a contact card with no user_id) deleted
+  // 2026-10-02 with the recovery service. M201 still guards the same check on
+  // the one contact-share path that remains.  // ── A referral disbursal reserves its budget before it pays (R6) ────────
   {
     id: 'M203', file: 'backend/domains/referral/referral.service.js', config: UNIT,
     test: 'backend/tests/unit/referralDisbursalBudget.test.js',
@@ -1532,22 +1148,7 @@ const MUTATIONS = [
     from: `WHERE programme_key = $1 AND disbursed_paise - $2 >= 0`,
     to: `WHERE programme_key = $1`,
   },  // ── Commission recorded is commission delivered; one pass at a time (R6) ─
-  {
-    id: 'M205', file: 'database/repositories/ledger.core.js', config: PG,
-    test: 'database/tests/merchantCommissionPg.test.js',
-    why: 'a commission the ledger recorded and the wallet never received is never delivered',
-    from: `        AND NOT EXISTS (SELECT 1 FROM merchant_wallet_entries w
-                         WHERE w.movement_id = e.idempotency_key)`,
-    to: `        AND FALSE`,
-  },
-  {
-    id: 'M206', file: 'database/repositories/ledger.core.js', config: PG,
-    test: 'database/tests/merchantCommissionPg.test.js',
-    why: 'the cron and the admin run-now overlap, both reading the pool before either writes',
-    // Retargeted 2026-10-01: F-048 reads the lock result into `got` first.
-    from: `    if (!got) return { locked: false };`,
-    to: `    if (false) return { locked: false };`,
-  },  // ── Queue writes are gated on a permission, not a tier (R6) ──────────────
+  // ── Queue writes are gated on a permission, not a tier (R6) ──────────────
   {
     id: 'M207', file: 'backend/routes/admin/_adminShared.js', config: PG,
     test: 'backend/tests/routes/queueWritePermissionPg.test.js',
@@ -1683,11 +1284,13 @@ const MUTATIONS = [
     to: `    if (false) {`,
   },
   {
-    id: 'M225', file: 'backend/middleware/order-crypto-access.js', config: PG,
+    // Repointed 2026-10-01: the guard's admin branch is gone, and what keeps a
+    // staff session off the player's order is now the player door itself.
+    id: 'M225', file: 'backend/domains/identity/auth.middleware.js', config: PG,
     test: 'backend/tests/routes/orderAccessGuardRoutes.test.js',
     why: 'any staff account acts as the player on the player\'s order: reads it, and raises a dispute recorded as the player\'s',
-    from: `    const isAdmin = admitAdmin && req.user?.isAdmin === true && req.user?.isBlocked !== true;`,
-    to: `    const isAdmin = req.user?.isAdmin === true || req.user?.isSubAdmin === true;`,
+    from: `const authenticatePlayer = makeAuthenticate({ accountTypes: ['PLAYER'] });`,
+    to: `const authenticatePlayer = makeAuthenticate();`,
   },
   {
     id: 'M226', file: 'backend/domains/notification/sseManager.service.js', config: UNIT,
@@ -1726,25 +1329,11 @@ const MUTATIONS = [
   },
   // ── Point 3 of the PR #198 verification (2026-10-01) ─────────────────────
   {
-    id: 'M231', file: 'database/repositories/ledger.core.js', config: PG,
-    test: 'database/tests/commissionRunLockPg.test.js',
-    why: 'a failed unlock returns the connection to the pool still holding the lock: every later pass is refused',
-    from: `      if (!unlocked) destroy = true;`,
-    to: `      if (false) destroy = true;`,
-  },
-  {
     id: 'M232', file: 'database/repositories/ipBlocks.js', config: PG,
     test: 'backend/tests/routes/ipBlocklistRoutesPg.test.js',
     why: 'the expiry is dated by the APP clock again, so a server running behind the database refuses short blocks',
     from: `CASE WHEN $5::int IS NULL THEN NULL ELSE now() + make_interval(mins => $5::int) END)`,
     to: `CASE WHEN $5::int IS NULL THEN NULL ELSE to_timestamp(\${Date.now() / 1000} + $5::int * 60) END)`,
-  },
-  {
-    id: 'M233', file: 'database/repositories/cashLinks.js', config: PG,
-    test: 'backend/tests/routes/retryAndMatchPg.test.js',
-    why: 'a cash link is dated by the APP clock again, so a server behind the database refuses every link as already expired',
-    from: `'LIVE', now() + make_interval(secs => $5::numeric / 1000))`,
-    to: `'LIVE', to_timestamp(\${Date.now() / 1000} + $5::numeric / 1000))`,
   },
   // ── §37 neighbour pass over R7 (2026-10-01) ───────────────────────────────
   {
@@ -1814,6 +1403,1049 @@ const MUTATIONS = [
     why: "a queue manager's one screen cannot load its own queue",
     from: `router.get('/payment-queue', authenticate, queueManagerOrPermission('canManageMerchants'),`,
     to: `router.get('/payment-queue', authenticate, hasPermission('canViewTransactions'),`,
+  },
+  // ── Staff authority on STAFF rows only; a deleted account is closed (2026-10-01) ──
+  {
+    id: 'M243', file: 'database/schema.sql', config: PG,
+    test: 'backend/tests/routes/adminUsersRoutes.test.js',
+    why: 'a staff flag can be written onto a PLAYER row, and that player\'s own session carries it',
+    from: `CHECK (account_type = 'STAFF' OR NOT (is_admin OR is_sub_admin OR is_queue_manager OR is_mediator));`,
+    to: `CHECK (TRUE);`,
+  },
+  {
+    id: 'M244', file: 'backend/routes/admin/users.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/adminUsersRoutes.test.js',
+    why: 'the queue-manager grant accepts a PLAYER id and the admin is not told why it failed',
+    from: `if (target.accountType !== 'STAFF') {`,
+    to: `if (false) {`,
+  },
+  {
+    id: 'M245', file: 'database/repositories/users.js', config: PG,
+    test: 'backend/tests/routes/closedAccountPg.test.js',
+    why: 'a sub-admin holding the players area can close the full admin\'s account',
+    from: `WHERE user_id = $1 AND status <> 'DELETED' AND account_type = 'PLAYER'`,
+    to: `WHERE user_id = $1 AND status <> 'DELETED'`,
+  },
+  {
+    id: 'M246', file: 'database/repositories/users.js', config: PG,
+    test: 'backend/tests/routes/closedAccountPg.test.js',
+    why: 'a deleted account keeps every socket and SSE stream it already held',
+    from: `sessions_valid_from = now(), updated_at = now()
+      WHERE user_id = $1 AND status <> 'DELETED'`,
+    to: `updated_at = now()
+      WHERE user_id = $1 AND status <> 'DELETED'`,
+  },
+  {
+    id: 'M247', file: 'backend/routes.js', config: PG,
+    test: 'backend/tests/routes/closedAccountPg.test.js',
+    why: 'a deleted player signs in with their password',
+    from: `    if (accountClosed(user)) return refuseClosedAccount(res);
+
+    // The hash comes`,
+    to: `
+    // The hash comes`,
+  },
+  {
+    id: 'M248', file: 'backend/routes.js', config: PG,
+    test: 'backend/tests/routes/closedAccountPg.test.js',
+    why: 'an account closed between the two legs of a login completes the second',
+    from: `    if (accountClosed(user)) return refuseClosedAccount(res);
+    // The SAME door`,
+    to: `    // The SAME door`,
+  },
+  {
+    id: 'M249', file: 'backend/domains/identity/auth.middleware.js', config: PG,
+    test: 'backend/tests/routes/closedAccountPg.test.js',
+    why: 'a deleted account is told its password changed instead of that it is closed',
+    from: `    if (accountClosed(user)) return refuseClosedAccount(res);`,
+    to: ``,
+  },
+  // ── Boot order, and the balance-adjust area (2026-10-01) ─────────────────
+  {
+    id: 'M250', file: 'backend/server.js', config: UNIT,
+    test: 'backend/tests/unit/schedulersWaitForSchema.test.js',
+    why: 'the settlement engine and cycle generator race the schema apply (deadlock measured)',
+    from: `    gameEngine.start();
+    cycleGenerator.start();
+    registerCronJobs(rebuildLeaderboard);`,
+    to: `    registerCronJobs(rebuildLeaderboard);`,
+  },
+  {
+    id: 'M251', file: 'backend/routes/retention.routes.js', config: PG,
+    test: 'backend/tests/routes/balanceAdjustAreaPg.test.js',
+    why: 'an admin credits money onto a staff or merchant login',
+    from: `if (user.accountType !== 'PLAYER') {`,
+    to: `if (false) {`,
+  },
+  {
+    id: 'M252', file: 'database/repositories/users.js', config: PG,
+    test: 'backend/tests/routes/balanceAdjustAreaPg.test.js',
+    why: "the balance-adjust lookup offers staff and merchant logins as players",
+    from: `if (accountType) add('account_type = $?', String(accountType));`,
+    to: ``,
+  },
+  {
+    id: 'M253', file: 'backend/middleware/errorHandler.js', config: UNIT,
+    test: 'backend/tests/unit/globalErrorHandler.test.js',
+    why: 'any uncaught route error hands the caller the server\'s internal text',
+    from: `const decided = Boolean(err?.status || err?.statusCode);`,
+    to: `const decided = true;`,
+  },
+  // ── A session is used at its own panel's door (2026-10-01) ──────────────
+  {
+    id: 'M254', file: 'backend/domains/identity/auth.middleware.js', config: PG,
+    test: 'backend/tests/routes/playerDoorPg.test.js',
+    why: 'a merchant\'s session reads the player\'s projection of an order assigned to it, and a staff session creates deposits in its own name',
+    from: `    if (belongsElsewhere(user, accountTypes)) return refuseWrongPanel(res, user);`,
+    to: ``,
+  },
+  {
+    id: 'M255', file: 'backend/domains/identity/auth.middleware.js', config: PG,
+    test: 'backend/tests/routes/playerDoorPg.test.js',
+    why: 'a staff session passes the player door: deposits, bets and support tickets in a staff account\'s name',
+    from: `const authenticatePlayer = makeAuthenticate({ accountTypes: ['PLAYER'] });`,
+    to: `const authenticatePlayer = makeAuthenticate({ accountTypes: ['PLAYER', 'STAFF'] });`,
+  },
+  {
+    id: 'M256', file: 'backend/routes.js', config: PG,
+    test: 'backend/tests/routes/playerDoorPg.test.js',
+    why: 'a merchant\'s session restores itself on /me, the endpoint every player and admin page load reads',
+    from: `    if (belongsElsewhere(user, ['PLAYER', 'STAFF'])) return refuseWrongPanel(res, user);`,
+    to: ``,
+  },
+  {
+    id: 'M257', file: 'backend/middleware/order-crypto-access.js', config: PG,
+    test: 'backend/tests/routes/orderAccessGuardRoutes.test.js',
+    why: 'any signed-in player reads, pays and disputes another player\'s order',
+    from: `    if (uid === null || String(order.userId) !== uid) return refuse();`,
+    to: `    if (uid === null) return refuse();`,
+  },
+  {
+    id: 'M258', file: 'backend/startup/socketHandlers.js', config: PG,
+    test: 'backend/tests/routes/playerDoorPg.test.js',
+    why: 'a merchant\'s or staff member\'s session joins a player socket room',
+    from: `        if (user.accountType === 'PLAYER' && user.userId?.toString() === userId?.toString()) {`,
+    to: `        if (user.userId?.toString() === userId?.toString()) {`,
+  },
+  {
+    id: 'M259', file: 'backend/startup/socketHandlers.js', config: PG,
+    test: 'backend/tests/routes/playerDoorPg.test.js',
+    why: 'a full admin\'s session joins ANY player\'s room: every balance push and order update for that player',
+    from: `        if (user.accountType === 'PLAYER' && user.userId?.toString() === userId?.toString()) {`,
+    to: `        if ((user.accountType === 'PLAYER' && user.userId?.toString() === userId?.toString()) || user.isAdmin) {`,
+  },
+  {
+    id: 'M260', file: 'backend/routes/admin/users.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/adminUsersRoutes.test.js',
+    why: 'phantom access is granted to a staff account that can never use it, and the admin is told it failed for no reason',
+    from: `    if (accessLevel !== 'NONE' && user.accountType !== 'PLAYER') {`,
+    to: `    if (false) {`,
+  },
+  {
+    id: 'M261', file: 'database/schema.sql', config: PG,
+    test: 'backend/tests/routes/adminUsersRoutes.test.js',
+    why: 'phantom access can be written onto a staff or merchant row by any path',
+    from: `  CHECK (account_type = 'PLAYER' OR phantom_access = 'NONE');`,
+    to: `  CHECK (TRUE);`,
+  },
+  // ── What the server tells a merchant reaches their screen (2026-10-01) ──
+  {
+    id: 'M262', file: 'backend/domains/disputes/disputeResolution.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/disputeResolutionRoutes.test.js',
+    why: 'a resolved dispute stays DISPUTED on the merchant\'s screen: the push goes nowhere the panel listens',
+    from: `      emitMerchantUpdate(order.merchantId, 'order_update', {`,
+    to: `      global.io?.to(\`merchant-\${order.merchantId}\`).emit('order_update', {`,
+  },
+  {
+    id: 'M263', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
+    test: 'backend/tests/routes/utrGracePg.test.js',
+    why: 'a moved UTR deadline goes out under a name the merchant panel never registered, so their countdown is wrong',
+    from: `    emitMerchantUpdate(String(extended.merchantId), 'order_update', {`,
+    to: `    emitMerchantUpdate(String(extended.merchantId), 'order_updated', {`,
+  },
+  // ── Retention, from the Operations screen (2026-10-01) ──────────────────
+  {
+    id: 'M264', file: 'backend/domains/operations/operations.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/retentionRunRoutesPg.test.js',
+    why: 'a retention run that failed is answered success: true, and the screen reports a prune that never ran',
+    from: `    if (outcome.results?.error) {`,
+    to: `    if (false) {`,
+  },
+  {
+    id: 'M265', file: 'backend/domains/operations/operations.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/retentionRunRoutesPg.test.js',
+    why: 'a prune deletes rows for good and leaves no record of who ran it',
+    from: `    if (!dryRun) {
+      await db.audit.recordDetailed({`,
+    to: `    if (false) {
+      await db.audit.recordDetailed({`,
+  },
+  {
+    id: 'M266', file: 'backend/domains/operations/operations.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/retentionRunRoutesPg.test.js',
+    why: 'a request that does not say dryRun deletes instead of previewing',
+    from: `    const dryRun = req.body?.dryRun !== false; // default to a safe preview`,
+    to: `    const dryRun = req.body?.dryRun === true;`,
+  },
+  // ── A player is not shown the admin's note, or the staff id (2026-10-01) ─
+  {
+    id: 'M267', file: 'backend/domains/user/user.routes.js', config: PG,
+    test: 'backend/tests/routes/playerLedgerViewPg.test.js',
+    why: 'the player\'s wallet history shows "[Admin:<staff id>] <internal note>" as the title of every support adjustment',
+    from: `    res.json({ success: true, ...result, entries: result.entries.map(toPlayerLedgerEntry) });`,
+    to: `    res.json({ success: true, ...result });`,
+  },
+  {
+    id: 'M268', file: 'backend/routes/retention.routes.js', config: PG,
+    test: 'backend/tests/routes/playerLedgerViewPg.test.js',
+    why: 'the player\'s bonus history carries the admin\'s note for the audit trail',
+    from: `    res.json({ success: true, ...result, records: result.records.map(toPlayerBonus) });`,
+    to: `    res.json({ success: true, ...result });`,
+  },
+  {
+    id: 'M269', file: 'backend/domains/wallet/playerLedgerView.js', config: PG,
+    test: 'backend/tests/routes/playerLedgerViewPg.test.js',
+    why: 'an adjustment is not recognised, so its note passes through to the player',
+    from: `const isAdjustment = (entry) => String(entry?.txId ?? '').startsWith(ADJUSTMENT_TX_PREFIX);`,
+    to: `const isAdjustment = () => false;`,
+  },
+  // ── The Merchant Platform's per-merchant figures (2026-10-01) ───────────
+  {
+    id: 'M271', file: 'backend/domains/merchant/merchantAnalytics.service.js', config: PG,
+    test: 'backend/tests/routes/merchantPlatformStatsPg.test.js',
+    why: 'a USDT merchant\'s volume is labelled as rupees on the admin screen',
+    from: `    currency: merchantTypeOf(merchant),`,
+    to: `    currency: 'INR',`,
+  },
+  // ── A create is a create (2026-10-01) ───────────────────────────────────
+  {
+    id: 'M272', file: 'backend/domains/gameRegistry/gameRegistry.routes.js', config: PG,
+    test: 'backend/tests/routes/gameRegistryAdminRoutesPg.test.js',
+    why: 'creating a game whose slug exists overwrites it, and two simultaneous creates both answer 200',
+    from: `      }, { createOnly: true });
+      if (!game) {`,
+    to: `      });
+      if (!game) {`,
+  },
+  {
+    id: 'M273', file: 'backend/domains/gameRegistry/gameRegistry.routes.js', config: PG,
+    test: 'backend/tests/routes/gameRegistryAdminRoutesPg.test.js',
+    why: 'creating a category whose slug exists overwrites it and re-enables a disabled one',
+    from: `    }, { createOnly: true });
+    if (!category) {`,
+    to: `    });
+    if (!category) {`,
+  },
+  // ── Curated winners (2026-10-01) ────────────────────────────────────────
+  {
+    id: 'M274', file: 'backend/routes/winners.routes.js', config: PG,
+    test: 'backend/tests/routes/curatedWinnersRoutesPg.test.js',
+    why: 'an entry created at a positive amount is edited to a negative one and published',
+    from: `      if (!(Number.isFinite(rupees) && rupees > 0)) {`,
+    to: `      if (false) {`,
+  },
+  {
+    id: 'M275', file: 'backend/routes/winners.routes.js', config: PG,
+    test: 'backend/tests/routes/curatedWinnersRoutesPg.test.js',
+    why: 'an edit to a public payout claim leaves no record of who made it',
+    from: `      performedBy: req.user.userId, action: 'CURATED_WINNER_UPDATED', category: 'CONTENT',`,
+    to: `      performedBy: req.user.userId, action: 'CURATED_WINNER_EDIT_X', category: 'CONTENT',`,
+  },
+  {
+    id: 'M276', file: 'database/repositories/engagement.js', config: PG,
+    test: 'backend/tests/routes/curatedWinnersRoutesPg.test.js',
+    why: 'the public winners feed publishes the staff id that wrote each curated entry',
+    from: `    badge: r.badge ?? '',
+    displayTime: r.display_time,
+    isReal: false,`,
+    to: `    badge: r.badge ?? '',
+    displayTime: r.display_time,
+    createdBy: r.created_by,
+    isReal: false,`,
+  },
+  // ── KYC removed (owner, 2026-10-02): the signup writer ─────────────────────
+  {
+    id: 'M277', file: 'database/repositories/identity.js', config: PG,
+    test: 'database/tests/identityPg.test.js',
+    why: 'the signup form writes its account into the STAFF population, so the player door can never read it back',
+    from: `VALUES ($1, $2, $3, $4, $5, $6, 'ACTIVE', 'PLAYER')`,
+    to: `VALUES ($1, $2, $3, $4, $5, $6, 'ACTIVE', 'STAFF')`,
+  },
+  {
+    id: 'M278', file: 'database/repositories/identity.js', config: PG,
+    test: 'database/tests/identityPg.test.js',
+    why: 'a second player signup on one mobile is reported as created, so the route seats a player on an account that is not theirs',
+    from: `    if (!rows[0]) return { ok: false, reason: 'mobile_taken' };`,
+    to: `    if (!rows[0]) return { ok: true, userId: String(userId) };`,
+  },
+  {
+    id: 'M279', file: 'database/repositories/users.js', config: PG,
+    test: 'database/tests/userPg.test.js',
+    why: 'a redelivered channel join hands out a SECOND joining number, moving the player down the referral payout queue and counting them twice',
+    from: `        WHERE user_id = $1 AND joining_number IS NULL`,
+    to: `        WHERE user_id = $1`,
+  },
+  {
+    id: 'M280', file: 'database/repositories/users.js', config: PG,
+    test: 'database/tests/userPg.test.js',
+    why: 'the referral member count advances on every repeat of a completion, so the cap fills with people counted twice',
+    from: `        WHERE programme_key = 'main' AND EXISTS (SELECT 1 FROM claimed)`,
+    to: `        WHERE programme_key = 'main'`,
+  },
+  // ── Supervisors and teams (Step 2a) ────────────────────────────────────────
+  {
+    id: 'M281', file: 'database/repositories/teams.js', config: PG,
+    test: 'database/tests/teamsPg.test.js',
+    why: 'a supervisor can create a fifth team, and as many more as they ask for',
+    from: `    if (c[0].n >= MAX_TEAMS) return { ok: false, reason: 'team_limit' };`,
+    to: `    if (false) return { ok: false, reason: 'team_limit' };`,
+  },
+  {
+    id: 'M282', file: 'database/repositories/teams.js', config: PG,
+    test: 'database/tests/teamsPg.test.js',
+    why: 'proposals arriving together each count the team before the others land, so a team fills past ten',
+    from: `'SELECT team_id FROM teams WHERE team_id = $1 AND supervisor_id = $2 FOR UPDATE',`,
+    to: `'SELECT team_id FROM teams WHERE team_id = $1 AND supervisor_id = $2',`,
+  },
+  {
+    id: 'M283', file: 'database/repositories/teams.js', config: PG,
+    test: 'database/tests/teamsPg.test.js',
+    why: 'every further departure restarts the grace day, so a team can be kept working below ten indefinitely',
+    from: `          WHEN t.was_full THEN COALESCE(t.short_since, now())`,
+    to: `          WHEN t.was_full THEN now()`,
+  },
+  {
+    id: 'M284', file: 'database/repositories/teams.js', config: PG,
+    test: 'database/tests/teamsPg.test.js',
+    why: 'a supervisor can add members to another supervisor\'s team',
+    from: `'SELECT team_id FROM teams WHERE team_id = $1 AND supervisor_id = $2 FOR UPDATE',`,
+    to: `'SELECT team_id FROM teams WHERE team_id = $1 AND $2::text IS NOT NULL FOR UPDATE',`,
+  },
+  {
+    id: 'M285', file: 'database/repositories/teams.js', config: PG,
+    test: 'database/tests/teamsPg.test.js',
+    why: 'the grace day never ends, so a team below ten keeps taking orders for good',
+    from: `     AND (t.short_since AT TIME ZONE 'Asia/Kolkata')::date = (now() AT TIME ZONE 'Asia/Kolkata')::date`,
+    to: `     AND true`,
+  },
+  // No M286. "Only a supervisor reaches the supervisor routes" is enforced
+  // TWICE on purpose — `requireSupervisor` in team.merchant.routes.js, and
+  // createTeam's own `is_supervisor` read under the lock (every other
+  // supervisor route is scoped by supervisor_id in its WHERE). A mutant of
+  // either alone behaves identically, so it was measured SURVIVED and deleted
+  // rather than kept as a permanent false hole (see the note on M101).
+
+  {
+    id: 'M287', file: 'backend/domains/team/team.merchant.routes.js', config: PG,
+    test: 'backend/tests/routes/teamRoutesPg.test.js',
+    why: 'a member of one of the supervisor\'s teams can be removed through another team\'s URL',
+    from: `    if (!membership || membership.team.teamId !== req.params.teamId) return refuse(res, 'not_found');`,
+    to: `    if (!membership) return refuse(res, 'not_found');`,
+  },
+  {
+    id: 'M288', file: 'database/repositories/teamPools.js', config: PG,
+    test: 'database/tests/teamPoolsPg.test.js',
+    why: 'a buyback larger than the pool is attempted anyway, and the platform pays for tokens the team does not hold',
+    from: `      WHERE team_id = $1 AND available_paise + $2 >= 0`,
+    to: `      WHERE team_id = $1`,
+  },
+  {
+    id: 'M289', file: 'database/repositories/teamPools.js', config: PG,
+    test: 'database/tests/teamPoolsPg.test.js',
+    why: 'a sale into a team pool is booked to the merchant float, so the books say merchants hold tokens a team holds',
+    from: `{ [ACCOUNTS.TOKEN_SUPPLY]: -amount, [ACCOUNTS.TEAM_FLOAT]: amount }`,
+    to: `{ [ACCOUNTS.TOKEN_SUPPLY]: -amount, [ACCOUNTS.MERCHANT_FLOAT]: amount }`,
+  },
+  {
+    id: 'M290', file: 'database/repositories/teamPools.js', config: PG,
+    test: 'database/tests/teamPoolsPg.test.js',
+    why: "a supervisor can ask for tokens into another supervisor's team",
+    from: `'SELECT team_id FROM teams WHERE team_id = $1 AND supervisor_id = $2',`,
+    to: `'SELECT team_id FROM teams WHERE team_id = $1 OR supervisor_id = $2',`,
+  },
+  {
+    id: 'M291', file: 'database/repositories/teams.js', config: PG,
+    test: 'database/tests/teamPoolsPg.test.js',
+    why: 'a team that has traded tokens can be deleted, taking the record of where its pool went with it',
+    from: `        AND NOT EXISTS (SELECT 1 FROM team_pool_entries WHERE team_id = t.team_id)
+        AND NOT EXISTS (SELECT 1 FROM team_pool_requests WHERE team_id = t.team_id)`,
+    to: `        AND true`,
+  },
+  {
+    id: 'M292', file: 'backend/domains/team/team.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/teamPoolRoutesPg.test.js',
+    why: 'any staff member with the Teams area can sell the platform\'s tokens into a pool — the money area is not asked for',
+    from: `const POOL_AREA = 'canFundMerchants';`,
+    to: `const POOL_AREA = 'canManageTeams';`,
+  },
+  {
+    id: 'M293', file: 'database/repositories/teamPools.js', config: PG,
+    test: 'database/tests/teamPoolsPg.test.js',
+    why: 'a sale is recorded as money the platform PAID, so every pool sale reads as an outflow in the books',
+    from: `  const direction = preview.direction === POOL_DIRECTIONS.BUY ? DIRECTIONS.RECEIVED : DIRECTIONS.PAID;`,
+    to: `  const direction = DIRECTIONS.PAID;`,
+  },  {
+    id: 'M294', file: 'database/repositories/teamRouting.js', config: PG,
+    test: 'database/tests/teamRoutingPg.test.js',
+    why: "the open orders are not counted again under the member's lock, so two racing orders both take a member's last place",
+    from: "          if (c[0].total >= cap) throw new PoolRefused('member_busy');",
+    to: "          if (false) throw new PoolRefused('member_busy');",
+  },
+  {
+    id: 'M295', file: 'database/repositories/teamRouting.js', config: PG,
+    test: 'database/tests/teamRoutingPg.test.js',
+    why: "routing ignores team strength, so a team that never reached ten members is given orders",
+    from: "        AND (${STRENGTH_SQL}) IN ('WORKING', 'GRACE')\n",
+    to: "\n",
+  },
+  {
+    id: 'M296', file: 'database/repositories/teamRouting.js', config: PG,
+    test: 'database/tests/teamRoutingPg.test.js',
+    why: "a CASH buy is offered to a member who has not said they are at the machine",
+    from: "        AND (NOT ($3 AND $1 = 'CASH') OR m.cash_ready)\n",
+    to: "\n",
+  },
+  {
+    id: 'M297', file: 'database/repositories/teamRouting.js', config: PG,
+    test: 'database/tests/teamRoutingPg.test.js',
+    why: "a CASH member holding an open buy is offered a sell too",
+    from: "        AND (NOT (NOT $3 AND $1 = 'CASH') OR COALESCE(o.buys, 0) = 0)\n",
+    to: "\n",
+  },
+  {
+    id: 'M298', file: 'database/repositories/teamRouting.js', config: PG,
+    test: 'database/tests/teamRoutingPg.test.js',
+    why: "ties go to whoever was assigned MOST recently, so one member takes every order while the rest wait",
+    from: "m.last_assigned_at ASC NULLS FIRST",
+    to: "m.last_assigned_at DESC NULLS LAST",
+  },
+  {
+    id: 'M299', file: 'database/repositories/teamRouting.js', config: PG,
+    test: 'database/tests/teamRoutingPg.test.js',
+    why: "a sell is assigned without naming its team, so the settled tokens have no pool to land in",
+    from: "            await client.query('UPDATE order_states SET team_id = $2 WHERE order_id = $1',\n              [String(order.orderId), cand.teamId]);",
+    to: "            void cand.teamId;",
+  },
+  {
+    id: 'M300', file: 'database/repositories/teamPools.js', config: PG,
+    test: 'database/tests/teamRoutingPg.test.js',
+    why: "the pool hold is taken without checking the pool covers it, so racing buys overdraw the team",
+    from: "      WHERE team_id = $1 AND available_paise >= $2\n      RETURNING available_paise, held_paise`, [teamId, amount]);\n  if (!pool[0]) throw new Refused('pool_short');",
+    to: "      WHERE team_id = $1\n      RETURNING available_paise, held_paise`, [teamId, amount]);\n  if (!pool[0]) throw new Refused('pool_short');",
+  },
+  {
+    id: 'M301', file: 'database/repositories/teamPools.js', config: PG,
+    test: 'database/tests/teamRoutingPg.test.js',
+    why: "a confirmed buy can be paid twice: the second confirm takes the tokens again",
+    from: "      if (done[0]) return { ok: true, alreadyTaken: true };",
+    to: "      void done;",
+  },
+  {
+    id: 'M302', file: 'database/repositories/teamPools.js', config: PG,
+    test: 'database/tests/teamRoutingPg.test.js',
+    why: "a release of an order holding nothing still writes an entry and reports a team, so the sweep cannot tell a real release from a no-op",
+    from: "WHERE order_id = $1 AND pool_held_paise > 0 FOR UPDATE) prev",
+    to: "WHERE order_id = $1 FOR UPDATE) prev",
+  },
+  {
+    id: 'M303', file: 'database/repositories/teamPools.js', config: PG,
+    test: 'database/tests/teamRoutingPg.test.js',
+    why: "a refund takes a sell's tokens back out of a pool that has already used them",
+    from: "          WHERE team_id = $1 AND available_paise >= $2 RETURNING available_paise, held_paise`, [teamId, amount]);\n      if (!pool[0] && coverShortfall) {",
+    to: "          WHERE team_id = $1 RETURNING available_paise, held_paise`, [teamId, amount]);\n      if (!pool[0] && coverShortfall) {",
+  },
+  {
+    id: 'M304', file: 'database/repositories/orders.core.js', config: PG,
+    test: 'database/tests/teamRoutingPg.test.js',
+    why: "the transition's `within` step never runs, so an order is assigned with no pool hold behind it",
+    from: "    if (within) movedOrder = (await within(client, movedOrder)) ?? movedOrder;",
+    to: "    void within;",
+  },
+  {
+    id: 'M305', file: 'database/repositories/teamPools.js', config: PG,
+    test: 'database/tests/teamRoutingPg.test.js',
+    why: 'a refund retried after the pool refills takes the tokens from the pool as well as from the platform, so the user side is paid twice',
+    from: "      if (covered[0]) return { ok: true, covered: true, alreadyCovered: true };",
+    to: "      if (false) return { ok: true, covered: true, alreadyCovered: true };",
+  },
+  {
+    id: 'M306', file: 'database/repositories/teamPools.js', config: PG,
+    test: 'database/tests/teamRoutingPg.test.js',
+    why: 'a refund of a sell the team already used is not covered by the platform, so the player is credited tokens no account moved and USER_FLOAT stops describing the wallets',
+    from: "      if (!pool[0] && coverShortfall) {",
+    to: "      if (!pool[0] && false) {",
+  },
+
+  // ── A withdrawal's stake is consumed OR returned, never both ─────────────
+  // A replayed refund of a SETTLED withdrawal branched on the order's mirrored
+  // status, which the first refund had rewritten, and paid the player a second
+  // time out of another order's locked stake (2c regression, 2026-10-03).
+  {
+    id: 'M307', file: 'database/repositories/wallets.js', config: PG,
+    test: 'backend/tests/routes/withdrawalResolutionPg.test.js',
+    why: 'a refund of a settled withdrawal takes the stake from the lock it already left, draining another order\'s locked stake',
+    from: "    const consumed = rows.length > 0;",
+    to: "    const consumed = false;",
+  },
+  {
+    id: 'M308', file: 'database/repositories/wallets.js', config: PG,
+    test: 'backend/tests/routes/withdrawalResolutionPg.test.js',
+    why: 'a consumed stake can still be returned from the lock, so a replayed refund pays the player twice',
+    from: "    excludes: [`wd_release_${withdrawalId}`],",
+    to: "    excludes: [],",
+  },
+  {
+    id: 'M309', file: 'database/repositories/wallets.js', config: PG,
+    test: 'backend/tests/routes/withdrawalResolutionPg.test.js',
+    why: 'a refunded stake can still be consumed, so the team is credited for tokens the player already has back',
+    from: "    excludes: [`refund_${withdrawalId}`],",
+    to: "    excludes: [],",
+  },
+  {
+    id: 'M310', file: 'database/repositories/wallets.core.js', config: PG,
+    test: 'backend/tests/routes/withdrawalResolutionPg.test.js',
+    why: 'rival movements are never checked, so a stake is both consumed and returned',
+    from: "  if (excludes.length) {",
+    to: "  if (false) {",
+  },
+
+  // ── 2c+: the escrow windows and dispute outcomes ───────────────────────────
+  {
+    id: 'M311', file: 'database/repositories/orders.core.js', config: PG,
+    test: 'backend/tests/routes/rejectedBuyWindowPg.test.js',
+    why: 'expectFrom is ignored again, so a member\'s reject closes a DISPUTED buy',
+    from: "  const allowedFrom = narrowing ? permitted.filter((state) => narrowing.includes(state)) : permitted;",
+    to: "  const allowedFrom = permitted;",
+  },
+  {
+    id: 'M312', file: 'database/repositories/orders.record.js', config: PG,
+    test: 'backend/tests/routes/rejectedBuyWindowPg.test.js',
+    why: 'the rejected buy is given no window, so the player cannot dispute it',
+    from: "`UPDATE order_states SET dispute_window_until = now() + make_interval(mins => $2)",
+    to: "`UPDATE order_states SET dispute_window_until = now() - make_interval(mins => $2)",
+  },
+  {
+    id: 'M313', file: 'backend/domains/payment/payment.routes.js', config: PG,
+    test: 'backend/tests/routes/rejectedBuyWindowPg.test.js',
+    why: 'the window is not checked, so a player disputes a rejected buy after it closed',
+    from: "          if (!await db.orders.rejectedBuyWindowOpenWithin(client, order.orderId)) throw windowClosed;",
+    to: "          void client;",
+  },
+  {
+    id: 'M314', file: 'database/repositories/orders.record.js', config: PG,
+    test: 'backend/tests/routes/rejectedBuyWindowPg.test.js',
+    why: 'the sweep closes windows that are still open',
+    from: "        AND (dispute_window_until IS NULL OR dispute_window_until <= now())",
+    to: "        AND TRUE",
+  },
+  {
+    id: 'M315', file: 'backend/domains/payment/rejectedBuyWindow.service.js', config: PG,
+    test: 'backend/tests/routes/rejectedBuyWindowPg.test.js',
+    why: 'a closed window cancels the buy and keeps the team\'s tokens held',
+    from: "          await db.teamPools.releaseBuyHoldWithin(client, order.orderId, {",
+    to: "          if (false) await db.teamPools.releaseBuyHoldWithin(client, order.orderId, {",
+  },
+  {
+    id: 'M316', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
+    test: 'backend/tests/routes/rejectedBuyWindowPg.test.js',
+    why: 'a rejected buy is retried beside its open window, holding a second team\'s tokens',
+    from: "  if (original.status === 'REJECTED') {",
+    to: "  if (false) {",
+  },
+  {
+    id: 'M317', file: 'database/spec/config.spec.js', config: PG,
+    test: 'backend/tests/routes/rejectedBuyWindowPg.test.js',
+    why: 'the sell hold may be set under the owner\'s one-hour floor',
+    from: "  withdrawalHoldMinutes: int(60, 60, 1440),",
+    to: "  withdrawalHoldMinutes: int(60, 0, 1440),",
+  },
+  {
+    id: 'M318', file: 'backend/domains/disputes/disputeOutcome.service.js', config: PG,
+    test: 'backend/tests/routes/disputeFaultsPg.test.js',
+    why: 'the loser is the wrong party: a buy decided for the player suspends the player',
+    from: "    if (!completed) return FAULT_PARTIES.PLAYER;",
+    to: "    if (!completed) return FAULT_PARTIES.MERCHANT;",
+  },
+  {
+    id: 'M319', file: 'backend/domains/disputes/disputeOutcome.service.js', config: PG,
+    test: 'backend/tests/routes/disputeFaultsPg.test.js',
+    why: 'a decision on an order that was never disputed suspends somebody',
+    from: "  if (!order || order.status !== 'DISPUTED') return { ok: false, reason: 'not_a_dispute' };",
+    to: "  if (!order) return { ok: false, reason: 'not_a_dispute' };",
+  },
+  {
+    id: 'M320', file: 'database/repositories/disputeFaults.js', config: PG,
+    test: 'backend/tests/routes/disputeFaultsPg.test.js',
+    why: 'a replayed decision counts the loss twice',
+    from: "         ON CONFLICT (order_id) DO NOTHING\n         RETURNING order_id`,",
+    to: "         ON CONFLICT (order_id) DO UPDATE SET decision = EXCLUDED.decision\n         RETURNING order_id`,",
+  },
+  {
+    id: 'M321', file: 'database/repositories/disputeFaults.js', config: PG,
+    test: 'backend/tests/routes/disputeFaultsPg.test.js',
+    why: 'the third loss does not open high-risk review',
+    from: "              high_risk_at  = CASE WHEN lost_disputes + 1 >= $4 THEN COALESCE(high_risk_at, now()) ELSE high_risk_at END,",
+    to: "              high_risk_at  = high_risk_at,",
+  },
+  {
+    id: 'M322', file: 'database/repositories/disputeFaults.js', config: PG,
+    test: 'backend/tests/routes/disputeFaultsPg.test.js',
+    why: 'a party with no row leaves a record naming nobody',
+    from: "      if (!loser[0]) throw new Refused('party_missing');",
+    to: "      if (!loser[0]) return { ok: false, reason: 'party_missing' };",
+  },
+  {
+    id: 'M323', file: 'database/repositories/users.js', config: PG,
+    test: 'backend/tests/routes/disputeFaultsPg.test.js',
+    why: 'a sub-admin lifts a player in high-risk review',
+    from: "        AND ($2 OR $5 OR high_risk_at IS NULL)",
+    to: "        AND ($2 OR $5 OR TRUE)",
+  },
+  {
+    id: 'M324', file: 'database/repositories/merchants.js', config: PG,
+    test: 'backend/tests/routes/disputeFaultsPg.test.js',
+    why: 'a sub-admin reinstates a team member in high-risk review',
+    from: "       AND ($3 OR high_risk_at IS NULL)",
+    to: "       AND ($3 OR TRUE)",
+  },
+  {
+    id: 'M325', file: 'backend/domains/payment/paymentOrder.routes.js', config: PG,
+    test: 'backend/tests/routes/disputeFaultsPg.test.js',
+    why: 'the Payment Control Centre decides a dispute and suspends nobody (§32 S3)',
+    from: "    // After the money: the suspension narrates a decision that has committed\n    // and its money that has moved (§21), and must not stand in front of them.\n    await recordDisputeLoser(asDecided, outcome);",
+    to: "    // removed",
+  },
+  {
+    id: 'M326', file: 'backend/domains/payment/paymentOrder.routes.js', config: PG,
+    test: 'backend/tests/routes/disputeFaultsPg.test.js',
+    why: 'the queue action decides a dispute and suspends nobody (§32 S3)',
+    from: "    if (wasDispute) {\n      await recordDisputeLoser(order, {",
+    to: "    if (false) {\n      await recordDisputeLoser(order, {",
+  },
+  {
+    id: 'M327', file: 'backend/domains/disputes/disputeResolution.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/disputeFaultsPg.test.js',
+    why: 'the Dispute Manager decides a dispute and suspends nobody',
+    from: "    const fault = await recordDisputeLoser(asDecided, outcome);",
+    to: "    const fault = { ok: false };",
+  },
+  {
+    id: 'M328', file: 'backend/domains/configuration/tokenRates.js', config: UNIT,
+    test: 'backend/tests/unit/tokenRates.test.js',
+    why: 'the team pool USDT rate is read with no sanity band',
+    from: "  const rate = config?.usdtPricing?.merchantAdminBuyInr;\n  return isUsableRate(rate) && isSaneUsdtRate(rate) ? Number(rate) : null;",
+    to: "  const rate = config?.usdtPricing?.merchantAdminBuyInr;\n  return isUsableRate(rate) ? Number(rate) : null;",
+  },
+  // ── A member's own switches reach the router (2c) ────────────────────────
+  {
+    id: 'M329', file: 'database/repositories/teamRouting.js', config: PG,
+    test: 'backend/tests/routes/merchantPanelRoutes.test.js',
+    why: 'a member who switched "Accept deposit orders" off is told it saved and keeps being handed buys — the preference has no consumer',
+    from: "        AND (CASE WHEN $3 THEN m.accepts_deposits ELSE m.accepts_withdrawals END)\n",
+    to: "\n",
+  },
+  // ── Security review 2026-10-03, F1: a buy's money moved before its state ──
+  {
+    id: 'M330', file: 'database/repositories/teamPools.js', config: PG,
+    test: 'database/tests/teamRoutingPg.test.js',
+    why: 'a confirm that read PAID pays the team\'s tokens out on a buy a member rejected or an expiry cancelled meanwhile',
+    from: "      if (states && !states.includes(o[0].state)) throw new Refused('order_state');\n",
+    to: "\n",
+  },
+  {
+    id: 'M331', file: 'backend/domains/payment/depositCredit.js', config: PG,
+    test: 'backend/tests/routes/paymentOrderAdminActionRoutes.test.js',
+    why: 'the state the route read never reaches the spend, so the check under the lock asks nothing',
+    from: "  const taken = await spend(order.orderId, { actor: 'deposit-credit', requireState });\n",
+    to: "  const taken = await spend(order.orderId, { actor: 'deposit-credit' });\n",
+  },
+  {
+    id: 'M332', file: 'database/repositories/teamPools.js', config: PG,
+    test: 'database/tests/teamRoutingPg.test.js',
+    why: 'a buy whose tokens were paid out can still be rejected, cancelled or disputed before the confirm completes it',
+    from: "      await client.query('UPDATE order_states SET pool_paid_at = now() WHERE order_id = $1', [oid]);\n",
+    to: "\n",
+  },
+  {
+    id: 'M333', file: 'database/repositories/orders.core.js', config: PG,
+    test: 'database/tests/teamRoutingPg.test.js',
+    why: 'the paid-out rule is not asked under the lock, so the caller is told an illegal move rather than why',
+    from: "    if (order.poolPaidAt && to !== ORDER_STATES.COMPLETED && order.state !== ORDER_STATES.COMPLETED) {\n",
+    to: "    if (false) {\n",
+  },
+  {
+    id: 'M334', file: 'backend/domains/payment/paymentOrder.routes.js', config: PG,
+    test: 'backend/tests/routes/paymentOrderAdminActionRoutes.test.js',
+    why: 'an admin APPROVE on a REJECTED buy credits the player and spends the pool, then answers 409',
+    from: "    if (action === 'APPROVE' && !canTransition(order.status, 'COMPLETED')) {\n",
+    to: "    if (false) {\n",
+  },
+  // ── Security review 2026-10-03, F2: suspended for a dispute nobody lost ───
+  {
+    id: 'M335', file: 'backend/domains/disputes/disputeOutcome.service.js', config: PG,
+    test: 'backend/tests/routes/disputeFaultsPg.test.js',
+    why: 'a member\'s red flag decided against the player suspends a player who claimed nothing',
+    from: "  if (!['user', 'system'].includes(order.disputeRaisedBy)) return null;\n",
+    to: "\n",
+  },
+  {
+    id: 'M336', file: 'backend/domains/disputes/disputeOutcome.service.js', config: PG,
+    test: 'backend/tests/routes/disputeFaultsPg.test.js',
+    why: 'dismissing a dispute on a buy that had already completed suspends the member who confirmed it',
+    from: "  if (!PAYMENT_DISPUTE_FROM[order.type]?.includes(disputedFrom)) return null;\n",
+    to: "\n",
+  },
+  {
+    id: 'M337', file: 'backend/domains/disputes/disputeOutcome.service.js', config: PG,
+    test: 'backend/tests/routes/disputeFaultsPg.test.js',
+    why: 'a cash buy disputed because the player sent no reference suspends the member who was shown nothing',
+    from: "    return disputedFrom === 'REJECTED' || order.utr ? FAULT_PARTIES.MERCHANT : null;\n",
+    to: "    return FAULT_PARTIES.MERCHANT;\n",
+  },
+  {
+    id: 'M338', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
+    test: 'backend/tests/routes/disputeFaultsPg.test.js',
+    why: 'a member red-flags their own rejection, turning it into a dispute the player never raised',
+    from: "        if (order.status === 'REJECTED') {\n",
+    to: "        if (false) {\n",
+  },
+  {
+    id: 'M339', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
+    test: 'backend/tests/routes/disputeFaultsPg.test.js',
+    why: 'a red flag is not recorded as the member\'s, so the record cannot say whose report it was',
+    from: "                disputeRaisedBy: 'merchant',\n",
+    to: "\n",
+  },
+  // ── Security review 2026-10-03, F3 and F4 ─────────────────────────────────
+  {
+    id: 'M340', file: 'database/repositories/orders.core.js', config: PG,
+    test: 'database/tests/teamRoutingPg.test.js',
+    why: 'a member accepts or declines an order an admin handed to a colleague, and their write takes it back',
+    from: "    if (onlyMerchant && String(order.merchantId ?? '') !== String(onlyMerchant)) {\n",
+    to: "    if (false) {\n",
+  },
+  {
+    id: 'M341', file: 'database/repositories/orders.js', config: PG,
+    test: 'database/tests/teamRoutingPg.test.js',
+    why: 'the member a route acts as never reaches the writer, so the pin asks nothing',
+    from: "    txId: key, within, onlyFrom: expectFrom, onlyMerchant: expectMerchant,\n",
+    to: "    txId: key, within, onlyFrom: expectFrom,\n",
+  },
+  {
+    id: 'M342', file: 'database/repositories/config.js', config: PG,
+    test: 'backend/tests/routes/rejectedBuyWindowPg.test.js',
+    why: 'an operator saves 7.5 minutes, is told it saved, and the platform runs the default',
+    from: "      if (field.integer && !Number.isInteger(num)) throw",
+    to: "      if (false) throw",
+  },
+  {
+    id: 'M343', file: 'database/repositories/disputeFaults.js', config: PG,
+    test: 'backend/tests/routes/disputeFaultsPg.test.js',
+    why: 'a high-risk review re-opened after an admin closed it raises no alert',
+    from: "      return { ok: true, party, lostCount, highRisk, newlyHighRisk: loser[0].newly_high_risk === true };\n",
+    to: "      return { ok: true, party, lostCount, highRisk, newlyHighRisk: highRisk && lostCount === HIGH_RISK_LOSSES };\n",
+  },
+  // ── Step 2d: a cash buy is paid through the machine the member scans ──
+  {
+    id: 'M349', file: 'backend/domains/payment/cashLink.js', config: UNIT,
+    test: 'backend/tests/unit/cashLink.test.js',
+    why: 'a member scans a ₹5,000 QR for a ₹1,000 order and the player pays five times the order',
+    from: "  if (Math.round(Number(am) * 100) !== want) {\n",
+    to: "  if (false) {\n",
+  },
+  {
+    id: 'M350', file: 'backend/domains/payment/cashLink.js', config: UNIT,
+    test: 'backend/tests/unit/cashLink.test.js',
+    why: 'a link naming the amount twice is checked on one and paid on the other',
+    from: "    if (seen.has(key)) throw refuse(",
+    to: "    if (false) throw refuse(",
+  },
+  {
+    id: 'M351', file: 'backend/domains/payment/cashLink.js', config: UNIT,
+    test: 'backend/tests/unit/cashLink.test.js',
+    why: 'any QR, a website or a script, is handed to the player as the thing to pay',
+    from: "  if (scanned.slice(0, PREFIX.length).toLowerCase() !== PREFIX) {\n",
+    to: "  if (false) {\n",
+  },
+  {
+    id: 'M352', file: 'database/repositories/orders.record.js', config: PG,
+    test: 'backend/tests/routes/cashLinkPg.test.js',
+    why: 'a member the order moved away from still puts their machine\'s QR in front of the player',
+    from: "        AND merchant_id  = $2\n        AND order_type   = 'DEPOSIT'\n",
+    to: "        AND order_type   = 'DEPOSIT'\n",
+  },
+  {
+    id: 'M353', file: 'database/repositories/orders.record.js', config: PG,
+    test: 'backend/tests/routes/cashLinkPg.test.js',
+    why: 'the QR is swapped after the player paid it, and the order no longer says what was paid',
+    from: "        AND payment_mode = 'CASH_ATM'\n        AND state        = 'PROCESSING'\n",
+    to: "        AND payment_mode = 'CASH_ATM'\n",
+  },
+  {
+    id: 'M354', file: 'database/repositories/teamRouting.js', config: PG,
+    test: 'database/tests/teamRoutingPg.test.js',
+    why: 'a bank-transfer buy goes to a member with no bank account, and the player is shown nowhere to pay',
+    from: "        AND (NOT ($3 AND $1 = 'UPI_BANK') OR (\n",
+    to: "        AND (true OR (\n",
+  },
+  {
+    id: 'M355', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
+    test: 'backend/tests/routes/cashLinkPg.test.js',
+    why: 'a player says they paid a cash buy before there was anything to pay',
+    from: "  if (isCashRail && !order.cashLink) {\n",
+    to: "  if (false) {\n",
+  },
+  {
+    id: 'M356', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
+    test: 'backend/tests/routes/cashLinkPg.test.js',
+    why: 'a Paid tap racing a change of hands leaves the cash buy PAID with no QR, paid to nobody\'s machine',
+    from: "  const sameMember = order.merchantId;\n",
+    to: "  const sameMember = null;\n",
+  },
+  {
+    id: 'M357', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
+    test: 'backend/tests/routes/cashLinkPg.test.js',
+    why: 'a player who was never given a QR is counted as not paying, and locked out after three',
+    from: "            playerCouldPay: !neverAccepted && !noCashLink,\n",
+    to: "            playerCouldPay: !neverAccepted,\n",
+  },
+  {
+    id: 'M358', file: 'backend/domains/payment/playerPaymentFailure.service.js', config: PG,
+    test: 'backend/tests/routes/cashLinkPg.test.js',
+    why: 'the expiry sweep says the player could not pay, and the count moves anyway',
+    from: "  const player = playerCouldPay\n",
+    to: "  const player = true\n",
+  },
+  {
+    id: 'M359', file: 'database/schema.sql', config: PG,
+    test: 'backend/tests/routes/cashLinkPg.test.js',
+    why: 'an order moves to another member and the player is still shown the last member\'s machine',
+    from: "  IF NEW.merchant_id IS DISTINCT FROM OLD.merchant_id THEN\n    NEW.cash_link := NULL;",
+    to: "  IF false THEN\n    NEW.cash_link := NULL;",
+  },
+  {
+    id: 'M360', file: 'backend/domains/payment/playerOrderView.js', config: PG,
+    test: 'backend/tests/routes/cashLinkPg.test.js',
+    why: 'the member scans the machine and the player is never given the Pay button',
+    from: "    if (order.cashLink) view.paymentLink = order.cashLink;\n",
+    to: "    if (false) view.paymentLink = order.cashLink;\n",
+  },
+  {
+    id: 'M361', file: 'backend/domains/payment/playerOrderView.js', config: PG,
+    test: 'backend/tests/routes/playerOrderPrivacyRoutes.test.js',
+    why: 'a 50,000 buy shows the player no bank account to transfer to',
+    from: "  } else if (isBuy && order.currency !== 'USDT' && snapshot.accountNo) {\n",
+    to: "  } else if (false) {\n",
+  },
+  {
+    id: 'M362', file: 'backend/domains/payment/playerOrderView.js', config: PG,
+    test: 'backend/tests/routes/playerOrderPrivacyRoutes.test.js',
+    why: 'the player is sent the member\'s whole profile, UPI handle included, instead of the account',
+    from: "    for (const key of PLAYER_PAY_TO_BANK_FIELDS) {\n",
+    to: "    for (const key of Object.keys(snapshot)) {\n",
+  },
+  {
+    id: 'M363', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
+    test: 'backend/tests/routes/cashLinkPg.test.js',
+    why: 'a member is invited to scan a machine for a sell, and told the order is closed instead',
+    from: "        if (order.type !== 'DEPOSIT' || order.paymentMode !== PAYMENT_MODES.CASH_ATM) {\n",
+    to: "        if (false) {\n",
+  },
+  {
+    id: 'M364', file: 'backend/domains/payment/cashLink.js', config: UNIT,
+    test: 'backend/tests/unit/cashLink.test.js',
+    why: 'a member scans their own UPI QR instead of the machine\'s, and the player\'s app shows them the member\'s mobile number',
+    from: "  if (MOBILE_IN_HANDLE.test(payee.split('@')[0])) {\n",
+    to: "  if (false) {\n",
+  },
+  {
+    id: 'M365', file: 'database/schema.sql', config: PG,
+    test: 'backend/tests/routes/payoutAccountNotAMobilePg.test.js',
+    why: 'a member saves their Paytm account, and every player paying a big buy is shown the member\'s mobile number',
+    from: "  SELECT (bare ~ '^[6-9][0-9]{9}$'\n          AND bank IN",
+    to: "  SELECT (false\n          AND bank IN",
+  },
+  {
+    id: 'M366', file: 'database/schema.sql', config: PG,
+    test: 'backend/tests/routes/payoutAccountNotAMobilePg.test.js',
+    why: 'a player gives their own mobile as their account number at a regular bank, and the member paying their sell sees it',
+    from: "      OR (length(own) = 10 AND bare = own)\n",
+    to: "      OR false\n",
+  },
+  {
+    id: 'M367', file: 'database/schema.sql', config: PG,
+    test: 'backend/tests/routes/payoutAccountNotAMobilePg.test.js',
+    why: 'every ten-digit account is taken for a phone number, so a Kotak customer cannot be paid',
+    from: "          AND bank IN ('PYTM', 'AIRP', 'JIOP', 'FINO', 'NSPB', 'IPOS'))\n",
+    to: "          AND true)\n",
+  },
+  {
+    id: 'M370', file: 'database/schema.sql', config: PG,
+    test: 'backend/tests/routes/payoutAccountNotAMobilePg.test.js',
+    why: 'a member types their mobile into the account holder name, and every player paying them reads it',
+    from: "     AND NOT bb_text_has_a_mobile(bank_account_holder_name)\n",
+    to: "",
+  },
+  {
+    id: 'M371', file: 'database/schema.sql', config: PG,
+    test: 'backend/tests/routes/payoutAccountNotAMobilePg.test.js',
+    why: 'a payments-bank account typed with a stray space before the IFSC is taken for a regular bank, and shows the mobile',
+    from: "           upper(left(regexp_replace(COALESCE(ifsc, ''), '[^A-Za-z0-9]', '', 'g'), 4)) AS bank\n",
+    to: "           upper(left(COALESCE(ifsc, ''), 4)) AS bank\n",
+  },
+  {
+    id: 'M372', file: 'backend/domains/payment/playerOrderView.js', config: PG,
+    test: 'backend/tests/routes/playerOrderPrivacyRoutes.test.js',
+    why: 'the player is shown the member\'s account while the member may still decline, pays it, and the order goes to someone else',
+    from: "  const accepted = PAY_DETAIL_STATES.includes(order.status);\n",
+    to: "  const accepted = true;\n",
+  },
+  {
+    id: 'M373', file: 'backend/domains/payment/playerOrderView.js', config: PG,
+    test: 'backend/tests/routes/playerOrderPrivacyRoutes.test.js',
+    why: 'USDT is sent to a member who has not accepted, and declines: a chain payment nobody can reverse',
+    from: "  if (accepted && isBuy && snapshot.usdtPayTo && snapshot.usdtChain) {\n",
+    to: "  if (isBuy && snapshot.usdtPayTo && snapshot.usdtChain) {\n",
+  },
+  {
+    id: 'M374', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
+    test: 'backend/tests/routes/acceptBeforePayPg.test.js',
+    why: '"I\'ve paid" on a buy nobody accepted spends the player\'s reference on an order that cannot move',
+    from: "  if (order.status === 'ASSIGNED') {\n    throw Object.assign(\n      new Error('The member has not accepted",
+    to: "  if (false) {\n    throw Object.assign(\n      new Error('The member has not accepted",
+  },
+  {
+    id: 'M375', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
+    test: 'backend/tests/routes/acceptBeforePayPg.test.js',
+    why: 'a bank buy changes hands while the tap waits, and reads PAID to the new member for money sent to the old one',
+    from: "  const sameMember = order.merchantId;\n",
+    to: "  const sameMember = isCashRail ? order.merchantId : undefined;\n",
+  },
+  {
+    id: 'M376', file: 'backend/domains/payment/paymentProcessing.service.js', config: PG,
+    test: 'backend/tests/routes/acceptBeforePayPg.test.js',
+    why: 'a player is counted as not paying a buy that was never accepted, when there was nothing to pay',
+    from: "          const neverAccepted = order.status === 'ASSIGNED';\n",
+    to: "          const neverAccepted = false;\n",
+  },
+  {
+    id: 'M377', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
+    test: 'backend/tests/routes/cashLinkPg.test.js',
+    why: 'a member who has not accepted is told the order is closed, not to accept it first',
+    from: "        if (order.status === 'ASSIGNED') {\n            // The player is shown the QR only",
+    to: "        if (false) {\n            // The player is shown the QR only",
+  },
+  {
+    id: 'M378', file: 'backend/domains/payment/cashLink.js', config: UNIT,
+    test: 'backend/tests/unit/cashLink.test.js',
+    why: 'a person\'s QR with their number in its name is handed to the player, whose UPI app shows it',
+    from: "  if (['pn', 'tn'].some((key) => MOBILE_IN_TEXT.test(seen.get(key) ?? ''))) {\n",
+    to: "  if (false) {\n",
+  },
+  {
+    id: 'M379', file: 'backend/domains/payment/cashLink.js', config: UNIT,
+    test: 'backend/tests/unit/cashLink.test.js',
+    why: 'a handle written 0091 and a mobile is taken for a machine\'s',
+    from: "const MOBILE_IN_HANDLE = /(?:^|\\D)(?:0{0,2}91|0)?[6-9]\\d{9}(?:\\D|$)/;\n",
+    to: "const MOBILE_IN_HANDLE = /(?:^|\\D)(?:91|0)?[6-9]\\d{9}(?:\\D|$)/;\n",
+  },
+  {
+    id: 'M380', file: 'database/schema.sql', config: PG,
+    test: 'backend/tests/routes/payoutAccountNotAMobilePg.test.js',
+    why: 'a player types their mobile into the account holder name, and the member paying them reads it',
+    from: "     AND NOT bb_text_has_a_mobile(bank_details->>'accountHolderName')\n",
+    to: "",
+  },
+  {
+    id: 'M381', file: 'database/schema.sql', config: PG,
+    test: 'backend/tests/routes/payoutAccountNotAMobilePg.test.js',
+    why: 'a mobile number typed into the bank name reaches the other side of every order',
+    from: "     AND NOT bb_text_has_a_mobile(bank_details->>'bankName'));\n",
+    to: ");\n",
+  },
+  {
+    id: 'M382', file: 'database/schema.sql', config: PG,
+    test: 'backend/tests/routes/payoutAccountNotAMobilePg.test.js',
+    why: 'a payments-bank account written with 0091 in front is taken for a regular account, and shows the mobile',
+    from: "digits ~ '^(0{0,2}91|0)[6-9][0-9]{9}$'",
+    to: "digits ~ '^(91|0)[6-9][0-9]{9}$'",
+  },
+  {
+    id: 'M368', file: 'backend/domains/user/user.routes.js', config: PG,
+    test: 'backend/tests/routes/payoutAccountNotAMobilePg.test.js',
+    why: 'a player whose account is refused is told only that saving failed, with nothing to change',
+    from: "    if (isAccountMobileRefusal(error)) {\n",
+    to: "    if (false) {\n",
+  },
+  {
+    id: 'M369', file: 'database/repositories/merchants.js', config: PG,
+    test: 'backend/tests/routes/payoutAccountNotAMobilePg.test.js',
+    why: 'an applicant whose account is a mobile number is told "signup failed" and nothing they can act on',
+    from: "    if (error.code === '23514' && error.constraint === 'merchants_bank_account_not_a_mobile') {\n",
+    to: "    if (false) {\n",
+  },  // ── Team commission (Step 2e) ──────────────────────────────────────────────
+  {
+    id: 'M383', file: 'database/repositories/teamCommission.js', config: PG,
+    test: 'backend/tests/routes/teamCommissionPg.test.js',
+    why: 'a commission the platform pool cannot cover is paid anyway: the pool is overdrawn, and the platform pays more than it set aside (§26: never partial)',
+    from: `      if (poolPaise < amount) return { ok: false, reason: 'pool_short', owedPaise: amount, poolPaise, summary };\n`,
+    to: '',
+  },
+  {
+    id: 'M384', file: 'database/repositories/teamCommission.js', config: PG,
+    test: 'backend/tests/routes/teamCommissionPg.test.js',
+    why: 'matched volume is the LARGER side: a team that only buys is paid commission on volume nobody matched',
+    from: `  const matched = Math.min(buys, sells);`,
+    to: `  const matched = Math.max(buys, sells);`,
+  },
+  {
+    id: 'M385', file: 'database/repositories/teamCommission.js', config: UNIT,
+    test: 'backend/tests/unit/teamCommission.test.js',
+    why: 'the supervisor is recorded 10% of a payment instead of the owner\'s 16%',
+    from: `  const supervisorShare = Math.floor((total * SUPERVISOR_SHARE_PERCENT) / 100);`,
+    to: `  const supervisorShare = Math.floor((total * 10) / 100);`,
+  },
+  {
+    id: 'M386', file: 'backend/domains/payment/orderLifecycle.service.js', config: PG,
+    test: 'backend/tests/routes/teamCommissionPg.test.js',
+    why: 'a buy that completes the match pays nothing until the sweep: commission is no longer instant',
+    from: `  if (to === ORDER_STATES.COMPLETED && result.ok && result.order?.teamId) {`,
+    to: `  if (false) {`,
+  },
+  {
+    id: 'M387', file: 'backend/domains/payment/withdrawalHold.service.js', config: PG,
+    test: 'backend/tests/routes/teamCommissionPg.test.js',
+    why: 'a sell that completes the match pays nothing until the sweep: commission is no longer instant',
+    from: `  await payCommissionFor(order.teamId, { actor: 'settlement-worker' });\n`,
+    to: '',
+  },
+  {
+    id: 'M388', file: 'database/repositories/teamPools.js', config: PG,
+    test: 'backend/tests/routes/teamCommissionPg.test.js',
+    why: 'commission tokens are taken from the commission token pool instead of the platform holding, which nothing funds',
+    from: `    legs: { [ACCOUNTS.TOKEN_SUPPLY]: -paise, [ACCOUNTS.TEAM_FLOAT]: paise },`,
+    to: `    legs: { [ACCOUNTS.COMMISSION_POOL]: -paise, [ACCOUNTS.TEAM_FLOAT]: paise },`,
+  },
+  {
+    id: 'M389', file: 'database/repositories/teamCommission.js', config: PG,
+    test: 'backend/tests/routes/teamCommissionPg.test.js',
+    why: 'the mark is read as the LOWEST mark paid, so the same rise is paid again on the next ask',
+    from: `  SELECT COALESCE(MAX(to_high_paise), 0) AS high_paise,`,
+    to: `  SELECT COALESCE(MIN(to_high_paise), 0) AS high_paise,`,
+  },
+  {
+    id: 'M390', file: 'database/repositories/teamCommission.js', config: PG,
+    test: 'backend/tests/routes/teamCommissionPg.test.js',
+    why: 'a member is shown the largest share of each payment — the supervisor\'s — instead of their own',
+    from: `                       WHERE s.commission_id = c.commission_id AND s.merchant_id = $2), 0) AS my_share_paise`,
+    to: `                       WHERE s.commission_id = c.commission_id AND $2::text IS NOT NULL ORDER BY s.share_paise DESC LIMIT 1), 0) AS my_share_paise`,
+  },
+  {
+    id: 'M391', file: 'backend/domains/revenue/revenue.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/teamCommissionPg.test.js',
+    why: 'funding the commission pool leaves the commission it was waiting on unpaid until the next sweep',
+    from: `    const paidNow = result.idempotent ? [] : (await payOwedCommissions({ actor: \`admin:\${req.user.userId}\` })`,
+    to: `    const paidNow = true ? [] : (await payOwedCommissions({ actor: \`admin:\${req.user.userId}\` })`,
   },
 ];
 
@@ -1899,12 +2531,12 @@ const results = [];
  * is the more expensive of the two mistakes because the fix people reach for is
  * writing a test that cannot possibly pass.
  *
- * M101 is the case that showed it. The cash-link claim tests the denomination
- * twice — `l.denomination_paise`, the size the link was supplied for, and
- * `m.cash_denomination_paise`, the tier the merchant is on now — and both are
- * load-bearing, because an admin can move a merchant between the two moments. A
- * mutation of either one is unkillable by construction, and a test was written
- * against it and still could not kill it, which is how the difference showed.
+ * M101 was the case that showed it (it went with the cash-link queue in Step
+ * 2c). The cash-link claim tested the denomination twice — the size the link
+ * was supplied for, and the tier the merchant was on — and both were
+ * load-bearing, because an admin could move a merchant between the two moments.
+ * A mutation of either one was unkillable by construction, and a test was
+ * written against it and still could not kill it, which is how it showed.
  *
  * So `edits` expresses "this BEHAVIOUR stops holding", which is what a mutation
  * is supposed to say. Every pair is still checked for presence and for
@@ -1937,7 +2569,11 @@ for (const m of selected) {
     console.log(`❓ ${m.id}  anchor appears more than once in ${m.file} — widen it so it names ONE site`);
     continue;
   }
-  writeFileSync(m.file, edits.reduce((text, [from, to]) => text.replace(from, to), original));
+  // The replacement is a FUNCTION so it is taken literally: a string
+  // replacement reads `$'`, `$&` and `$\`` as patterns, and a regex ending in
+  // `$'` (a SQL `~ '…$'`) once wrote the rest of the file into the mutant,
+  // which then failed to load and read NOT-MEASURED.
+  writeFileSync(m.file, edits.reduce((text, [from, to]) => text.replace(from, () => to), original));
   let outcome;
   const report = join(tmpdir(), `mutation-${m.id}.json`);
   try { rmSync(report, { force: true }); } catch { /* first run */ }

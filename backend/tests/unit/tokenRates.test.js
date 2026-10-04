@@ -48,7 +48,7 @@ import {
   merchantToUserUsdtRate,
   rateForMerchant,
   tokensPerUsdt,
-  usdtForTokens,
+  tokensForUsdt,
   isSaneUsdtRate,
   USDT_RATE_MIN_INR,
   USDT_RATE_MAX_INR,
@@ -153,33 +153,55 @@ describe('the rate that prices every USDT purchase is bounded', () => {
     const absurd = { usdtPricing: { userMerchantBuyInr: 10_000 } };
     expect(merchantToUserUsdtRate(absurd)).toBeNull();
     expect(tokensPerUsdt(absurd)).toBeNull();
-    expect(usdtForTokens(500_000, absurd)).toBeNull();
+    expect(tokensForUsdt(5_000, absurd)).toBeNull();
   });
 
-  it('prices the three sizes exactly as the owner specified', () => {
-    // 1 USDT = 100 tokens: 50,000 → 500, 100,000 → 1,000, 500,000 → 5,000.
+  it('prices a USDT buy in tokens: USDT times the rate (Step 2d)', () => {
+    // 100 USDT at ₹100 is 10,000 tokens; 10,000 USDT is 1,000,000 tokens.
     const cfg = { usdtPricing: { userMerchantBuyInr: 100 } };
     expect(tokensPerUsdt(cfg)).toBe(100);
-    expect(usdtForTokens(50_000, cfg)).toBe(500);
-    expect(usdtForTokens(100_000, cfg)).toBe(1_000);
-    expect(usdtForTokens(500_000, cfg)).toBe(5_000);
+    expect(tokensForUsdt(100, cfg)).toEqual({ tokens: 10_000, tokenPaise: 1_000_000, rate: 100 });
+    expect(tokensForUsdt(10_000, cfg).tokens).toBe(1_000_000);
   });
 
-  it('rounds the USDT figure UP, never against the platform', () => {
-    // 50,000 / 33 = 1515.1515…, and a rate that does not divide evenly is the
-    // normal case. Rounding down would hand over the difference on every order.
-    const cfg = { usdtPricing: { userMerchantBuyInr: 33 } };
-    expect(usdtForTokens(50_000, cfg)).toBe(1515.16);
+  it('computes in integer paise, so a two-decimal rate is exact', () => {
+    // 64.35 × 100 in floating point is 6434.999…, so a rate not taken to whole
+    // paise first prices 100 USDT at 643,499.99… paise. In paise it is exactly
+    // 643,500. (88.55 × 100 happens to be exact in floating point, so it
+    // cannot tell the two apart.)
+    const cfg = { usdtPricing: { userMerchantBuyInr: 64.35 } };
+    expect(tokensForUsdt(100, cfg)).toEqual({ tokens: 6_435, tokenPaise: 643_500, rate: 64.35 });
+    expect(tokensForUsdt(300, cfg).tokenPaise).toBe(1_930_500);
+  });
+
+  it('refuses what is not a whole, positive number of USDT', () => {
+    const cfg = { usdtPricing: { userMerchantBuyInr: 90 } };
+    for (const bad of [0, -100, 100.5, NaN, null, undefined, 'abc']) {
+      expect(tokensForUsdt(bad, cfg)).toBeNull();
+    }
+    expect(tokensForUsdt(100, {})).toBeNull(); // no rate set
   });
 });
 
-describe('the admin-to-merchant leg', () => {
-  it('falls back to the schema default of 1 when unset', () => {
-    // Unlike the other leg this one HAS a meaningful default — it is the value
-    // the route it feeds has always used — so a fallback here is not a guess.
-    expect(adminToMerchantUsdtRate({})).toBe(1);
-    expect(adminToMerchantUsdtRate(null)).toBe(1);
-    expect(adminToMerchantUsdtRate({ usdtPricing: { merchantAdminBuyInr: 0 } })).toBe(1);
+describe('the team pool leg', () => {
+  it('is null when unset — 0 is the schema default and is not a price', () => {
+    // It fell back to 1 ("1 USDT = ₹1"), so its one reader had to know that 1
+    // meant unset. Unset now reads as unset, as the player leg always has.
+    expect(adminToMerchantUsdtRate({})).toBeNull();
+    expect(adminToMerchantUsdtRate(null)).toBeNull();
+    expect(adminToMerchantUsdtRate({ usdtPricing: { merchantAdminBuyInr: 0 } })).toBeNull();
+  });
+
+  it('is held to the same sanity band as the player leg, at both ends', () => {
+    // A value that reached the row some other way (a direct write, an old
+    // backup) fails closed instead of valuing a pool payment at it.
+    expect(adminToMerchantUsdtRate({ usdtPricing: { merchantAdminBuyInr: 1 } })).toBeNull();
+    expect(adminToMerchantUsdtRate({ usdtPricing: { merchantAdminBuyInr: 9.99 } })).toBeNull();
+    expect(adminToMerchantUsdtRate({ usdtPricing: { merchantAdminBuyInr: 1000.01 } })).toBeNull();
+    // The legitimate case still prices, including both edges of the band.
+    expect(adminToMerchantUsdtRate({ usdtPricing: { merchantAdminBuyInr: 10 } })).toBe(10);
+    expect(adminToMerchantUsdtRate({ usdtPricing: { merchantAdminBuyInr: 90 } })).toBe(90);
+    expect(adminToMerchantUsdtRate({ usdtPricing: { merchantAdminBuyInr: 1000 } })).toBe(1000);
   });
 });
 

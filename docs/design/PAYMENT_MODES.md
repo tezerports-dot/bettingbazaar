@@ -178,7 +178,7 @@ checked afterwards by the person who made it.
 A missing receipt flags the merchant rather than blocking the player.
 
 That is only safe because of the hold that already exists. `withdrawalHold`
-freezes BOTH sides for `disputeWindowSeconds` on every confirm: the player's
+freezes BOTH sides for `withdrawalHoldMinutes` (at least 60) on every confirm: the player's
 stake stays locked and the merchant's tokens do not exist yet, so until
 settlement runs **no value has moved**. The click advances the order; it does
 not release money.
@@ -189,7 +189,7 @@ only when — the player raises one inside the window.
 
 The consequence, stated plainly because it is a real exposure: a merchant who
 clicks paid, never deposits, and never uploads a receipt is settled by default
-if the player does not notice inside `disputeWindowSeconds`. The dispute window
+if the player does not notice inside `withdrawalHoldMinutes`. The dispute window
 is therefore the only thing standing between that merchant and the money, and
 shortening it shortens exactly that protection. The flag is what makes the
 pattern visible after the fact rather than what prevents it.

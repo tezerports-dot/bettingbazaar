@@ -9,11 +9,11 @@
  * limiters, the CSP, `authenticate`, the surge breakers, the SPA catch-alls.
  *
  * This drives the WHOLE server over real HTTP as three different actors, and
- * consults the database directly for the facts no panel shows — escrow holds,
- * ledger rows, what a trigger refuses. Every defect it has found was invisible
- * to the tiers above it: a rate limiter that charged a player for the refusal
- * that taught them the rule, a merchant balance never emitted, a second
- * dispute route with no cooling-off period.
+ * consults the database directly for the facts no panel shows — team pool
+ * holds, ledger rows, what a trigger refuses. Every defect it has found was
+ * invisible to the tiers above it: a rate limiter that charged a player for
+ * the refusal that taught them the rule, a merchant balance never emitted, a
+ * second dispute route with no cooling-off period.
  */
 import { signToken } from '../../domains/identity/paseto.util.js';
 
@@ -63,10 +63,10 @@ export const adminToken    = (u) => signToken({ userId: u.userId, mobile: u.mobi
  *
  * ── `headers`, and why a harness that cannot send one is blind ────────────
  * §32 S26 is the gap between "a button calls a route" and "the route accepts
- * the call": `POST /admin/merchants/:id/deduct` requires an `Idempotency-Key`
- * and answers 400 without one, and the admin panel's button had never once
- * worked. A harness with no way to send a header cannot exercise either side
- * of that — it can only ever confirm the 400.
+ * the call": `POST /api/bet/place` requires an `Idempotency-Key` and answers
+ * 400 without one, and an admin money button once failed exactly that way
+ * without ever having worked. A harness with no way to send a header cannot
+ * exercise either side of that — it can only ever confirm the 400.
  */
 export async function api(token, method, path, body, headers = {}) {
   const res = await fetch(`${BASE}${path}`, {

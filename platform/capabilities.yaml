@@ -141,16 +141,17 @@ capabilities:
     # store it compared against — drift between two copies is not a failure mode
     # with one copy. What remains, and is what "reconciliation" should have
     # meant all along, is INTERNAL consistency: accounting events derived from
-    # completed orders and settled cycles, committed merchant pockets explained
-    # by outstanding settlements, and a ledger that conserves to zero.
+    # completed orders and settled cycles, team pools explained by their entries
+    # and summed by TEAM_FLOAT (Step 2c replaced merchant pockets with team
+    # pools), and a ledger that conserves to zero.
     implementation_status: full
     activation_status: active
     evidence:
       - backend/domains/revenue/revenueSettlement.service.js
-      - database/repositories/merchantSettlements.js
+      - database/repositories/teamPools.js
       - database/repositories/ledger.core.js
       - backend/startup/cronJobs.js
-    verification: { test: database/tests/merchantSettlementPg.test.js }
+    verification: { test: database/tests/moneyConservation.test.js }
   - id: CAP-14
     name: Rollback Strategy
     bucket: A

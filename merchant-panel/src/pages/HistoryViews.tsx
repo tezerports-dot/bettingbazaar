@@ -65,9 +65,9 @@ const HistoryViews: React.FC = () => {
   // rail (§2), so every order in this list shares a currency; the same sum
   // across merchants is trap 15 and is why the SERVER aggregates tokens.
   //
-  // EARNINGS are the opposite: commission is credited to the merchant's wallet
-  // in platform TOKENS (§26), so those render through `formatTokens` however
-  // the player paid.
+  // EARNINGS are the opposite: team commission is paid into the team's pool in
+  // platform TOKENS and each share is recorded in tokens (2e), so those render
+  // through `formatTokens` however the player paid.
   const totals = useMemo(() => {
     let deposits = 0;
     let withdrawals = 0;

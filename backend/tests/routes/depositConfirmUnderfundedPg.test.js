@@ -1,168 +1,155 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * What happens when a merchant confirms a deposit they cannot fund — on the
- * route merchants ACTUALLY USE.
+ * A buy the team's pool cannot cover — on the path a player actually takes.
  *
- * ── Why this file exists ────────────────────────────────────────────────────
- * There are two deposit-confirm implementations (F-017). All sixteen
- * real-database money assertions — conservation, the split, idempotency, a
- * four-way confirm race — are on `POST /api/payment/deposit/:orderId/confirm`,
- * which is on `check:ui-coverage --unused`: no screen calls it. The route the
- * merchant panel calls, `POST /api/merchant/confirm/:id`, reimplements the
- * sequence inline and had authorization and validation tests only.
+ * ── Where "underfunded" moved to ────────────────────────────────────────────
+ * This suite used to be about a MERCHANT confirming a deposit they could not
+ * fund: the confirm completed the order first and debited the merchant second,
+ * so a refused debit left a paid deposit reading COMPLETED with the player
+ * never credited (§21). Merchants hold no tokens any more (PROJECT_STATUS
+ * §3.10, 2c). A team's POOL does, and a buy takes its tokens from the pool at
+ * ASSIGNMENT, not at confirm: `teamRouting.assignToTeam` holds them in the
+ * same transaction that gives the order to a member, refused by the pool
+ * UPDATE's own WHERE (§32 S6). So the question "what if the tokens are not
+ * there" is now asked — and must be answered — before anybody is asked to
+ * serve the order, and before the player is told where to pay.
  *
- * These tests are about the ORDERING difference between the two, because that
- * is where the two implementations disagree about something that matters:
+ * What must be true when the answer is no:
+ *   - the order stays QUEUED, with no member, no team and nothing held;
+ *   - the pool and TEAM_FLOAT are exactly as they were;
+ *   - two buys racing for tokens that cover one get one hold, never two;
+ *   - and once the team is funded, the same order is taken on the next offer
+ *     — it was waiting, not lost.
  *
- *   moveDepositMoney (the unreachable route, and the admin override)
- *     money FIRST, then the caller sets the status. Its own header says why:
- *     "a crash between them leaves a PAID order whose next confirm replays
- *     these movements as no-ops, never a COMPLETED order that paid nobody."
+ * ── What is no longer asserted, and why ─────────────────────────────────────
+ * "A PAID buy the pool cannot pay is refused at confirm and stays PAID" needs a
+ * PAID buy holding nothing. No production path produces one now: a buy is held
+ * in the statement that assigns it, a player can mark paid only an assigned
+ * order, and a PAID or DISPUTED buy keeps its hold until it completes or is
+ * cancelled. Staging that row would be §32 S16. The repository's own refusal
+ * (`spendForBuy` → `pool_short`) is covered in database/tests/teamRoutingPg.
  *
- *   POST /api/merchant/confirm/:id
- *     `completeOrder` FIRST — "THE TRANSITION IS THE GATE, and it runs before
- *     the money" — then the merchant debit, which can refuse.
- *
- * The second ordering is exactly the shape CLAUDE.md §21 records having shipped
- * three times: a write that follows a commit and is allowed to fail, leaving
- * the order in a state whose facts never arrived.
- *
- * Asserted against a real database because §1 forbids mocking the boundary that
- * carries money, and because what is in question is what the ROW says after a
- * refusal — which no stub can answer.
+ * Driven through `createDepositOrder`, the function the player's buy route
+ * calls, because a guard proven on the repository says nothing about whether
+ * the player's path reaches it (the lesson M97 and M98 taught).
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { pgConfigured, applySchema, closePg } from '#db/client.js';
-import { getBalancesPaise } from '#db/repositories/wallets.core.js';
-import { createOrderRecord, getOrderRecord } from '#db/repositories/orders.record.js';
-import { getMerchantTokenBalance } from '../../domains/merchant/merchantWallet.service.js';
-import { mountRouter, actor, merchantActor, as } from './_harness.js';
+import { pgConfigured, applySchema, closePg, withTransaction } from '#db/client.js';
+import { getOrderRecord } from '#db/repositories/orders.record.js';
+import { getPool } from '#db/repositories/teamPools.js';
+import { getTreasuryBalances, ACCOUNTS } from '#db/repositories/treasury.js';
+import { createDepositOrder, tryAssignMerchant } from '../../domains/payment/paymentProcessing.service.js';
+import { teamFixture } from '../teamFixture.js';
+import { actor, merchantActor } from './_harness.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 
-describePg('a merchant confirms a deposit they cannot fund', () => {
-  let app;
-  const RUN = Math.random().toString(36).slice(2, 8);
-  let seq = 0;
+// Above the cash ceiling, so the buy runs on UPI_BANK and needs no Ready press.
+const BUY_TOKENS = 50_000;
+const BUY_PAISE = BUY_TOKENS * 100;
 
-  beforeAll(async () => {
-    await applySchema();
-    const mod = await import('../../domains/merchant/merchant.routes.js');
-    app = mountRouter(mod.default);
-  }, 60_000);
+describePg('a buy the team pool cannot cover', () => {
+  const teams = teamFixture();
+  const orders = [];
 
-  afterAll(async () => { await closePg(); });
+  beforeAll(async () => { await applySchema(); }, 60_000);
 
-  const utr = () => `UTRUF${RUN}${String(seq).padStart(6, '0')}`.toUpperCase();
-
-  /** A PAID deposit assigned to this merchant: the player has already paid. */
-  const paidDeposit = async (merchantId, tokens = 5000) => {
-    seq += 1;
-    const who = await actor({});
-    const orderId = `UF-${RUN}-${seq}`;
-    await createOrderRecord({
-      orderId, userId: who.userId, type: 'DEPOSIT',
-      tokenAmountRupees: tokens, fiatAmountRupees: tokens, state: 'PAID',
-      depositAllocation: tokens * 0.9, reserveAllocation: tokens * 0.1,
-      merchantId,
-      // The PLAYER's reference, on the row, which is where the confirm reads it
-      // from. It used to be sent in the request body and there is no longer a
-      // body — see depositConfirmReachablePg.test.js.
-      utrNumber: utr(),
+  afterAll(async () => {
+    await withTransaction(async (c) => {
+      await c.query('SET LOCAL session_replication_role = replica');
+      await c.query('DELETE FROM order_transitions WHERE order_id = ANY($1)', [orders]);
+      await c.query('DELETE FROM order_states WHERE order_id = ANY($1)', [orders]);
     });
-    return { orderId, who };
+    await teams.cleanup();
+    await closePg();
+  });
+
+  /** The only working UPI team online holds `poolTokens`, served by one member. */
+  const teamWith = async (poolTokens) => {
+    const member = await merchantActor();
+    const team = await teams.workingTeam({ rail: 'UPI_BANK', poolTokens, include: [member.merchantId] });
+    return { member, team };
   };
 
-  it('the deposit is refused, and nobody is paid — which is correct so far', async () => {
-    // A merchant with 100 tokens against a 5,000-token deposit. The guard in
-    // the UPDATE's WHERE refuses the debit, which is the wallet layer doing
-    // exactly its job (proven under concurrency in
-    // database/tests/merchantWalletConcurrencyPg.test.js).
-    const m = await merchantActor({ tokensRupees: 100 });
-    const { orderId, who } = await paidDeposit(m.merchantId, 5000);
+  /** The player's buy, through the service their route calls. */
+  const buy = async () => {
+    const player = await actor({});
+    const { order } = await createDepositOrder(player.userId, BUY_TOKENS);
+    orders.push(order.orderId);
+    return { player, orderId: order.orderId, view: order };
+  };
 
-    const before = await getBalancesPaise(who.userId);
-    const res = await as(app, m).post(`/confirm/${orderId}`);
+  const teamFloat = async () => (await getTreasuryBalances())[ACCOUNTS.TEAM_FLOAT] ?? 0;
 
-    expect(res.status).toBe(400);
-    expect(res.body.message).toMatch(/insufficient token inventory/i);
+  it('stays queued, with nobody assigned and nothing held', async () => {
+    // One token short. `>=` against `>` is exactly the kind of boundary a
+    // guard gets wrong, so the pool is as close as it can be without covering.
+    const { team } = await teamWith(BUY_TOKENS - 1);
+    const poolBefore = await getPool(team.teamId);
+    const floatBefore = await teamFloat();
 
-    // No tokens were minted and none moved. This half is right.
-    const after = await getBalancesPaise(who.userId);
-    expect(after.depositBalance).toBe(before.depositBalance);
-    expect(after.reserveBalance).toBe(before.reserveBalance);
-    expect(await getMerchantTokenBalance(m.merchantId)).toBe(100);
-  });
+    const { orderId, view } = await buy();
 
-  it('BUT THE ORDER IS ALREADY COMPLETED, and the player was never credited', async () => {
-    // The defect. `completeOrder` runs BEFORE the debit, so the refusal lands
-    // after the status has committed. The player paid real money — PAID is what
-    // that state means — the order now reads COMPLETED, and their wallet never
-    // moved.
-    //
-    // §21, in the words it was already recorded in: the release button "marked
-    // a disputed deposit COMPLETED and never credited the player, then told the
-    // admin it had failed. The order left the DISPUTED queue, so nothing
-    // remained to show it had gone wrong."
-    const m = await merchantActor({ tokensRupees: 100 });
-    const { orderId, who } = await paidDeposit(m.merchantId, 5000);
-
-    await as(app, m).post(`/confirm/${orderId}`);
-
+    // What the player is told: their order is waiting — not that it failed.
+    expect(view.status).toBe('PENDING_QUEUE');
     const row = await getOrderRecord(orderId);
-    const balances = await getBalancesPaise(who.userId);
+    expect(row.status).toBe('PENDING_QUEUE');
+    expect(row.merchantId ?? null).toBeNull();
+    expect(row.teamId).toBeNull();
+    expect(row.poolHeldPaise).toBe(0);
 
-    // THIS is the assertion that matters. It is written as the CORRECT
-    // expectation, so it fails until the ordering is fixed and passes after —
-    // a test that asserted the current behaviour would lock the defect in.
-    expect(
-      row.state,
-      'a deposit whose money never moved must not read COMPLETED — the player '
-      + `has paid and holds ${balances.depositBalance} paise`,
-    ).not.toBe('COMPLETED');
-
-    // And the state it SHOULD be left in: still PAID, so the next confirm can
-    // replay it once the merchant tops up, exactly as moveDepositMoney's
-    // ordering guarantees on the other route.
-    expect(row.state).toBe('PAID');
+    // Not a token moved, in the pool or in the books.
+    expect(await getPool(team.teamId)).toEqual(poolBefore);
+    expect(await teamFloat()).toBe(floatBefore);
   });
 
-  it('and the player cannot even dispute it, because dispute requires PAID', async () => {
-    // The recourse the platform offers a player whose deposit stalls is
-    // `POST /api/payment/order/:orderId/dispute`, and its first check is
-    // `if (order.status !== 'PAID') return 400 'Can only dispute PAID orders'`.
-    //
-    // So the ordering defect does not merely leave a wrong row: it closes the
-    // one door the player had. `expireOrders` does not sweep COMPLETED either,
-    // and a COMPLETED order reads as SUCCESS in their history.
-    const m = await merchantActor({ tokensRupees: 100 });
-    const { orderId } = await paidDeposit(m.merchantId, 5000);
+  it('a pool that covers the buy exactly takes it, and holds all of it', async () => {
+    // The mirror, so a "fix" that simply stopped assigning buys is not
+    // mistaken for one (§37 step 6).
+    const { member, team } = await teamWith(BUY_TOKENS);
+    const floatBefore = await teamFloat();
 
-    await as(app, m).post(`/confirm/${orderId}`);
+    const { orderId, view } = await buy();
 
-    const row = await getOrderRecord(orderId);
-    expect(
-      row.state,
-      'the order must stay disputable — a player who paid and was not credited '
-      + 'must have somewhere to go',
-    ).toBe('PAID');
+    expect(view.status).toBe('ASSIGNED');
+    expect(await getOrderRecord(orderId)).toMatchObject({
+      status: 'ASSIGNED', merchantId: member.merchantId, teamId: team.teamId, poolHeldPaise: BUY_PAISE,
+    });
+    expect(await getPool(team.teamId)).toMatchObject({ availablePaise: 0, heldPaise: BUY_PAISE });
+    // A hold moves tokens inside the pool, not out of it: the books are unchanged.
+    expect(await teamFloat()).toBe(floatBefore);
   });
 
-  it('a funded merchant still completes normally — the fix must not break the happy path', async () => {
-    // The mirror, so a fix that simply stops completing orders is not mistaken
-    // for a fix.
-    const m = await merchantActor({ tokensRupees: 20_000 });
-    const { orderId, who } = await paidDeposit(m.merchantId, 5000);
+  it('two buys racing for tokens that cover one: one is held, the other waits', async () => {
+    // Both read a pool that covers them; only one hold can land. A guard that
+    // was a read would assign both and hold 40,000 tokens the team does not own.
+    const { team } = await teamWith(BUY_TOKENS);
+    const [a, b] = await Promise.all([buy(), buy()]);
 
-    const res = await as(app, m).post(`/confirm/${orderId}`);
-    expect(res.status).toBe(200);
+    const rows = await Promise.all([getOrderRecord(a.orderId), getOrderRecord(b.orderId)]);
+    expect(rows.map((r) => r.status).sort()).toEqual(['ASSIGNED', 'PENDING_QUEUE']);
+    const waiting = rows.find((r) => r.status === 'PENDING_QUEUE');
+    expect(waiting.poolHeldPaise).toBe(0);
+    expect(waiting.teamId).toBeNull();
+    expect(await getPool(team.teamId)).toMatchObject({ availablePaise: 0, heldPaise: BUY_PAISE });
+  });
 
-    expect((await getOrderRecord(orderId)).state).toBe('COMPLETED');
-    const after = await getBalancesPaise(who.userId);
-    // 90/10 of 5,000 tokens, in paise.
-    expect(after.depositBalance).toBe(450_000);
-    expect(after.reserveBalance).toBe(50_000);
-    // Tokens moved, never minted: the merchant parts with the whole amount.
-    expect(await getMerchantTokenBalance(m.merchantId)).toBe(15_000);
+  it('once the team is funded, the waiting buy is taken on the next offer', async () => {
+    const { member, team } = await teamWith(BUY_TOKENS - 1);
+    const { orderId } = await buy();
+    expect((await getOrderRecord(orderId)).status).toBe('PENDING_QUEUE');
+
+    // The supervisor buys more tokens into the pool, through the request an
+    // admin fulfils — the only way tokens reach a pool.
+    await teams.fund(team, 1);
+
+    // The call the assignment sweep makes for each queued order. (The sweep
+    // itself walks every queued order in this shared database, so it is not
+    // called here: another suite's leftover would be held in this pool.)
+    expect(await tryAssignMerchant(await getOrderRecord(orderId))).toBe(true);
+    expect(await getOrderRecord(orderId)).toMatchObject({
+      status: 'ASSIGNED', merchantId: member.merchantId, teamId: team.teamId, poolHeldPaise: BUY_PAISE,
+    });
+    expect(await getPool(team.teamId)).toMatchObject({ availablePaise: 0, heldPaise: BUY_PAISE });
   });
 });

@@ -245,9 +245,15 @@ export async function releaseWithdrawal(userId, amount, withdrawalId) {
       txId, field: 'lockedBalance', amountPaise: -amountPaise, type: 'DEBIT',
       reason: `Withdrawal approved — request ${withdrawalId}`, refId: withdrawalId,
     }],
+    // A stake already RETURNED to the player cannot also be consumed: what is
+    // left in `locked` belongs to other orders.
+    excludes: [`refund_${withdrawalId}`],
   });
 
   if (result.idempotent) return { idempotent: true, txId };
+  if (result.excluded) {
+    throw Object.assign(new Error(`Withdrawal ${withdrawalId} was already refunded; its stake cannot be released`), { status: 409 });
+  }
   if (!result.ok) {
     const balances = await getBalancesPaise(userId);
     throw new Error(`lockedBalance would go negative: current=${rupees(balances.lockedBalance)} debit=${amount}`);
@@ -277,9 +283,15 @@ export async function refundWithdrawal(userId, amount, withdrawalId) {
       reason: `Withdrawal rejected — request ${withdrawalId} refunded to winnings`,
       refId: withdrawalId,
     }],
+    // A stake already CONSUMED has left `locked`; what is there now belongs to
+    // other orders, and returning it would pay this refund out of theirs.
+    excludes: [`wd_release_${withdrawalId}`],
   });
 
   if (result.idempotent) return { idempotent: true, txId };
+  if (result.excluded) {
+    throw Object.assign(new Error(`Withdrawal ${withdrawalId} was already settled; its stake is no longer locked`), { status: 409 });
+  }
   if (!result.ok) {
     const balances = await getBalancesPaise(userId);
     throw new Error(`lockedBalance would go negative on refund: current=${rupees(balances.lockedBalance)} refund=${amount}`);
@@ -292,6 +304,73 @@ export async function refundWithdrawal(userId, amount, withdrawalId) {
     winningsAfter:  rupees(after.winningsBalance),
     lockedAfter:    rupees(after.lockedBalance),
   };
+}
+
+/**
+ * walletAuthority.returnWithdrawalStake — give a withdrawal's stake back to
+ * the player, from WHEREVER it is, exactly once.
+ *
+ * The stake is in one of two places, and the LEDGER says which — never the
+ * order's mirrored status, which the first refund rewrites:
+ *
+ *   still locked   (no `wd_release_<id>`)  locked −a, winnings +a, `refund_<id>`
+ *   consumed       (`wd_release_<id>`)     winnings +a, `dispute_wd_refund_<id>`
+ *
+ * Decided under the wallet lock, so a release committing beside it cannot
+ * change the answer; and each branch is idempotent on its own key, so a replay
+ * moves nothing. Reading the branch off the order instead paid a
+ * settled refund twice: the replay saw REVERSED, took the "still locked"
+ * branch on the other key and drained another order's stake.
+ *
+ * @returns {Promise<{idempotent?: boolean, via: 'locked'|'settled', txId: string}>}
+ */
+export async function returnWithdrawalStake(userId, amount, withdrawalId) {
+  const amountPaise = rupeesToPaise(amount);
+  if (amountPaise <= 0) throw new Error(`Invalid withdrawal amount: ${amount}`);
+  const consumedKey = `wd_release_${withdrawalId}`;
+  const lockedKey = `refund_${withdrawalId}`;
+  const settledKey = `dispute_wd_refund_${withdrawalId}`;
+
+  const result = await withWalletLock(userId, async (ctx) => {
+    // The two return keys are only ever written on their own branch (a release
+    // refuses once `refund_<id>` exists, and the settled credit needs the
+    // release), so the movement's own replay probe makes a second call a no-op.
+    const { rows } = await ctx.client.query(
+      `SELECT 1 FROM wallet_ledger WHERE user_id = $1 AND tx_id = $2`, [ctx.uid, consumedKey],
+    );
+    const consumed = rows.length > 0;
+    const moved = await applyMovementWithin(ctx, consumed
+      ? {
+        legs: [{ field: 'winningsBalance', deltaPaise: amountPaise }],
+        ledger: [{
+          txId: settledKey, field: 'winningsBalance', amountPaise, type: 'CREDIT',
+          reason: `Dispute resolved — withdrawal refunded after settlement: ${withdrawalId}`,
+          refId: withdrawalId,
+        }],
+      }
+      : {
+        legs: [
+          { field: 'winningsBalance', deltaPaise: amountPaise },
+          { field: 'lockedBalance', deltaPaise: -amountPaise },
+        ],
+        ledger: [{
+          txId: lockedKey, field: 'winningsBalance', amountPaise, type: 'CREDIT',
+          reason: `Withdrawal rejected — request ${withdrawalId} refunded to winnings`,
+          refId: withdrawalId,
+        }],
+      });
+    const via = consumed ? 'settled' : 'locked';
+    const txId = consumed ? settledKey : lockedKey;
+    if (!moved.ok || moved.idempotent) return { commit: false, value: { ...moved, via, txId } };
+    return { commit: true, value: { ...moved, via, txId } };
+  });
+
+  if (result.idempotent) return { idempotent: true, via: result.via, txId: result.txId };
+  if (!result.ok) {
+    const balances = await getBalancesPaise(userId);
+    throw new Error(`lockedBalance would go negative on refund: current=${rupees(balances.lockedBalance)} refund=${amount}`);
+  }
+  return { via: result.via, txId: result.txId, balances: mapRupees(result.balancesAfterPaise) };
 }
 
 // ── Bet stake lifecycle ─────────────────────────────────────────────────────

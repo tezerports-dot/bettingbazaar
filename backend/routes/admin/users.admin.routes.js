@@ -76,7 +76,7 @@ function parseCursor(raw) {
  */
 router.get('/users', authenticate, hasPermission('canManageUsers'), async (req, res) => {
   try {
-    const { status, kycStatus, search, page = 1, limit = 50, cursor } = req.query;
+    const { status, search, page = 1, limit = 50, cursor } = req.query;
 
     // Merchants are a completely separate entity with their own record and auth
     // system, so the player list excludes them by the role they were created
@@ -89,7 +89,6 @@ router.get('/users', authenticate, hasPermission('canManageUsers'), async (req, 
     // wildcard on every keystroke of an admin's search box.
     const listed = await db.users.listUsers({
       status: status && status !== 'all' ? status : null,
-      kycStatus: kycStatus && kycStatus !== 'all' ? kycStatus : null,
       search: search || null,
       excludeRole: 'merchant',
       limit: Math.min(Number(limit) || 50, 200),
@@ -229,46 +228,12 @@ router.get('/users/:userId', authenticate, hasPermission('canManageUsers'), asyn
   }
 });
 
-/**
- * Set an account's roles.
- *
- * The authorisation flags are DERIVED from the roles inside one statement, not
- * assigned beside them. The handler this replaced set `roles`, then `isAdmin`,
- * `isSubAdmin` and `isQueueManager` as four properties on a document and saved
- * it — and it called `.save()` on a plain object the repository returned, which
- * is a TypeError, so this endpoint has thrown on every call since the accounts
- * moved to PostgreSQL.
- */
-router.put('/users/:userId/roles', authenticate, isAdmin, async (req, res) => {
-  try {
-    const { roles } = req.body;
-    if (!Array.isArray(roles)) {
-      return res.status(400).json({ success: false, message: 'roles must be an array' });
-    }
-    const KNOWN = ['admin', 'subadmin', 'queue_manager', 'merchant', 'mediator'];
-    const unknown = roles.filter((r) => !KNOWN.includes(r));
-    if (unknown.length) {
-      return res.status(400).json({
-        success: false, message: `Unknown role(s): ${unknown.join(', ')}`,
-      });
-    }
-
-    const user = await db.users.setRoles(req.params.userId, roles);
-    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
-
-    await db.audit.recordDetailed({
-      performedBy: req.user.userId, performedByRole: 'admin',
-      action: 'USER_ROLES_SET', category: 'USER',
-      targetType: 'User', targetId: String(user.userId),
-      details: { roles },
-    });
-
-    res.json({ success: true, user });
-  } catch (error) {
-    console.error('Update roles error:', error);
-    res.status(500).json({ success: false, message: 'Failed to update roles' });
-  }
-});
+// `PUT /users/:userId/roles` was removed 2026-10-01. No screen called it, and
+// it was a second way to grant staff authority beside the Sub-admins screen —
+// one that asked nothing about the account it was handed, so it would set
+// `is_admin` on a PLAYER row (`users_staff_flags_need_staff` now refuses that
+// in the data). Sub-admins are created and revoked on `/sub-admins`, queue
+// managers on `/users/:userId/queue-manager`, and the one full admin is seeded.
 
 // Block user
 router.put('/users/:userId/block', authenticate, hasPermission('canManageUsers'), async (req, res) => {
@@ -339,8 +304,22 @@ router.put('/users/:userId/unblock', authenticate, hasPermission('canManageUsers
 
     // `status` comes back to ACTIVE inside `setBlocked` now. It used to be a
     // second `updateUser` from here, and the pair could come apart.
-    const user = await db.users.setBlocked(req.params.userId, { blocked: false });
-    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+    //
+    // A player in high-risk review (a third lost dispute, 2c+) is lifted by a
+    // full admin only. The write refuses it in its WHERE; the read before it
+    // is only there to say why, rather than "not found".
+    const mayLiftHighRisk = req.user.isAdmin === true;
+    const user = await db.users.setBlocked(req.params.userId, { blocked: false, mayLiftHighRisk });
+    if (!user) {
+      const existing = await db.users.getUser(req.params.userId);
+      if (existing?.highRiskAt && !mayLiftHighRisk) {
+        return res.status(403).json({
+          success: false, code: 'HIGH_RISK_REVIEW',
+          message: `This player has lost ${existing.lostDisputes} disputes and is in high-risk review. Only an admin can lift this suspension.`,
+        });
+      }
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
 
     // Resetting warnings is the admin saying "this user is cleared", so the
     // explicit payment-complaint flag goes with it (owner directive 2026-07-14).
@@ -442,10 +421,10 @@ router.delete('/users/:userId', authenticate, hasPermission('canManageUsers'), a
 
     const user = await db.users.softDeleteUser(req.params.userId, { actor: req.user.userId });
     if (!user) {
-      // Null covers both "no such account" and "already deleted": either way
+      // Null covers "no such account", "already deleted" and "not a PLAYER": either way
       // there was nothing here to delete, and reporting success for the second
       // is how a double-click looks like two deletions in an audit trail.
-      return res.status(404).json({ success: false, message: 'User not found or already deleted' });
+      return res.status(404).json({ success: false, message: 'No player account to delete (not found, already deleted, or a staff or merchant login)' });
     }
 
     await db.audit.recordDetailed({
@@ -504,7 +483,20 @@ router.post('/users/:userId/phantom-access', authenticate, hasPermission('canMan
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
-    
+
+    // Phantom bets are placed from the PLAYER app, whose routes admit a
+    // player's session only, so a grant on a staff or merchant account is
+    // authority nobody can use (§32 S49). `users_phantom_access_needs_player`
+    // states it in the data; this says it in a sentence the admin can act on.
+    // A revoke is always allowed.
+    if (accessLevel !== 'NONE' && user.accountType !== 'PLAYER') {
+      return res.status(409).json({
+        success: false, code: 'NOT_A_PLAYER_ACCOUNT',
+        message: 'Phantom access is for a player account: phantom bets are placed from the player app. '
+          + 'Grant it to the agent\'s player account.',
+      });
+    }
+
     // ── This assigned the field and called `user.save()` ────────────────────
     // `getUser` returns a mapped row, not a document; `.save` is not a function
     // on it, so this threw a TypeError on EVERY call and the catch returned a
@@ -569,6 +561,23 @@ router.post('/users/:userId/queue-manager', authenticate, isAdmin, async (req, r
     const { enable } = req.body; // true or false
     if (typeof enable !== 'boolean') {
       return res.status(400).json({ success: false, message: 'enable must be true or false' });
+    }
+
+    // A STAFF account only. A queue manager routes players' payments, and the
+    // flag is read off whatever row a SESSION belongs to — so set on a PLAYER
+    // row it hands that player's own session the payment queue. The screen
+    // takes a typed user id, so this is the question that has to be asked.
+    // `users_staff_flags_need_staff` refuses it in the data too; this is the
+    // refusal that tells the admin what to do instead.
+    if (enable) {
+      const target = await db.users.getUser(userId);
+      if (!target) return res.status(404).json({ success: false, message: 'User not found' });
+      if (target.accountType !== 'STAFF') {
+        return res.status(409).json({
+          success: false,
+          message: 'Only a staff account can be a queue manager. Create a sub-admin for this person first, then grant it to that account.',
+        });
+      }
     }
 
     // One UPDATE. The handler this replaced read the account, set the property

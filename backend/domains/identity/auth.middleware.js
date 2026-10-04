@@ -24,7 +24,6 @@
 import { db } from '#db';
 // The KYC vocabulary has one owner, and it is not this file — the payment
 // service needs the same rule without booting the token layer to get it.
-import { isKycLinked, isKycApproved, kycRefusalFor } from './kycGates.js';
 import { isTokenRevoked as pgIsTokenRevoked } from '#db/repositories/identity.js';
 import { getUser } from '#db/repositories/users.js';
 import { setContextUser } from '../../middleware/requestContext.js'; // X-6
@@ -37,6 +36,7 @@ import { isChallengeToken } from './twoFactorChallenge.js';
 import { requires2FA } from './twoFactorPolicy.js';
 import { getSystemConfig } from '#db/repositories/config.js';
 import { isPermissionKey, permissionLabel, staffCan } from './staffPermissions.js';
+import { PANEL_NAME } from './audiences.js';
 
 
 /**
@@ -98,6 +98,31 @@ export function sessionSuperseded(user, decoded) {
   const issued = decoded?.iat ? Date.parse(decoded.iat) : NaN;
   return !Number.isFinite(issued)
     || issued < new Date(user.sessionsValidFrom).getTime();
+}
+
+/**
+ * Has an admin closed this account?
+ *
+ * A soft-deleted account keeps its row, its bets and its ledger, because its
+ * money still has to reconcile — so a read by id or by mobile still FINDS it.
+ * Before 2026-10-01 nothing asked: the login refused BLOCKED only, so a
+ * deleted player signed in and transacted as before, and "Delete" removed the
+ * row from nothing but the admin's list. `softDeleteUser` also moves
+ * `sessions_valid_from`, which evicts every outstanding session on every path
+ * that checks the cutoff (sockets and SSE included); this is the refusal the
+ * REST paths and the login say out loud, so the person is told the account is
+ * closed rather than that their password changed.
+ */
+export function accountClosed(user) {
+  return user?.status === 'DELETED';
+}
+
+export function refuseClosedAccount(res) {
+  return res.status(403).json({
+    success: false,
+    code: 'ACCOUNT_CLOSED',
+    message: 'This account has been closed. Contact support.',
+  });
 }
 
 /** One refusal, so both callers say the same thing to the same panel. */
@@ -189,7 +214,46 @@ function refuseUnenrolledStaff(req, res, user) {
   return true;
 }
 
-const makeAuthenticate = ({ allowUnenrolledStaff = false } = {}) => async (req, res, next) => {
+/**
+ * A session at the wrong panel's door.
+ *
+ * Owner, 2026-10-01: a player account, a staff account and a merchant account
+ * are separate, and "if he has his admin account that account can only be used
+ * for admin activity". The LOGIN doors already scope by `account_type`; the
+ * SESSION door did not. Measured before this existed: a full admin's and a
+ * sub-admin's STAFF session each created a deposit through
+ * `POST /api/payment/deposit/create` (200, an order in the staff account's
+ * name), and a merchant's session read the PLAYER's projection of an order
+ * assigned to them through `GET /api/payment/order/:orderId` (200). §32 S49,
+ * at the session rather than the flag.
+ *
+ * The message names the panel the account belongs to, because the person who
+ * meets it can act on that (§32 S14).
+ */
+export function belongsElsewhere(user, accountTypes) {
+  return !accountTypes.includes(user?.accountType);
+}
+
+export function refuseWrongPanel(res, user) {
+  const panel = PANEL_NAME[user?.accountType] ?? 'other';
+  return res.status(403).json({
+    success: false,
+    code: 'WRONG_PANEL',
+    message: `This account is for the ${panel} panel and cannot be used here. `
+      + 'Sign in with the account you hold for this panel.',
+  });
+}
+
+/**
+ * @param {object}   [opts]
+ * @param {boolean}  [opts.allowUnenrolledStaff]  the 2FA enrolment handshake only
+ * @param {string[]} [opts.accountTypes]  the populations this door admits. The
+ *   shared door admits PLAYER and STAFF (the staff routes then ask for an AREA,
+ *   which only a STAFF row can hold); `authenticatePlayer` admits PLAYER alone.
+ *   MERCHANT is never admitted here — merchants have their own door,
+ *   `merchantAuth`, and no merchant-facing route relies on this one.
+ */
+const makeAuthenticate = ({ allowUnenrolledStaff = false, accountTypes = ['PLAYER', 'STAFF'] } = {}) => async (req, res, next) => {
   try {
     // Accept token from httpOnly cookie (user panel) OR Authorization header (admin/merchant panels)
     let token = req.cookies?.auth_token;
@@ -259,7 +323,9 @@ const makeAuthenticate = ({ allowUnenrolledStaff = false } = {}) => async (req, 
       });
     }
 
+    if (accountClosed(user)) return refuseClosedAccount(res);
     if (sessionSuperseded(user, decoded)) return refuseSupersededSession(res);
+    if (belongsElsewhere(user, accountTypes)) return refuseWrongPanel(res, user);
 
     // Check if user account is active
     if (user.isBlocked) {
@@ -280,15 +346,10 @@ const makeAuthenticate = ({ allowUnenrolledStaff = false } = {}) => async (req, 
     // (wallet, settlement, …) are attributable to this user by correlation id.
     try { setContextUser(user.userId); } catch { /* context is best-effort */ }
 
-    
-    // Merchant PASETO contains { merchantId, isMerchant: true } — set by domains/merchant/merchant.routes.js /auth/login.
-    // isMerchant is a PASETO claim, NOT a User schema field. merchantAuth middleware handles Merchant PASETOs.
-    // This authenticate middleware is for User PASETOs only (players, admin, sub-admin, queue manager).
-    
-    
-    if (decoded.merchantId) {
-      req.merchantId = decoded.merchantId;
-    }
+    // `req.merchantId` is NOT set here any more. It was copied from a merchant
+    // token's claims, which is what let a merchant session reach the player's
+    // order routes as "the assigned merchant". Merchant sessions are refused
+    // above; `merchantAuth` is the only thing that establishes a merchant.
 
     // Continue to next middleware
     next();
@@ -304,6 +365,12 @@ const makeAuthenticate = ({ allowUnenrolledStaff = false } = {}) => async (req, 
 
 /** Every authenticated route. Unenrolled staff are refused here. */
 const authenticate = makeAuthenticate();
+
+/**
+ * The PLAYER's routes — money, bets, orders, profile, support tickets. A staff
+ * or merchant session is refused with the panel it belongs to.
+ */
+const authenticatePlayer = makeAuthenticate({ accountTypes: ['PLAYER'] });
 
 /**
  * The enrolment handshake only — identical in every other respect.
@@ -331,79 +398,9 @@ const authenticateForEnrolment = makeAuthenticate({ allowUnenrolledStaff: true }
  */
 
 
-/**
- * The WEAKER gate: KYC details have been given, not necessarily cleared.
- *
- * ── Why two gates and not one ───────────────────────────────────────────────
- * Owner decision 2026-09-08: an approved Aadhaar is required to take money OUT
- * and nothing else. Depositing, buying tokens and placing a bet need only that
- * the player has actually linked their identity — the verification runs in
- * batches and can take a day, and holding a funded player at the door for it
- * loses the player without protecting anybody.
- *
- * Withdrawal keeps `requireApprovedKyc`, and that is the whole of the stricter
- * rule: every withdrawal on this platform draws from the WINNINGS balance —
- * `debitWinningsForWithdrawal` is the only debit path — so "approved KYC to
- * withdraw winnings" and "approved KYC to withdraw" are the same sentence here.
- *
- * ── REJECTED is refused, and that is the owner's decision ───────────────────
- * PENDING_APPROVAL passes: the details are linked and a verifier has simply not
- * reached them, which is a queue the player cannot do anything about.
- *
- * REJECTED does not pass, and stays refused while they re-submit (owner
- * confirmed 2026-09-08). An Aadhaar that came back not matching the issuing
- * authority means the details given were wrong, and somebody giving wrong
- * identity details on a money platform is a bot or a scammer often enough that
- * the benefit of the doubt is the wrong default. Getting it wrong in this
- * direction costs an honest player a delay; getting it wrong in the other
- * direction lets funds move against an identity that failed its check, and that
- * cannot be undone afterwards.
- */
-export async function requireLinkedKyc(req, res, next) {
-  try {
-    const cfg = await getSystemConfig();
-    if (cfg?.kycRequired === false) return next();
-
-    const status = req.user?.kycStatus || 'PENDING_SUBMISSION';
-    if (isKycLinked(status)) return next();
-
-    return res.status(403).json({
-      success: false,
-      message: kycRefusalFor(status),
-      // A DIFFERENT code from the approved gate. A panel that cannot tell the
-      // two apart shows "your Aadhaar is being verified" to someone who never
-      // submitted one, and the button it offers leads nowhere.
-      code: 'KYC_NOT_LINKED',
-      kycStatus: status,
-      actionable: true,
-    });
-  } catch (error) {
-    console.error('KYC link check error:', error);
-    return res.status(500).json({ success: false, message: 'Failed to verify KYC settings.' });
-  }
-}
-
-export async function requireApprovedKyc(req, res, next) {
-  try {
-    const cfg = await getSystemConfig();
-    if (cfg?.kycRequired === false || isKycApproved(req.user?.kycStatus)) return next();
-
-    const status = req.user?.kycStatus || 'PENDING_SUBMISSION';
-    return res.status(403).json({
-      success: false,
-      message: kycRefusalFor(status),
-      code: 'KYC_REQUIRED',
-      kycStatus: status,
-      // Whether the player can do anything at all. The panel uses this to
-      // decide between "finish signing up" and a passive "we are working on it",
-      // rather than showing an action button that leads nowhere.
-      actionable: status !== 'PENDING_APPROVAL',
-    });
-  } catch (error) {
-    console.error('KYC config check error:', error);
-    return res.status(500).json({ success: false, message: 'Failed to verify KYC settings.' });
-  }
-}
+// The KYC gates (`requireLinkedKyc`, `requireApprovedKyc`) were removed
+// 2026-10-02 with KYC itself (owner): the Telegram contact share is the only
+// identity check now.
 
 /**
  * ════════════════════════════════════════════════════════════════════════════
@@ -507,6 +504,7 @@ export const hasPermission = (permission) => {
  */
 export {
   authenticate,
+  authenticatePlayer,
   // The enrolment handshake only — see `makeAuthenticate`. Staff who owe a
   // second factor reach these three steps and nothing else.
   authenticateForEnrolment,

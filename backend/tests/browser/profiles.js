@@ -7,7 +7,7 @@
  * account: a verified player with ₹1,500, a full admin, a cash merchant. A
  * control that only exists for somebody else — the GHOST MODE toggle a phantom
  * agent sees, the screens a sub-admin is limited to, what a suspended merchant
- * or a KYC-rejected player is shown — was never in the inventory, so it could
+ * or an unverified player is shown — was never in the inventory, so it could
  * never be counted as unpressed. It was simply not there to miss.
  *
  * Each profile seeds a FRESH account through the same seed functions every
@@ -23,7 +23,7 @@
 import { pgQuery } from '#db/client.js';
 import { pauseAssignment, suspendMerchant } from '#db/repositories/merchants.js';
 import { normaliseGrant, PERMISSION_KEYS } from '../../domains/identity/staffPermissions.js';
-import { seedPlayer, seedMerchant, seedAdmin, trc20, bep20 } from '../e2e/seed.js';
+import { seedPlayer, seedMerchant, seedTeam, seedAdmin, trc20, bep20 } from '../e2e/seed.js';
 import { playerToken, merchantToken, adminToken } from '../e2e/harness.js';
 
 /** The admin panel caches what `/me` returned; a returning operator has it before first paint. */
@@ -64,8 +64,18 @@ const staff = ({ isSubAdmin = false, isQueueManager = false, keys = [] }) => ({ 
   };
 } });
 
-const merchant = (opts, then, extraCache) => ({ panel: 'merchant-panel', seed: async () => {
-  const m = await seedMerchant({ currency: 'INR', tokensPaise: 500000000, ...opts });
+/**
+ * A merchant, and — when `rail` is named — a MEMBER of a working team on it.
+ *
+ * Since Step 2c a merchant holds no tokens and is on no rail by itself: the
+ * rail is the team supervisor's, so "a cash merchant" is a member of a CASH
+ * team. `exclusive: false`, because a profile is an account to LOOK at, and
+ * taking every other team on the rail offline would change what the drive
+ * pass's own merchant is routed.
+ */
+const merchant = (opts, then, extraCache, rail = null) => ({ panel: 'merchant-panel', seed: async () => {
+  const m = await seedMerchant({ currency: 'INR', ...opts });
+  if (rail) await seedTeam({ rail, include: [m], online: opts.online === false ? [] : [m], exclusive: false });
   if (then) await then(m);
   return {
     token: merchantToken(m),
@@ -82,18 +92,6 @@ export const PROFILES = {
   'player-zero-balance': {
     what: 'a verified player with no money',
     ...player({ balancePaise: 0 }),
-  },
-  'player-kyc-none': {
-    what: 'a player who has not submitted Aadhaar',
-    ...player({ kycStatus: 'PENDING_SUBMISSION' }),
-  },
-  'player-kyc-pending': {
-    what: 'a player whose Aadhaar is waiting for an admin',
-    ...player({ kycStatus: 'PENDING_APPROVAL' }),
-  },
-  'player-kyc-rejected': {
-    what: 'a player whose Aadhaar was rejected (may resubmit)',
-    ...player({ kycStatus: 'REJECTED' }),
   },
   'player-unverified': {
     what: 'a player who has not shared their contact or joined the channel — the gate',
@@ -116,8 +114,8 @@ export const PROFILES = {
     ...staff({ isSubAdmin: true, keys: ['canViewAnalytics'] }),
   },
   'subadmin-players': {
-    what: 'a sub-admin granted players, KYC and transactions, nothing that moves money',
-    ...staff({ isSubAdmin: true, keys: ['canManageUsers', 'canVerifyKYC', 'canViewTransactions'] }),
+    what: 'a sub-admin granted players and transactions, nothing that moves money',
+    ...staff({ isSubAdmin: true, keys: ['canManageUsers', 'canViewTransactions'] }),
   },
   'subadmin-all': {
     what: 'a sub-admin granted every area',
@@ -129,24 +127,24 @@ export const PROFILES = {
   },
   // ── Merchants ─────────────────────────────────────────────────────────
   'merchant-upi': {
-    what: 'an INR merchant on the UPI rail (no cash denomination)',
-    ...merchant({}),
+    what: 'an INR merchant in a working UPI/bank team',
+    ...merchant({}, null, undefined, 'UPI_BANK'),
   },
   'merchant-usdt': {
-    what: 'a USDT merchant with an address on both chains',
-    ...merchant({ currency: 'USDT', usdtAddressTrc20: trc20(), usdtAddressBep20: bep20() }),
+    what: 'a USDT merchant in a working USDT team, with an address on both chains',
+    ...merchant({ currency: 'USDT', usdtAddressTrc20: trc20(), usdtAddressBep20: bep20() }, null, undefined, 'USDT'),
   },
   'merchant-offline': {
-    what: 'a cash merchant who is offline',
-    ...merchant({ cashDenominationPaise: 500000, online: false }, null, { isOnline: false }),
+    what: 'a cash-team merchant who is offline',
+    ...merchant({ online: false }, null, { isOnline: false }, 'CASH'),
   },
   'merchant-paused': {
-    what: 'a cash merchant whose assignment is paused (three unpaid buys)',
-    ...merchant({ cashDenominationPaise: 500000 }, (m) => pauseAssignment(m.merchantId, 'profile: three unpaid buys')),
+    what: 'a cash-team merchant whose assignment is paused (three unpaid buys)',
+    ...merchant({}, (m) => pauseAssignment(m.merchantId, 'profile: three unpaid buys'), undefined, 'CASH'),
   },
   'merchant-suspended': {
-    what: 'a merchant an admin has suspended',
-    ...merchant({ cashDenominationPaise: 500000 }, (m) => suspendMerchant(m.merchantId, 'profile', { actor: 'profile' }), { status: 'SUSPENDED' }),
+    what: 'a cash-team merchant an admin has suspended',
+    ...merchant({}, (m) => suspendMerchant(m.merchantId, 'profile', { actor: 'profile' }), { status: 'SUSPENDED' }, 'CASH'),
   },
   'merchant-pending': {
     what: 'a merchant not yet approved',

@@ -347,16 +347,8 @@ export async function returnToProgramme(key, amountRupees) {
   return rows[0] ? { ok: true, programme: toProgramme(rows[0]) } : { ok: false, reason: 'NOTHING_TO_RETURN' };
 }
 
-/** Count a newly verified member against the cap. */
-export async function countVerifiedMember(key = 'main') {
-  const { rows } = await pgQuery(
-    `UPDATE referral_programmes SET verified_members = verified_members + 1, updated_at = now()
-      WHERE programme_key = $1 AND (member_cap = 0 OR verified_members < member_cap)
-      RETURNING *`,
-    [String(key)], 'programme_count_member',
-  );
-  return rows[0] ? { ok: true, programme: toProgramme(rows[0]) } : { ok: false, reason: 'MEMBER_CAP_REACHED' };
-}
+// `countVerifiedMember` was removed 2026-10-02: the count now advances inside
+// `claimJoiningNumber` (users.js), in the statement that completes verification.
 
 // ── Click attribution ───────────────────────────────────────────────────────
 

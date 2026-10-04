@@ -48,8 +48,7 @@ function normaliseFingerprint(value) {
  * into a VERIFIED App Link (no disambiguation dialog, no user opt-in step).
  *
  * Served from the backend rather than as a static file under dist/ so it
- * follows PUBLIC_APP_ORIGIN across deployments and cannot drift from the
- * package id already advertised by /api/app/bootstrap.
+ * follows PUBLIC_APP_ORIGIN and ANDROID_PACKAGE_ID across deployments.
  */
 router.get('/assetlinks.json', (req, res) => {
   const packageName = process.env.ANDROID_PACKAGE_ID;

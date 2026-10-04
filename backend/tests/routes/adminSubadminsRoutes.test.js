@@ -46,7 +46,7 @@ describePg('sub-admin routes', () => {
     const mobile = uniqueMobile();
     const res = await as(app, admin).post('/sub-admins').send({
       username: 'Sub One', mobile, password: 'a-long-enough-password-123',
-      permissions: { canVerifyKYC: true },
+      permissions: { canViewAnalytics: true },
     });
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
@@ -55,7 +55,7 @@ describePg('sub-admin routes', () => {
     const created = await getUser(res.body.subAdmin.userId);
     expect(created.isSubAdmin).toBe(true);
     expect(created.roles).toContain('subadmin');
-    expect(created.subAdminPermissions).toMatchObject({ canVerifyKYC: true });
+    expect(created.subAdminPermissions).toMatchObject({ canViewAnalytics: true });
   });
 
   it('never returns the password it was given', async () => {
@@ -102,22 +102,22 @@ describePg('sub-admin routes', () => {
   it('updates permissions — the handler that used to throw on .save()', async () => {
     const created = await as(app, admin).post('/sub-admins').send({
       username: 'Perms', mobile: uniqueMobile(), password: 'a-long-enough-password-123',
-      permissions: { canVerifyKYC: true },
+      permissions: { canViewAnalytics: true },
     });
     const id = created.body.subAdmin.userId;
 
     const res = await as(app, admin).put(`/sub-admins/${id}/permissions`)
-      .send({ permissions: { canVerifyKYC: false, canManageMerchants: true } });
+      .send({ permissions: { canViewAnalytics: false, canManageMerchants: true } });
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     const after = await getUser(id);
-    expect(after.subAdminPermissions).toMatchObject({ canVerifyKYC: false, canManageMerchants: true });
+    expect(after.subAdminPermissions).toMatchObject({ canViewAnalytics: false, canManageMerchants: true });
   });
 
   it('refuses a permission that is not a boolean, or not a real area, and changes nothing', async () => {
     const created = await as(app, admin).post('/sub-admins').send({
       username: 'Norm', mobile: uniqueMobile(), password: 'a-long-enough-password-123',
-      permissions: { canVerifyKYC: true },
+      permissions: { canViewAnalytics: true },
     });
     const id = created.body.subAdmin.userId;
 
@@ -126,7 +126,7 @@ describePg('sub-admin routes', () => {
     // used to assert exactly that. A key no route reads (`canManageOrders`) was
     // stored too. Both are refused now, by name, and the grant stands.
     const stringy = await as(app, admin).put(`/sub-admins/${id}/permissions`)
-      .send({ permissions: { canVerifyKYC: 'false' } });
+      .send({ permissions: { canViewAnalytics: 'false' } });
     expect(stringy.status).toBe(400);
     const unknown = await as(app, admin).put(`/sub-admins/${id}/permissions`)
       .send({ permissions: { canManageOrders: true } });
@@ -134,7 +134,7 @@ describePg('sub-admin routes', () => {
     expect(unknown.body.message).toMatch(/canManageOrders/);
 
     const after = await getUser(id);
-    expect(after.subAdminPermissions.canVerifyKYC).toBe(true);
+    expect(after.subAdminPermissions.canViewAnalytics).toBe(true);
     expect(after.subAdminPermissions).not.toHaveProperty('canManageOrders');
   });
 

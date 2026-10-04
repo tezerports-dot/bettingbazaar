@@ -1,7 +1,9 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 //
 // Profile — design handoff "BB Merchant Panel.dc.html": performance, identity,
-// payment details, order preferences, wallet and account status.
+// payment details, order preferences and account status. A merchant holds no
+// tokens — their team's pool does (PROJECT_STATUS §3.10) — so there is no
+// wallet card here.
 //
 // The payment-details section is the one place the settlement rail is fully
 // visible: an INR merchant edits UPI + QR + bank, a USDT merchant edits a single
@@ -10,7 +12,7 @@
 // request that carries the other rail's fields, so this is a real boundary and
 // not merely a hidden form.
 import React, { useEffect, useMemo, useState } from 'react';
-import { Copy, Edit3, LogOut, Save, Wallet } from 'lucide-react';
+import { Copy, Edit3, LogOut, Save } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useAuth } from '../services/AuthContext';
 import { availabilityOf } from '../utils/availability';
@@ -19,7 +21,7 @@ import { useViewport } from '../hooks/useViewport';
 import TwoFactorEnrol from '../components/TwoFactorEnrol';
 import { SUCCESS_MESSAGES } from '../constants';
 import {
-  formatTokens, formatWallet, railCopy, railOf,
+  formatTokens, railOf,
   USDT_CHAINS, USDT_CHAIN_INFO, isUsdtAddress, type UsdtChain,
 } from '../utils/rail';
 import {
@@ -30,7 +32,6 @@ const ProfileSettings: React.FC = () => {
   const { merchant, logout, refreshProfile } = useAuth();
   const { isMobile } = useViewport();
   const rail = railOf(merchant);
-  const copy = railCopy(rail);
   const isUsdt = rail === 'USDT';
 
   const [editingPayment, setEditingPayment] = useState(false);
@@ -193,7 +194,7 @@ const ProfileSettings: React.FC = () => {
           {[
             { label: 'Completed orders', value: merchant?.totalOrdersCompleted !== undefined ? String(merchant.totalOrdersCompleted) : '—', tone: 'var(--text)' },
             // TOKENS, not the rail's currency. `merchants.total_deposit_amount_paise`
-            // is fed `order.tokenAmount` by merchantScoring, so on the USDT rail
+            // is fed `order.tokenAmount` by recordCompletedOrder, so on the USDT rail
             // `formatMoney(..., rail)` printed a token count with a USDT suffix —
             // a 50,000-token deposit read "50,000 USDT" for about 555 USDT of work.
             // CLAUDE.md trap 15, in the line a human reads.
@@ -469,61 +470,36 @@ const ProfileSettings: React.FC = () => {
         </Button>
       </Card>
 
-      {/* Wallet + account status */}
-      <div style={{ display: 'grid', gridTemplateColumns: twoColumns, gap: 14, alignItems: 'start' }}>
-        <Card>
-          <CardTitle title="Wallet" />
-          <div style={{
-            display: 'flex', alignItems: 'center', gap: 12, padding: 14, borderRadius: 13,
-            background: isUsdt ? 'var(--dep-bg)' : 'var(--brand-bg)',
-          }}>
-            <span style={{
-              width: 38, height: 38, borderRadius: 11, background: 'var(--surface)', flexShrink: 0,
-              color: isUsdt ? 'var(--dep)' : 'var(--brand)',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-            }}>
-              <Wallet size={18} />
+      {/* Account status */}
+      <Card>
+        <CardTitle title="Account status" />
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ ...cardStyle, boxShadow: 'none', background: 'var(--surface-2)', border: 0, borderRadius: 13, padding: '13px 14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text-2)' }}>Account</span>
+            <Verified label={merchant?.status === 'ACTIVE' ? 'Active' : merchant?.status || 'Pending'} />
+          </div>
+          <div style={{ background: 'var(--surface-2)', borderRadius: 13, padding: '13px 14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text-2)' }}>Availability</span>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12.5, fontWeight: 700, color: 'var(--text)' }}>
+              <span style={{
+                width: 8, height: 8, borderRadius: '50%',
+                background: merchant?.isOnline ? 'var(--online)' : 'var(--offline)',
+                animation: merchant?.isOnline ? 'bb-pulse 2s ease infinite' : 'none',
+              }} />
+              {availabilityOf(merchant).short}
             </span>
-            <div style={{ minWidth: 0 }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)' }}>{copy.walletLabel}</div>
-              <div className="bb-mono" style={{ fontSize: 18, fontWeight: 700, color: 'var(--text)' }}>
-                {formatWallet(merchant?.tokenBalance, rail)}
-              </div>
-              <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--muted)', marginTop: 2 }}>{copy.walletNote}</div>
-            </div>
           </div>
-        </Card>
-
-        <Card>
-          <CardTitle title="Account status" />
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            <div style={{ ...cardStyle, boxShadow: 'none', background: 'var(--surface-2)', border: 0, borderRadius: 13, padding: '13px 14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text-2)' }}>Account</span>
-              <Verified label={merchant?.status === 'ACTIVE' ? 'Active' : merchant?.status || 'Pending'} />
-            </div>
-            <div style={{ background: 'var(--surface-2)', borderRadius: 13, padding: '13px 14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text-2)' }}>Availability</span>
-              <span style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12.5, fontWeight: 700, color: 'var(--text)' }}>
-                <span style={{
-                  width: 8, height: 8, borderRadius: '50%',
-                  background: merchant?.isOnline ? 'var(--online)' : 'var(--offline)',
-                  animation: merchant?.isOnline ? 'bb-pulse 2s ease infinite' : 'none',
-                }} />
-                {availabilityOf(merchant).short}
-              </span>
-            </div>
-            <div style={{ background: 'var(--surface-2)', borderRadius: 13, padding: '13px 14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text-2)' }}>Settlement rail</span>
-              <span style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--text)' }}>
-                {isUsdt ? 'USDT · TRC-20 / BEP-20' : 'INR · UPI & bank'}
-              </span>
-            </div>
-            <Button variant="outline" tone="danger" full onClick={logout} style={{ marginTop: 2 }}>
-              <LogOut size={16} /> Log out
-            </Button>
+          <div style={{ background: 'var(--surface-2)', borderRadius: 13, padding: '13px 14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text-2)' }}>Settlement rail</span>
+            <span style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--text)' }}>
+              {isUsdt ? 'USDT · TRC-20 / BEP-20' : 'INR · UPI & bank'}
+            </span>
           </div>
-        </Card>
-      </div>
+          <Button variant="outline" tone="danger" full onClick={logout} style={{ marginTop: 2 }}>
+            <LogOut size={16} /> Log out
+          </Button>
+        </div>
+      </Card>
     </div>
   );
 };

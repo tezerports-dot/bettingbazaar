@@ -20,6 +20,7 @@ import {
   fundMerchantBonusPool,
 } from './revenueSettlement.service.js';
 import { ACCOUNTS, EVENT_TYPE_LIST, toMinor, toRupees } from './chartOfAccounts.js';
+import { payOwedCommissions } from '../team/teamCommission.service.js';
 
 const router = express.Router();
 
@@ -73,7 +74,7 @@ router.get('/revenue/ledger', authenticate, hasPermission('canViewAnalytics'), a
 });
 
 // POST /api/admin/revenue/bonus-pool/fund — move distributable platform
-// revenue into the merchant bonus pool.
+// revenue into the team commission pool.
 // Body: { amount (rupees), justification, idempotencyKey? }
 // The service enforces: platform-funded only, capped at distributable
 // revenue, justification required, append-only + idempotent.
@@ -113,6 +114,13 @@ router.post('/revenue/bonus-pool/fund', authenticate, hasPermission('canManageCo
       success: true,
     });
 
+    // Team commission that was waiting for the pool is paid now, not at the
+    // next sweep (Step 2e). The funding has committed; a payment that fails
+    // here is retried by the sweep and never undoes it.
+    const paidNow = result.idempotent ? [] : (await payOwedCommissions({ actor: `admin:${req.user.userId}` })
+      .catch((e) => { console.error('Commission after funding failed:', e.message); return []; }))
+      .filter((r) => r.paid);
+
     const [distributableMinor, bonusPoolMinor] = await Promise.all([
       getDistributableRevenueMinor(),
       getAccountBalanceMinor(ACCOUNTS.MERCHANT_BONUS_POOL.code),
@@ -122,14 +130,16 @@ router.post('/revenue/bonus-pool/fund', authenticate, hasPermission('canManageCo
       success: true,
       message: result.idempotent
         ? 'Duplicate request — the original funding event was returned, nothing was recorded twice.'
-        : `₹${amount.toLocaleString()} moved from distributable revenue to the merchant bonus pool.`,
+        : `₹${amount.toLocaleString()} moved from distributable revenue to the team commission pool.`
+          + (paidNow.length ? ` ${paidNow.length} team commission payment(s) that were waiting have been paid.` : ''),
+      commissionsPaid: paidNow.length,
       event: result.event,
       distributableRevenue: toRupees(distributableMinor),
       merchantBonusPool: toRupees(bonusPoolMinor),
     });
   } catch (error) {
     console.error('Fund bonus pool error:', error);
-    res.status(500).json({ success: false, message: 'Failed to fund merchant bonus pool' });
+    res.status(500).json({ success: false, message: 'Failed to fund the team commission pool' });
   }
 });
 

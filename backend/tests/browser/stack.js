@@ -20,7 +20,7 @@ import { spawn } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
-import { seedPlayer, seedMerchant, seedAdmin } from '../e2e/seed.js';
+import { seedPlayer, seedMerchant, seedTeam, seedAdmin } from '../e2e/seed.js';
 import { playerToken, merchantToken, adminToken } from '../e2e/harness.js';
 
 export const ROOT = fileURLToPath(new URL('../../..', import.meta.url));
@@ -357,8 +357,7 @@ export async function awaitBudget(label) {
  * is — §32 S19, a pass that needs a value SETS it rather than reading whatever
  * the database happened to hold. The rows are written directly, because
  * `registerBot` verifies the token against Telegram itself and there is no
- * Telegram here; that is the same reason, stated the other way round, that
- * `seedPlayer` walks the KYC transitions instead of INSERTing a status.
+ * Telegram here.
  *
  * The restore goes in a `finally` (trap 10): a configured channel re-gates
  * every player the moment its generation moves, so leaving one behind is not
@@ -430,10 +429,10 @@ export async function configureTelegram(audiences = ['PLAYER', 'STAFF', 'MERCHAN
  *
  * Two things here are not obvious and both were paid for:
  *
- *   `cashDenominationPaise` makes the merchant a CASH merchant, so
- *   `/cash-links` renders its working screen instead of the "not approved for
- *   the ATM cash rail" empty state. Without it the whole CASH_ATM supply side
- *   is never opened by anything that clicks.
+ *   The merchant is a MEMBER of a working CASH team (Step 2c: a merchant is
+ *   on a rail only through a team), so the Dashboard renders the cash
+ *   member's Ready switch instead of leaving it out. Without that the whole
+ *   cash side of the merchant panel is never opened by anything that clicks.
  *
  *   `cached` is what a RETURNING operator has in localStorage besides a token.
  *   Seeding only the token meant that the moment a profile call was refused —
@@ -449,9 +448,8 @@ export async function seedActors() {
   // has to remember to call two things in order is a pass that will one day
   // call one; there is nothing to forget if the seeding owns both.
   const restoreTelegram = await configureTelegram();
-  const theMerchant = await seedMerchant({
-    currency: 'INR', tokensPaise: 500000000, cashDenominationPaise: 500000,
-  });
+  const theMerchant = await seedMerchant({ currency: 'INR' });
+  await seedTeam({ rail: 'CASH', poolTokens: 10000, include: [theMerchant], online: [theMerchant] });
   const theAdmin = await seedAdmin();
   return {
     restore: restoreTelegram,

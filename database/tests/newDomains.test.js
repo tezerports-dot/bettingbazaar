@@ -9,7 +9,7 @@
  * expiries a late sweep leaves in force, and rows that say two things at once.
  */
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
-import { pgConfigured, pgQuery, applySchema, closePg } from '../client.js';
+import { pgConfigured, pgQuery, applySchema, closePg, withTransaction } from '../client.js';
 import * as markets from '../repositories/markets.js';
 import * as games from '../repositories/games.js';
 import * as content from '../repositories/content.js';
@@ -18,10 +18,8 @@ import * as social from '../repositories/social.js';
 import * as referrals from '../repositories/referrals.js';
 import * as audit from '../repositories/audit.js';
 import * as operations from '../repositories/operations.js';
-import * as paymentConfig from '../repositories/paymentConfig.js';
 import * as depositPolicy from '../repositories/depositPolicy.js';
 import * as orderRecord from '../repositories/orders.record.js';
-import * as merchants from '../repositories/merchants.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 
@@ -115,20 +113,6 @@ describePg('the domains written from scratch', () => {
       });
       const active = (await markets.listActiveCycles()).map((c) => c.cycleId);
       expect(active).not.toContain(`c-${ID}-dead`);
-    });
-
-    it('finds the cycle covering an instant, and falls back to the last result', async () => {
-      const cycle = await makeCycle();
-      const midpoint = new Date(cycle.startTime).getTime() + 30_000;
-      expect((await markets.getCycleAt('30_MIN', midpoint)).cycleId).toBe(`c-${ID}`);
-
-      // Outside every live window: during the celebration the current cycle
-      // has completed and the next has not opened, so returning nothing would
-      // blank the page mid-animation.
-      await markets.declareWinner(`c-${ID}`, 'DELHI');
-      const far = await markets.getCycleAt('30_MIN', Date.now() + 86_400_000);
-      expect(far).not.toBeNull();
-      expect(far.winner).not.toBeNull();
     });
 
     it('writes the winner and the status in ONE statement', async () => {
@@ -446,7 +430,7 @@ describePg('the domains written from scratch', () => {
       await referrals.recordEarning({ earningId: `s1-${ID}`, earnerId: earner, sourceUserId: `x1-${ID}`, amountRupees: 30 });
       await referrals.recordEarning({ earningId: `s2-${ID}`, earnerId: earner, sourceUserId: `x2-${ID}`, amountRupees: 20 });
       await referrals.markPaid(`s1-${ID}`, { batchId: null, walletTxId: `tx-s1-${ID}` });
-      await referrals.markBlocked(`s2-${ID}`, 'KYC incomplete');
+      await referrals.markBlocked(`s2-${ID}`, 'account blocked');
 
       const summary = await referrals.earningsSummary(earner);
       expect(summary).toMatchObject({ paid: 30, queued: 0, blocked: 20, total: 2 });
@@ -811,44 +795,6 @@ describePg('the domains written from scratch', () => {
   });
 
   // ══════════════════════════════════════════════════════════════════════════
-  describe('payment configuration', () => {
-    it('gives a reviewed token order an owner, or refuses it', async () => {
-      await paymentConfig.createTokenOrder({
-        orderId: `to-${ID}`, merchantId: `m-${ID}`, tokenAmountRupees: 1000,
-      });
-      const claims = await Promise.all([
-        paymentConfig.approveTokenOrder(`to-${ID}`, { actor: 'admin-1' }),
-        paymentConfig.approveTokenOrder(`to-${ID}`, { actor: 'admin-2' }),
-      ]);
-      expect(claims.filter((c) => c.ok)).toHaveLength(1);
-
-      await expect(pgQuery(
-        `UPDATE merchant_admin_token_orders SET status = 'REJECTED', reviewed_by = NULL
-          WHERE order_id = $1`, [`to-${ID}`],
-      )).rejects.toThrow(/merchant_token_orders/);
-    });
-
-    it('refuses a rejection with no note', async () => {
-      await paymentConfig.createTokenOrder({
-        orderId: `tr-${ID}`, merchantId: `m-${ID}`, tokenAmountRupees: 500,
-      });
-      await expect(paymentConfig.rejectTokenOrder(`tr-${ID}`, { actor: 'admin', note: '' }))
-        .rejects.toThrow(/requires a note/);
-    });
-
-    it('refuses to leave a player with no way to fund an account', async () => {
-      await paymentConfig.setGatewayConfig({ key: `gw-${ID}`, p2pEnabled: true });
-      await expect(paymentConfig.setGatewayConfig({
-        key: `gw-${ID}`, p2pEnabled: false, gatewayEnabled: false,
-      })).rejects.toThrow(/payment_gateway_one_rail_live/);
-    });
-
-    it('reads as P2P-only when nothing has been configured', async () => {
-      const cfg = await paymentConfig.getGatewayConfig(`fresh-${ID}`);
-      expect(cfg).toMatchObject({ activeMode: 'P2P', p2pEnabled: true, gatewayEnabled: false });
-    });
-  });
-
   // ══════════════════════════════════════════════════════════════════════════
   describe('deposit policy — the split that governs every deposit', () => {
     const CUR = () => `T${ID.slice(0, 5).toUpperCase()}`;
@@ -861,22 +807,86 @@ describePg('the domains written from scratch', () => {
       return rows[0].n;
     };
 
+    /**
+     * Two writers that are GENUINELY in flight together — established, not hoped for.
+     *
+     * ── Why `Promise.all` was not enough (§32 S19) ──────────────────────────
+     * These two cases fired both writers with `Promise.all` and asserted one
+     * winner. Whether the two transactions overlap in the DATABASE is a matter
+     * of milliseconds: when the second one's UPDATE takes its snapshot after
+     * the first has committed, it sees the first's new ACTIVE row, supersedes
+     * it and inserts the next version. That is two SEQUENTIAL edits, both
+     * correctly applied (v2 superseded by v3, one ACTIVE row) — and the suite
+     * reported it as a doubled policy. Measured on 2026-10-03: 5 of 300 edit
+     * races and 1 of 300 first-version races came out that way, and in EVERY
+     * one the earlier row was SUPERSEDED by the later writer, which is only
+     * possible if that writer's statement began after the earlier commit. No
+     * interleaving produced two ACTIVE rows or a duplicate version.
+     *
+     * So the contention is made here: `gate` opens a transaction that every
+     * writer must wait behind, both writers are started, and the gate is not
+     * released until the database reports BOTH waiting on a lock. Only then is
+     * "exactly one wins" a claim about two writers racing.
+     */
+    const queuedWriters = async () => {
+      const { rows } = await pgQuery(
+        `SELECT count(*)::int AS n FROM pg_stat_activity
+          WHERE datname = current_database() AND pid <> pg_backend_pid()
+            AND wait_event_type = 'Lock' AND query ILIKE '%deposit_policies%'`,
+      );
+      return rows[0].n;
+    };
+    const raceBehind = async (gate, writers) => {
+      let held; const heldNow = new Promise((resolve) => { held = resolve; });
+      let release; const released = new Promise((resolve) => { release = resolve; });
+      const holder = withTransaction(async (client) => {
+        await gate(client);
+        held();
+        await released;
+        // Nothing the gate wrote survives it: a rollback, never a commit.
+        throw Object.assign(new Error('gate released'), { gateReleased: true });
+      }).catch((e) => { if (!e.gateReleased) throw e; });
+      await heldNow;
+      const racing = Promise.all(writers.map((w) => w()));
+      const deadline = Date.now() + 10_000;
+      let queued = await queuedWriters();
+      while (queued < writers.length && Date.now() < deadline) {
+        await new Promise((resolve) => { setTimeout(resolve, 20); });
+        queued = await queuedWriters();
+      }
+      release();
+      await holder;
+      expect(queued, 'the writers never queued behind the gate — this would not be a race').toBe(writers.length);
+      return racing;
+    };
+
     it('gives the FIRST version of a currency to exactly one of two writers', async () => {
       const currency = `${CUR()}A`;
       // There is no ACTIVE row yet, so there is nothing for the supersede to
       // lock and both writers compute version 1. The unique constraint is what
       // decides — one gets the row, the other a clean refusal it can retry.
       // Never a throw, and never two rows governing deposits.
-      const results = await Promise.all([
-        depositPolicy.createPolicyVersion({
-          currency, depositAllocationPercent: 90, reserveAllocationPercent: 10,
-          justification: 'race a', changedBy: 'admin-1',
-        }),
-        depositPolicy.createPolicyVersion({
-          currency, depositAllocationPercent: 80, reserveAllocationPercent: 20,
-          justification: 'race b', changedBy: 'admin-2',
-        }),
-      ]);
+      //
+      // The gate is an UNCOMMITTED version 1 of this currency: both writers
+      // compute version 1 too (they cannot see it) and wait on the unique index
+      // for its transaction. It is rolled back, so it never existed — and the
+      // two writers then meet each other on the same key.
+      const results = await raceBehind(
+        (client) => client.query(
+          `INSERT INTO deposit_policies (currency, version, status, deposit_allocation_percent,
+             reserve_allocation_percent, justification)
+           VALUES ($1, 1, 'PENDING_APPROVAL', 50, 50, 'race gate')`, [currency]),
+        [
+          () => depositPolicy.createPolicyVersion({
+            currency, depositAllocationPercent: 90, reserveAllocationPercent: 10,
+            justification: 'race a', changedBy: 'admin-1',
+          }),
+          () => depositPolicy.createPolicyVersion({
+            currency, depositAllocationPercent: 80, reserveAllocationPercent: 20,
+            justification: 'race b', changedBy: 'admin-2',
+          }),
+        ],
+      );
       expect(results.filter((r) => r.ok)).toHaveLength(1);
       expect(results.filter((r) => !r.ok).map((r) => r.reason)).toEqual(['CONCURRENT_CHANGE']);
       expect(await activeCount(currency)).toBe(1);
@@ -893,16 +903,23 @@ describePg('the domains written from scratch', () => {
       // nothing and holds no lock — so it is the one-ACTIVE-row index that
       // decides. What matters is what a caller can observe: one applied edit,
       // one retryable refusal, and one policy governing deposits.
-      const results = await Promise.all([
-        depositPolicy.createPolicyVersion({
-          currency, depositAllocationPercent: 70, reserveAllocationPercent: 30,
-          justification: 'race a', changedBy: 'admin-1',
-        }),
-        depositPolicy.createPolicyVersion({
-          currency, depositAllocationPercent: 60, reserveAllocationPercent: 40,
-          justification: 'race b', changedBy: 'admin-2',
-        }),
-      ]);
+      //
+      // The gate holds the live row, so both supersedes are queued on it with
+      // their snapshots already taken; neither can see the other's new row.
+      const results = await raceBehind(
+        (client) => client.query(
+          "SELECT 1 FROM deposit_policies WHERE currency = $1 AND status = 'ACTIVE' FOR UPDATE", [currency]),
+        [
+          () => depositPolicy.createPolicyVersion({
+            currency, depositAllocationPercent: 70, reserveAllocationPercent: 30,
+            justification: 'race a', changedBy: 'admin-1',
+          }),
+          () => depositPolicy.createPolicyVersion({
+            currency, depositAllocationPercent: 60, reserveAllocationPercent: 40,
+            justification: 'race b', changedBy: 'admin-2',
+          }),
+        ],
+      );
       expect(results.filter((r) => r.ok)).toHaveLength(1);
       expect(results.filter((r) => !r.ok).map((r) => r.reason)).toEqual(['CONCURRENT_CHANGE']);
       expect(await activeCount(currency)).toBe(1);
@@ -1121,134 +1138,4 @@ describePg('the domains written from scratch', () => {
       expect(new Date(again.completedAt).getTime()).toBeGreaterThanOrEqual(new Date(completedAt).getTime());
     });
   });
-
-
-  // ══════════════════════════════════════════════════════════════════════════
-  describe('merchant assignment candidates', () => {
-    const online = async (suffix, over = {}) => {
-      const id = `am-${ID}-${suffix}`;
-      await merchants.createMerchantWithWallet({
-        merchantId: id, name: `M ${suffix}`, username: id,
-        mobile: `6${String(Date.now()).slice(-6)}${suffix.padStart(3, '0')}`.slice(0, 12),
-        bankUpiId: `${id}@test`,
-      });
-      await merchants.updateMerchant(id, {
-        status: 'ACTIVE', merchantApprovalStatus: 'APPROVED', isOnline: true,
-        acceptsDeposits: true, acceptsWithdrawals: true, ...over,
-      });
-      return id;
-    };
-
-    const assignedOrder = async (merchantId, type = 'DEPOSIT') => orderRecord.createOrderRecord({
-      orderId: `AO_${ID}_${Math.random().toString(36).slice(2, 8)}`,
-      userId: `au-${ID}`, merchantId, type, tokenAmountRupees: 100, state: 'ASSIGNED',
-    });
-
-    const idsFor = async (options) =>
-      (await merchants.assignmentCandidates(options)).map((m) => m.merchantId);
-
-    it('counts active orders instead of reading a field that does not exist', async () => {
-      // ── The filter that never filtered ─────────────────────────────────────
-      // The document query gated on `activeOrderCount < maxConcurrentOrders`
-      // with an `$ifNull` default of 0. `activeOrderCount` is not a field on a
-      // merchant — the number is derived from the orders — so the left side was
-      // always 0 and the filter always passed. A merchant already at their
-      // limit was offered every order anyway.
-      const m = await online('001', { maxConcurrentDepositOrders: 2, maxConcurrentOrders: 5 });
-      expect(await idsFor({ direction: 'DEPOSIT' })).toContain(m);
-
-      await assignedOrder(m);
-      const one = (await merchants.assignmentCandidates({ direction: 'DEPOSIT' }))
-        .find((c) => c.merchantId === m);
-      expect(one.activeDepositOrderCount).toBe(1);
-      expect(one.activeOrderCount).toBe(1);
-
-      await assignedOrder(m);
-      // At the cap now. Not a candidate at all, rather than one the caller is
-      // trusted to filter out afterwards.
-      expect(await idsFor({ direction: 'DEPOSIT' })).not.toContain(m);
-    });
-
-    it('counts each direction against its own cap', async () => {
-      const m = await online('002', { maxConcurrentDepositOrders: 1, maxConcurrentWithdrawalOrders: 1, maxConcurrentOrders: 5 });
-      await assignedOrder(m, 'DEPOSIT');
-
-      // The deposit cap is spent; the withdrawal one is not. A single shared
-      // count would have taken this merchant out of both queues.
-      expect(await idsFor({ direction: 'DEPOSIT' })).not.toContain(m);
-      expect(await idsFor({ direction: 'WITHDRAWAL' })).toContain(m);
-    });
-
-    it('honours a PLATFORM default of zero rather than substituting its own', async () => {
-      // `Number(x) || 1` treats 0 as absent and puts the default back — the
-      // falsy-zero trap this codebase has now hit three times. A platform
-      // default of zero is how an operator stops automatic assignment while
-      // they investigate, and silently re-opening the tap is the worst possible
-      // response to it.
-      //
-      // A per-MERCHANT cap of zero is a different thing and deliberately not
-      // representable: `merchants_concurrency_positive` requires 1–10, because
-      // pausing one merchant on one rail is what `acceptsDeposits` is for and
-      // two ways to express the same state is one too many.
-      const m = await online('003', { maxConcurrentDepositOrders: 1, maxConcurrentOrders: 5 });
-      expect(await idsFor({ direction: 'DEPOSIT' })).toContain(m);
-      expect(await idsFor({ direction: 'DEPOSIT', defaultDepositLimit: 0 })).toContain(m);
-
-      // …and with no cap of its own, the merchant falls back to the platform
-      // default — which zero must actually mean.
-      const bare = await online('009', { maxConcurrentOrders: 5 });
-      expect(await idsFor({ direction: 'DEPOSIT' })).toContain(bare);
-      expect(await idsFor({ direction: 'DEPOSIT', defaultDepositLimit: 0 })).not.toContain(bare);
-    });
-
-    it('refuses a per-merchant cap the row does not allow', async () => {
-      const m = await online('010', { maxConcurrentOrders: 5 });
-      await expect(merchants.updateMerchant(m, { maxConcurrentDepositOrders: 0 }))
-        .rejects.toThrow(/merchants_concurrency_positive/);
-    });
-
-    it('leaves out a merchant who is offline, unapproved, or not accepting', async () => {
-      const offline = await online('004', { isOnline: false });
-      const unapproved = await online('005', { merchantApprovalStatus: 'PENDING' });
-      const refusing = await online('006', { acceptsDeposits: false });
-
-      const ids = await idsFor({ direction: 'DEPOSIT' });
-      expect(ids).not.toContain(offline);
-      expect(ids).not.toContain(unapproved);
-      expect(ids).not.toContain(refusing);
-    });
-
-    it('reports the 30-day funding imbalance a withdrawal is ranked on', async () => {
-      const m = await online('007');
-      await orderRecord.createOrderRecord({
-        orderId: `AI_${ID}_d`, userId: `au-${ID}`, merchantId: m, type: 'DEPOSIT',
-        tokenAmountRupees: 900, state: 'COMPLETED', completedAt: new Date(),
-      });
-      await orderRecord.createOrderRecord({
-        orderId: `AI_${ID}_w`, userId: `au-${ID}`, merchantId: m, type: 'WITHDRAWAL',
-        tokenAmountRupees: 200, state: 'COMPLETED', completedAt: new Date(),
-      });
-
-      const row = (await merchants.assignmentCandidates({ direction: 'WITHDRAWAL' }))
-        .find((c) => c.merchantId === m);
-      // Taken in more than paid out, so this merchant is replenished first —
-      // tokens flow back out of whoever is holding the most.
-      expect(row.thirtyDayDepositValue).toBe(900);
-      expect(row.thirtyDayWithdrawalValue).toBe(200);
-      expect(row.thirtyDayBuySellDelta).toBe(700);
-    });
-
-    it('ignores completed orders older than the window', async () => {
-      const m = await online('008');
-      await orderRecord.createOrderRecord({
-        orderId: `AI_${ID}_old`, userId: `au-${ID}`, merchantId: m, type: 'DEPOSIT',
-        tokenAmountRupees: 5000, state: 'COMPLETED',
-        completedAt: new Date(Date.now() - 60 * 86_400_000),
-      });
-      const row = (await merchants.assignmentCandidates({ direction: 'WITHDRAWAL', imbalanceDays: 30 }))
-        .find((c) => c.merchantId === m);
-      expect(row.thirtyDayDepositValue).toBe(0);
-    });
-  });
-
 });

@@ -174,8 +174,12 @@ jobs:
         with: { node-version: '22', cache: npm }
       - run: npm ci --legacy-peer-deps
         working-directory: ${{ matrix.project }}
-      - name: npm audit (fail on high/critical)
-        run: npm audit --audit-level=high
+      # `npm audit --audit-level=high`, except for advisories the owner has
+      # tolerated one at a time in scripts/audit-exceptions.json. An exception
+      # applies only while its package is dev-only here and unfixed upstream;
+      # the gate fails again by itself when either stops being true.
+      - name: npm audit (fail on high/critical, recorded exceptions only)
+        run: node "$GITHUB_WORKSPACE/scripts/audit-gate.mjs"
         working-directory: ${{ matrix.project }}
 
   # 2026 supply-chain: emit a CycloneDX Software Bill of Materials for the

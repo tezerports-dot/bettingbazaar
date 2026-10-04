@@ -28,7 +28,6 @@ import { createUser, updateUser, setRoles } from '#db/repositories/users.js';
 import {
   createMerchant, updateMerchant, newMerchantId, generateMerchantPublicRef,
 } from '#db/repositories/merchants.js';
-import { creditMerchantTokens } from '../../domains/merchant/merchantWallet.service.js';
 
 /**
  * A mobile number nothing else in the run holds.
@@ -100,7 +99,7 @@ export function mountRouter(router, { prefix = '' } = {}) {
  */
 export async function actor({
   userId, roles = [], isAdmin = false, isSubAdmin = false,
-  isQueueManager = false, kycStatus = 'APPROVED', permissions = null,
+  isQueueManager = false, permissions = null,
   twoFactorEnabled = undefined,
 } = {}) {
   const id = userId || `rt-${Math.random().toString(36).slice(2, 10)}`;
@@ -128,7 +127,7 @@ export async function actor({
   for (let attempt = 1; attempt <= 5; attempt += 1) {
     const candidate = uniqueMobile('9');
     const { created } = await createUser({
-      userId: id, username: id, mobile: candidate, kycStatus, accountType,
+      userId: id, username: id, mobile: candidate, accountType,
     });
     if (created) { mobile = candidate; break; }
   }
@@ -156,26 +155,29 @@ export async function actor({
  * suspended or unapproved merchant fails the test rather than passing it.
  */
 export async function merchantActor({
-  status = 'ACTIVE', approval = 'APPROVED', name = null, tokensRupees = 0,
+  status = 'ACTIVE', approval = 'APPROVED', name = null, tokensRupees,
   suspensionReason = 'route test suspension',
 } = {}) {
+  // A merchant holds no tokens any more: a team's pool does. A test that wants
+  // a merchant to serve buys puts them in a working team (../teamFixture.js).
+  if (tokensRupees !== undefined) throw new Error('merchantActor: tokensRupees is gone — use teamFixture().workingTeam({ include: [merchantId], poolTokens })');
   const merchantId = newMerchantId();
   const mobile = uniqueMobile('8');
   await createMerchant({
     merchantId, name: name || `RT Merchant ${merchantId.slice(-6)}`,
     publicRef: generateMerchantPublicRef(), mobile,
+    // The account a bank-transfer buy is paid into. A member without one is
+    // never routed a UPI/bank buy (owner, 2026-10-03), as in production.
+    bankDetails: {
+      accountHolderName: `RT Holder ${merchantId.slice(-6)}`, bankName: 'Test Bank',
+      accountNo: `5010${merchantId.replace(/\D/g, '').slice(-8).padStart(8, '0')}`, ifsc: 'TEST0000001',
+    },
     // A merchant created straight into SUSPENDED needs the reason the CHECK
     // insists on: a suspension nobody can explain is one nobody can appeal.
     ...(status === 'SUSPENDED' ? { status: 'ACTIVE' } : { status }),
   });
   if (status === 'SUSPENDED') await updateMerchant(merchantId, { status, suspensionReason });
   if (approval !== 'PENDING') await updateMerchant(merchantId, { merchantApprovalStatus: approval });
-  if (tokensRupees > 0) {
-    await creditMerchantTokens({
-      merchantId, amount: tokensRupees, reason: 'route test float',
-      refModel: 'Test', refId: merchantId, txId: `rt_float_${merchantId}`,
-    });
-  }
   const token = signToken({ merchantId, userId: merchantId, mobile, isMerchant: true, isAdmin: false });
   return { merchantId, mobile, token, auth: `Bearer ${token}` };
 }

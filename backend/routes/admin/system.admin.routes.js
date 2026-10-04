@@ -14,6 +14,7 @@ import { SYSTEM_CONFIG_SPEC } from '#db/spec/config.spec.js';
 import { db } from '#db';
 import { MAX_MERGE_BEFORE_END_SEC } from '../../domains/markets/cycleTypes.js';
 import { respondError } from '../../shared/httpError.js';
+import { systemConfigPayload } from '../../domains/configuration/systemConfigPayload.js';
 
 const router = express.Router();
 
@@ -129,11 +130,6 @@ router.get('/system/config', authenticate, hasPermission('canManageSystemSetting
         maxBet:                config.betLimits?.thirtyMin?.max   || 100000,
         max30MinBet:           config.betLimits?.thirtyMin?.max   || 100000,
         maxFullDayBet:         config.betLimits?.fullDay?.max     || 500000,
-        minDeposit:            config.minDeposit            || 500,  // schema default: 500
-        maxDeposit:            config.maxDeposit            || 50000,
-        minWithdrawal:         config.minWithdrawal         || 500,
-        maxWithdrawal:         config.maxWithdrawal         || 50000,
-        maxWinningsWithdrawal: config.maxWinningsWithdrawal || 500000,
         // The INR peg, from its one owner. It was a literal here and in the
         // response below, a third and fourth declaration of a rule that already
         // had two.
@@ -151,7 +147,6 @@ router.get('/system/config', authenticate, hasPermission('canManageSystemSetting
         retentionMonths:       config.retentionMonths ?? 6, // schema default: 6
         // Business Config Audit (2026-07-11) — formerly-hardcoded business values
         payoutMultiplier:      config.payoutMultiplier ?? 2,   // schema default: 2 (2x)
-        kycRequired:           config.kycRequired           !== false,
         registrationEnabled:   config.registrationEnabled   !== false,
         maintenanceMode:       config.maintenanceMode       || false,
         maintenanceMessage:    config.maintenanceMessage    || '',
@@ -184,12 +179,11 @@ router.put('/system/config', authenticate, hasPermission('canManageSystemSetting
 
     const {
       minBet, maxBet, max30MinBet, maxFullDayBet,
-      minDeposit, maxDeposit, minWithdrawal, maxWithdrawal, maxWinningsWithdrawal,
-      kycRequired, registrationEnabled,
+      registrationEnabled,
       maintenanceMode, maintenanceMessage,
       depositMethods, withdrawalMethods,
       webUrl, iosUrl, minVersion, latestVersion,
-      payoutFeePercent, usdtPricing, merchantOrderLimits, riskRules, betReservePercent, winningsFeePercent,
+      payoutFeePercent, usdtPricing, riskRules, betReservePercent, winningsFeePercent,
       cycleDurationMinutes, retentionMonths,
       payoutMultiplier, cyclePhases,
       footerPages, alertWebhookUrl, tlsFingerprintDefense,
@@ -225,8 +219,8 @@ router.put('/system/config', authenticate, hasPermission('canManageSystemSetting
       const userMerchantBuy = usdtPricing.userMerchantBuyInr;
       const merchantAdminBuy = usdtPricing.merchantAdminBuyInr;
       if ((userMerchantBuy !== undefined && (typeof userMerchantBuy !== 'number' || !Number.isFinite(userMerchantBuy) || userMerchantBuy < 0)) ||
-          (merchantAdminBuy !== undefined && (typeof merchantAdminBuy !== 'number' || !Number.isFinite(merchantAdminBuy) || merchantAdminBuy <= 0))) {
-        return res.status(400).json({ success: false, message: 'USDT buy rates must be non-negative; merchant/admin buy rate must be greater than zero.' });
+          (merchantAdminBuy !== undefined && (typeof merchantAdminBuy !== 'number' || !Number.isFinite(merchantAdminBuy) || merchantAdminBuy < 0))) {
+        return res.status(400).json({ success: false, message: 'USDT rates must be numbers of 0 or more (0 leaves a rate unset).' });
       }
       // ── A misplaced decimal here is a rail somebody drains ────────────────
       // `userMerchantBuyInr` prices EVERY USDT purchase, and the sizes are
@@ -238,41 +232,25 @@ router.put('/system/config', authenticate, hasPermission('canManageSystemSetting
       // The band comes from `tokenRates.js`, the one owner of what a USDT rate
       // means. A second copy of those numbers here would be a bound that
       // disagrees with the one the pricing path enforces.
-      if (userMerchantBuy !== undefined && userMerchantBuy !== 0 && !isSaneUsdtRate(userMerchantBuy)) {
-        return res.status(400).json({
-          success: false,
-          message: `A USDT rate must be between ₹${USDT_RATE_MIN_INR} and ₹${USDT_RATE_MAX_INR} per USDT, or 0 to leave it unset. `
-            + `Got ₹${userMerchantBuy} — check for a misplaced decimal.`,
-        });
-      }
-    }
-    if (merchantOrderLimits !== undefined) {
-      if (!merchantOrderLimits || typeof merchantOrderLimits !== 'object' || Array.isArray(merchantOrderLimits)) {
-        return res.status(400).json({ success: false, message: 'merchantOrderLimits must be an object.' });
-      }
-      const currentConfig = await getSystemConfig();
-      const validateUsdtLimitPair = (label, minKey, maxKey) => {
-        const minUsdt = merchantOrderLimits[minKey];
-        const maxUsdt = merchantOrderLimits[maxKey];
-        const effectiveMinUsdt = minUsdt ?? currentConfig?.merchantOrderLimits?.[minKey] ?? 100;
-        const effectiveMaxUsdt = maxUsdt ?? currentConfig?.merchantOrderLimits?.[maxKey] ?? 0;
-        const invalidProvided =
-          (minUsdt !== undefined && (typeof minUsdt !== 'number' || !Number.isFinite(minUsdt))) ||
-          (maxUsdt !== undefined && (typeof maxUsdt !== 'number' || !Number.isFinite(maxUsdt)));
-        const invalidEffective =
-          effectiveMinUsdt < 100 || effectiveMinUsdt % 10 !== 0 ||
-          effectiveMaxUsdt < 0 || effectiveMaxUsdt % 10 !== 0 ||
-          (effectiveMaxUsdt !== 0 && effectiveMaxUsdt < effectiveMinUsdt);
-        if (invalidProvided || invalidEffective) {
-          return `${label} USDT limits require min >= 100, min/max multiples of 10, and max either 0 (unlimited) or >= min.`;
+      // The team pool rate is held to the same band: it values every USDT
+      // payment for pool tokens, frozen on the record (2c+).
+      for (const [label, rate] of [['player', userMerchantBuy], ['team pool', merchantAdminBuy]]) {
+        // Paise, like every other price here: a USDT buy's tokens are its
+        // USDT times this rate, so a third decimal would make a buy a
+        // fraction of a paisa (Step 2d).
+        if (rate !== undefined && Math.abs(rate * 100 - Math.round(rate * 100)) > 1e-9) {
+          return res.status(400).json({
+            success: false,
+            message: `The ${label} USDT rate may have at most 2 decimals (rupees and paise). Got ₹${rate}.`,
+          });
         }
-        return null;
-      };
-      const limitError =
-        validateUsdtLimitPair('User token purchase', 'minUserTokenPurchaseUsdt', 'maxUserTokenPurchaseUsdt') ||
-        validateUsdtLimitPair('Merchant admin-token', 'minAdminTokenPurchaseUsdt', 'maxAdminTokenPurchaseUsdt');
-      if (limitError) {
-        return res.status(400).json({ success: false, message: limitError });
+        if (rate !== undefined && rate !== 0 && !isSaneUsdtRate(rate)) {
+          return res.status(400).json({
+            success: false,
+            message: `The ${label} USDT rate must be between ₹${USDT_RATE_MIN_INR} and ₹${USDT_RATE_MAX_INR} per USDT, or 0 to leave it unset. `
+              + `Got ₹${rate} — check for a misplaced decimal.`,
+          });
+        }
       }
     }
     if (riskRules?.maxFundingOrdersPerHour !== undefined &&
@@ -349,10 +327,6 @@ router.put('/system/config', authenticate, hasPermission('canManageSystemSetting
     // no route at all — two of them under a comment that called them
     // "admin-editable". See F-022.
     //
-    // `internal` fields are skipped: `adminTokenSupply.transferred` is how much
-    // of the platform's own holding has been handed out, and an operator who could set
-    // it to 0 could re-authorise the whole supply.
-    //
     // The spec still validates every value and its bounds when the write is
     // applied, so an undeclared key or an out-of-range number is refused with
     // its path named, not silently stored.
@@ -362,7 +336,6 @@ router.put('/system/config', authenticate, hasPermission('canManageSystemSetting
         const value = body[key];
         if (value === undefined) continue;
         if (decl.type === 'group') { collectDeclared(decl, value, [...path, key]); continue; }
-        if (decl.internal) continue;
         fieldWrites.push(['SystemConfig', [...path, key].join('.'), value]);
       }
     };
@@ -372,12 +345,6 @@ router.put('/system/config', authenticate, hasPermission('canManageSystemSetting
     if (maxBet          !== undefined) fieldWrites.push(['SystemConfig', 'betLimits.thirtyMin.max', maxBet]);
     if (max30MinBet     !== undefined) fieldWrites.push(['SystemConfig', 'betLimits.thirtyMin.max', max30MinBet]);
     if (maxFullDayBet   !== undefined) fieldWrites.push(['SystemConfig', 'betLimits.fullDay.max', maxFullDayBet]);
-    if (minDeposit            !== undefined) fieldWrites.push(['SystemConfig', 'minDeposit', minDeposit]);
-    if (maxDeposit            !== undefined) fieldWrites.push(['SystemConfig', 'maxDeposit', maxDeposit]);
-    if (minWithdrawal         !== undefined) fieldWrites.push(['SystemConfig', 'minWithdrawal', minWithdrawal]);
-    if (maxWithdrawal         !== undefined) fieldWrites.push(['SystemConfig', 'maxWithdrawal', maxWithdrawal]);
-    if (maxWinningsWithdrawal !== undefined) fieldWrites.push(['SystemConfig', 'maxWinningsWithdrawal', maxWinningsWithdrawal]);
-    if (kycRequired           !== undefined) fieldWrites.push(['SystemConfig', 'kycRequired', kycRequired]);
     if (registrationEnabled   !== undefined) fieldWrites.push(['SystemConfig', 'registrationEnabled', registrationEnabled]);
     if (maintenanceMode       !== undefined) fieldWrites.push(['SystemConfig', 'maintenanceMode', maintenanceMode]);
     if (maintenanceMessage    !== undefined) fieldWrites.push(['SystemConfig', 'maintenanceMessage', maintenanceMessage]);
@@ -426,10 +393,8 @@ router.put('/system/config', authenticate, hasPermission('canManageSystemSetting
     if (riskRules?.maxWarnings !== undefined) fieldWrites.push(['SystemConfig', 'riskRules.maxWarnings', riskRules.maxWarnings]);
     // Payout multiplier — consumed by markets/gameEngine.js via riskValidation.computeWinningsPayout
     if (payoutMultiplier   !== undefined) fieldWrites.push(['SystemConfig', 'payoutMultiplier', payoutMultiplier]);
-    // The payment order window is NOT here. It moved to
-    // payment_mode_policies.processing_window_seconds, because the two
-    // settlement rails have different timelines by design and one global number
-    // cannot express that. Edited at POST /api/admin/payment-mode.
+    // The payment order windows are per rail, in SystemConfig.teamRouting,
+    // accepted by declaration above.
     // Cycle phase offsets — consumed (cached) by markets/cycleGenerator.getCyclePhases.
     // Written per-type as a whole validated subdocument.
     // Validated above, board by board; written the same way. Only the four
@@ -475,28 +440,11 @@ router.put('/system/config', authenticate, hasPermission('canManageSystemSetting
 
     if (global.io) {
       const updatedConfig = await getSystemConfig();
-      const broadcastPayload = {
-        minBet:          updatedConfig.betLimits?.thirtyMin?.min   || 10,
-        maxBet:          updatedConfig.betLimits?.thirtyMin?.max   || 100000,
-        maxFullDayBet:   updatedConfig.betLimits?.fullDay?.max     || 500000,
-        minDeposit:      updatedConfig.minDeposit            || 500,  // schema default: 500
-        maxDeposit:      updatedConfig.maxDeposit            || 50000,
-        minWithdrawal:   updatedConfig.minWithdrawal         || 500,
-        maxWithdrawal:   updatedConfig.maxWithdrawal         || 50000,
-        maintenanceMode: updatedConfig.maintenanceMode       || false,
-        maintenanceMessage: updatedConfig.maintenanceMessage || '',
-        footerPages:     (() => {
-          const raw = updatedConfig.footerPages?.length ? updatedConfig.footerPages : ['home', 'results', 'winners', 'promo', 'profile'];
-          const normalized = raw.filter(k => FOOTER_PAGE_KEYS.includes(k));
-          return normalized.length >= 2 ? normalized : ['home', 'results', 'winners', 'promo', 'profile'];
-        })(),
-        tokenBuyRate:    INR_TOKEN_RATE,
-        tokenSellRate:   INR_TOKEN_RATE,
-        webUrl:        updatedConfig.webUrl        || '',
-        iosUrl:        updatedConfig.iosUrl        || '',
-        minVersion:    updatedConfig.minVersion    || '1.0.0',
-        latestVersion: updatedConfig.latestVersion || '1.0.0',
-      };
+      // The one payload every client receives (systemConfigPayload.js). This
+      // was a third hand-built copy, and after 2d it still sent the removed
+      // min/max limits and none of the order sizes, so every open player app
+      // was told, on each admin save, that nothing was on offer (§5).
+      const broadcastPayload = systemConfigPayload(updatedConfig);
       global.cachedSystemConfig = broadcastPayload;
       global.io.emit('system_config', broadcastPayload);
       if (global.sseManager) global.sseManager.broadcast('system_config', broadcastPayload);

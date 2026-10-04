@@ -71,11 +71,20 @@ export const OrderDetail: React.FC<{
       const receiving = receivingAddressFor(merchant, order.usdtChain);
       if (receiving) paymentRows.push({ label: 'Your USDT address', value: receiving.address });
       paymentRows.push({ label: 'Network', value: receiving?.label ?? 'Not set for this network' });
+    } else if (order.paymentMode === 'CASH_ATM') {
+      // Paid to the cash machine this member scans (Step 2d), never to them.
+      paymentRows.push({ label: 'Cash machine QR', value: order.cashLink ? 'Scanned — the player can pay it' : 'Not scanned yet' });
     } else {
-      const upi = merchant?.settlementDetails?.upiId || merchant?.bankDetails?.upiId;
-      if (upi) paymentRows.push({ label: 'Your UPI ID', value: upi });
-      const holder = merchant?.settlementDetails?.accountName || merchant?.bankDetails?.accountHolderName;
+      // Paid by bank transfer into the member's own account, the details the
+      // player is shown (owner, 2026-10-03).
+      const holder = merchant?.bankDetails?.accountHolderName || merchant?.settlementDetails?.accountName;
+      const accountNo = merchant?.bankDetails?.accountNo || merchant?.settlementDetails?.accountNumber;
+      const ifsc = merchant?.bankDetails?.ifsc || merchant?.settlementDetails?.ifsc;
+      const bankName = merchant?.bankDetails?.bankName || merchant?.settlementDetails?.bankName;
       if (holder) paymentRows.push({ label: 'Account holder', value: holder });
+      if (accountNo) paymentRows.push({ label: 'Account no.', value: accountNo });
+      if (ifsc) paymentRows.push({ label: 'IFSC', value: ifsc });
+      if (bankName) paymentRows.push({ label: 'Bank', value: bankName });
     }
   } else if (rail === 'USDT') {
     paymentRows.push({ label: 'Network', value: 'TRC-20' });
@@ -88,7 +97,9 @@ export const OrderDetail: React.FC<{
   }
 
   const paySectionLabel = isDeposit
-    ? (rail === 'USDT' ? 'Deposit address — user sends here' : 'Payment — user pays you here')
+    ? (rail === 'USDT' ? 'Deposit address — user sends here'
+      : order.paymentMode === 'CASH_ATM' ? 'Payment — user pays the cash machine'
+      : 'Payment — user transfers to your account')
     : copy.payoutDestinationLabel;
 
   const header = (
@@ -252,6 +263,9 @@ export const OrderDetail: React.FC<{
       {order.status === OrderStatus.REJECTED && (
         <Banner tone="danger" title="Rejected">
           {order.rejectedReason || 'This order was rejected.'}
+          {order.disputeWindowUntil && new Date(order.disputeWindowUntil).getTime() > Date.now() && (
+              <> The team's tokens stay held until {new Date(order.disputeWindowUntil).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} in case the player disputes. If they do not, the tokens return to the team pool.</>
+            )}
         </Banner>
       )}
     </Panel>

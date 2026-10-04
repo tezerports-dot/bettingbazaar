@@ -49,14 +49,17 @@ function isUsableRate(rate) {
 }
 
 /**
- * What a merchant pays the platform per token, in USDT terms.
+ * The INR price of one USDT when a supervisor pays for team pool tokens in USDT.
  *
- * Defaults to 1 when unset, which is the schema default and the value this
- * always fell back to.
+ * Returns null when it has never been set, and equally when what is stored is
+ * not a price at all — the same rule, and the same band, as the player rate
+ * below. It used to default to 1 ("1 USDT = ₹1") and had no band, so the one
+ * reader had to know that 1 meant "unset", and 1.5 or 15,000 valued a pool
+ * purchase at whatever was typed (2c+, owner: the admin sets USDT rates).
  */
 export function adminToMerchantUsdtRate(config) {
   const rate = config?.usdtPricing?.merchantAdminBuyInr;
-  return isUsableRate(rate) ? Number(rate) : 1;
+  return isUsableRate(rate) && isSaneUsdtRate(rate) ? Number(rate) : null;
 }
 
 /**
@@ -130,22 +133,29 @@ export function tokensPerUsdt(config) {
 }
 
 /**
- * What a player sends, in USDT, to receive `tokenAmount` platform tokens.
+ * What a USDT buy of `usdt` whole USDT gives the player, in platform tokens,
+ * and the rate it was priced at.
  *
- * Rounded UP to two decimals — never against the platform, and never a long
- * float in a payment instruction. Two decimals rather than USDT's six because
- * `fiat_amount_paise` is an integer of hundredths; the most that rounding can
- * cost a player is one hundredth of a USDT.
+ * ── Priced in USDT (Step 2d, owner 2026-10-02) ─────────────────────────────
+ * A player chooses what they SEND — a whole number of 100 USDT — and receives
+ * that many USDT times the admin's rate, in tokens. The rate is taken to the
+ * paisa (the admin route refuses a third decimal) and the product is computed
+ * in integer paise, so 100 USDT at ₹64.35 is exactly 6,435 tokens and never
+ * 6,434.999… rounded the wrong way.
  *
- * Returns null when the rate is unset, so a caller that cannot price a purchase
- * refuses it rather than quoting a number it invented.
+ * Returns null when the rate is unset or outside the band, so a caller that
+ * cannot price a purchase refuses it rather than quoting a number it invented.
+ *
+ * @returns {{ tokens: number, tokenPaise: number, rate: number } | null}
  */
-export function usdtForTokens(tokenAmount, config) {
+export function tokensForUsdt(usdt, config) {
   const rate = tokensPerUsdt(config);
-  if (rate === null) return null;
-  const raw = Number(tokenAmount) / rate;
-  if (!Number.isFinite(raw) || raw <= 0) return null;
-  return Math.ceil(raw * 100) / 100;
+  const units = Number(usdt);
+  if (rate === null || !Number.isInteger(units) || units <= 0) return null;
+  const ratePaise = Math.round(rate * 100);
+  const tokenPaise = units * ratePaise;
+  if (!Number.isSafeInteger(tokenPaise) || tokenPaise <= 0) return null;
+  return { tokens: tokenPaise / 100, tokenPaise, rate: ratePaise / 100 };
 }
 
 /**

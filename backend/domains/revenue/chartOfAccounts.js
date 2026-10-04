@@ -44,17 +44,15 @@ export const ACCOUNTS = Object.freeze({
   PAYOUT_FEES: { code: 'PAYOUT_FEES', normalBalance: 'CREDIT',
     description: 'Payout fees charged on withdrawals (none charged today)' },
 
-  // Platform-funded pool from which Merchant Performance Bonuses are issued.
-  // Funded ONLY from PLATFORM_REVENUE (never from users/deposits/withdrawals
-  // — hard business rule, enforced in revenueSettlement.service.js).
+  // The platform's commission pool: team commission is paid out of it (Step
+  // 2e). Funded ONLY from PLATFORM_REVENUE (never from users/deposits/
+  // withdrawals — hard business rule, enforced in revenueSettlement.service.js).
   MERCHANT_BONUS_POOL: { code: 'MERCHANT_BONUS_POOL', normalBalance: 'CREDIT',
-    description: 'Platform-funded pool for Merchant Performance Bonuses' },
+    description: 'Platform-funded pool team commission is paid from' },
 
-  // What the platform owes merchants — issued bonuses land here as a
-  // liability, mirrored 1:1 by the merchant-wallet credit executed via
-  // merchantWallet.service.js (Merchant Platform, Phase 008).
+  // What the platform owes the teams for commission paid into their pools.
   MERCHANT_FUNDS: { code: 'MERCHANT_FUNDS', normalBalance: 'CREDIT',
-    description: 'Aggregate merchant liability from issued Performance Bonuses' },
+    description: 'Aggregate team liability from commission paid into team pools' },
 });
 
 export const ACCOUNT_CODES = Object.freeze(Object.keys(ACCOUNTS));
@@ -85,8 +83,9 @@ export const EVENT_TYPES = Object.freeze({
   // Moving distributable platform revenue into the merchant bonus pool.
   MERCHANT_BONUS_FUNDED: 'MERCHANT_BONUS_FUNDED',
 
-  // Future: issuing a Merchant Performance Bonus from the pool to a merchant
-  // after a completed buy→sell cycle (bonus engine not built yet).
+  // A team commission paid from the pool into a team's token pool, each time
+  // the team's matched volume rises above its high-water mark (Step 2e,
+  // `database/repositories/teamCommission.js`).
   MERCHANT_BONUS_ISSUED: 'MERCHANT_BONUS_ISSUED',
 
   // Manual admin correction — always a NEW balancing entry, never an edit of
@@ -95,6 +94,22 @@ export const EVENT_TYPES = Object.freeze({
 });
 
 export const EVENT_TYPE_LIST = Object.freeze(Object.values(EVENT_TYPES));
+
+/**
+ * Postings for a team commission paid out of the pool (Step 2e): the pool
+ * shrinks, what the platform owes the teams grows. Here, beside the accounts,
+ * because the commission writer is a repository and must not import a
+ * service (`teamCommission.js` posts it inside its own transaction).
+ */
+export function buildBonusIssuePostings(amountMinor) {
+  if (!Number.isInteger(amountMinor) || amountMinor <= 0) {
+    throw new Error('Bonus issue amount must be a positive integer minor-unit amount.');
+  }
+  return [
+    { account: ACCOUNTS.MERCHANT_BONUS_POOL.code, amountMinor: amountMinor },
+    { account: ACCOUNTS.MERCHANT_FUNDS.code,      amountMinor: -amountMinor },
+  ];
+}
 
 // ── Money math ────────────────────────────────────────────────────────────────
 // All ledger amounts are INTEGER MINOR UNITS (paise). Rupee floats exist only

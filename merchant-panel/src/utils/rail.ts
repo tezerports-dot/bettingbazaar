@@ -47,18 +47,12 @@ interface RailCopy {
   proofSectionLabel: string;
   /** Where a withdrawal payout is sent. */
   payoutDestinationLabel: string;
-  /**
-   * Wallet card heading on Dashboard/Profile.
-   *
-   * The same on both rails, because the wallet IS the same on both rails: it
-   * holds BB tokens (see `formatTokens`). This said "USDT balance" for a USDT
-   * merchant, which put a heading and its own figure in different currencies
-   * on one tile.
-   */
-  walletLabel: string;
-  /** Sub-line under the wallet balance. */
-  walletNote: string;
 }
+
+// `walletLabel` / `walletNote` / `formatWallet` were here, for the merchant's
+// token wallet. There is no such wallet any more: a merchant holds no tokens,
+// their team's pool does (PROJECT_STATUS §3.10), and the server sends no
+// balance for a merchant. Deleted with the tiles that rendered them.
 
 // `networkNote` was declared here and set on both rails — 'TRC-20 network' on
 // the USDT one — and READ BY NOTHING. A constant with no consumer is §3, and
@@ -76,8 +70,6 @@ const COPY: Record<MerchantRail, RailCopy> = {
     proofLabel: 'UTR',
     proofSectionLabel: 'Payment proof',
     payoutDestinationLabel: 'Send to bank account',
-    walletLabel: 'BB Token balance',
-    walletNote: 'Funded by admin · 1:1 with INR',
   },
   USDT: {
     unit: 'USDT',
@@ -86,13 +78,6 @@ const COPY: Record<MerchantRail, RailCopy> = {
     proofLabel: 'Tx ID',
     proofSectionLabel: 'On-chain proof',
     payoutDestinationLabel: 'Send USDT to user address',
-    walletLabel: 'BB Token balance',
-    // Both legs, and their direction. The merchant HOLDS platform tokens and
-    // GIVES THEM UP on a buy; what comes back is USDT, sent by the player to
-    // the merchant's own wallet address. The platform never holds that USDT —
-    // it is off-platform, between two people — which is exactly why the balance
-    // on this tile is counted in BB and not in USDT.
-    walletNote: 'Funded by admin · players pay you USDT for these tokens',
   },
 };
 
@@ -135,44 +120,17 @@ export function formatMoneyCompact(amount: number | undefined | null, rail: Merc
  * A figure denominated in PLATFORM TOKENS, on either rail.
  *
  * ── The unit does not change with the rail. The rail is not the unit ───────
- * `merchant_wallets` holds BB tokens for every merchant — an admin top-up of
- * 1,000,000 writes 100,000,000 paise of TOKENS whether that merchant settles
- * in rupees or in USDT — and the deposit escrow reserves tokens against every
- * order.
- *
- * On a USDT buy the merchant GIVES UP tokens and RECEIVES USDT, sent by the
- * player straight to the merchant's own wallet address. That USDT never
- * touches the platform: it is a transfer between two people, and the platform's
- * side of it is only the token movement. So there is no USDT balance here to
- * show — the merchant's float is tokens, on both rails, and the rail says who
- * pays them, not what they hold.
- *
- * This said "on the USDT rail it holds USDT" and rendered `<n> USDT`. On a live
- * server at ₹90 per USDT, a merchant's 900,000-token float reads as
- * "900,000 USDT" — a float actually worth about 10,000 USDT, overstated ninety
- * times, on the merchant's own balance tile. That is `CLAUDE.md` trap 15 in the
- * line a human reads: the same number is true in one currency and a lie in the
- * other, and nothing about it looks wrong.
- *
- * Sharper still, the two defects hid each other. The balance was never sent
- * (`formatMerchant` read it off the merchant row, which does not carry it), so
- * this rendered 0 — and "0 USDT" is correct-looking in every currency. Fixing
- * the backend alone would have turned a zero into a ninety-fold overstatement.
+ * Every token count on this platform is BB tokens, whether the order settled in
+ * rupees or in USDT. On a USDT buy the player sends USDT straight to the
+ * member's own address — off-platform, between two people — and the platform's
+ * side of it is only the token movement (from the team's pool). So a figure
+ * counted in tokens is rendered in BB on both rails, never with the rail's
+ * currency suffix: "900,000 USDT" for 900,000 tokens at ₹90 per USDT is a
+ * ninety-fold overstatement, CLAUDE.md trap 15 in the line a human reads.
  */
 export function formatTokens(amount: number | undefined | null): string {
   const value = Number(amount) || 0;
   return `${value.toLocaleString('en-IN', { maximumFractionDigits: 2 })} BB`;
-}
-
-/**
- * The merchant's wallet balance.
- *
- * Tokens on both rails — see `formatTokens`. Kept as its own name because the
- * call sites read as "the wallet", and because the next person to wonder what
- * unit a USDT merchant's wallet is in should land on that explanation.
- */
-export function formatWallet(balance: number | undefined | null, _rail?: MerchantRail): string {
-  return formatTokens(balance);
 }
 
 /**
@@ -248,7 +206,7 @@ export function truncateMiddle(value: string, head = 10, tail = 6): string {
 /**
  * How to name the user on an order.
  *
- * The backend strips the user's name, phone and KYC snapshot from every order it
+ * The backend strips the user's name and phone from every order it
  * sends a merchant (`sanitizeMerchantOrder`), and additionally strips their
  * payout details on deposits — merchants only ever see the identity they need to
  * complete the transfer in front of them. So:

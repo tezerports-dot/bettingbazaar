@@ -153,12 +153,10 @@ export const Dashboard: React.FC = () => {
   const lanes = s ? [
     { title: 'Operations Queue', sub: 'Actionable work items', icon: Inbox, tone: 'info', rows: [
       { label: 'Pending payment orders', value: num(s.queue.pendingOrders), color: 'var(--warning)', go: '/queue-manager' },
-      { label: 'KYC awaiting review', value: num(s.users.kycPending), color: 'var(--warning)', go: '/kyc' },
       { label: 'Merchant approvals', value: num(s.merchants.pending), color: 'var(--info)', go: '/merchants' },
     ] },
     { title: 'Risk & Controls', sub: 'Needs admin intervention', icon: ShieldCheck, tone: 'danger', rows: [
       { label: 'Blocked users', value: num(s.users.blocked), color: 'var(--text)', go: '/users' },
-      { label: 'Pending KYC', value: num(s.users.kycPending), color: 'var(--warning)', go: '/kyc' },
       { label: 'Online merchants', value: num(s.merchants.online), color: 'var(--success)', go: '/merchants' },
     ] },
   ] : [];
@@ -362,7 +360,6 @@ export const Dashboard: React.FC = () => {
             {[
               { name: 'Liquidity coverage', pctVal: outflow > 0 ? Math.min(100, Math.round((inflow / outflow) * 100)) : 100, amount: `${outflow > 0 ? Math.round((inflow / outflow) * 100) : 100}%`, color: 'linear-gradient(90deg,#34d17f,#2bb96f)' },
               { name: 'Merchants online', pctVal: pct(s?.merchants.online ?? 0, s?.merchants.total ?? 0), amount: `${num(s?.merchants.online)} / ${num(s?.merchants.total)}`, color: 'linear-gradient(90deg,#5aa0f2,#3d6bd6)' },
-              { name: 'KYC verified users', pctVal: pct((s?.users.total ?? 0) - (s?.users.kycPending ?? 0), s?.users.total ?? 0), amount: `${num((s?.users.total ?? 0) - (s?.users.kycPending ?? 0))}`, color: 'linear-gradient(90deg,#efb03e,#d4913a)' },
               { name: 'Active users', pctVal: pct(s?.users.active ?? 0, s?.users.total ?? 0), amount: `${num(s?.users.active)}`, color: 'linear-gradient(90deg,#b57cf0,#9b5fe0)' },
             ].map((m) => (
               <div key={m.name}>

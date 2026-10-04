@@ -133,10 +133,14 @@ Caddy edge controls, WAF/header normalization, auth, KYC, geofence checks
 Backend APIs and financial ledger
 ```
 
-Native shells call `GET /api/app/bootstrap` during startup and verify that
-`officialOrigin` is in `allowedOrigins` before opening the WebView. That
-endpoint also returns the compliance block (`geofenceRequired`, `kycRequired`,
-`hiddenProxyOrVpn: false`, `networkBypassSupported: false`).
+**No bootstrap handshake exists.** This section used to say native shells call
+`GET /api/app/bootstrap` at startup and verify `officialOrigin` against an
+allow-list before opening the WebView. The Android shell never called it, so the
+check this described never ran anywhere; the route and the
+`PUBLIC_APP_ALLOWED_ORIGINS` / `IOS_BUNDLE_ID` / `DESKTOP_APP_ID` /
+`PUBLIC_APP_NAME` settings only it read were removed on 2026-10-01 (owner
+decision: delete what nothing uses). The shell loads the origin compiled into
+it; updates are governed by `android_releases` (`CLAUDE.md` §2).
 
 **No bundled VPN or proxy — recorded decision** (`CLAUDE.md` §20,
 2026-07-28). Shipping a circumvention transport inside a real-money client
@@ -145,6 +149,4 @@ would place bets from where the platform is not licensed to accept them. Under
 
 **Client inventory.** Android: a Capacitor 8 shell at `user-panel/android/`
 (user panel only). PWA: user panel only. iOS: **installed PWA, no native shell**
-— recorded decision, see `FULL_STACK_AND_CLIENT_DELIVERY.md` §3.6. The
-`iosBundleId` field in `/api/app/bootstrap` remains for a future client and is
-`null` until one exists.
+— recorded decision, see `FULL_STACK_AND_CLIENT_DELIVERY.md` §3.6.

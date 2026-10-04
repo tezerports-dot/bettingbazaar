@@ -17,7 +17,8 @@ import {
   reconcileAgainstSubLedgers,
 } from '../repositories/ledger.core.js';
 import { EVENT_TYPES } from '../../backend/domains/revenue/chartOfAccounts.js';
-import { transferToMerchantFloat, merchantDispensedToUser } from '../repositories/treasury.js';
+import { postMovement, ACCOUNTS } from '../repositories/treasury.js';
+import { teamFixture } from '../../backend/tests/teamFixture.js';
 
 const hasPg = pgConfigured();
 const describePg = hasPg ? describe : describe.skip;
@@ -34,11 +35,12 @@ const deposit = (key, paise) => recordEvent({
 
 describePg('Accounting ledger (PostgreSQL)', () => {
   beforeAll(async () => { await applySchema(); });
-  afterAll(async () => { await closePg(); });
+  const teams = teamFixture();
+  afterAll(async () => { await teams.cleanup(); await closePg(); });
   beforeEach(async () => {
     await pgQuery(
       `TRUNCATE accounting_events, wallets, wallet_ledger,
-                merchant_wallets, merchant_wallet_entries,
+                team_pool_entries, team_pools,
                 treasury_entries, treasury_accounts RESTART IDENTITY CASCADE`);
   });
 
@@ -263,17 +265,22 @@ describePg('Accounting ledger (PostgreSQL)', () => {
       expect(drift).toMatchObject({ ledgerPaise: 100_000, subLedgerPaise: 0, driftPaise: 100_000 });
     });
 
-    it('compares the treasury floats against the wallets they summarise', async () => {
-      await transferToMerchantFloat(500_000, { movementId: 'rec_mint' });
-      await pgQuery(
-        `INSERT INTO merchant_wallets (merchant_id, available_paise) VALUES ('m1', 500_000)`);
-      await merchantDispensedToUser(100_000, { movementId: 'rec_disp' });
+    it('compares the treasury floats against the pools they summarise', async () => {
+      // A real team bought 5,000 tokens into its pool: TEAM_FLOAT and the pool
+      // both say 500,000 paise, so they agree.
+      await teams.workingTeam({ rail: 'UPI_BANK', poolTokens: 5000 });
+      const agreed = await reconcileAgainstSubLedgers();
+      expect(agreed.comparisons.find((c) => c.name === 'team_float'))
+        .toMatchObject({ ledgerPaise: 500_000, subLedgerPaise: 500_000 });
 
+      // Now the treasury records a payout to a player that no pool performed.
+      await postMovement({
+        movementId: 'rec_disp', operation: 'TEAM_BUY_PAID',
+        legs: { [ACCOUNTS.TEAM_FLOAT]: -100_000, [ACCOUNTS.USER_FLOAT]: 100_000 },
+      });
       const r = await reconcileAgainstSubLedgers();
-      // MERCHANT_FLOAT is now 400_000 but the wallet still holds 500_000 — the
-      // treasury recorded a dispense the merchant wallet never performed.
-      const merchantDrift = r.differences.find((d) => d.name === 'merchant_float');
-      expect(merchantDrift).toMatchObject({ ledgerPaise: 400_000, subLedgerPaise: 500_000, driftPaise: -100_000 });
+      const teamDrift = r.differences.find((d) => d.name === 'team_float');
+      expect(teamDrift).toMatchObject({ ledgerPaise: 400_000, subLedgerPaise: 500_000, driftPaise: -100_000 });
       expect(r.ok).toBe(false);
     });
   });

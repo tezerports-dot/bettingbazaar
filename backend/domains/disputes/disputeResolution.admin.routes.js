@@ -7,9 +7,9 @@ import { moveDepositMoney } from '../payment/depositCredit.js';
 // The one owner of how an admin decision ends a withdrawal's money (F-027),
 // and of a cancelled buy's merchant hold.
 import { endWithdrawal } from '../payment/withdrawalHold.service.js';
-import { releaseForOrder } from '../merchant/depositEscrow.service.js';
-import { debitMerchantTokens } from '../merchant/merchantWallet.service.js';
+import { recordDisputeLoser, faultPreview } from './disputeOutcome.service.js';
 import { releaseUTR } from '../../middleware/utrValidation.js';
+import { emitMerchantUpdate } from '../notification/realtimeEmitters.js';
 // The order state machine. Resolving a dispute is a guarded transition, and it
 // runs BEFORE any money moves so that it is what decides the race.
 import { completeOrder, cancelOrder } from '../payment/orderLifecycle.service.js';
@@ -21,92 +21,16 @@ const router = express.Router();
 
 
 /**
- * GET /api/admin/orders/:orderId/cdm-receipt — the only way to read one.
- *
- * A CDM slip carries an account number, a branch, a timestamp and a bank
- * transaction reference. It is the strongest evidence in a cash-payout dispute
- * and the least appropriate thing to hand back to either party — so neither the
- * player nor the merchant who uploaded it can see it again.
- *
- * The narrowness is enforced in the data layer, not by this handler being
- * careful: `toOrder` does not map these columns, so no projection built on it
- * can carry them. `getCdmReceipt` is a separate query and this is its only
- * caller.
- *
- * Gated on `canResolveDisputes`, which is the disputes-manager permission the
- * rest of this file already uses — an admin holds it, and so does the person
- * whose job is deciding these.
- *
- * Every read is AUDITED. A record nobody may see is one whose access has to be
- * accountable; without this row, "who looked at this player's bank slip" has
- * no answer.
- */
-router.get('/orders/:orderId/cdm-receipt', authenticate, hasPermission('canResolveDisputes'), async (req, res) => {
-  try {
-    const receipt = await db.orders.getCdmReceipt(req.params.orderId);
-    if (!receipt) {
-      // A real and expected state, not an error: the merchant's confirm
-      // completes the order and the receipt is chased afterwards, so a settled
-      // order can legitimately have none yet.
-      return res.json({ success: true, receipt: null, message: 'No CDM receipt has been submitted for this order.' });
-    }
-
-    await db.audit.recordDetailed({
-      performedBy: req.user.userId, performedByName: req.user.username,
-      performedByRole: 'admin', action: 'CDM_RECEIPT_VIEWED', category: 'FINANCIAL',
-      targetType: 'PaymentOrder', targetId: String(req.params.orderId),
-      details: { merchantId: receipt.merchantId, submittedAt: receipt.submittedAt },
-    });
-
-    res.json({ success: true, receipt });
-  } catch (error) {
-    console.error('Get CDM receipt error:', error);
-    res.status(500).json({ success: false, message: 'Failed to read the CDM receipt' });
-  }
-});
-
-/**
- * GET /api/admin/orders/cdm-receipts/missing — payouts settled without evidence.
- *
- * The merchant's confirm completes the order and the receipt follows, so a
- * receipt that never arrives blocks nobody and nothing would otherwise notice.
- * This is what makes the pattern visible: a merchant appearing here repeatedly
- * is asserting payments they are not evidencing.
- */
-router.get('/orders/cdm-receipts/missing', authenticate, hasPermission('canResolveDisputes'), async (req, res) => {
-  try {
-    // `??`, never `||`. ZERO is meaningful here — it is how an admin asks
-    // "everything missing a receipt right now", which is exactly what they
-    // want during an incident — and `||` treats it as absent and substitutes
-    // the default, silently answering a different question. The same
-    // falsy-zero trap the concurrency caps and the hold window both had.
-    const asked = parseInt(req.query.olderThanMinutes, 10);
-    const olderThanMinutes = Number.isFinite(asked) && asked >= 0 ? asked : 60;
-    const orders = await db.orders.withdrawalsMissingCdmReceipt({ olderThanMinutes });
-    res.json({ success: true, olderThanMinutes, orders });
-  } catch (error) {
-    console.error('List missing CDM receipts error:', error);
-    res.status(500).json({ success: false, message: 'Failed to list payouts missing a receipt' });
-  }
-});
-
-/**
  * GET /api/admin/orders/stalled-withdrawals — payouts nobody has taken.
  *
- * A withdrawal that cannot find a merchant WAITS rather than failing. On the
- * cash rail that is the only safe answer: a large payout is several separate
- * withdrawals, and the ones already paid cannot be clawed back, so failing the
- * outstanding one would mean unwinding a payout that has partly happened.
+ * A withdrawal that cannot find a team member WAITS rather than failing: the
+ * player's tokens are locked behind it, and a member may come online.
  *
  * The price is a token lock with no deadline, which is exactly why this queue
  * exists. An order with no deadline and no owner is an order nobody is
  * answerable for; a payout past the assignment window appears here so somebody
  * is. The player can also cancel it themselves and take the tokens back — the
  * two together are what make waiting a decision instead of a leak.
- *
- * Deliberately NOT split-specific. A part of a split withdrawal is an ORDINARY
- * queued withdrawal, so the general question — which payouts have nobody
- * working them — covers it and every other stuck payout with one query.
  *
  * `olderThanMinutes` accepts 0, which is how an admin asks "everything waiting
  * right now" during an incident. `??`, never `||`, for exactly that reason.
@@ -125,10 +49,6 @@ router.get('/orders/stalled-withdrawals', authenticate, hasPermission('canResolv
         amount:     o.fiatAmount,
         tokenAmount: o.tokenAmount,
         createdAt:  o.createdAt,
-        // The label grouping the siblings of one request, when there was one.
-        // It tells an admin that a player asked for a large payout rather than
-        // several small ones — useful context, and nothing more than context.
-        batchRef:   o.withdrawalBatchRef ?? null,
       })),
     });
   } catch (error) {
@@ -149,7 +69,13 @@ router.get('/dispute-orders', authenticate, hasPermission('canResolveDisputes'),
     const queue = await db.orders.disputeQueue({ status, page, limit });
 
     // Mapped to the shape DisputeManager.tsx expects.
-    const disputes = queue.disputes.map((o) => ({
+    const disputes = queue.disputes.map((o) => {
+      // Who each of the screen's two decisions would suspend, from the rule's
+      // one owner, so the screen keeps no copy of it. On a buy, "to the user"
+      // completes the order; on a sell it refunds the player.
+      const preview = o.status === 'DISPUTED' ? faultPreview(o, o.disputedFrom) : { ifCompleted: null, ifNotCompleted: null };
+      const buy = o.type === 'DEPOSIT';
+      return {
       _id:               o.orderId,
       orderId:           o.orderId,
       type:              o.type,
@@ -172,7 +98,10 @@ router.get('/dispute-orders', authenticate, hasPermission('canResolveDisputes'),
       userId:            o.user,
       merchantId:        o.merchant,
       resolvedBy:        o.disputeResolvedBy,
-    }));
+      suspendsIfToUser:     buy ? preview.ifCompleted : preview.ifNotCompleted,
+      suspendsIfToMerchant: buy ? preview.ifNotCompleted : preview.ifCompleted,
+      };
+    });
 
     res.json({
       success: true, disputes,
@@ -221,11 +150,15 @@ router.post('/dispute-orders/:orderId/chat', authenticate, hasPermission('canRes
       isSystem:   false,
     });
 
-    // Notify both parties in real time
+    // Tell the player in real time. The merchant is NOT told, and that is a
+    // recorded gap rather than a choice (PROJECT_STATUS §3.9): this emitted to
+    // a socket room no merchant client ever joined, and the merchant panel has
+    // no order chat to show the message in. Routing it to the merchant's SSE
+    // `order_update` as it stood would have merged `type: 'ADMIN_MESSAGE'`
+    // over the order's own type in the merchant's list.
     const order = await db.orders.getOrderRecord(req.params.orderId);
     if (order) {
       global.io?.to(`user-${order.userId}`).emit('support_reply', { orderId: order._id, message: message.trim() });
-      global.io?.to(`merchant-${order.merchantId}`).emit('order_update', { orderId: order._id, type: 'ADMIN_MESSAGE' });
     }
 
     res.json({ success: true, message: msg });
@@ -250,7 +183,7 @@ router.post('/dispute-orders/:orderId/chat', authenticate, hasPermission('canRes
 //     CANCEL_ORDER        → refund tokens to user (safe default)
 router.post('/dispute-orders/:orderId/resolve', authenticate, hasPermission('canResolveDisputes'), async (req, res) => {
   try {
-    const { decision, resolution, penaltyUser, penaltyMerchant } = req.body;
+    const { decision, resolution } = req.body;
     
     const validDecisions = ['RELEASE_TO_USER', 'RELEASE_TO_MERCHANT', 'CANCEL_ORDER'];
     if (!validDecisions.includes(decision)) {
@@ -266,8 +199,13 @@ router.post('/dispute-orders/:orderId/resolve', authenticate, hasPermission('can
       return res.status(400).json({ success: false, message: `Cannot resolve order in status: ${order.status}` });
     }
 
-    const adminName = req.user?.username || req.user?.mobile || 'Admin';
+    // Never the mobile: this name goes into the order's timeline, which the
+    // player reads, and nobody learns another person's number (owner, 2026-10-03).
+    const adminName = req.user?.username || 'Admin';
     let systemMessage = '';
+    // The order as it stood when the decision was taken: whoever lost a
+    // DISPUTE is suspended (2c+), and only a DISPUTED order was one.
+    const asDecided = { ...order };
 
     // ── THE TRANSITION IS THE GATE, and it runs before the money ─────────────
     //
@@ -305,16 +243,21 @@ router.post('/dispute-orders/:orderId/resolve', authenticate, hasPermission('can
       // a state this resolution applies to.
       return res.status(409).json({
         success: false,
-        message: `Cannot resolve order in status: ${moved.status ?? 'missing'}`,
+        message: moved.reason === 'pool_paid'
+          ? 'The team\'s tokens for this buy were already paid to the player, so it can only be completed.' : `Cannot resolve order in status: ${moved.status ?? 'missing'}`,
       });
     }
     // A withdrawal's money step is keyed end to end: replaying it repairs a
     // first click that failed part-way and moves nothing when it succeeded.
     const withdrawalDecision = releasesToMerchant ? 'RELEASE' : 'REFUND';
+    const outcome = { completed: newStatus === 'COMPLETED', decision, by: req.user.userId };
     if (moved.idempotent) {
       if (order.type === 'WITHDRAWAL') {
         await endWithdrawal(order.orderId, withdrawalDecision, { reason: resolution, by: req.user.userId });
       }
+      // Keyed by the order: repairs a first decision whose suspension did not
+      // land, and records nothing twice.
+      await recordDisputeLoser(asDecided, outcome);
       return res.json({ success: true, message: 'Dispute already resolved', order: moved.order ?? order });
     }
 
@@ -326,11 +269,10 @@ router.post('/dispute-orders/:orderId/resolve', authenticate, hasPermission('can
         // and it was wrong in four ways at once. Every one of them reached
         // money, and this is the route the Disputes screen actually calls.
         //
-        //  1. TOKENS WERE MINTED. Nothing in this file debits a merchant —
-        //     `grep -c debitMerchant` returns 0. The player was credited and
-        //     the tokens came from nowhere, so a released dispute broke the
-        //     conservation the whole settlement design rests on. The other
-        //     resolve route debited the merchant; this one never has.
+        //  1. TOKENS WERE MINTED. Nothing debited the merchant side: the player
+        //     was credited and the tokens came from nowhere, so a released
+        //     dispute broke the conservation the whole settlement design rests
+        //     on. `moveDepositMoney` spends the team pool's hold.
         //
         //  2. THE IDEMPOTENCY KEY WAS A SENTENCE. The third argument is the
         //     ORDER ID — `creditDeposit` builds `dep_complete_<orderId>` from
@@ -352,13 +294,12 @@ router.post('/dispute-orders/:orderId/resolve', authenticate, hasPermission('can
         //     who was right, and whom an admin agreed with, kept a
         //     payment-failure strike toward an hour-long buying lockout.
         //
-        // `allowOverdraft` because an admin has already decided and the
-        // transition has already committed: refusing the money now would leave
-        // the dispute resolved and the player uncredited. A merchant going
-        // negative is the correct outcome — they owe it.
+        // A DISPUTED buy keeps its pool hold, so this spends it. If the hold
+        // is somehow gone and the pool cannot cover it, `moveDepositMoney`
+        // reports it and the log below makes it a case a person sees.
+        // Completed by the transition above, so it is paid out from COMPLETED.
         const moved = await moveDepositMoney(order, {
-          debitMerchantTokens, creditDeposit, creditReserve, releaseUTR,
-          allowOverdraft: true,
+          creditDeposit, creditReserve, releaseUTR, requireState: 'COMPLETED',
         });
         if (!moved.ok) {
           console.error(`[dispute resolve] ${order.orderId} released but money did not move:`, moved.reason);
@@ -368,9 +309,8 @@ router.post('/dispute-orders/:orderId/resolve', authenticate, hasPermission('can
           `Resolution: ${resolution}`;
       } else {
         // RELEASE_TO_MERCHANT or CANCEL — the player did not pay, so nothing
-        // reaches them; the merchant's tokens held for this buy go back. This
-        // released nothing and left the hold to the stranded-hold sweep.
-        await releaseForOrder(order, { actor: `admin:${req.user.userId}`, reason: resolution });
+        // reaches them; the team's tokens held for this buy go back to its pool.
+        await db.teamPools.releaseBuyHold(order.orderId, { actor: `admin:${req.user.userId}`, reason: resolution });
         systemMessage = `❌ Admin Decision: DEPOSIT REJECTED\n` +
           `No payment confirmed. Order cancelled. No token movement.\n` +
           `Resolution: ${resolution}`;
@@ -392,14 +332,14 @@ router.post('/dispute-orders/:orderId/resolve', authenticate, hasPermission('can
       }
       if (withdrawalDecision === 'RELEASE') {
         systemMessage = `✅ Admin Decision: WITHDRAWAL COMPLETED\n` +
-          `Payment confirmed. ${order.tokenAmount} tokens released to the merchant.\n` +
+          `Payment confirmed. ${order.tokenAmount} tokens released to the team.\n` +
           `Resolution: ${resolution}`;
       } else if (ended.afterSettlement) {
         systemMessage = `🔄 Admin Decision: WITHDRAWAL REFUNDED\n` +
           `${order.tokenAmount} tokens returned to user winnings balance.\n` +
           `Resolution: ${resolution}`;
         console.warn(`[dispute] Withdrawal ${order.orderId} refunded AFTER settlement — ` +
-          `merchant ${order.merchantId} was already credited ${order.tokenAmount}; manual recovery required.`);
+          `team ${order.teamId}'s pool had already been credited ${order.tokenAmount}.`);
       } else {
         systemMessage = `🔄 Admin Decision: WITHDRAWAL REVERSED\n` +
           `Payment was not received. ${order.tokenAmount} tokens returned to your balance.\n` +
@@ -407,13 +347,16 @@ router.post('/dispute-orders/:orderId/resolve', authenticate, hasPermission('can
       }
     }
 
-    // ── Handle optional penalties ─────────────────────────────────────────────
-    if (penaltyUser > 0) {
-      // Future: deduct penalty from user balance via walletAuthority
-      systemMessage += `\n⚠️ User penalty noted: ${penaltyUser} tokens (manual action required)`;
-    }
-    if (penaltyMerchant > 0) {
-      systemMessage += `\n⚠️ Merchant penalty noted: ${penaltyMerchant} tokens (manual action required)`;
+    // ── Whoever was wrong is suspended (2c+) ──────────────────────────────────
+    // This was an optional "penalty" the panel sent under a name the route
+    // never read, which then moved nothing and said "manual action required".
+    // The owner's rule replaces it: the party the decision went against is
+    // suspended until staff lift it, and a third lost dispute opens high-risk
+    // review that only an admin can close.
+    const fault = await recordDisputeLoser(asDecided, outcome);
+    if (fault.ok && !fault.already) {
+      systemMessage += `\n⛔ ${fault.party === 'PLAYER' ? 'The player' : 'The team member'} lost this dispute and is suspended`
+        + (fault.highRisk ? ` (lost disputes: ${fault.lostCount} — high-risk admin review)` : '') + '.';
     }
 
     // The order was written by the transition above, decision fields and all —
@@ -437,8 +380,14 @@ router.post('/dispute-orders/:orderId/resolve', authenticate, hasPermission('can
       orderId: order._id,
       message: `Your dispute has been resolved. Decision: ${decision.replace(/_/g, ' ')}`,
     });
+    // The merchant's live feed is SSE; this went to a socket room no merchant
+    // client ever joined, so a resolved dispute stayed DISPUTED on the
+    // merchant's screen until they reloaded (§32 S17). The order's id and its
+    // new state are all their list needs — the decision text is the admin's.
     if (order.merchantId) {
-      global.io?.to(`merchant-${order.merchantId}`).emit('order_update', payload);
+      emitMerchantUpdate(order.merchantId, 'order_update', {
+        orderId: order._id, status: newStatus, server_ts: Date.now(),
+      });
     }
     global.sseManager?.broadcastToAdmins('queue_order_update', payload);
 

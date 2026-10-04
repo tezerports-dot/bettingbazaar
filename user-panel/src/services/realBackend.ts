@@ -29,9 +29,9 @@ import { Backend, VerificationState } from './backend.interface';
 // L-01 fix: GAME_CORE.ts header requires realBackend.ts to import from it.
 import { PAYOUT, WINNER, PHASE } from '../GAME_CORE';
 import {
-  User, Bet, BettingSide, CycleType, AdminUser, AuditLog,
-  PromoContent, Transaction, PromoLocation,
-  GameState, ChatMessage, SystemConfigData, GameCycle
+  User, Bet, BettingSide, AdminUser, AuditLog,
+  PromoContent, PromoLocation,
+  GameState, SystemConfigData, GameCycle
 } from '../types';
 import { io, Socket } from 'socket.io-client';
 import { setToken } from './apiClient'; // GOVERNANCE.md M-9: single write path for auth_token
@@ -107,11 +107,6 @@ class SSEEventBridge extends EventTarget {
     } catch (err) {
       console.error('[SSE] SSE: EventSource creation failed:', err);
     }
-  }
-
-  disconnect() {
-    this.sse?.close();
-    this.sse = null;
   }
 }
 
@@ -327,7 +322,7 @@ export class RealBackend implements Backend {
    * outage before the server ever got to apply that.
    */
   async register(form: {
-    aadhaar: string; mobile: string; password: string; confirmPassword: string;
+    mobile: string; password: string; confirmPassword: string;
     referralCode?: string; captchaToken?: string;
   }) {
     const captchaToken = form.captchaToken ?? (await getCaptchaToken()) ?? undefined;
@@ -385,18 +380,6 @@ export class RealBackend implements Backend {
       { method: 'POST', body: JSON.stringify({ token, password, confirmPassword, captchaToken }) });
   }
 
-  /** A rejected player submits a corrected Aadhaar. */
-  async resubmitAadhaar(aadhaar: string) {
-    return this.request<{ success: boolean; message?: string; last4?: string }>(
-      '/v1/auth/kyc/resubmit', { method: 'POST', body: JSON.stringify({ aadhaar }) });
-  }
-
-  // -- AI ANALYSIS ----------------------------------------------------------
-  // BUG-U14 FIX: route now exists at /v1/content/ai-analysis
-  async getAIAnalysis() {
-    return this.request<{ text: string, cached: boolean, data?: any }>('/v1/content/ai-analysis');
-  }
-
   // -- SYSTEM CONFIG --------------------------------------------------------
   async getSystemConfig(): Promise<SystemConfigData> {
     // WS REPLACEMENT: server pushes 'system_config' on connect AND responds to
@@ -421,12 +404,6 @@ export class RealBackend implements Backend {
   }
 
   // -- SUBSCRIPTIONS ---------------------------------------------------------
-  subscribeToTicker(callback: (data: { id: string, text: string, side: 'DELHI' | 'BOMBAY', amount: number }) => void) {
-    if (!this.socket) return () => {};
-    this.socket.on('ticker_update', callback);
-    return () => { this.socket?.off('ticker_update', callback); };
-  }
-
   subscribeToUserUpdates(userId: string, callback: (data: any) => void) {
     if (!this.socket) return () => {};
     const balanceHandler = (data: any) => callback(data);
@@ -454,31 +431,8 @@ export class RealBackend implements Backend {
     };
   }
 
-  subscribeToAdminNotifications(callback: (data: any) => void) {
-    if (!this.socket) return () => {};
-    this.socket.on('admin_notification', callback);
-    return () => { this.socket?.off('admin_notification', callback); };
-  }
-
-  subscribeToChat(orderId: string, callback: (msg: ChatMessage) => void) {
-    if (!this.socket) return () => {};
-    this.socket.on(`chat_${orderId}`, callback);
-    return () => { this.socket?.off(`chat_${orderId}`, callback); };
-  }
 
   // -- CYCLE MANAGEMENT ------------------------------------------------------
-  // BUG-U1 FIX: backend wraps cycle in { success, cycle:{} } -- unwrap here.
-  async getCycleState(type: CycleType, startTime: number): Promise<GameCycle> {
-    const res = await this.request<{ success: boolean; cycle: GameCycle }>(`/v1/game/cycle/${type}/${startTime}`);
-    const cycle = (res as any).cycle || res;
-    // Normalise field aliases so GameContext always has totalDelhi/totalBombay
-    return {
-      ...cycle,
-      totalDelhi:  cycle.totalDelhi  || cycle.delhiPool  || 0,
-      totalBombay: cycle.totalBombay || cycle.bombayPool || 0,
-    };
-  }
-
   // BUG-U2 FIX: backend returns { success, cycles:[] } -- unwrap and normalise fields.
   async getCycleHistory(type?: string, limit = 50): Promise<GameCycle[]> {
     // WS REPLACEMENT: replaces GET /v1/game/cycles/history.
@@ -544,27 +498,21 @@ export class RealBackend implements Backend {
       method: 'POST', body: JSON.stringify({ userId, cycleId, amount, side })
     });
   }
-  async getBetHistory(userId: string) { return this.request<Bet[]>(`/user/${userId}/bets`); }
+
+  // getBetHistory / getTransactionHistory / getWinners / getCycleState /
+  // getAIAnalysis / getServerTime / uploadImage and the ticker, admin-
+  // notification and order-chat subscriptions removed 2026-10-01: no screen
+  // called any of them (report:routes). History arrives with getUserData,
+  // WinnersPage fetches /v1/winners itself, the cycle comes over the socket,
+  // and the server emits neither `ticker_update` nor `admin_notification`.
 
   // -- WALLET -----------------------------------------------------------------
   // deposit() / withdraw() removed 2026-08-24 — dead, and pointed at the retired
   // `/api/p2p/*` prefix. WalletPage.tsx owns this flow via apiClient.
-  async getTransactionHistory(userId: string) {
-    const res = await this.request<{ success: boolean; transactions: Transaction[] }>(`/user/${userId}/transactions`);
-    return (res as any).transactions || (Array.isArray(res) ? res : []);
-  }
 
-  // -- KYC & BANKING ----------------------------------------------------------
+  // -- BANKING ----------------------------------------------------------------
   async updateBankDetails(userId: string, details: any) {
     return this.request<User>(`/user/${userId}/bank-details`, { method: 'PUT', body: JSON.stringify(details) });
-  }
-
-  // -- WINNERS ----------------------------------------------------------------
-  // BUG-U12 FIX: Real winners from the server (not mock data in WinnersPage)
-
-  async getWinners(period: 'today' | 'week' = 'today', limit = 10) {
-    const res = await this.request<{ success: boolean; winners: any[] }>(`/v1/winners?period=${period}&limit=${limit}`);
-    return (res as any).winners || [];
   }
 
   // -- FAQ --------------------------------------------------------------------
@@ -653,11 +601,6 @@ export class RealBackend implements Backend {
   //   2. PUT file directly to S3 from browser (no backend bandwidth)
   //   3. POST /user/profile/picture/confirm-upload -> verify object and store CDN URL in User.profilePic
   // No URL/base64 fallback is allowed for persisted user images.
-  async uploadImage(file: File) {
-    const url = await this.uploadFile(file);
-    return { url, imageUrl: url };
-  }
-
   async uploadFile(file: File): Promise<string> {
     // Guard: if file is large and S3 is not configured, warn and compress
     if (file.size > 800_000) {
@@ -695,8 +638,6 @@ export class RealBackend implements Backend {
     // Reads token from localStorage (set by login/register) and validates it server-side.
     return this.request<{ success: boolean; user: any }>('/v1/auth/me');
   }
-
-  async getServerTime() { return this.request<{ unixtime: number }>('/v1/system/time'); }
 
 
 

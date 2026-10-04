@@ -46,8 +46,8 @@ import express from 'express';
 import request from 'supertest';
 import { readFileSync } from 'node:fs';
 import {
-  usdtDepositLimiter, orderRetryLimiter, cashLinkSupplyLimiter,
-  utrGraceLimiter, cdmReceiptLimiter,
+  usdtDepositLimiter, orderRetryLimiter,
+  utrGraceLimiter,
   ipBetLimiter, withdrawalLimiter, depositCreateLimiter,
 } from '../../middleware/security.js';
 import { RATE_LIMIT_TIERS } from '../../config/security.config.js';
@@ -116,10 +116,9 @@ describe('a money limiter that bounds EFFECTS does not charge for refusals', () 
     expect((await post(app, who, 200)).status).toBe(429);
   });
 
-  it('applies to the retry and cash-link rails too', async () => {
+  it('applies to the retry rail too', async () => {
     for (const [name, limiter, tier] of [
       ['orderRetry', orderRetryLimiter, RATE_LIMIT_TIERS.orderRetry],
-      ['cashLinkSupply', cashLinkSupplyLimiter, RATE_LIMIT_TIERS.cashLinkSupply],
     ]) {
       const app = appWith(limiter);
       const who = actor();
@@ -175,11 +174,10 @@ describe('the three that were declared by hand, and so were never asked', () => 
 
 describe('a money limiter that bounds ATTEMPTS still counts refusals', () => {
   it('bounds a sweep across other orders, which is nothing but refusals', async () => {
-    // If this ever starts passing at 200, the grace-claim and CDM limiters have
-    // been switched off by a change that looked like a consistency fix.
+    // If this ever starts passing at 200, the grace-claim limiter has been
+    // switched off by a change that looked like a consistency fix.
     for (const [name, limiter, tier] of [
       ['utrGrace', utrGraceLimiter, RATE_LIMIT_TIERS.utrGrace],
-      ['cdmReceipt', cdmReceiptLimiter, RATE_LIMIT_TIERS.cdmReceipt],
     ]) {
       const app = appWith(limiter);
       const who = actor();
@@ -197,7 +195,10 @@ describe('the declaration cannot be omitted', () => {
     // the decision, and a call site is the only place that shows.
     const src = readFileSync(new URL('../../middleware/security.js', import.meta.url), 'utf8');
     const calls = src.match(/moneyLimiter\(\s*'rl:[^)]*?\)/gs) ?? [];
-    expect(calls.length, 'money limiters found').toBeGreaterThanOrEqual(8);
+    // Six since Step 2d removed the CDM-slip limiter with the slip (2c took the
+    // cash-link supply one). A floor, so a regex that stops matching fails here
+    // instead of asserting over nothing.
+    expect(calls.length, 'money limiters found').toBeGreaterThanOrEqual(6);
     for (const call of calls) {
       expect(call, call.slice(0, 60)).toMatch(/bounds:\s*'(effects|attempts)'/);
     }

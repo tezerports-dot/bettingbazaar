@@ -7,9 +7,8 @@
  * versioned together as ONE policy per currency because they describe a
  * single coherent business decision, not independent settings. This page
  * governs ONLY the deposit/reserve split and reserve usage rules — merchant
- * incentive pay ("Merchant Performance Bonus") is a separate, cycle-
- * completion-triggered mechanism, not a deposit-time one (2026-07-08
- * correction, see CLAUDE.md). Future siblings (Withdrawal
+ * pay (team commission, 2e) is a separate mechanism on matched volume, not a
+ * deposit-time one (2026-07-08 correction, see CLAUDE.md). Future siblings (Withdrawal
  * Policy, Risk Policy, Merchant Policy...) belong in this same
  * Pages/BusinessPolicy/ folder and the same 'policy' nav group, not
  * scattered into Finance/Settings.

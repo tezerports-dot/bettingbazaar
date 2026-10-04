@@ -6,24 +6,21 @@
  * A few values must be RECOVERABLE, not merely comparable, and are dangerous in
  * a database dump:
  *
- *   - Aadhaar numbers. KYC verification is performed in bulk by an outside
- *     party who genuinely needs the number to check it against the phone, so a
- *     one-way hash alone cannot serve the workflow. The hash still exists and is
- *     what enforces "one account per Aadhaar" (aadhaarHash.util.js); this holds
- *     the ciphertext the export is generated from.
  *   - Telegram bot tokens. Whoever holds one can impersonate the bot — read
  *     every message sent to it, and message every user who has ever started it.
  *
- * Both are written once and read rarely, by one audited path each. Storing them
- * in plaintext would mean a single database dump hands over every player's
- * national identity number and the ability to speak as the platform.
+ *   - Casino provider credentials.
+ *
+ * Aadhaar numbers were the first use; KYC was removed 2026-10-02. Storing these
+ * in plaintext would mean a single database dump hands over the ability to
+ * speak as the platform and to call its providers.
  *
  * ── Why a separate key from TOTP ────────────────────────────────────────────
  * `totp.service.js` already encrypts second-factor secrets under
  * TOTP_ENCRYPTION_KEY, and this deliberately does NOT reuse that key. The two
  * protect different things with different blast radii: a leaked TOTP key costs
- * you second factors, a leaked identity key costs you every Aadhaar on the
- * platform. Sharing one key would make rotating either of them require
+ * you second factors, a leaked field key costs you every bot token and
+ * provider credential on the platform. Sharing one key would make rotating either of them require
  * re-encrypting both.
  *
  * The format and the refusal-to-derive rule are copied deliberately from
@@ -78,9 +75,8 @@ function encryptionKey() {
  * Regulators and ISO 27001 expect encryption keys to be rotatable, with an
  * emergency procedure for a suspected compromise. Without a retirement list a
  * rotation is not a rotation — it is a data-loss event: the moment the env var
- * changes, every Aadhaar and every bot token already stored becomes
- * undecryptable, and the platform cannot produce the KYC export a regulator
- * asked for.
+ * changes, every bot token and provider credential already stored becomes
+ * undecryptable, and the platform can no longer speak as its own bots.
  *
  * So a rotation is: move the current key into IDENTITY_ENCRYPTION_PREVIOUS_KEYS
  * (comma-separated), set the new one as IDENTITY_ENCRYPTION_KEY, redeploy, and

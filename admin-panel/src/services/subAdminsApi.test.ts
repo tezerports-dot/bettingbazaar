@@ -24,9 +24,9 @@ import api from './api';
 describe('the sub-admin permission requests', () => {
   it('sends the grant under `permissions`, the key the route reads', async () => {
     put.mockResolvedValue({ data: { success: true } });
-    await api.subAdmins.updatePermissions('u-1', { canManageUsers: true, canVerifyKYC: false });
+    await api.subAdmins.updatePermissions('u-1', { canManageUsers: true, canViewAnalytics: false });
     expect(put).toHaveBeenCalledWith('/api/admin/sub-admins/u-1/permissions', {
-      permissions: { canManageUsers: true, canVerifyKYC: false },
+      permissions: { canManageUsers: true, canViewAnalytics: false },
     });
   });
 

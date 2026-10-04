@@ -4,9 +4,8 @@
 
 
 import express   from 'express';
-import { randomBytes } from 'node:crypto';
 import { db } from '#db';
-import { creditDeposit, creditReserve, refundWithdrawal } from '../wallet/walletAuthority.service.js';
+import { creditDeposit, creditReserve } from '../wallet/walletAuthority.service.js';
 // AQ-2/AQ-8: sign via the single JWT authority; hash via the password authority
 // (argon2id + bcrypt verify-fallback). No direct bcrypt use remains here.
 import { signToken } from '../identity/jwt.util.js';
@@ -15,13 +14,7 @@ import { merchantAuth } from '../../middleware/merchantAuth.js';
 import { verificationEndpoint } from '../identity/verificationEndpoint.js';
 import { issueChallenge, verifyChallenge, CHALLENGE_AUDIENCE } from '../identity/twoFactorChallenge.js';
 import { verifySecondFactor, SECOND_FACTOR_RESULT } from '../identity/verifySecondFactor.js';
-import {
-  twoFactorLimiter, loginPaceLimiter,
-  // Supplying a cash link and submitting a CDM slip both shipped with no limit.
-  // Neither is a login route, so no auth tier covered them; both write to a
-  // queue an admin and other merchants read.
-  cashLinkSupplyLimiter, cdmReceiptLimiter,
-} from '../../middleware/security.js';
+import { twoFactorLimiter, loginPaceLimiter } from '../../middleware/security.js';
 import {
   generateSecret, buildOtpauthUri, encryptSecret, decryptSecret,
   verifyToken, generateBackupCodes, hashBackupCode,
@@ -30,54 +23,33 @@ import { releaseUTR } from '../../middleware/utrValidation.js';
 import { emitWalletUpdate, emitOrderUpdate, emitMerchantUpdate, emitAdminUpdate } from '../notification/realtimeEmitters.js';
 import {
     tryAssignMerchant, buildMerchantSnapshot, updateMerchantStatsOnComplete,
-    // A supplied link is handed straight to whoever is waiting for it.
-    matchWaitingOrdersToLinks,
 } from '../payment/paymentProcessing.service.js';
 // The order state machine. Every status change is a guarded transition, and
 // where money moves the transition runs FIRST and gates it.
 import {
   startOrder, markOrderPaid as markOrderPaidState, completeOrder,
-  disputeOrder, cancelOrder as cancelOrderState, requeueOrder,
+  disputeOrder, rejectOrder as rejectOrderState, requeueOrder,
 } from '../payment/orderLifecycle.service.js';
 // Withdrawal settlement hold — confirm asserts payment, the worker settles it
 // once the dispute window passes. See withdrawalHold.service.js.
-import { holdMinutes, settleHold } from '../payment/withdrawalHold.service.js';
+import { holdMinutes } from '../payment/withdrawalHold.service.js';
+import { rejectedBuyDisputeMinutes } from '../payment/rejectedBuyWindow.service.js';
 // A push to the PLAYER's socket goes through the player projection, like every
 // other thing a player receives.
 import { toPlayerOrderView } from '../payment/playerOrderView.js';
 // One rule for how a confirmed deposit splits across the user's two pockets.
 import { moveDepositMoney } from '../payment/depositCredit.js';
-import {
-  holdForOrder as holdDepositTokens,
-  releaseForOrder as releaseDepositHold,
-} from './depositEscrow.service.js';
-import { debitMerchantTokens } from './merchantWallet.service.js';
-// The merchant's own balance for a SCREEN. It lives in `merchant_wallets`, not
-// on the merchant row — `database/repositories/merchants.js` says so in its
-// header and means it, so a projection that reads `merchant.tokenBalance` gets
-// `undefined` every time. See `formatMerchant` below.
-import { getMerchantTokenBalance } from '#db/repositories/merchantWallets.js';
 import { publish as publishDomainEvent, EVENTS as DOMAIN_EVENTS } from '../../services/eventBus.service.js';
 // Order chat. Every write here named a model registered nowhere, so the thread
 // echoed over the socket and never survived a reload.
 // Only the order's own timeline now — the record a dispute is decided from.
 // listMessages/postMessage went with the merchant order chat above.
 import { postSystemMessage } from '#db/repositories/chat.js';
-// Every external payment reference — a UTR, a chain transaction hash, a CDM
-// slip's bank id — is claimed through ONE registry, so the same payment cannot
-// be presented twice.
-import {
-  claimPaymentReference, referenceSpecFor,
-  CDM_REFERENCE_SPEC, MERCHANT_TOKEN_REFERENCE_SPEC,
-} from '../payment/paymentReference.js';
+// Every external payment reference — a UTR, a chain transaction hash — is
+// claimed through ONE registry, so the same payment cannot be presented twice.
+import { claimPaymentReference, referenceSpecFor } from '../payment/paymentReference.js';
 import cdnService from '../../services/cdn.service.js';
 import { respondError } from '../../shared/httpError.js';
-import { adminToMerchantUsdtRate } from '../configuration/tokenRates.js';
-import { rupeesToPaise } from '../../shared/money.js';
-import { MONEY_PATHS } from '#db/moneyPaths.js';
-import {
-  DIRECTIONS as SETTLEMENT_DIRECTIONS, openSettlement,
-} from '#db/repositories/merchantSettlements.js';
 
 /** Is Postgres the source of truth for the merchant side of a settlement? */
 import {
@@ -85,15 +57,22 @@ import {
   USDT_CHAINS, USDT_CHAIN_SPEC, isUsdtAddress, usdtAddressFor, usdtChainsHeldBy,
 } from './merchantCurrency.js';
 import { toMerchantOrderView, toMerchantOrderViews } from './merchantOrderView.js';
-import { getActivePolicy as getPaymentModePolicy, modeCopy, publicTimers } from '../configuration/paymentMode.service.js';
-import { supplyCashLink, suppliersWithHeadroom } from './cashLink.service.js';
-import { PAYMENT_MODES } from '#db/repositories/paymentModePolicy.js';
+import { railOf, routingSettings, PAYMENT_MODES } from '#db/repositories/teamRouting.js';
+// What a cash buy's ATM link may be (Step 2d).
+import { checkCashLink } from '../payment/cashLink.js';
+import { isAccountMobileRefusal, ACCOUNT_IS_A_MOBILE_MESSAGE } from '../payment/payoutAccount.js';
 import { getSystemConfig } from '#db/repositories/config.js';
 import { recordMerchantRefusal, REFUSAL } from './merchantRefusal.service.js';
-import { assertCdnAssetUrl } from '../../shared/storedUrl.js';
 import { assertStaffPassword } from '../identity/passwordPolicy.js';
 
 const router     = express.Router();
+
+/**
+ * What a member is told when an admin handed the order to somebody else between
+ * their read and their action: every member transition below pins the member
+ * (`expectMerchant`), so nothing was changed (security review, 2026-10-03).
+ */
+const NO_LONGER_YOURS = 'This order has been moved to another member, so nothing was changed. Refresh your orders.';
 // JWT secret + expiry owned by jwt.util.js — removed a '|| fallback-secret'
 // default here (AQ-1): a missing secret must fail-fast, never sign with a
 // public string that would let anyone forge merchant tokens.
@@ -105,34 +84,9 @@ const router     = express.Router();
 
 
 /**
- * The merchant's own view of their account.
- *
- * ── ASYNC, because the balance is not on the row ───────────────────────────
- * `merchant_wallets` owns the token balance — deliberately, so nothing can keep
- * a second copy that drifts from the pocket the debits move
- * (`database/repositories/merchants.js`, "THE TOKEN BALANCE"). This read
- * `merchant.tokenBalance` straight off the record, which the repository has
- * never emitted, so the key was absent from every profile response and the
- * panel's `formatWallet(merchant?.tokenBalance, rail)` rendered
- * `Number(undefined) || 0`.
- *
- * Measured on a live server: a merchant holding 900,000 available tokens (plus
- * 100,000 reserved against an order in flight) was shown **"USDT balance
- * 0 USDT"** on their Dashboard, "0" on Token Supply — the screen where they
- * decide whether to buy more float from the platform — and 0 on their Profile,
- * while the ADMIN list read the same merchant correctly at 900,000 because it
- * goes to `getAvailablePaiseFor`. Nothing was red: the projection named a key,
- * the component had a `?? 0`, and a zero balance is indistinguishable from a
- * new merchant.
- *
- * The read is INSIDE this function rather than a `tokenBalance` argument each
- * caller supplies, for the reason §2 gives about deriving an accept list from
- * the spec: a fifth caller added later cannot forget to wire it. That is also
- * why it is async — the cost of making it impossible to omit.
- *
- * `getMerchantTokenBalance` is the AVAILABLE pocket, which is what the admin
- * list shows for the same merchant. Reserved tokens are still theirs but are
- * committed to orders in flight, and the two screens must not disagree.
+ * The merchant's own view of their account. A member holds no tokens — their
+ * team's pool does (§3.10) — so there is no balance here; the Team page shows
+ * the pool.
  */
 const formatMerchant = async (merchant, user = null) => {
     // A merchant settles on exactly one rail; the panel renders UPI/bank OR the
@@ -161,16 +115,18 @@ const formatMerchant = async (merchant, user = null) => {
         usdtAddressBep20:     merchant.usdtAddressBep20 || '',
         usdtChains:           usdtChainsHeldBy(merchant),
         limits:               merchant.limits,
-        tokenBalance:         await getMerchantTokenBalance(merchant._id),
         // Whether the platform has stopped sending them new buy orders (three
         // unpaid in a row, §2). A merchant was never told: the Dashboard read
         // "Online · Accepting orders" while no order could reach them. Only the
         // TIME is sent — the stored reason is written for an admin.
         assignmentPausedAt:   merchant.assignmentPausedAt ?? null,
+        // A CASH member's Ready: at the machine and able to take a buy. Each
+        // buy assigned to them switches it off (§3.10, 2c).
+        cashReady:            merchant.cashReady === true,
         earnings:             merchant.earnings,
         totalProcessedVolume: merchant.totalProcessedVolume,
         // Performance figures the panel's dashboard/profile show; all are
-        // maintained by merchantScoring.service.js — read-only here.
+        // maintained by the order lifecycle — read-only here.
         totalDepositsProcessed:    merchant.totalDepositsProcessed,
         totalDepositAmount:        merchant.totalDepositAmount,
         totalWithdrawalsProcessed: merchant.totalWithdrawalsProcessed,
@@ -239,6 +195,9 @@ router.post('/auth/signup', async (req, res) => {
             } : null,
         });
 
+        if (!created.ok && created.reason === 'ACCOUNT_IS_A_MOBILE') {
+            return res.status(400).json({ success: false, code: 'ACCOUNT_IS_A_MOBILE', message: ACCOUNT_IS_A_MOBILE_MESSAGE });
+        }
         if (!created.ok) {
             // Named, because "signup failed" tells an applicant nothing they
             // can act on — and a payment credential already registered to
@@ -349,11 +308,6 @@ async function issueMerchantSession(merchant, res, extra = {}) {
             _id: merchant._id, userId: merchant.userId,
             username: merchant.username, mobile: merchant.mobile, email: merchant.email,
             status: merchant.status, isOnline: merchant.isOnline,
-            // Same defect as `formatMerchant` above, on the login response: the
-            // panel stores this merchant object and renders from it until the
-            // first profile refresh, so a merchant's first sight of their own
-            // panel said their float was zero.
-            tokenBalance: await getMerchantTokenBalance(merchant._id),
             acceptsDeposits: merchant.acceptsDeposits !== false,
             acceptsWithdrawals: merchant.acceptsWithdrawals !== false,
             twoFactorEnabled: merchant.twoFactorEnabled || false,
@@ -528,338 +482,13 @@ router.post('/2fa/activate', merchantAuth, twoFactorLimiter, async (req, res) =>
 
 // ─── PROFILE ─────────────────────────────────────────────────────────────────
 
-/**
- * GET /api/merchant/payment-mode — which settlement rail this merchant is on.
- *
- * Read on panel load, and it is this — not the notification and not the socket
- * push — that actually guarantees a merchant knows their workflow. A merchant
- * with no linked player account has no inbox, and a merchant whose socket
- * dropped missed the broadcast; both still load the panel.
- *
- * Carries the timers the merchant is held to, and NOT the policy's authorship:
- * who switched the rail and why is an admin surface.
- */
-router.get('/payment-mode', merchantAuth, async (req, res) => {
-    try {
-        const policy = await getPaymentModePolicy();
-        res.json({
-            success: true,
-            activeMode: policy?.activeMode ?? null,
-            version: policy?.version ?? null,
-            ...modeCopy(policy?.activeMode),
-            timers: publicTimers(policy),
-        });
-    } catch (err) {
-        console.error('GET /merchant/payment-mode error:', err);
-        res.status(500).json({ success: false, message: 'Failed to read the settlement rail.' });
-    }
-});
-
-/**
- * GET /api/merchant/cash-links/current — what this merchant is holding, and
- * whether it is worth going to a machine.
- *
- * Read on the cash-rail screen. The "waiting" figure is the merchant's OWN
- * denomination and nothing else: a ₹500 merchant seeing the ₹10,000 backlog
- * learns nothing and is tempted by an order they cannot take.
- *
- * `worthGoing` is computed by the SAME function the broadcast uses. Two
- * implementations of "can this merchant serve one" would put a different
- * answer on the screen than in the notification.
- */
-/**
- * POST /api/merchant/orders/:id/cdm-receipt — the evidence for a cash payout.
- *
- * On the cash rail a SELL is settled by depositing cash at a CDM into the
- * player's bank account. The merchant's confirm already completed the order —
- * the player is not held up waiting for paperwork — and this is the evidence
- * that follows.
- *
- * ── Write-only, and this route is the write half ───────────────────────────
- * Once submitted, NEITHER the merchant who uploaded it nor the player can read
- * it back. Only an admin or a disputes manager can, through
- * `GET /api/admin/orders/:orderId/cdm-receipt`.
- *
- * That is enforced in the data layer, not here: `toOrder` does not map these
- * columns, so no projection built on it can carry them. This handler writes
- * them and never reads them back in its own response.
- *
- * The consequence for the merchant is real and worth stating: they cannot check
- * what they uploaded afterwards. So the proof is verified against THIS merchant
- * and THIS order before it is stored, and the response confirms exactly what
- * was accepted — that confirmation is the only look they get.
- */
-router.post('/orders/:id/cdm-receipt', merchantAuth, cdmReceiptLimiter, async (req, res) => {
-    try {
-        const { transactionId, receiptFileKey, receiptCdnUrl } = req.body || {};
-
-        if (!transactionId || !String(transactionId).trim()) {
-            return res.status(400).json({
-                success: false, reason: 'TRANSACTION_ID_REQUIRED',
-                message: CDM_REFERENCE_SPEC.hint,
-            });
-        }
-        if (!receiptFileKey) {
-            return res.status(400).json({
-                success: false, reason: 'RECEIPT_REQUIRED',
-                message: 'A photo of the CDM receipt is required. A transaction id with no image is an assertion with no evidence.',
-            });
-        }
-
-        // SCOPED to the merchant making the request. An unscoped read here let
-        // ANY merchant attach their slip to ANY payout — claiming somebody
-        // else's cash deposit and, with it, the evidence a dispute is decided
-        // on. It was scoped when this handler was written and lost in a later
-        // edit; the suite caught it, which is why the assertion is a 404 on
-        // another merchant's order rather than a happy-path check.
-        const order = await db.orders.getMerchantOrder(req.params.id, req.merchantId);
-        if (!order) return res.status(404).json({ success: false, message: 'Order not found.' });
-        if (order.type !== 'WITHDRAWAL') {
-            return res.status(400).json({
-                success: false, reason: 'NOT_A_WITHDRAWAL',
-                message: 'A CDM receipt belongs to a payout, not a purchase.',
-            });
-        }
-        if (order.paymentMode !== PAYMENT_MODES.CASH_ATM) {
-            return res.status(400).json({
-                success: false, reason: 'WRONG_RAIL',
-                message: 'This order was created on the UPI rail and is not settled at a CDM.',
-            });
-        }
-
-        // ── The bank reference is CLAIMED, not merely recorded ───────────
-        // A CDM slip's transaction id is a bank's reference for one real cash
-        // deposit, exactly as a UTR is for one real transfer. It used to be
-        // written into a column with nothing stopping the same id appearing on
-        // a second payout — one deposit presented as two, with every check
-        // green. It goes through the same registry as every other reference,
-        // and a duplicate is refused by name.
-        //
-        // Before the receipt is verified or stored, so a refused id leaves
-        // nothing behind.
-        try {
-            await claimPaymentReference({
-                reference: transactionId,
-                orderId: order.orderId,
-                amountRupees: order.fiatAmount,
-                spec: CDM_REFERENCE_SPEC,
-            });
-        } catch (e) {
-            return res.status(e.status || 400).json({
-                success: false, reason: e.code || 'INVALID_REFERENCE',
-                message: e.message, originalOrderId: e.originalOrderId ?? null,
-            });
-        }
-
-        // Bound to THIS merchant and THIS order — without it a merchant could
-        // name a key they never uploaded, or one staged against a different
-        // order, and the stored evidence would point at somebody else's.
-        let verified;
-        try {
-            verified = await cdnService.verifyUploadedObject({
-                fileKey: String(receiptFileKey).trim(),
-                cdnUrl: receiptCdnUrl || undefined,
-                expectedUserId: String(req.merchantId),
-                expectedOrderId: order.orderId,
-                expectedCategory: 'cdm-receipt',
-            });
-        } catch (e) {
-            return res.status(400).json({ success: false, message: `Receipt could not be verified: ${e.message}` });
-        }
-
-        const submittedAt = new Date();
-        await db.orders.setOrderFields(order.orderId, {
-            cdmTransactionId: String(transactionId).trim(),
-            cdmReceiptUrl: verified.cdnUrl,
-            cdmReceiptAt: submittedAt,
-        });
-
-        await db.audit.recordDetailed({
-            performedBy: req.merchantId, performedByRole: 'merchant',
-            action: 'CDM_RECEIPT_SUBMITTED', category: 'MERCHANT',
-            targetType: 'PaymentOrder', targetId: order.orderId,
-            // The URL is NOT recorded here. An audit row is read by more people
-            // than the receipt is, and putting it in one would be a second way
-            // to reach the thing this route exists to keep narrow.
-            details: { transactionId: String(transactionId).trim(), submittedAt },
-        });
-
-        res.json({
-            success: true,
-            // The only look the merchant gets. Echoed deliberately, because
-            // they cannot open it again to check what they sent.
-            submitted: { transactionId: String(transactionId).trim(), submittedAt },
-            message: 'Receipt recorded. It is visible only to an admin or a disputes manager from now on.',
-        });
-    } catch (err) {
-        console.error('POST /merchant/orders/:id/cdm-receipt error:', err);
-        res.status(500).json({ success: false, message: 'Failed to record the CDM receipt.' });
-    }
-});
-
-/**
- * GET /api/merchant/cdm-receipts/outstanding — the slips this merchant owes.
- *
- * The confirm completes the order and the receipt is chased afterwards, which
- * is the right order for the PLAYER — they are not held up waiting for
- * paperwork. The cost is that the moment to submit passes: an upload that
- * failed, an app closed at the machine, a slip not yet in hand, and the order
- * is gone from every screen the merchant has.
- *
- * This is the way back to it. `GET /api/admin/orders/cdm-receipts/missing`
- * asks the same question from the other side — who is not evidencing their
- * payouts — so without this route that admin queue fills with items the only
- * person who can clear them cannot reach.
- *
- * ── Why this does not go through `toMerchantOrderView` ─────────────────────
- * It is not an order. It is three columns — which payout, how much cash, when
- * it completed — chosen in the query itself, and the player is deliberately
- * not among them. Passing an order shape through here would mean assembling
- * one first, and the safest identity is the one never read.
- *
- * `cdm_receipt_url` is read only as IS NULL. A merchant learns THAT they still
- * owe a receipt; they never learn what a submitted one says. The slip becomes
- * unreadable to its own uploader the moment it is stored, and that is the
- * whole point of the feature.
- */
-router.get('/cdm-receipts/outstanding', merchantAuth, async (req, res) => {
-    try {
-        const outstanding = await db.orders.merchantWithdrawalsMissingCdmReceipt(req.merchantId);
-        res.json({ success: true, outstanding });
-    } catch (err) {
-        console.error('GET /merchant/cdm-receipts/outstanding error:', err);
-        res.status(500).json({ success: false, message: 'Failed to list the receipts you still owe.' });
-    }
-});
-
-router.get('/cash-links/current', merchantAuth, async (req, res) => {
-    try {
-        const denominationPaise = req.merchant?.cashDenominationPaise ?? null;
-        if (denominationPaise === null) {
-            return res.json({
-                success: true, approved: false, denomination: null,
-                live: null, waiting: 0, worthGoing: false,
-                message: 'You are not approved for the ATM cash rail.',
-            });
-        }
-
-        const [live, waiting, suppliers] = await Promise.all([
-            db.cashLinks.getLiveLinkFor(req.merchantId),
-            db.cashLinks.countOrdersAwaitingLink(denominationPaise),
-            suppliersWithHeadroom(denominationPaise),
-        ]);
-
-        res.json({
-            success: true,
-            approved: true,
-            denomination: denominationPaise / 100,
-            denominationPaise,
-            // Their own link only. Another merchant's link is another
-            // merchant's business, and it is a claim on their notes.
-            live: live && {
-                linkId: live.linkId,
-                paymentLink: live.paymentLink,
-                expiresAt: live.expiresAt,
-            },
-            waiting,
-            worthGoing: waiting > 0 && suppliers.includes(String(req.merchantId)),
-        });
-    } catch (err) {
-        console.error('GET /merchant/cash-links/current error:', err);
-        res.status(500).json({ success: false, message: 'Failed to read the cash link queue.' });
-    }
-});
-
-/**
- * POST /api/merchant/cash-links — supply the link the ATM just produced.
- *
- * The merchant sends only the link. The amount comes from their approval and
- * the lifetime from the policy: a client that supplies its own denomination
- * can claim to be serving ₹10,000 orders from a ₹500 machine, and a client
- * that supplies its own expiry can keep a link alive as long as it likes.
- */
-router.post('/cash-links', merchantAuth, cashLinkSupplyLimiter, async (req, res) => {
-    try {
-        const { paymentLink } = req.body || {};
-        const result = await supplyCashLink({
-            merchantId: req.merchantId,
-            merchant: req.merchant,
-            paymentLink,
-        });
-        if (!result.ok) {
-            // Neither of these is the caller's mistake — they have a link
-            // waiting, or they are already working an order — so both are a 409
-            // the panel can render as state rather than as an error.
-            const status = ['LINK_ALREADY_LIVE', 'ALREADY_SERVING'].includes(result.reason) ? 409 : 400;
-            return res.status(status).json({ success: false, reason: result.reason, message: result.message });
-        }
-
-        // ── Hand it straight to somebody who is waiting ────────────────────
-        // A link lives about two minutes, so the difference between matching
-        // now and matching on the next sweep is a real slice of the window the
-        // player has to reach the machine. The cron is still the guarantee —
-        // this is the latency.
-        //
-        // AWAITED, not fired and forgotten. The merchant's next question is
-        // "may I supply another?", and the answer depends on whether this link
-        // has just been taken — so leaving the match in flight makes their own
-        // next request race it. Deterministic beats marginally faster on a path
-        // where the alternative is a merchant told two different things about
-        // the same state.
-        //
-        // Still not fatal: the link IS supplied whatever happens here, and
-        // telling a merchant their supply failed when it did not would send
-        // them away from a machine they are standing at.
-        try {
-            await matchWaitingOrdersToLinks();
-        } catch (e) {
-            console.error('[cash-links] supply-time match failed:', e.message);
-        }
-
-        res.json({
-            success: true,
-            link: {
-                linkId: result.link.linkId,
-                paymentLink: result.link.paymentLink,
-                expiresAt: result.link.expiresAt,
-            },
-        });
-    } catch (err) {
-        console.error('POST /merchant/cash-links error:', err);
-        res.status(500).json({ success: false, message: 'Failed to supply the cash link.' });
-    }
-});
-
-/**
- * DELETE /api/merchant/cash-links/:linkId — withdraw a link they can no longer
- * honour, so it is not handed to a player who would find nothing.
- *
- * Scoped to the caller. A merchant cancelling another merchant's link would be
- * removing supply that is not theirs.
- */
-router.delete('/cash-links/:linkId', merchantAuth, async (req, res) => {
-    try {
-        const cancelled = await db.cashLinks.cancelLink(req.params.linkId, req.merchantId);
-        if (!cancelled) {
-            return res.status(404).json({
-                success: false,
-                message: 'No live link of yours with that id — it may have been taken or expired already.',
-            });
-        }
-        res.json({ success: true, linkId: cancelled.linkId });
-    } catch (err) {
-        console.error('DELETE /merchant/cash-links/:linkId error:', err);
-        res.status(500).json({ success: false, message: 'Failed to cancel the cash link.' });
-    }
-});
-
 router.get('/profile', merchantAuth, async (req, res) => {
     try {
         const merchant = await db.merchants.getMerchant(req.merchantId);
         if (!merchant) return res.status(404).json({ success: false, message: 'Merchant profile not found.' });
         // Fixed 1:1 internal conversion (Phase 006 flattening, 2026-07-08):
         // no buy/sell spread. Shape kept for merchant-panel compatibility;
-        // merchant earnings move to the future Merchant Performance Bonus.
+        // merchant earnings are team commission (2e, teamCommission.js).
         res.json({
             success: true,
             merchant: {
@@ -971,6 +600,9 @@ router.put('/profile', merchantAuth, async (req, res) => {
                     message: 'Those payment details are already registered to another merchant. Money sent to them would reach the wrong account.',
                 });
             }
+            if (isAccountMobileRefusal(e)) {
+                return res.status(400).json({ success: false, code: 'ACCOUNT_IS_A_MOBILE', message: ACCOUNT_IS_A_MOBILE_MESSAGE });
+            }
             if (e.code === '23514') {
                 return res.status(400).json({ success: false, message: 'Those payment details are not in a valid format.' });
             }
@@ -1014,6 +646,35 @@ router.put('/online-status', merchantAuth, async (req, res) => {
     }
 });
 
+/**
+ * PUT /api/merchant/cash-ready — a CASH member says they are at the machine.
+ *
+ * A cash buy needs a member standing at an ATM, so routing offers one only to a
+ * member who has pressed Ready, and the assignment that hands them one switches
+ * it off again in the same transaction (`teamRouting.assignToTeam`): they are
+ * busy at the machine with that buy, and press Ready again when free. Refused
+ * for anybody who is not an approved member of a CASH team — Ready means
+ * nothing on the other rails.
+ */
+router.put('/cash-ready', merchantAuth, async (req, res) => {
+    try {
+        const { ready } = req.body || {};
+        if (typeof ready !== 'boolean') {
+            return res.status(400).json({ success: false, message: 'ready must be true or false.' });
+        }
+        const set = await db.teamRouting.setCashReady(req.merchantId, ready);
+        if (!set.ok) {
+            return res.status(409).json({
+                success: false, code: set.reason,
+                message: 'Ready is only for members of a cash team. Ask your supervisor to add you to one.',
+            });
+        }
+        res.json({ success: true, ready: set.ready });
+    } catch (err) {
+        return respondError(res, err, 'PUT /merchant/cash-ready', { message: 'Failed to update Ready.' });
+    }
+});
+
 router.put('/preferences', merchantAuth, async (req, res) => {
     try {
         const { acceptsDeposits, acceptsWithdrawals } = req.body;
@@ -1051,174 +712,12 @@ router.put('/preferences', merchantAuth, async (req, res) => {
  * and it read as authoritative enough to be believed twice.
  *
  * Both columns are gone now, and nothing replaced them, because the two things
- * they were trying to express already have owners: a merchant's CEILING is the
- * tokens they hold, enforced by the deposit escrow that reserves them the
- * moment an order becomes theirs (F-018), and the FLOOR is the platform's —
- * `SystemConfig.minDeposit` / `minWithdrawal`, 500 tokens, the same for
- * everyone.
+ * they were trying to express already have owners: an order's CEILING is what
+ * the team's pool holds, enforced by the hold taken the moment an order is
+ * assigned (§3.10), and the SIZE is the platform's — one of the fixed order
+ * sizes the admin has on offer (`SystemConfig.orderSizes`, Step 2d), the same
+ * for everyone.
  */
-/**
- * What a merchant must send, in USDT, for `tokenAmount` platform tokens.
- *
- * ── Why this is a function and not two copies ──────────────────────────────
- * The merchant has to send the USDT BEFORE the request exists: the row refuses
- * an APPROVED purchase with no transaction hash on it
- * (`merchant_token_orders_approved_has_hash`), and the one-per-day unique index
- * means a request filed without a hash cannot be replaced with one that has it.
- * So the panel needs the figure in advance, which means a second reader of the
- * same arithmetic — and CLAUDE.md §5 is explicit about what happens to a value
- * assembled in two places. One function, two callers.
- *
- * Returns `{ ok: false, message }` rather than throwing, because both callers
- * answer a refusal the same way: tell the merchant, in the vocabulary of the
- * rail they are on (§25).
- */
-function quoteAdminTokenPurchase(cfg, tokenAmount) {
-    if (!Number.isFinite(tokenAmount) || tokenAmount <= 0) {
-        return { ok: false, status: 400, message: 'Token amount must be greater than zero.' };
-    }
-    // Through the one owner — see domains/configuration/tokenRates.js. The
-    // `=== undefined ? 1` fallback this replaced was a second statement of the
-    // default, in a different form from the schema's.
-    const usdtRate = adminToMerchantUsdtRate(cfg);
-    if (!Number.isFinite(usdtRate) || usdtRate < 0.01) {
-        return { ok: false, status: 500, message: 'Admin USDT buy rate is misconfigured.' };
-    }
-    // Merchants pay USDT in whole multiples of 10. If the configured INR/USDT
-    // rate produces a fractional/non-multiple quote, round UP so the platform
-    // never undercharges the merchant for admin tokens.
-    const exactUsdtCents = Math.ceil((tokenAmount / usdtRate) * 100 - 1e-9);
-    const usdtAmount = Math.ceil(exactUsdtCents / 1000) * 10;
-    const minPurchaseUsdt = cfg?.merchantOrderLimits?.minAdminTokenPurchaseUsdt ?? 100;
-    const maxPurchaseUsdt = cfg?.merchantOrderLimits?.maxAdminTokenPurchaseUsdt ?? 0;
-    if (!Number.isFinite(usdtAmount) || usdtAmount < minPurchaseUsdt || (maxPurchaseUsdt > 0 && usdtAmount > maxPurchaseUsdt)) {
-        const maxText = maxPurchaseUsdt > 0 ? ` and at most ${maxPurchaseUsdt} USDT` : '';
-        return {
-            ok: false, status: 400,
-            message: `Admin token purchase must be at least ${minPurchaseUsdt} USDT${maxText}.`,
-            usdtRate, usdtAmount, minPurchaseUsdt, maxPurchaseUsdt,
-        };
-    }
-    return { ok: true, usdtRate, usdtAmount, minPurchaseUsdt, maxPurchaseUsdt };
-}
-
-/**
- * The quote, before the request exists. Read-only and writes nothing.
- *
- * A refusal comes back as 200 with `ok: false` and the reason, because this is
- * a merchant typing into a field: the bounds are what they need to see while
- * they are still choosing an amount, and an error status would have the panel
- * render a failure where the answer is "not that amount".
- */
-router.get('/admin-token-orders/quote', merchantAuth, async (req, res) => {
-    try {
-        const cfg = await getSystemConfig();
-        const tokenAmount = Number(req.query.tokenAmount);
-        const quote = quoteAdminTokenPurchase(cfg, tokenAmount);
-        res.json({ success: true, tokenAmount, quote });
-    } catch (err) {
-        console.error('GET /merchant/admin-token-orders/quote error:', err);
-        res.status(500).json({ success: false, message: 'Failed to price an admin token purchase.' });
-    }
-});
-
-router.get('/admin-token-orders', merchantAuth, async (req, res) => {
-    try {
-        const orders = await db.paymentConfig.listTokenOrders({ merchantId: req.merchantId, limit: 30 });
-        res.json({ success: true, orders });
-    } catch (err) {
-        console.error('GET /merchant/admin-token-orders error:', err);
-        res.status(500).json({ success: false, message: 'Failed to fetch admin token orders.' });
-    }
-});
-
-router.post('/admin-token-orders', merchantAuth, async (req, res) => {
-    try {
-        const tokenAmount = Number(req.body.tokenAmount);
-        const usdtTxHash = String(req.body.usdtTxHash || '').trim();
-        const [cfg, merchant] = await Promise.all([
-            getSystemConfig(),
-            db.merchants.getMerchant(req.merchantId),
-        ]);
-        if (!merchant || merchant.status !== 'ACTIVE' || merchant.merchantApprovalStatus !== 'APPROVED') {
-            return res.status(403).json({ success: false, message: 'Only approved active merchants can buy admin tokens.' });
-        }
-        // The same quote the panel previewed through /admin-token-orders/quote,
-        // from the same function. It is recomputed here rather than accepted
-        // from the request: a price a caller supplies is a price a caller can
-        // choose.
-        const quote = quoteAdminTokenPurchase(cfg, tokenAmount);
-        if (!quote.ok) return res.status(quote.status).json({ success: false, message: quote.message });
-        const { usdtRate, usdtAmount } = quote;
-        // ONE REQUEST PER DAY, decided by a unique index rather than by a
-        // lookup for today's request followed by an insert. That check-then-act
-        // shape is a rate limit that stops nobody who clicks twice: both
-        // requests pass the check, both insert.
-        // ── And the merchant's own payment reference ─────────────────────
-        // A merchant buying platform tokens pays the platform in USDT and gives
-        // the transaction hash. Recorded, and never claimed — so one payment
-        // could fund two token purchases, which is the same defect as a reused
-        // UTR pointed at the platform's own inventory.
-        //
-        // ── The hash is REQUIRED, and the row is why ─────────────────────
-        // `merchant_token_orders_approved_has_hash` refuses an APPROVED
-        // purchase that has a `usdt_amount` and no transaction on it, and every
-        // purchase created here has one. So a request filed without a hash can
-        // never be approved — and the approve path mints and credits BEFORE it
-        // writes the status, so what actually happened was: the merchant is
-        // paid, the CHECK rejects the status write, the handler 500s, and the
-        // order sits PENDING with the tokens already delivered. The one-per-day
-        // index then locks the merchant out of filing a corrected one.
-        //
-        // Accepting it optionally was the defect. A merchant sends the USDT
-        // first (the panel prices it through /admin-token-orders/quote) and
-        // names the transaction here, which is also the only thing that makes
-        // the payment claimable: one payment, one purchase (§27).
-        const tokenOrderId = `MAT_${randomBytes(12).toString('hex')}`;
-        if (!usdtTxHash) {
-            return res.status(400).json({
-                success: false, code: 'REFERENCE_REQUIRED',
-                message: MERCHANT_TOKEN_REFERENCE_SPEC.hint,
-            });
-        }
-        try {
-            await claimPaymentReference({
-                reference: usdtTxHash, orderId: tokenOrderId,
-                userId: req.merchantId, amountRupees: tokenAmount,
-                spec: MERCHANT_TOKEN_REFERENCE_SPEC,
-            });
-        } catch (e) {
-            return res.status(e.status || 400).json({
-                success: false, code: e.code || 'INVALID_REFERENCE',
-                message: e.message, originalOrderId: e.originalOrderId ?? null,
-            });
-        }
-
-        const created = await db.paymentConfig.createTokenOrder({
-            orderId: tokenOrderId,
-            merchantId: req.merchantId,
-            tokenAmountRupees: tokenAmount,
-            usdtRate,
-            usdtAmount,
-            usdtTxHash,
-        }).catch((e) => {
-            if (e.code === '23505') return { ok: false, reason: 'ALREADY_REQUESTED_TODAY' };
-            throw e;
-        });
-
-        if (!created.ok) {
-            return res.status(429).json({
-                success: false,
-                message: 'Only one admin token purchase request is allowed per day.',
-            });
-        }
-        res.json({ success: true, order: created.order });
-    } catch (err) {
-        console.error('POST /merchant/admin-token-orders error:', err);
-        res.status(500).json({ success: false, message: 'Failed to create admin token order.' });
-    }
-});
-
 // ─── ORDERS ──────────────────────────────────────────────────────────────────
 
 router.get('/orders', merchantAuth, async (req, res) => {
@@ -1227,17 +726,9 @@ router.get('/orders', merchantAuth, async (req, res) => {
         const parsedLimit = Math.min(Math.max(parseInt(limit) || 50, 1), 100);
         const parsedSkip  = Math.max(parseInt(skip)  || 0, 0);
 
-        // The open withdrawal pool (unassigned sell orders any merchant may pick
-        // up) must be filtered to this merchant's own rail — a USDT merchant has
-        // no way to pay out an INR withdrawal and vice-versa (2026-07-27).
-        // Orders written before `currency` existed have no field at all, so the
-        // The merchant's own orders PLUS the open withdrawal pool on their
-        // rail. The rail filter is not cosmetic: an INR merchant claiming a
-        // USDT order cannot settle it, and the player waits for a payment that
-        // will never come.
+        // Only the member's own orders: there is no open pool (§3.10, 2c).
         const { orders, total } = await db.orders.merchantVisibleOrders({
             merchantId: req.merchantId,
-            rail: merchantTypeOf(req.merchant),
             state: status || null,
             orderType: type || null,
             limit: parsedLimit,
@@ -1256,59 +747,32 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
         const order = await db.orders.getOrderRecord(req.params.id);
         if (!order) return res.status(404).json({ success: false, message: 'Order not found.' });
 
-        if (order.merchantId && order.merchantId.toString() !== req.merchantId.toString()) {
-            return res.status(403).json({ success: false, message: 'This order is assigned to a different merchant.' });
+        // ── An order is ASSIGNED, never CLAIMED ─────────────────────────────
+        // Every order, both directions, reaches a member through team routing
+        // (`db.teamRouting.assignToTeam`), which checked the rail, the chain,
+        // the member's cap and — on a buy — held the tokens in the team's pool
+        // in the same transaction. There is no open pool to claim from, so the
+        // only order a member may accept is one already theirs.
+        if (!order.merchantId || String(order.merchantId) !== String(req.merchantId)) {
+            return res.status(403).json({ success: false, message: 'This order is not assigned to you.' });
         }
-        if (!['PENDING_QUEUE', 'ASSIGNED'].includes(order.status)) {
+        if (order.status !== 'ASSIGNED') {
             return res.status(400).json({ success: false, message: `Order cannot be accepted in status: ${order.status}` });
-        }
-        // ── A BUY is ASSIGNED, never CLAIMED ────────────────────────────────
-        // There is no open pool for buy orders and there never was one: every
-        // buy goes through `tryAssignMerchant`, which ranks the eligible
-        // merchants and hands the order to one of them. This handler
-        // nevertheless admitted a PENDING_QUEUE deposit, which made an
-        // unassigned buy claimable first-come by anyone who knew its id — the
-        // only surface on the buy side where two merchants could race for one
-        // order.
-        //
-        // Nothing needs that. A merchant with capacity is offered work by the
-        // queue; making them compete for it rewards whoever polls hardest, and
-        // it defeats the ranking that exists so the biggest holder takes the
-        // biggest order. The sell pool is different and stays: a withdrawal
-        // nobody is free for waits in the open rather than burning retries, and
-        // that is a deliberate choice recorded in `selectBestMerchant`.
-        //
-        // So a buy may only be accepted by the merchant it was ASSIGNED to.
-        if (order.type === 'DEPOSIT' && order.status === 'PENDING_QUEUE') {
-            return res.status(409).json({
-                success: false,
-                message: 'Buy orders are assigned automatically. This one has not been assigned to you.',
-            });
         }
 
         const merchant = await db.merchants.getMerchant(req.merchantId);
         if (!merchant) return res.status(404).json({ success: false, message: 'Merchant not found.' });
+        const merchantRail = order.currency || MERCHANT_CURRENCY.INR; // schema default: 'INR'
 
-        // Rail check (2026-07-27). Assignment already matches currency, but an
-        // order can also be claimed from the open withdrawal pool — so the rail
-        // is re-checked at the point the merchant actually takes the order.
-        const merchantRail = merchantTypeOf(merchant);
-        const orderRail    = order.currency || MERCHANT_CURRENCY.INR; // schema default: 'INR'
-        if (orderRail !== merchantRail) {
-            return res.status(400).json({ success: false, message: `This is a ${orderRail} order and you settle in ${merchantRail}.` });
-        }
-        // The CHAIN, not just the rail. A merchant holding only a TRC-20
-        // address cannot receive a BEP-20 payment: the networks are separate
-        // and the tokens would be gone. The assignment query already excludes
-        // them, but an order can also be claimed from the open pool, so it is
-        // re-checked where the merchant actually takes it.
+        // The CHAIN, re-checked where the member takes it: routing required an
+        // address on the order's chain, but a member can remove one from their
+        // profile in between, and USDT sent to no address is gone.
         if (merchantRail === MERCHANT_CURRENCY.USDT) {
-            const chain = order.usdtChain;
-            const spec = USDT_CHAIN_SPEC[chain];
+            const spec = USDT_CHAIN_SPEC[order.usdtChain];
             if (!spec) {
                 return res.status(400).json({ success: false, message: 'This USDT order names no chain and cannot be served.' });
             }
-            if (!usdtAddressFor(merchant, chain)) {
+            if (!usdtAddressFor(merchant, order.usdtChain)) {
                 return res.status(400).json({
                     success: false,
                     message: `This order pays on ${spec.label}. Add that address in Profile before taking it.`,
@@ -1316,91 +780,11 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
             }
         }
 
-        if (order.type === 'DEPOSIT') {
-            // From the WALLET, not the merchant record. This gate admits an
-            // order the merchant then has to fund; deciding it from a stored
-            // copy is how one came to be accepted that could not be served.
-            if (merchant.acceptsDeposits === false) {
-                return res.status(400).json({ success: false, message: 'Merchant is not enabled for buy orders.' });
-            }
-        } else if (merchant.acceptsWithdrawals === false) {
-            return res.status(400).json({ success: false, message: 'Merchant is not enabled for sell orders.' });
-        }
+        // The window is the order's own rail's (`teamRouting.processingWindowSeconds`).
+        const windowSeconds = routingSettings(await getSystemConfig()).processingWindowSeconds[railOf(order)];
 
-        const cfg = await getSystemConfig();
-        const typeLimit = order.type === 'DEPOSIT'
-            ? (merchant.maxConcurrentDepositOrders ?? cfg?.merchantOrderLimits?.maxConcurrentDepositOrders ?? 1)
-            : (merchant.maxConcurrentWithdrawalOrders ?? cfg?.merchantOrderLimits?.maxConcurrentWithdrawalOrders ?? 1);
-        // DERIVED from the orders themselves. The merchant record used to carry
-        // an `activeOrderCount` incremented on accept and decremented on
-        // finish; a crash between the two throttled that merchant permanently,
-        // with nothing able to correct it because nothing else knew the number.
-        const counts = await db.merchants.getActiveOrderCounts([req.merchantId]);
-        const active = counts.get(String(req.merchantId));
-        const activeForType = order.type === 'DEPOSIT' ? active.deposit : active.withdrawal;
-        // The count includes ASSIGNED orders, and THIS order — when it was
-        // assigned to this merchant rather than taken from the open pool — is
-        // one of them. Accepting it does not add to the merchant's plate, it
-        // moves an order already on it from ASSIGNED to PROCESSING, so it must
-        // not be counted against the ceiling for accepting it. Without this a
-        // merchant at the default limit of 1 could be ASSIGNED an order and then
-        // be refused when they tried to accept it — the one order they had was
-        // the one blocking them.
-        const alreadyMine = order.merchantId
-            && String(order.merchantId) === String(req.merchantId)
-            && ['ASSIGNED', 'PROCESSING', 'PAID'].includes(order.status);
-        const effectiveActive = activeForType - (alreadyMine ? 1 : 0);
-        if (effectiveActive >= typeLimit) {
-            return res.status(400).json({ success: false, message: `Merchant has reached ${order.type} active order limit (${typeLimit}).` });
-        }
-
-        // ── The HOLD is the check, and it is taken LAST ─────────────────────
-        // This was a balance read followed, in a later statement, by the accept
-        // — a snapshot, so two merchants claiming from the open pool in the
-        // same instant both passed it. Taking the hold IS asking the question:
-        // its refusal lives in the reserve leg's own
-        // `UPDATE … WHERE available_paise + $n >= 0` under the merchant's row
-        // lock, so the second claimant is refused by the database.
-        //
-        // Placed after every cheaper refusal above so that none of them has a
-        // hold to unwind — the only thing that can fail after this point is the
-        // transition itself, and that has exactly one release, below.
-        //
-        // One call covers both doors. An order already ASSIGNED to this
-        // merchant is already held by them and comes back `idempotent`, not
-        // charged a second time; one claimed from the open pool takes its hold
-        // here.
-        let heldFresh = false;
-        if (order.type === 'DEPOSIT') {
-            const held = await holdDepositTokens(order, merchant.merchantId, {
-                actor: `merchant:${req.merchantId}`,
-            });
-            if (!held.ok) {
-                // 409 when somebody else took it, 400 when this merchant cannot
-                // fund it. The distinction is not cosmetic: losing a race for an
-                // order is a CONFLICT and the merchant should try the next one,
-                // while an inventory shortfall is theirs to act on by topping
-                // up. Collapsing both into 400 also silently changed what the
-                // panel sees for the ordinary case of two merchants claiming
-                // the same order at once, which is the common event here.
-                const conflict = held.reason === 'held_by_another';
-                return res.status(conflict ? 409 : 400).json({
-                    success: false,
-                    message: conflict
-                        ? 'Another merchant is already serving this buy order.'
-                        : 'Your available token balance cannot cover this buy order. Top up, or finish an order you are already serving.',
-                });
-            }
-            // Only a hold TAKEN here may be released here. An order that was
-            // already this merchant's arrives holding its tokens from
-            // assignment, and releasing that on a lost accept race would strip
-            // a live order of its funding.
-            heldFresh = !held.idempotent;
-        }
-
-        const wasAssigned = Boolean(order.assignedAt);
         const now        = new Date();
-        const expiresAt  = new Date(now.getTime() + 15 * 60 * 1000); // 15-min window starts on accept
+        const expiresAt  = new Date(now.getTime() + windowSeconds * 1000); // the window starts on accept
 
         // Build full immutable merchantSnapshot (GOVERNANCE §1: assigned at accept)
         // via the Payment domain's single builder — this route used to re-implement
@@ -1413,37 +797,26 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
         const responseMinutes = order.assignedAt ? (now - new Date(order.assignedAt)) / 60000 : null;
 
         const accepted = await startOrder(order.orderId, {
+            expectMerchant: req.merchantId,
             set: {
                 merchantId:       req.merchantId,
                 assignedAt:       order.assignedAt || now,
                 processingAt:     now,
                 expiresAt,
-                // The ORDER is passed so the snapshot carries a per-order
-                // payment link. Without it the link is null and the player's
-                // screen has nothing to render — the panel no longer builds one
-                // from the merchant's handle, because it is no longer given it.
+                // What the player is shown to pay is built from this snapshot
+                // (`playerOrderView`): the member's bank account on a bank
+                // buy, the order's chain address on USDT. A cash buy's QR is
+                // not in it; the member scans that onto the order.
                 merchantSnapshot: buildMerchantSnapshot(merchant, expiresAt, order),
                 ...(responseMinutes === null ? {} : { merchantResponseMinutes: responseMinutes }),
             },
         });
-        if ((!accepted.ok || accepted.idempotent) && heldFresh) {
-            // The accept did not take, so the tokens this call held have nothing
-            // to hold for. Released immediately rather than left to the sweep:
-            // the next claimant wants them now, and the sweep exists for the
-            // paths that forget, not as the ordinary way a hold ends.
-            await releaseDepositHold(order, {
-                actor: `merchant:${req.merchantId}`,
-                reason: 'Accept did not take',
-            });
-        }
         if (!accepted.ok || accepted.idempotent) {
-            // Two merchants racing the same queued order both used to pass the
-            // status read above and both used to save; the second overwrote the
-            // first's merchantId and snapshot, so the user was shown one
-            // merchant's payment details while the other held the order.
+            // A double-tap, or the order expired between the read and the move.
             return res.status(409).json({
                 success: false,
-                message: `Order is ${accepted.status ?? 'missing'} and cannot be accepted.`,
+                message: accepted.reason === 'merchant_changed'
+                    ? NO_LONGER_YOURS : `Order is ${accepted.status ?? 'missing'} and cannot be accepted.`,
             });
         }
         Object.assign(order, accepted.order);
@@ -1470,15 +843,20 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
         const payAmount   = formatOrderFiat(order);
 
         if (isDeposit) {
+            // The timeline is read by the player, so it names where to pay the
+            // way their screen does, never the member's UPI handle (usually
+            // their mobile number; owner, 2026-10-03).
             const payTo = isUsdtOrder
                 ? `merchant USDT address on ${USDT_CHAIN_SPEC[order.usdtChain]?.label ?? 'the order chain'}: `
                   + `${usdtAddressFor(merchant, order.usdtChain) || 'See payment details'}`
-                : `merchant UPI: ${merchant.bankDetails?.upiId || 'See payment details'}`;
+                : order.paymentMode === PAYMENT_MODES.CASH_ATM
+                    ? 'the cash machine QR the member scans'
+                    : 'the member\'s bank account shown on the order, by bank transfer';
             await sendSystemMessage(oid,
                 `✅ Order Accepted by Merchant\n` +
                 `📋 Order: ${order.orderId}\n` +
                 `💰 User must pay ${payAmount} to ${payTo}\n` +
-                `⏱ Payment window: 15 minutes`,
+                `⏱ Payment window: ${Math.round(windowSeconds / 60)} minutes`,
                 io
             );
         } else if (isUsdtOrder) {
@@ -1495,8 +873,7 @@ router.post('/accept/:id', merchantAuth, async (req, res) => {
                 `📋 Order: ${order.orderId}\n` +
                 `💸 Merchant must send ${payAmount} to user's bank:\n` +
                 `   🏦 ${bank.bankName || ''} | AC: ${bank.accountNumber || 'N/A'} | IFSC: ${bank.ifscCode || 'N/A'}\n` +
-                `   Account Holder: ${bank.accountHolderName || 'N/A'}\n` +
-                `   UPI ID: ${order.upiId || 'N/A'}`,
+                `   Account Holder: ${bank.accountHolderName || 'N/A'}`,
                 io
             );
         }
@@ -1588,18 +965,20 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
         //         The reference for that transfer exists only on their receipt,
         //         so it is theirs to give and there is nobody else who could.
         //
-        // Not asked at a cash machine: a CASH_ATM payout is evidenced by the CDM
-        // slip, which has its own route and its own claim (§27), and no bank UTR
-        // exists for a note handed over a counter.
+        // Asked on EVERY rail. A sell is paid by bank transfer to the player's
+        // account whether a cash team or a UPI/bank team serves it (owner,
+        // 2026-10-03), so a cash-team payout has a bank UTR like any other. The
+        // CDM slip that used to stand in for it went with the cash-machine
+        // payout (Step 2d).
         //
         // CLAIMED, not merely stored. A merchant's payout reference is a real
         // bank transfer exactly as a player's is, so the same registry decides
         // whether it has been spent — otherwise one transfer could be presented
-        // as proof of two payouts, which is the defect §27 records for the CDM
-        // slip. `claimPaymentReference` throws rather than returning a flag, and
-        // it runs BEFORE the transition so a refusal leaves the order untouched.
+        // as proof of two payouts (§27). `claimPaymentReference` throws rather
+        // than returning a flag, and it runs BEFORE the transition so a refusal
+        // leaves the order untouched.
         let payoutReference = null;
-        if (!isDeposit && order.paymentMode !== PAYMENT_MODES.CASH_ATM) {
+        if (!isDeposit) {
             const submitted = String(req.body?.utrNumber ?? '').trim();
             if (!submitted) {
                 return res.status(400).json({
@@ -1631,9 +1010,9 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
         // from the decision. Now exactly one caller matches a row, and only that
         // caller goes on to move money.
         //
-        // Which target this is depends on the branch: a deposit completes, a
-        // withdrawal under hold only reaches PAID (asserted, not settled), and a
-        // withdrawal with the hold disabled completes inline.
+        // Which target this is depends on the branch: a deposit completes, and
+        // a withdrawal only reaches PAID (asserted, not settled) and is held for
+        // at least an hour — the player's window to dispute (2c+).
         const holdFor = isDeposit ? 0 : await holdMinutes();
 
         // ── DEPOSIT: the money moves BEFORE the status, through the one owner ──
@@ -1656,32 +1035,31 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
         // there is nothing to unwind when nothing has been declared finished.
         //
         // Double-tap is still handled, just by the thing that was always doing
-        // it: the canonical `mw_dep_deduct_<orderId>` / `dep_complete_<orderId>`
+        // it: the canonical `pool_buy_paid_<orderId>` / `dep_complete_<orderId>`
         // keys, plus `completeOrder`'s own idempotency below.
         let deposited = null;
         if (isDeposit) {
-            // ── The hold IS the payment, and `moveDepositMoney` takes it ────
-            // This route used to dispense the hold here and then let
-            // `moveDepositMoney` debit `available` as well, believing the
-            // dispense put the tokens back in `available` first. It does not —
-            // it spends them — so every confirmed buy cost the merchant twice,
-            // and a merchant whose tokens were all held for this order was
-            // refused after the hold was already gone (F-026). The owner now
-            // takes the merchant's side exactly once, from the hold.
-            deposited = await moveDepositMoney(order, {
-                debitMerchantTokens, creditDeposit, creditReserve, releaseUTR,
-            });
+            // ── The pool's hold IS the payment, and `moveDepositMoney` takes it ──
+            // Spent once, from the team pool, keyed on the order (§2).
+            // `requireState`: asked under the order's lock, so a buy the player
+            // disputed (or an admin decided) since it was read is not paid out
+            // underneath them (security review, 2026-10-03).
+            deposited = await moveDepositMoney(order, { creditDeposit, creditReserve, releaseUTR, requireState: 'PAID' });
+            if (!deposited.ok && deposited.reason === 'order_state') {
+                return res.status(409).json({
+                    success: false,
+                    message: 'This buy changed while you were confirming it (it may have been disputed), so nothing was credited. Refresh to see where it stands.',
+                });
+            }
             if (!deposited.ok) {
-                if (deposited.reason === 'hold_unavailable') {
-                    return res.status(409).json({
-                        success: false,
-                        message: 'This order\'s token hold could not be read. Nothing was charged — try again in a moment.',
-                    });
-                }
                 // Reported to the operator and to the player by
                 // `moveDepositMoney` itself (F-015). The order stays PAID, so it
                 // is retryable AND still disputable.
-                return res.status(400).json({ success: false, message: 'Insufficient token inventory to confirm this deposit. Top up your merchant wallet.' });
+                return res.status(409).json({
+                    success: false,
+                    message: 'Your team\'s token pool cannot cover this buy right now, so nothing was credited. '
+                        + 'The order stays paid; your supervisor has been told, and you can confirm again once it is funded.',
+                });
             }
         }
 
@@ -1689,21 +1067,17 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
         if (isDeposit) {
             moved = await completeOrder(order._id, {
                 expectFrom: 'PAID',
+                expectMerchant: req.merchantId,
                 set: { completedAt: new Date() },
             });
         } else {
-            // ── A hold of zero minutes is still a HOLD ─────────────────────────
-            // With the hold disabled this completed the order FIRST and then
-            // released the stake and credited the merchant — a write after the
-            // commit (§21). If the release threw, the confirm answered 500 and
-            // every retry was told "already confirmed", so the merchant who paid
-            // the player was never credited and the stake stayed locked for good.
-            // It also admitted only PROCESSING where the held path admits
-            // ASSIGNED too (§32 S3). So both are the same transition now; a zero
-            // window is simply already due, and it is settled below by the same
-            // `settleHold` the sweep uses — money first, COMPLETED after.
+            // ── Always a HOLD ───────────────────────────────────────────────────
+            // There was a "hold disabled" path that completed the order inline.
+            // The window is now at least an hour (owner, 2026-10-02), so every
+            // confirm holds and the sweep settles — money first, COMPLETED after.
             moved = await markOrderPaidState(order._id, {
                 expectFrom: ['PROCESSING', 'ASSIGNED'],
+                expectMerchant: req.merchantId,
                 set: {
                     ...(payoutReference ? { utrNumber: payoutReference } : {}),
                     merchantCreditStatus:    'HELD',
@@ -1715,7 +1089,8 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
         if (!moved.ok) {
             return res.status(409).json({
                 success: false,
-                message: `Order is ${moved.status ?? 'missing'} and cannot be confirmed.`,
+                message: moved.reason === 'merchant_changed'
+                    ? NO_LONGER_YOURS : `Order is ${moved.status ?? 'missing'} and cannot be confirmed.`,
             });
         }
         if (moved.idempotent) {
@@ -1732,51 +1107,22 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
             // The merchant is claiming they sent the player fiat. Nothing proves
             // it yet, so nothing settles yet.
             //
-            // This branch used to consume the player's locked stake AND credit
-            // the merchant in the same request. A merchant who pressed confirm
-            // without sending the money therefore held spendable tokens
-            // instantly, and could convert them through a buy order before the
-            // player noticed nothing arrived — with the player's stake already
-            // gone, the platform ate the loss and the dispute process arrived
-            // after the value had left.
+            // Crediting the pool in this request would let a member who pressed
+            // confirm without sending the money put spendable tokens in their
+            // team's pool at once, and the next buy could spend them before the
+            // player noticed nothing arrived.
             //
             // Both sides now freeze for SystemConfig.withdrawalHoldMinutes.
             // Until it expires no value has moved: the player's stake stays
-            // locked exactly as it has since order creation, and the merchant's
-            // tokens do not exist. A dispute inside the window is a reversal of
-            // something still held (withdrawalHold.endWithdrawal), not a
-            // clawback. See domains/payment/withdrawalHold.service.js.
+            // locked exactly as it has since order creation, and the team's
+            // pool has not been credited. A dispute inside the window is a
+            // reversal of something still held (withdrawalHold.endWithdrawal),
+            // not a clawback. See domains/payment/withdrawalHold.service.js.
             //
             // The status, the HELD marker and the hold deadline were written by
             // the transition above — this branch is now only the side effects
             // that follow it.
             //
-            // Record what the platform now OWES this merchant, in a pocket
-            // they cannot spend. Without this row the tokens simply do not
-            // exist during the hold and nothing shows the liability;
-            // opening the settlement here makes it visible and gives the
-            // sweeper a real state machine to advance. Idempotent on the order's key, and
-            // fire-and-forget: the hold itself must not fail because the
-            // settlement could not be opened — settleHold opens it lazily.
-            // Unconditional. This was `if (settlementOnPostgres())`, and that
-            // resolver was deleted with the rest of the two-store machinery
-            // — so the guard threw a ReferenceError and the merchant's
-            // confirm 500'd after the withdrawal had already been held.
-            await openSettlement({
-                settlementId: `ms_${order.orderId}`, merchantId: req.merchantId,
-                orderId: order.orderId, direction: SETTLEMENT_DIRECTIONS.WITHDRAWAL,
-                amountPaise: rupeesToPaise(order.tokenAmount),
-                reason: `Withdrawal ${order.orderId} held pending settlement`,
-            }).catch(e => console.error('[Merchant confirm] settlement open failed:', e.message));
-            if (holdFor === 0) {
-                // Hold disabled by admin: the window is already over, so settle
-                // now — through the same function the sweep runs, which moves the
-                // money and only then marks the order COMPLETED. If it fails the
-                // order stays PAID and due, and the next sweep settles it.
-                await settleHold(order.orderId)
-                    .catch(e => console.error('[Merchant confirm] immediate settlement failed; the sweep will retry:', e.message));
-            }
-
             // Emit wallet update so user sees updated balance
             await emitWalletUpdate(order.userId);
         }
@@ -1927,36 +1273,28 @@ router.post('/reject/:id', merchantAuth, async (req, res) => {
         // persist both at once, which is also why a failed reassignment left the
         // order's requeue unsaved unless the else-branch happened to save it.
         const requeued = await requeueOrder(order.orderId, {
+            expectMerchant: req.merchantId,
             set: { merchantId: null, merchantSnapshot: null, expiresAt: null, rejectedReason: reason },
+            // ── The pool's hold comes off IN the requeue's own transaction ──
+            // This member's team held the player's tokens from the moment the
+            // order was theirs. Released in the same commit that puts the order
+            // back in the queue, so it is never found queued while still holding
+            // a team's tokens, and the next assignment can hold afresh. The team
+            // is cleared too: the next one is decided by routing.
+            within: async (client) => {
+                await db.teamPools.detachFromTeamWithin(client, order.orderId, {
+                    actor: `merchant:${req.merchantId}`, reason: `Declined by the member: ${reason}`,
+                });
+            },
         });
         if (!requeued.ok) {
             return res.status(409).json({
                 success: false,
-                message: `Order can only be rejected in ASSIGNED status. Current: ${requeued.status ?? 'missing'}`,
+                message: requeued.reason === 'merchant_changed'
+                    ? NO_LONGER_YOURS : `Order can only be rejected in ASSIGNED status. Current: ${requeued.status ?? 'missing'}`,
             });
         }
         Object.assign(order, requeued.order);
-
-        // ── The hold comes off BEFORE anything tries to take a new one ──────
-        // This merchant held the player's tokens from the moment the order was
-        // theirs. They have declined, so the tokens are theirs again.
-        //
-        // The ordering is load-bearing, not tidiness: the reassignment further
-        // down calls `tryAssignMerchant`, which takes a hold of its own, and
-        // `merchant_settlements_one_live_deposit` permits exactly one live hold
-        // per order. Release after reassignment and the new merchant's hold is
-        // refused as `held_by_another` — the order would be reassigned with
-        // nobody's tokens behind it, and the FIRST merchant's still locked.
-        //
-        // Looked up by ORDER, not by merchant, which is why it still works here:
-        // `requeueOrder` has just set `merchantId` to null, and a release keyed
-        // on the merchant would have had nothing to look with.
-        if (order.type === 'DEPOSIT') {
-            await releaseDepositHold(order, {
-                actor: `merchant:${req.merchantId}`,
-                reason: `Rejected by the merchant: ${reason}`,
-            });
-        }
 
         // A refusal, through the one owner. It records the pair — so this order
         // never returns to this merchant, and this merchant never sees this
@@ -1983,17 +1321,13 @@ router.post('/reject/:id', merchantAuth, async (req, res) => {
             direction: order.type, amountRupees: 0, earningsRupees: 0, disputed: false,
         });
 
-        // Release escrow if WITHDRAWAL
-        if (order.type === 'WITHDRAWAL' && order.escrowLocked) {
-            try {
-                await refundWithdrawal(order.userId, order.tokenAmount, order.orderId);
-                order.escrowLocked = false;
-            } catch (refundErr) {
-                console.error('[merchant reject] winnings refund failed:', refundErr.message);
-            }
-        }
+        // A declined SELL keeps the player's stake LOCKED: the order is back in
+        // the queue and will be offered to another member. Refunding it here
+        // (as this once did) left a queued withdrawal with no stake behind it,
+        // so the next member to serve it paid out tokens the player still held.
 
-        // Try re-assignment to next-best merchant
+        // Offered straight to the next eligible member; if nobody is free the
+        // assignment sweep keeps offering it until it expires.
         const reAssigned = await tryAssignMerchant(order);
         if (reAssigned) {
             emitAdminUpdate('queue_order_update', {
@@ -2092,23 +1426,36 @@ router.post('/orders/:id/red-flag', merchantAuth, async (req, res) => {
         if (['COMPLETED', 'CANCELLED'].includes(order.status)) {
             return res.status(400).json({ success: false, message: 'Cannot red-flag a completed or cancelled order.' });
         }
+        if (order.status === 'REJECTED') {
+            return res.status(400).json({ success: false, message: 'You rejected this buy, so it is the player\'s to dispute until their window closes. Contact support if something else is wrong.' });
+        }
 
         // The red flag and the DISPUTED move land in ONE update. Writing the
         // flag separately would leave an order flagged but not disputed if the
         // second write failed, which is the state the admin queue cannot see.
+        // Not from REJECTED: a buy the member rejected is the player's to
+        // dispute, inside their window. A member flagging their own rejection
+        // would turn it into a dispute the player never raised (security
+        // review, 2026-10-03). `disputeRaisedBy: 'merchant'` says whose report
+        // this is, so a decision on it suspends nobody (disputeOutcome.service.js).
         const flagged = await disputeOrder(order._id, {
+            expectFrom: ['PROCESSING', 'PAID'],
+            expectMerchant: req.merchantId,
             set: {
-                redFlagged:     true,
-                redFlagReason:  reason.trim(),
-                redFlaggedBy:   req.userId,
-                redFlaggedAt:   new Date(),
-                disputeReason:  `Red-flagged by merchant: ${reason.trim()}`,
+                redFlagged:      true,
+                redFlagReason:   reason.trim(),
+                redFlaggedBy:    req.userId,
+                redFlaggedAt:    new Date(),
+                disputeReason:   `Red-flagged by merchant: ${reason.trim()}`,
+                disputeRaisedAt: new Date(),
+                disputeRaisedBy: 'merchant',
             },
         });
         if (!flagged.ok) {
             return res.status(409).json({
                 success: false,
-                message: `Cannot red-flag an order that is ${flagged.status ?? 'missing'}.`,
+                message: flagged.reason === 'merchant_changed'
+                    ? NO_LONGER_YOURS : `Cannot red-flag an order that is ${flagged.status ?? 'missing'}.`,
             });
         }
         Object.assign(order, flagged.order);
@@ -2140,6 +1487,88 @@ router.post('/orders/:id/red-flag', merchantAuth, async (req, res) => {
     }
 });
 
+// ─── CASH LINK (Step 2d) ─────────────────────────────────────────────────────
+//
+// A cash buy is paid through the ATM. The member picks the order amount on a
+// machine that offers UPI cash withdrawal and scans the QR it shows; the link
+// decoded from it is what the player pays, and the machine hands the member the
+// cash. The member's panel decodes the QR from the camera (or a photo of it);
+// typing a link is not offered, and the server holds whatever arrives to the
+// shape of a real one (`checkCashLink`) before a player is shown it.
+//
+// A second scan REPLACES the first until the player says they paid: the member
+// may have picked the wrong amount, or the machine timed out and showed a new
+// QR. After that the link is what was paid, and `setCashLink` moves nothing.
+
+router.post('/orders/:id/cash-link', merchantAuth, async (req, res) => {
+    try {
+        const order = await db.orders.getMerchantOrder(req.params.id, req.merchantId);
+        if (!order) return res.status(404).json({ success: false, message: 'Order not found.' });
+        if (order.type !== 'DEPOSIT' || order.paymentMode !== PAYMENT_MODES.CASH_ATM) {
+            return res.status(400).json({ success: false, code: 'NOT_A_CASH_BUY', message: 'Only a cash buy is paid through a cash machine\'s QR.' });
+        }
+        if (order.status === 'ASSIGNED') {
+            // The player is shown the QR only once the member has accepted
+            // (`playerOrderView`), so the scan waits for the accept too.
+            return res.status(409).json({
+                success: false,
+                code: 'ACCEPT_FIRST',
+                message: 'Accept the order first, then scan the machine\'s QR.',
+            });
+        }
+        if (order.status !== 'PROCESSING') {
+            return res.status(409).json({
+                success: false,
+                code: 'CASH_LINK_CLOSED',
+                message: order.status === 'PAID'
+                    ? 'The player has already said they paid this QR, so it can no longer be changed.'
+                    : `This order is ${order.status}, so there is nothing to scan for.`,
+            });
+        }
+
+        // Throws 400 INVALID_CASH_LINK naming what is wrong with the scan.
+        const link = checkCashLink(req.body?.link, order.fiatAmount);
+
+        const updated = await db.orders.setCashLink(order.orderId, req.merchantId, link);
+        if (!updated) {
+            // Every condition was in the UPDATE's WHERE; read the row to say
+            // which one moved between the check above and the write.
+            const now = await db.orders.getOrderRecord(order.orderId);
+            const moved = !now || String(now.merchantId) !== String(req.merchantId);
+            return res.status(409).json({
+                success: false,
+                code: moved ? 'merchant_changed' : 'CASH_LINK_CLOSED',
+                message: moved ? NO_LONGER_YOURS : `This order is ${now.status} now, so the QR was not changed.`,
+            });
+        }
+
+        await postSystemMessage(
+            updated.orderId,
+            `🏧 The member scanned the cash machine's QR for ${formatOrderFiat(updated)}. The player can pay it now.`,
+            { senderId: req.userId },
+        );
+
+        // The player's screen turns "waiting for the member" into the Pay
+        // button. `payTo` only, the one shape a player receives.
+        emitOrderUpdate(String(updated.userId), 'order_update', {
+            orderId:   updated.orderId,
+            _id:       updated.orderId,
+            status:    updated.status,
+            payTo:     toPlayerOrderView(updated).payTo ?? null,
+            expiresAt: updated.expiresAt,
+            server_ts: Date.now(),
+        });
+        emitMerchantUpdate(String(req.merchantId), 'order_update', {
+            orderId: updated.orderId, cashLinkAt: updated.cashLinkAt, server_ts: Date.now(),
+        });
+        emitAdminUpdate('queue_order_update', { orderId: updated.orderId, status: updated.status, server_ts: Date.now() });
+
+        res.json({ success: true, order: toMerchantOrderView(updated) });
+    } catch (err) {
+        return respondError(res, err, 'POST /merchant/orders/:id/cash-link', { message: 'Failed to attach the cash machine QR.' });
+    }
+});
+
 // Merchant BULK PAYOUTS was here — three routes, removed 2026-09-10 at the
 // owner's decision. It is not a feature that was working and got dropped:
 //
@@ -2150,10 +1579,7 @@ router.post('/orders/:id/red-flag', merchantAuth, async (req, res) => {
 //   and it takes explicit order ids rather than reading the batch.
 //
 // The columns, the repository readers, the CSV builder, the feature flag and
-// the `bulk_payout_completed` event go with it. `withdrawal_batch_ref` STAYS —
-// that is the withdrawal SPLITTER's label (a payout too large for one
-// denomination becomes several orders) and two admin screens read it. The two
-// are unrelated despite both being called a batch.
+// the `bulk_payout_completed` event go with it.
 //
 // A merchant closes payouts one at a time through `/confirm/:id`, which is the
 // path that takes the withdrawal hold, writes the transition and moves the
@@ -2309,6 +1735,13 @@ router.post('/orders/:id/reject', merchantAuth, async (req, res) => {
         if (order.merchantId?.toString() !== req.merchantId?.toString()) {
             return res.status(403).json({ success: false, message: 'This order is not assigned to you' });
         }
+        // "The player's money never arrived" is a statement about a BUY. A sell
+        // cancelled here would end with the player's stake still locked and
+        // nothing scheduled to return it; a member who cannot pay a sell
+        // declines it before paying (POST /reject/:id) instead.
+        if (order.type !== 'DEPOSIT') {
+            return res.status(400).json({ success: false, message: 'Only a buy order can be rejected as unpaid.' });
+        }
 
         // Bound to THIS merchant and THIS order. Without the check a merchant
         // could name a key they never uploaded, or one staged against a
@@ -2327,33 +1760,52 @@ router.post('/orders/:id/reject', merchantAuth, async (req, res) => {
             return res.status(400).json({ success: false, message: `Proof could not be verified: ${e.message}` });
         }
 
-        // ── Transition order to CANCELLED (with rejection metadata) ───────────
+        // ── Transition order to REJECTED, and open the player's window ────────
         // The guard is the transition. Everything after this point — the
         // user's warning count and the payment flag — is a consequence of the
         // rejection, and a merchant retrying a failed request used to run all
         // of it a second time and increment the warning count again.
-        const rejected = await cancelOrderState(order.orderId, {
+        //
+        // ── The tokens stay in ESCROW (2c+, owner 2026-10-02) ─────────────────
+        // This CANCELLED the buy and gave the team its tokens back at once, on
+        // the member's word alone. Now the buy waits in REJECTED with its pool
+        // hold intact, and the player has `rejectedBuyDisputeMinutes` (default
+        // 15) to say they paid. No dispute: the window sweep cancels it and the
+        // hold goes back to the pool. A dispute: the hold stays until the
+        // dispute manager decides. The deadline is written by the DATABASE
+        // clock in the same transaction, so the sweep, the dispute route and
+        // the screen all read one instant.
+        //
+        // `expectFrom` is applied now (it was ignored), so a member cannot use
+        // this button to close a buy the player has already DISPUTED.
+        const windowMinutes = await rejectedBuyDisputeMinutes();
+        const rejected = await rejectOrderState(order.orderId, {
             expectFrom: ['PAID', 'PROCESSING'],
+            expectMerchant: req.merchantId,
             set: {
                 rejectedBy:     req.merchantId,
                 rejectedAt:     new Date(),
                 rejectedReason: reason.trim(),
                 rejectionProofUrl: verifiedProof.cdnUrl,
-                cancelReason:   'MERCHANT_REJECTED',
-                cancelledAt:    new Date(),
                 // `updatedAt` was here and `setOrderFields` refuses it — the
                 // column is maintained by the write itself, not by callers — so
                 // this route threw on EVERY call and 500'd. No screen called it,
                 // so nothing noticed that the endpoint had never once worked.
             },
+            within: async (client, moved) => ({
+                ...moved,
+                disputeWindowUntil: await db.orders.openRejectedBuyWindowWithin(client, order.orderId, windowMinutes),
+            }),
         });
         if (!rejected.ok || rejected.idempotent) {
             return res.status(409).json({
                 success: false,
-                message: `Cannot reject order in ${rejected.status ?? 'unknown'} status`,
+                message: rejected.reason === 'merchant_changed'
+                    ? NO_LONGER_YOURS : `Cannot reject order in ${rejected.status ?? 'unknown'} status`,
             });
         }
         Object.assign(order, rejected.order);
+        const disputeUntil = order.disputeWindowUntil;
 
         // ── Warning and flag — but NOT a block ───────────────────────────────
         // A merchant rejecting a PAID order IS "the merchant says the payment
@@ -2398,15 +1850,19 @@ router.post('/orders/:id/reject', merchantAuth, async (req, res) => {
         const hitThreshold = flagged?.autoBlocked ?? false;
 
         // ── SSE: notify user (Finding 3) ──────────────────────────────────────
+        // `disputeUntil` is what the player's pop-up counts down to: the one
+        // thing they can do about a rejection is dispute it before then.
         emitOrderUpdate(order.userId.toString(), 'order_rejected', {
             orderId:      order.orderId,
             _id:          order.orderId,
+            status:       'REJECTED',
             reason:       order.rejectedReason,
+            disputeUntil,
             warningCount: newCount,
             isBlocked:    hitThreshold,
             server_ts:    Date.now(),
         });
-        emitAdminUpdate('queue_order_update', { orderId: order.orderId, status: 'CANCELLED', server_ts: Date.now() });
+        emitAdminUpdate('queue_order_update', { orderId: order.orderId, status: 'REJECTED', server_ts: Date.now() });
         // Explicit flag event so the admin console can surface the flagged user.
         emitAdminUpdate('user_flagged', {
             userId:          order.userId,
@@ -2420,7 +1876,8 @@ router.post('/orders/:id/reject', merchantAuth, async (req, res) => {
 
         res.json({
             success: true,
-            message: 'Order rejected.',
+            message: 'Order rejected. The player can dispute it until the window closes; the tokens stay held until then.',
+            disputeUntil,
             warningCount: newCount,
             paymentFlagged: true,
             autoBlocked:  hitThreshold,

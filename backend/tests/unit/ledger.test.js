@@ -5,9 +5,9 @@
 import { describe, it, expect } from 'vitest';
 import {
   validatePostings, buildDepositPostings, buildWithdrawalPostings,
-  buildCyclePostings, buildBonusFundingPostings, buildBonusIssuePostings,
+  buildCyclePostings, buildBonusFundingPostings,
 } from '../../domains/revenue/revenueSettlement.service.js';
-import { toMinor, toRupees } from '../../domains/revenue/chartOfAccounts.js';
+import { toMinor, toRupees, buildBonusIssuePostings } from '../../domains/revenue/chartOfAccounts.js';
 
 const sum = ps => ps.reduce((s, p) => s + p.amountMinor, 0);
 const leg = (ps, a) => ps.find(p => p.account === a)?.amountMinor;

@@ -3,7 +3,8 @@
  * F-015 — a deposit that cannot be credited must reach somebody.
  *
  * The defect was not that money moved wrongly; it was that nothing was told.
- * `moveDepositMoney` returned `{ ok: false, reason: 'merchant_insufficient' }`,
+ * `moveDepositMoney` returned a refusal (`merchant_insufficient` then; since
+ * Step 2c the team pool's `pool_short`),
  * both call sites answered 400, and the player — who had ALREADY SENT REAL
  * MONEY, since `PAID` is what that state means — saw an order that simply
  * stopped while the platform learned nothing.
@@ -25,22 +26,19 @@ const { moveDepositMoney } = await import('../../domains/payment/depositCredit.j
 
 /** An order shaped the way the lifecycle hands one over at confirmation. */
 const paidOrder = () => ({
-  orderId: 'DEP_abc123', userId: 'u-77', merchantId: 'm-9',
+  orderId: 'DEP_abc123', userId: 'u-77', merchantId: 'm-9', teamId: 'team-4',
   tokenAmount: 10_000, depositAllocation: 9_000, reserveAllocation: 1_000,
 });
 
 /**
- * Movers whose merchant debit refuses, which is the whole scenario.
- *
- * `dispenseHold` answers `noHold`: an order nothing held for this merchant is
- * the only one whose tokens come out of `available`, so it is the only one this
- * refusal can happen to. A HELD order is paid out of its hold and cannot be
- * short (see `depositConfirmConservationPg`).
+ * Movers whose team-pool spend refuses, which is the whole scenario: the order
+ * holds nothing and the pool's `available` cannot cover it. Every buy holds at
+ * assignment, so this is an anomaly — which is exactly why it must be reported.
  */
 const refusingMovers = () => ({
-  debitMerchantTokens: vi.fn(() => Promise.resolve({ merchant: null })),
+  spendPool: vi.fn(() => Promise.resolve({ ok: false, reason: 'pool_short' })),
   creditDeposit: vi.fn(), creditReserve: vi.fn(), releaseUTR: vi.fn(),
-  dispenseHold: vi.fn(() => Promise.resolve({ ok: true, noHold: true })),
+  requireState: 'PAID',
 });
 
 describe('a paid deposit that cannot be credited', () => {
@@ -53,7 +51,7 @@ describe('a paid deposit that cannot be credited', () => {
     const movers = refusingMovers();
     const result = await moveDepositMoney(paidOrder(), movers);
 
-    expect(result).toMatchObject({ ok: false, reason: 'merchant_insufficient' });
+    expect(result).toMatchObject({ ok: false, reason: 'pool_short' });
     expect(movers.creditDeposit).not.toHaveBeenCalled();
     expect(movers.creditReserve).not.toHaveBeenCalled();
     // The UTR stays claimed: releasing it would let the same payment be
@@ -61,18 +59,18 @@ describe('a paid deposit that cannot be credited', () => {
     expect(movers.releaseUTR).not.toHaveBeenCalled();
   });
 
-  it('alerts the operator, keyed per MERCHANT', async () => {
+  it('alerts the operator, keyed per TEAM', async () => {
     await moveDepositMoney(paidOrder(), refusingMovers());
 
     expect(sendAlert).toHaveBeenCalledOnce();
     const [key, title, details] = sendAlert.mock.calls[0];
     // sendAlert holds a 10-minute cooldown per key. A global key would swallow
-    // a SECOND merchant running dry; a per-order key would defeat the cooldown
-    // and page on every retry. One merchant short is one incident.
-    expect(key).toBe('deposit-uncreditable-m-9');
+    // a SECOND team running dry; a per-order key would defeat the cooldown
+    // and page on every retry. One team's pool short is one incident.
+    expect(key).toBe('deposit-uncreditable-team-4');
     expect(key).not.toContain('DEP_abc123');
     expect(title).toMatch(/cannot be credited/i);
-    expect(details).toMatchObject({ merchantId: 'm-9', orderId: 'DEP_abc123' });
+    expect(details).toMatchObject({ teamId: 'team-4', merchantId: 'm-9', orderId: 'DEP_abc123' });
   });
 
   it('logs as well as alerting, because alerting is allowed to be a no-op', async () => {
@@ -98,6 +96,7 @@ describe('a paid deposit that cannot be credited', () => {
     // counterparty's state and invite the player to think their money is gone.
     expect(message).not.toMatch(/merchant/i);
     expect(message).not.toContain('m-9');
+    expect(message).not.toMatch(/pool|team-4/i);
     expect(message).not.toMatch(/token|inventory|insufficient|balance/i);
     // And it must point at the recourse that actually exists — expireOrders
     // deliberately skips PAID, so a dispute is the only route out.
@@ -113,16 +112,39 @@ describe('a paid deposit that cannot be credited', () => {
     sendAlert.mockImplementationOnce(() => { throw new Error('webhook exploded'); });
 
     const result = await moveDepositMoney(paidOrder(), refusingMovers());
-    expect(result).toMatchObject({ ok: false, reason: 'merchant_insufficient' });
+    expect(result).toMatchObject({ ok: false, reason: 'pool_short' });
   });
 
-  it('reports NOTHING when the debit succeeds', async () => {
+  it('treats an order that moved since it was read as nothing to report', async () => {
+    // `order_state` is a race the route answers with 409, not a pool to fund:
+    // alerting on it would page an operator about a buy that is fine.
+    const movers = {
+      ...refusingMovers(),
+      spendPool: vi.fn(() => Promise.resolve({ ok: false, reason: 'order_state' })),
+    };
+    const result = await moveDepositMoney(paidOrder(), movers);
+
+    expect(result).toMatchObject({ ok: false, reason: 'order_state' });
+    expect(movers.creditDeposit).not.toHaveBeenCalled();
+    expect(movers.creditReserve).not.toHaveBeenCalled();
+    expect(sendAlert).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it('refuses a call that does not say which state it completes from', async () => {
+    const movers = refusingMovers();
+    delete movers.requireState;
+    await expect(moveDepositMoney(paidOrder(), movers)).rejects.toThrow(/requireState/);
+    expect(movers.spendPool).not.toHaveBeenCalled();
+  });
+
+  it('reports NOTHING when the pool spend succeeds', async () => {
     // The mirror. An alert on a healthy deposit is worse than no alert: it
     // trains whoever reads them to ignore the channel.
     const movers = {
-      debitMerchantTokens: vi.fn(() => Promise.resolve({ merchant: { merchantId: 'm-9' } })),
+      spendPool: vi.fn(() => Promise.resolve({ ok: true, taken: 'held' })),
       creditDeposit: vi.fn(), creditReserve: vi.fn(), releaseUTR: vi.fn(),
-      dispenseHold: vi.fn(() => Promise.resolve({ ok: true, noHold: true })),
+      requireState: 'PAID',
     };
     const result = await moveDepositMoney(paidOrder(), movers);
 

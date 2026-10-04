@@ -3,11 +3,10 @@
  * paymentReference.js — what counts as proof that a payment was made, and what
  * to call it when talking to the person who made it.
  *
- * ── One registry, three kinds of reference ─────────────────────────────────
+ * ── One registry, two kinds of reference ───────────────────────────────────
  * A UTR is a bank's reference for an INR transfer. A transaction hash is a
- * blockchain's reference for a USDT transfer. A CDM slip carries the machine's
- * reference for a cash deposit. They look nothing alike and they mean exactly
- * the same thing: THIS payment happened, once.
+ * blockchain's reference for a USDT transfer. They look nothing alike and they
+ * mean exactly the same thing: THIS payment happened, once.
  *
  * So they share one registry (`utr_registry`), because the property that
  * matters is the one they share — a reference may be claimed by ONE order, ever.
@@ -87,14 +86,14 @@ export function duplicateMessage(spec, reason) {
  * Claim a reference for one order, or refuse it by name.
  *
  * ── Why every path calls THIS and not the registry directly ────────────────
- * Three money paths record an external payment reference: a player's UTR or
- * transaction hash on a buy, the bank reference on a CDM slip, and the hash a
- * merchant gives when buying platform tokens with USDT. Only the first of them
- * ever claimed one. The other two wrote the reference into a column and nothing
- * stopped the same string being used twice — so one real payment could be
- * presented as two, on two different orders, and every check was green.
+ * Every money path that records an external payment reference — a player's
+ * UTR or transaction hash on a buy, a member's payout UTR on a sell, and the
+ * hash a supervisor gives when buying platform tokens with USDT — comes here.
+ * Only the first of them once claimed one; the others wrote the reference into
+ * a column and nothing stopped the same string being used twice, so one real
+ * payment could be presented as two, on two different orders.
  *
- * Three copies of "claim, and say something if it is taken" would drift, and
+ * Several copies of "claim, and say something if it is taken" would drift, and
  * the direction they drift is toward a path that forgets to claim. So the claim
  * has one owner, and `check:payment-references` fails the build on a path that
  * writes a reference column without coming through here.
@@ -126,23 +125,3 @@ export async function claimPaymentReference({
   }
   return { reference: normalized, idempotent: Boolean(claimed.idempotent) };
 }
-
-/**
- * The reference rule for a CDM slip: a bank's own transaction id for a cash
- * deposit at a machine. Not an order's currency — a CDM slip is a bank
- * reference whatever the order was created in.
- */
-export const CDM_REFERENCE_SPEC = Object.freeze({
-  label: 'bank transaction id',
-  valid: (value) => value.length >= 6,
-  hint: 'Enter the bank transaction id from the CDM slip — it is what a dispute is matched against.',
-});
-
-/** The reference rule for a merchant paying the platform in USDT. */
-export const MERCHANT_TOKEN_REFERENCE_SPEC = Object.freeze({
-  label: 'transaction ID',
-  // Either chain's shape. A merchant pays the platform's own wallet and the
-  // platform accepts both networks, so this cannot narrow to one of them.
-  valid: (value) => USDT_CHAINS.some((chain) => isUsdtTxHash(chain, value)),
-  hint: 'Enter the USDT transaction ID for your payment — 64 hexadecimal characters, with or without a leading 0x.',
-});

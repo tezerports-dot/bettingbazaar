@@ -32,7 +32,7 @@
  */
 import express from 'express';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
-import { authenticate } from '../identity/auth.middleware.js';
+import { authenticatePlayer } from '../identity/auth.middleware.js';
 import { db } from '#db';
 import { answer, ragStatus } from './ragService.js';
 import { serverError, respondError } from '../../shared/httpError.js';
@@ -65,7 +65,7 @@ router.get('/status', async (req, res) => {
   }
 });
 
-router.post('/ask', authenticate, askLimiter, async (req, res) => {
+router.post('/ask', authenticatePlayer, askLimiter, async (req, res) => {
   try {
     const { query, category, topK } = req.body || {};
     if (!query || !String(query).trim()) {
@@ -105,7 +105,7 @@ async function ownedTicket(ticketId, userId) {
   return ticket;
 }
 
-router.post('/tickets', authenticate, ticketLimiter, async (req, res) => {
+router.post('/tickets', authenticatePlayer, ticketLimiter, async (req, res) => {
   try {
     const { subject, message, category } = req.body || {};
     if (!subject || !String(subject).trim()) {
@@ -135,7 +135,7 @@ router.post('/tickets', authenticate, ticketLimiter, async (req, res) => {
   }
 });
 
-router.get('/tickets', authenticate, async (req, res) => {
+router.get('/tickets', authenticatePlayer, async (req, res) => {
   try {
     // Scoped by userId in the query, not filtered afterwards.
     const tickets = await db.social.listTickets({ userId: req.user.userId, limit: 50 });
@@ -146,7 +146,7 @@ router.get('/tickets', authenticate, async (req, res) => {
   }
 });
 
-router.get('/tickets/:ticketId', authenticate, async (req, res) => {
+router.get('/tickets/:ticketId', authenticatePlayer, async (req, res) => {
   try {
     const ticket = await ownedTicket(req.params.ticketId, req.user.userId);
     if (!ticket) return res.status(404).json({ success: false, message: 'Ticket not found' });
@@ -158,7 +158,7 @@ router.get('/tickets/:ticketId', authenticate, async (req, res) => {
   }
 });
 
-router.post('/tickets/:ticketId/reply', authenticate, async (req, res) => {
+router.post('/tickets/:ticketId/reply', authenticatePlayer, async (req, res) => {
   try {
     const { content } = req.body || {};
     if (!content || !String(content).trim()) {
