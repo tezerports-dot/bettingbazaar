@@ -3454,9 +3454,9 @@ checked and is correct; the evidence is named.
 
 | Measure | Count |
 |---|---|
-| Route declarations in `backend/**` | 282 |
+| Route declarations in `backend/**` | 287 |
 | Reachable with **no auth middleware** | 34 |
-| Staff routes carrying an **area** (permission key) | 173 |
+| Staff routes carrying an **area** (permission key) | 174 |
 | Staff routes a sub-admin can **never** be given (full admin only) | 7 |
 
 A count moving is not by itself a defect — it is a prompt to read the
@@ -3517,16 +3517,17 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 415 |
-| Parameters only (safe by construction) | 268 |
-| Interpolating into statement text (each needs a reading) | 143 |
-| Statement text built elsewhere and passed in (each needs a reading) | 4 |
+| `pgQuery` call sites | 424 |
+| Parameters only (safe by construction) | 273 |
+| Interpolating into statement text (each needs a reading) | 146 |
+| Statement text built elsewhere and passed in (each needs a reading) | 5 |
 
 <details><summary>Call sites whose statement text is built elsewhere</summary>
 
 - `database/client.js — sql`
 - `database/repositories/adminTokenConsiderations.js — text`
 - `database/repositories/merchants.js — text`
+- `database/repositories/teamOversight.js — sql`
 - `database/repositories/users.js — text`
 
 </details>
@@ -3536,7 +3537,7 @@ new route and decide. Each of the three questions is defined in §2.
 | Panel | .ts/.tsx files | `dangerouslySetInnerHTML` | `.innerHTML =` |
 |---|---|---|---|
 | `user-panel` | 87 | 0 | 0 |
-| `admin-panel` | 110 | 0 | 0 |
+| `admin-panel` | 111 | 0 | 0 |
 | `merchant-panel` | 44 | 0 | 0 |
 
 <!-- END GENERATED -->

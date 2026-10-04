@@ -39,6 +39,7 @@ vi.mock('../../services/api', () => ({
       poolRequests: vi.fn(),
       fulfilPoolRequest: vi.fn().mockResolvedValue({ success: true, message: 'Sold' }),
       rejectPoolRequest: vi.fn().mockResolvedValue({ success: true }),
+      redFlags: vi.fn(),
     },
   },
 }));
@@ -57,7 +58,33 @@ describe('admin Teams screen', () => {
     vi.clearAllMocks();
     (api.teams.list as any).mockResolvedValue(listing);
     (api.teams.poolRequests as any).mockResolvedValue({ success: true, requests: poolRequests });
+    (api.teams.redFlags as any).mockResolvedValue({ success: true, flags: [] });
     perms.fund = true;
+  });
+
+  // ── Red flags (Step 2f) ──────────────────────────────────────────────────
+  it('shows a farming flag with its player pairs, and a low-activity flag with the member and the average', async () => {
+    (api.teams.redFlags as any).mockResolvedValue({ success: true, flags: [
+      { flagId: '1', kind: 'COMMISSION_FARMING', flagDay: '2026-10-03', teamId: 't-1', teamName: 'Alpha', supervisorId: 's-1',
+        merchantId: null, merchantName: null, merchantRef: null, createdAt: '',
+        details: { pairCount: 2, hedgedPaise: 4800000, buysPaise: 20000000, sellsPaise: 20000000, commissionPaise: 2000000, minRounds: 3, hedgePercent: 80,
+          pairs: [{ playerA: 'u-1', playerB: 'u-2', sameAccount: false, rounds: 3, hedgedPaise: 3000000, stakedPaise: 3000000 },
+            { playerA: 'u-7', playerB: 'u-7', sameAccount: true, rounds: 3, hedgedPaise: 1800000, stakedPaise: 1800000 }] } },
+      { flagId: '2', kind: 'LOW_ACTIVITY', flagDay: '2026-10-03', teamId: 't-1', teamName: 'Alpha', supervisorId: 's-1',
+        merchantId: 'm-1', merchantName: 'Asha', merchantRef: 'MA', createdAt: '',
+        details: { completedOrders: 0, onlineSeconds: 300, teamAverageOrders: 4.2, teamAverageOnlineSeconds: 7800, members: 10, percent: 25 } },
+    ] });
+    render(<TeamsManager />);
+    expect(await screen.findByText('Possible commission farming')).toBeInTheDocument();
+    expect(screen.getByText(/Players u-1 and u-2: 3 rounds, 30,000 of 30,000 tokens staked against each other/)).toBeInTheDocument();
+    expect(screen.getByText(/Player u-7 on both sides: 3 rounds/)).toBeInTheDocument();
+    expect(screen.getByText(/0 orders, 5m online \(team average 4.2 orders, 2h 10m\)/)).toBeInTheDocument();
+    await waitFor(() => expect(api.teams.redFlags).toHaveBeenCalledWith(30));
+  });
+
+  it('says so when there are no red flags', async () => {
+    render(<TeamsManager />);
+    expect(await screen.findByText('No red flags.')).toBeInTheDocument();
   });
 
   // ── Team token pools (Step 2b) ───────────────────────────────────────────

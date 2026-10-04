@@ -2447,6 +2447,108 @@ const MUTATIONS = [
     from: `    const paidNow = result.idempotent ? [] : (await payOwedCommissions({ actor: \`admin:\${req.user.userId}\` })`,
     to: `    const paidNow = true ? [] : (await payOwedCommissions({ actor: \`admin:\${req.user.userId}\` })`,
   },
+  // ── Step 2f: red flags and oversight ─────────────────────────────────────
+  {
+    id: 'M392', file: 'database/repositories/teamOversight.js', config: UNIT,
+    test: 'backend/tests/unit/teamOversight.test.js',
+    why: 'a member below the team in only ONE of orders and online time is red-flagged (the owner said both)',
+    from: `    .filter((m) => m.completedOrders < orderCut && m.onlineSeconds < onlineCut)`,
+    to: `    .filter((m) => m.completedOrders < orderCut || m.onlineSeconds < onlineCut)`,
+  },
+  {
+    id: 'M393', file: 'database/repositories/teamOversight.js', config: UNIT,
+    test: 'backend/tests/unit/teamOversight.test.js',
+    why: 'the threshold is read the wrong way round: 25% below the average becomes 75% below it',
+    from: `  const keep = (100 - Number(percent)) / 100;`,
+    to: `  const keep = Number(percent) / 100;`,
+  },
+  {
+    id: 'M394', file: 'database/repositories/teamOversight.js', config: PG,
+    test: 'backend/tests/routes/teamOversightPg.test.js',
+    why: 'two customers who bet against each other a little, among much else, are flagged as farming',
+    from: `     AND p.hedged_paise * 100 >= $6 * (sa.paise + CASE WHEN p.user_a = p.user_b THEN 0 ELSE sb.paise END)`,
+    to: `     AND $6::int IS NOT NULL`,
+  },
+  {
+    id: 'M395', file: 'database/repositories/teamOversight.js', config: PG,
+    test: 'backend/tests/routes/teamOversightPg.test.js',
+    why: 'a pair that met in fewer rounds than the admin\'s minimum is flagged as farming',
+    from: `   WHERE p.rounds >= $5`,
+    to: `   WHERE $5::int IS NOT NULL`,
+  },
+  {
+    id: 'M396', file: 'database/repositories/teamOversight.js', config: PG,
+    test: 'backend/tests/routes/teamOversightPg.test.js',
+    why: 'two customers who only BOUGHT from the team are flagged, though no sell brings their stake back as matched volume',
+    from: `               AND ((a.bought AND b.sold) OR (b.bought AND a.sold))`,
+    to: `               AND TRUE`,
+  },
+  {
+    id: 'M397', file: 'database/schema.sql', config: PG,
+    test: 'backend/tests/routes/teamOversightPg.test.js',
+    why: 'switching Online off never closes the stretch, so online time runs on while the member is offline',
+    from: `    UPDATE merchant_online_sessions SET ended_at = now()
+     WHERE merchant_id = NEW.merchant_id AND ended_at IS NULL;`,
+    to: `    NULL;`,
+  },
+  {
+    id: 'M398', file: 'database/schema.sql', config: PG,
+    test: 'backend/tests/routes/teamOversightPg.test.js',
+    why: 'a supervisor\'s dispute message may carry a mobile number',
+    from: `  CHECK (sender_type <> 'SUPERVISOR' OR NOT bb_text_has_a_mobile(message));`,
+    to: `  CHECK (sender_type <> 'SUPERVISOR' OR TRUE);`,
+  },
+  {
+    id: 'M399', file: 'database/repositories/teamOversight.js', config: PG,
+    test: 'backend/tests/routes/teamOversightPg.test.js',
+    why: 'a supervisor can read and post in a dispute on another supervisor\'s team',
+    from: `      WHERE os.order_id = $1 AND os.dispute_raised_at IS NOT NULL
+        AND os.team_id IN (SELECT team_id FROM teams WHERE supervisor_id = $2)`,
+    to: `      WHERE os.order_id = $1 AND os.dispute_raised_at IS NOT NULL
+        AND $2::text IS NOT NULL`,
+  },
+  {
+    id: 'M400', file: 'database/repositories/teamOversight.js', config: PG,
+    test: 'backend/tests/routes/teamOversightPg.test.js',
+    why: 'a supervisor can read the log of another supervisor\'s member',
+    from: `      WHERE tm.merchant_id = $1 AND t.supervisor_id = $2\`,`,
+    to: `      WHERE tm.merchant_id = $1 AND $2::text IS NOT NULL\`,`,
+  },
+  {
+    id: 'M401', file: 'backend/domains/team/team.merchant.routes.js', config: PG,
+    test: 'backend/tests/routes/teamOversightPg.test.js',
+    why: 'the supervisor of a suspected team is shown the commission-farming flag and the players in it',
+    from: `kinds: [RED_FLAG_KINDS.LOW_ACTIVITY], days: 14 }),`,
+    to: `kinds: null, days: 14 }),`,
+  },
+  {
+    id: 'M402', file: 'backend/domains/team/team.merchant.routes.js', config: PG,
+    test: 'backend/tests/routes/teamOversightPg.test.js',
+    why: 'a member is sent every teammate\'s orders and online time instead of the team\'s totals and their own',
+    from: `      performance: teamPerformanceFor(week, me.merchantId),`,
+    to: `      performance: week,`,
+  },
+  {
+    id: 'M403', file: 'backend/domains/team/team.merchant.routes.js', config: PG,
+    test: 'backend/tests/routes/teamOversightPg.test.js',
+    why: 'a mobile number a player typed into their dispute reason reaches the supervisor',
+    from: `    res.json({ success: true, disputes: toSupervisorOrderViews(disputes.map(withMobilesHidden)) });`,
+    to: `    res.json({ success: true, disputes: toSupervisorOrderViews(disputes) });`,
+  },
+  {
+    id: 'M404', file: 'database/repositories/teamOversight.js', config: PG,
+    test: 'backend/tests/routes/teamOversightPg.test.js',
+    why: 'a day already evaluated is evaluated again',
+    from: `    if (!claimed.rowCount) return { evaluated: false };`,
+    to: `    if (false) return { evaluated: false };`,
+  },
+  {
+    id: 'M405', file: 'backend/domains/team/team.merchant.routes.js', config: PG,
+    test: 'backend/tests/routes/teamOversightPg.test.js',
+    why: 'a supervisor can still post into a dispute after it has been decided',
+    from: `    if (order.status !== 'DISPUTED') return refuse(res, 'dispute_closed');`,
+    to: ``,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

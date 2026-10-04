@@ -21,8 +21,12 @@
  */
 import { pgQuery } from '../client.js';
 
-/** Senders the schema will accept. Anything else is a bug at the call site. */
-const SENDER_TYPES = new Set(['USER', 'MERCHANT', 'ADMIN', 'SYSTEM']);
+/**
+ * Senders the schema will accept (`chat_messages_sender_type_check`). Anything
+ * else is a bug at the call site. SUPERVISOR: a member's supervisor speaking
+ * for them to the dispute manager (Step 2f).
+ */
+const SENDER_TYPES = new Set(['USER', 'MERCHANT', 'ADMIN', 'SYSTEM', 'SUPERVISOR']);
 
 /**
  * The shape every caller and the browser already expect.
@@ -40,6 +44,7 @@ function toMessage(r) {
     senderId: r.sender_id ?? null,
     senderType: r.sender_type,
     senderName: r.sender_type === 'MERCHANT' ? 'Merchant'
+      : r.sender_type === 'SUPERVISOR' ? 'Supervisor'
       : r.sender_type === 'SYSTEM' ? 'System'
       : r.sender_type === 'ADMIN' ? 'Admin' : 'User',
     message: r.message,

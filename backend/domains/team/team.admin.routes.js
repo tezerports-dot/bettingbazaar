@@ -33,6 +33,15 @@ router.get('/teams', authenticate, hasPermission(AREA), async (req, res) => {
   } catch (err) { respondError(res, err, 'GET /admin/teams'); }
 });
 
+// GET /api/admin/team-red-flags?days=30 — every red flag of the last `days`
+// days (Step 2f): low activity per member, and commission farming per team.
+router.get('/team-red-flags', authenticate, hasPermission(AREA), async (req, res) => {
+  try {
+    const flags = await db.teamOversight.listRedFlags({ days: Number(req.query.days) || 30, limit: 500 });
+    res.json({ success: true, flags });
+  } catch (err) { respondError(res, err, 'GET /admin/team-red-flags'); }
+});
+
 // PUT /api/admin/merchants/:merchantId/supervisor  { rail: 'CASH'|'UPI_BANK'|'USDT'|null }
 router.put('/merchants/:merchantId/supervisor', authenticate, hasPermission(AREA), async (req, res) => {
   try {

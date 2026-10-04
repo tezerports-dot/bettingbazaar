@@ -525,6 +525,25 @@ export interface TeamPoolRequest {
   note: string | null; decidedBy: string | null; decidedAt: string | null;
   decisionNote: string | null; createdAt: string;
 }
+// Red flags (Step 2f). Mirrors `toFlag` and the details `evaluateRedFlags`
+// writes in database/repositories/teamOversight.js — §5: change them together.
+export interface FarmingPair {
+  playerA: string; playerB: string; sameAccount: boolean; rounds: number; hedgedPaise: number; stakedPaise: number;
+}
+export interface TeamRedFlag {
+  flagId: string; kind: 'LOW_ACTIVITY' | 'COMMISSION_FARMING'; flagDay: string;
+  teamId: string; teamName: string; supervisorId: string;
+  merchantId: string | null; merchantName: string | null; merchantRef: string | null;
+  details: {
+    // LOW_ACTIVITY
+    completedOrders?: number; onlineSeconds?: number; teamAverageOrders?: number; teamAverageOnlineSeconds?: number;
+    members?: number; percent?: number;
+    // COMMISSION_FARMING
+    pairCount?: number; pairs?: FarmingPair[]; hedgedPaise?: number; buysPaise?: number; sellsPaise?: number;
+    commissionPaise?: number; minRounds?: number; hedgePercent?: number;
+  };
+  createdAt: string;
+}
 export interface TeamMemberView {
   merchantId: string; teamId: string; name: string; publicRef: string;
   status: 'PENDING' | 'APPROVED'; isOnline: boolean;

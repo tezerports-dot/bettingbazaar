@@ -10,7 +10,11 @@
  *   3. removes a member from a team;
  *   4. sells tokens into a team's pool, or buys them back, when a supervisor
  *      asks — recording what was paid (Step 2b). That part is the money area
- *      canFundMerchants, so it is shown only to staff who hold it.
+ *      canFundMerchants, so it is shown only to staff who hold it;
+ *   5. reads the red flags (Step 2f): members well below their team in both
+ *      completed orders and online time, and teams whose own customers bet
+ *      against each other to farm commission. Flags only — nothing acts on
+ *      them; the admin and the supervisor decide.
  *
  * Supervisors create their teams and propose members from the merchant panel.
  * Every cap (4 teams, 10 members, one team per merchant) is enforced by the
@@ -24,7 +28,7 @@ import api from '../../services/api';
 import { EmptyState } from '../../components/EmptyState';
 import { LoadingSpinner } from '../../components/LoadingSpinner';
 import { usePermissions } from '../../hooks/usePermission';
-import type { SupervisorRail, TeamMemberView, TeamPoolRequest, TeamSupervisor, TeamView } from '../../types';
+import type { SupervisorRail, TeamMemberView, TeamPoolRequest, TeamRedFlag, TeamSupervisor, TeamView } from '../../types';
 
 /** Mirrors SUPERVISOR_RAILS in database/repositories/teams.js (§5). */
 const RAILS: Array<{ value: SupervisorRail; label: string }> = [
@@ -41,6 +45,82 @@ const STRENGTH: Record<TeamView['strength'], { label: string; cls: string }> = {
 
 const messageOf = (err: any, fallback: string) => err?.response?.data?.message || fallback;
 const tokens = (paise: number) => (paise / 100).toLocaleString('en-IN');
+
+/** Seconds as "2h 05m", "45m" or "30s". */
+const duration = (seconds = 0) => {
+  const s = Math.max(0, Math.round(seconds));
+  if (s < 60) return `${s}s`;
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  return h ? `${h}h ${String(m).padStart(2, '0')}m` : `${m}m`;
+};
+
+/**
+ * Red flags of the last 30 days (Step 2f), newest day first. Declared at
+ * module level (§32 S23). A farming flag lists the player pairs (by player
+ * id) with how much of their stake they bet against each other.
+ */
+const RedFlags: React.FC = () => {
+  const [flags, setFlags] = useState<TeamRedFlag[] | null>(null);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    api.teams.redFlags(30)
+      .then((res) => setFlags(res.flags || []))
+      .catch((err) => setError(messageOf(err, 'Could not load the red flags.')));
+  }, []);
+  const farming = (flags ?? []).filter((f) => f.kind === 'COMMISSION_FARMING');
+  const low = (flags ?? []).filter((f) => f.kind === 'LOW_ACTIVITY');
+  return (
+    <div className="bg-dark-800 border border-dark-600 rounded-xl p-4">
+      <h2 className="text-base font-semibold mb-1">Red flags, last 30 days</h2>
+      <p className="text-xs text-gray-400 mb-3">
+        Computed once a day. Flags only: nothing is paused or blocked by them. The thresholds are in Settings.
+      </p>
+      {error && <p role="alert" className="text-sm text-red-400">{error}</p>}
+      {flags === null && !error && <LoadingSpinner />}
+      {flags?.length === 0 && <p className="text-sm text-gray-400">No red flags.</p>}
+      {farming.length > 0 && (
+        <div className="mb-3">
+          <h3 className="text-sm font-semibold text-red-400 mb-1">Possible commission farming</h3>
+          <ul className="space-y-2">
+            {farming.map((f) => (
+              <li key={f.flagId} className="bg-dark-700 rounded-lg p-2 text-sm">
+                <div>
+                  <span className="font-semibold">{f.teamName}</span> · {f.flagDay} · {f.details.pairCount} pair(s) of this team&apos;s
+                  own customers bet {tokens(f.details.hedgedPaise ?? 0)} tokens against each other. The team completed
+                  buys {tokens(f.details.buysPaise ?? 0)} and sells {tokens(f.details.sellsPaise ?? 0)} that day, and was paid
+                  {' '}{tokens(f.details.commissionPaise ?? 0)} tokens of commission.
+                </div>
+                <ul className="mt-1 text-xs text-gray-400">
+                  {(f.details.pairs ?? []).map((p) => (
+                    <li key={`${p.playerA}|${p.playerB}`}>
+                      {p.sameAccount ? `Player ${p.playerA} on both sides` : `Players ${p.playerA} and ${p.playerB}`}:
+                      {' '}{p.rounds} rounds, {tokens(p.hedgedPaise)} of {tokens(p.stakedPaise)} tokens staked against each other
+                    </li>
+                  ))}
+                </ul>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {low.length > 0 && (
+        <div>
+          <h3 className="text-sm font-semibold text-yellow-400 mb-1">Low activity</h3>
+          <ul className="space-y-1 text-sm">
+            {low.map((f) => (
+              <li key={f.flagId}>
+                <span className="font-semibold">{f.merchantName}</span> <span className="text-xs text-gray-500">{f.merchantRef}</span>
+                {' '}· {f.teamName} · {f.flagDay}: {f.details.completedOrders} orders, {duration(f.details.onlineSeconds)} online
+                (team average {f.details.teamAverageOrders} orders, {duration(f.details.teamAverageOnlineSeconds)})
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+};
 
 /**
  * The pool request queue. Declared at module level, never inside the parent
@@ -242,6 +322,7 @@ export const TeamsManager: React.FC = () => {
       </div>
 
       {canFund && <PoolRequests onChanged={() => void load()} />}
+      <RedFlags />
 
       {/* ── Waiting for approval ──────────────────────────────────────── */}
       <div className="bg-dark-800 border border-dark-600 rounded-xl p-4">

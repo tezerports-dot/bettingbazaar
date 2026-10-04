@@ -158,3 +158,29 @@ export function toMerchantOrderView(order) {
 export function toMerchantOrderViews(orders) {
   return (orders || []).map((order) => toMerchantOrderView(order));
 }
+
+/**
+ * What a SUPERVISOR sees of an order one of their members handled (Step 2f):
+ * what it was and how it went, so they can read a member's log and speak for
+ * them in a dispute. A subset of `MERCHANT_ORDER_FIELDS` with nothing that
+ * reaches the player — no bank details, no reference, no proof — because the
+ * supervisor pays nobody (`check:merchant-privacy` holds it to both lists).
+ */
+export const SUPERVISOR_ORDER_FIELDS = Object.freeze([
+  'orderId', 'merchantId', 'type', 'status', 'currency', 'tokenAmount', 'paymentMode',
+  'disputeRaisedAt', 'disputeRaisedBy', 'disputeReason', 'disputeResolvedAt', 'disputeDecision',
+  'rejectedReason', 'createdAt', 'updatedAt',
+]);
+
+export function toSupervisorOrderView(order) {
+  if (!order) return null;
+  const view = {};
+  for (const key of SUPERVISOR_ORDER_FIELDS) {
+    if (order[key] !== undefined) view[key] = order[key];
+  }
+  return view;
+}
+
+export function toSupervisorOrderViews(orders) {
+  return (orders || []).map((order) => toSupervisorOrderView(order));
+}

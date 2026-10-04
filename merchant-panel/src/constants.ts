@@ -74,6 +74,10 @@ export const ENDPOINTS = {
     // Team token pools (Step 2b).
     POOL:          (teamId: string) => `/api/merchant/supervisor/teams/${teamId}/pool`,
     POOL_REQUEST:  (teamId: string) => `/api/merchant/supervisor/teams/${teamId}/pool-requests`,
+    // Oversight (Step 2f): a member's log, and the disputes on the teams.
+    MEMBER_LOG:    (merchantId: string) => `/api/merchant/supervisor/members/${merchantId}/log`,
+    DISPUTES:      '/api/merchant/supervisor/disputes',
+    DISPUTE_CHAT:  (orderId: string) => `/api/merchant/supervisor/disputes/${orderId}/chat`,
     POOL_CANCEL:   (requestId: string) => `/api/merchant/supervisor/pool-requests/${requestId}`,
   },
 };

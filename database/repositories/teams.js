@@ -223,7 +223,8 @@ export async function deleteTeam({ teamId, supervisorId }) {
       WHERE t.team_id = $1 AND t.supervisor_id = $2
         AND NOT EXISTS (SELECT 1 FROM team_members WHERE team_id = t.team_id)
         AND NOT EXISTS (SELECT 1 FROM team_pool_entries WHERE team_id = t.team_id)
-        AND NOT EXISTS (SELECT 1 FROM team_pool_requests WHERE team_id = t.team_id)`,
+        AND NOT EXISTS (SELECT 1 FROM team_pool_requests WHERE team_id = t.team_id)
+        AND NOT EXISTS (SELECT 1 FROM team_red_flags WHERE team_id = t.team_id)`,
     [String(teamId), String(supervisorId)], 'teams_delete');
   if (rowCount) return { ok: true };
   const team = await getTeam(teamId);

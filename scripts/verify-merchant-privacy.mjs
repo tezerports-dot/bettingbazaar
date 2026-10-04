@@ -38,6 +38,8 @@ const read = (p) => blankComments(readFileSync(p, 'utf8'));
 const VIEW_MODULE   = join(ROOT, 'backend/domains/merchant/merchantOrderView.js');
 const MERCHANT_ROUTES = [
   join(ROOT, 'backend/domains/merchant/merchant.routes.js'),
+  // A supervisor reads their members' orders here (Step 2f).
+  join(ROOT, 'backend/domains/team/team.merchant.routes.js'),
 ];
 const PANEL_TYPES   = join(ROOT, 'merchant-panel/src/types.ts');
 
@@ -57,10 +59,18 @@ const viewSrc = read(VIEW_MODULE);
 const allowed   = frozenList(viewSrc, 'MERCHANT_ORDER_FIELDS');
 const forbidden = frozenList(viewSrc, 'MERCHANT_FORBIDDEN_ORDER_FIELDS');
 const bankOk    = frozenList(viewSrc, 'MERCHANT_BANK_FIELDS');
+const supervisorOk = frozenList(viewSrc, 'SUPERVISOR_ORDER_FIELDS');
 
-if (!allowed || !forbidden || !bankOk) {
-  fail(rel(VIEW_MODULE), 'could not read MERCHANT_ORDER_FIELDS / MERCHANT_FORBIDDEN_ORDER_FIELDS / MERCHANT_BANK_FIELDS');
+if (!allowed || !forbidden || !bankOk || !supervisorOk) {
+  fail(rel(VIEW_MODULE), 'could not read MERCHANT_ORDER_FIELDS / MERCHANT_FORBIDDEN_ORDER_FIELDS / MERCHANT_BANK_FIELDS / SUPERVISOR_ORDER_FIELDS');
 } else {
+  // 1a. A supervisor sees no more of an order than its member does, and no
+  // bank field at all: the supervisor pays nobody (Step 2f).
+  for (const f of supervisorOk) {
+    if (!allowed.includes(f)) fail(rel(VIEW_MODULE), `SUPERVISOR_ORDER_FIELDS names '${f}', which MERCHANT_ORDER_FIELDS does not allow`);
+    if (forbidden.includes(f)) fail(rel(VIEW_MODULE), `SUPERVISOR_ORDER_FIELDS names '${f}', which a merchant must never receive`);
+    if (f === 'userBankDetails' || bankOk.includes(f)) fail(rel(VIEW_MODULE), `SUPERVISOR_ORDER_FIELDS names the bank field '${f}'`);
+  }
   // 1. A field cannot be both permitted and forbidden.
   for (const f of allowed) {
     if (forbidden.includes(f)) fail(rel(VIEW_MODULE), `'${f}' is in BOTH the allowlist and the forbidden list`);
@@ -73,7 +83,7 @@ if (!allowed || !forbidden || !bankOk) {
 }
 
 /** The projection, by any of the names a caller may reach it under. */
-const PROJECTS = /\btoMerchantOrderViews?\s*\(/;
+const PROJECTS = /\bto(?:Merchant|Supervisor)OrderViews?\s*\(/;
 
 // Which route encloses a responder? Search back to the nearest handler
 // declaration rather than guessing at a fixed number of lines — the

@@ -31,6 +31,12 @@ const REFUSALS = Object.freeze({
   request_not_pending:   [409, 'That request has already been decided or cancelled. Refresh to see its outcome.'],
   request_not_found:     [404, 'No such request.'],
   supply_cap_exceeded:   [409, 'The platform does not hold that many tokens to sell. Sell fewer.'],
+  // Oversight (Step 2f)
+  member_not_found:      [404, 'That merchant is not in one of your teams.'],
+  dispute_not_found:     [404, 'That dispute is not on an order of one of your teams.'],
+  dispute_closed:        [409, 'This dispute has been decided, so its thread is closed. Refresh to see the decision.'],
+  bad_message:           [400, 'Write a message of up to 2,000 characters.'],
+  message_has_mobile:    [400, 'Take the mobile number out of your message. Nobody\'s mobile number may be shared, not even with the dispute manager.'],
 });
 
 /** Send the refusal for a repository `{ ok: false, reason }`. */

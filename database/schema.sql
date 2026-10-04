@@ -988,8 +988,8 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   is_system   BOOLEAN NOT NULL DEFAULT FALSE,
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
 
-  CONSTRAINT chat_messages_sender_type_check
-    CHECK (sender_type IN ('USER','MERCHANT','ADMIN','SYSTEM')),
+  -- Who may send (`chat_messages_sender_type_check`) is defined ONCE, at the
+  -- end of this file with Step 2f, where a supervisor joined the senders.
   -- A message with neither text nor an attachment is not a message.
   CONSTRAINT chat_messages_has_content
     CHECK (message <> '' OR attachment_url IS NOT NULL),
@@ -3845,3 +3845,115 @@ CREATE OR REPLACE TRIGGER team_commission_shares_append_only
 -- A team's completed volume, read on every completion: summed from this index alone.
 CREATE INDEX IF NOT EXISTS order_states_team_completed_idx
   ON order_states (team_id, order_type) INCLUDE (token_amount_paise) WHERE state = 'COMPLETED';
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Step 2f (owner, 2026-10-02 — PROJECT_STATUS §3.10): oversight.
+--
+-- A member's ONLINE TIME is the time their Online switch was on: the switch is
+-- what routing asks (`merchants.is_online`), so it is the time they offered to
+-- take orders. One row per stretch, opened and closed by the trigger below on
+-- every change of `is_online` from any writer, so the log cannot disagree with
+-- the switch it records (§32 S4/S5). Read by `teamOversight.js`.
+-- ═══════════════════════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS merchant_online_sessions (
+  id          BIGSERIAL PRIMARY KEY,
+  merchant_id TEXT NOT NULL REFERENCES merchants (merchant_id) ON DELETE CASCADE,
+  started_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  ended_at    TIMESTAMPTZ,
+  CONSTRAINT merchant_online_sessions_order CHECK (ended_at IS NULL OR ended_at >= started_at)
+);
+-- One open stretch per merchant: a second "on" while on opens nothing.
+CREATE UNIQUE INDEX IF NOT EXISTS merchant_online_sessions_open_once
+  ON merchant_online_sessions (merchant_id) WHERE ended_at IS NULL;
+CREATE INDEX IF NOT EXISTS merchant_online_sessions_merchant_idx
+  ON merchant_online_sessions (merchant_id, started_at);
+
+-- A stretch is closed once and never edited: only `ended_at`, from NULL.
+CREATE OR REPLACE FUNCTION bb_online_session_close_only() RETURNS trigger AS $$
+BEGIN
+  IF OLD.ended_at IS NOT NULL OR NEW.merchant_id <> OLD.merchant_id OR NEW.started_at <> OLD.started_at THEN
+    RAISE EXCEPTION 'merchant_online_sessions: a stretch is closed once and never edited';
+  END IF;
+  RETURN NEW;
+END $$ LANGUAGE plpgsql;
+CREATE OR REPLACE TRIGGER merchant_online_sessions_close_only
+  BEFORE UPDATE ON merchant_online_sessions FOR EACH ROW EXECUTE FUNCTION bb_online_session_close_only();
+
+CREATE OR REPLACE FUNCTION bb_log_online_switch() RETURNS trigger AS $$
+BEGIN
+  IF NEW.is_online THEN
+    INSERT INTO merchant_online_sessions (merchant_id) VALUES (NEW.merchant_id)
+      ON CONFLICT (merchant_id) WHERE ended_at IS NULL DO NOTHING;
+  ELSE
+    UPDATE merchant_online_sessions SET ended_at = now()
+     WHERE merchant_id = NEW.merchant_id AND ended_at IS NULL;
+  END IF;
+  RETURN NULL;
+END $$ LANGUAGE plpgsql;
+CREATE OR REPLACE TRIGGER merchants_log_online_switch
+  AFTER UPDATE OF is_online ON merchants FOR EACH ROW
+  WHEN (OLD.is_online IS DISTINCT FROM NEW.is_online) EXECUTE FUNCTION bb_log_online_switch();
+CREATE OR REPLACE TRIGGER merchants_log_online_insert
+  AFTER INSERT ON merchants FOR EACH ROW
+  WHEN (NEW.is_online) EXECUTE FUNCTION bb_log_online_switch();
+-- Convergent with the switch on a database that predates the log (§32 S31):
+-- an online merchant has an open stretch, an offline one has none.
+INSERT INTO merchant_online_sessions (merchant_id, started_at)
+  SELECT m.merchant_id, COALESCE(m.last_online_toggle, now()) FROM merchants m
+   WHERE m.is_online
+ON CONFLICT (merchant_id) WHERE ended_at IS NULL DO NOTHING;
+UPDATE merchant_online_sessions s SET ended_at = GREATEST(s.started_at, now())
+  FROM merchants m
+ WHERE m.merchant_id = s.merchant_id AND s.ended_at IS NULL AND NOT m.is_online;
+
+-- What a team completed in a window, for the activity read and the flags.
+CREATE INDEX IF NOT EXISTS order_states_team_completed_at_idx
+  ON order_states (completed_at) WHERE team_id IS NOT NULL AND completed_at IS NOT NULL;
+
+-- ── Red flags ────────────────────────────────────────────────────────────────
+-- Computed once per IST day by `teamOversight.evaluateRedFlags`, the one writer.
+-- A flag is a prompt for a person, never an action: nothing reads it to block,
+-- pause or pay (owner: "flag only — the supervisor decides").
+--   LOW_ACTIVITY        a member whose completed orders AND online time were
+--                       both below the team's average by the admin's threshold
+--                       (`SystemConfig.redFlags.lowActivityPercent`, 25).
+--   COMMISSION_FARMING  a team whose own buyers and sellers bet against each
+--                       other (or one of them against themself), which
+--                       inflates its matched volume and so its commission.
+-- `team_red_flag_days` is the once-only guard: a day is evaluated in the
+-- transaction that inserts its row, with the thresholds it used.
+CREATE TABLE IF NOT EXISTS team_red_flag_days (
+  flag_day     DATE PRIMARY KEY,
+  settings     JSONB NOT NULL,
+  evaluated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE OR REPLACE TRIGGER team_red_flag_days_append_only
+  BEFORE UPDATE OR DELETE ON team_red_flag_days FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
+
+CREATE TABLE IF NOT EXISTS team_red_flags (
+  flag_id     BIGSERIAL PRIMARY KEY,
+  kind        TEXT NOT NULL,
+  flag_day    DATE NOT NULL REFERENCES team_red_flag_days (flag_day),
+  team_id     TEXT NOT NULL REFERENCES teams (team_id),
+  merchant_id TEXT REFERENCES merchants (merchant_id) ON DELETE CASCADE,
+  details     JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT team_red_flags_kind_known CHECK (kind IN ('LOW_ACTIVITY', 'COMMISSION_FARMING')),
+  -- A low-activity flag is about one member; a farming flag about the team.
+  CONSTRAINT team_red_flags_subject CHECK ((kind = 'LOW_ACTIVITY') = (merchant_id IS NOT NULL))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS team_red_flags_once
+  ON team_red_flags (kind, flag_day, team_id, COALESCE(merchant_id, ''));
+CREATE INDEX IF NOT EXISTS team_red_flags_team_idx ON team_red_flags (team_id, flag_day DESC);
+
+-- ── A supervisor speaks for their members in a dispute ──────────────────────
+-- The order chat is what the dispute manager decides from; a supervisor posts
+-- into it as SUPERVISOR. No message from one may carry a mobile number
+-- (owner, 2026-10-03: nobody's mobile is exposed anywhere), the same test the
+-- payout rows use.
+ALTER TABLE chat_messages DROP CONSTRAINT IF EXISTS chat_messages_sender_type_check;
+ALTER TABLE chat_messages ADD CONSTRAINT chat_messages_sender_type_check
+  CHECK (sender_type IN ('USER', 'MERCHANT', 'ADMIN', 'SYSTEM', 'SUPERVISOR'));
+ALTER TABLE chat_messages DROP CONSTRAINT IF EXISTS chat_messages_supervisor_no_mobile;
+ALTER TABLE chat_messages ADD CONSTRAINT chat_messages_supervisor_no_mobile
+  CHECK (sender_type <> 'SUPERVISOR' OR NOT bb_text_has_a_mobile(message));

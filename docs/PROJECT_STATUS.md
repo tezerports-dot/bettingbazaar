@@ -863,10 +863,40 @@ Owner answers, 2026-10-02 (two rounds; the second replaced the security deposit 
     the smaller side, 16/84, treasury + ledger + pool entry, 6-way race,
     lifecycle hook, member sees only their share), unit `teamCommission` (7),
     `merchantEarningsPg` rebuilt on shares, TeamPage (+3); mutations M383–M391.
-- **2f Oversight.** Daily red flag (threshold admin-editable, 25%) from
-  transaction count and online time; member online-time log; team
-  performance for members; supervisor sees member logs and joins their
-  disputes.
+- **2f Oversight. DONE (2026-10-04).** `database/repositories/teamOversight.js`
+  (rules in CLAUDE.md §2 and §24, background in RULES_BACKGROUND §2).
+  - *Online-time log.* `merchant_online_sessions`: one stretch per time a
+    member's Online switch is on, opened and closed by a trigger on
+    `merchants.is_online` (nothing else writes it), closed once and never
+    edited. "Active time" is that switch.
+  - *Low-activity red flag.* Once per IST day (hourly cron `team-red-flags`,
+    catching up the last 3 ended days; `team_red_flag_days` makes each day
+    run once): a member whose completed orders AND online time that day are
+    both more than `SystemConfig.redFlags.lowActivityPercent` (25) below the
+    team's average is flagged to the supervisor and the admin. A team of
+    fewer than 2 members is skipped; a member approved after the day is not
+    counted. Flag only: nothing acts on it.
+  - *Commission-farming red flag* (2e recommendation, pending the owner).
+    Two customers who traded with the same team (one bought, the other sold,
+    or one did both) that day or the day before and then bet against each
+    other on the same rounds: at least `farmingMinRounds` (3) rounds and at
+    least `farmingHedgePercent` (80%) of their combined stake that day on
+    opposite sides. One flag per team per day, with the pairs and the team's
+    buys, sells and commission; ADMIN only (the supervisor is the person it
+    would warn).
+  - *Supervisor.* Team page: each team's activity today and over 7 days per
+    member, the low-activity flags of 14 days, a member's log (orders without
+    any player detail, `SUPERVISOR_ORDER_FIELDS`, and Online stretches), and
+    the disputes on their teams with a thread to the dispute manager (chat
+    sender `SUPERVISOR`, only while DISPUTED). Mobile numbers are hidden in
+    what they read and refused by the database in what they write.
+  - *Member.* Team performance over 7 days: the team's totals and average,
+    and their own figures; never a teammate's row.
+  - *Admin.* Teams: red flags of 30 days (farming and low activity).
+    Settings: the three red-flag numbers. Dispute Manager shows supervisor
+    messages.
+  - *Tests.* `teamOversightPg` (6), unit `teamOversight` (9), TeamPage (+5),
+    TeamsManager (+2), SystemSettingsRedFlags (2); mutations M392–M405.
 - **2g Close-out.** CLAUDE.md §2/§25/§26 rewritten for the new owners, docs,
   every gate and tier.
 

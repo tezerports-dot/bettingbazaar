@@ -256,6 +256,19 @@ export const SYSTEM_CONFIG_SPEC = group({
     }),
     utrSubmitSeconds:      n(60, 15, 3600),
   }),
+  // ── Red flags (redesign Step 2f) ────────────────────────────────────────
+  // Computed once a day, shown to people, acted on by nobody's code. Read
+  // through `redFlagSettings` in database/repositories/teamOversight.js.
+  redFlags: group({
+    // A member is flagged when their completed orders AND their online time
+    // were both this many percent below the team's average (owner: 25%).
+    lowActivityPercent:  int(25, 1, 90),
+    // Commission farming: two of a team's own customers (or one, on both
+    // sides) who bet against each other in at least this many rounds of a
+    // day, with at least this share of their combined stake on those bets.
+    farmingMinRounds:    int(3, 1, 100),
+    farmingHedgePercent: int(80, 1, 100),
+  }),
 
   riskRules: group({
     enforceMultiplesOf10:     b(true),
