@@ -366,8 +366,18 @@ These are his standing instructions:
        or more.
    - *Result:* the farming flag 2f built is to be removed (section 2,
      item 1) unless Vikram asks to keep it.
-   - **Note for Vikram:** the winnings fee is taken when a player sells, and
-     the setting starts at 0%, so 1% must be entered in the admin settings.
+   - *Vikram (07:12Z), correcting the 2e thread:* the 1% is taken from the
+     winnings: a bet of 100 that wins pays 200, and 1% of that, 2 tokens, is
+     the fee. So the 1% a bet draws from reserve goes straight back out in
+     fees, and nobody can farm through the reserve.
+   - *Checked in code (2e thread, 07:14Z):* that is how it works.
+     `SystemConfig.winningsFeePercent` (admin-editable, default 1) is taken
+     from a winning bet's gross 2x payout at settlement
+     (`computeWinningsPayout` in `domains/risk/riskValidation.service.js`,
+     called from `domains/markets/gameEngine.js`). Nothing needs setting.
+     The 2e thread's earlier note that the fee is taken on a sell and starts
+     at 0% was wrong: it mixed this up with `payoutFeePercent`, a separate
+     fee on sells whose default is 0. No code change follows.
 2. **USDT teams.** There is no USDT sell rail, so USDT teams have no matched
    volume. Vikram picked **"No commission"** on the decision card at
    2026-10-04 05:41Z. That is already how the code works; nothing to change.
