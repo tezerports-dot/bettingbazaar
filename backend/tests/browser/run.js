@@ -349,6 +349,30 @@ try {
     // refuse a panel that booted logged out, because the inventory it would
     // produce is of a sign-in screen (see `boot` in stack.js).
     const { signedOut, seen } = await boot(page, cfg, base, panel);
+
+    // ── An account the server turns away ─────────────────────────────────
+    // A profile that declares `signsOut` (a suspended merchant) SHOULD land on
+    // the sign-in form; what matters is whether that form says why. A bare
+    // form makes the person type their password to find out (§32 S48). Its
+    // inventory is the one screen it can reach.
+    const refusedWith = PROFILE ? PROFILES[PROFILE].signsOut : null;
+    if (refusedWith) {
+      const said = await page.evaluate(() => document.querySelector('[role="alert"]')?.textContent?.trim() ?? '')
+        .catch(() => '');
+      check('BROWSER', panel, 'a refused account is told why', `the sign-in form, saying ${refusedWith}`,
+        signedOut ? (said ? `"${said}"` : 'a sign-in form with no reason on it')
+          : 'the panel, signed in: the server did not refuse this account',
+        signedOut && refusedWith.test(said),
+        '§32 S48: a bare sign-in form makes the person type their password to learn why');
+      if (signedOut) {
+        manifest.shell[panel] = [];
+        const controls = await visit(page, panel, '/', cfg, base);
+        manifest.screens.push({ panel, screen: '/', controls: controls ?? [], seen: visit.lastSeen });
+        await page.screenshot({ path: join(SHOTS, `${panel}_refused_${PROFILE}.png`) }).catch(() => {});
+      }
+      await ctx.close();
+      continue;
+    }
     if (signedOut) {
       check('BROWSER', panel, 'boots with its session', 'the panel, signed in',
         `a SIGN-IN screen — a password field is in the routed region. Heading: "${seen.heading}". `

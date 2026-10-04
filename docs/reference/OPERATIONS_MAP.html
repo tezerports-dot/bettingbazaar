@@ -239,6 +239,7 @@ stateDiagram-v2
   PROCESSING --> PAID: player taps Paid (buy) · member marks sent (sell)
   PAID --> COMPLETED: buy confirmed · sell hold window passes
   PAID --> REJECTED: member says the buy's money never came
+  PROCESSING --> REJECTED: the same button, before the player tapped Paid
   REJECTED --> DISPUTED: player disputes inside the window
   REJECTED --> CANCELLED: window closes, hold back to the pool
   PAID --> DISPUTED: player (after 10 min) · member red flag · sweep
@@ -578,8 +579,8 @@ assigned to, before the idempotent answer and again in the WHERE (<code>merchant
   <tr><td>Scan the ATM QR</td><td><code>POST /orders/:id/cash-link</code></td><td>PROCESSING, cash buy</td><td><code>setCashLink</code>; the player gets one Pay button; a re-scan replaces it until Paid</td><td><code>ACCEPT_FIRST</code> · <code>NOT_A_CASH_BUY</code> · <code>CASH_LINK_CLOSED</code> · <code>INVALID_CASH_LINK</code></td></tr>
   <tr><td>Confirm (buy)</td><td><code>POST /confirm/:id</code></td><td>PAID, with a reference</td><td><code>moveDepositMoney</code>: spend the hold, credit the split, release the UTR; COMPLETED; commission</td><td>400 · 409 <code>order_state</code></td></tr>
   <tr><td>Mark sent (sell)</td><td><code>POST /confirm/:id</code></td><td>ASSIGNED / PROCESSING</td><td>claims the UTR, PAID, credit HELD for the window</td><td><code>PAYOUT_REFERENCE_REQUIRED</code> · 409 on a claimed UTR</td></tr>
-  <tr><td>Reject as unpaid</td><td><code>POST /orders/:id/reject</code></td><td>PAID buy</td><td>REJECTED with <code>dispute_window_until</code>; the hold stays; the player gets a pop-up</td><td>400 · 403 · 404</td></tr>
-  <tr><td>Red flag</td><td><code>POST /orders/:id/red-flag</code></td><td>PROCESSING / PAID</td><td>DISPUTED, to the dispute manager; never on their own rejection</td><td>400 · 409</td></tr>
+  <tr><td>Reject as unpaid</td><td><code>POST /orders/:id/reject</code></td><td>PAID buy, and also PROCESSING (<code>expectFrom</code>; see open items)</td><td>REJECTED with <code>dispute_window_until</code>; the hold stays; the player gets a pop-up and a payment warning</td><td>400 · 403 · 404 · 409</td></tr>
+  <tr><td>Red flag</td><td><code>POST /orders/:id/red-flag</code></td><td>PROCESSING / PAID</td><td>DISPUTED, to the dispute manager; never on their own rejection</td><td>400 · 404 · 409</td></tr>
   </table></div>
   <p>The rejection proof image is <b>never shown to the player</b>; they get the reason. A decline, an
   unanswered PAID buy and an expired sell count on one refusal streak
@@ -632,7 +633,7 @@ flowchart TD
   C["Hourly tick"] --> D["The last 3 ended IST days"]
   D --> CL{"team_red_flag_days claimed<br/>in the flags' own transaction?"}
   CL -->|"Already claimed"| SK["Skip: each day runs once"]
-  CL -->|Claimed now| T{"Team has 2+ members<br/>approved before the day?"}
+  CL -->|Claimed now| T{"Team has 2+ members<br/>approved before the day ended?"}
   T -->|No| SK2["Skipped"]
   T -->|Yes| M{"Member's completed orders AND online time<br/>both below the team average by<br/>redFlags.lowActivityPercent (25)?"}
   M -->|No| OK["No flag"]
@@ -857,6 +858,8 @@ a realtime layer. Several of these are the only thing between a stuck row and a 
 <tr><td>F-011</td><td>staff sign-in</td><td>sessions carry <code>amr</code> and the panels route to enrolment; the server-side guard is the owner's switch</td><td><span class="chip waiting">partly fixed</span></td></tr>
 <tr><td>F-009</td><td>casino iframe</td><td><code>frame-src</code> is unset, so the provider's frame stays empty; which origins to allow is the owner's decision</td><td><span class="chip waiting">decision needed</span></td></tr>
 <tr><td>—</td><td><code>test:mutate</code></td><td>the two <code>admin/payment-control</code> dispute cases open a screen deleted in 2c and report NOT DRIVEN; the dispute decision is pressed by <code>test:drive</code> and proved by <code>test:pg</code> and <code>test:e2e</code></td><td><span class="chip waiting">harness gap</span></td></tr>
+<tr><td>—</td><td>reject as unpaid</td><td>the member's "payment not received" is accepted on a PROCESSING buy too (<code>expectFrom: ['PAID', 'PROCESSING']</code>), before the player has tapped Paid, and still warns and flags the player; the design (§3.10) describes it after Paid only. Found by the 2g review.</td><td><span class="chip waiting">owner's call</span></td></tr>
+<tr><td>—</td><td>merchant login</td><td>the merchant door is its own handler (<code>merchant.routes.js</code>), not <code>loginHandler</code> with a door in <code>LOGIN_DOOR</code> as CLAUDE.md §2 says; it now answers an unknown mobile as it answers a wrong password (fixed in 2g, M424). Folding it into <code>loginHandler</code> belongs with Step 3's login rework.</td><td><span class="chip waiting">open</span></td></tr>
 <tr><td>—</td><td>conservation proof</td><td><code>reconcileAgainstSubLedgers()</code> (USER_FUNDS + reserve against the wallets, TEAM_FLOAT against the pools, USER_FLOAT against the wallets) has no production caller: only <code>ledgerPg.test.js</code> runs it, and <code>ledger-reconcile</code> does not. The books are checked in tests, never on a running platform. Found while writing this map (2g).</td><td><span class="chip refused">open · owner's call</span></td></tr>
 <tr><td>F-018</td><td>assignment → confirm</td><td>closed by 2c: the pool hold IS the assignment, in one transaction</td><td><span class="chip moved">fixed</span></td></tr>
 <tr><td>F-017</td><td>deposit confirm</td><td>both routes move money through <code>moveDepositMoney</code> (2026-10-01)</td><td><span class="chip moved">fixed</span></td></tr>

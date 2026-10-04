@@ -12,195 +12,175 @@
 
 | Manifest | Account | Viewport | Screens | Controls | Taken |
 |---|---|---|---|---|---|
-| `controls.manifest.json` | default — the accounts the drive and mutate passes press as | desktop | 69 | 678 | 2026-10-01T09:03:05.401Z |
-| `controls.manifest.merchant-offline.json` | **merchant-offline** — a cash merchant who is offline | desktop | 7 | 43 | 2026-10-01T08:51:37.853Z |
-| `controls.manifest.merchant-paused.json` | **merchant-paused** — a cash merchant whose assignment is paused (three unpaid buys) | desktop | 7 | 43 | 2026-10-01T09:12:41.023Z |
-| `controls.manifest.merchant-pending.json` | **merchant-pending** — a merchant not yet approved | desktop | 7 | 5 | 2026-10-01T08:56:37.113Z |
-| `controls.manifest.merchant-suspended.json` | **merchant-suspended** — a merchant an admin has suspended | desktop | 7 | 0 | 2026-10-01T08:52:10.164Z |
-| `controls.manifest.merchant-upi.json` | **merchant-upi** — an INR merchant on the UPI rail (no cash denomination) | desktop | 7 | 40 | 2026-10-01T08:51:05.426Z |
-| `controls.manifest.merchant-usdt.json` | **merchant-usdt** — a USDT merchant with an address on both chains | desktop | 7 | 38 | 2026-10-01T08:51:21.777Z |
-| `controls.manifest.phantom-agent.json` | **phantom-agent** — a phantom agent (phantom_access BOTH) — the only account that sees GHOST MODE | desktop | 16 | 142 | 2026-10-01T09:05:16.444Z |
-| `controls.manifest.phone.json` | **default** — the accounts the drive and mutate passes press as | phone | 69 | 660 | 2026-10-01T08:38:06.947Z |
-| `controls.manifest.player-blocked.json` | **player-blocked** — a player an admin has blocked | desktop | 16 | 139 | 2026-10-01T08:43:22.101Z |
-| `controls.manifest.player-kyc-none.json` | **player-kyc-none** — a player who has not submitted Aadhaar | desktop | 16 | 140 | 2026-10-01T08:41:07.226Z |
-| `controls.manifest.player-kyc-pending.json` | **player-kyc-pending** — a player whose Aadhaar is waiting for an admin | desktop | 16 | 140 | 2026-10-01T08:41:40.830Z |
-| `controls.manifest.player-kyc-rejected.json` | **player-kyc-rejected** — a player whose Aadhaar was rejected (may resubmit) | desktop | 16 | 140 | 2026-10-01T09:12:57.052Z |
-| `controls.manifest.player-unverified.json` | **player-unverified** — a player who has not shared their contact or joined the channel — the gate | desktop | 16 | 142 | 2026-10-01T08:42:48.112Z |
-| `controls.manifest.player-zero-balance.json` | **player-zero-balance** — a verified player with no money | desktop | 16 | 140 | 2026-10-01T08:40:34.051Z |
-| `controls.manifest.queue-manager.json` | **queue-manager** — a queue manager (no areas; works the payment queue) | desktop | 46 | 70 | 2026-10-01T09:11:18.881Z |
-| `controls.manifest.subadmin-all.json` | **subadmin-all** — a sub-admin granted every area | desktop | 46 | 488 | 2026-10-01T09:09:55.598Z |
-| `controls.manifest.subadmin-analytics.json` | **subadmin-analytics** — a sub-admin granted only "View analytics" | desktop | 46 | 97 | 2026-10-01T09:07:11.361Z |
-| `controls.manifest.subadmin-none.json` | **subadmin-none** — a sub-admin granted no areas | desktop | 46 | 13 | 2026-10-01T09:05:49.554Z |
-| `controls.manifest.subadmin-players.json` | **subadmin-players** — a sub-admin granted players, KYC and transactions, nothing that moves money | desktop | 46 | 104 | 2026-10-01T09:08:33.379Z |
+| `controls.manifest.json` | default — the accounts the drive and mutate passes press as | desktop | 64 | 609 | 2026-10-04T08:00:36.197Z |
+| `controls.manifest.merchant-offline.json` | **merchant-offline** — a cash-team merchant who is offline | desktop | 6 | 37 | 2026-10-04T08:46:24.165Z |
+| `controls.manifest.merchant-paused.json` | **merchant-paused** — a cash-team merchant whose assignment is paused (three unpaid buys) | desktop | 6 | 37 | 2026-10-04T08:46:38.796Z |
+| `controls.manifest.merchant-supervisor.json` | **merchant-supervisor** — a supervisor running one full cash team, its members offline | desktop | 6 | 66 | 2026-10-04T08:45:39.672Z |
+| `controls.manifest.merchant-suspended.json` | **merchant-suspended** — a cash-team merchant an admin suspended while they were signed in | desktop | 1 | 5 | 2026-10-04T08:45:33.210Z |
+| `controls.manifest.merchant-upi.json` | **merchant-upi** — an INR merchant in a working UPI/bank team | desktop | 6 | 35 | 2026-10-04T08:45:54.426Z |
+| `controls.manifest.merchant-usdt.json` | **merchant-usdt** — a USDT merchant in a working USDT team, with an address on both chains | desktop | 6 | 35 | 2026-10-04T08:46:09.333Z |
+| `controls.manifest.phantom-agent.json` | **phantom-agent** — a phantom agent (phantom_access BOTH) — the only account that sees GHOST MODE | desktop | 16 | 147 | 2026-10-04T08:04:51.859Z |
+| `controls.manifest.phone.json` | **default** — the accounts the drive and mutate passes press as | phone | 64 | 627 | 2026-10-04T08:02:43.196Z |
+| `controls.manifest.player-blocked.json` | **player-blocked** — a player an admin has blocked | desktop | 16 | 137 | 2026-10-04T08:06:30.423Z |
+| `controls.manifest.player-unverified.json` | **player-unverified** — a player who has not shared their contact or joined the channel — the gate | desktop | 16 | 147 | 2026-10-04T08:05:57.183Z |
+| `controls.manifest.player-zero-balance.json` | **player-zero-balance** — a verified player with no money | desktop | 16 | 145 | 2026-10-04T08:05:24.476Z |
+| `controls.manifest.queue-manager.json` | **queue-manager** — a queue manager (no areas; works the payment queue) | desktop | 42 | 62 | 2026-10-04T08:12:06.469Z |
+| `controls.manifest.subadmin-all.json` | **subadmin-all** — a sub-admin granted every area | desktop | 42 | 443 | 2026-10-04T08:10:50.170Z |
+| `controls.manifest.subadmin-analytics.json` | **subadmin-analytics** — a sub-admin granted only "View analytics" | desktop | 42 | 91 | 2026-10-04T08:08:18.808Z |
+| `controls.manifest.subadmin-none.json` | **subadmin-none** — a sub-admin granted no areas | desktop | 42 | 10 | 2026-10-04T08:07:03.122Z |
+| `controls.manifest.subadmin-players.json` | **subadmin-players** — a sub-admin granted players and transactions, nothing that moves money | desktop | 42 | 80 | 2026-10-04T08:09:34.846Z |
 
-Drive report: 991 presses, taken 2026-10-01T09:13:47.570Z.
+Drive report: 982 presses, taken 2026-10-04T08:23:03.423Z.
 
 ## Summary
 
 | Account | Panel | Screens | Controls seen | **Only here (never pressed)** | Default's controls not shown | Screens that sent it elsewhere |
 |---|---|---|---|---|---|---|
-| merchant-offline | merchant-panel | 7 | 43 | **2** | 4 | 1 |
-| merchant-paused | merchant-panel | 7 | 43 | **1** | 1 | 1 |
-| merchant-pending | merchant-panel | 7 | 5 | **5** | 43 | 6 |
-| merchant-suspended | merchant-panel | 7 | 0 | **0** | 43 | 6 |
-| merchant-upi | merchant-panel | 7 | 40 | **1** | 4 | 1 |
-| merchant-usdt | merchant-panel | 7 | 38 | **1** | 6 | 1 |
-| phantom-agent | user-panel | 16 | 142 | **1** | 0 | 1 |
-| default (phone) | user-panel, admin-panel, merchant-panel | 69 | 660 | **11** | 30 | 2 |
-| player-blocked | user-panel | 16 | 139 | **3** | 5 | 1 |
-| player-kyc-none | user-panel | 16 | 140 | **2** | 3 | 1 |
-| player-kyc-pending | user-panel | 16 | 140 | **2** | 3 | 1 |
-| player-kyc-rejected | user-panel | 16 | 140 | **1** | 1 | 1 |
-| player-unverified | user-panel | 16 | 142 | **3** | 2 | 1 |
-| player-zero-balance | user-panel | 16 | 140 | **2** | 3 | 1 |
-| queue-manager | admin-panel | 46 | 70 | **9** | 476 | 1 |
-| subadmin-all | admin-panel | 46 | 488 | **1** | 8 | 0 |
-| subadmin-analytics | admin-panel | 46 | 97 | **1** | 435 | 0 |
-| subadmin-none | admin-panel | 46 | 13 | **0** | 482 | 0 |
-| subadmin-players | admin-panel | 46 | 104 | **15** | 445 | 1 |
+| merchant-offline | merchant-panel | 6 | 37 | **2** | 4 | 1 |
+| merchant-paused | merchant-panel | 6 | 37 | **1** | 1 | 1 |
+| merchant-supervisor | merchant-panel | 6 | 66 | **33** | 6 | 1 |
+| merchant-suspended | merchant-panel | 1 | 5 | **5** | 37 | 0 |
+| merchant-upi | merchant-panel | 6 | 35 | **1** | 3 | 1 |
+| merchant-usdt | merchant-panel | 6 | 35 | **1** | 3 | 1 |
+| phantom-agent | user-panel | 16 | 147 | **13** | 5 | 1 |
+| default (phone) | user-panel, admin-panel, merchant-panel | 64 | 627 | **27** | 9 | 2 |
+| player-blocked | user-panel | 16 | 137 | **13** | 14 | 1 |
+| player-unverified | user-panel | 16 | 147 | **14** | 5 | 1 |
+| player-zero-balance | user-panel | 16 | 145 | **13** | 6 | 1 |
+| queue-manager | admin-panel | 42 | 62 | **7** | 417 | 1 |
+| subadmin-all | admin-panel | 42 | 443 | **14** | 5 | 0 |
+| subadmin-analytics | admin-panel | 42 | 91 | **2** | 377 | 0 |
+| subadmin-none | admin-panel | 42 | 10 | **0** | 424 | 0 |
+| subadmin-players | admin-panel | 42 | 80 | **12** | 403 | 1 |
 
-Distinct controls that exist only for some non-default account or screen size, and that nothing has pressed: **52** (on 99 screen slots).
+Distinct controls that exist only for some non-default account or screen size, and that nothing has pressed: **94** (on 137 screen slots).
 
-The default accounts: 678 controls inventoried; 3 never pressed by the drive at all (absent from its report, or DISABLED/GONE/UNREACHABLE), and 65 deferred to a mutating case (DRIVEN_ELSEWHERE — a pointer, not a proof, §35.1).
+The default accounts: 609 controls inventoried; 10 never pressed by the drive at all (absent from its report, or DISABLED/GONE/UNREACHABLE), and 64 deferred to a mutating case (DRIVEN_ELSEWHERE — a pointer, not a proof, §35.1).
 
 ## Per account
 
 ### merchant-offline
 
-a cash merchant who is offline — merchant-panel, desktop, taken 2026-10-01T08:51:37.853Z.
+a cash-team merchant who is offline — merchant-panel, desktop, taken 2026-10-04T08:46:24.165Z.
 
 **Only here, never pressed by anything: 2 distinct control(s), on 4 screen slot(s).** Not shown to this account (the default sees them): 4. Screens that sent it elsewhere: 1.
 
 | Screen(s) | Kind | Control |
 |---|---|---|
-| `(shell)` | button | E e2e-merch-ibr36c-1 INR operator |
+| `(shell)` | button | E e2e-merch-cdcp17-1 INR operator |
 | `/`, `/dashboard`, `(shell)` | button | Go online |
 
 Screens that did not stay where they were opened:
 
 | Opened | Landed on | What it said |
 |---|---|---|
-| `/` | `/merchant/dashboard` | Settlement: UPI settlement Buy orders are paid to your UPI and confirmed by UTR. Withdrawa |
+| `/` | `/merchant/dashboard` | MERCHANT STATUS Offline · Not accepting Go online Ready for a cash buy Cash team · e2e-tea |
 
 ### merchant-paused
 
-a cash merchant whose assignment is paused (three unpaid buys) — merchant-panel, desktop, taken 2026-10-01T09:12:41.023Z.
+a cash-team merchant whose assignment is paused (three unpaid buys) — merchant-panel, desktop, taken 2026-10-04T08:46:38.796Z.
 
 **Only here, never pressed by anything: 1 distinct control(s), on 1 screen slot(s).** Not shown to this account (the default sees them): 1. Screens that sent it elsewhere: 1.
 
 | Screen(s) | Kind | Control |
 |---|---|---|
-| `(shell)` | button | E e2e-merch-10eclj-1 INR operator |
+| `(shell)` | button | E e2e-merch-1tuia7-1 INR operator |
 
 Screens that did not stay where they were opened:
 
 | Opened | Landed on | What it said |
 |---|---|---|
-| `/` | `/merchant/dashboard` | Settlement: UPI settlement Buy orders are paid to your UPI and confirmed by UTR. Withdrawa |
+| `/` | `/merchant/dashboard` | MERCHANT STATUS Online · New orders paused Go offline Ready for a cash buy Cash team · e2e |
 
-### merchant-pending
+### merchant-supervisor
 
-a merchant not yet approved — merchant-panel, desktop, taken 2026-10-01T08:56:37.113Z.
+a supervisor running one full cash team, its members offline — merchant-panel, desktop, taken 2026-10-04T08:45:39.672Z.
 
-**Only here, never pressed by anything: 5 distinct control(s), on 5 screen slot(s).** Not shown to this account (the default sees them): 43. Screens that sent it elsewhere: 6.
+**Only here, never pressed by anything: 33 distinct control(s), on 35 screen slot(s).** Not shown to this account (the default sees them): 6. Screens that sent it elsewhere: 1.
 
 | Screen(s) | Kind | Control |
 |---|---|---|
-| `/cash-links` | button | Login |
-| `/cash-links` | button | Apply as Merchant |
-| `/cash-links` | input:text | 10-digit mobile |
-| `/cash-links` | input:password | Enter password |
-| `/cash-links` | button | Sign in securely *(disabled)* |
+| `(shell)` | button | E e2e-merch-6gqj34-1 INR operator |
+| `/`, `/dashboard`, `(shell)` | button | Go online |
+| `/team` | input:text | New team name |
+| `/team` | button | Create team *(disabled)* |
+| `/team` | select | Request for e2e-team-CASH-6gqj34-3 |
+| `/team` | input:text | Tokens for e2e-team-CASH-6gqj34-3 |
+| `/team` | input:text | Note for the admin (optional) |
+| `/team` | button | Send e2e-team-CASH-6gqj34-3 request *(disabled)* |
+| `/team` | button | Show e2e-team-CASH-6gqj34-3 pool history |
+| `/team` | button | Log of e2e-merch-6gqj34-10 |
+| `/team` | button | Log of e2e-merch-6gqj34-12 |
+| `/team` | button | Log of e2e-merch-6gqj34-14 |
+| `/team` | button | Log of e2e-merch-6gqj34-16 |
+| `/team` | button | Log of e2e-merch-6gqj34-18 |
+| `/team` | button | Log of e2e-merch-6gqj34-20 |
+| `/team` | button | Log of e2e-merch-6gqj34-22 |
+| `/team` | button | Log of e2e-merch-6gqj34-4 |
+| `/team` | button | Log of e2e-merch-6gqj34-6 |
+| `/team` | button | Log of e2e-merch-6gqj34-8 |
+| `/team` | button | Remove e2e-merch-6gqj34-4 |
+| `/team` | button | Remove e2e-merch-6gqj34-6 |
+| `/team` | button | Remove e2e-merch-6gqj34-8 |
+| `/team` | button | Remove e2e-merch-6gqj34-10 |
+| `/team` | button | Remove e2e-merch-6gqj34-12 |
+| `/team` | button | Remove e2e-merch-6gqj34-14 |
+| `/team` | button | Remove e2e-merch-6gqj34-16 |
+| `/team` | button | Remove e2e-merch-6gqj34-18 |
+| `/team` | button | Remove e2e-merch-6gqj34-20 |
+| `/team` | button | Remove e2e-merch-6gqj34-22 |
+| `/team` | input:text | Add a member to e2e-team-CASH-6gqj34-3 — their merchant ID |
+| `/team` | button | Add *(disabled)* |
+| `/team` | input:text | Team name |
+| `/team` | button | Rename *(disabled)* |
 
 Screens that did not stay where they were opened:
 
 | Opened | Landed on | What it said |
 |---|---|---|
-| `/dashboard` | `/merchant/` |  |
-| `/orders` | `/merchant/` |  |
-| `/cash-links` | `/merchant/` | BB Token |
-| `/history` | `/merchant/` |  |
-| `/token-supply` | `/merchant/` |  |
-| `/profile` | `/merchant/` |  |
+| `/` | `/merchant/dashboard` | MERCHANT STATUS Offline · Not accepting Go online Today's earnings 0 BB 0 orders completed |
 
 <details><summary>Per screen: controls this account saw against the default</summary>
 
 | Screen | This account | Default | What the screen said |
 |---|---|---|---|
-| `/` | 0 | 3 |  |
-| `/dashboard` | 0 | 3 |  |
-| `/orders` | 0 | 9 |  |
-| `/cash-links` | 5 | 3 | BB Token |
-| `/history` | 0 | 4 |  |
-| `/token-supply` | 0 | 3 |  |
-| `/profile` | 0 | 9 |  |
+| `/` | 2 | 3 | MERCHANT STATUS Offline · Not accepting Go online Today's earnings 0 BB 0 orders completed |
+| `/dashboard` | 2 | 3 | MERCHANT STATUS Offline · Not accepting Go online Today's earnings 0 BB 0 orders completed |
+| `/team` | 32 | 1 | Refresh Your teams Supervisor · rail CASH · up to 4 teams of 10 Your commission 0 tokens N |
 
 </details>
 
 ### merchant-suspended
 
-a merchant an admin has suspended — merchant-panel, desktop, taken 2026-10-01T08:52:10.164Z.
+a cash-team merchant an admin suspended while they were signed in — merchant-panel, desktop, taken 2026-10-04T08:45:33.210Z.
 
-**Only here, never pressed by anything: 0 distinct control(s), on 0 screen slot(s).** Not shown to this account (the default sees them): 43. Screens that sent it elsewhere: 6.
+**Only here, never pressed by anything: 5 distinct control(s), on 5 screen slot(s).** Not shown to this account (the default sees them): 37. Screens that sent it elsewhere: 0.
 
-Screens that did not stay where they were opened:
-
-| Opened | Landed on | What it said |
+| Screen(s) | Kind | Control |
 |---|---|---|
-| `/dashboard` | `/merchant/` |  |
-| `/orders` | `/merchant/` |  |
-| `/cash-links` | `/merchant/` |  |
-| `/history` | `/merchant/` |  |
-| `/token-supply` | `/merchant/` |  |
-| `/profile` | `/merchant/` |  |
+| `/` | button | Login |
+| `/` | button | Apply as Merchant |
+| `/` | input:text | 10-digit mobile |
+| `/` | input:password | Enter password |
+| `/` | button | Sign in securely *(disabled)* |
 
 <details><summary>Per screen: controls this account saw against the default</summary>
 
 | Screen | This account | Default | What the screen said |
 |---|---|---|---|
-| `/` | 0 | 3 |  |
-| `/dashboard` | 0 | 3 |  |
-| `/orders` | 0 | 9 |  |
-| `/cash-links` | 0 | 3 |  |
-| `/history` | 0 | 4 |  |
-| `/token-supply` | 0 | 3 |  |
-| `/profile` | 0 | 9 |  |
+| `/` | 5 | 3 | BB Token |
 
 </details>
 
 ### merchant-upi
 
-an INR merchant on the UPI rail (no cash denomination) — merchant-panel, desktop, taken 2026-10-01T08:51:05.426Z.
+an INR merchant in a working UPI/bank team — merchant-panel, desktop, taken 2026-10-04T08:45:54.426Z.
 
-**Only here, never pressed by anything: 1 distinct control(s), on 1 screen slot(s).** Not shown to this account (the default sees them): 4. Screens that sent it elsewhere: 1.
-
-| Screen(s) | Kind | Control |
-|---|---|---|
-| `(shell)` | button | E e2e-merch-y6bfli-1 INR operator |
-
-Screens that did not stay where they were opened:
-
-| Opened | Landed on | What it said |
-|---|---|---|
-| `/` | `/merchant/dashboard` | Settlement: UPI settlement Buy orders are paid to your UPI and confirmed by UTR. Withdrawa |
-
-<details><summary>Per screen: controls this account saw against the default</summary>
-
-| Screen | This account | Default | What the screen said |
-|---|---|---|---|
-| `/cash-links` | 0 | 3 | ATM cash rail Not enabled for this account You are not approved for the ATM cash rail. An  |
-
-</details>
-
-### merchant-usdt
-
-a USDT merchant with an address on both chains — merchant-panel, desktop, taken 2026-10-01T08:51:21.777Z.
-
-**Only here, never pressed by anything: 1 distinct control(s), on 1 screen slot(s).** Not shown to this account (the default sees them): 6. Screens that sent it elsewhere: 1.
+**Only here, never pressed by anything: 1 distinct control(s), on 1 screen slot(s).** Not shown to this account (the default sees them): 3. Screens that sent it elsewhere: 1.
 
 | Screen(s) | Kind | Control |
 |---|---|---|
-| `(shell)` | button | E e2e-merch-7e7qrb-1 USDT operator |
+| `(shell)` | button | E e2e-merch-z1w7si-1 INR operator |
 
 Screens that did not stay where they were opened:
 
@@ -214,20 +194,56 @@ Screens that did not stay where they were opened:
 |---|---|---|---|
 | `/` | 2 | 3 | MERCHANT STATUS Online · Accepting orders Go offline Today's earnings 0 BB 0 orders comple |
 | `/dashboard` | 2 | 3 | MERCHANT STATUS Online · Accepting orders Go offline Today's earnings 0 BB 0 orders comple |
-| `/cash-links` | 0 | 3 | ATM cash rail Not enabled for this account You are not approved for the ATM cash rail. An  |
+
+</details>
+
+### merchant-usdt
+
+a USDT merchant in a working USDT team, with an address on both chains — merchant-panel, desktop, taken 2026-10-04T08:46:09.333Z.
+
+**Only here, never pressed by anything: 1 distinct control(s), on 1 screen slot(s).** Not shown to this account (the default sees them): 3. Screens that sent it elsewhere: 1.
+
+| Screen(s) | Kind | Control |
+|---|---|---|
+| `(shell)` | button | E e2e-merch-gyn0zf-1 USDT operator |
+
+Screens that did not stay where they were opened:
+
+| Opened | Landed on | What it said |
+|---|---|---|
+| `/` | `/merchant/dashboard` | MERCHANT STATUS Online · Accepting orders Go offline Today's earnings 0 BB 0 orders comple |
+
+<details><summary>Per screen: controls this account saw against the default</summary>
+
+| Screen | This account | Default | What the screen said |
+|---|---|---|---|
+| `/` | 2 | 3 | MERCHANT STATUS Online · Accepting orders Go offline Today's earnings 0 BB 0 orders comple |
+| `/dashboard` | 2 | 3 | MERCHANT STATUS Online · Accepting orders Go offline Today's earnings 0 BB 0 orders comple |
 | `/profile` | 10 | 9 | Two-factor authentication Required for every merchant account. Not set up Your account mov |
 
 </details>
 
 ### phantom-agent
 
-a phantom agent (phantom_access BOTH) — the only account that sees GHOST MODE — user-panel, desktop, taken 2026-10-01T09:05:16.444Z.
+a phantom agent (phantom_access BOTH) — the only account that sees GHOST MODE — user-panel, desktop, taken 2026-10-04T08:04:51.859Z.
 
-**Only here, never pressed by anything: 1 distinct control(s), on 2 screen slot(s).** Not shown to this account (the default sees them): 0. Screens that sent it elsewhere: 1.
+**Only here, never pressed by anything: 13 distinct control(s), on 14 screen slot(s).** Not shown to this account (the default sees them): 5. Screens that sent it elsewhere: 1.
 
 | Screen(s) | Kind | Control |
 |---|---|---|
 | `/`, `/casino` | button | 👻 GHOST MODE OFF |
+| `/faq` | button | ALL |
+| `/faq` | button | ACCOUNT |
+| `/faq` | button | GAMEPLAY |
+| `/faq` | button | PAYMENTS |
+| `/faq` | button | SUPPORT |
+| `/faq` | button | How is my winnings balance different from deposit balance? + |
+| `/faq` | button | What is Delhi Bazaar vs Bombay Bazaar? + |
+| `/faq` | button | What is a 30-Min cycle? + |
+| `/faq` | button | What is the Full-Day (24H) cycle? + |
+| `/faq` | button | How do I buy tokens? + |
+| `/faq` | button | How do I withdraw winnings? + |
+| `/faq` | button | What happens if my deposit is stuck? + |
 
 Screens that did not stay where they were opened:
 
@@ -241,14 +257,15 @@ Screens that did not stay where they were opened:
 |---|---|---|---|
 | `/` | 17 | 16 | DELHI BAZAAR vs BOMBAY BAZAAR |
 | `/casino` | 17 | 16 | DELHI BAZAAR vs BOMBAY BAZAAR |
+| `/faq` | 16 | 9 | Help Center |
 
 </details>
 
 ### default (phone)
 
-the accounts the drive and mutate passes press as — user-panel, admin-panel, merchant-panel, phone, taken 2026-10-01T08:38:06.947Z.
+the accounts the drive and mutate passes press as — user-panel, admin-panel, merchant-panel, phone, taken 2026-10-04T08:02:43.196Z.
 
-**Only here, never pressed by anything: 11 distinct control(s), on 12 screen slot(s).** Not shown to this account (the default sees them): 30. Screens that sent it elsewhere: 2.
+**Only here, never pressed by anything: 27 distinct control(s), on 27 screen slot(s).** Not shown to this account (the default sees them): 9. Screens that sent it elsewhere: 2.
 
 | Screen(s) | Kind | Control |
 |---|---|---|
@@ -257,19 +274,35 @@ the accounts the drive and mutate passes press as — user-panel, admin-panel, m
 | `(shell)` | button | 💰 WALLET |
 | `(shell)` | button | 💡 PROMO |
 | `(shell)` | button | 👤 PROFILE |
-| `/`, `/casino` | button | 30M D B ANALYTICS ▲ |
-| `/` | button | KYC awaiting review 0 |
-| `/` | button | Merchant approvals 0 |
-| `/` | button | Blocked users 0 |
-| `/` | button | Pending KYC 0 |
-| `/` | button | Online merchants 3 |
+| `/faq` | button | ALL |
+| `/faq` | button | ACCOUNT |
+| `/faq` | button | GAMEPLAY |
+| `/faq` | button | PAYMENTS |
+| `/faq` | button | SUPPORT |
+| `/faq` | button | How is my winnings balance different from deposit balance? + |
+| `/faq` | button | What is Delhi Bazaar vs Bombay Bazaar? + |
+| `/faq` | button | What is a 30-Min cycle? + |
+| `/faq` | button | What is the Full-Day (24H) cycle? + |
+| `/faq` | button | How do I buy tokens? + |
+| `/faq` | button | How do I withdraw winnings? + |
+| `/faq` | button | What happens if my deposit is stuck? + |
+| `/teams` | button | Remove e2e-merch-krkvsz-1 |
+| `/teams` | button | Remove e2e-merch-krkvsz-6 |
+| `/teams` | button | Remove e2e-merch-krkvsz-8 |
+| `/teams` | button | Remove e2e-merch-krkvsz-10 |
+| `/teams` | button | Remove e2e-merch-krkvsz-12 |
+| `/teams` | button | Remove e2e-merch-krkvsz-14 |
+| `/teams` | button | Remove e2e-merch-krkvsz-16 |
+| `/teams` | button | Remove e2e-merch-krkvsz-18 |
+| `/teams` | button | Remove e2e-merch-krkvsz-20 |
+| `/teams` | button | Remove e2e-merch-krkvsz-22 |
 
 Screens that did not stay where they were opened:
 
 | Opened | Landed on | What it said |
 |---|---|---|
 | `/casino` | `/#/` | DELHI BAZAAR vs BOMBAY BAZAAR |
-| `/` | `/merchant/dashboard` | Settlement: UPI settlement Buy orders are paid to your UPI and confirmed by UTR. Withdrawa |
+| `/` | `/merchant/dashboard` | MERCHANT STATUS Online · Accepting orders Go offline Ready for a cash buy Cash team · e2e- |
 
 <details><summary>Per screen: controls this account saw against the default</summary>
 
@@ -277,164 +310,164 @@ Screens that did not stay where they were opened:
 |---|---|---|---|
 | `/` | 15 | 16 | DELHI BAZAAR vs BOMBAY BAZAAR |
 | `/casino` | 15 | 16 | DELHI BAZAAR vs BOMBAY BAZAAR |
-| `/live-cycles` | 7 | 10 | Active Cycles 3 Total Book ₹0 Phantom Exposure ₹0 Next Settlement 21:05 Refresh 1MIN_17908 |
-| `/cycle-history` | 23 | 48 | Total Cycles 16 1-Min 14 30-Min 2 Full Day 0 Total Paid Out ₹0 Net Revenue ₹0 All 1-Min 30 |
-| `/users` | 62 | 153 | Total Users 8 Active 8 Blocked 0 Pending KYC 0 All Active Blocked Suspended Pending KYC PL |
-| `/merchants` | 19 | 49 | Merchants 3 Online 3 Approved 3 Pending 0 All Approved Pending Suspended Refresh Create Me |
-| `/kyc` | 5 | 14 | Pending Review 3 Oldest In Queue 2h VERIFICATION QUEUE · 3 E e2e-merch-6e17h9-1 +91 91990- |
-| `/telegram` | 34 | 40 | Panel User panel Merchant panel Admin panel Each panel has its own bot and its own channel |
-| `/sub-admins` | 3 | 16 | Create Sub-Admin Queue managers (0) These accounts assign payment orders to merchants — th |
+| `/faq` | 16 | 9 | Help Center |
+| `/cycle-history` | 10 | 8 | Total Cycles 3 1-Min 3 30-Min 0 Full Day 0 Total Paid Out ₹0 Net Revenue ₹0 All 1-Min 30-M |
+| `/users` | 29 | 17 | Total Users 4 Active 4 Blocked 0 All Active Blocked Suspended PLAYER DEPOSIT WINNINGS LOCK |
+| `/merchants` | 95 | 51 | Merchants 22 Online 1 Approved 22 Pending 0 All Approved Pending Suspended Refresh Create  |
+| `/teams` | 24 | 14 | Make a merchant a supervisor |
 
 </details>
 
 ### player-blocked
 
-a player an admin has blocked — user-panel, desktop, taken 2026-10-01T08:43:22.101Z.
+a player an admin has blocked — user-panel, desktop, taken 2026-10-04T08:06:30.423Z.
 
-**Only here, never pressed by anything: 3 distinct control(s), on 4 screen slot(s).** Not shown to this account (the default sees them): 5. Screens that sent it elsewhere: 1.
+**Only here, never pressed by anything: 13 distinct control(s), on 13 screen slot(s).** Not shown to this account (the default sees them): 14. Screens that sent it elsewhere: 1.
 
 | Screen(s) | Kind | Control |
 |---|---|---|
 | `(shell)` | button | ₹ Sign in TO PLAY |
-| `/`, `/casino` | button | 30M D B ANALYTICS ▲ |
-| `/profile` | button | 🪪 KYC Verification Aadhaar verification status PENDING |
+| `/faq` | button | ALL |
+| `/faq` | button | ACCOUNT |
+| `/faq` | button | GAMEPLAY |
+| `/faq` | button | PAYMENTS |
+| `/faq` | button | SUPPORT |
+| `/faq` | button | How is my winnings balance different from deposit balance? + |
+| `/faq` | button | What is Delhi Bazaar vs Bombay Bazaar? + |
+| `/faq` | button | What is a 30-Min cycle? + |
+| `/faq` | button | What is the Full-Day (24H) cycle? + |
+| `/faq` | button | How do I buy tokens? + |
+| `/faq` | button | How do I withdraw winnings? + |
+| `/faq` | button | What happens if my deposit is stuck? + |
 
 Screens that did not stay where they were opened:
 
 | Opened | Landed on | What it said |
 |---|---|---|
 | `/casino` | `/#/` | DELHI BAZAAR vs BOMBAY BAZAAR |
-
-### player-kyc-none
-
-a player who has not submitted Aadhaar — user-panel, desktop, taken 2026-10-01T08:41:07.226Z.
-
-**Only here, never pressed by anything: 2 distinct control(s), on 3 screen slot(s).** Not shown to this account (the default sees them): 3. Screens that sent it elsewhere: 1.
-
-| Screen(s) | Kind | Control |
-|---|---|---|
-| `/`, `/casino` | button | 30M D B ANALYTICS ▲ |
-| `/profile` | button | 🪪 KYC Verification Aadhaar verification status PENDING |
-
-Screens that did not stay where they were opened:
-
-| Opened | Landed on | What it said |
-|---|---|---|
-| `/casino` | `/#/` | DELHI BAZAAR vs BOMBAY BAZAAR |
-
-### player-kyc-pending
-
-a player whose Aadhaar is waiting for an admin — user-panel, desktop, taken 2026-10-01T08:41:40.830Z.
-
-**Only here, never pressed by anything: 2 distinct control(s), on 3 screen slot(s).** Not shown to this account (the default sees them): 3. Screens that sent it elsewhere: 1.
-
-| Screen(s) | Kind | Control |
-|---|---|---|
-| `/`, `/casino` | button | 30M D B ANALYTICS ▲ |
-| `/profile` | button | 🪪 KYC Verification Aadhaar verification status IN REVIEW |
-
-Screens that did not stay where they were opened:
-
-| Opened | Landed on | What it said |
-|---|---|---|
-| `/casino` | `/#/` | DELHI BAZAAR vs BOMBAY BAZAAR |
-
-### player-kyc-rejected
-
-a player whose Aadhaar was rejected (may resubmit) — user-panel, desktop, taken 2026-10-01T09:12:57.052Z.
-
-**Only here, never pressed by anything: 1 distinct control(s), on 1 screen slot(s).** Not shown to this account (the default sees them): 1. Screens that sent it elsewhere: 1.
-
-| Screen(s) | Kind | Control |
-|---|---|---|
-| `/profile` | button | 🪪 KYC Verification Aadhaar verification status REJECTED |
-
-Screens that did not stay where they were opened:
-
-| Opened | Landed on | What it said |
-|---|---|---|
-| `/casino` | `/#/` | DELHI BAZAAR vs BOMBAY BAZAAR |
-
-### player-unverified
-
-a player who has not shared their contact or joined the channel — the gate — user-panel, desktop, taken 2026-10-01T08:42:48.112Z.
-
-**Only here, never pressed by anything: 3 distinct control(s), on 4 screen slot(s).** Not shown to this account (the default sees them): 2. Screens that sent it elsewhere: 1.
-
-| Screen(s) | Kind | Control |
-|---|---|---|
-| `(shell)` | link | Open @bb_browser_player |
-| `(shell)` | button | I've done it — check again |
-| `/`, `/casino` | button | 30M D B ANALYTICS ▲ |
-
-Screens that did not stay where they were opened:
-
-| Opened | Landed on | What it said |
-|---|---|---|
-| `/casino` | `/#/` | DELHI BAZAAR vs BOMBAY BAZAAR |
-
-### player-zero-balance
-
-a verified player with no money — user-panel, desktop, taken 2026-10-01T08:40:34.051Z.
-
-**Only here, never pressed by anything: 2 distinct control(s), on 3 screen slot(s).** Not shown to this account (the default sees them): 3. Screens that sent it elsewhere: 1.
-
-| Screen(s) | Kind | Control |
-|---|---|---|
-| `(shell)` | button | ₹ ₹0 WALLET |
-| `/`, `/casino` | button | 30M D B ANALYTICS ▲ |
-
-Screens that did not stay where they were opened:
-
-| Opened | Landed on | What it said |
-|---|---|---|
-| `/casino` | `/#/` | DELHI BAZAAR vs BOMBAY BAZAAR |
-
-### queue-manager
-
-a queue manager (no areas; works the payment queue) — admin-panel, desktop, taken 2026-10-01T09:11:18.881Z.
-
-**Only here, never pressed by anything: 9 distinct control(s), on 51 screen slot(s).** Not shown to this account (the default sees them): 476. Screens that sent it elsewhere: 1.
-
-| Screen(s) | Kind | Control |
-|---|---|---|
-| `/` | button | Pending Queue 0 |
-| `/` | button | All Orders 0 |
-| `/` | button | Merchant Pool 0 |
-| `/` | button | Refresh |
-| `/` | button | ALL |
-| `/` | button | DEPOSIT |
-| `/` | button | WITHDRAWAL |
-| `/` | button | Set up the Merchant Pool → |
-| 43 screens (`/live-cycles`, `/cycle-history`, `/profit-loss` …) | link | Go to a screen you can use |
-
-Screens that did not stay where they were opened:
-
-| Opened | Landed on | What it said |
-|---|---|---|
-| `/` | `/admin/#/queue-manager` | Pending Queue 0 All Orders 0 Merchant Pool 0 Refresh Pending 0 Deposits 0 Withdrawals 0 On |
 
 <details><summary>Per screen: controls this account saw against the default</summary>
 
 | Screen | This account | Default | What the screen said |
 |---|---|---|---|
-| `/` | 8 | 9 | Pending Queue 0 All Orders 0 Merchant Pool 0 Refresh Pending 0 Deposits 0 Withdrawals 0 On |
+| `/wallet` | 10 | 17 | Wallet |
+| `/faq` | 16 | 9 | Help Center |
+
+</details>
+
+### player-unverified
+
+a player who has not shared their contact or joined the channel — the gate — user-panel, desktop, taken 2026-10-04T08:05:57.183Z.
+
+**Only here, never pressed by anything: 14 distinct control(s), on 14 screen slot(s).** Not shown to this account (the default sees them): 5. Screens that sent it elsewhere: 1.
+
+| Screen(s) | Kind | Control |
+|---|---|---|
+| `(shell)` | link | Open @bb_browser_player |
+| `(shell)` | button | I've done it — check again |
+| `/faq` | button | ALL |
+| `/faq` | button | ACCOUNT |
+| `/faq` | button | GAMEPLAY |
+| `/faq` | button | PAYMENTS |
+| `/faq` | button | SUPPORT |
+| `/faq` | button | How is my winnings balance different from deposit balance? + |
+| `/faq` | button | What is Delhi Bazaar vs Bombay Bazaar? + |
+| `/faq` | button | What is a 30-Min cycle? + |
+| `/faq` | button | What is the Full-Day (24H) cycle? + |
+| `/faq` | button | How do I buy tokens? + |
+| `/faq` | button | How do I withdraw winnings? + |
+| `/faq` | button | What happens if my deposit is stuck? + |
+
+Screens that did not stay where they were opened:
+
+| Opened | Landed on | What it said |
+|---|---|---|
+| `/casino` | `/#/` | DELHI BAZAAR vs BOMBAY BAZAAR |
+
+<details><summary>Per screen: controls this account saw against the default</summary>
+
+| Screen | This account | Default | What the screen said |
+|---|---|---|---|
+| `/faq` | 16 | 9 | Help Center |
+
+</details>
+
+### player-zero-balance
+
+a verified player with no money — user-panel, desktop, taken 2026-10-04T08:05:24.476Z.
+
+**Only here, never pressed by anything: 13 distinct control(s), on 13 screen slot(s).** Not shown to this account (the default sees them): 6. Screens that sent it elsewhere: 1.
+
+| Screen(s) | Kind | Control |
+|---|---|---|
+| `(shell)` | button | ₹ ₹0 WALLET |
+| `/faq` | button | ALL |
+| `/faq` | button | ACCOUNT |
+| `/faq` | button | GAMEPLAY |
+| `/faq` | button | PAYMENTS |
+| `/faq` | button | SUPPORT |
+| `/faq` | button | How is my winnings balance different from deposit balance? + |
+| `/faq` | button | What is Delhi Bazaar vs Bombay Bazaar? + |
+| `/faq` | button | What is a 30-Min cycle? + |
+| `/faq` | button | What is the Full-Day (24H) cycle? + |
+| `/faq` | button | How do I buy tokens? + |
+| `/faq` | button | How do I withdraw winnings? + |
+| `/faq` | button | What happens if my deposit is stuck? + |
+
+Screens that did not stay where they were opened:
+
+| Opened | Landed on | What it said |
+|---|---|---|
+| `/casino` | `/#/` | DELHI BAZAAR vs BOMBAY BAZAAR |
+
+<details><summary>Per screen: controls this account saw against the default</summary>
+
+| Screen | This account | Default | What the screen said |
+|---|---|---|---|
+| `/faq` | 16 | 9 | Help Center |
+
+</details>
+
+### queue-manager
+
+a queue manager (no areas; works the payment queue) — admin-panel, desktop, taken 2026-10-04T08:12:06.469Z.
+
+**Only here, never pressed by anything: 7 distinct control(s), on 45 screen slot(s).** Not shown to this account (the default sees them): 417. Screens that sent it elsewhere: 1.
+
+| Screen(s) | Kind | Control |
+|---|---|---|
+| `/` | button | Pending Queue 0 |
+| `/` | button | All Orders 0 |
+| `/` | button | Refresh |
+| `/` | button | ALL |
+| `/` | button | DEPOSIT |
+| `/` | button | WITHDRAWAL |
+| 39 screens (`/live-cycles`, `/cycle-history`, `/profit-loss` …) | link | Go to a screen you can use |
+
+Screens that did not stay where they were opened:
+
+| Opened | Landed on | What it said |
+|---|---|---|
+| `/` | `/admin/#/queue-manager` | Pending Queue 0 All Orders 0 Refresh Pending 0 Deposits 0 Withdrawals 0 Filter: ALL DEPOSI |
+
+<details><summary>Per screen: controls this account saw against the default</summary>
+
+| Screen | This account | Default | What the screen said |
+|---|---|---|---|
+| `/` | 6 | 7 | Pending Queue 0 All Orders 0 Refresh Pending 0 Deposits 0 Withdrawals 0 Filter: ALL DEPOSI |
 | `/live-cycles` | 1 | 10 | You don’t have access to this screen |
-| `/cycle-history` | 1 | 48 | You don’t have access to this screen |
+| `/cycle-history` | 1 | 8 | You don’t have access to this screen |
 | `/profit-loss` | 1 | 6 | You don’t have access to this screen |
-| `/users` | 1 | 153 | You don’t have access to this screen |
-| `/merchants` | 1 | 49 | You don’t have access to this screen |
-| `/kyc` | 1 | 14 | You don’t have access to this screen |
-| `/merchant-token-orders` | 1 | 2 | You don’t have access to this screen |
-| `/users/phantom-agents` | 1 | 2 | You don’t have access to this screen |
-| `/kyc/bulk` | 1 | 2 | You don’t have access to this screen |
+| `/users` | 1 | 17 | You don’t have access to this screen |
+| `/merchants` | 1 | 51 | You don’t have access to this screen |
+| `/teams` | 1 | 14 | You don’t have access to this screen |
 | `/telegram` | 1 | 40 | You don’t have access to this screen |
 | `/referrals` | 1 | 2 | You don’t have access to this screen |
 | `/transactions` | 1 | 7 | You don’t have access to this screen |
-| `/content/faq` | 1 | 17 | You don’t have access to this screen |
+| `/content/faq` | 1 | 15 | You don’t have access to this screen |
 | `/content/slides` | 1 | 4 | You don’t have access to this screen |
 | `/content/support` | 1 | 13 | You don’t have access to this screen |
-| `/content/cdn` | 1 | 10 | You don’t have access to this screen |
+| `/content/cdn` | 1 | 9 | You don’t have access to this screen |
 | `/branding` | 1 | 24 | You don’t have access to this screen |
 | `/app-assets` | 1 | 4 | You don’t have access to this screen |
 | `/android-app` | 1 | 2 | You don’t have access to this screen |
@@ -444,19 +477,17 @@ Screens that did not stay where they were opened:
 | `/token-flow` | 1 | 4 | You don’t have access to this screen |
 | `/support-assistant` | 1 | 7 | You don’t have access to this screen |
 | `/reports` | 1 | 7 | You don’t have access to this screen |
-| `/merchant-platform` | 1 | 19 | You don’t have access to this screen |
+| `/merchant-platform` | 1 | 2 | You don’t have access to this screen |
 | `/business-policy/deposit` | 1 | 3 | You don’t have access to this screen |
-| `/business-policy/settlement-rail` | 1 | 11 | You don’t have access to this screen |
-| `/sub-admins` | 1 | 16 | You don’t have access to this screen |
-| `/settings` | 1 | 78 | You don’t have access to this screen |
+| `/sub-admins` | 1 | 3 | You don’t have access to this screen |
+| `/settings` | 1 | 85 | You don’t have access to this screen |
 | `/audit-logs` | 1 | 3 | You don’t have access to this screen |
 | `/disputes` | 1 | 2 | You don’t have access to this screen |
-| `/disputes/cdm-receipts` | 1 | 4 | You don’t have access to this screen |
 | `/disputes/stalled-withdrawals` | 1 | 2 | You don’t have access to this screen |
+| `/payment-references` | 1 | 5 | You don’t have access to this screen |
 | `/winners-manager` | 1 | 2 | You don’t have access to this screen |
 | `/game-providers` | 1 | 21 | You don’t have access to this screen |
 | `/games` | 1 | 47 | You don’t have access to this screen |
-| `/payment-control` | 1 | 14 | You don’t have access to this screen |
 | `/promotions/announcements` | 1 | 2 | You don’t have access to this screen |
 | `/users/balance-adjust` | 1 | 8 | You don’t have access to this screen |
 
@@ -464,55 +495,69 @@ Screens that did not stay where they were opened:
 
 ### subadmin-all
 
-a sub-admin granted every area — admin-panel, desktop, taken 2026-10-01T09:09:55.598Z.
+a sub-admin granted every area — admin-panel, desktop, taken 2026-10-04T08:10:50.170Z.
 
-**Only here, never pressed by anything: 1 distinct control(s), on 1 screen slot(s).** Not shown to this account (the default sees them): 8. Screens that sent it elsewhere: 0.
+**Only here, never pressed by anything: 14 distinct control(s), on 14 screen slot(s).** Not shown to this account (the default sees them): 5. Screens that sent it elsewhere: 0.
 
 | Screen(s) | Kind | Control |
 |---|---|---|
+| `/` | button | Blocked users 1 |
 | `/sub-admins` | link | Go to a screen you can use |
+| `/teams` | button | Remove e2e-merch-krkvsz-1 |
+| `/teams` | button | Remove e2e-merch-krkvsz-6 |
+| `/teams` | button | Remove e2e-merch-krkvsz-8 |
+| `/teams` | button | Remove e2e-merch-krkvsz-10 |
+| `/teams` | button | Remove e2e-merch-krkvsz-12 |
+| `/teams` | button | Remove e2e-merch-krkvsz-14 |
+| `/teams` | button | Remove e2e-merch-krkvsz-16 |
+| `/teams` | button | Remove e2e-merch-krkvsz-18 |
+| `/teams` | button | Remove e2e-merch-krkvsz-20 |
+| `/teams` | button | Remove e2e-merch-krkvsz-22 |
+| `/users` | button | Unblock |
+| `/users/phantom-agents` | button | Change scope |
 
 <details><summary>Per screen: controls this account saw against the default</summary>
 
 | Screen | This account | Default | What the screen said |
 |---|---|---|---|
-| `/cycle-history` | 55 | 48 | Total Cycles 48 1-Min 45 30-Min 3 Full Day 0 Total Paid Out ₹0 Net Revenue ₹0 All 1-Min 30 |
-| `/users` | 188 | 153 | Total Users 26 Active 25 Blocked 1 Pending KYC 3 All Active Blocked Suspended Pending KYC  |
-| `/users/phantom-agents` | 3 | 2 | Accounts with phantom access |
-| `/sub-admins` | 1 | 16 | You don’t have access to this screen |
+| `/live-cycles` | 7 | 10 | Active Cycles 2 Total Book ₹0 Phantom Exposure ₹0 Next Settlement 19:01 Refresh 30MIN_1791 |
+| `/cycle-history` | 18 | 8 | Total Cycles 11 1-Min 11 30-Min 0 Full Day 0 Total Paid Out ₹0 Net Revenue ₹0 All 1-Min 30 |
+| `/users` | 77 | 17 | Total Users 12 Active 11 Blocked 1 All Active Blocked Suspended PLAYER DEPOSIT WINNINGS LO |
+| `/merchants` | 95 | 51 | Merchants 22 Online 1 Approved 22 Pending 0 All Approved Pending Suspended Refresh Create  |
+| `/teams` | 24 | 14 | Make a merchant a supervisor |
+| `/users/phantom-agents` | 2 | 1 | Accounts with phantom access |
+| `/sub-admins` | 1 | 3 | You don’t have access to this screen |
 
 </details>
 
 ### subadmin-analytics
 
-a sub-admin granted only "View analytics" — admin-panel, desktop, taken 2026-10-01T09:07:11.361Z.
+a sub-admin granted only "View analytics" — admin-panel, desktop, taken 2026-10-04T08:08:18.808Z.
 
-**Only here, never pressed by anything: 1 distinct control(s), on 37 screen slot(s).** Not shown to this account (the default sees them): 435. Screens that sent it elsewhere: 0.
+**Only here, never pressed by anything: 2 distinct control(s), on 34 screen slot(s).** Not shown to this account (the default sees them): 377. Screens that sent it elsewhere: 0.
 
 | Screen(s) | Kind | Control |
 |---|---|---|
-| 37 screens (`/users`, `/users/flagged`, `/merchants` …) | link | Go to a screen you can use |
+| `/` | button | Blocked users 1 |
+| 33 screens (`/users`, `/users/flagged`, `/merchants` …) | link | Go to a screen you can use |
 
 <details><summary>Per screen: controls this account saw against the default</summary>
 
 | Screen | This account | Default | What the screen said |
 |---|---|---|---|
-| `/live-cycles` | 1 | 10 | Active Cycles 3 Total Book ₹0 Phantom Exposure ₹0 Next Settlement 00:40 Refresh 1MIN_17908 |
-| `/cycle-history` | 52 | 48 | Total Cycles 45 1-Min 42 30-Min 3 Full Day 0 Total Paid Out ₹0 Net Revenue ₹0 All 1-Min 30 |
-| `/users` | 1 | 153 | You don’t have access to this screen |
-| `/merchants` | 1 | 49 | You don’t have access to this screen |
-| `/kyc` | 1 | 14 | You don’t have access to this screen |
-| `/merchant-token-orders` | 1 | 2 | You don’t have access to this screen |
-| `/users/phantom-agents` | 1 | 2 | You don’t have access to this screen |
-| `/kyc/bulk` | 1 | 2 | You don’t have access to this screen |
+| `/live-cycles` | 1 | 10 | Active Cycles 3 Total Book ₹0 Phantom Exposure ₹0 Next Settlement 00:33 Refresh 1MIN_17911 |
+| `/cycle-history` | 15 | 8 | Total Cycles 8 1-Min 8 30-Min 0 Full Day 0 Total Paid Out ₹0 Net Revenue ₹0 All 1-Min 30-M |
+| `/users` | 1 | 17 | You don’t have access to this screen |
+| `/merchants` | 1 | 51 | You don’t have access to this screen |
+| `/teams` | 1 | 14 | You don’t have access to this screen |
 | `/telegram` | 1 | 40 | You don’t have access to this screen |
 | `/referrals` | 1 | 2 | You don’t have access to this screen |
 | `/transactions` | 1 | 7 | You don’t have access to this screen |
-| `/queue-manager` | 1 | 8 | You don’t have access to this screen |
-| `/content/faq` | 1 | 17 | You don’t have access to this screen |
+| `/queue-manager` | 1 | 6 | You don’t have access to this screen |
+| `/content/faq` | 1 | 15 | You don’t have access to this screen |
 | `/content/slides` | 1 | 4 | You don’t have access to this screen |
 | `/content/support` | 1 | 13 | You don’t have access to this screen |
-| `/content/cdn` | 1 | 10 | You don’t have access to this screen |
+| `/content/cdn` | 1 | 9 | You don’t have access to this screen |
 | `/branding` | 1 | 24 | You don’t have access to this screen |
 | `/app-assets` | 1 | 4 | You don’t have access to this screen |
 | `/android-app` | 1 | 2 | You don’t have access to this screen |
@@ -520,19 +565,17 @@ a sub-admin granted only "View analytics" — admin-panel, desktop, taken 2026-1
 | `/revenue` | 4 | 7 | Refresh Ledger integrity: OK — all postings sum to zero Distributable platform revenue: ₹0 |
 | `/support-assistant` | 1 | 7 | You don’t have access to this screen |
 | `/reports` | 6 | 7 | Financial Settlement Merchants From To Run 0 ledger entries in period. Account Debits Cred |
-| `/merchant-platform` | 1 | 19 | You don’t have access to this screen |
+| `/merchant-platform` | 1 | 2 | You don’t have access to this screen |
 | `/business-policy/deposit` | 1 | 3 | You don’t have access to this screen |
-| `/business-policy/settlement-rail` | 1 | 11 | You don’t have access to this screen |
-| `/sub-admins` | 1 | 16 | You don’t have access to this screen |
-| `/settings` | 1 | 78 | You don’t have access to this screen |
+| `/sub-admins` | 1 | 3 | You don’t have access to this screen |
+| `/settings` | 1 | 85 | You don’t have access to this screen |
 | `/audit-logs` | 1 | 3 | You don’t have access to this screen |
 | `/disputes` | 1 | 2 | You don’t have access to this screen |
-| `/disputes/cdm-receipts` | 1 | 4 | You don’t have access to this screen |
 | `/disputes/stalled-withdrawals` | 1 | 2 | You don’t have access to this screen |
+| `/payment-references` | 1 | 5 | You don’t have access to this screen |
 | `/winners-manager` | 1 | 2 | You don’t have access to this screen |
 | `/game-providers` | 1 | 21 | You don’t have access to this screen |
 | `/games` | 1 | 47 | You don’t have access to this screen |
-| `/payment-control` | 1 | 14 | You don’t have access to this screen |
 | `/promotions/announcements` | 1 | 2 | You don’t have access to this screen |
 | `/users/balance-adjust` | 1 | 8 | You don’t have access to this screen |
 
@@ -540,33 +583,31 @@ a sub-admin granted only "View analytics" — admin-panel, desktop, taken 2026-1
 
 ### subadmin-none
 
-a sub-admin granted no areas — admin-panel, desktop, taken 2026-10-01T09:05:49.554Z.
+a sub-admin granted no areas — admin-panel, desktop, taken 2026-10-04T08:07:03.122Z.
 
-**Only here, never pressed by anything: 0 distinct control(s), on 0 screen slot(s).** Not shown to this account (the default sees them): 482. Screens that sent it elsewhere: 0.
+**Only here, never pressed by anything: 0 distinct control(s), on 0 screen slot(s).** Not shown to this account (the default sees them): 424. Screens that sent it elsewhere: 0.
 
 <details><summary>Per screen: controls this account saw against the default</summary>
 
 | Screen | This account | Default | What the screen said |
 |---|---|---|---|
-| `/` | 3 | 9 | Live metrics are unavailable right now. Cashflow & Settlement Token buy (inflow) vs token  |
+| `/` | 0 | 7 | You don’t have access to this screen |
 | `/live-cycles` | 0 | 10 | You don’t have access to this screen |
-| `/cycle-history` | 0 | 48 | You don’t have access to this screen |
+| `/cycle-history` | 0 | 8 | You don’t have access to this screen |
 | `/profit-loss` | 0 | 6 | You don’t have access to this screen |
-| `/users` | 0 | 153 | You don’t have access to this screen |
+| `/users` | 0 | 17 | You don’t have access to this screen |
 | `/users/flagged` | 0 | 1 | You don’t have access to this screen |
-| `/merchants` | 0 | 49 | You don’t have access to this screen |
-| `/kyc` | 0 | 14 | You don’t have access to this screen |
-| `/merchant-token-orders` | 0 | 2 | You don’t have access to this screen |
-| `/users/phantom-agents` | 0 | 2 | You don’t have access to this screen |
-| `/kyc/bulk` | 0 | 2 | You don’t have access to this screen |
+| `/merchants` | 0 | 51 | You don’t have access to this screen |
+| `/teams` | 0 | 14 | You don’t have access to this screen |
+| `/users/phantom-agents` | 0 | 1 | You don’t have access to this screen |
 | `/telegram` | 0 | 40 | You don’t have access to this screen |
 | `/referrals` | 0 | 2 | You don’t have access to this screen |
 | `/transactions` | 0 | 7 | You don’t have access to this screen |
-| `/queue-manager` | 0 | 8 | You don’t have access to this screen |
-| `/content/faq` | 0 | 17 | You don’t have access to this screen |
+| `/queue-manager` | 0 | 6 | You don’t have access to this screen |
+| `/content/faq` | 0 | 15 | You don’t have access to this screen |
 | `/content/slides` | 0 | 4 | You don’t have access to this screen |
 | `/content/support` | 0 | 13 | You don’t have access to this screen |
-| `/content/cdn` | 0 | 10 | You don’t have access to this screen |
+| `/content/cdn` | 0 | 9 | You don’t have access to this screen |
 | `/branding` | 0 | 24 | You don’t have access to this screen |
 | `/app-assets` | 0 | 4 | You don’t have access to this screen |
 | `/android-app` | 0 | 2 | You don’t have access to this screen |
@@ -576,21 +617,19 @@ a sub-admin granted no areas — admin-panel, desktop, taken 2026-10-01T09:05:49
 | `/token-flow` | 0 | 4 | You don’t have access to this screen |
 | `/support-assistant` | 0 | 7 | You don’t have access to this screen |
 | `/reports` | 0 | 7 | You don’t have access to this screen |
-| `/merchant-platform` | 0 | 19 | You don’t have access to this screen |
+| `/merchant-platform` | 0 | 2 | You don’t have access to this screen |
 | `/business-policy/deposit` | 0 | 3 | You don’t have access to this screen |
-| `/business-policy/settlement-rail` | 0 | 11 | You don’t have access to this screen |
-| `/sub-admins` | 0 | 16 | You don’t have access to this screen |
-| `/settings` | 0 | 78 | You don’t have access to this screen |
+| `/sub-admins` | 0 | 3 | You don’t have access to this screen |
+| `/settings` | 0 | 85 | You don’t have access to this screen |
 | `/audit-logs` | 0 | 3 | You don’t have access to this screen |
 | `/error-logs` | 0 | 1 | You don’t have access to this screen |
 | `/disputes` | 0 | 2 | You don’t have access to this screen |
-| `/disputes/cdm-receipts` | 0 | 4 | You don’t have access to this screen |
 | `/disputes/stalled-withdrawals` | 0 | 2 | You don’t have access to this screen |
+| `/payment-references` | 0 | 5 | You don’t have access to this screen |
 | `/winners-manager` | 0 | 2 | You don’t have access to this screen |
 | `/chat-management` | 0 | 1 | You don’t have access to this screen |
 | `/game-providers` | 0 | 21 | You don’t have access to this screen |
 | `/games` | 0 | 47 | You don’t have access to this screen |
-| `/payment-control` | 0 | 14 | You don’t have access to this screen |
 | `/promotions/announcements` | 0 | 2 | You don’t have access to this screen |
 | `/users/balance-adjust` | 0 | 8 | You don’t have access to this screen |
 
@@ -598,9 +637,9 @@ a sub-admin granted no areas — admin-panel, desktop, taken 2026-10-01T09:05:49
 
 ### subadmin-players
 
-a sub-admin granted players, KYC and transactions, nothing that moves money — admin-panel, desktop, taken 2026-10-01T09:08:33.379Z.
+a sub-admin granted players and transactions, nothing that moves money — admin-panel, desktop, taken 2026-10-04T08:09:34.846Z.
 
-**Only here, never pressed by anything: 15 distinct control(s), on 54 screen slot(s).** Not shown to this account (the default sees them): 445. Screens that sent it elsewhere: 1.
+**Only here, never pressed by anything: 12 distinct control(s), on 49 screen slot(s).** Not shown to this account (the default sees them): 403. Screens that sent it elsewhere: 1.
 
 | Screen(s) | Kind | Control |
 |---|---|---|
@@ -608,44 +647,39 @@ a sub-admin granted players, KYC and transactions, nothing that moves money — 
 | `/` | button | Active |
 | `/` | button | Blocked |
 | `/` | button | Suspended |
-| `/` | button | Pending KYC |
 | `/` | input:text | Search name, mobile, ID… |
 | `/` | button | Details |
-| `/` | button | Add Balance |
-| `/` | button | Deduct |
 | `/` | button | Tx History |
 | `/` | button | Bank |
-| `/` | button | Phantom Access |
 | `/` | button | Block |
-| `/` | button | Unblock |
-| 40 screens (`/live-cycles`, `/cycle-history`, `/profit-loss` …) | link | Go to a screen you can use |
+| `/`, `/users` | button | Unblock |
+| `/` | button | Delete Account |
+| 37 screens (`/live-cycles`, `/cycle-history`, `/profit-loss` …) | link | Go to a screen you can use |
 
 Screens that did not stay where they were opened:
 
 | Opened | Landed on | What it said |
 |---|---|---|
-| `/` | `/admin/#/users` | Total Users 25 Active 24 Blocked 1 Pending KYC 3 All Active Blocked Suspended Pending KYC  |
+| `/` | `/admin/#/users` | Total Users 11 Active 10 Blocked 1 All Active Blocked Suspended PLAYER DEPOSIT WINNINGS LO |
 
 <details><summary>Per screen: controls this account saw against the default</summary>
 
 | Screen | This account | Default | What the screen said |
 |---|---|---|---|
-| `/` | 181 | 9 | Total Users 25 Active 24 Blocked 1 Pending KYC 3 All Active Blocked Suspended Pending KYC  |
+| `/` | 55 | 7 | Total Users 11 Active 10 Blocked 1 All Active Blocked Suspended PLAYER DEPOSIT WINNINGS LO |
 | `/live-cycles` | 1 | 10 | You don’t have access to this screen |
-| `/cycle-history` | 1 | 48 | You don’t have access to this screen |
+| `/cycle-history` | 1 | 8 | You don’t have access to this screen |
 | `/profit-loss` | 1 | 6 | You don’t have access to this screen |
-| `/users` | 181 | 153 | Total Users 25 Active 24 Blocked 1 Pending KYC 3 All Active Blocked Suspended Pending KYC  |
-| `/merchants` | 1 | 49 | You don’t have access to this screen |
-| `/merchant-token-orders` | 1 | 2 | You don’t have access to this screen |
-| `/users/phantom-agents` | 1 | 2 | You don’t have access to this screen |
-| `/kyc/bulk` | 1 | 2 | You don’t have access to this screen |
+| `/users` | 55 | 17 | Total Users 11 Active 10 Blocked 1 All Active Blocked Suspended PLAYER DEPOSIT WINNINGS LO |
+| `/merchants` | 1 | 51 | You don’t have access to this screen |
+| `/teams` | 1 | 14 | You don’t have access to this screen |
 | `/telegram` | 1 | 40 | You don’t have access to this screen |
 | `/referrals` | 1 | 2 | You don’t have access to this screen |
-| `/queue-manager` | 1 | 8 | You don’t have access to this screen |
-| `/content/faq` | 1 | 17 | You don’t have access to this screen |
+| `/queue-manager` | 1 | 6 | You don’t have access to this screen |
+| `/content/faq` | 1 | 15 | You don’t have access to this screen |
 | `/content/slides` | 1 | 4 | You don’t have access to this screen |
 | `/content/support` | 1 | 13 | You don’t have access to this screen |
-| `/content/cdn` | 1 | 10 | You don’t have access to this screen |
+| `/content/cdn` | 1 | 9 | You don’t have access to this screen |
 | `/branding` | 1 | 24 | You don’t have access to this screen |
 | `/app-assets` | 1 | 4 | You don’t have access to this screen |
 | `/android-app` | 1 | 2 | You don’t have access to this screen |
@@ -655,19 +689,17 @@ Screens that did not stay where they were opened:
 | `/token-flow` | 1 | 4 | You don’t have access to this screen |
 | `/support-assistant` | 1 | 7 | You don’t have access to this screen |
 | `/reports` | 1 | 7 | You don’t have access to this screen |
-| `/merchant-platform` | 1 | 19 | You don’t have access to this screen |
+| `/merchant-platform` | 1 | 2 | You don’t have access to this screen |
 | `/business-policy/deposit` | 1 | 3 | You don’t have access to this screen |
-| `/business-policy/settlement-rail` | 1 | 11 | You don’t have access to this screen |
-| `/sub-admins` | 1 | 16 | You don’t have access to this screen |
-| `/settings` | 1 | 78 | You don’t have access to this screen |
+| `/sub-admins` | 1 | 3 | You don’t have access to this screen |
+| `/settings` | 1 | 85 | You don’t have access to this screen |
 | `/audit-logs` | 1 | 3 | You don’t have access to this screen |
 | `/disputes` | 1 | 2 | You don’t have access to this screen |
-| `/disputes/cdm-receipts` | 1 | 4 | You don’t have access to this screen |
 | `/disputes/stalled-withdrawals` | 1 | 2 | You don’t have access to this screen |
+| `/payment-references` | 1 | 5 | You don’t have access to this screen |
 | `/winners-manager` | 1 | 2 | You don’t have access to this screen |
 | `/game-providers` | 1 | 21 | You don’t have access to this screen |
 | `/games` | 1 | 47 | You don’t have access to this screen |
-| `/payment-control` | 1 | 14 | You don’t have access to this screen |
 | `/promotions/announcements` | 1 | 2 | You don’t have access to this screen |
 | `/users/balance-adjust` | 1 | 8 | You don’t have access to this screen |
 
@@ -677,7 +709,14 @@ Screens that did not stay where they were opened:
 
 | Screen | Kind | Control | Drive verdict |
 |---|---|---|---|
-| `admin-panel/` | button | Online merchants 7 | not in the report |
+| `admin-panel/` | button | Blocked users 0 | not in the report |
+| `admin-panel/` | button | Merchant approvals 0 | not in the report |
+| `admin-panel/` | button | Online merchants 1 | not in the report |
 | `merchant-panel/dashboard` | button | Go offline | not in the report |
-| `user-panel/casino` | button | 30M B D B ANALYTICS ▲ | not in the report |
+| `user-panel/casino` | button | 30M No results yet ANALYTICS ▲ | not in the report |
+| `user-panel/faq` | button | How does Delhi vs Bombay Bazaar work? + | not in the report |
+| `user-panel/faq` | button | Is there a minimum bet? + | not in the report |
+| `user-panel/faq` | button | What are the two cycle types? + | not in the report |
+| `user-panel/faq` | button | When can I withdraw my winnings? + | not in the report |
+| `user-panel/faq` | button | Why did the pools disappear before results? + | not in the report |
 
