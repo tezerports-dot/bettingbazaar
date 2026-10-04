@@ -69,6 +69,10 @@ const team = (rail: string) => ({
 const cashMember = { role: 'MEMBER', publicRef: 'M1', status: 'APPROVED', team: team('CASH') };
 const merchant = (extra: Record<string, unknown> = {}) => ({ id: 'm-1', isOnline: true, cashReady: false, ...extra });
 const theSwitch = () => screen.findByRole('switch', { name: 'Ready for a cash buy' });
+// The switch is drawn in the same commit that subscribes, but the subscription
+// is a passive effect React may flush after `findByRole` has resolved. Emitting
+// before it lands reaches nobody, so a test that emits waits for it first.
+const subscribed = (ev: string) => waitFor(() => expect(stream.handlers.get(ev)?.size ?? 0).toBeGreaterThan(0));
 
 describe('the cash Ready switch', () => {
   beforeEach(() => {
@@ -144,6 +148,7 @@ describe('the cash Ready switch', () => {
     const sw = await theSwitch();
     expect(sw).toHaveAttribute('aria-checked', 'true');
 
+    await subscribed('new_order');
     act(() => { stream.emit('new_order', { orderId: 'O-1', type: 'DEPOSIT', paymentMode: 'CASH_ATM' }); });
     expect(auth.refreshProfile).toHaveBeenCalledTimes(1);
 
@@ -166,6 +171,7 @@ describe('the cash Ready switch', () => {
     fireEvent.click(sw);
     await waitFor(() => expect(sw).toHaveAttribute('aria-checked', 'true'));
 
+    await subscribed('new_order');
     act(() => { stream.emit('new_order', {}); });
     auth.merchant = merchant({ cashReady: false });
     rerender(<CashReadyCard />);
@@ -177,6 +183,7 @@ describe('the cash Ready switch', () => {
     api.getMyTeam.mockResolvedValue(cashMember);
     render(<CashReadyCard />);
     await theSwitch();
+    await subscribed('merchant_orders_snapshot');
     act(() => { stream.emit('merchant_orders_snapshot', { orders: [] }); });
     expect(auth.refreshProfile).toHaveBeenCalledTimes(1);
   });
