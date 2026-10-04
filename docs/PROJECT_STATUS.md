@@ -8,24 +8,29 @@
 >
 > Rules live in `CLAUDE.md`. This file is status only.
 
-**Last updated:** 2026-09-24, on the single-store branch (PR #184).
+**Last updated:** 2026-10-04, Step 2g (the close-out of the team model, §3.10).
 
 ---
 
 ## 1. Where the project actually is
 
-Every number below was printed by the command beside it on 2026-09-24, not
-recalled (§29 — a claim about readiness is a claim about evidence).
+Every number below was printed by the command beside it on 2026-10-04 (Step 2g),
+not recalled (§29 — a claim about readiness is a claim about evidence).
 
 | | State | Evidence |
 |---|---|---|
-| Datastore migration | **Complete** | `npm run check:no-mongo` — "All checks report zero", 186 references removed |
-| Unit suite | **853 passing** in 83 files | `npm run test:unit` |
-| Money-path suite | **1537 passing** in 101 files | `npm run test:pg` against a real PostgreSQL |
-| Control inventory | **1246** controls across 67 screens, 0 FAIL | `npm run test:browser` |
-| Panel suites | 81 admin, plus merchant and user | per-panel `vitest` |
-| CI | green on every check | PR #184 |
+| Datastore migration | **Complete** | `npm run check:no-mongo` — "All checks report zero. PostgreSQL is the only store." |
+| Unit suite | **892 passing** in 90 files | `npm run test:unit` |
+| Money-path suite | **1,582 passing** in 129 files | `npm run test:pg` against a real PostgreSQL |
+| Redis suite | 8 passing in 2 files | `npm run test:redis` |
+| Whole server | 226 checks: 223 pass, 0 fail, 3 notes | `npm run test:e2e` |
+| Control inventory | **692** controls across 64 screens, 0 FAIL (default accounts; phone the same; 16 account profiles, see §3.10 2g) | `npm run test:browser` |
+| Panel suites | user 229 · admin 176 · merchant 110, each typechecked and built | per-panel `vitest`, `tsc`, `vite build` |
+| Gates | all 17 exit 0; `audit:map -- --check` exit 0 | the Commands table in `CLAUDE.md` |
 | Capability registry | 74 tracked: 47 full · 9 partial · 7 architecture-ready · 7 absent · 4 decision | `npm run verify:capabilities` |
+
+The 2026-09-24 edition of this table (and §2 below) predates Step 2, which
+replaced the two-rail design with supervisors, teams and team pools.
 
 **What the 2026-09-24 browser work found, because none of it was visible
 below a browser.** The three panels were gated per-audience (`CLAUDE.md`
@@ -44,7 +49,12 @@ operational work that is not code.
 
 ---
 
-## 2. The two rails — the A/B work
+## 2. The two rails — the A/B work (HISTORY: replaced by Step 2, §3.10)
+
+> Step 2c (2026-10-03) deleted the platform-wide rail switch, the cash-link
+> queue, CDM slips and per-merchant wallets this section describes. An order's
+> rail now follows from its size or currency, and every order is routed to a
+> team member. Kept for the decisions it records; read §3.10 for what runs.
 
 The platform runs **one of two P2P settlement rails at a time**, with an admin
 switching between them and neither deleted. The design is
@@ -553,7 +563,7 @@ Measured on the commit that adds items 18–19: unit 920/920; pg 1736/1736 (133 
 
 Measured on the commit that adds items 11–17: unit 920/920; pg 1719/1719 (130 files); admin panel 155, merchant 73, user 224, tsc clean on all three; e2e 183 checks, 178 pass, 0 fail, 5 notes (each says what a dev server cannot measure), then s8 alone with the door probes 64/61/0/3; all 17 gates exit 0; `audit:map --check` matches after regeneration (308 routes, 35 unauthenticated). Mutation: M225, M243, M254–M263 KILLED. Not run: the browser tiers after the door change, the full mutation run, and an independent review (§37 step 12).
 
-## 3.10 Plan — the redesign (owner, 2026-10-02). Step 1 DONE; Step 2 IN PROGRESS (2a, 2b done); Step 3 NOT STARTED.
+## 3.10 Plan — the redesign (owner, 2026-10-02). Step 1 DONE; Step 2 DONE (2a–2g); Step 3 NOT STARTED.
 
 Three replacements, built in this order, each step tested, committed, and
 reported to the owner in a short update every 5–10 fixes.
@@ -863,7 +873,7 @@ Owner answers, 2026-10-02 (two rounds; the second replaced the security deposit 
     the smaller side, 16/84, treasury + ledger + pool entry, 6-way race,
     lifecycle hook, member sees only their share), unit `teamCommission` (7),
     `merchantEarningsPg` rebuilt on shares, TeamPage (+3); mutations M383–M391.
-- **2f Oversight. DONE (2026-10-04).** `database/repositories/teamOversight.js`
+- **2f Oversight. DONE (2026-10-04), merged as PR #202 (merge commit `83cd311`).** `database/repositories/teamOversight.js`
   (rules in CLAUDE.md §2 and §24, background in RULES_BACKGROUND §2).
   - *Online-time log.* `merchant_online_sessions`: one stretch per time a
     member's Online switch is on, opened and closed by a trigger on
@@ -902,8 +912,53 @@ Owner answers, 2026-10-02 (two rounds; the second replaced the security deposit 
   - *Tests.* `teamOversightPg` (7), unit `teamOversight` (11), `mobileInText`
     unit and `mobileInTextPg` (one list), TeamPage (+6), TeamsManager (+2),
     SystemSettingsRedFlags (2); mutations M392–M393, M397–M400, M402–M423.
-- **2g Close-out.** CLAUDE.md §2/§25/§26 rewritten for the new owners, docs,
-  every gate and tier.
+- **2g Close-out. DONE (2026-10-04), PR #203.**
+  - *Rules and docs.* CLAUDE.md §2's seven "⚠2c" rows rewritten for the new
+    owners (§25 and §26 were already current) and RULES_BACKGROUND with them;
+    domain READMEs and the env templates cleared of deleted settings;
+    `OPERATIONS_MAP.html` and `PANEL_WORKFLOWS.html` rewritten for the team
+    model, every route, refusal, state and cron read from the code, the panel
+    map's appendix regenerated (299 routes; 280 named by a panel).
+  - *Measured.* `test:unit` 892/892; `test:pg` 1,582/1,582 (129 files);
+    `test:redis` 8/8; `test:e2e` 226 checks, 223 pass, 0 fail, 3 notes;
+    panels user 229, admin 176, merchant 110, each typechecked and built;
+    all 17 gates and `audit:map -- --check` exit 0. Browser: default and phone
+    64 screens, 0 FAIL; every profile 0 FAIL; `test:drive` 64 checks, 0 FAIL
+    (632 controls: 2 NOT_REACHED, 0 INERT, 0 BROKE). Reports regenerated:
+    `PANEL_CONTROL_COVERAGE.md`, `CONTROL_COVERAGE_BY_ACCOUNT.md` (94
+    controls only some account has, never pressed; 33 of them the new
+    supervisor profile's), `ROUTE_COVERAGE.md` (300 mounted, 284 reached by a
+    tier, 16 never).
+  - *Found and fixed.* (1) Security, independent review: the merchant login
+    answered an unknown mobile differently from a wrong password, so anybody
+    could learn which numbers are merchants; one answer now, every door tested
+    with an unknown mobile, M424. The test that should have caught it compared
+    two 429s from the per-mobile pacer; it resets the pacer now. (2) A
+    merchant suspended mid-session was reloaded at a bare sign-in form; the
+    form now says "You were signed out: Account suspended. Contact support."
+    (3) The paused banner told members to check a UPI ID and QR they no longer
+    have. (4) The browser pass re-installed the session on every load, so a
+    panel that signed itself out was signed back in, in a loop; once per tab
+    now, and a refused-account profile is checked for its reason.
+    (5) No pass opened the panel as a supervisor: `merchant-supervisor` added.
+    `merchant-pending` dropped (a state login cannot produce, §3.8 item 6).
+  - *Open, recorded (owner's call where marked):*
+    - `reconcileAgainstSubLedgers()` (USER_FUNDS and TEAM_FLOAT against the
+      wallets and pools) has no production caller; only `ledgerPg` runs it.
+      Proposed: run it in `ledger-reconcile` and alert on drift. **Owner.**
+    - "Payment not received" is accepted on a PROCESSING buy (before the
+      player tapped Paid) and still warns the player; the design says after
+      Paid. Proposed: narrow `expectFrom` to PAID. **Owner.**
+    - The merchant login is its own handler, not `loginHandler` with a
+      `LOGIN_DOOR` entry as CLAUDE.md §2 says. With Step 3's login work.
+    - The admin panel's `verifySession` also drops a refused staff session
+      at a bare sign-in form (§32 S48).
+    - `merchants.bank_upi_id` is still written by Profile and copied into the
+      order snapshot, and nothing shows it: a field with no consumer (§3).
+    - The supervisor's 33 Team-page controls are inventoried, never pressed:
+      `drive.js` presses as a member only.
+    - `test:mutate`'s two `admin/payment-control` cases still open a screen
+      deleted in 2c (NOT DRIVEN).
 
 ### Step 3 — Telegram Mini App replaces every bot, all three panels
 - One bot per panel, which sends no messages; the Mini App does contact

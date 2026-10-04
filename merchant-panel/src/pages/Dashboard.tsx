@@ -180,8 +180,9 @@ const Dashboard: React.FC = () => {
           <div style={{ fontSize: 13 }}>
             Several players in a row could not complete a payment to you, so the platform has stopped
             sending you new buy orders. This is not a suspension: your team and your current orders
-            are untouched. Check that your UPI ID and QR code can receive payments, then contact support
-            to have new orders resumed.
+            are untouched. Check that the bank details on your Profile are right (a 50,000-and-up buyer
+            pays into them) and that you accept, and on a cash buy scan the machine's QR, promptly; then
+            contact support to have new orders resumed.
           </div>
         </div>
       )}

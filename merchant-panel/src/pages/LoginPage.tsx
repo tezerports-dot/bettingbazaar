@@ -32,6 +32,11 @@ const LoginPage: React.FC = () => {
   // extends the window it is trying to escape.
   const { secondsLeft, blocked, startFrom } = useRetryCountdown();
 
+  // Why the panel just signed this merchant out — a suspension, a session
+  // ended elsewhere — in the server's words, so the form is not the first and
+  // only thing they see (§32 S48). Read once per page load.
+  const [signedOutReason] = useState(() => api.signedOutReason());
+
   const [form, setForm] = useState({ username: '', mobile: '', email: '', password: '', confirmPassword: '' });
   const [applying, setApplying] = useState(false);
   const [applied, setApplied] = useState(false);
@@ -132,6 +137,15 @@ const LoginPage: React.FC = () => {
             <span style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--dep)' }}>Secure operator sign-in</span>
           </div>
         </div>
+
+        {signedOutReason && (
+          <div role="alert" style={{
+            marginBottom: 16, padding: '12px 14px', borderRadius: 12, fontSize: 13.5, fontWeight: 600, lineHeight: 1.5,
+            background: 'var(--danger-bg)', color: 'var(--danger)', border: '1px solid var(--border)',
+          }}>
+            You were signed out: {signedOutReason}
+          </div>
+        )}
 
         <div style={{
           background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 20,

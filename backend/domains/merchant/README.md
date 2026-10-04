@@ -6,8 +6,8 @@ The only authority for merchant lifecycle. Owns:
 |---|---|
 | Merchant pay | Not here: team commission (Step 2e) is paid into the TEAM's pool by `database/repositories/teamCommission.js`, called from `domains/team/teamCommission.service.js`. A merchant holds no tokens (2c). |
 | Merchant Analytics / Leaderboards / Performance History / Funding Statistics | `merchantAnalytics.service.js` + `merchantPlatform.admin.routes.js` (all derived, read-only) |
-| Merchant Queue Integration | `merchantScoring.service.js` (scoring inputs for assignment) — the queue/assignment PROCESS itself is Funding Platform-owned (Phase 009) |
-| Lifecycle / profile / approval | `merchant.model.js`, `merchant.routes.js`, `merchant.admin.routes.js`, `merchant.assignment.routes.js` |
+| Which member serves an order | Not here: team routing, `database/repositories/teamRouting.js` (Step 2c) |
+| Lifecycle / profile / approval | `database/repositories/merchants.js`, `merchant.routes.js`, `merchant.admin.routes.js`, `merchant.assignment.routes.js` |
 | Settlement rail (INR-only vs USDT-only) | `merchantCurrency.js` — rail vocabulary + TRC-20 address validation over `Merchant.acceptedCurrencies` (§1) |
 
 Hard rules (2026-07-08/09 decisions):
@@ -22,6 +22,6 @@ Settlement rail (2026-07-27 decision):
 - Import the rail names, the chain table and `isUsdtAddress` from
   `merchantCurrency.js`. Do not
   re-declare 'INR'/'USDT' string literals or a second address regex (§4).
-- Enforced in `merchantScoring.selectBestMerchant` (assignment), the accept guard
-  and open-pool filter in `merchant.routes.js`, and the rail-exclusive
-  `PUT /profile`. `PaymentOrder.currency` is the order-side counterpart.
+- Enforced in team routing (`database/repositories/teamRouting.js`), the accept
+  guard in `merchant.routes.js`, and the rail-exclusive `PUT /profile`.
+  `order_states.currency` is the order-side counterpart.

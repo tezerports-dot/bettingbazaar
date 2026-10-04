@@ -52,6 +52,41 @@ const clearAuthData = (): void => {
   localStorage.removeItem('merchantData');
 };
 
+/**
+ * ── Why the panel signed the merchant out, said on the sign-in screen ──────
+ * A session the server refuses (401, or 403 "Account suspended. Contact
+ * support.") is cleared and the panel reloads at the sign-in form. That form
+ * said nothing: a merchant an admin had just suspended was shown "Secure
+ * operator sign-in", typed their password, and only then read the reason
+ * (§32 S48, S17). Every sign-out reloads the page, so the server's own words
+ * are kept in sessionStorage across that one reload and read once.
+ */
+const SIGNED_OUT_REASON_KEY = 'merchantSignedOutReason';
+
+const keepSignedOutReason = (reason?: string | null): void => {
+  // Whatever this page load already showed is over: a manual Log out after a
+  // re-sign-in must not flash the previous reason before the reload lands.
+  signedOutReasonRead = true;
+  signedOutReasonValue = null;
+  const said = String(reason ?? '').trim().slice(0, 300);
+  if (!said) return;
+  try { sessionStorage.setItem(SIGNED_OUT_REASON_KEY, said); } catch { /* blocked storage: the form still renders */ }
+};
+
+// Read once per page load, then remembered for it: React's StrictMode runs a
+// state initialiser twice, and the second read must not find it already gone.
+let signedOutReasonRead = false;
+let signedOutReasonValue: string | null = null;
+export const signedOutReason = (): string | null => {
+  if (signedOutReasonRead) return signedOutReasonValue;
+  signedOutReasonRead = true;
+  try {
+    signedOutReasonValue = sessionStorage.getItem(SIGNED_OUT_REASON_KEY);
+    sessionStorage.removeItem(SIGNED_OUT_REASON_KEY);
+  } catch { signedOutReasonValue = null; }
+  return signedOutReasonValue;
+};
+
 export const isAuthenticated = (): boolean => {
   return !!getAuthToken();
 };
@@ -92,6 +127,7 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
         if (errData?.message) errMsg = errData.message;
       } catch { /* ignore parse errors */ }
       if (hadSession) {
+        keepSignedOutReason(errMsg);
         window.location.href = '/merchant/';
       }
       throw new Error(errMsg);
@@ -206,8 +242,10 @@ export const merchantSignup = async (fields: {
   }
 };
 
-export const logout = (): void => {
+/** Sign out and reload at the sign-in form; `reason` is the server's refusal, shown there once. */
+export const logout = (reason?: string | null): void => {
   clearAuthData();
+  keepSignedOutReason(reason);
   window.location.href = "/merchant/";
 };
 
@@ -657,6 +695,7 @@ export const api = {
   twoFactorActivate,
   merchantSignup,
   logout,
+  signedOutReason,
   getMerchantProfile,
   getVerification,
   

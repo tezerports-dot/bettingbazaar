@@ -3,8 +3,8 @@
 
 Two artefacts, both left behind by a real browser driving the real panels:
 
-* the control INVENTORY — every control each screen has — taken 2026-09-25T04:02:18.877Z
-* the DRIVE report — what happened when each was pressed — 2026-09-25T04:04:53.770Z
+* the control INVENTORY — every control each screen has — taken 2026-10-04T08:00:36.197Z
+* the DRIVE report — what happened when each was pressed — 2026-10-04T08:23:03.423Z
 
 ## How to read it, and what it does not say
 
@@ -27,88 +27,128 @@ would put the denominator in the thousands and bury the real work.
 
 | screen | controls | moved | answered | said | no-op | inert | disabled | elsewhere | asked | NOT reached | note |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| / | 17 | 15 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 2 | partial 0h ago |
-| /casino | 17 | 16 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | all pressed 0h ago |
-| /crash | 9 | 2 | 0 | 5 | 1 | 0 | 0 | 1 | 0 | 0 | all pressed 0h ago |
-| /faq | 9 | 7 | 1 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | all pressed 0h ago |
-| /history | 7 | 6 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | all pressed 0h ago |
-| /leaderboard | 9 | 7 | 0 | 0 | 0 | 1 | 0 | 1 | 0 | 0 | all pressed 0h ago |
-| /my-bets | 6 | 4 | 0 | 0 | 0 | 1 | 0 | 1 | 0 | 0 | all pressed 0h ago |
-| /profile | 9 | 5 | 0 | 0 | 0 | 1 | 0 | 3 | 0 | 0 | all pressed 0h ago |
-| /promo | 4 | 3 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | all pressed 0h ago |
-| /referrals | 4 | 3 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | all pressed 0h ago |
-| /results | 5 | 4 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | all pressed 0h ago |
-| /rules | 4 | 3 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | all pressed 0h ago |
-| /sports | 19 | 3 | 0 | 13 | 1 | 1 | 0 | 1 | 0 | 0 | all pressed 0h ago |
-| /support | 6 | 5 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | all pressed 0h ago |
-| /wallet | 11 | 7 | 0 | 0 | 0 | 2 | 1 | 1 | 0 | 0 | all pressed 0h ago |
-| /winners | 6 | 4 | 0 | 0 | 0 | 1 | 0 | 1 | 0 | 0 | all pressed 0h ago |
+| / | 16 | 15 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 2 | partial 0h ago |
+| /casino | 16 | 16 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
+| /crash | 8 | 2 | 0 | 5 | 1 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
+| /faq | 9 | 15 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | +7 only a press reveals 0h ago |
+| /history | 6 | 6 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
+| /leaderboard | 8 | 7 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
+| /my-bets | 5 | 4 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
+| /profile | 7 | 5 | 0 | 0 | 0 | 0 | 0 | 2 | 0 | 0 | all pressed 0h ago |
+| /promo | 3 | 3 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
+| /referrals | 3 | 3 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
+| /results | 4 | 4 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
+| /rules | 3 | 3 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
+| /sports | 18 | 3 | 0 | 13 | 2 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
+| /support | 5 | 5 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
+| /wallet | 17 | 7 | 0 | 0 | 2 | 0 | 8 | 0 | 0 | 0 | all pressed 0h ago |
+| /winners | 5 | 4 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
 
 ### admin-panel
 
 | screen | controls | moved | answered | said | no-op | inert | disabled | elsewhere | asked | NOT reached | note |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| / | 9 | 9 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
+| / | 7 | 7 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
+| /android-app | 2 | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
 | /app-assets | 4 | 0 | 1 | 0 | 0 | 0 | 0 | 3 | 0 | 0 | all pressed 0h ago |
 | /audit-logs | 3 | 3 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
-| /branding | 24 | 20 | 1 | 0 | 0 | 1 | 0 | 2 | 0 | 0 | all pressed 0h ago |
+| /blocked-ips | 6 | 4 | 1 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | all pressed 0h ago |
+| /branding | 24 | 20 | 1 | 0 | 1 | 0 | 0 | 2 | 0 | 0 | all pressed 0h ago |
 | /business-policy/deposit | 3 | 2 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
-| /business-policy/settlement-rail | 11 | 8 | 1 | 0 | 0 | 1 | 0 | 1 | 0 | 0 | all pressed 0h ago |
 | /chat-management | 1 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
-| /content/cdn | 10 | 9 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
-| /content/faq | 5 | 3 | 0 | 0 | 0 | 0 | 0 | 2 | 0 | 0 | all pressed 0h ago |
-| /content/slides | 4 | 2 | 1 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | all pressed 0h ago |
+| /content/cdn | 9 | 8 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
+| /content/faq | 15 | 8 | 0 | 0 | 0 | 0 | 0 | 7 | 0 | 0 | all pressed 0h ago |
+| /content/slides | 4 | 2 | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
 | /content/support | 13 | 12 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | all pressed 0h ago |
-| /cycle-history | 59 | 10 | 0 | 0 | 1 | 0 | 1 | 47 | 0 | 0 | all pressed 0h ago |
+| /cycle-history | 8 | 9 | 0 | 0 | 1 | 0 | 0 | 24 | 0 | 0 | +26 only a press reveals 0h ago |
 | /disputes | 2 | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
-| /disputes/cdm-receipts | 4 | 2 | 1 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | all pressed 0h ago |
 | /disputes/stalled-withdrawals | 2 | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
 | /error-logs | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
 | /game-providers | 21 | 14 | 1 | 0 | 0 | 0 | 0 | 6 | 0 | 0 | all pressed 0h ago |
 | /games | 47 | 24 | 0 | 0 | 1 | 0 | 0 | 22 | 0 | 0 | all pressed 0h ago |
-| /kyc | 64 | 62 | 0 | 0 | 1 | 0 | 0 | 2 | 0 | 0 | +1 only a press reveals 0h ago |
-| /kyc/bulk | 2 | 0 | 0 | 0 | 0 | 0 | 1 | 1 | 0 | 0 | all pressed 0h ago |
-| /live-cycles | 7 | 10 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | +3 only a press reveals 0h ago |
-| /login | 6 | 5 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | all pressed 0h ago |
-| /merchant-platform | 28 | 20 | 1 | 0 | 0 | 0 | 0 | 7 | 0 | 0 | all pressed 0h ago |
-| /merchant-token-orders | 2 | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
-| /merchants | 213 | 15 | 1 | 0 | 1 | 0 | 1 | 195 | 0 | 0 | all pressed 0h ago |
+| /live-cycles | 10 | 7 | 0 | 0 | 0 | 0 | 0 | 3 | 0 | 0 | all pressed 0h ago |
+| /login | 6 | 5 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
+| /merchant-platform | 2 | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
+| /merchants | 51 | 15 | 1 | 0 | 1 | 0 | 1 | 193 | 0 | 0 | +160 only a press reveals 0h ago |
 | /operations | 5 | 3 | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
-| /payment-control | 19 | 10 | 2 | 0 | 0 | 1 | 1 | 5 | 0 | 0 | all pressed 0h ago |
+| /payment-references | 5 | 2 | 1 | 0 | 1 | 0 | 1 | 0 | 0 | 0 | all pressed 0h ago |
 | /profit-loss | 6 | 6 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
-| /promotions/announcements | 6 | 3 | 1 | 0 | 0 | 0 | 0 | 2 | 0 | 0 | all pressed 0h ago |
-| /queue-manager | 8 | 5 | 1 | 0 | 1 | 1 | 0 | 0 | 0 | 0 | all pressed 0h ago |
+| /promotions/announcements | 2 | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
+| /queue-manager | 6 | 3 | 1 | 0 | 2 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
 | /referrals | 2 | 1 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | all pressed 0h ago |
 | /reports | 7 | 4 | 2 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
 | /revenue | 7 | 3 | 1 | 0 | 0 | 0 | 2 | 1 | 0 | 0 | all pressed 0h ago |
-| /settings | 77 | 73 | 0 | 0 | 0 | 3 | 0 | 1 | 0 | 0 | all pressed 0h ago |
-| /sub-admins | 3 | 2 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | all pressed 0h ago |
+| /settings | 85 | 84 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | all pressed 0h ago |
+| /sub-admins | 3 | 8 | 0 | 0 | 0 | 0 | 1 | 7 | 0 | 0 | +13 only a press reveals 0h ago |
 | /support-assistant | 7 | 4 | 1 | 0 | 0 | 0 | 1 | 0 | 1 | 0 | all pressed 0h ago |
+| /teams | 14 | 2 | 1 | 0 | 0 | 0 | 1 | 80 | 0 | 0 | +70 only a press reveals 0h ago |
 | /telegram | 40 | 27 | 3 | 0 | 0 | 0 | 2 | 8 | 0 | 0 | all pressed 0h ago |
 | /token-flow | 4 | 3 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | all pressed 0h ago |
-| /transactions | 9 | 7 | 0 | 0 | 1 | 0 | 1 | 0 | 0 | 0 | all pressed 0h ago |
-| /users | 358 | 21 | 0 | 0 | 1 | 0 | 1 | 335 | 0 | 0 | all pressed 0h ago |
+| /transactions | 7 | 6 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
+| /users | 17 | 20 | 0 | 0 | 1 | 0 | 0 | 72 | 0 | 0 | +76 only a press reveals 0h ago |
 | /users/balance-adjust | 8 | 5 | 1 | 0 | 0 | 0 | 0 | 2 | 0 | 0 | all pressed 0h ago |
 | /users/flagged | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
-| /users/phantom-agents | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
+| /users/phantom-agents | 1 | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | +1 only a press reveals 0h ago |
 | /winners-manager | 2 | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
 
 ### merchant-panel
 
 | screen | controls | moved | answered | said | no-op | inert | disabled | elsewhere | asked | NOT reached | note |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| / | 3 | 2 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
-| /cash-links | 3 | 1 | 1 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | all pressed 0h ago |
-| /dashboard | 3 | 2 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
+| / | 3 | 3 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
+| /dashboard | 3 | 3 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
 | /history | 4 | 2 | 0 | 0 | 1 | 0 | 0 | 1 | 0 | 0 | all pressed 0h ago |
 | /orders | 9 | 7 | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
-| /profile | 9 | 7 | 0 | 0 | 0 | 0 | 0 | 2 | 0 | 0 | all pressed 0h ago |
-| /token-supply | 3 | 1 | 1 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | all pressed 0h ago |
+| /profile | 9 | 6 | 1 | 0 | 0 | 0 | 0 | 2 | 0 | 0 | all pressed 0h ago |
+| /team | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
 
 ### Every control, by verdict
 
 
-REPRESENTED (574) — a repeat of a control already pressed on this screen
+ACTED (451) — pressed, and the screen changed
+   user-panel/  button:DELHI BAZAAR vs Bombay 🎯
+   user-panel/  button:CASH OR CRASH Take the flight ✈️
+   user-panel/  button:SPORTS Bet anytime 🏇
+   user-panel/  button:FULL DAY
+   user-panel/  button:30 MIN
+   user-panel/  button:1 MIN
+   user-panel/  button:INDIA GATE DELHI
+   user-panel/  button:GATEWAY OF INDIA BOMBAY
+   user-panel/  button:10
+   user-panel/  button:30
+   user-panel/  button:90
+   user-panel/  button:270
+   user-panel/  button:810
+   user-panel/  input:number:Or type amount (min ₹10)
+   user-panel/  button:FULL ANALYSIS
+   user-panel/casino  button:DELHI BAZAAR vs Bombay 🎯
+   user-panel/casino  button:CASH OR CRASH Take the flight ✈️
+   user-panel/casino  button:SPORTS Bet anytime 🏇
+   user-panel/casino  button:FULL DAY
+   user-panel/casino  button:30 MIN
+   user-panel/casino  button:1 MIN
+   user-panel/casino  button:INDIA GATE DELHI
+   user-panel/casino  button:GATEWAY OF INDIA BOMBAY
+   user-panel/casino  button:10
+   user-panel/casino  button:30
+   user-panel/casino  button:90
+   user-panel/casino  button:270
+   user-panel/casino  button:810
+   user-panel/casino  input:number:Or type amount (min ₹10)
+   user-panel/casino  button:1M D B D B D B B D D D D B B D B D B D D D B D B ANALYTICS ▲
+   user-panel/casino  button:FULL ANALYSIS
+   user-panel/crash  button:DELHI BAZAAR vs Bombay 🎯
+   user-panel/crash  button:SPORTS Bet anytime 🏇
+   user-panel/sports  button:DELHI BAZAAR vs Bombay 🎯
+   user-panel/sports  button:CASH OR CRASH Take the flight ✈️
+   user-panel/sports  button:🔴 LIVE
+   user-panel/wallet  button:DELHI BAZAAR vs Bombay 🎯
+   user-panel/wallet  button:CASH OR CRASH Take the flight ✈️
+   user-panel/wallet  button:SPORTS Bet anytime 🏇
+   user-panel/wallet  button:History
+   ... and 411 more
+
+REPRESENTED (281) — a repeat of a control already pressed on this screen
    admin-panel/cycle-history  button:Detail[3]  — instance 4 of the same control
    admin-panel/cycle-history  button:Detail[4]  — instance 5 of the same control
    admin-panel/cycle-history  button:Detail[5]  — instance 6 of the same control
@@ -133,161 +173,122 @@ REPRESENTED (574) — a repeat of a control already pressed on this screen
    admin-panel/cycle-history  button:Detail[24]  — instance 25 of the same control
    admin-panel/cycle-history  button:Detail[25]  — instance 26 of the same control
    admin-panel/cycle-history  button:Detail[26]  — instance 27 of the same control
-   admin-panel/cycle-history  button:Detail[27]  — instance 28 of the same control
-   admin-panel/cycle-history  button:Detail[28]  — instance 29 of the same control
-   admin-panel/cycle-history  button:Detail[29]  — instance 30 of the same control
-   admin-panel/cycle-history  button:Detail[30]  — instance 31 of the same control
-   admin-panel/cycle-history  button:Detail[31]  — instance 32 of the same control
-   admin-panel/cycle-history  button:Detail[32]  — instance 33 of the same control
-   admin-panel/cycle-history  button:Detail[33]  — instance 34 of the same control
-   admin-panel/cycle-history  button:Detail[34]  — instance 35 of the same control
-   admin-panel/cycle-history  button:Detail[35]  — instance 36 of the same control
-   admin-panel/cycle-history  button:Detail[36]  — instance 37 of the same control
-   admin-panel/cycle-history  button:Detail[37]  — instance 38 of the same control
-   admin-panel/cycle-history  button:Detail[38]  — instance 39 of the same control
-   admin-panel/cycle-history  button:Detail[39]  — instance 40 of the same control
-   admin-panel/cycle-history  button:Detail[40]  — instance 41 of the same control
-   admin-panel/cycle-history  button:Detail[41]  — instance 42 of the same control
-   admin-panel/cycle-history  button:Detail[42]  — instance 43 of the same control
-   ... and 534 more
+   admin-panel/users  button:Details[3]  — instance 4 of the same control
+   admin-panel/users  button:Tx History[3]  — instance 4 of the same control
+   admin-panel/users  button:Bank[3]  — instance 4 of the same control
+   admin-panel/users  button:Block[3]  — instance 4 of the same control
+   admin-panel/users  button:Details[4]  — instance 5 of the same control
+   admin-panel/users  button:Tx History[4]  — instance 5 of the same control
+   admin-panel/users  button:Bank[4]  — instance 5 of the same control
+   admin-panel/users  button:Block[4]  — instance 5 of the same control
+   admin-panel/users  button:Details[5]  — instance 6 of the same control
+   admin-panel/users  button:Tx History[5]  — instance 6 of the same control
+   admin-panel/users  button:Bank[5]  — instance 6 of the same control
+   admin-panel/users  button:Block[5]  — instance 6 of the same control
+   admin-panel/users  button:Details[6]  — instance 7 of the same control
+   admin-panel/users  button:Tx History[6]  — instance 7 of the same control
+   admin-panel/users  button:Bank[6]  — instance 7 of the same control
+   admin-panel/users  button:Block[6]  — instance 7 of the same control
+   ... and 241 more
 
-ACTED (533) — pressed, and the screen changed
-   user-panel/auth/telegram  button:Dismiss announcement
-   user-panel/auth/telegram  button:DELHI BAZAAR vs Bombay 🎯
-   user-panel/auth/telegram  button:CASH OR CRASH Take the flight ✈️
-   user-panel/auth/telegram  button:CASINO Play to win big 🃏
-   user-panel/auth/telegram  button:SPORTS Bet anytime 🏇
-   user-panel/auth/telegram  button:BACK TO THE APP
-   user-panel/  button:Dismiss announcement
-   user-panel/  button:DELHI BAZAAR vs Bombay 🎯
-   user-panel/  button:CASH OR CRASH Take the flight ✈️
-   user-panel/  button:SPORTS Bet anytime 🏇
-   user-panel/  button:FULL DAY
-   user-panel/  button:30 MIN
-   user-panel/  button:1 MIN
-   user-panel/  button:GATEWAY OF INDIA BOMBAY
-   user-panel/  button:10
-   user-panel/  button:30
-   user-panel/  button:90
-   user-panel/  button:270
-   user-panel/  button:810
-   user-panel/  input:number:Or type amount (min ₹10)
-   user-panel/  button:FULL ANALYSIS
-   user-panel/casino  button:Dismiss announcement
-   user-panel/casino  button:DELHI BAZAAR vs Bombay 🎯
-   user-panel/casino  button:CASH OR CRASH Take the flight ✈️
-   user-panel/casino  button:SPORTS Bet anytime 🏇
-   user-panel/casino  button:FULL DAY
-   user-panel/casino  button:30 MIN
-   user-panel/casino  button:1 MIN
-   user-panel/casino  button:GATEWAY OF INDIA BOMBAY
-   user-panel/casino  button:10
-   user-panel/casino  button:30
-   user-panel/casino  button:90
-   user-panel/casino  button:270
-   user-panel/casino  button:810
-   user-panel/casino  input:number:Or type amount (min ₹10)
-   user-panel/casino  button:1M B D D B B B B B D D B B B B B B B D D B D B B B D D ANALYTICS ▲
-   user-panel/casino  button:FULL ANALYSIS
-   user-panel/crash  button:DELHI BAZAAR vs Bombay 🎯
-   user-panel/crash  button:SPORTS Bet anytime 🏇
-   user-panel/sports  button:DELHI BAZAAR vs Bombay 🎯
-   ... and 493 more
-
-DEFERRED (76) — not pressed on purpose — destructive, or it leaves the app
+DEFERRED (156) — not pressed on purpose — destructive, or it leaves the app
    user-panel/profile  button:Switch theme  — publishes a platform-wide change from whatever the form happens to hold
    user-panel/profile  button:Log out  — ends the session for every screen after it
    admin-panel/users  button:Deduct  — destroys a row this run did not create — driven in the mutating pass, against its own rows
    admin-panel/users  button:Block  — destroys a row this run did not create — driven in the mutating pass, against its own rows
-   admin-panel/users  button:Deduct[1]  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   admin-panel/users  button:Delete Account  — destroys a row this run did not create — driven in the mutating pass, against its own rows
    admin-panel/users  button:Block[1]  — destroys a row this run did not create — driven in the mutating pass, against its own rows
-   admin-panel/users  button:Deduct[2]  — destroys a row this run did not create — driven in the mutating pass, against its own rows
    admin-panel/users  button:Block[2]  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   admin-panel/users  button:Deduct[1]  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   admin-panel/users  button:Delete Account[1]  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   admin-panel/users  button:Deduct[2]  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   admin-panel/users  button:Delete Account[2]  — destroys a row this run did not create — driven in the mutating pass, against its own rows
    admin-panel/merchants  button:Suspend  — destroys a row this run did not create — driven in the mutating pass, against its own rows
    admin-panel/merchants  button:Suspend[1]  — destroys a row this run did not create — driven in the mutating pass, against its own rows
    admin-panel/merchants  button:Suspend[2]  — destroys a row this run did not create — driven in the mutating pass, against its own rows
    admin-panel/merchants  button:Approve  — approves or pays out against a row this run did not create
    admin-panel/merchants  button:Reject  — destroys a row this run did not create — driven in the mutating pass, against its own rows
-   admin-panel/merchants  button:Approve[1]  — approves or pays out against a row this run did not create
-   admin-panel/merchants  button:Reject[1]  — destroys a row this run did not create — driven in the mutating pass, against its own rows
-   admin-panel/kyc  button:Reject  — destroys a row this run did not create — driven in the mutating pass, against its own rows
-   admin-panel/kyc  button:Approve KYC  — approves or pays out against a row this run did not create
-   admin-panel/kyc/bulk  button:Choose CSV  — downloads a file the browser cannot hand back
-   admin-panel/telegram  button:Activate  — publishes a platform-wide change from whatever the form happens to hold
-   admin-panel/telegram  button:Save  — publishes a platform-wide change from whatever the form happens to hold
-   admin-panel/telegram  button:Save[1]  — publishes a platform-wide change from whatever the form happens to hold
-   admin-panel/telegram  button:Save[2]  — publishes a platform-wide change from whatever the form happens to hold
-   admin-panel/referrals  button:Disburse  — approves or pays out against a row this run did not create
-   admin-panel/content/faq  button:Delete FAQ: e2e cross question 1790244630068  — destroys a row this run did not create — driven in the mutating pass, against its own rows
-   admin-panel/content/faq  button:Delete FAQ: e2e cross question 1790244889754  — destroys a row this run did not create — driven in the mutating pass, against its own rows
-   admin-panel/content/support  button:Save support links  — publishes a platform-wide change from whatever the form happens to hold
-   admin-panel/branding  button:Save All  — publishes a platform-wide change from whatever the form happens to hold
-   admin-panel/branding  button:Save Branding Settings  — publishes a platform-wide change from whatever the form happens to hold
-   admin-panel/app-assets  button:Delete the logo-header.png asset  — destroys a row this run did not create — driven in the mutating pass, against its own rows
-   admin-panel/app-assets  button:Delete the icon-192.png asset  — destroys a row this run did not create — driven in the mutating pass, against its own rows
-   admin-panel/app-assets  button:Delete the icon-512.png asset  — destroys a row this run did not create — driven in the mutating pass, against its own rows
-   admin-panel/revenue  button:Fund Pool  — approves or pays out against a row this run did not create
-   admin-panel/token-flow  button:Apply  — publishes a platform-wide change from whatever the form happens to hold
-   admin-panel/merchant-platform  button:Save New Policy Version  — publishes a platform-wide change from whatever the form happens to hold
-   admin-panel/business-policy/settlement-rail  button:Save timers  — publishes a platform-wide change from whatever the form happens to hold
-   admin-panel/settings  button:Save Settings  — publishes a platform-wide change from whatever the form happens to hold
-   admin-panel/game-providers  button:Delete Evolution Gaming  — destroys a row this run did not create — driven in the mutating pass, against its own rows
-   admin-panel/game-providers  button:Delete Ezugi Live Casino  — destroys a row this run did not create — driven in the mutating pass, against its own rows
-   admin-panel/game-providers  button:Delete Pragmatic Play  — destroys a row this run did not create — driven in the mutating pass, against its own rows
-   admin-panel/game-providers  button:Delete Smartsoft — JetX  — destroys a row this run did not create — driven in the mutating pass, against its own rows
-   ... and 36 more
+   admin-panel/merchants  button:Activate  — publishes a platform-wide change from whatever the form happens to hold
+   admin-panel/teams  button:Remove e2e-merch-bccyyw-1  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   admin-panel/teams  button:Remove e2e-merch-bccyyw-6  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   admin-panel/teams  button:Remove e2e-merch-bccyyw-8  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   admin-panel/teams  button:Remove e2e-merch-bccyyw-10  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   admin-panel/teams  button:Remove e2e-merch-bccyyw-12  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   admin-panel/teams  button:Remove e2e-merch-bccyyw-14  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   admin-panel/teams  button:Remove e2e-merch-bccyyw-16  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   admin-panel/teams  button:Remove e2e-merch-bccyyw-18  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   admin-panel/teams  button:Remove e2e-merch-bccyyw-20  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   admin-panel/teams  button:Remove e2e-merch-bccyyw-22  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   admin-panel/teams  button:Remove e2e-merch-d9gzji-1  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   admin-panel/teams  button:Remove e2e-merch-d9gzji-6  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   admin-panel/teams  button:Remove e2e-merch-d9gzji-8  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   admin-panel/teams  button:Remove e2e-merch-d9gzji-10  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   admin-panel/teams  button:Remove e2e-merch-d9gzji-12  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   admin-panel/teams  button:Remove e2e-merch-d9gzji-14  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   admin-panel/teams  button:Remove e2e-merch-d9gzji-16  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   admin-panel/teams  button:Remove e2e-merch-d9gzji-18  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   admin-panel/teams  button:Remove e2e-merch-d9gzji-20  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   admin-panel/teams  button:Remove e2e-merch-d9gzji-22  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   admin-panel/teams  button:Remove e2e-merch-ivyxrc-1  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   admin-panel/teams  button:Remove e2e-merch-ivyxrc-6  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   admin-panel/teams  button:Remove e2e-merch-ivyxrc-8  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   ... and 116 more
 
-REFETCHED (30) — pressed; it called a route and got the same answer — a working Refresh
-   user-panel/faq  button:ALL  — no visible change, but it called GET /api/user/notifications/unread-count (+1 more)
+ALREADY_ON (27) — pressed; it was already the selected segment, so nothing should change
+   user-panel/crash  button:CASH OR CRASH Take the flight ✈️  — it was already the selected one — pressing it again correctly changes nothing
+   user-panel/sports  button:SPORTS Bet anytime 🏇  — it was already the selected one — pressing it again correctly changes nothing
+   user-panel/sports  button:All  — it was already the selected one — pressing it again correctly changes nothing
+   user-panel/wallet  button:Exchange  — it was already the selected one — pressing it again correctly changes nothing
+   user-panel/wallet  button:⬇️ BUY TOKENS  — it was already the selected one — pressing it again correctly changes nothing
+   user-panel/my-bets  button:Active  — it was already the selected one — pressing it again correctly changes nothing
+   user-panel/faq  button:ALL  — it was already the selected one — pressing it again correctly changes nothing
+   user-panel/winners  button:Today  — it was already the selected one — pressing it again correctly changes nothing
+   user-panel/leaderboard  button:Today  — it was already the selected one — pressing it again correctly changes nothing
+   admin-panel/login  button:Super Admin  — it was already the selected one — pressing it again correctly changes nothing
+   admin-panel/cycle-history  button:All  — it was already the selected one — pressing it again correctly changes nothing
+   admin-panel/users  button:All  — it was already the selected one — pressing it again correctly changes nothing
+   admin-panel/merchants  button:All  — it was already the selected one — pressing it again correctly changes nothing
+   admin-panel/transactions  button:All  — it was already the selected one — pressing it again correctly changes nothing
+   admin-panel/queue-manager  button:Pending Queue 0  — it was already the selected one — pressing it again correctly changes nothing
+   admin-panel/queue-manager  button:ALL  — it was already the selected one — pressing it again correctly changes nothing
+   admin-panel/content/slides  button:Tips & Tricks  — it was already the selected one — pressing it again correctly changes nothing
+   admin-panel/content/cdn  button:ALL  — it was already the selected one — pressing it again correctly changes nothing
+   admin-panel/branding  button:Identity & Colors  — it was already the selected one — pressing it again correctly changes nothing
+   admin-panel/operations  button:Overview  — it was already the selected one — pressing it again correctly changes nothing
+   admin-panel/reports  button:Financial  — it was already the selected one — pressing it again correctly changes nothing
+   admin-panel/business-policy/deposit  button:INR  — it was already the selected one — pressing it again correctly changes nothing
+   admin-panel/payment-references  button:Review queue  — it was already the selected one — pressing it again correctly changes nothing
+   admin-panel/chat-management  button:Open the public chat room  — it was already the selected one — pressing it again correctly changes nothing
+   admin-panel/games  button:Games  — it was already the selected one — pressing it again correctly changes nothing
+   merchant-panel/orders  button:All  — it was already the selected one — pressing it again correctly changes nothing
+   merchant-panel/history  button:Volume  — it was already the selected one — pressing it again correctly changes nothing
+
+REFETCHED (25) — pressed; it called a route and got the same answer — a working Refresh
    admin-panel/users/flagged  button:Refresh  — no visible change, but it called GET /api/admin/users/flagged?limit=100
    admin-panel/merchants  button:Refresh  — no visible change, but it called GET /api/admin/merchants?page=1&limit=50
-   admin-panel/merchant-token-orders  button:Refresh  — no visible change, but it called GET /api/admin/merchant-token-orders
+   admin-panel/teams  button:Refresh  — no visible change, but it called GET /api/admin/teams
    admin-panel/users/phantom-agents  button:Refresh  — no visible change, but it called GET /api/admin/phantom-agents
-   admin-panel/queue-manager  button:Refresh  — no visible change, but it called GET /api/admin/queue/pending-orders (+3 more)
+   admin-panel/queue-manager  button:Refresh  — no visible change, but it called GET /api/admin/queue/pending-orders (+1 more)
    admin-panel/content/slides  button:Refresh  — no visible change, but it called GET /api/admin/promo?location=TRICKS_PAGE
    admin-panel/branding  button:Reload  — no visible change, but it called GET /api/admin/branding
    admin-panel/app-assets  button:Refresh  — no visible change, but it called GET /api/admin/app-assets
+   admin-panel/android-app  button:Refresh  — no visible change, but it called GET /api/admin/android/releases
+   admin-panel/blocked-ips  button:Refresh  — no visible change, but it called GET /api/admin/security/ip-blocks?includeReleased=1
    admin-panel/revenue  button:Refresh  — no visible change, but it called GET /api/admin/revenue/summary (+1 more)
    admin-panel/operations  button:Refresh  — no visible change, but it called GET /api/admin/operations/overview (+4 more)
-   admin-panel/reports  button:Run  — no visible change, but it called GET /api/admin/reports/financial?from=2026-09-18&to=2026-
-   admin-panel/reports  button:Regulatory export — one CSV row per journal posting  — no visible change, but it called GET /api/admin/reports/ledger-export?from=2026-09-18&to=2
-   admin-panel/merchant-platform  button:Refresh  — no visible change, but it called GET /api/admin/merchant-commission-policy (+2 more)
-   admin-panel/business-policy/settlement-rail  button:Reload  — no visible change, but it called GET /api/admin/payment-mode (+1 more)
+   admin-panel/reports  button:Run  — no visible change, but it called GET /api/admin/reports/financial?from=2026-09-27&to=2026-
+   admin-panel/reports  button:Regulatory export — one CSV row per journal posting  — no visible change, but it called GET /api/admin/reports/ledger-export?from=2026-09-27&to=2
+   admin-panel/merchant-platform  button:Refresh  — no visible change, but it called GET /api/admin/merchant-platform/leaderboard?days=30&limi
    admin-panel/error-logs  button:Refresh  — no visible change, but it called GET /api/admin/error-reports
    admin-panel/disputes  button:Reload the dispute queue  — no visible change, but it called GET /api/admin/dispute-orders?status=ESCALATED
-   admin-panel/disputes/cdm-receipts  button:Refresh  — no visible change, but it called GET /api/admin/orders/cdm-receipts/missing?olderThanMinut
    admin-panel/disputes/stalled-withdrawals  button:Refresh  — no visible change, but it called GET /api/admin/orders/stalled-withdrawals?olderThanMinute
-   admin-panel/winners-manager  button:Refresh  — no visible change, but it called GET /api/admin/fake-winners (+1 more)
+   admin-panel/payment-references  button:Refresh  — no visible change, but it called GET /api/admin/utr/stats (+1 more)
+   admin-panel/winners-manager  button:Refresh  — no visible change, but it called GET /api/admin/fake-winners
    admin-panel/game-providers  button:Refresh  — no visible change, but it called GET /api/game/admin/game-providers
-   admin-panel/payment-control  button:Refresh  — no visible change, but it called GET /api/payment/admin/config
-   admin-panel/payment-control  button:Refresh[1]  — no visible change, but it called GET /api/admin/dispute-orders?status=DISPUTED&limit=50
    admin-panel/promotions/announcements  button:Refresh  — no visible change, but it called GET /api/admin/announcements
-   admin-panel/users/balance-adjust  button:Search players  — no visible change, but it called GET /api/admin/users?search=500&limit=10
-   merchant-panel/  button:Re-check the settlement rail  — no visible change, but it called GET /api/merchant/payment-mode
-   merchant-panel/dashboard  button:Re-check the settlement rail  — no visible change, but it called GET /api/merchant/payment-mode
+   admin-panel/users/balance-adjust  button:Search players  — no visible change, but it called GET /api/admin/balance-adjust/players?search=bb&limit=10
    merchant-panel/orders  button:Refresh  — no visible change, but it called GET /api/merchant/orders?limit=50
-   merchant-panel/cash-links  button:Refresh  — no visible change, but it called GET /api/merchant/cash-links/current
-   merchant-panel/token-supply  button:Refresh  — no visible change, but it called GET /api/merchant/admin-token-orders
-
-INERT (18) — pressed, and it changed nothing AND called nothing (S22 — the shape worth hunting)
-   user-panel/  button:INDIA GATE DELHI  — it changed nothing on screen AND called no route — nothing happened at all (S22)
-   user-panel/casino  button:INDIA GATE DELHI  — it changed nothing on screen AND called no route — nothing happened at all (S22)
-   user-panel/sports  button:All  — it changed nothing on screen AND called no route — nothing happened at all (S22)
-   user-panel/wallet  button:Exchange  — it changed nothing on screen AND called no route — nothing happened at all (S22)
-   user-panel/wallet  button:⬇️ BUY TOKENS  — it changed nothing on screen AND called no route — nothing happened at all (S22)
-   user-panel/profile  button:E2  — it changed nothing on screen AND called no route — nothing happened at all (S22)
-   user-panel/my-bets  button:Active  — it changed nothing on screen AND called no route — nothing happened at all (S22)
-   user-panel/winners  button:Today  — it changed nothing on screen AND called no route — nothing happened at all (S22)
-   user-panel/leaderboard  button:Today  — it changed nothing on screen AND called no route — nothing happened at all (S22)
-   admin-panel/login  button:Super Admin  — it changed nothing on screen AND called no route — nothing happened at all (S22)
-   admin-panel/queue-manager  button:ALL  — it changed nothing on screen AND called no route — nothing happened at all (S22)
-   admin-panel/content/slides  button:Tips & Tricks  — it changed nothing on screen AND called no route — nothing happened at all (S22)
-   admin-panel/branding  button:Identity & Colors  — it changed nothing on screen AND called no route — nothing happened at all (S22)
-   admin-panel/business-policy/settlement-rail  input:radio:UPI settlement Buy orders are paid to your UPI and confirmed by UTR. Withdrawals  — it changed nothing on screen AND called no route — nothing happened at all (S22)
-   admin-panel/settings  select:Player footer navigation, slot 3  — it changed nothing on screen AND called no route — nothing happened at all (S22)
-   admin-panel/settings  select:Player footer navigation, slot 4  — it changed nothing on screen AND called no route — nothing happened at all (S22)
-   admin-panel/settings  select:Player footer navigation, slot 5  — it changed nothing on screen AND called no route — nothing happened at all (S22)
-   admin-panel/payment-control  button:P2P Merchant System Current active system All deposits and withdrawals are handl  — it changed nothing on screen AND called no route — nothing happened at all (S22)
+   merchant-panel/team  button:Refresh  — no visible change, but it called GET /api/merchant/team
 
 SAID (18) — pressed; the panel answered with an alert() — the message is in the verdict, and an alert is not a question
    user-panel/crash  button:▶ Play  — alert: "Provider is not fully configured"
@@ -309,70 +310,54 @@ SAID (18) — pressed; the panel answered with an alert() — the message is in 
    user-panel/sports  button:♟️ Chess 30+ markets  — alert: "Provider is not fully configured"
    user-panel/sports  button:🏐 Volleyball 70+ markets  — alert: "Provider is not fully configured"
 
-ALREADY_ON (16) — pressed; it was already the selected segment, so nothing should change
-   user-panel/crash  button:CASH OR CRASH Take the flight ✈️  — it was already the selected one — pressing it again correctly changes nothing
-   user-panel/sports  button:SPORTS Bet anytime 🏇  — it was already the selected one — pressing it again correctly changes nothing
-   admin-panel/cycle-history  button:All  — it was already the selected one — pressing it again correctly changes nothing
-   admin-panel/users  button:All  — it was already the selected one — pressing it again correctly changes nothing
-   admin-panel/merchants  button:All  — it was already the selected one — pressing it again correctly changes nothing
-   admin-panel/kyc  button:Review KYC for e2e-merch-x13syv-3  — it was already the selected one — pressing it again correctly changes nothing
-   admin-panel/transactions  button:All  — it was already the selected one — pressing it again correctly changes nothing
-   admin-panel/queue-manager  button:Pending Queue 0  — it was already the selected one — pressing it again correctly changes nothing
-   admin-panel/content/cdn  button:ALL  — it was already the selected one — pressing it again correctly changes nothing
-   admin-panel/operations  button:Overview  — it was already the selected one — pressing it again correctly changes nothing
-   admin-panel/reports  button:Financial  — it was already the selected one — pressing it again correctly changes nothing
-   admin-panel/business-policy/deposit  button:INR  — it was already the selected one — pressing it again correctly changes nothing
-   admin-panel/chat-management  button:Open the public chat room  — it was already the selected one — pressing it again correctly changes nothing
-   admin-panel/games  button:Games  — it was already the selected one — pressing it again correctly changes nothing
-   merchant-panel/orders  button:All  — it was already the selected one — pressing it again correctly changes nothing
-   merchant-panel/history  button:Volume  — it was already the selected one — pressing it again correctly changes nothing
-
-DISABLED (16) — disabled on arrival, so there was nothing to press
+DISABLED (17) — disabled on arrival, so there was nothing to press
+   user-panel/wallet  button:500 tokens  — disabled at the moment it was pressed
+   user-panel/wallet  button:1,000 tokens  — disabled at the moment it was pressed
+   user-panel/wallet  button:5,000 tokens  — disabled at the moment it was pressed
+   user-panel/wallet  button:10,000 tokens  — disabled at the moment it was pressed
+   user-panel/wallet  button:50,000 tokens  — disabled at the moment it was pressed
+   user-panel/wallet  button:1,00,000 tokens  — disabled at the moment it was pressed
+   user-panel/wallet  button:5,00,000 tokens  — disabled at the moment it was pressed
    user-panel/wallet  button:Continue to payment
-   admin-panel/cycle-history  button:Previous page (0 of 8)
-   admin-panel/users  button:Previous page (0 of 3)
    admin-panel/merchants  button:Previous page (0 of 2)
-   admin-panel/kyc/bulk  button:Nothing pending
+   admin-panel/teams  button:Make supervisor
    admin-panel/telegram  button:Replace channel
    admin-panel/telegram  button:Register bot
-   admin-panel/transactions  button:Previous page (0 of 2)
    admin-panel/revenue  button:Prev
    admin-panel/revenue  button:Next
    admin-panel/support-assistant  button:Ingest document
    admin-panel/sub-admins  button:Grant
-   admin-panel/disputes/cdm-receipts  button:Read slip
-   admin-panel/payment-control  button:Test Connection
-   merchant-panel/cash-links  button:Supply link
-   merchant-panel/token-supply  button:Price this amount
+   admin-panel/payment-references  button:Look up
 
-UPSTREAM (4) — pressed; an upstream the operator can fix refused, and the server SAID SO — correct behaviour, not a defect
-   admin-panel/telegram  button:Retry webhook  — 502 POST /api/admin/telegram/bots/bb-browser-merchant/webhook — "Telegram refused: Unautho
-   admin-panel/telegram  button:Retry webhook[1]  — 502 POST /api/admin/telegram/bots/bb-browser-player/webhook — "Telegram refused: Unauthori
-   admin-panel/telegram  button:Retry webhook[2]  — 502 POST /api/admin/telegram/bots/bb-browser-staff/webhook — "Telegram refused: Unauthoriz
+UPSTREAM (5) — pressed; an upstream the operator can fix refused, and the server SAID SO — correct behaviour, not a defect
+   admin-panel/telegram  button:Retry webhook  — 502 POST /api/admin/telegram/bots/bb-browser-merchant/webhook — "Telegram refused: HTTP 40
+   admin-panel/telegram  button:Retry webhook[1]  — 502 POST /api/admin/telegram/bots/bb-browser-player/webhook — "Telegram refused: HTTP 403"
+   admin-panel/telegram  button:Retry webhook[2]  — 502 POST /api/admin/telegram/bots/bb-browser-staff/webhook — "Telegram refused: HTTP 403"
    admin-panel/support-assistant  button:Reload the assistant's documents  — 503 GET /api/admin/support/documents — "The support assistant stores its passages with the
+   merchant-panel/profile  button:Set up now  — 500 POST /api/merchant/2fa/setup — "Could not start two-factor setup."
 
 GONE (1) — vanished before its turn — an earlier press removed it
-   user-panel/  button:30M B D D D B D D D D D D D B ANALYTICS ▲  — the control is no longer on the screen — an earlier press removed it
+   user-panel/  button:30M No results yet ANALYTICS ▲  — the control is no longer on the screen — an earlier press removed it
 
 NEEDS_INPUT (1) — it asked a confirm/prompt and this pass declined — NOT a dead button
    admin-panel/support-assistant  button:Re-ingest  — it asked a confirm/prompt, which this pass declines
 
 ------------------------------------------------------------------------
-1291 controls across 67 screens
+632 controls across 64 screens
 
-    527   40.8%  SCREEN_MOVED       pressed, and the routed region changed
-     34    2.6%  ANSWERED           pressed; it called a route and the server answered, including a refusal that names what to fix
-     18    1.4%  SAID               pressed; the panel answered with an alert() — informational, and NOT evidence of a mutation
-     16    1.2%  NO_OP_BY_DESIGN    pressed; it was already the selected segment, so no change is the correct outcome
-     18    1.4%  INERT              pressed; changed nothing AND called nothing — §32 S22 candidate, read the list
-     16    1.2%  DISABLED           disabled on arrival — correct state; the enable transition is a SEPARATE test
-    574   44.5%  REPEAT             a repeat of a name already pressed on this screen — covered ONLY IF the first instance is representative
-     76    5.9%  DRIVEN_ELSEWHERE   destructive — driven by `npm run test:mutate` against its own rows; check THAT output, this is a pointer not a proof
-      1    0.1%  ASKED              it asked a confirm/prompt and this pass declines — answered in the mutating pass instead
-     14    1.1%  PRESSED_ON_ANOTHER_SCREEN absent because an earlier press removed it platform-wide — the same control ACTED on another screen this run
-      2    0.2%  NOT_REACHED        NOT pressed and not by choice — this is the number that is left
+    451   71.4%  SCREEN_MOVED       pressed, and the routed region changed
+     30    4.7%  ANSWERED           pressed; it called a route and the server answered, including a refusal that names what to fix
+     18    2.8%  SAID               pressed; the panel answered with an alert() — informational, and NOT evidence of a mutation
+     27    4.3%  NO_OP_BY_DESIGN    pressed; it was already the selected segment, so no change is the correct outcome
+      0    0.0%  INERT              pressed; changed nothing AND called nothing — §32 S22 candidate, read the list
+     17    2.7%  DISABLED           disabled on arrival — correct state; the enable transition is a SEPARATE test
+    281   44.5%  REPEAT             a repeat of a name already pressed on this screen — covered ONLY IF the first instance is representative
+    156   24.7%  DRIVEN_ELSEWHERE   destructive — driven by `npm run test:mutate` against its own rows; check THAT output, this is a pointer not a proof
+      1    0.2%  ASKED              it asked a confirm/prompt and this pass declines — answered in the mutating pass instead
+      3    0.5%  PRESSED_ON_ANOTHER_SCREEN absent because an earlier press removed it platform-wide — the same control ACTED on another screen this run
+      2    0.3%  NOT_REACHED        NOT pressed and not by choice — this is the number that is left
       0    0.0%  BROKE              threw, or the server answered 5xx with nothing to act on
-      4          revealed           controls only a PRESS reveals — not in the inventory, which is taken at rest
+    353          revealed           controls only a PRESS reveals — not in the inventory, which is taken at rest
 
   STATE CHANGES are NOT counted here. This pass reads the SCREEN; it cannot
   tell a rendered change from a committed one. What proves a mutation is
@@ -380,4 +365,4 @@ NEEDS_INPUT (1) — it asked a confirm/prompt and this pass declined — NOT a d
   read its output beside this table, never instead of it.
 
 
-manifest 2026-09-25T04:02:18.877Z  ·  drive 2026-09-25T04:04:53.770Z
+manifest 2026-10-04T08:00:36.197Z  ·  drive 2026-10-04T08:23:03.423Z

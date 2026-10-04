@@ -7,12 +7,19 @@
 
   Committed rather than left in a session scratchpad because §17.4 requires it:
   a session container is ephemeral and the repository is the only durable
-  medium — a rule this project has already had broken twice.
+  medium.
 
-  Route, job, event and state counts are MACHINE-DERIVED, not written from
-  memory. Regenerate the underlying numbers with `npm run audit:map` and the
-  extraction in the session that produced this; anything that has drifted is a
-  correction to make here, not a reason to trust the old figure.
+  Rewritten 2026-10-04 (Step 2g) for the team model: supervisors and members,
+  team token pools, routing, team commission and oversight. The 2026-09-10
+  edition described the open pool, the cash-link queue, per-merchant wallets,
+  the settlement-rail switch and the per-variety commission engine, all of which
+  Step 2c deleted; `git log` has it.
+
+  Route, job and screen counts are MACHINE-DERIVED: regenerate them with
+  `node scripts/extract-operations-map.mjs` (and `npm run audit:map`). Anything
+  that has drifted is a correction to make here, not a reason to trust the old
+  figure. Refusal codes, states and predicates were read from the handler, the
+  service and the SQL each flow names.
 
   It is a READING of the code, and §0.5 of docs/audit/SECURITY_AUDIT_MAP.md
   records that reading is exactly what missed every serious defect in the
@@ -127,31 +134,32 @@ footer.end{border-top:2px solid var(--ink);margin-top:60px;padding-top:20px;colo
 <div class="wrap">
 
 <header class="top">
-  <p class="eyebrow">Derived from source · 2026-09-10</p>
+  <p class="eyebrow">Derived from source · 2026-10-04 · after Step 2 (teams)</p>
   <h1>BettingBazaar Operations Map</h1>
   <p class="sub">Every workflow across the three panels, what each branch decides, and what the row
   says afterwards — so a path can be checked by reading rather than by running it.</p>
   <div class="meta">
-    <span><b>304</b> routes</span>
-    <span><b>11</b> scheduled jobs</span>
-    <span><b>36</b> realtime events</span>
-    <span><b>2</b> settlement rails</span>
+    <span><b>286</b> routes</span>
+    <span><b>15</b> scheduled jobs</span>
+    <span><b>48</b> realtime event names</span>
+    <span><b>3</b> rails, fixed per order</span>
     <span><b>9</b> order states</span>
-    <span><b>65</b> panel screens</span>
+    <span><b>68</b> panel routes (19 · 43 · 6)</span>
   </div>
 </header>
 
 <div class="legend">
   <h3>How to read this</h3>
   <div class="legend-grid">
-    <p><span class="chip moved">MONEY MOVED</span> a balance changed and a ledger row exists.</p>
+    <p><span class="chip moved">MONEY MOVED</span> a balance or pool changed and a ledger row exists.</p>
     <p><span class="chip waiting">WAITING</span> the row is parked; something else must act.</p>
-    <p><span class="chip refused">REFUSED</span> nothing moved; the caller was told why.</p>
+    <p><span class="chip refused">REFUSED</span> nothing moved; the caller was told why, by code.</p>
     <p><span class="chip defect">F-0NN</span> a recorded defect on this path. See the audit register.</p>
   </div>
   <p style="margin:16px 0 0;font-size:14.5px;color:var(--ink-2)">
-    Every route, guard, job name and state below was extracted from the code, not written from
-    memory. Where a flow has a known defect it is marked in place rather than described as working.
+    Route, job and screen counts come from <code>node scripts/extract-operations-map.mjs</code>;
+    refusal codes, states and predicates were read out of the handler, the service and the SQL each
+    flow names. Where a flow has a known gap it is marked in place rather than described as working.
     <b>Where something was not verified, it says so.</b>
   </p>
 </div>
@@ -161,28 +169,32 @@ footer.end{border-top:2px solid var(--ink);margin-top:60px;padding-top:20px;colo
     <li><a href="#topology">Topology</a></li>
     <li><a href="#states">Order states</a></li>
     <li><a href="#player">Player</a></li>
-    <li><a href="#merchant">Merchant</a></li>
+    <li><a href="#teams">Teams</a></li>
+    <li><a href="#member">Member</a></li>
+    <li><a href="#oversight">Oversight</a></li>
     <li><a href="#admin">Admin</a></li>
     <li><a href="#cross">Cross-panel</a></li>
     <li><a href="#background">Background</a></li>
-    <li><a href="#defects">Open defects</a></li>
+    <li><a href="#defects">Open items</a></li>
   </ul>
 </nav>
 
 <section id="topology">
 <h2>Topology</h2>
 <p class="intro">One backend, three panels, one database. Everything shared reaches a panel through
-the API or the realtime stream — never through a file copied between panels.</p>
+the API or a realtime stream — never through a file copied between panels. The merchant panel serves
+two kinds of merchant login: a <b>supervisor</b>, who runs teams and does no orders, and a
+<b>member</b>, who does the orders.</p>
 
 <pre class="mermaid">
 flowchart LR
-  U["User panel<br/>19 screens"] --> API
-  M["Merchant panel<br/>SPA, ROUTES const"] --> API
-  A["Admin panel<br/>45 screens"] --> API
-  TG["Telegram bots<br/>sign-in + recovery"] --> API
-  API["Express<br/>304 routes"] --> PG[("PostgreSQL<br/>the only datastore")]
+  U["User panel<br/>19 routes"] --> API
+  M["Merchant panel<br/>6 routes · supervisors + members"] --> API
+  A["Admin panel<br/>43 routes"] --> API
+  TG["Telegram bots<br/>prove the mobile · channel · reset"] --> API
+  API["Express<br/>286 routes"] --> PG[("PostgreSQL<br/>the only datastore")]
   API -.optional.-> RD[("Redis<br/>rate limits · jobs · bridge")]
-  API --> SIO["socket.io<br/>public"]
+  API --> SIO["socket.io<br/>public + user rooms"]
   API --> SSE["SSE<br/>authenticated"]
   SIO --> U
   SSE --> M
@@ -191,427 +203,525 @@ flowchart LR
 
 <div class="scroll"><table>
 <tr><th>Mount</th><th>Serves</th><th>Gate at the door</th></tr>
-<tr><td><code>/api/</code></td><td>everything</td><td>1000 req / 15 min per IP, then <code>owaspFilter</code></td></tr>
-<tr><td><code>/api/v1/auth</code></td><td>player auth</td><td><code>authLimiter</code> + subnet limiter + surge breaker</td></tr>
-<tr><td><code>/api/merchant/auth/login</code></td><td>merchant login</td><td>pace limiter + captcha</td></tr>
-<tr><td><code>/api/admin</code></td><td>13 sub-routers</td><td><code>authenticate</code> then <code>isAdmin</code> / <code>isAdminOrSubAdmin</code></td></tr>
-<tr><td><code>/api/payment</code></td><td>orders, both rails</td><td><code>authenticate</code> + KYC gate + <code>orderAccessGuard</code></td></tr>
-<tr><td><code>/api/merchant</code></td><td>merchant panel</td><td><code>merchantAuth</code></td></tr>
+<tr><td><code>/api/</code></td><td>everything</td><td><code>ipBlocklist</code> before all middleware; 1,000 req / 15 min per IP (<code>RATE_LIMIT_TIERS.global</code>); <code>owaspFilter</code> (flag-gated)</td></tr>
+<tr><td><code>/api/v1/auth</code></td><td>player register, login, verification, reset</td><td>credential limiters on the credential routes only (§33.4); captcha on the form</td></tr>
+<tr><td><code>/api/merchant/auth/signup</code></td><td>merchant sign-up</td><td><code>signupLimiter</code> + subnet limiter counting successes + captcha</td></tr>
+<tr><td><code>/api/merchant/auth/login</code></td><td>merchant login</td><td><code>loginPaceLimiter</code> + <code>merchantAuthLimiter</code> + captcha</td></tr>
+<tr><td><code>/api/merchant</code></td><td>two routers: orders, and teams</td><td><code>merchantAuth</code>; <code>requireSupervisor</code> on the 12 <code>/supervisor/*</code> routes</td></tr>
+<tr><td><code>/api/payment</code></td><td>the player's orders</td><td><code>authenticatePlayer</code> on every route; channel membership and limiters on create; <code>orderAccessGuard</code> on one order</td></tr>
+<tr><td><code>/api/admin</code></td><td>25 sub-routers</td><td><code>authenticate</code>, then <code>hasPermission(&lt;area&gt;)</code>; <code>isAdmin</code> on staff accounts and queue managers</td></tr>
 <tr><td><code>/api/telegram</code></td><td>bot webhooks</td><td>per-bot secret header, not a session</td></tr>
+<tr><td><code>/api/sse</code></td><td>three streams: player, merchant, admin</td><td>the token in the stream URL, checked by <code>sessionIsLive</code></td></tr>
 </table></div>
 
-<p style="font-size:14.5px;color:var(--mid)"><b>Guard frequency across all 304 routes:</b>
-<code>authenticate</code> 227 · <code>isAdmin</code> 117 · <code>isAdminOrSubAdmin</code> 44 ·
-<code>merchantAuth</code> 28 · <code>hasPermission</code> 15 · <code>orderAccessGuard</code> 9.</p>
+<p style="font-size:14.5px;color:var(--mid)"><b>Guards across all 286 routes</b>, as the extractor reads them (the guards on the <code>router.verb(</code> line; a route that lists its guards on the lines below, like <code>/usdt/deposit/create</code>, counts fewer here than it has):
+<code>authenticate</code> 174 · <code>hasPermission</code> 169 · <code>authenticatePlayer</code> 34 ·
+<code>merchantAuth</code> 33 · <code>requireSupervisor</code> 12 · <code>orderAccessGuard</code> 7 ·
+<code>isAdmin</code> 7. <code>isAdminOrSubAdmin</code>, 44 routes in the 2026-09-10 map, is gone: every
+staff route asks for a permission area (F-047).</p>
 </section>
 
 <section id="states">
 <h2>The order state machine</h2>
-<p class="intro">Nine states, enforced by a CHECK constraint. Every transition is a guarded UPDATE —
-the state it expects is in the WHERE clause, so two callers racing produce one winner and one
-<span class="chip refused">REFUSED</span>, never two.</p>
+<p class="intro">Nine states, enforced by the <code>order_states_known</code> CHECK. Every transition is
+a guarded UPDATE: the states it accepts (<code>ALLOWED_FROM</code> in
+<code>database/repositories/orders.core.js</code>) are in the WHERE clause, so two callers racing
+produce one winner and one <span class="chip refused">REFUSED</span>, never two. The open sell pool
+that once let an order leave <code>PENDING_QUEUE</code> straight to <code>PROCESSING</code> is gone:
+every order reaches a member through routing.</p>
 
 <pre class="mermaid">
 stateDiagram-v2
   [*] --> PENDING_QUEUE: player creates
-  PENDING_QUEUE --> ASSIGNED: auto-assign / admin / merchant accepts
-  PENDING_QUEUE --> CANCELLED: expiry cron
-  ASSIGNED --> PROCESSING: merchant starts
-  ASSIGNED --> CANCELLED: expiry / merchant rejects
-  PROCESSING --> PAID: player submits UTR (deposit)
-  PROCESSING --> PAID: merchant asserts sent (withdrawal)
+  PENDING_QUEUE --> ASSIGNED: team routing (+ pool hold on a buy)
+  ASSIGNED --> PENDING_QUEUE: member declines · admin reassigns
+  ASSIGNED --> PROCESSING: member accepts
+  PROCESSING --> PAID: player taps Paid (buy) · member marks sent (sell)
+  PAID --> COMPLETED: buy confirmed · sell hold window passes
+  PAID --> REJECTED: member says the buy's money never came
+  PROCESSING --> REJECTED: the same button, before the player tapped Paid
+  REJECTED --> DISPUTED: player disputes inside the window
+  REJECTED --> CANCELLED: window closes, hold back to the pool
+  PAID --> DISPUTED: player (after 10 min) · member red flag · sweep
+  PROCESSING --> DISPUTED: member red flag
+  COMPLETED --> DISPUTED: player
+  DISPUTED --> COMPLETED: dispute manager decides for the payer's side
+  DISPUTED --> CANCELLED: dispute manager decides against
+  PENDING_QUEUE --> CANCELLED: expiry · player cancels
+  ASSIGNED --> CANCELLED: expiry
   PROCESSING --> CANCELLED: expiry
-  PAID --> COMPLETED: money moves, then this
-  PAID --> DISPUTED: player disputes
-  PROCESSING --> DISPUTED: merchant disputes
-  COMPLETED --> DISPUTED: merchant only
-  DISPUTED --> COMPLETED: admin releases
-  DISPUTED --> CANCELLED: admin refunds
   COMPLETED --> [*]
   CANCELLED --> [*]
 </pre>
 
-<div class="note">
-  <span class="tag">Asymmetry worth knowing</span>
-  <p>A <b>merchant</b> may dispute from <code>PROCESSING</code>, <code>PAID</code> or
-  <code>COMPLETED</code>. A <b>player</b> may dispute only from <code>PAID</code> —
-  <code>if (order.status !== 'PAID') return 400</code>. So any bug that moves an order out of
-  <code>PAID</code> without paying the player also removes their only recourse. That is exactly
-  what F-017 was.</p>
+<div class="note ok">
+  <span class="tag">Once the team's tokens are paid out, only COMPLETED may follow</span>
+  <p><code>teamPools.spendForBuy</code> stamps <code>order_states.pool_paid_at</code> in the paying
+  transaction, after asking the state under the order lock. From then on <code>transition()</code> and
+  <code>reassign()</code> refuse every move but <code>COMPLETED</code> (<code>pool_paid</code>). Before
+  this (2c+ review), an admin APPROVE on a <code>REJECTED</code> buy paid the player and then answered
+  409.</p>
 </div>
 
-<div class="note ok">
-  <span class="tag">The ordering rule, now uniform</span>
-  <p><b>Money moves before the status does</b>, on every deposit path. Each movement is keyed on the
-  order id, so a refusal or a crash leaves a <code>PAID</code> order the next attempt replays as
-  no-ops — retryable, and still disputable. The reverse ordering shipped four times in this
-  codebase before it was made uniform.</p>
+<div class="note">
+  <span class="tag">Who may dispute from where</span>
+  <p>A <b>player</b> disputes a <code>PAID</code> order (10 minutes after Paid), a <code>COMPLETED</code>
+  one, or a <code>REJECTED</code> buy inside <code>dispute_window_until</code>. A <b>member</b> red-flags
+  from <code>PROCESSING</code> or <code>PAID</code>, but never their own rejection. The
+  <code>paid-order-timeout</code> sweep disputes a <code>PAID</code> buy the member ignored
+  (<code>disputeRaisedBy='system'</code>). Only a payment dispute the player or the platform raised
+  can suspend whoever loses it.</p>
 </div>
 </section>
 
 <section id="player">
 <h2>Player workflows</h2>
-<p class="intro">The player never sees who they are paying — a payment link, an opaque
-<code>Merchant #ref</code>, a deadline. Everything below is what they can actually reach.</p>
+<p class="intro">The player picks a size, waits for a member to accept, and only then sees where to
+pay. They never see who they are paying beyond <code>Merchant #ref</code>; on a 50,000+ buy they see the
+member's bank account, which is the one relaxation the owner made (2026-10-03).</p>
 
 <div class="flow">
-  <header><h3>Signing up</h3><span class="who">Telegram bot → no password, no email</span></header>
+  <header><h3>Signing up, and being let in</h3><span class="who">a form, then Telegram verifies</span></header>
   <div class="body">
-  <p>There is <b>no player email anywhere on this platform</b> and the bot never asks for one.
-  Identity is a mobile number plus a 12-digit Aadhaar held as an HMAC and AES-256-GCM ciphertext.
-  No document is ever collected.</p>
+  <p>The form creates the account: mobile, password, confirmation, captcha and an invite code (a
+  referral link's code arrives pre-filled and locked). There is no email, no KYC, no Aadhaar and no
+  upload path; Step 1 deleted all of it. Telegram then <b>proves</b> the number and the channel
+  membership. Nothing a bot does grants a session.</p>
   <pre class="mermaid">
 flowchart TD
-  S["/start in the bot"] --> C{"Shares contact?"}
-  C -->|No| X1["Cannot proceed<br/>the number must be theirs"]
-  C -->|Yes| P{"Number already linked?"}
-  P -->|Yes| L["Sign in instead"]
-  P -->|No| K["Asks for 12-digit Aadhaar"]
-  K --> H{"Valid + unique?"}
-  H -->|"Duplicate hash"| X2["Refused — one Aadhaar, one account"]
-  H -->|"Typo / invalid"| X3["Row DELETED, may retry<br/>up to MAX_KYC_SUBMISSIONS"]
-  H -->|Yes| A["Account created<br/>KYC = PENDING_APPROVAL"]
-  A --> D["Can DEPOSIT immediately"]
-  A --> W["Cannot WITHDRAW<br/>needs APPROVED"]
+  F["POST /api/v1/auth/register<br/>mobile · password · captcha · invite"] --> V{"Valid fields?<br/>signupFields.js · passwordPolicy.js"}
+  V -->|No| R1["400, naming the field"]
+  V -->|Yes| IV{"Invite code, if given, is someone's?"}
+  IV -->|No| R3["400 — names the code"]
+  IV -->|Yes| U{"Mobile free among PLAYER accounts?"}
+  U -->|No| R2["409 — log in instead"]
+  U -->|Yes| C["Account created · a sign-in bot assigned ·<br/>session issued"]
+  C --> G["VerificationGateModal<br/>GET /api/v1/auth/verification"]
+  G --> Q{"reason"}
+  Q -->|no_bot / no_channel| P["Platform not configured<br/>no button: not the player's to fix"]
+  Q -->|share_contact / contact_changed| S["Share contact with the panel's own bot"]
+  Q -->|join_channel| J["Join the channel"]
+  Q -->|null| OK["Verified: the app opens"]
+  </pre>
+  <p>The gate asks on mount and on a timer and blocks everything until both halves hold. Leaving the
+  channel re-gates at once; a channel change re-gates everyone through the generation. Staff alone pass
+  while the staff surface is unconfigured (the bootstrap banner, §33).</p>
+  </div>
+</div>
+
+<div class="flow">
+  <header><h3>Buying tokens — which questions, in which order</h3><span class="who">POST /api/payment/deposit/create · /usdt/deposit/create</span></header>
+  <div class="body">
+  <p>There is no rail switch. The <b>size</b> decides the rail of an INR order and the
+  <b>currency</b> decides USDT; the order stamps <code>payment_mode</code> at creation and a trigger
+  freezes it (<code>orderRails.js</code>).</p>
+  <pre class="mermaid">
+flowchart TD
+  B["Player taps Buy"] --> CH{"In the Telegram channel?"}
+  CH -->|No| R0["403 — join first"]
+  CH -->|Yes| LIM{"depositCreateLimiter"}
+  LIM -->|Over| R1["429"]
+  LIM -->|OK| CO{"order_lock_until in the future?<br/>three unpaid buys in a row"}
+  CO -->|Yes| R2["429 ORDER_COOL_OFF · retryAt"]
+  CO -->|No| CUR{"Currency"}
+  CUR -->|USDT| CHN{"Chain chosen?"}
+  CHN -->|No| R3["400 USDT_CHAIN_REQUIRED"]
+  CHN -->|Yes| UA{"100–10,000 USDT, step 100?<br/>SystemConfig.usdtBuy"}
+  UA -->|No| R4["400 NOT_A_USDT_AMOUNT"]
+  CUR -->|INR| SZ{"One of the offered sizes?<br/>SystemConfig.orderSizes"}
+  SZ -->|No| R5["400 NOT_AN_ORDER_SIZE · sizes"]
+  UA -->|Yes| OPEN{"A buy already open?"}
+  SZ -->|Yes| OPEN
+  OPEN -->|Yes| R6["409 BUY_ALREADY_OPEN"]
+  OPEN -->|No| VEL{"maxFundingOrdersPerHour"}
+  VEL -->|Over| R7["429 VELOCITY_LIMIT"]
+  VEL -->|OK| BL{"Account blocked?"}
+  BL -->|Yes| R8["403 USER_BLOCKED"]
+  BL -->|No| RATE{"USDT priced?"}
+  RATE -->|No| R9["503 USDT_RATE_UNSET"]
+  RATE -->|"Yes, or INR"| Q["Order PENDING_QUEUE<br/>deposit/reserve split frozen on it"]
+  Q --> ASG["Team routing, at once<br/>then every 30 s"]
   </pre>
   <div class="scroll"><table>
-  <tr><th>KYC state</th><th>Deposit</th><th>Withdraw</th><th>Bet</th></tr>
-  <tr><td><code>PENDING_APPROVAL</code></td><td><span class="chip moved">yes</span></td><td>no</td><td>yes</td></tr>
-  <tr><td><code>APPROVED</code></td><td>yes</td><td><span class="chip moved">yes</span></td><td>yes</td></tr>
-  <tr><td><code>REJECTED</code></td><td>no</td><td>no</td><td>—</td></tr>
+  <tr><th>Rail</th><th>Sizes</th><th>Where to pay, shown only after the member accepts</th><th>Their next step</th></tr>
+  <tr><td><code>CASH</code> (<code>CASH_ATM</code>)</td><td>500 · 1,000 · 5,000 · 10,000</td><td>one <b>Pay ₹amount</b> button, from the ATM QR the member scanned</td><td>pay, tap Paid, then give the reference</td></tr>
+  <tr><td><code>UPI_BANK</code> (<code>P2P_UPI</code>)</td><td>50,000 · 1,00,000 · 5,00,000</td><td>the member's bank account: holder, number, IFSC, bank, with Copy buttons</td><td>transfer, tap Paid with the UTR</td></tr>
+  <tr><td><code>USDT</code></td><td>100–10,000 USDT, step 100</td><td>the member's address <b>on the chain the player chose</b></td><td>send, tap Paid with the tx hash</td></tr>
   </table></div>
-  <p><b>An APPROVED Aadhaar is immutable.</b> A REJECTED one can be replaced through the bot. A
-  FAILED submission's row is deleted on purpose: <code>aadhaar_hash</code> is unique, so a typo
-  would otherwise park a stranger's Aadhaar in that index and lock its real owner out permanently.</p>
   </div>
 </div>
 
 <div class="flow">
-  <header><h3>Deposit — the branch that decides everything</h3><span class="who">POST /api/payment/deposit/create</span></header>
+  <header><h3>Paying for a buy, and what happens after</h3><span class="who">POST /order/:id/mark-paid · /payment-reference · /dispute</span></header>
   <div class="body">
-  <p>The <b>live rail</b> decides which form the player sees. The order then carries its own copy of
-  that rail forever, so an admin switching rails mid-flight never changes the rules of an order
-  already created.</p>
   <pre class="mermaid">
 flowchart TD
-  B["Player taps Add funds"] --> G1{"KYC linked?"}
-  G1 -->|No| R1["Refused"]
-  G1 -->|Yes| G2{"In the Telegram channel?"}
-  G2 -->|No| R2["Refused — channel membership"]
-  G2 -->|Yes| G3{"Rate limit<br/>admin-set per minute"}
-  G3 -->|Over| R3["429"]
-  G3 -->|OK| G4{"Velocity<br/>maxFundingOrdersPerHour"}
-  G4 -->|Over| R4["429 VELOCITY_LIMIT"]
-  G4 -->|OK| G5{"Already an open buy?"}
-  G5 -->|Yes| R5["409 BUY_ALREADY_OPEN"]
-  G5 -->|No| G6{"Open withdrawal?"}
-  G6 -->|Yes| R6["400 OPPOSITE_SIDE_BLOCKED"]
-  G6 -->|No| RAIL{"Which rail is live?"}
-  RAIL -->|P2P_UPI| UPI["Any amount in range"]
-  RAIL -->|CASH_ATM| CASH{"Denomination + ceiling"}
-  RAIL -->|USDT| USDT{"50k / 100k / 500k tokens"}
-  CASH -->|"Not a denomination"| R7["400 NOT_A_DENOMINATION"]
-  CASH -->|"Over ₹10,000"| R8["400 CASH_BUY_CEILING"]
-  USDT -->|"Rate unset"| R9["503 USDT_RATE_UNSET"]
-  UPI --> Q["Order PENDING_QUEUE"]
-  CASH --> Q
-  USDT --> Q
-  Q --> ASG["Auto-assignment"]
+  A["Order ASSIGNED<br/>pool tokens held"] --> W["Player sees: Waiting for the member to accept…"]
+  W --> AC["Member accepts → PROCESSING"]
+  AC --> PD["Player taps Paid"]
+  PD --> G1{"Accepted yet?"}
+  G1 -->|No| X1["409 NOT_ACCEPTED_YET"]
+  G1 -->|Yes| G2{"CASH: has the member scanned the QR?"}
+  G2 -->|No| X2["409 CASH_LINK_PENDING"]
+  G2 -->|"Yes, or not cash"| G3{"Reference claimed before?<br/>utr_registry"}
+  G3 -->|Yes| X3["409 — one payment, one claim"]
+  G3 -->|No| PAID["PAID · the move names this member"]
+  PAID --> MC{"Member"}
+  MC -->|Confirms| DONE["Pool hold spent · player credited<br/>deposit + reserve · COMPLETED"]
+  MC -->|Rejects: money never came| REJ["REJECTED · hold kept<br/>window rejectedBuyDisputeMinutes (15)"]
+  MC -->|Silent| SW["paid-order-timeout → DISPUTED<br/>counted as a refusal"]
+  REJ -->|Player disputes in time| DIS["DISPUTED · hold kept, no time limit"]
+  REJ -->|Window closes| CAN["CANCELLED · hold back to the pool"]
   </pre>
-  <div class="scroll"><table>
-  <tr><th>Rail</th><th>Amounts</th><th>What the player is given</th><th>Their next step</th></tr>
-  <tr><td><code>P2P_UPI</code></td><td>configured min–max</td><td>a dynamic <code>upi://pay</code> intent with the amount already in it</td><td>tap it, pay, submit the UTR</td></tr>
-  <tr><td><code>CASH_ATM</code></td><td>fixed denominations, ≤ ₹10,000</td><td>an ATM cash link supplied by a merchant</td><td>draw the cash, confirm</td></tr>
-  <tr><td>USDT</td><td>50,000 / 100,000 / 500,000 tokens</td><td>the merchant's address <b>for the chain they chose</b></td><td>send, submit the tx hash</td></tr>
-  </table></div>
-  <div class="note">
-    <span class="tag">Why the ceilings exist</span>
-    <p>₹10,000 is the most a cash machine dispenses in one go and ₹40,000 the largest denomination
-    it handles — so they bound the <b>CASH_ATM</b> rail and one payout leg. Neither applies on UPI
-    and neither applies to USDT. They were once enforced on every INR buy: a machine's limit applied
-    where there is no machine.</p>
-  </div>
+  <p>A cash player may tap Paid before the reference: <code>utr-after-paid-timeout</code> catches the
+  ones whose reference never follows, and counts it as the <b>player's</b> silence
+  (<code>playerPaymentFailure</code>). A buy that lapses before PAID is the player's once the member had
+  accepted (and, on cash, scanned); otherwise it is the member's (<code>playerCouldPay</code>). Three
+  unpaid buys in a row set <code>users.order_lock_until</code>; money arriving clears it.</p>
   </div>
 </div>
 
 <div class="flow">
-  <header><h3>Deposit — after the player pays</h3><span class="who">the part that moves money</span></header>
+  <header><h3>Selling tokens</h3><span class="who">POST /api/payment/withdrawal/create</span></header>
   <div class="body">
   <pre class="mermaid">
 flowchart TD
-  P["Player submits UTR"] --> CL{"UTR already claimed?"}
-  CL -->|Yes| RJ["409 — one payment, one claim"]
-  CL -->|No| PAID["Order PAID<br/>player's money is gone"]
-  PAID --> MC["Merchant presses Confirm"]
-  MC --> D{"Merchant funded?"}
-  D -->|"No — F-018"| NF["REFUSED · order stays PAID<br/>operator alerted, player notified<br/>still retryable, still disputable"]
-  D -->|Yes| MOV["Debit merchant<br/>credit player deposit + reserve<br/>release the UTR"]
-  MOV --> DONE["Order COMPLETED"]
-  PAID -->|"10 min, no confirm"| DIS["Player may dispute"]
-  DIS --> ADM["Admin queue"]
+  W["Player asks to sell"] --> CH{"Channel · withdrawalLimiter · subnet limiter · surge breaker"}
+  CH -->|Refused| R0["403 / 429"]
+  CH -->|OK| CO{"Cool-off?"}
+  CO -->|Yes| R1["429 ORDER_COOL_OFF"]
+  CO -->|No| SZ{"An offered INR size?"}
+  SZ -->|No| R2["400 NOT_AN_ORDER_SIZE"]
+  SZ -->|Yes| VEL{"Velocity"}
+  VEL -->|Over| R3["429 VELOCITY_LIMIT"]
+  VEL -->|OK| BL{"Blocked?"}
+  BL -->|Yes| R4["403 USER_BLOCKED"]
+  BL -->|No| BK{"Bank account on file?"}
+  BK -->|No| R5["400 — add your bank account"]
+  BK -->|Yes| AFF{"Winnings cover it?<br/>read under the wallet lock"}
+  AFF -->|No| R6["400 with the real figure"]
+  AFF -->|Yes| LK["Order + stake lock<br/>ONE transaction"]
+  LK --> ASG["Routed to a member · no pool hold"]
+  ASG --> SENT["Member transfers to the player's bank<br/>gives the UTR · PAID"]
+  SENT --> HOLD["Held withdrawalHoldMinutes (≥ 60)<br/>player sees disputeUntil"]
+  HOLD --> SET["withdrawal-hold-settle:<br/>stake consumed · tokens into the TEAM pool · COMPLETED"]
+  HOLD -->|Player disputes| DSP["DISPUTED · a reversal, not a clawback"]
   </pre>
-  <div class="note">
-    <span class="tag">F-018 · open · the root cause</span>
-    <p>Reaching the <i>merchant not funded</i> branch at all should be impossible. Eligibility
-    <b>is</b> checked on all three assignment paths — but it is a snapshot, not a hold. The tokens
-    stay spendable, so between assignment and confirmation they can go to another deposit, a
-    withdrawal payout or an admin deduction. The wallet already has
-    <code>reserveForSettlement</code> / <code>completeReservation</code> /
-    <code>cancelReservation</code> to hold them. <b>Nothing calls them.</b></p>
-  </div>
+  <p>No USDT sell (<code>USDT_WITHDRAWAL_UNSUPPORTED</code>) and no splitting: one size, one order,
+  one payment. Every sell, cash sizes included, is a bank transfer to the player's own account.</p>
   </div>
 </div>
 
 <div class="flow">
-  <header><h3>Withdrawal</h3><span class="who">stricter than a deposit at every step</span></header>
+  <header><h3>Placing a bet, and getting paid</h3><span class="who">POST /api/bet/place · settlement is a cron tick</span></header>
   <div class="body">
   <pre class="mermaid">
 flowchart TD
-  W["Player requests withdrawal"] --> K{"KYC APPROVED?"}
-  K -->|No| R1["Refused"]
-  K -->|Yes| BK{"Bank details on file?"}
-  BK -->|No| R2["Add account first"]
-  BK -->|Yes| BL{"Blocked?"}
-  BL -->|Yes| R3["Refused"]
-  BL -->|No| BAL{"Affordable?<br/>read from the rows the write locks"}
-  BAL -->|No| R4["400 with the real balance"]
-  BAL -->|Yes| ESC["Stake LOCKED in escrow<br/>order PENDING_QUEUE"]
-  ESC --> ASG["Assigned to a merchant"]
-  ASG --> MP["Merchant asserts they sent it"]
-  MP --> HOLD["Order PAID + hold<br/>~60 min, admin-set"]
-  HOLD --> CRON["withdrawal-hold-settle<br/>every 60s"]
-  CRON --> SET["Stake consumed<br/>merchant credited"]
-  HOLD -->|"Player disputes in the window"| DSP["Reversal, not clawback"]
-  ESC -->|"Nobody takes it"| EXP["expiry cron → escrow REFUNDED"]
-  </pre>
-  <p><b>The hold is the whole design.</b> The merchant asserting payment settles nothing. Until the
-  window passes neither side has moved, so a dispute is a <i>reversal</i> rather than a clawback.
-  This branch previously consumed the stake and credited the merchant in the same request — a
-  merchant who pressed confirm without sending money held spendable tokens instantly.</p>
-  <p>A withdrawal larger than one payout leg is <b>split</b>, never refused. The siblings share a
-  <code>withdrawal_batch_ref</code>, which two admin screens read.</p>
-  </div>
-</div>
-
-<div class="flow">
-  <header><h3>Placing a bet, and getting paid</h3><span class="who">POST /api/bet · settlement is a cron tick</span></header>
-  <div class="body">
-  <pre class="mermaid">
-flowchart TD
-  B["Player places a bet"] --> IK{"Idempotency-Key present?"}
+  B["Player places a bet"] --> CH{"Channel · betLimiter"}
+  CH --> IK{"Idempotency-Key present?"}
   IK -->|No| R0["400 — say which request this is"]
   IK -->|Yes| RP{"Already seen this key?"}
   RP -->|Yes| SAME["Returns the SAME bet<br/>no second stake move"]
   RP -->|No| PH{"Cycle still OPEN?"}
   PH -->|No| R1["Betting closed"]
-  PH -->|Yes| LIM{"Within betLimits for this type?"}
-  LIM -->|No| R2["Refused with this board's own limits"]
+  PH -->|Yes| LIM{"Within betLimits for this type?<br/>opposite side allowed?"}
+  LIM -->|No| R2["Refused with this board's own limits<br/>or OPPOSITE_SIDE_BLOCKED"]
   LIM -->|Yes| AFF{"Affordable?"}
   AFF -->|No| R3["Refused"]
   AFF -->|Yes| LK["Stake LOCKED · bet written"]
-  LK --> CY["Cycle runs its phases"]
-  CY --> DEC["Winner written FIRST, then status"]
-  DEC --> STL["Settlement credits winners"]
+  LK --> DEC["Winner written FIRST, then status"]
+  DEC --> STL["Settlement: gross 2×, minus winningsFeePercent (1)"]
   </pre>
   <div class="note">
-    <span class="tag">Two traps this path already paid for</span>
-    <p><b>The winner is written before the status</b>, and a cycle with no winner is never offered
-    for settlement — otherwise the engine looks healthy and silently never settles.
-    And the payout figure is <code>net</code>: the function returns
-    <code>{gross, fee, net}</code> and has <b>no <code>payout</code> key</b>, so
-    <code>p?.payout ?? 0</code> pays zero while still charging the fee.</p>
+  <span class="tag">Two traps this path already paid for</span>
+  <p><b>The winner is written before the status</b>, and a cycle with no winner is never offered for
+  settlement. The payout figure is <code>net</code>: <code>computeWinningsPayout()</code> returns
+  <code>{gross, fee, net}</code> and has <b>no <code>payout</code> key</b>.</p>
   </div>
-  <p>Real pool totals are derived from the bets table and never stored on the cycle row — a bet
-  holds a share lock there, so a bet that also updated it would deadlock against another bet.</p>
   </div>
 </div>
 </section>
 
-<section id="merchant">
-<h2>Merchant workflows</h2>
-<p class="intro">A merchant settles on exactly one rail — INR or USDT, never both — and sees the
-payout account and the name on it, and nothing else that identifies the player.</p>
+<section id="teams">
+<h2>Teams, pools and routing</h2>
+<p class="intro">Step 2 replaced per-merchant wallets, scoring, the open pool, the cash-link queue and
+the platform payment-mode switch with one structure: an admin-approved supervisor on one rail, up to
+four teams of exactly ten approved members, and one token pool per team.</p>
 
 <div class="flow">
-  <header><h3>How an order reaches a merchant</h3><span class="who">three doors, one eligibility rule</span></header>
+  <header><h3>Building a team</h3><span class="who">supervisor proposes · admin approves</span></header>
   <div class="body">
   <pre class="mermaid">
 flowchart TD
-  Q["Order PENDING_QUEUE"] --> AUTO["Automatic assignment"]
-  AUTO --> F1{"ACTIVE · APPROVED · online?"}
-  F1 -->|No| SKIP1["Not a candidate"]
-  F1 -->|Yes| F2{"Accepts this direction?"}
-  F2 -->|No| SKIP2["Not a candidate"]
-  F2 -->|Yes| F3{"Same rail as the order?"}
-  F3 -->|No| SKIP3["Not a candidate"]
-  F3 -->|Yes| F4{"USDT: address on THIS chain?"}
-  F4 -->|No| SKIP4["Not a candidate"]
-  F4 -->|Yes| F5{"Token balance covers it?"}
-  F5 -->|No| SKIP5["Excluded by scoring"]
-  F5 -->|Yes| F6{"Under maxConcurrent<br/>default 1"}
-  F6 -->|No| SKIP6["At capacity"]
-  F6 -->|Yes| SC["Scored · best wins"]
-  SC --> ASN["ASSIGNED + snapshot frozen"]
-  Q --> POOL["Merchant claims from the open pool"]
-  POOL --> SAME["Same rail, chain and balance checks"]
-  Q --> ADM["Admin assigns or reassigns"]
-  ADM --> INV["inventoryRefusal()"]
+  S1["Merchant signs up<br/>POST /api/merchant/auth/signup"] --> S2["Admin approves the merchant"]
+  S2 --> SUP["Admin makes one a supervisor, on ONE rail<br/>PUT /api/admin/merchants/:id/supervisor"]
+  SUP --> T["Supervisor creates a team<br/>POST /api/merchant/supervisor/teams"]
+  T --> T1{"Fewer than 4 teams?"}
+  T1 -->|No| X1["409 team_limit"]
+  T1 -->|Yes| ADD["Supervisor adds members by merchant ID"]
+  ADD --> A1{"Approved merchant · not a supervisor ·<br/>not in a team · team under 10?"}
+  A1 -->|No| X2["merchant_not_approved / is_supervisor /<br/>already_in_team / team_full"]
+  A1 -->|Yes| PEND["Member PENDING"]
+  PEND --> APR["Admin approves<br/>POST /api/admin/team-members/:id/approve"]
+  APR --> STR{"Approved members"}
+  STR -->|10| WK["WORKING"]
+  STR -->|"fell below 10 today (IST)"| GR["GRACE until 00:00 IST"]
+  STR -->|"below 10 otherwise"| ST["STOPPED: no new orders<br/>open orders finish"]
   </pre>
-  <div class="note">
-    <span class="tag">F-018 · this is where it bites</span>
-    <p>All three doors check the balance and <b>none of them holds it.</b> The check is true at the
-    moment it is made and nothing keeps it true until the merchant confirms.</p>
-  </div>
-  <p><b>What freezes at assignment</b> and can never be re-decided later: the USDT chain, the quote
-  (<code>rate_used</code> and <code>fiat_amount_paise</code>), and the rail the order runs under —
-  all by database trigger. Assignment used to re-read the USDT rate, so an admin edit in between
-  silently re-priced a purchase the player had already agreed to.</p>
+  <p>The counts are taken inside the write under a lock on the parent row, so two approvals cannot both
+  become the eleventh member (§32 S6). Strength (<code>teams.js</code>) reads the <b>database</b> clock
+  in IST; only routing reads it.</p>
   </div>
 </div>
 
 <div class="flow">
-  <header><h3>The Confirm button — every branch</h3><span class="who">POST /api/merchant/confirm/:id</span></header>
+  <header><h3>The team's token pool</h3><span class="who">every movement starts as the supervisor's request</span></header>
   <div class="body">
-  <p>One button, two entirely different workflows underneath, decided by the order's own type.</p>
   <pre class="mermaid">
 flowchart TD
-  C["Confirm"] --> T{"Order type?"}
-  T -->|DEPOSIT| D1{"Bank reference supplied?"}
-  D1 -->|No / too short| DR1["400 — UTR required"]
-  D1 -->|Yes| D2{"Proof on the order or supplied?"}
-  D2 -->|No| DR2["400 — proof required"]
-  D2 -->|Yes| D3{"Merchant funded?"}
-  D3 -->|No| DR3["REFUSED · order stays PAID<br/>alert + player notified"]
-  D3 -->|Yes| D4["Debit merchant → credit player → release UTR"]
-  D4 --> D5["Order COMPLETED"]
-  T -->|WITHDRAWAL| W1{"Hold configured?"}
-  W1 -->|"> 0"| W2["Order PAID · credit HELD<br/>nothing settles yet"]
-  W1 -->|"0"| W3["Completes inline"]
-  W2 --> W4["hold window"]
-  W4 --> W5["Cron settles it later"]
+  R["Supervisor asks to BUY or SELL BACK tokens<br/>POST /api/merchant/supervisor/teams/:id/pool-requests"] --> P{"One pending per direction per team?"}
+  P -->|No| X1["409 request_pending"]
+  P -->|Yes| Q["team_pool_requests PENDING"]
+  Q --> OFF["Money moves off-platform<br/>INR or USDT in · INR out"]
+  OFF --> F["Admin with canFundMerchants fulfils it<br/>typing what was paid"]
+  F --> T{"One transaction"}
+  T --> T1["status flip is the once-only guard"]
+  T --> T2["pool UPDATE: a buyback below<br/>what is available matches no row"]
+  T --> T3["treasury TOKEN_SUPPLY ↔ TEAM_FLOAT"]
+  T --> T4["admin_token_considerations row"]
+  T1 --> DONE["MONEY MOVED"]
   </pre>
   <div class="scroll"><table>
-  <tr><th>Situation</th><th>Order after</th><th>Merchant</th><th>Player</th><th>Recourse</th></tr>
-  <tr><td>Deposit, funded</td><td><code>COMPLETED</code></td><td>debited</td><td>credited</td><td>—</td></tr>
-  <tr><td>Deposit, not funded</td><td><span class="chip waiting">PAID</span></td><td>untouched</td><td>untouched, notified</td><td>retry or dispute</td></tr>
-  <tr><td>Deposit, double-tap</td><td><code>COMPLETED</code></td><td>debited <b>once</b></td><td>credited <b>once</b></td><td>—</td></tr>
-  <tr><td>Withdrawal, hold on</td><td><span class="chip waiting">PAID</span></td><td>credit <code>HELD</code></td><td>stake still locked</td><td>dispute reverses</td></tr>
-  <tr><td>Withdrawal, hold off</td><td><code>COMPLETED</code></td><td>credited</td><td>stake consumed</td><td>dispute is a clawback</td></tr>
+  <tr><th>Order event</th><th>Pool</th><th>Treasury</th></tr>
+  <tr><td>Buy assigned</td><td>available → held, in the assigning transaction</td><td>—</td></tr>
+  <tr><td>Buy confirmed</td><td>held spent, <code>pool_paid_at</code> stamped</td><td>TEAM_FLOAT → USER_FLOAT</td></tr>
+  <tr><td>Buy cancelled, expired, requeued, lost in a dispute</td><td>held → available</td><td>—</td></tr>
+  <tr><td>Sell settled</td><td>available + amount</td><td>USER_FLOAT → TEAM_FLOAT</td></tr>
+  <tr><td>Settled sell refunded</td><td>available − amount; a shortfall the platform covers once</td><td>reversed</td></tr>
+  <tr><td>Commission paid</td><td>available + 10% of the rise (<code>COMMISSION</code> entry)</td><td>TOKEN_SUPPLY → TEAM_FLOAT</td></tr>
+  </table></div>
+  <p>Reconciliation proves <code>TEAM_FLOAT</code> = Σ pools, and holding + pools + wallets = the 20 billion
+  supply. A team with pool history cannot be deleted.</p>
+  </div>
+</div>
+
+<div class="flow">
+  <header><h3>How an order reaches a member</h3><span class="who">routingCandidates + assignToTeam</span></header>
+  <div class="body">
+  <p>One query in <code>database/repositories/teamRouting.js</code>, both directions. Nothing is
+  claimed; an order nobody can take waits in <code>PENDING_QUEUE</code> for the 30-second
+  <code>order-assignment</code> sweep and expires after <code>teamRouting.assignmentWaitSeconds</code>.</p>
+  <pre class="mermaid">
+flowchart TD
+  Q["Order PENDING_QUEUE"] --> F1{"Member APPROVED in a team<br/>whose supervisor holds this rail?"}
+  F1 -->|No| N["Not a candidate"]
+  F1 -->|Yes| F2{"Team WORKING or GRACE?"}
+  F2 -->|No| N
+  F2 -->|Yes| F3{"Member ACTIVE · approved · online ·<br/>not assignment-paused?"}
+  F3 -->|No| N
+  F3 -->|Yes| F4{"Switched on for this direction?"}
+  F4 -->|No| N
+  F4 -->|Yes| F5{"Under the rail's cap?<br/>CASH 1 · UPI_BANK 3 · USDT 3"}
+  F5 -->|No| N
+  F5 -->|Yes| F6{"Buy: team pool covers it?"}
+  F6 -->|No| N
+  F6 -->|Yes| F7{"CASH buy: pressed Ready?<br/>CASH sell: no open buy?"}
+  F7 -->|No| N
+  F7 -->|Yes| F8{"Not barred for this order or player?<br/>USDT: address on THIS chain?<br/>UPI_BANK buy: full bank account?"}
+  F8 -->|No| N
+  F8 -->|Yes| ORD["Fewest open orders,<br/>then least recently assigned"]
+  ORD --> TX["ONE transaction, under the member's row lock:<br/>re-check online · Ready · cap · cash buy ·<br/>hold the pool (buy) · ASSIGNED · stamp last_assigned_at ·<br/>switch Ready off (cash buy)"]
+  TX -->|"a re-check fails"| NEXT["Next candidate"]
+  TX --> ASN["ASSIGNED · team_id set · snapshot frozen"]
+  </pre>
+  <p>An admin or queue manager can assign or reassign by hand
+  (<code>/api/admin/queue/assign/:orderId</code>, <code>/payment-orders/:id/reassign</code>); both go
+  through the same routing with the member being taken off barred.</p>
+  </div>
+</div>
+
+<div class="flow">
+  <header><h3>Team commission</h3><span class="who">instant · never partial · recorded 16 / 84</span></header>
+  <div class="body">
+  <pre class="mermaid">
+flowchart TD
+  C["An order completes<br/>lifecycle hook · sell settlement"] --> MV["Matched volume = min(completed buys, completed sells)<br/>in tokens, this team's orders"]
+  MV --> HW{"Above the team's mark?<br/>highest team_commissions.to_high_paise"}
+  HW -->|No| SK["Nothing owed"]
+  HW -->|Yes| PL{"MERCHANT_BONUS_POOL covers ALL of 10%?"}
+  PL -->|No| WAIT["Pays nothing · waits<br/>admin sees: fund the team commission pool"]
+  PL -->|Yes| PAY["ONE transaction: payment, shares, ledger event,<br/>pool COMMISSION entry, treasury movement"]
+  PAY --> SH["Shares: 16% supervisor ·<br/>84% equally to the approved members"]
+  SW["team-commission-sweep · 5 min<br/>and every pool funding"] --> MV
+  </pre>
+  <p>An advisory lock and two UNIQUE keys pay each rise once. The tokens stay in the team's pool; the
+  shares are a record of who earned what. A USDT team earns nothing: there is no USDT sell, so nothing
+  matches (owner, 2026-10-04). No clawback on a reversed sell.</p>
+  </div>
+</div>
+</section>
+
+<section id="member">
+<h2>Member workflows</h2>
+<p class="intro">A member settles on the one rail their supervisor holds. Every member route passes
+<code>expectMerchant</code>: the move is checked under the order lock against the member the order is
+assigned to, before the idempotent answer and again in the WHERE (<code>merchant_changed</code>).</p>
+
+<div class="flow">
+  <header><h3>The order card — every button</h3><span class="who">/api/merchant/…</span></header>
+  <div class="body">
+  <div class="scroll"><table>
+  <tr><th>Button</th><th>Route</th><th>From</th><th>What it does</th><th>Refusals</th></tr>
+  <tr><td>Online</td><td><code>PUT /online-status</code></td><td>—</td><td>opens or closes an online stretch (trigger on <code>is_online</code>); routing needs it on</td><td>400</td></tr>
+  <tr><td>Ready (cash)</td><td><code>PUT /cash-ready</code></td><td>—</td><td>at the ATM, able to take one cash buy; the assignment switches it off</td><td>409 when not an approved member of a cash team</td></tr>
+  <tr><td>Accept</td><td><code>POST /accept/:id</code></td><td>ASSIGNED</td><td>PROCESSING; the player now sees where to pay</td><td>404 · 403 · 409</td></tr>
+  <tr><td>Decline</td><td><code>POST /reject/:id</code></td><td>ASSIGNED</td><td>back to the queue and re-routed at once, this member barred; counts on the refusal streak</td><td>400 without a reason · 404 · 409</td></tr>
+  <tr><td>Scan the ATM QR</td><td><code>POST /orders/:id/cash-link</code></td><td>PROCESSING, cash buy</td><td><code>setCashLink</code>; the player gets one Pay button; a re-scan replaces it until Paid</td><td><code>ACCEPT_FIRST</code> · <code>NOT_A_CASH_BUY</code> · <code>CASH_LINK_CLOSED</code> · <code>INVALID_CASH_LINK</code></td></tr>
+  <tr><td>Confirm (buy)</td><td><code>POST /confirm/:id</code></td><td>PAID, with a reference</td><td><code>moveDepositMoney</code>: spend the hold, credit the split, release the UTR; COMPLETED; commission</td><td>400 · 409 <code>order_state</code></td></tr>
+  <tr><td>Mark sent (sell)</td><td><code>POST /confirm/:id</code></td><td>ASSIGNED / PROCESSING</td><td>claims the UTR, PAID, credit HELD for the window</td><td><code>PAYOUT_REFERENCE_REQUIRED</code> · 409 on a claimed UTR</td></tr>
+  <tr><td>Reject as unpaid</td><td><code>POST /orders/:id/reject</code></td><td>PAID buy, and also PROCESSING (<code>expectFrom</code>; see open items)</td><td>REJECTED with <code>dispute_window_until</code>; the hold stays; the player gets a pop-up and a payment warning</td><td>400 · 403 · 404 · 409</td></tr>
+  <tr><td>Red flag</td><td><code>POST /orders/:id/red-flag</code></td><td>PROCESSING / PAID</td><td>DISPUTED, to the dispute manager; never on their own rejection</td><td>400 · 404 · 409</td></tr>
+  </table></div>
+  <p>The rejection proof image is <b>never shown to the player</b>; they get the reason. A decline, an
+  unanswered PAID buy and an expired sell count on one refusal streak
+  (<code>merchantOrderLimits.maxConsecutiveRejections</code>); only a COMPLETED order resets it and only
+  an admin lifts the bar. Three unpaid buys at one member pause their assignment
+  (<code>assignment_paused_at</code>) until an admin or a COMPLETED order clears it.</p>
+  </div>
+</div>
+
+<div class="flow">
+  <header><h3>The cash QR — checked, never typed</h3><span class="who">checkCashLink · setCashLink</span></header>
+  <div class="body">
+  <pre class="mermaid">
+flowchart TD
+  S["Member scans the ATM's QR<br/>camera, jsQR fallback, or a photo"] --> A{"Order accepted?"}
+  A -->|No| X1["409 ACCEPT_FIRST"]
+  A -->|Yes| K{"checkCashLink"}
+  K -->|"not upi://pay · wrong amount ·<br/>a parameter twice"| X2["400 INVALID_CASH_LINK"]
+  K -->|"a mobile in the handle, name or note"| X3["400 — no mobile numbers"]
+  K -->|OK| W{"WHERE: assigned member · CASH_ATM buy · PROCESSING"}
+  W -->|No row| X4["409 CASH_LINK_CLOSED"]
+  W -->|Row| OK["cash_link written · player gets Pay ₹amount"]
+  CH["Member changes"] --> CL["Trigger clears the link"]
+  </pre>
+  </div>
+</div>
+</section>
+
+<section id="oversight">
+<h2>Oversight — supervisors, members, red flags</h2>
+<p class="intro">Step 2f. A supervisor sees how their members work without seeing the players; a member
+sees how their team does without seeing a teammate.</p>
+
+<div class="flow">
+  <header><h3>What each merchant sees on the Team page</h3><span class="who">GET /api/merchant/team · /supervisor/*</span></header>
+  <div class="body">
+  <div class="scroll"><table>
+  <tr><th>Reader</th><th>Sees</th><th>Never sees</th></tr>
+  <tr><td>Supervisor</td><td>their teams and pools; each member's activity today and over 7 days; low-activity flags of 14 days; a member's log (orders by <code>SUPERVISOR_ORDER_FIELDS</code>, online stretches since joining); disputes on their teams and a thread to the dispute manager</td><td>player detail, mobiles, UPI handles, UTRs, account numbers, numbers of 9+ digits in free text, the player's messages, staff notices; a merely proposed member's log</td></tr>
+  <tr><td>Member</td><td>their own figures; the team's totals and average over 7 days once 3 members are approved; their own commission shares</td><td>a teammate's row</td></tr>
   </table></div>
   </div>
 </div>
 
 <div class="flow">
-  <header><h3>Rejecting, and the cash rail's own screens</h3><span class="who">the paths that only exist on one rail</span></header>
+  <header><h3>The low-activity red flag</h3><span class="who">cron team-red-flags · hourly · each IST day once</span></header>
   <div class="body">
   <pre class="mermaid">
-flowchart LR
-  subgraph BOTH["Either rail"]
-    RJ["Reject before payment"] --> Q["Back to the queue"]
-    RJP["Reject after the player says they paid"] --> P1{"Reason ≥ 10 chars<br/>+ proof image?"}
-    P1 -->|No| P2["Refused"]
-    P1 -->|Yes| P3["Cancelled · player warned<br/>may auto-block"]
-  end
-  subgraph CASH["CASH_ATM only"]
-    CL["Supply cash links"] --> CV{"Valid upi:// intent?"}
-    CV -->|No| CR["Refused"]
-    CV -->|Yes| CQ["Pool · matcher every 15s"]
-    CQ --> CE["Sweeper every 20s expires stale"]
-    CDM["CDM receipt on a payout"] --> CC{"Reference already claimed?"}
-    CC -->|Yes| CX["409 — same registry as a UTR"]
-    CC -->|No| CK["Attached to THIS payout only"]
-  end
+flowchart TD
+  C["Hourly tick"] --> D["The last 3 ended IST days"]
+  D --> CL{"team_red_flag_days claimed<br/>in the flags' own transaction?"}
+  CL -->|"Already claimed"| SK["Skip: each day runs once"]
+  CL -->|Claimed now| T{"Team has 2+ members<br/>approved before the day ended?"}
+  T -->|No| SK2["Skipped"]
+  T -->|Yes| M{"Member's completed orders AND online time<br/>both below the team average by<br/>redFlags.lowActivityPercent (25)?"}
+  M -->|No| OK["No flag"]
+  M -->|Yes| FL["LOW_ACTIVITY flag<br/>to the supervisor and the admin"]
+  FL --> NA["Acts on nothing: the supervisor decides"]
   </pre>
-  <p>The merchant's rejection proof is <b>never shown to the player</b> — it can be a bank statement
-  with their name on it. The player gets the reason, not the image.</p>
-  <p>A CDM slip, a UTR and a chain transaction hash are the same fact — <i>this payment happened,
-  once</i> — so they share one registry. Two of the three used to write the reference into a column
-  and claim nothing, so the same slip could be presented twice.</p>
+  <p>Completions are counted by <code>order_states.completed_at</code>; online time by
+  <code>merchant_online_sessions</code>, written only by the triggers on <code>merchants.is_online</code>.
+  There is no commission-farming flag: the owner ruled it out on 2026-10-04 because the 90:10
+  deposit/reserve split and the 1% winnings fee make farming lose money.</p>
+  </div>
+</div>
+
+<div class="flow">
+  <header><h3>A supervisor in a dispute</h3><span class="who">POST /api/merchant/supervisor/disputes/:orderId/chat</span></header>
+  <div class="body">
+  <p>One locked INSERT (<code>postSupervisorMessage</code>) asks that the order is <code>DISPUTED</code>,
+  belongs to one of their teams, and that they have sent fewer than 50 messages on it. A message with a
+  mobile number is refused by the row (<code>chat_messages_supervisor_no_mobile</code>). Refusals:
+  <code>dispute_not_found</code>, <code>dispute_closed</code>, <code>too_many_messages</code>,
+  <code>message_has_mobile</code>, <code>bad_message</code>.</p>
   </div>
 </div>
 </section>
 
 <section id="admin">
 <h2>Admin workflows</h2>
-<p class="intro">Admin actions are the ones that move money without a counterparty pressing
-anything, so most of them are versioned, justified, or both.</p>
+<p class="intro">Admin actions are the ones that move value without a counterparty pressing anything.
+Each staff route asks for one permission area (<code>staffPermissions.js</code>).</p>
 
 <div class="flow">
-  <header><h3>Switching the settlement rail</h3><span class="who">the switch that changes both other panels</span></header>
+  <header><h3>Resolving a dispute</h3><span class="who">POST /api/admin/dispute-orders/:orderId/resolve</span></header>
   <div class="body">
   <pre class="mermaid">
 flowchart TD
-  A["Admin picks the other rail"] --> J{"Justification given?"}
-  J -->|No| R["Refused"]
-  J -->|Yes| V["New ACTIVE version<br/>append-only, old one retained"]
-  V --> E["payment_mode_changed pushed"]
-  E --> M["Merchant banner re-reads<br/>and shows the new workflow"]
-  E --> U["User panel buy form changes<br/>denominations / cash ceiling"]
-  V --> OLD["Orders already created<br/>KEEP their own rail forever"]
+  D["DISPUTED order"] --> R{"Decision + resolution notes"}
+  R -->|"Buy: RELEASE_TO_USER"| C1["COMPLETED first, then the hold is spent<br/>and the player credited (moveDepositMoney)"]
+  R -->|"Buy: against the player"| C2["CANCELLED · hold back to the team pool"]
+  R -->|"Sell: RELEASE_TO_MERCHANT"| C3["COMPLETED · endWithdrawal RELEASE<br/>tokens into the team pool"]
+  R -->|"Sell: refund"| C4["CANCELLED · endWithdrawal REFUND<br/>stake back to the player"]
+  C1 --> L["recordDisputeLoser"]
+  C2 --> L
+  C3 --> L
+  C4 --> L
+  L --> S{"A payment dispute the player<br/>or the platform raised?"}
+  S -->|No| N["Nobody suspended"]
+  S -->|Yes| SU["Loser suspended · dispute_faults row<br/>3rd loss: high-risk review, only a full admin lifts"]
   </pre>
-  <div class="note ok">
-    <span class="tag">Verified — and this is the subtle part</span>
-    <p>Both panels read the <b>live policy</b> for a new order and the <b>order's own frozen
-    mode</b> for an existing one. Getting that backwards would silently rewrite the rules of orders
-    already in flight. The merchant banner also <i>re-reads</i> rather than rendering the pushed
-    payload, so one owner decides what the rail is.</p>
-  </div>
-  <p>The rail in force is <b>not</b> a feature flag — a flag is an env var and an in-process Map,
-  so it cannot survive a restart or say which rail was live when an order was created.</p>
-  </div>
-</div>
-
-<div class="flow">
-  <header><h3>Resolving a dispute</h3><span class="who">the only place money is returned by hand</span></header>
-  <div class="body">
-  <pre class="mermaid">
-flowchart TD
-  D["DISPUTED order in the queue"] --> R{"Admin decides"}
-  R -->|"Release to player"| RL["Credit player · order COMPLETED"]
-  R -->|"Refund"| RF["Return the stake · order CANCELLED"]
-  R -->|"Reject the dispute"| RJ["Back to its prior state"]
-  RL --> AU["Audit row: who, when, why"]
-  RF --> AU
-  RJ --> AU
-  </pre>
-  <p>This queue was <b>permanently empty</b> for a period: the panel called a path the server never
-  served, the component caught the 404 and rendered its empty state — indistinguishable from
-  "no disputes". Release and refund did nothing. <code>check:ui-coverage</code> now fails the build
-  on a panel call that reaches no route.</p>
-  <p>The release button separately marked a disputed deposit <code>COMPLETED</code> and never
-  credited the player, then reported failure — because the write that followed the state change was
-  allowed to fail. The order left the queue, so nothing remained to show it had gone wrong.</p>
+  <p>The transition is the gate: two admins deciding at once produce one decision and one 409. A buy
+  whose pool tokens were already paid out can only be completed (<code>pool_paid</code>). The Dispute
+  Manager shows who will be suspended before the press, from the server's answer, and the supervisor's
+  messages in the thread. The queue's other routes (<code>/payment-orders/:id/action</code>,
+  <code>/resolve</code>) reach the same loser record.</p>
   </div>
 </div>
 
 <div class="flow">
-  <header><h3>Funding a merchant, and paying commission</h3><span class="who">platform-funded, never from a user</span></header>
+  <header><h3>The Teams page</h3><span class="who">/teams · team.admin.routes.js</span></header>
   <div class="body">
-  <pre class="mermaid">
-flowchart TD
-  M["Merchant buys tokens"] --> H{"Tx hash supplied?"}
-  H -->|No| R1["Cannot be approved later"]
-  H -->|Yes| CL{"Hash already claimed?"}
-  CL -->|Yes| R2["409"]
-  CL -->|No| AP["Admin approves"]
-  AP --> IS["Tokens issued · treasury posts"]
-  CE["commission-engine · every 10 min"] --> V["Per VARIETY:<br/>currency × payment_mode × denomination"]
-  V --> MV["matched = min(deposits, withdrawals)"]
-  MV --> HW{"Above this variety's high-water mark?"}
-  HW -->|No| SK["Nothing owed"]
-  HW -->|Yes| PR{"Variety priced?"}
-  PR -->|No| UP["Reported UNPRICED · pays nothing"]
-  PR -->|Yes| PL{"Pool funded for the FULL amount?"}
-  PL -->|No| SKIP["Skip entirely — never partial"]
-  PL -->|Yes| PAY["Paid once · mark advances"]
-  </pre>
   <div class="scroll"><table>
-  <tr><th>Rule</th><th>Why it is not negotiable</th></tr>
-  <tr><td>Match within a variety only</td><td>otherwise a cash run pairs with a UPI payout and one rate pays for two different jobs</td></tr>
-  <tr><td>One mark per (merchant, variety)</td><td>one mark per merchant lets a cash payment advance the UPI mark, and the volume underneath is never paid — withheld silently, with a ledger that reads complete</td></tr>
-  <tr><td>Unpriced ≠ zero</td><td>a row priced 0/0 reads as priced and pays nothing, which is the shape most easily mistaken for a working rate</td></tr>
-  <tr><td>Never partial-issue</td><td>paying what the pool holds while recording the full mark under-pays permanently</td></tr>
-  <tr><td>Check the merchant exists first</td><td>the credit is a silent no-op for an unknown id, so the ledger would record a payment that never arrived</td></tr>
+  <tr><th>Action</th><th>Route</th><th>Area</th></tr>
+  <tr><td>Make or unmake a supervisor, and set the rail</td><td><code>PUT /merchants/:id/supervisor</code></td><td><code>canManageTeams</code></td></tr>
+  <tr><td>Approve, reject or remove a member</td><td><code>POST /team-members/:id/approve|reject</code>, <code>DELETE /team-members/:id</code></td><td><code>canManageTeams</code></td></tr>
+  <tr><td>Fulfil or reject a pool request</td><td><code>POST /team-pool-requests/:id/fulfil|reject</code></td><td><code>canFundMerchants</code></td></tr>
+  <tr><td>See teams, pools, commission paid and waiting</td><td><code>GET /teams</code></td><td><code>canManageTeams</code></td></tr>
+  <tr><td>See red flags of 30 days</td><td><code>GET /team-red-flags</code></td><td><code>canManageTeams</code></td></tr>
+  <tr><td>Fund the team commission pool</td><td><code>POST /revenue/bonus-pool/fund</code></td><td><code>canManageCommission</code></td></tr>
+  </table></div>
+  <p>Read from <code>team.admin.routes.js</code> (<code>AREA</code>, <code>POOL_AREA</code>) and
+  <code>revenue.admin.routes.js</code> on 2026-10-04.</p>
+  </div>
+</div>
+
+<div class="flow">
+  <header><h3>The settings that steer all of the above</h3><span class="who">/settings · SYSTEM_CONFIG_SPEC</span></header>
+  <div class="body">
+  <div class="scroll"><table>
+  <tr><th>Field</th><th>Default</th><th>Read by</th></tr>
+  <tr><td><code>orderSizes</code></td><td>all seven</td><td>buy and sell create; the player's size picker</td></tr>
+  <tr><td><code>usdtBuy.minUsdt</code> / <code>maxUsdt</code></td><td>100 / 10,000</td><td>USDT buy create</td></tr>
+  <tr><td><code>usdtPricing.userMerchantBuyInr</code> / <code>merchantAdminBuyInr</code></td><td>0 = unset, refused by name</td><td>USDT buy quote; a USDT pool sale</td></tr>
+  <tr><td><code>teamRouting.concurrency</code></td><td>CASH 1 · UPI_BANK 3 · USDT 3</td><td>routing</td></tr>
+  <tr><td><code>teamRouting.assignmentWaitSeconds</code>, <code>processingWindowSeconds</code>, <code>utrSubmitSeconds</code></td><td>1,500 · 900 per rail · 60</td><td>expiry and the UTR sweeps</td></tr>
+  <tr><td><code>rejectedBuyDisputeMinutes</code></td><td>15 (5–1,440, whole minutes)</td><td>member's reject; the window sweep</td></tr>
+  <tr><td><code>withdrawalHoldMinutes</code></td><td>60 (floor 60)</td><td>sell confirm; settlement</td></tr>
+  <tr><td><code>merchantOrderLimits.maxConsecutiveRejections</code></td><td>schema default</td><td>the refusal streak</td></tr>
+  <tr><td><code>redFlags.lowActivityPercent</code></td><td>25 (1–90)</td><td>the daily red flag</td></tr>
+  <tr><td><code>winningsFeePercent</code> / <code>payoutFeePercent</code></td><td>1 / 0</td><td>bet settlement / sells</td></tr>
   </table></div>
   </div>
 </div>
@@ -619,168 +729,160 @@ flowchart TD
 
 <section id="cross">
 <h2>Cross-panel workflows</h2>
-<p class="intro">Where two or three panels act on one row. These are the paths worth checking by
-hand, because each panel's own tests pass while the seam between them is where things break.</p>
+<p class="intro">Where two or three panels act on one row. Each panel's own tests pass while the seam
+between them is where things break.</p>
 
 <div class="flow">
-  <header><h3>One deposit, three panels, in parallel</h3><span class="who">who sees what, at each moment</span></header>
+  <header><h3>One UPI_BANK buy, three panels</h3><span class="who">who sees what, at each moment</span></header>
   <div class="body">
   <pre class="mermaid">
 sequenceDiagram
   participant P as Player
   participant S as Server
-  participant M as Merchant
+  participant M as Member
+  participant V as Supervisor
   participant A as Admin
-  P->>S: create deposit
-  S->>S: guards, rail rules, PENDING_QUEUE
-  S->>M: new_order (only the assignee)
-  S->>A: queue count updates
-  Note over P: sees a payment link<br/>and an opaque Merchant #ref
-  Note over M: sees the amount and the payout account<br/>never the player's phone or UPI
-  P->>S: submits the UTR
-  S->>S: claim it — one payment, one order, for good
-  S->>M: order is PAID
+  P->>S: buy 50,000
+  S->>S: routing · pool hold · ASSIGNED
+  S->>M: new_order (the assignee only)
+  S->>P: order_assigned (no payTo yet)
+  Note over P: Waiting for the member to accept…
+  M->>S: Accept
+  S->>P: order_update (payTo: the member's bank account)
+  P->>S: Paid + UTR (claimed once, for good)
+  S->>M: order_paid
   M->>S: Confirm
-  alt Merchant funded
-    S->>S: debit, credit, release UTR, then COMPLETED
-    S->>P: wallet_update
-  else Not funded — F-018
-    S->>A: alert
-    S->>P: "taking longer than usual"
-    Note over S: order stays PAID · retryable · disputable
-  end
+  S->>S: spend hold · credit split · COMPLETED · commission
+  S->>P: user_balance_update
+  Note over V: the member's log shows the order<br/>with no player detail
+  Note over A: queue and volume figures move
   </pre>
   <div class="scroll"><table>
-  <tr><th>Moment</th><th>Player sees</th><th>Merchant sees</th><th>Admin sees</th></tr>
-  <tr><td>Created</td><td>waiting for a merchant</td><td>nothing yet</td><td>queue depth</td></tr>
-  <tr><td>Assigned</td><td>where to pay + a deadline</td><td>amount, payout account, holder name</td><td>the pairing</td></tr>
-  <tr><td>Paid</td><td>waiting for confirmation</td><td>Confirm becomes available</td><td>—</td></tr>
-  <tr><td>Not funded</td><td>"taking longer than usual"</td><td>"top up your wallet"</td><td><b>alert</b></td></tr>
-  <tr><td>Completed</td><td>balance updated live</td><td>inventory down</td><td>volume counts toward commission</td></tr>
+  <tr><th>Moment</th><th>Player</th><th>Member</th><th>Supervisor</th><th>Admin</th></tr>
+  <tr><td>Created</td><td>waiting for a member</td><td>nothing yet</td><td>—</td><td>queue depth</td></tr>
+  <tr><td>Assigned</td><td>waiting for the member to accept</td><td>amount; Accept / Decline</td><td>open orders count</td><td>the pairing</td></tr>
+  <tr><td>Accepted</td><td>where to pay + a deadline</td><td>waiting for Paid</td><td>—</td><td>—</td></tr>
+  <tr><td>Paid</td><td>waiting for confirmation</td><td>Confirm / Reject as unpaid</td><td>—</td><td>—</td></tr>
+  <tr><td>Rejected</td><td>pop-up and a countdown to dispute</td><td>the deadline on the banner</td><td>—</td><td>—</td></tr>
+  <tr><td>Completed</td><td>balance updated live</td><td>commission share, if a rise was paid</td><td>pool and commission figures</td><td>volume, commission</td></tr>
   </table></div>
   </div>
 </div>
 
 <div class="flow">
-  <header><h3>What each side is never told</h3><span class="who">privacy points both ways</span></header>
+  <header><h3>What each side is never told</h3><span class="who">privacy points every way (§24)</span></header>
   <div class="body">
   <div class="scroll"><table>
-  <tr><th>Direction</th><th>Allowed</th><th>Never</th></tr>
-  <tr><td>Merchant → about the player</td><td>the bank account a withdrawal pays, and the name on it</td><td>phone in whole or part, UPI ID (it resolves to both), a CDM receipt after submission</td></tr>
-  <tr><td>Player → about the merchant</td><td>a payment link, <code>Merchant #ref</code>, a deadline</td><td>UPI handle, QR, bank account, IFSC, holder name, USDT address, panel URL</td></tr>
+  <tr><th>Reader → about</th><th>Allowed</th><th>Never</th></tr>
+  <tr><td>Member → player</td><td>the bank account a sell pays, and the name on it</td><td>mobile in any spelling, UPI handle</td></tr>
+  <tr><td>Player → member</td><td><code>Merchant #ref</code>, a deadline; once accepted: the member's bank account (UPI_BANK buy), the scanned QR (cash buy) or the chain address (USDT)</td><td>mobile, UPI handle as a destination, panel URL; anything before the accept</td></tr>
+  <tr><td>Supervisor → members' orders</td><td><code>SUPERVISOR_ORDER_FIELDS</code>, free text with mobiles, UPI handles and long numbers hidden</td><td>player detail, the player's messages, staff notices</td></tr>
+  <tr><td>Member → teammates</td><td>team totals and average from 3 approved members</td><td>a teammate's row</td></tr>
   </table></div>
-  <p>Both projections are <b>allowlists in one file each</b>, and the tests assert the response's
-  key set is a <i>subset</i> — so a new column added to the orders table cannot leak by default. A
-  denylist admits the next field automatically and its mistake is always "too much"; an allowlist
-  fails closed and its symptom is a blank field somebody notices.</p>
-  <div class="note">
-    <span class="tag">Stated honestly</span>
-    <p>A <code>upi://pay</code> intent carries the payee, so the player's own banking app will show
-    it. The platform stops publishing the merchant's identity; it cannot hide a payee from a payer.</p>
-  </div>
+  <p>Every projection is an allowlist in one file (<code>merchantOrderView.js</code>,
+  <code>playerOrderView.js</code>, <code>playerLedgerView.js</code>), and the tests assert the response's
+  key set is a subset. A mobile cannot be stored where someone else would read it: account numbers that
+  are mobiles, payments-bank IFSCs, mobiles in holder, bank, merchant, username and team names, and in a
+  cash QR's handle, name or note are refused by the row or by <code>checkCashLink</code>.</p>
   </div>
 </div>
 </section>
 
 <section id="background">
 <h2>What runs on its own</h2>
-<p class="intro">Eleven scheduled jobs, an optional Redis, and a realtime layer. Nothing here needs a
-person, and several of these are the only thing standing between a stuck row and a lost balance.</p>
+<p class="intro">Fifteen scheduled jobs (<code>backend/startup/cronJobs.js</code>), an optional Redis, and
+a realtime layer. Several of these are the only thing between a stuck row and a lost balance.</p>
 
 <div class="scroll"><table>
 <tr><th>Job</th><th>Every</th><th>What it decides</th></tr>
-<tr><td><code>cash-link-match</code></td><td>15 s</td><td>pairs pooled ATM links to waiting cash buys</td></tr>
-<tr><td><code>cash-link-expiry</code></td><td>20 s</td><td>retires stale links so none is offered twice</td></tr>
-<tr><td><code>order-expiry</code></td><td>60 s</td><td>cancels <code>PENDING_QUEUE</code>/<code>ASSIGNED</code>/<code>PROCESSING</code> and <b>refunds withdrawal escrow</b></td></tr>
-<tr><td><code>withdrawal-hold-settle</code></td><td>60 s</td><td>consumes the stake and credits the merchant once the dispute window passes</td></tr>
-<tr><td><code>ledger-reconcile</code></td><td>60 s</td><td>re-derives balances from postings; alerts on disagreement</td></tr>
+<tr><td><code>order-assignment</code></td><td>30 s</td><td>routes queued orders to team members</td></tr>
+<tr><td><code>order-expiry</code></td><td>60 s</td><td>cancels <code>PENDING_QUEUE</code>/<code>ASSIGNED</code>/<code>PROCESSING</code>; releases buy holds, refunds sell stakes, charges the lapse to whoever could have acted</td></tr>
+<tr><td><code>rejected-buy-window</code></td><td>60 s</td><td>cancels a REJECTED buy nobody disputed in time and releases its hold</td></tr>
+<tr><td><code>withdrawal-hold-settle</code></td><td>60 s</td><td>settles a paid sell once its window passes: stake consumed, tokens into the team pool</td></tr>
 <tr><td><code>scheduled-apply</code></td><td>60 s</td><td>activates a deposit policy version at its scheduled time</td></tr>
-<tr><td><code>commission-engine</code></td><td>10 min</td><td>per-variety matched volume above each high-water mark</td></tr>
+<tr><td><code>ledger-reconcile</code></td><td>60 s</td><td>records the accounting event a completed order or a settled cycle is missing; alerts when one fails</td></tr>
+<tr><td><code>paid-order-timeout</code></td><td>2 min</td><td>a PAID buy the member ignored → DISPUTED, counted against the member</td></tr>
+<tr><td><code>utr-after-paid-timeout</code></td><td>2 min</td><td>a cash Paid whose reference never came → the player's silence</td></tr>
+<tr><td><code>team-pool-hold-sweep</code></td><td>5 min</td><td>releases a hold left on an ended buy; alerts on a completed buy still holding, never re-holds</td></tr>
+<tr><td><code>team-commission-sweep</code></td><td>5 min</td><td>pays commission a completion missed or the pool could not cover</td></tr>
 <tr><td><code>leaderboard-rebuild</code></td><td>10 min</td><td>rebuilds the cached standings</td></tr>
+<tr><td><code>team-red-flags</code></td><td>1 h</td><td>evaluates each ended IST day once, catching up 3</td></tr>
 <tr><td><code>payment-proof-retention</code></td><td>1 h</td><td>expires stored payment images</td></tr>
-<tr><td><code>data-retention</code></td><td>24 h</td><td>sweeps expired sessions, links, codes and recovery holds</td></tr>
+<tr><td><code>data-retention</code></td><td>24 h</td><td>sweeps expired sessions, links and codes</td></tr>
 <tr><td><code>db-backup</code></td><td>24 h</td><td>alerts loudly on failure</td></tr>
 </table></div>
+<p style="font-size:14.5px;color:var(--mid)">Deleted with Step 2c: <code>cash-link-match</code>,
+<code>cash-link-expiry</code> and <code>commission-engine</code>.</p>
 
 <div class="note">
   <span class="tag">The one to check by hand</span>
-  <p><code>order-expiry</code> deliberately does <b>not</b> touch <code>PAID</code>. That is
-  correct — auto-cancelling an order the player has already paid for would strand their money. The
-  consequence is that <b>anything which leaves a row stuck at <code>PAID</code> is never swept</b>,
-  and only a person can clear it. That is why the not-funded branch alerts.</p>
+  <p><code>order-expiry</code> deliberately does <b>not</b> touch <code>PAID</code>: the player's money is
+  already gone. A PAID buy is moved on by the member, by <code>paid-order-timeout</code> or
+  <code>utr-after-paid-timeout</code>, or by a person; a PAID sell by the hold settlement.</p>
 </div>
 
 <div class="flow">
-  <header><h3>Redis, and what happens without it</h3><span class="who">optional everywhere — verified, not assumed</span></header>
+  <header><h3>Redis, and what happens without it</h3><span class="who">optional everywhere</span></header>
   <div class="body">
-  <pre class="mermaid">
-flowchart TD
-  ST["Server starts"] --> R{"REDIS_URL set?"}
-  R -->|Yes| Y1["Rate limits shared across instances"]
-  R -->|Yes| Y2["Scheduled jobs via BullMQ<br/>one instance runs each tick"]
-  R -->|Yes| Y3["Realtime bridge fans out between instances"]
-  R -->|No| N1["Rate limits are PER INSTANCE"]
-  R -->|No| N2["Jobs fall back to interval timers<br/>EVERY instance runs them"]
-  R -->|No| N3["Realtime reaches only the connected instance"]
-  </pre>
   <div class="scroll"><table>
-  <tr><th>Without Redis</th><th>Consequence</th><th>Safe?</th></tr>
-  <tr><td>Per-instance rate limits</td><td>effective limit multiplies by instance count</td><td>acceptable on one instance; a real gap on several</td></tr>
-  <tr><td>Every instance runs every cron</td><td>duplicate ticks</td><td><b>yes</b> — each job's work is a guarded transition, so the loser gets <i>idempotent</i> and skips</td></tr>
-  <tr><td>Realtime is instance-local</td><td>a client on another instance misses a push</td><td>screens re-read on their own; not a money path</td></tr>
+  <tr><th>With <code>REDIS_URL</code></th><th>Without it</th><th>Safe?</th></tr>
+  <tr><td>rate limits shared across instances</td><td>per instance</td><td>acceptable on one instance; a gap on several (§36 makes it required)</td></tr>
+  <tr><td>recurring jobs as BullMQ schedulers, one instance per tick</td><td>interval timers on every instance</td><td><b>yes</b>: each job's work is a guarded transition, and <code>cron_locks</code> elects a leader</td></tr>
+  <tr><td>socket.io adapter and the SSE relay fan out between instances</td><td>instance-local</td><td>screens re-read on their own; not a money path</td></tr>
   </table></div>
-  <p><b>BullMQ is used for one thing only:</b> scheduling the eleven recurring jobs. The one-off
-  <code>enqueue()</code> API exists, is tested, and <b>is called by nothing in the backend</b> —
-  the same shape as F-018, found while building this map.</p>
   </div>
 </div>
 
 <div class="flow">
-  <header><h3>Realtime</h3><span class="who">36 event names across three transports</span></header>
+  <header><h3>Realtime</h3><span class="who">48 names in REALTIME_EVENTS.md across three transports</span></header>
   <div class="body">
-  <p>socket.io for public browser clients, SSE for authenticated private streams, and the emitter
-  module. <b>One name per logical change, unique across all three</b> — a name reused on a different
-  transport for a different meaning is the defect this rule exists to stop.</p>
+  <p>socket.io for browser clients, SSE for the authenticated merchant and admin streams, and the
+  emitters in <code>realtimeEmitters.js</code>. One name per logical change, unique across all three.</p>
   <ul class="tight">
-    <li><b>Two silent dead-delivery traps</b> live here. <code>emitMerchantUpdate('*', …)</code>
-    reaches nobody — it looks the literal <code>'*'</code> up as a merchant id and returns, with no
-    error and no log. Use the broadcast helper.</li>
-    <li>The panel's SSE client registers listeners from a <b>hardcoded name list</b>, so a
-    subscriber for an unlisted event never fires and never errors. A new event must be added to that
-    list as well as emitted.</li>
+    <li><code>emitMerchantUpdate('*', …)</code> reaches nobody; use <code>broadcastToMerchants</code>.</li>
+    <li>A panel's SSE client hears only the names in its own list: compare both lists when adding one.</li>
+    <li><code>order_rejected</code> arrives at the player on socket.io as <code>order_update</code> with
+    <code>event: 'order_rejected'</code> and <code>disputeUntil</code>.</li>
   </ul>
   </div>
 </div>
 </section>
 
 <section id="defects">
-<h2>Open defects, on the flows above</h2>
-<p class="intro">Everything marked in place, gathered. These are recorded in the audit register with
-their sweeps; this is the operational view of them.</p>
+<h2>Open items, on the flows above</h2>
+<p class="intro">From the audit register (<code>docs/audit/SECURITY_AUDIT_MAP.md</code>) and
+<code>docs/PROJECT_STATUS.md</code> on 2026-10-04.</p>
 
 <div class="scroll"><table>
 <tr><th>ID</th><th>Where</th><th>What actually happens</th><th>State</th></tr>
-<tr><td>F-018</td><td>assignment → confirm</td><td>eligibility is checked but never <b>held</b>; the reservation mechanism exists and nothing calls it</td><td><span class="chip refused">open · root cause</span></td></tr>
-<tr><td>F-017</td><td>deposit confirm</td><td>ordering fixed; the 16 real-database money tests still sit on a route no screen calls</td><td><span class="chip waiting">partly open</span></td></tr>
-<tr><td>F-009</td><td>casino iframe</td><td><code>frame-src</code> is unset, so the game frame is blocked by the platform's own CSP</td><td><span class="chip waiting">decision needed</span></td></tr>
-<tr><td>F-011</td><td>staff sign-in</td><td>mandatory 2FA has no server-side enforcement point</td><td><span class="chip refused">open · highest</span></td></tr>
-<tr><td>F-001</td><td>admin routes</td><td>44 sub-admin routes carry no permission key</td><td><span class="chip waiting">proposal ready</span></td></tr>
-<tr><td>—</td><td><code>check:dead-code</code></td><td>a <b>test import</b> counts as a consumer; 80 exports sit in that bucket untriaged</td><td><span class="chip refused">gate gap</span></td></tr>
+<tr><td>F-011</td><td>staff sign-in</td><td>sessions carry <code>amr</code> and the panels route to enrolment; the server-side guard is the owner's switch</td><td><span class="chip waiting">partly fixed</span></td></tr>
+<tr><td>F-009</td><td>casino iframe</td><td><code>frame-src</code> is unset, so the provider's frame stays empty; which origins to allow is the owner's decision</td><td><span class="chip waiting">decision needed</span></td></tr>
+<tr><td>—</td><td><code>test:mutate</code></td><td>the two <code>admin/payment-control</code> dispute cases open a screen deleted in 2c and report NOT DRIVEN; the dispute decision is pressed by <code>test:drive</code> and proved by <code>test:pg</code> and <code>test:e2e</code></td><td><span class="chip waiting">harness gap</span></td></tr>
+<tr><td>—</td><td>reject as unpaid</td><td>the member's "payment not received" is accepted on a PROCESSING buy too (<code>expectFrom: ['PAID', 'PROCESSING']</code>), before the player has tapped Paid, and still warns and flags the player; the design (§3.10) describes it after Paid only. Found by the 2g review.</td><td><span class="chip waiting">owner's call</span></td></tr>
+<tr><td>—</td><td>merchant login</td><td>the merchant door is its own handler (<code>merchant.routes.js</code>), not <code>loginHandler</code> with a door in <code>LOGIN_DOOR</code> as CLAUDE.md §2 says; it now answers an unknown mobile as it answers a wrong password (fixed in 2g, M424). Folding it into <code>loginHandler</code> belongs with Step 3's login rework.</td><td><span class="chip waiting">open</span></td></tr>
+<tr><td>—</td><td>conservation proof</td><td><code>reconcileAgainstSubLedgers()</code> (USER_FUNDS + reserve against the wallets, TEAM_FLOAT against the pools, USER_FLOAT against the wallets) has no production caller: only <code>ledgerPg.test.js</code> runs it, and <code>ledger-reconcile</code> does not. The books are checked in tests, never on a running platform. Found while writing this map (2g).</td><td><span class="chip refused">open · owner's call</span></td></tr>
+<tr><td>F-018</td><td>assignment → confirm</td><td>closed by 2c: the pool hold IS the assignment, in one transaction</td><td><span class="chip moved">fixed</span></td></tr>
+<tr><td>F-017</td><td>deposit confirm</td><td>both routes move money through <code>moveDepositMoney</code> (2026-10-01)</td><td><span class="chip moved">fixed</span></td></tr>
+<tr><td>F-001</td><td>staff routes</td><td>superseded by F-047: every staff route asks a permission area</td><td><span class="chip moved">fixed</span></td></tr>
 </table></div>
 
 <div class="note">
   <span class="tag">What this map is not</span>
-  <p>It is derived from the code, but it is a <b>reading</b>, not a proof. Reading is what missed
-  every one of the defects above until somebody asked a harder question. Four questions found them,
-  and they are the ones to bring to any flow here:
-  <b>does anything actually call this · is this check a snapshot or a guarantee · if it fails
-  halfway what does the row say · am I fixing the symptom or the cause?</b></p>
+  <p>It is derived from the code, but it is a <b>reading</b>, not a proof. Bring the four questions to
+  any flow here: <b>does anything actually call this · is this check a snapshot or a guarantee · if it
+  fails halfway what does the row say · am I fixing the symptom or the cause?</b></p>
 </div>
 </section>
 
 <footer class="end">
-  <p>Extracted from the repository on 2026-09-10 · route, job, event and state counts are machine-derived ·
-  defect IDs match <code>docs/audit/SECURITY_AUDIT_MAP.md</code></p>
+  <p>Rewritten from the repository on 2026-10-04 for Step 2 (teams, pools, routing, commission,
+  oversight) · counts from <code>scripts/extract-operations-map.mjs</code> · defect IDs match
+  <code>docs/audit/SECURITY_AUDIT_MAP.md</code></p>
 </footer>
 
 </div>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  const dark = matchMedia('(prefers-color-scheme: dark)').matches;
+  mermaid.initialize({ startOnLoad: true, theme: dark ? 'dark' : 'neutral', securityLevel: 'strict' });
+</script>

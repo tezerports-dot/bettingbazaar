@@ -237,8 +237,12 @@ router.post('/auth/login', async (req, res) => {
         // unique index now, and signup writes it in the same transaction as
         // the account, so there is one lookup and nothing to fix up.
         const merchant = await db.merchants.getMerchantByLogin(mobile);
+        // The SAME answer as a wrong password, as the player and staff doors
+        // give. "No merchant account found for this mobile number" told
+        // anybody, one request at a time, which numbers were merchants'
+        // (2g review, 2026-10-04; threeSeparateEntities.test.js).
         if (!merchant)
-            return res.status(401).json({ success: false, message: 'No merchant account found for this mobile number' });
+            return res.status(401).json({ success: false, message: 'Invalid credentials' });
 
         // Credentials are read by a function that has to be asked for BY NAME,
         // so a hash cannot reach a response body by accident.

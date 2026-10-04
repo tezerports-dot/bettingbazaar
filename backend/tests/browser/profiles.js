@@ -142,13 +142,29 @@ export const PROFILES = {
     what: 'a cash-team merchant whose assignment is paused (three unpaid buys)',
     ...merchant({}, (m) => pauseAssignment(m.merchantId, 'profile: three unpaid buys'), undefined, 'CASH'),
   },
+  // The server refuses this session (merchantAuth: 403), so the panel signs
+  // itself out; `signsOut` is what its sign-in form must then say (run.js).
   'merchant-suspended': {
-    what: 'a cash-team merchant an admin has suspended',
+    what: 'a cash-team merchant an admin suspended while they were signed in',
+    signsOut: /Account suspended/,
     ...merchant({}, (m) => suspendMerchant(m.merchantId, 'profile', { actor: 'profile' }), { status: 'SUSPENDED' }, 'CASH'),
   },
-  'merchant-pending': {
-    what: 'a merchant not yet approved',
-    ...merchant({ approve: false }, null, { status: 'PENDING' }),
+  // No `merchant-pending`: a merchant not yet approved cannot sign in at all
+  // (the login refuses "Application pending approval."), so a pending
+  // merchant holding a session is a state the platform cannot produce (§32
+  // S16; PROJECT_STATUS §3.8 item 6).
+  // Every other merchant profile, and the drive's own merchant, is a MEMBER,
+  // so the supervisor's half of the Team page (create a team, add a member,
+  // pool requests, a member's log, the dispute thread) was in no inventory.
+  // Its members are left offline: a profile is an account to look at, and
+  // must not change what the drive pass's own merchant is routed.
+  'merchant-supervisor': {
+    what: 'a supervisor running one full cash team, its members offline',
+    panel: 'merchant-panel',
+    seed: async () => {
+      const { supervisor } = await seedTeam({ rail: 'CASH', online: [], exclusive: false });
+      return { token: merchantToken(supervisor), cached: merchantCache(supervisor, { isOnline: false }), who: supervisor.merchantId };
+    },
   },
 };
 
