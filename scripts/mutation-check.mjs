@@ -2463,27 +2463,6 @@ const MUTATIONS = [
     to: `  const keep = Number(percent) / 100;`,
   },
   {
-    id: 'M394', file: 'database/repositories/teamOversight.js', config: PG,
-    test: 'backend/tests/routes/teamOversightPg.test.js',
-    why: 'two customers who bet against each other a little, among much else, are flagged as farming',
-    from: `     AND p.hedged_paise * 100 >= $6 * (sa.paise + CASE WHEN p.user_a = p.user_b THEN 0 ELSE sb.paise END)`,
-    to: `     AND $6::int IS NOT NULL`,
-  },
-  {
-    id: 'M395', file: 'database/repositories/teamOversight.js', config: PG,
-    test: 'backend/tests/routes/teamOversightPg.test.js',
-    why: 'a pair that met in fewer rounds than the admin\'s minimum is flagged as farming',
-    from: `   WHERE p.rounds >= $5`,
-    to: `   WHERE $5::int IS NOT NULL`,
-  },
-  {
-    id: 'M396', file: 'database/repositories/teamOversight.js', config: PG,
-    test: 'backend/tests/routes/teamOversightPg.test.js',
-    why: 'two customers who only BOUGHT from the team are flagged, though no sell brings their stake back as matched volume',
-    from: `               AND ((a.bought AND b.sold) OR (b.bought AND a.sold))`,
-    to: `               AND TRUE`,
-  },
-  {
     id: 'M397', file: 'database/schema.sql', config: PG,
     test: 'backend/tests/routes/teamOversightPg.test.js',
     why: 'switching Online off never closes the stretch, so online time runs on while the member is offline',
@@ -2513,13 +2492,6 @@ const MUTATIONS = [
     why: 'a supervisor can read the log of another supervisor\'s member',
     from: `      WHERE tm.merchant_id = $1 AND t.supervisor_id = $2`,
     to: `      WHERE tm.merchant_id = $1 AND $2::text IS NOT NULL`,
-  },
-  {
-    id: 'M401', file: 'backend/domains/team/team.merchant.routes.js', config: PG,
-    test: 'backend/tests/routes/teamOversightPg.test.js',
-    why: 'the supervisor of a suspected team is shown the commission-farming flag and the players in it',
-    from: `kinds: [RED_FLAG_KINDS.LOW_ACTIVITY], days: 14 }),`,
-    to: `kinds: null, days: 14 }),`,
   },
   {
     id: 'M402', file: 'backend/domains/team/team.merchant.routes.js', config: PG,
@@ -2668,6 +2640,13 @@ const MUTATIONS = [
     why: 'a merchant only proposed for a team is shown the team\'s figures',
     from: `      performance: membership.member.status === 'APPROVED' ? `,
     to: `      performance: true ? `,
+  },
+  {
+    id: 'M423', file: 'database/repositories/teamOversight.js', config: PG,
+    test: 'backend/tests/routes/teamOversightPg.test.js',
+    why: 'a supervisor is shown the red flags of another supervisor\'s members',
+    from: `      WHERE ($1::text IS NULL OR t.supervisor_id = $1)`,
+    to: `      WHERE ($1::text IS NULL OR TRUE)`,
   },
 ];
 

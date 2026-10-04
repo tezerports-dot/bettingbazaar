@@ -262,12 +262,7 @@ export const SYSTEM_CONFIG_SPEC = group({
   redFlags: group({
     // A member is flagged when their completed orders AND their online time
     // were both this many percent below the team's average (owner: 25%).
-    lowActivityPercent:  int(25, 1, 90),
-    // Commission farming: two of a team's own customers (or one, on both
-    // sides) who bet against each other in at least this many rounds of a
-    // day, with at least this share of their combined stake on those bets.
-    farmingMinRounds:    int(3, 1, 100),
-    farmingHedgePercent: int(80, 1, 100),
+    lowActivityPercent: int(25, 1, 90),
   }),
 
   riskRules: group({

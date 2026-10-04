@@ -12,9 +12,8 @@
  *      asks — recording what was paid (Step 2b). That part is the money area
  *      canFundMerchants, so it is shown only to staff who hold it;
  *   5. reads the red flags (Step 2f): members well below their team in both
- *      completed orders and online time, and teams whose own customers bet
- *      against each other to farm commission. Flags only — nothing acts on
- *      them; the admin and the supervisor decide.
+ *      completed orders and online time. Flags only — nothing acts on them;
+ *      the admin and the supervisor decide.
  *
  * Supervisors create their teams and propose members from the merchant panel.
  * Every cap (4 teams, 10 members, one team per merchant) is enforced by the
@@ -57,8 +56,7 @@ const duration = (seconds = 0) => {
 
 /**
  * Red flags of the last 30 days (Step 2f), newest day first. Declared at
- * module level (§32 S23). A farming flag lists the player pairs (by player
- * id) with how much of their stake they bet against each other.
+ * module level (§32 S23).
  */
 const RedFlags: React.FC = () => {
   const [flags, setFlags] = useState<TeamRedFlag[] | null>(null);
@@ -68,8 +66,7 @@ const RedFlags: React.FC = () => {
       .then((res) => setFlags(res.flags || []))
       .catch((err) => setError(messageOf(err, 'Could not load the red flags.')));
   }, []);
-  const farming = (flags ?? []).filter((f) => f.kind === 'COMMISSION_FARMING');
-  const low = (flags ?? []).filter((f) => f.kind === 'LOW_ACTIVITY');
+  const low = flags ?? [];
   return (
     <div className="bg-dark-800 border border-dark-600 rounded-xl p-4">
       <h2 className="text-base font-semibold mb-1">Red flags, last 30 days</h2>
@@ -79,31 +76,6 @@ const RedFlags: React.FC = () => {
       {error && <p role="alert" className="text-sm text-red-400">{error}</p>}
       {flags === null && !error && <LoadingSpinner />}
       {flags?.length === 0 && <p className="text-sm text-gray-400">No red flags.</p>}
-      {farming.length > 0 && (
-        <div className="mb-3">
-          <h3 className="text-sm font-semibold text-red-400 mb-1">Possible commission farming</h3>
-          <ul className="space-y-2">
-            {farming.map((f) => (
-              <li key={f.flagId} className="bg-dark-700 rounded-lg p-2 text-sm">
-                <div>
-                  <span className="font-semibold">{f.teamName}</span> · {f.flagDay} · {f.details.pairCount} pair(s) of this team&apos;s
-                  own customers bet {tokens(f.details.hedgedPaise ?? 0)} tokens against each other. The team completed
-                  buys {tokens(f.details.buysPaise ?? 0)} and sells {tokens(f.details.sellsPaise ?? 0)} that day, and was paid
-                  {' '}{tokens(f.details.commissionPaise ?? 0)} tokens of commission.
-                </div>
-                <ul className="mt-1 text-xs text-gray-400">
-                  {(f.details.pairs ?? []).map((p) => (
-                    <li key={`${p.playerA}|${p.playerB}`}>
-                      {p.sameAccount ? `Player ${p.playerA} on both sides` : `Players ${p.playerA} and ${p.playerB}`}:
-                      {' '}{p.rounds} rounds, {tokens(p.hedgedPaise)} of {tokens(p.stakedPaise)} tokens staked against each other
-                    </li>
-                  ))}
-                </ul>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
       {low.length > 0 && (
         <div>
           <h3 className="text-sm font-semibold text-yellow-400 mb-1">Low activity</h3>

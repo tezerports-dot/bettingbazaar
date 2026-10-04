@@ -1,11 +1,11 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file.
 /**
- * System Settings — the red-flag thresholds (PROJECT_STATUS §3.10, Step 2f).
+ * System Settings — the red-flag threshold (PROJECT_STATUS §3.10, Step 2f).
  *
- * The three numbers `SystemConfig.redFlags` declares are on the screen with
- * the served values, and an edit goes back in the PUT under the spec's own
- * names — a name the spec does not declare is skipped silently by the server,
- * which would look like a save.
+ * The number `SystemConfig.redFlags` declares is on the screen with the
+ * served value, and an edit goes back in the PUT under the spec's own name —
+ * a name the spec does not declare is skipped silently by the server, which
+ * would look like a save.
  */
 import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -29,17 +29,15 @@ const saveButton = () => screen.getAllByRole('button', { name: /save/i }).pop() 
 describe('System Settings — red flags', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('shows the served thresholds and sends an edit back under the spec\'s names', async () => {
-    getConfig.mockResolvedValue({ success: true, data: { redFlags: { lowActivityPercent: 30, farmingMinRounds: 4, farmingHedgePercent: 70 } } });
+  it('shows the served threshold and sends an edit back under the spec\'s name', async () => {
+    getConfig.mockResolvedValue({ success: true, data: { redFlags: { lowActivityPercent: 30 } } });
     updateConfig.mockResolvedValue({ success: true });
     render(<SystemSettings />);
     await waitFor(() => expect(field('red-flag-low-activity').value).toBe('30'));
-    expect(field('red-flag-farming-rounds').value).toBe('4');
-    expect(field('red-flag-farming-share').value).toBe('70');
     fireEvent.change(field('red-flag-low-activity'), { target: { value: '40' } });
     fireEvent.click(saveButton());
     await waitFor(() => expect(updateConfig).toHaveBeenCalled());
-    expect(updateConfig.mock.calls[0][0].redFlags).toEqual({ lowActivityPercent: 40, farmingMinRounds: 4, farmingHedgePercent: 70 });
+    expect(updateConfig.mock.calls[0][0].redFlags).toEqual({ lowActivityPercent: 40 });
   });
 
   it('falls back to the schema defaults when nothing is stored', async () => {
@@ -47,7 +45,5 @@ describe('System Settings — red flags', () => {
     render(<SystemSettings />);
     await screen.findByLabelText(/Low-activity red flag/);
     await waitFor(() => expect(field('red-flag-low-activity').value).toBe('25'));
-    expect(field('red-flag-farming-rounds').value).toBe('3');
-    expect(field('red-flag-farming-share').value).toBe('80');
   });
 });

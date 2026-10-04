@@ -21,26 +21,18 @@
  * guard, in the same transaction as the flags (§32 S6). Nothing reads a flag to
  * block, pause, route or pay (owner: "flag only — the supervisor decides").
  *
- *   LOW_ACTIVITY        a member whose completed orders AND online time were
- *                       both below the team's average by `lowActivityPercent`.
- *   COMMISSION_FARMING  two of a team's own customers — one who bought from it,
- *                       one who sold to it, that day or the day before — who
- *                       bet against each other on the same rounds, or one such
- *                       customer on both sides of a round. That stake goes in
- *                       as a buy and comes back as a sell, raising the team's
- *                       matched volume and so its commission at almost no cost.
- *                       Shown to admins only: the team is the suspect.
+ *   LOW_ACTIVITY  a member whose completed orders AND online time were both
+ *                 below the team's average by `lowActivityPercent`.
+ *
+ * There is no commission-farming flag (owner, 2026-10-04): the 90:10
+ * deposit/reserve split and the 1% winnings fee make a farming round cost
+ * more than the commission it earns.
  */
 import { pgQuery, withTransaction } from '../client.js';
-import { MARKET_SIDES } from '../../backend/domains/trading/tradingModels.js';
 
 export const RED_FLAG_KINDS = Object.freeze({
   LOW_ACTIVITY: 'LOW_ACTIVITY',
-  COMMISSION_FARMING: 'COMMISSION_FARMING',
 });
-
-/** How many pairs a farming flag lists; the count says how many there were. */
-const FARMING_PAIRS_SHOWN = 10;
 
 /**
  * The red-flag settings, with the schema defaults (config.spec.js redFlags)
@@ -49,9 +41,7 @@ const FARMING_PAIRS_SHOWN = 10;
 export function redFlagSettings(cfg) {
   const r = cfg?.redFlags ?? {};
   return {
-    lowActivityPercent: Number(r.lowActivityPercent ?? 25),   // schema default: 25
-    farmingMinRounds: Number(r.farmingMinRounds ?? 3),        // schema default: 3
-    farmingHedgePercent: Number(r.farmingHedgePercent ?? 80), // schema default: 80
+    lowActivityPercent: Number(r.lowActivityPercent ?? 25), // schema default: 25
   };
 }
 
@@ -149,64 +139,6 @@ export function lowActivityFlags(members, percent) {
 }
 
 /**
- * Pairs of a team's own customers who bet against each other on a day:
- * `$1`/`$2` the day's bounds, `$3`/`$4` the two sides, `$5` the fewest rounds
- * and `$6` the least share (percent) of the pair's combined stake that day.
- *
- * A pair is a buyer and a seller of the same team (in either order), or one
- * customer who did both, against themself. In each round its HEDGED stake is
- * what the two had on opposite sides that cancels out — twice the smaller of
- * the two opposing stakes — so a pair that only ever bets against each other
- * hedges all of its stake, and two players who merely share a busy market do
- * not.
- */
-const FARMING_SQL = `
-  WITH legs AS (
-    SELECT os.team_id, os.user_id,
-           bool_or(os.order_type = 'DEPOSIT') AS bought, bool_or(os.order_type = 'WITHDRAWAL') AS sold
-      FROM order_states os
-     WHERE os.team_id IS NOT NULL AND os.completed_at >= $1::timestamptz - interval '1 day' AND os.completed_at < $2
-     GROUP BY os.team_id, os.user_id),
-  per AS (
-    SELECT l.team_id, l.user_id, l.bought, l.sold, bt.cycle_id,
-           COALESCE(SUM(bt.stake_paise) FILTER (WHERE bt.side = $3), 0) AS a_side,
-           COALESCE(SUM(bt.stake_paise) FILTER (WHERE bt.side = $4), 0) AS b_side
-      FROM legs l JOIN bets bt ON bt.user_id = l.user_id
-     WHERE bt.placed_at >= $1 AND bt.placed_at < $2 AND bt.status IN ('PENDING', 'WON', 'LOST')
-     GROUP BY l.team_id, l.user_id, l.bought, l.sold, bt.cycle_id),
-  staked AS (SELECT team_id, user_id, SUM(a_side + b_side) AS paise FROM per GROUP BY team_id, user_id),
-  pairs AS (
-    SELECT a.team_id, a.user_id AS user_a, b.user_id AS user_b,
-           count(*) FILTER (WHERE h.paise > 0)::int AS rounds, SUM(h.paise) AS hedged_paise
-      FROM per a
-      JOIN per b ON b.team_id = a.team_id AND b.cycle_id = a.cycle_id AND b.user_id >= a.user_id
-               AND ((a.bought AND b.sold) OR (b.bought AND a.sold))
-      CROSS JOIN LATERAL (SELECT CASE WHEN a.user_id = b.user_id THEN 2 * LEAST(a.a_side, a.b_side)
-                                      ELSE 2 * (LEAST(a.a_side, b.b_side) + LEAST(a.b_side, b.a_side)) END AS paise) h
-     GROUP BY a.team_id, a.user_id, b.user_id)
-  SELECT p.team_id, p.user_a, p.user_b, p.rounds, p.hedged_paise,
-         sa.paise + CASE WHEN p.user_a = p.user_b THEN 0 ELSE sb.paise END AS staked_paise
-    FROM pairs p
-    JOIN staked sa ON sa.team_id = p.team_id AND sa.user_id = p.user_a
-    JOIN staked sb ON sb.team_id = p.team_id AND sb.user_id = p.user_b
-   WHERE p.rounds >= $5
-     AND p.hedged_paise * 100 >= $6 * (sa.paise + CASE WHEN p.user_a = p.user_b THEN 0 ELSE sb.paise END)
-   ORDER BY p.team_id, p.hedged_paise DESC, p.user_a, p.user_b`;
-
-/** A team's buys and sells completed in a window, and the commission it was paid in it. */
-const TEAM_DAY_SQL = `
-  SELECT t.team_id,
-         COALESCE((SELECT SUM(os.token_amount_paise) FROM order_states os
-                    WHERE os.team_id = t.team_id AND os.order_type = 'DEPOSIT'
-                      AND os.completed_at >= $2 AND os.completed_at < $3), 0) AS buys_paise,
-         COALESCE((SELECT SUM(os.token_amount_paise) FROM order_states os
-                    WHERE os.team_id = t.team_id AND os.order_type = 'WITHDRAWAL'
-                      AND os.completed_at >= $2 AND os.completed_at < $3), 0) AS sells_paise,
-         COALESCE((SELECT SUM(commission_paise) FROM team_commissions c
-                    WHERE c.team_id = t.team_id AND c.created_at >= $2 AND c.created_at < $3), 0) AS commission_paise
-    FROM teams t WHERE t.team_id = ANY($1)`;
-
-/**
  * Evaluate one IST day ('YYYY-MM-DD') for every team, once. Returns
  * `{ evaluated: false }` when the day was already evaluated (here or by
  * another instance), else what was flagged.
@@ -235,34 +167,7 @@ export async function evaluateRedFlags(flagDay, settings) {
         lowActivity += 1;
       }
     }
-
-    const { rows: pairs } = await client.query(FARMING_SQL, [
-      b.d0, b.d1, MARKET_SIDES[0], MARKET_SIDES[1], s.farmingMinRounds, s.farmingHedgePercent]);
-    const byTeam = new Map();
-    for (const p of pairs) {
-      if (!byTeam.has(p.team_id)) byTeam.set(p.team_id, []);
-      byTeam.get(p.team_id).push({
-        playerA: p.user_a, playerB: p.user_b, sameAccount: p.user_a === p.user_b,
-        rounds: Number(p.rounds), hedgedPaise: Number(p.hedged_paise), stakedPaise: Number(p.staked_paise),
-      });
-    }
-    const { rows: days } = byTeam.size
-      ? await client.query(TEAM_DAY_SQL, [[...byTeam.keys()], b.d0, b.d1])
-      : { rows: [] };
-    for (const t of days) {
-      const list = byTeam.get(t.team_id);
-      await insert(RED_FLAG_KINDS.COMMISSION_FARMING, t.team_id, null, {
-        pairCount: list.length,
-        pairs: list.slice(0, FARMING_PAIRS_SHOWN),
-        hedgedPaise: list.reduce((sum, p) => sum + p.hedgedPaise, 0),
-        buysPaise: Number(t.buys_paise),
-        sellsPaise: Number(t.sells_paise),
-        commissionPaise: Number(t.commission_paise),
-        minRounds: s.farmingMinRounds,
-        hedgePercent: s.farmingHedgePercent,
-      });
-    }
-    return { evaluated: true, lowActivity, commissionFarming: days.length };
+    return { evaluated: true, lowActivity };
   });
 }
 
@@ -299,22 +204,22 @@ function toFlag(r) {
 
 /**
  * Red flags from the last `days` days, newest first. `supervisorId` scopes to
- * that supervisor's teams (in the WHERE, trap 16); `kinds` to those kinds.
+ * that supervisor's teams (in the WHERE, trap 16). A supervisor is shown every
+ * kind: a kind added for admins only needs its own filter here.
  */
-export async function listRedFlags({ supervisorId = null, kinds = null, days = 14, limit = 200 } = {}) {
+export async function listRedFlags({ supervisorId = null, days = 14, limit = 200 } = {}) {
   const { rows } = await pgQuery(
     `SELECT f.flag_id, f.kind, to_char(f.flag_day, 'YYYY-MM-DD') AS flag_day, f.team_id, t.name AS team_name,
             t.supervisor_id, f.merchant_id, m.name AS merchant_name, m.public_ref AS merchant_ref,
             f.details, f.created_at
        FROM team_red_flags f
        JOIN teams t ON t.team_id = f.team_id
-       LEFT JOIN merchants m ON m.merchant_id = f.merchant_id
+       JOIN merchants m ON m.merchant_id = f.merchant_id
       WHERE ($1::text IS NULL OR t.supervisor_id = $1)
-        AND ($2::text[] IS NULL OR f.kind = ANY($2))
-        AND f.flag_day >= (now() AT TIME ZONE 'Asia/Kolkata')::date - $3::int
+        AND f.flag_day >= (now() AT TIME ZONE 'Asia/Kolkata')::date - $2::int
       ORDER BY f.flag_day DESC, f.team_id, f.kind, m.name
-      LIMIT $4`,
-    [supervisorId === null ? null : String(supervisorId), kinds,
+      LIMIT $3`,
+    [supervisorId === null ? null : String(supervisorId),
       Math.min(Math.max(Math.trunc(Number(days)) || 14, 1), 90), Math.min(Math.max(Number(limit) || 200, 1), 1000)],
     'oversight_list_flags');
   return rows.map(toFlag);

@@ -3925,12 +3925,11 @@ CREATE INDEX IF NOT EXISTS order_states_team_completed_at_idx
 -- Computed once per IST day by `teamOversight.evaluateRedFlags`, the one writer.
 -- A flag is a prompt for a person, never an action: nothing reads it to block,
 -- pause or pay (owner: "flag only — the supervisor decides").
---   LOW_ACTIVITY        a member whose completed orders AND online time were
---                       both below the team's average by the admin's threshold
---                       (`SystemConfig.redFlags.lowActivityPercent`, 25).
---   COMMISSION_FARMING  a team whose own buyers and sellers bet against each
---                       other (or one of them against themself), which
---                       inflates its matched volume and so its commission.
+--   LOW_ACTIVITY  a member whose completed orders AND online time were both
+--                 below the team's average by the admin's threshold
+--                 (`SystemConfig.redFlags.lowActivityPercent`, 25).
+-- No commission-farming flag (owner, 2026-10-04): the deposit/reserve split
+-- and the winnings fee make farming cost more than it earns.
 -- `team_red_flag_days` is the once-only guard: a day is evaluated in the
 -- transaction that inserts its row, with the thresholds it used.
 CREATE TABLE IF NOT EXISTS team_red_flag_days (
@@ -3941,20 +3940,24 @@ CREATE TABLE IF NOT EXISTS team_red_flag_days (
 CREATE OR REPLACE TRIGGER team_red_flag_days_append_only
   BEFORE UPDATE OR DELETE ON team_red_flag_days FOR EACH ROW EXECUTE FUNCTION bb_forbid_change();
 
+-- Every flag is about one member.
 CREATE TABLE IF NOT EXISTS team_red_flags (
   flag_id     BIGSERIAL PRIMARY KEY,
   kind        TEXT NOT NULL,
   flag_day    DATE NOT NULL REFERENCES team_red_flag_days (flag_day),
   team_id     TEXT NOT NULL REFERENCES teams (team_id),
-  merchant_id TEXT REFERENCES merchants (merchant_id) ON DELETE CASCADE,
+  merchant_id TEXT NOT NULL REFERENCES merchants (merchant_id) ON DELETE CASCADE,
   details     JSONB NOT NULL DEFAULT '{}'::jsonb,
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-  CONSTRAINT team_red_flags_kind_known CHECK (kind IN ('LOW_ACTIVITY', 'COMMISSION_FARMING')),
-  -- A low-activity flag is about one member; a farming flag about the team.
-  CONSTRAINT team_red_flags_subject CHECK ((kind = 'LOW_ACTIVITY') = (merchant_id IS NOT NULL))
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE UNIQUE INDEX IF NOT EXISTS team_red_flags_once
-  ON team_red_flags (kind, flag_day, team_id, COALESCE(merchant_id, ''));
+-- Dropped and re-added so a changed list converges (S31).
+ALTER TABLE team_red_flags DROP CONSTRAINT IF EXISTS team_red_flags_kind_known;
+ALTER TABLE team_red_flags ADD CONSTRAINT team_red_flags_kind_known CHECK (kind IN ('LOW_ACTIVITY'));
+ALTER TABLE team_red_flags DROP CONSTRAINT IF EXISTS team_red_flags_subject;
+ALTER TABLE team_red_flags ALTER COLUMN merchant_id SET NOT NULL;
+DROP INDEX IF EXISTS team_red_flags_once;
+CREATE UNIQUE INDEX IF NOT EXISTS team_red_flags_once_per_member
+  ON team_red_flags (kind, flag_day, merchant_id);
 CREATE INDEX IF NOT EXISTS team_red_flags_team_idx ON team_red_flags (team_id, flag_day DESC);
 
 -- ── A supervisor speaks for their members in a dispute ──────────────────────

@@ -15,7 +15,6 @@ import { merchantAuth } from '../../middleware/merchantAuth.js';
 import { respondError } from '../../shared/httpError.js';
 import { refuse } from './teamRefusals.js';
 import { rupeesToPaise } from '../../shared/money.js';
-import { RED_FLAG_KINDS } from '#db/repositories/teamOversight.js';
 import { listMessages, postSupervisorMessage } from '#db/repositories/chat.js';
 import { toSupervisorOrderView, toSupervisorOrderViews } from '../merchant/merchantOrderView.js';
 import {
@@ -50,12 +49,11 @@ router.get('/team', merchantAuth, async (req, res) => {
       ]);
       // Oversight (Step 2f): each approved member's completed orders and
       // online time, today and over seven days, and the low-activity flags of
-      // the last fortnight. A commission-farming flag is for admins only: the
-      // team is what it suspects.
+      // the last fortnight.
       const [today, week, redFlags] = await Promise.all([
         Promise.all(teams.map((t) => db.teamOversight.teamActivity(t.teamId, { days: 1 }).then((a) => memberActivityRows(a, t.teamId)))),
         Promise.all(teams.map((t) => db.teamOversight.teamActivity(t.teamId, { days: 7 }).then((a) => memberActivityRows(a, t.teamId)))),
-        db.teamOversight.listRedFlags({ supervisorId: me.merchantId, kinds: [RED_FLAG_KINDS.LOW_ACTIVITY], days: 14 }),
+        db.teamOversight.listRedFlags({ supervisorId: me.merchantId, days: 14 }),
       ]);
       return res.json({
         success: true, role: 'SUPERVISOR', rail: me.supervisorRail, publicRef: me.publicRef,

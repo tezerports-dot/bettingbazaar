@@ -876,14 +876,9 @@ Owner answers, 2026-10-02 (two rounds; the second replaced the security deposit 
     team's average is flagged to the supervisor and the admin. A team of
     fewer than 2 members is skipped; a member approved after the day is not
     counted. Flag only: nothing acts on it.
-  - *Commission-farming red flag* (2e recommendation, pending the owner).
-    Two customers who traded with the same team (one bought, the other sold,
-    or one did both) that day or the day before and then bet against each
-    other on the same rounds: at least `farmingMinRounds` (3) rounds and at
-    least `farmingHedgePercent` (80%) of their combined stake that day on
-    opposite sides. One flag per team per day, with the pairs and the team's
-    buys, sells and commission; ADMIN only (the supervisor is the person it
-    would warn).
+  - *No commission-farming flag* (owner, 2026-10-04). 2f built one and
+    removed it: the 90:10 deposit/reserve split and the 1% winnings fee make
+    farming lose about ₹2 per ₹100 deposited.
   - *Supervisor.* Team page: each team's activity today and over 7 days per
     member, the low-activity flags of 14 days, a member's log (orders without
     any player detail, `SUPERVISOR_ORDER_FIELDS`, and Online stretches), and
@@ -892,8 +887,8 @@ Owner answers, 2026-10-02 (two rounds; the second replaced the security deposit 
     what they read and refused by the database in what they write.
   - *Member.* Team performance over 7 days: the team's totals and average,
     and their own figures; never a teammate's row.
-  - *Admin.* Teams: red flags of 30 days (farming and low activity).
-    Settings: the three red-flag numbers. Dispute Manager shows supervisor
+  - *Admin.* Teams: red flags of 30 days.
+    Settings: the low-activity percent. Dispute Manager shows supervisor
     messages.
   - *Security review (independent, 2026-10-04), 8 findings, none high, all
     fixed:* supervisors no longer see UPI handles, UTRs or account numbers in
@@ -906,7 +901,7 @@ Owner answers, 2026-10-02 (two rounds; the second replaced the security deposit 
     counts from joining; a team of two shows its members no totals.
   - *Tests.* `teamOversightPg` (7), unit `teamOversight` (11), `mobileInText`
     unit and `mobileInTextPg` (one list), TeamPage (+6), TeamsManager (+2),
-    SystemSettingsRedFlags (2); mutations M392–M422.
+    SystemSettingsRedFlags (2); mutations M392–M393, M397–M400, M402–M423.
 - **2g Close-out.** CLAUDE.md §2/§25/§26 rewritten for the new owners, docs,
   every gate and tier.
 

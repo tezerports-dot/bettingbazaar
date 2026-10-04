@@ -671,7 +671,7 @@ export const teams = {
     (await api.post(`/api/admin/team-members/${merchantId}/reject`)).data,
   removeMember: async (merchantId: string) =>
     (await api.delete(`/api/admin/team-members/${merchantId}`)).data,
-  /** Red flags of the last `days` days (Step 2f): low activity per member, commission farming per team. */
+  /** Red flags of the last `days` days (Step 2f): low activity per member. */
   redFlags: async (days = 30) => {
     const res = await api.get<any>('/api/admin/team-red-flags', { params: { days } });
     return res.data as { success: boolean; flags: TeamRedFlag[] };

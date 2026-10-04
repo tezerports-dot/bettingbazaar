@@ -157,8 +157,8 @@ export const SystemSettings: React.FC = () => {
     withdrawalHoldMinutes: 60,  // schema default: 60 (also the floor)
     // How long a player has to dispute a buy the member rejected as unpaid.
     rejectedBuyDisputeMinutes: 15,  // schema default: 15
-    // The daily red flags on teams (Step 2f): low activity, commission farming.
-    redFlags: { lowActivityPercent: 25, farmingMinRounds: 3, farmingHedgePercent: 80 },  // schema defaults: 25 / 3 / 80
+    // The daily red flag on team members (Step 2f): low activity.
+    redFlags: { lowActivityPercent: 25 },  // schema default: 25
     // Overload ceilings — past either one the server answers 503 fast rather
     // than admitting work into a queue that will never drain.
     loadShedding: { enabled: true, maxInFlight: 300, maxEventLoopLagMs: 0 },  // schema defaults: true / 300 / 0
@@ -277,9 +277,7 @@ export const SystemSettings: React.FC = () => {
           withdrawalHoldMinutes: response.data.withdrawalHoldMinutes ?? 60, // schema default: 60
           rejectedBuyDisputeMinutes: response.data.rejectedBuyDisputeMinutes ?? 15, // schema default: 15
           redFlags: {
-            lowActivityPercent:  response.data.redFlags?.lowActivityPercent  ?? 25, // schema default: 25
-            farmingMinRounds:    response.data.redFlags?.farmingMinRounds    ?? 3,  // schema default: 3
-            farmingHedgePercent: response.data.redFlags?.farmingHedgePercent ?? 80, // schema default: 80
+            lowActivityPercent: response.data.redFlags?.lowActivityPercent ?? 25, // schema default: 25
           },
           loadShedding: {
             enabled:           response.data.loadShedding?.enabled           ?? true, // schema default: true
@@ -1087,33 +1085,6 @@ export const SystemSettings: React.FC = () => {
             <p className="text-xs text-gray-500 mt-1">
               A member is flagged to their supervisor and here when their completed orders and their online
               time on a day were both this far below their team's average.
-            </p>
-          </div>
-          <div>
-            <label className="label" htmlFor="red-flag-farming-rounds">Commission farming: rounds bet against each other</label>
-            <input id="red-flag-farming-rounds"
-              type="number" min={1} max={100} step={1}
-              value={formData.redFlags.farmingMinRounds}
-              onChange={(e) => setFormData({ ...formData, redFlags: { ...formData.redFlags,
-                farmingMinRounds: Math.min(100, Math.max(1, Math.floor(Number(e.target.value) || 3))) } })}
-              className="input"
-            />
-            <p className="text-xs text-gray-500 mt-1">
-              A team is flagged when one of its buyers and one of its sellers (or one player on both sides)
-              bet against each other in at least this many rounds of a day…
-            </p>
-          </div>
-          <div>
-            <label className="label" htmlFor="red-flag-farming-share">Commission farming: share of their stake (%)</label>
-            <input id="red-flag-farming-share"
-              type="number" min={1} max={100} step={1}
-              value={formData.redFlags.farmingHedgePercent}
-              onChange={(e) => setFormData({ ...formData, redFlags: { ...formData.redFlags,
-                farmingHedgePercent: Math.min(100, Math.max(1, Math.floor(Number(e.target.value) || 80))) } })}
-              className="input"
-            />
-            <p className="text-xs text-gray-500 mt-1">
-              …with at least this share of everything the two staked that day on those bets.
             </p>
           </div>
         </div>

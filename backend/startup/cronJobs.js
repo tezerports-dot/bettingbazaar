@@ -113,14 +113,13 @@ export function registerCronJobs(rebuildLeaderboard) {
   });
 
   // ── Red flags — hourly, each IST day evaluated once ────────────────────────
-  // Step 2f: low activity per member and commission farming per team, for the
-  // days that have ended. The day's row is the once-only guard, so the hourly
+  // Step 2f: low activity per member, for the days that have ended. The day's row is the once-only guard, so the hourly
   // run is a catch-up after downtime rather than a repeat.
   registerRecurring('team-red-flags', 60 * 60 * 1000, async () => {
     try {
       const { runDailyRedFlags } = await import('../domains/team/teamOversight.service.js');
       for (const r of await runDailyRedFlags()) {
-        if (r.evaluated) console.log(`[red-flags] ${r.day}: ${r.lowActivity} low-activity, ${r.commissionFarming} commission-farming`);
+        if (r.evaluated) console.log(`[red-flags] ${r.day}: ${r.lowActivity} low-activity`);
       }
     } catch (e) { console.error('[red-flags] cron error:', e.message); }
   });

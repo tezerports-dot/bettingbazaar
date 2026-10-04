@@ -49,7 +49,7 @@ describe('the low-activity rule', () => {
   });
 
   it('reads the schema defaults for anything not stored', () => {
-    expect(redFlagSettings({})).toEqual({ lowActivityPercent: 25, farmingMinRounds: 3, farmingHedgePercent: 80 });
+    expect(redFlagSettings({})).toEqual({ lowActivityPercent: 25 });
     expect(redFlagSettings({ redFlags: { lowActivityPercent: 40 } }).lowActivityPercent).toBe(40);
   });
 });

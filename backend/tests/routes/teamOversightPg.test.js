@@ -7,12 +7,10 @@
  *   · the Online switch is logged, one stretch per spell, closed once;
  *   · the daily red flags, once per day: a member below the team's average in
  *     BOTH completed orders and online time is flagged, and one below in only
- *     one is not; a team whose own buyer and seller (or one customer on both
- *     sides) bet against each other is flagged for commission farming, and a
- *     pair under the rounds or the hedged share is not;
- *   · who sees what: the supervisor their teams' low-activity flags and every
- *     member's figures, never a farming flag; a member the team's totals and
- *     their own figures, never a teammate's row; an admin everything;
+ *     one is not; a sell settled by the hold sweep counts as a completed order;
+ *   · who sees what: the supervisor their own teams' flags and every member's
+ *     figures; a member the team's totals and their own figures, never a
+ *     teammate's row; an admin every team's flags;
  *   · a supervisor reads only their own APPROVED members' logs, from when they
  *     joined, and speaks in only their own members' open disputes (at most
  *     `SUPERVISOR_MESSAGES_PER_DISPUTE` times), shown nothing of the player:
@@ -21,18 +19,17 @@
  *
  * Built the way production builds it (§32 S16): orders routed to members of
  * working teams, completed on the member's panel and the hold sweep's
- * settler; bets placed through the bet writer; the switch through its writer.
+ * settler; the switch through its writer.
  *
  * Trap 10: the day this suite evaluates is its own to clean — the day's row
- * and every flag it produced are removed in `afterAll`, with the orders and
- * the bets (refunded through the bet writer) of this suite's players.
+ * and every flag it produced are removed in `afterAll`, with the orders of
+ * this suite's players.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { pgConfigured, applySchema, closePg, withTransaction, pgQuery } from '#db/client.js';
 import { createOrderRecord, getOrderRecord } from '#db/repositories/orders.record.js';
 import { updateUser } from '#db/repositories/users.js';
 import { setOnline } from '#db/repositories/merchants.js';
-import { placeBet, refundPlacedBet } from '#db/repositories/bets.js';
 import { evaluateRedFlags, redFlagSettings } from '#db/repositories/teamOversight.js';
 import { createTeam, addMember } from '#db/repositories/teams.js';
 import { postMessage, SUPERVISOR_MESSAGES_PER_DISPUTE } from '#db/repositories/chat.js';
@@ -54,14 +51,12 @@ describePg('team oversight', () => {
   const teams = teamFixture();
   const ownTeams = [];
   const players = [];
-  const placed = [];
   let today;
   const run = `tov${Date.now().toString(36)}`;
   const oid = () => `${run}-${Math.random().toString(36).slice(2, 7)}-${seq += 1}`;
   // Twelve digits, unique to this run: the UTR registry keeps every claim for good.
   const utr = () => `57${String(Date.now()).slice(-7)}${String(seq += 1).padStart(3, '0')}`;
   const payoutUtr = () => `UTRTO${String(Date.now()).slice(-7)}${String(seq += 1).padStart(4, '0')}`;
-  const cycle = (n) => `${run}-c${n}`;
 
   beforeAll(async () => {
     await applySchema();
@@ -85,9 +80,6 @@ describePg('team oversight', () => {
   }
 
   afterAll(async () => {
-    for (const b of placed) {
-      await refundPlacedBet({ ...b, reason: 'teamOversightPg cleanup' }).catch(() => {});
-    }
     await forgetDay();
     await withTransaction(async (c) => {
       await c.query('SET LOCAL session_replication_role = replica');
@@ -153,20 +145,9 @@ describePg('team oversight', () => {
     return orderId;
   };
 
-  /** Stakes through the bet writer: `[cycleNo, side, tokens]`, from the given pocket. */
-  const bet = async (who, field, stakes) => {
-    for (const [n, side, amount] of stakes) {
-      const b = { betId: `${run}-b${seq += 1}`, userId: who.userId, cycleId: cycle(n), side, slices: [{ field, amount }] };
-      const out = await placeBet({ ...b, amount });
-      expect(out.ok, JSON.stringify(out)).toBe(true);
-      placed.push(b);
-    }
-  };
-
   const supervisorFlags = (body) => body.redFlags.map((f) => `${f.kind}:${f.merchantId}`);
 
   let supL; let supT; let a; let b; let x; let t1; let teamL; let teamT;
-  let farmers = {};
 
   it('logs the Online switch: one stretch per spell, closed once and never edited', async () => {
     const m = await merchantActor();
@@ -198,39 +179,16 @@ describePg('team oversight', () => {
     expect(new Date(s.ended_at) >= new Date(s.started_at)).toBe(true);
   });
 
-  it('flags, once a day, the members below the team in BOTH orders and online time, and the farming team', async () => {
+  it('flags, once a day, the members below the team in BOTH orders and online time', async () => {
     supL = await merchantActor(); supT = await merchantActor();
     a = await merchantActor(); b = await merchantActor(); x = await merchantActor(); t1 = await merchantActor();
     teamL = await teams.workingTeam({ rail: 'UPI_BANK', poolTokens: 200_000, supervisorId: supL.merchantId, include: [a.merchantId, b.merchantId, x.merchantId] });
-    teamT = await teams.workingTeam({ rail: 'UPI_BANK', poolTokens: 500_000, supervisorId: supT.merchantId, include: [t1.merchantId] });
+    teamT = await teams.workingTeam({ rail: 'UPI_BANK', poolTokens: 200_000, supervisorId: supT.merchantId, include: [t1.merchantId] });
 
-    // ── Team T: its customers bet against each other ────────────────────────
-    const [pa, pb, pc, pd, pe, pf, pg, ph] = [
-      await player(), await player(), await player(), await player(), await player(), await player(), await player(), await player()];
-    farmers = { pa, pb, pg };
-    await completedBuy(pa, t1);            // A bought from the team…
-    await completedSell(pb, t1, 70_000);   // …B sold to it…
-    await completedBuy(pc, t1);
-    await completedSell(pd, t1, 80_000);
-    await completedBuy(pe, t1);
-    await completedSell(pf, t1, 60_000);
-    await completedBuy(pg, t1);            // G did both.
-    await completedSell(pg, t1, 50_000);
-    await completedBuy(ph, t1);
-    // A and B: 5,000 on opposite sides of three rounds — all of their stake.
-    await bet(pa, 'depositBalance', [[1, 'DELHI', 5000], [2, 'DELHI', 5000], [3, 'DELHI', 5000]]);
-    await bet(pb, 'winningsBalance', [[1, 'BOMBAY', 5000], [2, 'BOMBAY', 5000], [3, 'BOMBAY', 5000]]);
-    // C and D: against each other in three rounds, but D bets far more alone.
-    await bet(pc, 'depositBalance', [[1, 'DELHI', 1000], [2, 'DELHI', 1000], [3, 'DELHI', 1000]]);
-    await bet(pd, 'winningsBalance', [[1, 'BOMBAY', 1000], [2, 'BOMBAY', 1000], [3, 'BOMBAY', 1000], [9, 'DELHI', 20000]]);
-    // E and F: all of their stake against each other, in only two rounds.
-    await bet(pe, 'depositBalance', [[4, 'DELHI', 2000], [5, 'DELHI', 2000]]);
-    await bet(pf, 'winningsBalance', [[4, 'BOMBAY', 2000], [5, 'BOMBAY', 2000]]);
-    // C and H: all of their stake against each other in three rounds, but both
-    // only BOUGHT — no sell brings the stake back as matched volume.
-    await bet(ph, 'depositBalance', [[1, 'BOMBAY', 1000], [2, 'BOMBAY', 1000], [3, 'BOMBAY', 1000]]);
-    // G: both sides of three rounds.
-    await bet(pg, 'depositBalance', [[6, 'DELHI', 3000], [6, 'BOMBAY', 3000], [7, 'DELHI', 3000], [7, 'BOMBAY', 3000], [8, 'DELHI', 3000], [8, 'BOMBAY', 3000]]);
+    // ── Team T: one member completes a buy and a sell the hold sweep settles ─
+    const [pa, pb] = [await player(), await player()];
+    await completedBuy(pa, t1);
+    await completedSell(pb, t1, 50_000);
 
     // ── Team L: two members complete an order each, X is online and idle ────
     const [p1, p2] = [await player(), await player()];
@@ -250,18 +208,9 @@ describePg('team oversight', () => {
     // X did no orders but was online above the cut: below in ONE, so not flagged.
     expect(lowL).toEqual(idle);
     expect(flags.find((f) => f.merchant_id === idle[0]).details).toMatchObject({ completedOrders: 0, onlineSeconds: 0, members: 10, percent: 25 });
-    expect(flags.filter((f) => f.team_id === teamL.teamId && f.kind === 'COMMISSION_FARMING')).toHaveLength(0);
-
-    const farming = flags.filter((f) => f.team_id === teamT.teamId && f.kind === 'COMMISSION_FARMING');
-    expect(farming).toHaveLength(1);
-    const pair = (u, v) => [u.userId, v.userId].sort().join('|');
-    const got = farming[0].details.pairs.map((p) => [p.playerA, p.playerB].sort().join('|')).sort();
-    expect(got).toEqual([pair(pa, pb), pair(pg, pg)].sort());
-    expect(farming[0].details).toMatchObject({ pairCount: 2, buysPaise: 25_000_000, sellsPaise: 20_000_000, minRounds: 3, hedgePercent: 80 });
-    const ab = farming[0].details.pairs.find((p) => !p.sameAccount);
-    expect(ab).toMatchObject({ rounds: 3, hedgedPaise: 3_000_000, stakedPaise: 3_000_000 });
     // Team T's other nine never worked.
-    expect(flags.filter((f) => f.team_id === teamT.teamId && f.kind === 'LOW_ACTIVITY')).toHaveLength(9);
+    expect(flags.filter((f) => f.team_id === teamT.teamId).map((f) => f.merchant_id).sort())
+      .toEqual(teamT.members.filter((id) => id !== t1.merchantId).sort());
 
     // Once a day: a second evaluation is a no-op.
     expect(await evaluateRedFlags(today, redFlagSettings({}))).toEqual({ evaluated: false });
@@ -270,7 +219,7 @@ describePg('team oversight', () => {
     expect(again[0].n).toBe(flags.length);
   });
 
-  it('shows the supervisor their teams\' low-activity flags and every member\'s figures, never a farming flag', async () => {
+  it('shows the supervisor their own teams\' flags and every member\'s figures; an admin every team\'s', async () => {
     const seenL = await as(teamApp, supL).get('/team');
     expect(seenL.status, JSON.stringify(seenL.body)).toBe(200);
     const idle = teamL.members.filter((id) => ![a.merchantId, b.merchantId, x.merchantId].includes(id));
@@ -283,12 +232,13 @@ describePg('team oversight', () => {
     const seenT = await as(teamApp, supT).get('/team');
     expect(seenT.body.redFlags.every((f) => f.kind === 'LOW_ACTIVITY' && f.teamId === teamT.teamId)).toBe(true);
     expect(seenT.body.redFlags).toHaveLength(9);
-    expect(JSON.stringify(seenT.body)).not.toContain(farmers.pa.userId);
+    // The sell the hold sweep settled is a completed order like the buy.
+    expect(seenT.body.activity.today.find((r) => r.merchantId === t1.merchantId))
+      .toMatchObject({ completedOrders: 2, completedTokens: 100_000 });
 
     const seenAdmin = await as(teamAdmin, admin).get('/team-red-flags');
     expect(seenAdmin.status).toBe(200);
-    const farming = seenAdmin.body.flags.find((f) => f.kind === 'COMMISSION_FARMING' && f.teamId === teamT.teamId);
-    expect(farming.details.pairCount).toBe(2);
+    expect(seenAdmin.body.flags.filter((f) => f.teamId === teamT.teamId)).toHaveLength(9);
     expect(seenAdmin.body.flags.filter((f) => f.teamId === teamL.teamId)).toHaveLength(7);
   });
 
