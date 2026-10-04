@@ -325,6 +325,13 @@ try {
       : { viewport: { width: 1440, height: 900 } });
     await ctx.addInitScript(([k, v, extraKey, extraVal]) => {
       try {
+        // Once per tab, the way a real browser holds a session. Re-installed
+        // on every load, a panel that signs ITSELF out (a suspended merchant's
+        // 403 clears the token and reloads at sign-in) was signed straight back
+        // in, refused again, and judged mid-loop as "nothing rendered" — a loop
+        // no real browser has, hiding what the merchant is actually shown.
+        if (sessionStorage.getItem('bb_seeded') === k) return;
+        sessionStorage.setItem('bb_seeded', k);
         localStorage.setItem(k, v);
         // A returning operator has more than a token: the panel cached their
         // profile last visit. With only the token, the first refused profile

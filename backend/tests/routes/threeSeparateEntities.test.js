@@ -34,6 +34,7 @@ import { hashPassword } from '../../domains/identity/password.util.js';
 import playerAuthRoutes from '../../domains/identity/playerAuth.routes.js';
 import merchantRoutes from '../../domains/merchant/merchant.routes.js';
 import { loginHandler, LOGIN_DOOR } from '../../routes.js';
+import { loginPaceLimiter } from '../../middleware/security.js';
 import { mountRouter, request } from './_harness.js';
 import express from 'express';
 
@@ -42,6 +43,8 @@ const describePg = pgConfigured() ? describe : describe.skip;
 /** One mobile, three accounts, three passwords. Unique per RUN (§32 S19). */
 const RUN = String(Math.floor(Math.random() * 90000) + 10000);
 const MOBILE = `9${RUN}0007`;
+// A mobile no door has an account for (same RUN, different tail).
+const NOBODY = `9${RUN}0008`;
 const PW = {
   player:   'the-player-passphrase',
   staff:    'the-staff-passphrase-x',
@@ -180,11 +183,25 @@ describePg('three separate entities, one mobile', () => {
     for (const [door, path] of Object.entries(DOORS)) {
       const wrong = Object.entries(PW).filter(([who]) => who.toUpperCase() !== door);
       const said = [];
+      // The player door paces ONE credential try per mobile per 10 seconds.
+      // Without this the second and third tries were both answered 429 by the
+      // pacer, so the door's own wording was never compared at all and the
+      // check passed on two identical limiter replies (2g, 2026-10-04).
+      const unpaced = (mobile) => loginPaceLimiter.resetKey(`p:${mobile}`);
       for (const [, password] of wrong) {
+        await unpaced(MOBILE);
         const res = await post(path, { mobile: MOBILE, password });
         said.push(`${res.status}:${res.body.message}`);
       }
+      // And a mobile with NO account at this door at all. The merchant door
+      // answered it "No merchant account found for this mobile number" and a
+      // wrong password "Invalid credentials", so one request told anybody
+      // whether a number was a merchant's (2g review, 2026-10-04).
+      await unpaced(NOBODY);
+      const nobody = await post(path, { mobile: NOBODY, password: PW.player });
+      said.push(`${nobody.status}:${nobody.body.message}`);
       expect(new Set(said).size, `${door} door said: ${said.join(' | ')}`).toBe(1);
+      expect(said[0], `${door} door answered the limiter, not the login`).toMatch(/^401:/);
     }
   });
 

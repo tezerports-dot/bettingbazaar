@@ -8,24 +8,29 @@
 >
 > Rules live in `CLAUDE.md`. This file is status only.
 
-**Last updated:** 2026-09-24, on the single-store branch (PR #184).
+**Last updated:** 2026-10-04, Step 2g (the close-out of the team model, §3.10).
 
 ---
 
 ## 1. Where the project actually is
 
-Every number below was printed by the command beside it on 2026-09-24, not
-recalled (§29 — a claim about readiness is a claim about evidence).
+Every number below was printed by the command beside it on 2026-10-04 (Step 2g),
+not recalled (§29 — a claim about readiness is a claim about evidence).
 
 | | State | Evidence |
 |---|---|---|
-| Datastore migration | **Complete** | `npm run check:no-mongo` — "All checks report zero", 186 references removed |
-| Unit suite | **853 passing** in 83 files | `npm run test:unit` |
-| Money-path suite | **1537 passing** in 101 files | `npm run test:pg` against a real PostgreSQL |
-| Control inventory | **1246** controls across 67 screens, 0 FAIL | `npm run test:browser` |
-| Panel suites | 81 admin, plus merchant and user | per-panel `vitest` |
-| CI | green on every check | PR #184 |
+| Datastore migration | **Complete** | `npm run check:no-mongo` — "All checks report zero. PostgreSQL is the only store." |
+| Unit suite | **892 passing** in 90 files | `npm run test:unit` |
+| Money-path suite | **1,582 passing** in 129 files | `npm run test:pg` against a real PostgreSQL |
+| Redis suite | 8 passing in 2 files | `npm run test:redis` |
+| Whole server | 226 checks: 223 pass, 0 fail, 3 notes | `npm run test:e2e` |
+| Control inventory | **692** controls across 64 screens, 0 FAIL (default accounts; phone the same; 16 account profiles, see §3.10 2g) | `npm run test:browser` |
+| Panel suites | user 229 · admin 176 · merchant 108, each typechecked and built | per-panel `vitest`, `tsc`, `vite build` |
+| Gates | all 17 exit 0; `audit:map -- --check` exit 0 | the Commands table in `CLAUDE.md` |
 | Capability registry | 74 tracked: 47 full · 9 partial · 7 architecture-ready · 7 absent · 4 decision | `npm run verify:capabilities` |
+
+The 2026-09-24 edition of this table (and §2 below) predates Step 2, which
+replaced the two-rail design with supervisors, teams and team pools.
 
 **What the 2026-09-24 browser work found, because none of it was visible
 below a browser.** The three panels were gated per-audience (`CLAUDE.md`
@@ -44,7 +49,12 @@ operational work that is not code.
 
 ---
 
-## 2. The two rails — the A/B work
+## 2. The two rails — the A/B work (HISTORY: replaced by Step 2, §3.10)
+
+> Step 2c (2026-10-03) deleted the platform-wide rail switch, the cash-link
+> queue, CDM slips and per-merchant wallets this section describes. An order's
+> rail now follows from its size or currency, and every order is routed to a
+> team member. Kept for the decisions it records; read §3.10 for what runs.
 
 The platform runs **one of two P2P settlement rails at a time**, with an admin
 switching between them and neither deleted. The design is
@@ -553,7 +563,7 @@ Measured on the commit that adds items 18–19: unit 920/920; pg 1736/1736 (133 
 
 Measured on the commit that adds items 11–17: unit 920/920; pg 1719/1719 (130 files); admin panel 155, merchant 73, user 224, tsc clean on all three; e2e 183 checks, 178 pass, 0 fail, 5 notes (each says what a dev server cannot measure), then s8 alone with the door probes 64/61/0/3; all 17 gates exit 0; `audit:map --check` matches after regeneration (308 routes, 35 unauthenticated). Mutation: M225, M243, M254–M263 KILLED. Not run: the browser tiers after the door change, the full mutation run, and an independent review (§37 step 12).
 
-## 3.10 Plan — the redesign (owner, 2026-10-02). Step 1 DONE; Step 2 IN PROGRESS (2a, 2b done); Step 3 NOT STARTED.
+## 3.10 Plan — the redesign (owner, 2026-10-02). Step 1 DONE; Step 2 DONE (2a–2g); Step 3 NOT STARTED.
 
 Three replacements, built in this order, each step tested, committed, and
 reported to the owner in a short update every 5–10 fixes.
@@ -863,7 +873,7 @@ Owner answers, 2026-10-02 (two rounds; the second replaced the security deposit 
     the smaller side, 16/84, treasury + ledger + pool entry, 6-way race,
     lifecycle hook, member sees only their share), unit `teamCommission` (7),
     `merchantEarningsPg` rebuilt on shares, TeamPage (+3); mutations M383–M391.
-- **2f Oversight. DONE (2026-10-04).** `database/repositories/teamOversight.js`
+- **2f Oversight. DONE (2026-10-04), merged as PR #202 (merge commit `83cd311`).** `database/repositories/teamOversight.js`
   (rules in CLAUDE.md §2 and §24, background in RULES_BACKGROUND §2).
   - *Online-time log.* `merchant_online_sessions`: one stretch per time a
     member's Online switch is on, opened and closed by a trigger on

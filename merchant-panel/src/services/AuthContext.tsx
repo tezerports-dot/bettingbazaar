@@ -35,6 +35,15 @@ interface AuthContextType {
   unreachable: boolean;
 }
 
+/**
+ * The server's own refusal, and only that: a JSON body saying `success: false`.
+ * A 403 page from a proxy or CDN arrives as text and would otherwise be shown
+ * as "You were signed out: <html>…".
+ */
+const serverRefusal = (err: any): string | null =>
+  err?.data && typeof err.data === 'object' && err.data.success === false && typeof err.data.message === 'string'
+    ? err.data.message : null;
+
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const useAuth = () => {
@@ -107,7 +116,9 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             if (isPublicRoute) {
               setMerchant(null);
             } else if (credentialRejected) {
-              api.logout();
+              // The server's own words ("Account suspended. Contact support.")
+              // go with the sign-out, so the sign-in form can say why.
+              api.logout(serverRefusal(refreshErr));
               setMerchant(null);
             } else if (!cachedData) {
               // The session is fine and there is nothing cached to show. Say
@@ -208,7 +219,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     } catch (error: any) {
       console.error('Failed to refresh profile:', error);
       const status = error?.status;
-      if (status === 401 || status === 403) { api.logout(); setMerchant(null); return; }
+      if (status === 401 || status === 403) { api.logout(serverRefusal(error)); setMerchant(null); return; }
       if (!merchant) setUnreachable(true);
     }
   };

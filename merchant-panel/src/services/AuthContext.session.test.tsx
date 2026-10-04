@@ -113,6 +113,24 @@ describe('a transient failure does not end a merchant session', () => {
     });
   }
 
+  // A suspended merchant was thrown to a bare sign-in form and learned why only
+  // after typing their password again (§32 S48). The server's words go with the
+  // sign-out so the form can say them.
+  it('signs out with the server\'s reason, for the sign-in screen to show', async () => {
+    api.getMerchantProfile.mockRejectedValue(refusal(403, 'Account suspended. Contact support.'));
+    await boot();
+    await waitFor(() => expect(api.logout).toHaveBeenCalledWith('Account suspended. Contact support.'));
+  });
+
+  // A 403 page from a proxy or CDN is text, not the server's refusal: it still
+  // ends the session, but is not repeated on the sign-in form as a "reason".
+  it('signs out on a non-JSON 403 without passing its body on as a reason', async () => {
+    api.getMerchantProfile.mockRejectedValue(
+      Object.assign(new Error('<html>Forbidden</html>'), { status: 403, data: { message: '<html>Forbidden</html>' } }));
+    await boot();
+    await waitFor(() => expect(api.logout).toHaveBeenCalledWith(null));
+  });
+
   /**
    * ── A new device, and nothing cached to fall back to ────────────────────
    * Keeping the token was only half of it. With no `merchantData` in

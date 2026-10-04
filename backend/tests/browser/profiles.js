@@ -150,6 +150,19 @@ export const PROFILES = {
     what: 'a merchant not yet approved',
     ...merchant({ approve: false }, null, { status: 'PENDING' }),
   },
+  // Every other merchant profile, and the drive's own merchant, is a MEMBER,
+  // so the supervisor's half of the Team page (create a team, add a member,
+  // pool requests, a member's log, the dispute thread) was in no inventory.
+  // Its members are left offline: a profile is an account to look at, and
+  // must not change what the drive pass's own merchant is routed.
+  'merchant-supervisor': {
+    what: 'a supervisor running one full cash team, its members offline',
+    panel: 'merchant-panel',
+    seed: async () => {
+      const { supervisor } = await seedTeam({ rail: 'CASH', online: [], exclusive: false });
+      return { token: merchantToken(supervisor), cached: merchantCache(supervisor, { isOnline: false }), who: supervisor.merchantId };
+    },
+  },
 };
 
 /** One profile's account, shaped as `seedActors()` shapes its three. */

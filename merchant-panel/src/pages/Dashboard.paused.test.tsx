@@ -48,6 +48,10 @@ describe('the Dashboard and a paused assignment', () => {
     expect(alert).toHaveTextContent(/New buy orders are paused/i);
     expect(alert).toHaveTextContent(/not a suspension/i);
     expect(alert).toHaveTextContent(/contact support/i);
+    // What a member can actually check since 2d: their bank details and their
+    // own promptness. A member has no UPI ID or QR a buyer pays any more.
+    expect(alert).toHaveTextContent(/bank details on your Profile/i);
+    expect(alert).not.toHaveTextContent(/UPI ID/i);
     expect(screen.getByText(/Online · New orders paused/)).toBeInTheDocument();
     expect(screen.queryByText(/Online · Accepting orders/)).not.toBeInTheDocument();
   });

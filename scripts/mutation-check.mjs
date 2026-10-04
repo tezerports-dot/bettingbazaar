@@ -2648,6 +2648,16 @@ const MUTATIONS = [
     from: `      WHERE ($1::text IS NULL OR t.supervisor_id = $1)`,
     to: `      WHERE ($1::text IS NULL OR TRUE)`,
   },
+  // ── 2g review (2026-10-04): the merchant door named an unknown mobile ───
+  {
+    id: 'M424', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
+    test: 'backend/tests/routes/threeSeparateEntities.test.js',
+    why: 'the merchant login answers an unknown mobile differently from a wrong password, so anybody can learn which numbers are merchants',
+    from: `        if (!merchant)
+            return res.status(401).json({ success: false, message: 'Invalid credentials' });`,
+    to: `        if (!merchant)
+            return res.status(401).json({ success: false, message: 'No merchant account found for this mobile number' });`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that
