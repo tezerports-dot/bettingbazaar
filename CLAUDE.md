@@ -74,11 +74,6 @@ Owners are PostgreSQL tables reached through `database/repositories/`, or
 exported constants. `SystemConfig.x` lives in `config_documents`, declared in
 `database/spec/config.spec.js`.
 
-**⚠2c**: Step 2c removed the owner the old row named (per-merchant wallets,
-escrow, ranking, cash-link queue, payment-mode policy → team routing and pool
-holds). Until 2g rewrites the row, the design is `docs/PROJECT_STATUS.md` §3.10;
-the principle stated still holds.
-
 | Value | Owner and rule |
 |---|---|
 | Token price | Fixed 1 token = ₹1; never configurable. |
@@ -89,12 +84,12 @@ the principle stated still holds.
 | Analytics window | `ANALYTICS_WINDOW` (`user-panel/src/constants.ts`), a target; the server caps it. |
 | Platform deposit/withdrawal limits | The order sizes and the USDT bounds below; nothing else. |
 | Whether a number is admin-editable | Declared in `SYSTEM_CONFIG_SPEC`; the admin GET/PUT derive from the spec. Never a hand-written field list. |
-| A config value the PLATFORM writes ⚠2c | Marked `internal(…)` in the spec; derived accept lists skip it. |
+| A value the PLATFORM writes | Never in `config_documents`: every field the spec declares is admin-editable. It gets its own table and one writer. |
 | A board's earliest-phase ceiling | `maxMergeBeforeEndSec` on the cycle META (§18). |
 | Order sizes | An INR order, buy or sell, is exactly one of `ORDER_SIZES` (`domains/merchant/denominations.js`): CASH 500 · 1,000 · 5,000 · 10,000, UPI_BANK 50,000 · 100,000 · 500,000. The size derives the rail (`railForSize` → `orderRails.paymentModeFor`). Which are on offer: `SystemConfig.orderSizes` (admin; only those seven are legal). No min/max, no splitting: one size, one order, one payment. |
 | How each rail is paid | A CASH buy: the ATM QR the member scans (below). A UPI_BANK buy: bank transfer into the member's own account, so routing skips a member without holder, account number and IFSC (`routingCandidates`). Every sell, on every rail: bank transfer to the player's account, the member gives the UTR. No CDM slips, no UPI handle as a destination. Where to pay is shown only once the member has ACCEPTED (`PAY_DETAIL_STATES`, `playerOrderView.js`), Paid is taken only then (`NOT_ACCEPTED_YET`), and the Paid move names that member on every rail (`expectMerchant`). |
 | A cash buy's QR | `order_states.cash_link`, written only by `setCashLink` (`orders.record.js`), guards in its WHERE (assigned member, CASH_ATM deposit, PROCESSING: accepted and not yet paid; the route answers `ACCEPT_FIRST` before); checked by `checkCashLink` (`domains/payment/cashLink.js`: `upi://pay`, the order's exact amount, one of each parameter, no mobile in the handle, name or note). Cleared by trigger when the member changes. No Paid tap before it (`CASH_LINK_PENDING`), and the tap pins the member (`expectMerchant`). A cash buy lapsing with no QR is the member's, not the player's (`playerCouldPay`). Scanned, never typed. |
-| Order ceiling ⚠2c | The tokens held, enforced by a hold taken at assignment. No per-merchant order range. |
+| Order ceiling | A buy: the team's pool, enforced by the hold taken at assignment. A sell: the player's winnings, locked with the order. No per-merchant order range. |
 | Refusals; who may not serve whom | `domains/merchant/merchantRefusal.service.js`. A BUY the member accepted that expires before PAID is the player's, not a refusal (one never accepted, or a cash buy never scanned, is the member's: `playerCouldPay`); an unanswered PAID buy, an expired SELL and any decline count on one streak. Cap `merchantOrderLimits.maxConsecutiveRejections`; bars in `order_rejections`. Advanced and read in one statement; only COMPLETED resets; no timer, an admin lifts it. |
 | Supervisor and rail | `merchants.is_supervisor` + `supervisor_rail`, set only by `PUT /api/admin/merchants/:id/supervisor`. Rail fixed while running a team. A supervisor is never a member, and vice versa. |
 | Team membership, limits | `database/repositories/teams.js`, the one writer; one team per merchant (PK). `MAX_TEAMS` 4, `TEAM_SIZE` 10, counted inside the write under a parent-row lock (S6). Supervisor proposes, admin approves. |
@@ -108,21 +103,21 @@ the principle stated still holds.
 | A mobile number in text | `textHasAMobile` / `hideMobiles` (`domains/identity/mobileInText.js`) and the row's `bb_text_has_a_mobile`, one rule held to one list (`mobileInTextPg`): any script's digits, up to two separators between digits. Merchant names and usernames and team names may not carry one (`merchants_name_not_a_mobile`, `teams_name_not_a_mobile`). |
 | Merchant rail | `merchants.accepted_currencies`, exactly one of `INR`/`USDT`; vocabulary `domains/merchant/merchantCurrency.js`. |
 | An order's currency | `order_states.currency`, matched to the merchant's rail at assignment and accept. |
-| How an order reaches a merchant ⚠2c | A BUY is assigned, never claimed first-come; a SELL may be claimed from the open pool. |
+| Which member serves an order | `routingCandidates` + `assignToTeam` (`database/repositories/teamRouting.js`), both directions; nothing is claimed (no open pool). An APPROVED member of a `WORKING`/`GRACE` team whose supervisor holds the order's rail: online, ACTIVE, approved, not paused, switched on for that direction (`accepts_deposits`/`accepts_withdrawals`), under the rail's cap (`SystemConfig.teamRouting.concurrency`), not barred; fewest open orders, then least recently assigned. Re-checked under the member's row lock in the assigning transaction (S6). Nobody free: the order waits `PENDING_QUEUE` for the sweep. |
 | Unpaid BUYs | `domains/payment/playerPaymentFailure.service.js`, which advances both counts below. |
 | Three unpaid buys by a player | `users.consecutive_payment_failures`; at the cap `users.order_lock_until` (DATABASE clock, `GREATEST`) blocks new orders on BOTH rails. Flagged, never auto-blocked. Cleared only when money ARRIVES (`moveDepositMoney`). |
 | Three unpaid buys at a merchant | `merchants.consecutive_expiries`, never the refusal count. At the cap `assignment_paused_at` stops assignment on every path; not a suspension; an admin or any COMPLETED order clears it. |
 | A PAID buy ignored | `sweepUnansweredPaidDeposits` (needs a UTR) → DISPUTED with `disputeRaisedBy='system'`, counted as a refusal; never cancelled or reassigned. |
 | Cash Paid with no reference | `sweepUtrAfterPaid`, CASH_ATM only; the PLAYER's silence (`playerPaymentFailure`). |
-| Who may get a CASH order ⚠2c | Asked at the claim, with every question normal assignment asks. |
+| Who may get a CASH order | Routing as above, plus: a buy only to a member who pressed Ready (`merchants.cash_ready`, `setCashReady`), switched off by the assignment; a sell never to a member holding an open buy. |
 | USDT chain and quote | `order_states.usdt_chain`, `rate_used`, `fiat_amount_paise`: written with the order, frozen by trigger (§25). |
 | USDT pricing | `SystemConfig.usdtPricing` (`userMerchantBuyInr`, `merchantAdminBuyInr`); band ₹10–₹1,000 owned by `domains/configuration/tokenRates.js`, enforced on save and on read; 0 = unset = refused by name. No USDT sell rail. |
-| An order's payment rail ⚠2c | Fixed on the order; everything branches on the order's own value, never a feature flag or `payment_gateway_configs.active_mode`. |
+| An order's payment rail | `order_states.payment_mode`, stamped at creation from the order's size or currency (`orderRails.js`: `paymentModeFor`, `railOf`) and frozen by trigger. Everything branches on the order's own value; there is no platform-wide switch. |
 | Merchant earnings | Team commission (§26): `database/repositories/teamCommission.js`, the one writer of `team_commissions` + `team_commission_shares`. Paid into the TEAM's pool from the platform-funded team commission pool (`MERCHANT_BONUS_POOL`); never from users, a spread or a deposit trigger. Every screen reads `toSummary` and the shares; none keeps its own percentages. |
 | Token supply | `SystemConfig.adminTokenSupply.total` (20 billion). None are ever created; every movement is a transfer, and the books prove holding + pools + wallets = total. |
 | Pool token movements | `teamPools.js`, the one writer; idempotent `tx_id`. A commission joins the pool as a `COMMISSION` entry with its `TOKEN_SUPPLY` → `TEAM_FLOAT` movement, in the paying transaction (`creditCommissionWithin`). |
 | What an admin↔merchant/team token movement was FOR | `admin_token_considerations` (`database/repositories/adminTokenConsiderations.js`), one row keyed by the movement. Never sum `fiat_amount_minor` across currencies; aggregate `inr_equivalent_paise`. Figure required, 0 allowed. USDT in only. Validated before tokens move. |
-| Tokens held for an order ⚠2c | One owner holds them from attachment, releases on every terminal outcome, consumes on confirm; one live hold per order. Never admit an order by reading a balance: taking the hold IS the check. An unheld order is reported, never silently re-held. |
+| Tokens held for a buy | `order_states.pool_held_paise` in the team's pool, through `teamPools.js` only: held in the transaction that assigns (`holdForBuyWithin`), released on every ending and requeue (`releaseBuyHold`, `detachFromTeamWithin`), spent once on completion (`spendForBuy`). One live hold per order (`pool_held_paise = 0` in the WHERE). Never admit a buy by reading a balance: taking the hold IS the check. Cron `team-pool-hold-sweep` releases a hold left on an ended order and alerts on a completed buy still holding, never re-holds. |
 | Player balance changes | `domains/wallet/walletAuthority.service.js` only, stake locks included. |
 | Player balance reads | `walletAuthority.getBalances()`; classified display or decision (§9). |
 | Money in/out of the ecosystem | `domains/funding/fundingAuthority.service.js`; rails are adapters in `providerRegistry.js`. |
@@ -161,7 +156,7 @@ the principle stated still holds.
 | Password reset | `domains/identity/passwordReset.service.js`: from the account's own audience bot; grants choosing a password, never a session; hashed, single-use, expiring, in the URL fragment. |
 | Login doors | `LOGIN_DOOR` (`backend/routes.js`), one `loginHandler`; the read is scoped by `account_type` on both legs. |
 | Which panel a session may use | `belongsElsewhere`/`refuseWrongPanel`: `authenticatePlayer` on every player route; `authenticate` never admits MERCHANT; `403 WRONG_PANEL` (S51). |
-| What the bot says | `TelegramTemplate` rows (`telegramTemplates.service.js`), sent by the player's own bot (`sendTemplate({ bot })`). No hardcoded sentence in a route. |
+| What the bot says | `telegram_templates` rows (`telegramTemplates.service.js`), sent by the player's own bot (`sendTemplate({ bot })`). No hardcoded sentence in a route. |
 | Valid mobile, referral code | `backend/domains/identity/signupFields.js`; the panel mirror (`indianMobile`) changes in the same commit. |
 | Password policy | `backend/domains/identity/passwordPolicy.js`; floors 12 staff, 8 player. |
 | Notifications | `notify()` (`domains/communication/communication.service.js`); never write a notification row directly. |
