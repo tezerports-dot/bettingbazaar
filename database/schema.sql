@@ -3769,12 +3769,19 @@ RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
     FROM b
 $$;
 -- The NAMES on an account travel with it (the holder's name, the bank's name),
--- so a mobile number typed into one reaches the other side the same way. A
--- run of ten digits from 6, separators allowed, with 91 / +91 / 0091 / 0 or
--- not, standing alone. Shorter numbers in a name are left alone.
+-- so a mobile number typed into one reaches the other side the same way. Ten
+-- digits from 6, standing alone, with 91 / +91 / 091 / 0091 / 0 or not; up to
+-- two characters that are neither a digit nor a Latin letter between digits
+-- ("98765  43210", "(987) 654-3210", a slash, a newline); digits in the Indian
+-- scripts, Arabic-Indic and full-width read as digits. The same rule as
+-- `textHasAMobile` (backend/domains/identity/mobileInText.js), held to the
+-- same answers by mobileInTextPg. Shorter numbers are left alone.
 CREATE OR REPLACE FUNCTION bb_text_has_a_mobile(t TEXT)
 RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
-  SELECT COALESCE(t, '') ~ '(^|[^0-9])((00|[+])?91[ -]?|0)?[6-9]([ .-]?[0-9]){9}([^0-9]|$)'
+  SELECT translate(COALESCE(t, ''),
+                   '０１２３４５６７８９٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹०१२३४५६७८९০১২৩৪৫৬৭৮৯੦੧੨੩੪੫੬੭੮੯૦૧૨૩૪૫૬૭૮૯୦୧୨୩୪୫୬୭୮୯௦௧௨௩௪௫௬௭௮௯౦౧౨౩౪౫౬౭౮౯೦೧೨೩೪೫೬೭೮೯൦൧൨൩൪൫൬൭൮൯',
+                   '012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789')
+         ~ '(^|[^0-9])((00|[+]|0)?91[^0-9A-Za-z]{0,2}|0)?[6-9]([^0-9A-Za-z]{0,2}[0-9]){9}([^0-9]|$)'
 $$;
 ALTER TABLE merchants DROP CONSTRAINT IF EXISTS merchants_bank_account_not_a_mobile;
 ALTER TABLE merchants ADD CONSTRAINT merchants_bank_account_not_a_mobile
@@ -3885,7 +3892,11 @@ BEGIN
     INSERT INTO merchant_online_sessions (merchant_id) VALUES (NEW.merchant_id)
       ON CONFLICT (merchant_id) WHERE ended_at IS NULL DO NOTHING;
   ELSE
-    UPDATE merchant_online_sessions SET ended_at = now()
+    -- Never before the stretch began: an "offline" statement whose
+    -- transaction started before a concurrent "online" committed would
+    -- otherwise write an end before the start, and the CHECK would fail the
+    -- switch itself.
+    UPDATE merchant_online_sessions SET ended_at = GREATEST(started_at, clock_timestamp())
      WHERE merchant_id = NEW.merchant_id AND ended_at IS NULL;
   END IF;
   RETURN NULL;
@@ -3957,3 +3968,14 @@ ALTER TABLE chat_messages ADD CONSTRAINT chat_messages_sender_type_check
 ALTER TABLE chat_messages DROP CONSTRAINT IF EXISTS chat_messages_supervisor_no_mobile;
 ALTER TABLE chat_messages ADD CONSTRAINT chat_messages_supervisor_no_mobile
   CHECK (sender_type <> 'SUPERVISOR' OR NOT bb_text_has_a_mobile(message));
+
+-- A merchant's name and username are shown to other people (their
+-- supervisor, their team, admins), and a team's name to its members; many
+-- people would use their mobile as a username (owner, 2026-10-03: nobody's
+-- mobile number is exposed anywhere). Refused by the row; the signup routes
+-- and `teams.js` answer with a sentence first.
+ALTER TABLE merchants DROP CONSTRAINT IF EXISTS merchants_name_not_a_mobile;
+ALTER TABLE merchants ADD CONSTRAINT merchants_name_not_a_mobile
+  CHECK (NOT bb_text_has_a_mobile(name) AND NOT bb_text_has_a_mobile(username));
+ALTER TABLE teams DROP CONSTRAINT IF EXISTS teams_name_not_a_mobile;
+ALTER TABLE teams ADD CONSTRAINT teams_name_not_a_mobile CHECK (NOT bb_text_has_a_mobile(name));

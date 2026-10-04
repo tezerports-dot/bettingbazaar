@@ -61,6 +61,7 @@ import { railOf, routingSettings, PAYMENT_MODES } from '#db/repositories/teamRou
 // What a cash buy's ATM link may be (Step 2d).
 import { checkCashLink } from '../payment/cashLink.js';
 import { isAccountMobileRefusal, ACCOUNT_IS_A_MOBILE_MESSAGE } from '../payment/payoutAccount.js';
+import { NAME_IS_A_MOBILE_MESSAGE } from '../identity/mobileInText.js';
 import { getSystemConfig } from '#db/repositories/config.js';
 import { recordMerchantRefusal, REFUSAL } from './merchantRefusal.service.js';
 import { assertStaffPassword } from '../identity/passwordPolicy.js';
@@ -197,6 +198,9 @@ router.post('/auth/signup', async (req, res) => {
 
         if (!created.ok && created.reason === 'ACCOUNT_IS_A_MOBILE') {
             return res.status(400).json({ success: false, code: 'ACCOUNT_IS_A_MOBILE', message: ACCOUNT_IS_A_MOBILE_MESSAGE });
+        }
+        if (!created.ok && created.reason === 'NAME_IS_A_MOBILE') {
+            return res.status(400).json({ success: false, code: 'NAME_IS_A_MOBILE', message: NAME_IS_A_MOBILE_MESSAGE });
         }
         if (!created.ok) {
             // Named, because "signup failed" tells an applicant nothing they

@@ -136,7 +136,7 @@ describePg('an account number that is a mobile number', () => {
 
   describe('a member signing up with their bank account', () => {
     const signup = (mobile, accountNo, ifsc) => request(merchantApp).post('/auth/signup').send({
-      username: `acct${mobile}`, mobile, password: 'Correct-Horse-Battery-9!',
+      username: `acct${Math.random().toString(36).slice(2, 10)}`, mobile, password: 'Correct-Horse-Battery-9!',
       bankDetails: { accountNo, ifsc, bankName: 'Some Bank', accountHolderName: 'Applicant' },
     });
 

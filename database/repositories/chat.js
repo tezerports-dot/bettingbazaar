@@ -22,11 +22,12 @@
 import { pgQuery } from '../client.js';
 
 /**
- * Senders the schema will accept (`chat_messages_sender_type_check`). Anything
- * else is a bug at the call site. SUPERVISOR: a member's supervisor speaking
- * for them to the dispute manager (Step 2f).
+ * Senders `postMessage` accepts (the schema's `chat_messages_sender_type_check`
+ * also admits SUPERVISOR). Anything else is a bug at the call site. A
+ * supervisor speaking for their member to the dispute manager (Step 2f) has
+ * one path, `postSupervisorMessage`, whose guards are in its INSERT.
  */
-const SENDER_TYPES = new Set(['USER', 'MERCHANT', 'ADMIN', 'SYSTEM', 'SUPERVISOR']);
+const SENDER_TYPES = new Set(['USER', 'MERCHANT', 'ADMIN', 'SYSTEM']);
 
 /**
  * The shape every caller and the browser already expect.
@@ -90,6 +91,42 @@ export async function postMessage({
     'chat_post',
   );
   return toMessage(rows[0]);
+}
+
+/**
+ * The most messages a supervisor may post into one dispute. Without a bound,
+ * a few hundred posts push the dispute manager's own messages and the
+ * resolution notice past what a thread view lists.
+ */
+export const SUPERVISOR_MESSAGES_PER_DISPUTE = 50;
+
+/**
+ * A supervisor's message into their member's dispute (Step 2f), or null when
+ * it may not be posted: the order is not DISPUTED, is not on one of this
+ * supervisor's teams, or they have posted `SUPERVISOR_MESSAGES_PER_DISPUTE`
+ * already. Every condition is in the statement that inserts (S6), and the
+ * order row is share-locked while it does, so a decision committing at the
+ * same moment either waits for the message or is seen by it — a message
+ * never lands in a thread already decided. The caller reads the order again
+ * to say which condition refused.
+ */
+export async function postSupervisorMessage({ orderId, supervisorId, message }) {
+  const { rows } = await pgQuery(
+    `WITH open_dispute AS (
+       SELECT os.order_id FROM order_states os
+        WHERE os.order_id = $1 AND os.state = 'DISPUTED'
+          AND os.team_id IN (SELECT team_id FROM teams WHERE supervisor_id = $2)
+        FOR SHARE OF os)
+     INSERT INTO chat_messages (order_id, sender_id, sender_type, message, is_system)
+     SELECT d.order_id, $2, 'SUPERVISOR', $3, false FROM open_dispute d
+      WHERE (SELECT count(*) FROM chat_messages c
+              WHERE c.order_id = $1 AND c.sender_type = 'SUPERVISOR') < $4
+     RETURNING id, order_id, sender_id, sender_type, message,
+               attachment_url, attachment_key, is_system, created_at`,
+    [String(orderId), String(supervisorId), String(message ?? ''), SUPERVISOR_MESSAGES_PER_DISPUTE],
+    'chat_post_supervisor',
+  );
+  return rows[0] ? toMessage(rows[0]) : null;
 }
 
 /**

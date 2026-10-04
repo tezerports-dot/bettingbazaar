@@ -8,6 +8,7 @@
  * to do next rather than only that it failed (§32 S14).
  */
 import { MAX_TEAMS, TEAM_SIZE } from '#db/repositories/teams.js';
+import { SUPERVISOR_MESSAGES_PER_DISPUTE } from '#db/repositories/chat.js';
 
 const REFUSALS = Object.freeze({
   not_found:             [404, 'Not found.'],
@@ -32,11 +33,12 @@ const REFUSALS = Object.freeze({
   request_not_found:     [404, 'No such request.'],
   supply_cap_exceeded:   [409, 'The platform does not hold that many tokens to sell. Sell fewer.'],
   // Oversight (Step 2f)
-  member_not_found:      [404, 'That merchant is not in one of your teams.'],
+  member_not_found:      [404, 'That merchant is not an approved member of one of your teams. A member\'s log opens once an admin approves them.'],
   dispute_not_found:     [404, 'That dispute is not on an order of one of your teams.'],
   dispute_closed:        [409, 'This dispute has been decided, so its thread is closed. Refresh to see the decision.'],
   bad_message:           [400, 'Write a message of up to 2,000 characters.'],
   message_has_mobile:    [400, 'Take the mobile number out of your message. Nobody\'s mobile number may be shared, not even with the dispute manager.'],
+  too_many_messages:     [409, `You have sent the ${SUPERVISOR_MESSAGES_PER_DISPUTE} messages a supervisor may send on one dispute. The dispute manager has them all; wait for their decision.`],
 });
 
 /** Send the refusal for a repository `{ ok: false, reason }`. */

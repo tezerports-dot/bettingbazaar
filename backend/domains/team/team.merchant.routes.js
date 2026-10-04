@@ -16,10 +16,10 @@ import { respondError } from '../../shared/httpError.js';
 import { refuse } from './teamRefusals.js';
 import { rupeesToPaise } from '../../shared/money.js';
 import { RED_FLAG_KINDS } from '#db/repositories/teamOversight.js';
-import { listMessages, postMessage } from '#db/repositories/chat.js';
+import { listMessages, postSupervisorMessage } from '#db/repositories/chat.js';
 import { toSupervisorOrderView, toSupervisorOrderViews } from '../merchant/merchantOrderView.js';
 import {
-  teamPerformanceFor, memberActivityRows, hideMobiles, withMobilesHidden,
+  teamPerformanceFor, memberActivityRows, hideForSupervisor, withTextHidden, supervisorMaySee,
 } from './teamOversight.service.js';
 
 const router = express.Router();
@@ -77,7 +77,8 @@ router.get('/team', merchantAuth, async (req, res) => {
     res.json({
       success: true, role: 'MEMBER', publicRef: me.publicRef,
       status: membership.member.status, team: membership.team, commissions, myCommissionPaise,
-      performance: teamPerformanceFor(week, me.merchantId),
+      // Only once approved: a proposed member is not yet one of the team.
+      performance: membership.member.status === 'APPROVED' ? teamPerformanceFor(week, me.merchantId) : null,
     });
   } catch (err) { respondError(res, err, 'GET /merchant/team'); }
 });
@@ -214,9 +215,10 @@ router.get('/supervisor/members/:merchantId/log', merchantAuth, requireSuperviso
     if (!member) return refuse(res, 'member_not_found');
     const [orders, sessions] = await Promise.all([
       db.teamOversight.memberOrders(member.merchantId, req.merchantId, { limit: 50 }),
-      db.teamOversight.onlineSessions(member.merchantId, { days: 7 }),
+      // Only since they joined: time online before that was not this team's.
+      db.teamOversight.onlineSessions(member.merchantId, { days: 7, since: member.approvedAt }),
     ]);
-    res.json({ success: true, member, orders: toSupervisorOrderViews(orders.map(withMobilesHidden)), sessions });
+    res.json({ success: true, member, orders: toSupervisorOrderViews(orders.map(withTextHidden)), sessions });
   } catch (err) { respondError(res, err, 'GET /merchant/supervisor/members/:id/log'); }
 });
 
@@ -224,20 +226,20 @@ router.get('/supervisor/members/:merchantId/log', merchantAuth, requireSuperviso
 router.get('/supervisor/disputes', merchantAuth, requireSupervisor, async (req, res) => {
   try {
     const disputes = await db.teamOversight.supervisorDisputes(req.merchantId, { days: 30 });
-    res.json({ success: true, disputes: toSupervisorOrderViews(disputes.map(withMobilesHidden)) });
+    res.json({ success: true, disputes: toSupervisorOrderViews(disputes.map(withTextHidden)) });
   } catch (err) { respondError(res, err, 'GET /merchant/supervisor/disputes'); }
 });
 
 /**
  * A message of the dispute thread as a supervisor reads it: who spoke and
- * what they said, with any mobile number hidden. No sender ids — the
+ * what they said, through `hideForSupervisor`. No sender ids — the
  * supervisor needs to know it was the dispute manager, not which account.
  */
 const toThreadMessage = (m) => ({
   id: m.id,
   senderType: m.senderType,
   senderName: m.senderName,
-  message: hideMobiles(m.message),
+  message: hideForSupervisor(m.message),
   isSystem: m.isSystem,
   createdAt: m.createdAt,
 });
@@ -247,16 +249,20 @@ router.get('/supervisor/disputes/:orderId/chat', merchantAuth, requireSupervisor
   try {
     const order = await db.teamOversight.supervisorDispute(req.params.orderId, req.merchantId);
     if (!order) return refuse(res, 'dispute_not_found');
-    const messages = await listMessages(order.orderId);
-    res.json({ success: true, order: toSupervisorOrderView(withMobilesHidden(order)), messages: messages.map(toThreadMessage) });
+    const messages = await listMessages(order.orderId, { limit: 1000 });
+    res.json({
+      success: true, order: toSupervisorOrderView(withTextHidden(order)),
+      messages: messages.filter(supervisorMaySee).map(toThreadMessage),
+    });
   } catch (err) { respondError(res, err, 'GET /merchant/supervisor/disputes/:id/chat'); }
 });
 
 /**
  * POST /api/merchant/supervisor/disputes/:orderId/chat  { message }
  * The supervisor speaks for their member to the dispute manager, while the
- * dispute is open. Posted as SUPERVISOR under the supervisor's own id; a
- * message with a mobile number in it is refused by the row's CHECK.
+ * dispute is open. Posted as SUPERVISOR under the supervisor's own id by
+ * `postSupervisorMessage`, whose INSERT asks every condition under the order's
+ * lock; a message with a mobile number in it is refused by the row's CHECK.
  */
 router.post('/supervisor/disputes/:orderId/chat', merchantAuth, requireSupervisor, async (req, res) => {
   try {
@@ -264,13 +270,18 @@ router.post('/supervisor/disputes/:orderId/chat', merchantAuth, requireSuperviso
     if (!text || text.length > 2000) return refuse(res, 'bad_message');
     const order = await db.teamOversight.supervisorDispute(req.params.orderId, req.merchantId);
     if (!order) return refuse(res, 'dispute_not_found');
-    if (order.status !== 'DISPUTED') return refuse(res, 'dispute_closed');
     let saved;
     try {
-      saved = await postMessage({ orderId: order.orderId, senderId: req.merchantId, senderType: 'SUPERVISOR', message: text });
+      saved = await postSupervisorMessage({ orderId: order.orderId, supervisorId: req.merchantId, message: text });
     } catch (e) {
       if (e?.constraint === 'chat_messages_supervisor_no_mobile') return refuse(res, 'message_has_mobile');
       throw e;
+    }
+    if (!saved) {
+      // Refused inside the INSERT; read the order again to say why.
+      const now = await db.teamOversight.supervisorDispute(order.orderId, req.merchantId);
+      if (!now) return refuse(res, 'dispute_not_found');
+      return refuse(res, now.status !== 'DISPUTED' ? 'dispute_closed' : 'too_many_messages');
     }
     await db.audit.recordDetailed({
       performedBy: req.merchantId, category: 'TEAMS', targetType: 'ORDER', action: 'SUPERVISOR_DISPUTE_MESSAGE',

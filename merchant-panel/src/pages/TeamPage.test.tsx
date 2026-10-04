@@ -290,4 +290,15 @@ describe('merchant Team screen', () => {
     expect(screen.getByText('An average member: 4 orders, online 1h 30m.')).toBeInTheDocument();
     expect(screen.getByText('You: 6 orders, online 2h 01m.')).toBeInTheDocument();
   });
+
+  it('a member of a team of two sees their own figures and no team totals, which would be their teammate\'s', async () => {
+    api.getMyTeam.mockResolvedValue({
+      role: 'MEMBER', commissions: [], myCommissionPaise: 0, publicRef: 'M1', status: 'APPROVED', team: team('t-1', 'Alpha', { approvedCount: 2 }),
+      performance: { days: 7, from: '', members: 2, team: null, me: { completedOrders: 1, completedTokens: 500, onlineSeconds: 60 } },
+    });
+    render(<TeamPage />);
+    expect(await screen.findByText('The team\'s figures show once it has three approved members.')).toBeInTheDocument();
+    expect(screen.getByText('You: 1 orders, online 1m.')).toBeInTheDocument();
+    expect(screen.queryByText(/The team completed/)).toBeNull();
+  });
 });

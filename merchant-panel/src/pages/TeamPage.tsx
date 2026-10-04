@@ -124,8 +124,14 @@ const PerformanceSection: React.FC<{ performance: TeamPerformance }> = ({ perfor
   <div style={sectionStyle}>
     <span style={{ fontSize: 13, fontWeight: 800 }}>Team performance, last {p.days} days</span>
     <ul style={{ listStyle: 'none', padding: 0, margin: '8px 0 0', fontSize: 12.5 }}>
-      <li style={{ padding: '3px 0' }}>The team completed {p.team.completedOrders} orders ({tokens(p.team.completedTokens * 100)} tokens).</li>
-      <li style={{ padding: '3px 0' }}>An average member: {p.team.averageOrders} orders, online {duration(p.team.averageOnlineSeconds)}.</li>
+      {p.team ? (
+        <>
+          <li style={{ padding: '3px 0' }}>The team completed {p.team.completedOrders} orders ({tokens(p.team.completedTokens * 100)} tokens).</li>
+          <li style={{ padding: '3px 0' }}>An average member: {p.team.averageOrders} orders, online {duration(p.team.averageOnlineSeconds)}.</li>
+        </>
+      ) : (
+        <li style={{ padding: '3px 0', color: 'var(--muted)' }}>The team&apos;s figures show once it has three approved members.</li>
+      )}
       {p.me && <li style={{ padding: '3px 0', fontWeight: 700 }}>You: {p.me.completedOrders} orders, online {duration(p.me.onlineSeconds)}.</li>}
     </ul>
   </div>

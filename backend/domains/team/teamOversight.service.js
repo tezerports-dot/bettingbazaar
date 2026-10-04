@@ -11,6 +11,7 @@
 import { db } from '#db';
 import { getSystemConfig } from '#db/repositories/config.js';
 import { redFlagSettings } from '#db/repositories/teamOversight.js';
+import { hideMobiles } from '../identity/mobileInText.js';
 
 /**
  * Evaluate every IST day that has ended and was not evaluated yet, with the
@@ -27,35 +28,62 @@ export async function runDailyRedFlags() {
 }
 
 /**
- * A mobile number anywhere in free text, by the same pattern as the row
- * check `bb_text_has_a_mobile` (database/schema.sql) and `MOBILE_IN_TEXT`
- * (payment/cashLink.js), written with lookarounds so a replace keeps the
- * characters either side.
+ * A UPI handle or e-mail address in free text: a name, `@`, a provider. It
+ * resolves to a person (and on most UPI apps to their phone number), so a
+ * supervisor is never shown one (§24).
  */
-const MOBILE_RUN = /(?<![0-9])(?:(?:00|\+)?91[ -]?|0)?[6-9](?:[ .-]?[0-9]){9}(?![0-9])/g;
+const HANDLE = /[A-Za-z0-9._-]{2,}@[A-Za-z][A-Za-z0-9-]*(?:\.[A-Za-z0-9-]+)*/g;
 
 /**
- * Free text a supervisor is shown that someone else typed — a dispute reason,
- * a rejection reason, the dispute manager's messages — with any mobile number
- * hidden (owner, 2026-10-03: nobody's mobile is exposed anywhere).
+ * A payment reference or account number: nine digits or more, spaces or
+ * dashes between them allowed ("4123 4567 8901"). Commas end a run, so an
+ * amount written "1,00,000" stays readable.
  */
-export function hideMobiles(text) {
-  return typeof text === 'string' ? text.replace(MOBILE_RUN, '[number hidden]') : text;
+const LONG_NUMBER = /(?<![0-9])[0-9](?:[ -]?[0-9]){8,}(?![0-9])/g;
+
+/**
+ * Free text a supervisor reads that someone else typed (a dispute reason, a
+ * rejection reason, the dispute manager's messages) with what would identify
+ * the player hidden: mobile numbers in every spelling `hideMobiles` reads, UPI
+ * handles, and the long numbers of references and accounts. The supervisor
+ * speaks for their member and pays nobody, so none of it is theirs to see
+ * (§24; owner, 2026-10-03).
+ */
+export function hideForSupervisor(text) {
+  if (text == null) return text;
+  return hideMobiles(text)
+    .replace(HANDLE, '[handle hidden]')
+    .replace(LONG_NUMBER, '[number hidden]');
 }
 
-/** An order row for a supervisor, its free text through `hideMobiles`. */
-export function withMobilesHidden(order) {
+/** An order row for a supervisor, its free text through `hideForSupervisor`. */
+export function withTextHidden(order) {
   return order && {
     ...order,
-    disputeReason: hideMobiles(order.disputeReason),
-    rejectedReason: hideMobiles(order.rejectedReason),
+    disputeReason: hideForSupervisor(order.disputeReason),
+    rejectedReason: hideForSupervisor(order.rejectedReason),
   };
 }
 
 /**
+ * Which messages of a dispute thread a supervisor reads: their own, their
+ * member's, and the dispute manager's own words. Not the player's messages
+ * (the player's detail is not theirs, §24), and not system notices, which
+ * carry staff names and escalation notes written for staff (S52).
+ */
+export function supervisorMaySee(message) {
+  if (message.senderType === 'SUPERVISOR') return true;
+  return !message.isSystem && (message.senderType === 'ADMIN' || message.senderType === 'MERCHANT');
+}
+
+/** Fewest approved members at which the team's totals no longer give away one teammate's figures. */
+export const TEAM_FIGURES_FROM = 3;
+
+/**
  * What a MEMBER is shown of their team's work over the window: the team's
  * totals, the average per member, and their own figures. Never another
- * member's row — the supervisor and admins see those.
+ * member's row — the supervisor and admins see those — and no team figures
+ * below `TEAM_FIGURES_FROM` members, where they would be one.
  */
 export function teamPerformanceFor(activity, merchantId) {
   const rows = activity.members;
@@ -66,7 +94,8 @@ export function teamPerformanceFor(activity, merchantId) {
     days: activity.days,
     from: activity.from,
     members: n,
-    team: {
+    // With two members, the team's total less your own IS your teammate's.
+    team: n < TEAM_FIGURES_FROM ? null : {
       completedOrders: sum('completedOrders'),
       completedTokens: sum('completedPaise') / 100,
       averageOrders: n ? Number((sum('completedOrders') / n).toFixed(2)) : 0,

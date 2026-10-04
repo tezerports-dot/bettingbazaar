@@ -438,9 +438,10 @@ export interface LowActivityFlag {
   merchantId: string; merchantName: string; merchantRef: string;
   details: { completedOrders: number; onlineSeconds: number; teamAverageOrders: number; teamAverageOnlineSeconds: number; members: number; percent: number };
 }
+/** teamPerformanceFor (teamOversight.service.js): `team` is null below TEAM_FIGURES_FROM (3) members. */
 export interface TeamPerformance {
   days: number; from: string; members: number;
-  team: { completedOrders: number; completedTokens: number; averageOrders: number; averageOnlineSeconds: number };
+  team: { completedOrders: number; completedTokens: number; averageOrders: number; averageOnlineSeconds: number } | null;
   me: { completedOrders: number; completedTokens: number; onlineSeconds: number } | null;
 }
 /** An order as a supervisor sees it: SUPERVISOR_ORDER_FIELDS (merchantOrderView.js), nothing about the player. */
@@ -453,7 +454,7 @@ export interface SupervisorOrder {
 }
 export interface OnlineStretch { startedAt: string; endedAt: string | null; seconds: number }
 export interface MemberLog {
-  member: { merchantId: string; teamId: string; teamName: string; name: string; publicRef: string; status: string; isOnline: boolean };
+  member: { merchantId: string; teamId: string; teamName: string; approvedAt: string; name: string; publicRef: string; isOnline: boolean };
   orders: SupervisorOrder[]; sessions: OnlineStretch[];
 }
 export interface DisputeThreadMessage {
@@ -465,5 +466,5 @@ export type MyTeam =
       commissions: TeamCommission[]; myCommissionPaise: number;
       activity: { today: MemberActivity[]; week: MemberActivity[] }; redFlags: LowActivityFlag[] }
   | { role: 'MEMBER'; publicRef: string; status: 'PENDING' | 'APPROVED'; team: Team;
-      commissions: TeamCommission[]; myCommissionPaise: number; performance: TeamPerformance }
+      commissions: TeamCommission[]; myCommissionPaise: number; performance: TeamPerformance | null }
   | { role: 'NONE'; publicRef: string };

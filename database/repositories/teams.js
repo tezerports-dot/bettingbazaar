@@ -24,6 +24,7 @@
 import { pgQuery, withTransaction } from '../client.js';
 import { randomBytes } from 'node:crypto';
 import { teamVolumeSql, teamMarkSql, toSummary } from './teamCommission.js';
+import { textHasAMobile } from '../../backend/domains/identity/mobileInText.js';
 
 export const MAX_TEAMS = 4;
 export const TEAM_SIZE = 10;
@@ -179,11 +180,24 @@ export async function listSupervisors() {
 
 // ── Teams ────────────────────────────────────────────────────────────────────
 
-export async function createTeam({ supervisorId, name }) {
+/**
+ * A team name as typed, or a 400 naming what is wrong with it. Its members see
+ * it, so it may not carry a mobile number (the row's `teams_name_not_a_mobile`
+ * holds the same rule for every writer; owner, 2026-10-03).
+ */
+function teamName(name) {
   const clean = String(name ?? '').trim();
   if (!clean || clean.length > 60) {
     throw Object.assign(new Error('A team name is 1–60 characters.'), { status: 400 });
   }
+  if (textHasAMobile(clean)) {
+    throw Object.assign(new Error('Take the phone number out of the team name: every member sees it.'), { status: 400 });
+  }
+  return clean;
+}
+
+export async function createTeam({ supervisorId, name }) {
+  const clean = teamName(name);
   return withTransaction(async (client) => {
     // The lock every concurrent create for this supervisor queues on.
     const { rows } = await client.query(
@@ -201,10 +215,7 @@ export async function createTeam({ supervisorId, name }) {
 }
 
 export async function renameTeam({ teamId, supervisorId, name }) {
-  const clean = String(name ?? '').trim();
-  if (!clean || clean.length > 60) {
-    throw Object.assign(new Error('A team name is 1–60 characters.'), { status: 400 });
-  }
+  const clean = teamName(name);
   const { rowCount } = await pgQuery(
     `UPDATE teams SET name = $3, updated_at = now()
       WHERE team_id = $1 AND supervisor_id = $2`,

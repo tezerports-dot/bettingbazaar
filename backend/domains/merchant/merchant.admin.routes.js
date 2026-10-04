@@ -8,6 +8,7 @@ import { MERCHANT_CURRENCY, MERCHANT_CURRENCIES } from './merchantCurrency.js';
 import { assertExternalHttpsUrl } from '../../shared/storedUrl.js';
 import { assertStaffPassword } from '../identity/passwordPolicy.js';
 import { emitToStaff } from '../notification/staffEventAreas.js';
+import { NAME_IS_A_MOBILE_MESSAGE } from '../identity/mobileInText.js';
 
 const router = express.Router();
 
@@ -464,6 +465,9 @@ router.post('/merchants/create', authenticate, hasPermission('canManageMerchants
       username, mobile, email: email || null,
       passwordHash: await hashPassword(password),
     });
+    if (!created.ok && created.reason === 'NAME_IS_A_MOBILE') {
+      return res.status(400).json({ success: false, code: 'NAME_IS_A_MOBILE', message: NAME_IS_A_MOBILE_MESSAGE });
+    }
     if (!created.ok) {
       return res.status(409).json({
         success: false,

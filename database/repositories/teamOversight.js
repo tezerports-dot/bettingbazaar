@@ -321,32 +321,38 @@ export async function listRedFlags({ supervisorId = null, kinds = null, days = 1
 }
 
 /**
- * The approved or pending member `merchantId`, only when they are in one of
+ * The APPROVED member `merchantId`, only when they are in one of
  * `supervisorId`'s teams (in the WHERE: another supervisor's member matches no
- * row, trap 16).
+ * row, trap 16). A proposed member is not one yet: a supervisor can propose any
+ * merchant not in a team, and proposing must not open their log.
  */
 export async function memberOfSupervisor(merchantId, supervisorId) {
   const { rows } = await pgQuery(
-    `SELECT tm.merchant_id, tm.team_id, tm.status, t.name AS team_name, m.name, m.public_ref, m.is_online
+    `SELECT tm.merchant_id, tm.team_id, tm.approved_at, t.name AS team_name, m.name, m.public_ref, m.is_online
        FROM team_members tm JOIN teams t ON t.team_id = tm.team_id JOIN merchants m ON m.merchant_id = tm.merchant_id
-      WHERE tm.merchant_id = $1 AND t.supervisor_id = $2`,
+      WHERE tm.merchant_id = $1 AND t.supervisor_id = $2 AND tm.status = 'APPROVED'`,
     [String(merchantId), String(supervisorId)], 'oversight_member_of');
   const r = rows[0];
   return r ? {
-    merchantId: r.merchant_id, teamId: r.team_id, teamName: r.team_name, status: r.status,
+    merchantId: r.merchant_id, teamId: r.team_id, teamName: r.team_name, approvedAt: r.approved_at,
     name: r.name, publicRef: r.public_ref, isOnline: r.is_online,
   } : null;
 }
 
-/** A member's online stretches over the last `days` days, newest first. */
-export async function onlineSessions(merchantId, { days = 7, limit = 200 } = {}) {
+/**
+ * A member's online stretches over the last `days` days, newest first, cut at
+ * `since` when given (the moment they joined the team: what came before was
+ * not that team's, and may have been another supervisor's).
+ */
+export async function onlineSessions(merchantId, { days = 7, limit = 200, since = null } = {}) {
   const { rows } = await pgQuery(
-    `SELECT started_at, ended_at,
-            EXTRACT(EPOCH FROM COALESCE(ended_at, now()) - started_at) AS seconds
+    `SELECT GREATEST(started_at, $4::timestamptz) AS started_at, ended_at,
+            EXTRACT(EPOCH FROM COALESCE(ended_at, now()) - GREATEST(started_at, $4::timestamptz)) AS seconds
        FROM merchant_online_sessions
       WHERE merchant_id = $1 AND COALESCE(ended_at, now()) > now() - make_interval(days => $2::int)
+        AND COALESCE(ended_at, now()) > COALESCE($4::timestamptz, '-infinity')
       ORDER BY started_at DESC LIMIT $3`,
-    [String(merchantId), Math.min(Math.max(Math.trunc(Number(days)) || 7, 1), 31), Math.min(Math.max(Number(limit) || 200, 1), 500)],
+    [String(merchantId), Math.min(Math.max(Math.trunc(Number(days)) || 7, 1), 31), Math.min(Math.max(Number(limit) || 200, 1), 500), since],
     'oversight_sessions');
   return rows.map((r) => ({ startedAt: r.started_at, endedAt: r.ended_at, seconds: Math.round(Number(r.seconds)) }));
 }

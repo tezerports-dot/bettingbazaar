@@ -1,12 +1,13 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * The pure halves of team oversight (PROJECT_STATUS §3.10, Step 2f): the
- * low-activity rule, what a member is shown of the team, and hiding mobile
- * numbers from a supervisor. The database halves are teamOversightPg.
+ * low-activity rule, what a member is shown of the team, and what a
+ * supervisor is not shown of the player. The database halves are
+ * teamOversightPg; every spelling of a mobile is mobileInText.
  */
 import { describe, it, expect } from 'vitest';
 import { lowActivityFlags, redFlagSettings } from '#db/repositories/teamOversight.js';
-import { hideMobiles, teamPerformanceFor } from '../../domains/team/teamOversight.service.js';
+import { hideForSupervisor, supervisorMaySee, teamPerformanceFor } from '../../domains/team/teamOversight.service.js';
 
 const member = (merchantId, completedOrders, onlineSeconds, completedPaise = 0) => ({
   merchantId, completedOrders, onlineSeconds, completedPaise, name: merchantId, publicRef: merchantId, isOnline: false,
@@ -57,28 +58,38 @@ describe('what a member sees of the team', () => {
   it('the totals, the average and their own row, never a teammate\'s', () => {
     const out = teamPerformanceFor({
       days: 7, from: 'x',
-      members: [member('me', 2, 120.4, 100_000_00), member('other', 4, 600, 200_000_00)],
+      members: [member('me', 2, 120.4, 100_000_00), member('other', 4, 600, 200_000_00), member('third', 0, 360, 0)],
     }, 'me');
     expect(out).toEqual({
-      days: 7, from: 'x', members: 2,
-      team: { completedOrders: 6, completedTokens: 300_000, averageOrders: 3, averageOnlineSeconds: 360 },
+      days: 7, from: 'x', members: 3,
+      team: { completedOrders: 6, completedTokens: 300_000, averageOrders: 2, averageOnlineSeconds: 360 },
       me: { completedOrders: 2, completedTokens: 100_000, onlineSeconds: 120 },
     });
     expect(JSON.stringify(out)).not.toContain('other');
   });
+
+  it('no team figures in a team of two, where the total less your own is your teammate\'s', () => {
+    const out = teamPerformanceFor({ days: 7, from: 'x', members: [member('me', 2, 100), member('other', 4, 600)] }, 'me');
+    expect(out.team).toBeNull();
+    expect(out.me).toEqual({ completedOrders: 2, completedTokens: 0, onlineSeconds: 100 });
+  });
 });
 
-describe('a supervisor is shown no mobile number', () => {
-  it('hides every spelling of an Indian mobile and keeps the words around it', () => {
-    expect(hideMobiles('call 9876543210 now')).toBe('call [number hidden] now');
-    expect(hideMobiles('call +91 98765-43210.')).toBe('call [number hidden].');
-    expect(hideMobiles('0091 9876543210')).toBe('[number hidden]');
-    expect(hideMobiles('09876543210, then 8123456789')).toBe('[number hidden], then [number hidden]');
+describe('a supervisor is shown nothing of the player', () => {
+  it('hides mobiles, UPI handles and long numbers, and keeps the words around them', () => {
+    expect(hideForSupervisor('call +91 98765-43210 now')).toBe('call [number hidden] now');
+    expect(hideForSupervisor('paid from rahul.k@okaxis.')).toBe('paid from [handle hidden].');
+    expect(hideForSupervisor('UTR 412345678901, a/c 5010 0123 4567 89')).toBe('UTR [number hidden], a/c [number hidden]');
   });
 
-  it('leaves what is not a mobile alone: a UTR, an amount, a short number', () => {
-    expect(hideMobiles('UTR 412345678901 for 50,000')).toBe('UTR 412345678901 for 50,000');
-    expect(hideMobiles('order 5123456789')).toBe('order 5123456789');
-    expect(hideMobiles(null)).toBeNull();
+  it('leaves amounts, times and short numbers readable', () => {
+    expect(hideForSupervisor('₹1,00,000 at 14:02, order 50000')).toBe('₹1,00,000 at 14:02, order 50000');
+    expect(hideForSupervisor(null)).toBeNull();
+  });
+
+  it('reads their own messages, their member\'s and the dispute manager\'s; never the player\'s or a system notice', () => {
+    const m = (senderType, isSystem = false) => supervisorMaySee({ senderType, isSystem });
+    expect([m('SUPERVISOR'), m('MERCHANT'), m('ADMIN')]).toEqual([true, true, true]);
+    expect([m('USER'), m('SYSTEM', true), m('ADMIN', true), m('MERCHANT', true)]).toEqual([false, false, false, false]);
   });
 });

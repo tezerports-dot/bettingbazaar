@@ -895,8 +895,18 @@ Owner answers, 2026-10-02 (two rounds; the second replaced the security deposit 
   - *Admin.* Teams: red flags of 30 days (farming and low activity).
     Settings: the three red-flag numbers. Dispute Manager shows supervisor
     messages.
-  - *Tests.* `teamOversightPg` (6), unit `teamOversight` (9), TeamPage (+5),
-    TeamsManager (+2), SystemSettingsRedFlags (2); mutations M392–M405.
+  - *Security review (independent, 2026-10-04), 8 findings, none high, all
+    fixed:* supervisors no longer see UPI handles, UTRs or account numbers in
+    text, nor the player's messages or staff notices in the thread; the
+    mobile rule reads every spelling (two separators, Indian-script digits,
+    091) in code and in the database, held to one list; usernames and team
+    names may not carry a mobile; the supervisor's post asks DISPUTED, team
+    and a 50-message cap in one locked INSERT; switching Online off can no
+    longer fail; a merely proposed member's log stays closed and online time
+    counts from joining; a team of two shows its members no totals.
+  - *Tests.* `teamOversightPg` (7), unit `teamOversight` (11), `mobileInText`
+    unit and `mobileInTextPg` (one list), TeamPage (+6), TeamsManager (+2),
+    SystemSettingsRedFlags (2); mutations M392–M422.
 - **2g Close-out.** CLAUDE.md §2/§25/§26 rewritten for the new owners, docs,
   every gate and tier.
 

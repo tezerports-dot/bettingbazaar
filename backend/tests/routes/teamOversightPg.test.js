@@ -13,8 +13,11 @@
  *   · who sees what: the supervisor their teams' low-activity flags and every
  *     member's figures, never a farming flag; a member the team's totals and
  *     their own figures, never a teammate's row; an admin everything;
- *   · a supervisor reads only their own members' logs, and speaks in only their
- *     own members' open disputes, with no mobile number either way.
+ *   · a supervisor reads only their own APPROVED members' logs, from when they
+ *     joined, and speaks in only their own members' open disputes (at most
+ *     `SUPERVISOR_MESSAGES_PER_DISPUTE` times), shown nothing of the player:
+ *     no mobile, UPI handle or reference, no player message, no staff notice;
+ *   · no name other people see (username, team name) carries a mobile.
  *
  * Built the way production builds it (§32 S16): orders routed to members of
  * working teams, completed on the member's panel and the hold sweep's
@@ -31,6 +34,8 @@ import { updateUser } from '#db/repositories/users.js';
 import { setOnline } from '#db/repositories/merchants.js';
 import { placeBet, refundPlacedBet } from '#db/repositories/bets.js';
 import { evaluateRedFlags, redFlagSettings } from '#db/repositories/teamOversight.js';
+import { createTeam, addMember } from '#db/repositories/teams.js';
+import { postMessage, SUPERVISOR_MESSAGES_PER_DISPUTE } from '#db/repositories/chat.js';
 import { SUPERVISOR_ORDER_FIELDS } from '../../domains/merchant/merchantOrderView.js';
 import { creditWinnings } from '../../domains/wallet/walletAuthority.service.js';
 import {
@@ -38,6 +43,7 @@ import {
 } from '../../domains/payment/paymentProcessing.service.js';
 import { settleHold } from '../../domains/payment/withdrawalHold.service.js';
 import { teamFixture, readyToPay } from '../teamFixture.js';
+import request from 'supertest';
 import { mountRouter, actor, merchantActor, as } from './_harness.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
@@ -46,12 +52,14 @@ const sleep = (ms) => new Promise((r) => { setTimeout(r, ms); });
 describePg('team oversight', () => {
   let panel; let teamApp; let teamAdmin; let playerApp; let disputeApp; let admin; let seq = 0;
   const teams = teamFixture();
+  const ownTeams = [];
   const players = [];
   const placed = [];
   let today;
   const run = `tov${Date.now().toString(36)}`;
   const oid = () => `${run}-${Math.random().toString(36).slice(2, 7)}-${seq += 1}`;
-  const utr = () => String(570000000000 + (seq * 7919) + Math.floor(Math.random() * 7000));
+  // Twelve digits, unique to this run: the UTR registry keeps every claim for good.
+  const utr = () => `57${String(Date.now()).slice(-7)}${String(seq += 1).padStart(3, '0')}`;
   const payoutUtr = () => `UTRTO${String(Date.now()).slice(-7)}${String(seq += 1).padStart(4, '0')}`;
   const cycle = (n) => `${run}-c${n}`;
 
@@ -89,6 +97,11 @@ describePg('team oversight', () => {
         'DELETE FROM order_transitions WHERE order_id IN (SELECT order_id FROM order_states WHERE user_id = ANY($1))',
         [players]);
       await c.query('DELETE FROM order_states WHERE user_id = ANY($1)', [players]);
+    });
+    await withTransaction(async (c) => {
+      await c.query('SET LOCAL session_replication_role = replica');
+      await c.query('DELETE FROM team_members WHERE team_id = ANY($1)', [ownTeams]);
+      await c.query('DELETE FROM teams WHERE team_id = ANY($1)', [ownTeams]);
     });
     await teams.cleanup();
     await closePg();
@@ -173,6 +186,16 @@ describePg('team oversight', () => {
     await expect(pgQuery('UPDATE merchant_online_sessions SET ended_at = now() WHERE id = $1', [closed[0].id]))
       .rejects.toThrow(/closed once/);
     await setOnline(m.merchantId, false);
+
+    // A stretch opened by a statement that began after this one's clock (two
+    // taps, two tabs): switching off still works, and never ends it before it began.
+    const late = await merchantActor();
+    await pgQuery(`INSERT INTO merchant_online_sessions (merchant_id, started_at) VALUES ($1, now() + interval '1 minute')`, [late.merchantId]);
+    await pgQuery('UPDATE merchants SET is_online = true WHERE merchant_id = $1', [late.merchantId]);
+    await setOnline(late.merchantId, false);
+    const { rows: [s] } = await pgQuery('SELECT started_at, ended_at FROM merchant_online_sessions WHERE merchant_id = $1', [late.merchantId]);
+    expect(s.ended_at).not.toBeNull();
+    expect(new Date(s.ended_at) >= new Date(s.started_at)).toBe(true);
   });
 
   it('flags, once a day, the members below the team in BOTH orders and online time, and the farming team', async () => {
@@ -283,6 +306,43 @@ describePg('team oversight', () => {
     expect(text).not.toContain(x.merchantId);
     expect(seen.body.redFlags).toBeUndefined();
     expect(seen.body.activity).toBeUndefined();
+
+    // Proposed but not approved: not yet one of the team, so shown none of it,
+    // and the supervisor cannot open their log by proposing them.
+    const proposed = await merchantActor();
+    const extra = await createTeam({ supervisorId: supL.merchantId, name: `Extra ${run}` });
+    ownTeams.push(extra.teamId);
+    expect((await addMember({ teamId: extra.teamId, supervisorId: supL.merchantId, merchantRef: proposed.merchantId, actor: supL.merchantId })).ok).toBe(true);
+    const pending = await as(teamApp, proposed).get('/team');
+    expect(pending.body).toMatchObject({ role: 'MEMBER', status: 'PENDING', performance: null });
+    const log = await as(teamApp, supL).get(`/supervisor/members/${proposed.merchantId}/log`);
+    expect(log.status).toBe(404);
+    expect(log.body.code).toBe('member_not_found');
+  });
+
+  it('refuses a mobile number in a name other people see: a merchant username, a team name', async () => {
+    const mobile = `9${String(Date.now()).slice(-9)}`;
+    try {
+      const signup = await request(panel).post('/auth/signup')
+        .send({ username: `raj ${mobile}`, mobile, password: 'Correct-Horse-Battery-9!' });
+      expect(signup.status, JSON.stringify(signup.body)).toBe(400);
+      expect(signup.body.code).toBe('NAME_IS_A_MOBILE');
+      expect((await pgQuery("SELECT 1 FROM users WHERE mobile = $1 AND account_type = 'MERCHANT'", [mobile])).rowCount).toBe(0);
+    } finally {
+      // A broken rule lets the account in, and a row the restored CHECK would
+      // refuse stops the next schema apply: remove whatever got through.
+      await withTransaction(async (c) => {
+        await c.query('SET LOCAL session_replication_role = replica');
+        await c.query('DELETE FROM merchants WHERE mobile = $1', [mobile]);
+        await c.query("DELETE FROM users WHERE mobile = $1 AND account_type = 'MERCHANT'", [mobile]);
+      });
+    }
+
+    const named = await as(teamApp, supL).put(`/supervisor/teams/${ownTeams[0]}`).send({ name: 'Call 98765 43210' });
+    expect(named.status).toBe(400);
+    expect(named.body.message).toMatch(/phone number/);
+    await expect(pgQuery('UPDATE teams SET name = $2 WHERE team_id = $1', [ownTeams[0], '९८७६५४३२१०']))
+      .rejects.toMatchObject({ constraint: 'teams_name_not_a_mobile' });
   });
 
   it('lets a supervisor read their own member\'s log — orders without the player, online stretches — and nobody else\'s', async () => {
@@ -295,6 +355,14 @@ describePg('team oversight', () => {
       expect(Object.keys(o).every((k) => SUPERVISOR_ORDER_FIELDS.includes(k)), Object.keys(o).join()).toBe(true);
     }
     expect(log.body.sessions.length).toBeGreaterThan(0);
+    // Online time from before they joined the team is not the team's.
+    const { rows: [joined] } = await pgQuery('SELECT approved_at FROM team_members WHERE merchant_id = $1', [a.merchantId]);
+    expect(log.body.member.approvedAt).toBeTruthy();
+    await pgQuery(`INSERT INTO merchant_online_sessions (merchant_id, started_at, ended_at)
+                   VALUES ($1, $2::timestamptz - interval '3 hours', $2::timestamptz - interval '2 hours')`, [a.merchantId, joined.approved_at]);
+    const after = await as(teamApp, supL).get(`/supervisor/members/${a.merchantId}/log`);
+    expect(after.body.sessions).toHaveLength(log.body.sessions.length);
+    expect(after.body.sessions.every((s) => new Date(s.startedAt) >= new Date(joined.approved_at))).toBe(true);
 
     const other = await as(teamApp, supT).get(`/supervisor/members/${a.merchantId}/log`);
     expect(other.status).toBe(404);
@@ -304,17 +372,21 @@ describePg('team oversight', () => {
     expect((await as(teamApp, a).get(`/supervisor/members/${b.merchantId}/log`)).status).toBe(403);
   });
 
-  it('lets a supervisor speak in their member\'s open dispute, with no mobile number either way', async () => {
+  it('lets a supervisor speak in their member\'s open dispute, with nothing of the player either way', async () => {
     const who = await player();
     const orderId = await paidSell(who, a, 50_000);
     await pgQuery(`UPDATE order_states SET paid_at = now() - interval '11 minutes' WHERE order_id = $1`, [orderId]);
-    const disputed = await as(playerApp, who).post(`/order/${orderId}/dispute`).send({ reason: 'Nothing reached my bank, call 98765 43210' });
+    const disputed = await as(playerApp, who).post(`/order/${orderId}/dispute`)
+      .send({ reason: 'Nothing reached my bank, call 98765  43210, I paid from rahul.k@okaxis, UTR 4123 4567 8901' });
     expect(disputed.status, JSON.stringify(disputed.body)).toBe(200);
 
     const list = await as(teamApp, supL).get('/supervisor/disputes');
     expect(list.status).toBe(200);
     const mine = list.body.disputes.find((d) => d.orderId === orderId);
-    expect(mine).toMatchObject({ status: 'DISPUTED', merchantId: a.merchantId, disputeReason: 'Nothing reached my bank, call [number hidden]' });
+    expect(mine).toMatchObject({
+      status: 'DISPUTED', merchantId: a.merchantId,
+      disputeReason: 'Nothing reached my bank, call [number hidden], I paid from [handle hidden], UTR [number hidden]',
+    });
     expect((await as(teamApp, supT).get('/supervisor/disputes')).body.disputes.map((d) => d.orderId)).not.toContain(orderId);
 
     const said = await as(teamApp, supL).post(`/supervisor/disputes/${orderId}/chat`).send({ message: 'My member paid at 14:02; the UTR is on the order.' });
@@ -328,11 +400,30 @@ describePg('team oversight', () => {
     expect(withNumber.status).toBe(400);
     expect(withNumber.body.code).toBe('message_has_mobile');
     expect((await as(teamApp, supT).post(`/supervisor/disputes/${orderId}/chat`).send({ message: 'Not my team' })).status).toBe(404);
+    // The player's own words and system notices stay out of the supervisor's
+    // view; the dispute manager's reach it with the player's detail hidden.
+    await postMessage({ orderId, senderId: who.userId, senderType: 'USER', message: 'My UPI is rahul.k@okaxis' });
+    const asked = await as(disputeApp, admin).post(`/dispute-orders/${orderId}/chat`)
+      .send({ message: 'Member, the player says UTR 412345678901 from rahul.k@okaxis. Send your statement.' });
+    expect(asked.status, JSON.stringify(asked.body)).toBe(200);
     const seen = await as(teamApp, supL).get(`/supervisor/disputes/${orderId}/chat`);
     expect(seen.status).toBe(200);
-    expect(seen.body.messages.filter((m) => m.senderType === 'SUPERVISOR')).toHaveLength(1);
+    expect(seen.body.messages.map((m) => m.senderType).sort()).toEqual(['ADMIN', 'SUPERVISOR']);
+    expect(seen.body.messages.find((m) => m.senderType === 'ADMIN').message)
+      .toBe('Member, the player says UTR [number hidden] from [handle hidden]. Send your statement.');
     expect(seen.body.messages.every((m) => m.senderId === undefined)).toBe(true);
+    expect(JSON.stringify(seen.body)).not.toContain('okaxis');
     expect((await as(teamApp, supT).get(`/supervisor/disputes/${orderId}/chat`)).status).toBe(404);
+
+    // A bounded voice: past the cap, nothing more lands.
+    await pgQuery(
+      `INSERT INTO chat_messages (order_id, sender_id, sender_type, message)
+       SELECT $1, $2, 'SUPERVISOR', 'filler ' || g FROM generate_series(2, $3) g`,
+      [orderId, supL.merchantId, SUPERVISOR_MESSAGES_PER_DISPUTE]);
+    const over = await as(teamApp, supL).post(`/supervisor/disputes/${orderId}/chat`).send({ message: 'And another' });
+    expect(over.status).toBe(409);
+    expect(over.body.code).toBe('too_many_messages');
+    await pgQuery(`DELETE FROM chat_messages WHERE order_id = $1 AND message LIKE 'filler %'`, [orderId]);
 
     // Decided: the thread is closed to the supervisor.
     const decided = await as(disputeApp, admin).post(`/dispute-orders/${orderId}/resolve`)
@@ -341,5 +432,9 @@ describePg('team oversight', () => {
     const late = await as(teamApp, supL).post(`/supervisor/disputes/${orderId}/chat`).send({ message: 'One more thing' });
     expect(late.status).toBe(409);
     expect(late.body.code).toBe('dispute_closed');
+    // The resolution notice names the staff member: written for staff, not shown.
+    const after = await as(teamApp, supL).get(`/supervisor/disputes/${orderId}/chat`);
+    expect(after.body.order.disputeDecision).toBe('RELEASE_TO_MERCHANT');
+    expect(JSON.stringify(after.body.messages)).not.toMatch(/RESOLVED/);
   });
 });
