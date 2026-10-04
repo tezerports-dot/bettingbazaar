@@ -1,7 +1,7 @@
 # BettingBazaar project handoff (2026-10-04)
 
 This file is everything a new Claude session needs to carry on the
-BettingBazaar redesign from Step 2f, the way the work has been done so far.
+BettingBazaar redesign from Step 2g, the way the work has been done so far.
 It assumes no access to the old project's threads, memory or files. The
 owner is **Vikram**. Where this file and `CLAUDE.md` disagree on a coding
 rule, `CLAUDE.md` wins. Where they disagree on a decision or on what is left,
@@ -14,31 +14,30 @@ A prompt to start the new session is at the end (section 9).
 ## 1. Where things stand
 
 - **Repository:** `tezerports-dot/bettingbazaar`. Default branch `main`.
-- **Merged:** PR #201 was merged into `main` on 2026-10-04 as merge commit
-  `8cf6083`. Its head was `68f5144`, with CI 9/9 green. It carries Step 1
-  (KYC removed) and Steps 2a to 2e: teams, team token pools, routing orders
-  to teams, escrow windows and disputes, fixed order sizes with the ATM QR,
-  and team commission. `main` now has the trimmed `CLAUDE.md` (about 44 KB,
-  rules only).
-- **Step 2f** is on branch **`claude/2f-red-flags-wip`**, two commits on top
-  of `68f5144` (which is already in `main`). It has no PR yet.
-  - `e04c421` Step 2f: red flags and oversight (the build).
-  - `e6006c0` 2f: fixes for the eight findings of an independent security
-    review. None was high.
-  - This file is committed on that branch too.
-- **What 2f contains:**
+- **Merged into `main`:**
+  - PR #201 (2026-10-04, merge commit `8cf6083`): Step 1 (KYC removed) and
+    Steps 2a to 2e: teams, team token pools, routing orders to teams,
+    escrow windows and disputes, fixed order sizes with the ATM QR, and
+    team commission. It also brought the trimmed `CLAUDE.md` (about 44 KB,
+    rules only).
+  - PR #202 (2026-10-04, merged with a merge commit): **Step 2f, red flags
+    and oversight**, from branch `claude/2f-red-flags-wip`. This file came
+    with it.
+- **Step 2f is done.** It contains:
   - Online-time log: `merchant_online_sessions`, written only by triggers on
     `merchants.is_online`.
-  - Daily LOW_ACTIVITY red flag: a member whose completed orders AND online
-    time are both more than `SystemConfig.redFlags.lowActivityPercent`
-    (default 25%) below the team average. It goes to the supervisor and the
-    admin. The hourly cron `team-red-flags` evaluates each IST day once.
-  - A COMMISSION_FARMING red flag, admin only. **To be removed, see section 2.**
+  - Daily LOW_ACTIVITY red flag, the only kind: a member whose completed
+    orders AND online time are both more than
+    `SystemConfig.redFlags.lowActivityPercent` (default 25%) below the team
+    average. It goes to the supervisor and the admin and acts on nothing.
+    The hourly cron `team-red-flags` evaluates each IST day once.
+  - No commission-farming flag. 2f built one and removed it before merging,
+    on Vikram's word (section 7).
   - Supervisor views: each member's activity, a member's log, and the
     disputes on their teams, with a thread to the dispute manager.
-  - Members see team performance.
-  - Admins see the red flags and can edit the red-flag settings.
-  - The security fixes:
+  - Members see team performance. Admins see the red flags and can edit
+    the threshold.
+  - The security fixes from an independent review (8 findings, none high):
     - Supervisors never see a mobile number, UPI handle, UTR, account
       number, player message or staff notice.
     - One mobile-number rule (`backend/domains/identity/mobileInText.js` plus
@@ -48,72 +47,43 @@ A prompt to start the new session is at the end (section 9).
     - A supervisor's dispute post is checked in one locked INSERT and capped
       at 50 per dispute.
     - Switching Online off can no longer fail.
-    - Only approved members' logs open.
+    - Only approved members' logs open; online time counts from joining.
     - A team of two shows its members no team totals.
-- **Verified on the branch:**
-  - All 72 mutations on changed files KILLED.
-  - All 18 gates exit 0, and `audit:map` was regenerated.
-  - `test:unit` 892/892 at `e6006c0`.
-  - `test:pg` 1,582/1,582 (129 files) at `e6006c0`.
-  - Merchant panel 102/102 at `e6006c0` and admin panel 176/176 at
-    `e04c421`, both building.
-  - Changed tests after the fixes: TeamPage 20/20, teamOversightPg 7/7,
-    mobileInText unit and pg, cashLink 21/21.
+- **Verified at the 2f head before merging:**
+  - `test:unit` 892/892; `test:pg` 1,582/1,582 (129 files).
+  - Admin panel 176/176 and merchant panel 102/102, both building.
+  - All 17 gates and `audit:map -- --check` exit 0.
+  - Every mutation on the files and tests 2f changed KILLED (the last run:
+    28 of 28 after the farming removal).
+  - CI 9/9 green on PR #202.
+  - Not run: `test:e2e` and the browser tiers (they need a running server).
 
-## 2. What is left in Step 2f, exactly
+## 2. What is left: Step 2g, exactly
 
-1. **Remove the commission-farming red flag.**
-   - *Why:* on 2026-10-04 at 05:10Z Vikram said the 90:10 deposit/reserve
-     split and the winnings fee stop commission farming. The 2e analysis
-     agreed at 06:51Z (section 7). Vikram can ask to keep the flag; if he
-     does, skip this item.
-   - *What to remove:*
-     - The `COMMISSION_FARMING` kind: `RED_FLAG_KINDS`, `FARMING_SQL`,
-       `TEAM_DAY_SQL` and the farming half of `evaluateRedFlags` in
-       `database/repositories/teamOversight.js`. Also the kind in the
-       `team_red_flags` CHECK and its `(kind='LOW_ACTIVITY') = (merchant_id
-       IS NOT NULL)` CHECK in `database/schema.sql`, written as DROP/ADD so
-       the schema converges (CLAUDE.md §32 S31).
-     - `farmingMinRounds` and `farmingHedgePercent` from `redFlags` in
-       `database/spec/config.spec.js` and from `redFlagSettings`.
-     - The two farming inputs in `admin-panel/src/Pages/Settings/SystemSettings.tsx`
-       and in `SystemSettingsRedFlags.test.tsx`.
-     - "Possible commission farming" in
-       `admin-panel/src/Pages/Teams/TeamsManager.tsx` and its test; the
-       `FarmingPair` type in `admin-panel/src/types.ts`.
-     - The team T farming cases in `backend/tests/routes/teamOversightPg.test.js`
-       (players pa to ph and their bets).
-     - Mutations M394, M395 and M396. M401's anchor (the supervisor's
-       `kinds: [RED_FLAG_KINDS.LOW_ACTIVITY]` filter) can stay if the filter
-       stays.
-     - The farming wording in CLAUDE.md §2 ("Red flags" row),
-       `docs/reference/RULES_BACKGROUND.md` §2 ("Red flags, and what they
-       mean") and `docs/PROJECT_STATUS.md` (2f entry).
-   - *Keep:* the `kinds` filter on `listRedFlags`, the once-a-day claim and
-     everything else.
-2. **Run everything:**
-   - `npm run test:unit`
-   - `DATABASE_URL=postgresql://postgres:postgres@localhost:5432/bb_test npm run test:pg`
-   - In `merchant-panel` and `admin-panel`: `npm run build && npx vitest run`
-   - The 18 gates in CLAUDE.md "Commands", including `npm run audit:map -- --check`
-     (run `npm run audit:map` first if routes or SQL changed).
-   - Every mutation whose file or test changed (section 6).
-3. **Open a PR** from `claude/2f-red-flags-wip` to `main`. Use the
-   description pattern in section 6. Subscribe to its activity, drive CI to
-   9/9 green, and fix failures at once. Vikram merges.
-4. **Tell Vikram** in one reply: what finished, overall progress, what is
-   left, the security findings and their fixes, and the CLAUDE.md §31 table.
+1. **Rewrite the stale rules** in `CLAUDE.md`:
+   - The §2 rows marked "⚠2c", plus §25 and §26, for the new owners (team
+     routing and pool holds replaced per-merchant wallets, escrow, ranking,
+     the cash-link queue and the payment-mode switch). The design they
+     should describe is `docs/PROJECT_STATUS.md` §3.10.
+   - Keep the reasons in `docs/reference/RULES_BACKGROUND.md` under the same
+     § number (CLAUDE.md §31.1).
+2. **Update the docs:** `docs/PROJECT_STATUS.md` (mark 2g done, current
+   state), `docs/reference/OPERATIONS_MAP.html`, `PANEL_WORKFLOWS.html`, and
+   the generated reports (CLAUDE.md "Commands": `report:controls`,
+   `report:workflows`, `report:routes`, `report:control-gaps`). Never edit a
+   generated report by hand.
+3. **Run every gate and every tier:** `test:unit`, `test:pg`, `test:e2e`, and
+   the browser tiers if a server can be started; both panels' build and
+   tests; every mutation whose file or test changed.
+4. **Open a PR to `main`,** drive CI to 9/9 green, and merge it with a merge
+   commit (Vikram, 2026-10-04 07:14Z: "merge before you reach limit"). If
+   the usage limit is close before CI is green, keep everything pushed and
+   this file current instead of merging unfinished work.
+5. **Tell Vikram** in one reply: what finished, overall progress, what is
+   left, any security finding and its fix, and the CLAUDE.md §31 table.
 
-## 3. The plan after 2f
+## 3. The plan after 2g
 
-- **2g Close-out:**
-  - Rewrite the CLAUDE.md §2 rows marked "⚠2c", plus §25 and §26, for the
-    new owners (team routing and pool holds replaced per-merchant wallets,
-    escrow, ranking, the cash-link queue and the payment-mode switch).
-  - Update the docs: PROJECT_STATUS, OPERATIONS_MAP, PANEL_WORKFLOWS and the
-    generated reports.
-  - Run every gate and every tier (`test:e2e`, the browser tiers if a server
-    can be started).
 - **Step 3, Telegram Mini App** replaces every bot, on all three panels:
   - One bot per panel, which sends no messages. The Mini App does the
     contact share (proves the mobile), the channel-membership check and
@@ -176,6 +146,7 @@ Vikram can change it.
     below the team average by the threshold (admin-editable, default 25%)
     is flagged to the supervisor and the admin.
   - It is a flag only; the supervisor decides.
+  - No commission-farming flag (Vikram, 2026-10-04; section 7).
 - **Visibility:**
   - Members see their team's performance.
   - The supervisor sees and manages members, sees all their transaction
@@ -310,7 +281,9 @@ These are his standing instructions:
     rewrites source files temporarily (trap 12).
   - Each anchor must match exactly once (trap 13). The harness applies
     replacements literally.
-  - New mutations go at the end of `MUTATIONS`. The last id is **M422**.
+  - New mutations go at the end of `MUTATIONS`. The last id is **M423**
+    (M394 to M396 and M401 were deleted with the farming flag; ids are
+    never reused).
 - **Tests clean up:**
   - Tests that create orders delete them (a leftover PENDING_QUEUE row
     breaks `retryAndMatchPg`).
@@ -364,12 +337,12 @@ These are his standing instructions:
        about ₹2 per round.
      - This holds even at a 0% fee, as long as the reserve stays at about 9%
        or more.
-   - *Result:* the farming flag 2f built is to be removed (section 2,
-     item 1) unless Vikram asks to keep it.
-   - *Vikram (07:12Z), correcting the 2e thread:* the 1% is taken from the
-     winnings: a bet of 100 that wins pays 200, and 1% of that, 2 tokens, is
-     the fee. So the 1% a bet draws from reserve goes straight back out in
-     fees, and nobody can farm through the reserve.
+   - *Result:* the farming flag 2f built was removed before PR #202
+     merged.
+   - *Vikram (07:12Z and 07:14Z), correcting the 2e thread:* the fee is 1%,
+     not 2%. In a ₹100 against ₹100 bet the winner gets 200 and pays 2,
+     which is 1% from each side. So the 1% a bet draws from reserve goes
+     straight back out in fees, and nobody can farm through the reserve.
    - *Checked in code (2e thread, 07:14Z):* that is how it works.
      `SystemConfig.winningsFeePercent` (admin-editable, default 1) is taken
      from a winning bet's gross 2x payout at settlement
@@ -407,12 +380,13 @@ Working rules:
 ## 9. Prompt to start the new session
 
 ```
-Continue the BettingBazaar redesign from Step 2f. Repo
-tezerports-dot/bettingbazaar. Check out branch claude/2f-red-flags-wip
-before reading anything, then read docs/HANDOFF.md end to end and follow
-it (it records every decision, my working rules and what is left), then
-CLAUDE.md. Do section 2 of the handoff: remove the commission-farming red
-flag, run all suites, gates and the affected mutations, open a PR from
-that branch to main and drive CI green, then report to me as section 5
-says. After 2f, do 2g in a fresh session, then Step 3.
+Continue the BettingBazaar redesign from Step 2g. Repo
+tezerports-dot/bettingbazaar, branch main (Steps 1 to 2f are merged).
+Start a new branch from main before reading anything, then read
+docs/HANDOFF.md end to end and follow it (it records every decision, my
+working rules and what is left), then CLAUDE.md. Do section 2 of the
+handoff: rewrite the stale CLAUDE.md rules, update the docs and reports,
+run every gate and tier, open a PR to main, drive CI green and merge it
+with a merge commit, then report to me as section 5 says. After 2g, do
+Step 3 in a fresh session.
 ```
