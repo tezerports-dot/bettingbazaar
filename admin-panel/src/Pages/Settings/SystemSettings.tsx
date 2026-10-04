@@ -157,6 +157,8 @@ export const SystemSettings: React.FC = () => {
     withdrawalHoldMinutes: 60,  // schema default: 60 (also the floor)
     // How long a player has to dispute a buy the member rejected as unpaid.
     rejectedBuyDisputeMinutes: 15,  // schema default: 15
+    // The daily red flag on team members (Step 2f): low activity.
+    redFlags: { lowActivityPercent: 25 },  // schema default: 25
     // Overload ceilings — past either one the server answers 503 fast rather
     // than admitting work into a queue that will never drain.
     loadShedding: { enabled: true, maxInFlight: 300, maxEventLoopLagMs: 0 },  // schema defaults: true / 300 / 0
@@ -274,6 +276,9 @@ export const SystemSettings: React.FC = () => {
           },
           withdrawalHoldMinutes: response.data.withdrawalHoldMinutes ?? 60, // schema default: 60
           rejectedBuyDisputeMinutes: response.data.rejectedBuyDisputeMinutes ?? 15, // schema default: 15
+          redFlags: {
+            lowActivityPercent: response.data.redFlags?.lowActivityPercent ?? 25, // schema default: 25
+          },
           loadShedding: {
             enabled:           response.data.loadShedding?.enabled           ?? true, // schema default: true
             maxInFlight:       response.data.loadShedding?.maxInFlight       ?? 300,  // schema default: 300
@@ -1060,6 +1065,26 @@ export const SystemSettings: React.FC = () => {
               When a team member rejects a paid buy as unpaid, the team's tokens stay in escrow this long.
               If the player disputes in time they stay until the dispute is decided; if not, they go back
               to the team pool.
+            </p>
+          </div>
+        </div>
+
+        {/* ── Red flags (Step 2f) ─────────────────────────────────────────
+            Computed once a day; shown to the supervisor and on the Teams
+            page. Nothing acts on a flag. */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-4 mt-4 border-t border-dark-700">
+          <div>
+            <label className="label" htmlFor="red-flag-low-activity">Low-activity red flag (% below team average)</label>
+            <input id="red-flag-low-activity"
+              type="number" min={1} max={90} step={1}
+              value={formData.redFlags.lowActivityPercent}
+              onChange={(e) => setFormData({ ...formData, redFlags: { ...formData.redFlags,
+                lowActivityPercent: Math.min(90, Math.max(1, Math.floor(Number(e.target.value) || 25))) } })}
+              className="input"
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              A member is flagged to their supervisor and here when their completed orders and their online
+              time on a day were both this far below their team's average.
             </p>
           </div>
         </div>

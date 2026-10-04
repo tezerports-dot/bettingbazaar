@@ -112,6 +112,18 @@ export function registerCronJobs(rebuildLeaderboard) {
     } catch (e) { console.error('[team-commission] cron error:', e.message); }
   });
 
+  // ── Red flags — hourly, each IST day evaluated once ────────────────────────
+  // Step 2f: low activity per member, for the days that have ended. The day's row is the once-only guard, so the hourly
+  // run is a catch-up after downtime rather than a repeat.
+  registerRecurring('team-red-flags', 60 * 60 * 1000, async () => {
+    try {
+      const { runDailyRedFlags } = await import('../domains/team/teamOversight.service.js');
+      for (const r of await runDailyRedFlags()) {
+        if (r.evaluated) console.log(`[red-flags] ${r.day}: ${r.lowActivity} low-activity`);
+      }
+    } catch (e) { console.error('[red-flags] cron error:', e.message); }
+  });
+
   // ── Withdrawal settlement worker — runs every 60 seconds ────────────────────
   // Settles confirmed withdrawals whose dispute-hold window has passed: consumes
   // the player's locked stake and credits the merchant. Until this runs, neither

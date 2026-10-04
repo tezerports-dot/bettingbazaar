@@ -426,9 +426,45 @@ export interface TeamMember {
   merchantId: string; teamId: string; name: string; publicRef: string;
   status: 'PENDING' | 'APPROVED'; isOnline: boolean;
 }
+// Oversight (Step 2f). Mirrors database/repositories/teamOversight.js and
+// backend/domains/team/teamOversight.service.js (`memberActivityRows`,
+// `teamPerformanceFor`, `toFlag`) and SUPERVISOR_ORDER_FIELDS — §5.
+export interface MemberActivity {
+  teamId: string; merchantId: string; name: string; publicRef: string; isOnline: boolean;
+  completedOrders: number; completedTokens: number; onlineSeconds: number;
+}
+export interface LowActivityFlag {
+  flagId: string; kind: 'LOW_ACTIVITY'; flagDay: string; teamId: string; teamName: string;
+  merchantId: string; merchantName: string; merchantRef: string;
+  details: { completedOrders: number; onlineSeconds: number; teamAverageOrders: number; teamAverageOnlineSeconds: number; members: number; percent: number };
+}
+/** teamPerformanceFor (teamOversight.service.js): `team` is null below TEAM_FIGURES_FROM (3) members. */
+export interface TeamPerformance {
+  days: number; from: string; members: number;
+  team: { completedOrders: number; completedTokens: number; averageOrders: number; averageOnlineSeconds: number } | null;
+  me: { completedOrders: number; completedTokens: number; onlineSeconds: number } | null;
+}
+/** An order as a supervisor sees it: SUPERVISOR_ORDER_FIELDS (merchantOrderView.js), nothing about the player. */
+export interface SupervisorOrder {
+  orderId: string; merchantId: string; type: 'DEPOSIT' | 'WITHDRAWAL'; status: string; currency: string;
+  tokenAmount: number; paymentMode: string;
+  disputeRaisedAt: string | null; disputeRaisedBy: string | null; disputeReason: string | null;
+  disputeResolvedAt: string | null; disputeDecision: string | null; rejectedReason: string | null;
+  createdAt: string; updatedAt: string;
+}
+export interface OnlineStretch { startedAt: string; endedAt: string | null; seconds: number }
+export interface MemberLog {
+  member: { merchantId: string; teamId: string; teamName: string; approvedAt: string; name: string; publicRef: string; isOnline: boolean };
+  orders: SupervisorOrder[]; sessions: OnlineStretch[];
+}
+export interface DisputeThreadMessage {
+  id: string; senderType: 'USER' | 'MERCHANT' | 'ADMIN' | 'SYSTEM' | 'SUPERVISOR'; senderName: string;
+  message: string; isSystem: boolean; createdAt: string;
+}
 export type MyTeam =
   | { role: 'SUPERVISOR'; rail: SupervisorRail; publicRef: string; teams: Team[]; members: TeamMember[]; poolRequests: TeamPoolRequest[];
-      commissions: TeamCommission[]; myCommissionPaise: number }
+      commissions: TeamCommission[]; myCommissionPaise: number;
+      activity: { today: MemberActivity[]; week: MemberActivity[] }; redFlags: LowActivityFlag[] }
   | { role: 'MEMBER'; publicRef: string; status: 'PENDING' | 'APPROVED'; team: Team;
-      commissions: TeamCommission[]; myCommissionPaise: number }
+      commissions: TeamCommission[]; myCommissionPaise: number; performance: TeamPerformance | null }
   | { role: 'NONE'; publicRef: string };

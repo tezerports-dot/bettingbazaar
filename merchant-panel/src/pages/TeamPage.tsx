@@ -12,6 +12,10 @@
 //                whether the team is working, and its commission with their
 //                own share of each payment (Step 2e).
 //   Supervisors also see each team's commission and their 16% of it.
+//   Oversight (Step 2f): a supervisor sees every member's completed orders and
+//   online time (today, 7 days), the low-activity red flags, each member's log,
+//   and the disputes on their teams, where they speak for the member to the
+//   dispute manager. A member sees the team's totals and their own figures.
 //   NONE       — not in a team; shows the ID to hand to a supervisor.
 //
 // Every cap is the server's. A refusal is shown as the server worded it,
@@ -22,9 +26,11 @@ import { RefreshCw, Users } from 'lucide-react';
 import {
   getMyTeam, createTeam, renameTeam, deleteTeam, addTeamMember, removeTeamMember,
   getTeamPool, requestTeamPool, cancelTeamPoolRequest,
+  getMemberLog, getTeamDisputes, getDisputeThread, postDisputeMessage,
 } from '../services/api';
 import type {
-  MyTeam, PoolDirection, Team, TeamCommission, TeamMember, TeamPoolEntry, TeamPoolRequest,
+  DisputeThreadMessage, LowActivityFlag, MemberActivity, MemberLog, MyTeam, PoolDirection, SupervisorOrder,
+  Team, TeamCommission, TeamMember, TeamPerformance, TeamPoolEntry, TeamPoolRequest,
 } from '../types';
 import { Banner, Button, Card, CardTitle, CopyRow, ErrorState, Skeleton, inputStyle } from '../components/ui';
 
@@ -100,6 +106,208 @@ const CommissionSection: React.FC<{ team: Team; commissions: TeamCommission[] }>
   );
 };
 const labelStyle: React.CSSProperties = { display: 'block', fontSize: 12, fontWeight: 700, color: 'var(--text-2)', marginBottom: 6 };
+
+/** Seconds as "2h 05m", "45m" or "30s". */
+const duration = (seconds: number) => {
+  const s = Math.max(0, Math.round(seconds));
+  if (s < 60) return `${s}s`;
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  return h ? `${h}h ${String(m).padStart(2, '0')}m` : `${m}m`;
+};
+const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString('en-IN') : '');
+const ORDER_KIND: Record<SupervisorOrder['type'], string> = { DEPOSIT: 'Buy', WITHDRAWAL: 'Sell' };
+const sectionStyle: React.CSSProperties = { borderTop: '1px solid var(--border)', paddingTop: 12, marginBottom: 12 };
+
+/** What a member sees of the team's last seven days (Step 2f): totals, the average, and their own. Module level (§32 S23). */
+const PerformanceSection: React.FC<{ performance: TeamPerformance }> = ({ performance: p }) => (
+  <div style={sectionStyle}>
+    <span style={{ fontSize: 13, fontWeight: 800 }}>Team performance, last {p.days} days</span>
+    <ul style={{ listStyle: 'none', padding: 0, margin: '8px 0 0', fontSize: 12.5 }}>
+      {p.team ? (
+        <>
+          <li style={{ padding: '3px 0' }}>The team completed {p.team.completedOrders} orders ({tokens(p.team.completedTokens * 100)} tokens).</li>
+          <li style={{ padding: '3px 0' }}>An average member: {p.team.averageOrders} orders, online {duration(p.team.averageOnlineSeconds)}.</li>
+        </>
+      ) : (
+        <li style={{ padding: '3px 0', color: 'var(--muted)' }}>The team&apos;s figures show once it has three approved members.</li>
+      )}
+      {p.me && <li style={{ padding: '3px 0', fontWeight: 700 }}>You: {p.me.completedOrders} orders, online {duration(p.me.onlineSeconds)}.</li>}
+    </ul>
+  </div>
+);
+
+/** One member's log for their supervisor: orders without the player, and online stretches. Module level (§32 S23). */
+const MemberLogPanel: React.FC<{ merchantId: string }> = ({ merchantId }) => {
+  const [log, setLog] = useState<MemberLog | null>(null);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    getMemberLog(merchantId).then(setLog).catch((err) => setError(errorText(err, 'Could not load the log.')));
+  }, [merchantId]);
+  if (error) return <p role="alert" style={{ fontSize: 12.5, color: 'var(--danger)' }}>{error}</p>;
+  if (!log) return <Skeleton height={60} />;
+  return (
+    <div style={{ background: 'var(--surface-2)', borderRadius: 8, padding: 10, margin: '6px 0 10px', fontSize: 12.5 }}>
+      <strong>Orders</strong>
+      {log.orders.length === 0 ? <p style={{ color: 'var(--muted)', margin: '4px 0' }}>No orders yet.</p> : (
+        <ul style={{ listStyle: 'none', padding: 0, margin: '4px 0 8px' }}>
+          {log.orders.map((o) => (
+            <li key={o.orderId} style={{ display: 'flex', justifyContent: 'space-between', padding: '2px 0' }}>
+              <span>{ORDER_KIND[o.type]} · {tokens(o.tokenAmount * 100)} tokens · {when(o.createdAt)}</span>
+              <span className="bb-mono">{o.status}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      <strong>Online, last 7 days</strong>
+      {log.sessions.length === 0 ? <p style={{ color: 'var(--muted)', margin: '4px 0' }}>Not online in the last 7 days.</p> : (
+        <ul style={{ listStyle: 'none', padding: 0, margin: '4px 0 0' }}>
+          {log.sessions.map((s) => (
+            <li key={s.startedAt} style={{ padding: '2px 0' }}>
+              {when(s.startedAt)} to {s.endedAt ? when(s.endedAt) : 'now'} · {duration(s.seconds)}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+};
+
+/**
+ * Each approved member's completed orders and online time, today and over
+ * seven days, with any low-activity flag of the last fortnight and their log
+ * on demand. A flag is for the supervisor to judge: nothing acts on it.
+ */
+const TeamActivitySection: React.FC<{ team: Team; today: MemberActivity[]; week: MemberActivity[]; flags: LowActivityFlag[] }> = ({ team, today, week, flags }) => {
+  const [open, setOpen] = useState('');
+  const mine = week.filter((r) => r.teamId === team.teamId);
+  const todayOf = (id: string) => today.find((r) => r.merchantId === id);
+  const flagsOf = (id: string) => flags.filter((f) => f.merchantId === id && f.teamId === team.teamId);
+  return (
+    <div style={sectionStyle}>
+      <span style={{ fontSize: 13, fontWeight: 800 }}>Member activity</span>
+      <p style={{ fontSize: 12, color: 'var(--text-2)', margin: '4px 0 8px' }}>
+        Completed orders and time online. A red flag means a member was well below the team&apos;s average in both on that day. It is for you to judge; nothing happens to them automatically.
+      </p>
+      {mine.length === 0 && <p style={{ fontSize: 12.5, color: 'var(--muted)' }}>No approved members yet.</p>}
+      <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+        {mine.map((r) => {
+          const t = todayOf(r.merchantId);
+          const flagged = flagsOf(r.merchantId);
+          return (
+            <li key={r.merchantId} style={{ padding: '6px 0', borderBottom: '1px solid var(--border)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 13, fontWeight: 700 }}>
+                  {r.name} {r.isOnline && <span style={{ fontSize: 11, color: 'var(--ok)' }}>online</span>}
+                </span>
+                <span style={{ fontSize: 12 }}>
+                  Today {t?.completedOrders ?? 0} orders, {duration(t?.onlineSeconds ?? 0)} · 7 days {r.completedOrders} orders, {duration(r.onlineSeconds)}
+                </span>
+                <Button variant="ghost" tone="neutral" onClick={() => setOpen(open === r.merchantId ? '' : r.merchantId)}>
+                  {open === r.merchantId ? `Hide log of ${r.name}` : `Log of ${r.name}`}
+                </Button>
+              </div>
+              {flagged.map((f) => (
+                <Banner key={f.flagId} tone="danger" style={{ marginTop: 6 }}>
+                  Red flag, {f.flagDay}: {f.details.completedOrders} orders and {duration(f.details.onlineSeconds)} online,
+                  against a team average of {f.details.teamAverageOrders} orders and {duration(f.details.teamAverageOnlineSeconds)}.
+                </Banner>
+              ))}
+              {open === r.merchantId && <MemberLogPanel merchantId={r.merchantId} />}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+};
+
+/** One dispute's thread with the dispute manager, and the supervisor's reply box while it is open. Module level (§32 S23). */
+const DisputeThread: React.FC<{ order: SupervisorOrder }> = ({ order }) => {
+  const [messages, setMessages] = useState<DisputeThreadMessage[] | null>(null);
+  const [error, setError] = useState('');
+  const [text, setText] = useState('');
+  const [sending, setSending] = useState(false);
+  const load = useCallback(async () => {
+    try {
+      setMessages((await getDisputeThread(order.orderId)).messages);
+      setError('');
+    } catch (err) { setError(errorText(err, 'Could not load the thread.')); }
+  }, [order.orderId]);
+  useEffect(() => { void load(); }, [load]);
+  const boxId = `dm-${order.orderId}`;
+  return (
+    <div style={{ background: 'var(--surface-2)', borderRadius: 8, padding: 10, margin: '6px 0 10px', fontSize: 12.5 }}>
+      {error && <p role="alert" style={{ color: 'var(--danger)' }}>{error}</p>}
+      {messages === null && !error ? <Skeleton height={50} /> : (
+        <ul style={{ listStyle: 'none', padding: 0, margin: '0 0 8px' }}>
+          {(messages ?? []).length === 0 && <li style={{ color: 'var(--muted)' }}>No messages yet.</li>}
+          {(messages ?? []).map((m) => (
+            <li key={m.id} style={{ padding: '3px 0', whiteSpace: 'pre-wrap' }}>
+              <strong>{m.senderType === 'SUPERVISOR' ? 'You' : m.senderType === 'ADMIN' ? 'Dispute manager' : m.senderName}</strong>
+              {' · '}{when(m.createdAt)}<br /><span>{m.message}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {order.status === 'DISPUTED' ? (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!text.trim() || sending) return;
+            setSending(true);
+            postDisputeMessage(order.orderId, text.trim())
+              .then(async () => { setText(''); toast.success('Sent to the dispute manager'); await load(); })
+              .catch((err) => toast.error(errorText(err, 'Could not send that.')))
+              .finally(() => setSending(false));
+          }}
+        >
+          <label htmlFor={boxId} style={labelStyle}>Message the dispute manager for your member</label>
+          <textarea id={boxId} value={text} onChange={(e) => setText(e.target.value)} maxLength={2000} rows={3}
+            style={{ ...inputStyle, width: '100%', resize: 'vertical' }} />
+          <p style={{ fontSize: 11.5, color: 'var(--muted)', margin: '4px 0' }}>Do not include anyone&apos;s mobile number.</p>
+          <Button type="submit" disabled={!text.trim() || sending}>Send</Button>
+        </form>
+      ) : <p style={{ color: 'var(--muted)' }}>Decided{order.disputeDecision ? `: ${order.disputeDecision}` : ''}. The thread is closed.</p>}
+    </div>
+  );
+};
+
+/** Disputes on the supervisor's teams: open first. Module level (§32 S23). */
+const TeamDisputesCard: React.FC<{ members: TeamMember[] }> = ({ members }) => {
+  const [disputes, setDisputes] = useState<SupervisorOrder[] | null>(null);
+  const [error, setError] = useState('');
+  const [open, setOpen] = useState('');
+  useEffect(() => {
+    getTeamDisputes().then(setDisputes).catch((err) => setError(errorText(err, 'Could not load the disputes.')));
+  }, []);
+  const nameOf = (id: string) => members.find((m) => m.merchantId === id)?.name ?? 'A former member';
+  return (
+    <Card style={{ marginBottom: 14 }}>
+      <CardTitle title="Disputes on your teams" sub="Speak for your member to the dispute manager while a dispute is open." />
+      {error && <p role="alert" style={{ fontSize: 12.5, color: 'var(--danger)' }}>{error}</p>}
+      {disputes === null && !error && <Skeleton height={60} />}
+      {disputes?.length === 0 && <p style={{ fontSize: 12.5, color: 'var(--muted)' }}>No disputes in the last 30 days.</p>}
+      <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+        {(disputes ?? []).map((d) => (
+          <li key={d.orderId} style={{ padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 13 }}>
+                <strong>{nameOf(d.merchantId)}</strong> · {ORDER_KIND[d.type]} of {tokens(d.tokenAmount * 100)} tokens ·{' '}
+                <span style={{ color: d.status === 'DISPUTED' ? 'var(--warn)' : 'var(--muted)' }}>{d.status === 'DISPUTED' ? 'Open' : 'Decided'}</span>
+              </span>
+              <Button variant="ghost" tone="neutral" onClick={() => setOpen(open === d.orderId ? '' : d.orderId)}>
+                {open === d.orderId ? 'Hide the thread' : `Open the thread for ${nameOf(d.merchantId)}`}
+              </Button>
+            </div>
+            {d.disputeReason && <p style={{ fontSize: 12.5, color: 'var(--text-2)', margin: '4px 0 0' }}>Reason given: {d.disputeReason}</p>}
+            {open === d.orderId && <DisputeThread order={d} />}
+          </li>
+        ))}
+      </ul>
+    </Card>
+  );
+};
 
 /**
  * A team's token pool: its balance, a request to buy or sell, the requests
@@ -209,8 +417,9 @@ const TeamPoolSection: React.FC<{
 /** One team, as its supervisor manages it. Declared at module level so typing does not remount it (§32 S23). */
 const SupervisorTeamCard: React.FC<{
   team: Team; members: TeamMember[]; poolRequests: TeamPoolRequest[]; commissions: TeamCommission[]; busy: string;
+  today: MemberActivity[]; week: MemberActivity[]; flags: LowActivityFlag[];
   run: (key: string, fn: () => Promise<unknown>, ok: string) => Promise<void>;
-}> = ({ team, members, poolRequests, commissions, busy, run }) => {
+}> = ({ team, members, poolRequests, commissions, busy, today, week, flags, run }) => {
   const [ref, setRef] = useState('');
   const [name, setName] = useState(team.name);
   const inputId = `add-${team.teamId}`;
@@ -221,6 +430,7 @@ const SupervisorTeamCard: React.FC<{
       <Banner tone={STRENGTH[team.strength].tone} style={{ marginBottom: 12 }}>{STRENGTH[team.strength].body}</Banner>
       <TeamPoolSection team={team} requests={poolRequests} busy={busy} run={run} />
       <CommissionSection team={team} commissions={commissions} />
+      <TeamActivitySection team={team} today={today} week={week} flags={flags} />
 
       <ul style={{ listStyle: 'none', padding: 0, margin: '0 0 12px' }}>
         {members.length === 0 && <li style={{ fontSize: 12.5, color: 'var(--muted)' }}>No members yet.</li>}
@@ -351,6 +561,7 @@ const TeamPage: React.FC = () => {
             <span className="bb-mono" style={{ fontSize: 14, fontWeight: 800 }}>{tokens(data.myCommissionPaise)} tokens</span>
           </div>
           <CommissionSection team={t} commissions={data.commissions} />
+          {data.status === 'APPROVED' && data.performance && <PerformanceSection performance={data.performance} />}
         </Card>
       </div>
     );
@@ -383,8 +594,10 @@ const TeamPage: React.FC = () => {
         <SupervisorTeamCard key={t.teamId} team={t} busy={busy} run={run}
           members={data.members.filter((m) => m.teamId === t.teamId)}
           poolRequests={(data.poolRequests ?? []).filter((r) => r.teamId === t.teamId)}
-          commissions={data.commissions ?? []} />
+          commissions={data.commissions ?? []}
+          today={data.activity?.today ?? []} week={data.activity?.week ?? []} flags={data.redFlags ?? []} />
       ))}
+      {data.teams.length > 0 && <TeamDisputesCard members={data.members} />}
     </div>
   );
 };

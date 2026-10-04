@@ -10,6 +10,9 @@ import {
   PoolDirection,
   TeamPool,
   TeamPoolEntry,
+  MemberLog,
+  SupervisorOrder,
+  DisputeThreadMessage,
 } from '../types';
 import { ENDPOINTS, ERROR_MESSAGES } from '../constants';
 
@@ -623,6 +626,25 @@ export const requestTeamPool = async (
 export const cancelTeamPoolRequest = async (requestId: string): Promise<void> => {
   await request(ENDPOINTS.TEAM.POOL_CANCEL(requestId), { method: 'DELETE' });
 };
+
+// ── Oversight (Step 2f) ──────────────────────────────────────────────────────
+
+/** One member's orders on the supervisor's teams and their online stretches, last 7 days. */
+export const getMemberLog = async (merchantId: string): Promise<MemberLog> =>
+  request<MemberLog>(ENDPOINTS.TEAM.MEMBER_LOG(merchantId));
+
+/** Disputes on the supervisor's teams: open first, then the last 30 days. */
+export const getTeamDisputes = async (): Promise<SupervisorOrder[]> =>
+  (await request<{ disputes: SupervisorOrder[] }>(ENDPOINTS.TEAM.DISPUTES)).disputes;
+
+export const getDisputeThread = async (orderId: string): Promise<{ order: SupervisorOrder; messages: DisputeThreadMessage[] }> =>
+  request<{ order: SupervisorOrder; messages: DisputeThreadMessage[] }>(ENDPOINTS.TEAM.DISPUTE_CHAT(orderId));
+
+/** The supervisor speaks for their member to the dispute manager. No mobile numbers. */
+export const postDisputeMessage = async (orderId: string, message: string): Promise<DisputeThreadMessage> =>
+  (await request<{ message: DisputeThreadMessage }>(ENDPOINTS.TEAM.DISPUTE_CHAT(orderId), {
+    method: 'POST', body: JSON.stringify({ message }),
+  })).message;
 
 export const api = {
   // Auth

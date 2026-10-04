@@ -39,6 +39,7 @@ vi.mock('../../services/api', () => ({
       poolRequests: vi.fn(),
       fulfilPoolRequest: vi.fn().mockResolvedValue({ success: true, message: 'Sold' }),
       rejectPoolRequest: vi.fn().mockResolvedValue({ success: true }),
+      redFlags: vi.fn(),
     },
   },
 }));
@@ -57,7 +58,27 @@ describe('admin Teams screen', () => {
     vi.clearAllMocks();
     (api.teams.list as any).mockResolvedValue(listing);
     (api.teams.poolRequests as any).mockResolvedValue({ success: true, requests: poolRequests });
+    (api.teams.redFlags as any).mockResolvedValue({ success: true, flags: [] });
     perms.fund = true;
+  });
+
+  // ── Red flags (Step 2f) ──────────────────────────────────────────────────
+  it('shows a low-activity flag with the member and the team average', async () => {
+    (api.teams.redFlags as any).mockResolvedValue({ success: true, flags: [
+      { flagId: '2', kind: 'LOW_ACTIVITY', flagDay: '2026-10-03', teamId: 't-1', teamName: 'Alpha', supervisorId: 's-1',
+        merchantId: 'm-1', merchantName: 'Zoya', merchantRef: 'MZ', createdAt: '',
+        details: { completedOrders: 0, onlineSeconds: 300, teamAverageOrders: 4.2, teamAverageOnlineSeconds: 7800, members: 10, percent: 25 } },
+    ] });
+    render(<TeamsManager />);
+    expect(await screen.findByText('Low activity')).toBeInTheDocument();
+    expect(screen.getByText(/0 orders, 5m online \(team average 4.2 orders, 2h 10m\)/)).toBeInTheDocument();
+    expect(screen.getByText('Zoya')).toBeInTheDocument();
+    await waitFor(() => expect(api.teams.redFlags).toHaveBeenCalledWith(30));
+  });
+
+  it('says so when there are no red flags', async () => {
+    render(<TeamsManager />);
+    expect(await screen.findByText('No red flags.')).toBeInTheDocument();
   });
 
   // ── Team token pools (Step 2b) ───────────────────────────────────────────

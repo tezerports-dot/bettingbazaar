@@ -863,10 +863,45 @@ Owner answers, 2026-10-02 (two rounds; the second replaced the security deposit 
     the smaller side, 16/84, treasury + ledger + pool entry, 6-way race,
     lifecycle hook, member sees only their share), unit `teamCommission` (7),
     `merchantEarningsPg` rebuilt on shares, TeamPage (+3); mutations M383–M391.
-- **2f Oversight.** Daily red flag (threshold admin-editable, 25%) from
-  transaction count and online time; member online-time log; team
-  performance for members; supervisor sees member logs and joins their
-  disputes.
+- **2f Oversight. DONE (2026-10-04).** `database/repositories/teamOversight.js`
+  (rules in CLAUDE.md §2 and §24, background in RULES_BACKGROUND §2).
+  - *Online-time log.* `merchant_online_sessions`: one stretch per time a
+    member's Online switch is on, opened and closed by a trigger on
+    `merchants.is_online` (nothing else writes it), closed once and never
+    edited. "Active time" is that switch.
+  - *Low-activity red flag.* Once per IST day (hourly cron `team-red-flags`,
+    catching up the last 3 ended days; `team_red_flag_days` makes each day
+    run once): a member whose completed orders AND online time that day are
+    both more than `SystemConfig.redFlags.lowActivityPercent` (25) below the
+    team's average is flagged to the supervisor and the admin. A team of
+    fewer than 2 members is skipped; a member approved after the day is not
+    counted. Flag only: nothing acts on it.
+  - *No commission-farming flag* (owner, 2026-10-04). 2f built one and
+    removed it: the 90:10 deposit/reserve split and the 1% winnings fee make
+    farming lose about ₹2 per ₹100 deposited.
+  - *Supervisor.* Team page: each team's activity today and over 7 days per
+    member, the low-activity flags of 14 days, a member's log (orders without
+    any player detail, `SUPERVISOR_ORDER_FIELDS`, and Online stretches), and
+    the disputes on their teams with a thread to the dispute manager (chat
+    sender `SUPERVISOR`, only while DISPUTED). Mobile numbers are hidden in
+    what they read and refused by the database in what they write.
+  - *Member.* Team performance over 7 days: the team's totals and average,
+    and their own figures; never a teammate's row.
+  - *Admin.* Teams: red flags of 30 days.
+    Settings: the low-activity percent. Dispute Manager shows supervisor
+    messages.
+  - *Security review (independent, 2026-10-04), 8 findings, none high, all
+    fixed:* supervisors no longer see UPI handles, UTRs or account numbers in
+    text, nor the player's messages or staff notices in the thread; the
+    mobile rule reads every spelling (two separators, Indian-script digits,
+    091) in code and in the database, held to one list; usernames and team
+    names may not carry a mobile; the supervisor's post asks DISPUTED, team
+    and a 50-message cap in one locked INSERT; switching Online off can no
+    longer fail; a merely proposed member's log stays closed and online time
+    counts from joining; a team of two shows its members no totals.
+  - *Tests.* `teamOversightPg` (7), unit `teamOversight` (11), `mobileInText`
+    unit and `mobileInTextPg` (one list), TeamPage (+6), TeamsManager (+2),
+    SystemSettingsRedFlags (2); mutations M392–M393, M397–M400, M402–M423.
 - **2g Close-out.** CLAUDE.md §2/§25/§26 rewritten for the new owners, docs,
   every gate and tier.
 

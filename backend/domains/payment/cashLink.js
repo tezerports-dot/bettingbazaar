@@ -33,6 +33,7 @@
  * The link is otherwise stored as scanned. A machine's QR can carry a
  * signature over its parameters, and re-encoding them would break it.
  */
+import { textHasAMobile } from '../identity/mobileInText.js';
 
 /** Longest link accepted. A real ATM or merchant QR is a few hundred characters. */
 export const CASH_LINK_MAX_LENGTH = 1024;
@@ -50,14 +51,6 @@ const VPA = /^[A-Za-z0-9._-]{2,256}@[A-Za-z][A-Za-z0-9.-]{1,64}$/;
  * UPI app would show them that number (§24, owner 2026-10-03).
  */
 const MOBILE_IN_HANDLE = /(?:^|\D)(?:0{0,2}91|0)?[6-9]\d{9}(?:\D|$)/;
-
-/**
- * A mobile number written into the name or note a UPI app shows the payer
- * (`pn`, `tn`): ten digits from 6, spaces, dots or dashes between them, with
- * +91 / 0091 / 91 / 0 or not. The same reading as the database's
- * `bb_text_has_a_mobile` (database/schema.sql).
- */
-const MOBILE_IN_TEXT = /(?:^|[^0-9])(?:(?:00|\+)?91[ -]?|0)?[6-9](?:[ .-]?[0-9]){9}(?:[^0-9]|$)/;
 
 /** A rupee amount with at most two decimals, as UPI writes it. */
 const AMOUNT = /^\d{1,9}(\.\d{1,2})?$/;
@@ -109,7 +102,9 @@ export function checkCashLink(raw, amountRupees) {
   if (MOBILE_IN_HANDLE.test(payee.split('@')[0])) {
     throw refuse('That QR pays a mobile number, so it is a person\'s QR, not a cash machine\'s, and the player would see the number. Scan the QR the machine shows for UPI cash withdrawal.');
   }
-  if (['pn', 'tn'].some((key) => MOBILE_IN_TEXT.test(seen.get(key) ?? ''))) {
+  // A mobile written into the name or note a UPI app shows the payer, in any
+  // spelling `textHasAMobile` reads (the database's `bb_text_has_a_mobile`).
+  if (['pn', 'tn'].some((key) => textHasAMobile(seen.get(key) ?? ''))) {
     throw refuse('That QR has a mobile number in its name or note, so it is a person\'s QR, not a cash machine\'s, and the player would see the number. Scan the QR the machine shows for UPI cash withdrawal.');
   }
 

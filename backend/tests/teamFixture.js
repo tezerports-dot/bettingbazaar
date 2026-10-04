@@ -77,10 +77,15 @@ export function teamFixture() {
     if (!done.ok) throw new Error(`teamFixture: pool fulfilment refused: ${done.reason}`);
   }
 
-  async function workingTeam({ rail = 'UPI_BANK', poolTokens = 0, include = [], online = null } = {}) {
-    const supervisorId = await freshMerchant('TF sup');
-    const role = await setSupervisorRole(supervisorId, { rail });
-    if (!role.ok) throw new Error(`teamFixture: supervisor refused: ${role.reason}`);
+  async function workingTeam({ rail = 'UPI_BANK', poolTokens = 0, include = [], online = null, supervisorId: given = null } = {}) {
+    // `supervisorId` runs the team under an existing merchant (one a test can
+    // sign in as); it is made a supervisor on `rail` unless it already is one.
+    const supervisorId = given ?? await freshMerchant('TF sup');
+    const { rows: sup } = await pgQuery('SELECT is_supervisor FROM merchants WHERE merchant_id = $1', [supervisorId]);
+    if (!sup[0]?.is_supervisor) {
+      const role = await setSupervisorRole(supervisorId, { rail });
+      if (!role.ok) throw new Error(`teamFixture: supervisor refused: ${role.reason}`);
+    }
     const { teamId } = await createTeam({ supervisorId, name: `TF ${teams.length + 1}` });
     teams.push(teamId);
     const members = [...include.map(String)];
@@ -109,6 +114,8 @@ export function teamFixture() {
       await pgQuery('DELETE FROM team_pool_entries WHERE team_id = ANY($1)', [teams]);
       await pgQuery('DELETE FROM team_pool_requests WHERE team_id = ANY($1)', [teams]);
       await pgQuery('DELETE FROM team_pools WHERE team_id = ANY($1)', [teams]);
+      await pgQuery('DELETE FROM team_red_flags WHERE team_id = ANY($1)', [teams]);
+      await pgQuery('DELETE FROM merchant_online_sessions WHERE merchant_id = ANY($1)', [merchants]);
       await pgQuery('DELETE FROM team_members WHERE team_id = ANY($1)', [teams]);
       await pgQuery('DELETE FROM teams WHERE team_id = ANY($1)', [teams]);
       await pgQuery('DELETE FROM merchants WHERE merchant_id = ANY($1)', [merchants]);

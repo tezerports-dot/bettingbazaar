@@ -525,6 +525,18 @@ export interface TeamPoolRequest {
   note: string | null; decidedBy: string | null; decidedAt: string | null;
   decisionNote: string | null; createdAt: string;
 }
+// Red flags (Step 2f). Mirrors `toFlag` and the details `evaluateRedFlags`
+// writes in database/repositories/teamOversight.js — §5: change them together.
+export interface TeamRedFlag {
+  flagId: string; kind: 'LOW_ACTIVITY'; flagDay: string;
+  teamId: string; teamName: string; supervisorId: string;
+  merchantId: string; merchantName: string; merchantRef: string;
+  details: {
+    completedOrders: number; onlineSeconds: number; teamAverageOrders: number; teamAverageOnlineSeconds: number;
+    members: number; percent: number;
+  };
+  createdAt: string;
+}
 export interface TeamMemberView {
   merchantId: string; teamId: string; name: string; publicRef: string;
   status: 'PENDING' | 'APPROVED'; isOnline: boolean;

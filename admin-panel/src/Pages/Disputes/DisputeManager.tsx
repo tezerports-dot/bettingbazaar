@@ -46,7 +46,8 @@ function suspensionNote(party: 'PLAYER' | 'MERCHANT' | null | undefined): string
 
 interface ChatMsg {
   id: string;
-  senderType: 'USER' | 'MERCHANT' | 'SYSTEM';
+  // SUPERVISOR: the member's supervisor speaking for them (Step 2f).
+  senderType: 'USER' | 'MERCHANT' | 'ADMIN' | 'SYSTEM' | 'SUPERVISOR';
   senderName: string;
   text: string;
   message?: string;
@@ -179,7 +180,8 @@ export const DisputeManager: React.FC = () => {
   
   const renderBubble = (msg: ChatMsg) => {
     const isSystem   = msg.isSystem || msg.senderType === 'SYSTEM';
-    const isMerchant = msg.senderType === 'MERCHANT';
+    // A supervisor speaks on the member's side of the dispute.
+    const isMerchant = msg.senderType === 'MERCHANT' || msg.senderType === 'SUPERVISOR';
     const text       = msg.text || msg.message || '';
 
     if (isSystem) return (

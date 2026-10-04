@@ -14,7 +14,7 @@ import type {
   CDNImage,
   FAQ,
   SupportLinks,
-  SupervisorRail, TeamSupervisor, TeamView, TeamMemberView, TeamPoolRequest,
+  SupervisorRail, TeamSupervisor, TeamView, TeamMemberView, TeamPoolRequest, TeamRedFlag,
 } from '../types';
 
 const _adminViteUrl = import.meta.env.VITE_API_URL as string | undefined;
@@ -671,6 +671,11 @@ export const teams = {
     (await api.post(`/api/admin/team-members/${merchantId}/reject`)).data,
   removeMember: async (merchantId: string) =>
     (await api.delete(`/api/admin/team-members/${merchantId}`)).data,
+  /** Red flags of the last `days` days (Step 2f): low activity per member. */
+  redFlags: async (days = 30) => {
+    const res = await api.get<any>('/api/admin/team-red-flags', { params: { days } });
+    return res.data as { success: boolean; flags: TeamRedFlag[] };
+  },
 
   // Team token pools (Step 2b) — area canFundMerchants, because they move money.
   poolRequests: async (status: 'PENDING' | null = 'PENDING') => {

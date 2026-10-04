@@ -100,6 +100,12 @@ the principle stated still holds.
 | Team membership, limits | `database/repositories/teams.js`, the one writer; one team per merchant (PK). `MAX_TEAMS` 4, `TEAM_SIZE` 10, counted inside the write under a parent-row lock (S6). Supervisor proposes, admin approves. |
 | Whether a team may work | `strength` in `teams.js` (`WORKING`/`GRACE`/`STOPPED`) from the DATABASE clock in IST; below ten it works until midnight IST, then stops until full. Only routing reads it. |
 | Team token pools | `team_pools` + append-only `team_pool_entries`, written only by `database/repositories/teamPools.js`. Tokens move only as transfers to/from `TOKEN_SUPPLY` on a fulfilled `team_pool_requests` row, in one transaction with the treasury movement and `admin_token_considerations`; guards in the UPDATE's WHERE. Fulfilling needs `canFundMerchants`, not `canManageTeams`. `TEAM_FLOAT` = sum of pools (`reconcileAgainstSubLedgers`). |
+| A member's online time | `merchant_online_sessions`, written only by the triggers on `merchants.is_online` (`bb_log_online_switch`): one open stretch per member, closed once, never edited (`bb_online_session_close_only`). "Active time" is this switch. |
+| Red flags | `team_red_flags` via `teamOversight.evaluateRedFlags` (`database/repositories/teamOversight.js`), once per IST day: `team_red_flag_days` is claimed in the flags' own transaction; hourly cron `team-red-flags` catches up 3 days. Numbers: `SystemConfig.redFlags`. `LOW_ACTIVITY`, the one kind: completed orders AND online time both below the team average by the percent, to the supervisor and admin. No commission-farming flag (owner, 2026-10-04). A flag acts on nothing. Completions are counted by `order_states.completed_at` (the sell settlement writes no COMPLETED transition; not a money gate, trap 17). |
+| What a supervisor sees of a member's order | `SUPERVISOR_ORDER_FIELDS` (`merchantOrderView.js`), a subset of the merchant list with no player detail; only APPROVED members, online time only since they joined; every read scoped to their own teams in the WHERE (trap 16); free text through `hideForSupervisor` (mobiles, UPI handles, numbers of 9+ digits). |
+| A supervisor's voice in a dispute | Chat sender `SUPERVISOR`, written only by `postSupervisorMessage` (`chat.js`; `postMessage` refuses the sender), whose INSERT asks DISPUTED, own team and `SUPERVISOR_MESSAGES_PER_DISPUTE` under a share lock on the order (S6); a mobile is refused by the row (`chat_messages_supervisor_no_mobile`). They read their own, their member's and the dispute manager's own messages (`supervisorMaySee`), never the player's or a system notice. |
+| What a member sees of the team | `teamPerformanceFor`, once approved: their own figures, and the team's totals and average only from `TEAM_FIGURES_FROM` (3) members; never a teammate's row. |
+| A mobile number in text | `textHasAMobile` / `hideMobiles` (`domains/identity/mobileInText.js`) and the row's `bb_text_has_a_mobile`, one rule held to one list (`mobileInTextPg`): any script's digits, up to two separators between digits. Merchant names and usernames and team names may not carry one (`merchants_name_not_a_mobile`, `teams_name_not_a_mobile`). |
 | Merchant rail | `merchants.accepted_currencies`, exactly one of `INR`/`USDT`; vocabulary `domains/merchant/merchantCurrency.js`. |
 | An order's currency | `order_states.currency`, matched to the merchant's rail at assignment and accept. |
 | How an order reaches a merchant ⚠2c | A BUY is assigned, never claimed first-come; a SELL may be claimed from the open pool. |
@@ -421,7 +427,10 @@ that is a mobile (payments-bank IFSC, or the holder's own mobile, in any
 spelling) or a holder or bank name containing one is refused by the row
 (`bb_account_number_is_a_mobile`, `bb_text_has_a_mobile`; message
 `payoutAccount.js`), and a cash QR with a mobile in its handle, name or note by
-`checkCashLink`.
+`checkCashLink`. A merchant's name and username and a team's name may not carry
+one. A supervisor reads members' orders without player detail, never a player's
+message, and free text with mobiles, UPI handles and long numbers hidden; a
+supervisor's dispute message carrying a mobile is refused by the row.
 
 1. Each projection is an allowlist in one file (`merchantOrderView.js`,
    `playerOrderView.js`, `playerLedgerView.js`).
