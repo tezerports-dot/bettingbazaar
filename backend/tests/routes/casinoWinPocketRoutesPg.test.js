@@ -134,4 +134,20 @@ describePg('a casino WIN through the provider callback lands in winnings (Postgr
     expect(rb.status, JSON.stringify(rb.body)).toBe(200);
     expect(await pockets(p.userId)).toEqual({ deposit: 100_000, winnings: 35_000 });
   });
+
+  it('every supplier spelling lands in the same pocket: `action` debit / credit, any case', async () => {
+    // `normaliseType` reads DEBIT as BET and CREDIT as WIN, and the route takes
+    // `type` or `action` and other id field names — §37.1, every spelling.
+    const p = await player();
+    const roundId = rid();
+    const debit = await callback({
+      txId: tid(), player_id: p.userId, round_id: roundId, action: 'debit', amount: 100, game_id: 'g',
+    });
+    expect(debit.status, JSON.stringify(debit.body)).toBe(200);
+    const credit = await callback({
+      transaction_id: tid(), userId: p.userId, gameRound: roundId, action: 'Credit', bet: 250, gameId: 'g',
+    });
+    expect(credit.status, JSON.stringify(credit.body)).toBe(200);
+    expect(await pockets(p.userId)).toEqual({ deposit: 90_000, winnings: 25_000 });
+  });
 });
