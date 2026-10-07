@@ -917,10 +917,12 @@ function withParties(r) {
  * places between two pages and show one of them twice.
  */
 export async function disputeQueue({ filter = DEFAULT_DISPUTE_FILTER, page = 1, limit = 50 } = {}) {
-  const chosen = Object.hasOwn(DISPUTE_FILTERS, String(filter)) ? DISPUTE_FILTERS[filter] : null;
+  // One spelling from here on: a query string can hand over an array.
+  const key = String(filter);
+  const chosen = Object.hasOwn(DISPUTE_FILTERS, key) ? DISPUTE_FILTERS[key] : null;
   if (!chosen) {
     throw Object.assign(
-      new Error(`There is no dispute filter "${filter}". Choose one of: ${Object.keys(DISPUTE_FILTERS).join(', ')}.`),
+      new Error(`There is no dispute filter "${key}". Choose one of: ${Object.keys(DISPUTE_FILTERS).join(', ')}.`),
       { status: 400, code: 'UNKNOWN_DISPUTE_FILTER' },
     );
   }
@@ -962,7 +964,7 @@ export async function disputeQueue({ filter = DEFAULT_DISPUTE_FILTER, page = 1, 
     disputes: rows.filter((r) => r.order_id).map(withParties),
     total, page: wanted, limit: size,
     pages: Math.max(Math.ceil(total / size), 1),
-    filter,
+    filter: key,
     filters: Object.entries(DISPUTE_FILTERS).map(([key, f]) => ({ key, label: f.label })),
   };
 }

@@ -133,7 +133,9 @@ export const DisputeManager: React.FC = () => {
 
   useEffect(() => { load(); }, [filter, page]);
 
-  const chooseFilter = (key: string) => { setFilter(key); setPage(1); };
+  // The select shows the choice at once; the answer then confirms what the
+  // server applied.
+  const chooseFilter = (key: string) => { setFilter(key); setApplied(key); setPage(1); };
   const appliedLabel = filters.find((f) => f.key === applied)?.label;
   const firstShown = total === 0 ? 0 : (page - 1) * perPage + 1;
   const lastShown = Math.min(total, (page - 1) * perPage + disputes.length);

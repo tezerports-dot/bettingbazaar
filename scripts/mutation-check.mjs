@@ -2664,8 +2664,8 @@ const MUTATIONS = [
     id: 'M440', file: 'database/repositories/orders.record.js', config: PG,
     test: 'backend/tests/routes/disputeQueuePg.test.js',
     why: 'a filter the queue does not know is quietly read as the default, so a screen asking for a state it invented is shown a list instead of being told',
-    from: `  const chosen = Object.hasOwn(DISPUTE_FILTERS, String(filter)) ? DISPUTE_FILTERS[filter] : null;`,
-    to: `  const chosen = DISPUTE_FILTERS[filter] ?? DISPUTE_FILTERS[DEFAULT_DISPUTE_FILTER];`,
+    from: `  const chosen = Object.hasOwn(DISPUTE_FILTERS, key) ? DISPUTE_FILTERS[key] : null;`,
+    to: `  const chosen = DISPUTE_FILTERS[key] ?? DISPUTE_FILTERS[DEFAULT_DISPUTE_FILTER];`,
   },
   {
     id: 'M441', file: 'database/repositories/orders.record.js', config: PG,
