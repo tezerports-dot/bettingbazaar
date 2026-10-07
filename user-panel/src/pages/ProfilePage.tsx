@@ -3,8 +3,13 @@
  * ProfilePage.tsx — 2026 "Bazaar" redesign.
  *
  * Wired to live GameContext data: profile identity + balances, settled-bet stats
- * (net placed / winnings / win-rate / cycles), bank/UPI
- * details (backend.updateBankDetails), theme appearance toggle, and logout.
+ * (net placed / winnings / win-rate / cycles), the bank account a sell is paid
+ * into (backend.updateBankDetails), theme appearance toggle, and logout.
+ *
+ * A bank account and nothing else. Every sell is a bank transfer to it and no
+ * UPI handle is ever a destination or shown (CLAUDE.md §2, §24); the row keeps
+ * the four fields only (`users_bank_details_bank_account_only`). A UPI ID field
+ * stood above them here, typed into and never sent.
  */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
@@ -25,7 +30,7 @@ const ProfilePage: React.FC = () => {
   const [bankOpen, setBankOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [localPic, setLocalPic] = useState<string | null>(null);
-  const [bank, setBank] = useState({ upiId: '', accountHolderName: '', accountNumber: '', ifscCode: '', bankName: '' });
+  const [bank, setBank] = useState({ accountHolderName: '', accountNumber: '', ifscCode: '', bankName: '' });
 
   const stats = useMemo(() => {
     const settled = (userBets || []).filter(b => b.status === 'WON' || b.status === 'LOST');
@@ -45,8 +50,8 @@ const ProfilePage: React.FC = () => {
   const initials = (user?.username || 'U').slice(0, 2).toUpperCase();
 
   const openBank = () => {
-    const d = user?.bankDetails as any;
-    setBank({ upiId: d?.upiId || '', accountHolderName: d?.accountHolderName || '', accountNumber: d?.accountNumber || '', ifscCode: d?.ifscCode || '', bankName: d?.bankName || '' });
+    const d = user?.bankDetails;
+    setBank({ accountHolderName: d?.accountHolderName || '', accountNumber: d?.accountNumber || '', ifscCode: d?.ifscCode || '', bankName: d?.bankName || '' });
     setBankOpen(true);
   };
 
@@ -139,7 +144,7 @@ const ProfilePage: React.FC = () => {
       {/* Bank */}
       <button onClick={openBank} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 12, background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 16, padding: '14px 15px', boxShadow: 'var(--shadow-sm)', marginBottom: 14, cursor: 'pointer', textAlign: 'left' }}>
         <span style={{ width: 40, height: 40, flex: 'none', borderRadius: 11, background: 'var(--surface3)', border: '1px solid var(--line)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18 }}>🏦</span>
-        <span style={{ flex: 1 }}><span style={{ display: 'block', fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>Bank / UPI Details</span><span style={{ display: 'block', fontSize: 11, color: 'var(--text3)' }}>{user?.bankDetails?.bankName ? `${user.bankDetails.bankName} ••••${String(user.bankDetails.accountNumber || '').slice(-4)}` : 'Used for sell-order payouts'}</span></span>
+        <span style={{ flex: 1 }}><span style={{ display: 'block', fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>Bank account</span><span style={{ display: 'block', fontSize: 11, color: 'var(--text3)' }}>{user?.bankDetails?.bankName ? `${user.bankDetails.bankName} ••••${String(user.bankDetails.accountNumber || '').slice(-4)}` : 'Used for sell-order payouts'}</span></span>
         <span style={{ fontSize: 11, color: 'var(--gold-ink)', fontWeight: 800 }}>{user?.bankDetails?.bankName ? 'Edit' : 'Add'}</span>
       </button>
 
@@ -167,11 +172,9 @@ const ProfilePage: React.FC = () => {
       {bankOpen && (
         <div onClick={() => setBankOpen(false)} style={{ position: 'absolute', inset: 0, zIndex: 140, background: 'rgba(0,0,0,.6)', backdropFilter: 'blur(3px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px 16px' }}>
           <div onClick={e => e.stopPropagation()} className="bb-rise" style={{ width: '100%', maxWidth: 420, maxHeight: '92%', overflowY: 'auto', background: 'var(--surface)', border: '1px solid var(--line2)', borderRadius: 20, padding: 22, boxShadow: 'var(--shadow)' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}><span className="font-grotesk" style={{ fontWeight: 700, fontSize: 17, color: 'var(--text)' }}>Bank / UPI Details</span><button onClick={() => setBankOpen(false)} style={{ width: 30, height: 30, borderRadius: '50%', border: '1px solid var(--line)', background: 'var(--surface3)', color: 'var(--text2)', cursor: 'pointer', fontSize: 12 }}>✕</button></div>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}><span className="font-grotesk" style={{ fontWeight: 700, fontSize: 17, color: 'var(--text)' }}>Bank account</span><button onClick={() => setBankOpen(false)} style={{ width: 30, height: 30, borderRadius: '50%', border: '1px solid var(--line)', background: 'var(--surface3)', color: 'var(--text2)', cursor: 'pointer', fontSize: 12 }}>✕</button></div>
             <p style={{ fontSize: 11, color: 'var(--text2)', margin: '0 0 14px' }}>Required to receive sell-order payouts. Stored securely.</p>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 11 }}>
-              <div><label style={fieldLabel} htmlFor="upi-id">UPI ID</label><input id="upi-id" value={bank.upiId} onChange={e => setBank({ ...bank, upiId: e.target.value })} placeholder="yourname@okhdfc" style={inputStyle} /></div>
-              <div style={{ textAlign: 'center', fontSize: 10, fontWeight: 800, letterSpacing: '.1em', color: 'var(--text3)' }}>— OR BANK ACCOUNT —</div>
               <div><label style={fieldLabel} htmlFor="account-holder-name">Account holder name</label><input id="account-holder-name" value={bank.accountHolderName} onChange={e => setBank({ ...bank, accountHolderName: e.target.value })} placeholder="Full name as per bank" style={inputStyle} /></div>
               <div><label style={fieldLabel} htmlFor="account-number">Account number</label><input id="account-number" value={bank.accountNumber} onChange={e => setBank({ ...bank, accountNumber: e.target.value })} inputMode="numeric" placeholder="0000 0000 0000" className="font-grotesk" style={inputStyle} /></div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>

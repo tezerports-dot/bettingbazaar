@@ -8,7 +8,7 @@
 // (Step 2d, `denominations.js`), so this sell is 50,000 tokens: UPI/bank.
 import { pgQuery } from '#db/client.js';
 import { seedPlayer, seedMerchant, seedTeam, seedAdmin, orderPoolTrail } from '../seed.js';
-import { playerToken, merchantToken, adminToken, GET, POST, check } from '../harness.js';
+import { playerToken, merchantToken, adminToken, GET, POST, PUT, check } from '../harness.js';
 
 const A = 'SELL';
 export default async function run() {
@@ -25,14 +25,18 @@ export default async function run() {
 
   const { creditWinnings } = await import('../../../domains/wallet/walletAuthority.service.js');
   await creditWinnings(player.userId, 60000, 'e2e seed winnings', `${player.userId}_e2e_win`, `${player.userId}_e2e_win`);
-  await pgQuery(
-    `UPDATE users SET bank_details = $2 WHERE user_id = $1`,
-    [player.userId, JSON.stringify({
-      // `ifscCode`, not `ifsc` — the withdrawal guard reads
-      // `user.bankDetails?.ifscCode` (paymentProcessing.service.js).
-      accountNumber: '900011112222', ifscCode: 'HDFC0000009',
-      accountHolder: 'E2E Player', upiId: `${player.userId}@upi`,
-    })], 'e2e_bank');
+  // The payout account through the player's own Profile route, as production
+  // saves it (§32 S16): a bank account, the four fields, no UPI handle. This
+  // was a raw UPDATE carrying `accountHolder` (a key nothing reads) and a
+  // `upiId` the row now refuses (`users_bank_details_bank_account_only`).
+  const saved = await PUT(pT, `/api/user/${player.userId}/bank-details`, {
+    accountHolderName: 'E2E Player', accountNumber: '900011112222',
+    ifscCode: 'HDFC0000009', bankName: 'HDFC Bank', upiId: `${player.userId}@upi`,
+  });
+  const kept = (await pgQuery('SELECT bank_details FROM users WHERE user_id = $1', [player.userId], 'e2e')).rows[0]?.bank_details;
+  check(A, 'player', 'saves a bank account, and not a UPI handle sent beside it', '200, the four fields only',
+    `${saved.status} ${Object.keys(kept ?? {}).sort().join(',')}`,
+    saved.status === 200 && Object.keys(kept ?? {}).sort().join(',') === 'accountHolderName,accountNumber,bankName,ifscCode');
 
   const bal = await GET(pT, '/api/user/bet-limits');
   check(A, 'player', 'winnings are available to withdraw', '60000 winnings',

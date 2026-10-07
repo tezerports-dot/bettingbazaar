@@ -112,9 +112,13 @@ export default async function run() {
   const sT = playerToken(seller);
   const { creditWinnings } = await import('../../../domains/wallet/walletAuthority.service.js');
   await creditWinnings(seller.userId, 20000, 'e2e seed winnings', `${seller.userId}_e2e_win`, `${seller.userId}_e2e_win`);
-  await pgQuery(`UPDATE users SET bank_details = $2 WHERE user_id = $1`,
-    [seller.userId, JSON.stringify({ accountNumber: '900033334444', ifscCode: 'HDFC0000009', accountHolder: 'E2E Seller' })],
-    'e2e_bank');
+  // Saved through the player's own Profile route, as production saves it
+  // (§32 S16); the raw UPDATE this replaces wrote `accountHolder`, a key
+  // nothing reads and the row now refuses (`users_bank_details_bank_account_only`).
+  const saved = await PUT(sT, `/api/user/${seller.userId}/bank-details`, {
+    accountHolderName: 'E2E Seller', accountNumber: '900033334444', ifscCode: 'HDFC0000009', bankName: 'HDFC Bank',
+  });
+  if (saved.status !== 200) throw new Error(`could not save the seller's bank account: ${saved.status} ${saved.body?.message ?? ''}`);
   const oddSell = await POST(sT, '/api/payment/withdrawal/create', { tokenAmount: 7770 });
   check(A, 'player', 'a sell that is not an order size is refused by name', '400 NOT_AN_ORDER_SIZE',
     `${oddSell.status} ${oddSell.body.code ?? ''}`, oddSell.status === 400 && oddSell.body.code === 'NOT_AN_ORDER_SIZE');

@@ -30,15 +30,22 @@
  *
  * ── Every order is one the platform can produce (§32 S16, Step 2c) ───────────
  * A sell is the player's own withdrawal — `createWithdrawalOrder`, which copies
- * the player's bank details (UPI id included) and mobile onto the row — routed
- * to the one online member of a working team and accepted through the
- * member's panel. A buy is created queued with its split and routed the same
- * way. Nothing is planted on a row: the phone number and the UPI id this
- * suite looks for are the ones production itself writes.
+ * the player's bank account and mobile onto the row — routed to the one online
+ * member of a working team and accepted through the member's panel. A buy is
+ * created queued with its split and routed the same way. The phone number this
+ * suite looks for is the one production itself writes.
+ *
+ * ── The UPI id is PLANTED now (2026-10-07) ──────────────────────────────────
+ * Production wrote one here until a player could no longer keep one: the
+ * payout account is a bank account and nothing else
+ * (`users_bank_details_bank_account_only`), and the sell copies those four
+ * fields. So the handle is put on the ROW's copy after creation, as if a future
+ * copy carried one again: the projection is an allowlist, and an unknown key
+ * in the bank object must still be dropped (M89).
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { pgConfigured, applySchema, closePg, withTransaction } from '#db/client.js';
-import { createOrderRecord, getOrderRecord } from '#db/repositories/orders.record.js';
+import { createOrderRecord, getOrderRecord, setOrderFields } from '#db/repositories/orders.record.js';
 import { updateUser } from '#db/repositories/users.js';
 import { creditWinnings } from '../../domains/wallet/walletAuthority.service.js';
 import { tryAssignMerchant, createWithdrawalOrder } from '../../domains/payment/paymentProcessing.service.js';
@@ -57,16 +64,15 @@ describePg('what a merchant is told about a player', () => {
   const teams = teamFixture();
   const players = [];
 
-  // The player's payout account, as they save it — including the UPI id a
-  // merchant must never see.
-  const PLAYER_UPI = 'asha@examplebank';
+  // The player's payout account, as they save it: a bank account.
   const BANK = {
     accountNumber: '000111222333',
     ifscCode: 'HDFC0000001',
     bankName: 'HDFC Bank',
     accountHolderName: 'Asha Rao',
-    upiId: PLAYER_UPI,
   };
+  // Planted on the order's copy (see the header): a merchant must never see it.
+  const PLAYER_UPI = 'asha@examplebank';
 
   beforeAll(async () => {
     await applySchema();
@@ -121,9 +127,12 @@ describePg('what a merchant is told about a player', () => {
     const orderId = order.orderId ?? order._id;
     const row = await getOrderRecord(orderId);
     expect(row.merchantId, 'the sell was not routed to the member').toBe(String(merchant.merchantId));
-    // What production put on the row — the two things the merchant must not see.
+    // What production put on the row: the player's mobile, which the merchant
+    // must not see, and the bank account they pay, which carries no handle.
     expect(row.userPhone).toBe(who.mobile);
-    expect(row.userBankDetails.upiId).toBe(PLAYER_UPI);
+    expect(Object.keys(row.userBankDetails).sort(), 'the sell copied more than the bank account')
+      .toEqual([...MERCHANT_BANK_FIELDS].sort());
+    await setOrderFields(orderId, { userBankDetails: { ...row.userBankDetails, upiId: PLAYER_UPI } });
     await accept(merchant, orderId);
     return orderId;
   };
@@ -240,7 +249,7 @@ describePg('what a merchant is told about a player', () => {
     // player's saved account added — rather than by writing a row production
     // cannot make (§32 S16).
     const row = await getOrderRecord(orderId);
-    const view = toMerchantOrderView({ ...row, userBankDetails: BANK });
+    const view = toMerchantOrderView({ ...row, userBankDetails: { ...BANK, upiId: PLAYER_UPI } });
     expect(view.type).toBe('DEPOSIT');
     expect(view.userBankDetails, 'a buy carried the player payout account to the merchant').toBeUndefined();
   });
