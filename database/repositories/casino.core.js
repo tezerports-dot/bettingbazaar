@@ -61,6 +61,33 @@ const ROUND_COLUMN = Object.freeze({
 
 const REVERSALS = Object.freeze([CASINO_TX.ROLLBACK, CASINO_TX.REFUND]);
 
+/**
+ * The pocket a casino stake is taken from. One name, so a reversal cannot give
+ * a stake back anywhere but where the BET took it.
+ */
+const STAKE_POCKET = 'depositBalance';
+
+/**
+ * Which pocket each callback moves (owner, 2026-10-07: "a player wins a casino
+ * game, it should go to their winnings balance").
+ *
+ *   BET       takes the stake from STAKE_POCKET
+ *   WIN       pays into winnings, the withdrawable pocket — as a board win does
+ *             (`bets.core` WON credits `winningsBalance`)
+ *   ROLLBACK  gives the stake back to STAKE_POCKET, the pocket it came from
+ *   REFUND    the same
+ *
+ * A reversal into winnings would turn a deposit into withdrawable money with no
+ * game played — a BET and its ROLLBACK would be a cash-out. Data rather than
+ * branches, like ROUND_COLUMN, so the rule reads in one glance.
+ */
+const CALLBACK_POCKET = Object.freeze({
+  [CASINO_TX.BET]:      STAKE_POCKET,
+  [CASINO_TX.WIN]:      'winningsBalance',
+  [CASINO_TX.ROLLBACK]: STAKE_POCKET,
+  [CASINO_TX.REFUND]:   STAKE_POCKET,
+});
+
 const toPaise = (v) => Number(v ?? 0);
 
 function count(operation, outcome) {
@@ -273,15 +300,17 @@ export async function recordCallback({
     );
 
     const debiting = type === CASINO_TX.BET;
+    const pocket = CALLBACK_POCKET[type];
     const movement = await applyMovementWithin(ctx, {
-      // A BET takes from deposit; everything else gives back, into deposit
-      // too. The ledger row names that pocket: it once said `winningsBalance`
-      // for a WIN while `depositBalance` moved, a ledger describing a movement
-      // that did not happen.
-      legs: [{ field: 'depositBalance', deltaPaise: debiting ? 0 - amountPaise : amountPaise }],
+      // A BET takes from deposit; a WIN pays into winnings; a reversal gives
+      // the stake back to deposit (CALLBACK_POCKET). The ledger row names the
+      // pocket that moved, from the same lookup: it once said
+      // `winningsBalance` for a WIN while `depositBalance` moved, a ledger
+      // describing a movement that did not happen.
+      legs: [{ field: pocket, deltaPaise: debiting ? 0 - amountPaise : amountPaise }],
       ledger: [{
         txId: `casino_${txId}`,
-        field: 'depositBalance',
+        field: pocket,
         amountPaise: debiting ? 0 - amountPaise : amountPaise,
         type: debiting ? 'DEBIT' : 'CREDIT',
         reason: reason || `Casino ${type} round ${ctx.rid}`,
