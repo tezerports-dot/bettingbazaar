@@ -39,6 +39,8 @@
  * ── No production caller ────────────────────────────────────────────────────
  * Nothing in the backend grants a bonus today, and nothing funds BONUS_POOL,
  * REFERRAL_POOL or COMMISSION_POOL; a grant from an unfunded pool is refused.
+ * Kept for later by the owner (DECISION_LOG 2026-10-07): the first bonus funds
+ * its pool and wires its caller in the same change.
  */
 import { getPool, pgQuery, connectGuarded } from '../client.js';
 import { applyMovementWithin } from './wallets.core.js';

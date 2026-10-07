@@ -6,6 +6,10 @@
 
 Dates are stable anchors: **code comments cite these dates**, so keep them.
 
+**2026-10-07 — A casino win is paid into the player's winnings.** Owner (Choudhary): *"a player wins a casino game, it should go to their winnings balance."* `recordCallback` credited a casino WIN to the deposit pocket, the same pocket the stake came from, so a casino win could not be withdrawn the way a board win can. A WIN now credits `winningsBalance`; a ROLLBACK or REFUND still returns the stake to where it came from.
+
+**2026-10-07 — Bonuses are kept for later.** Owner (Choudhary): *"Bonuses have no code that grants them and nothing funds them. Keep them for later."* `database/repositories/bonuses.core.js` (`grantBonus`, `BONUS_KIND`) stays with no production caller, and `BONUS_POOL` stays unfunded. Whoever builds the first bonus funds that pool from the platform's holding and wires a caller in the same change.
+
 **2026-10-07 — Step 3 is redefined: simple signup, Telegram optional for 2FA and password reset only.** Owner (Choudhary): *"stop the step 3 we no longer need this we will keep download and login simple just register with your mobile password and captcha make the telegram mini app optional only as 2FA or reseting password … we will not force users to use telgram mini the website and apk can work perfectly fine even without these."* This replaces the 2026-10-01 plan below (a mandatory Mini App replacing every bot) and overrules CLAUDE.md §33's verification gate. The owner's twelve answers are in `docs/HANDOFF.md` §3:
 - The mobile is unverified at signup.
 - No channel requirement.
