@@ -278,7 +278,7 @@ export const merchants = {
 
   // Lift an assignment pause after speaking to the merchant. Three buy orders
   // in a row expired with nobody paying, which usually means nobody CAN pay
-  // them — a dead QR, a closed UPI handle. It is not a suspension and they were
+  // them — a wrong or frozen bank account. It is not a suspension and they were
   // not accused of anything; an admin who has had the conversation clears it.
   resumeAssignment: async (merchantId: string, note?: string) => {
     const res = await api.put(`/api/admin/merchants/${merchantId}/resume-assignment`, { note });

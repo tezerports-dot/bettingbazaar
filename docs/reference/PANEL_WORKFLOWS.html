@@ -492,15 +492,17 @@ enrolment, and the merchant ID to give a supervisor.</p>
 <div class="tablewrap"><table>
 <thead><tr><th>Refused when</th><th>Status</th><th>Message</th></tr></thead>
 <tbody>
-<tr><td>Bank details on a USDT account</td><td>400</td><td>This is a USDT merchant account — UPI, QR and bank details do not apply. Update the USDT wallet addresses instead.</td></tr>
-<tr><td>USDT address on an INR account</td><td>400</td><td>This is an INR merchant account — a USDT wallet address does not apply. Update UPI/bank details instead.</td></tr>
+<tr><td>Bank details on a USDT account</td><td>400</td><td>This is a USDT merchant account — bank details do not apply. Update the USDT wallet addresses instead.</td></tr>
+<tr><td>USDT address on an INR account</td><td>400</td><td>This is an INR merchant account — a USDT wallet address does not apply. Update the bank details instead.</td></tr>
 <tr><td>Nothing valid in the body</td><td>400</td><td>No valid profile fields provided.</td></tr>
 <tr><td>Malformed details</td><td>400</td><td>Those payment details are not in a valid format.</td></tr>
 <tr><td><strong>A mobile as the account number, a payments-bank IFSC, or a mobile in a name</strong></td><td>400</td><td>Those bank details contain a mobile number: … The other side of an order sees these details, so they cannot be used. Use an account at a regular bank, and the name as the bank has it.</td></tr>
 </tbody>
 </table></div>
 <p class="note">On a UPI_BANK team the bank account is what the buying player pays into,
-so routing skips a member without holder, account number and IFSC.</p>
+so routing skips a member without holder, account number and IFSC. There is no UPI ID
+field: a member keeps no UPI handle (<code>merchants.bank_upi_id</code> was dropped), and a
+<code>upiId</code> sent to this route or to signup is not kept.</p>
 
 <h3>2.7 What the merchant is NOT shown</h3>
 <div class="factbox">

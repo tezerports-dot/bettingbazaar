@@ -132,7 +132,7 @@ async function seed() {
     INSERT INTO merchants (merchant_id, name, public_ref, username, mobile, password_hash,
                            status, merchant_approval_status, is_online, accepts_deposits,
                            accepts_withdrawals, accepted_currencies,
-                           bank_upi_id, bank_account_holder_name,
+                           bank_account_holder_name,
                            min_deposit_paise, max_deposit_paise, min_withdraw_paise, max_withdraw_paise,
                            max_concurrent_orders, created_at)
     SELECT 'load-m-' || i, 'Load Merchant ' || i, 'LM' || lpad(i::text, 6, '0'),
@@ -141,7 +141,7 @@ async function seed() {
            CASE WHEN i % 23 = 0 THEN 'INACTIVE' ELSE 'ACTIVE' END,
            CASE WHEN i % 17 = 0 THEN 'PENDING' ELSE 'APPROVED' END,
            (i % 3 <> 0), true, true, ARRAY['INR'],
-           'load' || i || '@upi', 'Load Merchant ' || i,
+           'Load Merchant ' || i,
            50000, 100000000, 50000, 100000000, 5,
            now() - (i % 200) * interval '1 day'
     FROM generate_series(1, $1) i`, [merchants]);

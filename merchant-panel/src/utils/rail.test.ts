@@ -212,7 +212,7 @@ describe('railCopy — every rail-dependent string in one place', () => {
     const inr = railCopy('INR'); const usdt = railCopy('USDT');
     expect(inr.proofLabel).toBe('UTR');
     expect(usdt.proofLabel).toBe('Tx ID');
-    expect(inr.credentialsLabel).toBe('UPI & bank');
+    expect(inr.credentialsLabel).toBe('Bank account');
     expect(usdt.credentialsLabel).toBe('TRC-20 wallet');
     // No field is left blank except the INR network note (there is no network).
     for (const [k, v] of Object.entries(usdt)) expect(v, `USDT.${k}`).toBeTruthy();

@@ -19,7 +19,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { pgConfigured, applySchema, closePg, withTransaction } from '#db/client.js';
 import { getOrderRecord } from '#db/repositories/orders.record.js';
-import { updateMerchant } from '#db/repositories/merchants.js';
 import { updateUser } from '#db/repositories/users.js';
 import { listMessages } from '#db/repositories/chat.js';
 import { creditWinnings } from '../../domains/wallet/walletAuthority.service.js';
@@ -52,18 +51,18 @@ describePg('the order timeline names nobody\'s mobile or UPI handle', () => {
     await closePg();
   });
 
-  /** A member whose UPI handle IS their mobile number, as most are. */
-  const memberWithHandle = async () => {
-    const member = await merchantActor({});
-    await updateMerchant(member.merchantId, { 'bankDetails.upiId': `${member.mobile}@ybl` });
-    return member;
-  };
+  /**
+   * A member. They once held a UPI handle (usually their mobile with a bank
+   * suffix) that the accept message printed; the handle is gone with its
+   * column (`merchants.bank_upi_id`), so it is their MOBILE that is looked for.
+   */
+  const aMember = () => merchantActor({});
 
   const thread = async (orderId) => (await listMessages(orderId)).map((m) => m.message).join('\n');
 
   it('a bank-transfer buy: the accept message points at the account, not the handle', async () => {
     const player = await actor({});
-    const member = await memberWithHandle();
+    const member = await aMember();
     await teams.workingTeam({ rail: 'UPI_BANK', poolTokens: 50_000, include: [member.merchantId] });
     const { order } = await createDepositOrder(player.userId, 50_000);
     const orderId = order.orderId ?? order._id;
@@ -82,7 +81,7 @@ describePg('the order timeline names nobody\'s mobile or UPI handle', () => {
 
   it('a sell: the member is told the player\'s account, and not the player\'s handle or number', async () => {
     const player = await actor({});
-    const member = await memberWithHandle();
+    const member = await aMember();
     await teams.workingTeam({ rail: 'CASH', include: [member.merchantId] });
     await updateUser(player.userId, {
       bankDetails: {

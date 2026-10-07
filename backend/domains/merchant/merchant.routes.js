@@ -90,8 +90,8 @@ const NO_LONGER_YOURS = 'This order has been moved to another member, so nothing
  * the pool.
  */
 const formatMerchant = async (merchant, user = null) => {
-    // A merchant settles on exactly one rail; the panel renders UPI/bank OR the
-    // TRC-20 address from this, never both (domains/merchant/merchantCurrency.js).
+    // A merchant settles on exactly one rail; the panel renders the bank account
+    // OR the USDT addresses from this, never both (domains/merchant/merchantCurrency.js).
     // merchantTypeOf() is used rather than the `merchantType` virtual so lean()
     // documents (which carry no virtuals) format identically to hydrated ones.
     const merchantType = merchantTypeOf(merchant);
@@ -158,7 +158,7 @@ async function sendSystemMessage(orderId, message, io) {
 
 router.post('/auth/signup', async (req, res) => {
     try {
-        const { username, mobile, password, email, upiId, bankDetails } = req.body;
+        const { username, mobile, password, email, bankDetails } = req.body;
         if (!username || !mobile || !password) {
             return res.status(400).json({ success: false, message: 'username, mobile and password are required' });
         }
@@ -188,8 +188,8 @@ router.post('/auth/signup', async (req, res) => {
             username, mobile,
             email: email || null,
             passwordHash: await hashPassword(password),
-            bankDetails: bankDetails || upiId ? {
-                upiId: upiId || bankDetails?.upiId || null,
+            // A bank account, never a UPI handle (§2, §24): one sent is not kept.
+            bankDetails: bankDetails ? {
                 bankName: bankDetails?.bankName || null,
                 accountNo: bankDetails?.accountNo || null,
                 ifsc: bankDetails?.ifsc || null,
@@ -511,11 +511,15 @@ router.get('/profile', merchantAuth, async (req, res) => {
 });
 
 // FIX B5-d: PUT /profile — merchant edits their own settlement credentials.
-// Rail-exclusive (2026-07-27): an INR merchant may edit UPI/QR/bank and NOT the
-// USDT addresses; a USDT merchant may edit only those. Enforced here and not
-// merely hidden in the panel, so a hand-crafted request cannot leave a merchant
-// holding credentials for a rail they do not settle on. Only the admin
+// Rail-exclusive (2026-07-27): an INR merchant may edit the bank account and
+// NOT the USDT addresses; a USDT merchant may edit only those. Enforced here
+// and not merely hidden in the panel, so a hand-crafted request cannot leave a
+// merchant holding credentials for a rail they do not settle on. Only the admin
 // (PUT /merchants/:id/capabilities) can change which rail a merchant is on.
+//
+// There is no UPI handle to edit, so `upiId` is not read from the body: a
+// UPI_BANK buy is paid into the member's bank account and nobody is shown a
+// handle (§2 "How each rail is paid", §24).
 //
 // A USDT merchant holds an address PER CHAIN and may hold one, the other, or
 // both — the chains are separate networks and an address on one cannot receive
@@ -524,7 +528,7 @@ router.get('/profile', merchantAuth, async (req, res) => {
 // one is refused with a sentence rather than accepted silently.
 router.put('/profile', merchantAuth, async (req, res) => {
     try {
-        const { upiId, bankDetails, usdtAddressTrc20, usdtAddressBep20 } = req.body;
+        const { bankDetails, usdtAddressTrc20, usdtAddressBep20 } = req.body;
         const submittedAddresses = { TRC20: usdtAddressTrc20, BEP20: usdtAddressBep20 };
 
         const current = await db.merchants.getMerchant(req.merchantId);
@@ -534,14 +538,14 @@ router.put('/profile', merchantAuth, async (req, res) => {
         const railName = isUsdt ? 'USDT' : 'INR';
         const update  = {};
 
-        const wantsInrFields  = upiId !== undefined || bankDetails !== undefined;
+        const wantsInrFields  = bankDetails !== undefined;
         const wantsUsdtFields = USDT_CHAINS.some((chain) => submittedAddresses[chain] !== undefined);
 
         if (isUsdt && wantsInrFields) {
-            return res.status(400).json({ success: false, message: `This is a ${railName} merchant account — UPI, QR and bank details do not apply. Update the USDT wallet addresses instead.` });
+            return res.status(400).json({ success: false, message: `This is a ${railName} merchant account — bank details do not apply. Update the USDT wallet addresses instead.` });
         }
         if (!isUsdt && wantsUsdtFields) {
-            return res.status(400).json({ success: false, message: `This is a ${railName} merchant account — a USDT wallet address does not apply. Update UPI/bank details instead.` });
+            return res.status(400).json({ success: false, message: `This is a ${railName} merchant account — a USDT wallet address does not apply. Update the bank details instead.` });
         }
 
         if (wantsUsdtFields) {
@@ -580,9 +584,6 @@ router.put('/profile', merchantAuth, async (req, res) => {
             }
         }
 
-        if (upiId !== undefined) {
-            update['bankDetails.upiId'] = upiId;
-        }
         if (bankDetails) {
             if (bankDetails.accountHolderName !== undefined) update['bankDetails.accountHolderName'] = bankDetails.accountHolderName;
             if (bankDetails.bankName  !== undefined) update['bankDetails.bankName']  = bankDetails.bankName;

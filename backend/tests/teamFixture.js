@@ -23,7 +23,6 @@
  * Trap 10: everything this creates is removed by `cleanup()`, with the orders'
  * pool entries and the payments recorded for the pool.
  */
-import { randomBytes } from 'node:crypto';
 import { pgQuery } from '#db/client.js';
 import {
   createMerchant, updateMerchant, newMerchantId, generateMerchantPublicRef,
@@ -49,7 +48,6 @@ export function teamFixture() {
       mobile: `4${String(Date.now()).slice(-6)}${String(seq % 1000).padStart(3, '0')}`, status: 'ACTIVE',
       // The account a bank-transfer buy is paid into (owner, 2026-10-03).
       bankDetails: {
-        upiId: `tf${randomBytes(5).toString('hex')}@upi`,
         accountHolderName: `${prefix} Holder`, bankName: 'Test Bank',
         accountNo: `5020${String(Date.now()).slice(-6)}${String(seq % 100).padStart(2, '0')}`, ifsc: 'TEST0000001',
       },

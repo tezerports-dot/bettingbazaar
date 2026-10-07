@@ -127,7 +127,7 @@ export async function seedMerchant({
     name, username: name, mobile, email: `${name}@example.test`,
     currency, status: 'PENDING',
     bankDetails: currency === 'INR'
-      ? { accountNo, ifsc: 'HDFC0000001', accountHolderName: name, upiId: `${name}@upi`, bankName: 'HDFC Bank' }
+      ? { accountNo, ifsc: 'HDFC0000001', accountHolderName: name, bankName: 'HDFC Bank' }
       : null,
     usdtAddressTrc20, usdtAddressBep20,
   });

@@ -401,6 +401,10 @@ describePg('merchant panel routes', () => {
     expect(row.state).toBe('PROCESSING');
     expect(row.merchantId).toBe(String(m.merchantId));
     expect(row.merchantSnapshot, 'accepted with no merchant snapshot').toBeTruthy();
+    // The member's bank account, which a UPI_BANK buy is paid into, and no UPI
+    // handle: a member keeps none (§2 "How each rail is paid", §24).
+    expect(row.merchantSnapshot.accountNo, 'the member’s account is not on the snapshot').toBeTruthy();
+    expect(row.merchantSnapshot).not.toHaveProperty('upiId');
     expect(row.expiresAt, 'accepted with no payment window').toBeTruthy();
     expect(new Date(row.expiresAt).getTime()).toBeGreaterThan(Date.now());
   });
@@ -691,6 +695,24 @@ describePg('merchant panel routes', () => {
     const scoped = await getMerchantOrder(mine.orderId, row._id);
     expect(scoped, 'getMerchantOrder did not resolve with the aliased id').toBeTruthy();
     expect(scoped.orderId).toBe(mine.orderId);
+  });
+
+  // ── No UPI handle (§2 "How each rail is paid", §24) ──────────────────────
+  // Profile had a UPI ID field: saved, copied into every order's snapshot, and
+  // read by nothing. The bank account is what a UPI_BANK buy is paid into.
+  it('keeps no UPI handle from Profile: alone it is nothing to save, beside the account it is not kept', async () => {
+    const m = await merchantActor();
+    const alone = await as(app, m).put('/profile').send({ upiId: `rt${RUN}@okaxis` });
+    expect(alone.status).toBe(400);
+    expect(alone.body.message).toMatch(/No valid profile fields/);
+
+    const both = await as(app, m).put('/profile')
+      .send({ upiId: `rt${RUN}@okaxis`, bankDetails: { bankName: 'Union Bank', upiId: `rt${RUN}@okicici` } });
+    expect(both.status, both.body.message).toBe(200);
+    expect(both.body.merchant.bankDetails.bankName).toBe('Union Bank');
+    expect(both.body.merchant.bankDetails).not.toHaveProperty('upiId');
+    const read = await as(app, m).get('/profile');
+    expect(JSON.stringify(read.body)).not.toMatch(/@ok(axis|icici)/);
   });
 
   it('serves the merchant’s own profile and nobody else’s', async () => {

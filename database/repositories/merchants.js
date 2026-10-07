@@ -46,7 +46,7 @@ export function newMerchantId() {
 const COLUMNS = `merchant_id, user_id, name, public_ref, username, mobile, email,
   two_factor_enabled, two_factor_enrolled_at, status, suspension_reason, is_online,
   accepts_deposits, accepts_withdrawals, accepted_currencies, merchant_type,
-  bank_account_holder_name, bank_upi_id, bank_name, bank_account_no, bank_ifsc,
+  bank_account_holder_name, bank_name, bank_account_no, bank_ifsc,
   usdt_address_trc20, usdt_address_bep20,
   min_deposit_paise, max_deposit_paise, min_withdraw_paise, max_withdraw_paise,
   total_processed_volume_paise, earnings_paise, total_deposit_amount_paise,
@@ -114,9 +114,9 @@ function toMerchant(row) {
     acceptedCurrencies: row.accepted_currencies,
     merchantType: row.merchant_type,
 
+    // A bank account and nothing else: no UPI handle is kept (§2, §24).
     bankDetails: {
       accountHolderName: row.bank_account_holder_name,
-      upiId: row.bank_upi_id,
       bankName: row.bank_name,
       accountNo: row.bank_account_no,
       ifsc: row.bank_ifsc,
@@ -366,7 +366,7 @@ const UPDATABLE = new Set([
   'two_factor_last_counter', 'two_factor_enrolled_at', 'backup_codes',
   'status', 'suspension_reason', 'is_online', 'accepts_deposits', 'accepts_withdrawals',
   'accepted_currencies',
-  'bank_account_holder_name', 'bank_upi_id', 'bank_name', 'bank_account_no', 'bank_ifsc',
+  'bank_account_holder_name', 'bank_name', 'bank_account_no', 'bank_ifsc',
   'usdt_address_trc20', 'usdt_address_bep20',
   'min_deposit_paise', 'max_deposit_paise', 'min_withdraw_paise', 'max_withdraw_paise',
   'rating', 'last_online_toggle', 'panel_url',
@@ -383,14 +383,15 @@ const CAMEL_TO_COLUMN = Object.freeze(Object.fromEntries(
 /**
  * Nested names the panels use, mapped to the flat columns behind them.
  *
- * The bank details were an embedded object in the document model and the whole
- * admin panel writes `bankDetails.upiId`. They are columns now, because two
- * merchants sharing a UPI id must be refused by an index and an index cannot
- * reach inside a JSON blob — but the caller keeps its vocabulary.
+ * The bank details were an embedded object in the document model and the
+ * panels write `bankDetails.accountNo`. They are columns now, because two
+ * merchants sharing a bank account must be refused by an index and an index
+ * cannot reach inside a JSON blob — but the caller keeps its vocabulary.
+ * `bankDetails.upiId` is gone with its column: a write naming it is refused
+ * as unknown, not dropped.
  */
 const NESTED_TO_COLUMN = Object.freeze({
   'bankDetails.accountHolderName': 'bank_account_holder_name',
-  'bankDetails.upiId': 'bank_upi_id',
   'bankDetails.bankName': 'bank_name',
   'bankDetails.accountNo': 'bank_account_no',
   'bankDetails.ifsc': 'bank_ifsc',
@@ -412,7 +413,7 @@ const MONEY_COLUMNS = new Set([
   'max_withdraw_paise',
 ]);
 
-/** Flatten `{ bankDetails: { upiId } }` into the dotted names above. */
+/** Flatten `{ bankDetails: { accountNo } }` into the dotted names above. */
 function flatten(patch, prefix = '') {
   const out = {};
   for (const [key, value] of Object.entries(patch)) {
@@ -469,16 +470,16 @@ export async function createMerchant({
     `INSERT INTO merchants (
        merchant_id, user_id, name, public_ref, username, mobile, email,
        accepted_currencies, status,
-       bank_account_holder_name, bank_upi_id, bank_name, bank_account_no, bank_ifsc,
+       bank_account_holder_name, bank_name, bank_account_no, bank_ifsc,
        usdt_address_trc20, usdt_address_bep20, panel_url,
        min_deposit_paise, max_deposit_paise, min_withdraw_paise, max_withdraw_paise)
      VALUES ($1,$2,$3,$4,$5,$6,$7, ARRAY[$8], $9,
-             $10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+             $10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
      RETURNING ${COLUMNS}`,
     [id, userId ? String(userId) : null, String(name), ref,
       username || null, mobile || null, email || null,
       String(currency), String(status),
-      bankDetails?.accountHolderName || null, bankDetails?.upiId || null,
+      bankDetails?.accountHolderName || null,
       bankDetails?.bankName || null, bankDetails?.accountNo || null, bankDetails?.ifsc || null,
       usdtAddressTrc20 || null, usdtAddressBep20 || null, panelUrl || '',
       rupeesToPaise(l.minDeposit ?? 500), rupeesToPaise(l.maxDeposit ?? 50000),

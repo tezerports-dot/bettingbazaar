@@ -579,8 +579,7 @@ export const setCashReady = async (ready: boolean): Promise<boolean> => {
 // =======================================================================
 
 // The backend enforces rail exclusivity on this endpoint: an INR merchant may
-// send upiId/bankDetails, a USDT merchant may send only the wallet
-// addresses. Sending a field for the wrong rail is a 400, not a silent no-op
+// send bankDetails, a USDT merchant may send only the wallet addresses. Sending a field for the wrong rail is a 400, not a silent no-op
 // (backend/domains/merchant/merchant.routes.js PUT /profile).
 //
 // The two addresses are independent: send one to set it, send an empty string
@@ -588,7 +587,6 @@ export const setCashReady = async (ready: boolean): Promise<boolean> => {
 // refused — a merchant with no address receives no orders, and that is worth
 // saying rather than accepting silently.
 export const updateProfile = async (data: {
-  upiId?: string;
   bankDetails?: { accountHolderName?: string; bankName?: string; accountNo?: string; ifsc?: string };
   usdtAddressTrc20?: string;
   usdtAddressBep20?: string;

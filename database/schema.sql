@@ -1098,8 +1098,9 @@ CREATE TABLE IF NOT EXISTS merchants (
   merchant_type TEXT GENERATED ALWAYS AS (accepted_currencies[1]) STORED,
 
   -- ── Payment credentials. Money is sent to these ───────────────────────────
+  -- A bank account on the INR rail, never a UPI handle (CLAUDE.md §2 "How each
+  -- rail is paid", §24): `bank_upi_id` is dropped below.
   bank_account_holder_name TEXT,
-  bank_upi_id              TEXT,
   bank_name                TEXT,
   bank_account_no          TEXT,
   bank_ifsc                TEXT,
@@ -1181,12 +1182,18 @@ CREATE TABLE IF NOT EXISTS merchants (
 );
 ALTER TABLE merchants DROP COLUMN IF EXISTS password_hash;
 
+-- No UPI handle. `bank_upi_id` was written by Profile and copied into each
+-- order's snapshot, and nothing ever read it: a UPI_BANK buy is paid into the
+-- member's bank account, a cash buy through the ATM QR the member scans, a sell
+-- to the player's bank account, and nobody is shown a UPI handle (§2, §24).
+-- Dropped, its index with it, so an existing database converges (§32 S31).
+DROP INDEX IF EXISTS merchants_upi_unique;
+ALTER TABLE merchants DROP COLUMN IF EXISTS bank_upi_id;
+
 -- Payment credentials are an IDENTITY, not a preference: two merchants sharing
--- a UPI id or a bank account means money routed to one arrives at the other,
--- and there is no way afterwards to say which was intended. Partial indexes,
--- because most merchants have only the credentials for their own rail.
-CREATE UNIQUE INDEX IF NOT EXISTS merchants_upi_unique
-  ON merchants (bank_upi_id) WHERE bank_upi_id IS NOT NULL AND bank_upi_id <> '';
+-- a bank account means money routed to one arrives at the other, and there is
+-- no way afterwards to say which was intended. Partial indexes, because most
+-- merchants have only the credentials for their own rail.
 CREATE UNIQUE INDEX IF NOT EXISTS merchants_bank_account_unique
   ON merchants (bank_account_no, bank_ifsc)
   WHERE bank_account_no IS NOT NULL AND bank_account_no <> '';
@@ -2872,16 +2879,12 @@ DROP TABLE IF EXISTS gift_codes;
 -- ─────────────────────────────────────────────────────────────────────────────
 -- The merchant QR, DROPPED 2026-09-10 with the feature.
 --
--- A stored QR image was a SECOND, STATIC way of saying what `upiPaymentLink()`
--- already says dynamically and better. On the INR rail a merchant supplies a UPI
--- ID and nothing else: the link is built per order, with THAT order's amount
--- already in it (`upi://pay?pa=…&am=…&tn=…&tr=<orderId>`), so the player taps it
--- and their own UPI app opens filled in.
---
--- A stored image cannot carry the amount, which is the whole point — and it was
--- unreachable besides: its upload route had no UI, while the profile field that
--- stored it was constrained to this platform's CDN, so the only acceptable value
--- was one only that unreachable route could mint (F-016).
+-- A stored QR image of the merchant's own: it could not carry an order's
+-- amount, and it was unreachable besides: its upload route had no UI, while the
+-- profile field that stored it was constrained to this platform's CDN, so the
+-- only acceptable value was one only that unreachable route could mint (F-016).
+-- The QR a cash buy is paid through now is the ATM's, scanned per order
+-- (`order_states.cash_link`, Step 2d).
 DROP INDEX IF EXISTS merchants_qr_code_url_idx;
 ALTER TABLE merchants DROP COLUMN IF EXISTS qr_code_url;
 

@@ -1,7 +1,7 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 
 /**
- * Settlement rail. A merchant is INR-only (UPI + bank) or USDT-only (TRC-20) —
+ * Settlement rail. A merchant is INR-only (bank account) or USDT-only (TRC-20) —
  * never both. Mirrors the backend enum on Merchant.acceptedCurrencies and
  * PaymentOrder.currency (backend/domains/merchant/merchantCurrency.js,
  * MERCHANT_CURRENCIES). GOVERNANCE §4: this is the panel's only declaration of
@@ -173,7 +173,7 @@ export interface MerchantProfile {
   role?: string;
 
   // ── Settlement rail (exclusive) ──────────────────────────────────────────
-  // 'INR' (UPI + bank) or 'USDT' — never both. Backend authority is
+  // 'INR' (bank account) or 'USDT' — never both. Backend authority is
   // Merchant.acceptedCurrencies, which holds exactly one entry;
   // GET /api/merchant/profile surfaces both the array and this scalar.
   merchantType?: MerchantRail;
@@ -223,9 +223,9 @@ export interface MerchantProfile {
   // Settlement credentials as stored on the Merchant document — this is the
   // shape GET /api/merchant/profile returns (backend formatMerchant).
   // `settlementDetails` below is an older alias kept for compatibility.
+  // A bank account only: no UPI handle is kept or sent (CLAUDE.md §2, §24).
   bankDetails?: {
     accountHolderName?: string;
-    upiId?: string;
     bankName?: string;
     accountNo?: string;
     ifsc?: string;
@@ -233,7 +233,6 @@ export interface MerchantProfile {
 
   // Settlement details
   settlementDetails?: {
-    upiId?: string;
     accountName?: string;
     accountNumber?: string;
     ifsc?: string;

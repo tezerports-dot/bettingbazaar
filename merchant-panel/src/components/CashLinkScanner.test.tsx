@@ -121,6 +121,9 @@ describe('the order card', () => {
     onAccept: vi.fn(), onReject: vi.fn(), onPaymentNotReceived: vi.fn(), onRelease: vi.fn(),
     onPayout: vi.fn(), onRedFlag: vi.fn(), onScanCashLink: vi.fn(), onOpen: vi.fn(),
   });
+  // `upiId` is PLANTED: the server keeps no UPI handle (`merchants.bank_upi_id`
+  // was dropped) and sends none. It stays as an unknown key the card must not
+  // render, so a handle reappearing anywhere upstream is not shown by default.
   const MERCHANT: any = {
     acceptedCurrencies: ['INR'],
     bankDetails: { upiId: '9876501234@ybl', accountNo: '50100123456789', ifsc: 'HDFC0000123', bankName: 'HDFC Bank', accountHolderName: 'Ravi Kumar' },
