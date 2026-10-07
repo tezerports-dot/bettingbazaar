@@ -19,13 +19,18 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // `services/api.ts` builds its own axios instance, so the seam to stub is
 // `axios.create` itself — there is no separate client module in this panel.
-const { post, get } = vi.hoisted(() => ({ post: vi.fn(), get: vi.fn() }));
+// The response interceptor `api.ts` installs is kept, not stubbed away: it is
+// the path every route's 401 takes (`a refused session is SAID`, below).
+const { post, get, interceptor } = vi.hoisted(() => ({
+  post: vi.fn(), get: vi.fn(),
+  interceptor: { rejected: null as null | ((error: unknown) => Promise<unknown>) },
+}));
 vi.mock('axios', () => {
   const instance = {
     post, get, put: vi.fn(), patch: vi.fn(), delete: vi.fn(),
     interceptors: {
       request: { use: vi.fn() },
-      response: { use: vi.fn() },
+      response: { use: (_ok: unknown, rejected: (error: unknown) => Promise<unknown>) => { interceptor.rejected = rejected; } },
     },
     defaults: { headers: { common: {} } },
   };
@@ -168,5 +173,120 @@ describe('verifySession tells a refusal from a blip', () => {
     await useAuthStore.getState().verifySession();
     expect(useAuthStore.getState().isAuthenticated).toBe(false);
     expect(useAuthStore.getState().token).toBeNull();
+  });
+});
+
+/**
+ * A refused session is SAID on the sign-in form, not just obeyed (§32 S48).
+ *
+ * ── The defect ──────────────────────────────────────────────────────────────
+ * The branch above cleared the store on a 403 and the route guards dropped the
+ * operator at a bare sign-in form: a staff account blocked or closed while
+ * signed in read "Choose your role to continue", typed its password, and only
+ * then learned why. A 401 from any route went to `'/#/login'`, which is the
+ * PLAYER app in production (this panel is served under `/admin/`), with no
+ * reason either. The merchant panel fixed the same shape in Step 2g; this is
+ * its sibling. The reason is asserted where it is KEPT (sessionStorage, across
+ * the reload); `Login.signedOut.test.tsx` asserts the form announces it.
+ */
+describe('a refused session is SAID on the sign-in form', () => {
+  const KEY = 'adminSignedOutReason';
+  const signedIn = () => useAuthStore.setState({
+    admin: ADMIN as any, token: 'good-token', isAuthenticated: true,
+    isLoading: false, pendingChallenge: null, mustEnroll2FA: false,
+  });
+  const refusal = (status: number, data: unknown) =>
+    Object.assign(new Error(`HTTP ${status}`), { response: { status, data } });
+
+  beforeEach(() => { sessionStorage.clear(); localStorage.clear(); });
+
+  it('keeps the server\'s words when the session check is refused 403', async () => {
+    signedIn();
+    get.mockRejectedValue(refusal(403, { success: false, message: 'Account blocked' }));
+    await useAuthStore.getState().verifySession();
+    expect(sessionStorage.getItem(KEY)).toBe('Account blocked');
+    const s = useAuthStore.getState();
+    expect(s.isAuthenticated).toBe(false);
+    expect(s.token).toBeNull();
+    expect(s.admin, 'a refused identity was left in the store').toBeNull();
+    expect(localStorage.getItem('admin-auth'), 'the refused session is still stored').toBeNull();
+  });
+
+  it('says a closed account is closed, in the server\'s words', async () => {
+    signedIn();
+    get.mockRejectedValue(refusal(403, {
+      success: false, code: 'ACCOUNT_CLOSED', message: 'This account has been closed. Contact support.',
+    }));
+    await useAuthStore.getState().verifySession();
+    expect(sessionStorage.getItem(KEY)).toBe('This account has been closed. Contact support.');
+  });
+
+  it('ends the session on a proxy\'s 403 page without repeating its body as a reason', async () => {
+    signedIn();
+    get.mockRejectedValue(refusal(403, '<html><body>403 Forbidden</body></html>'));
+    await useAuthStore.getState().verifySession();
+    expect(useAuthStore.getState().isAuthenticated).toBe(false);
+    expect(sessionStorage.getItem(KEY)).toBeNull();
+  });
+
+  it('leaves no reason behind for a blip (the opposite case)', async () => {
+    signedIn();
+    get.mockRejectedValue(refusal(429, { success: false, message: 'Too many requests' }));
+    await useAuthStore.getState().verifySession();
+    expect(useAuthStore.getState().isAuthenticated).toBe(true);
+    expect(sessionStorage.getItem(KEY)).toBeNull();
+    expect(localStorage.getItem('admin-auth')).not.toBeNull();
+  });
+
+  it('ends a HELD session refused 401 on any route, keeping the server\'s words', async () => {
+    signedIn();   // persisted: the request interceptor reads the token from storage
+    expect(interceptor.rejected, 'api.ts installed no response interceptor').toBeTypeOf('function');
+    const err = refusal(401, { success: false, code: 'SESSION_SUPERSEDED', message: 'Your password was changed. Please sign in again.' });
+    await expect(interceptor.rejected!(err)).rejects.toBe(err);
+    expect(sessionStorage.getItem(KEY)).toBe('Your password was changed. Please sign in again.');
+    expect(localStorage.getItem('admin-auth')).toBeNull();
+  });
+
+  it('leaves the sign-in form\'s own 401 alone: no session was held, nothing is ended', async () => {
+    // "Invalid credentials" on the password leg, "Invalid authentication code"
+    // on the second: reloading over either erased the message unread.
+    const err = refusal(401, { success: false, message: 'Invalid credentials' });
+    await expect(interceptor.rejected!(err)).rejects.toBe(err);
+    expect(sessionStorage.getItem(KEY)).toBeNull();
+  });
+
+  it('a 403 from any other route ends nothing: "not permitted" is not "signed out"', async () => {
+    signedIn();
+    const err = refusal(403, { success: false, message: 'Administrative privileges required' });
+    await expect(interceptor.rejected!(err)).rejects.toBe(err);
+    expect(sessionStorage.getItem(KEY)).toBeNull();
+    expect(localStorage.getItem('admin-auth')).not.toBeNull();
+  });
+});
+
+/**
+ * The second factor's refusals reach the operator.
+ *
+ * Both come back 401, and axios throws on a 401, so the store's check for an
+ * expired challenge read a response that never arrives: the challenge was
+ * kept and every later code refused, with the reload the old interceptor did
+ * over any 401 hiding it. Without that reload, this is what the form shows.
+ */
+describe('a refused second factor', () => {
+  const refused = (data: unknown) => Object.assign(new Error('Request failed with status code 401'), { response: { status: 401, data } });
+
+  it('drops an expired challenge, so the form goes back to the password', async () => {
+    useAuthStore.setState({ pendingChallenge: 'c-1', isAuthenticated: false, token: null });
+    post.mockRejectedValue(refused({ success: false, twoFactorExpired: true, message: 'Login session expired. Please sign in again.' }));
+    await expect(useAuthStore.getState().submitTwoFactor('123456')).rejects.toBeTruthy();
+    expect(useAuthStore.getState().pendingChallenge).toBeNull();
+    expect(useAuthStore.getState().isLoading).toBe(false);
+  });
+
+  it('keeps a live challenge after a wrong code, so the next code can be tried', async () => {
+    useAuthStore.setState({ pendingChallenge: 'c-1', isAuthenticated: false, token: null });
+    post.mockRejectedValue(refused({ success: false, message: 'Invalid authentication code' }));
+    await expect(useAuthStore.getState().submitTwoFactor('000000')).rejects.toBeTruthy();
+    expect(useAuthStore.getState().pendingChallenge).toBe('c-1');
   });
 });

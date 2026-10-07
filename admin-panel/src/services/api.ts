@@ -1,5 +1,6 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import axios, { AxiosInstance, AxiosError } from 'axios';
+import { endRefusedSession, serverRefusal } from './signedOut';
 import type { StaffPermissionCatalog } from '../utils/permissions';
 import type {
   Admin,
@@ -31,18 +32,19 @@ const api: AxiosInstance = axios.create({
   headers: { 'Content-Type': 'application/json' },
 });
 
+/** The session this browser holds, from the store's persisted envelope (`auth.ts`). */
+const storedToken = (): string | null => {
+  try {
+    const stored = localStorage.getItem('admin-auth');
+    return stored ? (JSON.parse(stored)?.state?.token ?? null) : null;
+  } catch {
+    return null;
+  }
+};
+
 api.interceptors.request.use(
   (config) => {
-    let token: string | null = null;
-    try {
-      const stored = localStorage.getItem('admin-auth');
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        token = parsed?.state?.token ?? null;
-      }
-    } catch {
-      token = null;
-    }
+    const token = storedToken();
     if (token) config.headers.Authorization = `Bearer ${token}`;
     return config;
   },
@@ -52,9 +54,11 @@ api.interceptors.request.use(
 api.interceptors.response.use(
   (response) => response,
   (error: AxiosError) => {
-    if (error.response?.status === 401) {
-      localStorage.removeItem('admin-auth');
-      window.location.href = '/#/login';
+    // Only a session that was HELD ends here. A 401 with none is the sign-in
+    // form's own answer ("Invalid credentials", a wrong second-factor code):
+    // reloading over it erased the message before anybody read it.
+    if (error.response?.status === 401 && storedToken()) {
+      endRefusedSession(serverRefusal(error.response.data));
     }
     return Promise.reject(error);
   }

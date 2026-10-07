@@ -3,6 +3,7 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { Admin } from '../types';
 import api from './api';
+import { endRefusedSession, forgetSignedOutReason, serverRefusal } from './signedOut';
 
 interface AuthState {
   admin: Admin | null;
@@ -95,16 +96,18 @@ export const useAuthStore = create<AuthState>()(
             });
             return;
           }
-          // An expired challenge cannot be retried with a fresh code — the
-          // password leg has to happen again, so clear it and say so.
-          if ((response as any)?.twoFactorExpired) {
-            set({ isLoading: false, pendingChallenge: null });
-            throw new Error('Login session expired. Please sign in again.');
-          }
           set({ isLoading: false });
           throw new Error((response as any)?.message || 'Invalid authentication code');
-        } catch (error) {
-          set({ isLoading: false });
+        } catch (error: any) {
+          // A refused code and an expired challenge both come back 401, and
+          // axios throws on a 401, so the server's answer is on the ERROR. The
+          // check for `twoFactorExpired` used to read the response above, where
+          // it never arrives: an expired challenge was kept, and every code
+          // typed into it was refused with no way forward but a reload. An
+          // expired one cannot take a fresh code (the password leg has to
+          // happen again), so it is dropped and the form goes back to it.
+          const expired = !!error?.response?.data?.twoFactorExpired;
+          set({ isLoading: false, ...(expired ? { pendingChallenge: null } : {}) });
           throw error;
         }
       },
@@ -119,6 +122,9 @@ export const useAuthStore = create<AuthState>()(
           await api.auth.logout();
         } catch {}
         finally {
+          // A Log out says nothing on the sign-in form, whatever an earlier
+          // refusal said there on this page load (`signedOut.ts`).
+          forgetSignedOutReason();
           set({ admin: null, token: null, isAuthenticated: false, pendingChallenge: null, mustEnroll2FA: false });
         }
       },
@@ -153,13 +159,24 @@ export const useAuthStore = create<AuthState>()(
           // the platform's own IP limiter, `GET /api/v1/auth/me` answered 429,
           // and every screen in the panel rendered as logged out.
           //
-          // A session that is genuinely INVALID does not need this branch: the
-          // response interceptor in `api.ts` clears storage and redirects on a
-          // 401. So only an explicit refusal ends the session here, and
-          // everything else leaves it alone — the next request will be refused
-          // with a 401 if the token really is dead.
+          // So only an explicit refusal ends the session here, and everything
+          // else leaves it alone: the next request will be refused with a 401
+          // if the token really is dead.
+          //
+          // ── A refusal is said, not just obeyed (§32 S48) ─────────────────
+          // This used to clear the store and nothing else, so the route
+          // guards dropped the operator at a bare sign-in form: a staff
+          // account blocked or closed mid-session typed its password to learn
+          // why. Both refusals now end the way the merchant panel's do (2g):
+          // the server's words kept for the sign-in form, which announces
+          // them. A 401 has already been ended by the response interceptor in
+          // `api.ts` (every route, not only this one); a 403 ("Account
+          // blocked", ACCOUNT_CLOSED, WRONG_PANEL) is ended here.
           const status = err?.response?.status;
-          if (status === 401 || status === 403) set({ isAuthenticated: false, token: null });
+          if (status === 401 || status === 403) {
+            set({ admin: null, isAuthenticated: false, token: null, mustEnroll2FA: false });
+            if (status === 403) endRefusedSession(serverRefusal(err?.response?.data));
+          }
         }
       },
     }),

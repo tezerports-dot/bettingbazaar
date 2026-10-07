@@ -633,6 +633,7 @@ wait, the processing windows, the UTR deadline), <code>rejectedBuyDisputeMinutes
 <div class="tablewrap"><table>
 <thead><tr><th>Screen</th><th>What it is</th></tr></thead>
 <tbody>
+<tr><td>Sign in (<code>Login.tsx</code>)</td><td>Role, mobile, password, then the second factor. A session the server refuses (403 <em>"Account blocked"</em>, a closed account, <code>WRONG_PANEL</code>; 401 <em>"Your password was changed. Please sign in again."</em>) is cleared and the panel reloads at its own <code>/admin/</code>, where the form announces <em>"You were signed out: &lt;the server's words&gt;"</em> (<code>role="alert"</code>), once (<code>services/signedOut.ts</code>). A 401 with no session (a wrong password or code) is left to the form, which says the server's words.</td></tr>
 <tr><td>Queue manager</td><td>Pending orders; assign or reassign by hand through the same routing (<code>queueManagerOrPermission</code>)</td></tr>
 <tr><td>Stalled withdrawals</td><td>Sells waiting past their window (<code>canResolveDisputes</code>)</td></tr>
 <tr><td>Revenue · Token flow · Transactions · Reports</td><td>Read over <code>accounting_events</code>; Revenue funds the team commission pool (<code>canManageCommission</code>)</td></tr>
