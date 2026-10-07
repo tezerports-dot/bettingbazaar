@@ -23,7 +23,8 @@
  * THE MERCHANT, three in a row: this is the one nothing else on the platform
  * could see. If three different players were each assigned to the same merchant
  * and none of them could pay, the likeliest explanation is that something about
- * that MERCHANT is broken — a dead QR, a closed UPI handle, a bank refusing.
+ * that MERCHANT is broken — a wrong or frozen bank account, a bank refusing, a
+ * cash member who never scans the machine's QR.
  * Each failure on its own looks like an ordinary abandoned purchase, so the
  * pattern is invisible one order at a time. They stop being assigned until an
  * admin has spoken to them. Not a suspension: they keep their orders, their
@@ -129,7 +130,7 @@ async function countAgainstMerchant(orderId, merchantId, limits) {
     if (streak < cap) return { merchantStreak: streak, paused: false };
 
     const reason = `${streak} buy orders in a row expired with no payment. `
-                 + 'Check this merchant can actually be paid — QR, UPI handle, bank.';
+                 + 'Check this merchant can actually be paid: their bank account, or on a cash buy that they scan the machine QR in time.';
     await db.merchants.pauseAssignment(merchantId, reason);
 
     console.error(`[merchant-expiry] ${merchantId} paused from assignment: ${reason} (latest ${orderId})`);

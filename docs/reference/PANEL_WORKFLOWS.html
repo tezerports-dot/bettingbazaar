@@ -773,7 +773,7 @@ why a QR that pays a mobile is refused.</p>
 <tr><td>Game · Casino · Crash · Sports</td><td>Place a bet (an <code>Idempotency-Key</code> is required). Affordability is the wallet authority's, against the rows the write locks. Settlement pays gross 2× minus <code>winningsFeePercent</code> (1).</td></tr>
 <tr><td>My bets · History · Results · Winners · Leaderboard</td><td>Read-only.</td></tr>
 <tr><td>Referrals</td><td>A flat ₹25 per referral from a bounded programme. Never a share of losses, never tied to settlement.</td></tr>
-<tr><td>Support · Profile · Promo · Rules · FAQ</td><td>Tickets; bank details (<code>users.mobile</code> never changes); content.</td></tr>
+<tr><td>Support · Profile · Promo · Rules · FAQ</td><td>Tickets; the bank account a sell is paid into (<code>PUT /api/user/:userId/bank-details</code>: holder, number, IFSC, bank; no UPI ID, and the row keeps no fifth field, <code>users_bank_details_bank_account_only</code>; <code>users.mobile</code> never changes); content.</td></tr>
 </tbody>
 </table></div>
 <p class="danger"><strong>Never read <code>p?.payout</code> from

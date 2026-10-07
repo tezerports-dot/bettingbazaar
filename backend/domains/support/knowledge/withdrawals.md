@@ -9,7 +9,8 @@ place bets.
 1. On the Wallet page choose **Sell tokens / Withdraw** and enter the amount.
 2. The amount is reserved from your winnings balance and a withdrawal order is
    created.
-3. The system assigns a merchant who pays you by UPI/bank transfer.
+3. The system assigns a merchant who pays you by bank transfer to the bank
+   account saved in your Profile.
 4. When the payout is confirmed (UTR verification), the withdrawal completes.
 
 If a merchant cannot be assigned after the system's retry attempts, the order
@@ -19,7 +20,9 @@ again.
 ## Requirements
 
 - **KYC must be approved** before withdrawals (see the KYC help topic).
-- Your **bank / UPI details** on file should be correct and in your own name.
+- Your **bank account** on file (account holder, account number, IFSC, bank)
+  should be correct and in your own name. It is the only payout destination:
+  winnings are never paid to a UPI ID.
 - Withdrawals may be subject to **daily cut-off times** and minimum/maximum limits
   set by the platform; these are shown in the app when you request a withdrawal.
 
@@ -28,6 +31,7 @@ again.
 - KYC is not yet approved.
 - The account is under review (for example, after a payment-failure flag or after
   reaching the warning limit).
-- Bank/UPI details are missing or do not match your verified identity.
+- No bank account is saved in your Profile, or it does not match your verified
+  identity.
 
 If your withdrawal is delayed and none of the above apply, contact human support.

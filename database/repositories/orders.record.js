@@ -17,7 +17,7 @@
  *
  * ── Two snapshots, and why they are snapshots ───────────────────────────────
  * `merchant_snapshot` is the merchant's payment details AS THE PLAYER SAW THEM.
- * A merchant editing their UPI id afterwards must not change the account a
+ * A merchant editing their bank account afterwards must not change the one a
  * player was told to pay — that is the difference between a dispute with an
  * answer and one without.
  *

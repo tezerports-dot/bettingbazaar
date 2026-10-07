@@ -316,7 +316,12 @@ processor. A merchant who learns a player's phone or UPI ID can contact them off
 -platform; a player who copies a merchant's account number keeps it. Both have
 happened here: `sanitizeMerchantOrder` was a denylist that stripped payout
 details **only on the deposit branch**, so every withdrawal leaked the player's
-UPI ID.
+UPI ID. *Later (2026-10-07):* there is no player UPI ID left to leak. A
+player's payout account is a bank account and nothing else (the row's
+`users_bank_details_bank_account_only`, an allowlist of four keys, converged
+on apply), the sell copies those four onto the order, and the Profile screen's
+UPI ID field (typed, never sent) is gone. The merchant suites plant a handle on
+the order's copy to keep proving the projection drops one.
 
 **How.** Each projection is an **allowlist in one file**, and the test asserts the
 response's key set is a *subset* — so a new column fails without anyone adding a
@@ -3543,7 +3548,7 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Panel | .ts/.tsx files | `dangerouslySetInnerHTML` | `.innerHTML =` |
 |---|---|---|---|
-| `user-panel` | 87 | 0 | 0 |
+| `user-panel` | 88 | 0 | 0 |
 | `admin-panel` | 114 | 0 | 0 |
 | `merchant-panel` | 45 | 0 | 0 |
 

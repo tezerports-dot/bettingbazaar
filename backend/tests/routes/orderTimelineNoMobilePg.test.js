@@ -18,7 +18,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { pgConfigured, applySchema, closePg, withTransaction } from '#db/client.js';
-import { getOrderRecord } from '#db/repositories/orders.record.js';
+import { getOrderRecord, setOrderFields } from '#db/repositories/orders.record.js';
 import { updateUser } from '#db/repositories/users.js';
 import { listMessages } from '#db/repositories/chat.js';
 import { creditWinnings } from '../../domains/wallet/walletAuthority.service.js';
@@ -86,13 +86,18 @@ describePg('the order timeline names nobody\'s mobile or UPI handle', () => {
     await updateUser(player.userId, {
       bankDetails: {
         accountNumber: '000111222333', ifscCode: 'TEST0000001', bankName: 'Test Bank',
-        accountHolderName: 'Timeline Test', upiId: `${player.mobile}@okaxis`,
+        accountHolderName: 'Timeline Test',
       },
     });
     await creditWinnings(player.userId, 1000, 'timeline float', 'Test', `tl-${RUN}`, `tl_${RUN}`);
     const { orderId } = (await createWithdrawalOrder(player.userId, 1000)).order;
     made.push(orderId);
-    expect((await getOrderRecord(orderId)).merchantId, 'the sell was not routed').toBe(String(member.merchantId));
+    const row = await getOrderRecord(orderId);
+    expect(row.merchantId, 'the sell was not routed').toBe(String(member.merchantId));
+    // A player keeps no UPI handle (`users_bank_details_bank_account_only`), so
+    // one is PLANTED on the order's copy, as if a future copy carried it: the
+    // message is built from that copy and must still not print it.
+    await setOrderFields(orderId, { userBankDetails: { ...row.userBankDetails, upiId: `${player.mobile}@okaxis` } });
 
     const res = await as(merchantApp, member).post(`/accept/${orderId}`).send({});
     expect(res.status, res.body.message).toBe(200);

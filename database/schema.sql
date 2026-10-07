@@ -2785,7 +2785,7 @@ EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 -- is simply not a candidate. The merchant panel says so on their own screen, so
 -- the symptom is visible rather than silent.
 
--- A wallet address is an IDENTITY, for the same reason a UPI id is: two
+-- A wallet address is an IDENTITY, for the same reason a bank account is: two
 -- merchants sharing one means money routed to either arrives at one, and no
 -- record afterwards can say which was intended.
 CREATE UNIQUE INDEX IF NOT EXISTS merchants_usdt_trc20_unique
@@ -3796,6 +3796,29 @@ ALTER TABLE users ADD CONSTRAINT users_bank_account_not_a_mobile
   CHECK (NOT bb_account_number_is_a_mobile(bank_details->>'accountNumber', bank_details->>'ifscCode', mobile)
      AND NOT bb_text_has_a_mobile(bank_details->>'accountHolderName')
      AND NOT bb_text_has_a_mobile(bank_details->>'bankName'));
+
+-- A player's payout account is a BANK account: the four fields a transfer
+-- needs, and no fifth. Every sell is a bank transfer to it, and no UPI handle
+-- is ever a destination or shown (CLAUDE.md §2 "How each rail is paid", §24).
+-- The Profile screen asked for a UPI ID and the sell copied
+-- `bank_details.upiId` onto every order a member reads; an allowlist, so a
+-- handle under any other name is refused the same way.
+-- Converged first (§32 S31): a stray key is dropped from a row written before
+-- the rule, and a JSON null becomes no value, or the constraint below would
+-- stop the apply here.
+UPDATE users SET bank_details = NULL
+ WHERE bank_details IS NOT NULL AND jsonb_typeof(bank_details) <> 'object';
+UPDATE users
+   SET bank_details = bank_details - ARRAY(
+         SELECT k FROM jsonb_object_keys(bank_details) AS k
+          WHERE k <> ALL (ARRAY['accountHolderName', 'accountNumber', 'ifscCode', 'bankName']))
+ WHERE jsonb_typeof(bank_details) = 'object'
+   AND (bank_details - ARRAY['accountHolderName', 'accountNumber', 'ifscCode', 'bankName']) <> '{}'::jsonb;
+ALTER TABLE users DROP CONSTRAINT IF EXISTS users_bank_details_bank_account_only;
+ALTER TABLE users ADD CONSTRAINT users_bank_details_bank_account_only
+  CHECK (bank_details IS NULL
+      OR (jsonb_typeof(bank_details) = 'object'
+          AND (bank_details - ARRAY['accountHolderName', 'accountNumber', 'ifscCode', 'bankName']) = '{}'::jsonb));
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- Step 2e (owner, 2026-10-02): the team commission, instant and per team.

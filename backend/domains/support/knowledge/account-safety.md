@@ -37,5 +37,5 @@ but will **never** ask you to send your Aadhaar number or forward a sign-in link
   link works only once and only for you. (There is no password and no OTP on
   this platform, and there are no KYC documents — so nobody has a legitimate
   reason to ask you for any of them.)
-- Use your own bank/UPI account, matching your KYC name, for deposits and
-  withdrawals.
+- Pay for deposits from your own account, and save your own bank account for
+  withdrawals: winnings are paid by bank transfer, never to a UPI ID.

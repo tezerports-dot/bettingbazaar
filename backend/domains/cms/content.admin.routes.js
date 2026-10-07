@@ -25,7 +25,7 @@ const STARTER_FAQ = Object.freeze([
     answer: 'Go to Wallet \u2192 Buy Tokens. Choose an amount and follow the P2P deposit flow. A merchant will be assigned to process your payment.' },
   { faqId: 'faq_seed_withdraw', category: 'payments',
     question: 'How do I withdraw winnings?',
-    answer: 'Go to Wallet \u2192 Sell Tokens. Enter your bank/UPI details and the amount. Withdrawals are processed within 24 hours.' },
+    answer: 'Go to Wallet \u2192 Sell Tokens and pick a size. It is paid by bank transfer to the bank account saved in your Profile. Withdrawals are processed within 24 hours.' },
   { faqId: 'faq_seed_delhi_bombay', category: 'gameplay',
     question: 'What is Delhi Bazaar vs Bombay Bazaar?',
     answer: 'It is a prediction game. Pick Delhi or Bombay before the cycle closes. The winning side is determined by the game engine at the end of each round.' },
