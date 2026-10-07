@@ -104,24 +104,21 @@ export function merchantDisplayRef(merchant) {
  *
  * ── Two audiences, and only one of them gets the credentials ──────────────
  * This row is what a dispute is decided from months later, so it keeps the
- * merchant's details: which handle was quoted, which account, at what time.
- * The admin and the disputes desk read the row.
+ * merchant's details: which account, which addresses, at what time. The admin
+ * and the disputes desk read the row. No UPI handle: a member holds none
+ * (`merchants.bank_upi_id` was dropped; §2, §24).
  *
  * The PLAYER does not. `playerOrderView.js` is the only shape that reaches them
- * and it passes on three things from here — the payment link, an opaque
- * reference, and the deadline. Before that projection existed this whole object
- * was sent as-is, so every deposit handed the player the merchant's UPI handle,
- * their QR, and their bank account number, IFSC and account-holder name. The
- * screen rendered the handle in a copy-to-clipboard row.
- *
- * ── The link is built HERE, once ──────────────────────────────────────────
- * The panel used to assemble the UPI intent out of these fields, which is why it
- * had to be given them. Building it server-side is what makes the projection
- * above achievable rather than aspirational, and it puts the amount formatting
- * on the side that cannot be edited by whoever is holding the phone.
+ * and it chooses what they need from here, once the member has accepted: the
+ * member's bank account on a UPI_BANK buy, the order chain's address on USDT,
+ * an opaque reference and the deadline (a cash buy is paid through the ATM QR
+ * on the order, never through this row). Before that projection existed this
+ * whole object was sent as-is, so every deposit handed the player the
+ * merchant's UPI handle, their QR, and their bank account number, IFSC and
+ * account-holder name. The screen rendered the handle in a copy-to-clipboard
+ * row.
  */
 function buildMerchantSnapshot(merchant, expiresAt, order = null) {
-  const upiId = merchant.bankDetails?.upiId || '';
   const merchantRef = merchantDisplayRef(merchant);
   return {
     // ── For the player, through `toPlayerOrderView` ─────────────────────
@@ -148,11 +145,10 @@ function buildMerchantSnapshot(merchant, expiresAt, order = null) {
     merchantId:    merchant.merchantId,
     merchantName:  merchantRef,
     // A merchant settles on exactly one rail, so exactly one credential set is
-    // populated: UPI/bank for an INR merchant, the wallet addresses for a USDT
-    // one. Both chains are recorded here because a dispute months later is
-    // decided from what was true at assignment.
+    // populated: the bank account for an INR merchant, the wallet addresses
+    // for a USDT one. Both chains are recorded here because a dispute months
+    // later is decided from what was true at assignment.
     merchantType:  merchantTypeOf(merchant),
-    upiId,
     bankName:      merchant.bankDetails?.bankName          || '',
     accountNo:     merchant.bankDetails?.accountNo         || '',
     ifsc:          merchant.bankDetails?.ifsc              || '',

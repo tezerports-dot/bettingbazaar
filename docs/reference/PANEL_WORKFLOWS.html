@@ -499,15 +499,17 @@ enrolment, and the merchant ID to give a supervisor.</p>
 <div class="tablewrap"><table>
 <thead><tr><th>Refused when</th><th>Status</th><th>Message</th></tr></thead>
 <tbody>
-<tr><td>Bank details on a USDT account</td><td>400</td><td>This is a USDT merchant account — UPI, QR and bank details do not apply. Update the USDT wallet addresses instead.</td></tr>
-<tr><td>USDT address on an INR account</td><td>400</td><td>This is an INR merchant account — a USDT wallet address does not apply. Update UPI/bank details instead.</td></tr>
+<tr><td>Bank details on a USDT account</td><td>400</td><td>This is a USDT merchant account — bank details do not apply. Update the USDT wallet addresses instead.</td></tr>
+<tr><td>USDT address on an INR account</td><td>400</td><td>This is an INR merchant account — a USDT wallet address does not apply. Update the bank details instead.</td></tr>
 <tr><td>Nothing valid in the body</td><td>400</td><td>No valid profile fields provided.</td></tr>
 <tr><td>Malformed details</td><td>400</td><td>Those payment details are not in a valid format.</td></tr>
 <tr><td><strong>A mobile as the account number, a payments-bank IFSC, or a mobile in a name</strong></td><td>400</td><td>Those bank details contain a mobile number: … The other side of an order sees these details, so they cannot be used. Use an account at a regular bank, and the name as the bank has it.</td></tr>
 </tbody>
 </table></div>
 <p class="note">On a UPI_BANK team the bank account is what the buying player pays into,
-so routing skips a member without holder, account number and IFSC.</p>
+so routing skips a member without holder, account number and IFSC. There is no UPI ID
+field: a member keeps no UPI handle (<code>merchants.bank_upi_id</code> was dropped), and a
+<code>upiId</code> sent to this route or to signup is not kept.</p>
 
 <h3>2.7 What the merchant is NOT shown</h3>
 <div class="factbox">
@@ -640,6 +642,7 @@ wait, the processing windows, the UTR deadline), <code>rejectedBuyDisputeMinutes
 <div class="tablewrap"><table>
 <thead><tr><th>Screen</th><th>What it is</th></tr></thead>
 <tbody>
+<tr><td>Sign in (<code>Login.tsx</code>)</td><td>Role, mobile, password, then the second factor. A session the server refuses (403 <em>"Account blocked"</em>, a closed account, <code>WRONG_PANEL</code>; 401 <em>"Your password was changed. Please sign in again."</em>) is cleared and the panel reloads at its own <code>/admin/</code>, where the form announces <em>"You were signed out: &lt;the server's words&gt;"</em> (<code>role="alert"</code>), once (<code>services/signedOut.ts</code>). A 401 with no session (a wrong password or code) is left to the form, which says the server's words.</td></tr>
 <tr><td>Queue manager</td><td>Pending orders; assign or reassign by hand through the same routing (<code>queueManagerOrPermission</code>)</td></tr>
 <tr><td>Stalled withdrawals</td><td>Sells waiting past their window (<code>canResolveDisputes</code>)</td></tr>
 <tr><td>Revenue · Token flow · Transactions · Reports</td><td>Read over <code>accounting_events</code>; Revenue funds the team commission pool (<code>canManageCommission</code>)</td></tr>

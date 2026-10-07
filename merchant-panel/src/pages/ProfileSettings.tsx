@@ -6,8 +6,9 @@
 // wallet card here.
 //
 // The payment-details section is the one place the settlement rail is fully
-// visible: an INR merchant edits UPI + QR + bank, a USDT merchant edits a single
-// TRC-20 address. Which rail this merchant is on is assigned by an admin
+// visible: an INR merchant edits a bank account (no UPI handle: a UPI_BANK buy
+// is paid into it, and nobody is shown a handle, CLAUDE.md §2 and §24), a USDT
+// merchant edits an address per chain. Which rail this merchant is on is assigned by an admin
 // (Merchant.acceptedCurrencies) and is read-only here — the backend rejects a
 // request that carries the other rail's fields, so this is a real boundary and
 // not merely a hidden form.
@@ -38,10 +39,7 @@ const ProfileSettings: React.FC = () => {
   const [savingPayment, setSavingPayment] = useState(false);
   const [savingPrefs, setSavingPrefs] = useState(false);
 
-  const bank = merchant?.bankDetails ?? merchant?.settlementDetails;
-
   const [form, setForm] = useState({
-    upiId: '',
     accountHolderName: '',
     bankName: '',
     accountNo: '',
@@ -57,7 +55,6 @@ const ProfileSettings: React.FC = () => {
   useEffect(() => {
     if (!merchant) return;
     setForm({
-      upiId: merchant.bankDetails?.upiId ?? merchant.settlementDetails?.upiId ?? '',
       accountHolderName: merchant.bankDetails?.accountHolderName ?? merchant.settlementDetails?.accountName ?? '',
       bankName: merchant.bankDetails?.bankName ?? merchant.settlementDetails?.bankName ?? '',
       accountNo: merchant.bankDetails?.accountNo ?? merchant.settlementDetails?.accountNumber ?? '',
@@ -120,7 +117,6 @@ const ProfileSettings: React.FC = () => {
               usdtAddressBep20: form.usdtAddressBep20.trim(),
             }
           : {
-              upiId: form.upiId.trim(),
               bankDetails: {
                 accountHolderName: form.accountHolderName.trim(),
                 bankName: form.bankName.trim(),
@@ -236,7 +232,7 @@ const ProfileSettings: React.FC = () => {
               color: isUsdt ? 'var(--dep)' : 'var(--brand)',
               background: isUsdt ? 'var(--dep-bg)' : 'var(--brand-bg)',
             }}>
-              {isUsdt ? 'USDT · TRC-20 / BEP-20' : 'INR · UPI & bank'}
+              {isUsdt ? 'USDT · TRC-20 / BEP-20' : 'INR · bank account'}
             </span>
           </div>
           {!editingPayment && (
@@ -301,29 +297,9 @@ const ProfileSettings: React.FC = () => {
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 11 }}>
-            <div style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10,
-              padding: '13px 15px', background: 'var(--dep-bg)', borderRadius: 13,
-            }}>
-              <div style={{ minWidth: 0 }}>
-                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--dep)' }}>UPI ID</div>
-                <div className="bb-mono" style={{ fontSize: 15, fontWeight: 700, color: 'var(--text)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                  {bank?.upiId || 'Not set'}
-                </div>
-              </div>
-              {bank?.upiId && (
-                <button
-                  onClick={() => copyText(bank.upiId || '', 'UPI ID')}
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, fontWeight: 700, color: 'var(--dep)',
-                    background: 'var(--surface)', border: 0, padding: '8px 12px', borderRadius: 9, cursor: 'pointer', flexShrink: 0,
-                  }}
-                >
-                  <Copy size={13} /> Copy
-                </button>
-              )}
-            </div>
-
+            {/* A bank account only. A UPI ID row stood above this, saved and
+                copied into every order, and nothing ever read it: a UPI_BANK
+                buy is paid into this account and nobody is shown a handle. */}
             <div style={{ padding: '14px 15px', background: 'var(--surface-2)', borderRadius: 13 }}>
               <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)', marginBottom: 9 }}>Bank settlement account</div>
               <div style={{ display: 'grid', gridTemplateColumns: twoColumns, gap: '9px 18px' }}>
@@ -392,17 +368,6 @@ const ProfileSettings: React.FC = () => {
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 13 }}>
-            <Field label="UPI ID">
-              <input
-                value={form.upiId}
-                onChange={(e) => setForm((f) => ({ ...f, upiId: e.target.value }))}
-                placeholder="yourname@bank"
-                spellCheck={false}
-                autoCapitalize="none"
-                className="bb-mono"
-                style={inputStyle}
-              />
-            </Field>
             <div style={{ display: 'grid', gridTemplateColumns: twoColumns, gap: 12 }}>
               <Field label="Account holder">
                 <input value={form.accountHolderName} onChange={(e) => setForm((f) => ({ ...f, accountHolderName: e.target.value }))} style={inputStyle} />
@@ -492,7 +457,7 @@ const ProfileSettings: React.FC = () => {
           <div style={{ background: 'var(--surface-2)', borderRadius: 13, padding: '13px 14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text-2)' }}>Settlement rail</span>
             <span style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--text)' }}>
-              {isUsdt ? 'USDT · TRC-20 / BEP-20' : 'INR · UPI & bank'}
+              {isUsdt ? 'USDT · TRC-20 / BEP-20' : 'INR · bank account'}
             </span>
           </div>
           <Button variant="outline" tone="danger" full onClick={logout} style={{ marginTop: 2 }}>

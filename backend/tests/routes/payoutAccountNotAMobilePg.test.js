@@ -154,5 +154,24 @@ describePg('an account number that is a mobile number', () => {
       const res = await signup(mobile, regularAccount(), 'HDFC0000777');
       expect(res.status, JSON.stringify(res.body)).toBe(200);
     });
+
+    // A UPI handle is usually the holder's mobile with a bank suffix, and a
+    // member keeps none (`merchants.bank_upi_id` was dropped; §2, §24). The
+    // application used to store one, top-level or inside the bank details.
+    it('keeps no UPI handle sent with the application', async () => {
+      const mobile = someoneElse();
+      signedUp.push(mobile);
+      const res = await request(merchantApp).post('/auth/signup').send({
+        username: `upi${Math.random().toString(36).slice(2, 10)}`, mobile, password: 'Correct-Horse-Battery-9!',
+        upiId: `${mobile}@okaxis`,
+        bankDetails: { accountNo: regularAccount(), ifsc: 'HDFC0000778', bankName: 'Some Bank', upiId: `${mobile}@ybl` },
+      });
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      const { rows } = await pgQuery('SELECT merchant_id FROM merchants WHERE mobile = $1', [mobile]);
+      const merchant = await getMerchant(rows[0].merchant_id);
+      expect(merchant.bankDetails.bankName).toBe('Some Bank');
+      expect(merchant.bankDetails).not.toHaveProperty('upiId');
+      expect(JSON.stringify(merchant)).not.toMatch(/@okaxis|@ybl/);
+    });
   });
 });

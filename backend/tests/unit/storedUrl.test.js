@@ -4,8 +4,9 @@
  *
  * Five fields did this with no validation, and two of them are PAYMENT
  * INSTRUCTIONS shown to a player. The QR that motivated `assertCdnAssetUrl` was
- * removed on 2026-09-10 — a merchant supplies a UPI ID and the intent is built
- * per order — but the validator stays, because the carousel slide images go
+ * removed on 2026-09-10 (the pay link is now built per order: today the ATM QR
+ * a member scans on a cash buy, `checkCashLink`; a member keeps no UPI handle)
+ * — but the validator stays, because the carousel slide images go
  * through it and the shape it refuses is general. An upload route existed for
  * the QR, but nothing bound the stored value
  * to it — the merchant sent whatever string they liked to

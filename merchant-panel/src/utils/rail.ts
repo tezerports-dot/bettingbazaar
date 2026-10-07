@@ -2,7 +2,7 @@
 //
 // Settlement-rail vocabulary for the merchant panel.
 //
-// A merchant is INR-only (UPI + bank) or USDT-only (TRC-20) — never both. The
+// A merchant is INR-only (bank account) or USDT-only (TRC-20) — never both. The
 // backend authority is `Merchant.acceptedCurrencies`, which holds exactly one
 // entry, surfaced on the profile payload as `merchantType`
 // (backend/domains/merchant/merchantCurrency.js). This module is the mirror
@@ -66,7 +66,7 @@ const COPY: Record<MerchantRail, RailCopy> = {
   INR: {
     unit: 'INR',
     name: 'INR',
-    credentialsLabel: 'UPI & bank',
+    credentialsLabel: 'Bank account',
     proofLabel: 'UTR',
     proofSectionLabel: 'Payment proof',
     payoutDestinationLabel: 'Send to bank account',

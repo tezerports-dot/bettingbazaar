@@ -1643,6 +1643,13 @@ the case §28.2 names: *"either work someone forgot to finish or code to delete.
   supplies a UPI ID on the INR rail and nothing else.
   Route, CDN category, profile field, `merchants.qr_code_url`, the snapshot
   field, both panel types and every doc reference are gone.
+  *Later (2026-10-07):* the UPI ID went the same way. Once no rail paid a
+  member's UPI handle (CLAUDE.md §2 "How each rail is paid", §24), it was a
+  stored value nothing read: `merchants.bank_upi_id` (dropped convergently,
+  with `merchants_upi_unique`), its writers in signup, `PUT /profile` and the
+  admin rail switch, the snapshot's `upiId`, the Profile field and the panel
+  types are gone. `playerOrderPrivacyRoutes.test.js` now plants `upiId` in the
+  snapshot the way it plants `qrCodeUrl`, as a regression guard.
 - `assertCdnAssetUrl` deliberately STAYS: the carousel slide images use it, so
   removing the QR created no dead code, and the shape it refuses is general.
 - One fixture keeps `qrCodeUrl` on purpose —
@@ -3537,7 +3544,7 @@ new route and decide. Each of the three questions is defined in §2.
 | Panel | .ts/.tsx files | `dangerouslySetInnerHTML` | `.innerHTML =` |
 |---|---|---|---|
 | `user-panel` | 87 | 0 | 0 |
-| `admin-panel` | 111 | 0 | 0 |
+| `admin-panel` | 114 | 0 | 0 |
 | `merchant-panel` | 46 | 0 | 0 |
 
 <!-- END GENERATED -->

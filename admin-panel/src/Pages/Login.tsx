@@ -6,6 +6,7 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router';
 import { ArrowRight } from 'lucide-react';
 import { useAuthStore } from '../services/auth';
+import { signedOutReason as readSignedOutReason } from '../services/signedOut';
 import { useRetryCountdown } from '../hooks/useRetryCountdown';
 import { LogoMark, getBrand } from '../components/Logo';
 import toast from 'react-hot-toast';
@@ -32,6 +33,10 @@ export const Login: React.FC = () => {
   // 429 reads as a broken form, and the natural response — retry immediately —
   // extends the window it is trying to escape.
   const { secondsLeft, blocked, startFrom } = useRetryCountdown();
+  // Why the panel just signed this operator out (an account blocked or closed,
+  // a password changed elsewhere), in the server's words, so the form is not
+  // the first and only thing they see (§32 S48). Read once per page load.
+  const [signedOutReason] = useState(() => readSignedOutReason());
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -91,8 +96,10 @@ export const Login: React.FC = () => {
       // Same distinction on the second factor, and the code is KEPT on a pace
       // refusal: it was never submitted, and a 30-second TOTP retyped after a
       // 10-second wait is usually still the right one.
+      // The server's words first: a refused code arrives as an axios error
+      // whose own message is "Request failed with status code 401".
       if (!startFrom(error)) {
-        toast.error(error?.message || 'Invalid authentication code');
+        toast.error(error?.response?.data?.message || error?.message || 'Invalid authentication code');
         setOtp('');
       }
     } finally {
@@ -114,6 +121,15 @@ export const Login: React.FC = () => {
           <div style={{ fontSize: 20, fontWeight: 800, letterSpacing: '-.01em', marginTop: 13 }}>{brand.appName}</div>
           <div style={{ fontSize: 11, color: 'var(--muted)', fontWeight: 700, letterSpacing: '.16em', textTransform: 'uppercase', marginTop: 3 }}>{brand.adminPanelName}</div>
         </div>
+
+        {signedOutReason && (
+          <div role="alert" style={{
+            marginBottom: 14, padding: '12px 14px', borderRadius: 10, fontSize: 13, fontWeight: 600, lineHeight: 1.5,
+            background: 'var(--danger-bg)', color: 'var(--danger)', border: '1px solid var(--border)',
+          }}>
+            You were signed out: {signedOutReason}
+          </div>
+        )}
 
         {/* Card */}
         {/* ── OTP step ────────────────────────────────────────────────────

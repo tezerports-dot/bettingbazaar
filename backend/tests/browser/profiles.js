@@ -22,7 +22,9 @@
  */
 import { pgQuery } from '#db/client.js';
 import { pauseAssignment, suspendMerchant } from '#db/repositories/merchants.js';
+import { updateUser } from '#db/repositories/users.js';
 import { normaliseGrant, PERMISSION_KEYS } from '../../domains/identity/staffPermissions.js';
+import { hashPassword } from '../../domains/identity/password.util.js';
 import { seedPlayer, seedMerchant, seedTeam, seedAdmin, trc20, bep20 } from '../e2e/seed.js';
 import { playerToken, merchantToken, adminToken } from '../e2e/harness.js';
 
@@ -124,6 +126,22 @@ export const PROFILES = {
   'queue-manager': {
     what: 'a queue manager (no areas; works the payment queue)',
     ...staff({ isQueueManager: true }),
+  },
+  // The server refuses this session (`/me`: 401 SESSION_SUPERSEDED), so the
+  // panel signs itself out; `signsOut` is what its sign-in form must then say
+  // (run.js). The merchant panel's `merchant-suspended`, for staff (§32 S48).
+  'staff-password-reset': {
+    what: 'a sub-admin whose password was reset from another device while they were signed in',
+    signsOut: /password was changed/,
+    panel: 'admin-panel',
+    seed: async () => {
+      const s = await staff({ isSubAdmin: true, keys: ['canManageUsers'] }).seed();
+      // The reset's own write (`passwordReset.service.js`): the password and
+      // the session cutoff in one patch, AFTER the session above was issued.
+      await new Promise((r) => setTimeout(r, 20));
+      await updateUser(s.who, { passwordHash: await hashPassword(`Reset-${Date.now()}-elsewhere`), sessionsValidFrom: new Date() });
+      return s;
+    },
   },
   // ── Merchants ─────────────────────────────────────────────────────────
   'merchant-upi': {
