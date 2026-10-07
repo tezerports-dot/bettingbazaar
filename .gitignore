@@ -44,6 +44,7 @@ backend/tests/browser/controls.manifest.*.json
 # Route coverage hits and inventories (BB_ROUTE_COVERAGE); the report is the committed artefact.
 .route-coverage/
 backend/tests/browser/drive.report.json
+backend/tests/browser/drive.report.*.json
 backend/tests/browser/forms.report.json
 
 # Uploaded Android releases (local-disk fallback when S3 is not configured).

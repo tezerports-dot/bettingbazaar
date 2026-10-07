@@ -18,7 +18,9 @@
  * `scripts/report-control-gaps.mjs` compares them.
  *
  * `default` is not here: it is `seedActors()` itself, the account the drive and
- * mutate passes press as.
+ * mutate passes press as unless told otherwise. `BB_PROFILE=<name> npm run
+ * test:drive` presses a profile's panel AS that account, seeded by the same
+ * `seedProfile` call in the same order, and writes `drive.report.<name>.json`.
  */
 import { pgQuery } from '#db/client.js';
 import { pauseAssignment, suspendMerchant } from '#db/repositories/merchants.js';
