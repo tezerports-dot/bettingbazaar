@@ -6,6 +6,19 @@
 
 Dates are stable anchors: **code comments cite these dates**, so keep them.
 
+**2026-10-07 — Step 3 is redefined: simple signup, Telegram optional for 2FA and password reset only.** Owner (Choudhary): *"stop the step 3 we no longer need this we will keep download and login simple just register with your mobile password and captcha make the telegram mini app optional only as 2FA or reseting password … we will not force users to use telgram mini the website and apk can work perfectly fine even without these."* This replaces the 2026-10-01 plan below (a mandatory Mini App replacing every bot) and overrules CLAUDE.md §33's verification gate. The owner's twelve answers are in `docs/HANDOFF.md` §3:
+- The mobile is unverified at signup.
+- No channel requirement.
+- Password reset goes through a Mini App contact share that must match the account's mobile.
+- Linking is optional.
+- 2FA is Telegram only, required for staff and merchants.
+- No Telegram login.
+- The bot fleet goes, leaving one bot.
+- The invite code is optional.
+- Staff alerts go to those who linked Telegram.
+- Notification bots come later and are optional.
+- The Android app has the same flow.
+
 **2026-10-07 — Token supply is enforced at the moment of every write, not reconciled after it.** Owner (Choudhary), answering the 2g question on `reconcileAgainstSubLedgers()`. The proposal was to run it every minute in `ledger-reconcile` and alert on drift. The owner declined: *"dont run the supply checks each minute i want these live atomic so no double spend could happen, idempotency or anything which make sure that 1 token can't be calculated or used twice."* A periodic check only finds a double-count after it has committed. The database must refuse the write that would create, duplicate, lose or double-spend a token, in the same transaction as the money it moves. `reconcileAgainstSubLedgers()` stays as an audit read, not as the guarantee.
 
 **2026-10-07 — "Payment not received" only after the player taps Paid.** Owner (Choudhary), answering the 2g question: yes. `POST /api/merchant/orders/:id/reject` accused a player of not paying (a warning and a payment flag) on a PROCESSING buy, before the player had said they paid. A member who cannot serve an unpaid buy declines it instead.

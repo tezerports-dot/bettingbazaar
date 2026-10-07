@@ -25,8 +25,12 @@ A prompt to start the new session is at the end (section 9).
     `claude/2f-red-flags-wip`.
 - **Step 2g is done**: PR #203 from branch `ccr-4027856e-w3uqtr` (built on
   `claude/2g-close-out-wip`), merged with a merge commit once CI is green. See section 2. **Step 2 is complete.**
-- **Next: Step 3** (section 3), in a fresh session, after Vikram answers the
-  two questions in section 2.
+- **2026-10-07 batch (PR #210, branch `claude/add-graphify-skill`):** both
+  section-2 questions answered and built, every "recorded, not yet done" item
+  except the merchant login closed, token conservation enforced by the
+  database, and graphify (code map) added for sessions. See section 2.
+- **Next: Step 3, redefined by the owner on 2026-10-07** (section 3). It is
+  built on top of PR #210 and gets its own PR once #210 is merged.
 - **Step 2f is done.** It contains:
   - Online-time log: `merchant_online_sessions`, written only by triggers on
     `merchants.is_online`.
@@ -80,27 +84,29 @@ A prompt to start the new session is at the end (section 9).
   the paused banner's stale UPI/QR advice; the browser pass's sign-in loop;
   a supervisor browser profile added, `merchant-pending` dropped.
 
-**Questions for Vikram (ask before Step 3 if not yet answered):**
+**Questions for the owner (answered 2026-10-07; DECISION_LOG has both):**
 1. `reconcileAgainstSubLedgers()` (the proof that pools + wallets + holding
    = supply) runs only in `ledgerPg`, never on a running platform. Run it in
    the 1-minute `ledger-reconcile` job and alert on drift? Recommended: yes,
-   as a small change of its own.
+   as a small change of its own. **Answer: no periodic check.** Token
+   conservation is enforced by the database in every money transaction
+   (schema.sql "TOKEN CONSERVATION"; CLAUDE.md §19.1). Built in PR #210.
 2. "Payment not received" (`POST /api/merchant/orders/:id/reject`) is
    accepted on a PROCESSING buy, before the player tapped Paid, and still
    warns the player. Narrow it to PAID? Recommended: yes (§37 work: test,
-   mutation, both maps).
+   mutation, both maps). **Answer: yes.** REJECTED is reached from PAID
+   alone; both doors answer 400 `NOT_PAID_YET` before. Built in PR #210.
 
-**Recorded, not yet done:**
+**Recorded after 2g** (all closed in PR #210 except the first):
 - The merchant login is its own handler, not `loginHandler` with a
   `LOGIN_DOOR` entry as CLAUDE.md §2 says. Fold it in with Step 3's login.
-- The admin panel's `verifySession` drops a refused staff session at a bare
-  sign-in form (the shape fixed in the merchant panel in 2g).
-- `merchants.bank_upi_id` is written by Profile and copied into the order
-  snapshot; nothing shows it (§3: a field with no consumer).
-- `drive.js` presses as a member only: the supervisor's 33 Team-page
-  controls are inventoried, never pressed.
-- `test:mutate`'s two `admin/payment-control` cases open a screen deleted
-  in 2c.
+- Closed: the admin panel says why it signed a staff member out
+  (`services/signedOut.ts`).
+- Closed: `merchants.bank_upi_id` dropped end to end; a player's payout
+  account is a bank account only (`users_bank_details_bank_account_only`).
+- Closed: `BB_PROFILE=merchant-supervisor npm run test:drive` presses the
+  supervisor's Team page; `test:mutate`'s payment-control cases are replaced
+  by Dispute Manager cases on real held buys.
 
 **Running a server locally** (for `test:e2e` and the browser tiers):
 `test:e2e` starts its own (give it its own database and `E2E_PORT` if a
@@ -115,23 +121,36 @@ Install every panel's dependencies first (`npm ci` in each), or a browser
 pass cannot start its Vite server. For `report:routes`, start that server and
 run each tier with `BB_ROUTE_COVERAGE=$PWD/.route-coverage/<tier>.jsonl`.
 
-## 3. The plan after 2g
+## 3. The plan after 2g: Step 3, as redefined (owner, 2026-10-07)
 
-- **Step 3, Telegram Mini App** replaces every bot, on all three panels:
-  - One bot per panel, which sends no messages. The Mini App does the
-    contact share (proves the mobile), the channel-membership check and
-    password reset.
-  - "Login with Telegram" beside the password form signs in only when the
-    Telegram account is the one whose shared contact matches the account's
-    mobile. The Mini App's `initData` is verified on the server with the bot
-    token.
-  - Delete the sign-in bot fleet, rotation, per-bot webhooks, bot message
-    templates and the recovery bots.
-  - The Mini App must keep the 2d rule: a buying player sees where to pay
-    only after the member accepts.
-- **Five notification bots** (transaction status and dispute deadline) are
-  a separate later step, and they change Step 3. Nothing more is decided;
-  ask Vikram before designing them.
+The old Step 3 (a mandatory Mini App replacing every bot) is cancelled. The
+owner: *"keep download and login simple just register with your mobile
+password and captcha make the telegram mini app optional only as 2FA or
+reseting password … the website and apk can work perfectly fine even without
+these."* Their answers:
+
+1. The mobile number is not verified at signup; it is the login name.
+2. No Telegram channel requirement.
+3. Forgotten password: the player opens the Mini App and shares their
+   contact; if its phone matches the account's mobile, they set a new
+   password. No admin reset, no prior link needed.
+4. Linking Telegram is optional, from the profile, at any time.
+5. 2FA is Telegram only (the authenticator-app 2FA is removed unless the
+   owner says otherwise).
+6. No "Login with Telegram".
+7. Merchants and staff sign up and log in the same way, but 2FA is required
+   for them.
+8. Delete the sign-in bot fleet, rotation, per-bot webhooks, recovery bots
+   and bot message templates; keep one bot for the Mini App.
+9. The invite code at signup is optional.
+10. Admin security alerts go to staff who linked Telegram.
+11. The five notification bots (order status, dispute deadline) are still
+    wanted later, optional for users.
+12. The Android app has exactly the same flow as the website.
+
+This overrules CLAUDE.md §33; the Step 3 change rewrites it. The 2d rule
+still holds wherever a buy is shown: where to pay appears only after the
+member accepts.
 
 ## 4. Decisions and defaults, with dates
 
