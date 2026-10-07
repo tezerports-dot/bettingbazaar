@@ -2823,6 +2823,67 @@ const MUTATIONS = [
     to: `      if (false) {
         await client.query(rollback);`,
   },
+  // ── A casino WIN pays into winnings (owner, 2026-10-07) ──────────────────
+  // The pocket each callback moves is `CALLBACK_POCKET` in casino.core.js. A
+  // stake goes back where the BET took it; only a WIN reaches winnings.
+  {
+    id: 'MCW1', file: 'database/repositories/casino.core.js', config: PG,
+    test: 'database/tests/casinoWinPocketPg.test.js',
+    why: 'a casino WIN is paid into the deposit again, so it cannot be withdrawn the way a board win can',
+    from: `  [CASINO_TX.WIN]:      'winningsBalance',`,
+    to: `  [CASINO_TX.WIN]:      STAKE_POCKET,`,
+  },
+  {
+    id: 'MCW2', file: 'database/repositories/casino.core.js', config: PG,
+    test: 'database/tests/casinoWinPocketPg.test.js',
+    why: 'a ROLLBACK returns the stake into winnings: a BET and its rollback turn a deposit into withdrawable money',
+    from: `  [CASINO_TX.ROLLBACK]: STAKE_POCKET,`,
+    to: `  [CASINO_TX.ROLLBACK]: 'winningsBalance',`,
+  },
+  {
+    id: 'MCW3', file: 'database/repositories/casino.core.js', config: PG,
+    test: 'database/tests/casinoWinPocketPg.test.js',
+    why: 'a REFUND returns the stake into winnings: a deposit becomes withdrawable with no game played',
+    from: `  [CASINO_TX.REFUND]:   STAKE_POCKET,`,
+    to: `  [CASINO_TX.REFUND]:   'winningsBalance',`,
+  },
+  {
+    id: 'MCW4', file: 'database/repositories/casino.core.js', config: PG,
+    test: 'database/tests/casinoWinPocketPg.test.js',
+    why: 'a casino BET takes its stake from winnings instead of the deposit',
+    from: `  [CASINO_TX.BET]:      STAKE_POCKET,`,
+    to: `  [CASINO_TX.BET]:      'winningsBalance',`,
+  },
+  {
+    id: 'MCW5', file: 'database/repositories/casino.core.js', config: PG,
+    test: 'database/tests/casinoWinPocketPg.test.js',
+    why: 'the ledger row names the deposit while the winnings moved, so History describes a movement that did not happen',
+    from: `        field: pocket,`,
+    to: `        field: STAKE_POCKET,`,
+  },
+  {
+    // MCW1's edit, measured through the transport: the signed provider
+    // callback and the player's History, not the repository alone.
+    id: 'MCW6', file: 'database/repositories/casino.core.js', config: PG,
+    test: 'backend/tests/routes/casinoWinPocketRoutesPg.test.js',
+    why: 'a WIN posted to POST /api/game/wallet/:providerKey lands in the deposit, and History shows it as the deposit wallet',
+    from: `  [CASINO_TX.WIN]:      'winningsBalance',`,
+    to: `  [CASINO_TX.WIN]:      STAKE_POCKET,`,
+  },
+  {
+    // Two edits, because the callback is idempotent twice over on purpose —
+    // the provider id is UNIQUE in casino_transactions and, as `casino_<id>`,
+    // in wallet_ledger. Loosening either alone pays nothing twice.
+    id: 'MCW7', file: 'database/repositories/casino.core.js', config: PG,
+    test: 'database/tests/casinoWinPocketPg.test.js',
+    why: 'a redelivered WIN is keyed afresh each time, so the provider retrying pays the winnings again',
+    edits: [
+      [`        [String(txId), ctx.rid, ctx.uid, ctx.provider, type, amountPaise],`,
+        `        [\`\${txId}:\${Math.random()}\`, ctx.rid, ctx.uid, ctx.provider, type, amountPaise],`],
+      [`        txId: \`casino_\${txId}\`,`,
+        `        txId: \`casino_\${txId}:\${Math.random()}\`,`],
+    ],
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that
