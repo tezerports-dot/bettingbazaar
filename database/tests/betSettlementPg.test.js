@@ -22,6 +22,9 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { pgConfigured, pgQuery, applySchema, closePg } from '../client.js';
 import { applyDeltaPaise } from '../repositories/wallets.core.js';
+// A fixture's tokens come from somewhere too: the platform's own holding,
+// posted with the credit (see `_funding.js`).
+import { TEST_FUNDING } from './_funding.js';
 import { BET_STATUS, placeBet, winBet, loseBet, getBet, resolveBetId } from '../repositories/bets.core.js';
 import { publicIdFor } from '../repositories/bets.js';
 
@@ -31,7 +34,7 @@ const describePg = hasPg ? describe : describe.skip;
 const U = 'pg-fee-user';
 
 const fund = (field, paise, key) =>
-  applyDeltaPaise({ userId: U, field, deltaPaise: paise, txId: key, type: 'CREDIT', reason: 'test funding' });
+  applyDeltaPaise({ userId: U, field, deltaPaise: paise, txId: key, type: 'CREDIT', reason: 'test funding', counterparty: TEST_FUNDING });
 
 const place = (betId, amountPaise = 10_000) =>
   placeBet({
@@ -52,7 +55,7 @@ describePg('the retained platform fee (PostgreSQL)', () => {
     // TRUNCATE rather than DELETE: bet_transitions carries an append-only
     // trigger, so a DELETE is refused by the database — which is the point of
     // the trigger and not something a test should route around.
-    await pgQuery('TRUNCATE bet_transitions, bets, wallet_ledger, wallets RESTART IDENTITY CASCADE');
+    await pgQuery('TRUNCATE bet_transitions, bets, wallet_ledger, wallets, treasury_entries, treasury_accounts RESTART IDENTITY CASCADE');
     await fund('depositBalance', 1_000_000, 'fee_seed');
   });
 
@@ -144,7 +147,7 @@ describePg('resolving a bet by whichever id the caller holds', () => {
   beforeAll(async () => { await applySchema(); });
 
   beforeEach(async () => {
-    await pgQuery('TRUNCATE bet_transitions, bets, wallet_ledger, wallets RESTART IDENTITY CASCADE');
+    await pgQuery('TRUNCATE bet_transitions, bets, wallet_ledger, wallets, treasury_entries, treasury_accounts RESTART IDENTITY CASCADE');
     await fund('depositBalance', 1_000_000, 'fee_seed');
   });
 

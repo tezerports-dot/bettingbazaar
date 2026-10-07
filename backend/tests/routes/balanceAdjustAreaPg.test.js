@@ -20,6 +20,9 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { pgConfigured, applySchema, closePg } from '#db/client.js';
 import { db } from '#db';
 import { getBalancesPaise, applyMovementPaise } from '#db/repositories/wallets.core.js';
+// A fixture's tokens come from the platform's own holding, posted with the
+// credit — the database refuses a wallet that gains tokens from nowhere.
+import { TEST_FUNDING } from '#db/tests/_funding.js';
 import { mountRouter, actor, as } from './_harness.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
@@ -43,6 +46,7 @@ describePg('balance adjustment — its own area, players only', () => {
         userId: p.userId,
         legs: [{ field: 'depositBalance', deltaPaise: rupees * 100 }],
         ledger: [{ txId: `seed_${p.userId}`, field: 'depositBalance', amountPaise: rupees * 100, type: 'CREDIT' }],
+        counterparty: TEST_FUNDING,
       });
     }
     return p;

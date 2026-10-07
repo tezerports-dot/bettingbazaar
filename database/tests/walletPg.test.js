@@ -10,9 +10,17 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { pgConfigured, pgQuery, applySchema, closePg } from '../client.js';
 import {
-  getBalancesPaise, getBalancesRupees, applyDeltaPaise, applyDeltaRupees, transferPaise,
+  getBalancesPaise, getBalancesRupees, transferPaise,
+  applyDeltaPaise as applyDeltaPaiseRaw, applyDeltaRupees as applyDeltaRupeesRaw,
 } from '../repositories/wallets.core.js';
 import * as users from '../repositories/users.js';
+import { TEST_FUNDING } from './_funding.js';
+
+// Funding a wallet means tokens arriving from somewhere, and the database
+// refuses a credit that names nowhere — see `_funding.js`. A case that means
+// to name its own counterparty passes one and overrides this.
+const applyDeltaPaise = (args) => applyDeltaPaiseRaw({ counterparty: TEST_FUNDING, ...args });
+const applyDeltaRupees = (args) => applyDeltaRupeesRaw({ counterparty: TEST_FUNDING, ...args });
 
 const hasPg = pgConfigured();
 const describePg = hasPg ? describe : describe.skip;
@@ -23,7 +31,7 @@ describePg('Postgres-authoritative wallet', () => {
   beforeAll(async () => { await applySchema(); });
   afterAll(async () => { await closePg(); });
   beforeEach(async () => {
-    await pgQuery('TRUNCATE wallets, wallet_ledger RESTART IDENTITY CASCADE');
+    await pgQuery('TRUNCATE wallets, wallet_ledger, treasury_entries, treasury_accounts RESTART IDENTITY CASCADE');
   });
 
   describe('reads', () => {
@@ -60,11 +68,31 @@ describePg('Postgres-authoritative wallet', () => {
       expect((await getBalancesPaise(USER)).depositBalance).toBe(10000); // untouched
     });
 
-    it('permits a negative balance only when explicitly allowed (corrective admin path)', async () => {
+    it('refuses a negative balance to EVERY writer — there is no override', async () => {
+      // `allowNegative` was a per-leg override, used by the bonus clawback. A
+      // pocket below zero is a token spent that was never there, so the row
+      // refuses it (`wallets_pockets_nonneg`) and the movement's guard turns
+      // that into an answer rather than an error (owner, 2026-10-07).
       const result = await applyDeltaPaise({
-        userId: USER, field: 'depositBalance', deltaPaise: -500, txId: 'adj1', allowNegative: true,
+        userId: USER, field: 'depositBalance', deltaPaise: -500, txId: 'adj1',
       });
-      expect(result).toMatchObject({ ok: true, balanceAfterPaise: -500 });
+      expect(result).toMatchObject({ ok: false, insufficient: true });
+      expect((await getBalancesPaise(USER)).depositBalance).toBe(0);
+
+      // And directly, past the application entirely.
+      await expect(pgQuery(
+        `INSERT INTO wallets (user_id, deposit_paise) VALUES ($1, -1)`, [`${USER}-neg`],
+      )).rejects.toThrow(/wallets_pockets_nonneg/);
+    });
+
+    it('refuses a credit that names nowhere for the tokens to come from', async () => {
+      // The counterparty is not a formality: without it the wallets would move
+      // by more than USER_FLOAT and the transaction could not commit. The
+      // refusal is at the throw, so no half-written movement reaches the row.
+      await expect(applyDeltaPaiseRaw({
+        userId: USER, field: 'depositBalance', deltaPaise: 1000, txId: 'nowhere',
+      })).rejects.toThrow(/needs a counterparty/);
+      expect((await getBalancesPaise(USER)).depositBalance).toBe(0);
     });
 
     it('writes the balance and its ledger row in ONE transaction', async () => {

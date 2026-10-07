@@ -41,8 +41,10 @@
  *
  * ── Where the money is at each point ────────────────────────────────────────
  *   place     stake → locked          the user's stake is committed, not spent
- *   win       locked → (gone)         stake consumed; payout credited separately
- *   lose      locked → (gone)         stake consumed by the house
+ *   win       locked → (gone)         stake consumed; payout credited separately;
+ *                                     the net from the house (HOUSE_RESERVE, then
+ *                                     TOKEN_SUPPLY), same transaction
+ *   lose      locked → HOUSE_RESERVE  stake consumed by the house, same transaction
  *   void      locked → back to source returned to the pocket it came from
  *   refund    locked → back to source same, by the user's own request
  *
@@ -500,12 +502,23 @@ async function settle(
       });
     }
 
-    const movement = await applyMovementWithin(ctx, { legs, ledger });
+    // The house is the other side of what the player's wallet gains or loses
+    // (stake consumed, payout credited), posted in THIS transaction: a lost
+    // stake to HOUSE_RESERVE, a win from it — and past what the house holds,
+    // from the platform's own (`treasury.postHouseSettlement`). A void or a
+    // refund only moves the stake between the player's own pockets.
+    const movement = await applyMovementWithin(ctx, {
+      legs, ledger,
+      counterparty: {
+        house: true, operation: `BET_${spec.to}`, actor, reason: reason || `Bet ${ctx.bid} ${spec.to.toLowerCase()}`,
+        refModel: 'Bet', refId: ctx.bid,
+      },
+    });
     if (movement.idempotent) {
       return { commit: false, value: { ok: false, reason: 'inconsistent_idempotency', betId: ctx.bid } };
     }
     if (!movement.ok) {
-      return { commit: false, value: { ok: false, reason: 'insufficient', legs } };
+      return { commit: false, value: { ok: false, reason: movement.refused ?? 'insufficient', legs } };
     }
 
     return {

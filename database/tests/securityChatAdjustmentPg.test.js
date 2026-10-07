@@ -24,6 +24,7 @@ import {
   applyAdjustment, getAdjustment, listAdjustments, ADJUSTABLE_FIELDS,
 } from '../repositories/balanceAdjustments.js';
 import { getBalancesPaise } from '../repositories/wallets.core.js';
+import { fundWallet } from './_funding.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 
@@ -134,10 +135,12 @@ describePg('the controls that were defined nowhere', () => {
       seq += 1;
       USER = `adj-user-${RUN}-${seq}`;
       await pgQuery('DELETE FROM balance_adjustments', []);
-      await pgQuery(
-        `INSERT INTO wallets (user_id, deposit_paise, winnings_paise, token_paise)
-         VALUES ($1, 100000, 50000, 7000)`, [USER],
-      );
+      // Funded through the real writer, so USER_FLOAT describes these pockets:
+      // the database refuses a wallet written straight into existence
+      // (schema.sql, "TOKEN CONSERVATION").
+      await fundWallet(USER, 100000, `seed-dep-${RUN}-${seq}`, 'depositBalance');
+      await fundWallet(USER, 50000, `seed-win-${RUN}-${seq}`, 'winningsBalance');
+      await fundWallet(USER, 7000, `seed-tok-${RUN}-${seq}`, 'tokenBalance');
     });
 
     const adjust = (over = {}) => applyAdjustment({

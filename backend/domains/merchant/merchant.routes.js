@@ -5,7 +5,6 @@
 
 import express   from 'express';
 import { db } from '#db';
-import { creditDeposit, creditReserve } from '../wallet/walletAuthority.service.js';
 // AQ-2/AQ-8: sign via the single JWT authority; hash via the password authority
 // (argon2id + bcrypt verify-fallback). No direct bcrypt use remains here.
 import { signToken } from '../identity/jwt.util.js';
@@ -1053,7 +1052,7 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
             // `requireState`: asked under the order's lock, so a buy the player
             // disputed (or an admin decided) since it was read is not paid out
             // underneath them (security review, 2026-10-03).
-            deposited = await moveDepositMoney(order, { creditDeposit, creditReserve, releaseUTR, requireState: 'PAID' });
+            deposited = await moveDepositMoney(order, { releaseUTR, requireState: 'PAID' });
             if (!deposited.ok && deposited.reason === 'order_state') {
                 return res.status(409).json({
                     success: false,

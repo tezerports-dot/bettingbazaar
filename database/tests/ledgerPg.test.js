@@ -19,6 +19,7 @@ import {
 import { EVENT_TYPES } from '../../backend/domains/revenue/chartOfAccounts.js';
 import { postMovement, ACCOUNTS } from '../repositories/treasury.js';
 import { teamFixture } from '../../backend/tests/teamFixture.js';
+import { fundWallet } from './_funding.js';
 
 const hasPg = pgConfigured();
 const describePg = hasPg ? describe : describe.skip;
@@ -242,8 +243,9 @@ describePg('Accounting ledger (PostgreSQL)', () => {
   // ── The audit question ─────────────────────────────────────────────────────
   describe('reconciliation against the sub-ledgers', () => {
     it('agrees when the ledger describes what the wallets actually hold', async () => {
-      await pgQuery(
-        `INSERT INTO wallets (user_id, deposit_paise, winnings_paise) VALUES ('u1', 80_000, 20_000)`);
+      // The wallet and the USER_FLOAT that describes it, together — the
+      // database refuses either alone (schema.sql, "TOKEN CONSERVATION").
+      await fundWallet('u1', 100_000, 'rec_1_float');
       await deposit('rec_1', 100_000);
 
       const r = await reconcileAgainstSubLedgers();
@@ -273,15 +275,31 @@ describePg('Accounting ledger (PostgreSQL)', () => {
       expect(agreed.comparisons.find((c) => c.name === 'team_float'))
         .toMatchObject({ ledgerPaise: 500_000, subLedgerPaise: 500_000 });
 
-      // Now the treasury records a payout to a player that no pool performed.
-      await postMovement({
-        movementId: 'rec_disp', operation: 'TEAM_BUY_PAID',
-        legs: { [ACCOUNTS.TEAM_FLOAT]: -100_000, [ACCOUNTS.USER_FLOAT]: 100_000 },
-      });
+      // A payout to a player that no pool performed is REFUSED now (owner,
+      // 2026-10-07), so this comparison can no longer be made to drift from
+      // inside the application. It is kept as the audit it is: a drift written
+      // past the triggers (a restore, a replica, `session_replication_role`)
+      // is still reported rather than assumed impossible.
+      await pgQuery('SET session_replication_role = replica');
+      try {
+        await pgQuery(
+          `UPDATE treasury_accounts SET balance_paise = balance_paise - 100000 WHERE account = 'TEAM_FLOAT'`);
+      } finally {
+        await pgQuery('SET session_replication_role = DEFAULT');
+      }
       const r = await reconcileAgainstSubLedgers();
       const teamDrift = r.differences.find((d) => d.name === 'team_float');
       expect(teamDrift).toMatchObject({ ledgerPaise: 400_000, subLedgerPaise: 500_000, driftPaise: -100_000 });
       expect(r.ok).toBe(false);
+
+      // Put it back, outside any assertion: this database is shared (trap 10).
+      await pgQuery('SET session_replication_role = replica');
+      try {
+        await pgQuery(
+          `UPDATE treasury_accounts SET balance_paise = balance_paise + 100000 WHERE account = 'TEAM_FLOAT'`);
+      } finally {
+        await pgQuery('SET session_replication_role = DEFAULT');
+      }
     });
   });
 });

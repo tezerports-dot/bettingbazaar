@@ -161,7 +161,7 @@ describePg('a dispute that lands while the hold is being settled', () => {
     // it. A later waiter on a row waits on the one ahead of it, so it is found
     // behind the holder or the dispute.
     const settling = settleHold(orderId);
-    await untilBlocked('%SELECT team_id, token_amount_paise, order_type, state FROM order_states%FOR UPDATE%',
+    await untilBlocked('%token_amount_paise%FROM order_states WHERE order_id%FOR UPDATE%',
       [held.pid, disputing]);
 
     await held.unlock();
@@ -181,23 +181,29 @@ describePg('a dispute that lands while the hold is being settled', () => {
   });
 
   it('a dispute landing AFTER the settlement committed stays an open dispute over money that moved', async () => {
-    // The other interleaving. The pool credit commits (tokens to the team),
-    // then the worker parks on the PLAYER's wallet — releasing their stake —
-    // and the dispute lands before the order is mirrored. The money moving is
-    // correct: the settlement won the lock first. Erasing the dispute is not.
+    // The other interleaving, with the queue the other way round: the worker
+    // reaches the order's lock FIRST and the dispute waits behind it, so the
+    // settlement commits whole — the pool credited, the stake consumed and
+    // USER_FLOAT → TEAM_FLOAT, in ONE transaction (owner, 2026-10-07; there is
+    // no longer a gap between the two halves to land in). The money moving is
+    // correct: the settlement won the lock. Erasing the dispute is not — and
+    // the dispute holds the order's lock before the mirror asks for it, so the
+    // mirror finds DISPUTED rather than writing over it.
     const { who, team, orderId } = await dueHold();
     const poolBefore = await getPool(team.teamId);
 
-    const held = await holdRow('SELECT 1 FROM wallets WHERE user_id = $1 FOR UPDATE', [who.userId]);
+    const held = await holdRow('SELECT 1 FROM order_states WHERE order_id = $1 FOR UPDATE', [orderId]);
     const settling = settleHold(orderId);
-    await untilBlocked('%FROM wallets WHERE user_id%FOR UPDATE%', [held.pid]);
+    const settlingPid = await untilBlocked('%token_amount_paise%FROM order_states WHERE order_id%FOR UPDATE%', [held.pid]);
 
-    const raised = await as(playerApp, who).post(`/order/${orderId}/dispute`)
-      .send({ reason: 'Marked sent, nothing reached my bank.' });
-    expect(raised.status, raised.body?.message).toBe(200);
+    const raising = as(playerApp, who).post(`/order/${orderId}/dispute`)
+      .send({ reason: 'Marked sent, nothing reached my bank.' }).then((r) => r);
+    await untilBlocked('%SELECT * FROM order_states WHERE order_id%FOR UPDATE%', [held.pid, settlingPid]);
 
     await held.unlock();
-    await settling.catch(() => false);
+    expect(await settling, 'the settlement had the lock first and must have settled').toBe(true);
+    const raised = await raising;
+    expect(raised.status, raised.body?.message).toBe(200);
 
     const after = await getOrderRecord(orderId);
     expect(after.state, 'the mirror wrote COMPLETED over a dispute raised after settlement').toBe('DISPUTED');

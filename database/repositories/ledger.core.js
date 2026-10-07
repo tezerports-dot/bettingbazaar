@@ -397,8 +397,10 @@ export async function reconcileAgainstSubLedgers() {
   const [ledger, wallets, treasury, pools] = await Promise.all([
     trialBalance(),
     pgQuery(
-      `SELECT COALESCE(SUM(deposit_paise + winnings_paise + reserve_paise + locked_paise), 0) AS total
-         FROM wallets`, [], 'ledger_recon_wallets'),
+      // What a wallet HOLDS, by the one definition the conservation triggers
+      // use (schema.sql, `bb_wallet_value_paise`) — token_paise included.
+      `SELECT COALESCE(SUM(bb_wallet_value_paise(w)), 0) AS total
+         FROM wallets w`, [], 'ledger_recon_wallets'),
     pgQuery(
       `SELECT account, balance_paise FROM treasury_accounts`, [], 'ledger_recon_treasury'),
     pgQuery(
@@ -417,7 +419,7 @@ export async function reconcileAgainstSubLedgers() {
       name: 'user_liability',
       ledgerPaise: ledger.accounts.USER_FUNDS.reportedPaise + ledger.accounts.PLATFORM_RESERVE.reportedPaise,
       subLedgerPaise: toPaise(wallets.rows[0]?.total),
-      subLedger: 'wallets (deposit + winnings + reserve + locked)',
+      subLedger: 'wallets (bb_wallet_value_paise)',
     },
     {
       name: 'team_float',
@@ -429,7 +431,7 @@ export async function reconcileAgainstSubLedgers() {
       name: 'user_float',
       ledgerPaise: treasuryBy.USER_FLOAT ?? 0,
       subLedgerPaise: toPaise(wallets.rows[0]?.total),
-      subLedger: 'wallets (deposit + winnings + reserve + locked)',
+      subLedger: 'wallets (bb_wallet_value_paise)',
     },
   ];
 

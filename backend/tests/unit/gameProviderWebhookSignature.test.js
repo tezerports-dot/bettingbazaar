@@ -1,7 +1,8 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * POST /api/game/wallet/:providerKey is an UNAUTHENTICATED route that reaches
- * creditWinnings() and refundOrder() — the HMAC is its entire access control.
+ * the player's wallet — `applyProviderCallback` debits a stake and credits a
+ * win or a rollback — and the HMAC is its entire access control.
  *
  * The guard used to read `if (sig && sig !== expected) return 401`, so a request
  * with NO signature header fell through to the money paths. The first test below

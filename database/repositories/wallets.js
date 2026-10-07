@@ -24,15 +24,18 @@
  * ── Why a movement is its own transaction ───────────────────────────────────
  * Each function here opens and commits its own transaction: the balance and its
  * ledger rows land together or not at all, under `SELECT … FOR UPDATE` on the
- * wallet row. A caller cannot enlist a movement in some larger unit of its own,
- * and does not need to — the deterministic txId means a retry after any outer
- * failure is a no-op rather than a double spend.
+ * wallet row — except the `…Within` ones. Those are the player's half of a
+ * TEAM POOL movement (a buy paid, a sell settled or reversed): the pool, the
+ * wallet and the treasury movement between them are one fact, and the
+ * database refuses to commit any of them alone (owner, 2026-10-07), so they
+ * run inside `teamPools.js`'s transaction, after its order and pool locks.
  */
 import { paiseToRupees, rupeesToPaise } from '../../backend/shared/money.js';
 import { pgQuery } from '../client.js';
 import {
   applyMovementPaise, applyMovementWithin, getBalancesPaise, withWalletLock,
 } from './wallets.core.js';
+import { ACCOUNTS } from './treasury.js';
 
 /** Every balance a caller might read, in rupees. */
 export async function getBalances(userId) {
@@ -44,78 +47,106 @@ export async function getBalances(userId) {
 
 const rupees = paiseToRupees;
 
-/**
- * Credit one field. Covers creditWinnings / creditDeposit / creditReserve,
- * which differ only by field, reason and key format.
- */
-async function credit({ userId, field, amount, txId, reason, refId, type = 'CREDIT' }) {
-  const amountPaise = rupeesToPaise(amount);
-  if (amountPaise <= 0) throw new Error(`Invalid credit amount: ${amount}`);
-
-  const result = await applyMovementPaise({
-    userId,
-    legs: [{ field, deltaPaise: amountPaise }],
-    ledger: [{ txId, field, amountPaise, type, reason, refId }],
-  });
-  if (result.idempotent) return { idempotent: true, txId };
-
-  const after = rupees(result.balancesAfterPaise[field]);
-  return {
-    txId,
-    before: rupees(result.balancesAfterPaise[field] - amountPaise),
-    after,
-    balances: mapRupees(result.balancesAfterPaise),
-  };
-}
-
 function mapRupees(paise) {
   return Object.fromEntries(Object.entries(paise).map(([f, v]) => [f, rupees(v)]));
 }
 
 // ── Deposits, winnings, reserve ──────────────────────────────────────────────
 
-/** wallet.service.creditDeposit — txId `dep_complete_<orderId>`. */
-export async function creditDeposit(userId, amount, orderId) {
-  const r = await credit({
-    userId, field: 'depositBalance', amount,
-    txId: `dep_complete_${orderId}`,
-    reason: `P2P deposit confirmed ${orderId}`, refId: orderId,
-  });
-  return r.idempotent ? r : { depositBefore: r.before, depositAfter: r.after, txId: r.txId, balances: r.balances };
+/**
+ * How much of a completed buy lands in each pocket. ONE rule, in one place,
+ * because three routes once had three and one of them created tokens.
+ *
+ * The player receives exactly the order's token amount. It is split between
+ * `depositBalance` (usable for betting) and `reserveBalance` by the allocation
+ * the active DepositPolicy locked onto the order at creation, when that
+ * allocation is present and adds up; otherwise the whole amount goes to
+ * deposit, which neither creates nor destroys a token. The allocation is
+ * legitimately 0 twice over — a 100% reserve policy makes the deposit share 0,
+ * and an order with no split reads 0/0 — so a zero is a value, never "absent"
+ * (an `||` here once credited the whole amount to deposit AND to reserve).
+ * A partial split is not a split to fall back from: it would leave the
+ * difference unaccounted for, so it is refused by the row too
+ * (`order_states_allocation_closes`).
+ *
+ * Paise, read from the order row the spend has LOCKED (§9).
+ *
+ * @returns {{depositPaise:number, reservePaise:number, split:boolean}}
+ *   `depositPaise + reservePaise === amountPaise` always.
+ */
+export function buyCreditSplit({ amountPaise, depositAllocationPaise, reserveAllocationPaise }) {
+  const total = Number(amountPaise) || 0;
+  const deposit = Number(depositAllocationPaise);
+  const reserve = Number(reserveAllocationPaise);
+  const usable = Number.isInteger(deposit) && Number.isInteger(reserve)
+    && deposit >= 0 && reserve >= 0
+    && deposit + reserve === total;
+  if (!usable) return { depositPaise: total, reservePaise: 0, split: false };
+  return { depositPaise: deposit, reservePaise: reserve, split: true };
 }
 
-/** wallet.service.creditReserve — txId `reserve_credit_<orderId>`. */
-export async function creditReserve(userId, amount, orderId) {
-  const r = await credit({
-    userId, field: 'reserveBalance', amount,
-    txId: `reserve_credit_${orderId}`,
-    reason: `Deposit reserve allocation ${orderId}`, refId: orderId,
+/**
+ * A completed BUY reaching the player, INSIDE the transaction that takes the
+ * tokens out of the team's pool (`teamPools.spendForBuy`): the pool, the
+ * player's wallet and the TEAM_FLOAT → USER_FLOAT movement commit together or
+ * not at all. Split by `buyCreditSplit`; keys `dep_complete_<orderId>` and
+ * `reserve_credit_<orderId>`, so a replay collides on the first and moves
+ * nothing.
+ *
+ * `ctx` is `lockWalletWithin`'s: the caller holds the order and pool locks and
+ * takes the wallet's next, in that order (see `lockWalletWithin`).
+ */
+export async function creditBuyWithin(ctx, { orderId, amountPaise, depositAllocationPaise, reserveAllocationPaise }) {
+  const split = buyCreditSplit({ amountPaise, depositAllocationPaise, reserveAllocationPaise });
+  const slices = [
+    { field: 'depositBalance', amountPaise: split.depositPaise, txId: `dep_complete_${orderId}`, reason: `P2P deposit confirmed ${orderId}` },
+    { field: 'reserveBalance', amountPaise: split.reservePaise, txId: `reserve_credit_${orderId}`, reason: `Deposit reserve allocation ${orderId}` },
+  ].filter((s) => s.amountPaise > 0);
+  if (!slices.length) throw new Error(`creditBuyWithin: order ${orderId} credits nothing`);
+  const moved = await applyMovementWithin(ctx, {
+    legs: slices.map((s) => ({ field: s.field, deltaPaise: s.amountPaise })),
+    ledger: slices.map((s) => ({
+      txId: s.txId, field: s.field, amountPaise: s.amountPaise, type: 'CREDIT', reason: s.reason, refId: orderId,
+    })),
+    // TEAM_FLOAT → USER_FLOAT is the pool spend's own movement (`team_buy_<id>`).
+    counterparty: { postedByCaller: true },
   });
-  return r.idempotent ? r : { reserveBefore: r.before, reserveAfter: r.after, txId: r.txId, balances: r.balances };
+  return { ...moved, split };
 }
 
-/** wallet.service.creditWinnings — caller supplies the txId. */
+/**
+ * wallet.service.creditWinnings — caller supplies the txId.
+ *
+ * Winnings no game paid: a referral reward is the one production caller. The
+ * platform pays it out of its own holding, TOKEN_SUPPLY → USER_FLOAT, in the
+ * same transaction (owner, 2026-10-07). A game's payout is not this: it is
+ * the bet's or the round's own settlement, against the house.
+ */
 export async function creditWinnings(userId, amount, reason, refModel, refId, txId) {
   if (!txId) throw new Error('creditWinnings on Postgres requires a deterministic txId');
-  const r = await credit({
-    userId, field: 'winningsBalance', amount, txId,
-    reason: reason || 'Bet win payout', refId,
-  });
-  if (r.idempotent) return r;
-  return {
-    before: r.before, after: r.after, winningsAfter: r.after,
-    depositAfter: r.balances.depositBalance, txId: r.txId, balances: r.balances,
-  };
-}
+  const amountPaise = rupeesToPaise(amount);
+  if (amountPaise <= 0) throw new Error(`Invalid credit amount: ${amount}`);
+  const field = 'winningsBalance';
+  const description = reason || 'Winnings credited';
 
-/** wallet.service.refundOrder — txId `refund_<orderId>`, field chosen by caller. */
-export async function refundOrder(userId, amount, orderId, field = 'depositBalance') {
-  const r = await credit({
-    userId, field, amount,
-    txId: `refund_${orderId}`,
-    reason: `Refund for cancelled order ${orderId}`, refId: orderId,
+  const result = await applyMovementPaise({
+    userId,
+    legs: [{ field, deltaPaise: amountPaise }],
+    ledger: [{ txId, field, amountPaise, type: 'CREDIT', reason: description, refId }],
+    counterparty: {
+      account: ACCOUNTS.TOKEN_SUPPLY, operation: 'WINNINGS_CREDITED',
+      reason: description, refModel: refModel ?? null, refId: refId ?? null,
+    },
   });
-  return r.idempotent ? r : { before: r.before, after: r.after, txId: r.txId, balances: r.balances };
+  if (result.idempotent) return { idempotent: true, txId };
+  if (!result.ok) throw new Error(`creditWinnings refused: ${result.refused ?? 'insufficient'}`);
+
+  const after = rupees(result.balancesAfterPaise[field]);
+  return {
+    before: rupees(result.balancesAfterPaise[field] - amountPaise), after, winningsAfter: after,
+    depositAfter: rupees(result.balancesAfterPaise.depositBalance), txId,
+    balances: mapRupees(result.balancesAfterPaise),
+  };
 }
 
 // ── Spending ────────────────────────────────────────────────────────────────
@@ -225,42 +256,49 @@ export async function lockWithdrawal(userId, amount, withdrawalId) {
 }
 
 /**
- * walletAuthority.releaseWithdrawal — approved: the locked money leaves the
- * platform. txId `wd_release_<id>`.
+ * A settled SELL consuming the player's locked stake, INSIDE the transaction
+ * that puts the tokens in the team's pool (`teamPools.creditSellToPool`): the
+ * stake, the pool and the USER_FLOAT → TEAM_FLOAT movement commit together, so
+ * there is no moment at which the tokens are in both places, or in neither.
+ * Key `wd_release_<id>`.
  *
  * The ledger row is labelled `lockedBalance`, which is the balance that
  * actually moved. Labelling it `winningsBalance` while reporting locked figures
  * — as this once did — makes the ledger describe a movement that did not happen
- * and corrupts a
- * rollback, so this path records the field it moved.
+ * and corrupts a rollback, so this path records the field it moved.
+ *
+ * A stake already RETURNED to the player (`refund_<id>`) cannot also be
+ * consumed: what is left in `locked` belongs to other orders (`excluded`).
  */
-export async function releaseWithdrawal(userId, amount, withdrawalId) {
-  const amountPaise = rupeesToPaise(amount);
-  const txId = `wd_release_${withdrawalId}`;
-
-  const result = await applyMovementPaise({
-    userId,
+export async function consumeWithdrawalStakeWithin(ctx, { orderId, amountPaise }) {
+  return applyMovementWithin(ctx, {
     legs: [{ field: 'lockedBalance', deltaPaise: -amountPaise }],
     ledger: [{
-      txId, field: 'lockedBalance', amountPaise: -amountPaise, type: 'DEBIT',
-      reason: `Withdrawal approved — request ${withdrawalId}`, refId: withdrawalId,
+      txId: `wd_release_${orderId}`, field: 'lockedBalance', amountPaise: -amountPaise, type: 'DEBIT',
+      reason: `Withdrawal approved — request ${orderId}`, refId: orderId,
     }],
-    // A stake already RETURNED to the player cannot also be consumed: what is
-    // left in `locked` belongs to other orders.
-    excludes: [`refund_${withdrawalId}`],
+    excludes: [`refund_${orderId}`],
+    // USER_FLOAT → TEAM_FLOAT is the pool credit's own movement (`team_sell_<id>`).
+    counterparty: { postedByCaller: true },
   });
+}
 
-  if (result.idempotent) return { idempotent: true, txId };
-  if (result.excluded) {
-    throw Object.assign(new Error(`Withdrawal ${withdrawalId} was already refunded; its stake cannot be released`), { status: 409 });
-  }
-  if (!result.ok) {
-    const balances = await getBalancesPaise(userId);
-    throw new Error(`lockedBalance would go negative: current=${rupees(balances.lockedBalance)} debit=${amount}`);
-  }
-
-  const after = result.balancesAfterPaise;
-  return { txId, lockedBefore: rupees(after.lockedBalance) + amount, lockedAfter: rupees(after.lockedBalance) };
+/**
+ * A settled SELL refunded after all: its consumed stake comes back to the
+ * player as winnings, INSIDE the transaction that takes the tokens back out of
+ * the pool or has the platform cover them (`teamPools.reverseSellFromPool`).
+ * Key `dispute_wd_refund_<id>`.
+ */
+export async function returnSettledStakeWithin(ctx, { orderId, amountPaise }) {
+  return applyMovementWithin(ctx, {
+    legs: [{ field: 'winningsBalance', deltaPaise: amountPaise }],
+    ledger: [{
+      txId: `dispute_wd_refund_${orderId}`, field: 'winningsBalance', amountPaise, type: 'CREDIT',
+      reason: `Dispute resolved — withdrawal refunded after settlement: ${orderId}`, refId: orderId,
+    }],
+    // TEAM_FLOAT (or TOKEN_SUPPLY) → USER_FLOAT is the reversal's own movement.
+    counterparty: { postedByCaller: true },
+  });
 }
 
 /**
@@ -303,152 +341,8 @@ export async function refundWithdrawal(userId, amount, withdrawalId) {
     winningsBefore: rupees(after.winningsBalance) - amount,
     winningsAfter:  rupees(after.winningsBalance),
     lockedAfter:    rupees(after.lockedBalance),
+    balances: mapRupees(after),
   };
-}
-
-/**
- * walletAuthority.returnWithdrawalStake — give a withdrawal's stake back to
- * the player, from WHEREVER it is, exactly once.
- *
- * The stake is in one of two places, and the LEDGER says which — never the
- * order's mirrored status, which the first refund rewrites:
- *
- *   still locked   (no `wd_release_<id>`)  locked −a, winnings +a, `refund_<id>`
- *   consumed       (`wd_release_<id>`)     winnings +a, `dispute_wd_refund_<id>`
- *
- * Decided under the wallet lock, so a release committing beside it cannot
- * change the answer; and each branch is idempotent on its own key, so a replay
- * moves nothing. Reading the branch off the order instead paid a
- * settled refund twice: the replay saw REVERSED, took the "still locked"
- * branch on the other key and drained another order's stake.
- *
- * @returns {Promise<{idempotent?: boolean, via: 'locked'|'settled', txId: string}>}
- */
-export async function returnWithdrawalStake(userId, amount, withdrawalId) {
-  const amountPaise = rupeesToPaise(amount);
-  if (amountPaise <= 0) throw new Error(`Invalid withdrawal amount: ${amount}`);
-  const consumedKey = `wd_release_${withdrawalId}`;
-  const lockedKey = `refund_${withdrawalId}`;
-  const settledKey = `dispute_wd_refund_${withdrawalId}`;
-
-  const result = await withWalletLock(userId, async (ctx) => {
-    // The two return keys are only ever written on their own branch (a release
-    // refuses once `refund_<id>` exists, and the settled credit needs the
-    // release), so the movement's own replay probe makes a second call a no-op.
-    const { rows } = await ctx.client.query(
-      `SELECT 1 FROM wallet_ledger WHERE user_id = $1 AND tx_id = $2`, [ctx.uid, consumedKey],
-    );
-    const consumed = rows.length > 0;
-    const moved = await applyMovementWithin(ctx, consumed
-      ? {
-        legs: [{ field: 'winningsBalance', deltaPaise: amountPaise }],
-        ledger: [{
-          txId: settledKey, field: 'winningsBalance', amountPaise, type: 'CREDIT',
-          reason: `Dispute resolved — withdrawal refunded after settlement: ${withdrawalId}`,
-          refId: withdrawalId,
-        }],
-      }
-      : {
-        legs: [
-          { field: 'winningsBalance', deltaPaise: amountPaise },
-          { field: 'lockedBalance', deltaPaise: -amountPaise },
-        ],
-        ledger: [{
-          txId: lockedKey, field: 'winningsBalance', amountPaise, type: 'CREDIT',
-          reason: `Withdrawal rejected — request ${withdrawalId} refunded to winnings`,
-          refId: withdrawalId,
-        }],
-      });
-    const via = consumed ? 'settled' : 'locked';
-    const txId = consumed ? settledKey : lockedKey;
-    if (!moved.ok || moved.idempotent) return { commit: false, value: { ...moved, via, txId } };
-    return { commit: true, value: { ...moved, via, txId } };
-  });
-
-  if (result.idempotent) return { idempotent: true, via: result.via, txId: result.txId };
-  if (!result.ok) {
-    const balances = await getBalancesPaise(userId);
-    throw new Error(`lockedBalance would go negative on refund: current=${rupees(balances.lockedBalance)} refund=${amount}`);
-  }
-  return { via: result.via, txId: result.txId, balances: mapRupees(result.balancesAfterPaise) };
-}
-
-// ── Bet stake lifecycle ─────────────────────────────────────────────────────
-
-/**
- * walletAuthority.lockBetStake — bet placement: move the stake out of its
- * pockets into `locked`, recording which pocket each slice came from.
- *
- * ONE transaction covers the balance move, the lock-provenance counters and
- * every audit row. This used to be a guarded multi-field update followed by
- * fire-and-forget ledger writes, so a crash in between left a debited balance
- * with no
- * audit trail. Here that window does not exist.
- *
- * @param {Array<{field:string, suffix:string, amountPaise:number, reason:string}>} slices
- */
-export async function lockBetStake(userId, { amountPaise, txId, refId, slices }) {
-  const provenance = {
-    depositBalance:  'lockedDepositAmount',
-    winningsBalance: 'lockedWinningsAmount',
-  };
-
-  const result = await applyMovementPaise({
-    userId,
-    legs: [
-      { field: 'lockedBalance', deltaPaise: amountPaise },
-      ...slices.flatMap((s) => [
-        { field: s.field, deltaPaise: -s.amountPaise },
-        // The reserve slice has no provenance counter: reserve is platform
-        // money, not the player's, so there is no split to unwind later.
-        ...(provenance[s.field] ? [{ field: provenance[s.field], deltaPaise: s.amountPaise }] : []),
-      ]),
-    ],
-    ledger: slices.map((s) => ({
-      txId: `${txId}${s.suffix}`, field: s.field, amountPaise: -s.amountPaise,
-      type: 'DEBIT', reason: s.reason, refId,
-    })),
-  });
-
-  if (result.idempotent) return { ok: true, idempotent: true, txId };
-  if (!result.ok) return { ok: false, insufficient: true, txId };
-  return { ok: true, idempotent: false, txId, balances: mapRupees(result.balancesAfterPaise) };
-}
-
-/**
- * walletAuthority.releaseLockedStake — settlement releases a bet's locked
- * stake, and the lock-provenance counters unwind with it.
- *
- * The provenance legs are allowed to go negative, deliberately: a stale split
- * must not be able to strand a settled stake in `locked` forever, which is the
- * worse failure of the two.
- */
-export async function releaseLockedStake(userId, { amount, fromDeposit = 0, fromWinnings = 0, txId, reason }) {
-  if (!txId) throw new Error('releaseLockedStake requires a deterministic txId');
-  if (!(amount > 0)) throw new Error(`releaseLockedStake: invalid amount ${amount}`);
-  const amountPaise = rupeesToPaise(amount);
-
-  const result = await applyMovementPaise({
-    userId,
-    legs: [
-      { field: 'lockedBalance',        deltaPaise: -amountPaise },
-      { field: 'lockedDepositAmount',  deltaPaise: -rupeesToPaise(fromDeposit  || 0), allowNegative: true },
-      { field: 'lockedWinningsAmount', deltaPaise: -rupeesToPaise(fromWinnings || 0), allowNegative: true },
-    ],
-    ledger: [{
-      txId, field: 'lockedBalance', amountPaise: -amountPaise, type: 'DEBIT',
-      reason: reason || 'Bet stake unlock — cycle settlement',
-    }],
-  });
-
-  if (result.idempotent) return { idempotent: true, txId };
-  if (!result.ok) {
-    const balances = await getBalancesPaise(userId);
-    throw new Error(`lockedBalance would go negative: current=${rupees(balances.lockedBalance)} debit=${amount}`);
-  }
-
-  const after = result.balancesAfterPaise;
-  return { txId, lockedBefore: rupees(after.lockedBalance) + amount, lockedAfter: rupees(after.lockedBalance) };
 }
 
 // ── Reads ───────────────────────────────────────────────────────────────────

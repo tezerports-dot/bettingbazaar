@@ -1,73 +1,23 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * depositCredit.js — how much of a confirmed deposit lands in each pocket.
+ * depositCredit.js — the money for a confirmed buy, and what happens when it
+ * cannot move.
  *
- * ONE rule, in one place, because three routes had three different ones and one
- * of them created tokens.
+ * ── One owner, every route ──────────────────────────────────────────────────
+ * Three routes complete a buy (the member's confirm, the admin queue's
+ * APPROVE, a dispute released to the player) and all three come here, because
+ * three routes once had three rules and one of them created tokens.
  *
- * ── What went wrong ─────────────────────────────────────────────────────────
- * A confirmed deposit spends the team pool's held tokens and credits the
- * user. The user's credit is SPLIT across two pockets — `depositBalance` (usable
- * for betting) and `reserveBalance` — by the active DepositPolicy, locked onto
- * the order at creation by paymentOrder.model.js's pre-save hook.
- *
- * The split is a question about the USER's side. The team's side is not
- * split at all: whatever the user receives in total, the pool parts with.
- * Two of the three routes had that right and debited `order.tokenAmount`. The
- * third debited `order.depositAllocation` and then credited
- * `depositAllocation + reserveAllocation`, so on every deposit with a non-zero
- * reserve share it credited more than it debited — 100 tokens per ₹1000 deposit
- * under the default 90/10 policy, appearing from nowhere. All three also used
- * the same canonical idempotency key for the debit while asking for different
- * amounts.
- *
- * ── And why the fallbacks disagreed ─────────────────────────────────────────
- * The three readers were `?? tokenAmount`, `|| tokenAmount`, and no fallback.
- * They differ on 0, and `depositAllocation` is legitimately 0 twice over:
- *
- *   - a policy of `reserveAllocationPercent: 100` is legal (the service
- *     validates only that the two percentages sum to 100), and it makes the
- *     deposit share exactly zero. `||` treats that as absent and substitutes
- *     the whole token amount, so the user is credited the full amount to
- *     deposit AND the full amount to reserve.
- *   - an order predating the split fields reads 0 where the column defaults
- *     and `undefined` where it does not, so `??` fired or did not fire
- *     depending on how the order was READ — not a property any money decision
- *     should depend on.
- *
- * ── The rule ────────────────────────────────────────────────────────────────
- * The user receives exactly `tokenAmount`. It is split by the recorded
- * allocation when that allocation is present and adds up; otherwise the whole
- * amount goes to `depositBalance`, which is where it went before the split
- * existed and is the only answer that neither creates nor destroys tokens.
- *
- * `total` is what the pool parts with. Callers use it rather than reaching for
- * `order.tokenAmount` themselves, so the two sides cannot drift apart again.
+ * ── What moves, and where ───────────────────────────────────────────────────
+ * The team pool's held tokens, the player's credit and TEAM_FLOAT → USER_FLOAT
+ * are ONE transaction, `teamPools.spendForBuy` (owner, 2026-10-07): the
+ * database refuses to commit a wallet change without its USER_FLOAT leg, or a
+ * pool change without its TEAM_FLOAT leg. How the credit divides between
+ * `depositBalance` and `reserveBalance` is `wallets.buyCreditSplit`, read from
+ * the order row that transaction has locked. The player receives exactly the
+ * order's token amount, which the pool parts with — a partial or corrupt split
+ * falls back to all-deposit, which neither creates nor destroys a token.
  */
-
-/**
- * @param {{tokenAmount:number, depositAllocation?:number, reserveAllocation?:number}} order
- * @returns {{depositCredit:number, reserveCredit:number, total:number, split:boolean}}
- *   `depositCredit + reserveCredit === total` always. `split` says whether the
- *   order's recorded allocation was used, so a caller can log the fallback.
- */
-export function depositCreditSplit(order) {
-  const total = Number(order?.tokenAmount) || 0;
-
-  const deposit = Number(order?.depositAllocation);
-  const reserve = Number(order?.reserveAllocation);
-
-  // Both must be real numbers AND account for the whole amount. A partial split
-  // is not a split to fall back from — it is a corrupt order, and quietly
-  // crediting part of it would leave the difference unaccounted for on a path
-  // whose whole job is that the books close.
-  const usable = Number.isFinite(deposit) && Number.isFinite(reserve)
-    && deposit >= 0 && reserve >= 0
-    && Math.abs((deposit + reserve) - total) < 1e-9;
-
-  if (!usable) return { depositCredit: total, reserveCredit: 0, total, split: false };
-  return { depositCredit: deposit, reserveCredit: reserve, total, split: true };
-}
 
 /**
  * A deposit that cannot be credited is REPORTED — F-015.
@@ -148,34 +98,30 @@ export async function reportUncreditableDeposit(order, total) {
  * override, a dispute released to the player — comes here, so no route can
  * invent its own arithmetic (§2: one owner of "the money for a completed buy").
  *
- * ── The team's side is taken ONCE, from the HOLD ────────────────────────────
+ * ── Both sides, ONCE, from the HOLD ─────────────────────────────────────────
  * Every buy HOLDS its tokens in the team's pool from the moment it becomes a
- * member's (`teamRouting.assignToTeam`). `spendForBuy` spends that hold
- * (held −a), posts the treasury movement TEAM_FLOAT → USER_FLOAT with it, and
- * writes the pool's ledger line, all in one transaction keyed on the order — a
- * retry or a double-tap finds `alreadyTaken` and moves nothing. Only an order
- * that somehow holds nothing is taken from `available`, and only if it covers
- * it.
+ * member's (`teamRouting.assignToTeam`). `walletAuthority.completeBuy` →
+ * `teamPools.spendForBuy` spends that hold, credits the player and posts
+ * TEAM_FLOAT → USER_FLOAT in one transaction keyed on the order — a retry or a
+ * double-tap finds `alreadyTaken` and moves nothing, and a refusal moves
+ * nothing at all. Only an order that somehow holds nothing is taken from
+ * `available`, and only if it covers it.
  *
  * ── Ordering ────────────────────────────────────────────────────────────────
- * The team's side comes FIRST, because refusing must happen before anything
- * else moves. Every movement is keyed on the order, so a failure part-way
- * through leaves a retryable position rather than something to unwind.
- *
  * The caller applies the state transition AFTER this returns ok — money before
  * status, so a crash between them leaves a PAID order whose next confirm
- * replays these movements as no-ops, never a COMPLETED order that paid nobody.
+ * replays the movement as a no-op, never a COMPLETED order that paid nobody.
  *
  * @param {object} order  the order record, read from the same rows this writes
- * @returns {Promise<{ok: boolean, reason?: string, depositCredit, reserveCredit, total}>}
+ * @returns {Promise<{ok: boolean, reason?: string, total: number}>}
  */
 export async function moveDepositMoney(order, {
-  creditDeposit, creditReserve, releaseUTR,
+  releaseUTR,
   /**
-   * Spends the order's hold. Injected like the movers above so a caller can
-   * substitute it; defaults to the real one, so no caller can forget it.
+   * Completes the buy. Injectable so a unit test can substitute it; defaults
+   * to the one owner, so no caller can forget it.
    */
-  spendPool = null,
+  completeBuy = null,
   /**
    * The state the caller read the order in and will complete it from. Asked
    * under the order's row lock: an order that moved since is refused
@@ -185,26 +131,27 @@ export async function moveDepositMoney(order, {
   requireState,
 }) {
   if (!requireState) throw new Error('moveDepositMoney requires requireState: the state the order is completed from');
-  const { depositCredit, reserveCredit, total } = depositCreditSplit(order);
+  const total = Number(order.tokenAmount) || 0;
 
-  const spend = spendPool ?? (await import('#db')).db.teamPools.spendForBuy;
-  const taken = await spend(order.orderId, { actor: 'deposit-credit', requireState });
+  const complete = completeBuy ?? (await import('../wallet/walletAuthority.service.js')).completeBuy;
+  const taken = await complete(order.orderId, { actor: 'deposit-credit', requireState });
   if (!taken.ok && taken.reason === 'order_state') {
     // Not a funding problem: the order moved since the caller read it. Nothing
     // moved, and there is nothing for the operator to fund.
-    return { ok: false, reason: 'order_state', depositCredit, reserveCredit, total };
+    return { ok: false, reason: 'order_state', total };
+  }
+  if (!taken.ok && (taken.reason === 'pool_short' || taken.reason === 'no_team')) {
+    // Nothing held and nothing spendable. The player has paid, so it is
+    // reported, and the order stays PAID to retry.
+    await reportUncreditableDeposit(order, total);
+    return { ok: false, reason: taken.reason, total };
   }
   if (!taken.ok) {
-    // `pool_short` / `no_team`: nothing held and nothing spendable. The player
-    // has paid, so it is reported, and the order stays PAID to retry.
-    await reportUncreditableDeposit(order, total);
-    return { ok: false, reason: taken.reason, depositCredit, reserveCredit, total };
+    // A refusal no funding cures (a credit already made with no spend beside
+    // it, a treasury refusal): nothing moved, and a person has to look.
+    console.error(`[deposit-credit] ${order.orderId}: the buy could not complete: ${taken.reason}`);
+    return { ok: false, reason: taken.reason, total };
   }
-
-  // Both keyed on the ORDER ID, not on a message. A sentence here would make a
-  // second key for the same deposit and open the idempotency gate.
-  if (depositCredit > 0) await creditDeposit(order.userId, depositCredit, order.orderId);
-  if (reserveCredit > 0) await creditReserve(order.userId, reserveCredit, order.orderId);
   await releaseUTR(order.orderId);
 
   // ── The player's unpaid streak is cleared HERE, and only here ─────────────
@@ -219,5 +166,5 @@ export async function moveDepositMoney(order, {
   const { clearPlayerPaymentFailures } = await import('./playerPaymentFailure.service.js');
   await clearPlayerPaymentFailures(order.userId);
 
-  return { ok: true, depositCredit, reserveCredit, total };
+  return { ok: true, total };
 }

@@ -45,6 +45,7 @@ import {
 } from './wallets.core.js';
 import { pgQuery } from '../client.js';
 import { rupeesToPaise, paiseToRupees } from '../../backend/shared/money.js';
+import { ACCOUNTS } from './treasury.js';
 
 /**
  * Pockets an admin may adjust.
@@ -81,6 +82,8 @@ export const ADJUSTMENT_TX_PREFIX = 'admin_';
  *
  * @returns {{ok:true, adjustment, balances}}                     applied
  *          {{ok:false, reason:'INSUFFICIENT', availableRupees}}  refused
+ *          {{ok:false, reason:'SUPPLY_EXHAUSTED'}}              the platform's
+ *            holding cannot cover a credit (`treasury_supply_ceiling`)
  *          {{ok:true, idempotent:true, adjustment}}              already applied
  *
  * Refusal is a RETURN, not a throw: "this player does not have it" is an answer
@@ -132,7 +135,18 @@ export async function applyAdjustment({
         txId, field, amountPaise: delta, type,
         reason: fullReason, refId: idStr,
       }],
+      // A hand adjustment has no game or order behind it: the tokens come from
+      // the platform's own holding, or go back to it, in this transaction
+      // (owner, 2026-10-07) — never from nowhere.
+      counterparty: {
+        account: ACCOUNTS.TOKEN_SUPPLY, operation: `ADMIN_ADJUSTMENT_${type}`,
+        actor: adminStr, reason: fullReason, refModel: 'BalanceAdjustment', refId: idStr,
+      },
     });
+    // The platform's holding cannot cover a credit (the supply ceiling).
+    if (!moved.ok && moved.refused) {
+      return { commit: false, value: { ok: false, reason: 'SUPPLY_EXHAUSTED', detail: moved.refused } };
+    }
     // Refused: the pocket does not hold it. `beforePaise` is the locked read, so
     // the number reported back is the one the refusal was made against.
     if (!moved.ok) {

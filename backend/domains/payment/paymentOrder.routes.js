@@ -7,7 +7,6 @@
 
 import { express, authenticate, hasPermission, queueManagerOrPermission } from '../../routes/admin/_adminShared.js';
 import { db } from '#db';
-import { creditDeposit, creditReserve } from '../wallet/walletAuthority.service.js';
 // The one owner of how an admin decision ends a withdrawal's money, and of a
 // cancelled buy's merchant hold. Both routes below end orders both ways.
 import { endWithdrawal } from './withdrawalHold.service.js';
@@ -81,7 +80,7 @@ router.post('/payment-orders/:orderId/action', authenticate, hasPermission('canR
     let deposited = null;
     if (action === 'APPROVE' && order.type === 'DEPOSIT') {
       deposited = await moveDepositMoney(order, {
-        creditDeposit, creditReserve, releaseUTR, requireState: order.status,
+        releaseUTR, requireState: order.status,
       });
       if (!deposited.ok && deposited.reason === 'order_state') {
         return res.status(409).json({ success: false, message: 'The order changed while this was being approved. Nothing was credited; refresh and decide again.' });
@@ -298,7 +297,7 @@ router.post('/payment-orders/:orderId/resolve', authenticate, hasPermission('can
         // it and the log below makes it a case a person sees.
         // Completed by the transition above, so it is paid out from COMPLETED.
         const moved = await moveDepositMoney(order, {
-          creditDeposit, creditReserve, releaseUTR, requireState: 'COMPLETED',
+          releaseUTR, requireState: 'COMPLETED',
         });
         if (!moved.ok) {
           // `moveDepositMoney` has already reported it. Loud here too: the

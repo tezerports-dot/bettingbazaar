@@ -46,37 +46,38 @@ const MUTATIONS = [
   },
   // ── A deposit moves tokens; it must not create or destroy them ────────────
   {
-    // Retargeted 2026-10-02 (Step 2c): the team's pool parts with the order's
-    // whole amount by itself (`spendForBuy` reads it off the order row), so the
-    // pairing that can break is on the CREDIT side.
-    id: 'M22', file: 'backend/domains/payment/depositCredit.js', config: UNIT,
-    test: 'backend/tests/unit/depositCreditConservation.test.js',
-    why: 'the player is credited the whole deposit AND the reserve share while the pool parts with the total once: tokens created',
-    from: `  if (depositCredit > 0) await creditDeposit(order.userId, depositCredit, order.orderId);`,
-    to: `  if (depositCredit > 0) await creditDeposit(order.userId, total, order.orderId);`,
+    // Retargeted 2026-10-07 (the conservation guards): the split, the credit
+    // and the pool spend are ONE transaction, so the pairing is no longer two
+    // calls that could disagree — it is the database's rule. Crediting more
+    // than the pool parts with does not commit at all.
+    id: 'M22', file: 'database/repositories/wallets.js', config: PG,
+    test: 'database/tests/depositConservationPg.test.js',
+    why: 'the player is credited the whole amount AND the reserve share while the pool parts with the total once: tokens created',
+    from: `    { field: 'depositBalance', amountPaise: split.depositPaise, txId: \`dep_complete_\${orderId}\`, reason: \`P2P deposit confirmed \${orderId}\` },`,
+    to: `    { field: 'depositBalance', amountPaise: Number(amountPaise), txId: \`dep_complete_\${orderId}\`, reason: \`P2P deposit confirmed \${orderId}\` },`,
   },
   {
-    id: 'M23', file: 'backend/domains/payment/depositCredit.js', config: UNIT,
-    test: 'backend/tests/unit/depositCreditSplit.test.js',
+    id: 'M23', file: 'database/repositories/wallets.js', config: UNIT,
+    test: 'backend/tests/unit/buyCreditSplit.test.js',
     why: 'the `||` fallback is back — a legal 0 deposit share reads as absent',
-    from: `  if (!usable) return { depositCredit: total, reserveCredit: 0, total, split: false };
-  return { depositCredit: deposit, reserveCredit: reserve, total, split: true };`,
-    to: `  if (!usable) return { depositCredit: total, reserveCredit: 0, total, split: false };
-  return { depositCredit: deposit || total, reserveCredit: reserve, total, split: true };`,
+    from: `  if (!usable) return { depositPaise: total, reservePaise: 0, split: false };
+  return { depositPaise: deposit, reservePaise: reserve, split: true };`,
+    to: `  if (!usable) return { depositPaise: total, reservePaise: 0, split: false };
+  return { depositPaise: deposit || total, reservePaise: reserve, split: true };`,
   },
   {
-    id: 'M24', file: 'backend/domains/payment/depositCredit.js', config: UNIT,
-    test: 'backend/tests/unit/depositCreditSplit.test.js',
+    id: 'M24', file: 'database/repositories/wallets.js', config: UNIT,
+    test: 'backend/tests/unit/buyCreditSplit.test.js',
     why: 'a partial split is accepted, so part of the deposit goes unaccounted for',
-    from: `    && Math.abs((deposit + reserve) - total) < 1e-9;`,
+    from: `    && deposit + reserve === total;`,
     to: `    && true;`,
   },
   {
-    id: 'M25', file: 'backend/domains/payment/depositCredit.js', config: UNIT,
-    test: 'backend/tests/unit/depositCreditConservation.test.js',
+    id: 'M25', file: 'database/repositories/wallets.js', config: UNIT,
+    test: 'backend/tests/unit/buyCreditSplit.test.js',
     why: 'the fallback credits nothing instead of the whole amount — tokens burned',
-    from: `  if (!usable) return { depositCredit: total, reserveCredit: 0, total, split: false };`,
-    to: `  if (!usable) return { depositCredit: 0, reserveCredit: 0, total, split: false };`,
+    from: `  if (!usable) return { depositPaise: total, reservePaise: 0, split: false };`,
+    to: `  if (!usable) return { depositPaise: 0, reservePaise: 0, split: false };`,
   },
   {
     id: 'M30', file: 'database/repositories/bets.core.js', config: PG,
@@ -176,22 +177,13 @@ const MUTATIONS = [
   },
   // ── The order-facing wallet writers ───────────────────────────────────────
   {
+    // Retargeted 2026-10-07: `creditReserve` is gone — the reserve share is
+    // credited by `creditBuyWithin`, inside the pool spend's transaction.
     id: 'M55', file: 'database/repositories/wallets.js', config: PG,
-    test: 'database/tests/walletWriters.test.js',
+    test: 'database/tests/depositConservationPg.test.js',
     why: 'a deposit reserve is credited to the withdrawable pocket instead',
-    from: `    userId, field: 'reserveBalance', amount,`,
-    to: `    userId, field: 'depositBalance', amount,`,
-  },
-  {
-    id: 'M56', file: 'database/repositories/wallets.js', config: PG,
-    test: 'database/tests/walletWriters.test.js',
-    why: 'a refund ignores the pocket it was told to credit',
-    from: `export async function refundOrder(userId, amount, orderId, field = 'depositBalance') {
-  const r = await credit({
-    userId, field, amount,`,
-    to: `export async function refundOrder(userId, amount, orderId, field = 'depositBalance') {
-  const r = await credit({
-    userId, field: 'depositBalance', amount,`,
+    from: `    { field: 'reserveBalance', amountPaise: split.reservePaise, txId: \`reserve_credit_\${orderId}\`, reason: \`Deposit reserve allocation \${orderId}\` },`,
+    to: `    { field: 'depositBalance', amountPaise: split.reservePaise, txId: \`reserve_credit_\${orderId}\`, reason: \`Deposit reserve allocation \${orderId}\` },`,
   },
   // ── The controls that were defined nowhere ───────────────────────────────
   // M57/M58 guarded the IP deny-list, removed 2026-09-30 (it never ran).
@@ -796,28 +788,28 @@ const MUTATIONS = [
   // winnings and left the lock, releases moved nothing, a HELD settlement was
   // stranded, and a refunded dispute was written back to DISPUTED.
   {
+    // Retargeted 2026-10-07: the never-settled refund returns the stake
+    // through `refundWithdrawal` (locked -> winnings, one key).
     id: 'M169', file: 'backend/domains/payment/withdrawalHold.service.js', config: PG,
     test: 'backend/tests/routes/withdrawalResolutionPg.test.js',
     why: 'an admin refund never takes the stake out of the lock, so the player holds the amount twice and the token total no longer adds up',
     from: `  if (order.escrowLocked) {
-    await returnWithdrawalStake(order.userId, order.tokenAmount, order.orderId);
-  }
-  if (order.merchantCreditStatus === 'HELD') {`,
+    await refundWithdrawal(order.userId, order.tokenAmount, order.orderId);
+  }`,
     to: `  if (false) {
-    await returnWithdrawalStake(order.userId, order.tokenAmount, order.orderId);
-  }
-  if (order.merchantCreditStatus === 'HELD') {`,
+    await refundWithdrawal(order.userId, order.tokenAmount, order.orderId);
+  }`,
   },
   {
+    // Retargeted 2026-10-07: the release settles the sell — the pool credit and
+    // the stake leaving `locked` are one transaction (`creditSellToPool`), so
+    // there is no second call left to forget.
     id: 'M170', file: 'backend/domains/payment/withdrawalHold.service.js', config: PG,
     test: 'backend/tests/routes/withdrawalResolutionPg.test.js',
-    why: 'an admin release credits the merchant while the stake stays locked for good — the player keeps what the merchant was paid for',
-    from: `      await releaseWithdrawal(order.userId, order.tokenAmount, order.orderId);
-    } catch (err) {
-      // The same compensation \`settleHold\` makes, for the same reason.`,
-    to: `      void 0;
-    } catch (err) {
-      // The same compensation \`settleHold\` makes, for the same reason.`,
+    why: 'an admin release mirrors the order as settled while the stake stays locked and the team is never paid',
+    from: `    const settled = await settleSell(order.orderId, { actor });
+    if (!settled.ok) return { ok: false, reason: settled.reason };`,
+    to: `    const settled = { ok: true };`,
   },
   {
     id: 'M171', file: 'database/repositories/orders.record.js', config: PG,
@@ -1881,11 +1873,18 @@ const MUTATIONS = [
   // status, which the first refund had rewritten, and paid the player a second
   // time out of another order's locked stake (2c regression, 2026-10-03).
   {
+    // Retargeted 2026-10-07: the settled-sell refund returns the stake as
+    // WINNINGS (`returnSettledStakeWithin`), inside the pool reversal — it no
+    // longer reads `locked` to decide, so what can break is the key.
     id: 'M307', file: 'database/repositories/wallets.js', config: PG,
     test: 'backend/tests/routes/withdrawalResolutionPg.test.js',
-    why: 'a refund of a settled withdrawal takes the stake from the lock it already left, draining another order\'s locked stake',
-    from: "    const consumed = rows.length > 0;",
-    to: "    const consumed = false;",
+    why: 'a refund after settlement takes the stake out of the lock it already left, draining another order\'s locked stake',
+    from: `    legs: [{ field: 'winningsBalance', deltaPaise: amountPaise }],
+    ledger: [{
+      txId: \`dispute_wd_refund_\${orderId}\`, field: 'winningsBalance', amountPaise, type: 'CREDIT',`,
+    to: `    legs: [{ field: 'lockedBalance', deltaPaise: 0 - amountPaise }],
+    ledger: [{
+      txId: \`dispute_wd_refund_\${orderId}\`, field: 'winningsBalance', amountPaise, type: 'CREDIT',`,
   },
   {
     id: 'M308', file: 'database/repositories/wallets.js', config: PG,
@@ -1898,8 +1897,8 @@ const MUTATIONS = [
     id: 'M309', file: 'database/repositories/wallets.js', config: PG,
     test: 'backend/tests/routes/withdrawalResolutionPg.test.js',
     why: 'a refunded stake can still be consumed, so the team is credited for tokens the player already has back',
-    from: "    excludes: [`refund_${withdrawalId}`],",
-    to: "    excludes: [],",
+    from: `    excludes: [\`refund_\${orderId}\`],`,
+    to: `    excludes: [],`,
   },
   {
     id: 'M310', file: 'database/repositories/wallets.core.js', config: PG,
@@ -2056,8 +2055,8 @@ const MUTATIONS = [
     id: 'M331', file: 'backend/domains/payment/depositCredit.js', config: PG,
     test: 'backend/tests/routes/paymentOrderAdminActionRoutes.test.js',
     why: 'the state the route read never reaches the spend, so the check under the lock asks nothing',
-    from: "  const taken = await spend(order.orderId, { actor: 'deposit-credit', requireState });\n",
-    to: "  const taken = await spend(order.orderId, { actor: 'deposit-credit' });\n",
+    from: "  const taken = await complete(order.orderId, { actor: 'deposit-credit', requireState });\n",
+    to: "  const taken = await complete(order.orderId, { actor: 'deposit-credit' });\n",
   },
   {
     id: 'M332', file: 'database/repositories/teamPools.js', config: PG,
@@ -2707,6 +2706,122 @@ const MUTATIONS = [
     why: 'a PAID sell is rejected as unpaid: the member who owes the payout calls it the player\'s missing payment',
     from: "  if (order.type !== 'DEPOSIT') {\n    return { status: 400, code: 'NOT_A_BUY'",
     to: "  if (false) {\n    return { status: 400, code: 'NOT_A_BUY'",
+  },
+  // ── TOKEN CONSERVATION, ENFORCED BY THE DATABASE (owner, 2026-10-07) ──────
+  // Each guard below is the database refusing a transaction, so the mutation is
+  // in `schema.sql` itself: `applySchema()` runs the whole file on every suite
+  // start, and each guard is DROPped and re-ADDed there (S31), so weakening the
+  // definition weakens the live database the next time a suite starts.
+  {
+    id: 'MC1', file: 'database/schema.sql', config: PG,
+    test: 'database/tests/conservationPg.test.js',
+    why: 'a pocket may go below zero again — a token spent that was never there',
+    from: `ALTER TABLE wallets ADD CONSTRAINT wallets_pockets_nonneg CHECK (
+  deposit_paise >= 0 AND winnings_paise >= 0 AND token_paise >= 0
+  AND reserve_paise >= 0 AND locked_paise >= 0);`,
+    to: `ALTER TABLE wallets ADD CONSTRAINT wallets_pockets_nonneg CHECK (true);`,
+  },
+  {
+    id: 'MC2', file: 'database/schema.sql', config: PG,
+    test: 'database/tests/conservationPg.test.js',
+    why: 'a lock may claim to come from a pocket it never came from',
+    from: `ALTER TABLE wallets ADD CONSTRAINT wallets_lock_provenance_nonneg CHECK (
+  locked_deposit_paise >= 0 AND locked_winnings_paise >= 0);`,
+    to: `ALTER TABLE wallets ADD CONSTRAINT wallets_lock_provenance_nonneg CHECK (true);`,
+  },
+  {
+    id: 'MC3', file: 'database/schema.sql', config: PG,
+    test: 'database/tests/conservationPg.test.js',
+    why: 'TOKEN_SUPPLY may hold tokens it never released, and a platform account may hold fewer than none',
+    from: `ALTER TABLE treasury_accounts ADD CONSTRAINT treasury_accounts_sign CHECK (
+  CASE WHEN account = 'TOKEN_SUPPLY' THEN balance_paise <= 0 ELSE balance_paise >= 0 END);`,
+    to: `ALTER TABLE treasury_accounts ADD CONSTRAINT treasury_accounts_sign CHECK (true);`,
+  },
+  {
+    id: 'MC4', file: 'database/schema.sql', config: PG,
+    test: 'database/tests/conservationPg.test.js',
+    why: 'the platform may release more tokens than SystemConfig.adminTokenSupply.total says exist',
+    from: `     AND 0 - NEW.balance_paise > bb_token_supply_paise() THEN`,
+    to: `     AND false THEN`,
+  },
+  {
+    id: 'MC5', file: 'database/schema.sql', config: PG,
+    test: 'database/tests/conservationPg.test.js',
+    why: 'the wallets may move by more than USER_FLOAT — tokens in a wallet the treasury does not have there',
+    from: `  off := bb_cons_bucket('wallets');
+  IF off <> 0 THEN`,
+    to: `  off := bb_cons_bucket('wallets');
+  IF false THEN`,
+  },
+  {
+    id: 'MC6', file: 'database/schema.sql', config: PG,
+    test: 'database/tests/conservationPg.test.js',
+    why: 'the team pools may move by more than TEAM_FLOAT',
+    from: `  off := bb_cons_bucket('pools');
+  IF off <> 0 THEN`,
+    to: `  off := bb_cons_bucket('pools');
+  IF false THEN`,
+  },
+  {
+    id: 'MC7', file: 'database/schema.sql', config: PG,
+    test: 'database/tests/conservationPg.test.js',
+    why: 'a pool\'s available tokens may move with no entry explaining it',
+    from: `  off := bb_cons_bucket('pool_available');
+  IF off <> 0 THEN`,
+    to: `  off := bb_cons_bucket('pool_available');
+  IF false THEN`,
+  },
+  {
+    id: 'MC8', file: 'database/schema.sql', config: PG,
+    test: 'database/tests/conservationPg.test.js',
+    why: 'a pool\'s HELD tokens may move with no entry explaining it',
+    from: `  off := bb_cons_bucket('pool_held');
+  IF off <> 0 THEN`,
+    to: `  off := bb_cons_bucket('pool_held');
+  IF false THEN`,
+  },
+  {
+    id: 'MC9', file: 'database/schema.sql', config: PG,
+    test: 'database/tests/conservationPg.test.js',
+    why: 'a treasury balance may move without the entries that explain it',
+    from: `    off := bb_cons_bucket('acct_' || lower(account));
+    IF off <> 0 THEN`,
+    to: `    off := bb_cons_bucket('acct_' || lower(account));
+    IF false THEN`,
+  },
+  {
+    id: 'MC10', file: 'database/schema.sql', config: PG,
+    test: 'database/tests/conservationPg.test.js',
+    why: 'a movement\'s legs need not sum to zero, so tokens can appear',
+    from: `  SELECT SUM(amount_paise) INTO total FROM treasury_entries WHERE movement_id = NEW.movement_id;
+  IF total <> 0 THEN`,
+    to: `  SELECT SUM(amount_paise) INTO total FROM treasury_entries WHERE movement_id = NEW.movement_id;
+  IF false THEN`,
+  },
+  {
+    id: 'MC11', file: 'database/schema.sql', config: PG,
+    test: 'database/tests/conservationPg.test.js',
+    why: 'wallet movements stop being tracked, so the check compares USER_FLOAT against nothing',
+    from: `  PERFORM bb_cons_add('wallets', d);`,
+    to: `  PERFORM bb_cons_add('wallets', 0);`,
+  },
+  {
+    id: 'MC12', file: 'database/repositories/wallets.core.js', config: PG,
+    test: 'database/tests/walletPg.test.js',
+    why: 'a wallet movement need not say where the tokens came from, so the refusal arrives as a COMMIT error instead of an answer',
+    from: `function requireCounterparty(counterparty, delta) {
+  if (delta === 0) return;`,
+    to: `function requireCounterparty(counterparty, delta) {
+  if (delta === 0 || counterparty || !counterparty) return;`,
+  },
+  {
+    id: 'MC13', file: 'database/repositories/treasury.js', config: PG,
+    test: 'database/tests/casinoSettlementBonusPg.test.js',
+    why: 'an account paying out tokens it does not hold raises a CHECK error instead of a refusal the caller can phrase',
+    from: `      if (after < 0) {
+        await client.query(rollback);`,
+    to: `      if (false) {
+        await client.query(rollback);`,
   },
 ];
 

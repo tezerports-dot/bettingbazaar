@@ -41,8 +41,11 @@ import { placeBet, winBet, loseBet, getBet, BET_STATUS, reconcileUserStakes } fr
 import { ensureCycle, declareWinner, closeCycle, getCycle } from '../repositories/markets.js';
 import { trialBalance } from '../repositories/treasury.js';
 import {
-  debitWinningsForWithdrawal, releaseWithdrawal, refundWithdrawal,
+  debitWinningsForWithdrawal, refundWithdrawal, consumeWithdrawalStakeWithin,
 } from '../repositories/wallets.js';
+import { lockWalletWithin } from '../repositories/wallets.core.js';
+import { ACCOUNTS, postMovement } from '../repositories/treasury.js';
+import { TEST_FUNDING } from './_funding.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 
@@ -91,6 +94,32 @@ async function ledgerExplainsWallet(userId) {
     if (d !== 0) drift[field] = d;
   }
   return { ok: Object.keys(drift).length === 0, drift, stored, fromLedger };
+}
+
+/**
+ * A settled sell's player half, the way `teamPools.creditSellToPool` runs it:
+ * one transaction, the stake out of `locked` and the tokens on the other side.
+ */
+async function settleStake(userId, orderId, amountPaise) {
+  const { getPool } = await import('../client.js');
+  const client = await (await getPool()).connect();
+  try {
+    await client.query('BEGIN');
+    const ctx = await lockWalletWithin(client, userId);
+    const consumed = await consumeWithdrawalStakeWithin(ctx, { orderId, amountPaise });
+    if (!consumed.ok) throw new Error(`stake not consumed: ${consumed.refused ?? consumed.excluded}`);
+    const moved = await postMovement({
+      client, movementId: `wf_settle_${orderId}`, operation: 'TEST_SELL_SETTLED',
+      legs: { [ACCOUNTS.USER_FLOAT]: 0 - amountPaise, [ACCOUNTS.OPERATIONAL_FLOAT]: amountPaise },
+    });
+    if (!moved.ok) throw new Error(`treasury leg refused: ${moved.reason}`);
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
 }
 
 describePg('the whole journey: signup to withdrawal', () => {
@@ -164,6 +193,7 @@ describePg('the whole journey: signup to withdrawal', () => {
         txId: `dep_complete_${orderId}`, field: 'depositBalance',
         amountPaise: AMOUNT_PAISE, type: 'CREDIT', reason: 'deposit completed', refId: orderId,
       }],
+      counterparty: TEST_FUNDING,
     });
     expect(credit.ok).toBe(true);
     await transitionOrder(orderId, ORDER_STATES.COMPLETED, { actor: 'workflow-test' });
@@ -181,6 +211,7 @@ describePg('the whole journey: signup to withdrawal', () => {
         txId: `dep_complete_${orderId}`, field: 'depositBalance',
         amountPaise: AMOUNT_PAISE, type: 'CREDIT', reason: 'deposit completed', refId: orderId,
       }],
+      counterparty: TEST_FUNDING,
     });
     expect(replay.idempotent).toBe(true);
     expect((await getBalancesPaise(USER)).depositBalance).toBe(AMOUNT_PAISE);
@@ -195,6 +226,7 @@ describePg('the whole journey: signup to withdrawal', () => {
       userId: USER,
       legs: [{ field: 'depositBalance', deltaPaise: STARTING }],
       ledger: [{ txId: `wf_seed_${RUN}_${seq}`, field: 'depositBalance', amountPaise: STARTING, type: 'CREDIT' }],
+      counterparty: TEST_FUNDING,
     });
 
     await ensureCycle({
@@ -253,6 +285,7 @@ describePg('the whole journey: signup to withdrawal', () => {
       userId: USER,
       legs: [{ field: 'depositBalance', deltaPaise: STARTING }],
       ledger: [{ txId: `wf_seed2_${RUN}_${seq}`, field: 'depositBalance', amountPaise: STARTING, type: 'CREDIT' }],
+      counterparty: TEST_FUNDING,
     });
     await ensureCycle({
       cycleId: CYCLE, cycleType: '30_MIN',
@@ -306,6 +339,7 @@ describePg('the whole journey: signup to withdrawal', () => {
       userId: USER,
       legs: [{ field: 'depositBalance', deltaPaise: STARTING }],
       ledger: [{ txId: `wf_seed3_${RUN}_${seq}`, field: 'depositBalance', amountPaise: STARTING, type: 'CREDIT' }],
+      counterparty: TEST_FUNDING,
     });
     await ensureCycle({
       cycleId: CYCLE, cycleType: '30_MIN',
@@ -342,6 +376,7 @@ describePg('the whole journey: signup to withdrawal', () => {
         userId: USER,
         legs: [{ field: 'winningsBalance', deltaPaise: WINNINGS }],
         ledger: [{ txId: `wf_win_${RUN}_${seq}`, field: 'winningsBalance', amountPaise: WINNINGS, type: 'CREDIT' }],
+      counterparty: TEST_FUNDING,
       });
 
       // ADMISSION IS THE DEBIT. There is no pre-check in front of it, by
@@ -375,11 +410,15 @@ describePg('the whole journey: signup to withdrawal', () => {
       userId: USER,
       legs: [{ field: 'winningsBalance', deltaPaise: WINNINGS }],
       ledger: [{ txId: `wf_win2_${RUN}_${seq}`, field: 'winningsBalance', amountPaise: WINNINGS, type: 'CREDIT' }],
+      counterparty: TEST_FUNDING,
     });
 
     const orderId = `wf-wd2-${RUN}-${seq}`;
     await debitWinningsForWithdrawal(USER, 150, orderId);
-    await releaseWithdrawal(USER, 150, orderId);
+    // The settlement: the stake leaves `locked` in the same transaction as the
+    // tokens reaching whoever paid the player (here the platform's holding
+    // stands in for the team's pool, which `teamRoutingPg` covers).
+    await settleStake(USER, orderId, 150_00);
 
     const after = await getBalancesPaise(USER);
     // The money is gone from BOTH pockets: out of winnings at admission, out of
@@ -398,6 +437,7 @@ describePg('the whole journey: signup to withdrawal', () => {
       userId: USER,
       legs: [{ field: 'winningsBalance', deltaPaise: WINNINGS }],
       ledger: [{ txId: `wf_win3_${RUN}_${seq}`, field: 'winningsBalance', amountPaise: WINNINGS, type: 'CREDIT' }],
+      counterparty: TEST_FUNDING,
     });
 
     const orderId = `wf-wd3-${RUN}-${seq}`;

@@ -315,6 +315,14 @@ router.post('/admin/balance-adjust', authenticate, hasPermission('canAdjustBalan
     const result = await adminAdjustment(
       req.user.userId, userId, type, field, Number(amount), reason, adjustmentId,
     );
+    if (!result.ok && result.reason === 'SUPPLY_EXHAUSTED') {
+      // Platform state, not the admin's mistake: the configured token supply
+      // is all in circulation (§32 S14). Nothing moved.
+      return res.status(409).json({
+        success: false,
+        message: 'Nothing was credited: every token of the configured supply is already in circulation. Raise the supply in System Settings first.',
+      });
+    }
     if (!result.ok) {
       return res.status(400).json({
         success: false,

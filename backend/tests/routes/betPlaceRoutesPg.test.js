@@ -29,7 +29,10 @@ import { randomInt } from 'node:crypto';
 import { pgConfigured, applySchema, closePg, pgQuery, withTransaction } from '#db/client.js';
 import { ensureCycle } from '#db/repositories/markets.js';
 import { getSystemConfig } from '#db/repositories/config.js';
-import { creditDeposit, getBalances } from '../../domains/wallet/walletAuthority.service.js';
+import { getBalances } from '../../domains/wallet/walletAuthority.service.js';
+// Funded from the platform's own holding, posted with the credit: a wallet
+// that gains tokens from nowhere does not commit.
+import { fundWallet } from '#db/tests/_funding.js';
 import { actor, mountRouter, as } from './_harness.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
@@ -78,7 +81,7 @@ describePg('POST /api/bet/place', () => {
   const fundedPlayer = async (rupees) => {
     const p = await actor({});
     await linkTelegram(p);
-    await creditDeposit(p.userId, rupees, `rt-bet-fund-${p.userId}`);
+    await fundWallet(p.userId, rupees * 100, `rt-bet-fund-${p.userId}`);
     return p;
   };
   const place = (who, body, key = `k-${Math.random().toString(36).slice(2)}`) =>
