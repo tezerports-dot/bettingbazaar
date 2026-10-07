@@ -29,6 +29,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { pgConfigured, applySchema, closePg, pgQuery } from '#db/client.js';
 import { getMerchant, setOnline } from '#db/repositories/merchants.js';
+import { setSupervisorRole } from '#db/repositories/teams.js';
 import { teamFixture } from '../teamFixture.js';
 import { mountRouter, actor, merchantActor, as } from './_harness.js';
 
@@ -128,6 +129,48 @@ describePg('a supervisor takes no orders, so has no online switch', () => {
     expect((await as(teamAdminApp, admin).put(`/merchants/${promoted.merchantId}/supervisor`).send({ rail: null })).status).toBe(200);
     expect((await as(merchantApp, promoted).put('/online-status').send({ isOnline: true })).status).toBe(200);
     await as(merchantApp, promoted).put('/online-status').send({ isOnline: false });
+  });
+
+  it('going online and being made a supervisor, at the same moment, never leave a supervisor online', async () => {
+    // §37.1 first/concurrent: whichever statement takes the row second
+    // re-reads it — the switch's WHERE then refuses a supervisor, or the
+    // promotion switches the member off — so the row's CHECK is never what
+    // answers, and neither caller sees a constraint error.
+    const racer = await merchantActor();
+    for (let round = 0; round < 8; round += 1) {
+      const [role, online] = await Promise.all([
+        setSupervisorRole(racer.merchantId, { rail: 'CASH' }),
+        setOnline(racer.merchantId, true),
+      ]);
+      expect(role).toEqual({ ok: true });
+      const now = await pgQuery('SELECT is_supervisor, is_online FROM merchants WHERE merchant_id = $1', [racer.merchantId]);
+      expect(now.rows[0]).toEqual({ is_supervisor: true, is_online: false });
+      // The switch either went on before the promotion (and the promotion
+      // turned it off) or was refused after it.
+      if (online) expect(online.isSupervisor).toBe(false);
+      expect((await sessions(racer.merchantId)).every((s) => s.ended_at !== null)).toBe(true);
+      expect((await setSupervisorRole(racer.merchantId, { rail: null })).ok).toBe(true);
+    }
+  });
+
+  it('an existing database with a supervisor online converges: switched off, the stretch closed, the row guarded', async () => {
+    // §37.1 new/existing database (§32 S31): a row written before the rule.
+    // Recreate it the only way it could exist — without the constraint — and
+    // apply the schema again.
+    const old = await merchantActor();
+    await pgQuery('ALTER TABLE merchants DROP CONSTRAINT merchants_supervisor_never_online');
+    try {
+      expect((await setOnline(old.merchantId, true))?.isOnline).toBe(true);
+      await pgQuery(`UPDATE merchants SET is_supervisor = TRUE, supervisor_rail = 'UPI_BANK' WHERE merchant_id = $1`, [old.merchantId]);
+      expect((await row(old.merchantId)).is_online).toBe(true);
+    } finally {
+      await applySchema();
+    }
+    expect((await row(old.merchantId)).is_online).toBe(false);
+    expect((await sessions(old.merchantId)).every((s) => s.ended_at !== null)).toBe(true);
+    await expect(pgQuery('UPDATE merchants SET is_online = TRUE WHERE merchant_id = $1', [old.merchantId]))
+      .rejects.toThrow(/merchants_supervisor_never_online/);
+    expect((await setSupervisorRole(old.merchantId, { rail: null })).ok).toBe(true);
   });
 
   it('the profile tells the panel which kind of account it is', async () => {

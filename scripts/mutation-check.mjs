@@ -2774,6 +2774,13 @@ const MUTATIONS = [
     from: `  CHECK (NOT (is_supervisor AND is_online));`,
     to: `  CHECK (TRUE);`,
   },
+  {
+    id: 'M456', file: 'database/schema.sql', config: PG,
+    test: 'backend/tests/routes/supervisorTakesNoOrdersPg.test.js',
+    why: 'a database holding a supervisor online from before the rule is not switched off first, so applying the schema fails on the constraint (§32 S31)',
+    from: `UPDATE merchants SET is_online = FALSE, last_online_toggle = now() WHERE is_supervisor AND is_online;`,
+    to: `-- (not converged)`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that
