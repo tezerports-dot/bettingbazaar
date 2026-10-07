@@ -148,6 +148,24 @@ these."* Their answers:
     wanted later, optional for users.
 12. The Android app has exactly the same flow as the website.
 
+**Revised the same evening** (owner, 2026-10-07, DECISION_LOG): *"they must
+verify and share contact on signup … no need for login or anywhere else … but
+add also login with telegram button too."* So:
+
+- Answer 1 changes: signup requires the Mini App contact share, and it must
+  match the form's mobile before the account can be used. This applies to all
+  three account types.
+- Answer 4 changes: Telegram is linked at signup. The profile offers a relink
+  to a different Telegram account (same matching contact), not an unlink.
+- Answer 6 changes: an optional "Login with Telegram" button sits beside the
+  password login. For staff and merchants it still asks for the password, so
+  sign-in stays two-factor.
+- A referral counts once the new account is verified. A referral link carries
+  the code into the signup, pre-filled and locked.
+- Unchanged: password login needs no Telegram, password reset goes through the
+  Mini App, 2FA is Telegram only, there is no channel requirement, and the bot
+  fleet goes.
+
 This overrules CLAUDE.md §33; the Step 3 change rewrites it. The 2d rule
 still holds wherever a buy is shown: where to pay appears only after the
 member accepts.
