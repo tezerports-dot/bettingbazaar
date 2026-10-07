@@ -44,7 +44,7 @@ const Dashboard: React.FC = () => {
   // Online, and whether the platform paused new buy orders to them (§2:
   // three unpaid in a row) — one helper, shared with the sidebar (§5).
   const availability = availabilityOf(merchant);
-  const { online, paused } = availability;
+  const { online, paused, switchable } = availability;
 
   const [stats, setStats] = useState<Stats | null>(null);
   const [earnings, setEarnings] = useState<Earnings | null>(null);
@@ -155,15 +155,19 @@ const Dashboard: React.FC = () => {
             </div>
           </div>
         </div>
+        {/* A supervisor takes no orders (CLAUDE.md §2), so there is no switch to
+            offer: their work, and their members' online time, is on Team. */}
         <button
-          onClick={toggleOnline}
+          onClick={switchable ? toggleOnline : () => navigate(ROUTES.TEAM)}
           style={{
             display: 'flex', alignItems: 'center', gap: 8, padding: '11px 18px', borderRadius: 12,
             border: '1.5px solid rgba(255,255,255,.35)', background: 'rgba(255,255,255,.14)',
             color: '#fff', fontSize: 13, fontWeight: 700, cursor: 'pointer',
           }}
         >
-          <Power size={15} /> {online ? 'Go offline' : 'Go online'}
+          {switchable
+            ? <><Power size={15} /> {online ? 'Go offline' : 'Go online'}</>
+            : <>Open your teams <ArrowRight size={15} /></>}
         </button>
       </div>
 

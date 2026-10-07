@@ -155,8 +155,17 @@ export async function setSupervisorRole(merchantId, { rail }) {
       const { rows: t } = await client.query(
         'SELECT 1 FROM teams WHERE supervisor_id = $1 LIMIT 1', [String(merchantId)]);
       if (t.length) return { ok: false, reason: 'has_teams' };
+      // Becoming a supervisor switches the merchant OFFLINE in the same
+      // statement: a supervisor takes no orders and has no online switch
+      // (`setOnline` refuses them), and a member promoted while online would
+      // otherwise stay online, logging a member's online time (§2) for
+      // somebody who is no longer one. The trigger on `is_online` closes the
+      // open stretch. Taking the role away leaves the switch where it is.
       await client.query(
-        `UPDATE merchants SET is_supervisor = $2, supervisor_rail = $3, updated_at = now()
+        `UPDATE merchants SET is_supervisor = $2, supervisor_rail = $3,
+                is_online = is_online AND NOT $2,
+                last_online_toggle = CASE WHEN $2 AND is_online THEN now() ELSE last_online_toggle END,
+                updated_at = now()
           WHERE merchant_id = $1`,
         [String(merchantId), rail !== null, rail],
       );

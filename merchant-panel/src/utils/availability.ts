@@ -10,15 +10,26 @@
  */
 import type { MerchantProfile } from '../types';
 
-export function availabilityOf(merchant: Pick<MerchantProfile, 'isOnline' | 'assignmentPausedAt'> | null | undefined) {
-  const online = !!merchant?.isOnline;
-  const paused = !!merchant?.assignmentPausedAt;
+export function availabilityOf(
+  merchant: Pick<MerchantProfile, 'isOnline' | 'assignmentPausedAt' | 'isSupervisor'> | null | undefined,
+) {
+  // A supervisor is never a member (CLAUDE.md §2): they take no orders, so
+  // there is nothing to switch, and every screen says so instead of offering
+  // "Go online" (which the server refuses, SUPERVISOR_TAKES_NO_ORDERS).
+  const supervisor = merchant?.isSupervisor === true;
+  const online = !supervisor && !!merchant?.isOnline;
+  const paused = !supervisor && !!merchant?.assignmentPausedAt;
   return {
     online,
     paused,
+    supervisor,
+    /** Whether this account has an online switch at all. */
+    switchable: !supervisor,
     /** Sidebar and profile. */
-    short: online ? (paused ? 'New orders paused' : 'Available for orders') : 'Not accepting',
+    short: supervisor ? 'Supervisor · takes no orders'
+      : online ? (paused ? 'New orders paused' : 'Available for orders') : 'Not accepting',
     /** The Dashboard's status card. */
-    long: online ? (paused ? 'Online · New orders paused' : 'Online · Accepting orders') : 'Offline · Not accepting',
+    long: supervisor ? 'Supervisor · your members take the orders'
+      : online ? (paused ? 'Online · New orders paused' : 'Online · Accepting orders') : 'Offline · Not accepting',
   };
 }

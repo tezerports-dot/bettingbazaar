@@ -3907,6 +3907,16 @@ CREATE OR REPLACE TRIGGER merchants_log_online_switch
 CREATE OR REPLACE TRIGGER merchants_log_online_insert
   AFTER INSERT ON merchants FOR EACH ROW
   WHEN (NEW.is_online) EXECUTE FUNCTION bb_log_online_switch();
+-- A supervisor is never a member (CLAUDE.md §2) and online time is a member's,
+-- so a supervisor's row is never online. `setOnline` keeps it so in its WHERE
+-- and `setSupervisorRole` switches the row off in the statement that makes the
+-- supervisor; the row refuses every other path. Convergent (§32 S31): a row
+-- written before the rule is switched off first, which the trigger above logs
+-- as the end of its stretch.
+UPDATE merchants SET is_online = FALSE, last_online_toggle = now() WHERE is_supervisor AND is_online;
+ALTER TABLE merchants DROP CONSTRAINT IF EXISTS merchants_supervisor_never_online;
+ALTER TABLE merchants ADD CONSTRAINT merchants_supervisor_never_online
+  CHECK (NOT (is_supervisor AND is_online));
 -- Convergent with the switch on a database that predates the log (§32 S31):
 -- an online merchant has an open stretch, an offline one has none.
 INSERT INTO merchant_online_sessions (merchant_id, started_at)
