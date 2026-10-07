@@ -188,12 +188,16 @@ const MUTATIONS = [
   // ── The controls that were defined nowhere ───────────────────────────────
   // M57/M58 guarded the IP deny-list, removed 2026-09-30 (it never ran).
   {
-    id: 'M59', file: 'database/repositories/balanceAdjustments.js', config: PG,
+    // Retargeted 2026-10-07: `allowNegative` is gone (no writer may take a
+    // pocket below zero, `wallets_pockets_nonneg`), so adding it changed
+    // nothing and the entry SURVIVED forever. The guard that answers an
+    // over-debit is the WHERE in `moveBalances`; without it the CHECK still
+    // holds, but the admin gets a constraint error instead of INSUFFICIENT.
+    id: 'M59', file: 'database/repositories/wallets.core.js', config: PG,
     test: 'database/tests/securityChatAdjustmentPg.test.js',
-    why: 'the negative-balance guard is lifted, so an admin can debit a pocket below zero',
-    from: `      legs: [{ field, deltaPaise: delta }],`,
-    to: `      legs: [{ field, deltaPaise: delta }],
-      allowNegative: true,`,
+    why: 'the over-debit guard leaves the UPDATE, so an admin debit past the balance is a constraint error, not a refusal they can read',
+    from: `    if (delta < 0) guards.push(\`AND \${column} + \${placeholder} >= 0\`);`,
+    to: ``,
   },
   {
     id: 'M60', file: 'database/repositories/balanceAdjustments.js', config: PG,
