@@ -7,9 +7,9 @@
  * tests that fail if that property is lost:
  *
  *   CASINO      a ROLLBACK/REFUND must prove a matching prior debit. The old
- *               path calls refundOrder() with no such check and no bound, so a
- *               provider that is buggy, replayed or hostile can MINT REAL MONEY
- *               by rolling back a round that was never bet on.
+ *               path credited the wallet with no such check and no bound, so a
+ *               provider that is buggy, replayed or hostile could MINT REAL
+ *               MONEY by rolling back a round that was never bet on.
  *   SETTLEMENT  one settlement per cycle, ever, and a resumed pass settles the
  *               remaining bets against the side the FIRST pass recorded.
  *   BONUS       a bonus is a TRANSFER from a funded pool, not a mint — because
@@ -29,14 +29,15 @@ import {
   getCycleSettlement, reconcileSettlement, findIncompleteSettlements,
 } from '../repositories/settlements.js';
 import { grantBonus, clawBackBonus, getGrant, reconcileBonusPools, GRANT_STATUS } from '../repositories/bonuses.core.js';
-import { ACCOUNTS, getTreasuryBalances, allocateFromHouse, trialBalance } from '../repositories/treasury.js';
+import { ACCOUNTS, getTreasuryBalances, postMovement, trialBalance } from '../repositories/treasury.js';
+import { TEST_FUNDING, fundWallet } from './_funding.js';
 
 const hasPg = pgConfigured();
 const describePg = hasPg ? describe : describe.skip;
 
 const U = 'pg-d678-user';
 const fund = (paise, key, userId = U, field = 'depositBalance') =>
-  applyDeltaPaise({ userId, field, deltaPaise: paise, txId: key, type: 'CREDIT', reason: 'test' });
+  fundWallet(userId, paise, key, field);
 const bal = (userId = U) => getBalancesPaise(userId);
 const slice = (field, amountPaise) => ({ field, amountPaise });
 
@@ -53,10 +54,9 @@ describePg('Domains 6-8 (PostgreSQL)', () => {
   // ══ DOMAIN 7: casino ══════════════════════════════════════════════════════
   describe('casino callbacks: a refund must prove its debit', () => {
     it('refuses a rollback for a round that was never bet on', async () => {
-      // THE defect. Before this, the call reached
-      // refundOrder(userId, amount, roundId, 'depositBalance') and credits real
-      // money for a round that does not exist — free money for any provider
-      // that asks, by accident or otherwise.
+      // THE defect. Before this, the call reached a plain wallet credit for a
+      // round that does not exist — free money for any provider that asks, by
+      // accident or otherwise.
       const r = await recordCallback({
         txId: 'tx_ghost', roundId: 'round_ghost', userId: U,
         type: CASINO_TX.ROLLBACK, amountPaise: 50_000,
@@ -245,9 +245,16 @@ describePg('Domains 6-8 (PostgreSQL)', () => {
 
   // ══ DOMAIN 8: bonuses and commissions ═════════════════════════════════════
   describe('bonuses are a transfer from a funded pool, not a mint', () => {
-    /** Fund a pool the way revenue actually would: out of house reserve. */
-    const fundPool = (pool, paise, key) =>
-      allocateFromHouse(paise, pool, { movementId: key, reason: 'test pool funding' });
+    /**
+     * Fund a pool the way revenue would: distributable revenue the platform
+     * has not released yet moves from its own holding into the pool. Nothing
+     * in the backend does this today — which is why a grant is refused until
+     * somebody funds the pool, and why this has to be explicit here.
+     */
+    const fundPool = (pool, paise, key) => postMovement({
+      movementId: key, operation: `ALLOCATE_${pool}`, reason: 'test pool funding',
+      legs: { [ACCOUNTS.TOKEN_SUPPLY]: 0 - paise, [pool]: paise },
+    });
 
     it('pays the user AND takes it out of the pool, keeping the books closed', async () => {
       await fundPool(ACCOUNTS.BONUS_POOL, 50_000, 'pool1');
@@ -313,16 +320,37 @@ describePg('Domains 6-8 (PostgreSQL)', () => {
       expect((await getTreasuryBalances())[ACCOUNTS.BONUS_POOL]).toBe(50_000);
     });
 
-    it('a clawback may drive the balance negative — the money may be spent', async () => {
+    it('REFUSES a clawback the player can no longer cover, and takes nothing', async () => {
       await fundPool(ACCOUNTS.BONUS_POOL, 50_000, 'p1');
       await grantBonus({ grantId: 'g1', userId: U, kind: 'SIGNUP', amountPaise: 20_000 });
-      // Spent it.
-      await applyDeltaPaise({ userId: U, field: 'depositBalance', deltaPaise: -20_000, txId: 'spend', type: 'DEBIT', reason: 'spent' });
+      // Spent it — on a bet, which is where it goes.
+      await applyDeltaPaise({
+        userId: U, field: 'depositBalance', deltaPaise: -20_000, txId: 'spend',
+        type: 'DEBIT', reason: 'spent',
+        counterparty: { account: ACCOUNTS.OPERATIONAL_FLOAT, operation: 'TEST_SPEND' },
+      });
 
-      expect((await clawBackBonus({ grantId: 'g1', userId: U })).ok).toBe(true);
-      // Refusing to record a reversal that has already happened in the real
-      // world is worse than recording an overdraft.
-      expect((await bal()).depositBalance).toBe(-20_000);
+      // This used to be ALLOWED to overdraw, on the argument that refusing to
+      // record a reversal that already happened is worse than an overdraft. It
+      // is not: a negative pocket is a token spent that was never there, and
+      // the next debit would spend it a second time (owner, 2026-10-07). The
+      // grant stays PAID, so a person recovers it rather than the books lying.
+      const r = await clawBackBonus({ grantId: 'g1', userId: U });
+      expect(r).toMatchObject({ ok: false, reason: 'insufficient' });
+      expect((await bal()).depositBalance).toBe(0);
+      expect(await getGrant('g1')).toMatchObject({ status: GRANT_STATUS.PAID });
+      expect(await trialBalance()).toMatchObject({ ok: true });
+    });
+
+    it('REFUSES a grant from a pool that was never funded', async () => {
+      // Nothing funds these pools today. A grant that paid out anyway would be
+      // tokens from nowhere, so the pool's sign constraint refuses it and the
+      // caller is told — never a silent credit.
+      const r = await grantBonus({ grantId: 'g_unfunded', userId: U, kind: 'SIGNUP', amountPaise: 20_000 });
+      expect(r).toMatchObject({ ok: false, reason: 'pool_movement_failed' });
+      expect(await bal()).toMatchObject({ depositBalance: 0 });
+      expect(await getGrant('g_unfunded')).toBe(null);
+      expect(await trialBalance()).toMatchObject({ ok: true });
     });
 
     it('a replayed clawback takes nothing further', async () => {
@@ -360,7 +388,10 @@ describePg('Domains 6-8 (PostgreSQL)', () => {
     const pool = await getPool();
     const users = Array.from({ length: 20 }, (_, i) => `pg-d678-u${i}`);
     await Promise.all(users.map((u, i) => fund(100_000, `mf_${i}`, u)));
-    await allocateFromHouse(200_000, ACCOUNTS.BONUS_POOL, { movementId: 'mix_pool' });
+    await postMovement({
+      movementId: 'mix_pool', operation: `ALLOCATE_${ACCOUNTS.BONUS_POOL}`,
+      legs: { [ACCOUNTS.TOKEN_SUPPLY]: -200_000, [ACCOUNTS.BONUS_POOL]: 200_000 },
+    });
 
     const started = Date.now();
     await Promise.all(users.flatMap((u, i) => [

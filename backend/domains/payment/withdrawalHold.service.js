@@ -16,11 +16,10 @@
  * no value has moved: the player's stake is locked (as it has been since order
  * creation) and the pool has not been credited.
  *
- * Settling is two keyed movements: `teamPools.creditSellToPool` (the pool
- * +a, TEAM_FLOAT ← USER_FLOAT, once per order) and `releaseWithdrawal` (the
- * player's locked stake consumed, once per order). The pool credit goes first
- * and is the GATE — it checks, under the order's row lock, that the order is
- * still PAID — and a failed release reverses it.
+ * Settling is ONE transaction, keyed on the order (`walletAuthority.settleSell`
+ * → `teamPools.creditSellToPool`): the pool +a, the player's locked stake
+ * consumed and USER_FLOAT → TEAM_FLOAT commit together or not at all, after
+ * the GATE — under the order's row lock, the order is still PAID.
  *
  * ── Why a worker and not a timer ───────────────────────────────────────────
  * The hold outlives any single request and must survive a restart, so expiry is
@@ -29,7 +28,7 @@
  * several instances, settles each order exactly once.
  */
 import { db } from '#db';
-import { releaseWithdrawal, returnWithdrawalStake } from '../wallet/walletAuthority.service.js';
+import { settleSell, refundSettledSell, refundWithdrawal } from '../wallet/walletAuthority.service.js';
 import { emitOrderUpdate, emitAdminUpdate } from '../notification/realtimeEmitters.js';
 import { sendAlert } from '../../services/alerting.service.js';
 import { payCommissionFor } from '../team/teamCommission.service.js';
@@ -60,56 +59,40 @@ export async function holdMinutes() {
  * locked stake, complete the order.
  *
  * ── The gate ────────────────────────────────────────────────────────────────
- * `creditSellToPool` with `requireState: 'PAID'`: under the order's row lock,
- * once per order (its ledger key is the order's). A dispute that landed after
- * the read moved the order to DISPUTED and the credit is refused; two sweeps
- * credit once.
+ * `walletAuthority.settleSell` → `teamPools.creditSellToPool` with
+ * `requireState: 'PAID'`: under the order's row lock, once per order (its keys
+ * are the order's). A dispute that landed after the read moved the order to
+ * DISPUTED and the settlement is refused; two sweeps settle once.
  *
- * ── Ordering, and what compensates a partial failure ────────────────────────
- * The pool credit comes FIRST, so the player's stake is consumed after it has
- * committed. If that release then fails, the credit is REVERSED — a real
- * recorded movement out of the pool, not a silent undo — and the books end
- * with the player still holding their stake.
+ * ── One transaction, nothing to compensate ──────────────────────────────────
+ * The pool credit, the stake leaving the player's `locked` and
+ * USER_FLOAT → TEAM_FLOAT commit together or not at all (owner, 2026-10-07).
+ * They were two transactions with a reversal between them; the database now
+ * refuses either half alone, so there is no partial state to repair.
  *
  * @returns {Promise<boolean>} true when THIS call settled the order.
  */
 export async function settleHold(orderId) {
   const order = await db.orders.getOrderRecord(orderId);
   if (!order || order.type !== 'WITHDRAWAL') return false;
-  // Eligibility, not a gate — the credit below asks the same question under a
-  // lock. A DISPUTED withdrawal does not settle, whatever its timer says.
+  // Eligibility, not a gate — the settlement below asks the same question under
+  // a lock. A DISPUTED withdrawal does not settle, whatever its timer says.
   if (order.merchantCreditStatus !== 'HELD' || order.state !== 'PAID') return false;
 
-  const credited = await db.teamPools.creditSellToPool(order.orderId, {
+  const settled = await settleSell(order.orderId, {
     actor: 'settlement-worker', requireState: 'PAID',
   });
-  if (!credited.ok) {
+  if (!settled.ok) {
     // `order_state`: disputed since it was read; nothing moved and the admin
-    // who resolves the dispute decides. Anything else is a defect worth a log.
-    if (credited.reason !== 'order_state') {
-      console.error(`[withdrawal-hold] pool credit refused for ${order.orderId}:`, credited.reason);
+    // who resolves the dispute decides. Anything else moved nothing either,
+    // and is a defect a person must see.
+    if (settled.reason !== 'order_state') {
+      console.error(`[withdrawal-hold] settlement refused for ${order.orderId}:`, settled.reason);
+      sendAlert('withdrawal-hold-settle-refused', 'A held withdrawal could not settle; nothing moved', {
+        orderId: order.orderId, userId: String(order.userId), amount: order.tokenAmount, reason: settled.reason,
+      }).catch(() => {});
     }
     return false;
-  }
-
-  try {
-    await releaseWithdrawal(order.userId, order.tokenAmount, order.orderId);
-  } catch (err) {
-    console.error(`[withdrawal-hold] release failed for ${order.orderId}, reversing pool credit:`, err.message);
-    const reversed = await db.teamPools.reverseSellFromPool(order.orderId, {
-      actor: 'settlement-worker', reason: 'Player stake release failed',
-    }).catch((e) => ({ ok: false, reason: e.message }));
-    sendAlert('withdrawal-hold-release-failed', 'Held withdrawal could not release the player stake', {
-      orderId: order.orderId, userId: String(order.userId), amount: order.tokenAmount,
-      error: err.message,
-      // Whether the compensation landed decides whether a human has to act: an
-      // un-reversed credit means the pool holds tokens for a stake the player
-      // never gave up.
-      poolCreditReversed: reversed.ok === true,
-      reversalError: reversed.ok ? undefined : reversed.reason,
-    }).catch(() => {});
-    if (reversed.ok) await mirrorSettlement(order, 'REVERSED');
-    throw err;
   }
 
   await mirrorSettlement(order, 'SETTLED');
@@ -166,14 +149,16 @@ function mirrorSettlement(order, settlementStatus, extra = {}) {
  * transition, and that is the gate that stops two admins deciding one
  * withdrawal both ways.
  *
- * Every step is idempotent on its own key (`pool_sell_<id>`, `refund_<id>`,
- * the release key, `dispute_wd_refund_<id>`), so calling this again for the
- * same decision repairs a partial failure rather than paying twice — and the
- * routes do call it again when their transition reports the decision was
- * already made. Releasing and returning the stake are RIVALS: each refuses
- * when the other's key exists, so a stake is consumed or returned, never both.
- * Which way a refund returns it is read from the ledger, never from the
- * order's flags, which this function itself rewrites.
+ * Every step is one transaction keyed on the order (`pool_sell_<id>` with
+ * `wd_release_<id>`; `pool_sellrev_<id>` or `team_sell_cover_<id>` with
+ * `dispute_wd_refund_<id>`; `refund_<id>`), so calling this again for the
+ * same decision moves nothing twice — and the routes do call it again when
+ * their transition reports the decision was already made. Consuming and
+ * returning a locked stake are RIVALS: each refuses when the other's key
+ * exists, so a stake is consumed or returned, never both. Whether a refund
+ * finds the sell settled is asked under the order's lock, of the pool entry
+ * the settlement wrote in the same transaction as the stake it consumed —
+ * never of the order's flags, which this function itself rewrites.
  *
  * @param {string} orderId
  * @param {'REFUND'|'RELEASE'} decision
@@ -190,51 +175,29 @@ export async function endWithdrawal(orderId, decision, { reason = null, by = nul
 
   if (decision === 'RELEASE') {
     // Refunded already: the stake went back to the player, so crediting the
-    // pool now would pay out twice.
+    // pool now would pay out twice. (The settlement refuses it by key too.)
     if (order.escrowStatus === 'REFUNDED') return { ok: false, reason: 'refunded' };
-    const credited = await db.teamPools.creditSellToPool(order.orderId, { actor });
-    if (!credited.ok) return { ok: false, reason: credited.reason };
-    try {
-      await releaseWithdrawal(order.userId, order.tokenAmount, order.orderId);
-    } catch (err) {
-      // The same compensation `settleHold` makes, for the same reason.
-      console.error(`[withdrawal] release failed for ${order.orderId}, reversing pool credit:`, err.message);
-      const reversed = await db.teamPools.reverseSellFromPool(order.orderId, {
-        actor, reason: 'Player stake release failed',
-      }).catch((e) => ({ ok: false, reason: e.message }));
-      sendAlert('withdrawal-release-failed', 'Admin-released withdrawal could not release the player stake', {
-        orderId: order.orderId, userId: String(order.userId), amount: order.tokenAmount,
-        error: err.message, poolCreditReversed: reversed.ok === true,
-      }).catch(() => {});
-      if (reversed.ok) await mirrorSettlement(order, 'REVERSED', { keepState: true, reason, actor });
-      throw err;
-    }
+    const settled = await settleSell(order.orderId, { actor });
+    if (!settled.ok) return { ok: false, reason: settled.reason };
     await mirrorSettlement(order, 'SETTLED', { keepState: true, reason, actor });
-    return credited.alreadyCredited ? { ok: true, already: true } : { ok: true, released: true };
+    return settled.alreadyCredited ? { ok: true, already: true } : { ok: true, released: true };
   }
 
   // ── REFUND ─────────────────────────────────────────────────────────────
   // Settled already? Then the tokens are in the pool and the stake consumed:
-  // take them back out of the pool, and return the stake as winnings.
-  // A team that has already used those tokens cannot give them back; the
-  // platform covers the refund instead (`coverShortfall`), so the books keep
-  // describing the wallets and the team is recovered from by hand, below.
-  const reversed = await db.teamPools.reverseSellFromPool(order.orderId, {
+  // take them back out of the pool and return the stake as winnings, in one
+  // transaction. A team that has already used those tokens cannot give them
+  // back; the platform covers the refund instead (`coverShortfall`), and the
+  // team is recovered from by hand, below.
+  const reversed = await refundSettledSell(order.orderId, {
     actor, reason: String(reason || `Withdrawal ${order.orderId} refunded by admin`).slice(0, 200),
     coverShortfall: true,
   });
   if (!reversed.ok && reversed.reason !== 'not_settled') {
-    // Settled, and still not returnable: crediting the player now would be
-    // tokens no account moved. Nothing has moved yet, so say so and stop.
+    // Settled, and still not returnable: nothing has moved, so say so and stop.
     throw Object.assign(new Error(`The refund could not be made: ${reversed.reason}`), { status: 409 });
   }
   if (reversed.ok) {
-    // Where the STAKE is — consumed by the settlement, or still locked because
-    // a release failed — is the ledger's answer, asked under the wallet lock.
-    // Never the mirrored status: the first refund rewrites it (RELEASED ->
-    // REVERSED), and a replay that branched on it took the "still locked" path
-    // on another key and paid the player twice, out of another order's stake.
-    await returnWithdrawalStake(order.userId, order.tokenAmount, order.orderId);
     if (reversed.covered && !reversed.alreadyCovered) {
       // The team has already spent what this sell brought in. The player is
       // made whole now, from the platform's holding (above), and the team is
@@ -249,9 +212,10 @@ export async function endWithdrawal(orderId, decision, { reason = null, by = nul
   }
   // Never settled: the stake is still locked — admission moved it winnings ->
   // locked, so returning it is locked -> winnings, on the one refund key every
-  // path uses.
+  // path uses. A settlement that consumed it in the meantime is its rival and
+  // refuses it (409), so the stake is never both consumed and returned.
   if (order.escrowLocked) {
-    await returnWithdrawalStake(order.userId, order.tokenAmount, order.orderId);
+    await refundWithdrawal(order.userId, order.tokenAmount, order.orderId);
   }
   if (order.merchantCreditStatus === 'HELD') {
     await mirrorSettlement(order, 'CANCELLED', { keepState: true, reason, actor });

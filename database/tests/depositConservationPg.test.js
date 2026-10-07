@@ -3,19 +3,22 @@
  * A confirmed deposit MOVES tokens. It never creates them.
  *
  * The team's pool parts with exactly what the player receives, whatever the
- * deposit/reserve policy splits it into. The unit suite asserts that pairing by
- * observing the amounts each writer is ASKED for; this one runs the real
- * writers — `moveDepositMoney` over the real pool spend and the real wallet
- * credits — against a real database and checks the money afterwards, on both
- * sides and in the treasury that summarises them.
+ * deposit/reserve policy splits it into. This is the suite that asserts that
+ * pairing, because the pairing is now ONE TRANSACTION: `moveDepositMoney` →
+ * `completeBuy` → `teamPools.spendForBuy` spends the hold, credits the wallet
+ * and posts TEAM_FLOAT → USER_FLOAT together, and the database refuses the
+ * commit if those figures disagree (owner, 2026-10-07).
  *
- * Both exist deliberately. A stub makes the amounts visible; only the real
- * writers prove they move. A suite that mocked the settlement writer once
- * reported settlement working while the real function threw on every call.
+ * A unit suite used to assert it by observing the amounts three injected
+ * writers were ASKED for. There are no longer three writers to observe, and
+ * stubbing the one that remains would assert nothing about the money — so the
+ * claim lives here, against a real database, and `buyCreditSplit.test.js`
+ * pins the SPLIT RULE on its own (§1: never mock the boundary that carries
+ * money).
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { pgConfigured, pgQuery, applySchema, closePg } from '../client.js';
-import { creditDeposit, creditReserve, getBalances } from '../repositories/wallets.js';
+import { getBalances } from '../repositories/wallets.js';
 import { createOrderRecord, getOrderRecord } from '../repositories/orders.record.js';
 import { assignToTeam } from '../repositories/teamRouting.js';
 import { getPool, releaseBuyHold } from '../repositories/teamPools.js';
@@ -71,7 +74,7 @@ describePg('a confirmed deposit conserves tokens', () => {
 
   /** The confirm, with the real writers, exactly as every completing route calls it. */
   const confirm = (order) => moveDepositMoney(order, {
-    creditDeposit, creditReserve, releaseUTR: async () => {}, requireState: order.status,
+    releaseUTR: async () => {}, requireState: order.status,
   });
 
   for (const [label, depositAllocation, reserveAllocation] of [

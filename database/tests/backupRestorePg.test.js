@@ -25,6 +25,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { pgConfigured, pgQuery, applySchema, closePg } from '../client.js';
+import { fundWallet } from './_funding.js';
 import { Client } from 'pg';
 import fs from 'fs';
 import os from 'os';
@@ -80,15 +81,11 @@ describePg('the backup round trip', () => {
       `INSERT INTO users (user_id, username, mobile) VALUES ($1, 'drill', $2)`,
       [USER, `9997${RUN.replace(/\D/g, '0').padEnd(6, '0').slice(0, 6)}`],
     );
-    await pgQuery(
-      `INSERT INTO wallets (user_id, deposit_paise) VALUES ($1, $2)`,
-      [USER, DEPOSIT_PAISE.toString()],
-    );
-    await pgQuery(
-      `INSERT INTO wallet_ledger (tx_id, user_id, field, amount_paise, balance_after_paise, tx_type, description)
-       VALUES ($1, $2, 'depositBalance', $3, $3, 'CREDIT', 'drill seed')`,
-      [TX, USER, DEPOSIT_PAISE.toString()],
-    );
+    // The wallet, its ledger row and the USER_FLOAT that describes it, in one
+    // transaction: the database refuses a balance written into existence
+    // (schema.sql, "TOKEN CONSERVATION"), and a seed the platform could not
+    // produce would be testing a restore of something impossible (§32 S16).
+    await fundWallet(USER, Number(DEPOSIT_PAISE), TX, 'depositBalance');
 
     // A DIFFERENT database, empty, to restore into. Dropped and recreated so a
     // previous run cannot contribute a row and make a failed restore look fine.
@@ -146,30 +143,30 @@ describePg('the backup round trip', () => {
 
   // ── The half a row count cannot see ───────────────────────────────────────
 
-  it('does NOT constrain balances to be non-negative, and that is deliberate', async () => {
-    // Worth writing down, because the obvious assertion here is the opposite.
+  it('restores the CHECK that forbids a negative pocket', async () => {
+    // This drill used to assert the OPPOSITE, and the reason is worth keeping:
+    // a bonus clawback and a corrective admin path could pass `allowNegative`,
+    // so a CHECK would have made a legitimate correction unrepresentable.
     //
-    // A first draft of this drill asserted a CHECK forbidding a negative
-    // pocket, and adding one broke two tests that turned out to be documenting
-    // real behaviour: a bonus clawback may drive a balance negative because the
-    // money can already be spent, and refusing to record a reversal that has
-    // already happened is worse than recording an uncomfortable number; and the
-    // corrective admin path may do the same under authorisation.
-    //
-    // So the overdraft guard is `AND column + $delta >= 0` in the movement's
-    // own UPDATE, inside the transaction that holds the row lock — and that is
-    // the RIGHT mechanism precisely because an authorised caller can bypass it
-    // by passing `allowNegative`. A CHECK cannot be bypassed, which would make
-    // a legitimate correction unrepresentable.
-    //
-    // The restore therefore carries no such constraint, and this pins that the
-    // absence is a decision rather than an omission somebody should 'fix'.
-    const r = await onDb(restoreUrl,
-      'UPDATE wallets SET deposit_paise = -1 WHERE user_id = $1 RETURNING deposit_paise', [USER]);
-    expect(r.rows[0].deposit_paise).toBe('-1');
-    await onDb(restoreUrl,
-      'UPDATE wallets SET deposit_paise = $2 WHERE user_id = $1',
-      [USER, DEPOSIT_PAISE.toString()]);
+    // Both of those are gone (owner, 2026-10-07: no token may be counted or
+    // used twice). A pocket below zero is a token spent that was never there,
+    // whoever writes it, so the rule is a property of the ROW — and a restore
+    // that dropped it would leave a database that looks identical and is not.
+    await expect(onDb(restoreUrl,
+      'UPDATE wallets SET deposit_paise = -1 WHERE user_id = $1', [USER]))
+      .rejects.toThrow(/wallets_pockets_nonneg/);
+    const { rows } = await onDb(restoreUrl,
+      'SELECT deposit_paise FROM wallets WHERE user_id = $1', [USER]);
+    expect(rows[0].deposit_paise).toBe(DEPOSIT_PAISE.toString());
+  });
+
+  it('restores the conservation triggers, not just the tables they guard', async () => {
+    // A credit with nothing on the other side is tokens from nowhere. The
+    // guard is a DEFERRABLE constraint trigger, which a restore can carry the
+    // tables without.
+    await expect(onDb(restoreUrl,
+      `INSERT INTO wallets (user_id, deposit_paise) VALUES ($1, 500)`, [`${USER}-ghost`]))
+      .rejects.toThrow(/token conservation/);
   });
 
   it('restores the append-only trigger on the audit trail', async () => {

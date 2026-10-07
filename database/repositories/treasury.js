@@ -30,8 +30,13 @@
  * transfer moves tokens from it into the float account that received them —
  * nothing is created, which is why the legs sum to zero.
  *
- * `trialBalance()` summing to anything but zero means something wrote outside
- * this module.
+ * The DATABASE holds it, not this module (schema.sql, "TOKEN CONSERVATION";
+ * owner, 2026-10-07): a transaction whose movement's legs do not sum to zero,
+ * whose account moved by other than its entries, whose wallets moved by other
+ * than USER_FLOAT or whose pools by other than TEAM_FLOAT, does not commit,
+ * whoever wrote it. So a player's wallet and its USER_FLOAT leg are written in
+ * ONE transaction by every path (`wallets.core.applyMovementWithin`'s
+ * `counterparty`), and `trialBalance()` is evidence, not a guard.
  *
  * ── Signed amounts, unlike the wallet ledgers ───────────────────────────────
  * team_pool_entries and wallet_ledger store a positive magnitude with the
@@ -68,15 +73,18 @@ export const ACCOUNTS = Object.freeze({
 const ALL_ACCOUNTS = Object.freeze(Object.values(ACCOUNTS));
 
 /**
- * Every token that exists, in paise. **20,000,000,000 tokens** (owner,
- * 2026-09-23), and none are ever created: the platform starts holding all of
- * them and everything after is a transfer.
+ * Every token that exists, in paise: `SystemConfig.adminTokenSupply.total`
+ * (owner, 2026-09-23: 20,000,000,000), and none are ever created — the
+ * platform starts holding all of them and everything after is a transfer.
  *
- * Overridable for testing, and for the day the business changes the figure —
- * which is a decision, not an accident, so it is a configured number
- * (`SystemConfig.adminTokenSupply.total`) with this as the fallback.
+ * Read IN the database (`bb_token_supply_paise()`), on the movement's own
+ * client: the same function the `treasury_supply_ceiling` trigger asks, so the
+ * refusal below and the row's guarantee cannot use two different figures.
  */
-export const TOTAL_SUPPLY_PAISE = 20_000_000_000 * 100;
+async function supplyPaise(client) {
+  const { rows } = await client.query('SELECT bb_token_supply_paise() AS paise');
+  return toPaise(rows[0].paise);
+}
 
 const toPaise = (v) => Number(v ?? 0);
 
@@ -143,7 +151,6 @@ function requireAccount(account) {
 export async function postMovement({
   movementId, operation, legs,
   actor = null, reason = null, refModel = null, refId = null, correlationId = null,
-  supplyCapPaise = TOTAL_SUPPLY_PAISE,
   // A caller already inside a transaction passes its client, and the movement
   // commits or unwinds WITH that transaction. A team pool credit and the
   // treasury movement that funds it are one fact; two transactions would be
@@ -201,19 +208,38 @@ export async function postMovement({
     );
     const before = Object.fromEntries(locked.rows.map((r) => [r.account, toPaise(r.balance_paise)]));
 
-    // The supply ceiling. A mint drives TOKEN_SUPPLY down, so the guard is on
-    // how negative it may go — expressed here rather than as a CHECK because
-    // the cap is a business rule that can change, and a constraint would make
-    // every historical row invalid the day it did.
+    // The supply ceiling. A release drives TOKEN_SUPPLY down, so the guard is
+    // on how negative it may go: never past the configured total. Asked here,
+    // under the TOKEN_SUPPLY row lock, so the caller gets a refusal it can
+    // phrase; the `treasury_supply_ceiling` trigger is the same rule as a
+    // property of the row, for every writer.
     const supplyLeg = legs[ACCOUNTS.TOKEN_SUPPLY] ?? 0;
     if (supplyLeg < 0) {
+      const capPaise = await supplyPaise(client);
       const wouldCirculate = -(before[ACCOUNTS.TOKEN_SUPPLY] + supplyLeg);
-      if (wouldCirculate > supplyCapPaise) {
+      if (wouldCirculate > capPaise) {
         await client.query(rollback);
         return {
           ok: false, reason: 'supply_cap_exceeded',
-          capPaise: supplyCapPaise, circulatingPaise: -before[ACCOUNTS.TOKEN_SUPPLY],
+          capPaise, circulatingPaise: -before[ACCOUNTS.TOKEN_SUPPLY],
           requestedPaise: -supplyLeg,
+        };
+      }
+    }
+
+    // An account cannot pay out tokens it does not hold: that would be a token
+    // nobody has, and the next payment would spend it again. Asked here, under
+    // the account's own row lock, so the caller gets a refusal it can phrase —
+    // an unfunded bonus pool is "nobody has funded this promotion", not a 500.
+    // `treasury_accounts_sign` is the same rule as a property of the row.
+    for (const account of accounts) {
+      if (account === ACCOUNTS.TOKEN_SUPPLY) continue;   // the contra account: see above
+      const after = before[account] + legs[account];
+      if (after < 0) {
+        await client.query(rollback);
+        return {
+          ok: false, reason: 'account_short', account,
+          availablePaise: before[account], requestedPaise: 0 - legs[account],
         };
       }
     }
@@ -242,7 +268,10 @@ export async function postMovement({
         if (error.code === '23505') {
           await client.query(rollback);
           // Read on THIS client — see readBalances for why a pooled read here deadlocks.
-          return { ok: true, idempotent: true, balances: await readBalances((t, p) => client.query(t, p)) };
+          return {
+            ok: true, idempotent: true,
+            balances: outer ? null : await readBalances((t, p) => client.query(t, p)),
+          };
         }
         throw error;
       }
@@ -256,8 +285,10 @@ export async function postMovement({
 
     // Read BEFORE committing, on this transaction's client. Reading after the
     // commit would be a second pooled connection (the deadlock above) and would
-    // also report a moment later than the one this movement created.
-    const balances = await readBalances((t, p) => client.query(t, p));
+    // also report a moment later than the one this movement created. Inside a
+    // caller's transaction nobody reads them, and the read would be one more
+    // statement while USER_FLOAT's row lock is held.
+    const balances = outer ? null : await readBalances((t, p) => client.query(t, p));
     await client.query(commit);
     return { ok: true, idempotent: false, entries: written, balances };
   } catch (error) {
@@ -271,37 +302,46 @@ export async function postMovement({
   }
 }
 
-// ── Operations ───────────────────────────────────────────────────────────────
+// ── The house ────────────────────────────────────────────────────────────────
 
-const move = (from, to) => (amountPaise, args) => {
-  requirePositive(amountPaise, args.operation ?? 'treasury movement');
-  return postMovement({ ...args, legs: { [from]: -amountPaise, [to]: amountPaise } });
-};
-
-/** A losing stake. The house takes what the user staked. */
-export const stakeLostToHouse = (amountPaise, args = {}) =>
-  move(ACCOUNTS.USER_FLOAT, ACCOUNTS.HOUSE_RESERVE)(amountPaise, { operation: 'STAKE_LOST', ...args });
-
-/** A winning payout. The house pays out of reserve. */
-export const housePaidWinnings = (amountPaise, args = {}) =>
-  move(ACCOUNTS.HOUSE_RESERVE, ACCOUNTS.USER_FLOAT)(amountPaise, { operation: 'WINNINGS_PAID', ...args });
-
-/** House revenue apportioned to a pool. */
-export const allocateFromHouse = (amountPaise, pool, args = {}) => {
-  requireAccount(pool);
-  return move(ACCOUNTS.HOUSE_RESERVE, pool)(amountPaise, { operation: `ALLOCATE_${pool}`, ...args });
-};
-
-/** A pool paid a user — a bonus, a referral reward, a cashback. */
-export const poolPaidUser = (amountPaise, pool, args = {}) => {
-  requireAccount(pool);
-  return move(pool, ACCOUNTS.USER_FLOAT)(amountPaise, { operation: `PAYOUT_${pool}`, ...args });
-};
-
-function requirePositive(amountPaise, label) {
-  if (!Number.isInteger(amountPaise) || amountPaise <= 0) {
-    throw new TypeError(`${label}: amountPaise must be a positive integer, got ${amountPaise}`);
+/**
+ * A game's result on the platform's side, inside the caller's transaction:
+ * the player's wallet moved by `userDeltaPaise` (a lost stake is negative; a
+ * win, net of the stake it consumed, positive) and the HOUSE is the other side.
+ *
+ * A stake the house wins joins HOUSE_RESERVE. A payout comes out of
+ * HOUSE_RESERVE first and, once the house has paid out more than it has won,
+ * the rest from the platform's holding (TOKEN_SUPPLY): a transfer like any
+ * other, inside the supply ceiling. Never from a negative reserve, which would
+ * be tokens nobody holds (`treasury_accounts_sign`).
+ *
+ * The reserve is read under its row lock, taken before `postMovement` locks
+ * the rest in the same alphabetical order, so two payouts cannot both spend it.
+ */
+export async function postHouseSettlement({ client, movementId, userDeltaPaise, operation, ...meta }) {
+  if (!client) throw new Error('postHouseSettlement runs inside the caller\'s transaction: pass its client');
+  if (!Number.isInteger(userDeltaPaise) || userDeltaPaise === 0) {
+    throw new TypeError(`postHouseSettlement: userDeltaPaise must be a non-zero integer, got ${userDeltaPaise}`);
   }
+  if (userDeltaPaise < 0) {
+    return postMovement({
+      client, movementId, operation, ...meta,
+      legs: { [ACCOUNTS.USER_FLOAT]: userDeltaPaise, [ACCOUNTS.HOUSE_RESERVE]: 0 - userDeltaPaise },
+    });
+  }
+  await client.query(
+    'INSERT INTO treasury_accounts (account) VALUES ($1) ON CONFLICT (account) DO NOTHING', [ACCOUNTS.HOUSE_RESERVE]);
+  const { rows } = await client.query(
+    'SELECT balance_paise FROM treasury_accounts WHERE account = $1 FOR UPDATE', [ACCOUNTS.HOUSE_RESERVE]);
+  const fromReserve = Math.min(toPaise(rows[0].balance_paise), userDeltaPaise);
+  return postMovement({
+    client, movementId, operation, ...meta,
+    legs: {
+      [ACCOUNTS.HOUSE_RESERVE]: 0 - fromReserve,
+      [ACCOUNTS.TOKEN_SUPPLY]: fromReserve - userDeltaPaise,
+      [ACCOUNTS.USER_FLOAT]: userDeltaPaise,
+    },
+  });
 }
 
 // ── Proof ────────────────────────────────────────────────────────────────────

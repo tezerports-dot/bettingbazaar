@@ -48,7 +48,7 @@ import { getTreasuryBalances, ACCOUNTS } from '#db/repositories/treasury.js';
 import { getSystemConfig, applySystemConfig } from '#db/repositories/config.js';
 import { PAYMENT_MODES } from '#db/repositories/teamRouting.js';
 import {
-  creditWinnings, lockWithdrawal, releaseWithdrawal, refundWithdrawal,
+  creditWinnings, lockWithdrawal, refundWithdrawal,
 } from '../../domains/wallet/walletAuthority.service.js';
 import { createWithdrawalOrder } from '../../domains/payment/paymentProcessing.service.js';
 import { endWithdrawal } from '../../domains/payment/withdrawalHold.service.js';
@@ -319,8 +319,9 @@ describePg('ending a withdrawal, in every state its money can be in', () => {
       // The settlement, as the worker commits it when the dispute arrives
       // behind its lock: the pool credited, the stake consumed, and the order
       // left DISPUTED (the mirror moves state only from PAID).
+      // One transaction: the pool credited AND the stake consumed (owner,
+      // 2026-10-07). There is no second call that could be left undone.
       expect((await creditSellToPool(s.orderId, { actor: 'settlement-worker' })).ok).toBe(true);
-      await releaseWithdrawal(s.player.userId, RUPEES, s.orderId);
       await mirrorSettlementState(s.orderId, 'SETTLED');
       const row = await getOrderRecord(s.orderId);
       expect(row.status).toBe('DISPUTED');
@@ -388,7 +389,10 @@ describePg('ending a withdrawal, in every state its money can be in', () => {
         .post(`/dispute-orders/${s.orderId}/resolve`).send({ decision: 'CANCEL_ORDER', resolution: 'no payout' });
       expect(res.status, JSON.stringify(res.body)).toBe(200);
       const before = await snapshot(s);
-      await expect(releaseWithdrawal(s.player.userId, RUPEES, s.orderId)).rejects.toThrow(/already/i);
+      // The settlement asks for the stake and is refused by its rival key, so
+      // the pool is not credited either: the two are one transaction.
+      expect(await creditSellToPool(s.orderId, { actor: 'settlement-worker' }))
+        .toEqual({ ok: false, reason: 'refunded' });
       expect(await snapshot(s)).toEqual(before);
     });
   });

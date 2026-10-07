@@ -17,6 +17,9 @@ import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vites
 import { pgConfigured, pgQuery, applySchema, closePg } from '../client.js';
 import { placeBet, getBet } from '../repositories/bets.core.js';
 import { getBalancesPaise, applyDeltaPaise } from '../repositories/wallets.core.js';
+// A fixture's tokens come from somewhere too: the platform's own holding,
+// posted with the credit (see `_funding.js`).
+import { TEST_FUNDING } from './_funding.js';
 import { getCycle } from '../repositories/markets.js';
 import { getCycleSettlement } from '../repositories/settlements.js';
 import GameEngine from '../../backend/domains/markets/gameEngine.js';
@@ -48,7 +51,7 @@ function engineFor(io) {
 }
 
 const fund = (userId, field, paise, key) =>
-  applyDeltaPaise({ userId, field, deltaPaise: paise, txId: key, type: 'CREDIT', reason: 'test funding' });
+  applyDeltaPaise({ userId, field, deltaPaise: paise, txId: key, type: 'CREDIT', reason: 'test funding', counterparty: TEST_FUNDING });
 
 const declareCycle = (cycleId, winner, { endedMinutesAgo = 5 } = {}) => pgQuery(
   `INSERT INTO cycles (cycle_id, cycle_type, status, winner, winner_determined_at,
@@ -70,8 +73,8 @@ describePg('the settlement engine', () => {
   afterAll(async () => { await closePg(); });
   beforeEach(async () => {
     await pgQuery(`TRUNCATE bets, bet_transitions, wallet_ledger, wallets, cycles,
-                            cycle_settlements, accounting_events
-                   RESTART IDENTITY CASCADE`);
+                            cycle_settlements, accounting_events,
+                            treasury_entries, treasury_accounts RESTART IDENTITY CASCADE`);
     vi.restoreAllMocks();
   });
 

@@ -11,12 +11,13 @@
  *     A ROLLBACK or REFUND credit does not currently have to prove a matching
  *     prior debit.
  *
- * `gameProvider.routes.js` handles a rollback with
- * `refundOrder(userId, amount, roundId, 'depositBalance')` — no check that the
- * round was ever bet on, and no bound on the amount. A provider that is buggy,
- * replayed, or hostile can therefore MINT REAL MONEY by posting a rollback for
- * a round that never had a bet, or a rollback larger than the bet it reverses.
- * Nothing in that path can tell such a callback from a legitimate one.
+ * `gameProvider.routes.js` handled a rollback with a plain wallet credit
+ * (`refundOrder(userId, amount, roundId, 'depositBalance')`, since deleted) —
+ * no check that the round was ever bet on, and no bound on the amount. A
+ * provider that is buggy, replayed, or hostile could therefore MINT REAL MONEY
+ * by posting a rollback for a round that never had a bet, or a rollback larger
+ * than the bet it reverses. Nothing in that path could tell such a callback
+ * from a legitimate one.
  *
  * Here a refund is bounded by arithmetic the DATABASE enforces:
  *
@@ -273,18 +274,26 @@ export async function recordCallback({
 
     const debiting = type === CASINO_TX.BET;
     const movement = await applyMovementWithin(ctx, {
-      // A BET takes from deposit; everything else gives back. The old path
-      // refunds into `depositBalance` too, so the two stores agree on which
-      // pocket a reversal lands in.
+      // A BET takes from deposit; everything else gives back, into deposit
+      // too. The ledger row names that pocket: it once said `winningsBalance`
+      // for a WIN while `depositBalance` moved, a ledger describing a movement
+      // that did not happen.
       legs: [{ field: 'depositBalance', deltaPaise: debiting ? 0 - amountPaise : amountPaise }],
       ledger: [{
         txId: `casino_${txId}`,
-        field: debiting ? 'depositBalance' : (type === CASINO_TX.WIN ? 'winningsBalance' : 'depositBalance'),
+        field: 'depositBalance',
         amountPaise: debiting ? 0 - amountPaise : amountPaise,
         type: debiting ? 'DEBIT' : 'CREDIT',
         reason: reason || `Casino ${type} round ${ctx.rid}`,
         refId: ctx.rid,
       }],
+      // The house is the other side, in this transaction: a BET's stake joins
+      // HOUSE_RESERVE; a WIN or a reversal comes out of it, and past what it
+      // holds from the platform's own (`treasury.postHouseSettlement`).
+      counterparty: {
+        house: true, operation: `CASINO_${type}`, reason: reason || `Casino ${type} round ${ctx.rid}`,
+        refModel: 'CasinoRound', refId: ctx.rid,
+      },
     });
 
     if (movement.idempotent) {
@@ -294,7 +303,7 @@ export async function recordCallback({
       return { commit: false, value: { ok: false, reason: 'inconsistent_idempotency', txId } };
     }
     if (!movement.ok) {
-      return { commit: false, value: { ok: false, reason: 'insufficient' } };
+      return { commit: false, value: { ok: false, reason: movement.refused ?? 'insufficient' } };
     }
 
     return {

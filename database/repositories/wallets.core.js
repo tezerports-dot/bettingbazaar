@@ -27,7 +27,11 @@
  *   2. applies the delta with a guard that refuses to leave a balance negative;
  *   3. appends the ledger row in the SAME transaction, so a balance can never
  *      move without its audit row — these were once two writes that a crash
- *      between could separate.
+ *      between could separate;
+ *   4. when what the wallet HOLDS changes, posts the treasury movement that
+ *      moves USER_FLOAT with it, against the counterparty the caller names —
+ *      in the same transaction, because the database refuses to commit one
+ *      without the other (schema.sql, "TOKEN CONSERVATION").
  *
  * ── Idempotency ─────────────────────────────────────────────────────────────
  * `tx_id` is UNIQUE on wallet_ledger. A replay of the same movement hits that
@@ -39,6 +43,7 @@
  */
 import { getPool, pgQuery, connectGuarded } from '../client.js';
 import { rupeesToPaise, paiseToRupees } from '../../backend/shared/money.js';
+import { ACCOUNTS, postMovement, postHouseSettlement } from './treasury.js';
 
 /** The balance name a caller uses → its paise column on `wallets`. */
 export const FIELD_COLUMN = Object.freeze({
@@ -55,6 +60,15 @@ export const FIELD_COLUMN = Object.freeze({
 });
 
 export const BALANCE_FIELDS = Object.freeze(Object.keys(FIELD_COLUMN));
+
+/**
+ * The columns that hold TOKENS — what `bb_wallet_value_paise` adds up, and
+ * what USER_FLOAT must move with. The provenance counters say where part of
+ * `locked` came from; they are not tokens of their own.
+ */
+const VALUE_COLUMNS = Object.freeze(new Set([
+  'deposit_paise', 'winnings_paise', 'token_paise', 'reserve_paise', 'locked_paise',
+]));
 
 function columnFor(field) {
   const column = FIELD_COLUMN[field];
@@ -134,20 +148,7 @@ export async function withWalletLock(userId, fn) {
 
   try {
     await client.query('BEGIN');
-
-    // Materialise the wallet row so FOR UPDATE has something to lock. A
-    // first-ever movement and a concurrent one race here; ON CONFLICT makes the
-    // loser a no-op rather than an error.
-    await client.query(
-      `INSERT INTO wallets (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`, [uid],
-    );
-    const locked = await client.query(
-      `SELECT ${BALANCE_COLUMNS} FROM wallets WHERE user_id = $1 FOR UPDATE`, [uid],
-    );
-
-    const { commit, value } = await fn({
-      client, uid, balances: rowToBalances(locked.rows[0]),
-    });
+    const { commit, value } = await fn(await lockWalletWithin(client, uid));
 
     await client.query(commit ? 'COMMIT' : 'ROLLBACK');
     return value;
@@ -171,38 +172,119 @@ export async function withWalletLock(userId, fn) {
   }
 }
 
+/**
+ * Take one player's wallet lock INSIDE a transaction somebody else opened —
+ * the pool movement that pays a buy or settles a sell, which must move the
+ * pool, the wallet and the treasury in one commit. Returns the context
+ * `applyMovementWithin` takes.
+ *
+ * Lock order, everywhere: the order row, then the team pool, then the wallet,
+ * then the bet or round, then the treasury accounts (alphabetically). A path
+ * that took them in another order could deadlock against this one.
+ */
+export async function lockWalletWithin(client, userId) {
+  const uid = String(userId);
+  // Materialise the wallet row so FOR UPDATE has something to lock. A
+  // first-ever movement and a concurrent one race here; ON CONFLICT makes the
+  // loser a no-op rather than an error.
+  await client.query(
+    `INSERT INTO wallets (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`, [uid],
+  );
+  const locked = await client.query(
+    `SELECT ${BALANCE_COLUMNS} FROM wallets WHERE user_id = $1 FOR UPDATE`, [uid],
+  );
+  return { client, uid, balances: rowToBalances(locked.rows[0]) };
+}
+
 /** Normalise legs to one signed delta per column, carrying the negative guard. */
-function mergeLegs(legs, allowNegative) {
-  const merged = new Map(); // column → { delta, allowNegative }
+function mergeLegs(legs) {
+  const merged = new Map(); // column → { delta }
   for (const leg of legs) {
     if (!Number.isInteger(leg.deltaPaise)) {
       throw new TypeError(`leg '${leg.field}': deltaPaise must be an integer number of paise, got ${leg.deltaPaise}`);
     }
     const column = columnFor(leg.field);
-    const prior = merged.get(column) || { delta: 0, allowNegative: false };
-    merged.set(column, {
-      delta: prior.delta + leg.deltaPaise,
-      allowNegative: prior.allowNegative || allowNegative || leg.allowNegative === true,
-    });
+    const prior = merged.get(column) || { delta: 0 };
+    merged.set(column, { delta: prior.delta + leg.deltaPaise });
   }
   return merged;
+}
+
+/** How many tokens the movement adds to (or takes from) what the wallet holds. */
+function valueDelta(merged) {
+  let delta = 0;
+  for (const [column, { delta: d }] of merged) if (VALUE_COLUMNS.has(column)) delta += d;
+  return delta;
+}
+
+/**
+ * The other side of a movement that changes what a wallet HOLDS (owner,
+ * 2026-10-07: no token is used or counted twice).
+ *
+ * Moving tokens between a player's own pockets — a stake into `locked`, a
+ * withdrawal's winnings into `locked`, a stake returned — leaves what they hold
+ * unchanged and needs none. Anything else came from somewhere or went
+ * somewhere, and USER_FLOAT moves with it IN THIS TRANSACTION, or the database
+ * refuses the commit (`bb_conservation_user_float`). The caller names where:
+ *
+ *   { account, operation, … }   a treasury account pays or takes it — the
+ *                               platform's holding (TOKEN_SUPPLY) for a
+ *                               referral reward or an admin adjustment, a pool
+ *                               account for a bonus
+ *   { house: true, operation, … }  a game's result: `postHouseSettlement`
+ *   { postedByCaller: true }    the caller posts the USER_FLOAT leg itself, in
+ *                               the same transaction — a team pool paying a
+ *                               buy, or taking a sell (`teamPools.js`)
+ *
+ * The movement's id is its first ledger key, so the treasury half replays with
+ * the wallet half and never without it.
+ */
+function requireCounterparty(counterparty, delta) {
+  if (delta === 0) return;
+  if (!counterparty) {
+    throw new Error(
+      `a movement that changes what a wallet holds (by ${delta} paise) needs a counterparty: `
+      + 'where the tokens came from or went (wallets.core.applyMovementWithin)',
+    );
+  }
+  if (counterparty.postedByCaller || counterparty.house) return;
+  if (!Object.values(ACCOUNTS).includes(counterparty.account) || counterparty.account === ACCOUNTS.USER_FLOAT) {
+    throw new Error(`counterparty account '${counterparty.account}' is not a treasury account a wallet can move against`);
+  }
+}
+
+async function postCounterparty(client, counterparty, delta, movementId) {
+  if (delta === 0 || counterparty.postedByCaller) return { ok: true };
+  const { account, house, operation, actor = null, reason = null, refModel = null, refId = null } = counterparty;
+  if (!operation) throw new Error('a counterparty names its operation');
+  const meta = { client, movementId, operation, actor, reason, refModel, refId: refId ?? null };
+  const moved = house
+    ? await postHouseSettlement({ ...meta, userDeltaPaise: delta })
+    : await postMovement({ ...meta, legs: { [ACCOUNTS.USER_FLOAT]: delta, [account]: 0 - delta } });
+  if (!moved.ok) return { ok: false, refused: moved.reason };
+  // The wallet half was new and the treasury half was not: the two share one
+  // key, so this is a movement posted outside this function. Never pay twice.
+  if (moved.idempotent) return { ok: false, refused: 'treasury_already_posted' };
+  return { ok: true };
 }
 
 /**
  * Apply merged legs to the locked row. The negative guard lives in the UPDATE's
  * WHERE clause, so a debit that would overdraw simply matches no row — it
  * cannot be lost to a race between a read and a write. Returns the post-state,
- * or null when a guard refused.
+ * or null when a guard refused. There is no override: `wallets_pockets_nonneg`
+ * holds the same rule for every writer, so a negative pocket cannot be written
+ * at all — this guard only turns the refusal into an answer instead of an error.
  */
 async function moveBalances(client, uid, merged) {
   const params = [uid];
   const sets = [];
   const guards = [];
-  for (const [column, { delta, allowNegative }] of merged) {
+  for (const [column, { delta }] of merged) {
     params.push(delta);
     const placeholder = `$${params.length}`;
     sets.push(`${column} = ${column} + ${placeholder}`);
-    if (delta < 0 && !allowNegative) guards.push(`AND ${column} + ${placeholder} >= 0`);
+    if (delta < 0) guards.push(`AND ${column} + ${placeholder} >= 0`);
   }
   const { rows } = await client.query(
     `UPDATE wallets SET ${sets.join(', ')}, updated_at = now()
@@ -299,19 +381,21 @@ async function replayedBalances(txIds) {
  *
  * @param {object} args
  * @param {string} args.userId
- * @param {Array<{field:string, deltaPaise:number, allowNegative?:boolean}>} args.legs
+ * @param {Array<{field:string, deltaPaise:number}>} args.legs
  * @param {Array<{txId:string, field:string, amountPaise:number, type?:string,
  *                reason?:string, refId?:string}>} args.ledger
  *   A ledger row's `field` must be a field the movement actually touched: the
  *   reverse mirror reads it to know which balance the row describes.
- * @param {boolean} [args.allowNegative=false] blanket override for every leg.
  * @param {string[]} [args.excludes] ledger keys of the movement's RIVALS — the
  *   other answer to the same question. If any of them exists for this user the
  *   movement is refused (`excluded`), under the same lock as the replay probe.
+ * @param {object} [args.counterparty] where tokens the wallet gains came from,
+ *   or tokens it loses went — required when the movement changes what the
+ *   wallet holds (`postCounterparty`).
  *
- * @returns {Promise<{ok, idempotent, insufficient?, excluded?, balancesAfterPaise, replayedLedger?}>}
+ * @returns {Promise<{ok, idempotent, insufficient?, excluded?, refused?, balancesAfterPaise, replayedLedger?}>}
  */
-export async function applyMovementPaise({ userId, legs, ledger, allowNegative = false, excludes = [] }) {
+export async function applyMovementPaise({ userId, legs, ledger, excludes = [], counterparty = null }) {
   if (!Array.isArray(legs) || !legs.length) {
     throw new Error('applyMovementPaise requires at least one balance leg');
   }
@@ -319,10 +403,10 @@ export async function applyMovementPaise({ userId, legs, ledger, allowNegative =
     throw new Error('applyMovementPaise requires at least one ledger row — a balance must never move unaudited');
   }
   validateLedgerRows(ledger);
-  const merged = mergeLegs(legs, allowNegative);
+  const merged = mergeLegs(legs);
 
   const outcome = await withWalletLock(userId, async (ctx) => {
-    const value = await applyMovementWithin(ctx, { merged, ledger, excludes });
+    const value = await applyMovementWithin(ctx, { merged, ledger, excludes, counterparty });
     return { commit: value.ok && !value.idempotent, value };
   });
 
@@ -350,9 +434,14 @@ export async function applyMovementPaise({ userId, legs, ledger, allowNegative =
  * knows whether the rest of the transaction succeeded.
  *
  * `merged` is pre-normalised leg output from mergeLegs(); callers outside this
- * module should pass `legs`/`allowNegative` and let it normalise.
+ * module should pass `legs` and let it normalise.
+ *
+ * A movement that changes what the wallet HOLDS posts its USER_FLOAT leg here,
+ * after the ledger rows and in the same transaction, against `counterparty`
+ * (see `postCounterparty`); a treasury refusal comes back as `refused` and the
+ * lock holder must roll back.
  */
-export async function applyMovementWithin({ client, uid }, { legs, merged, ledger, allowNegative = false, excludes = [] }) {
+export async function applyMovementWithin({ client, uid }, { legs, merged, ledger, excludes = [], counterparty = null }) {
   if (!merged) {
     if (!Array.isArray(legs) || !legs.length) {
       throw new Error('applyMovementWithin requires at least one balance leg');
@@ -362,7 +451,9 @@ export async function applyMovementWithin({ client, uid }, { legs, merged, ledge
     }
     validateLedgerRows(ledger);
   }
-  const columns = merged ?? mergeLegs(legs, allowNegative);
+  const columns = merged ?? mergeLegs(legs);
+  const delta = valueDelta(columns);
+  requireCounterparty(counterparty, delta);
 
   // ── THE REPLAY PROBE COMES FIRST ─────────────────────────────────────────
   // Moving the balances first and letting the ledger's UNIQUE detect the replay
@@ -416,6 +507,8 @@ export async function applyMovementWithin({ client, uid }, { legs, merged, ledge
   if (!await appendLedgerRows(client, uid, ledger, after)) {
     return { ok: true, idempotent: true, balancesAfterPaise: null };
   }
+  const other = await postCounterparty(client, counterparty, delta, keys[0]);
+  if (!other.ok) return { ok: false, refused: other.refused, idempotent: false, balancesAfterPaise: null };
   return { ok: true, idempotent: false, balancesAfterPaise: after };
 }
 
@@ -431,15 +524,17 @@ export async function applyMovementWithin({ client, uid }, { legs, merged, ledge
  * @param {string}  [args.type]      ledger tx_type
  * @param {string}  [args.reason]
  * @param {string}  [args.refId]
- * @param {boolean} [args.allowNegative=false] only for corrective admin paths
+ * @param {object}  args.counterparty where the tokens come from or go
+ *                                   (`postCounterparty`); a pocket's change is
+ *                                   always somebody else's
  *
- * @returns {Promise<{ok, idempotent, balanceAfterPaise, insufficient?}>}
+ * @returns {Promise<{ok, idempotent, balanceAfterPaise, insufficient?, refused?}>}
  *   ok:false + insufficient:true when the guard refused the debit — the caller
  *   decides how to surface it — a refused debit is not an exception.
  */
 export async function applyDeltaPaise({
   userId, field, deltaPaise, txId,
-  type = null, reason = null, refId = null, allowNegative = false,
+  type = null, reason = null, refId = null, counterparty = null,
 }) {
   if (!txId) throw new Error('applyDeltaPaise requires a txId (idempotency key)');
   if (!Number.isInteger(deltaPaise)) {
@@ -449,12 +544,13 @@ export async function applyDeltaPaise({
     userId,
     legs: [{ field, deltaPaise }],
     ledger: [{ txId, field, amountPaise: deltaPaise, type, reason, refId }],
-    allowNegative,
+    counterparty,
   });
   return {
     ok: result.ok,
     idempotent: result.idempotent,
     ...(result.insufficient ? { insufficient: true } : {}),
+    ...(result.refused ? { refused: result.refused } : {}),
     balanceAfterPaise: result.balancesAfterPaise
       ? result.balancesAfterPaise[field]
       : (result.replayedLedger?.[txId] ?? null),

@@ -25,6 +25,8 @@
 import { pgQuery, withTransaction } from '../client.js';
 import { randomBytes } from 'node:crypto';
 import { ACCOUNTS, postMovement } from './treasury.js';
+import { lockWalletWithin } from './wallets.core.js';
+import { creditBuyWithin, consumeWithdrawalStakeWithin, returnSettledStakeWithin } from './wallets.js';
 import { recordConsideration, assertRecordable, DIRECTIONS } from './adminTokenConsiderations.js';
 
 export const POOL_DIRECTIONS = Object.freeze({ BUY: 'BUY', SELL: 'SELL' });
@@ -384,11 +386,19 @@ export async function detachFromTeamWithin(client, orderId, { actor = 'system', 
 }
 
 /**
- * The merchant's side of a completed BUY: the held tokens leave the pool for
- * the player. Spends the hold when there is one; when the hold was already
+ * A completed BUY: the held tokens leave the pool AND reach the player, in one
+ * transaction. Spends the hold when there is one; when the hold was already
  * released (a dispute resolved in the player's favour after expiry) it takes
  * the tokens from `available`, refused by the UPDATE's WHERE if the pool is
  * short. Once per order: a BUY_PAID entry for this order means it is done.
+ *
+ * ── Both sides, one commit (owner, 2026-10-07) ───────────────────────────────
+ * The pool's spend, the player's credit (`wallets.creditBuyWithin`, split by
+ * the locked order's own allocation) and TEAM_FLOAT → USER_FLOAT commit
+ * together. They were two transactions, and between them the tokens were in
+ * neither place — or, if the credit failed for good, in neither place for
+ * good. The database now refuses either half alone. Locks: the order, the
+ * pool, the player's wallet, then the treasury.
  *
  * `requireState` is the state (or states) the caller read the order in and is
  * about to complete it from. It is asked under the order's row lock, so an
@@ -397,9 +407,10 @@ export async function detachFromTeamWithin(client, orderId, { actor = 'system', 
  * underneath (§32 S6; security review, 2026-10-03). The spend also stamps
  * `pool_paid_at`, after which the order may only move to COMPLETED.
  *
- * Returns { ok, taken: 'hold' | 'available' } or { ok, alreadyTaken },
- * or { ok: false, reason: 'no_team' | 'pool_short' | 'order_state' } with
- * nothing moved.
+ * Returns { ok, taken: 'hold' | 'available', userId, amountPaise,
+ * depositPaise, reservePaise, balances } or { ok, alreadyTaken }, or
+ * { ok: false, reason: 'no_team' | 'pool_short' | 'order_state' |
+ * 'already_credited' | 'not_a_buy' } with nothing moved.
  */
 export async function spendForBuy(orderId, { actor = 'system', requireState = null } = {}) {
   const oid = String(orderId);
@@ -407,8 +418,11 @@ export async function spendForBuy(orderId, { actor = 'system', requireState = nu
   try {
     return await withTransaction(async (client) => {
       const { rows: o } = await client.query(
-        `SELECT team_id, pool_held_paise, token_amount_paise, state FROM order_states WHERE order_id = $1 FOR UPDATE`, [oid]);
+        `SELECT team_id, user_id, order_type, pool_held_paise, token_amount_paise,
+                deposit_allocation_paise, reserve_allocation_paise, state
+           FROM order_states WHERE order_id = $1 FOR UPDATE`, [oid]);
       if (!o[0]) throw new Refused('not_found');
+      if (o[0].order_type !== 'DEPOSIT') throw new Refused('not_a_buy');
       const { rows: done } = await client.query(
         `SELECT 1 FROM team_pool_entries WHERE ref_id = $1 AND kind = 'BUY_PAID' LIMIT 1`, [oid]);
       if (done[0]) return { ok: true, alreadyTaken: true };
@@ -445,13 +459,29 @@ export async function spendForBuy(orderId, { actor = 'system', requireState = nu
           availableDelta: -amount, heldDelta: 0, pool: pool[0], actor, refId: oid,
         });
       }
+      // The player's side, under their wallet lock (taken after the pool's).
+      const wallet = await lockWalletWithin(client, o[0].user_id);
+      const credited = await creditBuyWithin(wallet, {
+        orderId: oid, amountPaise: amount,
+        depositAllocationPaise: toNum(o[0].deposit_allocation_paise),
+        reserveAllocationPaise: toNum(o[0].reserve_allocation_paise),
+      });
+      // Credited already, with no BUY_PAID beside it: a credit some other path
+      // made. Paying the pool out now would hand the player the order twice.
+      if (credited.idempotent) throw new Refused('already_credited');
+      if (!credited.ok) throw new Refused(credited.refused ?? 'credit_refused');
       const moved = await postMovement({
         client, movementId: `team_buy_${oid}`, operation: 'TEAM_BUY_PAID',
         legs: { [ACCOUNTS.TEAM_FLOAT]: -amount, [ACCOUNTS.USER_FLOAT]: amount },
         actor: String(actor), refModel: 'PaymentOrder', refId: oid, reason: 'Team pool paid a player buy',
       });
       if (!moved.ok) throw new Refused(moved.reason);
-      return { ok: true, taken, teamId };
+      if (moved.idempotent) throw new Refused('already_credited');
+      return {
+        ok: true, taken, teamId, userId: String(o[0].user_id), amountPaise: amount,
+        depositPaise: credited.split.depositPaise, reservePaise: credited.split.reservePaise,
+        balances: credited.balancesAfterPaise,
+      };
     });
   } catch (e) {
     if (e instanceof Refused) return { ok: false, reason: e.reason };
@@ -460,8 +490,18 @@ export async function spendForBuy(orderId, { actor = 'system', requireState = nu
 }
 
 /**
- * A SELL has settled: the player's tokens join the team's pool. Once per
- * order — the entry's tx_id is the order's, so a replay is a no-op.
+ * A SELL has settled: the player's locked stake is consumed and its tokens
+ * join the team's pool. Once per order — the entry's tx_id is the order's, so
+ * a replay is a no-op.
+ *
+ * ── Both sides, one commit (owner, 2026-10-07) ───────────────────────────────
+ * The pool credit, the stake leaving the player's `locked`
+ * (`wallets.consumeWithdrawalStakeWithin`, key `wd_release_<id>`) and
+ * USER_FLOAT → TEAM_FLOAT commit together. They were two transactions with a
+ * compensating reversal between them: until the second landed the tokens
+ * were in the pool AND still the player's, and a failed reversal left them
+ * there for good. The database now refuses either half alone. A stake already
+ * refunded (`refund_<id>`) refuses the whole settlement (`refunded`).
  *
  * `requireState` is the settlement worker's gate: asked under the order's row
  * lock, so a dispute that moved the order since the worker read it is refused
@@ -473,7 +513,7 @@ export async function creditSellToPool(orderId, { actor = 'system', requireState
   try {
     return await withTransaction(async (client) => {
       const { rows: o } = await client.query(
-        `SELECT team_id, token_amount_paise, order_type, state FROM order_states WHERE order_id = $1 FOR UPDATE`, [oid]);
+        `SELECT team_id, user_id, token_amount_paise, order_type, state FROM order_states WHERE order_id = $1 FOR UPDATE`, [oid]);
       if (!o[0]) throw new Refused('not_found');
       if (o[0].order_type !== 'WITHDRAWAL') throw new Refused('not_a_sell');
       const teamId = o[0].team_id;
@@ -491,13 +531,22 @@ export async function creditSellToPool(orderId, { actor = 'system', requireState
         txId: `pool_sell_${oid}`, teamId, kind: 'SELL_SETTLED',
         availableDelta: amount, heldDelta: 0, pool: pool[0], actor, refId: oid,
       });
+      // The player's side, under their wallet lock (taken after the pool's).
+      const wallet = await lockWalletWithin(client, o[0].user_id);
+      const consumed = await consumeWithdrawalStakeWithin(wallet, { orderId: oid, amountPaise: amount });
+      if (consumed.excluded) throw new Refused('refunded');
+      // Consumed already with no pool credit beside it: a release some other
+      // path made. Crediting the pool now would pay the team for it twice.
+      if (consumed.idempotent) throw new Refused('stake_already_consumed');
+      if (!consumed.ok) throw new Refused(consumed.refused ?? 'stake_not_locked');
       const moved = await postMovement({
         client, movementId: `team_sell_${oid}`, operation: 'TEAM_SELL_SETTLED',
         legs: { [ACCOUNTS.USER_FLOAT]: -amount, [ACCOUNTS.TEAM_FLOAT]: amount },
         actor: String(actor), refModel: 'PaymentOrder', refId: oid, reason: 'Player sell settled into a team pool',
       });
       if (!moved.ok) throw new Refused(moved.reason);
-      return { ok: true, teamId };
+      if (moved.idempotent) throw new Refused('stake_already_consumed');
+      return { ok: true, teamId, userId: String(o[0].user_id) };
     });
   } catch (e) {
     if (e instanceof Refused) return { ok: false, reason: e.reason };
@@ -507,15 +556,29 @@ export async function creditSellToPool(orderId, { actor = 'system', requireState
 
 /**
  * Undo a settled SELL — an admin refunded it after the tokens reached the
- * pool. Takes them back out of `available`; refused by the UPDATE's WHERE if
- * the team has already used them. Once per order.
+ * pool. Takes them back out of `available` (refused by the UPDATE's WHERE if
+ * the team has already used them, unless the platform covers it) and returns
+ * the consumed stake to the player as winnings
+ * (`wallets.returnSettledStakeWithin`, key `dispute_wd_refund_<id>`) — the
+ * pool or the platform's holding, the player's wallet and USER_FLOAT in ONE
+ * transaction (owner, 2026-10-07). Once per order.
  */
 export async function reverseSellFromPool(orderId, { actor = 'system', reason = null, coverShortfall = false } = {}) {
   const oid = String(orderId);
+  // The player's half, after the pool's: their wallet lock, then the credit.
+  const returnStake = async (client, userId, amount) => {
+    const wallet = await lockWalletWithin(client, userId);
+    const returned = await returnSettledStakeWithin(wallet, { orderId: oid, amountPaise: amount });
+    // Returned already with no reversal beside it: a return some other path
+    // made. Taking the tokens from the pool now would refund the sell twice.
+    if (returned.idempotent) throw new Refused('already_returned');
+    if (!returned.ok) throw new Refused(returned.refused ?? 'return_refused');
+    return returned;
+  };
   try {
     return await withTransaction(async (client) => {
       const { rows: o } = await client.query(
-        `SELECT team_id, token_amount_paise FROM order_states WHERE order_id = $1 FOR UPDATE`, [oid]);
+        `SELECT team_id, user_id, token_amount_paise FROM order_states WHERE order_id = $1 FOR UPDATE`, [oid]);
       if (!o[0]) throw new Refused('not_found');
       const { rows: settled } = await client.query(
         `SELECT 1 FROM team_pool_entries WHERE tx_id = $1`, [`pool_sell_${oid}`]);
@@ -541,6 +604,7 @@ export async function reverseSellFromPool(orderId, { actor = 'system', reason = 
         // wallet grows by tokens no account moved and USER_FLOAT stops
         // describing the wallets. Posted under the order's lock, so a refund
         // retried after the pool refills cannot ALSO take the tokens from it.
+        const returned = await returnStake(client, o[0].user_id, amount);
         const moved = await postMovement({
           client, movementId: `team_sell_cover_${oid}`, operation: 'TEAM_SELL_REFUND_COVERED',
           legs: { [ACCOUNTS.TOKEN_SUPPLY]: -amount, [ACCOUNTS.USER_FLOAT]: amount },
@@ -548,7 +612,8 @@ export async function reverseSellFromPool(orderId, { actor = 'system', reason = 
           reason: reason || 'Refund of a settled sell the team had already used; covered by the platform',
         });
         if (!moved.ok) throw new Refused(moved.reason);
-        return { ok: true, covered: true, teamId };
+        if (moved.idempotent) throw new Refused('already_returned');
+        return { ok: true, covered: true, teamId, userId: String(o[0].user_id), balances: returned.balancesAfterPaise };
       }
       if (!pool[0]) throw new Refused('pool_short');
       await writeEntry(client, {
@@ -556,13 +621,15 @@ export async function reverseSellFromPool(orderId, { actor = 'system', reason = 
         availableDelta: -amount, heldDelta: 0, pool: pool[0], actor, refId: oid,
         note: reason ? String(reason).slice(0, 200) : null,
       });
+      const returned = await returnStake(client, o[0].user_id, amount);
       const moved = await postMovement({
         client, movementId: `team_sell_rev_${oid}`, operation: 'TEAM_SELL_REVERSED',
         legs: { [ACCOUNTS.TEAM_FLOAT]: -amount, [ACCOUNTS.USER_FLOAT]: amount },
         actor: String(actor), refModel: 'PaymentOrder', refId: oid, reason: reason || 'Settled sell reversed',
       });
       if (!moved.ok) throw new Refused(moved.reason);
-      return { ok: true, teamId };
+      if (moved.idempotent) throw new Refused('already_returned');
+      return { ok: true, teamId, userId: String(o[0].user_id), balances: returned.balancesAfterPaise };
     });
   } catch (e) {
     if (e instanceof Refused) return { ok: false, reason: e.reason };

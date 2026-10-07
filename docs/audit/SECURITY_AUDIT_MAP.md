@@ -262,17 +262,17 @@ statements is a race; the guard belongs *inside* the `UPDATE`'s `WHERE`. Idempot
 must be a unique constraint, not a prior read. Never mock the boundary that
 carries money (`CLAUDE.md` §1) — test through it against a real database.
 
-**Status: EXAMINED 2026-09-10 — the core holds; one reporting gap (F-015).**
+**Status: RE-EXAMINED 2026-10-07 — the per-write guards held; what did NOT hold was the pairing BETWEEN them (F-053). Conservation is now the database's, in every transaction.**
 
 **What was read, and what it says.** Every balance-mutating write in the
 platform was traced to its guard:
 
 | Path | How the guard is enforced | Verdict |
 |---|---|---|
-| Player wallet (`wallets.core.js`) | relative deltas (`col = col + $n`) with `AND col + $n >= 0` **in the UPDATE's WHERE**, ledger row in the same transaction, UNIQUE `tx_id` colliding inside it | correct |
+| Player wallet (`wallets.core.js`) | relative deltas (`col = col + $n`) with `AND col + $n >= 0` **in the UPDATE's WHERE**, ledger row in the same transaction, UNIQUE `tx_id` colliding inside it | correct per write — but it moved a pocket with nothing moving the other way (F-053). Now: a counterparty is a required argument, `USER_FLOAT` moves with the wallet in the same transaction, and `wallets_pockets_nonneg` holds the same rule for writers that never reach this function |
 | Merchant wallet (`merchantWallets.core.js`) | `SELECT … FOR UPDATE` on the row, same WHERE-clause guard, same in-transaction ledger | correct |
-| Treasury (`treasury.js`) | reads `balanceBefore` in JS and writes an ABSOLUTE `balance_paise` — which would be a lost update — but the read is `SELECT … FOR UPDATE … ORDER BY account`, so the row is held for the whole transaction and the ordering removes the deadlock | correct, and the ORDER BY is load-bearing |
-| Bonuses (`bonuses.core.js`) | pool movement first, then `applyMovementWithin`; refuses rather than partial-issuing | correct |
+| Treasury (`treasury.js`) | reads `balanceBefore` in JS and writes an ABSOLUTE `balance_paise` — which would be a lost update — but the read is `SELECT … FOR UPDATE … ORDER BY account`, so the row is held for the whole transaction and the ordering removes the deadlock | correct, and the ORDER BY is load-bearing. Since F-053 the balanced legs, the entries explaining each balance and the sign of every account are also properties of the ROWS, so a hand-written `INSERT` cannot post a one-sided movement |
+| Bonuses (`bonuses.core.js`) | one transaction: the grant row, the wallet credit and the pool → `USER_FLOAT` movement, refusing rather than partial-issuing | **was two transactions with the legs the wrong way round** (F-053): a clawback moved `HOUSE_RESERVE` → pool while the player's pocket was debited, and could drive that pocket negative. Fixed — and no production path calls either function, and nothing funds the pools, which is recorded rather than papered over |
 | Cycle pools | derived from `bets`, never stored on the `cycles` row (trap 4) | correct |
 
 **What was newly PROVEN rather than read.** `merchantWalletPg.test.js` contained
@@ -305,6 +305,14 @@ taught itself a capability production must never have.
 placement, and the crash-resume path, are exercised by `settlementEnginePg` and
 `betPg` but not under a deliberate storm. This pass proved the wallet layer both
 of those sit on; it did not prove the engine above it.
+
+What the 2026-10-07 guards do NOT cover, equally plainly: `TRUNCATE` and
+`session_replication_role = replica` bypass every row trigger (no application
+path uses either; test cleanup uses both); `wallet_ledger` is not reconciled
+against `wallets` per user, because a stake lock writes a ledger row while the
+wallet's total does not move; the aggregate of live withdrawal holds is not tied
+to `locked_paise`; and `accounting_events`' `user_liability` postings are not
+compared with `USER_FLOAT` inside the transaction that writes them.
 
 ### 2.7 Privacy — both directions
 
@@ -683,6 +691,7 @@ honest record of what surfaced it, and it is the column that should worry you:
 | A test that WRITES the shared config row and leaves it | **the whole suite, in run order** | the next suite failing in code the change never touched | no | trap 10 |
 | A gate anchored on a string that also matches a DIFFERENT site | the gate's own file vs the file it measures | re-running the gate after moving the site | no — this is the meta-shape | F-018, trap 13 |
 | A guard READING a value that only a test-only path WRITES | **whole backend + the test tree**, by column: who writes it in production? | counting tagged rows a live server created | partial — M156/M165 hold this instance; the class needs `check:dead-code` to stop counting a test import as a consumer | F-024 |
+| A sub-ledger and the ACCOUNT that summarises it, written by different code | **every writer of either table**, by COLUMN — and the two compared *inside one transaction* | owner pushback ("no double spend, live atomic") | **yes — the database itself**: deferred constraint triggers refuse the COMMIT | F-053 |
 
 **The last row is the one to take personally.** Three separate times a check
 went on passing while measuring something other than what it names:
@@ -3423,6 +3432,66 @@ may decline (`/reject`, ASSIGNED only) and an admin may reassign (ASSIGNED only)
   accepted buy that lapses unpaid, still counts on the player.
 - **Mutation-proved:** M372–M377, with M353, M356, M357 repointed.
 
+### F-053 — a wallet could gain or lose tokens with nothing moving the other way
+`FIXED` · high (tokens created or destroyed; `USER_FLOAT` drifting from the wallets it describes) · owner decision, token conservation · 2026-10-07
+
+Shape: *a sub-ledger and the account that summarises it written by different
+code at different times* (§32 S4/S5 and S7 at once). `treasury.js` kept
+`USER_FLOAT` and `TEAM_FLOAT` as the platform's statement of what players and
+teams hold, and only SOME writers moved them.
+
+- **What was open.** Bets (`bets.core.settle`), casino rounds
+  (`casino.core.recordCallback`), referral rewards (`wallets.creditWinnings`)
+  and admin adjustments (`balanceAdjustments`) all changed a wallet with no
+  treasury leg at all. `wallets` had no non-negative CHECK, so any writer not
+  going through `moveBalances` could overdraw a pocket — and
+  `backupRestorePg.test.js` asserted that absence as if it were intended.
+  `treasury_accounts` had no sign constraint. Nothing in the TABLES forced a
+  movement's legs to sum to zero, nor a balance to move with its entries.
+  `SystemConfig.adminTokenSupply.total` had no consumer that moved money, so
+  the "20 billion tokens" figure bounded nothing. Deposit completion, sell
+  settlement and the reversal of a settled sell were each two transactions with
+  compensation between them (S7), so the tokens were briefly in both places or
+  in neither; the bonus clawback's legs were `HOUSE_RESERVE` → pool while the
+  player's pocket was debited, and could drive that pocket negative. A casino
+  WIN wrote a `winningsBalance` ledger row while `depositBalance` moved.
+- **Fixed, in the database rather than in a caller.** `schema.sql`, "TOKEN
+  CONSERVATION, ENFORCED BY THE DATABASE": `wallets_pockets_nonneg`,
+  `wallets_lock_provenance_nonneg`, `treasury_accounts_sign`,
+  `treasury_supply_ceiling` (against `bb_token_supply_paise()`), and five
+  deferred constraint triggers — `bb_conservation_user_float`, `_team_float`,
+  `_pool_available`, `_pool_held`, `_treasury_entries` and
+  `_movement_balanced`. A counterparty is now a required argument of
+  `wallets.core.applyMovement*`; `postHouseSettlement` is the one owner of a
+  game's side (reserve first, the platform's holding for the rest, the reserve
+  never negative); `postMovement` answers `account_short` under the account's
+  lock so an unfunded pool is a sentence, not a 500.
+- **Paths swept** (every writer of `wallets`, `team_pools` or
+  `treasury_accounts`): `walletAuthority`, `wallets.core`, `wallets`,
+  `teamPools`, `treasury`, `bets.core`, `casino.core`, `bonuses.core`,
+  `balanceAdjustments`, `ledger.core`, `revenueSettlement`, `referral`,
+  `teamCommission`, `fundingAuthority`, the deposit and withdrawal routes, the
+  crons, `backend/tests/e2e/seed.js`, `loadtest/scale.mjs` and
+  `backend/tests/live/operations.mjs`. Six paths were defects and were fixed;
+  the two harnesses that staged balances with a direct `INSERT` now post the
+  movement that funds them.
+- **Neighbours (§37.1).** concurrent (25 credits to one wallet; 50 to 50
+  wallets; two debits of the same balance, exactly one commits) · duplicate
+  (the same key four times, one credit, one leg) · retry (a refused debit
+  leaves nothing, the retry works) · savepoint (a refused write unwinds its
+  bucket, the transaction still commits) · the legitimate case for every
+  refusal.
+- **Tests:** `database/tests/conservationPg.test.js` (24, each guard refused by
+  direct SQL and each legitimate path committing), plus the rewritten
+  `treasuryPg`, `walletWriters`, `moneyConservation` and
+  `depositConservationPg`. `test:pg` 1615/1615, `test:unit` 885/885.
+- **Mutation-proved:** MC1–MC13 (each guard weakened in `schema.sql` or its
+  caller, every one KILLED), with M22–M25, M55, M169, M170, M307, M309 and
+  M331 repointed at the writers that replaced the old ones; M56 deleted with
+  `refundOrder`.
+- **Not done, deliberately:** no periodic reconciliation was added — the
+  owner's decision. `reconcileAgainstSubLedgers` stays an admin report.
+
 ### The §37 neighbour pass over the follow-up's fixes (2026-10-01)
 Each fix was asked the §37.1 pairs that apply. "held" means the neighbour was
 checked and is correct; the evidence is named.
@@ -3568,6 +3637,7 @@ In the order it should be worked.
 | 6 | Admin 2FA enforcement | 2.19 | |
 | 7 | ~~Identifier predictability~~ | 2.20 | **Done 2026-09-10** — clear except F-014; the per-identifier table is in §2.20. |
 | 8 | ~~Money-path concurrency~~ | 2.6 | **Done 2026-09-10** — every balance write traced to its guard, and the merchant wallet now has a mutation-proven concurrency suite. Settlement-under-storm and crash-resume remain uncovered; §2.6 says so. |
+| 8b | ~~Token conservation~~ | 2.6 | **Done 2026-10-07 (F-053)** — the wallets, the pools and the treasury are now tied together per TRANSACTION by the database, not by a sweep (owner's decision). Still open, and named in §2.6: the aggregate of live withdrawal holds against `locked_paise`, and `accounting_events`' `user_liability` postings against `USER_FLOAT`. |
 | 9 | Gate for F-001 | §4 | Closes the class, not the instance. |
 | 10 | Gate for the F-003 shape | §4 | A CHECK a handler can violate after a commit. |
 | 11 | Gate for the F-006 shape | §4 | Any `*_url` / `*_link` written from `req.body` must pass through `shared/storedUrl.js`. |

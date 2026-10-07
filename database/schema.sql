@@ -3982,3 +3982,273 @@ ALTER TABLE merchants ADD CONSTRAINT merchants_name_not_a_mobile
   CHECK (NOT bb_text_has_a_mobile(name) AND NOT bb_text_has_a_mobile(username));
 ALTER TABLE teams DROP CONSTRAINT IF EXISTS teams_name_not_a_mobile;
 ALTER TABLE teams ADD CONSTRAINT teams_name_not_a_mobile CHECK (NOT bb_text_has_a_mobile(name));
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- TOKEN CONSERVATION, ENFORCED BY THE DATABASE (owner, 2026-10-07)
+--
+-- "I want these live atomic so no double spend could happen ... 1 token can't
+-- be calculated or used twice." Not a sweep that finds drift a minute later:
+-- a write that would create, lose or duplicate a token does not COMMIT.
+--
+-- Every token is in exactly one place: the platform's holding (what
+-- TOKEN_SUPPLY has not released), a platform account (HOUSE_RESERVE, the
+-- pools), a team pool (their sum is TEAM_FLOAT) or a player wallet (their sum
+-- is USER_FLOAT). So the books close when, in EVERY transaction:
+--
+--   1. each treasury movement's legs sum to zero (nothing appears);
+--   2. each treasury account moves by exactly its new entries (nothing moves
+--      unrecorded); with 1, the treasury always totals zero;
+--   3. the wallets move by exactly what USER_FLOAT moves, and the team pools
+--      by exactly what TEAM_FLOAT moves (no token sits in a wallet or a pool
+--      that the treasury does not have there);
+--   4. the pools' available and held tokens move by exactly their new
+--      `team_pool_entries`;
+--   and at every moment no pocket, pool or platform account is below zero,
+--   TOKEN_SUPPLY is never above zero, and the platform never releases more
+--   than `SystemConfig.adminTokenSupply.total`.
+--
+-- ── How, without summing a table at commit ─────────────────────────────────
+-- An ordinary AFTER row trigger adds each row's change to a TRANSACTION-LOCAL
+-- setting (`set_config(.., true)`), one bucket per rule. It is undone with the
+-- statement, savepoint or transaction that made it, exactly like the row. A
+-- DEFERRABLE INITIALLY DEFERRED constraint trigger then asks, at COMMIT, that
+-- every bucket is zero; the first to run checks them all and clears
+-- `bb_cons.pending`, so the rest return at once. Constant work per row and
+-- none per table size. Rule 1 reads the movement's own rows (movement index).
+--
+-- What this cannot see: TRUNCATE (it fires no row trigger), and a table owner
+-- who disables triggers or sets session_replication_role = replica. No
+-- application path does either; test cleanup does.
+-- ═══════════════════════════════════════════════════════════════════════════
+
+-- ── Signs ───────────────────────────────────────────────────────────────────
+-- A pocket below zero is a token spent that was never there. The movement's
+-- own UPDATE refuses an overdraft in its WHERE (`wallets.core.moveBalances`);
+-- this is the same rule as a property of the row, for every writer.
+ALTER TABLE wallets DROP CONSTRAINT IF EXISTS wallets_pockets_nonneg;
+ALTER TABLE wallets ADD CONSTRAINT wallets_pockets_nonneg CHECK (
+  deposit_paise >= 0 AND winnings_paise >= 0 AND token_paise >= 0
+  AND reserve_paise >= 0 AND locked_paise >= 0);
+-- How much of `locked` came from deposit and from winnings: never negative,
+-- or a returned stake would go back to a pocket it never came from.
+ALTER TABLE wallets DROP CONSTRAINT IF EXISTS wallets_lock_provenance_nonneg;
+ALTER TABLE wallets ADD CONSTRAINT wallets_lock_provenance_nonneg CHECK (
+  locked_deposit_paise >= 0 AND locked_winnings_paise >= 0);
+
+-- TOKEN_SUPPLY is the contra account: zero or below, by what was released.
+-- Every other account holds tokens and cannot hold fewer than none: a house
+-- that pays out more than it has won pays the rest from the platform's
+-- holding (`treasury.postHouseSettlement`), never from a negative reserve.
+ALTER TABLE treasury_accounts DROP CONSTRAINT IF EXISTS treasury_accounts_sign;
+ALTER TABLE treasury_accounts ADD CONSTRAINT treasury_accounts_sign CHECK (
+  CASE WHEN account = 'TOKEN_SUPPLY' THEN balance_paise <= 0 ELSE balance_paise >= 0 END);
+
+-- ── What a wallet holds ────────────────────────────────────────────────────
+-- Defined ONCE: the trigger below and `reconcileAgainstSubLedgers` both read
+-- it. The lock-provenance counters are not tokens; they say where part of
+-- `locked` came from.
+CREATE OR REPLACE FUNCTION bb_wallet_value_paise(w wallets) RETURNS BIGINT
+LANGUAGE sql IMMUTABLE AS $$
+  SELECT w.deposit_paise + w.winnings_paise + w.token_paise + w.reserve_paise + w.locked_paise
+$$;
+
+-- ── The supply ceiling ─────────────────────────────────────────────────────
+-- `SystemConfig.adminTokenSupply.total` tokens exist (owner, 2026-09-23: 20
+-- billion). The platform cannot release more than that: past it, it would be
+-- holding fewer than none. The fallback is the spec's default
+-- (`database/spec/config.spec.js`); `conservationPg.test.js` holds them equal.
+CREATE OR REPLACE FUNCTION bb_token_supply_paise() RETURNS BIGINT
+LANGUAGE sql STABLE AS $$
+  SELECT (COALESCE(
+    (SELECT (settings #>> '{adminTokenSupply,total}')::numeric
+       FROM config_documents WHERE scope = 'system' AND doc_key = 'main'),
+    20000000000) * 100)::bigint
+$$;
+
+-- Asked only when a write RELEASES tokens (TOKEN_SUPPLY going down), so a
+-- total lowered below what is already out never stops a buyback.
+CREATE OR REPLACE FUNCTION bb_supply_ceiling() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.account = 'TOKEN_SUPPLY'
+     AND NEW.balance_paise < (CASE WHEN TG_OP = 'UPDATE' THEN OLD.balance_paise ELSE 0 END)
+     AND 0 - NEW.balance_paise > bb_token_supply_paise() THEN
+    RAISE EXCEPTION 'token supply: % paise released would exceed the % paise that exist',
+      0 - NEW.balance_paise, bb_token_supply_paise()
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'treasury_supply_ceiling';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE OR REPLACE TRIGGER treasury_supply_ceiling
+  BEFORE INSERT OR UPDATE ON treasury_accounts FOR EACH ROW EXECUTE FUNCTION bb_supply_ceiling();
+
+-- ── The per-transaction buckets ────────────────────────────────────────────
+CREATE OR REPLACE FUNCTION bb_cons_add(bucket TEXT, delta BIGINT) RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF delta = 0 THEN RETURN; END IF;
+  PERFORM set_config('bb_cons.' || bucket,
+    (COALESCE(NULLIF(current_setting('bb_cons.' || bucket, true), ''), '0')::bigint + delta)::text, true);
+  PERFORM set_config('bb_cons.pending', 'on', true);
+END $$;
+
+-- A treasury account's bucket, and the list of accounts touched, so the
+-- check needs no list of accounts of its own (`treasury_accounts_known` is it).
+CREATE OR REPLACE FUNCTION bb_cons_account(account TEXT, delta BIGINT) RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE touched TEXT := NULLIF(current_setting('bb_cons.accounts', true), '');
+BEGIN
+  IF delta = 0 THEN RETURN; END IF;
+  PERFORM bb_cons_add('acct_' || lower(account), delta);
+  IF touched IS NULL OR NOT (account = ANY (string_to_array(touched, ','))) THEN
+    PERFORM set_config('bb_cons.accounts', concat_ws(',', touched, account), true);
+  END IF;
+END $$;
+
+CREATE OR REPLACE FUNCTION bb_cons_track_wallet() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE d BIGINT := 0;
+BEGIN
+  IF TG_OP <> 'INSERT' THEN d := d - bb_wallet_value_paise(OLD); END IF;
+  IF TG_OP <> 'DELETE' THEN d := d + bb_wallet_value_paise(NEW); END IF;
+  PERFORM bb_cons_add('wallets', d);
+  RETURN NULL;
+END $$;
+
+CREATE OR REPLACE FUNCTION bb_cons_track_pool() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE da BIGINT := 0; dh BIGINT := 0;
+BEGIN
+  IF TG_OP <> 'INSERT' THEN da := da - OLD.available_paise; dh := dh - OLD.held_paise; END IF;
+  IF TG_OP <> 'DELETE' THEN da := da + NEW.available_paise; dh := dh + NEW.held_paise; END IF;
+  PERFORM bb_cons_add('pools', da + dh);
+  PERFORM bb_cons_add('pool_available', da);
+  PERFORM bb_cons_add('pool_held', dh);
+  RETURN NULL;
+END $$;
+
+CREATE OR REPLACE FUNCTION bb_cons_track_pool_entry() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM bb_cons_add('pool_available', 0 - NEW.available_delta_paise);
+  PERFORM bb_cons_add('pool_held', 0 - NEW.held_delta_paise);
+  RETURN NULL;
+END $$;
+
+-- A treasury account moving is up to two facts: its own bucket (to be
+-- explained by entries) and, for the two floats, the side they describe.
+CREATE OR REPLACE FUNCTION bb_cons_track_account() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE side TEXT;
+BEGIN
+  IF TG_OP <> 'INSERT' THEN
+    PERFORM bb_cons_account(OLD.account, 0 - OLD.balance_paise);
+    side := CASE OLD.account WHEN 'USER_FLOAT' THEN 'wallets' WHEN 'TEAM_FLOAT' THEN 'pools' END;
+    IF side IS NOT NULL THEN PERFORM bb_cons_add(side, OLD.balance_paise); END IF;
+  END IF;
+  IF TG_OP <> 'DELETE' THEN
+    PERFORM bb_cons_account(NEW.account, NEW.balance_paise);
+    side := CASE NEW.account WHEN 'USER_FLOAT' THEN 'wallets' WHEN 'TEAM_FLOAT' THEN 'pools' END;
+    IF side IS NOT NULL THEN PERFORM bb_cons_add(side, 0 - NEW.balance_paise); END IF;
+  END IF;
+  RETURN NULL;
+END $$;
+
+CREATE OR REPLACE FUNCTION bb_cons_track_entry() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM bb_cons_account(NEW.account, 0 - NEW.amount_paise);
+  RETURN NULL;
+END $$;
+
+CREATE OR REPLACE TRIGGER wallets_conservation_track
+  AFTER INSERT OR UPDATE OR DELETE ON wallets FOR EACH ROW EXECUTE FUNCTION bb_cons_track_wallet();
+CREATE OR REPLACE TRIGGER team_pools_conservation_track
+  AFTER INSERT OR UPDATE OR DELETE ON team_pools FOR EACH ROW EXECUTE FUNCTION bb_cons_track_pool();
+CREATE OR REPLACE TRIGGER team_pool_entries_conservation_track
+  AFTER INSERT ON team_pool_entries FOR EACH ROW EXECUTE FUNCTION bb_cons_track_pool_entry();
+CREATE OR REPLACE TRIGGER treasury_accounts_conservation_track
+  AFTER INSERT OR UPDATE OR DELETE ON treasury_accounts FOR EACH ROW EXECUTE FUNCTION bb_cons_track_account();
+CREATE OR REPLACE TRIGGER treasury_entries_conservation_track
+  AFTER INSERT ON treasury_entries FOR EACH ROW EXECUTE FUNCTION bb_cons_track_entry();
+
+-- ── The check, at COMMIT ───────────────────────────────────────────────────
+CREATE OR REPLACE FUNCTION bb_cons_bucket(bucket TEXT) RETURNS BIGINT
+LANGUAGE sql STABLE AS $$
+  SELECT COALESCE(NULLIF(current_setting('bb_cons.' || bucket, true), ''), '0')::bigint
+$$;
+
+CREATE OR REPLACE FUNCTION bb_cons_check() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE account TEXT; off BIGINT;
+BEGIN
+  IF current_setting('bb_cons.pending', true) IS DISTINCT FROM 'on' THEN RETURN NULL; END IF;
+  off := bb_cons_bucket('wallets');
+  IF off <> 0 THEN
+    RAISE EXCEPTION 'token conservation: the wallets moved % paise more than USER_FLOAT in this transaction', off
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'bb_conservation_user_float';
+  END IF;
+  off := bb_cons_bucket('pools');
+  IF off <> 0 THEN
+    RAISE EXCEPTION 'token conservation: the team pools moved % paise more than TEAM_FLOAT in this transaction', off
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'bb_conservation_team_float';
+  END IF;
+  off := bb_cons_bucket('pool_available');
+  IF off <> 0 THEN
+    RAISE EXCEPTION 'token conservation: pools'' available tokens moved % paise more than their entries', off
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'bb_conservation_pool_available';
+  END IF;
+  off := bb_cons_bucket('pool_held');
+  IF off <> 0 THEN
+    RAISE EXCEPTION 'token conservation: pools'' held tokens moved % paise more than their entries', off
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'bb_conservation_pool_held';
+  END IF;
+  FOREACH account IN ARRAY COALESCE(string_to_array(NULLIF(current_setting('bb_cons.accounts', true), ''), ','), '{}') LOOP
+    off := bb_cons_bucket('acct_' || lower(account));
+    IF off <> 0 THEN
+      RAISE EXCEPTION 'token conservation: % moved % paise more than its treasury_entries', account, off
+        USING ERRCODE = 'check_violation', CONSTRAINT = 'bb_conservation_treasury_entries';
+    END IF;
+  END LOOP;
+  PERFORM set_config('bb_cons.pending', 'off', true);
+  RETURN NULL;
+END $$;
+
+-- One movement's legs, all of them, committed earlier or not: they sum to zero.
+CREATE OR REPLACE FUNCTION bb_cons_movement_check() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE total BIGINT;
+BEGIN
+  SELECT SUM(amount_paise) INTO total FROM treasury_entries WHERE movement_id = NEW.movement_id;
+  IF total <> 0 THEN
+    RAISE EXCEPTION 'token conservation: movement % has legs summing to % paise, not zero', NEW.movement_id, total
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'bb_conservation_movement_balanced';
+  END IF;
+  RETURN NULL;
+END $$;
+
+-- Dropped and re-created: a constraint trigger has no OR REPLACE (S31).
+DROP TRIGGER IF EXISTS wallets_conservation_check ON wallets;
+CREATE CONSTRAINT TRIGGER wallets_conservation_check
+  AFTER INSERT OR UPDATE OR DELETE ON wallets DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION bb_cons_check();
+DROP TRIGGER IF EXISTS team_pools_conservation_check ON team_pools;
+CREATE CONSTRAINT TRIGGER team_pools_conservation_check
+  AFTER INSERT OR UPDATE OR DELETE ON team_pools DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION bb_cons_check();
+DROP TRIGGER IF EXISTS team_pool_entries_conservation_check ON team_pool_entries;
+CREATE CONSTRAINT TRIGGER team_pool_entries_conservation_check
+  AFTER INSERT ON team_pool_entries DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION bb_cons_check();
+DROP TRIGGER IF EXISTS treasury_accounts_conservation_check ON treasury_accounts;
+CREATE CONSTRAINT TRIGGER treasury_accounts_conservation_check
+  AFTER INSERT OR UPDATE OR DELETE ON treasury_accounts DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION bb_cons_check();
+DROP TRIGGER IF EXISTS treasury_entries_conservation_check ON treasury_entries;
+CREATE CONSTRAINT TRIGGER treasury_entries_conservation_check
+  AFTER INSERT ON treasury_entries DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION bb_cons_check();
+DROP TRIGGER IF EXISTS treasury_entries_movement_balanced ON treasury_entries;
+CREATE CONSTRAINT TRIGGER treasury_entries_movement_balanced
+  AFTER INSERT ON treasury_entries DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION bb_cons_movement_check();

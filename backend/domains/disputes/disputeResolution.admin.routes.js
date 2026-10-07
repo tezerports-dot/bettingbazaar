@@ -2,7 +2,6 @@
 
 import { express, authenticate, isAdmin, hasPermission } from '../../routes/admin/_adminShared.js';
 import { db } from '#db';
-import { creditDeposit, creditReserve } from '../wallet/walletAuthority.service.js';
 import { moveDepositMoney } from '../payment/depositCredit.js';
 // The one owner of how an admin decision ends a withdrawal's money (F-027),
 // and of a cancelled buy's merchant hold.
@@ -299,7 +298,7 @@ router.post('/dispute-orders/:orderId/resolve', authenticate, hasPermission('can
         // reports it and the log below makes it a case a person sees.
         // Completed by the transition above, so it is paid out from COMPLETED.
         const moved = await moveDepositMoney(order, {
-          creditDeposit, creditReserve, releaseUTR, requireState: 'COMPLETED',
+          releaseUTR, requireState: 'COMPLETED',
         });
         if (!moved.ok) {
           console.error(`[dispute resolve] ${order.orderId} released but money did not move:`, moved.reason);
