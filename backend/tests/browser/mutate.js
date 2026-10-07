@@ -1196,8 +1196,21 @@ const CASES = [
         const party = await faultParty(mine.orderId);
         if (party !== 'PLAYER') return ['FAILED', `the player's claim was refused; the fault row says ${party ?? 'nobody'}`];
         if (pressed.stillOffered) return ['FAILED', 'decided, and the queue still offers "View Chat + Resolve" for it without a reload'];
+        // Where an admin looks for it afterwards: "Closed", one of the filters
+        // the queue sends, with the decision on its card. The card drew the
+        // decision only for status 'RESOLVED', which no order is ever in.
+        const filter = page.getByLabel('Filter disputes by status');
+        if (await filter.count() === 0) return ['FAILED', 'decided, and the Dispute Manager offers no filter to find it under'];
+        await filter.selectOption('CLOSED');
+        await settle(page, 8000);
+        const closed = page.locator('div').filter({ hasText: mine.orderId }).filter({ hasText: /Decision:/ }).last();
+        const card = await closed.count() ? (await closed.innerText()).replace(/\s+/g, ' ') : '';
+        if (!/Decision: RELEASE TO MERCHANT/.test(card)) {
+          const routed = (await page.locator('main').innerText().catch(() => '')).replace(/\s+/g, ' ').slice(0, 180);
+          return ['FAILED', `under "Closed" ${mine.orderId} shows no decision — ${card || routed}`];
+        }
         return ['DROVE', `${mine.orderId} CANCELLED: hold of ${BUY_TOKENS} tokens back to the pool, player not credited, `
-          + 'fault PLAYER as the dialog warned; listed on arrival; the bystander dispute untouched'];
+          + 'fault PLAYER as the dialog warned; listed on arrival, and under "Closed" with its decision; the bystander dispute untouched'];
       } finally {
         await endBuys(fx.buys);
         await fx.restore();
