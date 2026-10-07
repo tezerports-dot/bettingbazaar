@@ -379,6 +379,207 @@ const providerExists = async (key) => {
 };
 /** §9: every player balance read goes through the wallet authority. */
 const balances = (userId) => db.wallets.getBalances(userId);
+/** What a buy credits: the deposit and reserve pockets together, in paise (the split is the policy's). */
+const boughtPaise = async (userId) => {
+  const b = await db.wallets.getBalancesPaise(userId);
+  return Number(b.depositBalance ?? 0) + Number(b.reserveBalance ?? 0);
+};
+/** One order's state, its pool hold and the decision written on it. */
+const orderRow = async (orderId) => {
+  const { rows } = await pgQuery(
+    `SELECT state, pool_held_paise, dispute_decision, dispute_resolved_by
+       FROM order_states WHERE order_id = $1`, [String(orderId)]);
+  return rows[0] ? { ...rows[0], pool_held_paise: Number(rows[0].pool_held_paise) } : null;
+};
+/** Who lost a dispute, from its one writer's table (`disputeFaults.js`). */
+const faultParty = async (orderId) => {
+  const { rows } = await pgQuery('SELECT party FROM dispute_faults WHERE order_id = $1', [String(orderId)]);
+  return rows[0]?.party ?? null;
+};
+
+/** One request to the API as one account, answering `{ status, body }`. */
+async function call(token, method, path, body) {
+  const res = await fetch(`${API}${path}`, {
+    method,
+    headers: { Authorization: `Bearer ${token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+  return { status: res.status, body: await res.json().catch(() => ({})) };
+}
+
+/**
+ * Disputed BUYS, made the way production makes them.
+ *
+ * The two cases this replaces inserted `DISPUTED` rows straight into
+ * `order_states`, with no team, no member and no pool hold — rows the platform
+ * cannot produce (§32 S16), on a screen deleted in Step 2c. Since 2c a
+ * disputed buy is a held order: routed to a member of a working team, its
+ * tokens held in that team's pool from the assignment on, and the decision
+ * either SPENDS that hold into the player's wallet or RELEASES it to the pool.
+ * A fixture without the hold would test a decision that has nothing to move.
+ *
+ * So each buy goes through the routes a person uses: the player creates it
+ * (`POST /api/payment/deposit/create`, the smallest UPI/bank size), the member
+ * accepts it, the player marks it paid with a reference, and the player
+ * disputes it. The one thing moved by hand is the CLOCK: the dispute route
+ * makes a player wait ten minutes after Paid, so `paid_at` is put back past it
+ * — the same step the e2e tier takes (s7). The member's rejection path is not
+ * used because it needs a proof upload to object storage, which a local run
+ * does not have.
+ *
+ * Routing has to reach THIS team's member and nobody else, so the team is
+ * `exclusive` on the UPI/bank rail; the members that took offline are put
+ * back by `restore()`, with this team's members taken offline (trap 10).
+ */
+const BUY_TOKENS = 50000;   // the smallest UPI/bank order size (CLAUDE.md §2, ORDER_SIZES)
+async function disputedBuys(n) {
+  const { rows: wereOnline } = await pgQuery(
+    `SELECT m.merchant_id FROM merchants m
+       JOIN team_members tm ON tm.merchant_id = m.merchant_id
+       JOIN teams t ON t.team_id = tm.team_id
+       JOIN merchants s ON s.merchant_id = t.supervisor_id
+      WHERE m.is_online AND s.supervisor_rail = 'UPI_BANK'`);
+  const member = await seedMerchant({ currency: 'INR' });
+  const team = await seedTeam({ rail: 'UPI_BANK', poolTokens: BUY_TOKENS * n, include: [member], online: [member] });
+  const restore = async () => {
+    for (const m of team.members) await setOnline(m.merchantId, false).catch(() => {});
+    for (const r of wereOnline) await setOnline(r.merchant_id, true).catch(() => {});
+  };
+  const buys = [];
+  try {
+    for (let i = 0; i < n; i++) {
+      const player = await seedPlayer({ balancePaise: 0 });
+      const pT = playerToken(player);
+      const made = await call(pT, 'POST', '/api/payment/deposit/create', { tokenAmount: BUY_TOKENS });
+      const orderId = made.body?.order?.orderId;
+      if (!orderId) throw new Error(`the buy was refused: ${made.status} ${String(made.body?.message ?? '').slice(0, 100)}`);
+      buys.push({ orderId, player });
+      const placed = await orderRow(orderId);
+      const { rows: [who] } = await pgQuery('SELECT merchant_id FROM order_states WHERE order_id = $1', [orderId]);
+      if (placed?.state !== 'ASSIGNED' || who?.merchant_id !== member.merchantId) {
+        throw new Error(`${orderId} was not routed to this team's member (${placed?.state}, ${who?.merchant_id ?? 'nobody'})`);
+      }
+      const steps = [
+        ['the member accepts', await call(merchantToken(member), 'POST', `/api/merchant/accept/${orderId}`, {})],
+        ['the player marks it paid', await call(pT, 'POST', `/api/payment/order/${orderId}/mark-paid`,
+          { utrNumber: String(Date.now()).slice(-9) + String(Math.floor(Math.random() * 1000)).padStart(3, '0') })],
+      ];
+      await pgQuery(`UPDATE order_states SET paid_at = now() - interval '11 minutes' WHERE order_id = $1`, [orderId]);
+      steps.push(['the player disputes it', await call(pT, 'POST', `/api/payment/order/${orderId}/dispute`,
+        { reason: 'mutating drive: I paid and nothing was credited' })]);
+      const refused = steps.find(([, r]) => r.status !== 200);
+      if (refused) throw new Error(`${refused[0]}: ${refused[1].status} ${String(refused[1].body?.message ?? '').slice(0, 100)}`);
+      const row = await orderRow(orderId);
+      if (row?.state !== 'DISPUTED' || row.pool_held_paise !== BUY_TOKENS * 100) {
+        throw new Error(`${orderId} is ${row?.state} holding ${row?.pool_held_paise} paise, not a disputed held buy`);
+      }
+    }
+  } catch (e) {
+    await endBuys(buys);
+    await restore();
+    throw e;
+  }
+  return { member, team, buys, restore };
+}
+
+/** A literal for a RegExp: a seeded name is data, not a pattern. */
+const escapeRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * A supervisor of their own full cash team, members offline — the account
+ * `profiles.js`'s `merchant-supervisor` inventories and the drive presses as —
+ * and the session a case signs in with (`as`, see `main`). `secondTeam` adds
+ * an empty team beside it, through the same writer the Create button calls,
+ * for a case that needs a bystander team or a team with room.
+ */
+async function supervisorSession({ secondTeam = false } = {}) {
+  const team = await seedTeam({ rail: 'CASH', online: [], exclusive: false });
+  const supervisor = team.supervisor;
+  const name = (await db.teams.getTeam(team.teamId)).name;
+  let second = null;
+  if (secondTeam) {
+    const made = await db.teams.createTeam({ supervisorId: supervisor.merchantId, name: rid('drive-empty') });
+    if (!made.ok) throw new Error(`supervisorSession: the second team was refused: ${made.reason}`);
+    second = made.teamId;
+  }
+  return {
+    token: merchantToken(supervisor),
+    // A returning merchant has a cached profile besides a token (see main).
+    cached: {
+      id: supervisor.merchantId, merchantId: supervisor.merchantId, username: supervisor.username,
+      email: supervisor.email, mobile: supervisor.mobile, isOnline: false, status: 'ACTIVE',
+      acceptedCurrencies: ['INR'],
+    },
+    supervisor, team: { ...team, name }, second,
+  };
+}
+
+/**
+ * End whatever of these buys is still live, through the state machine and the
+ * pool's one owner — never a DELETE: `order_transitions` is append-only and
+ * holds an FK to the order (see `merchant/orders/accept-a-later-card`).
+ */
+async function endBuys(buys) {
+  for (const { orderId } of buys) {
+    await cancelOrderState(orderId, {
+      expectFrom: ['PENDING_QUEUE', 'ASSIGNED', 'PROCESSING', 'PAID', 'DISPUTED'],
+      set: { cancelReason: 'HARNESS_CLEANUP', cancelledAt: new Date() },
+      actor: 'drive-fixture', reason: 'harness cleanup',
+    }).catch(() => {});
+    await db.teamPools.releaseBuyHold(orderId, { actor: 'drive-fixture', reason: 'harness cleanup' }).catch(() => {});
+  }
+}
+
+/**
+ * Open a dispute in the Dispute Manager and decide it the way an admin does:
+ * its card's "View Chat + Resolve", the Resolve tab, a decision, notes, and
+ * "Decide dispute". Answers what the screen showed on the way, because a
+ * decision the admin could not reach is a different finding from one that
+ * moved the wrong money.
+ */
+async function decideOnScreen(page, cfg, base, orderId, decision) {
+  await go(page, cfg, base, '/disputes');
+  const cardFor = () => page.locator('div')
+    .filter({ hasText: orderId })
+    .filter({ has: page.getByRole('button', { name: /View Chat \+ Resolve/i }) })
+    .last();
+  // What a person arriving sees first: the default filter, untouched.
+  const onArrival = await cardFor().count() > 0;
+  if (!onArrival) {
+    // The filter a person reaches for next: the open disputes.
+    const filter = page.getByLabel('Filter disputes by status');
+    if (await filter.count()) {
+      await filter.selectOption('DISPUTED');
+      await settle(page, 8000);
+    }
+  }
+  if (await cardFor().count() === 0) {
+    const routed = await page.locator('main').innerText().catch(() => '(no <main>)');
+    return { ok: false, why: `no card for ${orderId} even under "Open" — routed region: ${routed.replace(/\s+/g, ' ').slice(0, 180)}` };
+  }
+  const open = cardFor().getByRole('button', { name: /View Chat \+ Resolve/i }).first();
+  await open.click({ timeout: 8000 });
+  await settle(page, 6000);
+  const dialog = page.locator('[role="dialog"]').last();
+  if (!(await dialog.isVisible().catch(() => false))) return { ok: false, why: 'View Chat + Resolve opened no dialog', onArrival };
+  await dialog.getByRole('button', { name: /^\s*Resolve\s*$/i }).first().click({ timeout: 8000 });
+  await settle(page, 2000);
+  await dialog.locator('#decision').selectOption(decision);
+  await dialog.locator('#resolution-notes').fill(`mutating drive: ${decision}`);
+  const decide = dialog.getByRole('button', { name: /Decide dispute/i }).first();
+  if (await decide.isDisabled()) return { ok: false, why: '"Decide dispute" stayed disabled with notes typed', onArrival };
+  const answered = page.waitForResponse(
+    (r) => r.url().includes(`/dispute-orders/${orderId}/resolve`) && r.request().method() === 'POST',
+    { timeout: 15000 },
+  ).catch(() => null);
+  await decide.click({ timeout: 8000 });
+  const reply = await answered;
+  await settle(page, 8000);
+  const said = reply ? `${reply.status()} ${(await reply.text().catch(() => '')).replace(/\s+/g, ' ').slice(0, 120)}` : 'no request left the panel';
+  // Without a reload: the queue must have learned what it just did (§31).
+  const stillOffered = await cardFor().count() > 0;
+  return { ok: true, said, onArrival, stillOffered };
+}
 
 
 /**
@@ -823,70 +1024,53 @@ const CASES = [
   },
 
 
-  // ── Money: an admin decides a disputed deposit ───────────────────────────
+  // ── Money: an admin decides a disputed buy (Dispute Manager) ─────────────
+  // These were `admin/payment-control/release` and `/refund`, which opened
+  // `/payment-control` — a screen deleted in Step 2c — and pressed its
+  // "Release to User" / "Refund to Merchant" on rows inserted straight into
+  // `order_states`. What owns the decision now is `/disputes`
+  // (DisputeManager.tsx → `POST /api/admin/dispute-orders/:id/resolve`), and
+  // a disputed buy now carries its team's pool hold, so each case decides a
+  // real held buy (`disputedBuys`) and reads both sides of the money back.
   {
-    id: 'admin/payment-control/release',
+    id: 'admin/disputes/decide-for-player',
     panel: 'admin-panel',
-    what: 'Release a disputed deposit to the player',
+    what: 'Decide a disputed buy for the player: the team pool\'s hold is spent into the player\'s wallet',
     async run(page, cfg, base) {
-      const player = await seedPlayer({ balancePaise: 0 });
-      const other = await seedPlayer({ balancePaise: 0 });
-      const merchant = await seedMerchant({ currency: 'INR' });
-      const mine = rid('DISP');
-      const theirs = rid('DISP');
-      for (const [orderId, u] of [[mine, player], [theirs, other]]) {
-        await pgQuery(
-          `INSERT INTO order_states
-             (order_id, user_id, merchant_id, order_type, state, token_amount_paise, fiat_amount_paise, order_hmac)
-           VALUES ($1, $2, $3, 'DEPOSIT', 'DISPUTED', 50000, 50000, $4)`,
-          [orderId, u.userId, merchant.merchantId, deriveOrderHmac(orderId)],
-        );
-      }
-
-      await go(page, cfg, base, '/payment-control');
-      // ── MY order's card, not merely an element mentioning it ─────────────
-      // `:has-text()` matches every ancestor too, and `.last()` gives the
-      // innermost — a <span> holding the order id and no button. The case then
-      // reported "no Release to User" while FOUR were on the page, which reads
-      // as an empty dispute queue over a working one. Ask for the card that
-      // contains BOTH the id and the control, and take the innermost of those.
-      const card = page.locator('div')
-        .filter({ hasText: mine })
-        .filter({ has: page.getByRole('button', { name: /Release to User/i }) })
-        .last();
-      const release = (await card.count())
-        ? card.getByRole('button', { name: /Release to User/i }).first()
-        : page.locator('nothing-matches-this');
-      if (await release.count() === 0) {
-        // Measure the ROUTED region, not the page (§32 S21): the shell is on
-        // screen either way, so quoting the top of the body reports the nav bar
-        // and tells the reader nothing about whether the queue rendered.
-        const routed = await page.locator('main').innerText().catch(() => '(no <main>)');
-        const all = await page.getByRole('button', { name: /Release to User/i }).count();
-        return ['NOT DRIVEN',
-          `no "Release to User" for ${mine} (${all} on the page) — routed region: `
-          + `${routed.replace(/\s+/g, ' ').trim().slice(0, 220)}`];
-      }
-
-      const before = await balances(player.userId);
-      // The handler asks for a reason through `window.prompt`, and returns early
-      // on an empty one — so the prompt is ANSWERED, not merely accepted.
-      page.__bbAccept = 'mutating drive: released';
+      const fx = await disputedBuys(2);
+      const [mine, theirs] = fx.buys;
       try {
-        await release.click({ timeout: 8000 });
-        await settle(page, 10000);
-      } finally { page.__bbAccept = false; }
+        const playerBefore = await boughtPaise(mine.player.userId);
+        const poolBefore = await db.teamPools.getPool(fx.team.teamId);
+        const pressed = await decideOnScreen(page, cfg, base, mine.orderId, 'RELEASE_TO_USER');
+        if (!pressed.ok) return ['NOT DRIVEN', pressed.why];
 
-      const after = await balances(player.userId);
-      const neighbour = await balances(other.userId);
-      const state = await orderState(mine);
-      if ((after.depositBalance ?? 0) <= (before.depositBalance ?? 0)) {
-        return ['FAILED', `the player was not credited (₹${before.depositBalance} → ₹${after.depositBalance});`
-          + ` order is ${state} — screen said: ${(await words(page)).slice(-140)}`];
+        const row = await orderRow(mine.orderId);
+        const credited = (await boughtPaise(mine.player.userId)) - playerBefore;
+        const poolAfter = await db.teamPools.getPool(fx.team.teamId);
+        const spent = poolBefore.heldPaise - poolAfter.heldPaise;
+        const neighbour = await orderRow(theirs.orderId);
+        const arrival = pressed.onArrival ? '' : ' (NOT listed under the default "All Disputes" filter — found under "Open")';
+        if (row?.state !== 'COMPLETED' || row.dispute_decision !== 'RELEASE_TO_USER') {
+          return ['FAILED', `pressed Decide dispute; ${mine.orderId} is ${row?.state} / ${row?.dispute_decision ?? 'no decision'} — ${pressed.said}`];
+        }
+        if (credited !== BUY_TOKENS * 100) return ['FAILED', `the player was credited ${credited} paise, expected ${BUY_TOKENS * 100}`];
+        if (spent !== BUY_TOKENS * 100 || poolAfter.availablePaise !== poolBefore.availablePaise) {
+          return ['FAILED', `the pool's hold fell by ${spent} paise (available ${poolBefore.availablePaise} → ${poolAfter.availablePaise}); expected exactly one buy's hold spent`];
+        }
+        if (neighbour?.state !== 'DISPUTED' || neighbour.pool_held_paise !== BUY_TOKENS * 100
+            || (await boughtPaise(theirs.player.userId)) !== 0) {
+          return ['FAILED', `the BYSTANDER dispute moved: ${theirs.orderId} is ${neighbour?.state} holding ${neighbour?.pool_held_paise}`];
+        }
+        const party = await faultParty(mine.orderId);
+        if (party !== 'MERCHANT') return ['FAILED', `the member was shown a reference and lost; the fault row says ${party ?? 'nobody'}`];
+        if (pressed.stillOffered) return ['FAILED', 'decided, and the queue still offers "View Chat + Resolve" for it without a reload'];
+        return ['DROVE', `${mine.orderId} COMPLETED: player +${credited / 100} tokens, team pool hold −${spent / 100}, `
+          + `fault MERCHANT; the bystander dispute untouched${arrival}`];
+      } finally {
+        await endBuys(fx.buys);
+        await fx.restore();
       }
-      if ((neighbour.depositBalance ?? 0) !== 0) return ['FAILED', 'the BYSTANDER player was credited too'];
-      if (await orderState(theirs) !== 'DISPUTED') return ['FAILED', "the BYSTANDER's dispute was resolved too"];
-      return ['DROVE', `player credited ₹${after.depositBalance}, order ${state}, the other dispute untouched`];
     },
   },
 
@@ -966,51 +1150,46 @@ const CASES = [
 
 
   // ── The other half of each money decision ────────────────────────────────
-
   {
-    id: 'admin/payment-control/refund',
+    id: 'admin/disputes/decide-for-team',
     panel: 'admin-panel',
-    what: 'Refund a disputed deposit to the merchant',
+    what: 'Decide a disputed buy for the team: the hold goes back to the pool, the player gets nothing',
     async run(page, cfg, base) {
-      const player = await seedPlayer({ balancePaise: 0 });
-      const merchant = await seedMerchant({ currency: 'INR' });
-      const mine = rid('DISP');
-      await pgQuery(
-        `INSERT INTO order_states
-           (order_id, user_id, merchant_id, order_type, state, token_amount_paise, fiat_amount_paise, order_hmac)
-         VALUES ($1, $2, $3, 'DEPOSIT', 'DISPUTED', 50000, 50000, $4)`,
-        [mine, player.userId, merchant.merchantId, deriveOrderHmac(mine)],
-      );
-
-      await go(page, cfg, base, '/payment-control');
-      const card = page.locator('div')
-        .filter({ hasText: mine })
-        .filter({ has: page.getByRole('button', { name: /Refund to Merchant/i }) })
-        .last();
-      if (await card.count() === 0) {
-        const routed = await page.locator('main').innerText().catch(() => '(no <main>)');
-        return ['NOT DRIVEN', `no card for ${mine} — routed region: ${routed.replace(/\s+/g, ' ').slice(0, 180)}`];
-      }
-      const refund = card.getByRole('button', { name: /Refund to Merchant/i }).first();
-
-      const before = await balances(player.userId);
-      page.__bbAccept = 'mutating drive: refunded';
+      const fx = await disputedBuys(2);
+      const [mine, theirs] = fx.buys;
       try {
-        await refund.click({ timeout: 8000 });
-        await settle(page, 10000);
-      } finally { page.__bbAccept = false; }
+        const poolBefore = await db.teamPools.getPool(fx.team.teamId);
+        const pressed = await decideOnScreen(page, cfg, base, mine.orderId, 'RELEASE_TO_MERCHANT');
+        if (!pressed.ok) return ['NOT DRIVEN', pressed.why];
 
-      const after = await balances(player.userId);
-      const state = await orderState(mine);
-      // The opposite outcome from a release, and the assertion is its mirror:
-      // the player must NOT be credited on a refund.
-      if ((after.depositBalance ?? 0) !== (before.depositBalance ?? 0)) {
-        return ['FAILED', `a REFUND credited the player ₹${after.depositBalance}`];
+        const row = await orderRow(mine.orderId);
+        const poolAfter = await db.teamPools.getPool(fx.team.teamId);
+        const neighbour = await orderRow(theirs.orderId);
+        const arrival = pressed.onArrival ? '' : ' (NOT listed under the default "All Disputes" filter — found under "Open")';
+        if (row?.state !== 'CANCELLED' || row.dispute_decision !== 'RELEASE_TO_MERCHANT') {
+          return ['FAILED', `pressed Decide dispute; ${mine.orderId} is ${row?.state} / ${row?.dispute_decision ?? 'no decision'} — ${pressed.said}`];
+        }
+        // The mirror of the release: the player must NOT be credited, and the
+        // hold must come back as available tokens, not vanish.
+        if ((await boughtPaise(mine.player.userId)) !== 0) return ['FAILED', 'a decision for the TEAM credited the player'];
+        if (row.pool_held_paise !== 0
+            || poolBefore.heldPaise - poolAfter.heldPaise !== BUY_TOKENS * 100
+            || poolAfter.availablePaise - poolBefore.availablePaise !== BUY_TOKENS * 100) {
+          return ['FAILED', `the hold did not return to the pool: held ${poolBefore.heldPaise} → ${poolAfter.heldPaise}, `
+            + `available ${poolBefore.availablePaise} → ${poolAfter.availablePaise}, order still holds ${row.pool_held_paise}`];
+        }
+        if (neighbour?.state !== 'DISPUTED' || neighbour.pool_held_paise !== BUY_TOKENS * 100) {
+          return ['FAILED', `the BYSTANDER dispute moved: ${theirs.orderId} is ${neighbour?.state} holding ${neighbour?.pool_held_paise}`];
+        }
+        const party = await faultParty(mine.orderId);
+        if (party !== 'PLAYER') return ['FAILED', `the player's claim was refused; the fault row says ${party ?? 'nobody'}`];
+        if (pressed.stillOffered) return ['FAILED', 'decided, and the queue still offers "View Chat + Resolve" for it without a reload'];
+        return ['DROVE', `${mine.orderId} CANCELLED: hold of ${BUY_TOKENS} tokens back to the pool, player not credited, `
+          + `fault PLAYER; the bystander dispute untouched${arrival}`];
+      } finally {
+        await endBuys(fx.buys);
+        await fx.restore();
       }
-      if (!['CANCELLED', 'FAILED', 'REJECTED', 'COMPLETED'].includes(String(state))) {
-        return ['FAILED', `the order is ${state}; the refund left it undecided`];
-      }
-      return ['DROVE', `order ${state}, the player correctly not credited`];
     },
   },
 
@@ -2371,6 +2550,182 @@ const CASES = [
       }
     },
   },
+
+  // ══════════════════════════════════════════════════════════════════════
+  // THE SUPERVISOR'S HALF OF THE TEAM PAGE
+  //
+  // `BB_PROFILE=merchant-supervisor npm run test:drive` presses the Team page
+  // AS a supervisor, and defers or finds disabled exactly the five controls
+  // that change a team: Remove a member (destructive), and Send request,
+  // Create team, Add and Rename (disabled until something is typed). Each case
+  // below signs in as its OWN supervisor (`as`), on a team it seeded, and
+  // reads the team's one writer back (`teams.js`, `teamPools.js`), with a
+  // bystander team or member beside it.
+  // ══════════════════════════════════════════════════════════════════════
+
+  {
+    id: 'merchant/team/remove-member',
+    panel: 'merchant-panel',
+    what: 'A supervisor removes one member of a full team, and only that one',
+    as: () => supervisorSession(),
+    async run(page, cfg, base, s) {
+      const [victim, neighbour] = s.team.members;
+      await go(page, cfg, base, '/team');
+      const remove = page.getByRole('button', { name: new RegExp(`^\\s*Remove ${victim.username}\\s*$`) });
+      if (await remove.count() === 0) return ['NOT DRIVEN', `no "Remove ${victim.username}" on /team — ${(await words(page)).slice(0, 160)}`];
+      const hit = await clickThrough(remove.first(), { timeout: 8000 });
+      if (!hit.ok) return ['NOT DRIVEN', `Remove could not be pressed: ${hit.why}`];
+      await settle(page, 8000);
+
+      const gone = await db.teams.membershipOf(victim.merchantId);
+      const kept = await db.teams.membershipOf(neighbour.merchantId);
+      const team = await db.teams.getTeam(s.team.teamId);
+      if (gone) return ['FAILED', `pressed Remove; ${victim.username} is still ${gone.member.status} in ${gone.team.teamId}`];
+      if (kept?.team?.teamId !== s.team.teamId || kept.member.status !== 'APPROVED') {
+        return ['FAILED', `the BYSTANDER member moved: ${neighbour.username} is ${kept ? `${kept.member.status} in ${kept.team.teamId}` : 'in no team'}`];
+      }
+      if (team.approvedCount !== 9) return ['FAILED', `the team counts ${team.approvedCount} approved, expected 9`];
+      if (await remove.count() > 0) return ['FAILED', `${victim.username} left the team and the screen still offers to remove them`];
+      return ['DROVE', `${victim.username} out of ${s.team.teamId} (9 approved now), ${neighbour.username} still APPROVED, screen updated`];
+    },
+  },
+
+  {
+    id: 'merchant/team/pool-request',
+    panel: 'merchant-panel',
+    what: 'A supervisor asks to buy tokens into one team\'s pool — "Send request" enables once tokens are typed',
+    as: () => supervisorSession({ secondTeam: true }),
+    async run(page, cfg, base, s) {
+      const mine = s.team.teamId;
+      try {
+        await go(page, cfg, base, '/team');
+        const send = page.getByRole('button', { name: new RegExp(`^\\s*Send ${escapeRe(s.team.name)} request\\s*$`) }).first();
+        if (await send.count() === 0) return ['NOT DRIVEN', `no "Send ${s.team.name} request" on /team`];
+        if (!(await send.isDisabled())) return ['FAILED', 'Send request is enabled before any tokens are typed'];
+        const typed = await fill(page, `#pa-${mine}`, '1000');
+        if (!typed.ok) return ['NOT DRIVEN', typed.why];
+        await settle(page, 1500);
+        if (await send.isDisabled()) return ['FAILED', 'Send request stayed disabled with 1000 tokens typed'];
+        await send.click({ timeout: 8000 });
+        await settle(page, 8000);
+
+        const asked = await db.teamPools.listRequests({ teamId: mine });
+        const other = await db.teamPools.listRequests({ teamId: s.second });
+        const pending = asked.filter((r) => r.status === 'PENDING');
+        if (pending.length !== 1 || pending[0].direction !== 'BUY' || Number(pending[0].tokenAmountPaise) !== 100000) {
+          return ['FAILED', `pressed Send; the team's requests are ${JSON.stringify(asked.map((r) => [r.status, r.direction, r.tokenAmountPaise]))}`];
+        }
+        if (other.length) return ['FAILED', `the BYSTANDER team got ${other.length} request(s) too`];
+        const said = await words(page);
+        if (!/waiting for an admin/i.test(said)) return ['FAILED', 'the request was written; the screen never showed it waiting'];
+        return ['DROVE', `one PENDING BUY of 1,000 tokens for ${mine}, the other team asked for nothing, shown as waiting`];
+      } finally {
+        for (const r of await db.teamPools.listRequests({ teamId: mine }).catch(() => [])) {
+          if (r.status === 'PENDING') await db.teamPools.cancelRequest({ requestId: r.requestId, supervisorId: s.supervisor.merchantId }).catch(() => {});
+        }
+      }
+    },
+  },
+
+  {
+    id: 'merchant/team/create',
+    panel: 'merchant-panel',
+    what: 'A supervisor creates a second team — "Create team" enables once a name is typed',
+    as: () => supervisorSession(),
+    async run(page, cfg, base, s) {
+      const name = `Drive ${rid('team').slice(-6)}`;
+      let made = null;
+      try {
+        await go(page, cfg, base, '/team');
+        const create = page.getByRole('button', { name: /^\s*Create team\s*$/ }).first();
+        if (await create.count() === 0) return ['NOT DRIVEN', 'no "Create team" on /team'];
+        if (!(await create.isDisabled())) return ['FAILED', 'Create team is enabled with no name typed'];
+        const typed = await fill(page, '#new-team-name', name);
+        if (!typed.ok) return ['NOT DRIVEN', typed.why];
+        await settle(page, 1500);
+        await create.click({ timeout: 8000 });
+        await settle(page, 8000);
+
+        const teams = await db.teams.listTeams({ supervisorId: s.supervisor.merchantId });
+        made = teams.find((t) => t.name === name) ?? null;
+        const original = teams.find((t) => t.teamId === s.team.teamId);
+        if (!made) return ['FAILED', `pressed Create team; the supervisor has [${teams.map((t) => t.name).join(', ')}]`];
+        if (teams.length !== 2) return ['FAILED', `one press, ${teams.length - 1} new teams`];
+        if (original?.name !== s.team.name || original.approvedCount !== 10) {
+          return ['FAILED', `the BYSTANDER team changed: ${original?.name} with ${original?.approvedCount} approved`];
+        }
+        if (!(await words(page)).includes(name)) return ['FAILED', `${name} was written; the screen never showed it`];
+        return ['DROVE', `"${name}" created for the supervisor, the first team untouched, shown on screen`];
+      } finally {
+        if (made) await db.teams.deleteTeam({ teamId: made.teamId, supervisorId: s.supervisor.merchantId }).catch(() => {});
+      }
+    },
+  },
+
+  {
+    id: 'merchant/team/add-member',
+    panel: 'merchant-panel',
+    what: 'A supervisor proposes a merchant for a team by the ID that merchant was given — "Add" enables once typed',
+    as: () => supervisorSession({ secondTeam: true }),
+    async run(page, cfg, base, s) {
+      const candidate = await seedMerchant({ currency: 'INR', online: false });
+      const { rows: [ref] } = await pgQuery('SELECT public_ref FROM merchants WHERE merchant_id = $1', [candidate.merchantId]);
+      try {
+        await go(page, cfg, base, '/team');
+        // The empty team's own form: each team card has an "Add".
+        const form = page.locator('form', { has: page.locator(`#add-${s.second}`) });
+        const add = form.getByRole('button', { name: /^\s*Add\s*$/ }).first();
+        if (await add.count() === 0) return ['NOT DRIVEN', `no "Add" beside #add-${s.second}`];
+        if (!(await add.isDisabled())) return ['FAILED', 'Add is enabled with no merchant ID typed'];
+        const typed = await fill(page, `#add-${s.second}`, ref.public_ref);
+        if (!typed.ok) return ['NOT DRIVEN', typed.why];
+        await settle(page, 1500);
+        await add.click({ timeout: 8000 });
+        await settle(page, 8000);
+
+        const joined = await db.teams.membershipOf(candidate.merchantId);
+        const full = await db.teams.getTeam(s.team.teamId);
+        if (joined?.team?.teamId !== s.second || joined.member.status !== 'PENDING') {
+          return ['FAILED', `pressed Add with ${ref.public_ref}; the merchant is ${joined ? `${joined.member.status} in ${joined.team.teamId}` : 'in no team'}`];
+        }
+        if (full.approvedCount !== 10 || full.pendingCount !== 0) {
+          return ['FAILED', `the BYSTANDER team changed: ${full.approvedCount} approved, ${full.pendingCount} pending`];
+        }
+        if (!/waiting for admin/i.test(await words(page))) return ['FAILED', 'proposed, and the screen never showed them waiting for an admin'];
+        return ['DROVE', `${ref.public_ref} PENDING in ${s.second} (an admin approves), the full team untouched, shown waiting`];
+      } finally {
+        await db.teams.removeMember({ merchantId: candidate.merchantId }).catch(() => {});
+      }
+    },
+  },
+
+  {
+    id: 'merchant/team/rename',
+    panel: 'merchant-panel',
+    what: 'A supervisor renames one team — "Rename" enables once the name differs',
+    as: () => supervisorSession({ secondTeam: true }),
+    async run(page, cfg, base, s) {
+      const name = `Renamed ${rid('team').slice(-6)}`;
+      const otherBefore = (await db.teams.getTeam(s.second)).name;
+      await go(page, cfg, base, '/team');
+      const form = page.locator('form', { has: page.locator(`#name-${s.team.teamId}`) });
+      const rename = form.getByRole('button', { name: /^\s*Rename\s*$/ }).first();
+      if (await rename.count() === 0) return ['NOT DRIVEN', `no "Rename" beside #name-${s.team.teamId}`];
+      if (!(await rename.isDisabled())) return ['FAILED', 'Rename is enabled while the name is unchanged'];
+      const typed = await fill(page, `#name-${s.team.teamId}`, name);
+      if (!typed.ok) return ['NOT DRIVEN', typed.why];
+      await settle(page, 1500);
+      await rename.click({ timeout: 8000 });
+      await settle(page, 8000);
+
+      const now = (await db.teams.getTeam(s.team.teamId)).name;
+      const other = (await db.teams.getTeam(s.second)).name;
+      if (now !== name) return ['FAILED', `pressed Rename; the team is called "${now}"`];
+      if (other !== otherBefore) return ['FAILED', `the BYSTANDER team was renamed too: "${otherBefore}" → "${other}"`];
+      if (!(await words(page)).includes(name)) return ['FAILED', 'renamed, and the screen still shows the old name'];
+      return ['DROVE', `"${s.team.name}" → "${name}", the other team still "${other}", shown on screen`];
+    },
+  },
 ];
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -2468,17 +2823,24 @@ async function main() {
    * so the harness grows the ability instead: a case marked `ownContext` gets
    * a context of its own and it is closed afterwards, so what it destroys is
    * its own session and nobody else's.
+   *
+   * A case that must act as a DIFFERENT account than the panel's shared one
+   * (a supervisor, where the shared merchant is a member) declares `as`, which
+   * seeds that account and answers `{ token, cached }`; it gets its own
+   * context signed in as it, for the same reason.
    */
-  const newPanelPage = async (panel) => {
+  const newPanelPage = async (panel, session = null) => {
     const cfg = PANELS[panel];
+    const token = session?.token ?? tokens[panel];
+    const cache = session?.cached ?? cached[panel];
     const ctx = await browser.newContext({ viewport: { width: 1400, height: 1000 } });
     await ctx.addInitScript(([k, v, ck, cv]) => {
       try {
         localStorage.setItem(k, v);
         if (ck) localStorage.setItem(ck, cv);
       } catch { /* private mode */ }
-    }, [cfg.key, cfg.wrap(tokens[panel], cached[panel]), cfg.cacheKey ?? '',
-        cfg.cacheKey && cached[panel] ? JSON.stringify(cached[panel]) : '']);
+    }, [cfg.key, cfg.wrap(token, cache), cfg.cacheKey ?? '',
+        cfg.cacheKey && cache ? JSON.stringify(cache) : '']);
 
     // ── Watch the REMOVALS, because reading the key back cannot work ───────
     // The seeding above is an init script: it runs on every new document. The
@@ -2541,11 +2903,10 @@ async function main() {
     // runs and this one, registered first, dismissed before the case's accept
     // could land. That is why "Delete" reported the row still in the catalogue.
     // `page.__bbAccept` is false to dismiss, true to accept, or a STRING to
-    // type into a `window.prompt` — the dispute resolution asks for a reason
+    // type into a `window.prompt` — rejecting a merchant's application asks for its reason
     // that way, and `if (!reason?.trim()) return` means an empty accept is
     // indistinguishable from a cancel: the button would do nothing and the case
-    // would report the platform as failing to release money it was never asked
-    // to release.
+    // would report the platform as failing to do what it was never asked to.
     page.on('dialog', (d) => {
       const want = page.__bbAccept;
       const p = want === false || want === undefined
@@ -2563,11 +2924,19 @@ async function main() {
   console.log(`\nDriving ${cases.length} mutating control(s) against their own rows.\n`);
 
   for (const c of cases) {
-    // A case that ENDS a session gets its own, so the damage is its own.
-    const own = c.ownContext ? await newPanelPage(c.panel) : null;
+    // A case that ENDS a session gets its own, so the damage is its own; a
+    // case that acts as another account (`as`) gets one signed in as it.
+    let session = null;
+    try {
+      session = c.as ? await c.as() : null;
+    } catch (err) {
+      record(c.id, 'NOT DRIVEN', `its account could not be seeded: ${err.message.split('\n')[0].slice(0, 140)}`);
+      continue;
+    }
+    const own = (c.ownContext || session) ? await newPanelPage(c.panel, session) : null;
     const { page, cfg, base } = own ?? pages[c.panel];
     try {
-      const [verdict, detail] = await c.run(page, cfg, base);
+      const [verdict, detail] = await c.run(page, cfg, base, session);
       record(c.id, verdict, detail);
     } catch (err) {
       record(c.id, 'FAILED', `threw: ${err.message.split('\n')[0].slice(0, 140)}`);

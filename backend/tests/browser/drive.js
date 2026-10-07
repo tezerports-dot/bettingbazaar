@@ -32,9 +32,23 @@
  * this run created — never against whatever happened to be in the database
  * (trap 10).
  *
+ * ── As WHOM ─────────────────────────────────────────────────────────────────
+ * By default it presses as the three accounts `seedActors()` seeds: a player,
+ * a full admin and a cash-team MEMBER. A control only another account is shown
+ * was inventoried (`BB_PROFILE=<name> npm run test:browser`) and never pressed
+ * — the supervisor's whole half of the Team page among them. `BB_PROFILE=<name>`
+ * seeds that profile's account exactly as the inventory does (`profiles.js`,
+ * Telegram first, then the profile), presses ITS panel as it, and writes
+ * `drive.report.<name>.json` beside the default report. The default report is
+ * untouched: it is the numerator `report:controls` divides into the default
+ * inventory, and another account's presses are not presses of THAT
+ * inventory's controls. `report:control-gaps` reads the profile's report
+ * against the profile's own manifest.
+ *
  *   npm run test:drive                      every panel
  *   npm run test:drive -- admin-panel       one panel
  *   npm run test:drive -- admin-panel /users one screen
+ *   BB_PROFILE=merchant-supervisor npm run test:drive   one panel, as that account
  */
 import { setTimeout as sleep } from 'node:timers/promises';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -46,11 +60,26 @@ import { check, note, summary } from '../e2e/harness.js';
 // Everything below the question this pass asks lives in one place (§5).
 import {
   ROOT, API, EXECUTABLE, PANELS, stopAll, waitFor, startVite, navigate, settle,
-  ignored, reset, awaitBudget, boot, clickThrough, seedActors, enableGameProviders,
+  ignored, reset, awaitBudget, boot, clickThrough, seedActors, enableGameProviders, configureTelegram,
 } from './stack.js';
+import { PROFILES, seedProfile } from './profiles.js';
 
-const SHOTS = join(ROOT, 'backend', 'tests', 'browser', 'screenshots', 'drive');
-const REPORT = join(ROOT, 'backend', 'tests', 'browser', 'drive.report.json');
+/** `BB_PROFILE=<name>`: press as that account (see the header). Empty = the default actors. */
+const PROFILE = process.env.BB_PROFILE || '';
+if (PROFILE && !PROFILES[PROFILE]) {
+  console.error(`Unknown BB_PROFILE "${PROFILE}". Known: ${Object.keys(PROFILES).join(', ')}`);
+  process.exit(1);
+}
+// An account the server refuses has no panel to press: it is shown the sign-in
+// form, and whether that form says why is `test:browser`'s check for it.
+if (PROFILE && PROFILES[PROFILE].signsOut) {
+  console.error(`BB_PROFILE "${PROFILE}" is refused by the server (it signs itself out), so there is no panel `
+    + 'to press as it. `BB_PROFILE=' + PROFILE + ' npm run test:browser` checks what its sign-in form says.');
+  process.exit(1);
+}
+
+const SHOTS = join(ROOT, 'backend', 'tests', 'browser', 'screenshots', PROFILE ? `drive.${PROFILE}` : 'drive');
+const REPORT = join(ROOT, 'backend', 'tests', 'browser', `drive.report${PROFILE ? `.${PROFILE}` : ''}.json`);
 
 /**
  * Controls this pass will not press, and why.
@@ -470,7 +499,15 @@ const onlyScreens = args.filter((a) => a.startsWith('/'));
 // harness concluded the server was down. The liveness endpoint exists for this.
 if (!await waitFor(`${API}/health/live`, 'the backend')) process.exit(1);
 
-const { actors, cached, restore: restoreTelegram } = await seedActors();
+// A profile is seeded the way `run.js` seeds it for the inventory — Telegram
+// FIRST (an account seeded before the channel exists is left behind the gate
+// modal), then the profile — so the account pressed here is built by the same
+// calls, in the same order, as the account whose controls were counted.
+const { actors, cached, restore: restoreTelegram } = PROFILE
+  ? await configureTelegram().then(async (restore) => ({ ...(await seedProfile(PROFILE)), restore }))
+  : await seedActors();
+/** A profile is one account on ONE panel; only that panel is driven. */
+const profilePanel = PROFILE ? PROFILES[PROFILE].panel : null;
 
 mkdirSync(SHOTS, { recursive: true });
 
@@ -490,7 +527,14 @@ mkdirSync(SHOTS, { recursive: true });
 const previous = (() => {
   try { return JSON.parse(readFileSync(REPORT, 'utf8')); } catch { return { pressed: [] }; }
 })();
-const report = { takenAt: new Date().toISOString(), pressed: [...(previous.pressed ?? [])] };
+const report = {
+  takenAt: new Date().toISOString(),
+  // As whom, so a reader of the file (and `report:control-gaps`) never has to
+  // infer it from the file name.
+  profile: PROFILE || 'default',
+  profileWhat: PROFILE ? PROFILES[PROFILE].what : 'the accounts the drive and mutate passes press as',
+  pressed: [...(previous.pressed ?? [])],
+};
 /** Screens this run drove, so their old results can be dropped. */
 const drovenow = new Set();
 const tally = {};
@@ -502,6 +546,7 @@ const browser = await chromium.launch({ executablePath: EXECUTABLE, args: ['--no
 
 try {
   for (const { panel, screens } of panelScreens()) {
+    if (profilePanel && panel !== profilePanel) continue;
     if (onlyPanels.length && !onlyPanels.includes(panel)) continue;
     const cfg = PANELS[panel];
     const base = `http://127.0.0.1:${cfg.port}`;
@@ -790,7 +835,7 @@ try {
 }
 
 writeFileSync(REPORT, JSON.stringify(report, null, 2));
-console.log(`\n${'─'.repeat(78)}\nCONTROLS PRESSED\n`);
+console.log(`\n${'─'.repeat(78)}\nCONTROLS PRESSED${PROFILE ? ` as ${PROFILE} (${PROFILES[PROFILE].what})` : ''}\n`);
 for (const [v, n] of Object.entries(tally).sort((a, b) => b[1] - a[1])) {
   console.log(`  ${String(n).padStart(4)}  ${v}`);
 }

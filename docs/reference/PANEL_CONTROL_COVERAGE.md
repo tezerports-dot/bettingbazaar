@@ -3,8 +3,8 @@
 
 Two artefacts, both left behind by a real browser driving the real panels:
 
-* the control INVENTORY — every control each screen has — taken 2026-10-04T08:00:36.197Z
-* the DRIVE report — what happened when each was pressed — 2026-10-04T08:23:03.423Z
+* the control INVENTORY — every control each screen has — taken 2026-10-07T14:44:49.020Z
+* the DRIVE report — what happened when each was pressed — 2026-10-07T14:58:58.591Z
 
 ## How to read it, and what it does not say
 
@@ -27,7 +27,7 @@ would put the denominator in the thousands and bury the real work.
 
 | screen | controls | moved | answered | said | no-op | inert | disabled | elsewhere | asked | NOT reached | note |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| / | 16 | 15 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 2 | partial 0h ago |
+| / | 16 | 14 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 2 | partial 0h ago |
 | /casino | 16 | 16 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
 | /crash | 8 | 2 | 0 | 5 | 1 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
 | /faq | 9 | 15 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | +7 only a press reveals 0h ago |
@@ -60,16 +60,16 @@ would put the denominator in the thousands and bury the real work.
 | /content/faq | 15 | 8 | 0 | 0 | 0 | 0 | 0 | 7 | 0 | 0 | all pressed 0h ago |
 | /content/slides | 4 | 2 | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
 | /content/support | 13 | 12 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | all pressed 0h ago |
-| /cycle-history | 8 | 9 | 0 | 0 | 1 | 0 | 0 | 24 | 0 | 0 | +26 only a press reveals 0h ago |
+| /cycle-history | 8 | 9 | 0 | 0 | 1 | 0 | 0 | 17 | 0 | 0 | +19 only a press reveals 0h ago |
 | /disputes | 2 | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
 | /disputes/stalled-withdrawals | 2 | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
 | /error-logs | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
 | /game-providers | 21 | 14 | 1 | 0 | 0 | 0 | 0 | 6 | 0 | 0 | all pressed 0h ago |
 | /games | 47 | 24 | 0 | 0 | 1 | 0 | 0 | 22 | 0 | 0 | all pressed 0h ago |
-| /live-cycles | 10 | 7 | 0 | 0 | 0 | 0 | 0 | 3 | 0 | 0 | all pressed 0h ago |
+| /live-cycles | 10 | 10 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
 | /login | 6 | 5 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
 | /merchant-platform | 2 | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
-| /merchants | 51 | 15 | 1 | 0 | 1 | 0 | 1 | 193 | 0 | 0 | +160 only a press reveals 0h ago |
+| /merchants | 51 | 15 | 1 | 0 | 1 | 0 | 1 | 191 | 0 | 0 | +158 only a press reveals 0h ago |
 | /operations | 5 | 3 | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
 | /payment-references | 5 | 2 | 1 | 0 | 1 | 0 | 1 | 0 | 0 | 0 | all pressed 0h ago |
 | /profit-loss | 6 | 6 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
@@ -81,7 +81,7 @@ would put the denominator in the thousands and bury the real work.
 | /settings | 85 | 84 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | all pressed 0h ago |
 | /sub-admins | 3 | 8 | 0 | 0 | 0 | 0 | 1 | 7 | 0 | 0 | +13 only a press reveals 0h ago |
 | /support-assistant | 7 | 4 | 1 | 0 | 0 | 0 | 1 | 0 | 1 | 0 | all pressed 0h ago |
-| /teams | 14 | 2 | 1 | 0 | 0 | 0 | 1 | 80 | 0 | 0 | +70 only a press reveals 0h ago |
+| /teams | 14 | 2 | 1 | 0 | 0 | 0 | 1 | 90 | 0 | 0 | +80 only a press reveals 0h ago |
 | /telegram | 40 | 27 | 3 | 0 | 0 | 0 | 2 | 8 | 0 | 0 | all pressed 0h ago |
 | /token-flow | 4 | 3 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | all pressed 0h ago |
 | /transactions | 7 | 6 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
@@ -99,14 +99,13 @@ would put the denominator in the thousands and bury the real work.
 | /dashboard | 3 | 3 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
 | /history | 4 | 2 | 0 | 0 | 1 | 0 | 0 | 1 | 0 | 0 | all pressed 0h ago |
 | /orders | 9 | 7 | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
-| /profile | 9 | 6 | 1 | 0 | 0 | 0 | 0 | 2 | 0 | 0 | all pressed 0h ago |
+| /profile | 9 | 7 | 0 | 0 | 0 | 0 | 0 | 2 | 0 | 0 | all pressed 0h ago |
 | /team | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | all pressed 0h ago |
 
 ### Every control, by verdict
 
 
-ACTED (451) — pressed, and the screen changed
-   user-panel/  button:DELHI BAZAAR vs Bombay 🎯
+ACTED (454) — pressed, and the screen changed
    user-panel/  button:CASH OR CRASH Take the flight ✈️
    user-panel/  button:SPORTS Bet anytime 🏇
    user-panel/  button:FULL DAY
@@ -135,7 +134,7 @@ ACTED (451) — pressed, and the screen changed
    user-panel/casino  button:270
    user-panel/casino  button:810
    user-panel/casino  input:number:Or type amount (min ₹10)
-   user-panel/casino  button:1M D B D B D B B D D D D B B D B D B D D D B D B ANALYTICS ▲
+   user-panel/casino  button:1M D D D D D D D B B B B D B B B ANALYTICS ▲
    user-panel/casino  button:FULL ANALYSIS
    user-panel/crash  button:DELHI BAZAAR vs Bombay 🎯
    user-panel/crash  button:SPORTS Bet anytime 🏇
@@ -146,9 +145,10 @@ ACTED (451) — pressed, and the screen changed
    user-panel/wallet  button:CASH OR CRASH Take the flight ✈️
    user-panel/wallet  button:SPORTS Bet anytime 🏇
    user-panel/wallet  button:History
-   ... and 411 more
+   user-panel/wallet  button:Bonuses
+   ... and 414 more
 
-REPRESENTED (281) — a repeat of a control already pressed on this screen
+REPRESENTED (274) — a repeat of a control already pressed on this screen
    admin-panel/cycle-history  button:Detail[3]  — instance 4 of the same control
    admin-panel/cycle-history  button:Detail[4]  — instance 5 of the same control
    admin-panel/cycle-history  button:Detail[5]  — instance 6 of the same control
@@ -166,13 +166,6 @@ REPRESENTED (281) — a repeat of a control already pressed on this screen
    admin-panel/cycle-history  button:Detail[17]  — instance 18 of the same control
    admin-panel/cycle-history  button:Detail[18]  — instance 19 of the same control
    admin-panel/cycle-history  button:Detail[19]  — instance 20 of the same control
-   admin-panel/cycle-history  button:Detail[20]  — instance 21 of the same control
-   admin-panel/cycle-history  button:Detail[21]  — instance 22 of the same control
-   admin-panel/cycle-history  button:Detail[22]  — instance 23 of the same control
-   admin-panel/cycle-history  button:Detail[23]  — instance 24 of the same control
-   admin-panel/cycle-history  button:Detail[24]  — instance 25 of the same control
-   admin-panel/cycle-history  button:Detail[25]  — instance 26 of the same control
-   admin-panel/cycle-history  button:Detail[26]  — instance 27 of the same control
    admin-panel/users  button:Details[3]  — instance 4 of the same control
    admin-panel/users  button:Tx History[3]  — instance 4 of the same control
    admin-panel/users  button:Bank[3]  — instance 4 of the same control
@@ -189,9 +182,16 @@ REPRESENTED (281) — a repeat of a control already pressed on this screen
    admin-panel/users  button:Tx History[6]  — instance 7 of the same control
    admin-panel/users  button:Bank[6]  — instance 7 of the same control
    admin-panel/users  button:Block[6]  — instance 7 of the same control
-   ... and 241 more
+   admin-panel/users  button:Details[7]  — instance 8 of the same control
+   admin-panel/users  button:Tx History[7]  — instance 8 of the same control
+   admin-panel/users  button:Bank[7]  — instance 8 of the same control
+   admin-panel/users  button:Details[8]  — instance 9 of the same control
+   admin-panel/users  button:Tx History[8]  — instance 9 of the same control
+   admin-panel/users  button:Bank[8]  — instance 9 of the same control
+   admin-panel/users  button:Block[7]  — instance 8 of the same control
+   ... and 234 more
 
-DEFERRED (156) — not pressed on purpose — destructive, or it leaves the app
+DEFERRED (164) — not pressed on purpose — destructive, or it leaves the app
    user-panel/profile  button:Switch theme  — publishes a platform-wide change from whatever the form happens to hold
    user-panel/profile  button:Log out  — ends the session for every screen after it
    admin-panel/users  button:Deduct  — destroys a row this run did not create — driven in the mutating pass, against its own rows
@@ -206,35 +206,36 @@ DEFERRED (156) — not pressed on purpose — destructive, or it leaves the app
    admin-panel/merchants  button:Suspend  — destroys a row this run did not create — driven in the mutating pass, against its own rows
    admin-panel/merchants  button:Suspend[1]  — destroys a row this run did not create — driven in the mutating pass, against its own rows
    admin-panel/merchants  button:Suspend[2]  — destroys a row this run did not create — driven in the mutating pass, against its own rows
-   admin-panel/merchants  button:Approve  — approves or pays out against a row this run did not create
-   admin-panel/merchants  button:Reject  — destroys a row this run did not create — driven in the mutating pass, against its own rows
    admin-panel/merchants  button:Activate  — publishes a platform-wide change from whatever the form happens to hold
-   admin-panel/teams  button:Remove e2e-merch-bccyyw-1  — destroys a row this run did not create — driven in the mutating pass, against its own rows
-   admin-panel/teams  button:Remove e2e-merch-bccyyw-6  — destroys a row this run did not create — driven in the mutating pass, against its own rows
-   admin-panel/teams  button:Remove e2e-merch-bccyyw-8  — destroys a row this run did not create — driven in the mutating pass, against its own rows
-   admin-panel/teams  button:Remove e2e-merch-bccyyw-10  — destroys a row this run did not create — driven in the mutating pass, against its own rows
-   admin-panel/teams  button:Remove e2e-merch-bccyyw-12  — destroys a row this run did not create — driven in the mutating pass, against its own rows
-   admin-panel/teams  button:Remove e2e-merch-bccyyw-14  — destroys a row this run did not create — driven in the mutating pass, against its own rows
-   admin-panel/teams  button:Remove e2e-merch-bccyyw-16  — destroys a row this run did not create — driven in the mutating pass, against its own rows
-   admin-panel/teams  button:Remove e2e-merch-bccyyw-18  — destroys a row this run did not create — driven in the mutating pass, against its own rows
-   admin-panel/teams  button:Remove e2e-merch-bccyyw-20  — destroys a row this run did not create — driven in the mutating pass, against its own rows
-   admin-panel/teams  button:Remove e2e-merch-bccyyw-22  — destroys a row this run did not create — driven in the mutating pass, against its own rows
-   admin-panel/teams  button:Remove e2e-merch-d9gzji-1  — destroys a row this run did not create — driven in the mutating pass, against its own rows
-   admin-panel/teams  button:Remove e2e-merch-d9gzji-6  — destroys a row this run did not create — driven in the mutating pass, against its own rows
-   admin-panel/teams  button:Remove e2e-merch-d9gzji-8  — destroys a row this run did not create — driven in the mutating pass, against its own rows
-   admin-panel/teams  button:Remove e2e-merch-d9gzji-10  — destroys a row this run did not create — driven in the mutating pass, against its own rows
-   admin-panel/teams  button:Remove e2e-merch-d9gzji-12  — destroys a row this run did not create — driven in the mutating pass, against its own rows
-   admin-panel/teams  button:Remove e2e-merch-d9gzji-14  — destroys a row this run did not create — driven in the mutating pass, against its own rows
-   admin-panel/teams  button:Remove e2e-merch-d9gzji-16  — destroys a row this run did not create — driven in the mutating pass, against its own rows
-   admin-panel/teams  button:Remove e2e-merch-d9gzji-18  — destroys a row this run did not create — driven in the mutating pass, against its own rows
-   admin-panel/teams  button:Remove e2e-merch-d9gzji-20  — destroys a row this run did not create — driven in the mutating pass, against its own rows
-   admin-panel/teams  button:Remove e2e-merch-d9gzji-22  — destroys a row this run did not create — driven in the mutating pass, against its own rows
-   admin-panel/teams  button:Remove e2e-merch-ivyxrc-1  — destroys a row this run did not create — driven in the mutating pass, against its own rows
-   admin-panel/teams  button:Remove e2e-merch-ivyxrc-6  — destroys a row this run did not create — driven in the mutating pass, against its own rows
-   admin-panel/teams  button:Remove e2e-merch-ivyxrc-8  — destroys a row this run did not create — driven in the mutating pass, against its own rows
-   ... and 116 more
+   admin-panel/teams  button:Remove e2e-merch-5wkn85-1  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   admin-panel/teams  button:Remove e2e-merch-5wkn85-6  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   admin-panel/teams  button:Remove e2e-merch-5wkn85-8  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   admin-panel/teams  button:Remove e2e-merch-5wkn85-10  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   admin-panel/teams  button:Remove e2e-merch-5wkn85-12  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   admin-panel/teams  button:Remove e2e-merch-5wkn85-14  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   admin-panel/teams  button:Remove e2e-merch-5wkn85-16  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   admin-panel/teams  button:Remove e2e-merch-5wkn85-18  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   admin-panel/teams  button:Remove e2e-merch-5wkn85-20  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   admin-panel/teams  button:Remove e2e-merch-5wkn85-22  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   admin-panel/teams  button:Remove e2e-merch-6jdt1f-1  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   admin-panel/teams  button:Remove e2e-merch-6jdt1f-6  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   admin-panel/teams  button:Remove e2e-merch-6jdt1f-8  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   admin-panel/teams  button:Remove e2e-merch-6jdt1f-10  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   admin-panel/teams  button:Remove e2e-merch-6jdt1f-12  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   admin-panel/teams  button:Remove e2e-merch-6jdt1f-14  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   admin-panel/teams  button:Remove e2e-merch-6jdt1f-16  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   admin-panel/teams  button:Remove e2e-merch-6jdt1f-18  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   admin-panel/teams  button:Remove e2e-merch-6jdt1f-20  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   admin-panel/teams  button:Remove e2e-merch-6jdt1f-22  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   admin-panel/teams  button:Remove e2e-merch-7x896u-1  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   admin-panel/teams  button:Remove e2e-merch-7x896u-6  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   admin-panel/teams  button:Remove e2e-merch-7x896u-8  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   admin-panel/teams  button:Remove e2e-merch-7x896u-10  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   admin-panel/teams  button:Remove e2e-merch-7x896u-12  — destroys a row this run did not create — driven in the mutating pass, against its own rows
+   ... and 124 more
 
-ALREADY_ON (27) — pressed; it was already the selected segment, so nothing should change
+ALREADY_ON (28) — pressed; it was already the selected segment, so nothing should change
+   user-panel/  button:DELHI BAZAAR vs Bombay 🎯  — it was already the selected one — pressing it again correctly changes nothing
    user-panel/crash  button:CASH OR CRASH Take the flight ✈️  — it was already the selected one — pressing it again correctly changes nothing
    user-panel/sports  button:SPORTS Bet anytime 🏇  — it was already the selected one — pressing it again correctly changes nothing
    user-panel/sports  button:All  — it was already the selected one — pressing it again correctly changes nothing
@@ -274,10 +275,10 @@ REFETCHED (25) — pressed; it called a route and got the same answer — a work
    admin-panel/app-assets  button:Refresh  — no visible change, but it called GET /api/admin/app-assets
    admin-panel/android-app  button:Refresh  — no visible change, but it called GET /api/admin/android/releases
    admin-panel/blocked-ips  button:Refresh  — no visible change, but it called GET /api/admin/security/ip-blocks?includeReleased=1
-   admin-panel/revenue  button:Refresh  — no visible change, but it called GET /api/admin/revenue/summary (+1 more)
+   admin-panel/revenue  button:Refresh  — no visible change, but it called GET /api/admin/revenue/summary (+2 more)
    admin-panel/operations  button:Refresh  — no visible change, but it called GET /api/admin/operations/overview (+4 more)
-   admin-panel/reports  button:Run  — no visible change, but it called GET /api/admin/reports/financial?from=2026-09-27&to=2026-
-   admin-panel/reports  button:Regulatory export — one CSV row per journal posting  — no visible change, but it called GET /api/admin/reports/ledger-export?from=2026-09-27&to=2
+   admin-panel/reports  button:Run  — no visible change, but it called GET /api/admin/reports/financial?from=2026-09-30&to=2026-
+   admin-panel/reports  button:Regulatory export — one CSV row per journal posting  — no visible change, but it called GET /api/admin/reports/ledger-export?from=2026-09-30&to=2
    admin-panel/merchant-platform  button:Refresh  — no visible change, but it called GET /api/admin/merchant-platform/leaderboard?days=30&limi
    admin-panel/error-logs  button:Refresh  — no visible change, but it called GET /api/admin/error-reports
    admin-panel/disputes  button:Reload the dispute queue  — no visible change, but it called GET /api/admin/dispute-orders?status=ESCALATED
@@ -285,7 +286,7 @@ REFETCHED (25) — pressed; it called a route and got the same answer — a work
    admin-panel/payment-references  button:Refresh  — no visible change, but it called GET /api/admin/utr/stats (+1 more)
    admin-panel/winners-manager  button:Refresh  — no visible change, but it called GET /api/admin/fake-winners
    admin-panel/game-providers  button:Refresh  — no visible change, but it called GET /api/game/admin/game-providers
-   admin-panel/promotions/announcements  button:Refresh  — no visible change, but it called GET /api/admin/announcements
+   admin-panel/promotions/announcements  button:Refresh  — no visible change, but it called GET /api/admin/announcements (+1 more)
    admin-panel/users/balance-adjust  button:Search players  — no visible change, but it called GET /api/admin/balance-adjust/players?search=bb&limit=10
    merchant-panel/orders  button:Refresh  — no visible change, but it called GET /api/merchant/orders?limit=50
    merchant-panel/team  button:Refresh  — no visible change, but it called GET /api/merchant/team
@@ -329,12 +330,11 @@ DISABLED (17) — disabled on arrival, so there was nothing to press
    admin-panel/sub-admins  button:Grant
    admin-panel/payment-references  button:Look up
 
-UPSTREAM (5) — pressed; an upstream the operator can fix refused, and the server SAID SO — correct behaviour, not a defect
+UPSTREAM (4) — pressed; an upstream the operator can fix refused, and the server SAID SO — correct behaviour, not a defect
    admin-panel/telegram  button:Retry webhook  — 502 POST /api/admin/telegram/bots/bb-browser-merchant/webhook — "Telegram refused: HTTP 40
    admin-panel/telegram  button:Retry webhook[1]  — 502 POST /api/admin/telegram/bots/bb-browser-player/webhook — "Telegram refused: HTTP 403"
    admin-panel/telegram  button:Retry webhook[2]  — 502 POST /api/admin/telegram/bots/bb-browser-staff/webhook — "Telegram refused: HTTP 403"
    admin-panel/support-assistant  button:Reload the assistant's documents  — 503 GET /api/admin/support/documents — "The support assistant stores its passages with the
-   merchant-panel/profile  button:Set up now  — 500 POST /api/merchant/2fa/setup — "Could not start two-factor setup."
 
 GONE (1) — vanished before its turn — an earlier press removed it
    user-panel/  button:30M No results yet ANALYTICS ▲  — the control is no longer on the screen — an earlier press removed it
@@ -345,19 +345,19 @@ NEEDS_INPUT (1) — it asked a confirm/prompt and this pass declined — NOT a d
 ------------------------------------------------------------------------
 632 controls across 64 screens
 
-    451   71.4%  SCREEN_MOVED       pressed, and the routed region changed
-     30    4.7%  ANSWERED           pressed; it called a route and the server answered, including a refusal that names what to fix
+    454   71.8%  SCREEN_MOVED       pressed, and the routed region changed
+     29    4.6%  ANSWERED           pressed; it called a route and the server answered, including a refusal that names what to fix
      18    2.8%  SAID               pressed; the panel answered with an alert() — informational, and NOT evidence of a mutation
-     27    4.3%  NO_OP_BY_DESIGN    pressed; it was already the selected segment, so no change is the correct outcome
+     28    4.4%  NO_OP_BY_DESIGN    pressed; it was already the selected segment, so no change is the correct outcome
       0    0.0%  INERT              pressed; changed nothing AND called nothing — §32 S22 candidate, read the list
      17    2.7%  DISABLED           disabled on arrival — correct state; the enable transition is a SEPARATE test
-    281   44.5%  REPEAT             a repeat of a name already pressed on this screen — covered ONLY IF the first instance is representative
-    156   24.7%  DRIVEN_ELSEWHERE   destructive — driven by `npm run test:mutate` against its own rows; check THAT output, this is a pointer not a proof
+    274   43.4%  REPEAT             a repeat of a name already pressed on this screen — covered ONLY IF the first instance is representative
+    164   25.9%  DRIVEN_ELSEWHERE   destructive — driven by `npm run test:mutate` against its own rows; check THAT output, this is a pointer not a proof
       1    0.2%  ASKED              it asked a confirm/prompt and this pass declines — answered in the mutating pass instead
-      3    0.5%  PRESSED_ON_ANOTHER_SCREEN absent because an earlier press removed it platform-wide — the same control ACTED on another screen this run
+      0    0.0%  PRESSED_ON_ANOTHER_SCREEN absent because an earlier press removed it platform-wide — the same control ACTED on another screen this run
       2    0.3%  NOT_REACHED        NOT pressed and not by choice — this is the number that is left
       0    0.0%  BROKE              threw, or the server answered 5xx with nothing to act on
-    353          revealed           controls only a PRESS reveals — not in the inventory, which is taken at rest
+    354          revealed           controls only a PRESS reveals — not in the inventory, which is taken at rest
 
   STATE CHANGES are NOT counted here. This pass reads the SCREEN; it cannot
   tell a rendered change from a committed one. What proves a mutation is
@@ -365,4 +365,4 @@ NEEDS_INPUT (1) — it asked a confirm/prompt and this pass declined — NOT a d
   read its output beside this table, never instead of it.
 
 
-manifest 2026-10-04T08:00:36.197Z  ·  drive 2026-10-04T08:23:03.423Z
+manifest 2026-10-07T14:44:49.020Z  ·  drive 2026-10-07T14:58:58.591Z
