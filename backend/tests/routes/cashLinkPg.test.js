@@ -33,12 +33,21 @@ import { mountRouter, actor, merchantActor, as } from './_harness.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 
-/** Resolve once some backend is waiting on a lock for a statement matching `like`. */
-async function untilBlocked(like, timeoutMs = 5000) {
+/**
+ * Resolve once a backend running a statement matching `like` is queued behind
+ * one of `behind` (this test's own lock holder). pg_stat_activity lists every
+ * session on the server and the text carries `$1`, not the order, so the text
+ * alone also matched other suites' lock waits, and the holder moved the order
+ * before the tap had read it (see disputeSettleRacePg).
+ */
+async function untilBlocked(like, behind, timeoutMs = 5000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const { rows } = await pgQuery(
-      `SELECT 1 FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query ILIKE $1 LIMIT 1`, [like]);
+      `SELECT 1 FROM pg_stat_activity
+        WHERE datname = current_database() AND wait_event_type = 'Lock' AND query ILIKE $1
+          AND pg_blocking_pids(pid) && $2::int[]
+        LIMIT 1`, [like, behind]);
     if (rows.length) return;
     await new Promise((r) => setTimeout(r, 20));
   }
@@ -247,9 +256,10 @@ describePg('a cash buy is paid through the machine the member scans', () => {
     const next = await merchantActor({});
     let tap;
     await withTransaction(async (c) => {
+      const holder = (await c.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
       await c.query('SELECT 1 FROM order_states WHERE order_id = $1 FOR UPDATE', [orderId]);
       tap = as(playerApp, player).post(`/order/${orderId}/mark-paid`).send({}).then((r) => r);
-      await untilBlocked('SELECT * FROM order_states WHERE order_id = $1 FOR UPDATE%');
+      await untilBlocked('SELECT * FROM order_states WHERE order_id = $1 FOR UPDATE%', [holder]);
       await c.query('UPDATE order_states SET merchant_id = $2 WHERE order_id = $1', [orderId, next.merchantId]);
     });
     const res = await tap;
