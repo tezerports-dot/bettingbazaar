@@ -78,12 +78,20 @@ describe('DisputeManager', () => {
   });
 
   it('a filter chosen is asked for by its key, from the first page', async () => {
+    // On page two of the open disputes first: a new filter starts at its own
+    // first page, not at the page number the last one was on.
+    get.mockResolvedValue(answer({ disputes: [row()], total: 120, pages: 3, limit: 50 }));
     render(<DisputeManager />);
-    const select = await screen.findByLabelText('Filter disputes by status');
-    get.mockResolvedValue(answer({ filter: 'SOMETHING_NEW', disputes: [] }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Next page of disputes' }));
+    await waitFor(() => expect(lastParams()).toEqual({ page: 2 }));
+    const select = screen.getByLabelText('Filter disputes by status');
+    get.mockResolvedValue(answer({ filter: 'SOMETHING_NEW', disputes: [], total: 0, pages: 1 }));
     fireEvent.change(select, { target: { value: 'SOMETHING_NEW' } });
     await waitFor(() => expect(lastParams()).toEqual({ page: 1, filter: 'SOMETHING_NEW' }));
     expect(await screen.findByText('No disputes under "A filter the server added"')).toBeInTheDocument();
+    // Never asked for a second page of a filter it had not seen one page of.
+    const asked = get.mock.calls.filter(([url]) => url === '/api/admin/dispute-orders').map(([, o]) => o?.params);
+    expect(asked).not.toContainEqual({ page: 2, filter: 'SOMETHING_NEW' });
   });
 
   it('a decided dispute shows its decision', async () => {
