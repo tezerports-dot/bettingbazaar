@@ -363,14 +363,14 @@ export const confirmPayment = async (orderId: string, utrNumber?: string): Promi
 /**
  * Reject an order the player says they paid, because the money never arrived.
  *
- * Different from `rejectOrder` above, which declines an order BEFORE payment
- * and returns it to the queue. This one cancels the order, adds a warning to
- * the player's account and can auto-block them — so the backend requires a
- * reason of at least ten characters and a proof image, and refuses without
- * either.
+ * Different from `rejectOrder` below, which declines an order BEFORE payment
+ * and returns it to the queue. This one rejects a PAID buy (only a PAID one:
+ * owner, 2026-10-07) and adds a warning and a flag to the player's account —
+ * so the backend requires a reason of at least ten characters and a proof
+ * image, and refuses without either.
  *
  * Three steps, in this order: ask for a presigned URL (which also checks the
- * order is this merchant's and is actually awaiting confirmation), PUT the
+ * order is this merchant's PAID buy, or answers 400 NOT_PAID_YET), PUT the
  * file, then send the reference. The proof is verified server-side against
  * THIS merchant and THIS order before it is stored, so a key from somewhere
  * else is refused.

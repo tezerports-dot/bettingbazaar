@@ -3,10 +3,12 @@
  * "The player says they paid and the money never arrived."
  *
  * ── Why this is not the ordinary Reject ─────────────────────────────────────
- * Rejecting an order BEFORE payment simply returns it to the queue; nobody is
- * accused of anything. This one cancels an order the player has already claimed
- * to pay, adds a warning to their account, and can auto-block them once they
- * cross the admin's threshold — without an admin looking at it first.
+ * Declining an order BEFORE payment simply returns it to the queue; nobody is
+ * accused of anything. This one rejects a buy the player has tapped Paid on
+ * (only then: owner, 2026-10-07; the card offers it on a PAID buy alone), adds
+ * a warning to their account and flags them for an admin. The buy waits in
+ * REJECTED, the team's tokens held, while the player may dispute it. It never
+ * blocks them: that is an admin's decision (owner, 2026-09-07).
  *
  * So it asks for what an accusation needs: a reason the player will be shown,
  * and a picture of the evidence. The backend refuses without both, and verifies
@@ -59,8 +61,9 @@ export const PaymentNotReceivedDialog: React.FC<Props> = ({ open, orderRef, busy
       <div style={{ width: 'min(94vw, 460px)', background: 'var(--surface, #151A24)', border: '1px solid var(--line, rgba(255,255,255,.12))', borderRadius: 16, padding: 20 }}>
         <h2 style={{ margin: 0, fontSize: 17, fontWeight: 800 }}>Payment not received</h2>
         <p style={{ margin: '8px 0 0', fontSize: 12.5, lineHeight: 1.5, color: 'var(--muted, #9AA3B2)' }}>
-          Order <b>{orderRef}</b> will be cancelled and the player will get a warning on their
-          account. Repeated warnings can block them, so this needs evidence.
+          The player says they paid order <b>{orderRef}</b>. Rejecting it puts a warning on their
+          account and flags them for an admin; they can dispute it until the window closes, and the
+          team&apos;s tokens stay held until then. So this needs evidence.
         </p>
 
         <label style={{ display: 'block', marginTop: 16, fontSize: 10, fontWeight: 800, letterSpacing: '.07em', textTransform: 'uppercase', color: 'var(--muted, #9AA3B2)' }} htmlFor="what-happened-the-player-sees-this">

@@ -169,8 +169,7 @@ stateDiagram-v2
     ASSIGNED --> PAID
     PAID --> COMPLETED
     PROCESSING --> COMPLETED
-    PAID --> REJECTED : member — the money never came
-    PROCESSING --> REJECTED : the same button, before Paid
+    PAID --> REJECTED : member — the money never came (from PAID only)
     REJECTED --> DISPUTED : player, inside the window
     REJECTED --> CANCELLED : window closed
     PROCESSING --> DISPUTED
@@ -407,18 +406,26 @@ settles until the window passes. The zero-hold "settle at once" branch is gone (
 <div class="tablewrap"><table>
 <thead><tr><th>Refused when</th><th>Status</th><th>Message</th></tr></thead>
 <tbody>
+<tr><td>No such order</td><td>404</td><td>Order not found</td></tr>
+<tr><td>Not theirs</td><td>403</td><td>This order is not assigned to you</td></tr>
+<tr><td>A sell</td><td>400 <code>NOT_A_BUY</code></td><td>Only a buy order can be rejected as unpaid.</td></tr>
+<tr><td>The player has not tapped Paid (ASSIGNED, PROCESSING)</td><td>400 <code>NOT_PAID_YET</code></td><td>The player has not tapped Paid on this buy yet, so there is no payment to reject. Wait for their Paid tap, then check your account and confirm the money or reject it; a buy that is never paid expires on its own.</td></tr>
+<tr><td>Past PAID (rejected already, disputed, completed, cancelled)</td><td>409 <code>NOT_REJECTABLE</code></td><td>This buy is … now, so it cannot be rejected as unpaid.</td></tr>
 <tr><td>Reason under 10 characters</td><td>400</td><td>A rejection reason of at least 10 characters is required — it is what the player is shown.</td></tr>
 <tr><td>No proof file</td><td>400</td><td>Proof is required: upload a screenshot or photo showing the payment did not arrive.</td></tr>
-<tr><td>Not theirs</td><td>403</td><td>This order is not assigned to you</td></tr>
-<tr><td>A sell</td><td>400</td><td>Only a buy order can be rejected as unpaid.</td></tr>
 <tr><td>Proof not theirs, for this order</td><td>400</td><td>Proof could not be verified: …</td></tr>
-<tr><td>Not PAID or PROCESSING</td><td>409</td><td>Cannot reject order in … status</td></tr>
+<tr><td>The team's tokens already paid out (a confirm won the race)</td><td>409</td><td>The team's tokens for this buy were already paid to the player, so it can only be completed.</td></tr>
 </tbody>
 </table></div>
-<p class="danger"><strong>Open, for the owner:</strong> the route accepts a PROCESSING buy
-(<code>expectFrom: ['PAID', 'PROCESSING']</code>), so a member can press this before the
-player has tapped Paid, and the player is still warned and flagged. The design (§3.10 of
-PROJECT_STATUS) describes it after Paid only.</p>
+<p>In that order: the state is asked after ownership and before the reason and proof, so a
+member is never asked for evidence of an accusation that cannot be made yet. A PAID buy
+only (owner, 2026-10-07): REJECTED's one edge in the state machine is from PAID, so the
+transition's WHERE refuses an unpaid buy whatever asked, and the proof upload
+(<code>POST /api/merchant/order-reject-proof/:orderId/upload-url</code>) asks the same
+question (<code>unpaidRejectRefusal</code>) and gives the same 400. The card offers
+<em>Payment never arrived — reject</em> on a PAID buy alone; before the tap it shows
+<em>Waiting for the user to pay …</em> with what to do once they tap, and that an unpaid
+buy expires on its own.</p>
 <p><strong>On success:</strong> REJECTED, the hold kept, <code>dispute_window_until</code>
 written; the player gets a pop-up (<code>order_rejected</code>) with a countdown and a
 Raise-a-dispute button. The proof image is never shown to the player. The dialog

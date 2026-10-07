@@ -33,7 +33,7 @@ import {
 // Withdrawal settlement hold — confirm asserts payment, the worker settles it
 // once the dispute window passes. See withdrawalHold.service.js.
 import { holdMinutes } from '../payment/withdrawalHold.service.js';
-import { rejectedBuyDisputeMinutes } from '../payment/rejectedBuyWindow.service.js';
+import { rejectedBuyDisputeMinutes, unpaidRejectRefusal } from '../payment/rejectedBuyWindow.service.js';
 // A push to the PLAYER's socket goes through the player projection, like every
 // other thing a player receives.
 import { toPlayerOrderView } from '../payment/playerOrderView.js';
@@ -1709,14 +1709,42 @@ router.get('/stats', merchantAuth, async (req, res) => {
 // `commitOrEnd` / `abortOrEnd` stubs, so code that read as a transaction and
 // was not is gone rather than made honest.
 // ─────────────────────────────────────────────────────────────────────────────
-// POST /api/merchant/orders/:id/reject
-// Merchant rejects a PAID/PROCESSING order.
-// Spec Section 11.2 / 13
+// POST /api/merchant/orders/:id/reject — "payment not received"
+// The member says the payment the player CLAIMED never arrived: a PAID buy
+// only (owner, 2026-10-07). `unpaidRejectRefusal` words every refusal.
 // ─────────────────────────────────────────────────────────────────────────────
 router.post('/orders/:id/reject', merchantAuth, async (req, res) => {
     try {
         const { id }   = req.params;
         const { reason, proofFileKey, proofCdnUrl } = req.body;
+
+        const order = await db.orders.getOrderRecord(id);
+        if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+        if (order.merchantId?.toString() !== req.merchantId?.toString()) {
+            return res.status(403).json({ success: false, message: 'This order is not assigned to you' });
+        }
+
+        // ── May this be said at all, before what it needs ────────────────────
+        // A BUY, and one the player has tapped Paid on. "The player's money
+        // never arrived" is a statement about a buy: a sell cancelled here
+        // would end with the player's stake still locked and nothing scheduled
+        // to return it; a member who cannot pay a sell declines it before
+        // paying (POST /reject/:id) instead. And before the Paid tap there is
+        // no claimed payment to deny (owner, 2026-10-07): this took a
+        // PROCESSING buy too, and warned and flagged a player who had said
+        // nothing yet. The member is told to wait for the tap (400).
+        //
+        // Asked BEFORE the reason and the proof (§32 S34): a member must not
+        // write an accusation and upload evidence to be told it cannot be
+        // made yet. Asked AFTER ownership, so a stranger learns nothing about
+        // where somebody else's buy stands. A snapshot that only words the
+        // answer: the rule is REJECTED's one edge in the state machine, from
+        // PAID, in the transition's WHERE below (trap 18).
+        const refused = unpaidRejectRefusal(order);
+        if (refused) {
+            return res.status(refused.status).json({ success: false, code: refused.code, message: refused.message });
+        }
 
         // ── The accusation carries its evidence ──────────────────────────────
         // Rejecting a PAID order says the player's money never arrived. It
@@ -1735,20 +1763,6 @@ router.post('/orders/:id/reject', merchantAuth, async (req, res) => {
                 success: false,
                 message: 'Proof is required: upload a screenshot or photo showing the payment did not arrive.',
             });
-        }
-
-        const order = await db.orders.getOrderRecord(id);
-        if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-
-        if (order.merchantId?.toString() !== req.merchantId?.toString()) {
-            return res.status(403).json({ success: false, message: 'This order is not assigned to you' });
-        }
-        // "The player's money never arrived" is a statement about a BUY. A sell
-        // cancelled here would end with the player's stake still locked and
-        // nothing scheduled to return it; a member who cannot pay a sell
-        // declines it before paying (POST /reject/:id) instead.
-        if (order.type !== 'DEPOSIT') {
-            return res.status(400).json({ success: false, message: 'Only a buy order can be rejected as unpaid.' });
         }
 
         // Bound to THIS merchant and THIS order. Without the check a merchant
@@ -1784,11 +1798,13 @@ router.post('/orders/:id/reject', merchantAuth, async (req, res) => {
         // clock in the same transaction, so the sweep, the dispute route and
         // the screen all read one instant.
         //
-        // `expectFrom` is applied now (it was ignored), so a member cannot use
-        // this button to close a buy the player has already DISPUTED.
+        // No `expectFrom`: the rule table's one edge into REJECTED is PAID,
+        // applied in the UPDATE's WHERE under the row lock, so a buy that moved
+        // on since the read above (confirmed, disputed, expired) is refused by
+        // the database, and one not yet PAID never matches at all. It said
+        // `['PAID', 'PROCESSING']`, which is how an unpaid buy got through.
         const windowMinutes = await rejectedBuyDisputeMinutes();
         const rejected = await rejectOrderState(order.orderId, {
-            expectFrom: ['PAID', 'PROCESSING'],
             expectMerchant: req.merchantId,
             set: {
                 rejectedBy:     req.merchantId,
@@ -1806,11 +1822,22 @@ router.post('/orders/:id/reject', merchantAuth, async (req, res) => {
             }),
         });
         if (!rejected.ok || rejected.idempotent) {
-            return res.status(409).json({
-                success: false,
-                message: rejected.reason === 'merchant_changed'
-                    ? NO_LONGER_YOURS : `Cannot reject order in ${rejected.status ?? 'unknown'} status`,
-            });
+            if (rejected.reason === 'merchant_changed') {
+                return res.status(409).json({ success: false, message: NO_LONGER_YOURS });
+            }
+            if (rejected.reason === 'pool_paid') {
+                return res.status(409).json({
+                    success: false,
+                    message: 'The team\'s tokens for this buy were already paid to the player, so it can only be completed.',
+                });
+            }
+            // The database's answer, worded by the same function as the read
+            // above: a buy not yet PAID is "not yet" (400) whichever of the two
+            // caught it, and one past PAID is a conflict (409).
+            const why = unpaidRejectRefusal({ type: order.type, status: rejected.status }) ?? {
+                status: 409, code: 'NOT_REJECTABLE', message: `Cannot reject order in ${rejected.status ?? 'unknown'} status`,
+            };
+            return res.status(why.status).json({ success: false, code: why.code, message: why.message });
         }
         Object.assign(order, rejected.order);
         const disputeUntil = order.disputeWindowUntil;

@@ -77,7 +77,7 @@ export async function transitionOrder(orderId, to, { set = {}, expectFrom = null
   // widening the machine. Validated HERE, before the call; the repository then
   // APPLIES it, in the UPDATE's WHERE under the row lock. It once ignored it,
   // and a narrowing nobody enforces is a comment: a member's "rejected as
-  // unpaid" (only from PAID or PROCESSING) cancelled a DISPUTED buy.
+  // unpaid", narrowed by its route, cancelled a DISPUTED buy.
   if (expectFrom) {
     const wanted = Array.isArray(expectFrom) ? expectFrom : [expectFrom];
     const illegal = wanted.filter((state) => !allowed.includes(state));
