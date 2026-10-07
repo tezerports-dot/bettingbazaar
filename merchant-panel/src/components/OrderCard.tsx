@@ -240,10 +240,14 @@ export const OrderCard: React.FC<{
           </div>
         )}
 
-        {/* Status narration */}
+        {/* Status narration. Before the Paid tap there is nothing to confirm
+            and nothing to report as missing, so this says when there will be
+            (owner, 2026-10-07: "payment not received" is for a PAID buy only;
+            the server answers NOT_PAID_YET before it). */}
         {awaitingUser && (
           <Banner tone="warn" style={{ marginBottom: 13 }} icon={<Clock size={16} style={{ color: 'var(--warn)', flexShrink: 0, marginTop: 1 }} />}>
-            Waiting for the user to pay {formatMoney(order.fiatAmount ?? order.amount, rail)}.
+            Waiting for the user to pay {formatMoney(order.fiatAmount ?? order.amount, rail)}. Once they tap Paid, check
+            your account: confirm it, or report that the payment never arrived. If they never pay, the order expires on its own.
           </Banner>
         )}
         {canRelease && (
@@ -313,10 +317,12 @@ export const OrderCard: React.FC<{
           </div>
         )}
         {canRelease && (
-          /* Distinct from Dispute above, and heavier: a dispute goes to an admin
-             to decide, while this cancels the order and warns the player
-             directly. Given its own row so the two are not mistaken for each
-             other at a glance. */
+          /* Distinct from Flag above, and heavier: a flag goes to an admin to
+             decide, while this rejects the buy and warns the player directly
+             (they have a window to dispute it). Given its own row so the two are
+             not mistaken for each other at a glance. On a PAID buy only, which
+             `canRelease` is: before the player taps Paid there is no payment
+             to deny, and the server refuses it (NOT_PAID_YET). */
           <button
             onClick={() => actions.onPaymentNotReceived(order)}
             style={{

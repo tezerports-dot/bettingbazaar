@@ -6,6 +6,7 @@ import { db } from '#db';
 import cdnService from '../services/cdn.service.js';
 import { authenticatePlayer } from '../domains/identity/auth.middleware.js';
 import { merchantAuth } from '../middleware/merchantAuth.js';
+import { unpaidRejectRefusal } from '../domains/payment/rejectedBuyWindow.service.js';
 import { serverError, callerError, respondError } from '../shared/httpError.js';
 // Order chat. An attachment that is not recorded is an upload nobody can find.
 
@@ -76,11 +77,13 @@ router.post('/merchant/order-reject-proof/:orderId/upload-url', merchantAuth, as
     // AND the merchant id, so an order that is not theirs is simply not found.
     const order = await db.orders.getMerchantOrder(orderId, req.merchantId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-    if (!['PAID', 'PROCESSING'].includes(order.status)) {
-      return res.status(400).json({
-        success: false,
-        message: `Proof applies to a paid order. This one is ${order.status}.`,
-      });
+    // The same question the reject asks, from the same function (§32 S3): a
+    // buy the player has tapped Paid on (owner, 2026-10-07). This admitted
+    // PROCESSING, and any order type, so evidence could be staged for an
+    // accusation that cannot be made.
+    const refused = unpaidRejectRefusal(order);
+    if (refused) {
+      return res.status(refused.status).json({ success: false, code: refused.code, message: refused.message });
     }
 
     // Images only — the category falls through to the image allowlist, and the

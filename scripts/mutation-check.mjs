@@ -2658,6 +2658,56 @@ const MUTATIONS = [
     to: `        if (!merchant)
             return res.status(401).json({ success: false, message: 'No merchant account found for this mobile number' });`,
   },
+  // ── "Payment not received" on a PAID buy only (owner, 2026-10-07) ──────────
+  {
+    id: 'M425', file: 'database/repositories/orders.core.js', config: PG,
+    test: 'backend/tests/routes/rejectedBuyWindowPg.test.js',
+    why: 'the state machine lets an unpaid buy into REJECTED again, so a member rejects an accepted buy and the player is warned and flagged',
+    from: '  [ORDER_STATES.REJECTED]:   [ORDER_STATES.PAID],',
+    to: '  [ORDER_STATES.REJECTED]:   [ORDER_STATES.PENDING_QUEUE, ORDER_STATES.ASSIGNED, ORDER_STATES.PROCESSING, ORDER_STATES.PAID],',
+  },
+  {
+    id: 'M426', file: 'database/repositories/orders.core.js', config: UNIT,
+    test: 'backend/tests/unit/orderLifecycle.test.js',
+    why: 'the rule table admits REJECTED from PROCESSING, before the player tapped Paid',
+    from: '  [ORDER_STATES.REJECTED]:   [ORDER_STATES.PAID],',
+    to: '  [ORDER_STATES.REJECTED]:   [ORDER_STATES.PROCESSING, ORDER_STATES.PAID],',
+  },
+  {
+    id: 'M427', file: 'backend/domains/payment/rejectedBuyWindow.service.js', config: PG,
+    test: 'backend/tests/routes/rejectedBuyWindowPg.test.js',
+    why: 'an unpaid buy is not told "not yet": both doors let the member write the accusation and stage the proof for a reject the database then refuses',
+    from: '  if (canTransition(order.status, ORDER_STATES.REJECTED)) return null;\n',
+    to: '  return null;\n',
+  },
+  {
+    id: 'M428', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
+    test: 'backend/tests/routes/rejectedBuyWindowPg.test.js',
+    why: 'the reject asks for the reason and verifies the proof before asking whether the buy was paid at all (§32 S34)',
+    from: '        const refused = unpaidRejectRefusal(order);\n',
+    to: '        const refused = null;\n',
+  },
+  {
+    id: 'M429', file: 'backend/routes/upload.routes.js', config: PG,
+    test: 'backend/tests/routes/rejectedBuyWindowPg.test.js',
+    why: 'the proof upload admits a buy the player has not paid, so evidence is staged for an accusation that cannot be made (§32 S3)',
+    from: '    const refused = unpaidRejectRefusal(order);\n',
+    to: '    const refused = null;\n',
+  },
+  {
+    id: 'M430', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
+    test: 'backend/tests/routes/rejectedBuyWindowPg.test.js',
+    why: 'the transition\'s own refusal is answered with a bare status, so a member whose buy moved on under them is not told where it now stands',
+    from: '            const why = unpaidRejectRefusal({ type: order.type, status: rejected.status }) ?? {\n',
+    to: '            const why = null ?? {\n',
+  },
+  {
+    id: 'M431', file: 'backend/domains/payment/rejectedBuyWindow.service.js', config: PG,
+    test: 'backend/tests/routes/rejectedBuyWindowPg.test.js',
+    why: 'a PAID sell is rejected as unpaid: the member who owes the payout calls it the player\'s missing payment',
+    from: "  if (order.type !== 'DEPOSIT') {\n    return { status: 400, code: 'NOT_A_BUY'",
+    to: "  if (false) {\n    return { status: 400, code: 'NOT_A_BUY'",
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that
