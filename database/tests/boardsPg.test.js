@@ -109,8 +109,10 @@ describePg('boards', () => {
          VALUES ($1, $2, 'CANCELLED', now() - interval '10 minutes', now() - interval '5 minutes')`,
         [`${b.idPrefix}_${randomInt(0, 1e9)}`, b.key],
       );
-      await expect(pgQuery('DELETE FROM boards WHERE board_key = $1', [b.key]))
-        .rejects.toMatchObject({ code: '23503', constraint: 'cycles_board_fk' });
+      // ON DELETE RESTRICT: 23503 up to PostgreSQL 17, 23001 (restrict_violation) from 18.
+      const refused = await pgQuery('DELETE FROM boards WHERE board_key = $1', [b.key]).then(() => null, (e) => e);
+      expect(refused).toMatchObject({ constraint: 'cycles_board_fk' });
+      expect(['23503', '23001']).toContain(refused.code);
     });
 
     it('lets phantom access name any board, and nothing else', async () => {
