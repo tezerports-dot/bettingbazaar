@@ -17,6 +17,7 @@ import {
   isCycleType, cycleMeta, cycleLabel, phasesFor,
 } from './cycleTypes.js';
 import { getSystemConfig } from '#db/repositories/config.js';
+import { AUDIENCES } from '#db/repositories/markets.js';
 import { emitToStaff } from '../notification/staffEventAreas.js';
 
 // ── CYCLE PHASE OFFSETS (Business Config Audit, 2026-07-11) ───────────────────
@@ -38,6 +39,16 @@ function validPhaseSet(p) {
   return [m, e, c, f].every(v => Number.isFinite(v)) && m > e && e > c && c > f && f >= 0;
 }
 
+/**
+ * Each board runs one cycle per slot for each audience (VIP, GENERAL), and the
+ * two never share one (owner, 2026-10-08). Everything the generator keeps per
+ * board — the broadcast cache, the celebration lock — is keyed by both.
+ */
+const slotKey = (type, audience) => `${type}:${audience}`;
+const slotOf = (cycle) => slotKey(cycle.type, cycle.audience);
+/** VIP ids keep their historical shape; GENERAL's carry a G so the two never collide. */
+const idFor = (prefix, audience) => `${prefix}_${audience === 'GENERAL' ? 'G_' : ''}${Date.now()}`;
+
 class CycleGenerator {
     constructor(io, sseManager) {
         this.io = io;
@@ -49,10 +60,11 @@ class CycleGenerator {
         // timestamp passes.  Set to Date.now() + 12 000 when a cycle completes.
         // Built from the type registry, so a new type cannot be left out of the
         // lock and start its next block mid-celebration.
-        this.celebrationLockUntil = Object.fromEntries(CYCLE_TYPE_VALUES.map(t => [t, 0]));
+        this.celebrationLockUntil = Object.fromEntries(
+            CYCLE_TYPE_VALUES.flatMap(t => AUDIENCES.map(a => [slotKey(t, a), 0])));
         // In-memory cache of active cycles — updated by manageCycles() every 1s,
         // read by broadcastLiveUpdates() in the same tick with zero DB hits.
-        this.liveCycleCache = {};  // { [cycleType]: cycleDoc } — see CYCLE_TYPE_VALUES
+        this.liveCycleCache = {};  // { [type:audience]: cycleDoc } — see slotKey
         // Short-TTL cache of the admin-configured phase offsets. The status tick
         // runs every 1s for every active cycle; without this we'd re-read
         // SystemConfig each tick. 30s TTL → an admin edit takes effect within 30s.
@@ -148,8 +160,7 @@ class CycleGenerator {
         // Every interval type, from the registry — so adding one to cycleTypes.js
         // is genuinely all it takes, rather than one edit here and another that
         // gets forgotten in manageCycles().
-        for (const type of INTERVAL_CYCLE_TYPES) await this.ensureIntervalCycle(type);
-        await this.ensureActiveFullDayCycle();
+        await this.ensureEveryCycle();
         // Populate broadcast cache with currently-active (non-expired) cycles.
         // ensureActive*Cycle() above already force-expired any stale ones,
         // but guard on endTime here too in case any slip through.
@@ -163,15 +174,22 @@ class CycleGenerator {
         for (const c of existing) {
             const endMs = new Date(c.endTime).getTime();
             if (endMs > nowMs - 60000) {  // allow 60s grace for cycles in CLOSED/celebration
-                this.liveCycleCache[c.type] = c;
+                this.liveCycleCache[slotOf(c)] = c;
             }
         }
     }
 
     async manageCycles() {
-        for (const type of INTERVAL_CYCLE_TYPES) await this.ensureIntervalCycle(type);
-        await this.ensureActiveFullDayCycle();
+        await this.ensureEveryCycle();
         await this.updateCycleStatuses();
+    }
+
+    /** The live cycle of every board, for every audience. */
+    async ensureEveryCycle() {
+        for (const audience of AUDIENCES) {
+            for (const type of INTERVAL_CYCLE_TYPES) await this.ensureIntervalCycle(type, audience);
+            await this.ensureActiveFullDayCycle(audience);
+        }
     }
 
     // ─── EMIT HELPERS ─────────────────────────────────────────────────────────
@@ -283,6 +301,7 @@ class CycleGenerator {
                     this.emitPublic('cycle_phase', {
                         cycleId: cycle.cycleId,
                         type:    cycle.type,
+                        audience: cycle.audience,
                         phase:   'MERGED',
                         message: meta.mergeMessage,
                         timestamp: new Date()
@@ -311,6 +330,7 @@ class CycleGenerator {
                     this.emitPublic('cycle_phase', {
                         cycleId: cycle.cycleId,
                         type:    cycle.type,
+                        audience: cycle.audience,
                         phase:   'CLOSED',
                         message: meta.closeMessage,
                         timestamp: new Date()
@@ -334,7 +354,7 @@ class CycleGenerator {
 
                 // Only reached for cycles that did NOT complete this tick.
                 // Refresh cache with latest values so 100ms broadcast is accurate.
-                this.liveCycleCache[cycle.type] = cycle;
+                this.liveCycleCache[slotOf(cycle)] = cycle;
             }
         } catch (error) {
             console.error('❌ Error updating cycle statuses:', error);
@@ -438,6 +458,7 @@ class CycleGenerator {
             this.emitPublic('cycle_result', assertPublicCycleSafe({
                 cycleId:   cycle.cycleId,
                 type:      cycle.type,
+                audience:  cycle.audience,
                 winner,
                 delhiPool:  combinedDelhi,
                 bombayPool: combinedBombay,
@@ -449,6 +470,7 @@ class CycleGenerator {
             this.emitAdmin('admin_cycle_result', {
                 cycleId:      cycle.cycleId,
                 type:         cycle.type,
+                audience:     cycle.audience,
                 winner,
                 realDelhi,
                 realBombay,
@@ -460,7 +482,7 @@ class CycleGenerator {
             });
 
             // Evict completed cycle from broadcast cache immediately
-            delete this.liveCycleCache[cycle.type];
+            delete this.liveCycleCache[slotOf(cycle)];
             console.log(`🏆 Cycle ${cycle.cycleId} (${cycleType}) RESULT_DECLARED — Winner: ${winner}`);
             console.log(`   Real bets: Delhi ₹${realDelhi} | Bombay ₹${realBombay}`);
 
@@ -471,8 +493,8 @@ class CycleGenerator {
             const celebrateSec = (await this.getCyclePhases())?.[cycleMeta(cycle.type).phasesKey]
                 ?.celebrateBeforeEndSec ?? 10;
 
-            this.emitPublic('celebration', { cycleId: cycle.cycleId, type: cycle.type, winner });
-            this.emitPublic('fireworks',   { cycleId: cycle.cycleId, type: cycle.type, winner, secondsLeft: celebrateSec, message: `${winner} wins!`, timestamp: new Date() });
+            this.emitPublic('celebration', { cycleId: cycle.cycleId, type: cycle.type, audience: cycle.audience, winner });
+            this.emitPublic('fireworks',   { cycleId: cycle.cycleId, type: cycle.type, audience: cycle.audience, winner, secondsLeft: celebrateSec, message: `${winner} wins!`, timestamp: new Date() });
 
             // Push updated cycle history to ALL clients after result.
             // This replaces the 5-minute HTTP polling interval in GameContext.
@@ -484,7 +506,7 @@ class CycleGenerator {
             // to tell them what they already had. The client merges on `types`.
             setTimeout(async () => {
                 try {
-                    this.emitPublic('cycle_history', await fetchCycleHistory({ types: cycle.type }));
+                    this.emitPublic('cycle_history', await fetchCycleHistory({ types: cycle.type, audience: cycle.audience }));
                 } catch { /* non-critical — clients will re-request on next mount */ }
             }, 1500);
 
@@ -497,13 +519,13 @@ class CycleGenerator {
             // construction expires as the timer reaches 00:00. Derived per type
             // rather than fixed at 10s: for the 1-minute block a 10s lock would
             // swallow a sixth of the next cycle before betting could open.
-            this.celebrationLockUntil[cycle.type] = Date.now() + celebrateSec * 1000;
+            this.celebrationLockUntil[slotOf(cycle)] = Date.now() + celebrateSec * 1000;
 
             // Create the next cycle as celebration ends (timer = 00:00), plus a
             // 500ms buffer for the DB write to land.
             setTimeout(async () => {
                 console.log(`🔄 Auto-creating next ${cycleType} cycle...`);
-                await this.ensureActiveCycle(cycle.type);
+                await this.ensureActiveCycle(cycle.type, cycle.audience);
             }, celebrateSec * 1000 + 500);
 
         } catch (error) {
@@ -611,7 +633,7 @@ class CycleGenerator {
             + `(ended ${new Date(cycle.endTime).toISOString()}). Adjudicating.`,
         );
         await this.completeCycle(cycle);
-        delete this.liveCycleCache[cycle.type];
+        delete this.liveCycleCache[slotOf(cycle)];
     }
 
     /**
@@ -621,9 +643,9 @@ class CycleGenerator {
      * blocks tile the hour) share one implementation; FULL_DAY is anchored to a
      * calendar date and keeps its own.
      */
-    async ensureActiveCycle(type) {
-        if (type === CYCLE_TYPES.FULL_DAY) return this.ensureActiveFullDayCycle();
-        return this.ensureIntervalCycle(type);
+    async ensureActiveCycle(type, audience) {
+        if (type === CYCLE_TYPES.FULL_DAY) return this.ensureActiveFullDayCycle(audience);
+        return this.ensureIntervalCycle(type, audience);
     }
 
     /**
@@ -643,17 +665,17 @@ class CycleGenerator {
      * cycleTypes.js. Everything else, including every fix below, is identical
      * by construction now.
      */
-    async ensureIntervalCycle(type) {
+    async ensureIntervalCycle(type, audience) {
         const meta = cycleMeta(type);
-        const label = meta.label;
+        const label = `${meta.label} ${audience}`;
         try {
             // Celebration lock: do not create the next cycle while fireworks are running.
             // manageCycles() ticks every 1 s; without this guard a new OPEN cycle would
             // appear within 1 s of result declaration, making getCycleState return
             // winner=null to any user who loads the page mid-celebration.
-            if (Date.now() < this.celebrationLockUntil[type]) return;
+            if (Date.now() < this.celebrationLockUntil[slotKey(type, audience)]) return;
 
-            const existing = await db.markets.currentCycleWithPools(type, {
+            const existing = await db.markets.currentCycleWithPools(type, audience, {
                 statuses: ['OPEN', 'MERGED', 'CLOSED'],
             });
 
@@ -709,8 +731,9 @@ class CycleGenerator {
             // (trap 4 — storing them on this row deadlocks against the bets that
             // update it) and the phantom ones default to zero.
             const { cycle, created } = await db.markets.ensureCycle({
-                cycleId:  `${meta.idPrefix}_${Date.now()}`,
+                cycleId:  idFor(meta.idPrefix, audience),
                 cycleType: type,
+                audience,
                 startTime,
                 endTime,
             });
@@ -721,7 +744,7 @@ class CycleGenerator {
             // status, which could not tell "I made this" from "I found this".
             if (!created) return;
 
-            this.liveCycleCache[type] = cycle;  // seed broadcast cache immediately
+            this.liveCycleCache[slotKey(type, audience)] = cycle;  // seed broadcast cache immediately
             console.log(`🆕 Created new ${label} cycle: ${cycle.cycleId}`);
             console.log(`   Start: ${startTime.toISOString()}`);
             console.log(`   End:   ${endTime.toISOString()}`);
@@ -734,6 +757,7 @@ class CycleGenerator {
             const newCyclePayload = {
                 cycleId:   cycle.cycleId,
                 type,
+                audience,
                 startTime: startMs,
                 endTime:   endMs,
                 status:    'OPEN',
@@ -747,9 +771,7 @@ class CycleGenerator {
 
             // Also push a fresh cycle_snapshot so any client that missed new_cycle
             // (brief disconnect, slow mobile) gets authoritative state immediately.
-            const snapshot = await this.getCycleSnapshotData();
-            this.emitPublic('cycle_snapshot', { cycles: snapshot, timestamp: Date.now() });
-            this.emitAdmin('admin_cycle_snapshot', { cycles: snapshot, timestamp: Date.now() });
+            await this.broadcastSnapshot(audience);
 
         } catch (error) {
             console.error(`❌ Error ensuring ${label} cycle:`, error);
@@ -757,12 +779,12 @@ class CycleGenerator {
     }
 
 
-    async ensureActiveFullDayCycle() {
+    async ensureActiveFullDayCycle(audience) {
         try {
             // Celebration lock — same reason as 30-MIN (see above)
-            if (Date.now() < this.celebrationLockUntil['FULL_DAY']) return;
+            if (Date.now() < this.celebrationLockUntil[slotKey('FULL_DAY', audience)]) return;
 
-            const existing = await db.markets.currentCycleWithPools('FULL_DAY', {
+            const existing = await db.markets.currentCycleWithPools('FULL_DAY', audience, {
                 statuses: ['OPEN', 'MERGED', 'CLOSED'],
             });
 
@@ -777,7 +799,7 @@ class CycleGenerator {
                 // The bug this guards against showed a stale date with a frozen
                 // 00:00 timer: the old cycle was still OPEN, so this function
                 // returned immediately and never created the current day's.
-                await this.adjudicateStaleCycle(existing, 'FULL-DAY');
+                await this.adjudicateStaleCycle(existing, `FULL-DAY ${audience}`);
                 // Fall through — create today's cycle below
             }
 
@@ -804,8 +826,9 @@ class CycleGenerator {
             // Same one-winner guarantee as the interval path: the unique index
             // on (cycle_type, start_time) decides, and the loser is a no-op.
             const { cycle, created } = await db.markets.ensureCycle({
-                cycleId:  `FULLDAY_${Date.now()}`,
+                cycleId:  idFor('FULLDAY', audience),
                 cycleType: 'FULL_DAY',
+                audience,
                 startTime,
                 endTime,
             });
@@ -813,7 +836,7 @@ class CycleGenerator {
 
             const startIST2 = new Date(startTime.getTime() + this.IST_OFFSET);
             const endIST2   = new Date(endTime.getTime()   + this.IST_OFFSET);
-            this.liveCycleCache['FULL_DAY'] = cycle;  // seed broadcast cache immediately
+            this.liveCycleCache[slotKey('FULL_DAY', audience)] = cycle;  // seed broadcast cache immediately
             console.log(`🆕 Created new FULL-DAY cycle: ${cycle.cycleId}`);
             console.log(`   Start IST: ${startIST2.toISOString()}`);
             console.log(`   End IST:   ${endIST2.toISOString()}`);
@@ -824,6 +847,7 @@ class CycleGenerator {
             const newCyclePayloadFD = {
                 cycleId:   cycle.cycleId,
                 type:      'FULL_DAY',
+                audience,
                 startTime: stFD,
                 endTime:   etFD,
                 status:    'OPEN',
@@ -834,9 +858,7 @@ class CycleGenerator {
             this.emitAdmin('admin_new_cycle', newCyclePayloadFD);
 
             // Push snapshot so all clients get fresh state without HTTP
-            const snapshot = await this.getCycleSnapshotData();
-            this.emitPublic('cycle_snapshot', { cycles: snapshot, timestamp: Date.now() });
-            this.emitAdmin('admin_cycle_snapshot', { cycles: snapshot, timestamp: Date.now() });
+            await this.broadcastSnapshot(audience);
 
         } catch (error) {
             console.error('❌ Error ensuring full-day cycle:', error);
@@ -851,18 +873,30 @@ class CycleGenerator {
      * bet_placed SSE just delivered to the frontend.
      */
     refreshCacheForCycle(cycleDoc) {
-        if (!cycleDoc || !cycleDoc.type) return;
-        this.liveCycleCache[cycleDoc.type] = cycleDoc;
+        if (!cycleDoc || !cycleDoc.type || !cycleDoc.audience) return;
+        this.liveCycleCache[slotOf(cycleDoc)] = cycleDoc;
     }
 
-    async getCycleSnapshotData() {
+    /**
+     * Push one audience's snapshot to everyone. Each carries its `audience`;
+     * a panel applies only its own player's (public totals only, so the other
+     * audience's snapshot reveals nothing a player of it could not see).
+     */
+    async broadcastSnapshot(audience) {
+        const snapshot = await this.getCycleSnapshotData(audience);
+        this.emitPublic('cycle_snapshot', { audience, cycles: snapshot, timestamp: Date.now() });
+        this.emitAdmin('admin_cycle_snapshot', { audience, cycles: snapshot, timestamp: Date.now() });
+    }
+
+    /** The live cycle of every type for one audience, keyed by type. */
+    async getCycleSnapshotData(audience) {
         // Every known type — a snapshot that omits one leaves clients with no
         // authoritative state for that tab until the next new_cycle fires.
         const types = CYCLE_TYPE_VALUES;
         const snapshot = {};
 
         for (const type of types) {
-            const cycle = await db.markets.currentCycleWithPools(type);
+            const cycle = await db.markets.currentCycleWithPools(type, audience);
             if (!cycle) continue;
 
             const now            = Date.now();
@@ -884,6 +918,7 @@ class CycleGenerator {
             snapshot[type] = assertPublicCycleSafe({
                 cycleId:         cycle.cycleId,
                 type:            cycle.type,
+                audience:        cycle.audience,
                 status:          cycle.status,
                 startTime:       new Date(cycle.startTime).getTime(),
                 endTime:         endTime,
@@ -905,10 +940,13 @@ class CycleGenerator {
     }
 
     
+    /** Both audiences' snapshots, each tagged; the panel applies its player's. */
     async sendCycleSnapshot(socket) {
         try {
-            const snapshot = await this.getCycleSnapshotData();
-            socket.emit('cycle_snapshot', { cycles: snapshot, timestamp: Date.now() });
+            for (const audience of AUDIENCES) {
+                const snapshot = await this.getCycleSnapshotData(audience);
+                socket.emit('cycle_snapshot', { audience, cycles: snapshot, timestamp: Date.now() });
+            }
         } catch (err) {
             console.error('❌ sendCycleSnapshot error:', err);
         }

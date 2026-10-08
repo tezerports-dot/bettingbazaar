@@ -1275,9 +1275,26 @@ DO $$ BEGIN
     status NOT IN ('COMPLETED', 'RESULT_DECLARED') OR winner IS NOT NULL);
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
-CREATE UNIQUE INDEX IF NOT EXISTS cycles_type_start_unique ON cycles (cycle_type, start_time);
-CREATE INDEX IF NOT EXISTS cycles_open_idx   ON cycles (cycle_type, status, end_time);
-CREATE INDEX IF NOT EXISTS cycles_recent_idx ON cycles (cycle_type, start_time DESC);
+-- Which players a cycle is for (owner, 2026-10-08): VIP (deposited money) or
+-- GENERAL (referral bonus money). The two never share a cycle or its pools,
+-- so every board runs one cycle per slot for each, and a bet is admitted only
+-- to a cycle of the player's own profile (`bet.routes.js`). The names are the
+-- profiles' (`users_play_profile_known`).
+ALTER TABLE cycles ADD COLUMN IF NOT EXISTS audience TEXT NOT NULL DEFAULT 'VIP';
+DO $$ BEGIN
+  ALTER TABLE cycles DROP CONSTRAINT IF EXISTS cycles_audience_known;
+  ALTER TABLE cycles ADD CONSTRAINT cycles_audience_known CHECK (audience IN ('VIP', 'GENERAL'));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+-- One cycle per type, audience and start instant. Replaces the per-type index,
+-- which would refuse the second audience's cycle in the same slot (§32 S31:
+-- dropped by name so an existing database converges).
+DROP INDEX IF EXISTS cycles_type_start_unique;
+DROP INDEX IF EXISTS cycles_open_idx;
+DROP INDEX IF EXISTS cycles_recent_idx;
+CREATE UNIQUE INDEX IF NOT EXISTS cycles_type_audience_start_unique ON cycles (cycle_type, audience, start_time);
+CREATE INDEX IF NOT EXISTS cycles_audience_open_idx   ON cycles (cycle_type, audience, status, end_time);
+CREATE INDEX IF NOT EXISTS cycles_audience_recent_idx ON cycles (cycle_type, audience, start_time DESC);
 -- The settlement sweep's query: declared, not yet settled.
 CREATE INDEX IF NOT EXISTS cycles_settleable_idx ON cycles (end_time)
   WHERE winner IS NOT NULL AND NOT is_settled;

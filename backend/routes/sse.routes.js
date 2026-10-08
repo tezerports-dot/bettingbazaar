@@ -36,6 +36,7 @@ import {
 } from '../domains/identity/auth.middleware.js';
 import { decodeOrderCursor, encodeOrderCursor, normalizeLimit } from '../utils/cursorPagination.js';
 import { fetchCycleHistory } from '../domains/markets/cycleHistory.service.js';
+import { AUDIENCES } from '#db/repositories/markets.js';
 // The one shape a merchant receives. The merchant stream is a merchant-facing
 // responder like any route handler, and it was the only one not going through
 // this.
@@ -89,11 +90,14 @@ export function initSSERoutes(sseManager, cycleGenerator) {
         const clientId = sseManager.addClient(res);
 
         // 1. Cycle snapshot
+        // One per audience, each tagged: the panel applies its player's own.
         try {
-            const snapshot = await cycleGenerator.getCycleSnapshotData();
-            sseManager.sendToClient(clientId, 'cycle_snapshot', {
-                cycles: snapshot, timestamp: Date.now()
-            });
+            for (const audience of AUDIENCES) {
+                const snapshot = await cycleGenerator.getCycleSnapshotData(audience);
+                sseManager.sendToClient(clientId, 'cycle_snapshot', {
+                    audience, cycles: snapshot, timestamp: Date.now()
+                });
+            }
         } catch (e) {
             console.error('❌ SSE initial cycle_snapshot error:', e.message);
         }
@@ -118,10 +122,12 @@ export function initSSERoutes(sseManager, cycleGenerator) {
         // belongs on `request_cycle_history`, which takes a type.
         try {
             const limit = normalizeLimit(req.query.limit, 50, 100);
-            sseManager.sendToClient(clientId, 'cycle_history', {
-                ...(await fetchCycleHistory({ limit })),
-                serverTime: Date.now(),
-            });
+            for (const audience of AUDIENCES) {
+                sseManager.sendToClient(clientId, 'cycle_history', {
+                    ...(await fetchCycleHistory({ limit, audience })),
+                    serverTime: Date.now(),
+                });
+            }
         } catch (e) {
             console.error('❌ SSE initial cycle_history error:', e.message);
         }

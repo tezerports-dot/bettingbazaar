@@ -15,6 +15,8 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { pgConfigured, pgQuery, applySchema, closePg } from '../client.js';
 import * as promo from '../repositories/promo.js';
 import { getBalancesPaise, applyDeltaPaise } from '../repositories/wallets.core.js';
+import { placeBet, winBet, loseBet, refundBet } from '../repositories/bets.core.js';
+import { ensureCycle } from '../repositories/markets.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 const RUN = `promo-${Date.now()}`;
@@ -143,5 +145,88 @@ describePg('the GENERAL balance and its turnover requirement', () => {
     expect(await promo.setPlayProfile(u, 'GENERAL')).toEqual({ ok: true, profile: 'GENERAL' });
     expect((await promo.promoSummary(u)).profile).toBe('GENERAL');
     await expect(promo.setPlayProfile(u, 'GOLD')).rejects.toMatchObject({ status: 400 });
+  });
+});
+
+describePg('GENERAL bets on GENERAL boards (owner, 2026-10-08)', () => {
+  beforeAll(async () => { await applySchema(); });
+
+  let n = 0;
+  const cycleFor = async (audience) => {
+    const start = new Date(Date.UTC(2031, 0, 1) + (++n) * 60_000 + seq * 3_600_000);
+    const { cycle } = await ensureCycle({
+      cycleId: `${RUN}-${audience}-c${n}`, cycleType: '1_MIN', audience,
+      startTime: start, endTime: new Date(start.getTime() + 60_000),
+    });
+    return cycle.cycleId;
+  };
+  const gen = (amountPaise) => [{ field: 'promoBalance', amountPaise }];
+
+  it('stakes from GENERAL, pays a win back into GENERAL, and counts the stake once as turnover', async () => {
+    const u = player();
+    await promo.creditReferralBonus({ userId: u, amountPaise: 10_000, earningId: `${u}-e1` });
+    const c = await cycleFor('GENERAL');
+    expect((await placeBet({ betId: `${u}-b1`, userId: u, cycleId: c, side: 'DELHI', slices: gen(4_000) })).ok).toBe(true);
+    expect((await balances(u)).promoBalance).toBe(6_000);
+
+    const won = await winBet({ betId: `${u}-b1`, userId: u, slices: gen(4_000), payoutPaise: 7_920 });
+    expect(won.ok).toBe(true);
+    const b = await balances(u);
+    expect(b.promoBalance).toBe(13_920);
+    expect(b.winningsBalance).toBe(0);
+    expect((await grants(u))[0].turnoverPaise).toBe(4_000);
+
+    // A replayed settlement moves nothing and counts nothing.
+    await winBet({ betId: `${u}-b1`, userId: u, slices: gen(4_000), payoutPaise: 7_920 });
+    expect((await grants(u))[0].turnoverPaise).toBe(4_000);
+  });
+
+  it('counts a lost GENERAL stake, but not a refunded one', async () => {
+    const u = player();
+    await promo.creditReferralBonus({ userId: u, amountPaise: 10_000, earningId: `${u}-e1` });
+    const c = await cycleFor('GENERAL');
+    await placeBet({ betId: `${u}-lost`, userId: u, cycleId: c, side: 'DELHI', slices: gen(2_000) });
+    await placeBet({ betId: `${u}-back`, userId: u, cycleId: c, side: 'DELHI', slices: gen(3_000) });
+    await loseBet({ betId: `${u}-lost`, userId: u, slices: gen(2_000) });
+    await refundBet({ betId: `${u}-back`, userId: u, slices: gen(3_000) });
+    expect((await grants(u))[0].turnoverPaise).toBe(2_000);
+    expect((await balances(u)).promoBalance).toBe(8_000);
+  });
+
+  it('unlocks into winnings when betting completes the requirement, and a later GENERAL win unlocks too', async () => {
+    const u = player();
+    await promo.creditReferralBonus({ userId: u, amountPaise: 1_000, earningId: `${u}-e1` });
+    const c = await cycleFor('GENERAL');
+    // Two bets open; the first one settled completes the ₹100 requirement.
+    await placeBet({ betId: `${u}-a`, userId: u, cycleId: c, side: 'DELHI', slices: gen(500) });
+    await placeBet({ betId: `${u}-b`, userId: u, cycleId: c, side: 'DELHI', slices: gen(500) });
+    await promo.recordTurnover({ userId: u, stakeRef: `${u}-earlier`, amountPaise: 9_500 });
+    await loseBet({ betId: `${u}-a`, userId: u, slices: gen(500) });
+    expect((await grants(u))[0].completedAt).not.toBeNull();
+    // The other ₹5 is still staked; nothing is left in GENERAL to unlock yet.
+    expect((await balances(u)).promoBalance).toBe(0);
+
+    await winBet({ betId: `${u}-b`, userId: u, slices: gen(500), payoutPaise: 990 });
+    const b = await balances(u);
+    expect(b.promoBalance).toBe(0);
+    expect(b.winningsBalance).toBe(990);
+  });
+
+  it('refuses GENERAL money on a VIP board and any other money on a GENERAL board', async () => {
+    const u = player();
+    await promo.creditReferralBonus({ userId: u, amountPaise: 10_000, earningId: `${u}-e1` });
+    const { fundWallet } = await import('./_funding.js');
+    await fundWallet(u, 10_000, `${u}-fund`);
+    const vip = await cycleFor('VIP');
+    const general = await cycleFor('GENERAL');
+    expect(await placeBet({ betId: `${u}-x1`, userId: u, cycleId: vip, side: 'DELHI', slices: gen(1_000) }))
+      .toMatchObject({ ok: false, reason: 'wrong_balance_for_cycle' });
+    expect(await placeBet({
+      betId: `${u}-x2`, userId: u, cycleId: general, side: 'DELHI',
+      slices: [{ field: 'depositBalance', amountPaise: 1_000 }],
+    })).toMatchObject({ ok: false, reason: 'wrong_balance_for_cycle' });
+    const b = await balances(u);
+    expect(b.promoBalance).toBe(10_000);
+    expect(b.lockedBalance).toBe(0);
   });
 });

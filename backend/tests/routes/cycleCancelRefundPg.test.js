@@ -30,7 +30,7 @@ const describePg = pgConfigured() ? describe : describe.skip;
 async function openCycle() {
   const start = new Date(Date.now() - 60_000 - randomInt(0, 50_000_000));
   const { cycle } = await ensureCycle({
-    cycleId: `rt-cancel-${start.getTime()}`, cycleType: '30_MIN',
+    cycleId: `rt-cancel-${start.getTime()}`, cycleType: '30_MIN', audience: 'VIP',
     startTime: start, endTime: new Date(Date.now() + 25 * 60_000),
   });
   return cycle;

@@ -230,7 +230,7 @@ describePg('the whole journey: signup to withdrawal', () => {
     });
 
     await ensureCycle({
-      cycleId: CYCLE, cycleType: '30_MIN',
+      cycleId: CYCLE, cycleType: '30_MIN', audience: 'VIP',
       startTime: new Date(Date.now() - 60_000), endTime: new Date(Date.now() + 60_000),
     });
 
@@ -288,7 +288,7 @@ describePg('the whole journey: signup to withdrawal', () => {
       counterparty: TEST_FUNDING,
     });
     await ensureCycle({
-      cycleId: CYCLE, cycleType: '30_MIN',
+      cycleId: CYCLE, cycleType: '30_MIN', audience: 'VIP',
       startTime: new Date(Date.now() - 60_000), endTime: new Date(Date.now() + 60_000),
     });
 
@@ -342,7 +342,7 @@ describePg('the whole journey: signup to withdrawal', () => {
       counterparty: TEST_FUNDING,
     });
     await ensureCycle({
-      cycleId: CYCLE, cycleType: '30_MIN',
+      cycleId: CYCLE, cycleType: '30_MIN', audience: 'VIP',
       startTime: new Date(Date.now() - 60_000), endTime: new Date(Date.now() + 60_000),
     });
 

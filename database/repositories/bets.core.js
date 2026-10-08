@@ -55,6 +55,7 @@
  */
 import { getPool, pgQuery, connectGuarded } from '../client.js';
 import { applyMovementWithin } from './wallets.core.js';
+import { recordTurnoverWithin, unlockIfNothingOutstandingWithin } from './promo.js';
 import { moneyOperations } from '../../backend/services/metrics.service.js';
 import { MONEY_PATHS } from '../moneyPaths.js';
 import { paiseToRupees } from '../../backend/shared/money.js';
@@ -323,6 +324,21 @@ function stakeLegs(slices, locking) {
 const sumSlices = (slices) => slices.reduce((s, x) => s + x.amountPaise, 0);
 
 /**
+ * Whose money a cycle's bets are (owner, 2026-10-08): a GENERAL cycle is played
+ * with the GENERAL (promotional) balance alone, a VIP cycle never with it. The
+ * stake, its payout and its turnover follow from the cycle's audience, read in
+ * the transaction that moves the money. A bet against a cycle with no row (a
+ * repository test) is VIP's.
+ */
+async function audienceOfCycle(client, cycleId) {
+  const { rows } = await client.query('SELECT audience FROM cycles WHERE cycle_id = $1', [String(cycleId)]);
+  return rows[0]?.audience ?? 'VIP';
+}
+const fundsMatchAudience = (slices, audience) => (audience === 'GENERAL'
+  ? slices.every((s) => s.field === 'promoBalance')
+  : slices.every((s) => s.field !== 'promoBalance'));
+
+/**
  * placeBet — create the bet AND commit the stake, in one transaction.
  *
  * `betId` is the caller's deterministic key. It must be derived from stable
@@ -356,6 +372,11 @@ export async function placeBet({
     // compensates for something that actually succeeded.
     if (ctx.bet) {
       return { commit: false, value: { ok: true, idempotent: true, bet: ctx.bet } };
+    }
+
+    // GENERAL money only on a GENERAL cycle, and only GENERAL money there.
+    if (!fundsMatchAudience(slices, await audienceOfCycle(ctx.client, cycleId))) {
+      return { commit: false, value: { ok: false, reason: 'wrong_balance_for_cycle' } };
     }
 
     await ctx.client.query(
@@ -493,11 +514,16 @@ async function settle(
     // A winning payout is a SEPARATE credit with its own ledger row, so the
     // books distinguish "the stake was consumed" from "the house paid out".
     // Netting them would make a won bet look like a smaller loss.
+    //
+    // A GENERAL cycle pays back into the GENERAL balance, never winnings: the
+    // promotional money becomes withdrawable only when its turnover is met.
+    const audience = await audienceOfCycle(ctx.client, bet.cycleId);
+    const payoutField = audience === 'GENERAL' ? 'promoBalance' : 'winningsBalance';
     if (payoutPaise > 0) {
-      legs.push({ field: 'winningsBalance', deltaPaise: payoutPaise });
+      legs.push({ field: payoutField, deltaPaise: payoutPaise });
       ledger.push({
         txId: `${ctx.bid}_payout`,
-        field: 'winningsBalance', amountPaise: payoutPaise, type: 'CREDIT',
+        field: payoutField, amountPaise: payoutPaise, type: 'CREDIT',
         reason: reason || `Bet ${ctx.bid} payout`, refId: ctx.bid,
       });
     }
@@ -519,6 +545,16 @@ async function settle(
     }
     if (!movement.ok) {
       return { commit: false, value: { ok: false, reason: movement.refused ?? 'insufficient', legs } };
+    }
+
+    // A GENERAL stake that was PLAYED (won or lost, not returned) counts
+    // towards the player's turnover, once, keyed by the bet, in this same
+    // transaction: the settlement and the count commit together or not at all.
+    // A returned GENERAL stake counts nothing, but goes the way any GENERAL
+    // money does once no requirement is open.
+    if (audience === 'GENERAL') {
+      if (spec.returnsStake) await unlockIfNothingOutstandingWithin(ctx, `promo_unlock_rest_${ctx.bid}`);
+      else await recordTurnoverWithin(ctx, { stakeRef: ctx.bid, amountPaise: bet.stakePaise });
     }
 
     return {

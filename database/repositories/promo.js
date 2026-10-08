@@ -94,68 +94,101 @@ async function unlockWithin(ctx, amountPaise, txId, reason) {
  *             completedGrants: string[] }}
  */
 export async function recordTurnover({ userId, stakeRef, amountPaise }) {
+  return withWalletLock(userId, async (ctx) => {
+    const value = await recordTurnoverWithin(ctx, { stakeRef, amountPaise });
+    return { commit: value.counted, value };
+  });
+}
+
+/**
+ * The same, inside a transaction that already holds the player's wallet row
+ * lock (`ctx.client`, `ctx.uid`): a GENERAL bet's settlement counts its stake
+ * here, so the settlement and the count commit together (bets.core.js).
+ */
+export async function recordTurnoverWithin(ctx, { stakeRef, amountPaise }) {
   if (!Number.isInteger(amountPaise) || amountPaise <= 0) {
     throw Object.assign(new Error(`Invalid turnover: ${amountPaise}`), { status: 400 });
   }
-  return withWalletLock(userId, async (ctx) => {
-    const { client, uid } = ctx;
-    const claimed = await client.query(
-      `INSERT INTO promo_turnover (stake_ref, user_id, amount_paise, applied_paise)
-       VALUES ($1, $2, $3, 0) ON CONFLICT (stake_ref) DO NOTHING RETURNING stake_ref`,
-      [String(stakeRef), uid, amountPaise],
-    );
-    if (!claimed.rows.length) {
-      return { commit: false, value: { counted: false, appliedPaise: 0, unlockedPaise: 0, completedGrants: [] } };
-    }
+  const { client, uid } = ctx;
+  const claimed = await client.query(
+    `INSERT INTO promo_turnover (stake_ref, user_id, amount_paise, applied_paise)
+     VALUES ($1, $2, $3, 0) ON CONFLICT (stake_ref) DO NOTHING RETURNING stake_ref`,
+    [String(stakeRef), uid, amountPaise],
+  );
+  if (!claimed.rows.length) {
+    return { counted: false, appliedPaise: 0, unlockedPaise: 0, completedGrants: [] };
+  }
 
-    const { rows: open } = await client.query(
-      `SELECT grant_id, amount_paise, required_turnover_paise, turnover_paise
-         FROM promo_grants WHERE user_id = $1 AND completed_at IS NULL
-        ORDER BY created_at, grant_id FOR UPDATE`,
-      [uid],
-    );
-    let left = amountPaise;
-    let applied = 0;
-    let unlocked = 0;
-    const completedGrants = [];
-    let promoHeld = ctx.balances.promoBalance;
-    for (const g of open) {
-      if (left === 0) break;
-      const take = Math.min(left, n(g.required_turnover_paise) - n(g.turnover_paise));
-      left -= take;
-      applied += take;
-      const done = n(g.turnover_paise) + take === n(g.required_turnover_paise);
-      const release = done ? Math.min(n(g.amount_paise), promoHeld) : 0;
-      await client.query(
-        `UPDATE promo_grants
-            SET turnover_paise = turnover_paise + $2,
-                completed_at = CASE WHEN turnover_paise + $2 = required_turnover_paise THEN now() END,
-                unlocked_paise = unlocked_paise + $3
-          WHERE grant_id = $1 AND completed_at IS NULL`,
-        [g.grant_id, take, release],
-      );
-      if (done) {
-        completedGrants.push(g.grant_id);
-        unlocked += await unlockWithin(ctx, release, `promo_unlock_${g.grant_id}`, 'Referral bonus unlocked');
-        promoHeld -= release;
-      }
-    }
+  const { rows: open } = await client.query(
+    `SELECT grant_id, amount_paise, required_turnover_paise, turnover_paise
+       FROM promo_grants WHERE user_id = $1 AND completed_at IS NULL
+      ORDER BY created_at, grant_id FOR UPDATE`,
+    [uid],
+  );
+  // What the GENERAL balance holds now, read under the lock this transaction
+  // holds: the caller may already have moved it (a payout just credited).
+  const { rows: [w] } = await client.query('SELECT promo_paise FROM wallets WHERE user_id = $1', [uid]);
+  let promoHeld = n(w?.promo_paise);
+  let left = amountPaise;
+  let applied = 0;
+  let unlocked = 0;
+  const completedGrants = [];
+  for (const g of open) {
+    if (left === 0) break;
+    const take = Math.min(left, n(g.required_turnover_paise) - n(g.turnover_paise));
+    left -= take;
+    applied += take;
+    const done = n(g.turnover_paise) + take === n(g.required_turnover_paise);
+    const release = done ? Math.min(n(g.amount_paise), promoHeld) : 0;
     await client.query(
-      'UPDATE promo_turnover SET applied_paise = $2 WHERE stake_ref = $1',
-      [String(stakeRef), applied],
+      `UPDATE promo_grants
+          SET turnover_paise = turnover_paise + $2,
+              completed_at = CASE WHEN turnover_paise + $2 = required_turnover_paise THEN now() END,
+              unlocked_paise = unlocked_paise + $3
+        WHERE grant_id = $1 AND completed_at IS NULL`,
+      [g.grant_id, take, release],
     );
-
-    // Nothing outstanding: the promotional winnings unlock too.
-    if (completedGrants.length && promoHeld > 0) {
-      const { rows: still } = await client.query(
-        'SELECT 1 FROM promo_grants WHERE user_id = $1 AND completed_at IS NULL LIMIT 1', [uid],
-      );
-      if (!still.length) {
-        unlocked += await unlockWithin(ctx, promoHeld, `promo_unlock_rest_${stakeRef}`, 'Promotional winnings unlocked');
-      }
+    if (done) {
+      completedGrants.push(g.grant_id);
+      unlocked += await unlockWithin(ctx, release, `promo_unlock_${g.grant_id}`, 'Referral bonus unlocked');
+      promoHeld -= release;
     }
-    return { commit: true, value: { counted: true, appliedPaise: applied, unlockedPaise: unlocked, completedGrants } };
-  });
+  }
+  await client.query(
+    'UPDATE promo_turnover SET applied_paise = $2 WHERE stake_ref = $1',
+    [String(stakeRef), applied],
+  );
+
+  unlocked += await unlockIfNothingOutstandingWithin(ctx, `promo_unlock_rest_${stakeRef}`);
+  return { counted: true, appliedPaise: applied, unlockedPaise: unlocked, completedGrants };
+}
+
+/**
+ * With no requirement open, nothing in the GENERAL balance is promotional any
+ * more: it all unlocks into winnings, keyed `txId`. Called after every count
+ * and every returned GENERAL stake, so money that lands in GENERAL after the
+ * last requirement was met (a later win, a refunded stake) is never stranded.
+ *
+ * @returns {Promise<number>} paise unlocked
+ */
+export async function unlockIfNothingOutstandingWithin(ctx, txId) {
+  const { client, uid } = ctx;
+  const { rows: [state] } = await client.query(
+    `SELECT w.promo_paise,
+            EXISTS (SELECT 1 FROM promo_grants g WHERE g.user_id = w.user_id AND g.completed_at IS NULL) AS open
+       FROM wallets w WHERE w.user_id = $1`,
+    [uid],
+  );
+  if (!state || state.open || n(state.promo_paise) === 0) return 0;
+  return unlockWithin(ctx, n(state.promo_paise), txId, 'Promotional winnings unlocked');
+}
+
+/** The profile a player is using (schema default: 'VIP'). */
+export async function playProfileOf(userId) {
+  const { rows } = await pgQuery(
+    `SELECT play_profile FROM users WHERE user_id = $1`, [String(userId)], 'promo_profile_of',
+  );
+  return rows[0]?.play_profile ?? 'VIP';
 }
 
 /** Switch the profile a player is using. */

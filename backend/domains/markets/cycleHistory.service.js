@@ -41,6 +41,7 @@
 import { db } from '#db';
 import { CYCLE_TYPE_VALUES, isCycleType } from './cycleTypes.js';
 import { publicCycleView } from './cyclePublicView.js';
+import { AUDIENCES } from '#db/repositories/markets.js';
 
 /**
  * Rows per type. Caps a `limit` a caller took from a query string.
@@ -82,8 +83,8 @@ export function normaliseLimit(limit, typeCount) {
  * showed only the handful of results that happened to be mid-settlement at
  * that instant, which on a 1-minute block is usually one row or none.
  */
-async function historyForType(type, limit) {
-  const cycles = await db.markets.resolvedCyclesWithPools(type, { limit });
+async function historyForType(type, audience, limit) {
+  const cycles = await db.markets.resolvedCyclesWithPools(type, audience, { limit });
   return cycles.map(publicCycleView);
 }
 
@@ -102,13 +103,17 @@ async function historyForType(type, limit) {
  * @returns {Promise<{cycles: object[], types: string[]}>} newest first within
  *          each type; `types` names what the payload is authoritative for.
  */
-export async function fetchCycleHistory({ types, limit } = {}) {
+export async function fetchCycleHistory({ types, limit, audience } = {}) {
+  // One audience's boards (VIP and GENERAL never share a cycle). Like an
+  // unknown type, an unknown audience from a client is not an error: it reads
+  // as VIP, the profile every visitor starts on (schema default: 'VIP').
+  const who = AUDIENCES.includes(audience) ? audience : 'VIP';
   const wanted = (Array.isArray(types) ? types : types ? [types] : CYCLE_TYPE_VALUES)
     .filter(isCycleType);
-  if (wanted.length === 0) return { cycles: [], types: [] };
+  if (wanted.length === 0) return { cycles: [], types: [], audience: who };
 
   const n = normaliseLimit(limit, wanted.length);
-  const perType = await Promise.all(wanted.map((t) => historyForType(t, n)));
+  const perType = await Promise.all(wanted.map((t) => historyForType(t, who, n)));
 
-  return { cycles: perType.flat(), types: wanted };
+  return { cycles: perType.flat(), types: wanted, audience: who };
 }

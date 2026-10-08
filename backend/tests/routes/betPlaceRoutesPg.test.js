@@ -36,6 +36,7 @@ import { fundWallet } from '#db/tests/_funding.js';
 import { actor, mountRouter, as } from './_harness.js';
 import { linkTelegram } from '../miniAppFixture.js';
 import { accept as acceptBoardRules } from '#db/repositories/boardRules.js';
+import * as promo from '#db/repositories/promo.js';
 import { BOARD_RULES_VERSION } from '../../domains/markets/boardRules.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
@@ -43,10 +44,10 @@ const describePg = pgConfigured() ? describe : describe.skip;
 const HOUR = 3_600_000;
 
 /** A cycle of this type running now, at a start time nothing else holds. */
-async function openCycle(type, { startedAgoMs, lengthMs }) {
+async function openCycle(type, { startedAgoMs, lengthMs, audience = 'VIP' }) {
   const start = new Date(Date.now() - startedAgoMs - randomInt(0, 50_000_000));
   const { cycle } = await ensureCycle({
-    cycleId: `rt-bet-${type}-${start.getTime()}`, cycleType: type,
+    cycleId: `rt-bet-${type}-${start.getTime()}`, cycleType: type, audience,
     startTime: start, endTime: new Date(Date.now() + lengthMs),
   });
   return cycle;
@@ -163,6 +164,57 @@ describePg('POST /api/bet/place', () => {
       const res = await place(p, { cycleId: cycle.cycleId, side: 'BOMBAY', amount: limits.fullDay.min, type: 'FULL_DAY' });
       expect(res.status).toBe(409);
       expect(res.body.code).toBe('BOARD_RULES_NOT_ACCEPTED');
+    });
+  });
+
+  describe('VIP and GENERAL players never share a board (owner, 2026-10-08)', () => {
+    const generalPlayer = async (bonusPaise) => {
+      const p = await actor({});
+      await linkTelegram(p.userId);
+      await promo.creditReferralBonus({ userId: p.userId, amountPaise: bonusPaise, earningId: `${p.userId}-ref` });
+      await promo.setPlayProfile(p.userId, 'GENERAL');
+      return p;
+    };
+
+    it('takes a GENERAL player\'s stake from the General balance on a GENERAL board', async () => {
+      const cycle = await openCycle('FULL_DAY', { startedAgoMs: HOUR, lengthMs: 20 * HOUR, audience: 'GENERAL' });
+      made.push(cycle.cycleId);
+      const p = await generalPlayer(limits.fullDay.min * 100 * 2);
+      const res = await place(p, { cycleId: cycle.cycleId, side: 'DELHI', amount: limits.fullDay.min, type: 'FULL_DAY' });
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body.balance.general).toBe(limits.fullDay.min);
+      const after = await getBalances(p.userId);
+      expect(after.depositBalance).toBe(0);
+      expect(after.lockedBalance).toBe(limits.fullDay.min);
+    });
+
+    it('refuses a GENERAL player on a VIP board, and a VIP player on a GENERAL board, moving nothing', async () => {
+      const vipBoard = await openCycle('FULL_DAY', { startedAgoMs: HOUR, lengthMs: 20 * HOUR });
+      const generalBoard = await openCycle('FULL_DAY', { startedAgoMs: HOUR, lengthMs: 20 * HOUR, audience: 'GENERAL' });
+      made.push(vipBoard.cycleId, generalBoard.cycleId);
+
+      const g = await generalPlayer(100_000);
+      const r1 = await place(g, { cycleId: vipBoard.cycleId, side: 'DELHI', amount: limits.fullDay.min, type: 'FULL_DAY' });
+      expect(r1.status).toBe(409);
+      expect(r1.body.code).toBe('WRONG_PROFILE_FOR_CYCLE');
+
+      const v = await fundedPlayer(1_000);
+      const r2 = await place(v, { cycleId: generalBoard.cycleId, side: 'DELHI', amount: limits.fullDay.min, type: 'FULL_DAY' });
+      expect(r2.status).toBe(409);
+      expect(r2.body.code).toBe('WRONG_PROFILE_FOR_CYCLE');
+
+      const { rows } = await pgQuery(`SELECT count(*)::int AS n FROM bets WHERE user_id = ANY($1)`, [[g.userId, v.userId]]);
+      expect(rows[0].n).toBe(0);
+    });
+
+    it('refuses a GENERAL stake larger than the General balance, whatever else the wallet holds', async () => {
+      const cycle = await openCycle('FULL_DAY', { startedAgoMs: HOUR, lengthMs: 20 * HOUR, audience: 'GENERAL' });
+      made.push(cycle.cycleId);
+      const p = await generalPlayer(limits.fullDay.min * 100);
+      await fundWallet(p.userId, 1_000_000, `rt-bet-gen-dep-${p.userId}`);
+      const res = await place(p, { cycleId: cycle.cycleId, side: 'DELHI', amount: limits.fullDay.min * 2, type: 'FULL_DAY' });
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('STAKE_EXCEEDS_FUNDABLE');
     });
   });
 

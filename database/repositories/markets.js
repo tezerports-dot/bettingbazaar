@@ -24,11 +24,25 @@
  */
 import { pgQuery, withTransaction } from '../client.js';
 import { rupeesToPaise, paiseToRupees } from '../../backend/shared/money.js';
+import { PLAY_PROFILES } from './promo.js';
 
 
 export const SIDES = Object.freeze(['DELHI', 'BOMBAY']);
 
-const COLUMNS = `cycle_id, cycle_type, start_time, end_time, status,
+/**
+ * Who a cycle is for: the play profiles (`cycles_audience_known`). VIP and
+ * GENERAL players never share a cycle (owner, 2026-10-08), so every read or
+ * write of "the cycle for a type" names its audience; there is no default.
+ */
+export const AUDIENCES = PLAY_PROFILES;
+function audienceOf(audience) {
+  if (!AUDIENCES.includes(audience)) {
+    throw Object.assign(new Error(`Unknown cycle audience '${audience}'. Known: ${AUDIENCES.join(', ')}`), { status: 400 });
+  }
+  return audience;
+}
+
+const COLUMNS = `cycle_id, cycle_type, audience, start_time, end_time, status,
   phantom_delhi_paise, phantom_bombay_paise, phantom_balanced, phantom_bets_closed,
   winner, pending_result, is_paused, winner_determined_at, winner_determined_by,
   winner_confidence, is_settled, settled_at, total_paid_out_paise, net_profit_paise,
@@ -52,6 +66,7 @@ function toCycle(r) {
   return {
     cycleId: r.cycle_id, _id: r.cycle_id,
     type: r.cycle_type,
+    audience: r.audience,
     startTime: r.start_time, endTime: r.end_time,
     status: r.status,
     phantomDelhi: paiseToRupees(num(r.phantom_delhi_paise)),
@@ -179,12 +194,13 @@ export async function getAcceptingCycle(cycleId) {
  * died still reads OPEN and offering it would take bets on a round that will
  * never settle.
  */
-export async function listActiveCycles() {
+export async function listActiveCycles({ audience = null } = {}) {
   const { rows } = await pgQuery(
     `SELECT ${COLUMNS} FROM cycles
       WHERE status = ANY($1::text[]) AND end_time > now()
-      ORDER BY cycle_type ASC, start_time ASC`,
-    [['OPEN', 'MERGED']], 'cycle_list_active',
+        AND ($2::text IS NULL OR audience = $2)
+      ORDER BY cycle_type ASC, audience ASC, start_time ASC`,
+    [['OPEN', 'MERGED'], audience === null ? null : audienceOf(audience)], 'cycle_list_active',
   );
   return rows.map(toCycle);
 }
@@ -284,7 +300,7 @@ export async function activeCyclesWithPools({
        FROM cycles c ${POOL_JOIN}
       WHERE c.status = ANY($1::text[])
         ${includeExpired ? '' : 'AND c.end_time > now()'}
-      ORDER BY c.cycle_type ASC, c.start_time ASC`,
+      ORDER BY c.cycle_type ASC, c.audience ASC, c.start_time ASC`,
     [statuses], 'cycle_active_with_pools',
   );
   return rows.map(withPools);
@@ -297,16 +313,16 @@ export async function activeCyclesWithPools({
  * celebration still gets the cycle whose result it is about to see rather than
  * nothing at all.
  */
-export async function currentCycleWithPools(cycleType, {
+export async function currentCycleWithPools(cycleType, audience, {
   statuses = ['OPEN', 'MERGED', 'CLOSED', 'RESULT_DECLARED'],
 } = {}) {
   const { rows } = await pgQuery(
     `SELECT ${qualified('c')},
             p.real_delhi_paise, p.real_bombay_paise, p.delhi_bets, p.bombay_bets
        FROM cycles c ${POOL_JOIN}
-      WHERE c.cycle_type = $1 AND c.status = ANY($2::text[])
+      WHERE c.cycle_type = $1 AND c.audience = $3 AND c.status = ANY($2::text[])
       ORDER BY c.start_time DESC LIMIT 1`,
-    [String(cycleType), statuses], 'cycle_current_with_pools',
+    [String(cycleType), statuses, audienceOf(audience)], 'cycle_current_with_pools',
   );
   return rows.length ? withPools(rows[0]) : null;
 }
@@ -338,10 +354,11 @@ export async function setCycleStatus(cycleId, to, { from = [] } = {}) {
  * concurrent reads this replaced could report 51 cycles across 2 pages while
  * the page in front of the admin held rows from a third.
  */
-export async function cycleHistory({ cycleType = null, page = 1, limit = 50 } = {}) {
+export async function cycleHistory({ cycleType = null, audience = null, page = 1, limit = 50 } = {}) {
   const params = [['RESULT_DECLARED', 'COMPLETED', 'CANCELLED']];
   const where = ['c.status = ANY($1::text[])'];
   if (cycleType) { params.push(String(cycleType)); where.push(`c.cycle_type = $${params.length}`); }
+  if (audience) { params.push(audienceOf(audience)); where.push(`c.audience = $${params.length}`); }
 
   const size = Math.min(Math.max(Number(limit) || 50, 1), 200);
   const wanted = Math.max(Number(page) || 1, 1);
@@ -374,18 +391,18 @@ export async function cycleHistory({ cycleType = null, page = 1, limit = 50 } = 
  * decides, not a prior existence check — `ON CONFLICT DO NOTHING` makes the
  * loser a no-op rather than an error, and the loser then reads the winner's row.
  */
-export async function ensureCycle({ cycleId, cycleType, startTime, endTime }) {
+export async function ensureCycle({ cycleId, cycleType, audience, startTime, endTime }) {
   const { rows } = await pgQuery(
-    `INSERT INTO cycles (cycle_id, cycle_type, start_time, end_time)
-     VALUES ($1, $2, $3, $4)
-     ON CONFLICT (cycle_type, start_time) DO NOTHING
+    `INSERT INTO cycles (cycle_id, cycle_type, audience, start_time, end_time)
+     VALUES ($1, $2, $5, $3, $4)
+     ON CONFLICT (cycle_type, audience, start_time) DO NOTHING
      RETURNING ${COLUMNS}`,
-    [String(cycleId), String(cycleType), startTime, endTime], 'cycle_ensure',
+    [String(cycleId), String(cycleType), startTime, endTime, audienceOf(audience)], 'cycle_ensure',
   );
   if (rows[0]) return { cycle: toCycle(rows[0]), created: true };
   const { rows: existing } = await pgQuery(
-    `SELECT ${COLUMNS} FROM cycles WHERE cycle_type = $1 AND start_time = $2`,
-    [String(cycleType), startTime], 'cycle_ensure_read',
+    `SELECT ${COLUMNS} FROM cycles WHERE cycle_type = $1 AND audience = $3 AND start_time = $2`,
+    [String(cycleType), startTime, audience], 'cycle_ensure_read',
   );
   return { cycle: toCycle(existing[0]), created: false };
 }
@@ -748,15 +765,15 @@ export async function setPendingResult(cycleId, side) {
  * a 1-minute block resolves 60 times an hour, so 50 rows shared across three
  * types is the last 50 minutes and nothing else.
  */
-export async function resolvedCyclesWithPools(cycleType, { limit = 50 } = {}) {
+export async function resolvedCyclesWithPools(cycleType, audience, { limit = 50 } = {}) {
   const { rows } = await pgQuery(
     `SELECT ${qualified('c')},
             p.real_delhi_paise, p.real_bombay_paise, p.delhi_bets, p.bombay_bets
        FROM cycles c ${POOL_JOIN}
-      WHERE c.cycle_type = $1 AND c.winner IS NOT NULL
+      WHERE c.cycle_type = $1 AND c.audience = $3 AND c.winner IS NOT NULL
       ORDER BY c.end_time DESC
       LIMIT $2`,
-    [String(cycleType), Math.min(Math.max(Number(limit) || 50, 1), 1440)],
+    [String(cycleType), Math.min(Math.max(Number(limit) || 50, 1), 1440), audienceOf(audience)],
     'cycle_resolved_with_pools',
   );
   return rows.map(withPools);

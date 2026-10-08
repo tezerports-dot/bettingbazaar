@@ -59,7 +59,7 @@ describePg('the domains written from scratch', () => {
     const makeCycle = async (over = {}) => {
       const start = new Date(Date.now() - 60_000);
       const { cycle } = await markets.ensureCycle({
-        cycleId: `c-${ID}`, cycleType: '30_MIN',
+        cycleId: `c-${ID}`, cycleType: '30_MIN', audience: 'VIP',
         startTime: start, endTime: new Date(start.getTime() + 30 * 60_000), ...over,
       });
       return cycle;
@@ -68,7 +68,7 @@ describePg('the domains written from scratch', () => {
     it('creates ONE cycle when two generators wake together', async () => {
       const start = new Date(Date.now() - 120_000);
       const spec = {
-        cycleType: '1_MIN', startTime: start,
+        cycleType: '1_MIN', audience: 'VIP', startTime: start,
         endTime: new Date(start.getTime() + 60_000),
       };
       const [a, b] = await Promise.all([
@@ -108,7 +108,7 @@ describePg('the domains written from scratch', () => {
       // healthy while nothing was being resolved.
       const start = new Date(Date.now() - 7200_000);
       await markets.ensureCycle({
-        cycleId: `c-${ID}-dead`, cycleType: '1_MIN',
+        cycleId: `c-${ID}-dead`, cycleType: '1_MIN', audience: 'VIP',
         startTime: start, endTime: new Date(start.getTime() + 60_000),
       });
       const active = (await markets.listActiveCycles()).map((c) => c.cycleId);
@@ -183,7 +183,7 @@ describePg('the domains written from scratch', () => {
       const id = `c-${ID}-${suffix}`;
       const start = new Date(Date.now() - 60 * 60_000);
       await markets.ensureCycle({
-        cycleId: id, cycleType: 'FULL_DAY',
+        cycleId: id, cycleType: 'FULL_DAY', audience: 'VIP',
         startTime: start, endTime: new Date(start.getTime() + 60_000),
       });
       await markets.declareWinner(id, 'DELHI');
@@ -236,7 +236,7 @@ describePg('the domains written from scratch', () => {
       // silently never settled" on the day it shipped.
       const start = new Date(Date.now() - 60 * 60_000);
       await markets.ensureCycle({
-        cycleId: `c-${ID}-stalled`, cycleType: 'FULL_DAY',
+        cycleId: `c-${ID}-stalled`, cycleType: 'FULL_DAY', audience: 'VIP',
         startTime: start, endTime: new Date(start.getTime() + 60_000),
       });
       const stalled = await markets.findStalledCycles({ olderThanMinutes: 5, limit: 1000 });
@@ -250,7 +250,7 @@ describePg('the domains written from scratch', () => {
       const start = new Date(Date.now() - 90 * 60_000);
       for (const n of [1, 2, 3]) {
         await markets.ensureCycle({
-          cycleId: `c-${ID}-stall-${n}`, cycleType: 'FULL_DAY',
+          cycleId: `c-${ID}-stall-${n}`, cycleType: 'FULL_DAY', audience: 'VIP',
           startTime: start, endTime: new Date(start.getTime() + 60_000),
         });
       }

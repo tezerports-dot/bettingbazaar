@@ -83,11 +83,13 @@ router.get('/cycles/active', async (req, res) => {
     // still reads OPEN, and offering it takes bets on a round that will never
     // settle — the exact failure that let the engine look healthy while
     // nothing was being resolved.
-    const cycles = await db.markets.listActiveCycles();
+    // `?audience=VIP|GENERAL` narrows to one profile's boards; without it,
+    // both, each row naming its own.
+    const { audience } = req.query;
+    const cycles = await db.markets.listActiveCycles({ audience: audience ? String(audience) : null });
     res.json({ success: true, cycles: cycles.map(sanitiseCycleForUser) });
   } catch (error) {
-    console.error('Get active cycles error:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch active cycles' });
+    return respondError(res, error, 'GET /api/cycles/active', { message: 'Failed to fetch active cycles' });
   }
 });
 
@@ -120,8 +122,8 @@ router.get('/v1/game/cycles/history', async (req, res) => {
     //
     // `limit` is PER TYPE. Omitting `type` returns every type at a much lower
     // per-type cap; the deep window is for one board at a time.
-    const { limit, type } = req.query;
-    const { cycles } = await fetchCycleHistory({ types: type, limit });
+    const { limit, type, audience } = req.query;
+    const { cycles } = await fetchCycleHistory({ types: type, limit, audience });
     res.json({ success: true, cycles });
   } catch (error) {
     console.error('Cycle history error:', error);
