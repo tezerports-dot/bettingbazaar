@@ -10,12 +10,20 @@
  * works and can never prove the stack in front of it lets the request reach
  * that handler).
  *
- * ── Tokens are minted, not obtained through the login screen ────────────────
- * Login is behind Cloudflare Turnstile. Minting the SAME payload the login
- * routes mint exercises every route, guard and middleware AFTER authentication
- * — which is where the behaviour under test lives — without pretending a
- * captcha was solved. What this therefore does NOT cover is the login screen
- * itself, and saying so is the point of §29.
+ * ── Tokens are minted, except in s9 ─────────────────────────────────────────
+ * The player's sign-in is behind Cloudflare Turnstile. Minting the SAME payload
+ * the login routes mint exercises every route, guard and middleware AFTER
+ * authentication — which is where the behaviour under test lives — without
+ * pretending a captcha was solved. s9 is the exception: it earns its sessions
+ * through the real doors and the Mini App (this server has no Turnstile secret,
+ * so the player's captcha is inert here; `test:captcha-doors` asks which doors
+ * challenge). What no scenario covers is the screens themselves (§29).
+ *
+ * ── What it needs ────────────────────────────────────────────────────────────
+ * DATABASE_URL, and the server's signing keys (JWT_SECRET or PASETO_SECRET_KEY,
+ * ORDER_HMAC_SECRET, IDENTITY_ENCRYPTION_KEY) in THIS process's environment:
+ * the server inherits them, and the runner signs with the same ones (minted
+ * sessions; s9's test bot token, encrypted as the server will decrypt it).
  *
  * ── It writes to whatever DATABASE_URL names ────────────────────────────────
  * Scenarios seed their own actors with a per-run id and assert on deltas, not
@@ -95,7 +103,13 @@ const server = spawn(process.execPath, [join(ROOT, 'backend', 'server.js')], {
   // X-Forwarded-For — the IP deny-list probe (s8 §18) needs a blocked caller
   // that is not the runner itself. A request with no such header is still
   // keyed on the socket, so no other scenario sees a difference.
-  env: { ...process.env, PORT: String(PORT), NODE_ENV: process.env.NODE_ENV || 'development', BB_RATE_LIMIT_RELAX: '1', TRUST_PROXY: '1' },
+  //
+  // TELEGRAM_CONFIG_TTL_MS short: s9 saves the test bot from THIS process, and
+  // the server's own bot cache (30 s by default) cannot hear it do so.
+  env: {
+    ...process.env, PORT: String(PORT), NODE_ENV: process.env.NODE_ENV || 'development',
+    BB_RATE_LIMIT_RELAX: '1', TRUST_PROXY: '1', TELEGRAM_CONFIG_TTL_MS: '500',
+  },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 const serverLog = [];

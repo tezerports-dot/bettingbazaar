@@ -1,6 +1,10 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * Which doors actually challenge, on a server where the captcha is switched on.
+ * Which doors challenge, and which must not, on a server where the captcha is
+ * switched on. The player's signup and sign-in challenge; staff sign-in,
+ * merchant sign-in and merchant signup must NOT (owner, 2026-10-08: "merchant
+ * and staff dont need captcha they will only need 2FA"), because their panels
+ * send no captcha token and a challenge there refuses every sign-in.
  *
  * ── The gap this closes ───────────────────────────────────────────────────
  * `captcha.test.js` covers the MIDDLEWARE — configured and not, accepted and
@@ -13,11 +17,10 @@
  * Two earlier drafts could not answer the question:
  *
  *   · Grepping the route files reported SEVEN naked doors, six of them false.
- *     `playerAuth.routes.js` spreads its captcha in from a shared chain
- *     (`...credentialChain('player-login')`), and the merchant login's captcha
- *     is a separate `app.use('/api/merchant/auth/login', …)` prefix mount in
- *     `server.js`. A text scan sees neither, and a gate that cries wolf six
- *     times out of seven is one somebody switches off (§28).
+ *     The doors spread their chains in (`...doorRoute('PLAYER', 'login')`,
+ *     `loginDoors.js`; `...signupChain(…)`), which a text scan cannot follow,
+ *     and a gate that cries wolf six times out of seven is one somebody
+ *     switches off (§28).
  *
  *   · Walking the router stack needs the assembled app, and `server.js` does
  *     not export it; `mountRouter` in the route harness mounts ONE router, so
