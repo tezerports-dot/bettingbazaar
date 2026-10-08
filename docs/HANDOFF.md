@@ -29,8 +29,31 @@ A prompt to start the new session is at the end (section 9).
   section-2 questions answered and built, every "recorded, not yet done" item
   except the merchant login closed, token conservation enforced by the
   database, and graphify (code map) added for sessions. See section 2.
-- **Next: Step 3, redefined by the owner on 2026-10-07** (section 3). It is
-  built on top of PR #210 and gets its own PR once #210 is merged.
+  Also in #210:
+  - A casino WIN pays into winnings (owner, 2026-10-07). A casino BET
+    drawing on winnings like a board bet (owner, 2026-10-08) is being built
+    on `helper/casino-bet`.
+  - The Dispute Manager's filters come from the server (`DISPUTE_FILTERS`:
+    Open by default, Open escalated, Closed, All), with the total and paging.
+    An unknown filter is a 400, and decided disputes show their decision.
+  - A supervisor has no online switch or order settings
+    (403 `SUPERVISOR_TAKES_NO_ORDERS`, the `merchants_supervisor_never_online`
+    CHECK). Promotion switches them offline, and the panel hides the switches.
+  - "Remove <member>" asks first.
+  - Left open: `PUT /api/admin/merchants/:id/capabilities` still writes a
+    supervisor's order flags (harmless, since routing never reads a
+    supervisor). `backupRestorePg` uses a fixed database name, so two
+    `test:pg` runs on one server collide. The admin panel's `npm run lint`
+    crashes inside eslint; it is not in CI.
+  - Verified at `f2ab2e2`: `test:unit` 886/886; `test:pg` 1,663/1,663;
+    `test:e2e` 0 fail; all gates exit 0 (`check:no-mongo` on a clean
+    export); admin 201/201, merchant 121/121 and user 231/231, all three
+    building. The harness-2 helper's browser tiers on its own branch:
+    `test:browser` 67 checks with 0 fail, `test:drive` 0 fail, and
+    `test:mutate` 46/47 driven with 0 failed.
+- **Next: Step 3, redefined by the owner on 2026-10-07** (section 3). It has
+  its own project thread ("Step 3 signup and login") working from branch
+  `helper/step3-core-2`. It gets its own PR once #210 is merged.
 - **Step 2f is done.** It contains:
   - Online-time log: `merchant_online_sessions`, written only by triggers on
     `merchants.is_online`.
