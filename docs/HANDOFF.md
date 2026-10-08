@@ -30,9 +30,11 @@ A prompt to start the new session is at the end (section 9).
   except the merchant login closed, token conservation enforced by the
   database, and graphify (code map) added for sessions. See section 2.
   Also in #210:
-  - A casino WIN pays into winnings (owner, 2026-10-07). A casino BET
-    drawing on winnings like a board bet (owner, 2026-10-08) is being built
-    on `helper/casino-bet`.
+  - A casino WIN pays into winnings (owner, 2026-10-07). A casino BET takes
+    its stake like a board bet (owner, 2026-10-08): the reserve share
+    (`betReservePercent`), then deposit, then winnings, split by the board's
+    own `stakeFunding.js` from the locked wallet. A rollback returns each part
+    to its own pocket in the same order, so winnings come back last.
   - The Dispute Manager's filters come from the server (`DISPUTE_FILTERS`:
     Open by default, Open escalated, Closed, All), with the total and paging.
     An unknown filter is a 400, and decided disputes show their decision.
@@ -45,7 +47,8 @@ A prompt to start the new session is at the end (section 9).
     supervisor). `backupRestorePg` uses a fixed database name, so two
     `test:pg` runs on one server collide. The admin panel's `npm run lint`
     crashes inside eslint; it is not in CI.
-  - Verified at `f2ab2e2`: `test:unit` 886/886; `test:pg` 1,663/1,663;
+  - Verified at `66ae775`: `test:unit` 886/886; `test:pg` 1,682/1,682;
+    every mutation KILLED (380/380);
     `test:e2e` 0 fail; all gates exit 0 (`check:no-mongo` on a clean
     export); admin 201/201, merchant 121/121 and user 231/231, all three
     building. The harness-2 helper's browser tiers on its own branch:
