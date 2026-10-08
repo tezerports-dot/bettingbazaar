@@ -74,7 +74,6 @@ class GameEngine {
     constructor(io) {
         this.io = io;
         this.isProcessing = false;
-        this.currentCycle = null;
         this.worker = `engine-${process.pid}`;
         this.tickInterval = setInterval(() => this.tick(), 1000);
         // The recovery sweep exists to pick up cycles whose claim lease has
@@ -86,70 +85,6 @@ class GameEngine {
 
     start() {
         console.log('🎮 Game Engine: Payout System Active');
-        this.loadCurrentCycle();
-    }
-
-    /** The live cycle, with its pools derived from the bets. */
-    async loadCurrentCycle() {
-        try {
-            const [live] = await db.markets.activeCyclesWithPools();
-            this.currentCycle = live ?? null;
-        } catch (error) {
-            console.error('❌ Error loading current cycle:', error);
-        }
-    }
-
-    /**
-     * The game state a client renders.
-     *
-     * Pools come from `activeCyclesWithPools`, which derives the real halves
-     * from the bets and reads only the phantom halves off the cycle row —
-     * trap 4. The version this replaced read `realDelhi` and `realBombay` as
-     * document fields; they are not columns, so every one of them fell through
-     * to its `|| 0` and the admin view of a live cycle showed no real volume at
-     * all.
-     */
-    async getGameState() {
-        try {
-            await this.loadCurrentCycle();
-
-            if (!this.currentCycle) {
-                return {
-                    status: 'NO_ACTIVE_CYCLE',
-                    message: 'No active betting cycle available',
-                    timestamp: new Date(),
-                };
-            }
-
-            const c = this.currentCycle;
-            const endMs = new Date(c.endTime).getTime();
-
-            return {
-                cycleId: c.cycleId,
-                status: c.status,
-                startTime: c.startTime,
-                endTime: c.endTime,
-                timeRemaining: Math.max(0, Math.floor((endMs - Date.now()) / 1000)),
-                // Display pools include phantom, so the client sees the balanced view.
-                delhiPool:  c.totalDelhi,
-                bombayPool: c.totalBombay,
-                totalPool:  c.totalDelhi + c.totalBombay,
-                // Admin fields — real only.
-                realDelhiPool:  c.realDelhi,
-                realBombayPool: c.realBombay,
-                winner: c.winner,
-                isSettled: c.isSettled,
-                timestamp: new Date(),
-            };
-        } catch (error) {
-            console.error('❌ Error getting game state:', error);
-            return {
-                status: 'ERROR',
-                message: 'Failed to retrieve game state',
-                error: error.message,
-                timestamp: new Date(),
-            };
-        }
     }
 
     /**
@@ -218,7 +153,6 @@ class GameEngine {
             if (!cycle) return;
 
             await this.settleCycle(cycle);
-            await this.loadCurrentCycle();
             settlementRuns.inc({ outcome: 'success' });
         } catch (e) {
             console.error('GameEngine Tick Error:', e);

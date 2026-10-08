@@ -14,12 +14,14 @@
  *   payout  = 2× stake − winningsFeePercent   riskValidation.computeWinningsPayout
  *   winners = real wins + curated entries     routes/winners.routes.js
  *   VIP / General boards apart                cycles.audience, bets.core.placeBet
+ *   blind pools: total only, merge → result   cyclePublicView.poolsHidden
+ *   staff may decide or cancel a round        admin/cycles.admin.routes.js manage-cycle
  *
  * BOARD_RULES_VERSION goes up whenever the text changes in substance; a player
  * who accepted an older version is asked again before their next bet.
  */
 
-export const BOARD_RULES_VERSION = 2;
+export const BOARD_RULES_VERSION = 3;
 
 /**
  * @param {{ feePercent: number }} live  the winnings fee in force
@@ -38,7 +40,8 @@ export function boardRules({ feePercent }) {
         title: 'House bets in the pools',
         body: 'The pools you see on screen include bets placed by the house to make the two sides look balanced. '
           + 'House bets are never paid out and do not decide the winner, but because of them the pools on screen '
-          + 'do not show which side has less real money.',
+          + 'do not show which side has less real money. Once the pools merge, only the total of both sides is '
+          + 'shown until the result.',
       },
       {
         title: 'Payout',
@@ -50,6 +53,11 @@ export function boardRules({ feePercent }) {
         body: 'Players betting with their General (referral bonus) balance play on their own boards, separate from '
           + 'VIP ID players who bet with deposited money. The two never share a round or its pools. '
           + 'A General win is paid back into your General balance.',
+      },
+      {
+        title: 'Exceptional situations',
+        body: 'In exceptional situations, such as an attack or a technical fault, the platform may decide or '
+          + 'cancel a round. A cancelled round returns every stake.',
       },
       {
         title: 'Winners list',

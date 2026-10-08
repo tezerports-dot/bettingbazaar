@@ -51,7 +51,22 @@ import { BOARD_RULES_EVENT } from '../redesign/BoardRules';
 
 const backend = getBackend();
 
-interface LiveStats { totalDelhi: number; totalBombay: number; }
+interface LiveStats { totalDelhi: number; totalBombay: number; totalPool: number; poolsHidden: boolean; }
+
+/**
+ * A cycle's public pools, from any payload that carries them (snapshot,
+ * `pool_update`, the SSE `bet_placed`, a result). Mirrors `publicCyclePools`
+ * (backend/domains/markets/cyclePublicView.js): from the merge until the
+ * result the server sends the total alone, `poolsHidden: true`, and no side.
+ */
+const poolStats = (d: any): LiveStats => {
+  if (d?.poolsHidden) {
+    return { totalDelhi: 0, totalBombay: 0, totalPool: Number(d.totalPool) || 0, poolsHidden: true };
+  }
+  const totalDelhi  = d?.totalDelhi  || d?.delhiPool  || d?.newTotalDelhi  || 0;
+  const totalBombay = d?.totalBombay || d?.bombayPool || d?.newTotalBombay || 0;
+  return { totalDelhi, totalBombay, totalPool: totalDelhi + totalBombay, poolsHidden: false };
+};
 
 /**
  * What the signup form submits.
@@ -153,7 +168,7 @@ const createNullCycle = (type: CycleType): GameCycle => ({
   phantomBombay:   0,
   phantomBalanced: false,
 });
-const NO_STATS: LiveStats = Object.freeze({ totalDelhi: 0, totalBombay: 0 }) as LiveStats;
+const NO_STATS: LiveStats = Object.freeze({ totalDelhi: 0, totalBombay: 0, totalPool: 0, poolsHidden: false }) as LiveStats;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -595,9 +610,8 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
         for (const [pendingCycleId, pending] of pendingBetPlaced) {
           if (pending.cycleType === ct) pendingBetPlaced.delete(pendingCycleId);
         }
-        const totalDelhi  = c.totalDelhi  || c.delhiPool  || 0;
-        const totalBombay = c.totalBombay || c.bombayPool || 0;
-        liveStatsRef.current[ct] = { totalDelhi, totalBombay };
+        const stats = poolStats(c);
+        liveStatsRef.current[ct] = stats;
         subscribersRef.current.forEach(sub => { if (sub.type === ct) sub.cb(liveStatsRef.current[ct]); });
         setCycles(prev => ({
           ...prev,
@@ -613,8 +627,10 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
             timeRemaining:   typeof c.timeRemaining   === 'number' ? c.timeRemaining   : 0,
             timeRemainingMs: typeof c.timeRemainingMs === 'number' ? c.timeRemainingMs
                            : typeof c.timeRemaining   === 'number' ? c.timeRemaining * 1000 : 0,
-            totalDelhi,
-            totalBombay,
+            totalDelhi:      stats.totalDelhi,
+            totalBombay:     stats.totalBombay,
+            totalPool:       stats.totalPool,
+            poolsHidden:     stats.poolsHidden,
             realDelhi:       c.realDelhi      || 0,
             realBombay:      c.realBombay     || 0,
             phantomDelhi:    c.phantomDelhi   || 0,
@@ -677,6 +693,8 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
             ...(prev[cycleType] ?? createNullCycle(cycleType)),
             totalDelhi: stats.totalDelhi,
             totalBombay: stats.totalBombay,
+            totalPool: stats.totalPool,
+            poolsHidden: stats.poolsHidden,
           };
         }
         return next;
@@ -687,13 +705,7 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
       const ct = toCycleType(data.cycleType, data.cycleId);
       if (!ct) return;
       if (typeof data.cycleId !== 'string' || !data.cycleId) return;
-      pendingBetPlaced.set(data.cycleId, {
-        cycleType: ct,
-        stats: {
-          totalDelhi:  data.newTotalDelhi  || 0,
-          totalBombay: data.newTotalBombay || 0,
-        },
-      });
+      pendingBetPlaced.set(data.cycleId, { cycleType: ct, stats: poolStats(data) });
       if (betPlacedFlushTimer == null) {
         betPlacedFlushTimer = window.setTimeout(flushBetPlaced, 120);
       }
@@ -705,12 +717,7 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
     // exact same applier — no separate code path, no double logic.
     const handlePoolUpdate = (data: any) => {
       if (typeof data?.cycleId !== 'string' || !data.cycleId) return;
-      handleBetPlaced({
-        cycleId:        data.cycleId,
-        cycleType:      data.cycleType,
-        newTotalDelhi:  data.totalDelhi,
-        newTotalBombay: data.totalBombay,
-      });
+      handleBetPlaced(data);
     };
 
     const handleNewCycle = (data: any) => {
@@ -738,6 +745,8 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
           timeRemainingMs: initRemaining * 1000,
           totalDelhi:      0,
           totalBombay:     0,
+          totalPool:       0,
+          poolsHidden:     false,
           realDelhi:       0,
           realBombay:      0,
           phantomDelhi:    0,
@@ -755,14 +764,22 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
       if (!mine(data)) return;
       const ct = toCycleType(data.type, data.cycleId);
       if (!ct) return;
+      // The result names both sides again: the pools are no longer hidden.
+      const stats = poolStats({ ...data, poolsHidden: false });
+      if (stats.totalPool > 0) {
+        liveStatsRef.current[ct] = stats;
+        subscribersRef.current.forEach(sub => { if (sub.type === ct) sub.cb(stats); });
+      }
       setCycles(prev => ({
         ...prev,
         [ct]: {
           ...(prev[ct] ?? createNullCycle(ct)),
           winner:      data.winner as BettingSide,
           status:      GameState.RESULT_DECLARED,
-          totalDelhi:  data.delhiPool  || data.totalDelhi  || prev[ct]?.totalDelhi  || 0,
-          totalBombay: data.bombayPool || data.totalBombay || prev[ct]?.totalBombay || 0,
+          totalDelhi:  stats.totalDelhi  || prev[ct]?.totalDelhi  || 0,
+          totalBombay: stats.totalBombay || prev[ct]?.totalBombay || 0,
+          totalPool:   stats.totalPool   || prev[ct]?.totalPool   || 0,
+          poolsHidden: false,
           declaredAt:  Date.now()
         }
       }));

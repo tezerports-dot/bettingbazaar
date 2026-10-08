@@ -295,34 +295,4 @@ describePg('the settlement engine', () => {
     expect(complete.payload.totalPaidOut).toBeCloseTo((await getCycle('c-emit')).totalPaidOut, 2);
   });
 
-  // ── The game state a client renders ───────────────────────────────────────
-  it('derives the live cycle pools from the bets', async () => {
-    await fund('u1', 'depositBalance', 300_00, 'f1');
-    await pgQuery(
-      `INSERT INTO cycles (cycle_id, cycle_type, status, start_time, end_time,
-                           phantom_delhi_paise, phantom_bombay_paise)
-       VALUES ('c-live', '30_MIN', 'OPEN',
-               now(), now() + interval '30 minutes', 500_00, 400_00)`, [],
-    );
-    await bet('b1', 'u1', 'c-live', 'DELHI',  200_00);
-    await bet('b2', 'u1', 'c-live', 'BOMBAY', 100_00);
-
-    const state = await engineFor(fakeIo().io).getGameState();
-
-    // Real halves from the bets, phantom halves off the row — trap 4. The
-    // version this replaced read `realDelhi` as a document field; it is not a
-    // column, so every figure fell through to `|| 0` and a live cycle showed
-    // no real volume at all.
-    expect(state.realDelhiPool).toBe(200);
-    expect(state.realBombayPool).toBe(100);
-    // Display pools include phantom, so the client sees the balanced view.
-    expect(state.delhiPool).toBe(700);
-    expect(state.bombayPool).toBe(500);
-    expect(state.totalPool).toBe(1200);
-  });
-
-  it('says so plainly when there is no live cycle', async () => {
-    const state = await engineFor(fakeIo().io).getGameState();
-    expect(state.status).toBe('NO_ACTIVE_CYCLE');
-  });
 });

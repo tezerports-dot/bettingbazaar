@@ -21,6 +21,7 @@ import { computeRealPools } from './cyclePool.service.js';
 // Coalesces per-bet pool changes into one snapshot/sec/cycle instead of a
 // per-bet fan-out to every connected client (cycleSnapshotPublisher.js).
 import { cycleSnapshotPublisher } from './cycleSnapshotPublisher.js';
+import { poolsHidden } from './cyclePublicView.js';
 // Pages the operator when a bet's stake cannot be conclusively refunded or
 // released — the one outcome no automated path can resolve on its own.
 import { sendAlert } from '../../services/alerting.service.js';
@@ -540,6 +541,7 @@ router.post('/place', authenticatePlayer, betLimiter, async (req, res) => {
         cycleType:  cycle.type,
         totalDelhi,
         totalBombay,
+        poolsHidden: poolsHidden(cycleStillOpen),
       });
 
       // ADMINS get the full real/phantom breakdown, per bet, on admin-room only
@@ -674,6 +676,7 @@ router.post('/phantom', authenticatePlayer, async (req, res) => {
         cycleType:  cycle.type,
         totalDelhi,
         totalBombay,
+        poolsHidden: poolsHidden(updatedCycle),
       });
 
       // ADMINS see the phantom breakdown per bet on admin-room only.

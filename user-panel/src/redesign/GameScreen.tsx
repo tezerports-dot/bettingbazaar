@@ -5,7 +5,7 @@
  * Live data from GameContext (server-authoritative via SSE/WS):
  *   • cycle timer   — derived from currentCycle.endTime (pure math, no drift)
  *   • phase/status  — currentCycle.status (OPEN/MERGED/CLOSED/RESULT_DECLARED)
- *   • pools         — subscribeToVolume(cycleType) → {totalDelhi,totalBombay}
+ *   • pools         — subscribeToVolume(cycleType) → {totalDelhi,totalBombay,totalPool,poolsHidden}
  *   • my bets       — userBets for the current cycle, summed per side
  *   • roadmap/stats — winners from pastCycles (analytics.ts), real results only
  *
@@ -83,7 +83,9 @@ const GameScreen: React.FC = () => {
 
   const poolDelhi = pools?.totalDelhi ?? currentCycle?.totalDelhi ?? 0;
   const poolBombay = pools?.totalBombay ?? currentCycle?.totalBombay ?? 0;
-  const total = poolDelhi + poolBombay;
+  // From the merge until the result the server sends the total alone.
+  const poolsHidden = pools ? pools.poolsHidden : !!currentCycle?.poolsHidden;
+  const total = poolsHidden ? (pools?.totalPool ?? currentCycle?.totalPool ?? 0) : poolDelhi + poolBombay;
   const dPct = total ? Math.round((poolDelhi / total) * 100) : 50;
   const bPct = 100 - dPct;
 
@@ -99,7 +101,7 @@ const GameScreen: React.FC = () => {
   const isClosed = gameState === GameState.CLOSED;
   const isResult = gameState === GameState.RESULT_DECLARED;
   const winner = currentCycle?.winner;
-  const showMerged = isMerged;
+  const showMerged = isMerged || (poolsHidden && !isResult);
 
   const secondsLeft = currentCycle?.endTime ? Math.max(0, Math.floor((currentCycle.endTime - Date.now()) / 1000)) : 0;
 

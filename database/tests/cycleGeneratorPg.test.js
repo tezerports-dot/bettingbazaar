@@ -22,7 +22,7 @@ import { applyDeltaPaise } from '../repositories/wallets.core.js';
 // A fixture's tokens come from somewhere too: the platform's own holding,
 // posted with the credit (see `_funding.js`).
 import { TEST_FUNDING } from './_funding.js';
-import { getCycle, currentCycleWithPools } from '../repositories/markets.js';
+import { getCycle, currentCycleWithPools, equalizePhantomPools, setCycleStatus } from '../repositories/markets.js';
 import CycleGenerator from '../../backend/domains/markets/cycleGenerator.service.js';
 
 const hasPg = pgConfigured();
@@ -219,6 +219,7 @@ describePg('the cycle generator', () => {
     // Real halves from the bets, phantom from the row. The read this replaced
     // took `realDelhi` as a document field — not a column — so both sides fell
     // through to `|| 0` and every connecting client saw empty pools.
+    expect(live.poolsHidden).toBe(false);
     expect(live.totalDelhi).toBe(700);
     expect(live.totalBombay).toBe(500);
     // The split itself must never cross the boundary: the winner is the
@@ -226,6 +227,27 @@ describePg('the cycle generator', () => {
     for (const forbidden of ['realDelhi', 'realBombay', 'phantomDelhi', 'phantomBombay']) {
       expect(live).not.toHaveProperty(forbidden);
     }
+  });
+
+  // Owner, 2026-10-08: blind from the merge until the result. Once the house
+  // pools are balanced the two totals differ by real money alone, so the
+  // smaller side IS the winner while blind betting is still open.
+  it('sends the total alone once the house pools are balanced, merged or not', async () => {
+    await fund('u1', 300_00, 'f1');
+    await openCycle('c-blind', { phantomDelhi: 500_00, phantomBombay: 400_00 });
+    await bet('b1', 'u1', 'c-blind', 'DELHI',  200_00);
+    await bet('b2', 'u1', 'c-blind', 'BOMBAY', 100_00);
+    await equalizePhantomPools('c-blind');   // the ticker has not merged it yet
+
+    const sideFields = ['totalDelhi', 'totalBombay', 'delhiPool', 'bombayPool'];
+    const balanced = (await generator().getCycleSnapshotData('VIP'))['30_MIN'];
+    expect(balanced).toMatchObject({ poolsHidden: true, totalPool: 1300 });
+    for (const f of sideFields) expect(balanced).not.toHaveProperty(f);
+
+    await setCycleStatus('c-blind', 'MERGED', { from: ['OPEN'] });
+    const merged = (await generator().getCycleSnapshotData('VIP'))['30_MIN'];
+    expect(merged).toMatchObject({ status: 'MERGED', poolsHidden: true, totalPool: 1300 });
+    for (const f of sideFields) expect(merged).not.toHaveProperty(f);
   });
 
   it('advances a cycle through its phases without moving it backwards', async () => {

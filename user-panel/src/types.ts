@@ -128,6 +128,10 @@ export interface GameCycle {
   timeRemaining: number;
   totalDelhi: number;
   totalBombay: number;
+  // From the merge until the result the server sends the total alone
+  // (backend/domains/markets/cyclePublicView.js `publicCyclePools`).
+  totalPool?: number;
+  poolsHidden?: boolean;
   realDelhi: number;
   realBombay: number;
   phantomDelhi: number;

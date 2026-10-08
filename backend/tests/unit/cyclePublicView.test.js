@@ -23,6 +23,7 @@ import { readFileSync } from 'node:fs';
 import {
   publicCycleView,
   publicCyclePools,
+  poolsHidden,
   assertPublicCycleSafe,
   FORBIDDEN_PUBLIC_CYCLE_FIELDS,
 } from '../../domains/markets/cyclePublicView.js';
@@ -40,11 +41,20 @@ const rawCycle = () => ({
   phantomBombay: 500,
   totalDelhi: 1200,   // real + phantom — the only figure users may see
   totalBombay: 800,
-  phantomBetsClosed: true,
-  phantomBalanced: true,
+  phantomBetsClosed: false,
+  phantomBalanced: false,
   winner: null,
   isSettled: 'PENDING',
 });
+
+/**
+ * The same cycle once the house pools are balanced (`equalizePhantomPools`):
+ * the two totals now differ by real money alone, so the smaller one, BOMBAY,
+ * is the winner. This is what the merged phase must not send.
+ */
+const balancedCycle = () => ({ ...rawCycle(), status: 'MERGED', phantomBalanced: true });
+
+const SIDE_FIELDS = ['delhiPool', 'bombayPool', 'totalDelhi', 'totalBombay'];
 
 const src = (p) => stripComments(readFileSync(new URL(`../../${p}`, import.meta.url), 'utf8'));
 
@@ -78,7 +88,59 @@ describe('publicCycleView — the safe projection', () => {
   });
 
   it('publicCyclePools returns combined totals only', () => {
-    expect(publicCyclePools(rawCycle())).toEqual({ delhiPool: 1200, bombayPool: 800 });
+    expect(publicCyclePools(rawCycle())).toEqual({
+      poolsHidden: false, delhiPool: 1200, bombayPool: 800, totalDelhi: 1200, totalBombay: 800, totalPool: 2000,
+    });
+  });
+});
+
+describe('the pools are blind from the merge until the result (owner, 2026-10-08)', () => {
+  it('a merged, balanced cycle carries the total alone, no side under any name', () => {
+    const view = publicCycleView(balancedCycle());
+    expect(view.poolsHidden).toBe(true);
+    expect(view.totalPool).toBe(2000);
+    for (const f of SIDE_FIELDS) expect(view).not.toHaveProperty(f);
+    expect(JSON.stringify(view)).not.toMatch(/1200|800/);
+  });
+
+  it('hides MERGED and CLOSED, and an OPEN cycle whose house pools are already balanced', () => {
+    expect(poolsHidden({ ...rawCycle(), status: 'MERGED' })).toBe(true);
+    expect(poolsHidden({ ...rawCycle(), status: 'CLOSED' })).toBe(true);
+    // The ticker balanced the pools but has not yet moved the status.
+    expect(poolsHidden({ ...rawCycle(), status: 'OPEN', phantomBalanced: true })).toBe(true);
+  });
+
+  it('opposite: an OPEN unbalanced cycle and a declared one name both sides', () => {
+    expect(poolsHidden(rawCycle())).toBe(false);
+    const declared = publicCycleView({ ...balancedCycle(), status: 'RESULT_DECLARED', winner: 'BOMBAY' });
+    expect(declared.poolsHidden).toBe(false);
+    expect(declared.totalDelhi).toBe(1200);
+    expect(declared.totalBombay).toBe(800);
+  });
+
+  it('the guard refuses a side figure beside poolsHidden, under every name', () => {
+    for (const f of [...SIDE_FIELDS, 'newTotalDelhi', 'newTotalBombay']) {
+      expect(() => assertPublicCycleSafe({ cycleId: 'c', poolsHidden: true, totalPool: 1, [f]: 1 }))
+        .toThrow(/hidden/);
+    }
+    const ok = { cycleId: 'c', poolsHidden: true, totalPool: 1 };
+    expect(assertPublicCycleSafe(ok)).toBe(ok);
+  });
+
+  it('the live snapshot builds its pools through publicCyclePools', () => {
+    expect(src('domains/markets/cycleGenerator.service.js')).toMatch(/\.\.\.publicCyclePools\(cycle\)/);
+  });
+
+  it('every public recordBet names the cycle\'s poolsHidden', () => {
+    const bet = src('domains/markets/bet.routes.js');
+    const calls = [...bet.matchAll(/recordBet\(\s*cycleId\s*,\s*\{([\s\S]*?)\}\s*\)/g)];
+    expect(calls.length).toBe(2);
+    for (const m of calls) expect(m[1]).toMatch(/poolsHidden: poolsHidden\(/);
+  });
+
+  it('no socket event answers with the engine\'s raw game state (it carried the real pools)', () => {
+    expect(src('startup/socketHandlers.js')).not.toMatch(/request_game_state|game_state/);
+    expect(src('domains/markets/gameEngine.js')).not.toMatch(/getGameState|realDelhiPool/);
   });
 });
 

@@ -40,7 +40,7 @@ reuse a name on a different transport for a different meaning.
 | `game_state` | socket.io | server→client | `startup/socketHandlers.js` |
 | `phantom_equalized` | socket.io | server→client | `cycleGenerator.service.js`, `cycles.admin.routes.js` |
 | `bet_placed` | **SSE only** (server→client) + socket.io (server→**admin** room) | The global socket.io broadcast was removed 2026-08-31. Player clients on a socket use `pool_update` instead; the SSE copy is the ONLY live-pool path for a client whose WebSocket is blocked, and `sseManager` has no room concept to scope it to. Do not "finish the cleanup" by deleting it. | `cycleSnapshotPublisher.js` (coalesced), `markets/bet.routes.js` (admin) |
-| `pool_update` | socket.io, room `cycle:<cycleId>` | server→watchers of that cycle | The canonical coalesced pool snapshot, ≤1 per live cycle per second. Requires the client to `watch_cycle`. | `cycleSnapshotPublisher.js` |
+| `pool_update` | socket.io, room `cycle:<cycleId>` | server→watchers of that cycle | The canonical coalesced pool snapshot, ≤1 per live cycle per second. Requires the client to `watch_cycle`. From the merge until the result it carries `poolsHidden: true` and `totalPool` only (as do `cycle_snapshot` and the SSE `bet_placed`; `cyclePublicView.poolsHidden`). | `cycleSnapshotPublisher.js` |
 | `admin_bet_placed` | socket.io | server→admin | `markets/bet.routes.js` |
 | `payout_success` | socket.io | server→user room | `realtimeEmitters.js` (per-winner wallet credit) |
 | `payout_complete` | socket.io | server→client | `gameEngine.js` (cycle payouts finished — distinct from the per-user event above) |
