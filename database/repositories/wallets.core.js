@@ -52,6 +52,8 @@ export const FIELD_COLUMN = Object.freeze({
   tokenBalance:    'token_paise',
   reserveBalance:  'reserve_paise',
   lockedBalance:   'locked_paise',
+  // The GENERAL profile's promotional balance (`promo.js`).
+  promoBalance:    'promo_paise',
   // Lock provenance — how much of lockedBalance came from each pocket. These
   // are never the `field` of a ledger row; they move as extra legs alongside a
   // lockedBalance movement.
@@ -68,6 +70,7 @@ export const BALANCE_FIELDS = Object.freeze(Object.keys(FIELD_COLUMN));
  */
 const VALUE_COLUMNS = Object.freeze(new Set([
   'deposit_paise', 'winnings_paise', 'token_paise', 'reserve_paise', 'locked_paise',
+  'promo_paise',
 ]));
 
 function columnFor(field) {

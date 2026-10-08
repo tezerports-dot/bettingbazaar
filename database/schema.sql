@@ -1835,6 +1835,67 @@ CREATE INDEX IF NOT EXISTS referral_earnings_earner_idx ON referral_earnings (ea
 CREATE INDEX IF NOT EXISTS referral_earnings_payable_idx ON referral_earnings (queue_position)
   WHERE status = 'QUEUED';
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- THE GENERAL (PROMOTIONAL) BALANCE  (owner, 2026-10-08)
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- A referral reward is paid into `wallets.promo_paise`, the player's GENERAL
+-- profile, never straight into winnings. Each reward is a `promo_grants` row
+-- asking for PROMO_TURNOVER_MULTIPLIER (10) times its amount in turnover
+-- (`database/repositories/promo.js`, the one writer of all three).
+--
+--   * Turnover is counted once: `promo_turnover` is keyed by the stake it
+--     counts, so a replay counts nothing.
+--   * It is applied to grants oldest first; a grant is complete when its
+--     turnover reaches its requirement, and winning early completes nothing.
+--   * A completed grant unlocks up to its own amount from the General balance
+--     into withdrawable winnings; once no grant is outstanding, whatever is
+--     left (the promotional winnings) unlocks too. Pocket to pocket, so the
+--     tokens never leave the wallet.
+ALTER TABLE wallets ADD COLUMN IF NOT EXISTS promo_paise BIGINT NOT NULL DEFAULT 0;
+
+-- Which profile the player is using: VIP (deposited money) or GENERAL
+-- (promotional money). Written only by `promo.setPlayProfile`.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS play_profile TEXT NOT NULL DEFAULT 'VIP';
+ALTER TABLE users DROP CONSTRAINT IF EXISTS users_play_profile_known;
+ALTER TABLE users ADD CONSTRAINT users_play_profile_known CHECK (play_profile IN ('VIP', 'GENERAL'));
+
+CREATE TABLE IF NOT EXISTS promo_grants (
+  grant_id                TEXT PRIMARY KEY,
+  user_id                 TEXT NOT NULL,
+  source                  TEXT NOT NULL,
+  source_ref              TEXT NOT NULL,
+  amount_paise            BIGINT NOT NULL,
+  required_turnover_paise BIGINT NOT NULL,
+  turnover_paise          BIGINT NOT NULL DEFAULT 0,
+  completed_at            TIMESTAMPTZ,
+  unlocked_paise          BIGINT NOT NULL DEFAULT 0,
+  created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT promo_grants_source_known CHECK (source IN ('REFERRAL')),
+  CONSTRAINT promo_grants_once UNIQUE (source, source_ref),
+  CONSTRAINT promo_grants_amount_positive CHECK (amount_paise > 0),
+  CONSTRAINT promo_grants_requirement CHECK (required_turnover_paise >= amount_paise),
+  CONSTRAINT promo_grants_turnover_range CHECK (
+    turnover_paise >= 0 AND turnover_paise <= required_turnover_paise),
+  -- Complete exactly when the requirement is met; never unlocked before.
+  CONSTRAINT promo_grants_complete_when_met CHECK (
+    (completed_at IS NOT NULL) = (turnover_paise = required_turnover_paise)),
+  CONSTRAINT promo_grants_unlock_after_complete CHECK (
+    unlocked_paise >= 0 AND (completed_at IS NOT NULL OR unlocked_paise = 0))
+);
+CREATE INDEX IF NOT EXISTS promo_grants_open_idx
+  ON promo_grants (user_id, created_at, grant_id) WHERE completed_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS promo_turnover (
+  stake_ref     TEXT PRIMARY KEY,
+  user_id       TEXT NOT NULL,
+  amount_paise  BIGINT NOT NULL,
+  applied_paise BIGINT NOT NULL,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT promo_turnover_amount_positive CHECK (amount_paise > 0),
+  CONSTRAINT promo_turnover_applied_range CHECK (applied_paise >= 0 AND applied_paise <= amount_paise)
+);
+
 CREATE TABLE IF NOT EXISTS referral_disbursals (
   batch_id      TEXT PRIMARY KEY,
   pool_paise    BIGINT NOT NULL DEFAULT 0,
@@ -3845,7 +3906,7 @@ ALTER TABLE teams ADD CONSTRAINT teams_name_not_a_mobile CHECK (NOT bb_text_has_
 ALTER TABLE wallets DROP CONSTRAINT IF EXISTS wallets_pockets_nonneg;
 ALTER TABLE wallets ADD CONSTRAINT wallets_pockets_nonneg CHECK (
   deposit_paise >= 0 AND winnings_paise >= 0 AND token_paise >= 0
-  AND reserve_paise >= 0 AND locked_paise >= 0);
+  AND reserve_paise >= 0 AND locked_paise >= 0 AND promo_paise >= 0);
 -- How much of `locked` came from deposit and from winnings: never negative,
 -- or a returned stake would go back to a pocket it never came from.
 ALTER TABLE wallets DROP CONSTRAINT IF EXISTS wallets_lock_provenance_nonneg;
@@ -3867,6 +3928,7 @@ ALTER TABLE treasury_accounts ADD CONSTRAINT treasury_accounts_sign CHECK (
 CREATE OR REPLACE FUNCTION bb_wallet_value_paise(w wallets) RETURNS BIGINT
 LANGUAGE sql IMMUTABLE AS $$
   SELECT w.deposit_paise + w.winnings_paise + w.token_paise + w.reserve_paise + w.locked_paise
+       + w.promo_paise
 $$;
 
 -- ── The supply ceiling ─────────────────────────────────────────────────────

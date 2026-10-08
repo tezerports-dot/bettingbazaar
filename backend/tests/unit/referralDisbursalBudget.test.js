@@ -19,19 +19,20 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const calls = [];
-const { referrals, creditWinnings } = vi.hoisted(() => ({
+// The reward is paid into the GENERAL balance (`db.promo`, owner 2026-10-08).
+const { referrals, creditBonus } = vi.hoisted(() => ({
   referrals: {},
-  creditWinnings: vi.fn(),
+  creditBonus: vi.fn(),
 }));
 vi.mock('#db', () => ({
   db: {
     referrals,
+    promo: { creditReferralBonus: creditBonus },
     users: { getUser: async (id) => ({ userId: id, status: 'ACTIVE' }) },
     identity: { getVerification: async () => ({ status: 'VERIFIED' }) },
     telegram: { getLinkByUserId: async () => ({ telegramUserId: '1' }) },
   },
 }));
-vi.mock('../../domains/wallet/walletAuthority.service.js', () => ({ creditWinnings }));
 
 const { disburse } = await import('../../domains/referral/referral.service.js');
 
@@ -41,7 +42,7 @@ const earning = (n) => ({
 
 beforeEach(() => {
   calls.length = 0;
-  creditWinnings.mockReset().mockImplementation(async (...a) => { calls.push(['credit', a[0]]); });
+  creditBonus.mockReset().mockImplementation(async (a) => { calls.push(['credit', a.userId]); return { ok: true }; });
   Object.assign(referrals, {
     getProgramme: async () => ({ active: true, budgetPaise: 1_000_000, disbursedPaise: 0 }),
     drawFromProgramme: vi.fn(async (_k, rupees) => { calls.push(['draw', rupees]); return { ok: true }; }),
@@ -59,7 +60,7 @@ describe('referral disbursal and the programme budget', () => {
   it('pays NOBODY when the budget cannot be reserved', async () => {
     referrals.drawFromProgramme.mockImplementation(async () => ({ ok: false, reason: 'BUDGET_EXHAUSTED_OR_INACTIVE' }));
     await expect(disburse({ poolPaise: 10_000, actorId: 'admin' })).rejects.toMatchObject({ status: 409 });
-    expect(creditWinnings).not.toHaveBeenCalled();
+    expect(creditBonus).not.toHaveBeenCalled();
   });
 
   it('reserves the whole pool BEFORE the first credit, and gives back what it did not spend', async () => {
@@ -71,7 +72,7 @@ describe('referral disbursal and the programme budget', () => {
   });
 
   it('gives back the unspent budget when the run fails partway', async () => {
-    creditWinnings.mockImplementationOnce(async () => { calls.push(['credit', 'u1']); })
+    creditBonus.mockImplementationOnce(async () => { calls.push(['credit', 'u1']); return { ok: true }; })
       .mockImplementationOnce(async () => { throw new Error('wallet down'); });
     await expect(disburse({ poolPaise: 10_000, actorId: 'admin' })).rejects.toThrow('wallet down');
     expect(calls.at(-1)).toEqual(['return', 75]);
