@@ -17,7 +17,6 @@ import {
   reconcileAgainstSubLedgers,
 } from '../repositories/ledger.core.js';
 import { EVENT_TYPES } from '../../backend/domains/revenue/chartOfAccounts.js';
-import { postMovement, ACCOUNTS } from '../repositories/treasury.js';
 import { teamFixture } from '../../backend/tests/teamFixture.js';
 import { fundWallet } from './_funding.js';
 

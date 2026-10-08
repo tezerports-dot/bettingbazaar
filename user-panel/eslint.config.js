@@ -48,11 +48,4 @@ export default defineConfig([
     files: ['public/service-worker.js'],
     languageOptions: { sourceType: 'script', globals: globals.serviceworker },
   },
-  // TEMPORARY, delete with the fix: these two files were under another change
-  // when the lint was set up, so their findings (unused type imports; a rethrow
-  // with no `cause`) are listed in that commit instead of fixed here.
-  {
-    files: ['src/services/backend.interface.ts', 'src/services/realBackend.ts'],
-    rules: { '@typescript-eslint/no-unused-vars': 'off', 'preserve-caught-error': 'off' },
-  },
 ]);

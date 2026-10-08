@@ -582,11 +582,10 @@ async function sse() {
       // Left open deliberately: the question is what the server does WHILE
       // they are held, not whether one connects.
       (async () => { try { for (;;) { const { done } = await reader.read(); if (done) break; } } catch { /* aborted */ } })();
-    } catch (e) {
+    } catch {
       if (ac.signal.aborted) timedOut++; else refused++;
     } finally { clearTimeout(cap); }
   }));
-  const failed = refused + timedOut;
 
   firstByte.sort((a, b) => a - b);
   const p = (q) => (firstByte.length

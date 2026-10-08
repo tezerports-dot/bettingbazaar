@@ -1557,7 +1557,7 @@ const CASES = [
       if (await button.count() === 0) return ['NOT DRIVEN', `no "Delete FAQ: ${mine}" control found`];
 
       page.__bbAccept = true;
-      let answered = 'none';
+      let answered;
       try {
         await button.click();
         await settle(page, 6000);
@@ -1924,7 +1924,7 @@ const CASES = [
       // pass that answers a question it has not read is worse than one that
       // declines. Here it is read and answered.
       page.__bbAccept = true;
-      let answered = 'none';
+      let answered;
       try {
         await clickThrough(button, { timeout: 8000 });
         await settle(page, 4000);
@@ -2821,7 +2821,7 @@ async function main() {
   for (const c of cases) {
     // A case that ENDS a session gets its own, so the damage is its own; a
     // case that acts as another account (`as`) gets one signed in as it.
-    let session = null;
+    let session;
     try {
       session = c.as ? await c.as() : null;
     } catch (err) {

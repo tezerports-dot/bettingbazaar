@@ -638,7 +638,6 @@ and the rest) are NOT here: they were adopted and verified, not held.
 | Package | Held on | At major | Why held — the rewrite adopting the newer major would force |
 |---|---|---|---|
 | typescript | all 3 panels | 5.x | 7.x is the native ("Corsa") port, still preview — 5.9 is the latest STABLE and is what the panels run; revisit when 7.x ships stable |
-| eslint | admin | 8.x | 9.x/10.x is the flat-config migration — it replaces the panel's entire `.eslintrc` lint setup, not a version field |
 | tailwindcss | merchant, user | 3.x | v4's engine change is a stylesheet + config rewrite; admin already migrated, these two are authored against v3's `@tailwind` directives |
 | recharts | admin | 2.x | v3 renamed the chart-component prop surface every analytics screen passes |
 | framer-motion | admin, user | 11.x | v12+ renamed the package and moved the `motion` import path used across many components |

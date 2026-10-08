@@ -21,7 +21,6 @@
  * @requires ../models
  */
 
-import { db } from '#db';
 // The KYC vocabulary has one owner, and it is not this file — the payment
 // service needs the same rule without booting the token layer to get it.
 import { isTokenRevoked as pgIsTokenRevoked } from '#db/repositories/identity.js';
@@ -33,7 +32,6 @@ import { verifyJwt } from './jwt.util.js';
 import { isChallengeToken } from './twoFactorChallenge.js';
 // The one bot: whether it exists decides the staff bootstrap exemption (§33).
 import { miniAppBot } from '../telegram/telegramClient.js';
-import { getSystemConfig } from '#db/repositories/config.js';
 import { isPermissionKey, permissionLabel, staffCan } from './staffPermissions.js';
 import { PANEL_NAME } from './audiences.js';
 

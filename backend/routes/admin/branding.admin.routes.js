@@ -118,7 +118,7 @@ router.put('/branding', authenticate, hasPermission('canManageContent'), async (
 // Get all transactions
 router.post('/branding/images', authenticate, hasPermission('canManageContent'), async (req, res) => {
   try {
-    const { url, category, title, description, fileKey } = req.body;
+    const { url, category, title, description } = req.body;
 
     if (!url || !title) {
       return res.status(400).json({ success: false, message: 'url and title are required' });
@@ -213,7 +213,7 @@ router.post('/branding/cdn-url', authenticate, hasPermission('canManageContent')
     });
     res.json({ success: true, image });
   } catch (error) {
-    res.status(500).json({ success: false, message: 'Failed to add CDN URL' });
+    return respondError(res, error, 'POST /branding/images', { message: 'Failed to add CDN URL' });
   }
 });
 

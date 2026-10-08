@@ -19,7 +19,7 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { pgConfigured, pgQuery, applySchema, closePg, getPool } from '../client.js';
 import { getBalancesPaise, applyDeltaPaise } from '../repositories/wallets.core.js';
-import { BET_STATUS, placeBet, getBet } from '../repositories/bets.core.js';
+import { placeBet } from '../repositories/bets.core.js';
 import {
   CASINO_TX, recordCallback, getRound, getRoundTransactions,
   reconcileRound, findOverRefundedRounds,
@@ -30,7 +30,7 @@ import {
 } from '../repositories/settlements.js';
 import { grantBonus, clawBackBonus, getGrant, reconcileBonusPools, GRANT_STATUS } from '../repositories/bonuses.core.js';
 import { ACCOUNTS, getTreasuryBalances, postMovement, trialBalance } from '../repositories/treasury.js';
-import { TEST_FUNDING, fundWallet } from './_funding.js';
+import { fundWallet } from './_funding.js';
 
 const hasPg = pgConfigured();
 const describePg = hasPg ? describe : describe.skip;

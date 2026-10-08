@@ -36,7 +36,7 @@ import playerAuthRoutes from '../../domains/identity/playerAuth.routes.js';
 import merchantRoutes from '../../domains/merchant/merchant.routes.js';
 import { loginHandler, LOGIN_DOOR } from '../../routes.js';
 import { loginPaceLimiter } from '../../middleware/security.js';
-import { mountRouter, request } from './_harness.js';
+import { request } from './_harness.js';
 import express from 'express';
 
 const describePg = pgConfigured() ? describe : describe.skip;

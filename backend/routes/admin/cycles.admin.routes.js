@@ -1,7 +1,7 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /** cycles.admin.routes.js — Cycle phases, history, equalization, manage-cycle */
 import {
-  authenticate, express, hasPermission, isAdmin,
+  authenticate, express, hasPermission,
 } from './_adminShared.js';
 import { db } from '#db';
 import { DEFAULT_CYCLE_PHASES, isCycleType, phasesFor } from '../../domains/markets/cycleTypes.js';

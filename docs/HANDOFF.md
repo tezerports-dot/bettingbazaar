@@ -45,8 +45,7 @@ A prompt to start the new session is at the end (section 9).
   - Left open: `PUT /api/admin/merchants/:id/capabilities` still writes a
     supervisor's order flags (harmless, since routing never reads a
     supervisor). `backupRestorePg` uses a fixed database name, so two
-    `test:pg` runs on one server collide. The admin panel's `npm run lint`
-    crashes inside eslint; it is not in CI.
+    `test:pg` runs on one server collide.
   - Verified at `66ae775`: `test:unit` 886/886; `test:pg` 1,682/1,682;
     every mutation KILLED (380/380);
     `test:e2e` 0 fail; all gates exit 0 (`check:no-mongo` on a clean
@@ -398,8 +397,8 @@ These are his standing instructions:
   - `audit (.)`, `audit (user-panel)`, `audit (admin-panel)` and
     `audit (merchant-panel)`, each with the braces exception only.
   - `sbom` and `secret-scan`.
-  - The admin panel's `npm run lint` crashes locally (eslint 8 config); it
-    is not in CI.
+  - `npm run lint` runs in the root and in each panel (ESLint 10, flat
+    config) and is in CI (Step 3 branch, 2026-10-08).
 - **Rules worth re-reading in CLAUDE.md before coding:**
   - §2 (one owner per value) and §24 (privacy both ways; no mobile
     anywhere).

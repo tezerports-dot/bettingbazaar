@@ -266,7 +266,7 @@ describePg('Bet lifecycle (PostgreSQL)', () => {
   // ── The reply a REPLAYED placement gets ───────────────────────────────────
   describe('a replayed placement answers, rather than throwing', () => {
     it('returns the same bet on every delivery of one request', async () => {
-      const { placeBet: placeThroughApi, getBetDoc } = await import('../repositories/bets.js');
+      const { placeBet: placeThroughApi } = await import('../repositories/bets.js');
       await fund('depositBalance', 100_00, 'f-replay');
 
       const args = {

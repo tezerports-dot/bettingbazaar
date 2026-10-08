@@ -192,8 +192,12 @@ async function playerJourney(browser) {
   record('Mini App: a new password is set on the page', Boolean(changed), changed || await bodyText(rs.page));
   await rs.ctx.close();
 
+  // The top bar reads "Sign in" while ANY session is still being restored, so
+  // that alone proves nothing (it passed with the eviction broken). What
+  // proves it is the app's answer to the server's 401: the token is dropped.
   await second.page.reload({ waitUntil: 'domcontentloaded' });
-  const signedOut = await until(async () => (await second.page.getByRole('button', { name: /Sign in\s*to play/i }).count()) > 0);
+  const signedOut = await until(async () => !(await stored(second.page, 'auth_token'))
+    && (await second.page.getByRole('button', { name: /Sign in\s*to play/i }).count()) > 0);
   record('player: the session opened before the reset is signed out', Boolean(signedOut));
   await second.ctx.close();
 

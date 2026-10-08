@@ -46,6 +46,7 @@
     "audit:map": "node scripts/audit-map.mjs",
     "report:branding": "node scripts/report-branding-literals.mjs",
     "test:browser": "node backend/tests/browser/run.js",
+    "test:signin-journey": "node backend/tests/browser/signInJourney.js",
     "test:drive": "node backend/tests/browser/drive.js",
     "test:forms": "node backend/tests/browser/forms.js",
     "test:bet-button": "node backend/tests/browser/betButton.js",

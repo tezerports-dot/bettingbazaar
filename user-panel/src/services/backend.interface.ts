@@ -1,8 +1,8 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import {
-  User, Bet, GameCycle, BettingSide, CycleType, AdminUser, AuditLog,
-  PromoContent, Transaction, PromoLocation,
-  GameState, SystemConfigData, ChatMessage
+  User, Bet, GameCycle, BettingSide,
+  PromoContent, PromoLocation,
+  SystemConfigData
 } from '../types';
 
 /**

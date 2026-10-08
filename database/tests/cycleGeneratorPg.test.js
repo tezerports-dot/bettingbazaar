@@ -207,7 +207,6 @@ describePg('the cycle generator', () => {
 
   it('advances a cycle through its phases without moving it backwards', async () => {
     await openCycle('c-phase', { endedMinutesAgo: null });
-    const gen = generator();
 
     const { setCycleStatus } = await import('../repositories/markets.js');
     expect((await setCycleStatus('c-phase', 'MERGED', { from: ['OPEN'] })).ok).toBe(true);

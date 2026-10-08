@@ -26,12 +26,10 @@
  */
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import { Backend, SignInStep, PollResult, TelegramSetup, MyTelegram, TelegramBlock } from './backend.interface';
-// L-01 fix: GAME_CORE.ts header requires realBackend.ts to import from it.
-import { PAYOUT, WINNER, PHASE } from '../GAME_CORE';
 import {
-  User, Bet, BettingSide, AdminUser, AuditLog,
+  User, Bet, BettingSide,
   PromoContent, PromoLocation,
-  GameState, SystemConfigData, GameCycle
+  SystemConfigData, GameCycle
 } from '../types';
 import { io, Socket } from 'socket.io-client';
 import { setToken } from './apiClient'; // GOVERNANCE.md M-9: single write path for auth_token
@@ -659,30 +657,26 @@ export class RealBackend implements Backend {
     if (file.size > 800_000) {
       console.warn('[uploadFile] Large file (' + (file.size/1024).toFixed(0) + 'kb) — S3 required for files >800kb');
     }
-    try {
-      const urlRes = await this.request<{
-        success: boolean; uploadUrl: string; fileKey: string; cdnUrl: string;
-      }>('/user/profile/picture/upload-url', {
-        method: 'POST',
-        body: JSON.stringify({ fileName: file.name, contentType: file.type, fileSize: file.size })
-      });
-      if (!urlRes.success || !urlRes.uploadUrl) throw new Error('No upload URL returned');
+    const urlRes = await this.request<{
+      success: boolean; uploadUrl: string; fileKey: string; cdnUrl: string;
+    }>('/user/profile/picture/upload-url', {
+      method: 'POST',
+      body: JSON.stringify({ fileName: file.name, contentType: file.type, fileSize: file.size })
+    });
+    if (!urlRes.success || !urlRes.uploadUrl) throw new Error('No upload URL returned');
 
-      const s3Res = await fetch(urlRes.uploadUrl, {
-        method:  'PUT',
-        headers: { 'Content-Type': file.type },
-        body:    file
-      });
-      if (!s3Res.ok) throw new Error(`S3 upload failed: ${s3Res.status}`);
+    const s3Res = await fetch(urlRes.uploadUrl, {
+      method:  'PUT',
+      headers: { 'Content-Type': file.type },
+      body:    file
+    });
+    if (!s3Res.ok) throw new Error(`S3 upload failed: ${s3Res.status}`);
 
-      await this.request('/user/profile/picture/confirm-upload', {
-        method: 'POST',
-        body:   JSON.stringify({ fileKey: urlRes.fileKey, cdnUrl: urlRes.cdnUrl })
-      });
-      return urlRes.cdnUrl; // BunnyCDN URL -- globally accessible
-    } catch (err: any) {
-      throw new Error(err?.message || 'Upload failed');
-    }
+    await this.request('/user/profile/picture/confirm-upload', {
+      method: 'POST',
+      body:   JSON.stringify({ fileKey: urlRes.fileKey, cdnUrl: urlRes.cdnUrl })
+    });
+    return urlRes.cdnUrl; // BunnyCDN URL -- globally accessible
   }
 
   // -- SERVER TIME --------------------------------------------------------------

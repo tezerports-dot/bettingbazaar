@@ -31,7 +31,7 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { pgConfigured, pgQuery, applySchema, closePg } from '../client.js';
 
-import { createUser, getUser } from '../repositories/users.js';
+import { createUser } from '../repositories/users.js';
 import { getBalancesPaise, applyMovementPaise } from '../repositories/wallets.core.js';
 import { createMerchant, newMerchantId, generateMerchantPublicRef } from '../repositories/merchants.js';
 import { ORDER_STATES, getOrder } from '../repositories/orders.core.js';

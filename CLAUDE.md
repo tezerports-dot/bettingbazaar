@@ -648,7 +648,7 @@ Ask each question of the change in front of you.
 Multiplies every `RATE_LIMIT_TIERS` count (never windows, keys or mounts);
 default 1; production refuses to boot with it; rejects non-numbers; pinned to 1
 in every vitest config and in `backend/tests/e2e/run.js`; warns at boot. Set it
-only on a development server for `test:browser`/`drive`/`mutate`/`forms`; never
+only on a development server for `test:browser`/`drive`/`mutate`/`forms`/`signin-journey`; never
 in a committed env file, Dockerfile, CI job or manifest, or on a server measuring
 limits.
 
@@ -699,7 +699,7 @@ opposite-behaviour test and the pairs. "Tests green" is not enough.
 
 ## Commands
 
-Gates: `check:no-mongo` (definition of done) · `check:deps` · `check:ui-coverage`
+Gates: `check:no-mongo` (definition of done) · `lint` (root and each panel) · `check:deps` · `check:ui-coverage`
 (`--unused`) · `check:dead-code` · `check:settable` · `check:db-boundary` ·
 `check:orphans` · `check:staff-permissions` · `check:balance-reads` ·
 `check:coherence` · `check:merchant-privacy` · `check:player-privacy` ·
@@ -708,7 +708,7 @@ Gates: `check:no-mongo` (definition of done) · `check:deps` · `check:ui-covera
 
 Tests: `test:unit` · `test:pg` (real PostgreSQL) · `test:e2e` (whole server,
 three actors, pen test) · `test:browser` (every screen; needs `BB_BASE`) ·
-`test:captcha-doors` · `test:drive`
+`test:captcha-doors` · `test:signin-journey` (the three sign-in screens and the Mini App, typed into; needs `BB_BASE`) · `test:drive`
 (every control pressed) · `test:mutate` (database + bystander; `bb_drive`) ·
 `test:bet-button` · `test:ghost-mode` ·
 `test:operations -- --cron --restore --sse` · `loadtest:scale -- --seed

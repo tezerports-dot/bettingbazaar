@@ -36,7 +36,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { chromium } from 'playwright-core';
 import { panelScreens } from './routes.js';
-import { PAGE_SCRIPT, collect, shell, idOf } from './controls.js';
+import { PAGE_SCRIPT, collect, shell } from './controls.js';
 import { check, note, summary } from '../e2e/harness.js';
 // ── The stack, shared with `drive.js` — NOT copied ─────────────────────────
 // This file had its own PANELS, navigate, settle, waitFor and startVite, and
@@ -414,13 +414,13 @@ writeFileSync(MANIFEST, JSON.stringify(manifest, null, 2));
 
 // ── The inventory, per panel ───────────────────────────────────────────────
 console.log(`\n${'─'.repeat(78)}\nCONTROLS a person can touch\n`);
-let grand = 0, unnamed = 0, disabled = 0;
+let grand = 0, unnamed = 0;
 for (const [panel, list] of Object.entries(manifest.shell)) {
   const own = manifest.screens.filter((s) => s.panel === panel);
   const n = own.reduce((t, s) => t + s.controls.length, 0);
   const u = own.reduce((t, s) => t + s.controls.filter((c) => c.unnamed).length, 0);
   const d = own.reduce((t, s) => t + s.controls.filter((c) => c.disabled).length, 0);
-  grand += n; unnamed += u; disabled += d;
+  grand += n; unnamed += u;
   console.log(`${panel.padEnd(16)} ${String(n).padStart(4)} in ${String(own.length).padStart(2)} screens`
     + `   + ${String(list.length).padStart(3)} in the shell`
     + `   (${u} unnamed, ${d} disabled on arrival)`);

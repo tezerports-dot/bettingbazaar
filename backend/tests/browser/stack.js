@@ -316,7 +316,7 @@ export async function reset(page, cfg, screen, base) {
 export const BUDGET_FLOOR = Number(process.env.BB_BUDGET_FLOOR ?? 120);
 export async function awaitBudget(label) {
   for (let attempt = 0; attempt < 6; attempt++) {
-    let left = null, resetIn = 15;
+    let left, resetIn;
     try {
       const r = await fetch(`${API}/api/v1/system/config`, { method: 'GET' });
       left = Number(r.headers.get('ratelimit-remaining'));

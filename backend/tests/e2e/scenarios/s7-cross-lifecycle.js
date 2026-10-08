@@ -15,7 +15,7 @@
 import { pgQuery } from '#db/client.js';
 import { seedPlayer, seedMerchant, seedTeam, seedAdmin } from '../seed.js';
 import {
-  playerToken, merchantToken, adminToken, GET, POST, PUT, check, note, idemKey, BASE,
+  playerToken, merchantToken, adminToken, GET, POST, PUT, check, note, BASE,
 } from '../harness.js';
 
 /**

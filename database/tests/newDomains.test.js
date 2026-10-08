@@ -392,7 +392,6 @@ describePg('the domains written from scratch', () => {
       // The ceiling is in the WHERE clause; an application check lets two
       // concurrent payments both read the same total and both pass.
       expect(spends.filter((s) => s.ok)).toHaveLength(10);
-      const [batch] = await referrals.listBatches({ limit: 200 });
       const mine = (await referrals.listBatches({ limit: 200 })).find((b) => b.batchId === `bt-${ID}`);
       expect(mine.spent).toBe(100);
     });
