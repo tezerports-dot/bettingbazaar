@@ -25,9 +25,11 @@
  * A refusal is returned to the caller to be surfaced to the provider. There is
  * nowhere for it to fall back to, and there should not be.
  */
-import { rupeesToPaise } from '../../backend/shared/money.js';
+import { rupeesToPaise, paiseToRupees } from '../../backend/shared/money.js';
+import { reserveBasisPoints, maxStakeMinor } from '../../backend/domains/risk/stakeFunding.js';
 import { CASINO_TX, recordCallback, getRound } from './casino.core.js';
-import { getBalancesRupees } from './wallets.core.js';
+import { getBalancesPaise } from './wallets.core.js';
+import { getSystemConfig } from './config.js';
 import { hasLiveSession } from './games.js';
 
 /** The provider's vocabulary, normalised. Anything else is not a money move. */
@@ -36,10 +38,22 @@ export function normaliseType(raw) {
   return CASINO_TX[t] ? t : null;
 }
 
-/** What the provider is told, and what the audit row records. */
+/**
+ * What the provider is told, and what the audit row records: the largest BET
+ * these pockets can fund, by the rule a BET is split with — the ceiling a
+ * board bet is offered (`computeMaxStake`, GET /api/user/bet-limits). A stake
+ * of exactly this is taken; a paisa more is refused. It once said deposit +
+ * winnings while a BET could draw on the deposit alone, so a provider offered
+ * the player stakes the callback then refused.
+ */
 export async function spendableBalance(userId) {
-  const w = await getBalancesRupees(String(userId));
-  return (w?.depositBalance || 0) + (w?.winningsBalance || 0);
+  const [w, config] = await Promise.all([getBalancesPaise(String(userId)), getSystemConfig()]);
+  return paiseToRupees(maxStakeMinor({
+    reserveBp: reserveBasisPoints(config.betReservePercent),
+    depositMinor: w.depositBalance,
+    winningsMinor: w.winningsBalance,
+    reserveMinor: w.reserveBalance,
+  }));
 }
 
 /**
@@ -47,7 +61,7 @@ export async function spendableBalance(userId) {
  *
  *   { ok: true,  idempotent, round, balanceRupees }
  *   { ok: false, reason: 'unknown_type' | 'no_prior_debit' | 'refund_exceeds_debit'
- *                      | 'insufficient' | 'inconsistent_idempotency' }
+ *                      | 'insufficient' | 'stake_split_unknown' | 'inconsistent_idempotency' }
  *
  * An amount that is not a positive number is refused here rather than reaching
  * the mechanism: `rupeesToPaise` on junk yields NaN, and NaN paise passed to a

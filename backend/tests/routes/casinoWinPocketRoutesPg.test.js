@@ -86,7 +86,8 @@ describePg('a casino WIN through the provider callback lands in winnings (Postgr
     const win = body(p.userId, { roundId, type: 'WIN', amount: 350 });
     const res = await callback(win);
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    // The provider is told what the player can see: deposit + winnings.
+    // The provider is told what a BET can draw on: deposit + winnings here
+    // (no reserve), the board's stake ceiling (`casinoStakePocketRoutesPg`).
     expect(res.body).toMatchObject({ success: true, balance: 1_250, currency: 'INR' });
     expect(await pockets(p.userId)).toEqual({ deposit: 90_000, winnings: 35_000 });
 
