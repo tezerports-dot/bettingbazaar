@@ -13,12 +13,13 @@
  *   house   = phantom bets, display only      cycleGenerator.runPhantomEqualizer
  *   payout  = 2× stake − winningsFeePercent   riskValidation.computeWinningsPayout
  *   winners = real wins + curated entries     routes/winners.routes.js
+ *   VIP / General boards apart                cycles.audience, bets.core.placeBet
  *
  * BOARD_RULES_VERSION goes up whenever the text changes in substance; a player
  * who accepted an older version is asked again before their next bet.
  */
 
-export const BOARD_RULES_VERSION = 1;
+export const BOARD_RULES_VERSION = 2;
 
 /**
  * @param {{ feePercent: number }} live  the winnings fee in force
@@ -43,6 +44,12 @@ export function boardRules({ feePercent }) {
         title: 'Payout',
         body: `A winning bet pays 2× its stake, minus a platform fee of ${feePercent}% of that payout. `
           + 'A losing stake is not returned.',
+      },
+      {
+        title: 'VIP and General boards',
+        body: 'Players betting with their General (referral bonus) balance play on their own boards, separate from '
+          + 'VIP ID players who bet with deposited money. The two never share a round or its pools. '
+          + 'A General win is paid back into your General balance.',
       },
       {
         title: 'Winners list',

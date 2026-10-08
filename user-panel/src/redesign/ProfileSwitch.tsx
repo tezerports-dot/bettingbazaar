@@ -11,8 +11,9 @@
  */
 import React, { useCallback, useEffect, useState } from 'react';
 import apiClient from '../services/apiClient';
+import type { PlayProfile } from '../types';
 
-export type PlayProfile = 'VIP' | 'GENERAL';
+export type { PlayProfile };
 
 export interface GeneralSummary {
   profile: PlayProfile;

@@ -24,8 +24,8 @@
  *   • CycleControl shows celebration display instead of countdown for those 10 s.
  */
 
-import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
-import { CycleType, GameState, User, Bet, BettingSide, GameCycle } from '../types';
+import React, { createContext, useContext, useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { CycleType, GameState, User, Bet, BettingSide, GameCycle, PlayProfile } from '../types';
 import { ANALYTICS_WINDOW } from '../constants';
 import { getBackend, setCdnBaseUrl } from './backend.service';
 import type { SignInStep } from './backend.interface';
@@ -102,6 +102,14 @@ interface GameContextType {
   cycles: { [key in CycleType]: GameCycle };
   currentCycle: GameCycle;
   pastCycles: GameCycle[];
+  /**
+   * Whose boards this screen shows: the player's profile (VIP or GENERAL),
+   * VIP for a visitor. The two never share a cycle (owner, 2026-10-08), so
+   * every cycle, result and history row of the other audience is ignored.
+   */
+  audience: PlayProfile;
+  /** Show the boards of this profile (the header switch calls it). */
+  setAudience: (audience: PlayProfile) => void;
   /** Fetch one board's full ANALYTICS_WINDOW of results. See the callback. */
   loadCycleHistory: (type: CycleType) => void;
   gameState: GameState;
@@ -187,6 +195,12 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
   const [userBets, setUserBets]     = useState<Bet[]>([]);
   const [history, setHistory]       = useState<string[]>([]);
   const [pastCycles, setPastCycles] = useState<GameCycle[]>([]);
+  // The audience whose boards are shown, and the last snapshot of each, so a
+  // profile switch shows the other audience's boards at once.
+  const [audience, setAudienceState] = useState<PlayProfile>('VIP');
+  const audienceRef = useRef<PlayProfile>('VIP');
+  const snapshotsRef = useRef<Partial<Record<PlayProfile, any>>>({});
+  const applySnapshotRef = useRef<((data: any) => void) | null>(null);
   // serverTimeOffset removed — cycle timing is server-authoritative.
   // Status and timeRemaining come from cycle_update WS events, not local math.
   const serverTimeOffset = 0; // kept for context API compat, components must not use for cycle math
@@ -357,8 +371,29 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
     const socket = (backend as any).socket;
     if (!socket?.connected) return;
     const limit = ANALYTICS_WINDOW[type as string] ?? ANALYTICS_WINDOW['30_MIN'];
-    socket.emit('request_cycle_history', { type, limit });
+    socket.emit('request_cycle_history', { type, limit, audience: audienceRef.current });
   }, []);
+
+  const setAudience = useCallback((next: PlayProfile) => {
+    if (next === audienceRef.current) return;
+    audienceRef.current = next;
+    setAudienceState(next);
+    // The other audience's boards, from the snapshot already received for it;
+    // a fresh one is asked for so a stale copy is corrected within a moment.
+    const cached = snapshotsRef.current[next];
+    if (cached) applySnapshotRef.current?.(cached);
+    const socket = (backend as any).socket;
+    if (socket?.connected) {
+      socket.emit('request_cycle_snapshot');
+      socket.emit('request_cycle_history', { limit: 50, audience: next });
+    }
+  }, []);
+
+  // History holds both audiences' rows; the screens see their own audience's.
+  const myPastCycles = useMemo(
+    () => pastCycles.filter((c) => (c.audience ?? 'VIP') === audience),
+    [pastCycles, audience],
+  );
 
   // ── BUG-U6: Refresh wallet balance from server ─────────────────────────────
   const refreshUserWallet = useCallback(async () => {
@@ -418,7 +453,8 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
         for (const c of [...byId.values()].sort((a, b) => (b.endTime || 0) - (a.endTime || 0))) {
           const t = String(c.type);
           const cap = ANALYTICS_WINDOW[t] ?? ANALYTICS_WINDOW['30_MIN'];
-          if ((perType[t] = (perType[t] || 0) + 1) <= cap) kept.push(c);
+          const key = `${t}:${c.audience ?? 'VIP'}`;
+          if ((perType[key] = (perType[key] || 0) + 1) <= cap) kept.push(c);
         }
         return kept;
       });
@@ -435,7 +471,9 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
     
     if (socket) {
       socket.on('cycle_history', handleCycleHistory);
-      socket.emit('request_cycle_history', { limit: 50 });
+      // Both audiences' recent rows: a profile switch then has its history.
+      socket.emit('request_cycle_history', { limit: 50, audience: 'VIP' });
+      socket.emit('request_cycle_history', { limit: 50, audience: 'GENERAL' });
     }
 
     // Tertiary: HTTP fallback if neither is available yet
@@ -527,7 +565,14 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
     // ── cycle_snapshot: authoritative init pushed by server on connect ───────
     // Arrives via SSE on every connection (SSE sends it on connect).
     
+    // Whether an event is about this screen's audience's boards. An event
+    // without one predates audiences and is VIP's.
+    const mine = (data: any) => (data?.audience ?? 'VIP') === audienceRef.current;
+
     const handleCycleSnapshot = (data: any) => {
+      // Kept per audience, applied only for this screen's (see setAudience).
+      snapshotsRef.current[(data?.audience ?? 'VIP') as PlayProfile] = data;
+      if (!mine(data)) return;
       const map = data?.cycles || {};
 
       const applySnapshotType = (rawType: string, ct: CycleType) => {
@@ -577,6 +622,7 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
       ));
       setIsOnline(true);
     };
+    applySnapshotRef.current = handleCycleSnapshot;
 
     // Request snapshot on every (re)connect so cycles are never stale after a
     // server restart or temporary network drop. The server drops our room
@@ -652,6 +698,7 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
 
     const handleNewCycle = (data: any) => {
       // Server created a fresh cycle (sent 12s after cycle_result).
+      if (!mine(data)) return;
       const ct = toCycleType(data.type, data.cycleId);
       if (!ct) return;
       for (const [pendingCycleId, pending] of pendingBetPlaced) {
@@ -688,6 +735,7 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
     };
 
     const handleCycleResult = (data: any) => {
+      if (!mine(data)) return;
       const ct = toCycleType(data.type, data.cycleId);
       if (!ct) return;
       setCycles(prev => ({
@@ -723,16 +771,19 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
     const handleCyclePhase = (data: any) => {
       // cycle_phase does carry `type` (cycleGenerator emits it); the cycleId is
       // the fallback for older payloads.
+      if (!mine(data)) return;
       const ct = toCycleType(data.type, data.cycleId);
       if (!ct) return;
       setCycles(prev => ({ ...prev, [ct]: { ...prev[ct], status: data.phase as GameState } }));
     };
 
     const handleFireworks = (data: any) => {
+      if (!mine(data)) return;
       window.dispatchEvent(new CustomEvent('bazaar_fireworks', { detail: data }));
     };
 
     const handleCelebration = (data: any) => {
+      if (!mine(data)) return;
       window.dispatchEvent(new CustomEvent('bazaar_celebration', { detail: data }));
     };
 
@@ -901,6 +952,7 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
     setUserBets([]);
     setHistory([]);
     setIsGhostMode(false);   // FIX: ghost mode must be cleared on logout
+    setAudience('VIP');      // a visitor sees the VIP boards
     localStorage.removeItem('auth_token');
   };
 
@@ -911,8 +963,10 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
     // BUG-U6 fix: use dual balance for availability check
     // Architecture: deposit+winnings already decremented per bet; lockedBalance is a
     // separate tracking counter — do NOT subtract it here (would double-deduct).
+    // A GENERAL player stakes the General balance, which the server checks
+    // and answers in its own words; this pre-check is the VIP pockets'.
     const availableBalance = (user.depositBalance || 0) + (user.winningsBalance || 0);
-    if (availableBalance < amount) {
+    if (audienceRef.current === 'VIP' && availableBalance < amount) {
       addToast('Insufficient Balance', 'error');
       return;
     }
@@ -971,7 +1025,7 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
     <GameContext.Provider value={{
       user, isAuthenticated: !!user, isOnline, register, signIn, signInWithTelegram, pollTelegramStep, logout,
       cycleType, setCycleType, cycles, currentCycle: cycles[cycleType],
-      pastCycles, loadCycleHistory, gameState: cycles[cycleType].status, serverTimeOffset,
+      pastCycles: myPastCycles, audience, setAudience, loadCycleHistory, gameState: cycles[cycleType].status, serverTimeOffset,
       placeBet, placePhantomBet, userBets, history, formatTime,
       updateProfile, subscribeToVolume, getCurrentVolume, refreshUserWallet,
       isGhostMode,

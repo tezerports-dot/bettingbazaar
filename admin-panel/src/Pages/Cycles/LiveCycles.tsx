@@ -50,6 +50,7 @@ export const LiveCycles: React.FC = () => {
           _id: c.cycleId,
           cycleId: c.cycleId,
           type: c.type,
+          audience: c.audience,
           status: c.status,
           startTime: c.startTime,
           endTime: c.endTime,
@@ -179,6 +180,7 @@ export const LiveCycles: React.FC = () => {
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 15 }}>
                   <div className="font-mono" style={{ fontSize: 15, fontWeight: 800 }}>{c.cycleId}</div>
                   <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-2)', background: 'var(--surface-2)', border: '1px solid var(--border)', padding: '3px 8px', borderRadius: 6 }}>{CYCLE_TYPE_LABEL[c.type as string] ?? c.type}</span>
+                  {c.audience === 'GENERAL' && <span title="Referral bonus players' board" style={{ fontSize: 10, fontWeight: 700, color: 'var(--success)', background: 'var(--success-bg)', padding: '3px 8px', borderRadius: 6 }}>GENERAL</span>}
                   <span style={{ flex: 1 }} />
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 10.5, fontWeight: 700, padding: '4px 10px', borderRadius: 20, color: toneColor, background: toneBg }}>
                     <span style={{ width: 6, height: 6, borderRadius: '50%', background: toneColor }} />{(c.status || '').replace(/_/g, ' ')}

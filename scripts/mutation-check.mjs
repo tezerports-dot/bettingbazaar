@@ -3220,6 +3220,44 @@ const MUTATIONS = [
     from: `if (version !== BOARD_RULES_VERSION) {`,
     to: `if (!version) {`,
   },
+
+  // ── VIP and GENERAL boards apart (owner, 2026-10-08) ────────────────────────
+  {
+    id: 'MAU1', file: 'database/repositories/bets.core.js', config: PG,
+    test: 'database/tests/promoPg.test.js',
+    why: 'the writer stops holding a stake to its cycle\'s audience, so General bonus money can be staked on a VIP board',
+    from: `if (!fundsMatchAudience(slices, await audienceOfCycle(ctx.client, cycleId))) {`,
+    to: `if (false) {`,
+  },
+  {
+    id: 'MAU2', file: 'database/repositories/bets.core.js', config: PG,
+    test: 'database/tests/promoPg.test.js',
+    why: 'a General win is paid into withdrawable winnings, skipping the turnover requirement',
+    from: `const payoutField = audience === 'GENERAL' ? 'promoBalance' : 'winningsBalance';`,
+    to: `const payoutField = 'winningsBalance';`,
+  },
+  {
+    id: 'MAU3', file: 'database/repositories/bets.core.js', config: PG,
+    test: 'database/tests/promoPg.test.js',
+    why: 'a returned General stake is counted as turnover, so a cancelled round brings the unlock closer',
+    from: `if (spec.returnsStake) await unlockIfNothingOutstandingWithin(ctx, \`promo_unlock_rest_\${ctx.bid}\`);
+      else await recordTurnoverWithin(ctx, { stakeRef: ctx.bid, amountPaise: bet.stakePaise });`,
+    to: `await recordTurnoverWithin(ctx, { stakeRef: ctx.bid, amountPaise: bet.stakePaise });`,
+  },
+  {
+    id: 'MAU4', file: 'backend/domains/markets/bet.routes.js', config: PG,
+    test: 'backend/tests/routes/betPlaceRoutesPg.test.js',
+    why: 'a player on the other profile\'s board is refused only by the writer, told their profile changed instead of which profile to switch to (S14)',
+    from: `if (cycle.audience !== profile) {`,
+    to: `if (false) {`,
+  },
+  {
+    id: 'MAU5', file: 'database/repositories/markets.js', config: PG,
+    test: 'database/tests/cycleGeneratorPg.test.js',
+    why: 'the current cycle of a type is read without its audience, so a GENERAL screen is handed the VIP cycle',
+    from: `WHERE c.cycle_type = $1 AND c.audience = $3 AND c.status = ANY($2::text[])`,
+    to: `WHERE c.cycle_type = $1 AND ($3::text IS NOT NULL) AND c.status = ANY($2::text[])`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

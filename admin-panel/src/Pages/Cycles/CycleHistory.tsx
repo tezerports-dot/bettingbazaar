@@ -101,6 +101,7 @@ export const CycleHistory: React.FC = () => {
         <div>
           <p className="font-mono font-semibold text-xs text-gold-400">{cycle.cycleId}</p>
           {getCycleTypeBadge(cycle.type)}
+          {cycle.audience === 'GENERAL' && <span className="ml-1 text-[10px] font-bold text-green-400">GENERAL</span>}
         </div>
       ),
     },

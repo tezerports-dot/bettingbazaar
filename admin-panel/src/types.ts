@@ -123,6 +123,11 @@ export interface Cycle {
   _id: string;
   cycleId: string;
   type: CycleType;
+  /**
+   * Whose board: VIP (deposited money) or GENERAL (referral bonus money); the
+   * two never share a cycle. Mirrors `cycles_audience_known` (schema.sql).
+   */
+  audience?: 'VIP' | 'GENERAL';
   startTime: number; // Unix ms timestamp
   endTime: number;   // Unix ms timestamp
   status: CycleStatus;

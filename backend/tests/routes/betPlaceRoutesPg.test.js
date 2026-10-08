@@ -197,11 +197,14 @@ describePg('POST /api/bet/place', () => {
       const r1 = await place(g, { cycleId: vipBoard.cycleId, side: 'DELHI', amount: limits.fullDay.min, type: 'FULL_DAY' });
       expect(r1.status).toBe(409);
       expect(r1.body.code).toBe('WRONG_PROFILE_FOR_CYCLE');
+      // Told what to do about it (S14), not that something changed mid-bet.
+      expect(r1.body.message).toMatch(/Switch to VIP ID/);
 
       const v = await fundedPlayer(1_000);
       const r2 = await place(v, { cycleId: generalBoard.cycleId, side: 'DELHI', amount: limits.fullDay.min, type: 'FULL_DAY' });
       expect(r2.status).toBe(409);
       expect(r2.body.code).toBe('WRONG_PROFILE_FOR_CYCLE');
+      expect(r2.body.message).toMatch(/Switch to General/);
 
       const { rows } = await pgQuery(`SELECT count(*)::int AS n FROM bets WHERE user_id = ANY($1)`, [[g.userId, v.userId]]);
       expect(rows[0].n).toBe(0);

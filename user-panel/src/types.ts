@@ -83,9 +83,18 @@ export interface Bet {
   isPhantom?: boolean;
 }
 
+/**
+ * A player's profile and a board cycle's audience (owner, 2026-10-08).
+ * Mirrors `PLAY_PROFILES` (database/repositories/promo.js) and the
+ * `users_play_profile_known` / `cycles_audience_known` CHECKs.
+ */
+export type PlayProfile = 'VIP' | 'GENERAL';
+
 export interface GameCycle {
   id: string;          // This is the backend's cycleId (e.g. 30MIN_1234567890)
   type: CycleType;
+  /** Whose board this is; absent on payloads that predate audiences (VIP). */
+  audience?: PlayProfile;
   startTime: number;
   endTime: number;
   status: GameState;

@@ -52,7 +52,7 @@ vi.mock('react-router', async () => ({
 vi.mock('../services/GameContext', () => ({
   useGame: () => ({
     user: null, balances: { depositBalance: 0, winningsBalance: 0, reserveBalance: 0, lockedBalance: 0 },
-    isOnline: true, logout: vi.fn(),
+    isOnline: true, logout: vi.fn(), setAudience: () => {},
   }),
   spendableBalance: () => 0,
 }));

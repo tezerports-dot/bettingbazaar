@@ -13,7 +13,7 @@
  * app_branding / --brand-* variables). §8: route paths flow through here as the
  * single nav table for the redesigned shell.
  */
-import React, { createContext, useContext, useMemo, useState } from 'react';
+import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router';
 import { useGame, spendableBalance } from '../services/GameContext';
 import { useGameProviders } from '../services/GameProviderContext';
@@ -117,7 +117,7 @@ const MENU_SECTIONS = [
 const APP_VERSION = import.meta.env.VITE_APP_VERSION ?? '';
 
 const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
-  const { user, isAuthenticated, logout } = useGame();
+  const { user, isAuthenticated, logout, setAudience } = useGame();
   const { theme, toggleTheme } = useTheme();
   const { desktop } = useViewport();
   const navigate = useNavigate();
@@ -144,6 +144,10 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
   // On the General profile the pill shows the General (referral bonus)
   // balance instead: that is the money the player is playing with.
   const { general, choose, error: profileError } = usePlayProfile(!!isAuthenticated, location.pathname);
+  // The boards on screen are the profile's own (VIP and GENERAL never share a
+  // cycle); a visitor, and a player whose profile has not loaded, sees VIP's.
+  const shownProfile = isAuthenticated && general ? general.profile : 'VIP';
+  useEffect(() => { setAudience(shownProfile); }, [shownProfile, setAudience]);
   const onGeneral = general?.profile === 'GENERAL';
   const totalBal = isAuthenticated ? (onGeneral ? general!.promoBalance : spendableBalance(user)) : null;
 

@@ -62,6 +62,7 @@ router.get('/cycles/phases', authenticate, hasPermission('canViewAnalytics'), as
       return {
         cycleId: cycle.cycleId,
         type: cycle.type,
+        audience: cycle.audience,
         status: cycle.status,
         currentPhase,
         startTime: startMs,
@@ -114,6 +115,7 @@ router.get('/cycles/history', authenticate, hasPermission('canViewAnalytics'), a
         _id: c.cycleId,
         cycleId: c.cycleId,
         type: c.type,
+        audience: c.audience,
         status: c.status,
         startTime: c.startTime,
         endTime: c.endTime,
