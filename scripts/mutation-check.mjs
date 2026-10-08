@@ -1071,12 +1071,15 @@ const MUTATIONS = [
     from: `    if (subject) return \`u:\${subject.id}\`;`,
     to: `    if (false) return null;`,
   },  // ── A merchant's password has one owner, and a reset evicts its sessions (R6)
+  // The merchant door is the one `loginHandler` since Step 3, reading the
+  // MERCHANT login row; its old reader (`getMerchantCredentials`) is deleted,
+  // so the mutant moves to the other side of the same seam: the reset.
   {
-    id: 'M196', file: 'database/repositories/merchants.js', config: PG,
+    id: 'M196', file: 'database/repositories/telegram.js', config: PG,
     test: 'backend/tests/routes/merchantPasswordResetPg.test.js',
-    why: 'the merchant door reads a password the reset never writes, so a reset merchant is refused their new password',
-    from: `LEFT JOIN users u ON u.user_id = m.user_id AND u.account_type = 'MERCHANT'`,
-    to: `LEFT JOIN users u ON FALSE`,
+    why: 'the reset keeps the old password on the row the merchant door reads, so a reset merchant is refused their new password',
+    from: `UPDATE users SET password_hash = $2, sessions_valid_from = $3, updated_at = now()`,
+    to: `UPDATE users SET password_hash = COALESCE(password_hash, $2), sessions_valid_from = $3, updated_at = now()`,
   },
   {
     id: 'M197', file: 'backend/middleware/merchantAuth.js', config: PG,

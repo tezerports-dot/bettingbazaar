@@ -20,12 +20,12 @@ import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { pgConfigured, pgQuery, applySchema, closePg } from '../client.js';
 import {
   createMerchant, getMerchant, getMerchants,
-  getMerchantByUserId, getMerchantByPublicRef, getMerchantByLogin,
-  getMerchantCredentials,
+  getMerchantByUserId, getMerchantByPublicRef,
   listMerchants, merchantCounts, updateMerchant, setOnline,
   recordCompletedOrder, resetPeriodicStats, suspendMerchant, approveMerchant,
   rejectMerchant, deleteMerchant, generateMerchantPublicRef, newMerchantId,
 } from '../repositories/merchants.js';
+import { getUserCredentials } from '../repositories/users.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 
@@ -96,16 +96,14 @@ describePg('the merchant record', () => {
     ).rejects.toThrow(/merchants_user_id_key|duplicate key/);
   });
 
-  it('finds a merchant by account, by public ref, and by either login identifier', async () => {
+  it('finds a merchant by account and by public ref', async () => {
+    // Signing in is not a merchant read: the merchant door is the one
+    // `loginHandler`, which finds the MERCHANT login row by mobile (§33.5).
     const userId = `u-${RUN}-${seq}`;
-    const created = await make({ userId, mobile: `98${RUN}${seq}`, username: `Trader${RUN}${seq}` });
+    const created = await make({ userId });
 
     expect((await getMerchantByUserId(userId)).merchantId).toBe(ID);
     expect((await getMerchantByPublicRef(created.publicRef)).merchantId).toBe(ID);
-    expect((await getMerchantByLogin(`98${RUN}${seq}`)).merchantId).toBe(ID);
-    // Usernames are matched case-insensitively, or a merchant who capitalises
-    // differently at the keyboard cannot sign in.
-    expect((await getMerchantByLogin(`trader${RUN}${seq}`)).merchantId).toBe(ID);
   });
 
   it('reads several merchants in one round trip', async () => {
@@ -129,7 +127,8 @@ describePg('the merchant record', () => {
     expect(JSON.stringify(rendered)).not.toContain('hashed-secret');
     expect(rendered.passwordHash).toBeUndefined();
 
-    const creds = await getMerchantCredentials(ID);
+    // The one credentials read, the one the merchant door asks (`loginHandler`).
+    const creds = await getUserCredentials(uid);
     expect(creds.passwordHash).toBe('hashed-secret');
   });
 

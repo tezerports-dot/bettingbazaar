@@ -2947,6 +2947,9 @@ evicted nothing.
   `merchants.password_hash` is dropped (§0.0: nothing to migrate).
   `merchantAuth` refuses a session issued before the login row's
   `sessions_valid_from`.
+  (Step 3, 2026-10-08: the merchant door became the one `loginHandler`, which
+  reads `getUserCredentials` on that same row; `getMerchantCredentials` and
+  `getMerchantByLogin` had no caller left and were deleted.)
 - **Tests:** `merchantPasswordResetPg` drives the real reset route, the merchant
   login and a `merchantAuth` read, and then the merchant SSE feed. The new
   password is admitted, the old one refused, and the old session refused
@@ -3596,9 +3599,9 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 408 |
-| Parameters only (safe by construction) | 265 |
-| Interpolating into statement text (each needs a reading) | 136 |
+| `pgQuery` call sites | 406 |
+| Parameters only (safe by construction) | 264 |
+| Interpolating into statement text (each needs a reading) | 135 |
 | Statement text built elsewhere and passed in (each needs a reading) | 7 |
 
 <details><summary>Call sites whose statement text is built elsewhere</summary>

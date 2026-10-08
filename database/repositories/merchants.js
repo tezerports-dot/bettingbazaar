@@ -208,43 +208,6 @@ export async function getMerchantByPublicRef(publicRef) {
   return toMerchant(rows[0]);
 }
 
-/** The login lookup: mobile or username, case-insensitively for the username. */
-export async function getMerchantByLogin(identifier) {
-  if (!identifier) return null;
-  const { rows } = await pgQuery(
-    `SELECT ${COLUMNS} FROM merchants
-      WHERE mobile = $1 OR lower(username) = lower($1) LIMIT 1`,
-    [String(identifier)], 'merchant_get_login',
-  );
-  return toMerchant(rows[0]);
-}
-
-/**
- * The credential columns, for the sign-in path only.
- *
- * Separate from `getMerchant` so a password hash cannot reach a
- * response body by accident — a caller has to ask for this by name, and no
- * route that renders a merchant calls it.
- */
-export async function getMerchantCredentials(merchantId) {
-  if (!merchantId) return null;
-  const { rows } = await pgQuery(
-    // The password comes from the merchant's LOGIN row — the one owner, and
-    // the row a password reset writes. The second factor is the login's
-    // Telegram (telegram_links), not a stored secret.
-    `SELECT m.merchant_id, u.password_hash
-       FROM merchants m
-       LEFT JOIN users u ON u.user_id = m.user_id AND u.account_type = 'MERCHANT'
-      WHERE m.merchant_id = $1`,
-    [String(merchantId)], 'merchant_get_credentials',
-  );
-  const r = rows[0];
-  return r ? {
-    merchantId: r.merchant_id,
-    passwordHash: r.password_hash,
-  } : null;
-}
-
 /**
  * The admin list. Keyset pagination on `(created_at, merchant_id)`.
  *
