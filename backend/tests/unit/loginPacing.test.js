@@ -8,15 +8,9 @@
  * two failures an attacker may submit as fast as the network allows, and it is
  * the RATE that decides whether an automated guess is worth attempting.
  *
- * A six-digit TOTP is a 10^6 space. Paced at one attempt per 10 seconds a full
- * sweep takes over three months, against codes that expire in thirty seconds.
- *
- * ── Which accounts this actually protects ───────────────────────────────────
- * Players cannot reach it: there is no player login form and no password
- * endpoint — the Telegram bot issues a one-time link that the app trades for a
- * session. Admins and merchants still sign in with a password and then a TOTP,
- * and those are the higher-value credentials: an admin adjusts balances, a
- * merchant settles real INR and USDT.
+ * ── Which accounts this protects ───────────────────────────────────────────
+ * Every door (Step 3): a player, a staff member and a merchant all sign in with
+ * a mobile and a password; staff and merchants then approve in Telegram.
  *
  * ── The response has to be answerable ───────────────────────────────────────
  * A 429 carrying only "too many requests" leaves a person to guess when to

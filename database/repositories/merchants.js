@@ -44,7 +44,7 @@ export function newMerchantId() {
 }
 
 const COLUMNS = `merchant_id, user_id, name, public_ref, username, mobile, email,
-  two_factor_enabled, two_factor_enrolled_at, status, suspension_reason, is_online,
+  status, suspension_reason, is_online,
   accepts_deposits, accepts_withdrawals, accepted_currencies, merchant_type,
   bank_account_holder_name, bank_name, bank_account_no, bank_ifsc,
   usdt_address_trc20, usdt_address_bep20,
@@ -102,9 +102,6 @@ function toMerchant(row) {
     username: row.username,
     mobile: row.mobile,
     email: row.email,
-
-    twoFactorEnabled: row.two_factor_enabled,
-    twoFactorEnrolledAt: row.two_factor_enrolled_at,
 
     status: row.status,
     suspensionReason: row.suspension_reason,
@@ -234,7 +231,7 @@ export async function getMerchantByLogin(identifier) {
 /**
  * The credential columns, for the sign-in path only.
  *
- * Separate from `getMerchant` so a password hash or a 2FA secret cannot reach a
+ * Separate from `getMerchant` so a password hash cannot reach a
  * response body by accident — a caller has to ask for this by name, and no
  * route that renders a merchant calls it.
  */
@@ -242,9 +239,9 @@ export async function getMerchantCredentials(merchantId) {
   if (!merchantId) return null;
   const { rows } = await pgQuery(
     // The password comes from the merchant's LOGIN row — the one owner, and
-    // the row a password reset writes. The second factor stays on `merchants`.
-    `SELECT m.merchant_id, u.password_hash, m.two_factor_enabled, m.two_factor_secret,
-            m.two_factor_pending_secret, m.two_factor_last_counter, m.backup_codes
+    // the row a password reset writes. The second factor is the login's
+    // Telegram (telegram_links), not a stored secret.
+    `SELECT m.merchant_id, u.password_hash
        FROM merchants m
        LEFT JOIN users u ON u.user_id = m.user_id AND u.account_type = 'MERCHANT'
       WHERE m.merchant_id = $1`,
@@ -254,11 +251,6 @@ export async function getMerchantCredentials(merchantId) {
   return r ? {
     merchantId: r.merchant_id,
     passwordHash: r.password_hash,
-    twoFactorEnabled: r.two_factor_enabled,
-    twoFactorSecret: r.two_factor_secret,
-    twoFactorPendingSecret: r.two_factor_pending_secret,
-    twoFactorLastCounter: toInt(r.two_factor_last_counter),
-    backupCodes: r.backup_codes ?? [],
   } : null;
 }
 
@@ -362,8 +354,6 @@ export async function merchantCounts() {
  */
 const UPDATABLE = new Set([
   'user_id', 'name', 'username', 'mobile', 'email',
-  'two_factor_enabled', 'two_factor_secret', 'two_factor_pending_secret',
-  'two_factor_last_counter', 'two_factor_enrolled_at', 'backup_codes',
   'status', 'suspension_reason', 'is_online', 'accepts_deposits', 'accepts_withdrawals',
   'accepted_currencies',
   'bank_account_holder_name', 'bank_name', 'bank_account_no', 'bank_ifsc',
@@ -884,57 +874,6 @@ export async function createMerchantAccount({
   } finally {
     client.release(failure ?? undefined);
   }
-}
-
-/**
- * Spend a TOTP counter, atomically.
- *
- * ── Why this is a conditional UPDATE and not a save ─────────────────────────
- * A TOTP code stays valid for its 30-second step plus the verifier's drift
- * window, so the same six digits are accepted for up to 90 seconds — exactly
- * the window a shoulder-surfed or phished code needs. The guard against that is
- * remembering the highest counter already spent and refusing anything at or
- * below it.
- *
- * Read the counter, compare it in JavaScript, then write it back, and two
- * submissions of the SAME code inside that window both read the old value, both
- * pass, and both are accepted. The replay guard would fail in precisely the
- * situation it exists for, because a replay IS concurrent. The comparison is in
- * the WHERE clause here, so exactly one of N racing submissions updates a row.
- *
- * @returns {boolean} true when this call is the one that spent the counter.
- */
-export async function spendTwoFactorCounter(merchantId, counter) {
-  const n = Number(counter);
-  if (!Number.isFinite(n)) return false;
-  const { rowCount } = await pgQuery(
-    `UPDATE merchants SET two_factor_last_counter = $2, updated_at = now()
-      WHERE merchant_id = $1
-        AND (two_factor_last_counter IS NULL OR two_factor_last_counter < $2)`,
-    [String(merchantId), n], 'merchant_2fa_spend_counter',
-  );
-  return rowCount === 1;
-}
-
-/**
- * Consume one recovery code, atomically.
- *
- * Compare-and-swap on the whole array: the update only lands if the stored
- * codes are still exactly the ones the caller verified against. Two requests
- * redeeming the same code both compute the same shorter array, but only the
- * first matches the expected value — the second finds the list already changed
- * and is refused, so a single-use code is single-use under concurrency rather
- * than only in sequence.
- *
- * @returns {boolean} true when this call is the one that consumed it.
- */
-export async function consumeTwoFactorBackupCode(merchantId, { expected, remaining }) {
-  const { rowCount } = await pgQuery(
-    `UPDATE merchants SET backup_codes = $3, updated_at = now()
-      WHERE merchant_id = $1 AND COALESCE(backup_codes, ARRAY[]::text[]) = $2`,
-    [String(merchantId), expected ?? [], remaining ?? []], 'merchant_2fa_consume_backup',
-  );
-  return rowCount === 1;
 }
 
 /**

@@ -572,17 +572,8 @@ CREATE TABLE IF NOT EXISTS users (
   sub_admin_permissions JSONB NOT NULL DEFAULT '{}'::jsonb,
   phantom_access     TEXT NOT NULL DEFAULT 'NONE',
 
-  -- ── Second factor ────────────────────────────────────────────────────────
-  -- MANDATORY for admins and sub-admins, available to merchants, and not
-  -- applicable to players (who have no password to protect).
-  two_factor_enabled BOOLEAN NOT NULL DEFAULT FALSE,
-  two_factor_secret  TEXT,
-  two_factor_pending_secret TEXT,
-  -- The last accepted TOTP counter. Storing it is what makes a replay of an
-  -- observed code fail: a code is valid for a window, and without this the same
-  -- code works twice inside it.
-  two_factor_last_counter BIGINT,
-  two_factor_enrolled_at TIMESTAMPTZ,
+  -- The second factor is the account's own Telegram (`telegram_links`, Step 3);
+  -- no secret is stored on the account.
 
   -- ── Blocking ─────────────────────────────────────────────────────────────
   is_blocked         BOOLEAN NOT NULL DEFAULT FALSE,
@@ -613,14 +604,16 @@ CREATE TABLE IF NOT EXISTS users (
     CHECK (NOT is_blocked OR (block_reason IS NOT NULL AND blocked_at IS NOT NULL))
 );
 
--- Single-use 2FA recovery codes, hashed.
---
--- An array rather than a table: they are written as a SET (enrolment mints ten,
--- consuming one rewrites the remainder) and never queried individually, so a
--- child table would add a join and a delete path for no read this code makes.
--- Like the TOTP secret, these are returned only by the function that exists to
--- read them — a recovery code in a response body is a second factor given away.
-ALTER TABLE users ADD COLUMN IF NOT EXISTS backup_codes TEXT[] NOT NULL DEFAULT '{}';
+-- ── The authenticator app is gone (owner, 2026-10-07: 2FA is "Telegram only")
+-- Its secrets, replay counters and recovery codes are dropped, so a database
+-- that had them converges on this file (§32 S31) and keeps no secret for a
+-- factor nothing checks.
+ALTER TABLE users DROP COLUMN IF EXISTS two_factor_enabled;
+ALTER TABLE users DROP COLUMN IF EXISTS two_factor_secret;
+ALTER TABLE users DROP COLUMN IF EXISTS two_factor_pending_secret;
+ALTER TABLE users DROP COLUMN IF EXISTS two_factor_last_counter;
+ALTER TABLE users DROP COLUMN IF EXISTS two_factor_enrolled_at;
+ALTER TABLE users DROP COLUMN IF EXISTS backup_codes;
 
 -- Coarse role tags, distinct from the is_* booleans that gate authorisation.
 -- The booleans decide what an account MAY DO and are what every check reads;
@@ -821,16 +814,7 @@ CREATE TABLE IF NOT EXISTS merchants (
   -- wrote `users`, the login door read this column, so a merchant who reset
   -- was told it worked and was then refused the new password (R6, 2026-09-30).
 
-  -- ── Second factor. Mandatory for merchants ────────────────────────────────
-  -- Same column names as `users`, deliberately: the drift window, replay guard
-  -- and recovery-code logic in identity/verifySecondFactor.js operates on
-  -- either. Two copies of an anti-replay guard is how one of them goes stale.
-  two_factor_enabled         BOOLEAN NOT NULL DEFAULT FALSE,
-  two_factor_secret          TEXT,   -- AES-256-GCM ciphertext
-  two_factor_pending_secret  TEXT,
-  two_factor_last_counter    BIGINT,
-  two_factor_enrolled_at     TIMESTAMPTZ,
-  backup_codes               TEXT[] NOT NULL DEFAULT '{}',  -- sha256 hashes, single use
+  -- The second factor is the login row's Telegram (`telegram_links`, Step 3).
 
   status            TEXT NOT NULL DEFAULT 'PENDING',
   suspension_reason TEXT,
@@ -933,6 +917,13 @@ CREATE TABLE IF NOT EXISTS merchants (
     min_deposit_paise >= 0 AND min_withdraw_paise >= 0)
 );
 ALTER TABLE merchants DROP COLUMN IF EXISTS password_hash;
+-- The authenticator app is gone (see the same drops on `users`).
+ALTER TABLE merchants DROP COLUMN IF EXISTS two_factor_enabled;
+ALTER TABLE merchants DROP COLUMN IF EXISTS two_factor_secret;
+ALTER TABLE merchants DROP COLUMN IF EXISTS two_factor_pending_secret;
+ALTER TABLE merchants DROP COLUMN IF EXISTS two_factor_last_counter;
+ALTER TABLE merchants DROP COLUMN IF EXISTS two_factor_enrolled_at;
+ALTER TABLE merchants DROP COLUMN IF EXISTS backup_codes;
 
 -- No UPI handle. `bank_upi_id` was written by Profile and copied into each
 -- order's snapshot, and nothing ever read it: a UPI_BANK buy is paid into the

@@ -183,10 +183,10 @@ export async function staffBootstrap() {
  * admits a password-only staff or merchant session the login would not have
  * minted (§32 S32).
  *
- * `otp` (an authenticator code) is accepted until the TOTP removal lands in its
- * own commit. A player's session never owes one: a player signs in with a
- * password, or with Telegram, and a player who switched approval on is asked
- * for it AT the login.
+ * Telegram is the only second factor (owner, 2026-10-07: "Telegram only"; the
+ * authenticator app is gone). A player's session never owes one: a player
+ * signs in with a password, or with Telegram, and a player who switched
+ * approval on is asked for it AT the login.
  *
  * @param {'PLAYER'|'STAFF'|'MERCHANT'|null} accountType
  * @param {object} decoded  the verified claims
@@ -194,7 +194,7 @@ export async function staffBootstrap() {
 export async function secondFactorMissing(accountType, decoded) {
   if (accountType !== 'STAFF' && accountType !== 'MERCHANT') return false;
   const amr = Array.isArray(decoded?.amr) ? decoded.amr : [];
-  if (amr.includes('tg') || amr.includes('otp')) return false;
+  if (amr.includes('tg')) return false;
   if (accountType === 'STAFF' && await staffBootstrap()) return false;
   return true;
 }
@@ -318,9 +318,9 @@ const makeAuthenticate = ({ accountTypes = ['PLAYER', 'STAFF'] } = {}) => async 
     // found nothing, and nothing errored anywhere.
     //
     // Credentials are NOT loaded here. This runs on every authenticated
-    // request, and a TOTP secret on `req.user` is a secret one careless
-    // `res.json(req.user)` puts in a response body. The paths that verify a
-    // second factor ask for them by name.
+    // request, and a password hash on `req.user` is a secret one careless
+    // `res.json(req.user)` puts in a response body. The login asks for it by
+    // name.
     const user = await getUser(decoded.userId);
     
     if (!user) {
@@ -382,12 +382,6 @@ const authenticatePlayer = makeAuthenticate({ accountTypes: ['PLAYER'] });
  */
 const authenticateStaff = makeAuthenticate({ accountTypes: ['STAFF'] });
 
-/**
- * The authenticator-app enrolment routes (`/api/2fa/*`). Identical to
- * `authenticate` now that no account is forced to enrol one; removed with
- * TOTP itself.
- */
-const authenticateForEnrolment = makeAuthenticate();
 
 
 /**
@@ -515,6 +509,5 @@ export {
   authenticate,
   authenticatePlayer,
   authenticateStaff,
-  authenticateForEnrolment,
   isAdmin,
 };

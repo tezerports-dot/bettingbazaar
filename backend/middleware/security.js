@@ -248,8 +248,8 @@ export function actorAccount(req) {
  * as fast as the network allows, and it is the RATE that decides whether an
  * automated guess is worth attempting at all.
  *
- * A six-digit TOTP is a 10^6 space. Paced at one per 10 seconds a full sweep
- * takes over three months, against codes that expire in thirty seconds.
+ * Paced at one per 10 seconds per mobile, a password guesser is slow before
+ * the failure budget is even consulted.
  *
  * ── The response has to be answerable ───────────────────────────────────────
  * A 429 that says "too many requests" and nothing else leaves a person to

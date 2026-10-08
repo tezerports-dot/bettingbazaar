@@ -34,7 +34,6 @@ import { signToken, verifyJwt, decodeTokenClaims } from './domains/identity/jwt.
 import { hashPassword, verifyPassword } from './domains/identity/password.util.js';
 import { isTokenRevoked, revokeToken } from '#db/repositories/identity.js';
 import { verifyChallenge, issueChallenge, isChallengeToken } from './domains/identity/twoFactorChallenge.js';
-import { verifySecondFactor, SECOND_FACTOR_RESULT } from './domains/identity/verifySecondFactor.js';
 import {
   sessionSuperseded, refuseSupersededSession, accountClosed, refuseClosedAccount,
   belongsElsewhere, refuseWrongPanel, secondFactorMissing, refuseMissingSecondFactor,
@@ -227,7 +226,6 @@ export async function issueSession(user, res, { amr = ['pwd'] } = {}) {
     status: user.status || 'ACTIVE', joinedAt: user.joinedAt || null,
     lastLogin: lastLogin?.lastLogin ?? new Date(),
     phantomAccess: user.phantomAccess || 'NONE',
-    twoFactorEnabled: user.twoFactorEnabled || false,
   };
 
   res.cookie('auth_token', token, COOKIE_OPTS);
@@ -257,7 +255,6 @@ export async function issueMerchantSession(merchant, res, { amr = ['pwd'] } = {}
       status: merchant.status, isOnline: merchant.isOnline,
       acceptsDeposits: merchant.acceptsDeposits !== false,
       acceptsWithdrawals: merchant.acceptsWithdrawals !== false,
-      twoFactorEnabled: merchant.twoFactorEnabled || false,
     },
   });
 }
@@ -355,49 +352,11 @@ export async function loginHandler(req, res) {
       twoFactorRequired: true,
       challengeToken: opened.challengeToken,
       telegram: opened.telegram,
-      // An authenticator app enrolled before Step 3 may answer instead, until
-      // TOTP is removed in its own commit.
-      totpAvailable: await totpEnrolled(door, user),
       message: 'Approve this sign-in in Telegram. Open the link on your phone, then come back here.',
     });
   } catch (e) {
     return respondError(res, e, 'auth/login', { message: 'Sign-in failed. Please try again.' });
   }
-}
-
-// ── The authenticator app, until TOTP is removed in its own commit ──────────
-async function totpCredentials(door, user) {
-  if (door.accountType === 'MERCHANT') {
-    const merchant = await db.merchants.getMerchantByUserId(user.userId);
-    if (!merchant) return null;
-    const creds = await db.merchants.getMerchantCredentials(merchant.merchantId);
-    return creds && {
-      creds,
-      store: {
-        spendCounter: (counter) => db.merchants.spendTwoFactorCounter(merchant.merchantId, counter),
-        consumeBackupCode: (arg) => db.merchants.consumeTwoFactorBackupCode(merchant.merchantId, arg),
-      },
-    };
-  }
-  const creds = await db.users.getUserCredentials(user.userId);
-  return creds && {
-    creds,
-    store: {
-      spendCounter: (counter) => db.users.spendTwoFactorCounter(user.userId, counter),
-      consumeBackupCode: (arg) => db.users.consumeTwoFactorBackupCode(user.userId, arg),
-    },
-  };
-}
-
-async function totpEnrolled(door, user) {
-  const found = await totpCredentials(door, user);
-  return Boolean(found?.creds?.twoFactorEnabled);
-}
-
-async function totpVerdict(door, user, code) {
-  const found = await totpCredentials(door, user);
-  if (!found?.creds?.twoFactorEnabled) return { ok: false };
-  return verifySecondFactor(found.creds, code, found.store);
 }
 
 /**
@@ -434,30 +393,12 @@ function notRedeemed(res, state) {
 export async function loginTwoFactorHandler(req, res) {
   try {
     const door = req.loginDoor || LOGIN_DOOR.STAFF;
-    const { challengeToken, code } = req.body || {};
+    const { challengeToken } = req.body || {};
     if (!challengeToken) {
       return send(res, { status: 400, code: 'CHALLENGE_REQUIRED', message: 'Sign in again to continue.' });
     }
     const challenge = verifyChallenge(challengeToken, door.accountType);
     if (!challenge?.userId) return notRedeemed(res, 'EXPIRED');
-
-    // ── An authenticator code, until TOTP is removed ───────────────────────
-    if (code) {
-      const user = await db.users.getUser(challenge.userId);
-      const refused = accountRefusal(door, user, challenge.loginType);
-      if (refused) return send(res, refused);
-      if (!(await db.telegram.getLinkByUserId(user.userId))) return notRedeemed(res, 'EXPIRED');
-      const verdict = await totpVerdict(door, user, code);
-      if (!verdict.ok) {
-        if (verdict.result === SECOND_FACTOR_RESULT.MALFORMED_SECRET) {
-          console.error(`🚨 2FA secret undecryptable for ${user.userId} — check TOTP_ENCRYPTION_KEY`);
-        }
-        return send(res, { status: 401, code: 'INVALID_CODE', message: 'Invalid authentication code.' });
-      }
-      const { merchant, refusal: notActive } = await merchantRefusal(door, user);
-      if (notActive) return send(res, notActive);
-      return sessionFor(door, user, res, { amr: ['pwd', 'otp'], merchant });
-    }
 
     const spent = await db.telegram.redeemChallenge({
       challengeId: challenge.challengeId, audience: door.accountType,

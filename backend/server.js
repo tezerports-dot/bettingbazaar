@@ -38,32 +38,6 @@ if (!process.env.DATABASE_URL) {
   process.exit(1);
 }
 
-// ── The one way the 2FA guard can become a real lockout ─────────────────────
-// Staff who have not enrolled a second factor reach the enrolment handshake and
-// nothing else (F-011 step 2). Enrolment stores the TOTP secret encrypted under
-// TOTP_ENCRYPTION_KEY, so WITHOUT that key an admin owes a factor they cannot
-// create: refused everywhere, and refused at the one door left open.
-//
-// That is worse than an outage because it is quiet. Players keep depositing
-// while nobody can approve KYC, resolve a dispute or release a payment, and the
-// first symptom is a support queue rather than an alarm.
-//
-// It does not exit: a missing key locks out STAFF, and turning that into a
-// refusal to boot would take the platform away from players too. It is loud
-// instead, and checked at startup rather than discovered by the first admin.
-if (!String(process.env.TOTP_ENCRYPTION_KEY || '').trim()) {
-  console.error(
-    '\n' + '='.repeat(72) + '\n'
-    + '❌ TOTP_ENCRYPTION_KEY IS NOT SET — NO STAFF MEMBER CAN SIGN IN.\n'
-    + '   Admin and sub-admin accounts must hold a second factor, and enrolling\n'
-    + '   one needs this key. Without it every staff account is locked out of\n'
-    + '   everything except an enrolment screen that cannot complete.\n'
-    + '   Set a base64 32-byte key and restart. Back it up like a signing key:\n'
-    + '   rotating it makes every stored 2FA secret undecryptable.\n'
-    + '='.repeat(72) + '\n',
-  );
-}
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 
@@ -122,7 +96,6 @@ import { registerService } from './services/serviceRegistry.js';
 import { providerRegistry } from './providers/registry.js';
 import { S3StorageProvider } from './providers/storage/S3StorageProvider.js';
 import { LocalDiskStorageProvider } from './providers/storage/LocalDiskStorageProvider.js';
-import twoFactorRoutes from './domains/identity/twoFactor.routes.js';
 import winnersRoutes      from './routes/winners.routes.js';
 import wellKnownRoutes from './routes/wellKnown.routes.js';
 
@@ -567,7 +540,6 @@ app.use('/api/v1/auth', authLimiter, authRoutes);
 // sub-admin roles; players do not have passwords and so have no second factor
 // to enrol. Enforcement at login lives in the auth handler, this router only
 // manages enrolment.
-app.use('/api/2fa', twoFactorRoutes);
 app.use('/api', winnersRoutes);
 
 // ── The staff sign-in door (§33) ─────────────────────────────────────────────

@@ -131,13 +131,6 @@ describePg('the merchant record', () => {
 
     const creds = await getMerchantCredentials(ID);
     expect(creds.passwordHash).toBe('hashed-secret');
-    expect(creds.backupCodes).toEqual([]);
-  });
-
-  it('stores recovery codes, which had no column at all on the account side', async () => {
-    await make();
-    await updateMerchant(ID, { backup_codes: ['h1', 'h2', 'h3'] });
-    expect((await getMerchantCredentials(ID)).backupCodes).toEqual(['h1', 'h2', 'h3']);
   });
 
   // ── The rail ──────────────────────────────────────────────────────────────

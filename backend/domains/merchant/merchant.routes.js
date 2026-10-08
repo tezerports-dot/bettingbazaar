@@ -15,10 +15,6 @@ import { openChallenge } from '../identity/telegramChallenge.service.js';
 import { miniAppBot } from '../telegram/telegramClient.js';
 import { telegramStatus, telegramRelink, telegramTwoFactor } from '../identity/accountTelegram.js';
 import { normalisePhone, isValidMobile } from '../identity/signupFields.js';
-import {
-  generateSecret, buildOtpauthUri, encryptSecret, decryptSecret,
-  verifyToken, generateBackupCodes, hashBackupCode,
-} from '../identity/totp.service.js';
 import { releaseUTR } from '../../middleware/utrValidation.js';
 import { emitWalletUpdate, emitOrderUpdate, emitMerchantUpdate, emitAdminUpdate } from '../notification/realtimeEmitters.js';
 import {
@@ -256,100 +252,6 @@ router.post('/auth/login/telegram/complete', ...doorRoute('MERCHANT', 'telegramC
 router.get('/telegram', merchantAuth, telegramStatus);
 router.post('/telegram/relink', merchantAuth, telegramRelink);
 router.put('/telegram/two-factor', merchantAuth, telegramTwoFactor);
-
-// ─── 2FA ENROLMENT ───────────────────────────────────────────────────────────
-// Merchants live in their own collection, so they cannot use /api/2fa (which
-// is User-only). Same two-step handshake for the same reason: a secret that
-// goes live before the merchant proves they scanned it locks them out of an
-// account that moves real settlement money.
-
-router.get('/2fa/status', merchantAuth, async (req, res) => {
-    const m = req.merchant;
-    res.json({
-        success: true,
-        enabled: !!m.twoFactorEnabled,
-        mandatory: true,                    // every merchant, no exceptions
-        enrolledAt: m.twoFactorEnrolledAt || null,
-        backupCodesRemaining: (m.backupCodes || []).length,
-    });
-});
-
-router.post('/2fa/setup', merchantAuth, twoFactorLimiter, async (req, res) => {
-    try {
-        const creds = await db.merchants.getMerchantCredentials(req.merchantId);
-        if (!creds)
-            return res.status(404).json({ success: false, message: 'Merchant not found' });
-        if (creds.twoFactorEnabled)
-            return res.status(400).json({ success: false,
-                // There is no merchant disable route, deliberately (see below), so
-                // "disable it first" named a step nobody can take (§32 S14).
-                message: 'Two-factor authentication is already active. If you have lost your authenticator, '
-                    + 'sign in with a recovery code, or ask an admin to re-enrol you.' });
-
-        const secret = generateSecret();
-        // PENDING, not live: the secret only becomes the account's second factor
-        // once the merchant proves they can generate a code from it.
-        const merchant = await db.merchants.updateMerchant(req.merchantId, {
-            twoFactorPendingSecret: encryptSecret(secret),
-        });
-
-        res.json({
-            success: true,
-            secret,                                                 // for manual entry
-            otpauthUri: buildOtpauthUri({
-                secret,
-                label: `merchant:${merchant.mobile || merchant.username || merchant._id}`,
-            }),
-            message: 'Scan the QR with your authenticator, then submit a code to activate.',
-        });
-    } catch (e) {
-        console.error('Merchant 2FA setup error:', e);
-        res.status(500).json({ success: false, message: 'Could not start two-factor setup.' });
-    }
-});
-
-router.post('/2fa/activate', merchantAuth, twoFactorLimiter, async (req, res) => {
-    try {
-        const { code } = req.body;
-        if (!code) return res.status(400).json({ success: false, message: 'Code is required' });
-
-        const creds = await db.merchants.getMerchantCredentials(req.merchantId);
-        if (!creds?.twoFactorPendingSecret)
-            return res.status(400).json({ success: false, message: 'Start setup first.' });
-
-        const pending = decryptSecret(creds.twoFactorPendingSecret);
-        const verdict = verifyToken({ secret: pending, token: String(code) });
-        if (!verdict.valid)
-            return res.status(400).json({ success: false, message: 'That code did not match. Check your authenticator and try again.' });
-
-        // Only now does the secret become live — and all of it in ONE update,
-        // so the account is never found enrolled with no recovery codes, or
-        // with a live secret whose activation code has not been spent.
-        const codes = generateBackupCodes();
-        await db.merchants.updateMerchant(req.merchantId, {
-            twoFactorSecret: creds.twoFactorPendingSecret,
-            twoFactorPendingSecret: null,
-            twoFactorEnabled: true,
-            twoFactorEnrolledAt: new Date(),
-            twoFactorLastCounter: verdict.counter,   // the activation code is spent
-            backupCodes: codes.map(hashBackupCode),
-        });
-
-        res.json({
-            success: true,
-            backupCodes: codes,     // shown exactly once — only hashes are stored
-            message: 'Two-factor authentication is active. Save these recovery codes now; they will not be shown again.',
-        });
-    } catch (e) {
-        console.error('Merchant 2FA activate error:', e);
-        res.status(500).json({ success: false, message: 'Could not activate two-factor authentication.' });
-    }
-});
-
-// NOTE: there is deliberately no merchant /2fa/disable. 2FA is mandatory for
-// accounts that settle money, so self-service removal would be a hole in the
-// policy rather than a convenience. A merchant who loses their handset uses a
-// recovery code; if those are gone too, an admin re-enrols them out of band.
 
 // ─── PROFILE ─────────────────────────────────────────────────────────────────
 

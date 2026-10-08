@@ -187,10 +187,8 @@ export const RATE_LIMIT_TIERS = {
   //   It counts EVERY attempt, success included — that is the point of a pace —
   //   and it is what makes an automated guesser slow rather than merely capped.
   //
-  // A six-digit TOTP is a 10^6 space. At one attempt per 10 seconds a full
-  // sweep takes over three months, and each code is only valid for 30 seconds
-  // anyway, so the pace alone makes the guess uneconomic before the budget is
-  // even consulted.
+  // At one attempt per 10 seconds per mobile, a password guesser gets 8,640
+  // tries a day against one account before the failure budget is consulted.
   loginPace: tier(10 * 1000, 1),
   // ── SIGNUP is not a credential attempt, and must not be paced like one ────
   // A registration submits no secret. Nobody learns anything by sending the

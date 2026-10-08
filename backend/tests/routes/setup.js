@@ -18,7 +18,6 @@ const FIXED = {
   ORDER_HMAC_SECRET: 'test-only-order-hmac-not-a-real-secret-0123456789abcdef',
   // 32 bytes, base64 — AES-256 needs a real key shape even in a test.
   IDENTITY_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString('base64'),
-  TOTP_ENCRYPTION_KEY: Buffer.alloc(32, 9).toString('base64'),
 };
 
 for (const [key, value] of Object.entries(FIXED)) process.env[key] = value;

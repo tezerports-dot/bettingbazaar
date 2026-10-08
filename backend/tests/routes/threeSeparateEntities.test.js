@@ -106,12 +106,6 @@ describePg('three separate entities, one mobile', () => {
     });
     expect(staff.created, 'the staff account on the SAME mobile').toBe(true);
     await setRoles(staff.user.userId, ['admin']);
-    // Staff enrol a second factor by policy, and an enrolled account is
-    // answered with a CHALLENGE rather than a session — which is a different
-    // assertion from the one this file is making. Off, deliberately and
-    // explicitly, so the nine cases below compare like with like.
-    await pgQuery('UPDATE users SET two_factor_enabled = false WHERE user_id = $1',
-      [staff.user.userId]);
 
     // The MERCHANT, through merchant signup.
     const merchant = await createMerchantAccount({

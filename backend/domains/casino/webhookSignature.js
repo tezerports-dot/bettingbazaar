@@ -31,7 +31,7 @@ import crypto from 'crypto';
  *      Unverifiable and authentic are not the same thing.
  *   3. The comparison is constant-time, matching how the rest of the codebase
  *      compares secrets (middleware/order-crypto-access.js,
- *      identity/totp.service.js). Lengths are compared first because
+ *      domains/telegram/miniAppAuth.js). Lengths are compared first because
  *      `timingSafeEqual` throws when they differ.
  *
  * ── The raw bytes, and why BOTH encodings are accepted ────────────────────

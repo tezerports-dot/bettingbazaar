@@ -50,8 +50,6 @@ const COLUMNS = `
   consecutive_payment_failures, order_lock_until, lost_disputes, high_risk_at,
   is_admin, is_sub_admin, is_queue_manager, is_mediator,
   sub_admin_role, sub_admin_permissions, phantom_access,
-  two_factor_enabled, two_factor_secret, two_factor_pending_secret,
-  two_factor_last_counter, two_factor_enrolled_at,
   is_blocked, block_reason, blocked_at, blocked_by,
   bank_details, last_login, roles, deleted_at, deleted_by, joined_at, updated_at,
   account_type, sessions_valid_from`;
@@ -77,8 +75,6 @@ const UPDATABLE = Object.freeze(new Set([
   'consecutive_payment_failures', 'order_lock_until',
   'is_admin', 'is_sub_admin', 'is_queue_manager', 'is_mediator',
   'sub_admin_role', 'sub_admin_permissions', 'phantom_access',
-  'two_factor_enabled', 'two_factor_secret', 'two_factor_pending_secret',
-  'two_factor_last_counter', 'two_factor_enrolled_at', 'backup_codes',
   'is_blocked', 'block_reason', 'blocked_at', 'blocked_by',
   'bank_details', 'last_login', 'roles',
   // Moved to `now()` by a password reset, which kills every session issued
@@ -118,8 +114,7 @@ function toColumns(patch, fn) {
 /**
  * Row → the shape the application speaks.
  *
- * Secrets are NOT included. `password_hash`, `two_factor_secret`,
- * `two_factor_pending_secret` and `two_factor_last_counter` are returned only
+ * Secrets are NOT included. `password_hash` is returned only
  * by the functions that exist to read them, so an ordinary read cannot leak a
  * credential into a response body by accident. The document model expressed
  * this with `select: false`; here it is the mapper's job, and the mapper is the
@@ -165,8 +160,6 @@ function toUser(row) {
     subAdminRole: row.sub_admin_role,
     subAdminPermissions: row.sub_admin_permissions ?? {},
     phantomAccess: row.phantom_access,
-    twoFactorEnabled: row.two_factor_enabled,
-    twoFactorEnrolledAt: row.two_factor_enrolled_at,
     isBlocked: row.is_blocked,
     blockReason: row.block_reason,
     blockedAt: row.blocked_at,
@@ -271,76 +264,13 @@ export async function getUsers(userIds = []) {
 export async function getUserCredentials(userId) {
   if (!userId) return null;
   const { rows } = await pgQuery(
-    `SELECT user_id, password_hash, two_factor_enabled, two_factor_secret,
-            two_factor_pending_secret, two_factor_last_counter, backup_codes
-       FROM users WHERE user_id = $1`,
+    `SELECT user_id, password_hash FROM users WHERE user_id = $1`,
     [String(userId)], 'user_get_credentials',
   );
   const r = rows[0];
-  return r ? {
-    userId: r.user_id,
-    passwordHash: r.password_hash,
-    twoFactorEnabled: r.two_factor_enabled,
-    twoFactorSecret: r.two_factor_secret,
-    twoFactorPendingSecret: r.two_factor_pending_secret,
-    twoFactorLastCounter: toInt(r.two_factor_last_counter),
-    // Recovery codes, as hashes. Absent here and the second-factor check falls
-    // back to the authenticator alone — which locks out exactly the person
-    // whose phone is gone, the one case recovery codes exist for.
-    backupCodes: r.backup_codes ?? [],
-  } : null;
-}
-
-
-/**
- * Spend a TOTP counter, atomically.
- *
- * ── Why this is a conditional UPDATE and not a save ─────────────────────────
- * A TOTP code stays valid for its 30-second step plus the verifier's drift
- * window, so the same six digits are accepted for up to 90 seconds — exactly
- * the window a shoulder-surfed or phished code needs. The guard against that is
- * remembering the highest counter already spent and refusing anything at or
- * below it.
- *
- * Read the counter, compare it in JavaScript, then write it back, and two
- * submissions of the SAME code inside that window both read the old value, both
- * pass, and both are accepted. The replay guard would fail in precisely the
- * situation it exists for, because a replay IS concurrent. The comparison is in
- * the WHERE clause here, so exactly one of N racing submissions updates a row.
- *
- * @returns {boolean} true when this call is the one that spent the counter.
- */
-export async function spendTwoFactorCounter(userId, counter) {
-  const n = Number(counter);
-  if (!Number.isFinite(n)) return false;
-  const { rowCount } = await pgQuery(
-    `UPDATE users SET two_factor_last_counter = $2, updated_at = now()
-      WHERE user_id = $1
-        AND (two_factor_last_counter IS NULL OR two_factor_last_counter < $2)`,
-    [String(userId), n], 'user_2fa_spend_counter',
-  );
-  return rowCount === 1;
-}
-
-/**
- * Consume one recovery code, atomically.
- *
- * Compare-and-swap on the whole array: the update only lands if the stored
- * codes are still exactly the ones the caller verified against. Two requests
- * redeeming the same code both compute the same shorter array, but only the
- * first matches the expected value — the second finds the list already changed
- * and is refused, so a single-use code is single-use under concurrency rather
- * than only in sequence.
- *
- * @returns {boolean} true when this call is the one that consumed it.
- */
-export async function consumeTwoFactorBackupCode(userId, { expected, remaining }) {
-  const { rowCount } = await pgQuery(
-    `UPDATE users SET backup_codes = $3, updated_at = now()
-      WHERE user_id = $1 AND COALESCE(backup_codes, ARRAY[]::text[]) = $2`,
-    [String(userId), expected ?? [], remaining ?? []], 'user_2fa_consume_backup',
-  );
-  return rowCount === 1;
+  // The password is the only credential an account row holds: the second
+  // factor is the account's Telegram (telegram_links), not a stored secret.
+  return r ? { userId: r.user_id, passwordHash: r.password_hash } : null;
 }
 
 // ── Writes ───────────────────────────────────────────────────────────────────

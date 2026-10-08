@@ -87,20 +87,9 @@ export function mountRouter(router, { prefix = '' } = {}) {
  * by the same middleware, so an auth change that breaks the routes breaks these
  * tests too. A hand-written `req.user` would keep passing.
  */
-/**
- * @param twoFactorEnabled whether this account has enrolled a second factor.
- *   Defaults to TRUE for staff, because since F-011 step 2 a staff account that
- *   has NOT enrolled reaches the enrolment handshake and nothing else — so an
- *   unenrolled admin is not a normal admin a route test can use, it is an admin
- *   mid-onboarding, and every assertion about any other route would be
- *   asserting the 2FA guard instead.
- *
- *   Pass `false` deliberately to test the guard itself.
- */
 export async function actor({
   userId, roles = [], isAdmin = false, isSubAdmin = false,
   isQueueManager = false, permissions = null,
-  twoFactorEnabled = undefined,
 } = {}) {
   const id = userId || `rt-${Math.random().toString(36).slice(2, 10)}`;
 
@@ -136,8 +125,6 @@ export async function actor({
   }
 
   const patch = { isAdmin, isSubAdmin, isQueueManager };
-  // Staff enrol by default — see the note on the parameter.
-  patch.twoFactorEnabled = twoFactorEnabled ?? (isAdmin || isSubAdmin);
   if (permissions) patch.subAdminPermissions = permissions;
   await updateUser(id, patch);
   if (roles.length) await setRoles(id, roles);
