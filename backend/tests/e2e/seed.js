@@ -7,6 +7,7 @@ import { createRequest, fulfilRequest, getPool } from '#db/repositories/teamPool
 import { setCashReady, RAILS } from '#db/repositories/teamRouting.js';
 import { getTreasuryBalances, ACCOUNTS } from '#db/repositories/treasury.js';
 import { rid } from './harness.js';
+import { BOARD_RULES_VERSION } from '../../domains/markets/boardRules.js';
 
 const mob = () => String(6000000000 + Math.floor(Math.random() * 3999999999));
 
@@ -38,7 +39,7 @@ export async function verifyActor({ userId, mobile, audience }) {
   return true;
 }
 
-export async function seedPlayer({ balancePaise = 0, verified = true } = {}) {
+export async function seedPlayer({ balancePaise = 0, verified = true, boardRules = true } = {}) {
   const userId = rid('player');
   // The number is held in a LOCAL, not read back off the projection. The
   // identity insert below needs it and `phone` is NOT NULL, so a projection
@@ -52,6 +53,8 @@ export async function seedPlayer({ balancePaise = 0, verified = true } = {}) {
 
   // The Telegram verification every account completes at signup (Step 3).
   if (verified) await verifyActor({ userId, mobile, audience: 'PLAYER' });
+  // The board rules every player accepts before a first bet (owner, 2026-10-08).
+  if (boardRules) await db.boardRules.accept(userId, BOARD_RULES_VERSION);
 
   // A seeded balance comes OUT OF THE PLATFORM'S OWN HOLDING, posted with the
   // credit: since the conservation guards (owner, 2026-10-07) a wallet that

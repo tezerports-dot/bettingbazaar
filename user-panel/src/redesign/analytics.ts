@@ -27,8 +27,7 @@
  * renders the shortfall instead of filling it in.
  */
 
-import type { CycleType } from '../types';
-import { ANALYTICS_WINDOW } from '../constants';
+import { analyticsWindowFor } from '../constants';
 
 export type Side = 'DELHI' | 'BOMBAY';
 
@@ -117,15 +116,15 @@ export function computeAnalytics(seq: Side[]): Analytics {
 }
 
 /**
- * Build the analytics window for a cycle type, from real winners only
+ * Build the analytics window for a board, from real winners only
  * (newest first). A window holding fewer than `MIN_SAMPLE` results comes back
  * with `sufficient: false` and is NOT topped up — see the module header.
  */
-export function analyticsFor(realWinnersNewestFirst: Side[], cycleType: CycleType | string): Analytics {
-  // How far back each board looks — ANALYTICS_WINDOW in constants.ts, shared
-  // with GameContext (which caps the stored history to it) and the drawer
-  // (which requests exactly that many rows for the board being viewed).
-  const target = ANALYTICS_WINDOW[cycleType as string] ?? ANALYTICS_WINDOW['30_MIN'];
+export function analyticsFor(realWinnersNewestFirst: Side[], board?: { kind: string } | null): Analytics {
+  // How far back this board looks — `analyticsWindowFor` in constants.ts,
+  // shared with GameContext (which caps the stored history to it) and the
+  // drawer (which requests exactly that many rows for the board being viewed).
+  const target = analyticsWindowFor(board);
   return computeAnalytics(realWinnersNewestFirst.slice(0, target));
 }
 

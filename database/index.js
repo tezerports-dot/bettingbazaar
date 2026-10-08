@@ -70,6 +70,9 @@ import * as androidReleases from './repositories/androidReleases.js';
 import * as engagement from './repositories/engagement.js';
 import * as social from './repositories/social.js';
 import * as referrals from './repositories/referrals.js';
+import * as promo from './repositories/promo.js';
+import * as boardRules from './repositories/boardRules.js';
+import * as boards from './repositories/boards.js';
 import * as audit from './repositories/audit.js';
 import * as operations from './repositories/operations.js';
 import * as supportDocuments from './repositories/supportDocuments.js';
@@ -142,6 +145,9 @@ export const db = Object.freeze({
   engagement,
   social,
   referrals,
+  promo,
+  boardRules,
+  boards,
   chat,
 
   // Platform

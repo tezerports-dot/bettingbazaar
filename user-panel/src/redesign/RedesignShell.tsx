@@ -13,7 +13,7 @@
  * app_branding / --brand-* variables). §8: route paths flow through here as the
  * single nav table for the redesigned shell.
  */
-import React, { createContext, useContext, useMemo, useState } from 'react';
+import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router';
 import { useGame, spendableBalance } from '../services/GameContext';
 import { useGameProviders } from '../services/GameProviderContext';
@@ -25,6 +25,7 @@ import NotificationBell from '../components/Layout/NotificationBell';
 import ShareModal from '../components/Modals/ShareModal';
 import AnnouncementBanner from '../components/AnnouncementBanner';
 import { brandLogo } from '../services/brandAssets';
+import { ProfileSwitch, usePlayProfile } from './ProfileSwitch';
 
 interface ShellContextValue {
   isAuthenticated: boolean;
@@ -116,7 +117,7 @@ const MENU_SECTIONS = [
 const APP_VERSION = import.meta.env.VITE_APP_VERSION ?? '';
 
 const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
-  const { user, isAuthenticated, logout } = useGame();
+  const { user, isAuthenticated, logout, setAudience } = useGame();
   const { theme, toggleTheme } = useTheme();
   const { desktop } = useViewport();
   const navigate = useNavigate();
@@ -140,7 +141,15 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
   // Left as a named helper rather than an inline sum so the next reader meets
   // this reasoning instead of "the header forgot a pocket" — which is exactly
   // how it was read once already.
-  const totalBal = isAuthenticated ? spendableBalance(user) : null;
+  // On the General profile the pill shows the General (referral bonus)
+  // balance instead: that is the money the player is playing with.
+  const { general, choose, error: profileError } = usePlayProfile(!!isAuthenticated, location.pathname);
+  // The boards on screen are the profile's own (VIP and GENERAL never share a
+  // cycle); a visitor, and a player whose profile has not loaded, sees VIP's.
+  const shownProfile = isAuthenticated && general ? general.profile : 'VIP';
+  useEffect(() => { setAudience(shownProfile); }, [shownProfile, setAudience]);
+  const onGeneral = general?.profile === 'GENERAL';
+  const totalBal = isAuthenticated ? (onGeneral ? general!.promoBalance : spendableBalance(user)) : null;
 
   const openAuth = (mode: 'login' | 'register' = 'login') => { setAuthMode(mode); setAuthOpen(true); setMenuOpen(false); };
   const openMenu = () => setMenuOpen(true);
@@ -206,7 +215,7 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
                 {totalBal !== null ? `₹${fmt(totalBal)}` : 'Sign in'}
               </span>
               <span style={{ fontSize: 8, fontWeight: 700, letterSpacing: '.12em', textTransform: 'uppercase', color: 'var(--green)' }}>
-                {totalBal !== null ? 'Wallet' : 'to play'}
+                {totalBal !== null ? (onGeneral ? 'General' : 'Wallet') : 'to play'}
               </span>
             </span>
           </button>
@@ -245,6 +254,7 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
               It takes `isAuthenticated` because it polls: signed out there is
               nothing to count and no token to count it with.
             */}
+            {general && <ProfileSwitch general={general} choose={choose} error={profileError} />}
             <NotificationBell isAuthenticated={isAuthenticated} />
             <button onClick={toggleTheme} aria-label="Toggle theme" style={{ ...iconBtn, color: 'var(--gold-ink)', fontSize: 17 }}>
               {theme === 'dark' ? '☀️' : '🌙'}

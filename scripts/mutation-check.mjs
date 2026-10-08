@@ -1015,8 +1015,8 @@ const MUTATIONS = [
     id: 'M188', file: 'backend/domains/markets/bet.routes.js', config: PG,
     test: 'backend/tests/routes/betPlaceRoutesPg.test.js',
     why: 'the stake limits come from the type the client SENDS, so a full-day bet goes under the full-day floor by claiming to be a 30-minute bet',
-    from: `const limitsKey = isCycleType(cycle.type) ? limitsKeyFor(cycle.type) : 'thirtyMin';`,
-    to: `const limitsKey = isCycleType(req.body.type) ? limitsKeyFor(req.body.type) : 'thirtyMin';`,
+    from: `const board  = await boardOf(cycle.type);`,
+    to: `const board  = await boardOf(req.body.type ?? cycle.type);`,
   },
   {
     id: 'M189', file: 'database/repositories/bets.js', config: PG,
@@ -2757,7 +2757,7 @@ const MUTATIONS = [
     why: 'a pocket may go below zero again — a token spent that was never there',
     from: `ALTER TABLE wallets ADD CONSTRAINT wallets_pockets_nonneg CHECK (
   deposit_paise >= 0 AND winnings_paise >= 0 AND token_paise >= 0
-  AND reserve_paise >= 0 AND locked_paise >= 0);`,
+  AND reserve_paise >= 0 AND locked_paise >= 0 AND promo_paise >= 0);`,
     to: `ALTER TABLE wallets ADD CONSTRAINT wallets_pockets_nonneg CHECK (true);`,
   },
   {
@@ -3189,6 +3189,117 @@ const MUTATIONS = [
         AND (NEW.refunded_reserve_paise < NEW.debited_reserve_paise
              OR NEW.refunded_deposit_paise < NEW.debited_deposit_paise)) THEN`,
     to: `  IF false THEN`,
+  },
+
+  // ── The GENERAL balance and the board rules (owner, 2026-10-08) ─────────────
+  {
+    id: 'MPR1', file: 'database/repositories/promo.js', config: PG,
+    test: 'database/tests/promoPg.test.js',
+    why: 'a completed bonus unlocks the whole GENERAL balance, so winnings made with other open bonuses become withdrawable early',
+    from: `const release = done ? Math.min(n(g.amount_paise), promoHeld) : 0;`,
+    to: `const release = done ? promoHeld : 0;`,
+  },
+  {
+    id: 'MPR2', file: 'database/repositories/promo.js', config: PG,
+    test: 'database/tests/promoPg.test.js',
+    why: 'a stake reported twice is counted twice, so a retry halves the turnover a bonus asks for',
+    from: `VALUES ($1, $2, $3, 0) ON CONFLICT (stake_ref) DO NOTHING RETURNING stake_ref\`,`,
+    to: `VALUES ($1 || clock_timestamp()::text, $2, $3, 0) ON CONFLICT (stake_ref) DO NOTHING RETURNING stake_ref\`,`,
+  },
+  {
+    id: 'MBR1', file: 'backend/domains/markets/bet.routes.js', config: PG,
+    test: 'backend/tests/routes/betPlaceRoutesPg.test.js',
+    why: 'a player who never read the board rules can stake money on a board',
+    from: `if (await db.boardRules.acceptedVersion(userId) < BOARD_RULES_VERSION) {`,
+    to: `if (false) {`,
+  },
+  {
+    id: 'MBR2', file: 'backend/domains/user/user.routes.js', config: PG,
+    test: 'backend/tests/routes/boardRulesAndGeneralPg.test.js',
+    why: 'a version the player was never shown is recorded as accepted, so the next rules change is never put in front of them',
+    from: `if (version !== BOARD_RULES_VERSION) {`,
+    to: `if (!version) {`,
+  },
+
+  // ── VIP and GENERAL boards apart (owner, 2026-10-08) ────────────────────────
+  {
+    id: 'MAU1', file: 'database/repositories/bets.core.js', config: PG,
+    test: 'database/tests/promoPg.test.js',
+    why: 'the writer stops holding a stake to its cycle\'s audience, so General bonus money can be staked on a VIP board',
+    from: `if (!fundsMatchAudience(slices, await audienceOfCycle(ctx.client, cycleId))) {`,
+    to: `if (false) {`,
+  },
+  {
+    id: 'MAU2', file: 'database/repositories/bets.core.js', config: PG,
+    test: 'database/tests/promoPg.test.js',
+    why: 'a General win is paid into withdrawable winnings, skipping the turnover requirement',
+    from: `const payoutField = audience === 'GENERAL' ? 'promoBalance' : 'winningsBalance';`,
+    to: `const payoutField = 'winningsBalance';`,
+  },
+  {
+    id: 'MAU3', file: 'database/repositories/bets.core.js', config: PG,
+    test: 'database/tests/promoPg.test.js',
+    why: 'a returned General stake is counted as turnover, so a cancelled round brings the unlock closer',
+    from: `if (spec.returnsStake) await unlockIfNothingOutstandingWithin(ctx, \`promo_unlock_rest_\${ctx.bid}\`);
+      else await recordTurnoverWithin(ctx, { stakeRef: ctx.bid, amountPaise: bet.stakePaise });`,
+    to: `await recordTurnoverWithin(ctx, { stakeRef: ctx.bid, amountPaise: bet.stakePaise });`,
+  },
+  {
+    id: 'MAU4', file: 'backend/domains/markets/bet.routes.js', config: PG,
+    test: 'backend/tests/routes/betPlaceRoutesPg.test.js',
+    why: 'a player on the other profile\'s board is refused only by the writer, told their profile changed instead of which profile to switch to (S14)',
+    from: `if (cycle.audience !== profile) {`,
+    to: `if (false) {`,
+  },
+  {
+    id: 'MAU5', file: 'database/repositories/markets.js', config: PG,
+    test: 'database/tests/cycleGeneratorPg.test.js',
+    why: 'the current cycle of a type is read without its audience, so a GENERAL screen is handed the VIP cycle',
+    from: `WHERE c.cycle_type = $1 AND c.audience = $3 AND c.status = ANY($2::text[])`,
+    to: `WHERE c.cycle_type = $1 AND ($3::text IS NOT NULL) AND c.status = ANY($2::text[])`,
+  },
+  // ── Boards as rows (owner, 2026-10-08) ──────────────────────────────────────
+  {
+    id: 'MBD1', file: 'backend/domains/markets/bet.routes.js', config: PG,
+    test: 'backend/tests/routes/betPlaceRoutesPg.test.js',
+    why: 'a board the admin switched off keeps taking new bets',
+    from: `    if (!board?.enabled) {`,
+    to: `    if (!board) {`,
+  },
+  {
+    id: 'MBD2', file: 'backend/domains/markets/bet.routes.js', config: PG,
+    test: 'backend/tests/routes/betPlaceRoutesPg.test.js',
+    why: 'betting closes on the board\'s result offset instead of its close offset, so stakes land after the equalizer',
+    from: `if (Date.now() >= cycle.endTime - (board.phases.closeBeforeEndSec * 1000)) {`,
+    to: `if (Date.now() >= cycle.endTime - (board.phases.celebrateBeforeEndSec * 1000)) {`,
+  },
+  {
+    id: 'MBD3', file: 'database/schema.sql', config: PG,
+    test: 'database/tests/boardsPg.test.js',
+    why: 'a DAILY board with no start hour passes the CHECK as unknown, and the engine cannot place its round',
+    from: `anchor_hour_ist IS NOT NULL AND anchor_hour_ist BETWEEN 0 AND 23));`,
+    to: `anchor_hour_ist BETWEEN 0 AND 23));`,
+  },
+  {
+    id: 'MBD4', file: 'database/repositories/boards.js', config: PG,
+    test: 'database/tests/boardsPg.test.js',
+    why: 'an order that leaves a board out is saved, so two boards share a place on the home page',
+    from: `    if (all.size !== keys.length || keys.some((k) => !all.has(k))) {`,
+    to: `    if (keys.some((k) => !all.has(k))) {`,
+  },
+  {
+    id: 'MBD5', file: 'backend/domains/markets/cycleGenerator.service.js', config: PG,
+    test: 'database/tests/boardsPg.test.js',
+    why: 'the engine keeps opening rounds on a board the admin switched off',
+    from: `        if (!board?.enabled) return;`,
+    to: `        if (!board) return;`,
+  },
+  {
+    id: 'MBD6', file: 'database/schema.sql', config: PG,
+    test: 'database/tests/boardsPg.test.js',
+    why: 'a board\'s id prefix can be changed, orphaning the names of every round it ran',
+    from: `     OR NEW.id_prefix IS DISTINCT FROM OLD.id_prefix THEN`,
+    to: `     THEN`,
   },
 ];
 

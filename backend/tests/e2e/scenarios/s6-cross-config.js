@@ -35,24 +35,22 @@ export default async function run() {
   const admin = await seedAdmin();
   const aT = adminToken(admin);
 
-  // ══ 1. Bet limits: admin types a number, the player panel is offered it ═══
+  // ══ 1. Bet limits: admin types a number on a board, the player is offered it ═
   {
-    const before = (await GET(aT, '/api/admin/system/config')).body;
+    const before = (await GET(aT, '/api/admin/boards')).body?.boards?.find((b) => b.key === '30_MIN');
     try {
-      const saved = await PUT(aT, '/api/admin/system/config', {
-        betLimits: { thirtyMin: { min: 70, max: 7000 } },
-      });
-      check(A, 'admin', 'set the 30-minute bet limits', '200',
+      const saved = await PUT(aT, '/api/admin/boards/30_MIN', { minBet: 70, maxBet: 7000 });
+      check(A, 'admin', 'set the 30-minute board\'s bet limits', '200',
         `${saved.status} ${saved.body?.message ?? ''}`, saved.status === 200);
 
-      const pub = await publicConfig();
-      check(A, 'player', 'the player panel is offered the NEW bet limits', 'min 70, max 7000',
+      const pub = (await GET(null, '/api/v1/boards')).body?.boards?.find((b) => b.key === '30_MIN') ?? {};
+      check(A, 'player', 'the player panel is offered the board\'s NEW bet limits', 'min 70, max 7000',
         `min ${pub.minBet}, max ${pub.maxBet}`,
         pub.minBet === 70 && pub.maxBet === 7000,
         'the panel renders what it is told; a client-side copy is a list an attacker can edit');
     } finally {
-      await PUT(aT, '/api/admin/system/config', {
-        betLimits: before?.config?.betLimits ?? { thirtyMin: { min: 10, max: 100000 } },
+      await PUT(aT, '/api/admin/boards/30_MIN', {
+        minBet: before?.minBet ?? 10, maxBet: before?.maxBet ?? 100000,
       });
     }
   }

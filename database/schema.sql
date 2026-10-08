@@ -653,8 +653,6 @@ CREATE TABLE IF NOT EXISTS users (
 
   CONSTRAINT users_status_check
     CHECK (status IN ('ACTIVE','BLOCKED','SUSPENDED','DELETED')),
-  CONSTRAINT users_phantom_access_check
-    CHECK (phantom_access IN ('NONE','1_MIN','30_MIN','FULL_DAY','BOTH')),
   CONSTRAINT users_sub_admin_role_check
     CHECK (sub_admin_role IN ('PHANTOM_MANAGER','PHANTOM_EQUALIZER','USER_OPS',
                               'MERCHANT_OPS','CONTENT_MANAGER','ANALYST','CUSTOM')),
@@ -1199,6 +1197,78 @@ CREATE OR REPLACE TRIGGER deposit_policies_immutable
 --
 -- 3. A CYCLE WITH NO WINNER IS NOT OFFERED FOR SETTLEMENT. Same constraint,
 --    read the other way.
+-- ═══════════════════════════════════════════════════════════════════════════
+-- BOARDS (owner, 2026-10-08: admins create any number of board games, each
+-- with its own timer, and set their order on the home page)
+--
+-- One row per board; `cycles.cycle_type` names its board. Written only by
+-- `database/repositories/boards.js`. The row holds everything a board's
+-- cycles run by, and the database refuses a board the engine cannot run:
+--   INTERVAL  blocks tile the hour, so the duration divides 60;
+--   DAILY     one 24-hour block from `anchor_hour_ist`;
+--   phases    merge > equalizer > close > celebrate >= 0, inside the block;
+--   stakes    0 < min <= max.
+-- The key and id prefix name the board's cycles for good, so they never
+-- change; a board with cycles is never deleted (`cycles_board_fk`), only
+-- switched off, and the engine still finishes and settles its open cycles.
+-- ═══════════════════════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS boards (
+  board_key        TEXT PRIMARY KEY,
+  name             TEXT NOT NULL,
+  kind             TEXT NOT NULL,
+  duration_min     INTEGER NOT NULL,
+  anchor_hour_ist  INTEGER,
+  merge_sec        INTEGER NOT NULL,
+  equalizer_sec    INTEGER NOT NULL,
+  close_sec        INTEGER NOT NULL,
+  celebrate_sec    INTEGER NOT NULL,
+  min_bet_paise    BIGINT NOT NULL,
+  max_bet_paise    BIGINT NOT NULL,
+  id_prefix        TEXT NOT NULL UNIQUE,
+  enabled          BOOLEAN NOT NULL DEFAULT TRUE,
+  home_order       INTEGER NOT NULL DEFAULT 0,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT boards_key_shape    CHECK (board_key ~ '^[A-Z0-9_]{1,24}$'),
+  CONSTRAINT boards_prefix_shape CHECK (id_prefix ~ '^[A-Z0-9]{1,12}$'),
+  CONSTRAINT boards_name_shape   CHECK (length(btrim(name)) BETWEEN 1 AND 40),
+  CONSTRAINT boards_kind_known   CHECK (kind IN ('INTERVAL', 'DAILY')),
+  CONSTRAINT boards_phases_ordered CHECK (
+    merge_sec > equalizer_sec AND equalizer_sec > close_sec AND close_sec > celebrate_sec
+    AND celebrate_sec >= 0 AND merge_sec < duration_min * 60),
+  CONSTRAINT boards_stakes CHECK (min_bet_paise > 0 AND min_bet_paise <= max_bet_paise),
+  CONSTRAINT boards_home_order CHECK (home_order >= 0)
+);
+CREATE INDEX IF NOT EXISTS boards_home_idx ON boards (home_order, board_key);
+
+-- The key, kind and prefix are what the board's cycles are named and timed
+-- by; changing one would orphan every cycle already run.
+CREATE OR REPLACE FUNCTION bb_board_identity_fixed() RETURNS trigger AS $$
+BEGIN
+  IF NEW.board_key IS DISTINCT FROM OLD.board_key OR NEW.kind IS DISTINCT FROM OLD.kind
+     OR NEW.id_prefix IS DISTINCT FROM OLD.id_prefix THEN
+    RAISE EXCEPTION 'a board''s key, kind and id prefix never change'
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'boards_identity_fixed';
+  END IF;
+  NEW.updated_at := now();
+  RETURN NEW;
+END $$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS boards_identity_fixed ON boards;
+CREATE TRIGGER boards_identity_fixed BEFORE UPDATE ON boards
+  FOR EACH ROW EXECUTE FUNCTION bb_board_identity_fixed();
+
+-- The three boards the platform has always run, as they were configured
+-- (the former SystemConfig.cyclePhases / .betLimits defaults). Inserted once;
+-- an admin's later edits are never overwritten.
+INSERT INTO boards (board_key, name, kind, duration_min, anchor_hour_ist,
+                    merge_sec, equalizer_sec, close_sec, celebrate_sec,
+                    min_bet_paise, max_bet_paise, id_prefix, home_order)
+VALUES
+  ('FULL_DAY', 'Full day', 'DAILY',    1440, 18, 300, 120, 30, 10, 10000, 50000000, 'FULLDAY', 0),
+  ('30_MIN',   '30 min',   'INTERVAL',   30, NULL, 180, 120, 30, 10, 1000, 10000000, '30MIN', 1),
+  ('1_MIN',    '1 min',    'INTERVAL',    1, NULL,  12,   9,  5,  3, 1000, 10000000, '1MIN', 2)
+ON CONFLICT (board_key) DO NOTHING;
+
 CREATE TABLE IF NOT EXISTS cycles (
   cycle_id    TEXT PRIMARY KEY,
   cycle_type  TEXT NOT NULL,
@@ -1231,7 +1301,6 @@ CREATE TABLE IF NOT EXISTS cycles (
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
 
-  CONSTRAINT cycles_type_known   CHECK (cycle_type IN ('1_MIN', '30_MIN', 'FULL_DAY')),
   -- The seven states the engine actually uses, in the order it moves through
   -- them: OPEN takes bets, MERGED folds in the phantom pools, CLOSED stops
   -- betting, RESULT_DECLARED names the winner, COMPLETED settles. PAUSED and
@@ -1275,9 +1344,33 @@ DO $$ BEGIN
     status NOT IN ('COMPLETED', 'RESULT_DECLARED') OR winner IS NOT NULL);
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
-CREATE UNIQUE INDEX IF NOT EXISTS cycles_type_start_unique ON cycles (cycle_type, start_time);
-CREATE INDEX IF NOT EXISTS cycles_open_idx   ON cycles (cycle_type, status, end_time);
-CREATE INDEX IF NOT EXISTS cycles_recent_idx ON cycles (cycle_type, start_time DESC);
+-- Every cycle runs on a board (replaces the fixed `cycles_type_known` list).
+ALTER TABLE cycles DROP CONSTRAINT IF EXISTS cycles_type_known;
+DO $$ BEGIN
+  ALTER TABLE cycles ADD CONSTRAINT cycles_board_fk
+    FOREIGN KEY (cycle_type) REFERENCES boards (board_key) ON UPDATE RESTRICT ON DELETE RESTRICT;
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+-- Which players a cycle is for (owner, 2026-10-08): VIP (deposited money) or
+-- GENERAL (referral bonus money). The two never share a cycle or its pools,
+-- so every board runs one cycle per slot for each, and a bet is admitted only
+-- to a cycle of the player's own profile (`bet.routes.js`). The names are the
+-- profiles' (`users_play_profile_known`).
+ALTER TABLE cycles ADD COLUMN IF NOT EXISTS audience TEXT NOT NULL DEFAULT 'VIP';
+DO $$ BEGIN
+  ALTER TABLE cycles DROP CONSTRAINT IF EXISTS cycles_audience_known;
+  ALTER TABLE cycles ADD CONSTRAINT cycles_audience_known CHECK (audience IN ('VIP', 'GENERAL'));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+-- One cycle per type, audience and start instant. Replaces the per-type index,
+-- which would refuse the second audience's cycle in the same slot (§32 S31:
+-- dropped by name so an existing database converges).
+DROP INDEX IF EXISTS cycles_type_start_unique;
+DROP INDEX IF EXISTS cycles_open_idx;
+DROP INDEX IF EXISTS cycles_recent_idx;
+CREATE UNIQUE INDEX IF NOT EXISTS cycles_type_audience_start_unique ON cycles (cycle_type, audience, start_time);
+CREATE INDEX IF NOT EXISTS cycles_audience_open_idx   ON cycles (cycle_type, audience, status, end_time);
+CREATE INDEX IF NOT EXISTS cycles_audience_recent_idx ON cycles (cycle_type, audience, start_time DESC);
 -- The settlement sweep's query: declared, not yet settled.
 CREATE INDEX IF NOT EXISTS cycles_settleable_idx ON cycles (end_time)
   WHERE winner IS NOT NULL AND NOT is_settled;
@@ -1834,6 +1927,72 @@ CREATE UNIQUE INDEX IF NOT EXISTS referral_earnings_queue_unique
 CREATE INDEX IF NOT EXISTS referral_earnings_earner_idx ON referral_earnings (earner_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS referral_earnings_payable_idx ON referral_earnings (queue_position)
   WHERE status = 'QUEUED';
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- THE GENERAL (PROMOTIONAL) BALANCE  (owner, 2026-10-08)
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- A referral reward is paid into `wallets.promo_paise`, the player's GENERAL
+-- profile, never straight into winnings. Each reward is a `promo_grants` row
+-- asking for PROMO_TURNOVER_MULTIPLIER (10) times its amount in turnover
+-- (`database/repositories/promo.js`, the one writer of all three).
+--
+--   * Turnover is counted once: `promo_turnover` is keyed by the stake it
+--     counts, so a replay counts nothing.
+--   * It is applied to grants oldest first; a grant is complete when its
+--     turnover reaches its requirement, and winning early completes nothing.
+--   * A completed grant unlocks up to its own amount from the General balance
+--     into withdrawable winnings; once no grant is outstanding, whatever is
+--     left (the promotional winnings) unlocks too. Pocket to pocket, so the
+--     tokens never leave the wallet.
+ALTER TABLE wallets ADD COLUMN IF NOT EXISTS promo_paise BIGINT NOT NULL DEFAULT 0;
+
+-- Which profile the player is using: VIP (deposited money) or GENERAL
+-- (promotional money). Written only by `promo.setPlayProfile`.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS play_profile TEXT NOT NULL DEFAULT 'VIP';
+ALTER TABLE users DROP CONSTRAINT IF EXISTS users_play_profile_known;
+ALTER TABLE users ADD CONSTRAINT users_play_profile_known CHECK (play_profile IN ('VIP', 'GENERAL'));
+
+-- Which version of the board rules the player accepted before betting
+-- (`repositories/boardRules.js`; the text is `domains/markets/boardRules.js`).
+-- 0 = never; the bet route refuses until it reaches the current version.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS board_rules_version INTEGER NOT NULL DEFAULT 0;
+
+CREATE TABLE IF NOT EXISTS promo_grants (
+  grant_id                TEXT PRIMARY KEY,
+  user_id                 TEXT NOT NULL,
+  source                  TEXT NOT NULL,
+  source_ref              TEXT NOT NULL,
+  amount_paise            BIGINT NOT NULL,
+  required_turnover_paise BIGINT NOT NULL,
+  turnover_paise          BIGINT NOT NULL DEFAULT 0,
+  completed_at            TIMESTAMPTZ,
+  unlocked_paise          BIGINT NOT NULL DEFAULT 0,
+  created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT promo_grants_source_known CHECK (source IN ('REFERRAL')),
+  CONSTRAINT promo_grants_once UNIQUE (source, source_ref),
+  CONSTRAINT promo_grants_amount_positive CHECK (amount_paise > 0),
+  CONSTRAINT promo_grants_requirement CHECK (required_turnover_paise >= amount_paise),
+  CONSTRAINT promo_grants_turnover_range CHECK (
+    turnover_paise >= 0 AND turnover_paise <= required_turnover_paise),
+  -- Complete exactly when the requirement is met; never unlocked before.
+  CONSTRAINT promo_grants_complete_when_met CHECK (
+    (completed_at IS NOT NULL) = (turnover_paise = required_turnover_paise)),
+  CONSTRAINT promo_grants_unlock_after_complete CHECK (
+    unlocked_paise >= 0 AND (completed_at IS NOT NULL OR unlocked_paise = 0))
+);
+CREATE INDEX IF NOT EXISTS promo_grants_open_idx
+  ON promo_grants (user_id, created_at, grant_id) WHERE completed_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS promo_turnover (
+  stake_ref     TEXT PRIMARY KEY,
+  user_id       TEXT NOT NULL,
+  amount_paise  BIGINT NOT NULL,
+  applied_paise BIGINT NOT NULL,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT promo_turnover_amount_positive CHECK (amount_paise > 0),
+  CONSTRAINT promo_turnover_applied_range CHECK (applied_paise >= 0 AND applied_paise <= amount_paise)
+);
 
 CREATE TABLE IF NOT EXISTS referral_disbursals (
   batch_id      TEXT PRIMARY KEY,
@@ -3845,7 +4004,7 @@ ALTER TABLE teams ADD CONSTRAINT teams_name_not_a_mobile CHECK (NOT bb_text_has_
 ALTER TABLE wallets DROP CONSTRAINT IF EXISTS wallets_pockets_nonneg;
 ALTER TABLE wallets ADD CONSTRAINT wallets_pockets_nonneg CHECK (
   deposit_paise >= 0 AND winnings_paise >= 0 AND token_paise >= 0
-  AND reserve_paise >= 0 AND locked_paise >= 0);
+  AND reserve_paise >= 0 AND locked_paise >= 0 AND promo_paise >= 0);
 -- How much of `locked` came from deposit and from winnings: never negative,
 -- or a returned stake would go back to a pocket it never came from.
 ALTER TABLE wallets DROP CONSTRAINT IF EXISTS wallets_lock_provenance_nonneg;
@@ -3867,6 +4026,7 @@ ALTER TABLE treasury_accounts ADD CONSTRAINT treasury_accounts_sign CHECK (
 CREATE OR REPLACE FUNCTION bb_wallet_value_paise(w wallets) RETURNS BIGINT
 LANGUAGE sql IMMUTABLE AS $$
   SELECT w.deposit_paise + w.winnings_paise + w.token_paise + w.reserve_paise + w.locked_paise
+       + w.promo_paise
 $$;
 
 -- ── The supply ceiling ─────────────────────────────────────────────────────
@@ -4069,3 +4229,34 @@ DROP TRIGGER IF EXISTS treasury_entries_movement_balanced ON treasury_entries;
 CREATE CONSTRAINT TRIGGER treasury_entries_movement_balanced
   AFTER INSERT ON treasury_entries DEFERRABLE INITIALLY DEFERRED
   FOR EACH ROW EXECUTE FUNCTION bb_cons_movement_check();
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- BOARDS, continued: rules that need objects defined above
+-- ═══════════════════════════════════════════════════════════════════════════
+-- The timer the engine can run. Here rather than in the CREATE TABLE so a
+-- changed definition converges on an existing database (S31). NULL-safe: a
+-- DAILY board without its hour must fail, not pass as unknown.
+ALTER TABLE boards DROP CONSTRAINT IF EXISTS boards_timer_runs;
+ALTER TABLE boards ADD CONSTRAINT boards_timer_runs CHECK (
+     (kind = 'INTERVAL' AND duration_min BETWEEN 1 AND 60 AND 60 % duration_min = 0 AND anchor_hour_ist IS NULL)
+  OR (kind = 'DAILY' AND duration_min = 1440 AND anchor_hour_ist IS NOT NULL AND anchor_hour_ist BETWEEN 0 AND 23));
+
+-- A board's name is shown to every player: never a mobile number (§24).
+ALTER TABLE boards DROP CONSTRAINT IF EXISTS boards_name_not_a_mobile;
+ALTER TABLE boards ADD CONSTRAINT boards_name_not_a_mobile CHECK (NOT bb_text_has_a_mobile(name));
+
+-- Phantom access names a board (or NONE / BOTH = every board). Was a fixed
+-- CHECK of the three original boards; a board is now a row, so a trigger asks.
+ALTER TABLE users DROP CONSTRAINT IF EXISTS users_phantom_access_check;
+CREATE OR REPLACE FUNCTION bb_phantom_access_known() RETURNS trigger AS $$
+BEGIN
+  IF NEW.phantom_access NOT IN ('NONE', 'BOTH')
+     AND NOT EXISTS (SELECT 1 FROM boards WHERE board_key = NEW.phantom_access) THEN
+    RAISE EXCEPTION 'phantom access % names no board', NEW.phantom_access
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'users_phantom_access_check';
+  END IF;
+  RETURN NEW;
+END $$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS users_phantom_access_known ON users;
+CREATE TRIGGER users_phantom_access_known BEFORE INSERT OR UPDATE OF phantom_access ON users
+  FOR EACH ROW EXECUTE FUNCTION bb_phantom_access_known();

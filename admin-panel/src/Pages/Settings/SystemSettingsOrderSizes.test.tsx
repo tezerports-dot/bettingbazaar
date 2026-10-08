@@ -29,8 +29,6 @@ const { SystemSettings } = await import('./SystemSettings');
 const served = {
   orderSizes: [500, 1000, 5000, 50000, 100000],
   usdtBuy: { minUsdt: 200, maxUsdt: 5000 },
-  minBet: 10, maxBet: 100000,
-  betLimits: { oneMin: { min: 10, max: 100000 }, thirtyMin: { min: 10, max: 100000 }, fullDay: { min: 100, max: 500000 } },
 };
 
 const paint = async (data: typeof served = served) => {
@@ -84,7 +82,7 @@ describe('the order sizes', () => {
   });
 
   it('starts from every size when the server sends none', async () => {
-    getConfig.mockResolvedValue({ success: true, data: { minBet: 10 } });
+    getConfig.mockResolvedValue({ success: true, data: {} });
     render(<SystemSettings />);
     await screen.findByLabelText('10,000');
     await waitFor(() => expect(getConfig).toHaveBeenCalled());

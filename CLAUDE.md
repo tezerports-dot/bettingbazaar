@@ -78,14 +78,12 @@ exported constants. `SystemConfig.x` lives in `config_documents`, declared in
 |---|---|
 | Token price | Fixed 1 token = ₹1; never configurable. |
 | Deposit/reserve split | `deposit_policies` via `domains/configuration/depositPolicy.service.js`; one ACTIVE version per currency. |
-| Bet min/max per cycle type | `SystemConfig.betLimits` |
-| Cycle phase defaults | `DEFAULT_CYCLE_PHASES` (the schema default); runtime `SystemConfig.cyclePhases`. |
+| Boards: timer, phases, stakes, switch, home order | `boards`, one row per board, written only by `database/repositories/boards.js` (admin `/api/admin/boards`, `canManageGames`; owner, 2026-10-08) and read through `domains/markets/cycleTypes.js` (cache `BOARDS_CACHE_MS`, dropped on every write). A cycle's `type` is its board's key (`cycles_board_fk`). The schema refuses a board the engine cannot run (`boards_timer_runs`: an interval dividing 60, or DAILY from an IST hour; `boards_phases_ordered`; `boards_stakes`); key, kind and id prefix never change (`boards_identity_fixed`); a board is switched off, never deleted. Switched off: no new round, no new bet (409 `BOARD_SWITCHED_OFF`); its open round settles. Players get the switched-on boards in `home_order` from `GET /api/v1/boards`; chips derive from its `minBet` (`chipsFor`). A changed timer applies from the next round. |
 | Cycle-history feed | `domains/markets/cycleHistory.service.js`, the one query; rows via `publicCycleView`; the server caps the window. |
-| Analytics window | `ANALYTICS_WINDOW` (`user-panel/src/constants.ts`), a target; the server caps it. |
+| Analytics window | `ANALYTICS_WINDOW` by board kind, read through `analyticsWindowFor` (`user-panel/src/constants.ts`), a target; the server caps it. |
 | Platform deposit/withdrawal limits | The order sizes and the USDT bounds below; nothing else. |
 | Whether a number is admin-editable | Declared in `SYSTEM_CONFIG_SPEC`; the admin GET/PUT derive from the spec. Never a hand-written field list. |
 | A value the PLATFORM writes | Never in `config_documents`: every field the spec declares is admin-editable. It gets its own table and one writer. |
-| A board's earliest-phase ceiling | `maxMergeBeforeEndSec` on the cycle META (§18). |
 | Order sizes | An INR order, buy or sell, is exactly one of `ORDER_SIZES` (`domains/merchant/denominations.js`): CASH 500 · 1,000 · 5,000 · 10,000, UPI_BANK 50,000 · 100,000 · 500,000. The size derives the rail (`railForSize` → `orderRails.paymentModeFor`). Which are on offer: `SystemConfig.orderSizes` (admin; only those seven are legal). No min/max, no splitting: one size, one order, one payment. |
 | How each rail is paid | A CASH buy: the ATM QR the member scans (below). A UPI_BANK buy: bank transfer into the member's own account, so routing skips a member without holder, account number and IFSC (`routingCandidates`). Every sell, on every rail: bank transfer to the player's account, the member gives the UTR. No CDM slips, no UPI handle as a destination. Where to pay is shown only once the member has ACCEPTED (`PAY_DETAIL_STATES`, `playerOrderView.js`), Paid is taken only then (`NOT_ACCEPTED_YET`), and the Paid move names that member on every rail (`expectMerchant`). |
 | A cash buy's QR | `order_states.cash_link`, written only by `setCashLink` (`orders.record.js`), guards in its WHERE (assigned member, CASH_ATM deposit, PROCESSING: accepted and not yet paid; the route answers `ACCEPT_FIRST` before); checked by `checkCashLink` (`domains/payment/cashLink.js`: `upi://pay`, the order's exact amount, one of each parameter, no mobile in the handle, name or note). Cleared by trigger when the member changes. No Paid tap before it (`CASH_LINK_PENDING`), and the tap pins the member (`expectMerchant`). A cash buy lapsing with no QR is the member's, not the player's (`playerCouldPay`). Scanned, never typed. |
@@ -143,7 +141,11 @@ exported constants. `SystemConfig.x` lives in `config_documents`, declared in
 | Window after a rejected BUY | `order_states.dispute_window_until` (DATABASE clock, set in the reject transition), `domains/payment/rejectedBuyWindow.service.js`, `SystemConfig.rejectedBuyDisputeMinutes` (whole minutes, `int(…)`). Only a PAID buy is rejected as unpaid: REJECTED's one edge is from PAID (`ALLOWED_FROM`, in the WHERE); before the Paid tap the reject and its proof upload answer 400 `NOT_PAID_YET` (`unpaidRejectRefusal`) and the card does not offer it. The member cannot red-flag their own rejection. The hold stays until the window lapses or a dispute is decided. |
 | Window after a SELL is marked paid | `SystemConfig.withdrawalHoldMinutes` (default and floor 60), via `withdrawalHold.service.js`; the player sees `disputeUntil`. |
 | USDT buy amount | A whole multiple of `USDT_BUY_STEP` (100, fixed) between `SystemConfig.usdtBuy.minUsdt` and `maxUsdt` (admin; defaults 100 and 10,000; min ≤ max). The tokens follow from the frozen rate. |
-| Referral rewards | `REFERRAL_REWARD_PAISE` (flat ₹25) + `referral_programmes`; ledger and payout via `domains/referral/referral.service.js` only, through `wallets.creditWinnings`, which pays out of the platform's own holding (`TOKEN_SUPPLY` → `USER_FLOAT`) in the paying transaction. Never a share of losses or tied to settlement. |
+| Referral rewards | `REFERRAL_REWARD_PAISE` (flat ₹25) + `referral_programmes`; ledger and payout via `domains/referral/referral.service.js` only, through `promo.creditReferralBonus`, which pays the GENERAL balance out of the platform's own holding (`TOKEN_SUPPLY` → `USER_FLOAT`) and opens its turnover requirement in the paying transaction. Never into winnings directly; never a share of losses or tied to settlement. |
+| The GENERAL (promotional) balance | `wallets.promo_paise`, `promo_grants`, `promo_turnover`, written only by `database/repositories/promo.js` (owner, 2026-10-08). Each referral bonus asks `PROMO_TURNOVER_MULTIPLIER` (10) × its amount in turnover; a stake is counted once (keyed by the stake), applied to open grants oldest first; a grant is complete exactly when met (`promo_grants_complete_when_met`). A completed grant unlocks up to its amount into winnings; with none open, the rest unlocks too. Pocket to pocket, under the wallet lock. |
+| What players are told about the boards | `backend/domains/markets/boardRules.js` (`boardRules`, `BOARD_RULES_VERSION`), served by `GET /api/v1/board-rules`; the pop-up and the Rules page render it and keep no copy (`redesign/BoardRules.tsx`). Each statement describes engine code; change both in one commit and raise the version. `users.board_rules_version` (written only by `database/repositories/boardRules.js`, never backwards); `POST /bet/place` answers 409 `BOARD_RULES_NOT_ACCEPTED` below the current version (owner, 2026-10-08). |
+| Which profile a player uses | `users.play_profile` (`VIP`/`GENERAL`), written only by `promo.setPlayProfile`; a deposit order switches to VIP after it is created (`payment.routes.js`). The board screen shows its profile's cycles only (`GameContext` `audience`). |
+| A board cycle's audience | `cycles.audience` (`VIP`/`GENERAL`, `cycles_audience_known`): the generator runs one cycle per type, audience and slot (`cycles_type_audience_start_unique`; caches and the celebration lock keyed `type:audience`). Every read of "the cycle for a type" names the audience (`markets.js`, no default). `POST /bet/place` admits a player only to their profile's cycles (409 `WRONG_PROFILE_FOR_CYCLE`); `bets.core.placeBet` holds the stake to it in the writer (GENERAL: `promoBalance` only; VIP: never), a GENERAL win pays into `promoBalance`, and a played (won or lost, not returned) GENERAL stake counts as turnover in the settling transaction (`recordTurnoverWithin`). Realtime events and history carry `audience`; a panel applies its own (owner, 2026-10-08). |
 | Player identity | A Telegram-proven mobile plus a password. No email, no KYC, no Aadhaar, no identity document or upload path (owner, 2026-10-02; `identitySurfaceRemoved.test.js`). `users.mobile` is immutable. |
 | Upload categories | `services/cdn.service.js`: chat attachments, payment proofs, branding assets, Android APKs. Nothing else. |
 | The one Telegram bot | `miniAppBot()` (`domains/telegram/telegramClient.js`) over `telegram_bot` (one row, token encrypted), saved only by `PUT /api/admin/telegram/bot` after Telegram's `getMe`; its 30 s cache is the only cache. No channel, fleet, recovery bot, template or webhook. |
@@ -331,25 +333,26 @@ Held-major register (a row leaves when its blocker is gone):
 
 ---
 
-## 18. Adding a cycle type, board or game
+## 18. Adding a board or game
 
-A new board inherits the money system and re-implements none of it.
+A board is a row an admin creates on the Boards page (§2 *Boards*); it inherits
+the money system and re-implements none of it. Adding one needs no code.
 
-- **18.1 Inherited, never given a per-type case:** funding split, reserve, fee,
+- **18.1 Inherited, never given a per-board case:** funding split, reserve, fee,
   multiplier, settlement, payout, idempotency, crash resume, ledger, realtime
-  snapshots and pools, bet rate limits, caches, cron, retention, reconciliation.
-  Needing a case there means a type-specific branch exists: fix the branch.
-- **18.2 Declared per type:** (1) a `META` entry in `cycleTypes.js`;
-  (2) `DEFAULT_CYCLE_PHASES.<phasesKey>`; (2a) `maxMergeBeforeEndSec`;
-  (3) `SystemConfig.betLimits.<limitsKey>`, even if equal to another's;
-  (4) the phantom-access enum; (5) frontend enum, chips and phase map as §5
-  mirrors; (6) `cycleTypes.test.js` loops; (7) a lifecycle test if its phases
-  differ by an order of magnitude.
-- **18.3 Invariants:** `merge > equalizer > close > celebrate >= 0` and
-  `merge < duration`; phases fit the block; celebration lock and next-cycle
-  timer derive from the type's own offset; a still-OPEN cycle may complete
-  directly (keep that tolerance); unknown types fail loudly, broadcast paths
-  skip the row.
+  snapshots and pools, bet rate limits, caches, cron, retention, reconciliation,
+  the VIP/GENERAL split. Needing a case there means a board-specific branch
+  exists: fix the branch. No code names a board's key.
+- **18.2 Declared per board, on its row:** name, timer (INTERVAL minutes or
+  DAILY IST hour), the four phase offsets, stake bounds, switch, home order.
+  The key and id prefix derive from the name at creation. A frontend reads all
+  of it from `GET /api/v1/boards` (chips, close offset, analytics window, tabs);
+  a list of boards kept in a panel is a §5 defect.
+- **18.3 Invariants, held by the schema for every writer:** `merge > equalizer >
+  close > celebrate >= 0` and `merge < duration`; an interval divides 60 (rounds
+  tile the hour); celebration lock and next-round timer derive from the board's
+  own offset; a still-OPEN cycle may complete directly (keep that tolerance); a
+  cycle whose board cannot be read is skipped loudly, never defaulted.
 - **18.4** Re-run the load test before enabling a high-frequency board.
 
 ## 19. The financial core stays

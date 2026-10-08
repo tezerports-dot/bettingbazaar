@@ -2,12 +2,34 @@
 // FIX (Audit #38) — Added depositBalance, winningsBalance fields to User interface
 // FIX (Audit #15) — GameState.CLOSED confirmed present (was already here, but calculateStatus didn't use it)
 
-export enum CycleType {
-  FULL_DAY   = 'FULL_DAY',
-  THIRTY_MIN = '30_MIN',
-  /** 60-second block. Same game and same chips as the 30-minute one, and the
-   *  only difference is the clock — see GAME_CORE.PHASE.ONE_MIN. */
-  ONE_MIN    = '1_MIN'
+/**
+ * A board's key, which is also its cycles' `type`. Boards are rows an admin
+ * creates (owner, 2026-10-08), so this is any key the server lists in
+ * `GET /api/v1/boards`, not a fixed enum.
+ */
+export type CycleType = string;
+
+/**
+ * One board as the server sends it (`publicBoard`,
+ * backend/domains/markets/cycleTypes.js). Stakes in rupees, phases in seconds
+ * before the round's end.
+ */
+export interface Board {
+  key: string;
+  name: string;
+  kind: 'INTERVAL' | 'DAILY';
+  durationMin: number;
+  anchorHourIst: number | null;
+  phases: {
+    mergeBeforeEndSec: number;
+    equalizerBeforeEndSec: number;
+    closeBeforeEndSec: number;
+    celebrateBeforeEndSec: number;
+  };
+  minBet: number;
+  maxBet: number;
+  homeOrder: number;
+  idPrefix: string;
 }
 
 export enum BettingSide {
@@ -64,9 +86,9 @@ export interface User {
     bankName: string;
   };
 
-  // 'BOTH' predates the 1-minute block and means EVERY type — the server gate
-  // reads it as "skip the per-type check" (backend/domains/user/user.model.js).
-  phantomAccess?: 'NONE' | '1_MIN' | '30_MIN' | 'FULL_DAY' | 'BOTH';
+  // 'NONE', a board's key, or 'BOTH' (= every board); the server's
+  // `users_phantom_access_known` trigger holds it to an existing board.
+  phantomAccess?: string;
   joinedAt: number;
   lastLogin: number;
 }
@@ -83,9 +105,18 @@ export interface Bet {
   isPhantom?: boolean;
 }
 
+/**
+ * A player's profile and a board cycle's audience (owner, 2026-10-08).
+ * Mirrors `PLAY_PROFILES` (database/repositories/promo.js) and the
+ * `users_play_profile_known` / `cycles_audience_known` CHECKs.
+ */
+export type PlayProfile = 'VIP' | 'GENERAL';
+
 export interface GameCycle {
   id: string;          // This is the backend's cycleId (e.g. 30MIN_1234567890)
   type: CycleType;
+  /** Whose board this is; absent on payloads that predate audiences (VIP). */
+  audience?: PlayProfile;
   startTime: number;
   endTime: number;
   status: GameState;

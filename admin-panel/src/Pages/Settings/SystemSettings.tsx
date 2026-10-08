@@ -123,10 +123,6 @@ export const SystemSettings: React.FC = () => {
     orderSizes: [...ALL_ORDER_SIZES] as number[],
     usdtBuy: { minUsdt: 100, maxUsdt: 10000 },   // schema defaults: 100 / 10,000
     maxBalanceAdjustment: 1000000, // schema default: 1000000 (₹10,00,000)
-    minBet: 10,           // schema default: 10
-    maxBet: 100000,       // schema default: 100000 (was 50000 here — §4 drift)
-    max30MinBet: 50000,
-    maxFullDayBet: 100000,
     // ── Money rules (Phase A + Risk Platform) — consumed by bet.routes.js,
     //    gameEngine.js and riskValidation.service.js on the backend ──────────
     betReservePercent: 1,      // schema default: 1
@@ -141,17 +137,8 @@ export const SystemSettings: React.FC = () => {
     // Per-rail caps and windows for team routing, seeded from ROUTING_RAILS /
     // ROUTING_TIMERS rather than restated.
     teamRouting: routingDefaults(),
-    cycleDurationMinutes: 30,  // schema default: 30 (Phase X X-5)
     // Business Config Audit (2026-07-11) — formerly-hardcoded business values
     payoutMultiplier: 2,       // schema default: 2 (2x)
-    cyclePhases: {
-      // The one-minute board is declared in the spec and run by the engine, and
-      // was missing from BOTH halves of this screen and from the route's own
-      // response — a board whose phase timings nobody could see or change.
-      oneMin:    { mergeBeforeEndSec: 12,  equalizerBeforeEndSec: 9,   closeBeforeEndSec: 5,  celebrateBeforeEndSec: 3 },  // schema defaults: 12/9/5/3
-      thirtyMin: { mergeBeforeEndSec: 180, equalizerBeforeEndSec: 120, closeBeforeEndSec: 30, celebrateBeforeEndSec: 10 },
-      fullDay:   { mergeBeforeEndSec: 300, equalizerBeforeEndSec: 120, closeBeforeEndSec: 30, celebrateBeforeEndSec: 10 },
-    },
     // How long a sell stays in escrow after the member marks it paid.
     withdrawalHoldMinutes: 60,  // schema default: 60 (also the floor)
     // How long a player has to dispute a buy the member rejected as unpaid.
@@ -210,10 +197,6 @@ export const SystemSettings: React.FC = () => {
             maxUsdt: response.data.usdtBuy?.maxUsdt ?? 10000,  // schema default: 10,000
           },
           maxBalanceAdjustment: response.data.maxBalanceAdjustment ?? 1000000, // schema default: 1000000
-          minBet: response.data.minBet ?? 10,                 // schema default: 10
-          maxBet: response.data.maxBet ?? 100000,             // schema default: 100000
-          max30MinBet: response.data.max30MinBet || 50000,
-          maxFullDayBet: response.data.maxFullDayBet || 100000,
           betReservePercent:  response.data.betReservePercent  ?? 1, // schema default: 1
           winningsFeePercent: response.data.winningsFeePercent ?? 1, // schema default: 1
           payoutFeePercent:   response.data.payoutFeePercent   ?? 0, // schema default: 0
@@ -240,28 +223,7 @@ export const SystemSettings: React.FC = () => {
               processingWindowSeconds: { ...d.processingWindowSeconds, ...(served.processingWindowSeconds ?? {}) },
             } as TeamRoutingForm;
           })(),
-          cycleDurationMinutes: response.data.cycleDurationMinutes ?? 30, // schema default: 30
           payoutMultiplier:   response.data.payoutMultiplier   ?? 2,  // schema default: 2
-          cyclePhases: {
-            oneMin: {
-              mergeBeforeEndSec:     response.data.cyclePhases?.oneMin?.mergeBeforeEndSec     ?? 12, // schema default: 12
-              equalizerBeforeEndSec: response.data.cyclePhases?.oneMin?.equalizerBeforeEndSec ?? 9,  // schema default: 9
-              closeBeforeEndSec:     response.data.cyclePhases?.oneMin?.closeBeforeEndSec     ?? 5,  // schema default: 5
-              celebrateBeforeEndSec: response.data.cyclePhases?.oneMin?.celebrateBeforeEndSec ?? 3,  // schema default: 3
-            },
-            thirtyMin: {
-              mergeBeforeEndSec:     response.data.cyclePhases?.thirtyMin?.mergeBeforeEndSec     ?? 180,
-              equalizerBeforeEndSec: response.data.cyclePhases?.thirtyMin?.equalizerBeforeEndSec ?? 120,
-              closeBeforeEndSec:     response.data.cyclePhases?.thirtyMin?.closeBeforeEndSec     ?? 30,
-              celebrateBeforeEndSec: response.data.cyclePhases?.thirtyMin?.celebrateBeforeEndSec ?? 10,
-            },
-            fullDay: {
-              mergeBeforeEndSec:     response.data.cyclePhases?.fullDay?.mergeBeforeEndSec     ?? 300,
-              equalizerBeforeEndSec: response.data.cyclePhases?.fullDay?.equalizerBeforeEndSec ?? 120,
-              closeBeforeEndSec:     response.data.cyclePhases?.fullDay?.closeBeforeEndSec     ?? 30,
-              celebrateBeforeEndSec: response.data.cyclePhases?.fullDay?.celebrateBeforeEndSec ?? 10,
-            },
-          },
           riskRules: {
             enforceMultiplesOf10:     response.data.riskRules?.enforceMultiplesOf10     ?? true,
             blockOppositeSideBetting: response.data.riskRules?.blockOppositeSideBetting ?? false,
@@ -518,63 +480,14 @@ export const SystemSettings: React.FC = () => {
 
       </div>
 
-      {/* Betting Limits */}
+      {/* Each board's stakes, timer and phases are on the Boards page (owner,
+          2026-10-08: admins create boards, each with its own timer). */}
       <div className="card">
-        <h3 className="text-lg font-semibold mb-4">Betting Limits</h3>
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <label className="label" htmlFor="min-bet-amount-rs">Min Bet Amount (Rs.)</label>
-            <input id="min-bet-amount-rs" min="0"
-              type="number"
-              value={formData.minBet}
-              onChange={(e) =>
-                setFormData({ ...formData, minBet: (Number(e.target.value) || 0) })
-              }
-              className="input"
-            />
-          </div>
-          <div>
-            <label className="label" htmlFor="max-bet-amount-rs">Max Bet Amount (Rs.)</label>
-            <input id="max-bet-amount-rs" min="0"
-              type="number"
-              value={formData.maxBet}
-              onChange={(e) =>
-                setFormData({ ...formData, maxBet: (Number(e.target.value) || 0) })
-              }
-              className="input"
-            />
-          </div>
-        </div>
-
-        {formData.minBet > formData.maxBet && (
-          <div className="mt-3 flex items-center space-x-2 p-3 bg-red-500/10 border border-red-500/30 rounded-lg">
-            <AlertTriangle className="text-red-500 shrink-0" size={16} />
-            <p className="text-sm text-red-400">
-              Minimum bet amount cannot be greater than maximum bet amount!
-            </p>
-          </div>
-        )}
-      </div>
-
-      {/* Cycle-Wise Limits */}
-      <div className="card">
-        <h3 className="text-lg font-semibold mb-4">Cycle-Wise Bet Limits</h3>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <label htmlFor="max-30min-bet" className="label">Max Bet -- 30-Min Cycle (Rs.)</label>
-            <input id="max-30min-bet" name="max30MinBet" type="number" min="0"
-              value={formData.max30MinBet}
-              onChange={(e) => setFormData({ ...formData, max30MinBet: (Number(e.target.value) || 0) })}
-              className="input" />
-          </div>
-          <div>
-            <label htmlFor="max-fullday-bet" className="label">Max Bet -- Full Day Cycle (Rs.)</label>
-            <input id="max-fullday-bet" name="maxFullDayBet" type="number" min="0"
-              value={formData.maxFullDayBet}
-              onChange={(e) => setFormData({ ...formData, maxFullDayBet: (Number(e.target.value) || 0) })}
-              className="input" />
-          </div>
-        </div>
+        <h3 className="text-lg font-semibold mb-1">Board stakes and timers</h3>
+        <p className="text-sm text-gray-400">
+          Each board's minimum and maximum bet, timer and phase timings are set on the{' '}
+          <a href="/boards" className="text-gold-500 underline">Boards</a> page.
+        </p>
       </div>
 
       {/* ── BETTING MONEY RULES (Phase A) ──────────────────────────────────── */}
@@ -935,74 +848,6 @@ export const SystemSettings: React.FC = () => {
             </div>
 
           </div>
-        </div>
-      </div>
-
-      {/* ── CYCLE TIMING (Phase X X-5) ──────────────────────────────────────── */}
-      <div className="card">
-        <h3 className="text-lg font-semibold mb-1">Cycle Timing</h3>
-        <p className="text-xs text-gray-400 mb-4">
-          How long each short betting cycle stays open. Takes effect on the next
-          cycle the generator creates.
-        </p>
-        <div>
-          <label className="label" htmlFor="short-cycle-duration">Short Cycle Duration</label>
-          <select id="short-cycle-duration"
-            className="input"
-            value={formData.cycleDurationMinutes}
-            onChange={(e) => setFormData({ ...formData, cycleDurationMinutes: Number(e.target.value) })}
-          >
-            {[10, 12, 15, 20, 30, 60].map((m) => (
-              <option key={m} value={m}>{m} minutes</option>
-            ))}
-          </select>
-          <p className="text-xs text-gray-500 mt-1">
-            Must divide 60 evenly so cycles line up with the clock (e.g. a 15-minute
-            cycle starts at :00, :15, :30, :45). The cycle is still labelled
-            &ldquo;30 Min&rdquo; internally — only its actual length changes.
-          </p>
-        </div>
-
-        <div className="pt-4 mt-4 border-t border-dark-700">
-          <label className="label">Cycle Phase Timings (seconds before cycle end)</label>
-          <p className="text-xs text-gray-500 mb-3">
-            When each phase fires inside a cycle, measured in seconds before its end.
-            Values must strictly decrease: Merge &gt; Equalizer &gt; Close &gt; Celebrate.
-            Takes effect within ~30 seconds.
-          </p>
-          {([['oneMin', '1-Min Cycle'], ['thirtyMin', '30-Min Cycle'], ['fullDay', 'Full-Day Cycle']] as const).map(([key, label]) => (
-            <div key={key} className="mb-3">
-              <p className="text-sm font-medium mb-1">{label}</p>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                {([
-                  ['mergeBeforeEndSec', 'Merge'],
-                  ['equalizerBeforeEndSec', 'Equalizer'],
-                  ['closeBeforeEndSec', 'Close'],
-                  ['celebrateBeforeEndSec', 'Celebrate'],
-                ] as const).map(([field, flabel]) => (
-                  <div key={field}>
-                    <label className="text-xs text-gray-400" htmlFor={`phase-${key}-${field}`}>{flabel}</label>
-                    <input
-                      id={`phase-${key}-${field}`}
-                      type="number" min={0} step={1}
-                      value={formData.cyclePhases[key][field]}
-                      onChange={(e) => setFormData({
-                        ...formData,
-                        cyclePhases: {
-                          ...formData.cyclePhases,
-                          [key]: {
-                            ...formData.cyclePhases[key],
-                            [field]: Math.max(0, Math.floor(Number(e.target.value) || 0)),
-                          },
-                        },
-                      })}
-                      className="input"
-                    />
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))}
         </div>
       </div>
 
@@ -1401,7 +1246,6 @@ export const SystemSettings: React.FC = () => {
       <button
         onClick={handleSave}
         disabled={isSaving
-          || (formData.minBet > formData.maxBet)
           || formData.orderSizes.length === 0
           || !usdtStepOk(formData.usdtBuy.minUsdt) || !usdtStepOk(formData.usdtBuy.maxUsdt)
           || (formData.usdtBuy.minUsdt > formData.usdtBuy.maxUsdt)

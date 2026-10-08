@@ -12,14 +12,14 @@
  *   queue in joining order and moves real money, so it re-checks eligibility at
  *   that moment rather than trusting what was true when the earning was made.
  *
- * Money movement itself is delegated to walletAuthority.creditWinnings, which
- * already owns idempotency, the ledger row and the store routing. This module
- * never touches a balance directly.
+ * Money movement itself is delegated to `db.promo.creditReferralBonus`, which
+ * pays the GENERAL balance and opens the bonus's turnover requirement in one
+ * transaction, keyed by the earning. This module never touches a balance
+ * directly.
  */
 import { db } from '#db';
 import crypto from 'crypto';
 import { REFERRAL_REWARD_PAISE } from './referralRewards.js';
-import { creditWinnings } from '../wallet/walletAuthority.service.js';
 import { paiseToRupees } from '../../shared/money.js';
 
 // ── Joining numbers ─────────────────────────────────────────────────────────
@@ -187,14 +187,16 @@ export async function disburse({ poolPaise, actorId, maxRows = 50_000 }) {
       // authority keys off this id, and two runs reaching the same earning
       // produce the SAME key and therefore one movement.
       const walletTxId = `ref_${earning.earningId}`;
-      await creditWinnings(
-        String(earning.earnerId),
-        paiseToRupees(earning.amountPaise),
-        `Referral reward — level ${earning.level}`,
-        'ReferralEarning',
-        String(earning.earningId),
-        walletTxId,
-      );
+      // Into the GENERAL (promotional) balance, with its 10× turnover
+      // requirement opened in the same transaction — never straight into
+      // withdrawable winnings (owner, 2026-10-08; `db.promo`).
+      const credited = await db.promo.creditReferralBonus({
+        userId: String(earning.earnerId),
+        amountPaise: earning.amountPaise,
+        earningId: String(earning.earningId),
+        reason: `Referral bonus — level ${earning.level}`,
+      });
+      if (!credited.ok) throw new Error(`referral bonus refused: ${credited.refused}`);
 
       // MONEY FIRST, then the status. `markPaid`'s `status = 'QUEUED'` guard is
       // what stops two disbursal runs paying the same earning: the loser gets
@@ -396,7 +398,7 @@ export async function referralSummaryFor(userId, { limit = 200 } = {}) {
       referrals:   detail.length,
       // Earned and confirmed — not blocked.
       confirmed:   paiseToRupees(sum('confirmedPaise')),
-      // Already paid into the winnings wallet.
+      // Already paid into the GENERAL balance.
       disbursed:   paiseToRupees(sum('disbursedPaise')),
       // Confirmed but not yet paid — this is what the next disbursal draws on.
       nextDisbursal: paiseToRupees(sum('confirmedPaise') - sum('disbursedPaise')),

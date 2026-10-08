@@ -29,6 +29,7 @@ import { EmptyState } from '../../components/EmptyState';
 import { LoadingSpinner } from '../../components/LoadingSpinner';
 import { formatters } from '../../utils/formatters';
 import type { CycleType } from '../../types';
+import { useBoards } from '../../hooks/useBoards';
 
 /** Only the fields this screen renders, from the shared user mapper. */
 interface PhantomAgent {
@@ -41,27 +42,19 @@ interface PhantomAgent {
 }
 
 /**
- * The levels the route accepts. It derives its own list from CYCLE_TYPE_VALUES
- * (`['NONE', ...CYCLE_TYPE_VALUES, 'BOTH']`) precisely so a new board is not
- * silently rejected — this is the frontend mirror of that, and §5 wants the
- * citation: backend/routes/admin/users.admin.routes.js, the `validLevels`
- * array, over CYCLE_TYPE_VALUES in domains/markets/cycleTypes.js. Adding a
- * cycle type means adding it here too (CLAUDE.md §18.2 item 5).
+ * The levels the route accepts: NONE, any board's key, or BOTH (= every
+ * board). Built from the boards (`useBoards`), because the route derives its
+ * own list from them (backend/routes/admin/users.admin.routes.js `validLevels`)
+ * and a hand-written list here silently missed every board added since.
  */
-const LEVELS: Array<{ value: string; label: string }> = [
-  { value: 'NONE',     label: 'NONE — no phantom betting' },
-  { value: '1_MIN',    label: '1_MIN — 1-minute cycles only' },
-  { value: '30_MIN',   label: '30_MIN — 30-minute cycles only' },
-  { value: 'FULL_DAY', label: 'FULL_DAY — full-day cycles only' },
-  { value: 'BOTH',     label: 'BOTH — every cycle type' },
+const levelsFor = (boards: Array<{ key: string; name: string }>) => [
+  { value: 'NONE', label: 'NONE — no phantom betting' },
+  ...boards.map((b) => ({ value: b.key, label: `${b.name} — this board only` })),
+  { value: 'BOTH', label: 'BOTH — every board' },
 ];
 
-const LEVEL_CLASS: Record<string, string> = {
-  BOTH:     'bg-yellow-500/20 text-yellow-400',
-  '1_MIN':  'bg-blue-500/20 text-blue-400',
-  '30_MIN': 'bg-blue-500/20 text-blue-400',
-  FULL_DAY: 'bg-blue-500/20 text-blue-400',
-};
+const levelClass = (level: string) => (level === 'BOTH' ? 'bg-yellow-500/20 text-yellow-400'
+  : level && level !== 'NONE' ? 'bg-blue-500/20 text-blue-400' : 'bg-gray-500/20 text-gray-400');
 
 const when = (ts: string | null) => {
   if (!ts) return 'never';
@@ -73,6 +66,7 @@ const when = (ts: string | null) => {
 };
 
 export const PhantomAgents: React.FC = () => {
+  const { boards } = useBoards();
   const [agents, setAgents] = useState<PhantomAgent[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [editing, setEditing] = useState<PhantomAgent | null>(null);
@@ -175,7 +169,7 @@ export const PhantomAgents: React.FC = () => {
                     <td className="py-2.5 pr-3 font-medium">{a.username}</td>
                     <td className="py-2.5 pr-3 text-gray-400">{formatters.phone(a.mobile)}</td>
                     <td className="py-2.5 pr-3">
-                      <span className={`text-xs px-2 py-0.5 rounded-lg ${LEVEL_CLASS[a.phantomAccess] || 'bg-gray-500/20 text-gray-400'}`}>
+                      <span className={`text-xs px-2 py-0.5 rounded-lg ${levelClass(a.phantomAccess)}`}>
                         {a.phantomAccess}
                       </span>
                     </td>
@@ -210,7 +204,7 @@ export const PhantomAgents: React.FC = () => {
             <div>
               <label className="label" htmlFor="scope">Scope</label>
               <select id="scope" value={level} onChange={(e) => setLevel(e.target.value)} className="input">
-                {LEVELS.map((l) => <option key={l.value} value={l.value}>{l.label}</option>)}
+                {levelsFor(boards).map((l) => <option key={l.value} value={l.value}>{l.label}</option>)}
               </select>
             </div>
             <p className="text-xs text-yellow-400">

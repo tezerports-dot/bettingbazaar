@@ -5,7 +5,6 @@
  */
 import React, { useMemo, useState } from 'react';
 import { useGame } from '../services/GameContext';
-import { CycleType } from '../types';
 import { fmt, ago } from '../redesign/format';
 import { Side } from '../redesign/analytics';
 import ScreenShell, { card, capLabel } from '../redesign/Screen';
@@ -14,24 +13,19 @@ import AnalyticsDrawer from '../redesign/AnalyticsDrawer';
 const sideBg = (sd: string) => (sd === 'DELHI' ? 'var(--delhi)' : 'var(--bombay)');
 
 const ResultsPage: React.FC = () => {
-  const { pastCycles, loadCycleHistory } = useGame();
+  const { pastCycles, loadCycleHistory, boards } = useGame();
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   const cycles = useMemo(() => (pastCycles || [])
     .filter(c => c.winner === 'DELHI' || c.winner === 'BOMBAY')
     .sort((a, b) => (b.endTime || 0) - (a.endTime || 0)), [pastCycles]);
 
-  // Built from the enum, not a hand-written pair. The literal
-  // `{ '30_MIN': …, FULL_DAY: … }` this replaces silently omitted 1_MIN, so
-  // the drawer's 1-Min tab opened from THIS page showed an empty board however
-  // much 1-minute history had arrived — the same omission the GameScreen copy
-  // was already built from the enum to avoid.
-  const winnersByType = useMemo(() => {
-    const build = (t: CycleType): Side[] => cycles.filter(c => c.type === t).map(c => c.winner as Side);
-    return Object.fromEntries(
-      Object.values(CycleType).map(t => [t, build(t)]),
-    ) as Record<CycleType, Side[]>;
-  }, [cycles]);
+  // An entry for every board, from the server's list — a hand-written set of
+  // boards once omitted one, and its tab in the drawer showed an empty board.
+  const winnersByType = useMemo(() => Object.fromEntries(
+    boards.map(b => [b.key, cycles.filter(c => c.type === b.key).map(c => c.winner as Side)]),
+  ) as Record<string, Side[]>, [cycles, boards]);
+  const boardName = (key: string) => boards.find(b => b.key === key)?.name ?? '';
 
   const roadmapBeads = cycles.slice(0, 60).map(c => c.winner as Side).reverse().map(sd => ({ ch: sd === 'DELHI' ? 'D' : 'B', bg: sideBg(sd) }));
   const latest = cycles[0]?.winner as string | undefined;
@@ -69,7 +63,7 @@ const ResultsPage: React.FC = () => {
             <div key={c.id} style={{ borderTop: '1px solid var(--line)', padding: '13px 0' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 11, marginBottom: 10 }}>
                 <span className="font-grotesk" style={{ width: 32, height: 32, flex: 'none', borderRadius: '50%', background: sideBg(sd), color: '#fff', fontSize: 13, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{sd === 'DELHI' ? 'D' : 'B'}</span>
-                <span style={{ flex: 1, minWidth: 0 }}><span style={{ display: 'block', fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>{sd.charAt(0)}{sd.slice(1).toLowerCase()} won · {c.type === CycleType.THIRTY_MIN ? '30M' : 'Full day'}</span><span style={{ display: 'block', fontSize: 10, color: 'var(--text3)' }}>{ago(c.endTime)} · pool ₹{fmt(tot)}</span></span>
+                <span style={{ flex: 1, minWidth: 0 }}><span style={{ display: 'block', fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>{sd.charAt(0)}{sd.slice(1).toLowerCase()} won · {boardName(c.type)}</span><span style={{ display: 'block', fontSize: 10, color: 'var(--text3)' }}>{ago(c.endTime)} · pool ₹{fmt(tot)}</span></span>
                 <span style={{ flex: 'none', textAlign: 'right' }}><span className="font-grotesk" style={{ display: 'block', fontWeight: 700, fontSize: 13, color: 'var(--green)' }}>₹{fmt(paidOut)}</span><span style={{ display: 'block', fontSize: 8, fontWeight: 800, letterSpacing: '.08em', color: 'var(--text3)' }}>PAID OUT</span></span>
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
@@ -88,7 +82,7 @@ const ResultsPage: React.FC = () => {
         })}
       </div>
 
-      <AnalyticsDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} winnersByType={winnersByType} loadCycleHistory={loadCycleHistory} />
+      <AnalyticsDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} winnersByType={winnersByType} boards={boards} loadCycleHistory={loadCycleHistory} />
     </ScreenShell>
   );
 };

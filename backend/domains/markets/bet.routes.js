@@ -13,10 +13,8 @@ import * as betAuthority from '#db/repositories/bets.js';
 import { assessBet, computeBetFundingPlan, computeMaxStake } from '../risk/riskValidation.service.js';
 // Shared trading vocabulary (Phase 011) — one source for sides/statuses.
 import { MARKET_SIDES } from '../trading/tradingModels.js';
-// Cycle-type vocabulary: which betLimits key belongs to which type.
-import { CYCLE_TYPES, DEFAULT_CYCLE_PHASES, isCycleType, limitsKeyFor, phasesFor } from './cycleTypes.js';
-// Phase offsets, for the clock-based betting cutoff below. Same single
-// declaration the generator and the admin phase view read.
+// The cycle's board: its stake bounds and phase offsets (the `boards` row).
+import { boardOf } from './cycleTypes.js';
 // Derived cycle pools (FLAGS.DERIVED_CYCLE_POOLS, default off) — see
 // cyclePool.service.js for why the running total is the scaling ceiling.
 import { computeRealPools } from './cyclePool.service.js';
@@ -27,6 +25,7 @@ import { cycleSnapshotPublisher } from './cycleSnapshotPublisher.js';
 // released — the one outcome no automated path can resolve on its own.
 import { sendAlert } from '../../services/alerting.service.js';
 import { getSystemConfig } from '#db/repositories/config.js';
+import { BOARD_RULES_VERSION } from './boardRules.js';
 import { emitToStaff } from '../notification/staffEventAreas.js';
 
 const router = express.Router();
@@ -115,6 +114,18 @@ router.post('/place', authenticatePlayer, betLimiter, async (req, res) => {
       return res.status(400).json({ success: false, message: 'Invalid side — must be DELHI or BOMBAY' });
     }
 
+    // ── The player has read how the boards work ──────────────────────────────
+    // Owner, 2026-10-08: players are told how a round is won and that the
+    // pools include house bets, and accept it, before they stake anything
+    // (`domains/markets/boardRules.js`). After the replay gate, so a retry of
+    // a bet placed under an older acceptance still answers with that bet.
+    if (await db.boardRules.acceptedVersion(userId) < BOARD_RULES_VERSION) {
+      return res.status(409).json({
+        success: false, code: 'BOARD_RULES_NOT_ACCEPTED',
+        message: 'Please read and accept the board rules before you bet.',
+      });
+    }
+
     // ── Cycle check ──────────────────────────────────────────────────────────
     // Read BEFORE the limits, because the limits belong to the cycle.
     const cycle = await db.markets.getCycle(cycleId);
@@ -130,17 +141,25 @@ router.post('/place', authenticatePlayer, betLimiter, async (req, res) => {
       });
     }
 
-    // ── The stake limits are the CYCLE'S ─────────────────────────────────────
+    // ── The stake limits are the CYCLE'S BOARD'S ─────────────────────────────
     // Keyed on `cycle.type`, never on the `type` the client sent. They used to
     // be read from the request body, so a full-day bet (floor ₹100) went
     // through at ₹10 by claiming to be a 30-minute bet, and a 30-minute bet
     // reached the full-day ceiling by claiming the opposite (R6, 2026-09-30).
     // The body's `type` is now only echoed back in the response.
-    const config    = await getSystemConfig();
-    const isFullDay = cycle.type === CYCLE_TYPES.FULL_DAY;
-    const limitsKey = isCycleType(cycle.type) ? limitsKeyFor(cycle.type) : 'thirtyMin';
-    const minBet    = config?.betLimits?.[limitsKey]?.min ?? (isFullDay ? 100  : 10);      // schema default: 100 / 10
-    const maxBet    = config?.betLimits?.[limitsKey]?.max ?? (isFullDay ? 500000 : 100000); // schema default: 500000 / 100000
+    //
+    // A board switched off takes no new bet; its open round still settles.
+    const config = await getSystemConfig();
+    const board  = await boardOf(cycle.type);
+    if (!board?.enabled) {
+      return res.status(409).json({
+        success: false,
+        message: 'This board is switched off. Pick another board.',
+        code: 'BOARD_SWITCHED_OFF',
+      });
+    }
+    const minBet = board.minBet;
+    const maxBet = board.maxBet;
 
     // ── Risk Platform gate (Phase 010) — the single validation authority ────
     // positive/whole/multiples-of-10, min/max, and the config-gated
@@ -174,15 +193,9 @@ router.post('/place', authenticatePlayer, betLimiter, async (req, res) => {
     // whoever benefits from a slow tick" is not a property a real-money board
     // should have.
     //
-    // The clock does not slip, so the clock is the gate. `config` is already
-    // loaded above for the stake limits, so this costs no extra read. An
-    // unrecognised type keeps the status-only behaviour rather than being
-    // rejected outright — it cannot be created through the model's enum, and
-    // failing closed on the money path over an impossible value is worse.
-    const phases = isCycleType(cycle.type)
-      ? (phasesFor(cycle.type, config?.cyclePhases) || phasesFor(cycle.type, DEFAULT_CYCLE_PHASES))
-      : null;
-    if (phases && Date.now() >= cycle.endTime - (phases.closeBeforeEndSec * 1000)) {
+    // The clock does not slip, so the clock is the gate: the board's own
+    // close offset, read above with its stake limits.
+    if (Date.now() >= cycle.endTime - (board.phases.closeBeforeEndSec * 1000)) {
       return res.status(400).json({
         success: false,
         message: 'Betting closed for this cycle',
@@ -197,13 +210,27 @@ router.post('/place', authenticatePlayer, betLimiter, async (req, res) => {
     // because that table has no balance columns at all: every figure comes
     // back undefined, the `|| 0` makes it a confident zero, and no player can
     // place any bet.
-    const [user, balances] = await Promise.all([
+    const [user, balances, profile] = await Promise.all([
       db.users.getUser(userId),
       getBalances(String(userId)),
+      db.promo.playProfileOf(userId),
     ]);
 
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    // ── VIP and GENERAL never share a cycle (owner, 2026-10-08) ─────────────
+    // A player bets only on their own profile's cycles. The stake's pockets
+    // are held to the cycle's audience again in the writer (`bets.core`), so
+    // this is the answer a player can act on, not the only guard.
+    if (cycle.audience !== profile) {
+      return res.status(409).json({
+        success: false, code: 'WRONG_PROFILE_FOR_CYCLE',
+        message: profile === 'GENERAL'
+          ? 'You are playing with your General balance. Switch to VIP ID to bet on this board.'
+          : 'This board is for General balance players. Switch to General to bet on it.',
+      });
     }
 
     const availableDeposit  = balances.depositBalance  || 0;
@@ -211,85 +238,104 @@ router.post('/place', authenticatePlayer, betLimiter, async (req, res) => {
     const availableReserve  = balances.reserveBalance  || 0;
     const totalAvailable    = availableDeposit + availableWinnings + availableReserve;
 
-    const reservePercent = config?.betReservePercent ?? 1; // schema default: 1
+    // ── A GENERAL bet is staked from the GENERAL balance alone ──────────────
+    // No reserve split and no other pocket: the bonus and what it has won are
+    // the whole of what a GENERAL player plays with.
+    let stakeSlices;
+    if (profile === 'GENERAL') {
+      const availableGeneral = balances.promoBalance || 0;
+      if (amount > availableGeneral) {
+        return res.status(400).json({
+          success: false, code: 'STAKE_EXCEEDS_FUNDABLE',
+          message: `You can bet up to ₹${availableGeneral} from your General balance right now.`,
+          balance: { general: availableGeneral, maxStake: availableGeneral },
+        });
+      }
+      stakeSlices = [{
+        field: 'promoBalance', suffix: '_gen', amount,
+        reason: `BET_PLACED General balance — ₹${amount} on ${side}`,
+      }];
+    } else {
+      const reservePercent = config?.betReservePercent ?? 1; // schema default: 1
 
-    // ── The affordability check, against the TRUE ceiling ────────────────────
-    // This used to compare the stake to deposit + winnings + reserve, which is
-    // not what the wallet can fund: only `reservePercent` of a stake may come
-    // from the reserve, and the rest must come from deposit + winnings. So a
-    // player with ₹100 + ₹100 + ₹800 was refused a ₹500 bet by the funding plan
-    // below with the message "Insufficient balance. Available: ₹1000" — told
-    // they had the money while being refused it.
-    //
-    // computeMaxStake applies the same expression the funding plan does, so the
-    // number in this message is exactly the number that would succeed.
-    const { maxStake } = computeMaxStake({
-      reservePercent, availableDeposit, availableWinnings, availableReserve,
-    });
-
-    if (amount > maxStake) {
-      // Integer paise: `totalAvailable` is a sum of stored floats, so subtracting
-      // the exact maxStake from it directly yields 793.8199999999999.
-      const reserveLocked = (Math.round(totalAvailable * 100) - Math.round(maxStake * 100)) / 100;
-      return res.status(400).json({
-        success: false,
-        code: 'STAKE_EXCEEDS_FUNDABLE',
-        message: reserveLocked > 0
-          ? `You can bet up to ₹${maxStake} right now. ₹${reserveLocked} of your reserve `
-            + `can only be used ${reservePercent}% at a time, so add to your deposit to bet more.`
-          : `You can bet up to ₹${maxStake} right now.`,
-        balance: {
-          deposit: availableDeposit, winnings: availableWinnings,
-          reserve: availableReserve, total: totalAvailable,
-          // How much of the reserve this wallet cannot reach yet. The client
-          // shows it so the gap between "I hold ₹9" and "I may bet ₹7.21" is
-          // explained rather than left as an apparently arbitrary limit.
-          maxStake, reservePercent, reserveLocked,
-        },
+      // ── The affordability check, against the TRUE ceiling ────────────────────
+      // This used to compare the stake to deposit + winnings + reserve, which is
+      // not what the wallet can fund: only `reservePercent` of a stake may come
+      // from the reserve, and the rest must come from deposit + winnings. So a
+      // player with ₹100 + ₹100 + ₹800 was refused a ₹500 bet by the funding plan
+      // below with the message "Insufficient balance. Available: ₹1000" — told
+      // they had the money while being refused it.
+      //
+      // computeMaxStake applies the same expression the funding plan does, so the
+      // number in this message is exactly the number that would succeed.
+      const { maxStake } = computeMaxStake({
+        reservePercent, availableDeposit, availableWinnings, availableReserve,
       });
+
+      if (amount > maxStake) {
+        // Integer paise: `totalAvailable` is a sum of stored floats, so subtracting
+        // the exact maxStake from it directly yields 793.8199999999999.
+        const reserveLocked = (Math.round(totalAvailable * 100) - Math.round(maxStake * 100)) / 100;
+        return res.status(400).json({
+          success: false,
+          code: 'STAKE_EXCEEDS_FUNDABLE',
+          message: reserveLocked > 0
+            ? `You can bet up to ₹${maxStake} right now. ₹${reserveLocked} of your reserve `
+              + `can only be used ${reservePercent}% at a time, so add to your deposit to bet more.`
+            : `You can bet up to ₹${maxStake} right now.`,
+          balance: {
+            deposit: availableDeposit, winnings: availableWinnings,
+            reserve: availableReserve, total: totalAvailable,
+            // How much of the reserve this wallet cannot reach yet. The client
+            // shows it so the gap between "I hold ₹9" and "I may bet ₹7.21" is
+            // explained rather than left as an apparently arbitrary limit.
+            maxStake, reservePercent, reserveLocked,
+          },
+        });
+      }
+
+      // ── Bet funding split (Phase A, 2026-07-10) ──────────────────────────────
+      // Admin-editable reserve % (Business Policy owns the number; Risk owns the
+      // arithmetic). Replaces the hardcoded 0.97/0.03 Math.round pair, which
+      // wasn't configurable, rounded 9.7/0.3 to 10/0, and could over-deduct
+      // (₹50 → 49+2 = ₹51). Paise-exact: parts always conserve the stake.
+      // Fallbacks preserved: reserve short → main; deposit short → winnings.
+      let plan;
+      try {
+        plan = computeBetFundingPlan({
+          amount, reservePercent,
+          availableDeposit, availableWinnings, availableReserve,
+        });
+      } catch (planErr) {
+        return res.status(planErr.status || 400).json({
+          success: false,
+          message: planErr.message,
+          balance: { deposit: availableDeposit, winnings: availableWinnings, reserve: availableReserve, total: totalAvailable }
+        });
+      }
+      const { fromDeposit, fromWinnings, fromReserve } = plan;
+
+      // ── Stake lock (§7: walletAuthority is the sole balance writer) ─────────
+      // This used to be a raw three-field `findOneAndUpdate` plus a
+      // fire-and-forget ledger write, right here in the route. That made
+      // balances have two writers, one of which the money-authority switch
+      // could not reach — so flipping the wallet path to Postgres would have
+      // split the source of truth mid-bet. The authority now owns it, and picks
+      // the store per postgres/moneyAuthority.js.
+      // ── The stake, split across pockets ─────────────────────────────────────
+      // The bet's identity (betTxBase) was established at the top of
+      // the handler from the REQUIRED Idempotency-Key. It is the txId of every
+      // slice's ledger row and the Bet row's _id, so on both stores the unique
+      // index — not a convention — is what makes a redelivery idempotent.
+      stakeSlices = [
+        { field: 'depositBalance',  suffix: '_dep', amount: fromDeposit,
+          reason: `BET_PLACED deposit portion — ₹${amount} on ${side}` },
+        { field: 'winningsBalance', suffix: '_win', amount: fromWinnings,
+          reason: `BET_PLACED winnings portion — ₹${amount} on ${side}` },
+        { field: 'reserveBalance',  suffix: '_res', amount: fromReserve,
+          reason: `BET_PLACED reserve portion (${plan.reservePercentApplied}%) — ₹${amount} on ${side}` },
+      ].filter((s) => s.amount > 0);
     }
-
-    // ── Bet funding split (Phase A, 2026-07-10) ──────────────────────────────
-    // Admin-editable reserve % (Business Policy owns the number; Risk owns the
-    // arithmetic). Replaces the hardcoded 0.97/0.03 Math.round pair, which
-    // wasn't configurable, rounded 9.7/0.3 to 10/0, and could over-deduct
-    // (₹50 → 49+2 = ₹51). Paise-exact: parts always conserve the stake.
-    // Fallbacks preserved: reserve short → main; deposit short → winnings.
-    let plan;
-    try {
-      plan = computeBetFundingPlan({
-        amount, reservePercent,
-        availableDeposit, availableWinnings, availableReserve,
-      });
-    } catch (planErr) {
-      return res.status(planErr.status || 400).json({
-        success: false,
-        message: planErr.message,
-        balance: { deposit: availableDeposit, winnings: availableWinnings, reserve: availableReserve, total: totalAvailable }
-      });
-    }
-    const { fromDeposit, fromWinnings, fromReserve } = plan;
-
-    // ── Stake lock (§7: walletAuthority is the sole balance writer) ─────────
-    // This used to be a raw three-field `findOneAndUpdate` plus a
-    // fire-and-forget ledger write, right here in the route. That made
-    // balances have two writers, one of which the money-authority switch
-    // could not reach — so flipping the wallet path to Postgres would have
-    // split the source of truth mid-bet. The authority now owns it, and picks
-    // the store per postgres/moneyAuthority.js.
-    // ── The stake, split across pockets ─────────────────────────────────────
-    // The bet's identity (betTxBase) was established at the top of
-    // the handler from the REQUIRED Idempotency-Key. It is the txId of every
-    // slice's ledger row and the Bet row's _id, so on both stores the unique
-    // index — not a convention — is what makes a redelivery idempotent.
-    const stakeSlices = [
-      { field: 'depositBalance',  suffix: '_dep', amount: fromDeposit,
-        reason: `BET_PLACED deposit portion — ₹${amount} on ${side}` },
-      { field: 'winningsBalance', suffix: '_win', amount: fromWinnings,
-        reason: `BET_PLACED winnings portion — ₹${amount} on ${side}` },
-      { field: 'reserveBalance',  suffix: '_res', amount: fromReserve,
-        reason: `BET_PLACED reserve portion (${plan.reservePercentApplied}%) — ₹${amount} on ${side}` },
-    ].filter((s) => s.amount > 0);
 
     // ── Stake + bet record ─────────────────────────────────────────────────
     // These were once two operations: lock the stake, then insert the bet.
@@ -320,6 +366,14 @@ router.post('/place', authenticatePlayer, betLimiter, async (req, res) => {
     const pgBet = placed.ok ? placed.bet : null;
     const moneyMoved = placed.ok && placed.idempotent !== true;
 
+    if (!stakeLock.ok && placed.reason === 'wrong_balance_for_cycle') {
+      // The writer holds the stake to the cycle's audience. Reached only if the
+      // profile changed between the check above and the write.
+      return res.status(409).json({
+        success: false, code: 'WRONG_PROFILE_FOR_CYCLE',
+        message: 'Your profile changed while this bet was being placed. Please try again.',
+      });
+    }
     if (!stakeLock.ok) {
       // Concurrent request won the race — our pre-computed split is now stale.
       return res.status(400).json({
@@ -351,6 +405,7 @@ router.post('/place', authenticatePlayer, betLimiter, async (req, res) => {
         depositBalance:  updatedUser.depositBalance  || 0,
         winningsBalance: updatedUser.winningsBalance || 0,
         reserveBalance:  updatedUser.reserveBalance  || 0,
+        promoBalance:    updatedUser.promoBalance    || 0,
         totalBalance:    (updatedUser.depositBalance || 0) + (updatedUser.winningsBalance || 0),
       });
     } catch (_) { /* SSE failure never blocks the bet response */ }
@@ -520,6 +575,7 @@ router.post('/place', authenticatePlayer, betLimiter, async (req, res) => {
         winnings: updatedUser.winningsBalance,
         reserve:  updatedUser.reserveBalance  || 0,
         locked:   updatedUser.lockedBalance,
+        general:  updatedUser.promoBalance || 0,
         total:    updatedUser.depositBalance + updatedUser.winningsBalance,
       }
     });

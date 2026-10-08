@@ -47,7 +47,6 @@ describePg('paired config bounds (PostgreSQL)', () => {
       scope: 'system', actor: 'test-restore',
       patch: {
         usdtBuy: baseline.usdtBuy,
-        betLimits: baseline.betLimits,
       },
     }).catch(() => {});
     await closePg();
@@ -72,11 +71,6 @@ describePg('paired config bounds (PostgreSQL)', () => {
   it('names BOTH fields and BOTH values, so the operator knows what to type', async () => {
     await expect(put({ usdtBuy: { minUsdt: 99900 } }))
       .rejects.toThrow(/'usdtBuy\.minUsdt' \(99900\) cannot be above 'usdtBuy\.maxUsdt' \(10000\)/);
-  });
-
-  it('refuses a bet minimum above its maximum, per board', async () => {
-    await expect(put({ betLimits: { oneMin: { min: 200000 } } })).rejects.toMatchObject({ status: 400 });
-    await expect(put({ betLimits: { fullDay: { min: 999999 } } })).rejects.toMatchObject({ status: 400 });
   });
 
   /**

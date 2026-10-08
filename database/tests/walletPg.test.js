@@ -37,7 +37,7 @@ describePg('Postgres-authoritative wallet', () => {
   describe('reads', () => {
     it('reports zeros for a user who has never transacted', async () => {
       expect(await getBalancesPaise(USER)).toEqual({
-        depositBalance: 0, winningsBalance: 0, tokenBalance: 0, reserveBalance: 0, lockedBalance: 0,
+        depositBalance: 0, winningsBalance: 0, tokenBalance: 0, reserveBalance: 0, lockedBalance: 0, promoBalance: 0,
         lockedDepositAmount: 0, lockedWinningsAmount: 0,
       });
     });

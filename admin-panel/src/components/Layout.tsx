@@ -91,6 +91,7 @@ const NAV_GROUPS: MenuGroup[] = [
     { path: '/merchant-platform', icon: Store,    label: 'Merchant Platform', title: 'Merchant Platform',   sub: 'Merchant onboarding, tiers & performance', permission: 'canManageMerchants' },
   ] },
   { key: 'games', label: 'Game Providers', items: [
+    { path: '/boards',         icon: Gamepad2, label: 'Boards',         title: 'Boards',         sub: 'Board games: timers, stakes and home-page order', permission: 'canManageGames' },
     { path: '/games',          icon: Gamepad2, label: 'Game Registry',  title: 'Game Registry',  sub: 'Game catalogue & categories', permission: 'canManageGames' },
     { path: '/game-providers', icon: Star,     label: 'Game Providers', title: 'Game Providers', sub: 'Casino / crash / sports API providers', permission: 'canManageGames' },
   ] },

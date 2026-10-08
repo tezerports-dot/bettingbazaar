@@ -47,13 +47,25 @@ function forPlayer(order) {
   return toPlayerOrderView(order);
 }
 
+/**
+ * A player who deposits plays as VIP (owner, 2026-10-08). Run after the order
+ * exists, not inside it: a failed switch must not cost the deposit, and the
+ * player can still switch by hand. Answers the profile now in use, or null.
+ */
+function switchToVip(userId) {
+  return db.promo.setPlayProfile(userId, 'VIP')
+    .then((r) => r.profile ?? null)
+    .catch((e) => { console.error('[deposit] could not switch to VIP:', e.message); return null; });
+}
+
 // No KYC gate on any money route: KYC was removed 2026-10-02 (owner). The
 // channel-membership gate, which requires the Telegram contact share, is the
 // identity check.
 router.post('/deposit/create', authenticatePlayer, depositCreateLimiter, async (req, res) => {
   try {
     const result = await requestDeposit({ userId: req.user.userId, tokenAmount: Number(req.body.tokenAmount) });
-    res.json({ success: true, message: 'Deposit request created. Waiting for merchant assignment.', ...result });
+    const profile = await switchToVip(req.user.userId);
+    res.json({ success: true, message: 'Deposit request created. Waiting for merchant assignment.', ...result, profile });
   } catch (err) { return respondError(res, err, 'POST /payment/deposit/create'); }
 });
 
@@ -85,7 +97,8 @@ router.post('/usdt/deposit/create',
         usdtChain: req.body.usdtChain,
         provider: 'USDT',
       });
-      res.json({ success: true, message: 'USDT purchase created. Waiting for a merchant.', ...result });
+      const profile = await switchToVip(req.user.userId);
+      res.json({ success: true, message: 'USDT purchase created. Waiting for a merchant.', ...result, profile });
     } catch (err) {
       return respondError(res, err, 'POST /payment/usdt/deposit/create');
     }

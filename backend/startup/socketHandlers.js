@@ -79,8 +79,8 @@ export function attachSocketHandlers(io, cycleGenerator, gameEngine) {
     // cycleHistory.service.js.
     socket.on('request_cycle_history', async (params = {}) => {
       try {
-        const { type, limit } = params;
-        socket.emit('cycle_history', await fetchCycleHistory({ types: type, limit }));
+        const { type, limit, audience } = params;
+        socket.emit('cycle_history', await fetchCycleHistory({ types: type, limit, audience }));
       } catch { socket.emit('cycle_history', { cycles: [], types: [] }); }
     });
 

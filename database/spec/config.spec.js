@@ -30,33 +30,6 @@
  */
 import { ORDER_SIZES, USDT_BUY_STEP } from '../../backend/domains/merchant/denominations.js';
 
-/**
- * Cycle phase offsets, in seconds BEFORE a cycle's end, per type.
- *
- * ── This is the only copy ──────────────────────────────────────────────────
- * These numbers were declared three times: as schema defaults, again in
- * `cycleGenerator.service.js` as its fallback, and again in
- * `routes/admin/cycles.admin.routes.js` to draw the phase timeline. Three
- * copies of one constant, and this one had ALREADY DRIFTED: the admin route
- * said the 30-minute block closed betting 60s before the end while the
- * generator closed it at 30s, so the panel drew a boundary the engine did not
- * honour.
- *
- * The invariant every set must satisfy: merge > equalizer > close >
- * celebrate >= 0, and merge < the cycle's duration.
- */
-export const DEFAULT_CYCLE_PHASES = Object.freeze({
-  // 1-minute block: merge 12s before the end, equalize at 9s, close betting at
-  // 5s, declare at 3s, celebrate 3s→0. Betting is open for 55 of 60 seconds.
-  // The close→celebrate window is only 2s wide and the status tick runs at 1s,
-  // so a slow tick can miss the CLOSED transition; the phase logic tolerates
-  // that by letting a still-OPEN cycle complete directly rather than stalling.
-  oneMin:    Object.freeze({ mergeBeforeEndSec: 12,  equalizerBeforeEndSec: 9,   closeBeforeEndSec: 5,  celebrateBeforeEndSec: 3 }),
-  thirtyMin: Object.freeze({ mergeBeforeEndSec: 180, equalizerBeforeEndSec: 120, closeBeforeEndSec: 30, celebrateBeforeEndSec: 10 }),
-  // Full-day merges earlier than the 30-minute block by default.
-  fullDay:   Object.freeze({ mergeBeforeEndSec: 300, equalizerBeforeEndSec: 120, closeBeforeEndSec: 30, celebrateBeforeEndSec: 10 }),
-});
-
 /** A number setting: `n(default, min, max)`. Bounds are inclusive. */
 const n = (def, min = null, max = null) => ({ type: 'number', default: def, min, max });
 // A count of whole units — minutes the database turns into an interval. 7.5
@@ -72,13 +45,6 @@ const s = (def = '') => ({ type: 'string', default: def });
 const sa = (def = []) => ({ type: 'string[]', default: def });
 /** A nested group of settings. */
 const group = (fields) => ({ type: 'group', fields });
-
-const phaseGroup = (d) => group({
-  mergeBeforeEndSec:     n(d.mergeBeforeEndSec, 0),
-  equalizerBeforeEndSec: n(d.equalizerBeforeEndSec, 0),
-  closeBeforeEndSec:     n(d.closeBeforeEndSec, 0),
-  celebrateBeforeEndSec: n(d.celebrateBeforeEndSec, 0),
-});
 
 const surgeGroup = () => group({
   // 0 = OFF, and that is the default: a ceiling set before the owner knows the
@@ -106,15 +72,6 @@ export const SYSTEM_CONFIG_SPEC = group({
   // `supportLinks` scope below. Both existed, so the admin page wrote one and
   // the public page read the other: every channel an admin configured showed as
   // blank to players, with nothing reporting a problem. One owner — the scope.
-
-  // The 1-minute block shares the 30-minute stake bounds and chip ladder — same
-  // game, shorter window. Declared explicitly rather than falling through, so
-  // raising one block's ceiling cannot silently raise the other's.
-  betLimits: group({
-    oneMin:    group({ min: n(10, 0),  max: n(100000, 0) }),
-    thirtyMin: group({ min: n(10, 0),  max: n(100000, 0) }),
-    fullDay:   group({ min: n(100, 0), max: n(500000, 0) }),
-  }),
 
   // ── The sizes an INR order may be (Step 2d, owner 2026-10-02) ─────────────
   // Which of the seven fixed sizes are ON OFFER, buys and sells alike: 500,
@@ -306,17 +263,8 @@ export const SYSTEM_CONFIG_SPEC = group({
     merchantAdminBuyInr: n(0, 0),
   }),
 
-  // MUST divide 60 evenly so blocks tile the hour cleanly. The type label
-  // '30_MIN' is a fixed identifier and does NOT rename when this changes.
-  cycleDurationMinutes: n(30, 10, 60),
   // The payment order windows are per rail, in `teamRouting` below.
   retentionMonths:      n(6, 1, 120),
-
-  cyclePhases: group({
-    oneMin:    phaseGroup(DEFAULT_CYCLE_PHASES.oneMin),
-    thirtyMin: phaseGroup(DEFAULT_CYCLE_PHASES.thirtyMin),
-    fullDay:   phaseGroup(DEFAULT_CYCLE_PHASES.fullDay),
-  }),
 
   footerPages: sa(['home', 'results', 'winners', 'promo', 'profile']),
   alertWebhookUrl: s(''),

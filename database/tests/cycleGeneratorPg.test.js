@@ -69,7 +69,7 @@ describePg('the cycle generator', () => {
     await openCycle('c-declare', { endedMinutesAgo: 1 });
     await bet('b1', 'u1', 'c-declare', 'DELHI', 100_00);
 
-    await generator().completeCycle(await currentCycleWithPools('30_MIN'));
+    await generator().completeCycle(await currentCycleWithPools('30_MIN', 'VIP'));
 
     const cycle = await getCycle('c-declare');
     // Both, or the settlement sweep reads a declared cycle with no winner.
@@ -84,7 +84,7 @@ describePg('the cycle generator', () => {
     await bet('b-delhi',  'u1', 'c-minority', 'DELHI',  400_00);
     await bet('b-bombay', 'u1', 'c-minority', 'BOMBAY', 100_00);
 
-    await generator().completeCycle(await currentCycleWithPools('30_MIN'));
+    await generator().completeCycle(await currentCycleWithPools('30_MIN', 'VIP'));
 
     // More money on DELHI, so BOMBAY wins and the house keeps the difference.
     expect((await getCycle('c-minority')).winner).toBe('BOMBAY');
@@ -102,7 +102,7 @@ describePg('the cycle generator', () => {
        VALUES ('b-ph','house','c-phantom-blind','BOMBAY',900_00,'PENDING',TRUE)`, [],
     );
 
-    await generator().completeCycle(await currentCycleWithPools('30_MIN'));
+    await generator().completeCycle(await currentCycleWithPools('30_MIN', 'VIP'));
 
     // Real: Delhi 150, Bombay 50 → the minority real side is BOMBAY.
     expect((await getCycle('c-phantom-blind')).winner).toBe('BOMBAY');
@@ -113,7 +113,7 @@ describePg('the cycle generator', () => {
     await openCycle('c-once', { endedMinutesAgo: 1 });
     await bet('b1', 'u1', 'c-once', 'DELHI', 100_00);
 
-    const cycle = await currentCycleWithPools('30_MIN');
+    const cycle = await currentCycleWithPools('30_MIN', 'VIP');
     const gen = generator();
     await gen.completeCycle(cycle);
     const first = (await getCycle('c-once')).winner;
@@ -131,7 +131,7 @@ describePg('the cycle generator', () => {
     await bet('b-delhi',  'u1', 'c-stale', 'DELHI',  400_00);
     await bet('b-bombay', 'u1', 'c-stale', 'BOMBAY', 100_00);
 
-    const stale = await currentCycleWithPools('30_MIN');
+    const stale = await currentCycleWithPools('30_MIN', 'VIP');
     await generator().adjudicateStaleCycle(stale, '30-MIN');
 
     // Adjudicated by the same minority rule as any other cycle. The version
@@ -146,7 +146,7 @@ describePg('the cycle generator', () => {
     // tie rather than a failure — the coin flip decides and the cycle IS
     // declared, so a round nobody bet on does not block the next one forever.
     await openCycle('c-empty', { endedMinutesAgo: 1 });
-    await generator().completeCycle(await currentCycleWithPools('30_MIN'));
+    await generator().completeCycle(await currentCycleWithPools('30_MIN', 'VIP'));
 
     const cycle = await getCycle('c-empty');
     expect(['DELHI', 'BOMBAY']).toContain(cycle.winner);
@@ -157,21 +157,44 @@ describePg('the cycle generator', () => {
   it('creates one cycle per block however many ticks race for it', async () => {
     const gen = generator();
     await Promise.all([
-      gen.ensureIntervalCycle('30_MIN'),
-      gen.ensureIntervalCycle('30_MIN'),
-      gen.ensureIntervalCycle('30_MIN'),
+      gen.ensureActiveCycle('30_MIN', 'VIP'),
+      gen.ensureActiveCycle('30_MIN', 'VIP'),
+      gen.ensureActiveCycle('30_MIN', 'VIP'),
     ]);
 
-    // The unique index on (cycle_type, start_time) decides. Three documents
-    // here would mean three concurrent betting rounds for one block.
+    // The unique index on (cycle_type, audience, start_time) decides. Three
+    // documents here would mean three concurrent betting rounds for one block.
     const { rows } = await pgQuery(
-      "SELECT COUNT(*)::int AS n FROM cycles WHERE cycle_type = '30_MIN'", [],
+      "SELECT COUNT(*)::int AS n FROM cycles WHERE cycle_type = '30_MIN' AND audience = 'VIP'", [],
     );
     expect(rows[0].n).toBe(1);
   });
 
+  it('runs a separate cycle for GENERAL players in the same block, never shared with VIP', async () => {
+    const gen = generator();
+    await Promise.all([
+      gen.ensureActiveCycle('30_MIN', 'GENERAL'),
+      gen.ensureActiveCycle('30_MIN', 'GENERAL'),
+      gen.ensureActiveCycle('30_MIN', 'VIP'),
+    ]);
+    const vip = await currentCycleWithPools('30_MIN', 'VIP');
+    const general = await currentCycleWithPools('30_MIN', 'GENERAL');
+    expect(general.audience).toBe('GENERAL');
+    expect(vip.audience).toBe('VIP');
+    expect(general.cycleId).not.toBe(vip.cycleId);
+    expect(new Date(general.startTime).getTime()).toBe(new Date(vip.startTime).getTime());
+    const { rows } = await pgQuery(
+      "SELECT COUNT(*)::int AS n FROM cycles WHERE cycle_type = '30_MIN' AND audience = 'GENERAL'", [],
+    );
+    expect(rows[0].n).toBe(1);
+
+    // Each audience's snapshot holds its own cycle only.
+    expect((await gen.getCycleSnapshotData('GENERAL'))['30_MIN'].cycleId).toBe(general.cycleId);
+    expect((await gen.getCycleSnapshotData('VIP'))['30_MIN'].cycleId).toBe(vip.cycleId);
+  });
+
   it('stores no real pool figures on the cycle row', async () => {
-    await generator().ensureIntervalCycle('30_MIN');
+    await generator().ensureActiveCycle('30_MIN', 'VIP');
     const { rows } = await pgQuery(
       `SELECT column_name FROM information_schema.columns
         WHERE table_name = 'cycles' AND column_name IN
@@ -190,7 +213,7 @@ describePg('the cycle generator', () => {
     await bet('b1', 'u1', 'c-snap', 'DELHI',  200_00);
     await bet('b2', 'u1', 'c-snap', 'BOMBAY', 100_00);
 
-    const snapshot = await generator().getCycleSnapshotData();
+    const snapshot = await generator().getCycleSnapshotData('VIP');
     const live = snapshot['30_MIN'];
 
     // Real halves from the bets, phantom from the row. The read this replaced

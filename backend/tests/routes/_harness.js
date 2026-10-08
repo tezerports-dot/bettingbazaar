@@ -25,6 +25,8 @@ import cookieParser from 'cookie-parser';
 import request from 'supertest';
 import { signToken } from '../../domains/identity/paseto.util.js';
 import { createUser, updateUser, setRoles } from '#db/repositories/users.js';
+import { accept as acceptBoardRules } from '#db/repositories/boardRules.js';
+import { BOARD_RULES_VERSION } from '../../domains/markets/boardRules.js';
 import {
   createMerchant, updateMerchant, newMerchantId, generateMerchantPublicRef,
 } from '#db/repositories/merchants.js';
@@ -89,7 +91,7 @@ export function mountRouter(router, { prefix = '' } = {}) {
  */
 export async function actor({
   userId, roles = [], isAdmin = false, isSubAdmin = false,
-  isQueueManager = false, permissions = null,
+  isQueueManager = false, permissions = null, boardRules = true,
 } = {}) {
   const id = userId || `rt-${Math.random().toString(36).slice(2, 10)}`;
 
@@ -128,6 +130,9 @@ export async function actor({
   if (permissions) patch.subAdminPermissions = permissions;
   await updateUser(id, patch);
   if (roles.length) await setRoles(id, roles);
+  // A player reads and accepts the board rules before a first bet (owner,
+  // 2026-10-08); a test of that gate asks for a player who has not.
+  if (accountType === 'PLAYER' && boardRules) await acceptBoardRules(id, BOARD_RULES_VERSION);
 
   // What the sign-in would have proved (Step 3): staff approve every sign-in in
   // Telegram, so a staff actor's token says so; a player's is the password.

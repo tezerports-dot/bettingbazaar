@@ -28,23 +28,27 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomInt } from 'node:crypto';
 import { pgConfigured, applySchema, closePg, pgQuery, withTransaction } from '#db/client.js';
 import { ensureCycle } from '#db/repositories/markets.js';
-import { getSystemConfig } from '#db/repositories/config.js';
+import { listBoards, createBoard, updateBoard } from '#db/repositories/boards.js';
+import { invalidateBoards } from '../../domains/markets/cycleTypes.js';
 import { getBalances } from '../../domains/wallet/walletAuthority.service.js';
 // Funded from the platform's own holding, posted with the credit: a wallet
 // that gains tokens from nowhere does not commit.
 import { fundWallet } from '#db/tests/_funding.js';
 import { actor, mountRouter, as } from './_harness.js';
 import { linkTelegram } from '../miniAppFixture.js';
+import { accept as acceptBoardRules } from '#db/repositories/boardRules.js';
+import * as promo from '#db/repositories/promo.js';
+import { BOARD_RULES_VERSION } from '../../domains/markets/boardRules.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 
 const HOUR = 3_600_000;
 
 /** A cycle of this type running now, at a start time nothing else holds. */
-async function openCycle(type, { startedAgoMs, lengthMs }) {
+async function openCycle(type, { startedAgoMs, lengthMs, audience = 'VIP' }) {
   const start = new Date(Date.now() - startedAgoMs - randomInt(0, 50_000_000));
   const { cycle } = await ensureCycle({
-    cycleId: `rt-bet-${type}-${start.getTime()}`, cycleType: type,
+    cycleId: `rt-bet-${type}-${start.getTime()}`, cycleType: type, audience,
     startTime: start, endTime: new Date(Date.now() + lengthMs),
   });
   return cycle;
@@ -66,8 +70,8 @@ describePg('POST /api/bet/place', () => {
   let limits;
   const made = [];
 
-  const fundedPlayer = async (rupees) => {
-    const p = await actor({});
+  const fundedPlayer = async (rupees, { boardRules = true } = {}) => {
+    const p = await actor({ boardRules });
     await linkTelegram(p.userId);
     await fundWallet(p.userId, rupees * 100, `rt-bet-fund-${p.userId}`);
     return p;
@@ -79,7 +83,9 @@ describePg('POST /api/bet/place', () => {
     await applySchema();
     const router = (await import('../../domains/markets/bet.routes.js')).default;
     app = mountRouter(router);
-    limits = (await getSystemConfig())?.betLimits;
+    // Each board's own stake bounds (the `boards` row).
+    const byKey = Object.fromEntries((await listBoards()).map((b) => [b.key, { min: b.minBet, max: b.maxBet }]));
+    limits = { fullDay: byKey.FULL_DAY, thirtyMin: byKey['30_MIN'] };
   }, 60_000);
 
   afterAll(async () => {
@@ -128,6 +134,154 @@ describePg('POST /api/bet/place', () => {
       const p = await fundedPlayer(1_000);
       const res = await place(p, { cycleId: cycle.cycleId, side: 'DELHI', amount: limits.fullDay.min, type: 'FULL_DAY' });
       expect(res.status, JSON.stringify(res.body)).toBe(200);
+    });
+  });
+
+  describe('a board an admin created runs on its own row', () => {
+    // One board per run (boards are never deleted); switched off afterwards so
+    // no generator started on this database runs it.
+    let board;
+    beforeAll(async () => {
+      board = await createBoard({
+        name: `Rt bet ${randomInt(0, 1e9)}`, kind: 'INTERVAL', durationMin: 5,
+        phases: { mergeBeforeEndSec: 40, equalizerBeforeEndSec: 30, closeBeforeEndSec: 20, celebrateBeforeEndSec: 5 },
+        minBet: 50, maxBet: 500,
+      });
+      invalidateBoards();
+    });
+    afterAll(async () => {
+      await updateBoard(board.key, { enabled: false }).catch(() => {});
+      invalidateBoards();
+    });
+
+    it('holds a stake to the board\'s own bounds', async () => {
+      const cycle = await openCycle(board.key, { startedAgoMs: 60_000, lengthMs: 4 * 60_000 });
+      made.push(cycle.cycleId);
+      const p = await fundedPlayer(2_000);
+      const low = await place(p, { cycleId: cycle.cycleId, side: 'DELHI', amount: 40 });
+      expect(low.status, JSON.stringify(low.body)).toBe(400);
+      const high = await place(p, { cycleId: cycle.cycleId, side: 'DELHI', amount: 510 });
+      expect(high.status, JSON.stringify(high.body)).toBe(400);
+      const ok = await place(p, { cycleId: cycle.cycleId, side: 'DELHI', amount: 50 });
+      expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+    });
+
+    it('closes betting on the board\'s own close offset, whatever the status says', async () => {
+      // 15s before the end: inside this board's 20s close, while the row still reads OPEN.
+      const cycle = await openCycle(board.key, { startedAgoMs: 60_000, lengthMs: 15_000 });
+      made.push(cycle.cycleId);
+      const p = await fundedPlayer(1_000);
+      const res = await place(p, { cycleId: cycle.cycleId, side: 'DELHI', amount: 50 });
+      expect(res.status, JSON.stringify(res.body)).toBe(400);
+      expect(res.body.code).toBe('BETTING_CLOSED');
+    });
+
+    it('takes no new bet once the board is switched off, and takes nothing', async () => {
+      const cycle = await openCycle(board.key, { startedAgoMs: 60_000, lengthMs: 4 * 60_000 });
+      made.push(cycle.cycleId);
+      const p = await fundedPlayer(1_000);
+      await updateBoard(board.key, { enabled: false });
+      invalidateBoards();
+      try {
+        const res = await place(p, { cycleId: cycle.cycleId, side: 'DELHI', amount: 50 });
+        expect(res.status, JSON.stringify(res.body)).toBe(409);
+        expect(res.body.code).toBe('BOARD_SWITCHED_OFF');
+        const { rows } = await pgQuery(`SELECT count(*)::int AS n FROM bets WHERE user_id = $1`, [p.userId]);
+        expect(rows[0].n).toBe(0);
+      } finally {
+        await updateBoard(board.key, { enabled: true });
+        invalidateBoards();
+      }
+      // Switched back on, the same round takes the bet: the refusal was the switch.
+      const ok = await place(p, { cycleId: cycle.cycleId, side: 'DELHI', amount: 50 });
+      expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+    });
+  });
+
+  describe('the board rules are read and accepted before a first bet', () => {
+    it('refuses a player who has not accepted them, takes nothing, and takes the bet once they have', async () => {
+      const cycle = await openCycle('FULL_DAY', { startedAgoMs: HOUR, lengthMs: 20 * HOUR });
+      made.push(cycle.cycleId);
+      const p = await fundedPlayer(1_000, { boardRules: false });
+      const body = { cycleId: cycle.cycleId, side: 'DELHI', amount: limits.fullDay.min, type: 'FULL_DAY' };
+      const before = await getBalances(p.userId);
+
+      const refused = await place(p, body);
+      expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+      expect(refused.body.code).toBe('BOARD_RULES_NOT_ACCEPTED');
+      const { rows } = await pgQuery(`SELECT count(*)::int AS n FROM bets WHERE user_id = $1`, [p.userId]);
+      expect(rows[0].n).toBe(0);
+      const after = await getBalances(p.userId);
+      expect(after.depositBalance).toBe(before.depositBalance);
+      expect(after.lockedBalance).toBe(before.lockedBalance);
+
+      await acceptBoardRules(p.userId, BOARD_RULES_VERSION);
+      const taken = await place(p, body);
+      expect(taken.status, JSON.stringify(taken.body)).toBe(200);
+    });
+
+    it('refuses a player who accepted an OLDER version of the rules', async () => {
+      const cycle = await openCycle('FULL_DAY', { startedAgoMs: HOUR, lengthMs: 20 * HOUR });
+      made.push(cycle.cycleId);
+      const p = await fundedPlayer(1_000, { boardRules: false });
+      await pgQuery('UPDATE users SET board_rules_version = $2 WHERE user_id = $1', [p.userId, BOARD_RULES_VERSION - 1]);
+      const res = await place(p, { cycleId: cycle.cycleId, side: 'BOMBAY', amount: limits.fullDay.min, type: 'FULL_DAY' });
+      expect(res.status).toBe(409);
+      expect(res.body.code).toBe('BOARD_RULES_NOT_ACCEPTED');
+    });
+  });
+
+  describe('VIP and GENERAL players never share a board (owner, 2026-10-08)', () => {
+    const generalPlayer = async (bonusPaise) => {
+      const p = await actor({});
+      await linkTelegram(p.userId);
+      await promo.creditReferralBonus({ userId: p.userId, amountPaise: bonusPaise, earningId: `${p.userId}-ref` });
+      await promo.setPlayProfile(p.userId, 'GENERAL');
+      return p;
+    };
+
+    it('takes a GENERAL player\'s stake from the General balance on a GENERAL board', async () => {
+      const cycle = await openCycle('FULL_DAY', { startedAgoMs: HOUR, lengthMs: 20 * HOUR, audience: 'GENERAL' });
+      made.push(cycle.cycleId);
+      const p = await generalPlayer(limits.fullDay.min * 100 * 2);
+      const res = await place(p, { cycleId: cycle.cycleId, side: 'DELHI', amount: limits.fullDay.min, type: 'FULL_DAY' });
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body.balance.general).toBe(limits.fullDay.min);
+      const after = await getBalances(p.userId);
+      expect(after.depositBalance).toBe(0);
+      expect(after.lockedBalance).toBe(limits.fullDay.min);
+    });
+
+    it('refuses a GENERAL player on a VIP board, and a VIP player on a GENERAL board, moving nothing', async () => {
+      const vipBoard = await openCycle('FULL_DAY', { startedAgoMs: HOUR, lengthMs: 20 * HOUR });
+      const generalBoard = await openCycle('FULL_DAY', { startedAgoMs: HOUR, lengthMs: 20 * HOUR, audience: 'GENERAL' });
+      made.push(vipBoard.cycleId, generalBoard.cycleId);
+
+      const g = await generalPlayer(100_000);
+      const r1 = await place(g, { cycleId: vipBoard.cycleId, side: 'DELHI', amount: limits.fullDay.min, type: 'FULL_DAY' });
+      expect(r1.status).toBe(409);
+      expect(r1.body.code).toBe('WRONG_PROFILE_FOR_CYCLE');
+      // Told what to do about it (S14), not that something changed mid-bet.
+      expect(r1.body.message).toMatch(/Switch to VIP ID/);
+
+      const v = await fundedPlayer(1_000);
+      const r2 = await place(v, { cycleId: generalBoard.cycleId, side: 'DELHI', amount: limits.fullDay.min, type: 'FULL_DAY' });
+      expect(r2.status).toBe(409);
+      expect(r2.body.code).toBe('WRONG_PROFILE_FOR_CYCLE');
+      expect(r2.body.message).toMatch(/Switch to General/);
+
+      const { rows } = await pgQuery(`SELECT count(*)::int AS n FROM bets WHERE user_id = ANY($1)`, [[g.userId, v.userId]]);
+      expect(rows[0].n).toBe(0);
+    });
+
+    it('refuses a GENERAL stake larger than the General balance, whatever else the wallet holds', async () => {
+      const cycle = await openCycle('FULL_DAY', { startedAgoMs: HOUR, lengthMs: 20 * HOUR, audience: 'GENERAL' });
+      made.push(cycle.cycleId);
+      const p = await generalPlayer(limits.fullDay.min * 100);
+      await fundWallet(p.userId, 1_000_000, `rt-bet-gen-dep-${p.userId}`);
+      const res = await place(p, { cycleId: cycle.cycleId, side: 'DELHI', amount: limits.fullDay.min * 2, type: 'FULL_DAY' });
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('STAKE_EXCEEDS_FUNDABLE');
     });
   });
 

@@ -69,6 +69,7 @@ export function publicCycleView(cycle) {
   return {
     id:          cycle.cycleId,
     type:        cycle.type,
+    audience:    cycle.audience,
     status:      cycle.status,
     startTime:   toMs(cycle.startTime),
     endTime:     toMs(cycle.endTime),

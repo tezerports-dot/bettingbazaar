@@ -4,8 +4,7 @@ import {
   authenticate, express, hasPermission,
 } from './_adminShared.js';
 import { db } from '#db';
-import { DEFAULT_CYCLE_PHASES, isCycleType, phasesFor } from '../../domains/markets/cycleTypes.js';
-import { getSystemConfig } from '#db/repositories/config.js';
+import { allBoards } from '../../domains/markets/cycleTypes.js';
 import { voidCancelledCycle } from '#db/repositories/settlements.js';
 import { sendAlert } from '../../services/alerting.service.js';
 
@@ -21,26 +20,17 @@ router.get('/cycles/phases', authenticate, hasPermission('canViewAnalytics'), as
     // board that shows an operator what is running must show it.
     const activeCycles = await db.markets.activeCyclesWithPools();
     
-    // Phase offsets come from the SAME admin config the generator acts on
-    // (SystemConfig.cyclePhases, resolved per type through the registry).
-    //
-    // These were hardcoded here as 3min/2min/1min-or-5min, which was wrong in
-    // two directions at once: it had already drifted from the generator's own
-    // defaults (which close bets at 30s, not 60s), so this screen reported a
-    // phase boundary the engine did not act on; and for any type it did not
-    // know it fell through to the full-day arm, which for a 1-minute cycle
-    // puts "merge" five minutes before a block that lasts sixty seconds.
-    // Reading the config is the only version that cannot drift.
-    const cfg = await getSystemConfig();
+    // Phase offsets come from the SAME board rows the generator acts on.
+    // Hardcoding them here once drew phase boundaries the engine did not act on.
+    const byKey = new Map((await allBoards()).map((b) => [b.key, b]));
 
     const cyclesWithPhases = activeCycles.map(cycle => {
-      // An unrecognised type is skipped rather than defaulted. `phasesFor`
-      // throws on one, and this endpoint draws the whole live-cycle board —
-      // one stray row must not 500 the screen an operator watches the platform
-      // through.
-      if (!isCycleType(cycle.type)) return null;
-      const p = phasesFor(cycle.type, cfg?.cyclePhases)
-        || phasesFor(cycle.type, DEFAULT_CYCLE_PHASES);
+      // A cycle whose board cannot be read is skipped rather than defaulted:
+      // this endpoint draws the whole live-cycle board, and one stray row must
+      // not 500 the screen an operator watches the platform through.
+      const board = byKey.get(cycle.type);
+      if (!board) return null;
+      const p = board.phases;
 
       // Epoch millis, because the phase arithmetic below subtracts seconds
       // from them. The rows carry Date objects; subtracting a number from a
@@ -62,6 +52,7 @@ router.get('/cycles/phases', authenticate, hasPermission('canViewAnalytics'), as
       return {
         cycleId: cycle.cycleId,
         type: cycle.type,
+        audience: cycle.audience,
         status: cycle.status,
         currentPhase,
         startTime: startMs,
@@ -114,6 +105,7 @@ router.get('/cycles/history', authenticate, hasPermission('canViewAnalytics'), a
         _id: c.cycleId,
         cycleId: c.cycleId,
         type: c.type,
+        audience: c.audience,
         status: c.status,
         startTime: c.startTime,
         endTime: c.endTime,

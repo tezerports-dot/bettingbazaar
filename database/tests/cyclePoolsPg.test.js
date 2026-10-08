@@ -45,7 +45,7 @@ describePg('real cycle pools', () => {
     cycleId = nextId();
     const start = new Date(Date.now() - 60_000);
     await ensureCycle({
-      cycleId, cycleType: '30_MIN',
+      cycleId, cycleType: '30_MIN', audience: 'VIP',
       startTime: start, endTime: new Date(start.getTime() + 30 * 60_000),
     });
   });

@@ -38,6 +38,7 @@
 import express from 'express';
 import { db } from '#db';
 import { authenticatePlayer } from '../identity/auth.middleware.js';
+import { paiseToRupees } from '../../shared/money.js';
 import { toPlayerLedgerEntry } from '../wallet/playerLedgerView.js';
 import { getUserLedger, getBalances } from '../wallet/walletAuthority.service.js';
 // The withdrawal rate limiters (withdrawalLimiter, createSubnetLimiter,
@@ -53,8 +54,10 @@ import { getUserLedger, getBalances } from '../wallet/walletAuthority.service.js
 import { publicCycleView } from '../markets/cyclePublicView.js';
 import { fetchCycleHistory } from '../markets/cycleHistory.service.js';
 import { getSystemConfig } from '#db/repositories/config.js';
+import { boardRules, BOARD_RULES_VERSION } from '../markets/boardRules.js';
+import { enabledBoards, publicBoard } from '../markets/cycleTypes.js';
 import { systemConfigPayload } from '../configuration/systemConfigPayload.js';
-import { serverError } from '../../shared/httpError.js';
+import { serverError, respondError, refusal } from '../../shared/httpError.js';
 import { isAccountMobileRefusal, ACCOUNT_IS_A_MOBILE_MESSAGE } from '../payment/payoutAccount.js';
 
 const router = express.Router();
@@ -81,11 +84,13 @@ router.get('/cycles/active', async (req, res) => {
     // still reads OPEN, and offering it takes bets on a round that will never
     // settle — the exact failure that let the engine look healthy while
     // nothing was being resolved.
-    const cycles = await db.markets.listActiveCycles();
+    // `?audience=VIP|GENERAL` narrows to one profile's boards; without it,
+    // both, each row naming its own.
+    const { audience } = req.query;
+    const cycles = await db.markets.listActiveCycles({ audience: audience ? String(audience) : null });
     res.json({ success: true, cycles: cycles.map(sanitiseCycleForUser) });
   } catch (error) {
-    console.error('Get active cycles error:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch active cycles' });
+    return respondError(res, error, 'GET /api/cycles/active', { message: 'Failed to fetch active cycles' });
   }
 });
 
@@ -118,8 +123,8 @@ router.get('/v1/game/cycles/history', async (req, res) => {
     //
     // `limit` is PER TYPE. Omitting `type` returns every type at a much lower
     // per-type cap; the deep window is for one board at a time.
-    const { limit, type } = req.query;
-    const { cycles } = await fetchCycleHistory({ types: type, limit });
+    const { limit, type, audience } = req.query;
+    const { cycles } = await fetchCycleHistory({ types: type, limit, audience });
     res.json({ success: true, cycles });
   } catch (error) {
     console.error('Cycle history error:', error);
@@ -311,6 +316,103 @@ router.get('/user/referrals', authenticatePlayer, async (req, res) => {
   } catch (error) {
     console.error('Referral summary error:', error);
     return res.status(500).json({ success: false, message: 'Failed to load your referral report' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/v1/boards — public: the switched-on boards in the admin's home-page
+// order, each with its timer, phase offsets and stake bounds (`publicBoard`).
+// The player panel draws its board tabs and times betting from this.
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/v1/boards', async (req, res) => {
+  try {
+    return res.json({ success: true, boards: (await enabledBoards()).map(publicBoard) });
+  } catch (error) {
+    return respondError(res, error, 'GET /api/v1/boards', { message: 'Could not load the boards' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The board rules a player is shown and accepts before betting (owner,
+// 2026-10-08). The text is `domains/markets/boardRules.js`, with the winnings
+// fee in force; the bet route refuses until the current version is accepted.
+//
+// GET  /api/v1/board-rules               — public: { version, sections }
+// GET  /api/user/board-rules             — { version, acceptedVersion }
+// POST /api/user/board-rules/accept      — { version } (must be the current one)
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/v1/board-rules', async (req, res) => {
+  try {
+    const config = await getSystemConfig();
+    return res.json({ success: true, ...boardRules({ feePercent: config.winningsFeePercent }) });
+  } catch (error) {
+    return respondError(res, error, 'GET /api/v1/board-rules', { message: 'Could not load the board rules' });
+  }
+});
+
+router.get('/user/board-rules', authenticatePlayer, async (req, res) => {
+  try {
+    const acceptedVersion = await db.boardRules.acceptedVersion(req.user.userId);
+    return res.json({ success: true, version: BOARD_RULES_VERSION, acceptedVersion });
+  } catch (error) {
+    return respondError(res, error, 'GET /api/user/board-rules', { message: 'Could not load the board rules' });
+  }
+});
+
+router.post('/user/board-rules/accept', authenticatePlayer, async (req, res) => {
+  try {
+    const version = Number(req.body?.version);
+    if (version !== BOARD_RULES_VERSION) {
+      throw refusal(409, 'BOARD_RULES_CHANGED', 'The board rules have changed. Please read them again.');
+    }
+    const r = await db.boardRules.accept(req.user.userId, version);
+    if (!r.ok) throw refusal(404, 'ACCOUNT_NOT_FOUND', 'Account not found');
+    return res.json({ success: true, acceptedVersion: r.version });
+  } catch (error) {
+    return respondError(res, error, 'POST /api/user/board-rules/accept', { message: 'Could not save that you accepted the rules' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/user/general — the GENERAL (promotional) profile: the profile in
+// use, the balance, and each referral bonus with its 10× turnover progress
+// (owner, 2026-10-08; `db.promo`). Amounts in rupees, like every player route.
+//
+// PUT /api/user/play-profile { profile: 'VIP' | 'GENERAL' } — switch profile.
+// The panel switches to VIP when the player opens Deposit.
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/user/general', authenticatePlayer, async (req, res) => {
+  try {
+    const s = await db.promo.promoSummary(req.user.userId);
+    return res.json({
+      success: true,
+      profile: s.profile,
+      promoBalance: paiseToRupees(s.promoBalancePaise),
+      outstandingTurnover: paiseToRupees(s.outstandingTurnoverPaise),
+      turnoverMultiplier: s.turnoverMultiplier,
+      grants: s.grants.map((g) => ({
+        grantId: g.grantId,
+        source: g.source,
+        amount: paiseToRupees(g.amountPaise),
+        requiredTurnover: paiseToRupees(g.requiredTurnoverPaise),
+        turnover: paiseToRupees(g.turnoverPaise),
+        completedAt: g.completedAt,
+        unlocked: paiseToRupees(g.unlockedPaise),
+        createdAt: g.createdAt,
+      })),
+    });
+  } catch (error) {
+    return respondError(res, error, 'GET /api/user/general', { message: 'Failed to load your General balance' });
+  }
+});
+
+router.put('/user/play-profile', authenticatePlayer, async (req, res) => {
+  try {
+    const r = await db.promo.setPlayProfile(req.user.userId, String(req.body?.profile ?? ''));
+    if (!r.ok) throw refusal(404, 'ACCOUNT_NOT_FOUND', 'Account not found');
+    return res.json({ success: true, profile: r.profile });
+  } catch (error) {
+    return respondError(res, error, 'PUT /api/user/play-profile', { message: 'Could not switch profile' });
   }
 });
 

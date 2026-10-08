@@ -10,6 +10,7 @@ import React, { useEffect, useState } from 'react';
 import { getBackend } from '../services/backend.service';
 import { PromoContent } from '../types';
 import ScreenShell, { card } from '../redesign/Screen';
+import { useBoardRulesText, BoardRulesSections } from '../redesign/BoardRules';
 
 const backend = getBackend();
 
@@ -17,13 +18,15 @@ const RULE_BLOCKS = [
   { ic: '🎯', t: 'Pick a side', d: 'Every cycle pits Delhi Bazaar against Bombay Bazaar. Choose a chip value, then tap the side you back.' },
   { ic: '🪙', t: 'Chips & bet amount', d: 'Chips step up 3× (₹10 · 30 · 90 · 270 · 810 on the 1-min and 30-min boards; ×10 on full-day). Tap a chip then a side to stake it. One side per cycle.' },
   { ic: '⚡', t: 'Pools merge', d: 'Shortly before results — minutes on the longer boards, seconds on the 1-min one — the pools merge and hide. Betting continues blind until bets close.' },
-  { ic: '🏆', t: 'Result & payout', d: 'The side with the smaller real-money pool wins. Winners are paid 2× their stake; the timer resets for the next cycle.' },
 ];
 
 const RulesPage: React.FC = () => {
   const branding = (() => { try { return JSON.parse(localStorage.getItem('app_branding') || '{}'); } catch { return {}; } })();
   const rulesBannerUrl: string = branding.rulesPageImageUrl || '';
   const [slides, setSlides] = useState<PromoContent[]>([]);
+  // How a round is won, house bets, payout, winners list: the server's text,
+  // the same the board screen's pop-up asks players to accept.
+  const { rules, error: rulesError } = useBoardRulesText();
 
   useEffect(() => {
     backend.getPublicContent('RULES_PAGE')
@@ -43,6 +46,13 @@ const RulesPage: React.FC = () => {
               <div><div className="font-grotesk" style={{ fontWeight: 700, fontSize: 14, color: 'var(--text)' }}>{b.t}</div><div style={{ fontSize: 12, color: 'var(--text2)', marginTop: 3, lineHeight: 1.5 }}>{b.d}</div></div>
             </div>
           ))}
+        </div>
+
+        <div style={{ ...card, marginBottom: 16 }}>
+          <div className="font-grotesk" style={{ fontWeight: 800, fontSize: 15, color: 'var(--text)', marginBottom: 10 }}>🏆 Results, house bets and payouts</div>
+          {rules ? <BoardRulesSections rules={rules} /> : (
+            <p role={rulesError ? 'alert' : 'status'} style={{ fontSize: 12, color: 'var(--text2)', margin: 0 }}>{rulesError || 'Loading the rules…'}</p>
+          )}
         </div>
 
         {slides.length > 0 && (
@@ -65,7 +75,6 @@ const RulesPage: React.FC = () => {
           </>
         )}
 
-        <div style={{ textAlign: 'center', marginTop: 16, fontSize: 10, fontWeight: 800, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--text3)' }}>Fair Play Protected · RNG Certified</div>
       </div>
     </ScreenShell>
   );

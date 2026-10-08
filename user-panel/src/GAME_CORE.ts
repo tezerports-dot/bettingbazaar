@@ -13,7 +13,7 @@
  * ║  Place this file at: user-panel/src/GAME_CORE.ts      ║
  * ║                                                                          ║
  * ║  Then import in every file that needs it:                               ║
- * ║    import { PHASE, WINNER, PAYOUT } from '../GAME_CORE';                ║
+ * ║    import { WINNER, PAYOUT } from '../GAME_CORE';                       ║
  * ║                                                                          ║
  * ║  Files that MUST import from here:                                       ║
  * ║    redesign/GameScreen.tsx    — canPlaceBet (stop offering a late bet)   ║
@@ -31,110 +31,14 @@
  * ╚══════════════════════════════════════════════════════════════════════════╝
  */
 
-import { CycleType, BettingSide } from './types';
+import { BettingSide } from './types';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 1. CYCLE PHASE TIMINGS
-//    All values are in MILLISECONDS from the END of the cycle.
-//    Example: THIRTY_MIN.MERGE_AT = 180000 means the MERGED phase starts
-//    when there are 180 000 ms (3 minutes) left on the timer.
+//    Each board's own (`GET /api/v1/boards`, the server's `boards` row): an
+//    admin creates boards with their own timers (owner, 2026-10-08), so there is
+//    no fixed per-board table here. The panel reads `board.phases`.
 // ─────────────────────────────────────────────────────────────────────────────
-
-export const PHASE = Object.freeze({
-
-  ONE_MIN: Object.freeze({
-    /** Total cycle duration: 1 minute */
-    DURATION_MS: 60 * 1000,                         // 60 000 ms
-
-    /**
-     * MERGED phase starts when the timer shows 00:12.
-     * Same blind-betting rule as the longer blocks — displayed pools combine so
-     * nobody can read which side holds fewer real bets.
-     */
-    MERGE_AT_MS: 12 * 1000,                         // 12 000 ms   →  timer: 00:12
-
-    /**
-     * Phantom Equalizer at 00:09 remaining. SERVER-SIDE ONLY — the client stays
-     * in MERGED; this is here for documentation and admin tooling, like the
-     * other blocks' equivalents.
-     */
-    PHANTOM_EQUALIZER_AT_MS: 9 * 1000,              //  9 000 ms   →  timer: 00:09
-
-    /**
-     * CLOSED phase at 00:05 remaining. All bets locked.
-     */
-    CLOSE_AT_MS: 5 * 1000,                          //  5 000 ms   →  timer: 00:05
-
-    /**
-     * Winner declared at 00:03, celebration runs 00:03 → 00:00, and the next
-     * block starts at 00:00. Three seconds rather than the ten the longer
-     * blocks use: a 10s celebration would still be running a sixth of the way
-     * into the next cycle's betting.
-     */
-    CELEBRATE_AT_MS: 3 * 1000,                      //  3 000 ms   →  timer: 00:03
-  }),
-
-  THIRTY_MIN: Object.freeze({
-    /** Total cycle duration: 30 minutes */
-    DURATION_MS: 30 * 60 * 1000,                    // 1 800 000 ms
-
-    /**
-     * MERGED phase starts when timer shows 03:00.
-     * At this point the displayed pools are combined so users cannot see
-     * which side has more real bets. Real bets can still be placed (blind).
-     */
-    MERGE_AT_MS: 3 * 60 * 1000,                     // 180 000 ms  →  timer: 03:00
-
-    /**
-     * Phantom Equalizer fires at 02:00.
-     * Server matches the lower phantom side up to the higher phantom side.
-     * After this moment no new phantom bets are accepted.
-     * This is SERVER-SIDE ONLY — the client just stays in MERGED state.
-     * Included here for documentation and admin tooling reference.
-     */
-    PHANTOM_EQUALIZER_AT_MS: 2 * 60 * 1000,         // 120 000 ms  →  timer: 02:00
-
-    /**
-     * CLOSED phase starts when timer shows 00:30.
-     * All real bets are locked. No new bets of any kind accepted.
-     */
-    CLOSE_AT_MS: 30 * 1000,                          // 30 000 ms   →  timer: 00:30
-
-    /**
-     * RESULT_DECLARED / Winner Celebration starts when timer shows 00:10.
-     * Winner is announced, fireworks + shimmer begin, payouts are processed.
-     * This phase lasts exactly 10 seconds until the next cycle starts.
-     */
-    CELEBRATE_AT_MS: 10 * 1000,                     // 10 000 ms   →  timer: 00:10
-  }),
-
-  FULL_DAY: Object.freeze({
-    /** Total cycle duration: 24 hours, ends at 18:00 IST */
-    DURATION_MS: 24 * 60 * 60 * 1000,               // 86 400 000 ms
-
-    /**
-     * MERGED phase starts when timer shows 05:00:00.
-     * Same blind-betting rules as 30-MIN.
-     */
-    MERGE_AT_MS: 5 * 60 * 1000,                     // 300 000 ms  →  timer: 05:00
-
-    /**
-     * Phantom Equalizer at 04:00 remaining (server-side only).
-     */
-    PHANTOM_EQUALIZER_AT_MS: 2 * 60 * 1000,         // 120 000 ms  →  timer: 02:00
-
-    /**
-     * CLOSED phase at 00:30 remaining.
-     */
-    CLOSE_AT_MS: 30 * 1000,                          // 30 000 ms   →  timer: 00:30
-
-    /**
-     * Celebration starts at 00:10 remaining.
-     */
-    CELEBRATE_AT_MS: 10 * 1000,                     // 10 000 ms   →  timer: 00:10
-  }),
-
-});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 2. WINNER DETERMINATION RULE
@@ -350,16 +254,6 @@ export const PHANTOM = Object.freeze({
 //    stake it cannot land in time. See §11 of CLAUDE.md — display only.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Phase config per cycle type. A map rather than a ternary chain: with two
- *  types a ternary's fallback was harmless, but a third makes "everything that
- *  is not THIRTY_MIN is FULL_DAY" wrong — a 1-minute cycle would have been read
- *  against 24-hour offsets and shown as OPEN until its final 30 seconds. */
-const PHASE_BY_TYPE = Object.freeze({
-  [CycleType.ONE_MIN]:    PHASE.ONE_MIN,
-  [CycleType.THIRTY_MIN]: PHASE.THIRTY_MIN,
-  [CycleType.FULL_DAY]:   PHASE.FULL_DAY,
-});
-
 /**
  * Safety margin between when the CLIENT stops accepting a stake and when the
  * SERVER stops accepting one.
@@ -394,57 +288,6 @@ export const BET_SUBMIT_MARGIN_MS = 1500;
  * MERGED/CLOSED labels stay honest. This is the narrower question of whether a
  * tap right now would still arrive in time.
  */
-export function canPlaceBet(type: CycleType, nowMs: number, endTimeMs: number): boolean {
-  const cfg = PHASE_BY_TYPE[type] ?? PHASE.THIRTY_MIN;
-  return (endTimeMs - nowMs) > (cfg.CLOSE_AT_MS + BET_SUBMIT_MARGIN_MS);
+export function canPlaceBet(closeBeforeEndSec: number, nowMs: number, endTimeMs: number): boolean {
+  return (endTimeMs - nowMs) > (closeBeforeEndSec * 1000 + BET_SUBMIT_MARGIN_MS);
 }
-
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 6. QUICK REFERENCE — complete timeline in plain English
-// ─────────────────────────────────────────────────────────────────────────────
-//
-//  ── 30-MINUTE CYCLE ────────────────────────────────────────────────────────
-//
-//  30:00  Cycle starts. State = OPEN.
-//         Real bets: ✅ allowed
-//         Phantom bets: ✅ allowed
-//         Pools: shown separately (Delhi total | Bombay total)
-//
-//  03:00  State → MERGED.
-//         Real bets: ✅ still allowed (blind — user cannot see pool sizes)
-//         Phantom bets: ✅ still allowed (until 02:00)
-//         Pools: merged display — users see combined total only
-//
-//  02:00  Phantom Equalizer fires (SERVER-SIDE ONLY).
-//         Server sets both phantom sides to max(phantomDelhi, phantomBombay).
-//         No new phantom bets accepted after this point.
-//         Client state stays MERGED — no visible change on UI.
-//
-//  00:30  State → CLOSED.
-//         Real bets: ❌ locked
-//         Phantom bets: ❌ locked
-//         UI: "BETS CLOSED" overlay on betting card
-//
-//  00:10  State → RESULT_DECLARED.
-//         Winner = side with FEWER real bets (e.g. realDelhi < realBombay → DELHI wins)
-//         Fireworks + shimmer start on winner card.
-//         Full-screen WinnerCelebration overlay appears.
-//         Payouts begin processing:
-//           • Winners receive 2× their bet credited to winningsBalance
-//           • Losers forfeit entire bet
-//           • House profit = realLoserPool − realWinnerPool
-//
-//  00:00  Cycle ends. Next cycle created immediately.
-//         Timer resets to 30:00. State → OPEN.
-//
-//  ── FULL-DAY CYCLE ─────────────────────────────────────────────────────────
-//
-//  Same as above except:
-//    MERGED at 05:00 remaining (not 03:00)
-//    Phantom Equalizer at 04:00 remaining (not 02:00)
-//    CLOSED at 00:30 remaining (same)
-//    RESULT_DECLARED at 00:10 remaining (same)
-//    Cycle ends at 18:00 IST daily.
-//
-// ─────────────────────────────────────────────────────────────────────────────
