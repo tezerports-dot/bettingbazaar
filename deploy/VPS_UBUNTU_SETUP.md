@@ -18,7 +18,7 @@ deployment dead, and all four fail *after* you think you are finished.
 ## 0. The four things that will bite you
 
 **1. The boot gate is a hard gate.** `backend/startup/validateEnv.js` refuses to
-start in production unless **all eleven** required variables are present, and
+start in production unless **all** required variables are present, and
 holds the signing secrets to ≥32 non-placeholder characters. A missing one is a
 fatal throw at boot, not a warning. The full list is in §6.
 
@@ -188,8 +188,7 @@ cp .env.example .env      # the annotated full reference
 nano .env
 ```
 
-Generate every secret with `openssl rand -base64 48` (32 for
-`TOTP_ENCRYPTION_KEY`). **All eleven required variables must be present or the
+Generate every secret with `openssl rand -base64 48`. **All the required variables must be present or the
 process will not boot** (`backend/startup/validateEnv.js`):
 
 ```ini
@@ -214,9 +213,6 @@ S3_SECRET_KEY=<minio secret key>
 
 # ── Required behind a reverse proxy (§0.4) ──────────────────────────────────
 TRUST_PROXY=1
-
-# ── 2FA. Back this up like the Android keystore — it has no _PREVIOUS_ ──────
-TOTP_ENCRYPTION_KEY=<openssl rand -base64 32>
 
 # ── Identity at rest. Must decode to EXACTLY 32 bytes, or the boot gate refuses
 #    (a wrong length is caught here rather than on the first unreadable Aadhaar).
@@ -244,9 +240,6 @@ Notes that cost people hours:
   gate will still report `JWT_SECRET` missing.
 - **`ALLOWED_ORIGINS` is browser origins only** — the panels' own URLs. Do not
   put the API URL there unless it is also a front end someone loads in a browser.
-- **`TOTP_ENCRYPTION_KEY` is permanent.** It has no `_PREVIOUS_` counterpart;
-  rotating it makes every stored TOTP secret undecryptable and forces every
-  enrolled user to re-enrol. Back it up off the box.
 - **`IDENTITY_ENCRYPTION_KEY` is rotatable, but only deliberately.** Put the old
   value in `IDENTITY_ENCRYPTION_PREVIOUS_KEYS` (decrypt-only) before switching, or
   every stored bot token and provider credential becomes unreadable.

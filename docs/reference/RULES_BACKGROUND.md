@@ -1859,6 +1859,31 @@ noticed for months that one of the two confirm routes never checked for one.
 
 ## 33. Signing up is a FORM. Telegram verifies; it does not authenticate.
 
+### 33.0 Step 3 (owner, 2026-10-07) replaced 33.2, 33.3 and 33.7 below
+
+Kept below as history; the rules are CLAUDE.md §33. The owner's words: "they
+must verify and share contact on signup ... now they can do login without
+telegram mini app but add also login with telegram button too", with the
+answers: forgot password by sharing the Telegram contact in the Mini App (no
+admin reset); 2FA is Telegram only, required for staff and merchants; delete
+the sign-in fleet, rotation, recovery bots and templates and keep one Mini App
+bot; drop the must-join-channel gate; keep security alerts for staff who linked
+Telegram.
+
+Why one bot is enough now: a bot no longer converses or signs anybody in by
+itself. It signs `initData` and contacts the Mini App sends back, and the
+server proves each one. Telegram suspending it costs a token swap in the admin
+panel (`PUT /api/admin/telegram/bot`); links survive because they key on the
+person's Telegram id, not the bot. Why the Mini App and not the Login Widget:
+the widget serves one domain per bot, and three panels plus the app are not one
+domain. Why staff keep the password with "Login with Telegram": a stolen or
+borrowed phone must not be a staff session on its own.
+
+Found while building it (2026-10-08): the staff security alerts posted through
+`activeConfig`, which the channel removal deleted; the import failed inside a
+catch and every alert went nowhere. And the referral report lost an import in
+the same pass, caught by `check:orphans`.
+
 Owner decision, 2026-09-23. Signing up used to happen inside a Telegram bot —
 /start, type your Aadhaar to the bot, share your contact — and signing in was a
 six-digit code the same bot DMed. Every step depended on a third party that

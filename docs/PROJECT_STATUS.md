@@ -960,7 +960,7 @@ Owner answers, 2026-10-02 (two rounds; the second replaced the security deposit 
     - `test:mutate`'s two `admin/payment-control` cases still open a screen
       deleted in 2c (NOT DRIVEN).
 
-### Step 3 — Simple signup and login; Telegram verifies the mobile once — **IN PROGRESS (backend), branch `helper/step3-core-2`**
+### Step 3 — Simple signup and login; Telegram verifies the mobile once — **BUILT on branch `helper/step3-core-2` (2026-10-08); PR waits for #210**
 
 **Owner, 2026-10-07, two messages.** First (HANDOFF §3, twelve answers):
 signup and login are mobile + password + captcha, the Mini App is optional,
@@ -1224,31 +1224,39 @@ the fleet/channel/template half of `telegram.admin.routes.js` and of
 `authenticateForEnrolment`, `mustEnroll2FA`, the `TOTP_ENCRYPTION_KEY` boot
 check, and their tests.
 
-#### Left for the panel helpers (backend contract above)
+#### Done (2026-10-08), and what is left
 
-- **User panel and APK** (the APK is the same web app, so one change): the
-  signup form ends on a "Verify with Telegram" step (open the link, poll
-  `/login/2fa`); the login form handles `TELEGRAM_VERIFICATION_REQUIRED` and
-  `twoFactorRequired` the same way, and gains "Login with Telegram"; delete
-  `VerificationGateModal` and its calls; Profile shows the Telegram link, a
-  "Move to another Telegram account" action and the 2FA switch; the reset
-  screen stays (`#/reset/<token>`), "Forgot password" opens
-  `GET /api/telegram/mini-app?panel=PLAYER`'s `resetUrl`; the referral page
-  stops calling `/api/telegram/public-config`. **The Mini App page itself**:
-  reads `Telegram.WebApp.initData`, asks `/context`, and shows approve or deny,
-  share contact (`requestContact`, sending its signed `response` string), the
-  signup form, the reset form, or Login; staff links should also call
-  `requestWriteAccess` so security alerts can reach them.
-- **Merchant panel**: the same signup step and login handling; delete the
-  verification gate and the authenticator enrolment (`ROUTES.TWO_FA_*`);
-  Profile as above without the 2FA switch.
-- **Admin panel**: the same login handling and Login with Telegram; the
-  `bootstrap` banner; replace the Telegram Setup screen (config, channel, bot
-  fleet, bot messages) with the one-bot form (`/api/admin/telegram/bot`);
-  delete `VerificationGate`, `MandatoryTwoFactor`, `TwoFactorSetup`; the
-  merchant and user lists may show `telegramVerified`.
-- Until those land, `check:ui-coverage` names every panel call into a deleted
-  route as a DEAD BUTTON; that list is the panel helpers' checklist.
+**Built**, each committed with its tests:
+- **User panel and APK**: signup ends on the Telegram step; login handles
+  `TELEGRAM_VERIFICATION_REQUIRED` and `twoFactorRequired`; Log in with
+  Telegram; Forgot password opens the Mini App reset link; Profile's Telegram
+  card (relink, the approval switch); `VerificationGateModal` deleted.
+- **The Mini App**: `user-panel/mini-app.html` (its own page: Telegram's launch
+  data in the URL fragment would fight the HashRouter). **BotFather's Web App
+  URL for the bot must be `<player panel origin>/mini-app.html`.**
+- **Merchant panel**: the same steps, Telegram card; gate and authenticator
+  enrolment deleted. **Admin panel**: the same login, bootstrap banner, one-bot
+  screen (`/telegram`), "My Telegram" (`/account/telegram`, any staff).
+- **Security alerts** go by the one bot to every linked, unblocked staff member.
+- Numbers at the last run: unit 796, pg 1591 (127 files), user panel 234,
+  merchant panel 127, admin panel 200; every §Commands gate passes; mutations
+  MS1–MS8, M77, M195, M199, M247, M424 KILLED.
+
+**Not done**
+- No browser pass (`test:drive`, `test:mutate`, `test:browser`) or `test:e2e`
+  was run: they need a running server. The browser signup drive
+  (`signupJourney.js`) was deleted with the bot signup it drove and is not yet
+  rewritten for the Mini App; the panel tests, `MiniApp.test.tsx` and
+  `telegramLoginPg` cover the flow without a browser.
+- Not tried inside Telegram itself: `requestContact`'s signed `response` is
+  checked against Telegram's documented format by `miniAppAuth` tests only.
+- The merchant and admin panels send no captcha token (as before Step 3); with
+  `TURNSTILE_SECRET_KEY` set and `ALLOW_NO_CAPTCHA` off their sign-in is
+  refused by `requireCaptcha`.
+- The admin panel's ESLint does not start in this checkout (minimatch error),
+  so the admin code is type-checked and tested but not linted.
+- Showing `telegramVerified` on the admin user and merchant lists.
+- Notification bots: later, optional (owner answer 11).
 
 #### Order of work (each committed when its tests pass)
 

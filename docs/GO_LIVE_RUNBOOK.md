@@ -112,8 +112,8 @@ FEATURE_DERIVED_CYCLE_POOLS=true
 > unless the code, the reconciliation query and the rollback path all line up. If
 > it objects, it tells you exactly which flag to remove. Trust it over this file.
 
-Generate every secret with `openssl rand -base64 48`. Back up `TOTP_ENCRYPTION_KEY`
-and the admin keystore **off the box** — they cannot be rotated.
+Generate every secret with `openssl rand -base64 48`. Back up the Android
+keystore **off the box**: it cannot be rotated.
 
 `IDENTITY_ENCRYPTION_KEY` must decode to exactly **32 bytes**, so generate that
 one with `openssl rand -base64 32`. The server refuses to boot in production
