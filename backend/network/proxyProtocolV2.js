@@ -14,7 +14,6 @@
  *   PROXY_PROTOCOL_TRUSTED_SUBNETS=10.0.10.0/24,127.0.0.1/32
  */
 import net from 'net';
-import ipaddr from 'ipaddr.js';
 
 const SIGNATURE = Buffer.from([0x0d, 0x0a, 0x0d, 0x0a, 0x00, 0x0d, 0x0a, 0x51, 0x55, 0x49, 0x54, 0x0a]);
 const HEADER_LENGTH = 16;
@@ -203,7 +202,7 @@ export function listenWithOptionalProxyProtocol(httpServer, { port, host = '0.0.
       let parsed;
       try {
         parsed = parseProxyProtocolV2(buffered);
-      } catch (error) {
+      } catch {
         socket.destroy();
         return;
       }

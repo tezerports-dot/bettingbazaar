@@ -563,7 +563,7 @@ Measured on the commit that adds items 18–19: unit 920/920; pg 1736/1736 (133 
 
 Measured on the commit that adds items 11–17: unit 920/920; pg 1719/1719 (130 files); admin panel 155, merchant 73, user 224, tsc clean on all three; e2e 183 checks, 178 pass, 0 fail, 5 notes (each says what a dev server cannot measure), then s8 alone with the door probes 64/61/0/3; all 17 gates exit 0; `audit:map --check` matches after regeneration (308 routes, 35 unauthenticated). Mutation: M225, M243, M254–M263 KILLED. Not run: the browser tiers after the door change, the full mutation run, and an independent review (§37 step 12).
 
-## 3.10 Plan — the redesign (owner, 2026-10-02). Step 1 DONE; Step 2 DONE (2a–2g); Step 3 NOT STARTED.
+## 3.10 Plan — the redesign (owner, 2026-10-02). Step 1 DONE; Step 2 DONE (2a–2g); Step 3 IN PROGRESS (redefined 2026-10-07).
 
 Three replacements, built in this order, each step tested, committed, and
 reported to the owner in a short update every 5–10 fixes.
@@ -960,15 +960,333 @@ Owner answers, 2026-10-02 (two rounds; the second replaced the security deposit 
     - `test:mutate`'s two `admin/payment-control` cases still open a screen
       deleted in 2c (NOT DRIVEN).
 
-### Step 3 — Telegram Mini App replaces every bot, all three panels
-- One bot per panel, which sends no messages; the Mini App does contact
-  share (proves the mobile), channel-membership check, and password reset.
-- **Login with Telegram** beside the password form: tapping it opens the Mini
-  App, and the app (or the website) is signed in — only when the Telegram
-  account is the one whose shared contact matches the account's mobile. The
-  Mini App's `initData` is verified server-side with the bot token.
-- Deleted: the sign-in bot fleet, rotation, per-bot webhooks, bot message
-  templates, the recovery bots.
+### Step 3 — Simple signup and login; Telegram verifies the mobile once — **BUILT on branch `helper/step3-core-2` (2026-10-08), main (#210) merged in; draft PR open**
+
+**Owner, 2026-10-07, two messages.** First (HANDOFF §3, twelve answers):
+signup and login are mobile + password + captcha, the Mini App is optional,
+for 2FA and password reset only. Then, the same day (20:06 UTC), revised:
+*"lets keep that telegram mini app login verification for signup and referal
+code basis, they must verify and share contact on signup just do these 2
+things. no need for login or anywhere else as now they can do login without
+telegram mini app but add also login with telegram button too."* This plan is
+the second message read onto the first. Where a reading is ours, it is marked
+**Default** and listed at the end for the owner.
+
+#### What the platform does now, in one paragraph
+
+An account is created by a form (mobile, password, confirmation, captcha, an
+optional invite code). It cannot be used until its holder opens the one
+Telegram Mini App and shares their contact, and the phone Telegram vouches for
+equals the form's mobile for that account type. That share LINKS the account
+to that Telegram account, and for a player it is the moment the joining
+number and the referrer's earning are booked. After that, signing in is mobile
++ password + captcha, with no Telegram involved for a player. Staff and
+merchants also approve every sign-in in the Mini App (Telegram is their second
+factor; the authenticator app is gone). Any account may instead press **Login
+with Telegram**: a player is signed in by Telegram alone; staff and merchants
+still type their password. A forgotten password is reset in the Mini App by the
+same contact share. There is one bot, no fleet, no channel, no recovery bot,
+no bot templates, no webhooks.
+
+#### Defaults taken (the owner may change any of them)
+
+1. **Every account type verifies at signup, the same way** (answer 7). A staff
+   account, created by an admin, verifies at its first sign-in; a merchant at
+   signup, before the admin approves it (approval and verification are
+   independent; sign-in needs both).
+2. **Verification gates sign-in, not just money.** Until the contact matches,
+   every login door answers 403 `TELEGRAM_VERIFICATION_REQUIRED` with a fresh
+   Mini App link, and finishing it signs the person in (they have just proved
+   the password and the phone).
+3. **Signup inside the Mini App** exists for players: a referral link
+   (`/r/<code>`) opens the Mini App with the code locked; there the person sets a
+   password and shares their contact, and the account is created already
+   verified, mobile taken from Telegram. No captcha there: the signed contact
+   is a stronger proof of a person than a captcha. Without a configured bot the
+   link falls back to the website form with `?ref=<code>`.
+4. **Referral**: a joiner counts (joining number, level-1 and level-2 ₹25
+   earnings) only at verification, in the transaction that links them. At
+   payout the referrer must be verified and not blocked; the channel condition
+   is gone with the channel.
+5. **Login with Telegram, outside Telegram, uses the Mini App deep link**, not
+   the Telegram Login Widget. The widget only works on the ONE domain set for a
+   bot, and the three panels and the APK (`https://localhost`) are not one
+   domain; the deep link works from any origin and opens the Telegram app on a
+   phone. Inside Telegram the Mini App's own `initData` signs in directly.
+6. **Staff and merchants: Telegram is required as a second factor at every
+   password sign-in, and a password is required after a Telegram sign-in.**
+   Players: password alone, or Telegram alone; a player MAY switch on Telegram
+   approval of password sign-ins (the brief's "optional for players"); turning
+   it off needs the approval of their Telegram.
+7. **Relink, never unlink.** A person moves their account to another Telegram
+   account by sharing the same matching contact from it (from the profile, at
+   a sign-in approval, at a Telegram login or at a password reset). Nothing
+   leaves a verified account unlinked.
+8. **The bootstrap exemption** (kept from §33): while no Mini App bot is
+   configured, a STAFF account signs in with its password alone, and every staff
+   response says `bootstrap: true` so the admin panel shows a standing banner
+   naming the Telegram screen. The moment a bot is saved, every password-only
+   staff session is refused (`TWO_FACTOR_REQUIRED`). Players and merchants have
+   no exemption: their sign-in answers 503 `TELEGRAM_UNAVAILABLE`.
+9. **The merchant login is folded into `loginHandler`** as a `MERCHANT` door
+   (closing the 2g item). It reads the `users` login row by mobile; signing in
+   by merchant username is gone (the owner's "same way").
+10. **Staff security alerts** (`sendAlert`) are sent by the one bot as a direct
+    message to every STAFF account that is linked and not blocked or closed;
+    the staff channel is gone. The webhook sink stays.
+11. A mobile must equal the Telegram phone, so a person whose Telegram account
+    is on another number cannot verify. That is the owner's rule ("share
+    contact ... must match"), stated so nobody is surprised by it.
+12. Lifetimes: a sign-in or relink approval is open 5 minutes, a signup
+    verification 15; an approved challenge must be redeemed within 2 minutes;
+    `initData` and a contact are accepted for 5 minutes after Telegram signed
+    them, each once.
+
+#### The Mini App, and how the server trusts it
+
+- **One bot**, saved by an admin (`canManageTelegram`) in `telegram_bot`
+  (one row): token (encrypted with `IDENTITY_ENCRYPTION_KEY`, verified with
+  `getMe` before it is stored), Telegram's id and @username for it, and the
+  optional Mini App short name. The Mini App's page is served by the player
+  panel (panel work); BotFather points the bot's Mini App at it.
+- **Deep links**: `https://t.me/<bot>/<short>?startapp=<param>`, or
+  `https://t.me/<bot>?startapp=<param>` when no short name is set (the bot's
+  main Mini App). `<param>` (Telegram allows `[A-Za-z0-9_-]{1,512}`) is a
+  challenge id, `reset-<PANEL>` or `ref-<CODE>`. Telegram signs it into
+  `initData` as `start_param`, so it cannot be altered.
+- **`initData` verification** (`domains/telegram/miniAppAuth.js`): the
+  query string's fields except `hash`, sorted, joined `key=value` by `\n`;
+  key `HMAC_SHA256("WebAppData", botToken)`; constant-time compare of the hex
+  HMAC to `hash`; `auth_date` no older than 300 s and not more than 30 s in the
+  future; `user` present. The **contact** a Mini App receives from
+  `WebApp.requestContact()` arrives as a signed string (`response`) in the
+  same format and is verified the same way; its `contact.user_id` must equal
+  the `initData` user and its phone is normalised by `normalisePhone`.
+- **Replay**: every accepted `initData` or contact `hash` is claimed once in
+  `telegram_init_data_uses` (primary key; the INSERT is the check, in the
+  transaction that acts on it). A second use answers 409
+  `INIT_DATA_REPLAYED`. A challenge moves `PENDING → APPROVED|DENIED →
+  REDEEMED` with the expected state in each UPDATE's WHERE (S6), on the
+  database clock.
+
+#### Schema (`database/schema.sql`, convergent: S31, trap 14)
+
+- **Added** `telegram_bot` (one row, `CHECK (id = 1)`).
+- **Added** `telegram_links`: `user_id` PK; `audience`; `telegram_user_id`;
+  `phone`; `telegram_username`, `first_name`; `verified_at` (first proof),
+  `linked_at` (this Telegram account since); `two_factor`. `(user_id,
+  audience)` references `users (user_id, account_type)` (a new UNIQUE on
+  users), so a link's panel IS its account's type; `UNIQUE (telegram_user_id,
+  audience)`: one Telegram account verifies one account per panel. A trigger
+  refuses a link whose `phone` is not the account's `mobile`
+  (`telegram_link_phone_is_mobile`). `CHECK (audience = 'PLAYER' OR
+  two_factor)`: staff and merchant rows always carry 2FA.
+- **Added** `telegram_challenges`: id (the deep-link param), `purpose`
+  (`VERIFY`, `LOGIN`, `TELEGRAM_LOGIN`, `RELINK`, `TWO_FACTOR_OFF`),
+  `audience`, `user_id` (null only for an unbound `TELEGRAM_LOGIN`), `status`,
+  `expires_at`, who approved, the requesting address and device for the Mini
+  App to show.
+- **Added** `telegram_init_data_uses` (hash PK, `expires_at`; swept).
+- **Dropped (2026-10-08)** `password_resets`: the reset is set in the Mini App
+  in the transaction that spends the proof, so there is no token to store.
+- **Dropped** `telegram_configs`, `telegram_bots`, `telegram_templates`,
+  `telegram_identities` (replaced by `telegram_links`),
+  `users.telegram_bot_id`, sequence `telegram_signin_rotation`, their indexes.
+- **Dropped in the TOTP commit**: `users.two_factor_enabled, two_factor_secret,
+  two_factor_pending_secret, two_factor_last_counter, two_factor_enrolled_at,
+  backup_codes`, and the same six on `merchants`.
+
+#### API contract (for the panel helpers)
+
+Every refusal is `{ success: false, code, message }` with the HTTP status
+shown; `message` is written for the person reading it. A **Telegram block**
+is `{ url, botUsername, expiresAt }` (`url` the deep link to open).
+Doors: player `/api/v1/auth`, staff `/api/admin`, merchant
+`/api/merchant/auth`. A **session** is the door's existing payload: player and
+staff `{ success, token, user }` (cookie `auth_token` too), merchant `{
+success, token, merchant }`; staff add `bootstrap` while it is true.
+
+**Signup**
+- `POST /api/v1/auth/register` `{ mobile, password, confirmPassword,
+  referralCode?, captchaToken }` → 200 `{ success: true, verificationRequired:
+  true, challengeToken, telegram }`; `telegram: null` with
+  `verificationAvailable: false` when no bot is configured. No session: the
+  panel opens `telegram.url` and polls `POST /api/v1/auth/login/2fa`.
+  Refusals: 400 `MOBILE_INVALID`, `PASSWORDS_DIFFER`, `PASSWORD_WEAK`,
+  `INVITE_CODE_UNKNOWN`, `INVITE_CODE_INVALID`; 409 `MOBILE_TAKEN`; 429.
+- `POST /api/merchant/auth/signup` (fields unchanged) → the same three fields
+  added to its 200; after verification the merchant waits for approval.
+- `POST /api/telegram/mini-app/signup` `{ initData, contact, password,
+  confirmPassword, referralCode? }` (player, inside Telegram) → a session.
+  Refusals: the initData/contact set below; 400 `PASSWORDS_DIFFER`,
+  `PASSWORD_WEAK`, `INVITE_CODE_UNKNOWN`; 409 `MOBILE_TAKEN`,
+  `TELEGRAM_ALREADY_LINKED`.
+
+**Sign-in (each door)**
+- `POST {door}/login` `{ mobile, password, captchaToken, challengeToken? }`
+  → a session; or 200 `{ success: false, twoFactorRequired: true,
+  challengeToken, telegram }` (staff, merchant, a player with 2FA on); or 403
+  `TELEGRAM_VERIFICATION_REQUIRED` `{ challengeToken, telegram }`.
+  `challengeToken` in the body, when it is an approved Telegram login of this
+  same account, satisfies the second factor (staff and merchant Telegram-first
+  sign-in). Refusals: 400 `CREDENTIALS_REQUIRED`; 401 `INVALID_CREDENTIALS`;
+  403 `ACCOUNT_BLOCKED`, `ACCOUNT_CLOSED`, `WRONG_DOOR`, `MERCHANT_NOT_ACTIVE`
+  (pending, rejected, suspended, each worded); 503 `TELEGRAM_UNAVAILABLE`;
+  429 `LOGIN_PACED`.
+- `POST {door}/login/2fa` `{ challengeToken }` → redeems a `VERIFY` or
+  `LOGIN` challenge: a session; 202 `TWO_FACTOR_PENDING` (keep polling, every
+  2–3 s); 401 `TWO_FACTOR_DENIED`, `TWO_FACTOR_EXPIRED`; the account refusals
+  above (re-checked).
+- `POST {door}/login/telegram` `{ initData? }`. Without `initData`: 200 `{
+  success: false, pending: true, challengeToken, telegram }`. With `initData`
+  (inside Telegram): a player gets a session; staff and merchant get 200 `{
+  success: false, passwordRequired: true, challengeToken }`. Refusals: the
+  initData set; 404 `NO_LINKED_ACCOUNT`; 503 `TELEGRAM_UNAVAILABLE`.
+- `POST {door}/login/telegram/complete` `{ challengeToken }` → a player gets a
+  session; staff and merchant 200 `{ success: false, passwordRequired: true }`
+  and then call `{door}/login` with the token; 202 `TWO_FACTOR_PENDING`; 401
+  `TWO_FACTOR_DENIED`, `TWO_FACTOR_EXPIRED`.
+
+**The Mini App (no session; `initData` is the credential)**
+- `GET /api/telegram/mini-app?panel=PLAYER|MERCHANT|STAFF` → `{ available,
+  botUsername, resetUrl }` (public, cached 60 s).
+- `POST /api/telegram/mini-app/context` `{ initData }` → `{ telegramUser: {
+  id, username, firstName }, start: { kind, panel, needsContact, expiresAt,
+  request: { at, ip, device }, referral: { code, invitedBy } }, accounts: [{
+  panel, mobileHint }] }`; `kind` is `VERIFY`, `LOGIN`, `TELEGRAM_LOGIN`,
+  `RELINK`, `TWO_FACTOR_OFF`, `RESET`, `SIGNUP` or `NONE`. Reads only; spends
+  nothing.
+- `POST /api/telegram/mini-app/approve` `{ initData, contact?, decision:
+  'approve'|'deny' }` → acts on the challenge named by `start_param` → 200 `{
+  kind, panel, approved, relinked }`. A `VERIFY` or `RELINK` needs `contact`;
+  a `LOGIN`, `TELEGRAM_LOGIN` or `TWO_FACTOR_OFF` accepts the linked Telegram
+  account, or a matching `contact` from a new one (which relinks).
+- `POST /api/telegram/mini-app/password-reset` `{ initData, contact, password,
+  confirmPassword, panel? }` (param `reset-<PANEL>`, or `panel` when opened
+  plainly) → 200 `{ panel, changed: true, message }`. Any panel's account; the
+  password is checked against the account's floor (400 `PASSWORD_REQUIRED`,
+  `PASSWORDS_DIFFER`, `WEAK_PASSWORD`) before the proof is spent; setting it
+  evicts every session; nobody is signed in. The share also verifies or
+  relinks the account. `POST /api/v1/auth/password/reset` and the player app's
+  `#/reset/<token>` page were removed 2026-10-08.
+- The initData/contact refusals: 400 `INIT_DATA_INVALID`, `CONTACT_INVALID`,
+  `CONTACT_REQUIRED`; 401 `INIT_DATA_STALE`; 403 `CONTACT_NOT_OWN`,
+  `CONTACT_MISMATCH`, `TELEGRAM_NOT_LINKED`, `ACCOUNT_BLOCKED`,
+  `ACCOUNT_CLOSED`; 404 `NO_ACCOUNT`; 409 `INIT_DATA_REPLAYED`,
+  `TELEGRAM_ALREADY_LINKED`; 410 `CHALLENGE_EXPIRED`; 503
+  `TELEGRAM_UNAVAILABLE`.
+
+**The signed-in account's Telegram** (one implementation, three mounts:
+`/api/v1/auth/telegram`, `/api/admin/account/telegram`,
+`/api/merchant/telegram`)
+- `GET` → `{ available, linked, telegramUsername, firstName, verifiedAt,
+  linkedAt, twoFactor: { enabled, required } }`.
+- `POST /relink` → 200 `{ telegram }`; approved from the new Telegram account
+  with a matching contact; poll `GET`.
+- `PUT /two-factor` `{ enabled }` (players) → `true`: 200 `{ twoFactor }`;
+  `false`: 202 `{ approvalRequired: true, telegram }`, done on approval. Staff
+  and merchant: 403 `TWO_FACTOR_MANDATORY`.
+
+**Admin**: `GET /api/admin/telegram/bot` → `{ configured, botId, botUsername,
+miniAppShortName, updatedAt, updatedBy }`; `PUT /api/admin/telegram/bot` `{
+token?, miniAppShortName? }` → the same; 400 `TOKEN_INVALID`,
+`SHORT_NAME_INVALID`.
+
+**Referral link**: `GET /r/<code>` → 302 to the Mini App with
+`startapp=ref-<CODE>`, or to `<player origin>/?ref=<CODE>` without a bot.
+
+**Deleted routes**: `GET /api/v1/auth/verification`, `GET
+/api/merchant/verification`, `GET /api/admin/verification`, `POST
+/api/telegram/webhook/:botId`, `POST /api/telegram/recovery/webhook/:botId`,
+`GET /api/telegram/public-config`, `GET|POST /api/admin/telegram/config`,
+`POST /api/admin/telegram/channel`, `GET|POST /api/admin/telegram/bots`,
+`POST /api/admin/telegram/bots/:id/{promote,webhook,retire}`, `GET
+/api/admin/telegram/templates`, `PUT /api/admin/telegram/templates/:key`;
+in the TOTP commit `GET /api/2fa/status`, `POST /api/2fa/{setup,activate,disable}`,
+`GET /api/merchant/2fa/status`, `POST /api/merchant/2fa/{setup,activate}`.
+The channel gate (`requireChannelMembership`) leaves bet placing, deposits and
+withdrawals.
+
+#### Sessions
+
+A session token says how it was proved in `amr`: `pwd`, `tg`, or both. STAFF
+and MERCHANT sessions without `tg` are refused on every path that checks a
+session (`authenticate`, `/me`, `merchantAuth`, SSE, socket joins) with 403
+`TWO_FACTOR_REQUIRED`, except a staff session during the bootstrap exemption.
+A session is minted only for a verified account (bootstrap staff excepted).
+
+#### Deleted code
+
+`domains/telegram/telegram.routes.js` (webhooks; replaced by
+`miniApp.routes.js`), `telegramBots.service.js`, `telegramTemplates.service.js`,
+`telegramMembership.js`, `identity/signupVerification.service.js`,
+`identity/verificationEndpoint.js`, `middleware/requireChannelMembership.js`,
+the fleet/channel/template half of `telegram.admin.routes.js` and of
+`database/repositories/telegram.js`; in the TOTP commit `totp.service.js`,
+`verifySecondFactor.js`, `twoFactor.routes.js`, the merchant `/2fa` routes,
+`authenticateForEnrolment`, `mustEnroll2FA`, the `TOTP_ENCRYPTION_KEY` boot
+check, and their tests.
+
+#### Done (2026-10-08), and what is left
+
+**Built**, each committed with its tests:
+- **User panel and APK**: signup ends on the Telegram step; login handles
+  `TELEGRAM_VERIFICATION_REQUIRED` and `twoFactorRequired`; Log in with
+  Telegram; Forgot password opens the Mini App on `reset-PLAYER`; Profile's
+  Telegram card (relink, the approval switch); `VerificationGateModal` deleted.
+- **The Mini App**: `user-panel/mini-app.html` (its own page: Telegram's launch
+  data in the URL fragment would fight the HashRouter). **BotFather's Web App
+  URL for the bot must be `<player panel origin>/mini-app.html`.** A forgotten
+  password is SET there for every panel (new password, then the contact); no
+  token, no link (owner, 2026-10-08: staff and merchant panels have no reset
+  page).
+- **Merchant panel**: the same steps, Telegram card; gate and authenticator
+  enrolment deleted. **Admin panel**: the same login, bootstrap banner, one-bot
+  screen (`/telegram`), "My Telegram" (`/account/telegram`, any staff).
+- **No captcha for staff and merchants** (owner, 2026-10-08: "they will only
+  need 2FA"): the player's signup and sign-in keep it.
+- **Security alerts** go by the one bot to every linked, unblocked staff member.
+- **The merchant sign-in answers with the profile projection**
+  (`merchantSelfView.js`), so a supervisor is told `isSupervisor` at sign-in
+  (main's fix, carried to the Step 3 door in the merge).
+- **Lint**: ESLint 10 runs in the root and in each panel, in CI, with no
+  exemptions.
+- **Cron `credential-sweep`** (hourly) deletes expired Telegram challenges,
+  spent initData claims and expired identity rows; neither sweep had a caller.
+
+**Measured** on the merged branch: `test:unit` 797; `test:pg` 1,648 (133
+files); admin 206, merchant 134, user 237 panel tests; lint, tsc and build in
+every panel; every Commands gate; `test:e2e` 256 checks, 0 failures (s9 drives
+signup, every sign-in and the reset through the Mini App routes); the
+captcha-doors probe 5 of 5; `test:signin-journey` 25 of 25 (types into all
+three sign-in screens and answers on the Mini App page; with the reset's
+session eviction broken on purpose, its two signed-out checks fail). Mutations MS1–MS13,
+M48, M77, M452 KILLED.
+
+**Not done**
+- Not tried inside Telegram itself: Telegram's UI and `requestContact`'s signed
+  `response` are stood in for (miniAppFixture.js signs them with a test token).
+  The first real check is the owner opening the Mini App from the bot.
+- Showing `telegramVerified` on the admin user and merchant lists.
+- Notification bots: later, optional (owner answer 11).
+- Found while linting, not fixed: `recordAccountingEvent` callers still pass
+  `metadata`/`recordedBy`, which `accounting_events` has no column for (an
+  admin's justification is not in the ledger row); the search and date boxes
+  on CycleHistory and TransactionsList, and the search on AuditLogs, filter
+  nothing on the server; the player profile picture upload (`category:
+  'profile'`) is outside §2's four upload categories.
+
+#### Order of work (each committed when its tests pass)
+
+1. This design. 2. The one bot and `initData` verification (unit-tested with
+a test token). 3. Delete the fleet, channel, templates, recovery bots, the
+gate and the channel middleware; signup returns the verification step; the
+merchant login folded in; verification and the Mini App routes; referral at
+verification. 4. Telegram as the staff and merchant second factor; Login with
+Telegram; relink; the player 2FA switch; staff alerts. 5. Password reset
+through the Mini App. 6. **TOTP removed, in its own commit** (revertable
+alone). 7. CLAUDE.md §33 and §2, RULES_BACKGROUND, mutations MS1+, every gate
+and tier, this section's numbers.
 
 ### Defaults chosen without an answer (change any of them)
 - USDT order maximum 10,000 USDT.

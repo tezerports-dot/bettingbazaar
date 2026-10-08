@@ -1,10 +1,9 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
-import React, { useEffect, useState } from 'react';
-import { Users, Eye, Ban, CheckCircle, Plus, Minus, CreditCard, History, Ghost, Trash2 } from 'lucide-react';
+import React, { useCallback, useEffect, useState } from 'react';
+import { Eye, Ban, CheckCircle, Plus, Minus, CreditCard, History, Ghost, Trash2 } from 'lucide-react';
 import { DataTable } from '../../components/DataTable';
 import { DisputeRecordBadge } from '../../components/DisputeRecordBadge';
 import { StatusBadge } from '../../components/StatusBadge';
-import { SearchBar } from '../../components/SearchBar';
 import { Modal } from '../../components/Modal';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { UserAvatar } from '../../components/UserAvatar';
@@ -44,18 +43,6 @@ export const UsersList: React.FC = () => {
   const [phantomLevel, setPhantomLevel]       = useState('NONE');
   const [isSavingPhantom, setIsSavingPhantom] = useState(false);
 
-  const handleSetPhantomAccess = async () => {
-    if (!phantomUser) return;
-    setIsSavingPhantom(true);
-    try {
-      await api.post(`/api/admin/users/${phantomUser.userId}/phantom-access`, { accessLevel: phantomLevel });
-      toast.success(`Phantom access set to ${phantomLevel}`);
-      setPhantomUser(null);
-      loadUsers();
-    } catch { toast.error('Failed to set phantom access'); }
-    finally { setIsSavingPhantom(false); }
-  };
-
   // Balance adjust
   const [showBalanceModal, setShowBalanceModal] = useState(false);
   const [balanceTarget, setBalanceTarget] = useState<User | null>(null);
@@ -72,9 +59,7 @@ export const UsersList: React.FC = () => {
   const { page, limit, setPage } = usePagination();
   const debouncedSearch = useDebounce(search);
 
-  useEffect(() => { loadUsers(); }, [page, debouncedSearch, statusFilter]);
-
-  const loadUsers = async () => {
+  const loadUsers = useCallback(async () => {
     setIsLoading(true);
     try {
       const response = await api.users.getAll(page, limit, debouncedSearch, statusFilter === 'ALL' ? undefined : statusFilter);
@@ -84,6 +69,20 @@ export const UsersList: React.FC = () => {
       }
     } catch { toast.error('Failed to load users'); }
     finally { setIsLoading(false); }
+  }, [page, limit, debouncedSearch, statusFilter]);
+
+  useEffect(() => { loadUsers(); }, [loadUsers]);
+
+  const handleSetPhantomAccess = async () => {
+    if (!phantomUser) return;
+    setIsSavingPhantom(true);
+    try {
+      await api.post(`/api/admin/users/${phantomUser.userId}/phantom-access`, { accessLevel: phantomLevel });
+      toast.success(`Phantom access set to ${phantomLevel}`);
+      setPhantomUser(null);
+      loadUsers();
+    } catch { toast.error('Failed to set phantom access'); }
+    finally { setIsSavingPhantom(false); }
   };
 
   const openUserDetails = async (user: User, tab: ModalTab = 'profile') => {

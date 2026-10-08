@@ -175,6 +175,8 @@ const ENTRY = [
   // imported at the top of the file that renders it, so neither needs the
   // exemption. It was hiding a whole buy/sell modal.
   /^(admin|user|merchant)-panel\/src\/(main|App|vite-env)\.(tsx?|d\.ts)$/,
+  // The Telegram Mini App's page: `user-panel/mini-app.html` names it (Step 3).
+  /^user-panel\/src\/miniApp\/main\.tsx$/,
   /\.d\.ts$/,
 ];
 

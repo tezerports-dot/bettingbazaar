@@ -28,7 +28,7 @@ vi.mock('#db', () => ({
     referrals,
     users: { getUser: async (id) => ({ userId: id, status: 'ACTIVE' }) },
     identity: { getVerification: async () => ({ status: 'VERIFIED' }) },
-    telegram: { getIdentityByUserId: async () => ({ contactActive: true, channelStatus: 'member' }) },
+    telegram: { getLinkByUserId: async () => ({ telegramUserId: '1' }) },
   },
 }));
 vi.mock('../../domains/wallet/walletAuthority.service.js', () => ({ creditWinnings }));

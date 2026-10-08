@@ -587,10 +587,9 @@ CREATE TABLE IF NOT EXISTS users (
   user_id            TEXT PRIMARY KEY,     -- the account's stable identity
   username           TEXT NOT NULL,
   mobile             TEXT NOT NULL UNIQUE, -- never mutable, by anyone (§1)
-  -- Absent means "cannot sign in with a password", which is the CORRECT state
-  -- for a player: players authenticate through Telegram and never set one.
-  -- Admins, sub-admins and merchants have one so their access does not depend
-  -- on a third party that can suspend an account.
+  -- Every account signs in with a password (Step 3: the signup form sets it,
+  -- an admin sets a staff member's). Telegram verifies the mobile once and is
+  -- the staff and merchant second factor; it never replaces the password.
   password_hash      TEXT,
 
   -- ── Referral programme identity ──────────────────────────────────────────
@@ -633,17 +632,8 @@ CREATE TABLE IF NOT EXISTS users (
   sub_admin_permissions JSONB NOT NULL DEFAULT '{}'::jsonb,
   phantom_access     TEXT NOT NULL DEFAULT 'NONE',
 
-  -- ── Second factor ────────────────────────────────────────────────────────
-  -- MANDATORY for admins and sub-admins, available to merchants, and not
-  -- applicable to players (who have no password to protect).
-  two_factor_enabled BOOLEAN NOT NULL DEFAULT FALSE,
-  two_factor_secret  TEXT,
-  two_factor_pending_secret TEXT,
-  -- The last accepted TOTP counter. Storing it is what makes a replay of an
-  -- observed code fail: a code is valid for a window, and without this the same
-  -- code works twice inside it.
-  two_factor_last_counter BIGINT,
-  two_factor_enrolled_at TIMESTAMPTZ,
+  -- The second factor is the account's own Telegram (`telegram_links`, Step 3);
+  -- no secret is stored on the account.
 
   -- ── Blocking ─────────────────────────────────────────────────────────────
   is_blocked         BOOLEAN NOT NULL DEFAULT FALSE,
@@ -674,14 +664,16 @@ CREATE TABLE IF NOT EXISTS users (
     CHECK (NOT is_blocked OR (block_reason IS NOT NULL AND blocked_at IS NOT NULL))
 );
 
--- Single-use 2FA recovery codes, hashed.
---
--- An array rather than a table: they are written as a SET (enrolment mints ten,
--- consuming one rewrites the remainder) and never queried individually, so a
--- child table would add a join and a delete path for no read this code makes.
--- Like the TOTP secret, these are returned only by the function that exists to
--- read them — a recovery code in a response body is a second factor given away.
-ALTER TABLE users ADD COLUMN IF NOT EXISTS backup_codes TEXT[] NOT NULL DEFAULT '{}';
+-- ── The authenticator app is gone (owner, 2026-10-07: 2FA is "Telegram only")
+-- Its secrets, replay counters and recovery codes are dropped, so a database
+-- that had them converges on this file (§32 S31) and keeps no secret for a
+-- factor nothing checks.
+ALTER TABLE users DROP COLUMN IF EXISTS two_factor_enabled;
+ALTER TABLE users DROP COLUMN IF EXISTS two_factor_secret;
+ALTER TABLE users DROP COLUMN IF EXISTS two_factor_pending_secret;
+ALTER TABLE users DROP COLUMN IF EXISTS two_factor_last_counter;
+ALTER TABLE users DROP COLUMN IF EXISTS two_factor_enrolled_at;
+ALTER TABLE users DROP COLUMN IF EXISTS backup_codes;
 
 -- Coarse role tags, distinct from the is_* booleans that gate authorisation.
 -- The booleans decide what an account MAY DO and are what every check reads;
@@ -710,258 +702,11 @@ CREATE INDEX IF NOT EXISTS users_joined_at_idx     ON users (joined_at DESC);
 CREATE INDEX IF NOT EXISTS users_admins_idx        ON users (user_id) WHERE is_admin OR is_sub_admin;
 CREATE INDEX IF NOT EXISTS users_flagged_idx       ON users (payment_flagged_at DESC) WHERE payment_flagged;
 
--- ── Telegram: the configuration generation ───────────────────────────────────
---
--- `generation` is monotonic and bumped ONLY when the channel changes, never
--- when a bot is swapped. The two have different blast radii: a cached "this
--- user is a member" is meaningful only for the channel it was observed in, so
--- swapping channels must invalidate every cached answer — which the counter
--- does by construction. Swapping a bot invalidates nothing, because identities
--- key on the person's Telegram id, a property of Telegram rather than of our
--- bot. Tying the two would force every player to re-join a channel to fix a
--- problem that never touched it.
-CREATE TABLE IF NOT EXISTS telegram_configs (
-  generation           BIGINT PRIMARY KEY,
-  -- WHICH PANEL this channel belongs to. The three panels are three separate
-  -- entities (§33.5) and each has its own bot and its own channel, so "the
-  -- active config" is a question per audience, not a question per platform.
-  --
-  -- `generation` stays GLOBALLY unique — one counter across all three — which
-  -- is deliberate and load-bearing: a cached membership stamped with the
-  -- merchant channel's generation can then never compare equal to the player
-  -- channel's, so a cross-audience stale answer is unrepresentable rather than
-  -- merely unlikely.
-  audience             TEXT NOT NULL DEFAULT 'PLAYER',
-  -- Ciphertext, always. Whoever holds a bot token can read every message sent
-  -- to the bot and speak as the platform. Never returned to any panel.
-  bot_token_encrypted  TEXT,
-  bot_username         TEXT NOT NULL DEFAULT '',
-  webhook_secret       TEXT,
-  recovery_bot_token_encrypted TEXT,
-  recovery_bot_username TEXT NOT NULL DEFAULT '',
-  recovery_webhook_secret TEXT,
-  channel_id           TEXT NOT NULL,
-  channel_username     TEXT NOT NULL DEFAULT '',
-  channel_invite_link  TEXT NOT NULL DEFAULT '',
-  active               BOOLEAN NOT NULL DEFAULT FALSE,
-  activated_at         TIMESTAMPTZ,
-  activated_by         TEXT,
-  reason               TEXT NOT NULL DEFAULT '',
-  created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
-
-  CONSTRAINT telegram_configs_audience_check
-    CHECK (audience IN ('PLAYER','STAFF','MERCHANT'))
-);
--- At most one active generation, as the DATABASE's rule rather than something
--- every writer has to remember: activating a new one must deactivate the old
--- in the same transaction, or fail.
--- On an existing database `CREATE TABLE IF NOT EXISTS` is a no-op, so the column
--- the index below names has to be added here — before the index, not in a
--- migration block at the end of the file, which is where the first draft put it
--- and where it ran far too late to help.
-ALTER TABLE telegram_configs ADD COLUMN IF NOT EXISTS audience TEXT NOT NULL DEFAULT 'PLAYER';
-CREATE UNIQUE INDEX IF NOT EXISTS one_active_telegram_config
-  ON telegram_configs (audience) WHERE active;
-
--- ── Telegram: the bot registry ───────────────────────────────────────────────
---
--- Exists so that replacing a suspended bot is one click on a row that already
--- exists, rather than creating, naming and verifying a bot during the outage
--- where nobody can sign up. STANDBY is the point of the table.
-CREATE TABLE IF NOT EXISTS telegram_bots (
-  bot_id          TEXT PRIMARY KEY,   -- Telegram's numeric id: the real identity
-  label           TEXT NOT NULL,
-  role            TEXT NOT NULL,
-  -- WHICH PANEL this bot serves. One bot serves exactly one audience, which is
-  -- why this is a column on the row rather than a join: the whole point of the
-  -- split is that a merchant never opens the player bot and an admin never
-  -- opens either (owner, 2026-09-24).
-  audience        TEXT NOT NULL DEFAULT 'PLAYER',
-  username        TEXT NOT NULL,
-  token_encrypted TEXT NOT NULL,
-  webhook_secret  TEXT NOT NULL,
-  status          TEXT NOT NULL DEFAULT 'STANDBY',
-
-  -- GENERATED, not maintained by application code.
-  --
-  -- This column exists only to be indexed: it holds the role for a LIVE bot in
-  -- a SINGULAR role and NULL otherwise, so the partial unique index below makes
-  -- "at most one live bot in that role" a rule the database enforces.
-  --
-  -- The document model derived it in a pre-validate hook, which meant a writer
-  -- using an update operator instead of a document save bypassed the hook
-  -- entirely and left the invariant unguarded — a live-bot promotion that set
-  -- status without recomputing the slot would have been accepted. Generating it
-  -- from the row removes the requirement to remember, and there is no writer
-  -- that can get it wrong.
-  --
-  -- ── `signin` is a FLEET, and deliberately not in this list ────────────────
-  -- One bot is a throughput ceiling, not a design: the Bot API allows roughly
-  -- THIRTY messages a second per bot, and every signup sends several. An
-  -- operator runs as many sign-in bots as they need — the owner's figure was
-  -- 500 to 1,000 — and each account is assigned one of them in rotation
-  -- (`assignSigninBot`). They all do the same job, so which one a player gets
-  -- does not matter to the player; what matters is that no single one is the
-  -- whole platform's front door.
-  --
-  -- `recovery` stays singular. There is exactly one account-recovery
-  -- conversation and it is the one path that hands an account to a DIFFERENT
-  -- Telegram account, so it stays a single, watchable door.
-  --
-  -- ── The slot is per AUDIENCE ──────────────────────────────────────────────
-  -- "One live recovery bot" is a rule about one panel's recovery conversation,
-  -- not about the platform: the player, merchant and staff doors are three
-  -- separate doors and each gets exactly one. Composing the audience into the
-  -- slot value is what makes the single partial unique index below say that,
-  -- rather than refusing the second audience's recovery bot outright — which
-  -- is what a slot holding the bare role did, silently, on the second INSERT.
-  live_slot       TEXT GENERATED ALWAYS AS (
-                    CASE WHEN status = 'ACTIVE' AND role = 'recovery'
-                         THEN audience || ':' || role END
-                  ) STORED,
-
-  webhook_url     TEXT NOT NULL DEFAULT '',
-  webhook_registered_at TIMESTAMPTZ,
-  last_error      TEXT NOT NULL DEFAULT '',
-  added_by        TEXT,
-  added_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-  activated_at    TIMESTAMPTZ,
-  activated_by    TEXT,
-  retired_at      TIMESTAMPTZ,
-  retired_by      TEXT,
-  notes           TEXT NOT NULL DEFAULT '',
-
-  CONSTRAINT telegram_bots_role_check
-    CHECK (role IN ('signin','recovery','broadcast','moderation','generic')),
-  CONSTRAINT telegram_bots_status_check
-    CHECK (status IN ('ACTIVE','STANDBY','RETIRED')),
-  CONSTRAINT telegram_bots_audience_check
-    CHECK (audience IN ('PLAYER','STAFF','MERCHANT'))
-);
--- Partial rather than sparse: rows with no live_slot are not indexed at all, so
--- any number of standby, retired and outbound-only bots coexist.
-ALTER TABLE telegram_bots ADD COLUMN IF NOT EXISTS audience TEXT NOT NULL DEFAULT 'PLAYER';
-CREATE UNIQUE INDEX IF NOT EXISTS one_live_bot_per_singular_role
-  ON telegram_bots (live_slot) WHERE live_slot IS NOT NULL;
-CREATE INDEX IF NOT EXISTS telegram_bots_role_status_idx
-  ON telegram_bots (audience, role, status);
-
--- ── Telegram: what the bot says ──────────────────────────────────────────────
--- A missing or blank row means THE SHIPPED DEFAULT, never silence: a player
--- staring at nothing after /start is the worst outcome this table can produce.
-CREATE TABLE IF NOT EXISTS telegram_templates (
-  key        TEXT PRIMARY KEY,
-  body       TEXT NOT NULL,
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_by TEXT
-);
-
--- ── Telegram: one Telegram account ↔ one platform account ────────────────────
-CREATE TABLE IF NOT EXISTS telegram_identities (
-  telegram_user_id  TEXT NOT NULL,
-  -- WHICH PANEL this link is for, and why it is part of the KEY.
-  --
-  -- One person may hold a player account, a merchant account and a staff
-  -- account on one mobile (§33.5), and they will open all three bots from the
-  -- SAME Telegram account — that is what a Telegram account is. A bare
-  -- `telegram_user_id` primary key made the second one impossible: sharing a
-  -- contact with the merchant bot answered "this Telegram account is already
-  -- verifying a different account", naming the player link the person had made
-  -- minutes earlier, and there was no way past it from either side.
-  audience          TEXT NOT NULL DEFAULT 'PLAYER',
-  -- One Telegram account cannot hold two platform accounts (the PRIMARY KEY),
-  -- and one platform account cannot be driven by two ACTIVE Telegram accounts
-  -- (`one_active_identity_per_user` below). That pair IS the
-  -- no-duplicate-accounts rule, enforced by the database rather than by a
-  -- check-then-insert that a concurrent signup fits between.
-  user_id           TEXT NOT NULL REFERENCES users (user_id) ON DELETE CASCADE,
-  telegram_username TEXT NOT NULL DEFAULT '',
-  first_name        TEXT NOT NULL DEFAULT '',
-
-  -- Telegram's own verified number for the account, which is why it can stand
-  -- in for an SMS OTP. Normalised to digits so it compares to users.mobile.
-  phone             TEXT NOT NULL,
-  contact_shared_at TIMESTAMPTZ NOT NULL,
-  contact_active    BOOLEAN NOT NULL DEFAULT TRUE,
-
-  -- A CACHE. Telegram is authoritative; this is updated by chat_member events
-  -- with a sweep for the ones we miss, because polling per request does not
-  -- survive the member counts this platform plans for.
-  channel_status    TEXT NOT NULL DEFAULT 'unknown',
-  channel_checked_at TIMESTAMPTZ,
-  -- Which generation's channel the status above refers to. An admin swapping
-  -- the channel makes this stale BY CONSTRUCTION, and the gate then reads the
-  -- user as "must join the new channel" rather than trusting an old answer.
-  channel_generation BIGINT NOT NULL DEFAULT 0,
-  linked_generation  BIGINT NOT NULL DEFAULT 0,
-  created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-  last_seen_at      TIMESTAMPTZ,
-
-  PRIMARY KEY (telegram_user_id, audience),
-
-  CONSTRAINT telegram_identities_channel_status_check
-    CHECK (channel_status IN ('member','administrator','creator','restricted','left','kicked','unknown')),
-  CONSTRAINT telegram_identities_audience_check
-    CHECK (audience IN ('PLAYER','STAFF','MERCHANT'))
-);
--- The phone is an identity anchor: two Telegram accounts sharing one number
--- must not become two platform accounts. Partial on contact_active so somebody
--- who genuinely moves their number to a new Telegram account (the recovery
--- path) is not blocked by their own retired row.
--- Partial on `contact_active`, exactly like the phone index below, and for the
--- same reason: ACCOUNT RECOVERY has to hand an account from one Telegram
--- identity to another, and the old row must survive as history.
---
--- A plain UNIQUE on user_id could not express that. Recovery would have had to
--- DELETE the identity that lost the account — erasing the record of who used to
--- hold it, which is the first thing a takeover review asks for — or point it at
--- some placeholder account, which the foreign key refuses. Partial, the old row
--- keeps its real user_id, goes inactive, and stays readable.
-ALTER TABLE telegram_identities ADD COLUMN IF NOT EXISTS audience TEXT NOT NULL DEFAULT 'PLAYER';
-CREATE UNIQUE INDEX IF NOT EXISTS one_active_identity_per_user
-  ON telegram_identities (user_id) WHERE contact_active;
-DO $$ BEGIN
-  ALTER TABLE telegram_identities DROP CONSTRAINT IF EXISTS telegram_identities_user_id_key;
-EXCEPTION WHEN undefined_object THEN NULL; END $$;
-
--- Per AUDIENCE, for the reason the primary key is: one mobile legitimately
--- holds one account on each panel, so the rule "two Telegram accounts sharing
--- one number must not become two platform accounts" is a rule WITHIN a panel.
-CREATE UNIQUE INDEX IF NOT EXISTS one_active_identity_per_phone
-  ON telegram_identities (phone, audience) WHERE contact_active;
-CREATE INDEX IF NOT EXISTS telegram_identities_channel_idx
-  ON telegram_identities (channel_generation, channel_status);
-
--- ── Telegram: the half-finished conversation — REMOVED 2026-09-23 ──────────
---
--- `telegram_pending_links` held an onboarding conversation: the step, the
--- Aadhaar hash and ciphertext captured over a chat, and the referral code from
--- the deep link. None of those exist any more. The FORM creates the account
--- (domains/identity/playerAuth.routes.js), so by the time anybody opens a bot
--- there is a row in `users` to match a contact share against — which is what
--- `linkTelegramToAccount` does, and why there is no half-finished state to
--- park anywhere.
---
--- Deleted rather than left standing: a table nothing writes is the next
--- reader's false lead (§3, §22), and this one would read as though the
--- platform still took Aadhaar numbers over Telegram.
-
--- ── The bot can no longer sign anybody in — REMOVED 2026-09-23 ────────────
---
--- Two tables went together, because they were two spellings of one thing: a
--- credential a BOT could mint. `telegram_login_tokens` held the one-time link
--- the bot DMed after signup; `telegram_login_codes` held the six-digit code it
--- sent to a returning player.
---
--- Players have passwords now (the signup form sets one), so both are replaced
--- by `POST /api/v1/auth/login` — and that is the security half of the change,
--- not a side effect. A compromised, suspended or impersonated bot could
--- previously hand out sessions; the fleet makes that worse by multiplying the
--- number of tokens that would do it. Nothing the bot can do now grants access:
--- it proves a phone number and admits somebody to a channel.
---
--- Deleted rather than left standing. A credential table nothing writes is
--- still a credential table, and the next reader has no way to know it is dead.
+-- ── Telegram ───────────────────────────────────────────────────────────────
+-- The link, the one bot and the Mini App challenges are defined in the STEP 3
+-- block near the end of this file, after `users.account_type`, which they
+-- reference. The fleet, channel and template tables that stood here are gone
+-- (owner, 2026-10-07); the DROPs there make an older database converge.
 
 -- ── Revoked tokens ───────────────────────────────────────────────────────────
 -- Checked on every authenticated request, so it is a primary-key lookup and
@@ -1129,16 +874,7 @@ CREATE TABLE IF NOT EXISTS merchants (
   -- wrote `users`, the login door read this column, so a merchant who reset
   -- was told it worked and was then refused the new password (R6, 2026-09-30).
 
-  -- ── Second factor. Mandatory for merchants ────────────────────────────────
-  -- Same column names as `users`, deliberately: the drift window, replay guard
-  -- and recovery-code logic in identity/verifySecondFactor.js operates on
-  -- either. Two copies of an anti-replay guard is how one of them goes stale.
-  two_factor_enabled         BOOLEAN NOT NULL DEFAULT FALSE,
-  two_factor_secret          TEXT,   -- AES-256-GCM ciphertext
-  two_factor_pending_secret  TEXT,
-  two_factor_last_counter    BIGINT,
-  two_factor_enrolled_at     TIMESTAMPTZ,
-  backup_codes               TEXT[] NOT NULL DEFAULT '{}',  -- sha256 hashes, single use
+  -- The second factor is the login row's Telegram (`telegram_links`, Step 3).
 
   status            TEXT NOT NULL DEFAULT 'PENDING',
   suspension_reason TEXT,
@@ -1241,6 +977,13 @@ CREATE TABLE IF NOT EXISTS merchants (
     min_deposit_paise >= 0 AND min_withdraw_paise >= 0)
 );
 ALTER TABLE merchants DROP COLUMN IF EXISTS password_hash;
+-- The authenticator app is gone (see the same drops on `users`).
+ALTER TABLE merchants DROP COLUMN IF EXISTS two_factor_enabled;
+ALTER TABLE merchants DROP COLUMN IF EXISTS two_factor_secret;
+ALTER TABLE merchants DROP COLUMN IF EXISTS two_factor_pending_secret;
+ALTER TABLE merchants DROP COLUMN IF EXISTS two_factor_last_counter;
+ALTER TABLE merchants DROP COLUMN IF EXISTS two_factor_enrolled_at;
+ALTER TABLE merchants DROP COLUMN IF EXISTS backup_codes;
 
 -- No UPI handle. `bank_upi_id` was written by Profile and copied into each
 -- order's snapshot, and nothing ever read it: a UPI_BANK buy is paid into the
@@ -3091,89 +2834,6 @@ DO $$ BEGIN
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 -- ═══════════════════════════════════════════════════════════════════════════
--- Form signup, and the sign-in bot FLEET (2026-09-23)
--- ═══════════════════════════════════════════════════════════════════════════
--- An account is now created by a FORM — Aadhaar, the Aadhaar-linked mobile, a
--- password and a captcha — and Telegram is the VERIFICATION step that follows,
--- not the thing that creates the account. Two consequences land in the schema.
-
--- ── 1. Which bot this account was told to open ─────────────────────────────
--- The fleet exists because one bot is a throughput ceiling (~30 messages a
--- second, Bot API). The assignment is STORED rather than recomputed, because a
--- player is TOLD which bot to open: recomputing it would send them to a
--- different conversation on their next page load, and the one they had already
--- started would be the one holding their contact share.
---
--- Nullable: an account created while the operator has registered no bot yet is
--- a real state (it is exactly where a launch sits), and it is assigned the
--- moment one exists rather than being refused at signup.
-ALTER TABLE users ADD COLUMN IF NOT EXISTS telegram_bot_id TEXT;
-CREATE INDEX IF NOT EXISTS users_telegram_bot_idx ON users (telegram_bot_id)
-  WHERE telegram_bot_id IS NOT NULL;
-
--- ── 2. The rotation cursor ─────────────────────────────────────────────────
--- Round robin, in the owner's words: "assign 1, assign 2, then 3rd, 4th, 5th
--- and so on, and once it reaches all, again start from 1."
---
--- A SEQUENCE, not a counter row and not a number held in a process. Trap 6
--- forbids accumulating a counter in memory, and a counter row would have to be
--- locked by every signup; `nextval` is non-transactional by design, so two
--- signups arriving together get two different numbers without either waiting
--- for the other. It is allowed to skip on a rollback — a skipped number costs
--- one bot one position in a cycle, which is nothing, and is the correct trade
--- against serialising every signup behind one row.
---
--- The list it indexes is read at assignment time, so adding, replacing or
--- retiring a bot changes the cycle from the next signup onward with nothing to
--- reset.
-CREATE SEQUENCE IF NOT EXISTS telegram_signin_rotation;
-
--- ── 3. What a contact share is matched against ─────────────────────────────
--- The form's mobile. `telegram_identities.phone` already holds Telegram's own
--- verified number for the account, and `users.mobile` holds what was typed —
--- the link is made only when they are the same number, which is what makes the
--- Telegram step a VERIFICATION of the form rather than a second signup.
-CREATE INDEX IF NOT EXISTS telegram_identities_phone_idx ON telegram_identities (phone);
-
--- ── `signin` became a FLEET: rebuild live_slot on a database that predates it ─
---
--- The table above is `CREATE TABLE IF NOT EXISTS`, so an existing database
--- keeps the OLD generated column — the one that names `signin` as a singular
--- role — and the partial unique index then refuses the SECOND live sign-in bot
--- with "duplicate key value violates one_live_bot_per_singular_role".
---
--- That failure is worse than it looks: it arrives on the operator's second bot,
--- which is the moment the fleet starts being a fleet, and its message describes
--- a rule the platform no longer has. Measured on a developer database, which is
--- exactly where it would have been met.
---
--- Guarded on the column's own EXPRESSION rather than on a version marker, so it
--- runs once and is a no-op every time after — including on a database created
--- fresh from this file, where the column is already right.
-DO $$
-BEGIN
-  IF EXISTS (
-    SELECT 1
-      FROM pg_attrdef d
-      JOIN pg_class     c ON c.oid = d.adrelid
-      JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = d.adnum
-     WHERE c.relname = 'telegram_bots'
-       AND a.attname = 'live_slot'
-       AND pg_get_expr(d.adbin, d.adrelid) LIKE '%signin%'
-  ) THEN
-    -- The index depends on the column, so it goes first and comes back after.
-    DROP INDEX IF EXISTS one_live_bot_per_singular_role;
-    ALTER TABLE telegram_bots DROP COLUMN live_slot;
-    ALTER TABLE telegram_bots ADD COLUMN live_slot TEXT GENERATED ALWAYS AS (
-      CASE WHEN status = 'ACTIVE' AND role = 'recovery' THEN role END
-    ) STORED;
-    CREATE UNIQUE INDEX one_live_bot_per_singular_role
-      ON telegram_bots (live_slot) WHERE live_slot IS NOT NULL;
-    RAISE NOTICE 'telegram_bots.live_slot rebuilt: signin is a fleet, recovery stays singular';
-  END IF;
-END $$;
-
--- ═══════════════════════════════════════════════════════════════════════════
 -- Three separate entities: player, staff, merchant (owner, 2026-09-24)
 -- ═══════════════════════════════════════════════════════════════════════════
 -- One person may hold a PLAYER account and a STAFF account, with DIFFERENT
@@ -3290,36 +2950,19 @@ ALTER TABLE users DROP CONSTRAINT IF EXISTS users_phantom_access_needs_player;
 ALTER TABLE users ADD CONSTRAINT users_phantom_access_needs_player
   CHECK (account_type = 'PLAYER' OR phantom_access = 'NONE');
 
--- ── The bot's password reset ──────────────────────────────────────────────
--- A player who has forgotten their password opens a bot, shares their contact,
--- and — if that number matches an account — is sent a link that lets them SET a
--- new one. There is no email on this platform, so the number Telegram has
--- already verified is the only channel a reset can travel on.
+-- ── The password reset ────────────────────────────────────────────────────
+-- A person who has forgotten their password opens the Mini App, types the new
+-- one and shares their contact; if Telegram's phone is the account's mobile
+-- for that panel, the password is set there and then, and every session the
+-- account had is evicted in the same statement (Step 3, owner 2026-10-07: no
+-- admin reset, no prior link needed; 2026-10-08: set in the Mini App for every
+-- panel). It signs nobody in. There is no email on this platform, so the
+-- number Telegram has verified is the only channel a reset can travel on.
 --
--- ── What the link does NOT do ─────────────────────────────────────────────
--- It does not sign anybody in (owner, 2026-09-24). The whole point of deleting
--- `telegram_login_tokens` was that a fleet of hundreds of bot tokens must not
--- be able to mint a session; a reset that logged somebody in would put that
--- back under a different name. It grants the right to choose a password, and
--- then they log in like anybody else — and setting it REVOKES existing
--- sessions, because the reason somebody resets is often that a session is not
--- theirs.
---
--- Stored as a SHA-256 hash, like every other bearer credential here, so a
--- database dump yields nothing usable. Bound to the Telegram account that asked
--- for it, single-use (`consumed_at` set in the SAME atomic UPDATE that reads
--- it), and short-lived. Expiry is enforced by the READS — every query filters
--- on it — so a sweep that has not run cannot make a stale link usable.
-CREATE TABLE IF NOT EXISTS password_resets (
-  token_hash       TEXT PRIMARY KEY,
-  user_id          TEXT NOT NULL REFERENCES users (user_id) ON DELETE CASCADE,
-  telegram_user_id TEXT NOT NULL,
-  consumed_at      TIMESTAMPTZ,
-  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-  expires_at       TIMESTAMPTZ NOT NULL
-);
-CREATE INDEX IF NOT EXISTS password_resets_user_idx ON password_resets (user_id);
-CREATE INDEX IF NOT EXISTS password_resets_expiry_idx ON password_resets (expires_at);
+-- There is no reset token, so there is no table for one: the reset links the
+-- Mini App used to mint opened a page only the player app had. Dropped so a
+-- database that had it converges on this file (§32 S31).
+DROP TABLE IF EXISTS password_resets;
 
 -- ── Sessions issued before this instant are dead ────────────────────────────
 -- The revocation list is keyed by the TOKEN, so it can retire a token somebody
@@ -3337,112 +2980,190 @@ CREATE INDEX IF NOT EXISTS password_resets_expiry_idx ON password_resets (expire
 ALTER TABLE users ADD COLUMN IF NOT EXISTS sessions_valid_from TIMESTAMPTZ;
 
 -- ═══════════════════════════════════════════════════════════════════════════
--- Three panels, three bots, three channels — 2026-09-24 (owner)
+-- STEP 3: Telegram verifies the mobile once; one bot (owner, 2026-10-07)
 -- ═══════════════════════════════════════════════════════════════════════════
+-- "they must verify and share contact on signup ... now they can do login
+-- without telegram mini app but add also login with telegram button too."
 --
--- "two separate bots which handles merchant and admin panel ... one bot with
--- its own channel for merchant and one bot with its own channel for admin thus
--- it will be complete separate from user panel whether its signup or login or
--- account recovery" (owner, 2026-09-24).
+-- An account is created by a FORM and cannot be used until its holder shares,
+-- in the one Mini App, the Telegram contact whose phone IS the form's mobile.
+-- That share is the LINK below. After it, Telegram is the staff and merchant
+-- second factor, an optional "Login with Telegram", and the way a forgotten
+-- password is reset. There is no fleet, no channel, no recovery bot, no bot
+-- copy and no webhook (PROJECT_STATUS §3.10, Step 3).
 --
--- §33.5 already made a player, a merchant and a staff account three separate
--- ENTITIES on one mobile. This makes their Telegram halves three separate
--- entities too, on the SAME axis and with the SAME vocabulary: `audience` here
--- takes exactly the values `users.account_type` takes, so an account's type IS
--- its audience and there is no second place where "which bot serves this
--- person" gets decided (§2).
---
--- Every statement below is CONVERGENT, not merely idempotent (§32 S31): a
--- definition that can move is DROPPED and re-added rather than skipped when an
--- object of that name already exists. The `account_type` CHECK is what taught
--- us the difference — a guard that skipped it left every merchant signup
--- failing on a value the schema file plainly allowed, and because the apply
--- stops at the failure a column further down was never created at all.
+-- Everything the 2026-09-23 and 2026-09-24 blocks built for the fleet goes, and
+-- these DROPs make a database that had it CONVERGE on this file (§32 S31): a
+-- table left behind would hold bot tokens for bots nothing uses.
+DROP TABLE IF EXISTS telegram_identities;
+DROP TABLE IF EXISTS telegram_templates;
+DROP TABLE IF EXISTS telegram_bots;
+DROP TABLE IF EXISTS telegram_configs;
+DROP SEQUENCE IF EXISTS telegram_signin_rotation;
+DROP INDEX IF EXISTS users_telegram_bot_idx;
+ALTER TABLE users DROP COLUMN IF EXISTS telegram_bot_id;
 
--- ── telegram_configs: one active channel PER AUDIENCE ──────────────────────
-ALTER TABLE telegram_configs ADD COLUMN IF NOT EXISTS audience TEXT NOT NULL DEFAULT 'PLAYER';
-ALTER TABLE telegram_configs DROP CONSTRAINT IF EXISTS telegram_configs_audience_check;
-ALTER TABLE telegram_configs ADD CONSTRAINT telegram_configs_audience_check
-  CHECK (audience IN ('PLAYER','STAFF','MERCHANT'));
--- The old index was UNIQUE on (active) WHERE active — "one active config on the
--- whole platform". Left standing, activating the merchant channel would have
--- deactivated the player channel and re-gated every player, which is the most
--- expensive thing this schema can do by accident.
-DROP INDEX IF EXISTS one_active_telegram_config;
-CREATE UNIQUE INDEX one_active_telegram_config
-  ON telegram_configs (audience) WHERE active;
-
--- ── telegram_bots: a bot serves exactly one panel ──────────────────────────
-ALTER TABLE telegram_bots ADD COLUMN IF NOT EXISTS audience TEXT NOT NULL DEFAULT 'PLAYER';
-ALTER TABLE telegram_bots DROP CONSTRAINT IF EXISTS telegram_bots_audience_check;
-ALTER TABLE telegram_bots ADD CONSTRAINT telegram_bots_audience_check
-  CHECK (audience IN ('PLAYER','STAFF','MERCHANT'));
-
--- The generated slot must compose the audience in, or the single partial unique
--- index refuses the SECOND panel's recovery bot — on the INSERT, with a
--- duplicate-key error naming an index whose name says nothing about audiences.
--- Guarded on the EXPRESSION rather than on the column's existence, because the
--- column exists in both the old shape and the new one and only the expression
--- tells them apart.
-DO $$ BEGIN
-  IF EXISTS (
-    SELECT 1 FROM pg_attrdef d
-      JOIN pg_class c ON c.oid = d.adrelid
-      JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = d.adnum
-     WHERE c.relname = 'telegram_bots'
-       AND a.attname = 'live_slot'
-       AND pg_get_expr(d.adbin, d.adrelid) NOT LIKE '%audience%'
-  ) THEN
-    DROP INDEX IF EXISTS one_live_bot_per_singular_role;
-    ALTER TABLE telegram_bots DROP COLUMN live_slot;
-    ALTER TABLE telegram_bots ADD COLUMN live_slot TEXT GENERATED ALWAYS AS (
-      CASE WHEN status = 'ACTIVE' AND role = 'recovery'
-           THEN audience || ':' || role END
-    ) STORED;
-    CREATE UNIQUE INDEX one_live_bot_per_singular_role
-      ON telegram_bots (live_slot) WHERE live_slot IS NOT NULL;
-    RAISE NOTICE 'telegram_bots.live_slot rebuilt: one live recovery bot PER AUDIENCE';
-  END IF;
-END $$;
-
-DROP INDEX IF EXISTS telegram_bots_role_status_idx;
-CREATE INDEX telegram_bots_role_status_idx ON telegram_bots (audience, role, status);
-
--- ── telegram_identities: one Telegram account, one link PER PANEL ──────────
-ALTER TABLE telegram_identities ADD COLUMN IF NOT EXISTS audience TEXT NOT NULL DEFAULT 'PLAYER';
-ALTER TABLE telegram_identities DROP CONSTRAINT IF EXISTS telegram_identities_audience_check;
-ALTER TABLE telegram_identities ADD CONSTRAINT telegram_identities_audience_check
-  CHECK (audience IN ('PLAYER','STAFF','MERCHANT'));
-
--- An EXISTING row's audience is derivable — it is the account_type of the user
--- it points at — so nothing has to be guessed. Runs before the key changes, so
--- the rows are already in their right audiences when uniqueness is re-imposed.
-UPDATE telegram_identities ti
-   SET audience = u.account_type
-  FROM users u
- WHERE u.user_id = ti.user_id
-   AND ti.audience <> u.account_type;
-
--- The primary key, widened. Guarded on whether `audience` is already part of
--- it, which is the only thing that distinguishes the two shapes.
-DO $$ BEGIN
+-- ── A link's panel IS its account's type ──────────────────────────────────
+-- `(user_id, account_type)` is trivially unique (user_id is the key); it is
+-- declared so the link and the challenge below can REFERENCE the pair, which
+-- makes "this link is for a STAFF account" a fact the row cannot get wrong
+-- rather than a column every writer must remember to copy (§33.5).
+DO $$
+BEGIN
   IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint con
-      JOIN pg_attribute a
-        ON a.attrelid = con.conrelid AND a.attnum = ANY (con.conkey)
-     WHERE con.conrelid = 'telegram_identities'::regclass
-       AND con.contype = 'p'
-       AND a.attname = 'audience'
+    SELECT 1 FROM pg_constraint
+     WHERE conrelid = 'users'::regclass AND conname = 'users_id_account_type'
   ) THEN
-    ALTER TABLE telegram_identities DROP CONSTRAINT IF EXISTS telegram_identities_pkey;
-    ALTER TABLE telegram_identities ADD PRIMARY KEY (telegram_user_id, audience);
-    RAISE NOTICE 'telegram_identities primary key widened to (telegram_user_id, audience)';
+    DROP INDEX IF EXISTS users_id_account_type;
+    ALTER TABLE users ADD CONSTRAINT users_id_account_type UNIQUE (user_id, account_type);
   END IF;
 END $$;
 
-DROP INDEX IF EXISTS one_active_identity_per_phone;
-CREATE UNIQUE INDEX one_active_identity_per_phone
-  ON telegram_identities (phone, audience) WHERE contact_active;
+-- ── The one bot ───────────────────────────────────────────────────────────
+-- One row. Saved by an admin (`canManageTelegram`) after Telegram's `getMe`
+-- confirmed the token, so the @username and id are Telegram's answer, not a
+-- typed value. The token is ciphertext (IDENTITY_ENCRYPTION_KEY): whoever holds
+-- it can sign Mini App data, which is to say sign anybody in. It is replaceable
+-- at runtime because Telegram suspends gambling bots; links survive a swap,
+-- because they key on the PERSON's Telegram id.
+CREATE TABLE IF NOT EXISTS telegram_bot (
+  id                  SMALLINT PRIMARY KEY DEFAULT 1,
+  bot_id              TEXT NOT NULL,
+  username            TEXT NOT NULL,
+  token_encrypted     TEXT NOT NULL,
+  -- The Mini App's short name from BotFather (`t.me/<bot>/<short>`); empty
+  -- means the bot's MAIN Mini App (`t.me/<bot>?startapp=`).
+  mini_app_short_name TEXT NOT NULL DEFAULT '',
+  updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_by          TEXT
+);
+ALTER TABLE telegram_bot DROP CONSTRAINT IF EXISTS telegram_bot_one_row;
+ALTER TABLE telegram_bot ADD CONSTRAINT telegram_bot_one_row CHECK (id = 1);
+ALTER TABLE telegram_bot DROP CONSTRAINT IF EXISTS telegram_bot_short_name_shape;
+ALTER TABLE telegram_bot ADD CONSTRAINT telegram_bot_short_name_shape
+  CHECK (mini_app_short_name ~ '^[A-Za-z0-9_]{0,64}$');
+
+-- ── The link: an account verified by its own Telegram ─────────────────────
+-- One per account (the key) and, per panel, one account per Telegram account
+-- (`telegram_links_one_per_panel`): a person holds a player, a merchant and a
+-- staff account on one mobile, all three linked to the same Telegram account.
+--
+-- A row EXISTS only once a contact share proved the phone, and nothing deletes
+-- one but the account's own deletion: "relink, never unlink" (owner reading,
+-- 2026-10-07). A relink moves `telegram_user_id` in place and re-stamps
+-- `linked_at`; `verified_at` is the first proof and never moves.
+CREATE TABLE IF NOT EXISTS telegram_links (
+  user_id           TEXT PRIMARY KEY,
+  audience          TEXT NOT NULL,
+  telegram_user_id  TEXT NOT NULL,
+  -- Telegram's verified number, digits as `users.mobile` holds them. Equal to
+  -- the account's mobile by the trigger below.
+  phone             TEXT NOT NULL,
+  telegram_username TEXT NOT NULL DEFAULT '',
+  first_name        TEXT NOT NULL DEFAULT '',
+  -- Telegram approval of every password sign-in. Always on for staff and
+  -- merchants (the CHECK); a player's own switch.
+  two_factor        BOOLEAN NOT NULL DEFAULT FALSE,
+  verified_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  linked_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE telegram_links DROP CONSTRAINT IF EXISTS telegram_links_account;
+ALTER TABLE telegram_links ADD CONSTRAINT telegram_links_account
+  FOREIGN KEY (user_id, audience) REFERENCES users (user_id, account_type) ON DELETE CASCADE;
+ALTER TABLE telegram_links DROP CONSTRAINT IF EXISTS telegram_links_audience_check;
+ALTER TABLE telegram_links ADD CONSTRAINT telegram_links_audience_check
+  CHECK (audience IN ('PLAYER', 'STAFF', 'MERCHANT'));
+ALTER TABLE telegram_links DROP CONSTRAINT IF EXISTS telegram_links_staff_two_factor;
+ALTER TABLE telegram_links ADD CONSTRAINT telegram_links_staff_two_factor
+  CHECK (audience = 'PLAYER' OR two_factor);
+CREATE UNIQUE INDEX IF NOT EXISTS telegram_links_one_per_panel
+  ON telegram_links (telegram_user_id, audience);
+
+-- "Linked" means "this Telegram account's phone is this account's mobile".
+-- A trigger rather than trust in the writer: the whole of Step 3 rests on it,
+-- and `users.mobile` never changes, so the check is exact for the row's life.
+CREATE OR REPLACE FUNCTION bb_telegram_link_phone_is_mobile() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM users WHERE user_id = NEW.user_id AND mobile = NEW.phone
+  ) THEN
+    RAISE EXCEPTION 'a Telegram link must carry its account''s own mobile'
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'telegram_link_phone_is_mobile';
+  END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS telegram_link_phone_is_mobile ON telegram_links;
+CREATE TRIGGER telegram_link_phone_is_mobile
+  BEFORE INSERT OR UPDATE OF phone, user_id ON telegram_links
+  FOR EACH ROW EXECUTE FUNCTION bb_telegram_link_phone_is_mobile();
+
+-- ── A question put to the Mini App, and its answer ────────────────────────
+-- The id is the deep-link parameter (`startapp=<id>`), which Telegram signs
+-- into `initData`, so the Mini App can only ever answer the challenge it was
+-- opened for. It names nothing secret: approving needs the account's own
+-- Telegram (or a contact matching its mobile), and redeeming an approval needs
+-- the signed challenge token the requesting browser holds.
+--
+-- PENDING → APPROVED or DENIED → REDEEMED, each step an UPDATE whose WHERE
+-- names the state it expects and the database clock (§32 S6). `user_id` is
+-- null only while a "Login with Telegram" does not yet know whose Telegram it
+-- is; the approval binds it.
+CREATE TABLE IF NOT EXISTS telegram_challenges (
+  challenge_id     TEXT PRIMARY KEY,
+  purpose          TEXT NOT NULL,
+  audience         TEXT NOT NULL,
+  user_id          TEXT,
+  status           TEXT NOT NULL DEFAULT 'PENDING',
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at       TIMESTAMPTZ NOT NULL,
+  decided_at       TIMESTAMPTZ,
+  telegram_user_id TEXT,
+  redeemed_at      TIMESTAMPTZ,
+  -- Shown in the Mini App ("a sign-in from 203.0.113.7, Chrome on Android"),
+  -- so the person approving knows what they approve.
+  requested_ip     TEXT NOT NULL DEFAULT '',
+  requested_agent  TEXT NOT NULL DEFAULT ''
+);
+ALTER TABLE telegram_challenges DROP CONSTRAINT IF EXISTS telegram_challenges_purpose_check;
+ALTER TABLE telegram_challenges ADD CONSTRAINT telegram_challenges_purpose_check
+  CHECK (purpose IN ('VERIFY', 'LOGIN', 'TELEGRAM_LOGIN', 'RELINK', 'TWO_FACTOR_OFF'));
+ALTER TABLE telegram_challenges DROP CONSTRAINT IF EXISTS telegram_challenges_audience_check;
+ALTER TABLE telegram_challenges ADD CONSTRAINT telegram_challenges_audience_check
+  CHECK (audience IN ('PLAYER', 'STAFF', 'MERCHANT'));
+ALTER TABLE telegram_challenges DROP CONSTRAINT IF EXISTS telegram_challenges_status_check;
+ALTER TABLE telegram_challenges ADD CONSTRAINT telegram_challenges_status_check
+  CHECK (status IN ('PENDING', 'APPROVED', 'DENIED', 'REDEEMED'));
+ALTER TABLE telegram_challenges DROP CONSTRAINT IF EXISTS telegram_challenges_account;
+ALTER TABLE telegram_challenges ADD CONSTRAINT telegram_challenges_account
+  FOREIGN KEY (user_id, audience) REFERENCES users (user_id, account_type) ON DELETE CASCADE;
+-- Only an unanswered (or refused) Telegram login may not yet know its account.
+ALTER TABLE telegram_challenges DROP CONSTRAINT IF EXISTS telegram_challenges_bound;
+ALTER TABLE telegram_challenges ADD CONSTRAINT telegram_challenges_bound
+  CHECK (user_id IS NOT NULL OR (purpose = 'TELEGRAM_LOGIN' AND status IN ('PENDING', 'DENIED')));
+-- An answer says when it was given and by which Telegram account.
+ALTER TABLE telegram_challenges DROP CONSTRAINT IF EXISTS telegram_challenges_decided;
+ALTER TABLE telegram_challenges ADD CONSTRAINT telegram_challenges_decided
+  CHECK (status = 'PENDING' OR (decided_at IS NOT NULL AND telegram_user_id IS NOT NULL));
+ALTER TABLE telegram_challenges DROP CONSTRAINT IF EXISTS telegram_challenges_redeemed;
+ALTER TABLE telegram_challenges ADD CONSTRAINT telegram_challenges_redeemed
+  CHECK ((status = 'REDEEMED') = (redeemed_at IS NOT NULL));
+CREATE INDEX IF NOT EXISTS telegram_challenges_expiry_idx ON telegram_challenges (expires_at);
+CREATE INDEX IF NOT EXISTS telegram_challenges_user_idx ON telegram_challenges (user_id)
+  WHERE user_id IS NOT NULL;
+
+-- ── Each signed Mini App string, used once ────────────────────────────────
+-- `initData` and a shared contact are bearer proofs for the five minutes
+-- Telegram's signature is accepted (miniAppAuth.js). Claiming the hash here,
+-- in the transaction that acts on it, makes a captured string worth nothing a
+-- second time — the INSERT is the check (§32 S6). Swept once worthless.
+CREATE TABLE IF NOT EXISTS telegram_init_data_uses (
+  hash       TEXT PRIMARY KEY,
+  used_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS telegram_init_data_uses_expiry_idx
+  ON telegram_init_data_uses (expires_at);
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- KYC REMOVED (owner, 2026-10-02)

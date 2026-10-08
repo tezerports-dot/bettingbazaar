@@ -90,24 +90,24 @@ describePg('accounts (PostgreSQL)', () => {
   });
 
   describe('secrets do not leak through an ordinary read', () => {
-    it('omits the password hash and the 2FA secret from getUser', async () => {
+    it('omits the password hash from getUser', async () => {
       await createUser(mk({ passwordHash: 'argon2-hash' }));
-      await updateUser('u-1', { two_factor_secret: 'TOTPSECRET', two_factor_enabled: true });
-
       const user = await getUser('u-1');
-      expect(user.twoFactorEnabled).toBe(true);     // the FACT is public
       expect(user).not.toHaveProperty('passwordHash');
-      expect(user).not.toHaveProperty('twoFactorSecret');
-      expect(JSON.stringify(user)).not.toContain('TOTPSECRET');
       expect(JSON.stringify(user)).not.toContain('argon2-hash');
     });
 
-    it('returns them only through the function that exists to read them', async () => {
+    it('returns it only through the function that exists to read it', async () => {
       await createUser(mk({ passwordHash: 'argon2-hash' }));
-      await updateUser('u-1', { two_factor_secret: 'TOTPSECRET', two_factor_last_counter: 42 });
-      expect(await getUserCredentials('u-1')).toMatchObject({
-        passwordHash: 'argon2-hash', twoFactorSecret: 'TOTPSECRET', twoFactorLastCounter: 42,
-      });
+      expect(await getUserCredentials('u-1')).toEqual({ userId: 'u-1', passwordHash: 'argon2-hash' });
+    });
+
+    it('holds no authenticator secret at all: Telegram is the only second factor', async () => {
+      const { rows } = await pgQuery(
+        `SELECT column_name FROM information_schema.columns
+          WHERE table_name IN ('users', 'merchants')
+            AND (column_name LIKE 'two_factor%' OR column_name = 'backup_codes')`);
+      expect(rows).toEqual([]);
     });
   });
 
@@ -555,79 +555,5 @@ describePg('seeding the first admin', () => {
     delete process.env.DEFAULT_ADMIN_PASSWORD;
     await seedAdminAccount();
     expect((await listUsers({ isAdmin: true })).users).toHaveLength(0);
-  });
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// The second-factor writes, under concurrency.
-//
-// The unit test asserts the module's LOGIC against a stub. What it cannot
-// assert is that two requests racing the same code produce one success — a
-// race needs a real database, and this is the only place it can be run.
-// ─────────────────────────────────────────────────────────────────────────────
-import { spendTwoFactorCounter, consumeTwoFactorBackupCode } from '../repositories/users.js';
-
-describePg('the second-factor anti-replay writes', () => {
-  const U = 'u-2fa';
-
-  beforeAll(async () => { await applySchema(); });
-  afterAll(async () => { await closePg(); });
-  beforeEach(async () => {
-    await pgQuery('TRUNCATE users RESTART IDENTITY CASCADE');
-    await createUser({ userId: U, username: 'twofa', mobile: '9995550001' });
-  });
-
-  it('spends a counter once, and refuses the same one again', async () => {
-    expect(await spendTwoFactorCounter(U, 100)).toBe(true);
-    // The replayed code verifies cryptographically for up to 90 seconds. This
-    // is what stops it being accepted twice.
-    expect(await spendTwoFactorCounter(U, 100)).toBe(false);
-  });
-
-  it('refuses a counter BELOW the one already spent', async () => {
-    await spendTwoFactorCounter(U, 100);
-    expect(await spendTwoFactorCounter(U, 99)).toBe(false);
-    expect(await spendTwoFactorCounter(U, 101)).toBe(true);
-  });
-
-  it('lets exactly ONE of many simultaneous replays through', async () => {
-    // The real shape of the attack: the same six digits submitted at once. A
-    // read-then-write guard passes every one of these, because they all read
-    // the old counter before any of them writes.
-    const results = await Promise.all(
-      Array.from({ length: 12 }, () => spendTwoFactorCounter(U, 500)),
-    );
-    expect(results.filter(Boolean)).toHaveLength(1);
-  });
-
-  it('consumes a recovery code once, even when redeemed concurrently', async () => {
-    const codes = ['h1', 'h2', 'h3'];
-    await updateUser(U, { backupCodes: codes });
-
-    // Both callers verified against the same list and computed the same
-    // shorter one. Compare-and-swap means only the first lands.
-    const results = await Promise.all([
-      consumeTwoFactorBackupCode(U, { expected: codes, remaining: ['h1', 'h3'] }),
-      consumeTwoFactorBackupCode(U, { expected: codes, remaining: ['h1', 'h3'] }),
-    ]);
-    expect(results.filter(Boolean)).toHaveLength(1);
-    expect((await getUserCredentials(U)).backupCodes).toEqual(['h1', 'h3']);
-  });
-
-  it('refuses a consume whose expected list is already stale', async () => {
-    await updateUser(U, { backupCodes: ['h1', 'h2'] });
-    await consumeTwoFactorBackupCode(U, { expected: ['h1', 'h2'], remaining: ['h1'] });
-    // A second request holding the pre-consume list must not resurrect 'h2'.
-    expect(await consumeTwoFactorBackupCode(U, { expected: ['h1', 'h2'], remaining: ['h2'] })).toBe(false);
-    expect((await getUserCredentials(U)).backupCodes).toEqual(['h1']);
-  });
-
-  it('returns the recovery codes with the credentials, not with the account', async () => {
-    await updateUser(U, { backupCodes: ['h1'] });
-    // They were missing from getUserCredentials entirely, so the second-factor
-    // check could never reach a recovery code — locking out precisely the
-    // person whose authenticator is gone, which is what they exist for.
-    expect((await getUserCredentials(U)).backupCodes).toEqual(['h1']);
-    expect(JSON.stringify(await getUser(U))).not.toContain('h1');
   });
 });

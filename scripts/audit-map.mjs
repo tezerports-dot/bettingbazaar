@@ -84,7 +84,7 @@ function routes() {
 
 const AUTH = new Set(['authenticate', 'merchantAuth', 'isAdmin', 'hasPermission',
   'orderAccessGuard',
-  'requireChannelMembership', 'optionalAuth', 'queueManagerOrPermission']);
+  'optionalAuth', 'queueManagerOrPermission']);
 
 /**
  * A VARIANT of a known guard counts as that guard.

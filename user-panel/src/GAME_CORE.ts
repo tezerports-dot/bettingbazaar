@@ -18,7 +18,6 @@
  * ║  Files that MUST import from here:                                       ║
  * ║    redesign/GameScreen.tsx    — canPlaceBet (stop offering a late bet)   ║
  * ║    types.ts                   — the shared phase/winner unions           ║
- * ║    services/realBackend.ts    — (reference only, server enforces)        ║
  * ║                                                                          ║
  * ║  This roster named components/Game/{CycleControl,BettingCard,            ║
  * ║  WinnerCelebration}.tsx. None had been mounted since RedesignShell       ║

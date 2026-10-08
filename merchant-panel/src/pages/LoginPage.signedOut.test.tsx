@@ -16,8 +16,8 @@ import { MemoryRouter } from 'react-router';
 
 vi.mock('../services/AuthContext', () => ({
   useAuth: () => ({
-    merchant: null, loading: false, unreachable: false, pendingChallenge: null,
-    login: vi.fn(), submitTwoFactor: vi.fn(), cancelTwoFactor: vi.fn(), refreshProfile: vi.fn(),
+    merchant: null, loading: false, unreachable: false,
+    login: vi.fn(), acceptSession: vi.fn(), refreshProfile: vi.fn(),
   }),
 }));
 

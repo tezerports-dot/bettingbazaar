@@ -22,10 +22,3 @@ export const PANEL_NAME = {
   MERCHANT: 'merchant',
   STAFF: 'admin',
 };
-
-/** The people on it, singular, for "every ___ will be asked to…". */
-export const PANEL_NOUN = {
-  PLAYER: 'player',
-  MERCHANT: 'merchant',
-  STAFF: 'staff member',
-};

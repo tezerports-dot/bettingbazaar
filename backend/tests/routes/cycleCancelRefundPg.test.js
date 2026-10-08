@@ -27,19 +27,6 @@ import { actor, as } from './_harness.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 
-async function linkTelegram({ userId, mobile }) {
-  const active = await pgQuery(
-    `SELECT generation FROM telegram_configs WHERE active AND audience = 'PLAYER' LIMIT 1`, []);
-  if (!active.rows[0]) return;
-  await pgQuery(
-    `INSERT INTO telegram_identities (
-       telegram_user_id, audience, user_id, phone, contact_shared_at,
-       contact_active, channel_status, channel_checked_at, channel_generation, linked_generation)
-     VALUES ($1, 'PLAYER', $2, $3, now(), TRUE, 'member', now(), $4, $4)
-     ON CONFLICT (telegram_user_id, audience) DO NOTHING`,
-    [`rt-tg-${userId}`, userId, mobile, active.rows[0].generation]);
-}
-
 async function openCycle() {
   const start = new Date(Date.now() - 60_000 - randomInt(0, 50_000_000));
   const { cycle } = await ensureCycle({
@@ -56,7 +43,6 @@ describePg('cancelling a cycle returns its stakes', () => {
 
   const player = async () => {
     const p = await actor({});
-    await linkTelegram(p);
     await fundWallet(p.userId, 1_000 * 100, `rt-cancel-fund-${p.userId}`);
     return p;
   };

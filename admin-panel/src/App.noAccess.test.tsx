@@ -21,15 +21,14 @@ vi.mock('./services/sse', () => ({
 }));
 vi.mock('./services/api', () => ({
   default: {
-    twoFactor: { status: vi.fn().mockResolvedValue({ enabled: true, mandatory: true }), setup: vi.fn(), activate: vi.fn() },
     auth: {
       verifySession: vi.fn(async () => (current.admin
-        ? { success: true, data: { admin: current.admin }, mustEnroll2FA: false }
+        ? { success: true, data: { admin: current.admin }, bootstrap: false }
         : { success: false })),
       logout: vi.fn(),
     },
+    telegram: { miniApp: vi.fn().mockResolvedValue({ success: true, available: false, botUsername: '', resetUrl: null }) },
   },
-  telegram: { staffVerification: vi.fn().mockResolvedValue({ verified: true }) },
 }));
 // The shell itself is not the question here, and it fetches notifications and
 // the live feed on mount. The real `firstPermittedPath` is kept: it is what
@@ -45,7 +44,7 @@ import { useAuthStore } from './services/auth';
 const signInAs = (admin: Record<string, unknown>) => {
   current.admin = { userId: 's-1', username: 'staff', ...admin };
   useAuthStore.setState({
-    isAuthenticated: true, mustEnroll2FA: false, token: 't', pendingChallenge: null, admin: current.admin as any,
+    isAuthenticated: true, bootstrap: false, token: 't', admin: current.admin as any,
   });
 };
 
@@ -93,7 +92,7 @@ describe('a screen outside the grant', () => {
   it('still sends a person who is NOT signed in to the sign-in screen', async () => {
     window.location.hash = '#/users';
     current.admin = null;
-    useAuthStore.setState({ isAuthenticated: false, admin: null, token: null, mustEnroll2FA: false, pendingChallenge: null } as any);
+    useAuthStore.setState({ isAuthenticated: false, admin: null, token: null, bootstrap: false } as any);
     render(<App />);
     await new Promise((r) => setTimeout(r, 50));
     expect(window.location.hash).toBe('#/login');

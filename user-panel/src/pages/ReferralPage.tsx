@@ -25,7 +25,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import ScreenShell, { card } from '../redesign/Screen';
 import { apiClient } from '../services/apiClient';
-import { apiUrl } from '../services/apiUrl';
+import { getBackend } from '../services/backend.service';
 
 interface LevelTotals {
   count: number; confirmed: number; disbursed: number; blocked: number;
@@ -76,9 +76,8 @@ const ReferralPage: React.FC = () => {
     // Only to SHOW which bot the link currently opens. It is deliberately not
     // part of the link itself — see below.
     try {
-      const r = await fetch(apiUrl('/api/telegram/public-config'), { credentials: 'include' });
-      const d = await r.json();
-      if (d?.success) setBot(d.botUsername || '');
+      const d = await getBackend().getTelegramSetup();
+      setBot(d.available ? d.botUsername : '');
     } catch { /* the report and the link both work without this */ }
   }, []);
 
@@ -101,8 +100,8 @@ const ReferralPage: React.FC = () => {
    *
    * `/r/<code>` redirects to whichever bot is live at the moment of the tap, so
    * the link never has to change — it never named a bot in the first place.
-   * Telegram still receives the code as the /start argument, so the invited
-   * player types nothing.
+   * The Mini App receives the code as its signed start parameter (`ref-CODE`)
+   * and locks it on the signup form, so the invited player types nothing.
    */
   const link = data?.referralCode
     ? `${window.location.origin}/r/${encodeURIComponent(data.referralCode)}`

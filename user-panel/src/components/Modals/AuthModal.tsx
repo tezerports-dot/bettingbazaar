@@ -10,9 +10,11 @@
  * anybody who has not opened a chat with it first.
  *
  * So both are forms this platform owns. Telegram keeps the one job it is good
- * at — proving a phone number belongs to the person holding it, and carrying
- * the channel — and that happens AFTER the account exists, behind the
- * verification gate (`VerificationGateModal`).
+ * at, proving a phone number belongs to the person holding it: the signup ends
+ * on a Telegram step (`TelegramStep`), the Mini App's contact share must match
+ * the mobile, and only then can the account be used (Step 3, owner
+ * 2026-10-07). A sign-in is the password, plus Telegram's approval only for a
+ * player who switched that on. "Login with Telegram" is offered beside it.
  *
  * ── The signup form ────────────────────────────────────────────────────────
  *   1. mobile (the one on the player's Telegram account)
@@ -40,12 +42,14 @@
  * — the one on your Telegram account — without +91" is the difference between a player
  * fixing their entry and a player trying the same thing again.
  */
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { storedReferralCode } from '../../services/referralCapture';
 import { useGame } from '../../services/GameContext';
 import { getBackend } from '../../services/backend.service';
 import { useRetryCountdown } from '../../hooks/useRetryCountdown';
 import { brandLogo } from '../../services/brandAssets';
+import TelegramStep from './TelegramStep';
+import type { SignInStep, TelegramSetup } from '../../services/backend.interface';
 
 interface AuthModalProps {
   onClose?: () => void;
@@ -118,13 +122,12 @@ const Field: React.FC<{
   </div>
 );
 
-const digits = (v: string, max: number) => v.replace(/\D/g, '').slice(0, max);
 
 /**
  * The ten digits of an Indian mobile, whatever the player typed around them.
  *
  * ── The defect this exists for, found by typing into the box ──────────────
- * `digits(v, 10)` alone turns `+91 98765 43210` into `9198765432`: ten digits,
+ * Taking the first ten digits alone turns `+91 98765 43210` into `9198765432`: ten digits,
  * starting with a 9, indistinguishable from a real number to every check on
  * both sides. The account is created on a number that is not theirs, the
  * Telegram contact share then matches nothing FOREVER, and the player sits at
@@ -160,7 +163,7 @@ function indianMobile(raw: string): string {
 }
 
 const AuthModal: React.FC<AuthModalProps> = ({ onClose, initialMode }) => {
-  const { register, signIn, signInWithSecondFactor } = useGame();
+  const { register, signIn, signInWithTelegram, pollTelegramStep } = useGame();
 
   const [mode, setMode] = useState<'login' | 'signup'>(initialMode === 'register' ? 'signup' : 'login');
   const [busy, setBusy] = useState(false);
@@ -205,9 +208,24 @@ const AuthModal: React.FC<AuthModalProps> = ({ onClose, initialMode }) => {
   // ── Login ─────────────────────────────────────────────────────────────────
   const [loginMobile, setLoginMobile] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
-  const [challenge, setChallenge] = useState('');
-  const [otp, setOtp] = useState('');
-  const otpRef = useRef<HTMLInputElement>(null);
+
+  // ── The Telegram step, when one is owed ──────────────────────────────────
+  const [step, setStep] = useState<Extract<SignInStep, { kind: 'telegram' }> | null>(null);
+  const [stepTitle, setStepTitle] = useState('');
+  const [notice, setNotice] = useState('');
+
+  /**
+   * Is Telegram available, and where "Forgot password" goes. Asked once; when
+   * it fails or says no, the two Telegram buttons are simply not offered.
+   */
+  const [setup, setSetup] = useState<TelegramSetup | null>(null);
+  useEffect(() => {
+    let alive = true;
+    getBackend().getTelegramSetup()
+      .then((r) => { if (alive) setSetup(r); })
+      .catch(() => { /* no Telegram buttons; the password form still works */ });
+    return () => { alive = false; };
+  }, []);
 
   /**
    * Confirm the code the link brought, so a field nobody can edit is not also
@@ -232,18 +250,23 @@ const AuthModal: React.FC<AuthModalProps> = ({ onClose, initialMode }) => {
     && password.length >= 8 && confirm.length > 0 && !busy;
   const loginReady = loginMobile.length === 10 && loginPassword.length > 0 && !busy && !pace.blocked;
 
+  /** Show the step the server owes, or say why there is none. */
+  const follow = (next: SignInStep, title: string) => {
+    if (next.kind === 'done') { onClose?.(); return; }
+    if (next.kind === 'unavailable') { setNotice(next.message); return; }
+    setStepTitle(title);
+    setStep(next);
+  };
+
   const submitSignup = async (e?: React.FormEvent) => {
     e?.preventDefault();
     if (!signupReady) return;
-    setBusy(true); setError('');
+    setBusy(true); setError(''); setNotice('');
     try {
-      await register({
+      follow(await register({
         mobile: signupMobile, password, confirmPassword: confirm,
         referralCode: invite || undefined,
-      });
-      // Seated. The verification gate takes over from here — it is mounted
-      // above every screen and reads the session this call just created.
-      onClose?.();
+      }), 'Verify your mobile in Telegram');
     } catch (err) {
       // Verbatim. The server names the field that is wrong, and replacing that
       // with "Sign-up failed" is the difference between a player fixing their
@@ -255,16 +278,9 @@ const AuthModal: React.FC<AuthModalProps> = ({ onClose, initialMode }) => {
   const submitLogin = async (e?: React.FormEvent) => {
     e?.preventDefault();
     if (!loginReady) return;
-    setBusy(true); setError('');
+    setBusy(true); setError(''); setNotice('');
     try {
-      const res = await signIn(loginMobile, loginPassword);
-      if (res.twoFactorRequired && res.challengeToken) {
-        setChallenge(res.challengeToken);
-        setOtp('');
-        setTimeout(() => otpRef.current?.focus(), 0);
-        return;
-      }
-      onClose?.();
+      follow(await signIn(loginMobile, loginPassword), 'Continue in Telegram');
     } catch (err) {
       // A pace refusal is not a wrong password. Saying "invalid credentials"
       // would send the player to check a password that was probably right.
@@ -276,20 +292,23 @@ const AuthModal: React.FC<AuthModalProps> = ({ onClose, initialMode }) => {
     } finally { setBusy(false); }
   };
 
-  const submitOtp = async (e?: React.FormEvent) => {
-    e?.preventDefault();
-    if (otp.length !== 6 || busy) return;
-    setBusy(true); setError('');
+  const startTelegramLogin = async () => {
+    if (busy) return;
+    setBusy(true); setError(''); setNotice('');
     try {
-      await signInWithSecondFactor(challenge, otp);
-      onClose?.();
+      follow(await signInWithTelegram(), 'Log in with Telegram');
     } catch (err) {
-      setError((err as Error)?.message || 'That code is not valid.');
-      setOtp('');
+      setError((err as Error)?.message || 'Telegram sign-in is not available right now.');
     } finally { setBusy(false); }
   };
 
-  const switchTo = (m: 'login' | 'signup') => { setMode(m); setError(''); setChallenge(''); };
+  // Stable per step, so the poll restarts only when the step does.
+  const poll = useCallback(
+    () => (step ? pollTelegramStep(step.leg, step.challengeToken) : Promise.resolve('pending' as const)),
+    [step, pollTelegramStep],
+  );
+
+  const switchTo = (m: 'login' | 'signup') => { setMode(m); setError(''); setNotice(''); setStep(null); };
 
   return (
     <div style={{ position: 'absolute', inset: 0, zIndex: 200, overflowY: 'auto', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px 16px', background: 'var(--app-bg)' }}>
@@ -323,14 +342,20 @@ const AuthModal: React.FC<AuthModalProps> = ({ onClose, initialMode }) => {
           ))}
         </div>
 
-        {error && (
+        {notice && !step && (
+          <div role="status" style={{ background: 'var(--surface2)', border: '1px solid var(--line2)', borderRadius: 10, padding: 10, textAlign: 'center', fontSize: 11.5, fontWeight: 700, color: 'var(--text2)', marginBottom: 12, lineHeight: 1.5 }}>
+            {notice}
+          </div>
+        )}
+
+        {error && !step && (
           <div role="alert" style={{ background: 'color-mix(in srgb,var(--red) 12%,transparent)', border: '1px solid color-mix(in srgb,var(--red) 40%,transparent)', borderRadius: 10, padding: 10, textAlign: 'center', fontSize: 11.5, fontWeight: 700, color: 'var(--red)', marginBottom: 12, lineHeight: 1.5 }}>
             {error}
           </div>
         )}
 
         {/* ── SIGN UP ───────────────────────────────────────────────────── */}
-        {mode === 'signup' && (
+        {mode === 'signup' && !step && (
           <form onSubmit={submitSignup} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
             <Field
               id="bb-signup-mobile" label="Mobile number" value={signupMobile} autoFocus
@@ -379,13 +404,13 @@ const AuthModal: React.FC<AuthModalProps> = ({ onClose, initialMode }) => {
             </button>
 
             <p style={{ margin: 0, textAlign: 'center', fontSize: 11, color: 'var(--text3)', lineHeight: 1.6 }}>
-              One more step after this: open our Telegram bot from this same mobile number and join the channel.
+              One more step after this: open Telegram on this same mobile number and share your contact to verify it.
             </p>
           </form>
         )}
 
         {/* ── LOG IN ────────────────────────────────────────────────────── */}
-        {mode === 'login' && !challenge && (
+        {mode === 'login' && !step && (
           <form onSubmit={submitLogin} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
             <Field
               id="bb-login-mobile" label="Mobile number" value={loginMobile} autoFocus
@@ -401,6 +426,18 @@ const AuthModal: React.FC<AuthModalProps> = ({ onClose, initialMode }) => {
               style={{ ...GOLD, cursor: loginReady ? 'pointer' : 'not-allowed', opacity: loginReady ? 1 : 0.55 }}>
               {pace.blocked ? `Try again in ${pace.secondsLeft}s` : busy ? 'Signing in…' : 'Log in'}
             </button>
+            {setup?.available && (
+              <button type="button" onClick={startTelegramLogin} disabled={busy}
+                style={{ height: 46, borderRadius: 13, border: '1px solid var(--line2)', background: 'var(--surface2)', color: 'var(--text)', fontWeight: 800, fontSize: 13, cursor: busy ? 'not-allowed' : 'pointer' }}>
+                Log in with Telegram
+              </button>
+            )}
+            {setup?.available && setup.resetUrl && (
+              <a href={setup.resetUrl} target="_blank" rel="noopener noreferrer"
+                style={{ textAlign: 'center', fontSize: 11.5, color: 'var(--gold-ink)', textDecoration: 'underline' }}>
+                Forgot password? Reset it in Telegram
+              </a>
+            )}
             <p style={{ margin: 0, textAlign: 'center', fontSize: 11.5, color: 'var(--text3)' }}>
               New here?{' '}
               <button type="button" onClick={() => switchTo('signup')}
@@ -411,25 +448,13 @@ const AuthModal: React.FC<AuthModalProps> = ({ onClose, initialMode }) => {
           </form>
         )}
 
-        {/* ── SECOND FACTOR ─────────────────────────────────────────────── */}
-        {mode === 'login' && challenge && (
-          <form onSubmit={submitOtp} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            <label htmlFor="bb-otp" style={LABEL}>Authenticator code</label>
-            <input
-              ref={otpRef} id="bb-otp" name="one-time-code" value={otp}
-              onChange={(e) => setOtp(digits(e.target.value, 6))}
-              inputMode="numeric" autoComplete="one-time-code" placeholder="000000"
-              style={{ ...FIELD, textAlign: 'center', fontSize: 22, letterSpacing: '.35em', fontFamily: 'monospace', height: 56 }}
-            />
-            <button type="submit" disabled={otp.length !== 6 || busy}
-              style={{ ...GOLD, cursor: (otp.length === 6 && !busy) ? 'pointer' : 'not-allowed', opacity: (otp.length === 6 && !busy) ? 1 : 0.55 }}>
-              {busy ? 'Checking…' : 'Verify'}
-            </button>
-            <button type="button" onClick={() => { setChallenge(''); setError(''); }}
-              style={{ background: 'transparent', border: 'none', color: 'var(--text3)', fontSize: 11.5, cursor: 'pointer', padding: '6px 0' }}>
-              ← Back
-            </button>
-          </form>
+        {/* ── THE TELEGRAM STEP ─────────────────────────────────────────── */}
+        {step && (
+          <TelegramStep
+            title={stepTitle} message={step.message} telegram={step.telegram}
+            poll={poll} onDone={() => { setStep(null); onClose?.(); }}
+            onBack={() => { setStep(null); setError(''); }}
+          />
         )}
       </div>
     </div>

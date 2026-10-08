@@ -278,23 +278,65 @@ export interface MerchantProfile {
 
 export interface AuthResponse {
   success: boolean;
-  token: string;
+  token?: string;
   user?: MerchantProfile;
   merchant?: MerchantProfile;
-  /** Password accepted, second factor still owed. `success` is false here. */
+  /** Password accepted; approve this sign-in in Telegram. `success` is false here. */
   twoFactorRequired?: boolean;
+  /** 403 TELEGRAM_VERIFICATION_REQUIRED: the mobile is not verified in Telegram yet. */
+  verificationRequired?: boolean;
   challengeToken?: string;
-  /** The challenge aged out (5 min) — the password leg must be redone. */
-  twoFactorExpired?: boolean;
-  /** Set when an approved merchant has not yet enrolled a second factor. */
-  mustEnroll2FA?: boolean;
+  telegram?: TelegramLink | null;
+  code?: string;
   message?: string;
+}
+
+/**
+ * A Mini App link the server opened for a challenge
+ * (backend/domains/identity/telegramChallenge.service.js `openChallenge`).
+ */
+export interface TelegramLink {
+  url: string;
+  botUsername: string;
+  expiresAt: string;
+}
+
+/** `GET /api/telegram/mini-app?panel=MERCHANT` (backend miniApp.routes.js). */
+export interface MiniAppSetup {
+  success: boolean;
+  available: boolean;
+  botUsername: string;
+  resetUrl: string | null;
+}
+
+/** `GET /api/merchant/telegram` (backend accountTelegram.js `view`). */
+export interface TelegramStatus {
+  success: boolean;
+  available: boolean;
+  linked: boolean;
+  telegramUsername: string;
+  firstName: string;
+  verifiedAt: string | null;
+  linkedAt: string | null;
+  twoFactor: { enabled: boolean; required: boolean };
+}
+
+/** `POST /api/merchant/auth/signup` (backend merchant.routes.js). */
+export interface SignupResponse {
+  success: boolean;
+  message: string;
+  verificationRequired?: boolean;
+  verificationAvailable?: boolean;
+  challengeToken?: string | null;
+  telegram?: TelegramLink | null;
 }
 
 export interface LoginCredentials {
   mobile: string;
   password: string;
   loginType?: string;
+  /** An approved "Login with Telegram" this password completes. */
+  challengeToken?: string;
 }
 
 /**

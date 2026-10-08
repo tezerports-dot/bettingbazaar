@@ -16,7 +16,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import {
   Landmark, ShieldCheck, History as HistoryIcon, Info, Save, RefreshCw,
-  AlertTriangle, CheckCircle, XCircle, RotateCcw, Undo2,
+  AlertTriangle, CheckCircle, XCircle, Undo2,
 } from 'lucide-react';
 import { LoadingSpinner } from '../../components/LoadingSpinner';
 import { Modal } from '../../components/Modal';

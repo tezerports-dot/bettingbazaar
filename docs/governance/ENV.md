@@ -289,9 +289,9 @@ uniqueness, the other does export.
 
 **Rotating `IDENTITY_ENCRYPTION_KEY`:** move the current value into
 `IDENTITY_ENCRYPTION_PREVIOUS_KEYS`, set the new one, redeploy, then re-encrypt
-at leisure with `rewrapField()` and drop the old entry. Unlike
-`TOTP_ENCRYPTION_KEY` below, this key *can* be rotated — but only if the previous
-value is kept until the re-encryption finishes.
+at leisure with `rewrapField()` and drop the old entry. This key *can* be
+rotated, but only if the previous value is kept until the re-encryption
+finishes. It also encrypts the one Telegram bot's token.
 
 **Bot tokens are NOT environment variables.** They live in `TelegramConfig` so a
 suspended bot can be replaced from the admin panel without a deploy — see
@@ -327,22 +327,8 @@ workflow needs an `ANDROID_APP_ORIGIN` repository **variable** (the same value
 as `PUBLIC_APP_ORIGIN`), whose host is baked into the APK's intent-filter.
 Full walkthrough: `ANDROID_RELEASE_SETUP.md`.
 
-## Two-factor authentication (TOTP)
+## Two-factor authentication
 
-| Variable | Required | Purpose |
-|---|---|---|
-| `TOTP_ENCRYPTION_KEY` | **yes, once 2FA is enabled** | AES-256-GCM key protecting stored TOTP secrets. Generate with `openssl rand -base64 32`. |
-
-A TOTP secret is a **bearer credential** — anyone holding it can mint valid
-codes indefinitely — and unlike a password it cannot be stored as a one-way
-hash, because the server must recompute codes from it. So secrets are encrypted
-at rest and decrypted only for the duration of a verification. A database dump
-alone does not yield working second factors.
-
-Kept separate from `JWT_SECRET` deliberately: rotating the auth key must not
-silently invalidate every enrolled authenticator, and a leak of one must not
-compromise the other.
-
-**This key has no `_PREVIOUS_` counterpart.** Rotating it makes every stored
-secret undecryptable, which means every user re-enrolling. Treat it as
-permanent; back it up with the same care as the Android keystore.
+No variable. The second factor is the account's own Telegram, approved in the
+Mini App (Step 3); no authenticator secrets are stored, so the former
+`TOTP_ENCRYPTION_KEY` is gone.

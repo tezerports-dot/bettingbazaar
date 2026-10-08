@@ -32,7 +32,7 @@ import toast from 'react-hot-toast';
 import { useAuthStore } from '../../services/auth';
 
 const as = (admin: Record<string, unknown>) => useAuthStore.setState({
-  isAuthenticated: true, token: 't', mustEnroll2FA: false, pendingChallenge: null,
+  isAuthenticated: true, token: 't', bootstrap: false,
   admin: { userId: 's-1', username: 'staff', ...admin } as any,
 });
 

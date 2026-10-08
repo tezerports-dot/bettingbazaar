@@ -56,7 +56,7 @@ const CasinoPage: React.FC = () => {
   const [activeGameName, setActiveGameName] = useState('');
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
-  useEffect(() => { if (!anyCasino) navigate('/', { replace: true }); }, [anyCasino]);
+  useEffect(() => { if (!anyCasino) navigate('/', { replace: true }); }, [anyCasino, navigate]);
 
   useEffect(() => {
     (async () => {

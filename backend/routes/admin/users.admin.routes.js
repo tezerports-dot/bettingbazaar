@@ -6,12 +6,9 @@ import {
 import { db } from '#db';
 // Cycle-type vocabulary — phantom access is scoped to one type, or BOTH.
 import { CYCLE_TYPE_VALUES } from '../../domains/markets/cycleTypes.js';
-import { adminAdjustment } from '../../domains/wallet/walletAuthority.service.js';
-import { getUser } from '#db/repositories/users.js';
 // The wallet rows themselves — a delete is a decision, and a decision reads
 // what a movement would lock, never a stored copy of a balance.
 import { getBalancesPaise } from '#db/repositories/wallets.core.js';
-import { randomBytes } from 'node:crypto';
 // `maxWarnings` — one owner. The setting that used to auto-block on a merchant
 // rejection now marks a flagged player for review; it is READ here, never
 // re-declared, so editing it in System Settings changes this screen.

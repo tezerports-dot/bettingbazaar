@@ -1,6 +1,6 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
-import React, { useEffect, useState } from 'react';
-import { Link2, Trash2, Copy, Plus, Image, ExternalLink } from 'lucide-react';
+import React, { useCallback, useEffect, useState } from 'react';
+import { Trash2, Copy, Plus, Image, ExternalLink } from 'lucide-react';
 import { Modal } from '../../components/Modal';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { EmptyState } from '../../components/EmptyState';
@@ -32,16 +32,16 @@ export const CDNManager: React.FC = () => {
   const [previewError, setPreviewError] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
 
-  useEffect(() => { loadImages(); }, [categoryFilter]);
-
-  const loadImages = async () => {
+  const loadImages = useCallback(async () => {
     setIsLoading(true);
     try {
       const res = await api.cdn.getImages(categoryFilter === 'ALL' ? undefined : categoryFilter);
       if (res.success && res.data) setImages(res.data);
     } catch { toast.error('Failed to load CDN library'); }
     finally { setIsLoading(false); }
-  };
+  }, [categoryFilter]);
+
+  useEffect(() => { loadImages(); }, [loadImages]);
 
   const handleAdd = async () => {
     if (!form.url) { toast.error('CDN URL is required'); return; }

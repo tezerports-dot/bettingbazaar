@@ -13,10 +13,10 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import apiClient from '../services/apiClient';
 import { DisputeWindowPanel } from '../components/DisputeWindow';
-import { PAYMENT_STATE_LABELS, PAYMENT_STATE_COLOR, isActive, type PaymentOrderState } from '../services/paymentStateMachine';
+import { PAYMENT_STATE_LABELS, PAYMENT_STATE_COLOR, type PaymentOrderState } from '../services/paymentStateMachine';
 // M-05: WalletTransactionDTO normalizer — GOVERNANCE §4: this module must have consumers.
 import { normalizeTransaction } from '../services/walletTransactionDTO';
-import ScreenShell, { card, capLabel } from '../redesign/Screen';
+import ScreenShell, { card } from '../redesign/Screen';
 // The INR sizes, as tiles grouped by the rail each size is on (Step 2d).
 import OrderSizePicker, { railOfSize, type OrderSizes } from '../components/OrderSizePicker';
 // The USDT rail: whole steps of USDT between the admin's bounds, served by a
@@ -79,12 +79,6 @@ interface PaymentOrder {
   // and the server has never sent it to a player; the second named the cash-link
   // queue, which was removed with its routes (§23 — a type naming a field the
   // server never sends typechecks every read and is `undefined` at runtime).
-}
-interface UserProfile {
-  id: string; username: string;
-  // The bank account a sell is paid into; the row keeps nothing else
-  // (`users_bank_details_bank_account_only`, §24).
-  bankDetails?: { accountNumber?: string; ifscCode?: string; bankName?: string; accountHolderName?: string; };
 }
 type TabKey = 'exchange' | 'ledger' | 'bonuses' | 'payments';
 type BuyStep = 'amount' | 'pay_now' | 'waiting';
@@ -478,7 +472,6 @@ export function BuyPaymentUI({ order, onPaid, onExpire, onExpiryExtended }: {
 const WalletPage: React.FC = () => {
   const [balances, setBalances]         = useState<Balances>({ depositBalance: 0, winningsBalance: 0, lockedBalance: 0, reserveBalance: 0 });
   const [limits, setLimits]             = useState<BetLimits | null>(null);
-  const [userProfile, setUserProfile]   = useState<UserProfile | null>(null);
   const [ledger, setLedger]             = useState<LedgerEntry[]>([]);
   const [paymentOrders, setPaymentOrders] = useState<PaymentOrder[]>([]);
   // Which split withdrawal, if any, has its parts open. One at a time — a
@@ -531,12 +524,6 @@ const WalletPage: React.FC = () => {
 
   const loadMeta = useCallback(async () => {
     try {
-      const prof: any = await apiClient.get('/api/v1/user/profile');
-      const u = prof?.user;
-      if (u) {
-        setUserProfile({ id: u._id || u.id, username: u.username || u.mobile || 'User', bankDetails: u.bankDetails });
-      }
-
       // Balances come from the LIMITS endpoint, not the profile: it reads all
       // four pockets straight from the wallet and returns the stake ceiling
       // computed by the same rule the bet route enforces. Taking the numbers
@@ -627,6 +614,9 @@ const WalletPage: React.FC = () => {
   useEffect(() => { if (tab === 'ledger') { setLedgerPage(1); loadLedger(1, true); } }, [tab, loadLedger]);
   useEffect(() => { if (tab === 'bonuses') { setBonusPage(1); loadBonuses(1, true); } }, [tab, loadBonuses]);
 
+  const resetBuy = () => { setBuyStep('amount'); setBuyTokens(null); setActiveBuyOrder(null); setBuyError(''); };
+  const resetSell = () => { setSellStep('amount'); setSellTokens(null); setActiveSellOrder(null); setSellError(''); };
+
   useEffect(() => {
     const activeOrderId = activeBuyOrder?.orderId || activeSellOrder?.orderId;
     if (!activeOrderId) { if (pollRef.current) clearInterval(pollRef.current); return; }
@@ -684,7 +674,6 @@ const WalletPage: React.FC = () => {
     }
   };
 
-  const resetBuy = () => { setBuyStep('amount'); setBuyTokens(null); setActiveBuyOrder(null); setBuyError(''); };
   const handleBuySubmit = async () => {
     const amt = buyTokens;
     if (!amt) { setBuyError('Choose how many tokens to buy'); return; }
@@ -698,7 +687,6 @@ const WalletPage: React.FC = () => {
     finally { setBuyLoading(false); }
   };
 
-  const resetSell = () => { setSellStep('amount'); setSellTokens(null); setActiveSellOrder(null); setSellError(''); };
   const handleSellSubmit = async () => {
     const amt = sellTokens;
     if (!amt) { setSellError('Choose how many tokens to sell'); return; }

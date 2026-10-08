@@ -60,9 +60,8 @@ import { emitWalletUpdate, emitOrderUpdate, emitMerchantUpdate, emitAdminUpdate 
 import { getSystemConfig } from '#db/repositories/config.js';
 // Which rail an order runs on, and the per-rail timers and caps.
 import {
-  PAYMENT_MODES, paymentModeFor, railOf, routingSettings,
+  PAYMENT_MODES, railOf, routingSettings,
 } from '#db/repositories/teamRouting.js';
-import { rupeesToPaise, paiseToRupees } from '../../shared/money.js';
 // The only shape of an order a player receives.
 import { toPlayerOrderView } from './playerOrderView.js';
 // The mirror of it, pointing the other way: the one shape a MERCHANT receives.

@@ -13,7 +13,7 @@
  * records what it should, and that server.js actually mounts it. A behaviour
  * test alone would have passed for the whole time it was unreachable.
  */
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { readFileSync } from 'node:fs';
 import express from 'express';
 import request from 'supertest';

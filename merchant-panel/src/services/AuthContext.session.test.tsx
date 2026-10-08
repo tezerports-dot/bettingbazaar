@@ -40,7 +40,6 @@ const api = vi.hoisted(() => ({
   getMerchantProfile: vi.fn(),
   logout: vi.fn(),
   merchantLogin: vi.fn(),
-  verifyTwoFactor: vi.fn(),
 }));
 vi.mock('./api', () => ({ api, default: api, ...api }));
 

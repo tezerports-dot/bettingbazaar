@@ -74,13 +74,13 @@ export async function getBalances(userId) {
  */
 export async function creditWinnings(userId, amount, reason, refIdOrModel, txIdOrRefId, maybeTxId, maybeSession) {
   // Detect which overload was used
-  let refModel, refId, txId, session;
+  let refModel, refId, txId;
   if (maybeSession !== undefined) {
-    // 7-arg: (userId, amount, reason, refModel, refId, txId, session)
+    // 7-arg: (userId, amount, reason, refModel, refId, txId, session); the
+    // session is a leftover of the document store and is not used.
     refModel  = refIdOrModel;
     refId     = txIdOrRefId;
     txId      = maybeTxId;
-    session   = maybeSession;
   } else if (maybeTxId !== undefined) {
     // 6-arg: (userId, amount, reason, refModel, refId, txId)
     refModel  = refIdOrModel;
@@ -115,7 +115,6 @@ export async function creditWinnings(userId, amount, reason, refIdOrModel, txIdO
  * with CI to prove it, not folded into an unrelated one.
  */
 export async function lockWithdrawal(userId, amount, withdrawalId) {
-  const txId = `wd_lock_${withdrawalId}`;
   return pg.lockWithdrawal(userId, amount, withdrawalId);
 }
 

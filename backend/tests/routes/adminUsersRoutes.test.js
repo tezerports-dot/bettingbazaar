@@ -16,7 +16,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { pgConfigured, applySchema, closePg, pgQuery } from '#db/client.js';
-import { getBalancesPaise, applyMovementPaise } from '#db/repositories/wallets.core.js';
+import { applyMovementPaise } from '#db/repositories/wallets.core.js';
 // A fixture's tokens come from the platform's own holding, posted with the
 // credit — the database refuses a wallet that gains tokens from nowhere.
 import { TEST_FUNDING } from '#db/tests/_funding.js';

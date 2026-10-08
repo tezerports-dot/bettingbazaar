@@ -41,7 +41,7 @@ const read = (p) => stripComments(readFileSync(path(p), 'utf8'));
 const routes   = read('../../routes.js');
 const server   = read('../../server.js');
 const player   = read('../../domains/identity/playerAuth.routes.js');
-const telegram = read('../../domains/telegram/telegram.routes.js');
+const telegram = read('../../domains/telegram/miniApp.routes.js');
 const schema   = read('../../../database/schema.sql');
 
 describe('a player signs up and signs in with a form', () => {
@@ -64,15 +64,18 @@ describe('a player signs up and signs in with a form', () => {
   });
 });
 
-describe('NOTHING in the Telegram surface can grant access', () => {
+describe('the Telegram surface grants access only through the one issuer', () => {
   /**
-   * The security half of the change. A sign-in bot is now one of hundreds of
-   * tokens sitting in a database; any one of them being compromised must not be
-   * an account takeover, and a token that can mint a session is exactly that.
+   * Step 3 (owner, 2026-10-07): "add also login with telegram button too". A
+   * Telegram sign-in is now deliberate, and so it goes through the SAME
+   * `issueSession` every door uses, with `amr` naming Telegram — never a
+   * second minting path, and never on a bot's word alone: the proof is the
+   * Mini App's signed initData (miniAppAuth.js), checked on the server.
    */
   it('deleted the login-link and login-code services outright', () => {
     expect(existsSync(path('../../domains/telegram/telegramLogin.service.js'))).toBe(false);
     expect(existsSync(path('../../domains/telegram/telegramOtp.service.js'))).toBe(false);
+    expect(existsSync(path('../../domains/telegram/telegram.routes.js'))).toBe(false);
   });
 
   it('dropped the tables that held those credentials', () => {
@@ -80,19 +83,15 @@ describe('NOTHING in the Telegram surface can grant access', () => {
     expect(schema).not.toMatch(/CREATE TABLE IF NOT EXISTS telegram_login_codes/);
   });
 
-  it('issues no session from any Telegram route', () => {
-    // `issueSession` was imported by the exchange and the OTP verify. Neither
-    // exists; the import must not survive either, because an import is how the
-    // next "just one small login shortcut" gets written.
-    expect(telegram).not.toMatch(/issueSession/);
+  it('the Mini App mints no token of its own: it calls the one issuer, naming Telegram', () => {
+    expect(telegram).not.toMatch(/signToken/);
+    expect(telegram).toMatch(/import \{ issueSession \} from '\.\.\/\.\.\/routes\.js'/);
+    for (const call of telegram.match(/issueSession\([^)]*\)/g) || []) expect(call).toMatch(/'tg'/);
     expect(telegram).not.toMatch(/router\.post\('\/exchange'/);
     expect(telegram).not.toMatch(/router\.post\('\/otp\//);
   });
 
   it('takes no Aadhaar number anywhere in the Telegram surface', () => {
-    // The account exists before the bot is opened, so the bot has nothing to
-    // collect — and since KYC was removed (owner, 2026-10-02) the recovery bot
-    // no longer takes one either. File-wide now, because nothing is exempt.
     expect(telegram).not.toMatch(/aadhaar/i);
   });
 });
@@ -117,7 +116,9 @@ describe('one session issuer, and a door that says who it admits', () => {
     // A challenge proves a password was right five minutes ago. If only the
     // password leg checked the door, a player's valid challenge posted to the
     // staff endpoint would be redeemed by the staff handler.
-    expect((routes.match(/door\.admits\(user\)/g) || []).length).toBe(2);
+    // Step 3: one `accountRefusal` asks it, and every leg calls that.
+    expect((routes.match(/door\.admits\(user\)/g) || []).length).toBe(1);
+    expect((routes.match(/accountRefusal\(door, user/g) || []).length).toBeGreaterThanOrEqual(4);
   });
 
   it('defaults an unmounted call to the STAFF door, never to "anyone"', () => {
@@ -129,9 +130,9 @@ describe('one session issuer, and a door that says who it admits', () => {
     // somebody who already knows the password, or the endpoint becomes a way to
     // sort phone numbers into staff and non-staff.
     const handler = routes.slice(routes.indexOf('export async function loginHandler'),
-                                 routes.indexOf('export async function issueSession'));
+                                 routes.indexOf('export async function loginTwoFactorHandler'));
     const pwAt   = handler.indexOf('verifyPassword');
-    const doorAt = handler.indexOf('door.admits(user)');
+    const doorAt = handler.indexOf('accountRefusal(door, user');
     expect(pwAt).toBeGreaterThan(-1);
     expect(doorAt).toBeGreaterThan(pwAt);
   });

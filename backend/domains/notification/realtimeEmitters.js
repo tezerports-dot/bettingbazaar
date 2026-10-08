@@ -1,7 +1,6 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 
 
-import { db } from '#db';
 // The wallet is the only place a balance is read from. See sseBalancePush.
 import { getBalances } from '#db/repositories/wallets.js';
 

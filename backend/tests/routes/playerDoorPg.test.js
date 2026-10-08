@@ -83,7 +83,7 @@ const PLAYER_ROUTES = {
     ['post', '/ask'], ['post', '/tickets'], ['get', '/tickets'], ['get', '/tickets/x'],
     ['post', '/tickets/x/reply'],
   ],
-  playerAuth: [['get', '/verification']],
+  playerAuth: [['get', '/telegram']],
   game: [['post', '/launch']],
   uploads: [['post', '/user/profile/picture/upload-url'], ['post', '/user/profile/picture/confirm-upload']],
   retention: [['get', '/bonuses/my']],
@@ -135,7 +135,7 @@ describePg('the player door', () => {
     expect(created.ok, JSON.stringify(created)).toBe(true);
     const merchantId = created.merchant.merchantId;
     await updateMerchant(merchantId, { status: 'ACTIVE', merchantApprovalStatus: 'APPROVED' });
-    const token = signToken({ merchantId, userId: created.userId, mobile, isMerchant: true, isAdmin: false });
+    const token = signToken({ merchantId, userId: created.userId, mobile, isMerchant: true, isAdmin: false, amr: ['pwd', 'tg'] });
     return { merchantId, loginUserId: created.userId, mobile, token, auth: `Bearer ${token}` };
   };
 

@@ -348,13 +348,6 @@ const referralPaidPaise = async () => {
        FROM referral_earnings WHERE disbursed_at IS NOT NULL`).catch(() => ({ rows: [] }));
   return Number(rows[0]?.paid ?? 0);
 };
-/** The ACTIVE bot generation — §2: a channel change bumps it, a bot swap does not. */
-const telegramGeneration = async () => {
-  const { rows } = await pgQuery(
-    `SELECT generation, channel_username FROM telegram_configs
-      ORDER BY generation DESC LIMIT 1`).catch(() => ({ rows: [] }));
-  return rows[0] ?? null;
-};
 const cdnImageExists = async (id) => {
   const { rows } = await pgQuery('SELECT 1 FROM cdn_images WHERE image_id = $1', [String(id)]);
   return rows.length > 0;
@@ -1381,79 +1374,6 @@ const CASES = [
     },
   },
 
-  // ── The bot generation that owns the official channel ────────────────────
-  {
-    id: 'admin/telegram/activate',
-    panel: 'admin-panel',
-    what: 'Activate a new Telegram generation',
-    async run(page, cfg, base) {
-      const before = await telegramGeneration();
-
-      await go(page, cfg, base, '/telegram');
-      const channel = `drive_${Math.random().toString(36).slice(2, 8)}`;
-      // ── Addressed by PLACEHOLDER, and that is a finding ───────────────────
-      // "Bot token" and "Channel id" are the two REQUIRED fields — Activate
-      // stays disabled without them — and each is a bare <label> with no
-      // `htmlFor` and no `id` on the input. §32 S24: the text is on screen so
-      // it looks labelled, but nothing associates the two, so a screen reader
-      // (and `getByLabel`) cannot address either. On the screen that owns the
-      // platform's official channel.
-      const token = await fill(page, 'input[placeholder^="123456789"]', '123456789:AAdrive-pass-token');
-      if (!token.ok) return ['NOT DRIVEN', `bot token field: ${token.why}`];
-      const chan = await fill(page, 'input[placeholder^="-100"]', '-1001234567890');
-      if (!chan.ok) return ['NOT DRIVEN', `channel id field: ${chan.why}`];
-      await fill(page, '#channel-username', channel);
-      await fill(page, '#channel-invite-link', `https://t.me/${channel}`);
-      await fill(page, '#reason', 'mutating drive: generation check');
-      await settle(page, 1500);
-
-      const activate = page.getByRole('button', { name: /^\s*Activate\s*$/i }).first();
-      if (await activate.count() === 0) return ['NOT DRIVEN', 'no Activate button on /telegram'];
-      if (await activate.isDisabled()) return ['NOT DRIVEN', 'Activate is disabled with the form filled'];
-
-      // ── The ANSWER, never the page text ──────────────────────────────────
-      // A first draft looked for /token|invalid|…/ in the body to decide whether
-      // the platform had refused by name. The nav carries a "Token Flow" link,
-      // so it matched on every run and reported a refusal the server never made
-      // — a check measuring nothing that reads exactly like a pass (§32 S8).
-      const answered = page.waitForResponse(
-        (r) => /\/telegram/i.test(r.url()) && r.request().method() !== 'GET',
-        { timeout: 20000 },
-      ).catch(() => null);
-      await activate.click({ timeout: 8000 });
-      await settle(page, 3000);
-      // An INLINE two-step, like the referral disbursal: pressing Activate
-      // swaps the button for "Yes, activate" beside a warning, in the page
-      // rather than a dialog. `confirmWith` is dialog-only by design (a
-      // page-wide fallback once deleted a second chat message), so a screen
-      // that confirms inline is confirmed here, by name. Third screen with this
-      // shape — "Yes, pay out", "Yes, activate" — and neither is a dialog.
-      const yes = page.getByRole('button', { name: /^\s*Yes, activate\s*$/i }).first();
-      if (await yes.count() === 0) {
-        return ['FAILED', 'pressing Activate raised no "Yes, activate" step'];
-      }
-      await yes.click({ timeout: 8000 });
-      const reply = await answered;
-      await settle(page, 8000);
-
-      const after = await telegramGeneration();
-      // §2: a CHANNEL change bumps the generation; a bot swap does not. So the
-      // assertion is the generation, not merely "something saved".
-      if (Number(after?.generation ?? 0) > Number(before?.generation ?? 0)) {
-        return ['DROVE', `generation ${before?.generation ?? 'none'} → ${after.generation}, channel ${after.channel_username}`];
-      }
-      if (!reply) return ['FAILED', 'pressing Activate sent no request at all'];
-      const body = (await reply.text().catch(() => '')).replace(/\s+/g, ' ');
-      // A refusal is legitimate and expected here: the route validates the bot
-      // token WITH TELEGRAM, which this container cannot reach. What matters is
-      // that the platform said so rather than half-applying.
-      if (reply.status() >= 400 && reply.status() < 500) {
-        return ['DROVE', `refused ${reply.status()}, generation unchanged — ${body.slice(0, 110)}`];
-      }
-      return ['FAILED', `Activate answered ${reply.status()} and the generation did not move — ${body.slice(0, 140)}`];
-    },
-  },
-
 
   // ── Deferred by NAME, and not a mutation at all ──────────────────────────
   // `drive.js` defers on the first word of a control's name, which is the right
@@ -1637,7 +1557,7 @@ const CASES = [
       if (await button.count() === 0) return ['NOT DRIVEN', `no "Delete FAQ: ${mine}" control found`];
 
       page.__bbAccept = true;
-      let answered = 'none';
+      let answered;
       try {
         await button.click();
         await settle(page, 6000);
@@ -1744,55 +1664,6 @@ const CASES = [
           ).catch((e) => console.error('   ! could not restore the app asset:', e.message));
         } else {
           await pgQuery('DELETE FROM app_assets WHERE slot = $1', [slot]).catch(() => {});
-        }
-      }
-    },
-  },
-
-  // ── What the bot SAYS: a per-template Save, restored to the default ──────
-  {
-    id: 'admin/telegram/save-template',
-    panel: 'admin-panel',
-    what: "Save one of the bot's message templates",
-    async run(page, cfg, base) {
-      await go(page, cfg, base, '/telegram');
-      const box = page.locator('textarea[aria-label^="Message the bot sends for"]').first();
-      if (await box.count() === 0) return ['NOT DRIVEN', 'no template editor on /telegram'];
-
-      const key = (await box.getAttribute('aria-label') ?? '').replace(/^Message the bot sends for\s*/i, '').trim();
-      if (!key) return ['NOT DRIVEN', 'the template editor does not say which key it edits'];
-
-      const rows = await pgQuery('SELECT body FROM telegram_templates WHERE key = $1', [key]);
-      const before = rows.rows[0]?.body ?? null;    // null = never customised, i.e. the shipped default
-      const wrote = `drive pass ${rid('tpl')} — this text is restored in a finally`;
-      try {
-        await box.fill(wrote);
-        await settle(page, 1500);
-
-        // The Save is disabled until the draft differs, which is the screen
-        // telling the truth: there is nothing to save. Asserting that first
-        // means a failure here is about the SAVE, not about the fill.
-        const save = page.getByRole('button', { name: /^\s*Sav(e|ing)/i }).first();
-        if (await save.count() === 0) return ['NOT DRIVEN', 'no Save control beside the template'];
-        if (await save.isDisabled()) return ['FAILED', 'the text changed and Save stayed disabled'];
-        await save.click();
-        await settle(page, 8000);
-
-        const after = (await pgQuery('SELECT body FROM telegram_templates WHERE key = $1', [key])).rows[0]?.body ?? null;
-        if (after !== wrote) {
-          return ['FAILED', `pressed Save; telegram_templates.body for '${key}' is ${JSON.stringify(String(after).slice(0, 40))}`];
-        }
-        return ['DROVE', `template '${key}' written and restored`];
-      } finally {
-        // §2: a BLANK row means the shipped default, never silence — so the
-        // way back to "not customised" is a blank body, not a deleted row,
-        // unless there was no row to begin with.
-        if (before === null) {
-          await pgQuery('DELETE FROM telegram_templates WHERE key = $1', [key])
-            .catch((e) => console.error('   ! could not remove the template row:', e.message));
-        } else {
-          await pgQuery('UPDATE telegram_templates SET body = $2 WHERE key = $1', [key, before])
-            .catch((e) => console.error('   ! could not restore the template:', e.message));
         }
       }
     },
@@ -2053,7 +1924,7 @@ const CASES = [
       // pass that answers a question it has not read is worse than one that
       // declines. Here it is read and answered.
       page.__bbAccept = true;
-      let answered = 'none';
+      let answered;
       try {
         await clickThrough(button, { timeout: 8000 });
         await settle(page, 4000);
@@ -2779,20 +2650,8 @@ async function main() {
 
   const panels = [...new Set(cases.map((c) => c.panel))];
 
-  // ── A configured platform, because all three panels GATE on one ─────────
-  // §33.7 gates every panel on Telegram, and `VerificationGateModal` BLOCKS —
-  // with no bot and no channel it renders a modal with no button, over the
-  // whole screen, deliberately. Measured before this line existed: the two
-  // merchant cases timed out at THIRTY SECONDS on buttons that were behind
-  // that modal, and the preference switch could not be pressed for the same
-  // reason. Three "the control is broken" findings, none of them true.
-  //
-  // STAFF pass through the bootstrap exemption, which is why the admin cases
-  // were unaffected and the failure looked merchant-specific.
-  //
-  // Restored at the end, outside any assertion (trap 10): an active channel
-  // re-gates every player the moment its generation moves, so a leftover one
-  // is not a stale fixture, it is a platform running under rules nobody chose.
+  // ── A configured platform: the one Mini App bot exists (Step 3) ─────────
+  // Restored at the end, outside any assertion (trap 10).
   const restoreTelegram = await configureTelegram();
 
   const tokens = { 'admin-panel': adminToken(await seedAdmin()) };
@@ -2962,7 +2821,7 @@ async function main() {
   for (const c of cases) {
     // A case that ENDS a session gets its own, so the damage is its own; a
     // case that acts as another account (`as`) gets one signed in as it.
-    let session = null;
+    let session;
     try {
       session = c.as ? await c.as() : null;
     } catch (err) {

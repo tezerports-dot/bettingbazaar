@@ -485,7 +485,7 @@ class CycleGenerator {
             setTimeout(async () => {
                 try {
                     this.emitPublic('cycle_history', await fetchCycleHistory({ types: cycle.type }));
-                } catch (e) { /* non-critical — clients will re-request on next mount */ }
+                } catch { /* non-critical — clients will re-request on next mount */ }
             }, 1500);
 
             // BUG 4b FIX: celebration lock was 12s, but completeCycle fires at the

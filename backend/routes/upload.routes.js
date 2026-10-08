@@ -12,29 +12,8 @@ import { serverError, callerError, respondError } from '../shared/httpError.js';
 
 const router = express.Router();
 
-/**
- * The order, if this PLAYER owns it.
- *
- * Six handlers repeated the same lookup — an `$or` over an order id and an
- * ObjectId — and then compared `order.userId` after the fetch. The comparison
- * is an authorisation boundary, so it lives in one place a new handler cannot
- * be written without.
- *
- * Returns null for "does not exist" and "not yours" alike. A distinguishable
- * 404-vs-403 tells somebody probing order ids which ones are real.
- */
-async function playerOrder(orderId, userId) {
-  const order = await db.orders.getOrderRecord(orderId);
-  if (!order) return null;
-  return String(order.userId) === String(userId) ? order : null;
-}
-
-/** The order, if this MERCHANT holds it. Same reasoning as above. */
-async function merchantOrder(orderId, merchantId) {
-  const order = await db.orders.getOrderRecord(orderId);
-  if (!order) return null;
-  return String(order.merchantId) === String(merchantId) ? order : null;
-}
+// An order's owner is checked in the read's WHERE (`getMerchantOrder`), never
+// compared after a fetch: "does not exist" and "not yours" answer alike.
 
 function hasValidUploadInput(fileName, contentType, fileSize) {
   return typeof fileName === 'string' && fileName.trim() &&

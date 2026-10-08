@@ -1,9 +1,11 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Plus, Trash2, Edit2, RefreshCw, Bell } from 'lucide-react';
 import api from '../../services/api';
 import { Toolbar } from '../../components/design';
 import toast from 'react-hot-toast';
+
+const reason = (e: any, fallback: string) => e?.response?.data?.message || e?.message || fallback;
 
 export const AnnouncementsPage: React.FC = () => {
   const [items, setItems] = useState<any[]>([]);
@@ -15,9 +17,8 @@ export const AnnouncementsPage: React.FC = () => {
   // buttons (§28): an operator could not tell "none yet" from "never loaded".
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
-  const reason = (e: any, fallback: string) => e?.response?.data?.message || e?.message || fallback;
 
-  const load = async () => {
+  const load = useCallback(async () => {
     try {
       const r = await api.get('/api/admin/announcements');
       if (r.data.success) { setItems(r.data.announcements); setLoadError(null); }
@@ -25,8 +26,8 @@ export const AnnouncementsPage: React.FC = () => {
     } catch (e) {
       setLoadError(reason(e, 'Could not reach the server to list announcements.'));
     } finally { setLoaded(true); }
-  };
-  useEffect(() => { load(); }, []);
+  }, []);
+  useEffect(() => { load(); }, [load]);
 
   const save = async () => {
     try {

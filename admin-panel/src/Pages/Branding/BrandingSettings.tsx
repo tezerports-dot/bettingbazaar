@@ -1,6 +1,6 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
-import React, { useEffect, useState } from 'react';
-import { Save, Palette, Eye, RefreshCw, Image as ImageIcon } from 'lucide-react';
+import React, { useCallback, useEffect, useState } from 'react';
+import { Save, Palette, RefreshCw } from 'lucide-react';
 import api from '../../services/api';
 import toast from 'react-hot-toast';
 
@@ -109,54 +109,6 @@ const CdnUrlField: React.FC<{ id: string; name: string; label: string; hint?: st
     </div>
   );
 }
-const BrandingImageInput: React.FC<{
-  id: string;
-  label: string;
-  value: string;
-  hint?: string;
-  onChange: (url: string) => void;
-}> = ({ id, label, value, hint, onChange }) => {
-  const [uploading, setUploading] = React.useState(false);
-
-  const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setUploading(true);
-    try {
-      onChange(await uploadBrandingImage(file));
-      toast.success('Image uploaded');
-    } catch (err: unknown) {
-      toast.error(uploadErrorMessage(err));
-    } finally {
-      setUploading(false);
-      e.target.value = '';
-    }
-  };
-
-  return (
-    <div>
-      <label className="label" htmlFor={id}>{label}</label>
-      <div className="flex gap-2 items-start">
-        <input
-          id={id} name={id} type="url"
-          value={value}
-          onChange={e => onChange(e.target.value)}
-          placeholder="https://... or upload a file →"
-          className="input flex-1 text-sm"
-        />
-        <label className={`btn-secondary text-xs px-3 py-2 cursor-pointer whitespace-nowrap${uploading ? ' opacity-50 pointer-events-none' : ''}`}>
-          {uploading ? 'Uploading…' : '📎 Upload'}
-          <input type="file" accept="image/*" className="hidden" onChange={handleFile} disabled={uploading} />
-        </label>
-      </div>
-      {value && (
-        <img src={value} alt={label} className="mt-2 h-12 object-contain rounded-sm border border-dark-600" onError={e => (e.currentTarget.style.display = 'none')} />
-      )}
-      {hint && <p className="text-xs text-gray-400 mt-1">{hint}</p>}
-    </div>
-  );
-};
-
 
 type Tab = 'identity' | 'images' | 'promo' | 'panels';
 
@@ -213,9 +165,7 @@ export const BrandingSettings: React.FC = () => {
     // Social links removed — managed in SupportLinks page (H-04 / GOVERNANCE §2)
   });
 
-  useEffect(() => { loadBranding(); }, []);
-
-  const loadBranding = async () => {
+  const loadBranding = useCallback(async () => {
     try {
       const res = await api.branding.getCurrent();
       if (res.success && res.data) {
@@ -223,7 +173,9 @@ export const BrandingSettings: React.FC = () => {
       }
     } catch { toast.error('Failed to load branding'); }
     finally { setIsLoading(false); }
-  };
+  }, []);
+
+  useEffect(() => { loadBranding(); }, [loadBranding]);
 
   const set = (key: string, value: any) => setFormData(prev => ({ ...prev, [key]: value }));
 

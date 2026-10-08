@@ -2947,6 +2947,9 @@ evicted nothing.
   `merchants.password_hash` is dropped (§0.0: nothing to migrate).
   `merchantAuth` refuses a session issued before the login row's
   `sessions_valid_from`.
+  (Step 3, 2026-10-08: the merchant door became the one `loginHandler`, which
+  reads `getUserCredentials` on that same row; `getMerchantCredentials` and
+  `getMerchantByLogin` had no caller left and were deleted.)
 - **Tests:** `merchantPasswordResetPg` drives the real reset route, the merchant
   login and a `merchantAuth` read, and then the merchant SSE feed. The new
   password is admitted, the old one refused, and the old session refused
@@ -3535,9 +3538,9 @@ checked and is correct; the evidence is named.
 
 | Measure | Count |
 |---|---|
-| Route declarations in `backend/**` | 287 |
-| Reachable with **no auth middleware** | 34 |
-| Staff routes carrying an **area** (permission key) | 174 |
+| Route declarations in `backend/**` | 283 |
+| Reachable with **no auth middleware** | 32 |
+| Staff routes carrying an **area** (permission key) | 166 |
 | Staff routes a sub-admin can **never** be given (full admin only) | 7 |
 
 A count moving is not by itself a defect — it is a prompt to read the
@@ -3559,8 +3562,8 @@ new route and decide. Each of the three questions is defined in §2.
 - `GET /leaderboard/:period  (backend/routes/retention.routes.js)`
 - `GET /me  (backend/routes.js)`
 - `GET /merchant/events  (backend/routes/sse.routes.js)`
+- `GET /mini-app  (backend/domains/telegram/miniApp.routes.js)`
 - `GET /providers  (backend/domains/casino/gameProvider.routes.js)`
-- `GET /public-config  (backend/domains/telegram/telegram.routes.js)`
 - `GET /r/:code  (backend/routes/referralRedirect.routes.js)`
 - `GET /status  (backend/domains/support/support.routes.js)`
 - `GET /v1/content/faq  (backend/domains/user/user.routes.js)`
@@ -3569,16 +3572,14 @@ new route and decide. Each of the three questions is defined in §2.
 - `GET /v1/system/config  (backend/domains/user/user.routes.js)`
 - `GET /v1/winners  (backend/routes/winners.routes.js)`
 - `POST /auth/login  (backend/domains/merchant/merchant.routes.js)`
-- `POST /auth/login/2fa  (backend/domains/merchant/merchant.routes.js)`
 - `POST /auth/signup  (backend/domains/merchant/merchant.routes.js)`
-- `POST /login  (backend/domains/identity/playerAuth.routes.js)`
-- `POST /login/2fa  (backend/domains/identity/playerAuth.routes.js)`
 - `POST /logout  (backend/routes.js)`
-- `POST /password/reset  (backend/domains/identity/playerAuth.routes.js)`
-- `POST /recovery/webhook/:botId  (backend/domains/telegram/telegram.routes.js)`
+- `POST /mini-app/approve  (backend/domains/telegram/miniApp.routes.js)`
+- `POST /mini-app/context  (backend/domains/telegram/miniApp.routes.js)`
+- `POST /mini-app/password-reset  (backend/domains/telegram/miniApp.routes.js)`
+- `POST /mini-app/signup  (backend/domains/telegram/miniApp.routes.js)`
 - `POST /register  (backend/domains/identity/playerAuth.routes.js)`
 - `POST /wallet/:providerKey  (backend/domains/casino/gameProvider.routes.js)`
-- `POST /webhook/:botId  (backend/domains/telegram/telegram.routes.js)`
 
 </details>
 
@@ -3598,15 +3599,16 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 426 |
-| Parameters only (safe by construction) | 273 |
-| Interpolating into statement text (each needs a reading) | 148 |
-| Statement text built elsewhere and passed in (each needs a reading) | 5 |
+| `pgQuery` call sites | 406 |
+| Parameters only (safe by construction) | 264 |
+| Interpolating into statement text (each needs a reading) | 135 |
+| Statement text built elsewhere and passed in (each needs a reading) | 7 |
 
 <details><summary>Call sites whose statement text is built elsewhere</summary>
 
 - `database/client.js — sql`
 - `database/repositories/adminTokenConsiderations.js — text`
+- `database/repositories/identity.js — text`
 - `database/repositories/merchants.js — text`
 - `database/repositories/teamOversight.js — sql`
 - `database/repositories/users.js — text`
@@ -3617,9 +3619,9 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Panel | .ts/.tsx files | `dangerouslySetInnerHTML` | `.innerHTML =` |
 |---|---|---|---|
-| `user-panel` | 88 | 0 | 0 |
-| `admin-panel` | 115 | 0 | 0 |
-| `merchant-panel` | 47 | 0 | 0 |
+| `user-panel` | 91 | 0 | 0 |
+| `admin-panel` | 110 | 0 | 0 |
+| `merchant-panel` | 50 | 0 | 0 |
 
 <!-- END GENERATED -->
 

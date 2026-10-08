@@ -17,7 +17,8 @@ import { useGame } from '../services/GameContext';
 import { useTheme } from '../redesign/ThemeContext';
 import { getBackend } from '../services/backend.service';
 import { fmt } from '../redesign/format';
-import ScreenShell, { card, capLabel, goldButton, inputStyle, fieldLabel } from '../redesign/Screen';
+import ScreenShell, { card, goldButton, inputStyle, fieldLabel } from '../redesign/Screen';
+import ProfileTelegram from './ProfileTelegram';
 
 const backend = getBackend();
 
@@ -147,6 +148,8 @@ const ProfilePage: React.FC = () => {
         <span style={{ flex: 1 }}><span style={{ display: 'block', fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>Bank account</span><span style={{ display: 'block', fontSize: 11, color: 'var(--text3)' }}>{user?.bankDetails?.bankName ? `${user.bankDetails.bankName} ••••${String(user.bankDetails.accountNumber || '').slice(-4)}` : 'Used for sell-order payouts'}</span></span>
         <span style={{ fontSize: 11, color: 'var(--gold-ink)', fontWeight: 800 }}>{user?.bankDetails?.bankName ? 'Edit' : 'Add'}</span>
       </button>
+
+      <ProfileTelegram />
 
       {/* Settings */}
       <div style={{ ...card, padding: 0, overflow: 'hidden' }}>

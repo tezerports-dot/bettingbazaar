@@ -9,7 +9,6 @@
  */
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router';
-import { useGame } from '../services/GameContext';
 import GameScreen from '../redesign/GameScreen';
 import { getBackend, getAssetUrl } from '../services/backend.service';
 import { PromoContent } from '../types';
@@ -17,7 +16,6 @@ import { PromoContent } from '../types';
 const backend = getBackend();
 
 const GamePage: React.FC = () => {
-  const { isAuthenticated } = useGame();
   const navigate = useNavigate();
   const location = useLocation();
   const [promoPopup, setPromoPopup] = useState<PromoContent | null>(null);

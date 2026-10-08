@@ -21,7 +21,6 @@ vi.mock('../../services/api', () => ({
 }));
 vi.mock('react-hot-toast', () => ({ default: { success: vi.fn(), error: vi.fn() } }));
 vi.mock('react-router', () => ({ Link: ({ children }: any) => <>{children}</> }));
-vi.mock('../../components/TwoFactorSetup', () => ({ default: () => null }));
 vi.mock('../../components/ConfirmDialog', () => ({ ConfirmDialog: () => null }));
 
 const { SystemSettings } = await import('./SystemSettings');

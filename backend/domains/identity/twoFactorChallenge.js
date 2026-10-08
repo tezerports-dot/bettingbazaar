@@ -1,83 +1,64 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * domains/identity/twoFactorChallenge.js — the half-authenticated state.
+ * domains/identity/twoFactorChallenge.js — the token a browser holds while
+ * Telegram is asked.
  *
- * A password-plus-OTP login cannot be one request: the server has to tell the
- * client "password accepted, now prove the second factor" and then trust, on
- * the follow-up request, that the password step really happened. That interim
- * proof is this module's challenge token.
+ * Step 3 (owner, 2026-10-07): an account's first sign-in waits for its Telegram
+ * verification, a staff or merchant sign-in waits for its Telegram approval,
+ * and "Login with Telegram" waits for the Mini App. Each is a row in
+ * `telegram_challenges`; this token is how the browser that ASKED proves, when
+ * it polls, that the answer is its own. The challenge id travels to Telegram in
+ * the deep link; this token, signed by the session authority, never leaves the
+ * browser.
  *
- * ── Why a signed token and not a server-side session ──────────────────────
- * The platform runs multiple instances behind a load balancer with no sticky
- * routing, so an in-memory pending-login map would only work when both
- * requests happened to land on the same box. A signed, short-lived token is
- * stateless and correct on every instance. It rides the same PASETO/Ed25519
- * authority as session tokens, so there is one signing key to protect and
- * rotate rather than two.
+ * ── Why a signed token and not the id alone ───────────────────────────────
+ * The id is also in the Mini App link, which the person opens on a phone, may
+ * forward, and which Telegram itself sees. Redeeming needs the token, which
+ * names the door it was issued at and the account it is for, so a link that
+ * leaked cannot be turned into a session at another door or for another
+ * account.
  *
- * ── The one property everything else depends on ───────────────────────────
- * A challenge token MUST NOT be usable as a session token. If it were, the
- * login handler would be handing out working credentials to anyone who knows
- * only the password — which is precisely the attack 2FA exists to stop, and
- * 2FA would be worse than useless because it would look enforced while being
- * bypassable. Two mechanisms enforce this, deliberately belt-and-braces:
- *
- *   1. The token carries `purpose: '2fa_challenge'`. `assertNotChallenge()` is
- *      called by every session-consuming middleware (authenticate,
- *      merchantAuth, /me) and rejects it.
- *   2. It deliberately omits the claims those middlewares need — no `role`,
- *      no `isAdmin`, no privilege at all — so even a missed check downgrades
- *      to an unprivileged principal rather than an admin one.
- *
- * `subjectKey` scopes the token to one identity AND one audience: a merchant
- * challenge cannot be redeemed on the user endpoint or vice versa, even
- * though both are signed by the same key.
- *
- * ── Lifetime ──────────────────────────────────────────────────────────────
- * Five minutes: comfortably longer than reading six digits off a handset,
- * far shorter than a session. An attacker who steals a challenge token still
- * needs the second factor, and only has five minutes to use it.
+ * ── The property everything depends on ───────────────────────────────────
+ * A challenge token MUST NOT be usable as a session token. It carries
+ * `purpose: '2fa_challenge'`, which every session-consuming path refuses
+ * (`authenticate`, `merchantAuth`, `/me`, SSE, sockets), and none of the claims
+ * those paths read — no `userId`, no `role`, no `merchantId` — so even a missed
+ * check is an unprivileged nobody rather than an admin.
  */
 import { signToken, verifyJwt } from './jwt.util.js';
+import { ACCOUNT_TYPES } from './audiences.js';
 
 export const CHALLENGE_PURPOSE = '2fa_challenge';
-export const CHALLENGE_TTL = '5m';
-
-/** Audiences a challenge can be scoped to. Redemption must match issuance. */
-export const CHALLENGE_AUDIENCE = {
-  USER: 'user',
-  MERCHANT: 'merchant',
-};
 
 /**
- * Mint the interim proof that a password was accepted.
+ * Mint the token for one challenge.
  *
- * @param {object}  subject
- * @param {string}  subject.id        User._id or Merchant._id
- * @param {string}  subject.audience  CHALLENGE_AUDIENCE value
- * @param {string} [subject.loginType] Echoed back so the second leg re-applies
- *                                     the same role gate the first leg did.
+ * @param {object} c
+ * @param {string|null} c.userId  null only for a Telegram login that does not
+ *                                yet know whose Telegram it is
+ * @param {'PLAYER'|'STAFF'|'MERCHANT'} c.door  the door it may be redeemed at
+ * @param {string} c.challengeId
+ * @param {number} c.ttlSeconds   at least the challenge's own window plus the
+ *                                redeem window; the database row decides
+ * @param {string|null} [c.loginType]  the staff door's role selector, re-applied
  */
-export function issueChallenge({ id, audience, loginType = null }) {
-  if (!id) throw new Error('issueChallenge: id is required');
-  if (!Object.values(CHALLENGE_AUDIENCE).includes(audience)) {
-    throw new Error(`issueChallenge: unknown audience ${audience}`);
-  }
+export function issueChallenge({ userId = null, door, challengeId, ttlSeconds, loginType = null }) {
+  if (!ACCOUNT_TYPES.includes(door)) throw new Error(`issueChallenge: unknown door ${door}`);
+  if (!challengeId) throw new Error('issueChallenge: a challenge id is required');
   return signToken(
-    // NOTE the absence of userId/role/isAdmin. See the header: a challenge
-    // that leaks into a session path must not carry privilege with it.
-    { sub: String(id), purpose: CHALLENGE_PURPOSE, aud2fa: audience, loginType },
-    { expiresIn: CHALLENGE_TTL },
+    // NOTE the absence of userId/role/isAdmin/merchantId: see the header.
+    { sub: userId ? String(userId) : '', purpose: CHALLENGE_PURPOSE, door, cid: String(challengeId), loginType },
+    { expiresIn: `${Math.max(60, Math.ceil(Number(ttlSeconds) || 0))}s` },
   );
 }
 
 /**
- * Verify a challenge token and return its subject.
- * @returns {{ id: string, audience: string, loginType: string|null }|null}
- *          null for anything that is not a valid, unexpired challenge for
- *          this audience — callers must treat null as "restart the login".
+ * Read a challenge token presented at `door`. Null for anything that is not
+ * one, has expired, or was minted at another door.
+ *
+ * @returns {null | {userId: string|null, challengeId: string, door: string, loginType: string|null}}
  */
-export function verifyChallenge(token, audience) {
+export function verifyChallenge(token, door) {
   if (!token || typeof token !== 'string') return null;
   let claims;
   try {
@@ -86,19 +67,19 @@ export function verifyChallenge(token, audience) {
     return null;                          // expired or forged
   }
   if (claims.purpose !== CHALLENGE_PURPOSE) return null;  // a session token
-  if (claims.aud2fa !== audience) return null;            // wrong endpoint
-  if (!claims.sub) return null;
-  return { id: String(claims.sub), audience: claims.aud2fa, loginType: claims.loginType || null };
+  if (claims.door !== door || !claims.cid) return null;    // another door
+  return {
+    userId: claims.sub ? String(claims.sub) : null,
+    challengeId: String(claims.cid),
+    door: claims.door,
+    loginType: claims.loginType || null,
+  };
 }
 
 /**
- * The ACCOUNT a valid challenge is for, whichever door it was minted at, or
- * null for anything that is not a valid, unexpired challenge.
- *
- * For the rate limiter, which must count second-factor guesses per ACCOUNT.
- * Keyed on the token instead, every correct password mints a fresh token and
- * with it a fresh budget of guesses, so the lockout never trips for somebody
- * who holds the password — the one attacker 2FA exists to stop (R6).
+ * Who a challenge token is about, for the rate limiter's key only — never an
+ * authorisation decision. The account when the token names one, else the
+ * challenge.
  */
 export function challengeSubject(token) {
   if (!token || typeof token !== 'string') return null;
@@ -108,15 +89,11 @@ export function challengeSubject(token) {
   } catch {
     return null;
   }
-  if (claims.purpose !== CHALLENGE_PURPOSE || !claims.sub) return null;
-  if (!Object.values(CHALLENGE_AUDIENCE).includes(claims.aud2fa)) return null;
-  return { id: String(claims.sub), audience: claims.aud2fa };
+  if (claims.purpose !== CHALLENGE_PURPOSE || !claims.cid) return null;
+  return { id: claims.sub ? String(claims.sub) : `c:${claims.cid}`, door: claims.door };
 }
 
-/**
- * True when these claims belong to a challenge token.
- * Session middlewares call this to slam the door — see header property (1).
- */
+/** True when the claims are a challenge, never a session. */
 export function isChallengeToken(claims) {
   return !!claims && claims.purpose === CHALLENGE_PURPOSE;
 }

@@ -73,8 +73,8 @@ export async function runRetention({ months, dryRun = false } = {}) {
     1, Math.round((Date.now() - cutoff.getTime()) / (30 * 24 * 60 * 60 * 1000)),
   );
 
-  let results = {};
-  let totalDeleted = 0;
+  let results;
+  let totalDeleted;
   try {
     results = dryRun
       ? await db.operations.countPrunableData({ months: effectiveMonths })

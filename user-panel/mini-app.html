@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<!-- GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.) -->
+<!--
+  The Telegram Mini App (Step 3). Telegram opens this page inside its own app
+  from the one bot's Mini App link; BotFather's Web App URL for that bot is
+  <player panel origin>/mini-app.html. A separate page, not a route of the
+  player app: Telegram passes its launch data in the URL fragment, which the
+  player app's HashRouter would read as a route and redirect away from.
+-->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="x-bazaar-api-url" content="/api" />
+    <meta name="x-bazaar-socket-url" content="/" />
+    <title>Betting Bazaar</title>
+    <!-- Telegram's own Mini App script, which reads the launch data and is the
+         only way to ask for the contact. Loaded before the app, as Telegram asks. -->
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script src="/config-init.js"></script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/miniApp/main.tsx"></script>
+  </body>
+</html>

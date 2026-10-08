@@ -87,20 +87,9 @@ export function mountRouter(router, { prefix = '' } = {}) {
  * by the same middleware, so an auth change that breaks the routes breaks these
  * tests too. A hand-written `req.user` would keep passing.
  */
-/**
- * @param twoFactorEnabled whether this account has enrolled a second factor.
- *   Defaults to TRUE for staff, because since F-011 step 2 a staff account that
- *   has NOT enrolled reaches the enrolment handshake and nothing else — so an
- *   unenrolled admin is not a normal admin a route test can use, it is an admin
- *   mid-onboarding, and every assertion about any other route would be
- *   asserting the 2FA guard instead.
- *
- *   Pass `false` deliberately to test the guard itself.
- */
 export async function actor({
   userId, roles = [], isAdmin = false, isSubAdmin = false,
   isQueueManager = false, permissions = null,
-  twoFactorEnabled = undefined,
 } = {}) {
   const id = userId || `rt-${Math.random().toString(36).slice(2, 10)}`;
 
@@ -136,13 +125,14 @@ export async function actor({
   }
 
   const patch = { isAdmin, isSubAdmin, isQueueManager };
-  // Staff enrol by default — see the note on the parameter.
-  patch.twoFactorEnabled = twoFactorEnabled ?? (isAdmin || isSubAdmin);
   if (permissions) patch.subAdminPermissions = permissions;
   await updateUser(id, patch);
   if (roles.length) await setRoles(id, roles);
 
-  const token = signToken({ userId: id });
+  // What the sign-in would have proved (Step 3): staff approve every sign-in in
+  // Telegram, so a staff actor's token says so; a player's is the password.
+  const staff = isAdmin || isSubAdmin || isQueueManager || roles.length > 0;
+  const token = signToken({ userId: id, amr: staff ? ['pwd', 'tg'] : ['pwd'] });
   return { userId: id, mobile, token, auth: `Bearer ${token}` };
 }
 
@@ -178,7 +168,8 @@ export async function merchantActor({
   });
   if (status === 'SUSPENDED') await updateMerchant(merchantId, { status, suspensionReason });
   if (approval !== 'PENDING') await updateMerchant(merchantId, { merchantApprovalStatus: approval });
-  const token = signToken({ merchantId, userId: merchantId, mobile, isMerchant: true, isAdmin: false });
+  // A merchant session is a password AND Telegram (Step 3), as the login mints it.
+  const token = signToken({ merchantId, userId: merchantId, mobile, isMerchant: true, isAdmin: false, amr: ['pwd', 'tg'] });
   return { merchantId, mobile, token, auth: `Bearer ${token}` };
 }
 

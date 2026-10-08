@@ -2,25 +2,9 @@
 /**
  * Production Logging Service
  * Outputs structured JSON logs in production for ingestion by ELK/Splunk/CloudWatch.
- * Now includes remote monitoring hooks for proactive alerting.
  */
 
 const IS_PROD = process.env.NODE_ENV === 'production';
-
-// Placeholder for remote monitoring SDKs (e.g. Sentry)
-const REMOTE_MONITORING = {
-    captureException: (err: any, context?: any) => {
-        if (IS_PROD) {
-            // This is where Sentry.captureException(err) would go
-            // console.log("[REMOTE_MONITOR_SENT]", err.message);
-        }
-    },
-    captureMessage: (msg: string, level: string) => {
-        if (IS_PROD && level === 'fatal') {
-            // console.log("[REMOTE_ALERT_TRIGGERED]", msg);
-        }
-    }
-};
 
 interface LogEvent {
   level: 'info' | 'warn' | 'error' | 'fatal';
@@ -52,11 +36,7 @@ class Logger {
               context: event.context 
           };
           console.log(JSON.stringify(payload));
-          
-          if (event.level === 'error' || event.level === 'fatal') {
-              REMOTE_MONITORING.captureException(new Error(event.message), event.context);
-          }
-      } catch (e) {
+      } catch {
           console.log(JSON.stringify({
               timestamp,
               level: 'error',
@@ -95,7 +75,6 @@ class Logger {
 
   public fatal(message: string, context?: any) {
       this.log({ level: 'fatal', message, context });
-      REMOTE_MONITORING.captureMessage(message, 'fatal');
   }
 
   public info(message: string, context?: any) {

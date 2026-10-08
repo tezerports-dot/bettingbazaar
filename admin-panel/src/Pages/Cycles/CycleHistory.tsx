@@ -1,14 +1,11 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
-import React, { useEffect, useState } from 'react';
-import { History, Download } from 'lucide-react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { DataTable } from '../../components/DataTable';
 import { StatusBadge } from '../../components/StatusBadge';
-import { SearchBar } from '../../components/SearchBar';
 import { DateRangePicker } from '../../components/DateRangePicker';
 import { Kpis, Toolbar } from '../../components/design';
 import { Modal } from '../../components/Modal';
 import { usePagination } from '../../hooks/usePagination';
-import { useDebounce } from '../../hooks/useDebounce';
 import { formatters } from '../../utils/formatters';
 import { usePermissions } from '../../hooks/usePermission';
 import api from '../../services/api';
@@ -51,9 +48,6 @@ export const CycleHistory: React.FC = () => {
   const canSeePhantom = usePermissions().can('canManagePhantomAgents');
 
   const { page, limit, setPage } = usePagination();
-  const debouncedSearch = useDebounce(search);
-
-  useEffect(() => { loadCycles(); }, [page, debouncedSearch, typeFilter, startDate, endDate]);
 
   useEffect(() => {
     if (!canSeePhantom) return;
@@ -62,7 +56,7 @@ export const CycleHistory: React.FC = () => {
       .catch(() => { /* the panel simply does not render */ });
   }, [canSeePhantom]);
 
-  const loadCycles = async () => {
+  const loadCycles = useCallback(async () => {
     setIsLoading(true);
     try {
       const response = await api.cycles.getHistory(page, limit, typeFilter === 'ALL' ? undefined : typeFilter);
@@ -70,12 +64,14 @@ export const CycleHistory: React.FC = () => {
         setCycles(response.data);
         setTotal(response.pagination?.total || 0);
       }
-    } catch (error) {
+    } catch {
       toast.error('Failed to load cycle history');
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [page, limit, typeFilter]);
+
+  useEffect(() => { loadCycles(); }, [loadCycles]);
 
   // Net Revenue = losing side stake − winning side stake + retained winnings fee
   // = realPool - netPaidOut = netProfit stored in DB; netPaidOut is after fee

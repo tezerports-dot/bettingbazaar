@@ -146,19 +146,19 @@ exported constants. `SystemConfig.x` lives in `config_documents`, declared in
 | Referral rewards | `REFERRAL_REWARD_PAISE` (flat ₹25) + `referral_programmes`; ledger and payout via `domains/referral/referral.service.js` only, through `wallets.creditWinnings`, which pays out of the platform's own holding (`TOKEN_SUPPLY` → `USER_FLOAT`) in the paying transaction. Never a share of losses or tied to settlement. |
 | Player identity | A Telegram-proven mobile plus a password. No email, no KYC, no Aadhaar, no identity document or upload path (owner, 2026-10-02; `identitySurfaceRemoved.test.js`). `users.mobile` is immutable. |
 | Upload categories | `services/cdn.service.js`: chat attachments, payment proofs, branding assets, Android APKs. Nothing else. |
-| Live bot and channel | `activeConfig()` (`domains/telegram/telegramClient.js`) over `telegram_configs` + the bot registry; the registry wins; its 30 s cache is the only cache. |
-| Which panel a bot/channel/link serves | `audience` on the Telegram tables, equal to `users.account_type`; each panel has its own fleet, recovery bot and channel. A deciding read requires an audience. |
-| Panel origins for minted links | `panelOrigin()` (`backend/config/panelOrigins.js`). |
-| A panel's name on screen | `PANEL_NAME`/`PANEL_NOUN` (`domains/identity/audiences.js`). |
-| Sign-in bot assignment | `assignSigninBot` (`database/repositories/telegram.js`): sign-in is a rotating fleet, recovery is singular; stored on `users.telegram_bot_id`. The last live sign-in bot cannot be retired. |
-| Whether a player may use the app | `verificationStateFor()` (`GET /api/v1/auth/verification`), one `reason`; the panel reads only that. Staff `bootstrap` per §33. |
+| The one Telegram bot | `miniAppBot()` (`domains/telegram/telegramClient.js`) over `telegram_bot` (one row, token encrypted), saved only by `PUT /api/admin/telegram/bot` after Telegram's `getMe`; its 30 s cache is the only cache. No channel, fleet, recovery bot, template or webhook. |
+| Whose mobile Telegram verified | `telegram_links` (`database/repositories/telegram.js`): one row per account, `phone` = the account's `mobile` (trigger), `audience` = `account_type`, one account per panel per Telegram account; staff and merchant rows carry `two_factor` (CHECK). Written only from a signed Mini App contact share. |
+| The player app's origin | `publicAppOrigin()` (`backend/config/publicAppOrigin.js`). No link is minted to the admin or merchant panel. |
+| A panel's name on screen | `PANEL_NAME` (`domains/identity/audiences.js`). |
+| A Telegram approval | `telegram_challenges` (VERIFY, LOGIN, TELEGRAM_LOGIN, RELINK, TWO_FACTOR_OFF), answered by the Mini App (`miniApp.routes.js`) and redeemed once by the polling door, guards in the UPDATE's WHERE; each `initData`/contact proof claimed once (`telegram_init_data_uses`). |
+| Whether an account may sign in | A `telegram_links` row (verified) at its own door; a session's `amr` says what was proved, and STAFF/MERCHANT need `tg` (`secondFactorMissing`). Staff `bootstrap` per §33. |
 | An account's population | `users.account_type` (`PLAYER`/`STAFF`/`MERCHANT`); mobile unique per type; `getUserByMobile` requires the type. Never move, promote or link an account across panels; staff flags only on STAFF rows. |
 | Whether a session is still valid | `sessions_valid_from` + `sessionIsLive()` (`domains/identity/auth.middleware.js`), on EVERY path that verifies a token (middleware, `/me`, `merchantAuth`, SSE, socket joins). |
 | A merchant's password | `users.password_hash` on its login row, never on `merchants`. |
-| Password reset | `domains/identity/passwordReset.service.js`: from the account's own audience bot; grants choosing a password, never a session; hashed, single-use, expiring, in the URL fragment. |
+| Password reset | `domains/identity/passwordReset.service.js` (`resetFromMiniApp`), in the Mini App for every panel: the new password, checked against the account's floor BEFORE the proof is spent, then a contact share matching the account's mobile; set with every session evicted in the transaction that spends the proof (`telegram.resetPasswordByContact`). Never a session; no token, no link. |
 | Login doors | `LOGIN_DOOR` (`backend/routes.js`), one `loginHandler`; the read is scoped by `account_type` on both legs. |
 | Which panel a session may use | `belongsElsewhere`/`refuseWrongPanel`: `authenticatePlayer` on every player route; `authenticate` never admits MERCHANT; `403 WRONG_PANEL` (S51). |
-| What the bot says | `telegram_templates` rows (`telegramTemplates.service.js`), sent by the player's own bot (`sendTemplate({ bot })`). No hardcoded sentence in a route. |
+| Who gets a security alert | `listAlertRecipients` (linked, unblocked STAFF), messaged by the one bot from `services/alerting.service.js`. |
 | Valid mobile, referral code | `backend/domains/identity/signupFields.js`; the panel mirror (`indianMobile`) changes in the same commit. |
 | Password policy | `backend/domains/identity/passwordPolicy.js`; floors 12 staff, 8 player. |
 | Notifications | `notify()` (`domains/communication/communication.service.js`); never write a notification row directly. |
@@ -323,7 +323,6 @@ Held-major register (a row leaves when its blocker is gone):
 | Package | Held on | Major | Rewrite the newer major forces |
 |---|---|---|---|
 | typescript | all panels | 5.x | 7.x is a preview |
-| eslint | admin | 8.x | flat config replaces `.eslintrc` |
 | tailwindcss | merchant, user | 3.x | v4 stylesheet and config rewrite |
 | recharts | admin | 2.x | v3 renamed chart props |
 | framer-motion | admin, user | 11.x | v12 renamed the package and `motion` import |
@@ -603,47 +602,53 @@ Ask each question of the change in front of you.
 
 ---
 
-## 33. Signing up is a FORM. Telegram verifies; it does not authenticate.
+## 33. Signing up is a FORM. Telegram verifies the mobile; one bot, one Mini App.
 
-- **33.1 The form creates the account** (mobile, password, confirmation, captcha,
-  invite code; a referral link's code is pre-filled and locked). Telegram then
-  proves the number (contact share matched to an existing row) and enforces
-  channel membership. Login is mobile, password, captcha and any second factor.
-  **Nothing a bot does grants a session.**
-- **33.2 Fleet:** sign-in bots rotate (§2); `live_slot` names `recovery` only; a
-  webhook path and secret per bot; replies come from the bot the update arrived
-  on; `getLiveBot(role)` returns any live bot.
-- **33.3 The gate** (`VerificationGateModal`) asks on mount and on a timer and
-  blocks everything until both halves hold. A channel change re-gates everyone
-  via the generation; a leave re-gates at once; `no_bot`/`no_channel` are the
-  platform's state and show no button; a changed contact is acted on when the
-  next share arrives.
+- **33.1 The form creates the account** (mobile, password, confirmation,
+  optional invite code, and a captcha on the player's form; a referral link's
+  code is pre-filled and locked). It
+  answers with a Telegram step, never a session: the Mini App's contact share,
+  signed by Telegram, must be the account's own mobile (every account type).
+  A referral counts only once the joiner is verified, in that transaction.
+- **33.2 Sign-in** is mobile and password at the account's own door, plus a
+  captcha at the player's only: staff and merchants "only need 2FA" (owner,
+  2026-10-08), the Telegram approval of every sign-in. An unverified account is answered `TELEGRAM_VERIFICATION_REQUIRED`; staff and
+  merchants (always) and players (by their own switch) approve each sign-in in
+  Telegram. "Login with Telegram" signs a player in on Telegram alone; staff and
+  merchants still give their password with it. No authenticator app.
+- **33.3 The Mini App** (`user-panel/mini-app.html`, `miniApp.routes.js`) acts
+  only on what Telegram signed: `initData` proved on every request and claimed
+  once by the request that acts; a contact as Telegram's signed string, its
+  user equal to the opener. What it does is the signed `start_param`, never the
+  body. **Nothing it does grants a staff or merchant session without the
+  password.**
 - **33.4 Limiters guard credentials:** credential limiters sit on the credential
-  routes, never the `/api/v1/auth` prefix. Signup submits no secret: it bounds
-  accounts per address, counting successes only. Before mounting a limiter,
-  name the credential the path checks.
+  routes, never the `/api/v1/auth` prefix; every door's legs come from
+  `doorRoute` (`loginDoors.js`). Signup submits no secret: it bounds accounts
+  per address, counting successes only.
 - **33.5 Three entities:** player, staff and merchant accounts are separate, even on
   one mobile. A query that can match two populations gets a predicate in the
   WHERE, plus a second refusal where takeover is possible. A constraint whose
   definition may change is dropped and re-added.
-- **33.6 Password reset:** offered, not sent; setting it evicts every session in the
-  same statement (checked on both authenticated paths); the token is consumed
-  before the password is validated; the floor is the account type's.
-- **33.7 Three panels, three bots, three channels** (owner, 2026-09-24): per panel a
-  fleet, a recovery bot, a webhook per bot, one active channel; identities keyed
-  `(telegram_user_id, audience)`; a reset link opens its own panel; the admin bot
-  resets passwords, verifies first login and carries security alerts.
-- **Bootstrap exemption:** staff alone pass while the staff surface is
-  unconfigured, shown as a standing banner naming the screen that closes it.
+- **33.6 Password reset:** in the Mini App, for every panel: the new password,
+  then a contact share matching the account's mobile. The password is checked
+  against the account type's floor before the proof is spent; setting it
+  evicts every session in the same statement (checked on both authenticated
+  paths). No token, no link, no admin reset.
+- **33.7 Relink, never unlink:** an account moves to another Telegram account
+  only by that account sharing a contact with the same mobile. A player turns
+  approval off only with their Telegram's approval.
+- **Bootstrap exemption:** staff alone sign in on a password while no bot is
+  saved, shown as a standing banner naming the screen that closes it.
 - Seed fixtures produce real accounts (`account_type`, a merchant's `users` row,
-  a linked Telegram).
+  a `telegram_links` row).
 
 ## 34. `BB_RATE_LIMIT_RELAX` — test facility only
 
 Multiplies every `RATE_LIMIT_TIERS` count (never windows, keys or mounts);
 default 1; production refuses to boot with it; rejects non-numbers; pinned to 1
 in every vitest config and in `backend/tests/e2e/run.js`; warns at boot. Set it
-only on a development server for `test:browser`/`drive`/`mutate`/`forms`; never
+only on a development server for `test:browser`/`drive`/`mutate`/`forms`/`signin-journey`; never
 in a committed env file, Dockerfile, CI job or manifest, or on a server measuring
 limits.
 
@@ -694,7 +699,7 @@ opposite-behaviour test and the pairs. "Tests green" is not enough.
 
 ## Commands
 
-Gates: `check:no-mongo` (definition of done) · `check:deps` · `check:ui-coverage`
+Gates: `check:no-mongo` (definition of done) · `lint` (root and each panel) · `check:deps` · `check:ui-coverage`
 (`--unused`) · `check:dead-code` · `check:settable` · `check:db-boundary` ·
 `check:orphans` · `check:staff-permissions` · `check:balance-reads` ·
 `check:coherence` · `check:merchant-privacy` · `check:player-privacy` ·
@@ -703,7 +708,7 @@ Gates: `check:no-mongo` (definition of done) · `check:deps` · `check:ui-covera
 
 Tests: `test:unit` · `test:pg` (real PostgreSQL) · `test:e2e` (whole server,
 three actors, pen test) · `test:browser` (every screen; needs `BB_BASE`) ·
-`test:panel-split` · `test:panel-gates` · `test:captcha-doors` · `test:drive`
+`test:captcha-doors` · `test:signin-journey` (the three sign-in screens and the Mini App, typed into; needs `BB_BASE`) · `test:drive`
 (every control pressed) · `test:mutate` (database + bystander; `bb_drive`) ·
 `test:bet-button` · `test:ghost-mode` ·
 `test:operations -- --cron --restore --sse` · `loadtest:scale -- --seed

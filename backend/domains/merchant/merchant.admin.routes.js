@@ -260,7 +260,6 @@ router.put('/merchants/:merchantId/capabilities', authenticate, hasPermission('c
 // Get merchant earnings
 router.get('/merchants/:merchantId/earnings', authenticate, hasPermission('canManageMerchants'), async (req, res) => {
   try {
-    const { merchantId } = req.params;
     const merchant = await db.merchants.getMerchant(req.params.merchantId);
     if (!merchant) return res.status(404).json({ success: false, message: 'Merchant not found' });
 

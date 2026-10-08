@@ -47,7 +47,6 @@
 import { readFileSync, globSync } from 'node:fs';
 
 import { parse } from 'acorn';
-import * as walk from 'acorn-walk';
 
 // `database/` is scanned too. Nothing else parse-checks it: the unit suite does
 // not import it, and a repository whose SQL template literal was terminated

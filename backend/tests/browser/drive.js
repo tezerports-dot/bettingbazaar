@@ -292,7 +292,7 @@ async function press(page, panel, screen, c, seen, byName) {
     if (r.status() >= 500 && !ignored(r.url())) {
       const where = `${r.status()} ${r.request().method()} ${r.url().replace(/^https?:\/\/[^/]+/, '')}`;
       r.text().then((body) => {
-        let said = '';
+        let said;
         try { said = JSON.parse(body)?.message ?? ''; } catch { said = ''; }
         (said ? upstream : failed).push(said ? `${where} — "${said.slice(0, 140)}"` : where);
       }).catch(() => failed.push(where));
@@ -407,7 +407,7 @@ async function press(page, panel, screen, c, seen, byName) {
       const again = await find(page, c);
       if (!again) throw e;
       const r3 = await clickLive(page, c, again);
-      if (!r3.ok) throw new Error(r3.why);
+      if (!r3.ok) throw new Error(r3.why, { cause: e });
     } catch {
       page.off('pageerror', onErr); page.off('response', onRes); page.off('request', onReq); page.off('filechooser', onFile);
       return { verdict: 'UNREACHABLE', why: e.message.split('\n')[0].slice(0, 120) };

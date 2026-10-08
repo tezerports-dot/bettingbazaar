@@ -25,13 +25,11 @@
  *            Required by WinnersPage, FaqPage, SupportPage, and app-init branding fetch.
  */
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
-import { Backend, VerificationState } from './backend.interface';
-// L-01 fix: GAME_CORE.ts header requires realBackend.ts to import from it.
-import { PAYOUT, WINNER, PHASE } from '../GAME_CORE';
+import { Backend, SignInStep, PollResult, TelegramSetup, MyTelegram, TelegramBlock } from './backend.interface';
 import {
-  User, Bet, BettingSide, AdminUser, AuditLog,
+  User, Bet, BettingSide,
   PromoContent, PromoLocation,
-  GameState, SystemConfigData, GameCycle
+  SystemConfigData, GameCycle
 } from '../types';
 import { io, Socket } from 'socket.io-client';
 import { setToken } from './apiClient'; // GOVERNANCE.md M-9: single write path for auth_token
@@ -257,7 +255,12 @@ export class RealBackend implements Backend {
       if (response.status === 401) {
         localStorage.removeItem('auth_token');
         document.cookie = 'auth_token=; Max-Age=0; path=/';
-        throw new Error('Unauthorized');
+        // The server's own sentence and code travel with it: a sign-in form
+        // reads "Wrong mobile number or password", and a Telegram poll reads
+        // TWO_FACTOR_DENIED, neither of which "Unauthorized" says.
+        const body = await response.json().catch(() => ({}));
+        throw Object.assign(new Error(body.message || 'Unauthorized'),
+          { status: 401, code: body.code, data: body });
       }
 
       if (response.status >= 500 && retries > 0) {
@@ -268,7 +271,11 @@ export class RealBackend implements Backend {
 
       if (!response.ok) {
         const errorBody = await response.json().catch(() => ({}));
-        throw new Error(errorBody.message || `API Error: ${response.status}`);
+        // Status, code and body travel with the sentence: the login pace
+        // countdown reads `retryAt`, and the Telegram step reads its link off a
+        // 403 TELEGRAM_VERIFICATION_REQUIRED.
+        throw Object.assign(new Error(errorBody.message || `API Error: ${response.status}`),
+          { status: response.status, code: errorBody.code, data: errorBody });
       }
 
       if (response.status === 204) return {} as T;
@@ -324,27 +331,90 @@ export class RealBackend implements Backend {
   async register(form: {
     mobile: string; password: string; confirmPassword: string;
     referralCode?: string; captchaToken?: string;
-  }) {
+  }): Promise<SignInStep> {
     const captchaToken = form.captchaToken ?? (await getCaptchaToken()) ?? undefined;
-    return this.seat(await this.request<{
-      success: boolean; token?: string; user?: User; message?: string }>(
-      '/v1/auth/register', { method: 'POST', body: JSON.stringify({ ...form, captchaToken }) }));
+    const res = await this.request<{
+      success: boolean; verificationAvailable?: boolean; challengeToken?: string | null;
+      telegram?: TelegramBlock | null; message?: string }>(
+      '/v1/auth/register', { method: 'POST', body: JSON.stringify({ ...form, captchaToken }) });
+    if (res.verificationAvailable === false || !res.challengeToken) {
+      return { kind: 'unavailable', message: res.message || 'Your account is created. Sign in later to verify it in Telegram.' };
+    }
+    return { kind: 'telegram', leg: 'challenge', challengeToken: res.challengeToken,
+      telegram: res.telegram ?? null, message: res.message || '' };
   }
 
-  /** The login form. Same captcha posture as `register`. */
-  async login(mobile: string, password: string, captchaToken?: string) {
+  /**
+   * The login form. Same captcha posture as `register`.
+   *
+   * Two answers are a Telegram step rather than a session: 200
+   * `twoFactorRequired` (Telegram approval on) and 403
+   * TELEGRAM_VERIFICATION_REQUIRED (the mobile was never verified). Neither is
+   * a failure, so neither throws.
+   */
+  async login(mobile: string, password: string, captchaToken?: string): Promise<SignInStep> {
     const token = captchaToken ?? (await getCaptchaToken()) ?? undefined;
-    return this.seat(await this.request<{
-      success: boolean; token?: string; user?: User; message?: string;
-      twoFactorRequired?: boolean; challengeToken?: string }>(
-      '/v1/auth/login', { method: 'POST', body: JSON.stringify({ mobile, password, captchaToken: token }) }));
+    let res: { success: boolean; token?: string; user?: User; message?: string;
+      twoFactorRequired?: boolean; challengeToken?: string; telegram?: TelegramBlock | null };
+    try {
+      res = await this.request('/v1/auth/login',
+        { method: 'POST', body: JSON.stringify({ mobile, password, captchaToken: token }) });
+    } catch (err) {
+      const e = err as { code?: string; data?: { challengeToken?: string; telegram?: TelegramBlock; message?: string } };
+      if (e.code === 'TELEGRAM_VERIFICATION_REQUIRED' && e.data?.challengeToken) {
+        return { kind: 'telegram', leg: 'challenge', challengeToken: e.data.challengeToken,
+          telegram: e.data.telegram ?? null, message: e.data.message || '' };
+      }
+      throw err;
+    }
+    if (res.twoFactorRequired && res.challengeToken) {
+      return { kind: 'telegram', leg: 'challenge', challengeToken: res.challengeToken,
+        telegram: res.telegram ?? null, message: res.message || '' };
+    }
+    if (!res.success || !res.user) throw new Error(res.message || 'Could not sign you in. Please try again.');
+    this.seat(res);
+    return { kind: 'done', user: res.user };
   }
 
-  /** The second leg, for an account with an authenticator enrolled. */
-  async verifySecondFactor(challengeToken: string, code: string) {
-    return this.seat(await this.request<{
-      success: boolean; token?: string; user?: User; message?: string }>(
-      '/v1/auth/login/2fa', { method: 'POST', body: JSON.stringify({ challengeToken, code }) }));
+  /**
+   * One poll. 202 is "not yet"; a session is seated here, through the one
+   * seater; a 401 (denied, expired) throws with the server's sentence.
+   */
+  async pollSignIn(leg: 'challenge' | 'telegramLogin', challengeToken: string): Promise<PollResult> {
+    const path = leg === 'challenge' ? '/v1/auth/login/2fa' : '/v1/auth/login/telegram/complete';
+    const res = await this.request<{ success: boolean; pending?: boolean; token?: string; user?: User }>(
+      path, { method: 'POST', body: JSON.stringify({ challengeToken }) }, 0);
+    if (res.success && res.token && res.user) { this.seat(res); return { state: 'done', user: res.user }; }
+    return { state: 'pending' };
+  }
+
+  async loginWithTelegram(): Promise<SignInStep> {
+    const res = await this.request<{ challengeToken?: string; telegram?: TelegramBlock; message?: string }>(
+      '/v1/auth/login/telegram', { method: 'POST', body: '{}' });
+    if (!res.challengeToken) {
+      return { kind: 'unavailable', message: res.message || 'Telegram sign-in is not available right now.' };
+    }
+    return { kind: 'telegram', leg: 'telegramLogin', challengeToken: res.challengeToken,
+      telegram: res.telegram ?? null, message: res.message || '' };
+  }
+
+  async getTelegramSetup(): Promise<TelegramSetup> {
+    return this.request<TelegramSetup>('/telegram/mini-app?panel=PLAYER');
+  }
+
+  async getMyTelegram(): Promise<MyTelegram> {
+    return this.request<MyTelegram>('/v1/auth/telegram');
+  }
+
+  async relinkTelegram() {
+    return this.request<{ telegram: TelegramBlock; message?: string }>(
+      '/v1/auth/telegram/relink', { method: 'POST', body: '{}' });
+  }
+
+  async setTelegramTwoFactor(enabled: boolean) {
+    return this.request<{ twoFactor?: { enabled: boolean; required: boolean };
+      approvalRequired?: boolean; telegram?: TelegramBlock; message?: string }>(
+      '/v1/auth/telegram/two-factor', { method: 'PUT', body: JSON.stringify({ enabled }) });
   }
 
   /**
@@ -358,26 +428,6 @@ export class RealBackend implements Backend {
   async checkInvite(code: string) {
     return this.request<{ valid: boolean; code?: string; invitedBy?: string }>(
       `/v1/auth/invite/${encodeURIComponent(code)}`);
-  }
-
-  /** The verification gate's one question. */
-  async getVerification(opts: { verify?: boolean } = {}) {
-    return this.request<VerificationState>(
-      `/v1/auth/verification${opts.verify ? '?verify=1' : ''}`);
-  }
-
-  /**
-   * Redeem a reset link. Same captcha posture as the other credential routes.
-   *
-   * NOT seated through `this.seat`: this call returns no token by design, and
-   * routing it through the seater would invite somebody to "fix" that by
-   * issuing one.
-   */
-  async resetPassword(token: string, password: string, confirmPassword: string) {
-    const captchaToken = (await getCaptchaToken()) ?? undefined;
-    return this.request<{ success: boolean; message?: string }>(
-      '/v1/auth/password/reset',
-      { method: 'POST', body: JSON.stringify({ token, password, confirmPassword, captchaToken }) });
   }
 
   // -- SYSTEM CONFIG --------------------------------------------------------
@@ -607,30 +657,26 @@ export class RealBackend implements Backend {
     if (file.size > 800_000) {
       console.warn('[uploadFile] Large file (' + (file.size/1024).toFixed(0) + 'kb) — S3 required for files >800kb');
     }
-    try {
-      const urlRes = await this.request<{
-        success: boolean; uploadUrl: string; fileKey: string; cdnUrl: string;
-      }>('/user/profile/picture/upload-url', {
-        method: 'POST',
-        body: JSON.stringify({ fileName: file.name, contentType: file.type, fileSize: file.size })
-      });
-      if (!urlRes.success || !urlRes.uploadUrl) throw new Error('No upload URL returned');
+    const urlRes = await this.request<{
+      success: boolean; uploadUrl: string; fileKey: string; cdnUrl: string;
+    }>('/user/profile/picture/upload-url', {
+      method: 'POST',
+      body: JSON.stringify({ fileName: file.name, contentType: file.type, fileSize: file.size })
+    });
+    if (!urlRes.success || !urlRes.uploadUrl) throw new Error('No upload URL returned');
 
-      const s3Res = await fetch(urlRes.uploadUrl, {
-        method:  'PUT',
-        headers: { 'Content-Type': file.type },
-        body:    file
-      });
-      if (!s3Res.ok) throw new Error(`S3 upload failed: ${s3Res.status}`);
+    const s3Res = await fetch(urlRes.uploadUrl, {
+      method:  'PUT',
+      headers: { 'Content-Type': file.type },
+      body:    file
+    });
+    if (!s3Res.ok) throw new Error(`S3 upload failed: ${s3Res.status}`);
 
-      await this.request('/user/profile/picture/confirm-upload', {
-        method: 'POST',
-        body:   JSON.stringify({ fileKey: urlRes.fileKey, cdnUrl: urlRes.cdnUrl })
-      });
-      return urlRes.cdnUrl; // BunnyCDN URL -- globally accessible
-    } catch (err: any) {
-      throw new Error(err?.message || 'Upload failed');
-    }
+    await this.request('/user/profile/picture/confirm-upload', {
+      method: 'POST',
+      body:   JSON.stringify({ fileKey: urlRes.fileKey, cdnUrl: urlRes.cdnUrl })
+    });
+    return urlRes.cdnUrl; // BunnyCDN URL -- globally accessible
   }
 
   // -- SERVER TIME --------------------------------------------------------------

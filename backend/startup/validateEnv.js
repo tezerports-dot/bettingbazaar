@@ -42,11 +42,11 @@ const REQUIRED = [
   ['S3_SECRET_KEY',     'S3 credentials; production storage refuses the local-disk fallback'],
   ['S3_ENDPOINT',       'S3-compatible endpoint URL (e.g. Cloudflare R2, Vultr, AWS)'],
   ['METRICS_TOKEN',     'protects Prometheus metrics from public disclosure'],
-  // The player app's origin: the links the platform mints (password reset,
-  // panelOrigin()) and the Android App Links association are built from it.
+  // The player app's origin: the referral link's fallback (publicAppOrigin())
+  // and the Android App Links association are built from it.
   // PUBLIC_APP_ALLOWED_ORIGINS was required beside it and read only by
   // GET /api/app/bootstrap, which nothing called; both went 2026-10-01.
-  ['PUBLIC_APP_ORIGIN', 'the player app origin: minted links (panelOrigin) and Android App Links'],
+  ['PUBLIC_APP_ORIGIN', 'the player app origin: the referral link (publicAppOrigin) and Android App Links'],
 ];
 
 // Only meaningful in a real deployment; absence is a warning, not a failure.

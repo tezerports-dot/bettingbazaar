@@ -187,7 +187,7 @@ without bound.
 |---|---|
 | Session tokens | **PASETO v4.public / Ed25519** — no alg-swap, no `none`; `iss`/`aud` stamped; rotatable verify-key set; instant revocation via `TokenBlacklist` |
 | Passwords | **Argon2id** (19 MiB, t=2, p=1) with transparent bcrypt→argon2 upgrade on login |
-| **Two-factor (TOTP)** | **Built and enforced** — mandatory for admin + sub-admin, optional for players, available for merchants. Two-step enrolment (pending → activate), one-time recovery codes stored as hashes, secrets AES-256-GCM encrypted at rest under `TOTP_ENCRYPTION_KEY`. QR/OTP UI in all three panels. |
+| **Two-factor (Telegram)** | **Built and enforced** — every account's mobile verified by a signed Mini App contact share at signup; staff and merchants approve every sign-in in Telegram, players by their own switch. No authenticator secrets are stored. |
 | Payment order integrity | HMAC-signed orders, rotatable secret (`middleware/order-crypto-access.js`) |
 | Aadhaar handling | Dedicated HMAC for dedup only; never reversible; never in URLs, storage, telemetry or logs |
 | Boot gate | Production refuses to start on a missing/weak secret or unverified money-DB TLS (`startup/validateEnv.js`) |
@@ -624,8 +624,6 @@ decision about a store listing.
 > **Back up the upload keystore somewhere you will still have in five years.**
 > Losing it means you can never update the installed app — Play identifies an app by
 > its signing key, and a new key is a new app. Enrol in Play App Signing.
-> The same permanence applies to `TOTP_ENCRYPTION_KEY`: it has no `_PREVIOUS_`
-> counterpart, and rotating it forces every enrolled user to re-enrol.
 
 **No bundled VPN or proxy — recorded decision** (§20, 2026-07-28). Availability
 against a blocked or failing *origin* is handled at the origin and DNS layer:

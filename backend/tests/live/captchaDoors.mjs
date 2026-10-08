@@ -1,6 +1,10 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * Which doors actually challenge, on a server where the captcha is switched on.
+ * Which doors challenge, and which must not, on a server where the captcha is
+ * switched on. The player's signup and sign-in challenge; staff sign-in,
+ * merchant sign-in and merchant signup must NOT (owner, 2026-10-08: "merchant
+ * and staff dont need captcha they will only need 2FA"), because their panels
+ * send no captcha token and a challenge there refuses every sign-in.
  *
  * ── The gap this closes ───────────────────────────────────────────────────
  * `captcha.test.js` covers the MIDDLEWARE — configured and not, accepted and
@@ -13,11 +17,10 @@
  * Two earlier drafts could not answer the question:
  *
  *   · Grepping the route files reported SEVEN naked doors, six of them false.
- *     `playerAuth.routes.js` spreads its captcha in from a shared chain
- *     (`...credentialChain('player-login')`), and the merchant login's captcha
- *     is a separate `app.use('/api/merchant/auth/login', …)` prefix mount in
- *     `server.js`. A text scan sees neither, and a gate that cries wolf six
- *     times out of seven is one somebody switches off (§28).
+ *     The doors spread their chains in (`...doorRoute('PLAYER', 'login')`,
+ *     `loginDoors.js`; `...signupChain(…)`), which a text scan cannot follow,
+ *     and a gate that cries wolf six times out of seven is one somebody
+ *     switches off (§28).
  *
  *   · Walking the router stack needs the assembled app, and `server.js` does
  *     not export it; `mountRouter` in the route harness mounts ONE router, so
@@ -79,6 +82,13 @@ const PW = `Cap7cha-Pr0be-${stamp}!`;
 const DOORS = [
   ['player signup',   '/api/v1/auth/register',     { mobile: `91${stamp}1`.slice(0, 10), password: PW, confirmPassword: PW }],
   ['player login',    '/api/v1/auth/login',        { mobile: `92${stamp}2`.slice(0, 10), password: PW }],
+];
+// ── Doors that must NOT challenge (owner, 2026-10-08) ─────────────────────
+// Staff and merchants "only need 2FA": every sign-in waits for their Telegram
+// approval, and a merchant application is unusable until Telegram verifies
+// its mobile. Their panels carry no captcha widget, so a challenge here would
+// refuse every staff and merchant sign-in the moment Turnstile is switched on.
+const UNCHALLENGED = [
   ['staff login',     '/api/admin/login',          { mobile: `93${stamp}3`.slice(0, 10), password: PW }],
   ['merchant login',  '/api/merchant/auth/login',  { mobile: `94${stamp}4`.slice(0, 10), password: PW }],
   ['merchant signup', '/api/merchant/auth/signup', { username: `cap${stamp}`, mobile: `95${stamp}5`.slice(0, 10), email: `c${stamp}@example.test`, password: PW, acceptedCurrencies: ['INR'] }],
@@ -113,7 +123,13 @@ for (const [label, path, body] of DOORS) {
      `${res.status} ${JSON.stringify(res.body).slice(0, 120)}`);
 }
 
+for (const [label, path, body] of UNCHALLENGED) {
+  const res = await probe(path, body);
+  ok(`${label} does NOT ask for a captcha (Telegram approval is its second factor)`,
+     res.body?.code !== 'CAPTCHA_REQUIRED', `${res.status} ${JSON.stringify(res.body).slice(0, 120)}`);
+}
+
 console.log(`\n${pass.join('\n')}`);
-if (fail.length) console.log(`\nDOORS THAT DO NOT CHALLENGE:\n${fail.join('\n')}`);
-console.log(`\n${pass.length} challenged, ${fail.length} did not\n`);
+if (fail.length) console.log(`\nDOORS THAT ANSWER WRONGLY:\n${fail.join('\n')}`);
+console.log(`\n${pass.length} as expected, ${fail.length} not\n`);
 process.exit(fail.length ? 1 : 0);

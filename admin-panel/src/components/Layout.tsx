@@ -4,7 +4,7 @@
 // palette, theme toggle, live status and account menu. Recreated from the
 // design handoff "Betting Bazaar Admin.dc.html". All routing, permission
 // filtering, auth and branding wiring is preserved from the previous shell.
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router';
 import {
   LayoutDashboard, Users, Store, Activity, Layers, Landmark,
@@ -13,7 +13,7 @@ import {
   MessageCircle, Shield, History, Scale, Upload, Search, Sun, Moon, Bell,
   SlidersHorizontal, Trophy, Star, Gamepad2, Bot, Share2,
   type LucideIcon, ArrowLeftRight, BookOpenCheck, Flag, Hourglass, Fingerprint,
-  Ghost, Smartphone, ShieldBan} from 'lucide-react';
+  Ghost, Smartphone, ShieldBan, Send, AlertTriangle} from 'lucide-react';
 import { useAuthStore } from '../services/auth';
 import { usePermissions } from '../hooks/usePermission';
 import { useThemeStore } from '../services/theme';
@@ -67,9 +67,11 @@ const NAV_GROUPS: MenuGroup[] = [
   ] },
   // Identity and payout control plane. Each screen is its own area, granted
   // by an admin on the Sub-admins screen (owner, 2026-10-01). Every staff
-  // account owes a second factor, sub-admins included.
+  // sign-in is approved in Telegram, sub-admins included; "My Telegram" is
+  // every account's own link and needs no area.
   { key: 'identity', label: 'Identity & Growth', items: [
-    { path: '/telegram',  icon: Bot,             label: 'Telegram Setup',  title: 'Telegram Setup',      sub: 'Replace the sign-in bot or channel without a deploy', permission: 'canManageTelegram' },
+    { path: '/telegram',  icon: Bot,             label: 'Telegram Setup',  title: 'Telegram Setup',      sub: 'The one bot: replace it without a deploy', permission: 'canManageTelegram' },
+    { path: '/account/telegram', icon: Send,     label: 'My Telegram',     title: 'My Telegram',         sub: 'The Telegram account that approves your sign-ins' },
     { path: '/referrals', icon: Share2,          label: 'Referrals',       title: 'Referral Programme',  sub: 'Fund the payout queue in joining order', permission: 'canManageReferrals' },
   ] },
   { key: 'payments', label: 'Payments & Queue', items: [
@@ -146,7 +148,7 @@ function initialsOf(name?: string): string {
 export const Layout: React.FC<LayoutProps> = ({ children }) => {
   const location = useLocation();
   const navigate = useNavigate();
-  const { admin, logout } = useAuthStore();
+  const { admin, logout, bootstrap } = useAuthStore();
   const { can, canAny, isAdmin, isQueueManager } = usePermissions();
   const { theme, toggleTheme, collapsed, toggleCollapsed } = useThemeStore();
 
@@ -187,17 +189,17 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  const canSee = (item: MenuItem): boolean => {
+  const canSee = useCallback((item: MenuItem): boolean => {
     if (isAdmin) return true;
     if (item.adminOnly) return false;
     if (item.queueManagerAccess && isQueueManager) return true;
     if (item.permission) return canAny(Array.isArray(item.permission) ? item.permission : [item.permission]);
     return true; // dashboard etc. — any authenticated user
-  };
+  }, [isAdmin, isQueueManager, canAny]);
 
   const visibleGroups = useMemo(
     () => NAV_GROUPS.map((g) => ({ ...g, items: g.items.filter(canSee) })).filter((g) => g.items.length),
-    [admin, isAdmin, isQueueManager]
+    [canSee]
   );
 
   const paletteItems: PaletteItem[] = useMemo(
@@ -390,6 +392,23 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
         {/* Page content */}
         <main style={{ flex: 1, overflowY: 'auto', background: 'var(--bg)' }}>
           <div style={{ padding: '22px 24px 72px', maxWidth: 1560, margin: '0 auto' }}>
+            {/* ── The staff bootstrap (CLAUDE.md §33) ──────────────────────
+                Standing, on every screen, while the server says this session
+                is a password alone because no bot is saved yet. Names the
+                screen that ends it. */}
+            {bootstrap && (
+              <div role="status" style={{
+                display: 'flex', alignItems: 'center', gap: 10, marginBottom: 18, padding: '12px 16px',
+                borderRadius: 10, border: '1px solid var(--border)', background: 'var(--warning-bg)',
+                color: 'var(--text)', fontSize: 13, fontWeight: 600, lineHeight: 1.5,
+              }}>
+                <AlertTriangle size={17} style={{ flex: 'none', color: 'var(--gold-ink)' }} />
+                <span>
+                  Telegram is not set up. Staff sign in with a password alone until a bot is saved in{' '}
+                  <Link to="/telegram" style={{ color: 'var(--gold-ink)', textDecoration: 'underline' }}>Telegram setup</Link>.
+                </span>
+              </div>
+            )}
             {children}
           </div>
         </main>

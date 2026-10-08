@@ -32,10 +32,11 @@ import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { pgConfigured, applySchema, closePg, pgQuery } from '#db/client.js';
-import { getUser, getUserByMobile, getUserCredentials } from '#db/repositories/users.js';
+import { getUserByMobile, getUserCredentials } from '#db/repositories/users.js';
 import { verifyPassword } from '../../domains/identity/password.util.js';
 import playerAuthRoutes from '../../domains/identity/playerAuth.routes.js';
-import { mountRouter, actor, as, request } from './_harness.js';
+import { mountRouter, request } from './_harness.js';
+import { linkTelegram, saveTestBot, removeTestBot } from '../miniAppFixture.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 const app = mountRouter(playerAuthRoutes, { prefix: '/api/v1/auth' });
@@ -118,14 +119,29 @@ describePg('POST /api/v1/auth/register — the signup form', () => {
     expect((await verifyPassword(creds.passwordHash, f.password)).valid).toBe(true);
   });
 
-  it('signs the new player in, so the gate knows who is standing at it', async () => {
-    const res = await post('/register', form());
-    expect(res.body.token).toBeTruthy();
-    expect(res.body.user.role).toBe('user');
-    // No joining number yet — the channel join claims it. Asserted here too
-    // because this is the route somebody would "helpfully" add it to.
-    const user = await getUser(res.body.user.id);
-    expect(user.joiningNumber).toBeFalsy();
+  it('answers with the Telegram step, never a session (Step 3)', async () => {
+    await saveTestBot();
+    try {
+      const f = form();
+      const res = await post('/register', f);
+      expect(res.body).toMatchObject({ success: true, verificationRequired: true, verificationAvailable: true });
+      expect(res.body.token).toBeFalsy();
+      expect(res.body.challengeToken).toBeTruthy();
+      expect(res.body.telegram.url).toMatch(/^https:\/\/t\.me\/bb_test_miniapp_bot\?startapp=c[0-9a-f]{32}$/);
+      // No joining number yet: the contact share claims it. Asserted here too
+      // because this is the route somebody would "helpfully" add it to.
+      const user = await getUserByMobile(f.mobile, 'PLAYER');
+      expect(user.joiningNumber).toBeFalsy();
+    } finally { await removeTestBot(); }
+  });
+
+  it('keeps the account when no bot is configured, and says the step comes later', async () => {
+    await removeTestBot();
+    const f = form();
+    const res = await post('/register', f);
+    expect(res.body).toMatchObject({ success: true, verificationRequired: true, verificationAvailable: false, telegram: null });
+    expect(res.body.token).toBeFalsy();
+    expect(await getUserByMobile(f.mobile, 'PLAYER')).not.toBeNull();
   });
 
   it('names the FIELD in every refusal', async () => {
@@ -228,13 +244,36 @@ describePg('POST /api/v1/auth/login — the login form', () => {
   beforeAll(async () => { await applySchema(); });
   afterAll(async () => { await closePg(); });
 
-  it('signs a player in with the password the form set', async () => {
+  it('signs a VERIFIED player in with the password the form set, and no Telegram', async () => {
     const f = form();
     await post('/register', f);
+    await linkTelegram((await getUserByMobile(f.mobile, 'PLAYER')).userId);
     const res = await post('/login', { mobile: f.mobile, password: f.password });
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
     expect(res.body.token).toBeTruthy();
+  });
+
+  it('does not sign in an account Telegram has not verified: it hands back the step', async () => {
+    await saveTestBot();
+    try {
+      const f = form();
+      await post('/register', f);
+      const res = await post('/login', { mobile: f.mobile, password: f.password });
+      expect(res.status).toBe(403);
+      expect(res.body.code).toBe('TELEGRAM_VERIFICATION_REQUIRED');
+      expect(res.body.token).toBeFalsy();
+      expect(res.body.telegram.url).toContain('startapp=c');
+    } finally { await removeTestBot(); }
+  });
+
+  it('says Telegram is unavailable, not that the player is wrong, when no bot exists', async () => {
+    await removeTestBot();
+    const f = form();
+    await post('/register', f);
+    const res = await post('/login', { mobile: f.mobile, password: f.password });
+    expect(res.status).toBe(503);
+    expect(res.body.code).toBe('TELEGRAM_UNAVAILABLE');
   });
 
   it('answers a wrong password and an unknown number IDENTICALLY', async () => {
@@ -302,40 +341,21 @@ describePg('POST /api/v1/auth/login — the login form', () => {
     expect(res.body.message).toMatch(/blocked/i);
   });
 
-  it('issues a 2FA CHALLENGE instead of a session for an enrolled account', async () => {
+  it('issues a Telegram CHALLENGE instead of a session when the player switched approval on', async () => {
+    await saveTestBot();
     const f = form();
     await post('/register', f);
     const user = await getUserByMobile(f.mobile, 'PLAYER');
-    await pgQuery(`UPDATE users SET two_factor_enabled = true WHERE user_id = $1`, [user.userId]);
+    await linkTelegram(user.userId, { twoFactor: true });
     const res = await post('/login', { mobile: f.mobile, password: f.password });
+    await removeTestBot();
+    expect(res.body.telegram.url).toContain('startapp=c');
     // Deliberately NOT a logged-in success: a challenge is issued INSTEAD of a
     // session, so nothing downstream can mistake it for one.
     expect(res.body.success).toBe(false);
     expect(res.body.twoFactorRequired).toBe(true);
     expect(res.body.challengeToken).toBeTruthy();
     expect(res.body.token).toBeFalsy();
-  });
-});
-
-describePg('GET /api/v1/auth/verification — the gate', () => {
-  beforeAll(async () => { await applySchema(); });
-  afterAll(async () => { await closePg(); });
-
-  it('refuses an anonymous caller', async () => {
-    expect((await request(app).get('/api/v1/auth/verification')).status).toBe(401);
-  });
-
-  it('reports NO BOT as the platform state, never as the player fault', async () => {
-    // A launch sits in exactly this state between deploying and registering the
-    // first bot, and the player can do nothing about it. The reason has to say
-    // so, or the screen tells them to open a bot that does not exist.
-    await pgQuery(`UPDATE telegram_bots SET status = 'RETIRED', retired_at = now()
-                    WHERE role = 'signin' AND status = 'ACTIVE'`);
-    const who = await actor();
-    const res = await as(app, who).get('/api/v1/auth/verification');
-    expect(res.status).toBe(200);
-    expect(res.body.verified).toBe(false);
-    expect(res.body.reason).toBe('no_bot');
   });
 });
 
@@ -365,13 +385,18 @@ describe('the limiters guard credentials, and only credentials', () => {
   const server = source('../../server.js');
 
   it('puts the failure budget and the subnet limiter on the LOGIN route', () => {
-    const chain = routes.slice(routes.indexOf('const credentialChain'),
-                               routes.indexOf('const signupChain'));
+    const doors = source('../../domains/identity/loginDoors.js');
+    const chain = doors.slice(doors.indexOf('PLAYER: () => ['), doors.indexOf('STAFF: () => ['));
     expect(chain).toMatch(/loginPaceLimiter/);
     expect(chain).toMatch(/authLimiter/);
     expect(chain).toMatch(/createSubnetLimiter\('auth'\)/);
     expect(chain).toMatch(/globalSurgeBreaker\('auth'\)/);
-    expect(routes).toMatch(/router\.post\('\/login', \.\.\.credentialChain/);
+    expect(routes).toMatch(/router\.post\('\/login', \.\.\.doorRoute\('PLAYER', 'login'\)\)/);
+    // There is no reset token to spend here any more: a forgotten password is
+    // set in the Mini App, on a Telegram-signed proof, behind its own limiter.
+    expect(routes).not.toMatch(/router\.post\('\/password\/reset'/);
+    const miniApp = source('../../domains/telegram/miniApp.routes.js');
+    expect(miniApp).toMatch(/router\.post\('\/mini-app\/password-reset', miniAppLimiter,/);
   });
 
   it('keeps BOTH off the signup route, which submits no secret', () => {

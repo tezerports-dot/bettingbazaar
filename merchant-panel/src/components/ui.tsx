@@ -137,10 +137,12 @@ export const Field: React.FC<{
   label: string;
   hint?: string;
   error?: string;
+  /** The `id` of the control inside, so the label names it (§32 S24). */
+  htmlFor?: string;
   children: React.ReactNode;
-}> = ({ label, hint, error, children }) => (
+}> = ({ label, hint, error, htmlFor, children }) => (
   <div>
-    <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: 'var(--text-2)', marginBottom: 6 }}>
+    <label htmlFor={htmlFor} style={{ display: 'block', fontSize: 12, fontWeight: 700, color: 'var(--text-2)', marginBottom: 6 }}>
       {label}
     </label>
     {children}

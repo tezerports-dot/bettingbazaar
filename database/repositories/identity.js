@@ -60,15 +60,18 @@ export async function sweepExpired() {
 /**
  * Create an account from the SIGNUP FORM, before Telegram has met the person.
  *
- * The account exists BEFORE Telegram is involved; the contact share later
- * proves the mobile is theirs (`linkTelegramToAccount`). The unique index on
- * `(mobile, account_type)` refuses a second player account for one number —
- * that is the guarantee, and the route's read before this is only a courtesy
- * that produces the right sentence.
+ * The website form creates the account BEFORE Telegram is involved, and the
+ * contact share in the Mini App later proves the mobile is theirs
+ * (`telegram.answerChallenge`). The Mini App's own signup creates it in the
+ * transaction that links it, passing that transaction's `client`
+ * (`telegram.signUpVerifiedPlayer`), so both paths write the row here. The
+ * unique index on `(mobile, account_type)` refuses a second player account for
+ * one number — that is the guarantee, and the route's read before this is only
+ * a courtesy that produces the right sentence.
  */
 export async function createAccountFromSignup({
   userId, username, mobile, passwordHash,
-  referralCode = null, referredBy = null,
+  referralCode = null, referredBy = null, client = null,
 }) {
   if (!userId || !mobile) throw new Error('createAccountFromSignup requires a userId and a mobile');
   if (!passwordHash) throw new Error('createAccountFromSignup requires a passwordHash — the form sets one');
@@ -76,7 +79,10 @@ export async function createAccountFromSignup({
   try {
     // 'PLAYER', stated rather than defaulted. This is the one writer of a
     // player account and the type decides which door can ever read it back.
-    const { rows } = await pgQuery(
+    const run = client
+      ? (text, params) => client.query(text, params)
+      : (text, params) => pgQuery(text, params, 'identity_signup');
+    const { rows } = await run(
       `INSERT INTO users (user_id, username, mobile, password_hash, referral_code,
                           referred_by, status, account_type)
        VALUES ($1, $2, $3, $4, $5, $6, 'ACTIVE', 'PLAYER')
@@ -84,7 +90,6 @@ export async function createAccountFromSignup({
        RETURNING user_id`,
       [String(userId), username || `player${String(mobile).slice(-4)}`, String(mobile),
        String(passwordHash), referralCode, referredBy ? String(referredBy) : null],
-      'identity_signup',
     );
     if (!rows[0]) return { ok: false, reason: 'mobile_taken' };
     return { ok: true, userId: String(userId) };

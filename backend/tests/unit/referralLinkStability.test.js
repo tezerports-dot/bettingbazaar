@@ -35,13 +35,14 @@ import request from 'supertest';
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, '../../..');
 
-// The route's two collaborators are stubbed: this is about the redirect's
-// contract, not about Telegram or the database.
-let liveBotUsername = 'bazaar_signin_bot';
+// The route's collaborators are stubbed: this is about the redirect's
+// contract, not about Telegram or the database. `miniAppLink` is the real one.
+let liveBot = { botUsername: 'bazaar_bot', miniAppShortName: '' };
 const clicks = [];
 
-vi.mock('../../domains/telegram/telegramClient.js', () => ({
-  activeConfig: async () => (liveBotUsername ? { botUsername: liveBotUsername } : null),
+vi.mock('../../domains/telegram/telegramClient.js', async (importOriginal) => ({
+  ...(await importOriginal()),
+  miniAppBot: async () => liveBot,
 }));
 
 vi.mock('../../domains/referral/referral.service.js', () => ({
@@ -57,33 +58,30 @@ function app() {
 }
 
 beforeEach(() => {
-  liveBotUsername = 'bazaar_signin_bot';
+  liveBot = { botUsername: 'bazaar_bot', miniAppShortName: '' };
   clicks.length = 0;
 });
 
-describe('the link survives a bot replacement', () => {
-  it('sends the visitor to whichever bot is live at the moment of the tap', async () => {
+describe('the link survives a bot replacement (Step 3: it opens the Mini App)', () => {
+  it('opens the Mini App of whichever bot is configured at the moment of the tap', async () => {
     const before = await request(app()).get('/r/ABC12345');
     expect(before.status).toBe(302);
-    expect(before.headers.location).toBe('https://t.me/bazaar_signin_bot?start=ABC12345');
+    expect(before.headers.location).toBe('https://t.me/bazaar_bot?startapp=ref-ABC12345');
 
-    // Telegram suspends the bot; an operator promotes the standby.
-    liveBotUsername = 'bazaar_backup_bot';
+    // Telegram suspends the bot; an admin saves a new one.
+    liveBot = { botUsername: 'bazaar_backup_bot', miniAppShortName: 'play' };
 
     // THE SAME URL — the one already sitting in a hundred WhatsApp threads.
     const after = await request(app()).get('/r/ABC12345');
-    expect(after.status).toBe(302);
-    expect(after.headers.location).toBe('https://t.me/bazaar_backup_bot?start=ABC12345');
+    expect(after.headers.location).toBe('https://t.me/bazaar_backup_bot/play?startapp=ref-ABC12345');
   });
 
-  it('carries the code through as the /start argument, so nobody types it', async () => {
-    const res = await request(app()).get('/r/ZZZZ9999');
-    expect(res.headers.location).toContain('?start=ZZZZ9999');
+  it('carries the code as the signed start parameter, so nobody types it', async () => {
+    const res = await request(app()).get('/r/zzzz9999');
+    expect(res.headers.location).toContain('?startapp=ref-ZZZZ9999');
   });
 
   it('never answers with a cacheable redirect', async () => {
-    // A 301 would be cached by browsers and intermediaries against the CURRENT
-    // bot — recreating this exact bug inside caches nobody can clear.
     const res = await request(app()).get('/r/ABC12345');
     expect(res.status).toBe(302);
     expect(res.headers['cache-control']).toMatch(/no-store/);
@@ -91,22 +89,20 @@ describe('the link survives a bot replacement', () => {
 });
 
 describe('the redirect cannot be turned into someone else’s link', () => {
-  it('refuses to pass through a code that is not a code', async () => {
-    // The code is interpolated into a URL. Anything that could change where
-    // that URL points is dropped — the visitor still reaches the bot, because a
-    // mistyped link should not be a dead end.
+  it('drops a code that is not a code, and still reaches signup', async () => {
     for (const bad of ['../evil', 'a b', 'x'.repeat(80), '%2e%2e', 'a?b=c', 'a#b']) {
       const res = await request(app()).get(`/r/${encodeURIComponent(bad)}`);
       expect(res.status, bad).toBe(302);
-      expect(res.headers.location, bad).toBe('https://t.me/bazaar_signin_bot');
-      expect(res.headers.location, bad).not.toContain('start=');
+      expect(res.headers.location, bad).toBe('/');
+      expect(res.headers.location, bad).not.toContain('ref');
     }
   });
 
   it('always lands on t.me, whatever the bot username contains', async () => {
-    liveBotUsername = 'evil.example/x?';
+    liveBot = { botUsername: 'evil.example/x?', miniAppShortName: '' };
     const res = await request(app()).get('/r/ABC12345');
     expect(res.headers.location.startsWith('https://t.me/')).toBe(true);
+    expect(res.headers.location).not.toContain('evil.example/');
   });
 
   it('does not count a click for a code it refused', async () => {
@@ -121,17 +117,12 @@ describe('the redirect cannot be turned into someone else’s link', () => {
   });
 });
 
-describe('when there is no bot to send anyone to', () => {
-  it('says so rather than redirecting to a chat that does not exist', async () => {
-    // The state a fresh deployment sits in before the runbook's Phase 3.5, and
-    // the state a suspension leaves until a spare is promoted.
-    liveBotUsername = '';
+describe('when there is no bot', () => {
+  it('sends the visitor to the signup form with the code, rather than a dead chat', async () => {
+    liveBot = null;
     const res = await request(app()).get('/r/ABC12345');
-    expect(res.status).toBe(503);
-    expect(res.headers.location).toBeUndefined();
-    expect(res.text).toMatch(/paused/i);
-    // The reassurance matters: a referrer must not go asking for a new link.
-    expect(res.text).toMatch(/keep working/i);
+    expect(res.status).toBe(302);
+    expect(res.headers.location).toBe('/?ref=ABC12345');
   });
 });
 

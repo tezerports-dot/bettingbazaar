@@ -4,11 +4,11 @@
  *
  * ── What arrives here ──────────────────────────────────────────────────────
  * The App Link filter in AndroidManifest.xml routes taps on
- * `https://<PUBLIC_APP_ORIGIN>/#/…` to this app. The one the platform sends
- * today is the bot's password-reset link, `/#/reset/<token>`: a player who
- * forgot their password taps it in Telegram and lands on the reset screen in
- * the app they already have, instead of a browser. (Sign-in itself is a form —
- * CLAUDE.md §33 — so no link here grants a session.)
+ * `https://<PUBLIC_APP_ORIGIN>/#/…` to this app: a link to a screen of the
+ * site, shared anywhere, opens that screen in the app the player already has
+ * instead of a browser. No link the platform sends carries a credential: the
+ * password reset is finished inside the Mini App (2026-10-08), and sign-in is a
+ * form (CLAUDE.md §33), so nothing here grants a session or spends a token.
  *
  * The manifest routes the tap; this takes the URL Android hands over and
  * turns it into a navigation inside the app.
@@ -37,8 +37,8 @@ import { originCandidates, readEnv } from './originFailover';
  * Origins whose links this app will act on.
  *
  * `VITE_APP_ORIGIN` is the panel's public origin — the one the backend's
- * `PUBLIC_APP_ORIGIN` builds reset links against, and the host the App Link
- * filter claims. The API origins are included because a single-service deploy
+ * `PUBLIC_APP_ORIGIN` names (the referral link sends people there), and the
+ * host the App Link filter claims. The API origins are included because a single-service deploy
  * serves the panel and the API from the same host, and a multi-domain deploy
  * (`network.config.js` DOMAINS) serves the same app from every one of them.
  */
@@ -89,9 +89,8 @@ export function routeFromDeepLink(rawUrl: string, allowed: string[]): string | n
 let lastHandled: string | null = null;
 
 function applyRoute(hash: string): void {
-  // A single-use token that arrives twice — Android can deliver a cold-start
-  // URL through both getLaunchUrl() and an appUrlOpen event — would burn itself
-  // on the second attempt and drop the player on the failure screen.
+  // Android can deliver a cold-start URL through both getLaunchUrl() and an
+  // appUrlOpen event; acting on it twice would push the same screen twice.
   if (hash === lastHandled) return;
   lastHandled = hash;
 

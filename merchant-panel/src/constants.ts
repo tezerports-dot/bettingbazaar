@@ -25,9 +25,12 @@ export const ENDPOINTS = {
     // FIX 2: Point to merchant-specific endpoints that enforce merchant status checks
     LOGIN: '/api/merchant/auth/login',
     LOGIN_2FA: '/api/merchant/auth/login/2fa',
-    TWO_FA_STATUS: '/api/merchant/2fa/status',
-    TWO_FA_SETUP: '/api/merchant/2fa/setup',
-    TWO_FA_ACTIVATE: '/api/merchant/2fa/activate',
+    // Telegram sign-in legs (backend/domains/identity/loginDoors.js, merchant.routes.js).
+    LOGIN_TELEGRAM: '/api/merchant/auth/login/telegram',
+    LOGIN_TELEGRAM_COMPLETE: '/api/merchant/auth/login/telegram/complete',
+    // The signed-in merchant's Telegram link (accountTelegram.js).
+    TELEGRAM: '/api/merchant/telegram',
+    TELEGRAM_RELINK: '/api/merchant/telegram/relink',
     SIGNUP: '/api/merchant/auth/signup',
     PROFILE: '/api/merchant/profile',
     STATUS: '/api/merchant/online-status',

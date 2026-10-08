@@ -22,7 +22,7 @@
  * settlement working while the real function threw on every call.
  */
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
-import { pgConfigured, pgQuery, applySchema, closePg, withTransaction } from '../client.js';
+import { pgConfigured, applySchema, closePg, withTransaction } from '../client.js';
 import { debitWinningsForWithdrawal, creditWinnings, getBalances } from '../repositories/wallets.js';
 import { createOrderRecord, pendingWithdrawalTotal, getOrderRecord } from '../repositories/orders.record.js';
 

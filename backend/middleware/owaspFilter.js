@@ -28,6 +28,7 @@ const RULES = [
   { name: 'xss-event-handler',   re: /\bon(error|load|click|mouseover)\s*=\s*["']/i },
   { name: 'xss-js-uri',          re: /javascript:\s*[a-z(]/i },
   { name: 'path-traversal',      re: /(\.\.\/){2,}|(\.\.%2f){2,}/i },
+  // eslint-disable-next-line no-control-regex -- a NUL byte is exactly what this rule matches
   { name: 'null-byte',           re: /\x00|%00/ },
 ];
 

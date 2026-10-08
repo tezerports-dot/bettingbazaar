@@ -15,17 +15,10 @@
  * in plaintext would mean a single database dump hands over the ability to
  * speak as the platform and to call its providers.
  *
- * ── Why a separate key from TOTP ────────────────────────────────────────────
- * `totp.service.js` already encrypts second-factor secrets under
- * TOTP_ENCRYPTION_KEY, and this deliberately does NOT reuse that key. The two
- * protect different things with different blast radii: a leaked TOTP key costs
- * you second factors, a leaked field key costs you every bot token and
- * provider credential on the platform. Sharing one key would make rotating either of them require
- * re-encrypting both.
- *
- * The format and the refusal-to-derive rule are copied deliberately from
- * totp.service.js — that shape is already proven here, and a second, subtly
- * different crypto implementation in the same codebase is its own hazard.
+ * ── One implementation ──────────────────────────────────────────────────────
+ * This is the codebase's one field cipher (the authenticator app that had its
+ * own was removed in Step 3). A second, subtly different crypto implementation
+ * in the same codebase is its own hazard.
  */
 import crypto from 'crypto';
 

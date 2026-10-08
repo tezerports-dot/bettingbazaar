@@ -1,12 +1,9 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
-import React, { useEffect, useState } from 'react';
-import { FileText, Download } from 'lucide-react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { DataTable } from '../../components/DataTable';
-import { SearchBar } from '../../components/SearchBar';
 import { Kpis, Toolbar, AvatarCell } from '../../components/design';
 import { DateRangePicker } from '../../components/DateRangePicker';
 import { usePagination } from '../../hooks/usePagination';
-import { useDebounce } from '../../hooks/useDebounce';
 import { formatters } from '../../utils/formatters';
 import api from '../../services/api';
 import type { Transaction } from '../../types';
@@ -23,13 +20,8 @@ export const TransactionsList: React.FC = () => {
   const [endDate, setEndDate] = useState('');
 
   const { page, limit, setPage } = usePagination();
-  const debouncedSearch = useDebounce(search);
 
-  useEffect(() => {
-    loadTransactions();
-  }, [page, debouncedSearch, typeFilter, fieldFilter, startDate, endDate]);
-
-  const loadTransactions = async () => {
+  const loadTransactions = useCallback(async () => {
     setIsLoading(true);
     try {
       const response = await api.finance.getTransactions(
@@ -44,12 +36,14 @@ export const TransactionsList: React.FC = () => {
         setTransactions(response.data);
         setTotal(response.pagination?.total || 0);
       }
-    } catch (error) {
+    } catch {
       toast.error('Failed to load transactions');
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [page, limit, typeFilter, fieldFilter, startDate, endDate]);
+
+  useEffect(() => { loadTransactions(); }, [loadTransactions]);
 
   /**
    * A ledger row records a MOVEMENT: a direction and a pocket. It has no

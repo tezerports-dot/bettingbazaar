@@ -246,7 +246,7 @@ for (const [panel, file] of CLIENTS) {
     // Comments blanked, so a path a comment mentions is not taken for the request.
     const body = src.slice(m.index, end)
       .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-    const path = body.match(/['\`](\/(?:api|v1)[^'\`]*)['\`]/)?.[1] ?? '';
+    const path = body.match(/['`](\/(?:api|v1)[^'`]*)['`]/)?.[1] ?? '';
     uncalled.push({ panel, file: relative(ROOT, abs), obj, name, path });
   });
 }

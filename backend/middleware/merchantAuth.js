@@ -20,7 +20,10 @@
 // AQ-2: verify via the single PASETO authority (Ed25519 signature + iss/aud stamped).
 import { verifyJwt } from '../domains/identity/jwt.util.js';
 import { db } from '#db';
-import { isTokenRevoked, sessionSuperseded, refuseSupersededSession, merchantLoginRow } from '../domains/identity/auth.middleware.js';
+import {
+  isTokenRevoked, sessionSuperseded, refuseSupersededSession, merchantLoginRow,
+  secondFactorMissing, refuseMissingSecondFactor,
+} from '../domains/identity/auth.middleware.js';
 import { isChallengeToken } from '../domains/identity/twoFactorChallenge.js';
 
 /**
@@ -84,6 +87,10 @@ export const merchantAuth = async (req, res, next) => {
     // merchant session (R6, 2026-09-30).
     const login = await merchantLoginRow(merchant);
     if (sessionSuperseded(login, decoded)) return refuseSupersededSession(res);
+    // A merchant session is a password AND the merchant's own Telegram
+    // (Step 3); one minted on the password alone is refused here as on every
+    // other path that honours a session (auth.middleware.js).
+    if (await secondFactorMissing('MERCHANT', decoded)) return refuseMissingSecondFactor(res);
 
     req.merchant   = merchant;
     req.merchantId = merchant._id;

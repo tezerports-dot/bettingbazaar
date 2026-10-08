@@ -1,7 +1,7 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 
 
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle, CheckCircle, RefreshCw, Send,
   MessageSquare, Scale, Image as ImgIcon, Clock,
@@ -109,7 +109,7 @@ export const DisputeManager: React.FC = () => {
   const [perPage, setPerPage]             = useState(0);
 
   // ── Load disputes list ────────────────────────────────────────────────────
-  const load = async () => {
+  const load = useCallback(async () => {
     setIsLoading(true);
     try {
       const res = await api.get<any>('/api/admin/dispute-orders', {
@@ -129,9 +129,9 @@ export const DisputeManager: React.FC = () => {
       }
     } catch (e: any) { toast.error(e?.response?.data?.message || 'Failed to load disputes'); }
     finally { setIsLoading(false); }
-  };
+  }, [filter, page]);
 
-  useEffect(() => { load(); }, [filter, page]);
+  useEffect(() => { load(); }, [load]);
 
   // The select shows the choice at once; the answer then confirms what the
   // server applied.

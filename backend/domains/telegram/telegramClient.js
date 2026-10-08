@@ -1,160 +1,92 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * domains/telegram/telegramClient.js — the Bot API, and the active config.
+ * domains/telegram/telegramClient.js — the one bot, and the Bot API.
  *
- * Everything that talks to Telegram goes through here, for one reason: the bot
- * token is replaceable at runtime. If a module captured a token at import time,
- * swapping a banned bot from the admin panel would require a restart — which is
- * precisely the outage the replaceability requirement exists to prevent. So the
- * active config is resolved per call, from one cached document.
+ * Step 3 (owner, 2026-10-07) left ONE bot: it carries the Mini App that
+ * verifies every account, approves staff and merchant sign-ins, signs players
+ * in with "Login with Telegram" and resets passwords, and it sends staff their
+ * security alerts. There is no fleet, no channel, no recovery bot, no webhook.
+ *
+ * ── Why the bot is read per call, through a short cache ───────────────────
+ * Telegram suspends gambling bots, so an admin replaces the token at runtime
+ * (PUT /api/admin/telegram/bot). A module that captured the token at import
+ * would need a restart to follow the swap. `miniAppBot()` reads the one row and
+ * keeps it for `BOT_TTL_MS`; the admin route drops the cache on the instance
+ * that saved, and the other instances follow within the window (stated in
+ * CLAUDE.md §2, "Live bot").
  *
  * ── Failure posture ─────────────────────────────────────────────────────────
- * Telegram is a third party and will be unreachable sometimes. Calls here
- * return a verdict rather than throwing on transport failure, so a caller can
- * decide whether "we could not check" means allow or deny. That decision is
- * NOT made here — for channel membership it is made in the gate, where the
- * safe answer (deny betting, keep the session) is a policy choice.
+ * Telegram is a third party and will be unreachable sometimes. `callApi`
+ * returns a verdict rather than throwing on transport failure, and no request
+ * a person makes waits on Telegram: the Mini App's proofs are verified locally
+ * (miniAppAuth.js), so an outage at Telegram stops alerts, not sign-ins.
  */
 import { db } from '#db';
-import { ACCOUNT_TYPES } from '#db/repositories/users.js';
 import { decryptField } from '../identity/fieldCrypto.util.js';
 
 const API_ROOT = 'https://api.telegram.org';
 
-/** How long the active config is reused before re-reading it. */
-const CONFIG_TTL_MS = Number(process.env.TELEGRAM_CONFIG_TTL_MS || 30_000);
+/** How long the bot row is reused before it is read again (30 s). */
+const BOT_TTL_MS = Number(process.env.TELEGRAM_CONFIG_TTL_MS || 30_000);
 
-/**
- * ── One cache entry PER PANEL ──────────────────────────────────────────────
- *
- * It was a single slot, which with three audiences is not a cache but a race:
- * a merchant's request caches the merchant config, and the player request
- * arriving 200ms later reads it and gates that player on the MERCHANT channel.
- * Keyed by audience the mistake is unrepresentable.
- */
-const _cache = new Map();
+let _cache = null; // { at, bot }
 
-/**
- * Drop a cached config — called after an admin activates a new generation.
- *
- * With no argument it drops ALL THREE, which is what a caller that does not
- * know which audience changed must do. That is the safe direction: an extra
- * database read costs one round trip, whereas a stale config gates the wrong
- * people against the wrong channel for up to CONFIG_TTL_MS.
- */
-export function invalidateConfigCache(audience = null) {
-  if (audience) _cache.delete(audience); else _cache.clear();
+/** Drop the cached bot — called after an admin saves one. */
+export function invalidateBotCache() {
+  _cache = null;
 }
 
-/** Throws rather than defaulting — see the repository's `assertAudience`. */
-function assertAudience(audience, fn) {
-  if (!ACCOUNT_TYPES.includes(audience)) {
-    throw new Error(`${fn} requires an audience (one of ${ACCOUNT_TYPES.join(', ')}); got ${audience}`);
+/**
+ * The bot, token decrypted, or null when none is configured.
+ *
+ * Null is a normal answer: a fresh deployment, or a token that no longer
+ * decrypts (logged, so the operator learns the key changed). Every caller
+ * reads it as "Telegram is not available", never as an error to retry.
+ *
+ * @returns {Promise<null | {botId: string, botUsername: string, token: string,
+ *   miniAppShortName: string}>}
+ */
+export async function miniAppBot({ force = false } = {}) {
+  if (!force && _cache && Date.now() - _cache.at < BOT_TTL_MS) return _cache.bot;
+  const row = await db.telegram.getBotSecrets();
+  let bot = null;
+  if (row) {
+    const token = safeDecrypt(row.tokenEncrypted);
+    if (token) {
+      bot = {
+        botId: row.botId, botUsername: row.botUsername, token,
+        miniAppShortName: row.miniAppShortName || '',
+      };
+    }
   }
-  return audience;
+  _cache = { at: Date.now(), bot };
+  return bot;
 }
 
-/**
- * The active bot/channel configuration, with secrets decrypted.
- *
- * Returns null when nothing is configured yet, which is the state a fresh
- * deployment starts in. Callers must treat that as "Telegram auth is not
- * available", never as an error to retry.
- */
-export async function activeConfig(audience, { force = false } = {}) {
-  assertAudience(audience, 'activeConfig');
-  const hit = _cache.get(audience);
-  if (!force && hit?.config && Date.now() - hit.at < CONFIG_TTL_MS) {
-    return hit.config;
-  }
-  // One statement for the channel and the credentials together: read as two,
-  // an admin's channel swap could land between them and compose a config whose
-  // channel and token belong to different generations.
-  const doc = await db.telegram.getActiveConfigWithSecrets(audience);
-  if (!doc) { _cache.set(audience, { at: Date.now(), config: null }); return null; }
-
-  // The bot REGISTRY wins over the credentials embedded in the generation.
-  //
-  // Both can name a sign-in bot, and they answer different questions: the
-  // config records what was live when the generation was created, the registry
-  // records what is live NOW. Promoting a spare must take effect without
-  // creating a new generation — a bot swap does not invalidate anybody's
-  // channel membership and must not force every player to re-join — so the
-  // registry has to be the one that is read.
-  //
-  // The embedded fields remain the fallback, which is what a deployment
-  // configured through the activation form alone has. They are not dead code:
-  // they are generation 1 of any install that never registered a spare.
-  const [signin, recovery] = await Promise.all([
-    liveBot('signin', audience), liveBot('recovery', audience),
-  ]);
-
-  const config = {
-    audience,
-    generation:        doc.generation,
-    botUsername:       signin?.username || doc.botUsername,
-    botToken:          signin ? signin.token : safeDecrypt(doc.botTokenEncrypted),
-    webhookSecret:     signin?.webhookSecret || doc.webhookSecret,
-    recoveryBotUsername: recovery?.username || doc.recoveryBotUsername || '',
-    recoveryBotToken:  recovery
-      ? recovery.token
-      : (doc.recoveryBotTokenEncrypted ? safeDecrypt(doc.recoveryBotTokenEncrypted) : null),
-    recoveryWebhookSecret: recovery?.webhookSecret || doc.recoveryWebhookSecret || null,
-    // Which source each credential came from — read by the admin panel so an
-    // operator can see at a glance whether a promotion actually took.
-    signinSource:   signin ? 'registry' : 'generation',
-    recoverySource: recovery ? 'registry' : (doc.recoveryBotTokenEncrypted ? 'generation' : 'none'),
-    channelId:         doc.channelId,
-    channelUsername:   doc.channelUsername || '',
-    channelInviteLink: doc.channelInviteLink || '',
-  };
-  _cache.set(audience, { at: Date.now(), config });
-  return config;
-}
-
-/**
- * The live bot for a role, token decrypted, or null.
- *
- * Null is a normal answer, not an error: it is what a fresh deployment returns
- * before any bot is registered, and what a suspended role returns until someone
- * promotes a spare. Callers must read it as "unavailable".
- *
- * Deliberately NOT cached here. `activeConfig` caches the composed result for
- * CONFIG_TTL_MS and is what the request path calls; a second cache underneath
- * it would mean a promotion had two independent expiries to wait out.
- */
-export async function liveBot(role, audience) {
-  assertAudience(audience, 'liveBot');
-  // The live bot for a role is a UNIQUE row, not the newest of several: the
-  // table has a partial unique index on the live slot. Sorting by activation
-  // date and taking the first was the document store's way of coping with two
-  // rows that both claimed to be live — a state that is now unrepresentable.
-  const doc = await db.telegram.getLiveBotSecrets(role, audience);
-  if (!doc) return null;
-
-  return {
-    role,
-    audience,
-    botId: doc.botId,
-    username: doc.username,
-    token: safeDecrypt(doc.tokenEncrypted),
-    webhookSecret: doc.webhookSecret,
-  };
-}
-
-/**
- * Decrypt, or return null.
- *
- * A token that cannot be decrypted means IDENTITY_ENCRYPTION_KEY changed or the
- * row was tampered with. Returning null degrades to "Telegram unavailable",
- * which the caller already handles; throwing here would take down every request
- * that merely wanted to know the channel's invite link.
- */
 function safeDecrypt(ciphertext) {
   try { return decryptField(ciphertext); } catch (err) {
     console.error('[telegram] bot token could not be decrypted — check IDENTITY_ENCRYPTION_KEY:', err.message);
     return null;
   }
+}
+
+/** What Telegram allows as a Mini App start parameter. */
+export const START_PARAM_SHAPE = /^[A-Za-z0-9_-]{1,512}$/;
+
+/**
+ * The deep link that opens the Mini App with `param`.
+ *
+ * `https://t.me/<bot>/<short>?startapp=` for a Mini App registered under a
+ * short name, `https://t.me/<bot>?startapp=` for the bot's main Mini App.
+ * Telegram signs `param` into the page's `initData` as `start_param`, which is
+ * how the page learns what it was opened for without anything it could alter.
+ */
+export function miniAppLink(bot, param) {
+  if (!bot?.botUsername) return null;
+  if (!START_PARAM_SHAPE.test(String(param))) throw new Error(`miniAppLink: start parameter ${param} is not one Telegram accepts`);
+  const name = encodeURIComponent(String(bot.botUsername).replace(/^@/, ''));
+  const short = bot.miniAppShortName ? `/${encodeURIComponent(bot.miniAppShortName)}` : '';
+  return `https://t.me/${name}${short}?startapp=${param}`;
 }
 
 /**
@@ -176,8 +108,6 @@ export async function callApi(token, method, payload = {}, { timeoutMs = 10_000 
     });
     const body = await res.json().catch(() => ({}));
     if (!res.ok || body.ok !== true) {
-      // 429 carries the wait in parameters.retry_after. Surfacing it lets the
-      // caller back off rather than hammering a bot that is already limited.
       return {
         ok: false,
         error: body.description || `HTTP ${res.status}`,
@@ -193,134 +123,23 @@ export async function callApi(token, method, payload = {}, { timeoutMs = 10_000 
   }
 }
 
-// ── Convenience wrappers, all resolving the active config per call ──────────
-
-export async function sendMessage(audience, chatId, text, extra = {}) {
-  const cfg = await activeConfig(audience);
-  if (!cfg) return { ok: false, error: 'not_configured' };
-  return callApi(cfg.botToken, 'sendMessage', {
-    chat_id: chatId, text, parse_mode: 'HTML', disable_web_page_preview: true, ...extra,
-  });
-}
-
 /**
- * Reply from a SPECIFIC bot.
- *
- * ── Why the fleet needs this and `sendMessage` is not enough ───────────────
- * A Telegram bot can only message somebody who has opened a chat with IT. With
- * one sign-in bot that was invisible — every player was in a chat with the only
- * bot there was. With a fleet of hundreds it is the central fact: a player
- * assigned bot #47 has a conversation with bot #47 and with nothing else, and a
- * reply sent from bot #1 is rejected by Telegram with "bot can't initiate
- * conversation with a user" — no message, no error a player can see, a
- * conversation that just stops.
- *
- * So every reply in the sign-in conversation is sent by the bot the update
- * ARRIVED ON, which the webhook resolves from its own path. This function is
- * how it does that, and `sendMessage`'s config-resolved token is reserved for
- * the paths that genuinely have one bot.
- *
- * @param {{token: string, username?: string}} bot
+ * A direct message from the bot. The bot can reach only somebody who opened
+ * it, which every linked account did to verify (and a staff member's Mini App
+ * asks `requestWriteAccess` for exactly this).
  */
-export async function sendAs(bot, chatId, text, extra = {}) {
-  if (!bot?.token) return { ok: false, error: 'no_bot' };
+export async function sendDirectMessage(chatId, text, extra = {}) {
+  const bot = await miniAppBot();
+  if (!bot) return { ok: false, error: 'not_configured' };
   return callApi(bot.token, 'sendMessage', {
     chat_id: chatId, text, parse_mode: 'HTML', disable_web_page_preview: true, ...extra,
   });
 }
 
-/**
- * Admit somebody who asked to join the channel.
- *
- * The official channel is PRIVATE and admits on a JOIN REQUEST (owner
- * decision): a link opens a request rather than adding the person, and somebody
- * has to approve it. That somebody is this platform, immediately — the request
- * is the player doing exactly what they were told to do, and leaving it in a
- * queue for a human would make signing up take as long as an admin's attention
- * span.
- *
- * Any bot that administers the channel may approve, so the caller passes the
- * one whose webhook the request arrived on.
- *
- * `USER_ALREADY_PARTICIPANT` and an already-handled request are SUCCESSES, not
- * errors: Telegram redelivers an update it thinks failed, and a second approval
- * of the same request must not be logged as a failure to admit somebody who is
- * already in.
- */
-export async function approveJoinRequest(bot, chatId, telegramUserId) {
-  const res = await callApi(bot?.token, 'approveChatJoinRequest', {
-    chat_id: chatId, user_id: Number(telegramUserId),
-  });
-  if (res.ok) return res;
-  if (/already|hide_requester_missing|participant/i.test(res.error || '')) {
-    return { ok: true, result: true, alreadyIn: true };
-  }
-  return res;
-}
-
-export async function sendRecoveryMessage(audience, chatId, text, extra = {}) {
-  const cfg = await activeConfig(audience);
-  if (!cfg?.recoveryBotToken) return { ok: false, error: 'recovery_not_configured' };
-  return callApi(cfg.recoveryBotToken, 'sendMessage', {
-    chat_id: chatId, text, parse_mode: 'HTML', disable_web_page_preview: true, ...extra,
-  });
-}
-
-/**
- * Ask Telegram whether someone is in the channel RIGHT NOW.
- *
- * This is the expensive, authoritative answer. It is deliberately NOT what the
- * request path calls — see telegramMembership.js, which serves a cache kept
- * fresh by `chat_member` webhook updates. At the member counts this programme
- * is sized for, one getChatMember per request would exceed the Bot API's limits
- * long before it exceeded ours.
- */
-export async function fetchChatMemberStatus(telegramUserId, audience) {
-  const cfg = await activeConfig(audience);
-  if (!cfg) return { ok: false, error: 'not_configured' };
-  const res = await callApi(cfg.botToken, 'getChatMember', {
-    chat_id: cfg.channelId, user_id: Number(telegramUserId),
-  });
-  if (!res.ok) {
-    // "user not found" / "chat member not found" is a definite answer: they are
-    // not in the channel. Anything else is genuinely unknown.
-    if (/not found/i.test(res.error || '')) {
-      return { ok: true, status: 'left', generation: cfg.generation };
-    }
-    return res;
-  }
-  return { ok: true, status: res.result?.status || 'unknown', generation: cfg.generation };
-}
-
-/** Register the webhook for the primary bot. Called when a config is activated. */
-export async function setWebhook({ token, url, secret, allowedUpdates }) {
-  return callApi(token, 'setWebhook', {
-    url,
-    secret_token: secret,
-    // `chat_member` is what makes membership event-driven instead of polled,
-    // and Telegram only delivers it when explicitly requested.
-    allowed_updates: allowedUpdates || ['message', 'chat_member', 'my_chat_member', 'callback_query'],
-    drop_pending_updates: true,
-  });
-}
-
-/**
- * Stop Telegram delivering to a bot.
- *
- * Called on a bot that has just been stood down, so a token that may be the
- * reason for the swap — leaked, or on a bot suspected of compromise — stops
- * receiving anything immediately. Best effort: a bot Telegram has already
- * banned will refuse this, and that must never block the promotion of its
- * replacement.
- */
-export async function deleteWebhook(token) {
-  return callApi(token, 'deleteWebhook', { drop_pending_updates: true });
-}
-
-
-/** Confirm a token works and belongs to the username an admin typed. */
+/** Ask Telegram who a token belongs to: the only way a bot is ever named. */
 export async function verifyBotToken(token) {
   const res = await callApi(token, 'getMe');
   if (!res.ok) return res;
-  return { ok: true, username: res.result?.username, id: res.result?.id };
+  if (!res.result?.is_bot || !res.result?.username) return { ok: false, error: 'not_a_bot' };
+  return { ok: true, username: res.result.username, id: String(res.result.id) };
 }

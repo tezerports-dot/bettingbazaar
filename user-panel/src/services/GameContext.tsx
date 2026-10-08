@@ -28,6 +28,7 @@ import React, { createContext, useContext, useState, useEffect, useRef, useCallb
 import { CycleType, GameState, User, Bet, BettingSide, GameCycle } from '../types';
 import { ANALYTICS_WINDOW } from '../constants';
 import { getBackend, setCdnBaseUrl } from './backend.service';
+import type { SignInStep } from './backend.interface';
 import { applyBranding } from './branding';
 
 
@@ -47,7 +48,6 @@ const DEFAULT_SYS_CONFIG: SysConfig = {
   tokenBuyRate: 1, tokenSellRate: 1,
   footerPages: ['home', 'results', 'winners', 'promo', 'profile'], // schema default
 };
-import { logger } from './logging.service';
 import { useToast } from '../components/ui/Toast';
 
 const backend = getBackend();
@@ -75,23 +75,23 @@ interface GameContextType {
   isAuthenticated: boolean;
   isOnline: boolean;
   /**
-   * Create an account from the signup form and adopt the session it grants.
+   * Create an account from the signup form. Answers with the Telegram step the
+   * account owes before it can be used (Step 3); never seats anybody.
    *
    * Throws with the server's own sentence on a refusal: every one of them names
-   * the FIELD that is wrong, and a screen that swallowed it would send the
-   * player back to guess which box to change.
+   * the FIELD that is wrong.
    */
-  register: (form: RegisterForm) => Promise<void>;
+  register: (form: RegisterForm) => Promise<SignInStep>;
   /**
-   * Sign in with the mobile and password.
-   *
-   * Resolves `{ twoFactorRequired, challengeToken }` instead of seating anybody
-   * when the account has an authenticator enrolled — deliberately not a throw,
-   * because it is not a failure and the form has a second step to show.
+   * Sign in with the mobile and password: seated (`done`), or the Telegram
+   * step owed first. A step is deliberately not a throw: the password was
+   * right, and the form has a next screen to show.
    */
-  signIn: (mobile: string, password: string) => Promise<{ twoFactorRequired?: boolean; challengeToken?: string }>;
-  /** Redeem a 2FA challenge and seat the player. */
-  signInWithSecondFactor: (challengeToken: string, code: string) => Promise<void>;
+  signIn: (mobile: string, password: string) => Promise<SignInStep>;
+  /** "Login with Telegram": the step to open. */
+  signInWithTelegram: () => Promise<SignInStep>;
+  /** Ask once whether Telegram has answered; seats the player when it has. */
+  pollTelegramStep: (leg: 'challenge' | 'telegramLogin', challengeToken: string) => Promise<'pending' | 'done'>;
   logout: () => void;
   cycleType: CycleType;
   setCycleType: (type: CycleType) => void;
@@ -119,36 +119,6 @@ interface GameContextType {
 const GameContext = createContext<GameContextType | undefined>(undefined);
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-const getCycleTimes = (type: CycleType, refTimeMs: number) => {
-  const IST_OFFSET = 5.5 * 60 * 60 * 1000;
-  const istTime = new Date(refTimeMs + IST_OFFSET);
-  let startMs: number;
-  let endMs: number;
-
-  if (type === CycleType.THIRTY_MIN) {
-    const minutes = istTime.getUTCMinutes();
-    const seconds = istTime.getUTCSeconds();
-    const blockStartMinute = minutes < 30 ? 0 : 30;
-    const elapsedInBlock = ((minutes - blockStartMinute) * 60 * 1000) + (seconds * 1000);
-    startMs = refTimeMs - elapsedInBlock;
-    endMs   = startMs + (30 * 60 * 1000);
-  } else {
-    const currentIstYear  = istTime.getUTCFullYear();
-    const currentIstMonth = istTime.getUTCMonth();
-    const currentIstDate  = istTime.getUTCDate();
-    const today1800_IST   = Date.UTC(currentIstYear, currentIstMonth, currentIstDate, 18, 0, 0, 0);
-    const today1800_Real  = today1800_IST - IST_OFFSET;
-    if (refTimeMs < today1800_Real) {
-      endMs   = today1800_Real;
-      startMs = endMs - (24 * 3600 * 1000);
-    } else {
-      startMs = today1800_Real;
-      endMs   = startMs + (24 * 3600 * 1000);
-    }
-  }
-  return { startTime: startMs, endTime: endMs };
-};
 
 /**
  * Merge a balance push into the user. FOUR pockets, not three.
@@ -204,13 +174,7 @@ const applyBalances = (prev: User, src: BalancePush): User => ({
 export const spendableBalance = (user: Partial<User> | null | undefined): number =>
   (user?.depositBalance || 0) + (user?.winningsBalance || 0);
 
-// Read ?ref= from URL and persist for registration
-if (typeof window !== 'undefined') {
-  const _hashParams = new URLSearchParams(window.location.hash.split('?')[1] || '');
-  const _refFromUrl = _hashParams.get('ref');
-}
-
-export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }) => {
+export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) => {
   const { addToast } = useToast();
   const [user, setUser]             = useState<User | null>(null);
   // Memory only, never localStorage: a 5-minute half-authenticated credential
@@ -226,7 +190,6 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
   // Status and timeRemaining come from cycle_update WS events, not local math.
   const serverTimeOffset = 0; // kept for context API compat, components must not use for cycle math
   const isProcessingBet = useRef(false);
-  const isRefreshing    = useRef(false);
 
   const liveStatsRef = useRef<{ [key in CycleType]: LiveStats }>({
     [CycleType.ONE_MIN]:    { totalDelhi: 0, totalBombay: 0 },
@@ -278,6 +241,14 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
       } catch { /* branding is non-critical */ }
     };
     fetchBranding();
+  }, []);
+
+  // ── WS-FIRST: request a fresh snapshot instead of HTTP fetch ───────────────
+  const requestCycleSnapshot = useCallback(() => {
+    const socket = (backend as any).socket;
+    if (socket?.connected) {
+      socket.emit('request_cycle_snapshot');
+    }
   }, []);
 
   // ── SESSION RESTORE: Rehydrate user from stored JWT on every page load ────
@@ -362,14 +333,6 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
     window.addEventListener('storage', onStorage);
     return () => window.removeEventListener('storage', onStorage);
   }, [user]);
-
-  // ── WS-FIRST: request a fresh snapshot instead of HTTP fetch ───────────────
-  const requestCycleSnapshot = useCallback(() => {
-    const socket = (backend as any).socket;
-    if (socket?.connected) {
-      socket.emit('request_cycle_snapshot');
-    }
-  }, []);
 
   // Keep refreshCycles as a thin alias so any remaining callers compile.
   // It now triggers a WS snapshot request, NOT an HTTP fetch.
@@ -485,7 +448,7 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
       if (sseBridge && sseHandler) sseBridge.removeEventListener('cycle_history', sseHandler);
       if (socket) socket.off('cycle_history', handleCycleHistory);
     };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
   const subscribeToVolume = useCallback((type: CycleType, callback: (data: LiveStats) => void) => {
     const sub = { type, cb: callback };
@@ -878,7 +841,7 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
         socket.off('user_update',         handleUserBalanceUpdate);
       }
     };
-  }, [refreshCycles, currentUserId]);
+  }, [refreshCycles, currentUserId, addToast]);
 
   // ── PERSONAL WS EVENTS: apply server-pushed data directly, zero HTTP ─────
   useEffect(() => {
@@ -910,64 +873,26 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
   }, [user?.id]);
 
   // ── AUTH ──────────────────────────────────────────────────────────────────
-  /**
-   * Take the seat a successful auth call grants.
-   *
-   * One function for all three doors. Two ways in that seat a player
-   * differently is how one of them ends up showing an empty wallet — which has
-   * happened here: `issueSession` once read balances off fields the account row
-   * does not have, so every login on the platform reported a wallet of zero.
-   */
-  const seat = (
-    res: { success: boolean; user?: User; message?: string;
-           code?: string; retryAfter?: number; retryAt?: string },
-    fallback: string,
-  ) => {
-    if (!res.success || !res.user) {
-      // The THROTTLE fields travel with the error, not just the sentence.
-      // `useRetryCountdown` reads `retryAt` to run a live countdown and disable
-      // the button; a bare `new Error(message)` drops them, and the screen then
-      // shows a refusal beside a button that still looks pressable — so the
-      // player presses it, extends the window, and the form looks broken rather
-      // than throttled.
-      throw Object.assign(new Error(res.message || fallback), {
-        code: res.code, retryAfter: res.retryAfter, retryAt: res.retryAt,
-      });
-    }
-    setUser({ ...res.user } as User);
+  // ── AUTH ──────────────────────────────────────────────────────────────────
+  // The transport seats the token (realBackend's one seater); this seats the
+  // PLAYER, from the user the same response carried. One function for every
+  // way in, so none of them can show a wallet the others do not.
+  const seatStep = (step: SignInStep): SignInStep => {
+    if (step.kind === 'done') setUser({ ...step.user } as User);
+    return step;
   };
 
-  /**
-   * The signup form.
-   *
-   * Seats the player straight away, deliberately: the next thing they see is
-   * the Telegram verification gate, and the gate has to know who is standing at
-   * it to say which bot to open. Sending them to a login form in between is a
-   * step that exists only to be completed.
-   */
-  const register = async (form: RegisterForm): Promise<void> => {
-    seat(await backend.register(form), 'Could not create your account. Please try again.');
-  };
+  const register = async (form: RegisterForm): Promise<SignInStep> => backend.register(form);
 
-  /**
-   * The login form.
-   *
-   * A 2FA challenge is NOT a failure and must not throw: the form has a second
-   * step to show, and turning this into an error would put "Invalid
-   * credentials" in front of somebody whose password was correct.
-   */
-  const signIn = async (mobile: string, password: string) => {
-    const res = await backend.login(mobile, password);
-    if (res.twoFactorRequired) {
-      return { twoFactorRequired: true, challengeToken: res.challengeToken };
-    }
-    seat(res, 'Could not sign you in. Please try again.');
-    return {};
-  };
+  const signIn = async (mobile: string, password: string): Promise<SignInStep> =>
+    seatStep(await backend.login(mobile, password));
 
-  const signInWithSecondFactor = async (challengeToken: string, code: string): Promise<void> => {
-    seat(await backend.verifySecondFactor(challengeToken, code),
-      'That code is not valid. Check your authenticator app and try again.');
+  const signInWithTelegram = async (): Promise<SignInStep> => backend.loginWithTelegram();
+
+  const pollTelegramStep = async (leg: 'challenge' | 'telegramLogin', challengeToken: string) => {
+    const r = await backend.pollSignIn(leg, challengeToken);
+    if (r.state === 'done') { setUser({ ...r.user } as User); return 'done' as const; }
+    return 'pending' as const;
   };
 
   const logout = () => {
@@ -1011,7 +936,7 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
     if (!user) return;
     try {
       await backend.placePhantomBet(user.id, cycles[cycleType].id, amount, side);
-    } catch (err: any) { addToast('Phantom Failed', 'error'); }
+    } catch { addToast('Phantom Failed', 'error'); }
   }, [user, cycleType, cycles, addToast]);
 
   const updateProfile = async (updates: any) => {
@@ -1041,7 +966,7 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
 
   return (
     <GameContext.Provider value={{
-      user, isAuthenticated: !!user, isOnline, register, signIn, signInWithSecondFactor, logout,
+      user, isAuthenticated: !!user, isOnline, register, signIn, signInWithTelegram, pollTelegramStep, logout,
       cycleType, setCycleType, cycles, currentCycle: cycles[cycleType],
       pastCycles, loadCycleHistory, gameState: cycles[cycleType].status, serverTimeOffset,
       placeBet, placePhantomBet, userBets, history, formatTime,

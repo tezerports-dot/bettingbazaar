@@ -29,7 +29,11 @@
  */
 import { describe, it, expect } from 'vitest';
 import { actorKey, actorAccount } from '../../middleware/security.js';
-import { issueChallenge, CHALLENGE_AUDIENCE } from '../../domains/identity/twoFactorChallenge.js';
+import { issueChallenge } from '../../domains/identity/twoFactorChallenge.js';
+
+let cids = 0;
+const challengeFor = (userId, door = 'PLAYER') =>
+  issueChallenge({ userId, door, challengeId: `c${String(cids += 1).padStart(32, '0')}`, ttlSeconds: 300 });
 
 const req = (over = {}) => ({ ip: '203.0.113.7', body: {}, ...over });
 
@@ -66,8 +70,8 @@ describe('actorKey — who a limiter counts against', () => {
     // count only failures — so a key per TOKEN handed somebody who holds the
     // password a fresh budget of five guesses with each login, and the
     // "5 failures per 15 minutes" lockout never tripped (R6, 2026-09-30).
-    const first = issueChallenge({ id: 'u-77', audience: CHALLENGE_AUDIENCE.USER });
-    const second = issueChallenge({ id: 'u-77', audience: CHALLENGE_AUDIENCE.USER });
+    const first = challengeFor('u-77');
+    const second = challengeFor('u-77');
     expect(first).not.toBe(second);
     const one = { ip: '203.0.113.7', body: { challengeToken: first, code: '000000' } };
     const other = { ip: '198.51.100.9', body: { challengeToken: second, code: '111111' } };
@@ -77,14 +81,23 @@ describe('actorKey — who a limiter counts against', () => {
     expect(actorKey(req({ user: { userId: 'u-77' } }))).toBe(actorKey(one));
   });
 
-  it('keys a merchant challenge on the merchant', () => {
-    const token = issueChallenge({ id: 'mrc-9', audience: CHALLENGE_AUDIENCE.MERCHANT });
-    expect(actorKey({ ip: '203.0.113.7', body: { challengeToken: token } })).toBe('m:mrc-9');
+  it('keys a merchant challenge on the merchant\'s login account', () => {
+    // A merchant signs in as its `users` login row (Step 3: one loginHandler),
+    // so its challenge names that account, like every other door's.
+    const token = challengeFor('u-mrc-9', 'MERCHANT');
+    expect(actorKey({ ip: '203.0.113.7', body: { challengeToken: token } })).toBe('u:u-mrc-9');
+  });
+
+  it('keys an unbound Telegram login on its challenge, never one shared bucket', () => {
+    const a = issueChallenge({ userId: null, door: 'PLAYER', challengeId: 'c1', ttlSeconds: 300 });
+    const b = issueChallenge({ userId: null, door: 'PLAYER', challengeId: 'c2', ttlSeconds: 300 });
+    expect(actorKey({ ip: '1.1.1.1', body: { challengeToken: a } })).toBe('u:c:c1');
+    expect(actorKey({ ip: '1.1.1.1', body: { challengeToken: b } })).not.toBe(actorKey({ ip: '1.1.1.1', body: { challengeToken: a } }));
   });
 
   it('separates two accounts\' challenges', () => {
-    const a = actorKey({ ip: '203.0.113.7', body: { challengeToken: issueChallenge({ id: 'u-1', audience: CHALLENGE_AUDIENCE.USER }) } });
-    const b = actorKey({ ip: '203.0.113.7', body: { challengeToken: issueChallenge({ id: 'u-2', audience: CHALLENGE_AUDIENCE.USER }) } });
+    const a = actorKey({ ip: '203.0.113.7', body: { challengeToken: challengeFor('u-1') } });
+    const b = actorKey({ ip: '203.0.113.7', body: { challengeToken: challengeFor('u-2') } });
     expect(a).not.toBe(b);
   });
 
@@ -133,7 +146,7 @@ describe('actorAccount — what a security audit row names', () => {
   });
 
   it('names the account a valid challenge is for — never the token', () => {
-    const token = issueChallenge({ id: 'u-42', audience: CHALLENGE_AUDIENCE.USER });
+    const token = challengeFor('u-42');
     expect(actorAccount(req({ body: { challengeToken: token } }))).toBe('u-42');
   });
 });

@@ -10,7 +10,7 @@
 import { db } from '#db';
 import { pgQuery } from '#db/client.js';
 import { seedPlayer, seedMerchant, seedTeam, seedAdmin, orderPoolTrail } from '../seed.js';
-import { playerToken, merchantToken, adminToken, GET, POST, PUT, check, note } from '../harness.js';
+import { playerToken, merchantToken, adminToken, GET, POST, check, note } from '../harness.js';
 
 const A = 'BUY';
 export default async function run() {

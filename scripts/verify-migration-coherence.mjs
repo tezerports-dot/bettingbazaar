@@ -197,7 +197,6 @@ function insertGaps() {
   let skipped = 0;
   for (const file of REPOS) {
     const src = readFileSync(join(ROOT, file), 'utf8');
-    const lines = src.split('\n');
     for (const m of src.matchAll(/INSERT\s+INTO\s+([a-z][a-z0-9_]*)\s*\(([^)]*)\)/gi)) {
       const table = m[1].toLowerCase();
       const cols = m[2].split(',').map((c) => c.trim().toLowerCase());

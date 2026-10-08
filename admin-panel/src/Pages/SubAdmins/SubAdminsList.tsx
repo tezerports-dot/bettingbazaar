@@ -1,6 +1,6 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
-import React, { useEffect, useState } from 'react';
-import { ShieldCheck, UserPlus, Edit, Trash2, Key, Layers} from 'lucide-react';
+import React, { useCallback, useEffect, useState } from 'react';
+import { UserPlus, Edit, Trash2, Key, Layers} from 'lucide-react';
 import { DataTable } from '../../components/DataTable';
 import { Kpis, Toolbar } from '../../components/design';
 import { Modal } from '../../components/Modal';
@@ -48,16 +48,14 @@ export const SubAdminsList: React.FC = () => {
   // area, its description, and whether it moves money.
   const [catalog, setCatalog] = useState<StaffPermissionCatalog | null>(null);
   const [catalogError, setCatalogError] = useState<string | null>(null);
-  const loadCatalog = async () => {
+  const loadCatalog = useCallback(async () => {
     try {
       setCatalog(await api.subAdmins.permissionCatalog());
       setCatalogError(null);
     } catch (e: any) {
       setCatalogError(e.response?.data?.message || 'The permission list could not be loaded.');
     }
-  };
-
-  useEffect(() => { loadSubAdmins(); loadQueueManagers(); loadCatalog(); }, []);
+  }, []);
 
   /**
    * Queue-manager authority — a separate grant from sub-admin permissions.
@@ -66,12 +64,12 @@ export const SubAdminsList: React.FC = () => {
    * a player's money is routed. Both endpoints existed with nothing calling
    * them: the only way to grant it was to write the column by hand.
    */
-  const loadQueueManagers = async () => {
+  const loadQueueManagers = useCallback(async () => {
     try {
       const r = await api.subAdmins.listQueueManagers();
       if (r?.success) setQueueManagers(r.managers || []);
     } catch { /* the section simply does not render */ }
-  };
+  }, []);
 
   const toggleQueueManager = async (userId: string, enable: boolean) => {
     setQmBusy(userId);
@@ -84,7 +82,7 @@ export const SubAdminsList: React.FC = () => {
     } finally { setQmBusy(null); }
   };
 
-  const loadSubAdmins = async () => {
+  const loadSubAdmins = useCallback(async () => {
     setIsLoading(true);
     try {
       const response = await api.subAdmins.getAll();
@@ -94,7 +92,9 @@ export const SubAdminsList: React.FC = () => {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, []);
+
+  useEffect(() => { loadSubAdmins(); loadQueueManagers(); loadCatalog(); }, [loadSubAdmins, loadQueueManagers, loadCatalog]);
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();

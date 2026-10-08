@@ -1,7 +1,6 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 
 
-import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import { staffMayReceive } from './staffEventAreas.js';
 
@@ -78,7 +77,7 @@ class SSEManager {
         if (!this._pub) return;
         try {
             this._pub.publish(this._channel, JSON.stringify({ origin: this._origin, kind, args }));
-        } catch (e) { /* delivery to remote instances is best-effort */ }
+        } catch { /* delivery to remote instances is best-effort */ }
     }
 
     /** Apply a fan-out that arrived from another instance to LOCAL clients. */

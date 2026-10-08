@@ -1,6 +1,5 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
-import React, { useEffect, useState } from 'react';
-import { TrendingUp, TrendingDown, DollarSign, Download, Calendar } from 'lucide-react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { formatters } from '../../utils/formatters';
 import { Kpis, Toolbar } from '../../components/design';
 import api from '../../services/api';
@@ -37,23 +36,18 @@ export const ProfitLoss: React.FC = () => {
   const [startDate, setStart] = useState('');
   const [endDate, setEnd]     = useState('');
 
-  const getQueryDates = () => {
-    if (preset === 'custom') return { start: startDate, end: endDate };
-    return presetDates(preset);
-  };
-
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
-    const { start, end } = getQueryDates();
+    const { start, end } = preset === 'custom' ? { start: startDate, end: endDate } : presetDates(preset);
     try {
       const r = await api.analytics.getFinancials(start || undefined, end || undefined);
       if (r.success && r.data) { setStats(r.data); setError(false); }
       else setError(true);
     } catch { setError(true); toast.error('Failed to load P&L data'); }
     finally { setLoading(false); }
-  };
+  }, [preset, startDate, endDate]);
 
-  useEffect(() => { load(); }, [preset, startDate, endDate]);
+  useEffect(() => { load(); }, [load]);
 
   const changePreset = (p: Preset) => { setPreset(p); if (p !== 'custom') { setStart(''); setEnd(''); } };
 

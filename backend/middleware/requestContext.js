@@ -23,7 +23,7 @@ const als = new AsyncLocalStorage();
 // or x-tls-ja3-hash; we validate and thread it through logs/context here.
 const SAFE_ID = /^[A-Za-z0-9_.-]{1,64}$/;
 const SAFE_JA3_HASH = /^[a-f0-9]{32}$/i;
-const SAFE_JA3 = /^[0-9,\-]{1,256}$/;
+const SAFE_JA3 = /^[0-9,-]{1,256}$/;
 const EDGE_SECRET = process.env.TLS_FINGERPRINT_EDGE_SECRET || '';
 
 function trustedTlsFingerprintHeaders(req) {

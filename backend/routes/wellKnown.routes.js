@@ -4,11 +4,11 @@
  *
  * ── Why this exists at all ─────────────────────────────────────────────────
  * The installed APK claims links to `${PUBLIC_APP_ORIGIN}` (an Android App
- * Link), so the bot's password-reset link — `/#/reset/<token>` — opens the
- * reset screen in the app rather than a browser. Android only honours that
- * claim when the site vouches for the app's package and signing key, and this
- * file is that vouching (Digital Asset Links). Without it the link still works,
- * in a browser; with it, recovery happens where the player already is.
+ * Link), so a link to a screen of the site (`/#/wallet`) opens that screen in
+ * the app rather than a browser (`user-panel/src/services/nativeDeepLink.ts`).
+ * Android only honours that claim when the site vouches for the app's package
+ * and signing key, and this file is that vouching (Digital Asset Links).
+ * Without it the link still works, in a browser.
  *
  * ── Why it is generated rather than committed ──────────────────────────────
  * The file names the app's signing certificate. That fingerprint is a property

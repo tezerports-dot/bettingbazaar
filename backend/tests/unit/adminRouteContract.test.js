@@ -48,16 +48,11 @@ describe('the identity and payout control plane is reachable', () => {
   // Exactly what admin-panel/src/services/api.ts calls, minus the /api/admin
   // prefix that server.js supplies.
   const required = [
-    'GET /telegram/config',
-    'POST /telegram/config',
-    'POST /telegram/channel',
-    'GET /telegram/bots',
-    'POST /telegram/bots',
-    'POST /telegram/bots/:id/promote',
-    'POST /telegram/bots/:id/webhook',
-    'POST /telegram/bots/:id/retire',
-    'GET /telegram/templates',
-    'PUT /telegram/templates/:key',
+    'GET /telegram/bot',
+    'PUT /telegram/bot',
+    'GET /account/telegram',
+    'POST /account/telegram/relink',
+    'PUT /account/telegram/two-factor',
     'GET /referral/stats',
     'POST /referral/disburse',
   ];

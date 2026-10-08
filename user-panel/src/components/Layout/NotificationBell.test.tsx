@@ -30,7 +30,7 @@ const NOTES = [
 ];
 
 const route = (over: Record<string, any> = {}) => {
-  fetchMock.mockImplementation((url: string, init?: any) => {
+  fetchMock.mockImplementation((url: string) => {
     const u = String(url);
     if (u.endsWith('/unread-count')) return json(over.count ?? { success: true, unreadCount: 1 });
     if (u.endsWith('/notifications/read')) return json(over.read ?? { success: true, marked: 1 });

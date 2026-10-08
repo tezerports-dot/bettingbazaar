@@ -1,5 +1,5 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
-// ── Scenario 7: identity, money, disputes and the three Telegram surfaces ───
+// ── Scenario 7: identity, money and disputes across panels ─────────────────
 //
 // s5 covers an admin acting on a person; s6 covers an admin configuring the
 // platform. This one covers the cases where an admin decision moves MONEY or
@@ -15,7 +15,7 @@
 import { pgQuery } from '#db/client.js';
 import { seedPlayer, seedMerchant, seedTeam, seedAdmin } from '../seed.js';
 import {
-  playerToken, merchantToken, adminToken, GET, POST, PUT, check, note, idemKey, BASE,
+  playerToken, merchantToken, adminToken, GET, POST, PUT, check, note, BASE,
 } from '../harness.js';
 
 /**
@@ -167,46 +167,6 @@ export default async function run() {
     }
   }
 
-  // ══ 5. Replacing ONE panel's channel re-gates ONLY that panel ════════════
-  // The expensive mistake the audience split exists to make unrepresentable
-  // (§33.7). A cached membership is stamped with the generation it was observed
-  // in, so an unscoped activation re-gates a population nobody was thinking
-  // about — and nothing on any screen would say why.
-  {
-    const { db } = await import('#db');
-    const made = [];
-    try {
-      for (const [audience, chan] of [['PLAYER', '-100x1'], ['MERCHANT', '-100x2']]) {
-        const cfg = await db.telegram.activateConfig({
-          audience, channelId: `${chan}-${Date.now()}`, reason: 'e2e cross-panel',
-        });
-        made.push(cfg.generation);
-      }
-      const playerGen = (await db.telegram.getActiveConfig('PLAYER')).generation;
-
-      const flipped = await db.telegram.activateConfig({
-        audience: 'MERCHANT', channelId: `-100x9-${Date.now()}`, reason: 'e2e cross-panel',
-      });
-      made.push(flipped.generation);
-
-      check(A, 'system', 'replacing the MERCHANT channel leaves the PLAYER generation alone',
-        `player still ${playerGen}`,
-        `player ${(await db.telegram.getActiveConfig('PLAYER')).generation}, merchant ${flipped.generation}`,
-        (await db.telegram.getActiveConfig('PLAYER')).generation === playerGen,
-        '§33.7: unscoped, this re-gated the entire player base at the moment an operator '
-        + 'believed they were configuring something else');
-
-      check(A, 'system', 'and the two generations can never be confused for one another',
-        'distinct', `${playerGen} vs ${flipped.generation}`,
-        playerGen !== flipped.generation,
-        'generations are GLOBALLY unique, which makes a cross-panel stale membership unrepresentable');
-    } finally {
-      for (const g of made) {
-        await pgQuery(`DELETE FROM telegram_configs WHERE generation = $1`, [g]).catch(() => {});
-      }
-    }
-  }
-
   // ══ 5b. An ANNOUNCEMENT an admin posts is one a player can read ══════════
   {
     const mark = `e2e cross announcement ${Date.now()}`;
@@ -255,41 +215,5 @@ export default async function run() {
     const after = await GET(pT, '/api/user/referrals');
     check(A, 'player', 'the player’s report still reads cleanly afterwards', '200',
       String(after.status), after.status === 200);
-  }
-
-  // ══ 6. Retiring a sign-in bot MOVES the players it carried ═══════════════
-  {
-    const { db } = await import('#db');
-    const { encryptField } = await import('../../../domains/identity/fieldCrypto.util.js');
-    const stamp = String(Date.now()).slice(-7);
-    const ids = [`x7a-${stamp}`, `x7b-${stamp}`];
-    try {
-      for (const botId of ids) {
-        await db.telegram.addBot({
-          botId, label: botId, role: 'signin', audience: 'PLAYER', username: `bb_${botId}`,
-          tokenEncrypted: encryptField('000:FAKE'), webhookSecret: `s-${botId}`, status: 'ACTIVE',
-        });
-      }
-      const p = await seedPlayer();
-      const first = await db.telegram.assignSigninBot(p.userId, 'PLAYER');
-      check(A, 'system', 'a player is assigned one of the live sign-in bots', 'one of the two',
-        String(first), ids.includes(first));
-
-      const retired = await db.telegram.retireBot(first, { actor: 'e2e' });
-      check(A, 'admin', 'retire the bot that player was on', 'ok',
-        JSON.stringify(retired).slice(0, 120), retired.ok === true);
-
-      const moved = await db.telegram.assignSigninBot(p.userId, 'PLAYER');
-      check(A, 'player', 'the player is MOVED to a live bot, with no sweep and no migration',
-        'a different, live bot', `${first} → ${moved}`,
-        moved !== first && ids.includes(moved),
-        '§2: the assignment is re-resolved on every read, so a retired bot’s players move on their own');
-    } finally {
-      for (const botId of ids) {
-        await pgQuery(`UPDATE users SET telegram_bot_id = NULL WHERE telegram_bot_id = $1`,
-          [botId]).catch(() => {});
-        await pgQuery(`DELETE FROM telegram_bots WHERE bot_id = $1`, [botId]).catch(() => {});
-      }
-    }
   }
 }

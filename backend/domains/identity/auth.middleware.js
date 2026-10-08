@@ -21,7 +21,6 @@
  * @requires ../models
  */
 
-import { db } from '#db';
 // The KYC vocabulary has one owner, and it is not this file — the payment
 // service needs the same rule without booting the token layer to get it.
 import { isTokenRevoked as pgIsTokenRevoked } from '#db/repositories/identity.js';
@@ -31,10 +30,8 @@ import { setContextUser } from '../../middleware/requestContext.js'; // X-6
 // Ed25519 signature verification, iss/aud stamped on sign. No raw token-library calls remain here.
 import { verifyJwt } from './jwt.util.js';
 import { isChallengeToken } from './twoFactorChallenge.js';
-// WHO must hold a second factor — its own module, because importing the 2FA
-// ROUTES here would be a cycle: they import this file.
-import { requires2FA } from './twoFactorPolicy.js';
-import { getSystemConfig } from '#db/repositories/config.js';
+// The one bot: whether it exists decides the staff bootstrap exemption (§33).
+import { miniAppBot } from '../telegram/telegramClient.js';
 import { isPermissionKey, permissionLabel, staffCan } from './staffPermissions.js';
 import { PANEL_NAME } from './audiences.js';
 
@@ -153,7 +150,60 @@ export function refuseSupersededSession(res) {
  */
 export async function sessionIsLive(token, decoded, login) {
   if (await isTokenRevoked(token)) return false;
-  return !sessionSuperseded(login, decoded);
+  if (isChallengeToken(decoded)) return false;
+  if (sessionSuperseded(login, decoded)) return false;
+  const accountType = login?.accountType ?? (decoded?.isMerchant ? 'MERCHANT' : null);
+  return !(await secondFactorMissing(accountType, decoded));
+}
+
+/**
+ * Is the platform still in its STAFF BOOTSTRAP (CLAUDE.md §33)?
+ *
+ * True while no Mini App bot is configured. A staff account then signs in with
+ * its password alone, because the screen where an admin saves the bot sits
+ * behind the staff sign-in, and Telegram cannot approve anything before there
+ * is a bot to carry the approval. Every staff response says so (`bootstrap`),
+ * and the moment a bot is saved this is false on every path below — within the
+ * bot cache's 30 seconds on other instances.
+ */
+export async function staffBootstrap() {
+  return !(await miniAppBot());
+}
+
+/**
+ * Does this session lack the Telegram approval its account type owes?
+ *
+ * Step 3 (owner, 2026-10-07): a staff or merchant sign-in is a password AND the
+ * account's own Telegram, and the token SAYS which it proved (`amr`, minted
+ * only by `issueSession` / `issueMerchantSession`). Asked on every path that
+ * honours a session — `authenticate`, `/me`, `merchantAuth`, both private SSE
+ * streams and the socket room joins (through `sessionIsLive`) — so no path
+ * admits a password-only staff or merchant session the login would not have
+ * minted (§32 S32).
+ *
+ * Telegram is the only second factor (owner, 2026-10-07: "Telegram only"; the
+ * authenticator app is gone). A player's session never owes one: a player
+ * signs in with a password, or with Telegram, and a player who switched
+ * approval on is asked for it AT the login.
+ *
+ * @param {'PLAYER'|'STAFF'|'MERCHANT'|null} accountType
+ * @param {object} decoded  the verified claims
+ */
+export async function secondFactorMissing(accountType, decoded) {
+  if (accountType !== 'STAFF' && accountType !== 'MERCHANT') return false;
+  const amr = Array.isArray(decoded?.amr) ? decoded.amr : [];
+  if (amr.includes('tg')) return false;
+  if (accountType === 'STAFF' && await staffBootstrap()) return false;
+  return true;
+}
+
+/** One refusal, so every path says the same thing to the same panel. */
+export function refuseMissingSecondFactor(res) {
+  return res.status(403).json({
+    success: false,
+    code: 'TWO_FACTOR_REQUIRED',
+    message: 'This sign-in has not been approved in Telegram. Sign in again and approve it in the Telegram app.',
+  });
 }
 
 /** The `users` row a merchant session belongs to (§33.5), or null. */
@@ -168,50 +218,6 @@ export async function isTokenRevoked(token) {
     console.error('[auth] revocation check failed — refusing the token:', e.message);
     return true;
   }
-}
-
-/**
- * Staff who must hold a second factor, and have not enrolled one, reach the
- * enrolment handshake and nothing else.
- *
- * ── What this closes ────────────────────────────────────────────────────────
- * `requires2FA(user)` decides who must hold a factor. `loginHandler` branches
- * on `user.twoFactorEnabled`, so the factor was demanded only of accounts that
- * ALREADY enrolled — an admin who never did held a password-only session over
- * the entire admin surface, permanently and silently, and `seedAdmin` puts the
- * bootstrapped admin in exactly that state from the first boot. F-011.
- *
- * ── Why it is not a lockout ─────────────────────────────────────────────────
- * The session is still ISSUED; what is refused is everything except enrolling.
- * The admin panel routes an account carrying `mustEnroll2FA` straight to the
- * enrolment screen, so an operator meets a form rather than a wall of 403s.
- * That panel half had to ship first, and did — switching this on before it
- * would have been a lockout with nothing on screen to explain it.
- *
- * The one way it can still bite is a missing TOTP_ENCRYPTION_KEY, without which
- * enrolment itself throws. `server.js` says so loudly at startup rather than
- * leaving the first admin to discover it.
- *
- * ── Why enrolment opts OUT by name instead of this file listing paths ───────
- * A path allowlist here is a second place the enrolment handshake is defined,
- * and it goes stale the first time a route moves or a step is added — the
- * drift shape §5 names. Instead `authenticateForEnrolment` is a distinct
- * export the enrolment routes use, so adding a step is a deliberate act at the
- * route, and this module never has to know their URLs.
- *
- * `disable` deliberately does NOT opt out: an account that has not enrolled has
- * nothing to disable, and the route already refuses it through `requires2FA`.
- */
-function refuseUnenrolledStaff(req, res, user) {
-  if (!requires2FA(user) || user.twoFactorEnabled) return false;
-  res.status(403).json({
-    success: false,
-    code: 'TWO_FACTOR_ENROLMENT_REQUIRED',
-    mustEnroll2FA: true,
-    message: 'This account must be protected by two-factor authentication. '
-      + 'Set up an authenticator app to continue.',
-  });
-  return true;
 }
 
 /**
@@ -246,14 +252,13 @@ export function refuseWrongPanel(res, user) {
 
 /**
  * @param {object}   [opts]
- * @param {boolean}  [opts.allowUnenrolledStaff]  the 2FA enrolment handshake only
  * @param {string[]} [opts.accountTypes]  the populations this door admits. The
  *   shared door admits PLAYER and STAFF (the staff routes then ask for an AREA,
  *   which only a STAFF row can hold); `authenticatePlayer` admits PLAYER alone.
  *   MERCHANT is never admitted here — merchants have their own door,
  *   `merchantAuth`, and no merchant-facing route relies on this one.
  */
-const makeAuthenticate = ({ allowUnenrolledStaff = false, accountTypes = ['PLAYER', 'STAFF'] } = {}) => async (req, res, next) => {
+const makeAuthenticate = ({ accountTypes = ['PLAYER', 'STAFF'] } = {}) => async (req, res, next) => {
   try {
     // Accept token from httpOnly cookie (user panel) OR Authorization header (admin/merchant panels)
     let token = req.cookies?.auth_token;
@@ -311,9 +316,9 @@ const makeAuthenticate = ({ allowUnenrolledStaff = false, accountTypes = ['PLAYE
     // found nothing, and nothing errored anywhere.
     //
     // Credentials are NOT loaded here. This runs on every authenticated
-    // request, and a TOTP secret on `req.user` is a secret one careless
-    // `res.json(req.user)` puts in a response body. The paths that verify a
-    // second factor ask for them by name.
+    // request, and a password hash on `req.user` is a secret one careless
+    // `res.json(req.user)` puts in a response body. The login asks for it by
+    // name.
     const user = await getUser(decoded.userId);
     
     if (!user) {
@@ -326,6 +331,7 @@ const makeAuthenticate = ({ allowUnenrolledStaff = false, accountTypes = ['PLAYE
     if (accountClosed(user)) return refuseClosedAccount(res);
     if (sessionSuperseded(user, decoded)) return refuseSupersededSession(res);
     if (belongsElsewhere(user, accountTypes)) return refuseWrongPanel(res, user);
+    if (await secondFactorMissing(user.accountType, decoded)) return refuseMissingSecondFactor(res);
 
     // Check if user account is active
     if (user.isBlocked) {
@@ -334,10 +340,6 @@ const makeAuthenticate = ({ allowUnenrolledStaff = false, accountTypes = ['PLAYE
         message: 'Your account has been blocked. Please contact support.' 
       });
     }
-
-    // Last of the refusals, and after `isBlocked`: a blocked account is told it
-    // is blocked rather than told to enrol in something it cannot use.
-    if (!allowUnenrolledStaff && refuseUnenrolledStaff(req, res, user)) return;
 
     // Attach user to request object for use in subsequent middleware/routes
     req.user = user;
@@ -363,7 +365,7 @@ const makeAuthenticate = ({ allowUnenrolledStaff = false, accountTypes = ['PLAYE
   }
 };
 
-/** Every authenticated route. Unenrolled staff are refused here. */
+/** Every authenticated route of the player app and the admin panel. */
 const authenticate = makeAuthenticate();
 
 /**
@@ -373,12 +375,11 @@ const authenticate = makeAuthenticate();
 const authenticatePlayer = makeAuthenticate({ accountTypes: ['PLAYER'] });
 
 /**
- * The enrolment handshake only — identical in every other respect.
- *
- * Used by `/api/2fa/status`, `/setup` and `/activate`, which are the three
- * steps an unenrolled account has to reach in order to stop being one.
+ * A STAFF account's own routes — its Telegram link (accountTelegram.js). A
+ * player's session is refused with the panel it belongs to.
  */
-const authenticateForEnrolment = makeAuthenticate({ allowUnenrolledStaff: true });
+const authenticateStaff = makeAuthenticate({ accountTypes: ['STAFF'] });
+
 
 
 /**
@@ -505,8 +506,6 @@ export const hasPermission = (permission) => {
 export {
   authenticate,
   authenticatePlayer,
-  // The enrolment handshake only — see `makeAuthenticate`. Staff who owe a
-  // second factor reach these three steps and nothing else.
-  authenticateForEnrolment,
+  authenticateStaff,
   isAdmin,
 };

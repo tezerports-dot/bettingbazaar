@@ -160,6 +160,24 @@ let realtimeStatsProvider = null;
 /** server.js registers a getter returning {connectedSockets, trackedCycles, snapshotsPublished, betsCoalesced}. */
 export function setRealtimeStatsProvider(fn) { realtimeStatsProvider = typeof fn === 'function' ? fn : null; }
 
+// The getter above was registered and never read, so none of these reached
+// /metrics. Sampled on each scrape like the pool gauge; dormant on an API-only
+// role, where no provider is registered.
+const REALTIME_STATS = ['connectedSockets', 'trackedCycles', 'snapshotsPublished', 'betsCoalesced'];
+new client.Gauge({
+  name: 'bb_realtime_delivery',
+  help: 'Realtime delivery by stat (connectedSockets|trackedCycles|snapshotsPublished|betsCoalesced)',
+  labelNames: ['stat'],
+  registers: [registry],
+  collect() {
+    try {
+      const s = realtimeStatsProvider ? realtimeStatsProvider() : null;
+      if (!s) return;
+      for (const stat of REALTIME_STATS) if (Number.isFinite(s[stat])) this.set({ stat }, s[stat]);
+    } catch { /* realtime unavailable — emit nothing */ }
+  },
+});
+
 /** GET /metrics handler. */
 export async function metricsHandler(req, res) {
   try {

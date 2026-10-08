@@ -19,6 +19,7 @@
     "test:e2e": "node backend/tests/e2e/run.js",
     "test:redis": "vitest run --config vitest.redis.config.ts",
     "test:watch": "vitest --config vitest.config.ts",
+    "lint": "eslint . --report-unused-disable-directives --max-warnings 0",
     "check:deps": "depcruise backend --config .dependency-cruiser.cjs",
     "check:no-mongo": "node scripts/verify-no-mongo.mjs",
     "check:balance-reads": "node scripts/audit-balance-reads.mjs",
@@ -45,6 +46,7 @@
     "audit:map": "node scripts/audit-map.mjs",
     "report:branding": "node scripts/report-branding-literals.mjs",
     "test:browser": "node backend/tests/browser/run.js",
+    "test:signin-journey": "node backend/tests/browser/signInJourney.js",
     "test:drive": "node backend/tests/browser/drive.js",
     "test:forms": "node backend/tests/browser/forms.js",
     "test:bet-button": "node backend/tests/browser/betButton.js",
@@ -53,9 +55,6 @@
     "test:operations": "node backend/tests/live/operations.mjs",
     "loadtest:scale": "node loadtest/scale.mjs",
     "report:ui-coverage": "node scripts/report-ui-coverage.mjs",
-    "test:signup": "node backend/tests/browser/signupJourney.js",
-    "test:panel-split": "node backend/tests/live/panelSplit.mjs",
-    "test:panel-gates": "node backend/tests/browser/panelGates.js",
     "test:captcha-doors": "node backend/tests/live/captchaDoors.mjs",
     "report:workflows": "BB_E2E_MD=docs/reference/E2E_WORKFLOWS.md npm run test:e2e",
     "report:controls": "node scripts/report-ui-coverage.mjs --md --controls --out docs/reference/PANEL_CONTROL_COVERAGE.md",
@@ -96,15 +95,18 @@
     "tweetnacl-util": "^0.15.1"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/qrcode": "^1.5.6",
     "dependency-cruiser": "^18.4.0",
+    "eslint": "^10.12.0",
+    "globals": "^17.13.0",
     "nodemon": "^3.1.14",
     "playwright-core": "^1.63.0",
     "stylelint": "^17.15.0",
     "stylelint-config-standard": "^40.0.0",
     "supertest": "^7.3.0",
-    "vitest": "^5.0.2",
-    "vite": "^8.3.1"
+    "vite": "^8.3.1",
+    "vitest": "^5.0.2"
   },
   "engines": {
     "node": ">=22.0.0"

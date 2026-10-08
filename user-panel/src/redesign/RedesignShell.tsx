@@ -24,7 +24,6 @@ import AuthModal from '../components/Modals/AuthModal';
 import NotificationBell from '../components/Layout/NotificationBell';
 import ShareModal from '../components/Modals/ShareModal';
 import AnnouncementBanner from '../components/AnnouncementBanner';
-import VerificationGateModal from '../components/Modals/VerificationGateModal';
 import { brandLogo } from '../services/brandAssets';
 
 interface ShellContextValue {
@@ -116,7 +115,7 @@ const MENU_SECTIONS = [
 
 const APP_VERSION = import.meta.env.VITE_APP_VERSION ?? '';
 
-const RedesignShell: React.FC<React.PropsWithChildren<{}>> = ({ children }) => {
+const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
   const { user, isAuthenticated, logout } = useGame();
   const { theme, toggleTheme } = useTheme();
   const { desktop } = useViewport();
@@ -386,13 +385,6 @@ const RedesignShell: React.FC<React.PropsWithChildren<{}>> = ({ children }) => {
         {authOpen && !isAuthenticated && <AuthModal onClose={() => setAuthOpen(false)} initialMode={authMode} />}
         {shareOpen && <ShareModal onClose={() => setShareOpen(false)} />}
 
-        {/*
-          Mounted unconditionally and rendering nothing until the server refuses
-          a request. It has to live in the shell rather than on a page: the
-          channel can be replaced at any moment, and the refusal lands on
-          whichever screen the player happens to be on.
-        */}
-        <VerificationGateModal />
       </div>
     </ShellContext.Provider>
   );

@@ -5,7 +5,6 @@
  * Import and call registerCronJobs(rebuildLeaderboard) from server.js after DB init.
  */
 import { db } from '#db';
-import { emitOrderUpdate, emitAdminUpdate } from '../domains/notification/realtimeEmitters.js';
 // Items 17+56 (2026-07-13): every job runs through the Background Job Platform
 // (services/jobQueue.service.js) — BullMQ repeatables with retry/backoff when
 // Redis is configured; the historical setInterval + withLeaderLock (X-4 leader
@@ -264,6 +263,21 @@ export function registerCronJobs(rebuildLeaderboard) {
       const scrubbed = await db.orders.scrubExpiredProofs();
       if (scrubbed > 0) console.log(`[retention] Scrubbed ${scrubbed} expired payment proof(s)`);
     } catch (e) { console.error('[retention] payment proof scrub error:', e.message); }
+  });
+
+  // ── Spent and expired credentials — runs hourly ────────────────────────────
+  // Telegram challenges, single-use Mini App proofs and revoked session tokens
+  // each carry `expires_at`, and every read filters on it, so this reclaims
+  // SPACE only: a late sweep never makes anything usable. Both repositories
+  // said they were swept on a schedule and nothing scheduled them (§32 S5),
+  // so the claimed-proof table grew by a row for every Mini App action.
+  registerRecurring('credential-sweep', 60 * 60 * 1000, async () => {
+    try {
+      const tg = await db.telegram.sweepExpired();
+      const tokens = await db.identity.sweepExpired();
+      const n = tg.challenges + tg.initDataUses + tokens.revokedTokens;
+      if (n > 0) console.log('[credential-sweep]', JSON.stringify({ ...tg, ...tokens }));
+    } catch (e) { console.error('[credential-sweep] cron error:', e.message); }
   });
 
   // ── Automated database backup — runs daily ─────────────────────────────────

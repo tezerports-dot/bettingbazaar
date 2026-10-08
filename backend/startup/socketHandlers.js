@@ -37,7 +37,7 @@ export function attachSocketHandlers(io, cycleGenerator, gameEngine) {
         const configData = systemConfigPayload(await getSystemConfig());
         global.cachedSystemConfig = configData;
         socket.emit('system_config', configData);
-      } catch (e) {
+      } catch {
         // The same builder with no row, not a hand-written subset: the seven
         // fields this used to emit told a client that connected during a
         // database blip that there were no deposit limits and no footer.
@@ -57,7 +57,7 @@ export function attachSocketHandlers(io, cycleGenerator, gameEngine) {
         const payload = await currentBranding();
         global.cachedBranding = payload;
         socket.emit('branding', payload);
-      } catch (e) {
+      } catch {
         // The declared defaults, not a second hardcoded copy of them: a client
         // that connects while the database is unreachable draws itself the same
         // way an unbranded platform does, rather than in colours that exist
@@ -81,7 +81,7 @@ export function attachSocketHandlers(io, cycleGenerator, gameEngine) {
       try {
         const { type, limit } = params;
         socket.emit('cycle_history', await fetchCycleHistory({ types: type, limit }));
-      } catch (e) { socket.emit('cycle_history', { cycles: [], types: [] }); }
+      } catch { socket.emit('cycle_history', { cycles: [], types: [] }); }
     });
 
     socket.on('request_promo', async ({ location } = {}) => {
@@ -95,7 +95,7 @@ export function attachSocketHandlers(io, cycleGenerator, gameEngine) {
           location ? String(location).toUpperCase() : 'HOME',
         );
         socket.emit('promo_data', { location, content });
-      } catch (e) { socket.emit('promo_data', { location, content: [] }); }
+      } catch { socket.emit('promo_data', { location, content: [] }); }
     });
 
     socket.on('request_game_state', async () => {

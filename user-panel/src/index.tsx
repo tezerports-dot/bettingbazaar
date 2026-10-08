@@ -31,11 +31,9 @@ if (isNativeShell) {
     registerNativeLifecycle(() => getBackend().reconnectRealtime?.()),
   ).catch((err) => console.warn('[native] lifecycle wiring skipped:', err));
 
-  // The bot's one-time sign-in link is the ONLY way into an account, and it
-  // arrives as an Android App Link. Without this the tap lands in a browser,
-  // the browser spends the token, and the installed app can never be signed
-  // in to. Registered at boot, before React mounts, so a cold start launched
-  // by the link routes straight to the sign-in screen.
+  // The password-reset link the Mini App opens arrives as an Android App Link.
+  // Registered at boot, before React mounts, so a cold start launched by the
+  // link routes straight to the reset screen.
   void import('./services/nativeDeepLink')
     .then(({ registerNativeDeepLinks }) => registerNativeDeepLinks())
     .catch((err) => console.warn('[native] deep-link wiring skipped:', err));

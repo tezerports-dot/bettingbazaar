@@ -6,11 +6,6 @@ import { db } from '#db';
 import { getBalances } from '../wallet/walletAuthority.service.js';
 import { authenticatePlayer } from '../identity/auth.middleware.js';
 import { betLimiter } from '../../middleware/security.js';
-// Betting is for members of the official Telegram channel. The gate serves a
-// cache kept current by chat_member events, so this costs a lookup, not a
-// Telegram round-trip — see middleware/requireChannelMembership.js for the
-// bounded-window policy when Telegram is unreachable.
-import { requireChannelMembership } from '../../middleware/requireChannelMembership.js';
 import { requireIdempotencyKey, IdempotencyKeyError } from '../../middleware/idempotencyKey.js';
 import * as betAuthority from '#db/repositories/bets.js';
 // Risk Platform (Phase 010): the single validation authority for bets.
@@ -25,9 +20,6 @@ import { CYCLE_TYPES, DEFAULT_CYCLE_PHASES, isCycleType, limitsKeyFor, phasesFor
 // Derived cycle pools (FLAGS.DERIVED_CYCLE_POOLS, default off) — see
 // cyclePool.service.js for why the running total is the scaling ceiling.
 import { computeRealPools } from './cyclePool.service.js';
-// Real/phantom pools reveal the minority-side winner — the public bet broadcast
-// must carry totals only. assertPublicCycleSafe throws if one slips in.
-import { assertPublicCycleSafe } from './cyclePublicView.js';
 // Coalesces per-bet pool changes into one snapshot/sec/cycle instead of a
 // per-bet fan-out to every connected client (cycleSnapshotPublisher.js).
 import { cycleSnapshotPublisher } from './cycleSnapshotPublisher.js';
@@ -81,7 +73,7 @@ async function idempotentBetResponse(bet, userId, type) {
 // POST /api/bet/place
 // Places a real bet. Deducts from winnings first, then deposits.
 // ─────────────────────────────────────────────────────────────────────────────
-router.post('/place', authenticatePlayer, requireChannelMembership({ action: 'place a bet' }), betLimiter, async (req, res) => {
+router.post('/place', authenticatePlayer, betLimiter, async (req, res) => {
   // NOTE: No session opened here — the critical balance step is a single atomic
   // findOneAndUpdate (see FIX B). Remaining writes (Bet, Cycle pool, Transaction)
   // are idempotent/append-only and do not need a multi-document transaction.
@@ -109,7 +101,6 @@ router.post('/place', authenticatePlayer, requireChannelMembership({ action: 'pl
       throw keyErr;
     }
     const betTxBase  = `bet_${userId}_${clientKey}`;
-    const betPublicId = betAuthority.publicIdFor(betTxBase);
 
     // Fast replay gate: this exact request already produced a bet. Answer with it
     // and touch NOTHING — no stake move, no pool change, no second Transaction
@@ -287,7 +278,7 @@ router.post('/place', authenticatePlayer, requireChannelMembership({ action: 'pl
     // split the source of truth mid-bet. The authority now owns it, and picks
     // the store per postgres/moneyAuthority.js.
     // ── The stake, split across pockets ─────────────────────────────────────
-    // The bet's identity (betTxBase / betPublicId) was established at the top of
+    // The bet's identity (betTxBase) was established at the top of
     // the handler from the REQUIRED Idempotency-Key. It is the txId of every
     // slice's ledger row and the Bet row's _id, so on both stores the unique
     // index — not a convention — is what makes a redelivery idempotent.

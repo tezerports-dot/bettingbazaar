@@ -34,23 +34,11 @@ import { getBalances } from '../../domains/wallet/walletAuthority.service.js';
 // that gains tokens from nowhere does not commit.
 import { fundWallet } from '#db/tests/_funding.js';
 import { actor, mountRouter, as } from './_harness.js';
+import { linkTelegram } from '../miniAppFixture.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 
 const HOUR = 3_600_000;
-
-async function linkTelegram({ userId, mobile }) {
-  const active = await pgQuery(
-    `SELECT generation FROM telegram_configs WHERE active AND audience = 'PLAYER' LIMIT 1`, []);
-  if (!active.rows[0]) return; // no channel configured: the gate admits
-  await pgQuery(
-    `INSERT INTO telegram_identities (
-       telegram_user_id, audience, user_id, phone, contact_shared_at,
-       contact_active, channel_status, channel_checked_at, channel_generation, linked_generation)
-     VALUES ($1, 'PLAYER', $2, $3, now(), TRUE, 'member', now(), $4, $4)
-     ON CONFLICT (telegram_user_id, audience) DO NOTHING`,
-    [`rt-tg-${userId}`, userId, mobile, active.rows[0].generation]);
-}
 
 /** A cycle of this type running now, at a start time nothing else holds. */
 async function openCycle(type, { startedAgoMs, lengthMs }) {
@@ -80,7 +68,7 @@ describePg('POST /api/bet/place', () => {
 
   const fundedPlayer = async (rupees) => {
     const p = await actor({});
-    await linkTelegram(p);
+    await linkTelegram(p.userId);
     await fundWallet(p.userId, rupees * 100, `rt-bet-fund-${p.userId}`);
     return p;
   };
