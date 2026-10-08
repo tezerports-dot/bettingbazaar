@@ -9,6 +9,7 @@ import { endWithdrawal } from '../payment/withdrawalHold.service.js';
 import { recordDisputeLoser, faultPreview } from './disputeOutcome.service.js';
 import { releaseUTR } from '../../middleware/utrValidation.js';
 import { emitMerchantUpdate } from '../notification/realtimeEmitters.js';
+import { respondError } from '../../shared/httpError.js';
 // The order state machine. Resolving a dispute is a guarded transition, and it
 // runs BEFORE any money moves so that it is what decides the race.
 import { completeOrder, cancelOrder } from '../payment/orderLifecycle.service.js';
@@ -56,59 +57,71 @@ router.get('/orders/stalled-withdrawals', authenticate, hasPermission('canResolv
   }
 });
 
+/**
+ * One dispute as the Dispute Manager reads it — for the queue's cards and for
+ * the dialog an admin decides in, from one mapper so the two cannot differ.
+ * `o` is a row from `disputeQueue` or `getOrderWithParties` (both carry the
+ * parties and `disputedFrom`).
+ */
+function toDisputeView(o) {
+  // Who each of the screen's two decisions would suspend, from the rule's one
+  // owner, so the screen keeps no copy of it. On a buy, "to the user" completes
+  // the order; on a sell it refunds the player.
+  const preview = o.status === 'DISPUTED' ? faultPreview(o, o.disputedFrom) : { ifCompleted: null, ifNotCompleted: null };
+  const buy = o.type === 'DEPOSIT';
+  return {
+    _id:               o.orderId,
+    orderId:           o.orderId,
+    type:              o.type,
+    amount:            o.fiatAmount,
+    fiatAmount:        o.fiatAmount,
+    tokenAmount:       o.tokenAmount,
+    status:            o.status,
+    createdAt:         o.createdAt,
+    disputedAt:        o.disputeRaisedAt,
+    // Both consumers render "Raised by <who> · <when>"; the mapper dropped
+    // them, so that line silently never appeared.
+    disputeRaisedAt:   o.disputeRaisedAt,
+    disputeRaisedBy:   o.disputeRaisedBy,
+    resolvedAt:        o.disputeResolvedAt,
+    disputeReason:     o.disputeReason,
+    disputeResolution: o.disputeResolution,
+    disputeDecision:   o.disputeDecision,
+    disputeEscalated:  o.disputeEscalated === true,
+    proofScreenshot:   o.proofScreenshot,
+    utrNumber:         o.utrNumber,
+    userId:            o.user,
+    merchantId:        o.merchant,
+    resolvedBy:        o.disputeResolvedBy,
+    suspendsIfToUser:     buy ? preview.ifCompleted : preview.ifNotCompleted,
+    suspendsIfToMerchant: buy ? preview.ifNotCompleted : preview.ifCompleted,
+  };
+}
+
 router.get('/dispute-orders', authenticate, hasPermission('canResolveDisputes'), async (req, res) => {
   try {
-    const { status = 'DISPUTED', page = 1, limit = 50 } = req.query;
+    // `filter` is one of the queue's own keys (`DISPUTE_FILTERS`,
+    // orders.record.js), or absent for its default. The screen used to send a
+    // `status` from its own list, which the queue read as an order state, so
+    // its default view asked for state 'all' and listed nothing. An unknown
+    // key is now a 400 naming the ones that exist.
+    const { filter, page = 1, limit = 50 } = req.query;
 
     // The page and its total come from ONE statement, and both parties from a
     // join. The version this replaced ran the find and the count concurrently
     // — so on a queue people are actively working, the total could describe a
     // different instant than the rows — and called `.populate()` twice on plain
     // rows, which is a TypeError.
-    const queue = await db.orders.disputeQueue({ status, page, limit });
-
-    // Mapped to the shape DisputeManager.tsx expects.
-    const disputes = queue.disputes.map((o) => {
-      // Who each of the screen's two decisions would suspend, from the rule's
-      // one owner, so the screen keeps no copy of it. On a buy, "to the user"
-      // completes the order; on a sell it refunds the player.
-      const preview = o.status === 'DISPUTED' ? faultPreview(o, o.disputedFrom) : { ifCompleted: null, ifNotCompleted: null };
-      const buy = o.type === 'DEPOSIT';
-      return {
-      _id:               o.orderId,
-      orderId:           o.orderId,
-      type:              o.type,
-      amount:            o.fiatAmount,
-      fiatAmount:        o.fiatAmount,
-      tokenAmount:       o.tokenAmount,
-      status:            o.status,
-      createdAt:         o.createdAt,
-      disputedAt:        o.disputeRaisedAt,
-      // Both consumers render "Raised by <who> · <when>"; the mapper dropped
-      // them, so that line silently never appeared.
-      disputeRaisedAt:   o.disputeRaisedAt,
-      disputeRaisedBy:   o.disputeRaisedBy,
-      resolvedAt:        o.disputeResolvedAt,
-      disputeReason:     o.disputeReason,
-      disputeResolution: o.disputeResolution,
-      disputeDecision:   o.disputeDecision,
-      proofScreenshot:   o.proofScreenshot,
-      utrNumber:         o.utrNumber,
-      userId:            o.user,
-      merchantId:        o.merchant,
-      resolvedBy:        o.disputeResolvedBy,
-      suspendsIfToUser:     buy ? preview.ifCompleted : preview.ifNotCompleted,
-      suspendsIfToMerchant: buy ? preview.ifNotCompleted : preview.ifCompleted,
-      };
-    });
+    const queue = await db.orders.disputeQueue({ ...(filter !== undefined ? { filter } : {}), page, limit });
 
     res.json({
-      success: true, disputes,
+      success: true, disputes: queue.disputes.map(toDisputeView),
       total: queue.total, page: queue.page, limit: queue.limit, pages: queue.pages,
+      // What was applied, and every filter the screen may offer — its only list.
+      filter: queue.filter, filters: queue.filters,
     });
   } catch (err) {
-    console.error('GET /dispute-orders error:', err);
-    res.status(500).json({ success: false, message: 'Failed to fetch disputes' });
+    return respondError(res, err, 'GET /dispute-orders', { message: 'Failed to fetch disputes' });
   }
 });
 
@@ -119,9 +132,13 @@ router.get('/dispute-orders/:orderId', authenticate, hasPermission('canResolveDi
     // repository returns is a TypeError, so this endpoint threw on every call.
     const order = await db.orders.getOrderWithParties(req.params.orderId);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-    res.json({ success: true, dispute: order });
+    // The queue's own view of it (one mapper). The screen swaps the card's row
+    // for this when it opens the dialog; as the raw order it carried no
+    // `suspendsIfTo…` and named the parties under other keys, so the Resolve
+    // tab said "Nobody is suspended" where the member would be.
+    res.json({ success: true, dispute: toDisputeView(order) });
   } catch (err) {
-    res.status(500).json({ success: false, message: 'Failed to fetch dispute' });
+    return respondError(res, err, 'GET /dispute-orders/:orderId', { message: 'Failed to fetch dispute' });
   }
 });
 

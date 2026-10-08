@@ -846,87 +846,51 @@ export async function paymentQueue({ state = null, limit = 200 } = {}) {
 }
 
 /**
- * The dispute queue, with both parties named.
+ * What the Dispute Manager can ask for — the ONE list (§5).
  *
- * `status: 'ALL'` means "everything that has ever been disputed", not
- * "everything" — a resolved dispute is still a dispute, and the admin screen
- * that reviews decisions needs the ones that are closed.
+ * The screen kept its own: "all", "DISPUTED", "RESOLVED", "ESCALATED", and the
+ * queue read anything but 'ALL' as an order STATE. So the screen's default
+ * asked for orders in state 'all', and two of its four filters for states no
+ * order can be in (the `order_states.state` CHECK): every view but "Open"
+ * listed nothing. Now the queue owns the keys, what each selects and what each
+ * is called, sends them with every answer (`filters`), and refuses a key it
+ * does not have by name (§32 S35) instead of reading it as a state.
  *
- * The page and its total come from ONE statement. The two concurrent reads this
- * replaced could report a page of fifty against a total taken a moment later,
- * which on a queue people are actively working is how a paginator grows a page
- * that is not there.
+ *   OPEN       being disputed now
+ *   ESCALATED  being disputed now, and escalated to a senior admin
+ *   CLOSED     was disputed and no longer is, however it ended: decided on the
+ *              Dispute Manager or the payment-order route (both write
+ *              `dispute_decision`), or by the queue's approve/reject, which
+ *              writes none — so this asks the state, not the decision
+ *   ALL        OPEN and CLOSED together: everything ever disputed
+ *
+ * "Ever disputed" is one predicate, written once: a dispute timestamp or a
+ * reason on the row.
  */
-export async function disputeQueue({ status = 'DISPUTED', page = 1, limit = 50 } = {}) {
-  const params = [];
-  let filter;
-  if (status === 'ALL') {
-    // Currently disputed, OR carrying the marks of a dispute that was settled.
-    filter = `(o.state = 'DISPUTED' OR o.dispute_raised_at IS NOT NULL
-               OR COALESCE(o.dispute_reason, '') <> '')`;
-  } else {
-    params.push(String(status));
-    filter = `o.state = $${params.length}`;
-  }
+const EVER_DISPUTED = `(o.dispute_raised_at IS NOT NULL OR COALESCE(o.dispute_reason, '') <> '')`;
+export const DISPUTE_FILTERS = Object.freeze({
+  OPEN:      { label: 'Open', where: `o.state = 'DISPUTED'` },
+  ESCALATED: { label: 'Open, escalated', where: `o.state = 'DISPUTED' AND o.dispute_escalated` },
+  CLOSED:    { label: 'Closed', where: `o.state <> 'DISPUTED' AND ${EVER_DISPUTED}` },
+  ALL:       { label: 'All disputes', where: `(o.state = 'DISPUTED' OR ${EVER_DISPUTED})` },
+});
+/** What the screen shows on arrival: the work still to do. */
+export const DEFAULT_DISPUTE_FILTER = 'OPEN';
 
-  const size = Math.min(Math.max(Number(limit) || 50, 1), 200);
-  const wanted = Math.max(Number(page) || 1, 1);
-  params.push(size, (wanted - 1) * size);
-
-  const { rows } = await pgQuery(
-    `SELECT o.*,
-            u.username AS user_username, u.mobile AS user_mobile,
-            m.name AS merchant_name, m.mobile AS merchant_mobile,
-            -- The state the order was disputed FROM, which decides whether a
-            -- decision suspends anybody (disputeOutcome.service.js).
-            (SELECT t.from_state FROM order_transitions t
+/**
+ * The state the order was disputed FROM, which decides whether a decision
+ * suspends anybody (disputeOutcome.service.js). One subquery for both reads
+ * below, over an `order_states o` in scope.
+ */
+const DISPUTED_FROM = `(SELECT t.from_state FROM order_transitions t
               WHERE t.order_id = o.order_id AND t.to_state = 'DISPUTED'
-              ORDER BY t.id DESC LIMIT 1) AS disputed_from,
-            COUNT(*) OVER () AS total_matching
-       FROM order_states o
-       LEFT JOIN users u     ON u.user_id = o.user_id
-       LEFT JOIN merchants m ON m.merchant_id = o.merchant_id
-      WHERE ${filter}
-      -- Newest dispute first, falling back to creation for an order whose
-      -- dispute timestamp predates the column.
-      ORDER BY COALESCE(o.dispute_raised_at, o.created_at) DESC
-      LIMIT $${params.length - 1} OFFSET $${params.length}`,
-    params, 'orders_dispute_queue',
-  );
+              ORDER BY t.id DESC LIMIT 1)`;
 
-  const total = rows.length ? Number(rows[0].total_matching) : 0;
-  return {
-    disputes: rows.map((r) => ({
-      ...toOrder(r),
-      disputedFrom: r.disputed_from ?? null,
-      user: r.user_username
-        ? { userId: r.user_id, username: r.user_username, mobile: r.user_mobile }
-        : null,
-      merchant: r.merchant_name
-        ? { merchantId: r.merchant_id, name: r.merchant_name, mobile: r.merchant_mobile }
-        : null,
-    })),
-    total, page: wanted, limit: size,
-    pages: Math.max(Math.ceil(total / size), 1),
-  };
-}
-
-/** One order with both parties named — the dispute detail screen's read. */
-export async function getOrderWithParties(orderId) {
-  const { rows } = await pgQuery(
-    `SELECT o.*,
-            u.username AS user_username, u.mobile AS user_mobile,
-            m.name AS merchant_name, m.mobile AS merchant_mobile
-       FROM order_states o
-       LEFT JOIN users u     ON u.user_id = o.user_id
-       LEFT JOIN merchants m ON m.merchant_id = o.merchant_id
-      WHERE o.order_id = $1`,
-    [String(orderId)], 'order_with_parties',
-  );
-  const r = rows[0];
-  if (!r) return null;
+/** A dispute row with both parties named, as the queue and the detail read both return it. */
+function withParties(r) {
   return {
     ...toOrder(r),
+    disputedFrom: r.disputed_from ?? null,
     user: r.user_username
       ? { userId: r.user_id, username: r.user_username, mobile: r.user_mobile }
       : null,
@@ -934,6 +898,98 @@ export async function getOrderWithParties(orderId) {
       ? { merchantId: r.merchant_id, name: r.merchant_name, mobile: r.merchant_mobile }
       : null,
   };
+}
+
+/**
+ * The dispute queue, with both parties named.
+ *
+ * `filter` is a key of `DISPUTE_FILTERS`; anything else is refused with a 400
+ * that names the keys. The answer carries the filter applied and the whole
+ * list, so the screen renders what the server offers and nothing else.
+ *
+ * The page and its total come from ONE statement. The two concurrent reads this
+ * replaced could report a page of fifty against a total taken a moment later,
+ * which on a queue people are actively working is how a paginator grows a page
+ * that is not there. The total is counted APART from the page, in that same
+ * statement: read off the page's own rows (`COUNT(*) OVER ()`), a page past the
+ * end said there were no disputes at all (§32 S47). And the order has a
+ * tiebreak (the order id), so two disputes raised in one instant cannot trade
+ * places between two pages and show one of them twice.
+ */
+export async function disputeQueue({ filter = DEFAULT_DISPUTE_FILTER, page = 1, limit = 50 } = {}) {
+  // One spelling from here on: a query string can hand over an array.
+  const key = String(filter);
+  const chosen = Object.hasOwn(DISPUTE_FILTERS, key) ? DISPUTE_FILTERS[key] : null;
+  if (!chosen) {
+    throw Object.assign(
+      new Error(`There is no dispute filter "${key}". Choose one of: ${Object.keys(DISPUTE_FILTERS).join(', ')}.`),
+      { status: 400, code: 'UNKNOWN_DISPUTE_FILTER' },
+    );
+  }
+
+  const size = Math.min(Math.max(Number(limit) || 50, 1), 200);
+  const wanted = Math.max(Number(page) || 1, 1);
+
+  const { rows } = await pgQuery(
+    `WITH matching AS (
+       SELECT o.order_id, COALESCE(o.dispute_raised_at, o.created_at) AS sort_at
+         FROM order_states o
+        WHERE ${chosen.where}
+     ),
+     counted AS (SELECT COUNT(*)::bigint AS total FROM matching),
+     paged AS (
+       -- Newest dispute first, falling back to creation for an order whose
+       -- dispute timestamp predates the column; the id breaks a tie.
+       SELECT order_id, sort_at FROM matching
+        ORDER BY sort_at DESC, order_id DESC
+        LIMIT $1 OFFSET $2
+     )
+     SELECT c.total AS total_matching, o.*,
+            u.username AS user_username, u.mobile AS user_mobile,
+            m.name AS merchant_name, m.mobile AS merchant_mobile,
+            ${DISPUTED_FROM} AS disputed_from
+       FROM counted c
+       LEFT JOIN paged p        ON TRUE
+       LEFT JOIN order_states o ON o.order_id = p.order_id
+       LEFT JOIN users u        ON u.user_id = o.user_id
+       LEFT JOIN merchants m    ON m.merchant_id = o.merchant_id
+      ORDER BY p.sort_at DESC NULLS LAST, p.order_id DESC`,
+    [size, (wanted - 1) * size], 'orders_dispute_queue',
+  );
+
+  // The count always comes back as one row; a page with nothing on it is that
+  // row alone, carrying no order.
+  const total = rows.length ? Number(rows[0].total_matching) : 0;
+  return {
+    disputes: rows.filter((r) => r.order_id).map(withParties),
+    total, page: wanted, limit: size,
+    pages: Math.max(Math.ceil(total / size), 1),
+    filter: key,
+    filters: Object.entries(DISPUTE_FILTERS).map(([key, f]) => ({ key, label: f.label })),
+  };
+}
+
+/**
+ * One order with both parties named — the dispute the Dispute Manager opens.
+ *
+ * The same row the queue lists (`withParties`, `DISPUTED_FROM`), so the route
+ * can hand the dialog the queue's own view of it. It used to lack the state
+ * the order was disputed from, and the dialog then had nothing to say who a
+ * decision would suspend.
+ */
+export async function getOrderWithParties(orderId) {
+  const { rows } = await pgQuery(
+    `SELECT o.*,
+            u.username AS user_username, u.mobile AS user_mobile,
+            m.name AS merchant_name, m.mobile AS merchant_mobile,
+            ${DISPUTED_FROM} AS disputed_from
+       FROM order_states o
+       LEFT JOIN users u     ON u.user_id = o.user_id
+       LEFT JOIN merchants m ON m.merchant_id = o.merchant_id
+      WHERE o.order_id = $1`,
+    [String(orderId)], 'order_with_parties',
+  );
+  return rows[0] ? withParties(rows[0]) : null;
 }
 
 /**

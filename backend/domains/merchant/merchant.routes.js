@@ -103,6 +103,10 @@ const formatMerchant = async (merchant, user = null) => {
         mobile:               user?.mobile   || merchant.mobile,
         email:                merchant.email,
         status:               merchant.status,
+        // A supervisor runs teams and takes no orders (§2): the panel hides
+        // the member's online switch and order settings for them, and the
+        // server refuses both (`SUPERVISOR_TAKES_NO_ORDERS`).
+        isSupervisor:         merchant.isSupervisor === true,
         isOnline:             merchant.isOnline,
         acceptsDeposits:      merchant.acceptsDeposits,
         acceptsWithdrawals:   merchant.acceptsWithdrawals,
@@ -309,14 +313,14 @@ async function issueMerchantSession(merchant, res, extra = {}) {
     const token = signToken(
         { merchantId: merchant._id, userId: merchant.userId, mobile: merchant.mobile, isMerchant: true, isAdmin: false }
     );
+    // The merchant's own view, from the one projection `GET /profile` answers
+    // with (§5): this was a second hand-built copy, and it lacked whatever was
+    // added there since — `isSupervisor` among it, so a supervisor signing in
+    // was shown a member's online switch until the next reload.
     return res.json({
         success: true, token, ...extra,
         merchant: {
-            _id: merchant._id, userId: merchant.userId,
-            username: merchant.username, mobile: merchant.mobile, email: merchant.email,
-            status: merchant.status, isOnline: merchant.isOnline,
-            acceptsDeposits: merchant.acceptsDeposits !== false,
-            acceptsWithdrawals: merchant.acceptsWithdrawals !== false,
+            ...(await formatMerchant(merchant)),
             twoFactorEnabled: merchant.twoFactorEnabled || false,
         },
     });
@@ -627,6 +631,29 @@ router.put('/profile', merchantAuth, async (req, res) => {
     }
 });
 
+/**
+ * Why a supervisor's online switch and order directions are refused — one
+ * sentence for both routes, written for the supervisor to act on (§32 S14).
+ * A supervisor is never a member (§2): their members go online and take the
+ * orders; the supervisor runs the teams.
+ */
+const SUPERVISOR_TAKES_NO_ORDERS = Object.freeze({
+    code: 'SUPERVISOR_TAKES_NO_ORDERS',
+    message: 'You are a supervisor: you run teams and take no orders yourself, so you have no online switch '
+        + 'or order settings. Your members go online and choose their orders from their own accounts; '
+        + 'their online time is on your Team page.',
+});
+
+/**
+ * Answer a write the merchant's row refused. The guard is in the write's
+ * WHERE (`setOnline`, `setOrderPreferences`); this read only says why.
+ */
+async function refusedWrite(req, res) {
+    const me = await db.merchants.getMerchant(req.merchantId);
+    if (me?.isSupervisor) return res.status(403).json({ success: false, ...SUPERVISOR_TAKES_NO_ORDERS });
+    return res.status(404).json({ success: false, message: 'Merchant profile not found.' });
+}
+
 router.put('/online-status', merchantAuth, async (req, res) => {
     try {
         const { isOnline } = req.body;
@@ -635,8 +662,10 @@ router.put('/online-status', merchantAuth, async (req, res) => {
         }
         // The flag and its timestamp move in ONE statement, so two rapid
         // toggles cannot interleave into "online, with the timestamp of going
-        // offline" — which is what the assignment score reads.
+        // offline" — which is what the assignment score reads. A supervisor
+        // going online is refused by that statement's WHERE.
         const merchant = await db.merchants.setOnline(req.merchantId, isOnline);
+        if (!merchant) return refusedWrite(req, res);
         // Notify admin panel via SSE so merchant list shows green/red dot without refresh
         if (global.sseManager && merchant) {
             global.sseManager.broadcastToAdmins('merchant_status_changed', {
@@ -649,8 +678,7 @@ router.put('/online-status', merchantAuth, async (req, res) => {
         }
         res.json({ success: true, merchant: await formatMerchant(merchant, req.user) });
     } catch (err) {
-        console.error('PUT /merchant/online-status error:', err);
-        res.status(500).json({ success: false, message: 'Failed to update online status.' });
+        return respondError(res, err, 'PUT /merchant/online-status', { message: 'Failed to update online status.' });
     }
 });
 
@@ -692,11 +720,13 @@ router.put('/preferences', merchantAuth, async (req, res) => {
         if (!Object.keys(update).length) {
             return res.status(400).json({ success: false, message: 'No valid preference fields provided.' });
         }
-        const merchant = await db.merchants.updateMerchant(req.merchantId, update);
+        // Its own writer, refusing a supervisor in the WHERE: the generic
+        // `updateMerchant` would set a direction on a row routing never reads.
+        const merchant = await db.merchants.setOrderPreferences(req.merchantId, update);
+        if (!merchant) return refusedWrite(req, res);
         res.json({ success: true, merchant: await formatMerchant(merchant, req.user) });
     } catch (err) {
-        console.error('PUT /merchant/preferences error:', err);
-        res.status(500).json({ success: false, message: 'Failed to update preferences.' });
+        return respondError(res, err, 'PUT /merchant/preferences', { message: 'Failed to update preferences.' });
     }
 });
 /*

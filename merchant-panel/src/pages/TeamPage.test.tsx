@@ -82,7 +82,31 @@ describe('merchant Team screen', () => {
     });
     render(<TeamPage />);
     fireEvent.click(await screen.findByRole('button', { name: 'Remove Bhanu' }));
+    // The first press only asks: removing is undone only by a new proposal an
+    // admin approves, so a slip of the finger must not do it.
+    const ask = screen.getByRole('group', { name: 'Confirm removing Bhanu' });
+    expect(ask).toHaveTextContent(/Remove Bhanu from Alpha\?/);
+    expect(ask).toHaveTextContent(/an admin approves again/);
+    expect(api.removeTeamMember).not.toHaveBeenCalled();
+    // Asha's row is untouched by Bhanu's question.
+    expect(screen.getByRole('button', { name: 'Remove Asha' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Bhanu from Alpha' }));
     await waitFor(() => expect(api.removeTeamMember).toHaveBeenCalledWith('t-1', 'm-2'));
+    expect(api.removeTeamMember).toHaveBeenCalledTimes(1);
+  });
+
+  it('"Keep" answers the question and removes nobody (the opposite)', async () => {
+    api.getMyTeam.mockResolvedValue({
+      role: 'SUPERVISOR', commissions: [], myCommissionPaise: 0, rail: 'UPI_BANK', publicRef: 'MSUP',
+      teams: [team('t-1', 'Alpha', { approvedCount: 1 })],
+      members: [{ merchantId: 'm-1', teamId: 't-1', name: 'Asha', publicRef: 'MA', status: 'APPROVED', isOnline: false }],
+    });
+    render(<TeamPage />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove Asha' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Keep Asha' }));
+    expect(screen.queryByRole('group', { name: 'Confirm removing Asha' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Remove Asha' })).toBeInTheDocument();
+    expect(api.removeTeamMember).not.toHaveBeenCalled();
   });
 
   it('shows the server refusal verbatim', async () => {

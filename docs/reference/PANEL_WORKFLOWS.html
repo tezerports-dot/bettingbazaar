@@ -448,7 +448,10 @@ payment dispute the player or the platform raised does.</p>
 <h3>2.3 Dashboard — <code>/dashboard</code></h3>
 <p><code>Dashboard.tsx</code>: the live order list (the same <code>OrderCard</code>), stats,
 the <strong>Online</strong> switch (<code>PUT /online-status</code>; its triggers open and
-close the stretch the red flag reads) and, for a member of a cash team, the
+close the stretch the red flag reads; a member's only: a supervisor sees "Supervisor ·
+your members take the orders" and <strong>Open your teams</strong> instead, in the top
+bar and sidebar too, and the server answers their "online" with 403
+<code>SUPERVISOR_TAKES_NO_ORDERS</code>) and, for a member of a cash team, the
 <strong>Ready</strong> card (<code>CashReadyCard.tsx</code>, <code>PUT /cash-ready</code>;
 409 <em>"Ready is only for members of a cash team. Ask your supervisor to add you to
 one."</em>). Ready switches itself off when a cash buy is assigned. An assignment
@@ -470,7 +473,7 @@ Every refusal below is from <code>backend/domains/team/teamRefusals.js</code>.</
 <tr><td>Create team</td><td>POST /supervisor/teams</td><td>409 A supervisor can run at most 4 teams. · 400 A team name is 1–60 characters. · 400 Take the phone number out of the team name: every member sees it.</td></tr>
 <tr><td>Rename · Delete team</td><td>PUT · DELETE /supervisor/teams/:teamId</td><td>404 That team is not one of yours. · 409 Remove every member before deleting the team. · 409 This team has traded tokens, so it is kept as the record of where they went. It cannot be deleted.</td></tr>
 <tr><td>Add (by merchant ID)</td><td>POST /supervisor/teams/:teamId/members</td><td>404 No merchant has that ID. Ask them for the ID shown on their Profile. · 409 That merchant has not been approved by an admin yet, so they cannot join a team. · 409 A supervisor cannot be a member of a team. · 409 That merchant is already in a team. They must leave it first. · 409 That team already has 10 members.</td></tr>
-<tr><td>Remove member</td><td>DELETE /supervisor/teams/:teamId/members/:merchantId</td><td>404</td></tr>
+<tr><td>Remove member (asks first: "Remove &lt;name&gt; from &lt;team&gt;" or "Keep &lt;name&gt;")</td><td>DELETE /supervisor/teams/:teamId/members/:merchantId</td><td>404</td></tr>
 <tr><td>Buy tokens · Sell tokens back</td><td>POST /supervisor/teams/:teamId/pool-requests</td><td>409 This team already has a request of that kind waiting. Cancel it, or wait for an admin to decide it. · 409 The team's pool does not have that many tokens available… (a sell-back)</td></tr>
 <tr><td>Cancel request</td><td>DELETE /supervisor/pool-requests/:requestId</td><td>409 That request has already been decided or cancelled. Refresh to see its outcome.</td></tr>
 <tr><td>Show pool history</td><td>GET /supervisor/teams/:teamId/pool</td><td></td></tr>
@@ -494,8 +497,10 @@ figures. Never a teammate's row.</p>
 
 <h3>2.6 Profile — <code>/profile</code></h3>
 <p><code>ProfileSettings.tsx</code> → <code>PUT /api/merchant/profile</code>,
-<code>PUT /preferences</code> (accept buys / accept sells, which routing reads), 2FA
-enrolment, and the merchant ID to give a supervisor.</p>
+<code>PUT /preferences</code> (accept buys / accept sells, which routing reads; a
+member's only: a supervisor is told they take no orders, and the server answers 403
+<code>SUPERVISOR_TAKES_NO_ORDERS</code>), 2FA enrolment, and the merchant ID to give a
+supervisor.</p>
 <div class="tablewrap"><table>
 <thead><tr><th>Refused when</th><th>Status</th><th>Message</th></tr></thead>
 <tbody>
@@ -533,10 +538,14 @@ The tier check <code>isAdminOrSubAdmin</code> that F-001 recorded is gone (F-047
 <h3>3.1 Disputes — <code>/disputes</code></h3>
 <p><code>DisputeManager.tsx</code> → <code>disputeResolution.admin.routes.js</code>, all
 <code>canResolveDisputes</code>: the list, one order, the chat (which shows the
-supervisor's messages), escalate, and resolve.</p>
+supervisor's messages), escalate, and resolve. The list's filter is the server's own list
+(<code>DISPUTE_FILTERS</code>, sent with every answer: Open, Open escalated, Closed, All
+disputes); the screen opens on Open, says "Showing a–b of N disputes" and pages through
+the server's total.</p>
 <div class="tablewrap"><table>
 <thead><tr><th>Refused when</th><th>Status</th><th>Message</th></tr></thead>
 <tbody>
+<tr><td>A filter the queue does not offer</td><td>400</td><td>There is no dispute filter "…". Choose one of: OPEN, ESCALATED, CLOSED, ALL.</td></tr>
 <tr><td>Decision not one the route accepts</td><td>400</td><td>Invalid decision</td></tr>
 <tr><td>Notes blank</td><td>400</td><td>Resolution notes required</td></tr>
 <tr><td>No such order</td><td>404</td><td>Order not found</td></tr>

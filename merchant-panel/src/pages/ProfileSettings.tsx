@@ -34,6 +34,8 @@ const ProfileSettings: React.FC = () => {
   const { isMobile } = useViewport();
   const rail = railOf(merchant);
   const isUsdt = rail === 'USDT';
+  // Online, paused, or a supervisor with no switch at all: one helper (§5).
+  const availability = availabilityOf(merchant);
 
   const [editingPayment, setEditingPayment] = useState(false);
   const [savingPayment, setSavingPayment] = useState(false);
@@ -406,33 +408,42 @@ const ProfileSettings: React.FC = () => {
         ))}
       </Card>
 
-      {/* Order preferences */}
+      {/* Order preferences: a member's. A supervisor takes no orders (CLAUDE.md
+          §2) and the server refuses the write (SUPERVISOR_TAKES_NO_ORDERS), so
+          they are told so instead of being offered two switches. */}
       <Card>
         <CardTitle title="Order preferences" />
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {[
-            { key: 'acceptsDeposits' as const, title: 'Accept deposit orders', sub: 'Receive deposit requests from users' },
-            { key: 'acceptsWithdrawals' as const, title: 'Accept withdrawal orders', sub: 'Receive withdrawal requests from users' },
-          ].map((row) => (
-            <div key={row.key} style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
-              padding: 14, background: 'var(--surface-2)', borderRadius: 13,
-            }}>
-              <div>
-                <div style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--text)' }}>{row.title}</div>
-                <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--muted)' }}>{row.sub}</div>
+        {availability.supervisor ? (
+          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-2)', lineHeight: 1.5 }}>
+            You are a supervisor: you run teams and take no orders yourself, so there is nothing to choose
+            here. Your members choose which orders they take from their own accounts.
+          </div>
+        ) : (<>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {[
+              { key: 'acceptsDeposits' as const, title: 'Accept deposit orders', sub: 'Receive deposit requests from users' },
+              { key: 'acceptsWithdrawals' as const, title: 'Accept withdrawal orders', sub: 'Receive withdrawal requests from users' },
+            ].map((row) => (
+              <div key={row.key} style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+                padding: 14, background: 'var(--surface-2)', borderRadius: 13,
+              }}>
+                <div>
+                  <div style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--text)' }}>{row.title}</div>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--muted)' }}>{row.sub}</div>
+                </div>
+                <Toggle
+                  on={prefs[row.key]}
+                  label={row.title}
+                  onChange={() => setPrefs((p) => ({ ...p, [row.key]: !p[row.key] }))}
+                />
               </div>
-              <Toggle
-                on={prefs[row.key]}
-                label={row.title}
-                onChange={() => setPrefs((p) => ({ ...p, [row.key]: !p[row.key] }))}
-              />
-            </div>
-          ))}
-        </div>
-        <Button onClick={savePrefs} busy={savingPrefs} style={{ marginTop: 14 }}>
-          Save preferences
-        </Button>
+            ))}
+          </div>
+          <Button onClick={savePrefs} busy={savingPrefs} style={{ marginTop: 14 }}>
+            Save preferences
+          </Button>
+        </>)}
       </Card>
 
       {/* Account status */}
@@ -448,10 +459,10 @@ const ProfileSettings: React.FC = () => {
             <span style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12.5, fontWeight: 700, color: 'var(--text)' }}>
               <span style={{
                 width: 8, height: 8, borderRadius: '50%',
-                background: merchant?.isOnline ? 'var(--online)' : 'var(--offline)',
-                animation: merchant?.isOnline ? 'bb-pulse 2s ease infinite' : 'none',
+                background: availability.online ? 'var(--online)' : 'var(--offline)',
+                animation: availability.online ? 'bb-pulse 2s ease infinite' : 'none',
               }} />
-              {availabilityOf(merchant).short}
+              {availability.short}
             </span>
           </div>
           <div style={{ background: 'var(--surface-2)', borderRadius: 13, padding: '13px 14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>

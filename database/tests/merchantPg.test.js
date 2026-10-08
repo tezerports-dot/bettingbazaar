@@ -377,12 +377,12 @@ describePg('the merchant record', () => {
     // and that coupling is what makes a rename a hundred-file change.
     await make();
     await updateMerchant(ID, {
-      isOnline: true, panelUrl: 'https://panel.test',
+      acceptsWithdrawals: false, panelUrl: 'https://panel.test',
       bankDetails: { bankName: `Bank ${RUN}${seq}`, ifsc: 'HDFC0009' },
       limits: { minDeposit: 250 },
     });
     const m = await getMerchant(ID);
-    expect(m.isOnline).toBe(true);
+    expect(m.acceptsWithdrawals).toBe(false);
     expect(m.panelUrl).toBe('https://panel.test');
     expect(m.bankDetails.bankName).toBe(`Bank ${RUN}${seq}`);
     expect(m.bankDetails.ifsc).toBe('HDFC0009');
@@ -400,6 +400,10 @@ describePg('the merchant record', () => {
     // Generated and identity columns are protected too.
     await expect(updateMerchant(ID, { merchant_type: 'USDT' })).rejects.toThrow(/refusing to write/);
     await expect(updateMerchant(ID, { public_ref: 'MDEADBEEF' })).rejects.toThrow(/refusing to write/);
+    // The online switch has one writer, `setOnline`, whose WHERE keeps a
+    // supervisor offline; a generic patch would be a path around it (§2, §3).
+    await expect(updateMerchant(ID, { isOnline: true })).rejects.toThrow(/refusing to write.*isOnline/);
+    await expect(updateMerchant(ID, { lastOnlineToggle: new Date() })).rejects.toThrow(/refusing to write/);
   });
 
   // ── No UPI handle (CLAUDE.md §2 "How each rail is paid", §24) ────────────

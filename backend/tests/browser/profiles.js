@@ -183,7 +183,9 @@ export const PROFILES = {
     panel: 'merchant-panel',
     seed: async () => {
       const { supervisor } = await seedTeam({ rail: 'CASH', online: [], exclusive: false });
-      return { token: merchantToken(supervisor), cached: merchantCache(supervisor, { isOnline: false }), who: supervisor.merchantId };
+      // `isSupervisor` as the server's profile says it (formatMerchant), so the
+      // cached first paint already has no online switch to offer.
+      return { token: merchantToken(supervisor), cached: merchantCache(supervisor, { isOnline: false, isSupervisor: true }), who: supervisor.merchantId };
     },
   },
 };
