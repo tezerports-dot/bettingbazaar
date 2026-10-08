@@ -10,11 +10,13 @@
  * ── The invariant ───────────────────────────────────────────────────────────
  * A casino round's money is in the pockets its totals say: the player's
  * WINNINGS rose by exactly what the round credited (`credited_paise`), and
- * their DEPOSIT moved by exactly what it debited less what it refunded
- * (`refunded_paise - debited_paise`). A stake returned goes back to the pocket
- * it came from — a BET takes from deposit, so a ROLLBACK or REFUND gives back
- * to deposit. Returning it to winnings would turn a deposit into withdrawable
- * money with no game played: a cash-out route, not a rounding error.
+ * each pocket the stake came from moved by exactly that pocket's part
+ * returned less its part taken. A stake returned goes back to the pocket it
+ * came from — these players hold deposit only, so a BET takes from deposit
+ * and a ROLLBACK or REFUND gives back to deposit. Returning it to winnings
+ * would turn a deposit into withdrawable money with no game played: a
+ * cash-out route, not a rounding error. How a stake is split across deposit,
+ * winnings and the reserve share is `casinoStakePocketPg` (owner, 2026-10-08).
  *
  * Every case asserts both pockets, the ledger row (what the player's History
  * shows) and, where money moved, the treasury's other side.
@@ -105,18 +107,15 @@ describePg('a casino WIN is paid into winnings; a stake goes back where it came 
     expect(await pockets(u)).toEqual({ deposit: 90_000, winnings: 0, locked: 35_000 });
   });
 
-  it('a BET still takes its stake from the deposit only, never from winnings (the opposite behaviour)', async () => {
-    // Today's rule, not a new one: a casino BET debits `depositBalance` alone.
-    // A board bet draws deposit first and then winnings; whether a casino BET
-    // should too is the owner's question (reported with this change).
+  it('a BET the deposit cannot cover draws the rest from winnings, as a board bet does', async () => {
+    // Owner, 2026-10-08: "Yes, like boards". It used to debit the deposit
+    // alone and refuse this stake. The split itself — the reserve share, the
+    // order, the record on the round — is `casinoStakePocketPg`.
     const u = await player({ deposit: 5_000, winnings: 100_000 });
-    const short = await call(u, { roundId: rid(), type: 'BET', amountRupees: 100 });
-    expect(short).toMatchObject({ ok: false, reason: 'insufficient' });
-    expect(await pockets(u)).toEqual({ deposit: 5_000, winnings: 100_000, locked: 0 });
-
     const betTx = tid();
-    expect((await call(u, { txId: betTx, roundId: rid(), type: 'BET', amountRupees: 50 })).ok).toBe(true);
-    expect(await pockets(u)).toEqual({ deposit: 0, winnings: 100_000, locked: 0 });
+    expect((await call(u, { txId: betTx, roundId: rid(), type: 'BET', amountRupees: 100 })).ok).toBe(true);
+    expect(await pockets(u)).toEqual({ deposit: 0, winnings: 95_000, locked: 0 });
+    // One ledger row per pocket: the movement's key names the first part.
     expect(await ledgerRow(betTx)).toEqual([
       { field: 'depositBalance', tx_type: 'DEBIT', amount: 5_000, before: 5_000, after: 0 },
     ]);

@@ -2828,42 +2828,47 @@ const MUTATIONS = [
         await client.query(rollback);`,
   },
   // ── A casino WIN pays into winnings (owner, 2026-10-07) ──────────────────
-  // The pocket each callback moves is `CALLBACK_POCKET` in casino.core.js. A
-  // stake goes back where the BET took it; only a WIN reaches winnings.
+  // Retargeted 2026-10-08 ("Yes, like boards"): `CALLBACK_POCKET` and
+  // `STAKE_POCKET` are gone. A WIN's pocket is `WIN_POCKET`; a BET is split
+  // across the pockets by the board rule (`stakeParts`) and a reversal returns
+  // each part home (`returnParts`), so ROLLBACK and REFUND are ONE path now and
+  // MCW2/MCW3 measure the same edit through the repository and the transport.
   {
     id: 'MCW1', file: 'database/repositories/casino.core.js', config: PG,
     test: 'database/tests/casinoWinPocketPg.test.js',
     why: 'a casino WIN is paid into the deposit again, so it cannot be withdrawn the way a board win can',
-    from: `  [CASINO_TX.WIN]:      'winningsBalance',`,
-    to: `  [CASINO_TX.WIN]:      STAKE_POCKET,`,
+    from: `const WIN_POCKET = 'winningsBalance';`,
+    to: `const WIN_POCKET = 'depositBalance';`,
   },
   {
     id: 'MCW2', file: 'database/repositories/casino.core.js', config: PG,
     test: 'database/tests/casinoWinPocketPg.test.js',
-    why: 'a ROLLBACK returns the stake into winnings: a BET and its rollback turn a deposit into withdrawable money',
-    from: `  [CASINO_TX.ROLLBACK]: STAKE_POCKET,`,
-    to: `  [CASINO_TX.ROLLBACK]: 'winningsBalance',`,
+    why: 'a ROLLBACK or REFUND returns the stake into winnings: a BET and its reversal turn a deposit into withdrawable money',
+    from: `    if (back > 0) parts.push({ ...p, amountPaise: back });`,
+    to: `    if (back > 0) parts.push({ ...p, field: 'winningsBalance', amountPaise: back });`,
   },
   {
     id: 'MCW3', file: 'database/repositories/casino.core.js', config: PG,
-    test: 'database/tests/casinoWinPocketPg.test.js',
-    why: 'a REFUND returns the stake into winnings: a deposit becomes withdrawable with no game played',
-    from: `  [CASINO_TX.REFUND]:   STAKE_POCKET,`,
-    to: `  [CASINO_TX.REFUND]:   'winningsBalance',`,
+    test: 'backend/tests/routes/casinoWinPocketRoutesPg.test.js',
+    why: 'a reversal posted to POST /api/game/wallet/:providerKey returns the stake into winnings: a deposit becomes withdrawable with no game played',
+    from: `    if (back > 0) parts.push({ ...p, amountPaise: back });`,
+    to: `    if (back > 0) parts.push({ ...p, field: 'winningsBalance', amountPaise: back });`,
   },
   {
     id: 'MCW4', file: 'database/repositories/casino.core.js', config: PG,
     test: 'database/tests/casinoWinPocketPg.test.js',
-    why: 'a casino BET takes its stake from winnings instead of the deposit',
-    from: `  [CASINO_TX.BET]:      STAKE_POCKET,`,
-    to: `  [CASINO_TX.BET]:      'winningsBalance',`,
+    why: 'a casino BET takes its deposit part from winnings instead of the deposit',
+    edits: [
+      [`    depositBalance: split.fromDepositMinor,`, `    depositBalance: split.fromWinningsMinor,`],
+      [`    winningsBalance: split.fromWinningsMinor,`, `    winningsBalance: split.fromDepositMinor,`],
+    ],
   },
   {
     id: 'MCW5', file: 'database/repositories/casino.core.js', config: PG,
     test: 'database/tests/casinoWinPocketPg.test.js',
     why: 'the ledger row names the deposit while the winnings moved, so History describes a movement that did not happen',
-    from: `        field: pocket,`,
-    to: `        field: STAKE_POCKET,`,
+    from: `        field: p.field,`,
+    to: `        field: 'depositBalance',`,
   },
   {
     // MCW1's edit, measured through the transport: the signed provider
@@ -2871,8 +2876,8 @@ const MUTATIONS = [
     id: 'MCW6', file: 'database/repositories/casino.core.js', config: PG,
     test: 'backend/tests/routes/casinoWinPocketRoutesPg.test.js',
     why: 'a WIN posted to POST /api/game/wallet/:providerKey lands in the deposit, and History shows it as the deposit wallet',
-    from: `  [CASINO_TX.WIN]:      'winningsBalance',`,
-    to: `  [CASINO_TX.WIN]:      STAKE_POCKET,`,
+    from: `const WIN_POCKET = 'winningsBalance';`,
+    to: `const WIN_POCKET = 'depositBalance';`,
   },
   {
     // Two edits, because the callback is idempotent twice over on purpose —
@@ -2884,8 +2889,8 @@ const MUTATIONS = [
     edits: [
       [`        [String(txId), ctx.rid, ctx.uid, ctx.provider, type, amountPaise],`,
         `        [\`\${txId}:\${Math.random()}\`, ctx.rid, ctx.uid, ctx.provider, type, amountPaise],`],
-      [`        txId: \`casino_\${txId}\`,`,
-        `        txId: \`casino_\${txId}:\${Math.random()}\`,`],
+      [`        txId: i === 0 ? \`casino_\${txId}\` : \`casino:\${p.field}:\${txId}\`,`,
+        `        txId: i === 0 ? \`casino_\${txId}:\${Math.random()}\` : \`casino:\${p.field}:\${txId}:\${Math.random()}\`,`],
     ],
   },
 
@@ -3010,6 +3015,143 @@ const MUTATIONS = [
     why: 'a database holding a supervisor online from before the rule is not switched off first, so applying the schema fails on the constraint (§32 S31)',
     from: `UPDATE merchants SET is_online = FALSE, last_online_toggle = now() WHERE is_supervisor AND is_online;`,
     to: `-- (not converged)`,
+  },
+  // ── A casino BET draws on the pockets a board bet draws on (owner, 2026-10-08)
+  // "Yes, like boards": the reserve share, then deposit, then winnings, split
+  // by the board's own function from the LOCKED wallet row and recorded on the
+  // round; a reversal returns each part to its pocket, winnings last.
+  {
+    id: 'MCB1', file: 'database/repositories/casino.core.js', config: PG,
+    test: 'database/tests/casinoStakePocketPg.test.js',
+    why: 'a casino BET draws on the deposit alone again, so a stake the deposit cannot cover is refused while winnings would cover it',
+    from: `    winningsMinor: balances.winningsBalance,`,
+    to: `    winningsMinor: 0,`,
+  },
+  {
+    id: 'MCB2', file: 'database/repositories/casino.core.js', config: PG,
+    test: 'database/tests/casinoStakePocketPg.test.js',
+    why: 'a casino BET skips the reserve share a board bet takes, so the same pockets fund a casino stake differently from a board stake',
+    from: `    reserveMinor: balances.reserveBalance,`,
+    to: `    reserveMinor: 0,`,
+  },
+  {
+    // The board's arithmetic, broken where it lives: the casino follows it,
+    // which is what "reusing the board's code" means (§5, §18.1).
+    id: 'MCB3', file: 'backend/domains/risk/stakeFunding.js', config: PG,
+    test: 'database/tests/casinoStakePocketPg.test.js',
+    why: 'the shared stake split takes winnings before the deposit, and a casino BET splits the same wrong way as a board bet',
+    from: `  const fromDepositMinor  = Math.min(mainMinor, depositMinor);`,
+    to: `  const fromDepositMinor  = Math.max(0, mainMinor - winningsMinor);`,
+  },
+  {
+    // §32 S6: the split decided from a balance read BEFORE the wallet lock —
+    // on the same connection, so the mutant waits on the lock like the
+    // original and only the read is stale.
+    id: 'MCB4', file: 'database/repositories/casino.core.js', config: PG,
+    test: 'database/tests/casinoStakePocketPg.test.js',
+    why: 'two BETs racing for the last of the deposit both plan from the same read, and the second is refused although winnings would fund it',
+    from: `    const { balances } = await lockWalletWithin(client, uid);`,
+    to: `    const { rows: [read] } = await client.query(
+      'SELECT deposit_paise, winnings_paise, reserve_paise FROM wallets WHERE user_id = $1', [uid]);
+    const balances = { depositBalance: Number(read?.deposit_paise ?? 0),
+      winningsBalance: Number(read?.winnings_paise ?? 0), reserveBalance: Number(read?.reserve_paise ?? 0) };
+    await lockWalletWithin(client, uid);`,
+  },
+  {
+    // §32 S34: affordability asked before idempotency.
+    id: 'MCB5', file: 'database/repositories/casino.core.js', config: PG,
+    test: 'database/tests/casinoStakePocketPg.test.js',
+    why: 'a redelivered BET the pockets could no longer fund is answered "insufficient" instead of "already done", so the provider reverses a stake that stands',
+    from: `    if (!ctx.round) {
+      await ctx.client.query(
+        \`INSERT INTO casino_rounds (round_id, user_id, provider_key, game_id)`,
+    to: `    if (type === CASINO_TX.BET && !stakeParts(ctx.balances, amountPaise, reserveBp)) {
+      return { commit: false, value: { ok: false, reason: 'insufficient' } };
+    }
+    if (!ctx.round) {
+      await ctx.client.query(
+        \`INSERT INTO casino_rounds (round_id, user_id, provider_key, game_id)`,
+  },
+  {
+    id: 'MCB6', file: 'database/repositories/casino.core.js', config: PG,
+    test: 'database/tests/casinoStakePocketPg.test.js',
+    why: 'a reversal returns a split stake all to the deposit, so the winnings part comes back non-withdrawable',
+    from: `    if (back > 0) parts.push({ ...p, amountPaise: back });`,
+    to: `    if (back > 0) parts.push({ ...p, field: 'depositBalance', amountPaise: back });`,
+  },
+  {
+    id: 'MCB7', file: 'database/repositories/casino.core.js', config: PG,
+    test: 'database/tests/casinoStakePocketPg.test.js',
+    why: 'a partial rollback returns the winnings part first, so a rollback makes part of a deposit-funded stake withdrawable',
+    from: `  Object.freeze({ field: 'reserveBalance',  column: 'reserve' }),
+  Object.freeze({ field: 'depositBalance',  column: 'deposit' }),
+  Object.freeze({ field: 'winningsBalance', column: 'winnings' }),`,
+    to: `  Object.freeze({ field: 'winningsBalance', column: 'winnings' }),
+  Object.freeze({ field: 'reserveBalance',  column: 'reserve' }),
+  Object.freeze({ field: 'depositBalance',  column: 'deposit' }),`,
+  },
+  {
+    // The round does not record its split: the sum CHECK refuses the BET, so
+    // the record cannot be skipped silently.
+    id: 'MCB8', file: 'database/repositories/casino.core.js', config: PG,
+    test: 'database/tests/casinoStakePocketPg.test.js',
+    why: 'a BET moves the pockets without recording on the round which pockets it took, so a reversal cannot return the parts home',
+    from: `    const stakeMoved = type === CASINO_TX.WIN ? [] : parts;`,
+    to: `    const stakeMoved = [];`,
+  },
+  {
+    id: 'MCB9', file: 'database/repositories/casino.js', config: PG,
+    test: 'database/tests/casinoStakePocketPg.test.js',
+    why: 'the provider is told a balance that leaves out the reserve share a BET can draw on, so it refuses stakes the callback would take',
+    from: `    reserveMinor: w.reserveBalance,`,
+    to: `    reserveMinor: 0,`,
+  },
+  {
+    // MCB9's edit, measured through the transport: the balance in the signed
+    // callback's own answer.
+    id: 'MCB10', file: 'database/repositories/casino.js', config: PG,
+    test: 'backend/tests/routes/casinoStakePocketRoutesPg.test.js',
+    why: 'POST /api/game/wallet/:providerKey answers a balance that is not what a BET can draw on',
+    from: `    reserveMinor: w.reserveBalance,`,
+    to: `    reserveMinor: 0,`,
+  },
+  {
+    id: 'MCB11', file: 'database/schema.sql', config: PG,
+    test: 'database/tests/casinoStakePocketPg.test.js',
+    why: 'a round\'s debit total and its parts can disagree, so the record of where a stake came from stops describing the stake',
+    from: `ALTER TABLE casino_rounds ADD CONSTRAINT casino_rounds_split_debit CHECK (
+  debited_paise = debited_deposit_paise + debited_winnings_paise + debited_reserve_paise) NOT VALID;`,
+    to: `ALTER TABLE casino_rounds ADD CONSTRAINT casino_rounds_split_debit CHECK (
+  true OR debited_paise = debited_deposit_paise + debited_winnings_paise + debited_reserve_paise) NOT VALID;`,
+  },
+  {
+    id: 'MCB12', file: 'database/schema.sql', config: PG,
+    test: 'database/tests/casinoStakePocketPg.test.js',
+    why: 'a round\'s refund total and the parts returned can disagree',
+    from: `ALTER TABLE casino_rounds ADD CONSTRAINT casino_rounds_split_refund CHECK (
+  refunded_paise = refunded_deposit_paise + refunded_winnings_paise + refunded_reserve_paise) NOT VALID;`,
+    to: `ALTER TABLE casino_rounds ADD CONSTRAINT casino_rounds_split_refund CHECK (
+  true OR refunded_paise = refunded_deposit_paise + refunded_winnings_paise + refunded_reserve_paise) NOT VALID;`,
+  },
+  {
+    id: 'MCB13', file: 'database/schema.sql', config: PG,
+    test: 'database/tests/casinoStakePocketPg.test.js',
+    why: 'a writer outside recordCallback can return more to a pocket than the round took from it — deposit turned into winnings by an UPDATE',
+    from: `ALTER TABLE casino_rounds ADD CONSTRAINT casino_rounds_split_refund_bound CHECK (
+  refunded_deposit_paise <= debited_deposit_paise`,
+    to: `ALTER TABLE casino_rounds ADD CONSTRAINT casino_rounds_split_refund_bound CHECK (
+  true OR refunded_deposit_paise <= debited_deposit_paise`,
+  },
+  {
+    id: 'MCB14', file: 'database/schema.sql', config: PG,
+    test: 'database/tests/casinoStakePocketPg.test.js',
+    why: 'a writer outside recordCallback can return the winnings part while deposit is still out',
+    from: `  IF (NEW.refunded_deposit_paise > OLD.refunded_deposit_paise
+        AND NEW.refunded_reserve_paise < NEW.debited_reserve_paise)
+     OR (NEW.refunded_winnings_paise > OLD.refunded_winnings_paise
+        AND (NEW.refunded_reserve_paise < NEW.debited_reserve_paise
+             OR NEW.refunded_deposit_paise < NEW.debited_deposit_paise)) THEN`,
+    to: `  IF false THEN`,
   },
 ];
 
