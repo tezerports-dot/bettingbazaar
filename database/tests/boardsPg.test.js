@@ -102,8 +102,15 @@ describePg('boards', () => {
         `INSERT INTO cycles (cycle_id, cycle_type, status, start_time, end_time)
          VALUES ($1, 'NO_SUCH_BOARD', 'OPEN', now(), now() + interval '1 minute')`, [`x-${randomInt(0, 1e9)}`],
       )).rejects.toMatchObject({ code: '23503', constraint: 'cycles_board_fk' });
-      await expect(pgQuery(`DELETE FROM boards WHERE board_key = '30_MIN'`, []))
-        .rejects.toMatchObject({ code: '23503' });
+      // Its own board and cycle: a fresh database may hold no cycle on a seeded board yet.
+      const b = await make();
+      await pgQuery(
+        `INSERT INTO cycles (cycle_id, cycle_type, status, start_time, end_time)
+         VALUES ($1, $2, 'CANCELLED', now() - interval '10 minutes', now() - interval '5 minutes')`,
+        [`${b.idPrefix}_${randomInt(0, 1e9)}`, b.key],
+      );
+      await expect(pgQuery('DELETE FROM boards WHERE board_key = $1', [b.key]))
+        .rejects.toMatchObject({ code: '23503', constraint: 'cycles_board_fk' });
     });
 
     it('lets phantom access name any board, and nothing else', async () => {
