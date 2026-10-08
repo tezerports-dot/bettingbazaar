@@ -214,6 +214,21 @@ export const RATE_LIMIT_TIERS = {
   // and tighter than the password tier: at this point an attacker is guessing
   // a 6-digit code, where 10 tries is 1-in-100,000 rather than 1-in-a-million.
   twoFactor: tier(15 * 60 * 1000, 5),
+  // ── Waiting on Telegram (Step 3, 2026-10-07) ──────────────────────────────
+  // A browser that opened the Mini App polls `/login/2fa` or
+  // `/login/telegram/complete` every two or three seconds until the person
+  // taps approve. Each poll checks no secret — the signed challenge token names
+  // the one row it may read — so the credential pace (one per 10 s) would
+  // refuse the very wait it exists to serve. This bounds load only: forty a
+  // minute per account is a poll every 1.5 s.
+  challengePoll: tier(60 * 1000, 40),
+  // "Login with Telegram" from outside Telegram writes a challenge before
+  // anybody has proved anything, so its rate is bounded per address, every
+  // request counted: ten a ten minutes is a person retrying, not a script.
+  telegramLogin: tier(10 * 60 * 1000, 10),
+  // The Mini App's own calls, per address. `initData` is the credential and is
+  // single-use, so this bounds load and the cost of a forged string's HMAC.
+  miniApp: tier(10 * 60 * 1000, 120),
   // Bet placement bursts
   bet: tier(1 * 60 * 1000, 30),
   // Withdrawal creation

@@ -1,74 +1,50 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * playerAuth.routes.js — the player's FORM signup and FORM login.
+ * playerAuth.routes.js — the player's FORM signup, the player sign-in door, the
+ * player's own Telegram link, and the password reset.
  *
- * ── What changed, and why (owner decision, 2026-09-23) ─────────────────────
- * Signing up used to happen inside a Telegram bot: /start, type your Aadhaar to
- * the bot, share your contact, join the channel, and the bot DMs a one-time
- * link that is traded for a session. Signing in was a six-digit code the same
- * bot sent. Every one of those steps depended on a THIRD PARTY that suspends
- * gambling bots, rate-limits at roughly thirty messages a second per bot, and
- * cannot message anybody who has not opened a chat with it first.
+ * ── Step 3 (owner, 2026-10-07) ─────────────────────────────────────────────
+ * "they must verify and share contact on signup ... now they can do login
+ * without telegram mini app but add also login with telegram button too."
  *
- * So the account is now created by a FORM this platform owns, and Telegram
- * keeps only the job it is actually good at: proving that a phone number
- * belongs to the person holding it, and carrying the official channel.
+ *   FORM (here)        → the account exists, with a password, and NO session
+ *   MINI APP (Telegram) → the contact share proves the mobile and links the
+ *                         account; for a player it is also the moment the
+ *                         joining number and the referrer's ₹25 are booked
+ *   then               → sign in with the mobile and password, or with Telegram
  *
- *   FORM (here)              →  the account exists, with a password
- *   TELEGRAM (the gate)      →  contact share proves the number, channel join
- *                               is the membership requirement
+ * The signup answers with the Telegram step (`challengeToken`, `telegram`), and
+ * the panel polls `/login/2fa` with the token: the approval signs them in,
+ * because they have just proved the password and the phone. An account that
+ * never finishes is met by the same step at every sign-in
+ * (TELEGRAM_VERIFICATION_REQUIRED), so nothing is lost by closing the tab.
  *
- * The order matters and is the whole design: the account exists BEFORE Telegram
- * is involved, so the contact share is matched against a row that is already
- * there (`linkTelegramToAccount`) rather than creating one. A contact that
- * matches nothing is somebody who has not filled the form yet, which is a
- * sentence the bot can say.
- *
- * ── What a signup does NOT get ─────────────────────────────────────────────
- * A joining number, and therefore no referral payout for whoever invited them.
- * That is deliberate and unchanged: the number orders the referral payout queue
- * and is claimed when the Telegram step COMPLETES (`completeOnboarding`). An
- * account that filled a form and never verified must not consume a position
- * ahead of people who did, and must not pay anybody ₹25 for it — otherwise the
- * referral programme is a form that can be submitted in a loop.
- *
- * ── Rate limiting is on the MOUNT, not here ────────────────────────────────
- * server.js puts `loginPaceLimiter`, `authLimiter`, the subnet limiter and
- * `requireCaptcha` in front of both routes, in that order and for the reason
- * stated there: a paced request never reaches the credential check, so it is
- * not a failed attempt and must not consume the failure budget behind it.
+ * ── Rate limiting is per ROUTE, never on the router ────────────────────────
+ * The sign-in legs carry their door's chain (`loginDoors.js`); signup carries
+ * its own (`signupChain`); the reset carries the credential chain. The router
+ * also serves `/invite/:code` and the session routes' neighbours, which check
+ * no credential (§32 S27, S28).
  */
 import express from 'express';
 import { db } from '#db';
-import { issueSession, loginHandler, loginTwoFactorHandler, LOGIN_DOOR } from '../../routes.js';
 import { hashPassword } from './password.util.js';
 import { assertPlayerPassword } from './passwordPolicy.js';
 import { generateReferralCode } from '../referral/referral.service.js';
 import {
   normalisePhone, isValidMobile, normaliseReferralCode,
 } from './signupFields.js';
-import { respondError } from '../../shared/httpError.js';
-import { assignSigninBot } from './signupVerification.service.js';
-import { verificationEndpoint } from './verificationEndpoint.js';
+import { respondError, refusal } from '../../shared/httpError.js';
 import { redeemResetLink } from './passwordReset.service.js';
 import { authenticatePlayer } from './auth.middleware.js';
-import { authLimiter, loginPaceLimiter, twoFactorLimiter, signupLimiter } from '../../middleware/security.js';
+import { authLimiter, loginPaceLimiter, signupLimiter } from '../../middleware/security.js';
 import { requireCaptcha } from '../../middleware/captcha.js';
 import { createSubnetLimiter, globalSurgeBreaker } from '../../middleware/ipDefense.js';
+import { doorRoute } from './loginDoors.js';
+import { openChallenge } from './telegramChallenge.service.js';
+import { miniAppBot } from '../telegram/telegramClient.js';
+import { telegramStatus, telegramRelink, telegramTwoFactor } from './accountTelegram.js';
 
 const router = express.Router();
-
-/**
- * A refusal the CALLER caused, carrying its own wording to the caller.
- *
- * `status` on the error is what `respondError` routes on — without it a
- * perfectly good sentence naming the field that is wrong goes to `serverError`,
- * which logs in full and answers with nothing by design, and the player is told
- * the platform broke (§21).
- */
-function refuse(message, status = 400) {
-  return Object.assign(new Error(message), { status });
-}
 
 /**
  * The chain a route that checks a PASSWORD carries, in this order.
@@ -130,60 +106,50 @@ const signupChain = (action) => [
  * POST /api/v1/auth/register — the signup form.
  *
  * Body: mobile, password, confirmPassword, referralCode?, and the captcha
- * token `requireCaptcha` reads. No Aadhaar: KYC was removed 2026-10-02 (owner),
- * and the Telegram contact share is what proves the mobile is theirs.
+ * token `requireCaptcha` reads. Answers with the Telegram step, never a
+ * session: the account cannot be used until its mobile is verified (Step 3).
  */
 router.post('/register', ...signupChain('player-register'), async (req, res) => {
   try {
     const { mobile, password, confirmPassword, referralCode } = req.body || {};
 
     // ── Every refusal NAMES THE FIELD (§25, §32 S14) ───────────────────────
-    // A signup form that answers "invalid details" to six different mistakes
-    // sends the player back to guess which box is wrong, and the commonest
-    // wrong box — the mobile, where they typed +91 as well — looks identical to
-    // a correct one.
+    // The commonest wrong box — the mobile, where they typed +91 as well —
+    // looks identical to a correct one, so each mistake says which box.
     if (!isValidMobile(mobile)) {
-      throw refuse(
-        'Enter your 10-digit mobile number — the one on your Telegram account — without +91.', 400,
-      );
+      throw refusal(400, 'MOBILE_INVALID',
+        'Enter your 10-digit mobile number — the one on your Telegram account — without +91.');
     }
     if (String(password ?? '') !== String(confirmPassword ?? '')) {
-      throw refuse('The two passwords do not match.', 400);
+      throw refusal(400, 'PASSWORDS_DIFFER', 'The two passwords do not match.');
     }
 
     const number = normalisePhone(mobile);
 
-    // Throws a 400 naming what is wrong with it. The mobile is passed as
-    // context because it is printed on the form directly above this box, so
-    // "my own number" is the first thing somebody reaches for.
+    // Throws 400 WEAK_PASSWORD naming what is wrong. The mobile is context
+    // because "my own number" is the first thing somebody reaches for.
     assertPlayerPassword(password, { mobile: number }, 'player');
 
     // ── A courtesy check, not the guarantee ────────────────────────────────
-    // The UNIQUE index on `(mobile, account_type)` is what actually prevents a
-    // second account; two signups arriving together both pass a read. This
-    // exists to produce the RIGHT SENTENCE, and `createAccountFromSignup`
-    // returns the same reason when the race is lost.
+    // The UNIQUE index on `(mobile, account_type)` prevents a second account;
+    // this produces the right sentence, and the writer returns the same reason
+    // when the race is lost.
     if (await db.users.getUserByMobile(number, 'PLAYER')) {
-      throw refuse('An account already exists for that mobile number. Log in instead.', 409);
+      throw refusal(409, 'MOBILE_TAKEN', 'An account already exists for that mobile number. Log in instead.');
     }
 
     // ── The referrer is resolved BEFORE the account is written ─────────────
-    // A code that matches nobody is reported rather than dropped. The path this
-    // replaces normalised the code, looked it up at contact-share time and
-    // silently wrote null when it missed: the signup succeeded, the referrer
-    // never earned, and nobody could tell afterwards whether the code had been
-    // wrong or the payout had failed.
+    // A code that matches nobody is reported rather than dropped: a silently
+    // dropped code is a referrer who never earns and nobody can say why.
     const code = normaliseReferralCode(referralCode);
     let referrer = null;
     if (code) {
       referrer = await db.users.getUserByReferralCode(code);
-      if (!referrer) {
-        throw refuse(`No one on Betting Bazaar has the invite code ${code}.`, 400);
-      }
+      if (!referrer) throw refusal(400, 'INVITE_CODE_UNKNOWN', `No one on Betting Bazaar has the invite code ${code}.`);
     }
     // A non-empty box that normalises to nothing is a typo, not an absence.
     if (!code && String(referralCode ?? '').trim()) {
-      throw refuse('That invite code is not a valid code. Leave it blank if you have none.', 400);
+      throw refusal(400, 'INVITE_CODE_INVALID', 'That invite code is not a valid code. Leave it blank if you have none.');
     }
 
     const created = await db.identity.createAccountFromSignup({
@@ -196,53 +162,47 @@ router.post('/register', ...signupChain('player-register'), async (req, res) => 
     });
 
     if (!created.ok) {
-      // The race the courtesy checks above cannot close. Same sentences, so a
-      // player who lost it is told the same thing as one who was simply second.
-      const said = {
-        mobile_taken: 'An account already exists for that mobile number. Log in instead.',
-        duplicate: 'An account already exists for those details.',
-      }[created.reason] || 'An account already exists for those details.';
-      throw refuse(said, 409);
+      // The race the courtesy check cannot close; the same sentence.
+      throw refusal(409, 'MOBILE_TAKEN', created.reason === 'mobile_taken'
+        ? 'An account already exists for that mobile number. Log in instead.'
+        : 'An account already exists for those details.');
     }
 
-    // ── Assigned a bot, then signed in ─────────────────────────────────────
-    // Signed in deliberately: the very next thing they see is the Telegram gate,
-    // and the gate has to know WHO is standing at it to tell them which bot to
-    // open and whether their contact has been shared. Sending them back to a
-    // login form to find that out is a step that exists only to be completed.
-    //
-    // The bot assignment is best-effort: an operator who has registered no
-    // sign-in bot yet has an account that is created and cannot yet be verified,
-    // which the gate REPORTS ("verification is not available right now") rather
-    // than blaming on the player.
-    await assignSigninBot(created.userId, 'PLAYER').catch((e) => {
-      console.error('[signup] could not assign a sign-in bot:', e.message);
+    // ── The Telegram step, not a session ───────────────────────────────────
+    // The account exists and is not usable until the Mini App's contact share
+    // matches this mobile. No bot configured is the PLATFORM's state, not the
+    // player's: the account is kept, and the same step is offered at their
+    // next sign-in once a bot exists (§32 S14).
+    if (!(await miniAppBot())) {
+      return res.json({
+        success: true, verificationRequired: true, verificationAvailable: false,
+        challengeToken: null, telegram: null,
+        message: 'Your account is created. Telegram verification is not available right now — sign in later to finish.',
+      });
+    }
+    const opened = await openChallenge({ purpose: 'VERIFY', door: 'PLAYER', userId: created.userId, req });
+    return res.json({
+      success: true, verificationRequired: true, verificationAvailable: true,
+      challengeToken: opened.challengeToken,
+      telegram: opened.telegram,
+      message: 'Account created. Verify your mobile number in Telegram to start playing.',
     });
-
-    const user = await db.users.getUser(created.userId);
-    return issueSession(user, res);
   } catch (err) {
     return respondError(res, err, 'auth/register',
       { message: 'Could not create your account. Please try again.' });
   }
 });
 
-/**
- * The player login door.
- *
- * Both legs are `routes.js`'s handlers, mounted here with a DOOR rather than
- * copied — §5's rule, applied to the one function where a copy would be most
- * expensive: a second implementation of "check the password, then decide about
- * the second factor" is where one of the two quietly stops challenging.
- */
-router.post('/login', ...credentialChain('player-login'),
-  (req, res, next) => { req.loginDoor = LOGIN_DOOR.PLAYER; next(); }, loginHandler);
-// The OTP tier, not the password tier: six digits is a 10^6 space and warrants
-// its own tighter budget. No captcha — the challenge was already solved on the
-// first leg, and Turnstile tokens are single-use, so asking again would refuse
-// every second factor on the platform.
-router.post('/login/2fa', loginPaceLimiter, twoFactorLimiter,
-  (req, res, next) => { req.loginDoor = LOGIN_DOOR.PLAYER; next(); }, loginTwoFactorHandler);
+// ── The player sign-in door: routes.js's handlers, with this door's limits ──
+router.post('/login', ...doorRoute('PLAYER', 'login'));
+router.post('/login/2fa', ...doorRoute('PLAYER', 'twoFactor'));
+router.post('/login/telegram', ...doorRoute('PLAYER', 'telegram'));
+router.post('/login/telegram/complete', ...doorRoute('PLAYER', 'telegramComplete'));
+
+// ── The player's own Telegram link (accountTelegram.js) ─────────────────────
+router.get('/telegram', authenticatePlayer, telegramStatus);
+router.post('/telegram/relink', authenticatePlayer, telegramRelink);
+router.put('/telegram/two-factor', authenticatePlayer, telegramTwoFactor);
 
 /**
  * GET /api/v1/auth/invite/:code — is this invite code real, and whose?
@@ -274,56 +234,24 @@ router.get('/invite/:code', async (req, res) => {
   }
 });
 
-// ═══════════════════════════════════════════════════════════════════════════
-// GET /api/v1/auth/verification — what the gate shows
-// ═══════════════════════════════════════════════════════════════════════════
-/**
- * The ONE answer to "may this player use the app yet, and if not, what next?"
- *
- * ── Why it replaced GET /api/telegram/membership ───────────────────────────
- * That endpoint answered half the question — the channel half — and the panel
- * would have had to ask a second one about the contact share and then decide
- * between them. Two sources, one decision, is §5: the two would have disagreed
- * the first time somebody's contact was stood down while their channel status
- * was still `member`, and the screen would have shown "all set" over a gate
- * that was refusing every action.
- *
- * ── The live check is asked for, not assumed ───────────────────────────────
- * The default read is CACHE ONLY. Joining a channel emits a `chat_member`
- * update that writes the cache within about a second, for free — so a poll
- * costs nothing. `?verify=1` is what the "I have joined" button sends, once,
- * and it is floored per user because a button is a button and people press it.
- *
- * That floor matters more than it looks: replacing the channel makes every
- * cached membership stale in one instant, so the prompt appears for every
- * logged-in player at once. Without the floor, a flip would aim the entire
- * active user base at the Bot API in the same few seconds.
- */
-/**
- * ONE implementation, three mounts — see `verificationEndpoint`. The player
- * mount is here; the merchant and staff mounts are on their own routers, and
- * they answer the same shape because they ARE the same function.
- */
-router.get('/verification', authenticatePlayer, verificationEndpoint((req) => req.user));
-
-// `POST /api/v1/auth/kyc/resubmit` was removed 2026-10-02 with KYC.
+// `GET /api/v1/auth/verification` (the Telegram gate's poll) was removed with
+// the gate in Step 3: an unverified account is never signed in, so there is no
+// signed-in session for a gate to stand in front of.
 
 // ═══════════════════════════════════════════════════════════════════════════
-// POST /api/v1/auth/password/reset — redeem a link the bot sent
+// POST /api/v1/auth/password/reset — set a password with a reset token
 // ═══════════════════════════════════════════════════════════════════════════
 /**
  * Unauthenticated by necessity: the whole point is that they cannot sign in.
+ * The token comes from the Mini App (`POST /api/telegram/mini-app/password-reset`)
+ * for an account of ANY panel; the account's own floor applies.
  *
  * The TOKEN is the credential, so this carries the credential chain — the
- * pace, the failure budget, the subnet limiter and the captcha. A 256-bit
- * single-use token is not brute-forceable, and that is not the reason for the
- * limiters: they are what stops this endpoint being used to grind the password
- * POLICY, and what bounds the damage if a token ever leaks into a place that
- * can be scraped.
+ * pace, the failure budget, the subnet limiter and the captcha. They stop this
+ * endpoint being used to grind the password POLICY, and bound the damage if a
+ * token ever leaks.
  *
- * It does NOT sign them in. It answers "done, now log in" and the panel sends
- * them to the login form — see passwordReset.service.js for why that is the
- * point rather than an omission.
+ * It does NOT sign them in, and it evicts every session (passwordReset.service.js).
  */
 router.post('/password/reset', ...credentialChain('password-reset'), async (req, res) => {
   try {
@@ -340,11 +268,9 @@ router.post('/password/reset', ...credentialChain('password-reset'), async (req,
     }
     // `invalid` covers unknown, already used and expired, with one sentence —
     // a caller that can tell them apart can map which tokens were ever live.
-    // The other two carry the service's own wording, because "too short" and
-    // "they do not match" are the only refusals a person can act on.
-    throw refuse(result.message
-      || 'This reset link is no longer valid. Share your contact with the bot again for a new one.',
-      400);
+    const codes = { mismatch: 'PASSWORDS_DIFFER', weak: 'WEAK_PASSWORD' };
+    throw refusal(400, codes[result.reason] || 'RESET_TOKEN_INVALID', result.message
+      || 'This reset link is no longer valid. Open "Forgot password" in Telegram again for a new one.');
   } catch (err) {
     return respondError(res, err, 'auth/password-reset',
       { message: 'Could not change your password. Please try again.' });

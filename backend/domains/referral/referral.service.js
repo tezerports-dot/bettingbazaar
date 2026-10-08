@@ -18,7 +18,6 @@
  */
 import { db } from '#db';
 import crypto from 'crypto';
-import { REFERRAL_REWARD_PAISE } from './referralRewards.js';
 import { creditWinnings } from '../wallet/walletAuthority.service.js';
 import { paiseToRupees } from '../../shared/money.js';
 
@@ -52,50 +51,15 @@ export function generateReferralCode() {
 // ── Attribution ─────────────────────────────────────────────────────────────
 
 /**
- * Record the earnings a newly-onboarded user generates for their upline.
- *
- * Called once, when onboarding completes. Safe to call again: the
- * `one_earning_per_source_level` unique index rejects a duplicate rather than
- * booking a second ₹25, so a retried or replayed onboarding is a no-op.
- *
- * @param {object} user  the joining user — must already have joiningNumber and referredBy
- * @returns {Promise<{recorded: number, levels: number[]}>}
+ * Earnings are RECORDED by `db.referrals.recordJoinerEarnings`, inside the
+ * transaction that verifies the joiner's mobile (the Mini App contact share,
+ * `database/repositories/telegram.js`). A referral counts only once the joiner
+ * is verified (owner, 2026-10-07), and booking it in that same transaction
+ * means a verified joiner always has their referrer's earning and an
+ * unverified one never does — there is no window where one exists without the
+ * other. The derived earning id and `ON CONFLICT DO NOTHING` make a replayed
+ * verification book nothing further.
  */
-export async function recordEarningsFor(user) {
-  if (!user?.referredBy || !user?.joiningNumber) return { recorded: 0, levels: [] };
-
-  // Walk up at most two edges. Level 1 is the direct referrer; level 2 is that
-  // referrer's own referrer. Nothing deeper is ever paid.
-  const level1 = await db.users.getUser(user.referredBy);
-  if (!level1) return { recorded: 0, levels: [] };
-  const level2 = level1.referredBy
-    ? await db.users.getUser(level1.referredBy)
-    : null;
-
-  const earners = [
-    { level: 1, earnerId: level1.userId },
-    ...(level2 ? [{ level: 2, earnerId: level2.userId }] : []),
-  ]
-    // A self-referral loop would pay a user for their own signup. The tree is
-    // built from ids the bot supplied, so it is not assumed to be acyclic.
-    .filter((e) => String(e.earnerId) !== String(user.userId));
-
-  const levels = [];
-  for (const { level, earnerId } of earners) {
-    // The earning id is DERIVED from the pair and the level, so a replayed
-    // onboarding collides on the primary key and books nothing further — the
-    // index does the work, rather than a prior read two deliveries would pass.
-    const result = await db.referrals.recordEarning({
-      earningId: `ref_${earnerId}_${user.userId}_L${level}`,
-      earnerId,
-      sourceUserId: user.userId,
-      level,
-      amountRupees: paiseToRupees(REFERRAL_REWARD_PAISE),
-    });
-    if (!result.idempotent) levels.push(level);
-  }
-  return { recorded: levels.length, levels };
-}
 
 // ── Eligibility ─────────────────────────────────────────────────────────────
 
@@ -114,19 +78,12 @@ export async function eligibilityFor(earning) {
     return { ok: false, reason: 'Referrer account is blocked' };
   }
 
-  // No KYC condition (removed 2026-10-02 with KYC itself). The joiner earned
-  // this only by completing the Telegram step — that is what claims the joining
-  // number — and the referrer's own Telegram link is checked below.
-
-  // The referrer must still be in the channel, on the number they verified.
-  const identity = await db.telegram.getIdentityByUserId(earning.earnerId);
-  if (!identity) return { ok: false, reason: 'Referrer has no linked Telegram account' };
-  if (!identity.contactActive) {
-    return { ok: false, reason: 'Referrer’s shared contact is no longer active' };
-  }
-  if (!['member', 'administrator', 'creator'].includes(identity.channelStatus)) {
-    return { ok: false, reason: 'Referrer is not a member of the official channel' };
-  }
+  // No KYC condition (removed 2026-10-02 with KYC itself), and no channel
+  // condition (the channel gate was removed in Step 3, owner 2026-10-07). The
+  // joiner earned this only by verifying their mobile; the referrer must hold a
+  // verified Telegram link too — the same proof, asked of both ends.
+  const link = await db.telegram.getLinkByUserId(earning.earnerId);
+  if (!link) return { ok: false, reason: 'Referrer has not verified their mobile in Telegram' };
 
   return { ok: true };
 }

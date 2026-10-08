@@ -1,463 +1,116 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * routes/admin/telegram.admin.routes.js — operating the Telegram layer.
+ * routes/admin/telegram.admin.routes.js — the one bot, the staff account's own
+ * Telegram link, and the referral batches.
  *
- * Three jobs, all of them things an operator must be able to do at 3am without
- * a developer: replace a banned bot, replace a lost channel, and run the KYC
- * and referral batches.
- *
- * ── Why replacement is a first-class operation ──────────────────────────────
- * Telegram suspends bots, and gambling bots more than most. If replacing one
- * required a code change and a deploy, a suspension would be an outage measured
- * in hours during which nobody can sign up or log in. Activating a new
- * generation here is a database write plus a webhook registration, and existing
- * users are unaffected because identities are keyed on the person's Telegram
- * user id, which belongs to Telegram rather than to our bot.
+ * ── The one bot (Step 3, owner 2026-10-07) ─────────────────────────────────
+ * One bot carries the Mini App that verifies every account and approves staff
+ * and merchant sign-ins. Telegram suspends gambling bots, so replacing it must
+ * be a form an operator fills at 3am, not a deploy: PUT a new token here. Links
+ * survive a swap — they key on the PERSON's Telegram id, which belongs to
+ * Telegram, not to the bot. The fleet, the channels, the recovery bots and the
+ * bot messages that used to be configured here are gone.
  *
  * ── Two areas, each granted on its own ────────────────────────────────────
- * Telegram setup (`canManageTelegram`) moves the platform's identity root;
- * referrals (`canManageReferrals`) pay money. Each is its own area so an admin
- * can give one without the other (owner, 2026-10-01). Every staff account owes
- * a second factor (twoFactorPolicy), sub-admins included.
+ * Telegram setup (`canManageTelegram`) holds the key that signs every Mini App
+ * proof; referrals (`canManageReferrals`) pay money.
  */
 import express from 'express';
-import { db } from '#db';
-import crypto from 'crypto';
-import { authenticate, hasPermission } from '../../domains/identity/auth.middleware.js';
+import { authenticate, authenticateStaff, hasPermission } from '../../domains/identity/auth.middleware.js';
 import { encryptField } from '../../domains/identity/fieldCrypto.util.js';
-import {
-  verifyBotToken, setWebhook, invalidateConfigCache, activeConfig, liveBot,
-} from '../../domains/telegram/telegramClient.js';
-import {
-  registerBot, promote, retire, retryWebhook, listBots, signinLoads,
-} from '../../domains/telegram/telegramBots.service.js';
-import { listTemplates, saveTemplate } from '../../domains/telegram/telegramTemplates.service.js';
+import { verifyBotToken, invalidateBotCache } from '../../domains/telegram/telegramClient.js';
+import { telegramStatus, telegramRelink, telegramTwoFactor } from '../../domains/identity/accountTelegram.js';
+import { db } from '#db';
 import { disburse, programmeStats } from '../../domains/referral/referral.service.js';
 import { rupeesToPaise, paiseToRupees } from '../../shared/money.js';
-import { serverError, respondError } from '../../shared/httpError.js';
-import { ACCOUNT_TYPES, PANEL_NAME, PANEL_NOUN } from '../../domains/identity/audiences.js';
-import { verificationEndpoint } from '../../domains/identity/verificationEndpoint.js';
+import { serverError, respondError, refusal } from '../../shared/httpError.js';
 
 const router = express.Router();
 
-/**
- * Which panel an admin is configuring.
- *
- * Every screen in this file is now three screens — a bot fleet and a channel
- * for players, for merchants and for staff (owner, 2026-09-24). The audience
- * arrives as a query parameter on the reads and in the body on the writes, and
- * it is VALIDATED here rather than passed through: an unrecognised value would
- * reach `assertAudience` deep in the repository and surface as a 500 with no
- * message, where what the operator needs is the list of what they may pick.
- *
- * PLAYER is the default, and only for reads. It is the panel that existed
- * before the split, so a screen that has not been updated keeps showing what it
- * always showed rather than showing nothing. A WRITE takes no default —
- * `registerBot` and the channel routes refuse without one, because activating
- * the wrong panel's channel re-gates the wrong population.
- */
-function audienceFromQuery(req) {
-  const asked = String(req.query.audience || 'PLAYER').toUpperCase();
-  if (!ACCOUNT_TYPES.includes(asked)) return null;
-  return asked;
-}
+// ═══════════════════════════════════════════════════════════════════════════
+// THE STAFF ACCOUNT'S OWN TELEGRAM (accountTelegram.js; SELF_ROUTES)
+// ═══════════════════════════════════════════════════════════════════════════
+// About the caller themselves, so no area: every staff account, of any role,
+// may see and move its own link. `authenticateStaff` admits STAFF rows only.
+router.get('/account/telegram', authenticateStaff, telegramStatus);
+router.post('/account/telegram/relink', authenticateStaff, telegramRelink);
+router.put('/account/telegram/two-factor', authenticateStaff, telegramTwoFactor);
 
 // ═══════════════════════════════════════════════════════════════════════════
-// GET /api/admin/verification — the STAFF gate
-// ═══════════════════════════════════════════════════════════════════════════
-/**
- * The same function the player panel mounts, and that is the point (§5).
- *
- * `authenticate` alone, deliberately — NOT `isAdmin`. Every staff account is
- * gated, including a sub-admin, a queue manager and a mediator, and each of
- * them has to be able to ask what is blocking them. Behind `isAdmin` this
- * would answer 403 to the four roles that are not full admins, on the one
- * screen that exists to tell somebody what to do next: §32 S14, on a wall they
- * cannot get past.
- *
- * The BOOTSTRAP EXEMPTION lives in `verificationStateFor`, not here. It admits
- * staff only while the staff bot and channel do not exist — otherwise the
- * screen where an operator registers them sits behind the gate that has
- * nothing to check, and nobody could ever configure it from any account.
- */
-router.get('/verification', authenticate, verificationEndpoint((req) => req.user));
-
-// ═══════════════════════════════════════════════════════════════════════════
-// TELEGRAM CONFIG
+// THE ONE BOT
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** GET /api/admin/telegram/config — the active generation, secrets omitted. */
-router.get('/telegram/config', authenticate, hasPermission('canManageTelegram'), async (req, res) => {
+/** GET /api/admin/telegram/bot — the bot, never its token. */
+router.get('/telegram/bot', authenticate, hasPermission('canManageTelegram'), async (req, res) => {
   try {
-    const audience = audienceFromQuery(req);
-    if (!audience) {
-      return res.status(400).json({
-        success: false,
-        message: `audience must be one of ${ACCOUNT_TYPES.join(', ')}`,
-      });
-    }
-    const cfg = await activeConfig(audience, { force: true });
-    // Public columns only. There is no read path for a bot token by design,
-    // and a history that carried one would be exactly that.
-    const history = await db.telegram.listConfigHistory({ limit: 10, audience });
-
-    res.json({
-      success: true,
-      // Tokens are NEVER returned. An admin who needs to change one supplies a
-      // new value; there is no read path for a bot token by design.
-      active: cfg && {
-        generation: cfg.generation,
-        botUsername: cfg.botUsername,
-        recoveryBotUsername: cfg.recoveryBotUsername,
-        channelId: cfg.channelId,
-        channelUsername: cfg.channelUsername,
-        channelInviteLink: cfg.channelInviteLink,
-        botTokenConfigured: Boolean(cfg.botToken),
-        recoveryBotConfigured: Boolean(cfg.recoveryBotToken),
-        // Whether each live credential comes from the registry or from the
-        // generation. Without this an operator who promotes a spare has no way
-        // to confirm the promotion actually took effect.
-        signinSource: cfg.signinSource,
-        recoverySource: cfg.recoverySource,
-      },
-      history,
-    });
-  } catch (err) {
-    return serverError(res, err, 'GET /telegram/config');
-  }
-});
-
-/**
- * POST /api/admin/telegram/config — activate a new generation.
- *
- * The token is VERIFIED against Telegram before anything is stored: activating
- * a config with a dead token would take signup and login down until someone
- * noticed, and the failure would look like "the bot stopped working" rather
- * than "the value pasted was wrong".
- */
-router.post('/telegram/config', authenticate, hasPermission('canManageTelegram'), async (req, res) => {
-  try {
-    const {
-      botToken, recoveryBotToken, channelId, channelUsername, channelInviteLink,
-      webhookBaseUrl, reason,
-    } = req.body || {};
-
-    if (!botToken || !channelId) {
-      return res.status(400).json({ success: false, message: 'botToken and channelId are required' });
-    }
-    // NO DEFAULT on a write. Activating a channel is what makes every cached
-    // membership for that panel stale, so guessing the panel would re-gate a
-    // population the operator was not thinking about.
-    const audience = String(req.body?.audience || '').toUpperCase();
-    if (!ACCOUNT_TYPES.includes(audience)) {
-      return res.status(400).json({
-        success: false,
-        message: `Choose which panel this channel is for: ${ACCOUNT_TYPES.join(', ')}.`,
-      });
-    }
-
-    const probe = await verifyBotToken(botToken);
-    if (!probe.ok) {
-      return res.status(400).json({
-        success: false,
-        message: `Telegram rejected that bot token: ${probe.error}`,
-      });
-    }
-
-    let recoveryUsername = '';
-    if (recoveryBotToken) {
-      const rprobe = await verifyBotToken(recoveryBotToken);
-      if (!rprobe.ok) {
-        return res.status(400).json({ success: false, message: `Recovery bot token rejected: ${rprobe.error}` });
-      }
-      recoveryUsername = rprobe.username || '';
-    }
-
-    const webhookSecret = crypto.randomBytes(32).toString('hex');
-    const recoveryWebhookSecret = recoveryBotToken ? crypto.randomBytes(32).toString('hex') : null;
-
-    // Deactivating the old generation and activating the new one is ONE
-    // transaction inside the repository, and the generation number is MAX + 1
-    // taken inside it — two admins activating at once cannot be handed the
-    // same number, and the partial unique index refuses two active rows, so a
-    // half-applied swap cannot leave the platform with none.
-    const created = await db.telegram.activateConfig({
-      audience,
-      botTokenEncrypted: encryptField(botToken),
-      botUsername: probe.username || '',
-      webhookSecret,
-      recoveryBotTokenEncrypted: recoveryBotToken ? encryptField(recoveryBotToken) : null,
-      recoveryBotUsername: recoveryUsername,
-      recoveryWebhookSecret: recoveryWebhookSecret || null,
-      channelId: String(channelId),
-      channelUsername: channelUsername || '',
-      channelInviteLink: channelInviteLink || '',
-      activatedBy: req.user.userId,
-      reason: reason || '',
-    });
-
-    invalidateConfigCache(audience);
-
-    // Point Telegram at us. Failure here is reported but does NOT unwind the
-    // config: the row is correct and an operator can retry the webhook, whereas
-    // rolling back would leave the platform on a bot that may already be dead.
-    let webhook = { ok: false, error: 'not_attempted' };
-    const base = String(webhookBaseUrl || process.env.PUBLIC_APP_ORIGIN || '').replace(/\/+$/, '');
-    if (base) {
-      webhook = await setWebhook({
-        token: botToken,
-        url: `${base}/api/telegram/webhook`,
-        secret: webhookSecret,
-      });
-    }
-
-    res.json({
-      success: true,
-      generation: created.generation,
-      botUsername: created.botUsername,
-      webhook: webhook.ok ? 'registered' : `not registered: ${webhook.error}`,
-      message: `Generation ${created.generation} is now active. Existing users keep their accounts.`,
-    });
-  } catch (err) {
-    console.error('[admin/telegram] activation failed:', err.message);
-    return serverError(res, err, 'POST /telegram/config');
-  }
-});
-
-/**
- * POST /api/admin/telegram/channel — swap the channel, keep everything else.
- *
- * The combined form above replaces the bot AND the channel together, because
- * originally they were one document. In an incident they are almost never the
- * same event: a channel is lost or deleted while the bot is fine, and forcing
- * the operator to re-paste a working bot token to fix an unrelated channel is
- * both an extra way to fail and an extra reason to hesitate.
- *
- * So this endpoint takes a channel and nothing else. It creates a new
- * generation carrying the current bot arrangement forward.
- *
- * ── What the generation bump does to players ────────────────────────────────
- * Every cached "this user is a member" records the generation it was observed
- * in. Bumping it makes all of them stale BY CONSTRUCTION — nothing has to be
- * invalidated by hand and nothing has to be migrated. The next protected
- * request each player makes returns 403 CHANNEL_MEMBERSHIP_REQUIRED carrying
- * the NEW invite link, which the user panel raises as a mandatory join prompt.
- *
- * Accounts, balances, KYC state, referral position and joining numbers are all
- * untouched: none of them is keyed on the channel. A player joins the new
- * channel and continues exactly where they were.
- */
-router.post('/telegram/channel', authenticate, hasPermission('canManageTelegram'), async (req, res) => {
-  try {
-    const { channelId, channelUsername, channelInviteLink, reason } = req.body || {};
-    if (!channelId) {
-      return res.status(400).json({ success: false, message: 'channelId is required' });
-    }
-    const audience = String(req.body?.audience || '').toUpperCase();
-    if (!ACCOUNT_TYPES.includes(audience)) {
-      return res.status(400).json({
-        success: false,
-        message: `Choose which panel's channel to replace: ${ACCOUNT_TYPES.join(', ')}.`,
-      });
-    }
-
-    // A generation with no reachable bot would take signup and login down the
-    // moment it activated. The credential may live in the registry OR on the
-    // generation, so the invariant is checked HERE, where both sources are
-    // visible — neither one alone can express it.
-    const current = await db.telegram.getActiveConfigWithSecrets(audience);
-    const registrySignin = await liveBot('signin', audience);
-
-    if (!current && !registrySignin) {
-      return res.status(400).json({
-        success: false,
-        message: 'Register and promote a sign-in bot first — a channel with no bot leaves nobody able to sign in.',
-      });
-    }
-
-    // Bot credentials are carried forward ONLY when they are not already in
-    // the registry. Copying a token the registry owns would create a second
-    // copy of a secret that a later promotion would silently leave stale.
-    const carryBot = registrySignin ? {} : {
-      botTokenEncrypted: current.botTokenEncrypted,
-      botUsername: current.botUsername,
-      webhookSecret: current.webhookSecret,
-    };
-    const carryRecovery = (await liveBot('recovery', audience)) ? {} : {
-      recoveryBotTokenEncrypted: current?.recoveryBotTokenEncrypted,
-      recoveryBotUsername: current?.recoveryBotUsername,
-      recoveryWebhookSecret: current?.recoveryWebhookSecret,
-    };
-
-    const created = await db.telegram.activateConfig({
-      audience,
-      ...carryBot,
-      ...carryRecovery,
-      channelId: String(channelId),
-      channelUsername: channelUsername || '',
-      channelInviteLink: channelInviteLink || '',
-      activatedBy: req.user.userId,
-      reason: reason || 'channel replaced',
-    });
-
-    invalidateConfigCache(audience);
-
-    console.warn(`[admin/telegram] CHANNEL FLIP (${audience}) to generation ${created.generation} `
-      + `(${channelUsername || channelId}) by admin ${req.user.userId}`);
-
+    const bot = await db.telegram.getBot();
     return res.json({
       success: true,
-      generation: created.generation,
-      channelId: created.channelId,
-      channelUsername: created.channelUsername,
-      audience,
-      // Names the population, because "every player" on the merchant screen is
-      // the sentence that makes an operator think they flipped the wrong one.
-      message: `Generation ${created.generation} is live for the ${PANEL_NAME[audience]} panel. `
-        + `Every ${PANEL_NOUN[audience]} will be asked to join the new channel on their next action. `
-        + 'Accounts, balances, KYC and referral positions are unchanged.',
+      configured: Boolean(bot),
+      botId: bot?.botId || null,
+      botUsername: bot?.botUsername || '',
+      miniAppShortName: bot?.miniAppShortName || '',
+      updatedAt: bot?.updatedAt || null,
+      updatedBy: bot?.updatedBy || null,
     });
   } catch (err) {
-    console.error('[admin/telegram] channel flip failed:', err.message);
-    return serverError(res, err, 'POST /telegram/channel');
+    return serverError(res, err, 'GET /admin/telegram/bot');
   }
 });
 
-// ═══════════════════════════════════════════════════════════════════════════
-// BOT FLEET — spares registered before the incident, promoted during it
-// ═══════════════════════════════════════════════════════════════════════════
+/** BotFather's short-name rules for a Mini App. Empty = the bot's main Mini App. */
+const SHORT_NAME = /^[A-Za-z0-9_]{0,64}$/;
 
 /**
- * GET /api/admin/telegram/bots — every bot, no secrets, with the sign-in load.
+ * PUT /api/admin/telegram/bot `{ token?, miniAppShortName? }`.
  *
- * ONE call, not two. The screen renders the load INTO the bot's own row, so
- * fetching it separately would mean the table and the numbers beside it could
- * be from different moments — and the moment that matters is the one where an
- * operator decides whether to add bots.
+ * A token is asked of Telegram (`getMe`) BEFORE it is stored, and the bot's id
+ * and @username are Telegram's answer, never typed: a token for the wrong bot,
+ * or no bot, is refused by name. Stored encrypted (IDENTITY_ENCRYPTION_KEY).
+ * The cache on this instance is dropped at once; others follow within 30 s.
  */
-router.get('/telegram/bots', authenticate, hasPermission('canManageTelegram'), async (req, res) => {
+router.put('/telegram/bot', authenticate, hasPermission('canManageTelegram'), async (req, res) => {
   try {
-    // No audience filter by default: the screen shows all three fleets
-    // together, because the state an operator most needs to see is a panel
-    // with NO bot at all — and a filtered list cannot show an absence.
-    const audience = req.query.audience ? audienceFromQuery(req) : null;
-    if (req.query.audience && !audience) {
-      return res.status(400).json({
-        success: false,
-        message: `audience must be one of ${ACCOUNT_TYPES.join(', ')}`,
-      });
+    const token = typeof req.body?.token === 'string' ? req.body.token.trim() : '';
+    const short = req.body?.miniAppShortName;
+    if (short !== undefined && (typeof short !== 'string' || !SHORT_NAME.test(short))) {
+      throw refusal(400, 'SHORT_NAME_INVALID',
+        'The Mini App short name is the part after the bot in t.me/<bot>/<short name>: letters, digits and _, or empty.');
     }
-    const [bots, loads] = await Promise.all([
-      listBots({ audience }), signinLoads({ audience }),
-    ]);
-    res.json({ success: true, bots, loads, audiences: ACCOUNT_TYPES });
-  } catch (err) {
-    return respondError(res, err, 'GET /admin/telegram/bots');
-  }
-});
+    if (!token && short === undefined) {
+      throw refusal(400, 'NOTHING_TO_SAVE', 'Send a bot token, a Mini App short name, or both.');
+    }
 
-/** POST /api/admin/telegram/bots — register a bot, verified against Telegram. */
-router.post('/telegram/bots', authenticate, hasPermission('canManageTelegram'), async (req, res) => {
-  try {
-    const { label, role, audience, token, notes } = req.body || {};
-    const bot = await registerBot({
-      label, role, audience: String(audience || '').toUpperCase(), token, notes,
-      actorId: req.user.userId,
-    });
-    console.warn(`[admin/telegram] bot @${bot.username} registered as ${bot.audience} ${bot.role} `
-      + `by admin ${req.user.userId}`);
-    res.json({ success: true, bot, message: `@${bot.username} is registered and on standby.` });
-  } catch (err) {
-    return respondError(res, err, 'POST /admin/telegram/bots');
-  }
-});
-
-/**
- * POST /api/admin/telegram/bots/:id/promote — make it the live bot for its role.
- *
- * The one-click flip. For sign-in and recovery this stands the incumbent down
- * in the same transaction, so there is never a window with two live bots or
- * none. Players are not affected: an identity is keyed on the person's Telegram
- * user id, not on whichever of our bots they happen to be messaging.
- */
-router.post('/telegram/bots/:id/promote', authenticate, hasPermission('canManageTelegram'), async (req, res) => {
-  try {
-    const result = await promote({
-      id: req.params.id,
-      actorId: req.user.userId,
-      webhookBaseUrl: req.body?.webhookBaseUrl,
-    });
-    console.warn(`[admin/telegram] PROMOTE @${result.bot.username} (${result.bot.role}) by admin ${req.user.userId}`
-      + `${result.displaced ? `, displacing @${result.displaced.username}` : ''} — webhook ${result.webhook}`);
-    res.json({
+    let saved;
+    if (token) {
+      if (!/^\d{5,20}:[A-Za-z0-9_-]{20,}$/.test(token)) {
+        throw refusal(400, 'TOKEN_INVALID', 'That is not a bot token. Copy it from @BotFather: digits, a colon, then letters.');
+      }
+      const me = await verifyBotToken(token);
+      if (!me.ok) {
+        throw refusal(400, 'TOKEN_INVALID', `Telegram did not accept that token (${me.error}). Copy it again from @BotFather.`);
+      }
+      saved = await db.telegram.saveBot({
+        botId: me.id, botUsername: me.username, tokenEncrypted: encryptField(token),
+        miniAppShortName: short, updatedBy: req.user.userId,
+      });
+    } else {
+      saved = await db.telegram.saveBot({ miniAppShortName: short, updatedBy: req.user.userId });
+      if (!saved) throw refusal(409, 'NO_BOT', 'Save a bot token first; the short name belongs to a bot.');
+    }
+    invalidateBotCache();
+    console.warn(`[telegram] bot @${saved.botUsername} saved by ${req.user.userId}`);
+    return res.json({
       success: true,
-      ...result,
-      message: result.alreadyLive
-        ? `@${result.bot.username} was already live.`
-        : `@${result.bot.username} is now the live ${result.bot.role} bot. Existing accounts are unaffected.`,
+      configured: true,
+      botId: saved.botId,
+      botUsername: saved.botUsername,
+      miniAppShortName: saved.miniAppShortName,
+      updatedAt: saved.updatedAt,
+      updatedBy: saved.updatedBy,
     });
   } catch (err) {
-    return respondError(res, err, 'POST /admin/telegram/bots/:id/promote');
-  }
-});
-
-/** POST /api/admin/telegram/bots/:id/webhook — retry a registration that failed. */
-router.post('/telegram/bots/:id/webhook', authenticate, hasPermission('canManageTelegram'), async (req, res) => {
-  try {
-    const bot = await retryWebhook({ id: req.params.id, webhookBaseUrl: req.body?.webhookBaseUrl });
-    res.json({ success: true, bot, message: `Telegram is now delivering to @${bot.username}.` });
-  } catch (err) {
-    return respondError(res, err, 'POST /admin/telegram/bots/:id/webhook');
-  }
-});
-
-/** POST /api/admin/telegram/bots/:id/retire — stand a bot down for good. */
-router.post('/telegram/bots/:id/retire', authenticate, hasPermission('canManageTelegram'), async (req, res) => {
-  try {
-    const bot = await retire({ id: req.params.id, actorId: req.user.userId });
-    console.warn(`[admin/telegram] RETIRE @${bot.username} (${bot.role}) by admin ${req.user.userId}`);
-    res.json({ success: true, bot, message: `@${bot.username} is retired.` });
-  } catch (err) {
-    return respondError(res, err, 'POST /admin/telegram/bots/:id/retire');
-  }
-});
-
-// ═══════════════════════════════════════════════════════════════════════════
-// MESSAGE TEMPLATES — the bot's words
-// ═══════════════════════════════════════════════════════════════════════════
-
-router.get('/telegram/templates', authenticate, hasPermission('canManageTelegram'), async (req, res) => {
-  try {
-    res.json({ success: true, templates: await listTemplates() });
-  } catch (err) {
-    return respondError(res, err, 'GET /admin/telegram/templates');
-  }
-});
-
-/**
- * PUT /api/admin/telegram/templates/:key — change what the bot says.
- *
- * The body is checked for markup Telegram will refuse before it is stored. An
- * empty body reverts the key to the shipped copy, which is also what the send
- * path falls back to if a template somehow still fails to parse — a typo here
- * must not be able to take signup offline.
- */
-router.put('/telegram/templates/:key', authenticate, hasPermission('canManageTelegram'), async (req, res) => {
-  try {
-    const saved = await saveTemplate({
-      key: req.params.key,
-      body: req.body?.body,
-      actorId: req.user.userId,
-    });
-    res.json({
-      success: true,
-      template: saved,
-      message: saved.customised
-        ? `The "${saved.key}" message is updated. It takes effect on the next message the bot sends.`
-        : `The "${saved.key}" message is back to the default wording.`,
-    });
-  } catch (err) {
-    return respondError(res, err, 'PUT /admin/telegram/templates/:key');
+    return respondError(res, err, 'PUT /admin/telegram/bot', { message: 'Could not save the bot.' });
   }
 });
 

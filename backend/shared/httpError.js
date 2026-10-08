@@ -105,3 +105,15 @@ export function respondError(res, err, where, { message, passthrough } = {}) {
   if (err?.status) return callerError(res, err, err.status, passthrough);
   return serverError(res, err, where, message);
 }
+
+/**
+ * A refusal somebody wrote, as an error to throw: the status and code at the
+ * throw (§21, §32 S35), so `respondError` sends its wording instead of a 500.
+ *
+ * @param {number} status
+ * @param {string} code     stable, for the panel to branch on
+ * @param {string} message  for the person reading it (§32 S14)
+ */
+export function refusal(status, code, message) {
+  return Object.assign(new Error(message), { status, code });
+}

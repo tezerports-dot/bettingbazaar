@@ -61,6 +61,62 @@ export async function recordEarning({
 }
 
 
+/**
+ * Book what a joiner earns their upline, inside the transaction that verifies
+ * them (Step 3, owner 2026-10-07: "they must verify and share contact on
+ * signup").
+ *
+ * A joiner counts only once Telegram has proved their mobile, and the proof,
+ * the joining number and these rows are ONE transaction
+ * (`database/repositories/telegram.js`, `linkWithin`): a verification that
+ * commits without its earnings is a referrer who is never paid, and earnings
+ * that commit without the verification are a form submitted in a loop paying
+ * ₹25 a time (§21).
+ *
+ * Level 1 is the joiner's `referred_by`; level 2 is that account's own. Both
+ * walk `users`, the one place the edge is stored, so nothing here takes a
+ * referrer from a caller. The earning id is derived from the pair and the
+ * level, so a second verification of one account (a relink is not one, but a
+ * retried transaction would be) books nothing further.
+ *
+ * @param {string} joinerId
+ * @param {{client: import('pg').PoolClient, amountPaise: number}} opts
+ * @returns {Promise<number[]>} the levels booked by this call
+ */
+export async function recordJoinerEarnings(joinerId, { client, amountPaise }) {
+  if (!client) throw new Error('recordJoinerEarnings runs inside the verifying transaction; pass its client');
+  if (!(Number.isInteger(amountPaise) && amountPaise > 0)) {
+    throw new Error('recordJoinerEarnings requires a positive integer amount in paise');
+  }
+  const { rows } = await client.query(
+    `WITH joiner AS (
+       SELECT user_id, referred_by FROM users
+        WHERE user_id = $1 AND account_type = 'PLAYER' AND joining_number IS NOT NULL
+     ), l1 AS (
+       SELECT u.user_id, u.referred_by FROM users u JOIN joiner j ON u.user_id = j.referred_by
+     ), l2 AS (
+       SELECT u.user_id FROM users u JOIN l1 ON u.user_id = l1.referred_by
+     ), earners AS (
+       SELECT 1 AS level, user_id AS earner_id FROM l1
+       UNION ALL
+       SELECT 2, user_id FROM l2
+     )
+     INSERT INTO referral_earnings
+       (earning_id, earner_id, source_user_id, level, amount_paise, queue_position)
+     SELECT 'ref_' || e.earner_id || '_' || $1 || '_L' || e.level,
+            e.earner_id, $1, e.level, $2, nextval('referral_queue_position_seq')
+       FROM earners e
+      -- A loop in the tree would pay somebody for their own signup; the row
+      -- refuses that too (referral_earnings_not_self), and this keeps the
+      -- refusal from aborting the verification it rides in.
+      WHERE e.earner_id <> $1
+     ON CONFLICT (earning_id) DO NOTHING
+     RETURNING level`,
+    [String(joinerId), amountPaise],
+  );
+  return rows.map((r) => Number(r.level)).sort();
+}
+
 export async function listEarnings({ earnerId = null, status = null, limit = 100 } = {}) {
   const where = []; const params = [];
   if (earnerId) { params.push(String(earnerId)); where.push(`earner_id = $${params.length}`); }

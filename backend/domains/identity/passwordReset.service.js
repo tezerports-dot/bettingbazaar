@@ -3,35 +3,22 @@
  * passwordReset.service.js — "I've forgotten my password."
  *
  * ── The only channel this platform has ─────────────────────────────────────
- * There is no player email (§2: "Player contact details — there are none
- * beyond the mobile"), and no SMS gateway. What there IS, is a Telegram account
- * whose phone number Telegram itself has verified and which the player has
- * already linked to their account. So the reset travels the same way the
- * verification did: they open a bot, share their contact, and if that number
- * matches an account they are sent a link.
+ * There is no email and no SMS gateway. What there IS, is the Telegram account
+ * whose phone number Telegram itself verified. So a reset happens in the Mini
+ * App (Step 3, owner 2026-10-07): the person opens "Forgot password" for a
+ * panel, shares their contact, and if its phone is the mobile of an account on
+ * that panel they are given a link to choose a new password. The same share
+ * verifies or relinks the account (`telegram.resetPasswordByContact`).
  *
  * ── What the link grants, and what it deliberately does not ───────────────
  * It grants the right to CHOOSE A PASSWORD (owner, 2026-09-24). It does not
- * sign anybody in. The whole point of deleting `telegram_login_tokens` was that
- * a fleet of hundreds of bot tokens must not be able to mint a session; a reset
- * that logged somebody in would put that back under a different name. After
- * setting it they log in like anybody else.
- *
- * And setting it REVOKES every existing session, because the commonest reason
- * somebody resets a password is that a session they did not open is holding
- * their account.
- *
- * ── Why it is bound to a Telegram id ──────────────────────────────────────
- * The token records WHICH Telegram account asked for it. That is not used to
- * authorise the redemption — the token is the credential — but it is the only
- * record of who requested a password change on somebody else's account, and it
- * is the first thing an investigation asks for.
+ * sign anybody in. Setting it REVOKES every existing session, because the
+ * commonest reason somebody resets a password is that a session they did not
+ * open is holding their account.
  *
  * ── The token is in the FRAGMENT ──────────────────────────────────────────
- * The link is `.../#/reset/<token>`. A query string reaches the server: it
- * lands in access logs, in the proxy's log, and in the `Referer` header of
- * whatever the page loads next. A fragment is never sent. That lesson was paid
- * for once already, by the login link this replaces.
+ * The link is `<panel>/#/reset/<token>`. A query string reaches the server's
+ * logs and the next page's `Referer`; a fragment is never sent.
  */
 import crypto from 'crypto';
 import { db } from '#db';
@@ -47,62 +34,24 @@ const mint = () => crypto.randomBytes(32).toString('base64url');
 const hash = (token) => crypto.createHash('sha256').update(String(token)).digest('hex');
 
 /**
- * A contact share matched an account. Issue the link.
+ * A contact shared in the Mini App asks for a reset of the account of that
+ * mobile on `panel`. The account's type IS the panel, in the repository's
+ * WHERE (§33.5): a player's share can never reach the staff account on the
+ * same number.
  *
- * @returns {Promise<{ok: true, url: string, minutes: number} | {ok: false, reason: string}>}
+ * @returns {Promise<{ok: true, token: string, url: string, expiresAt: Date}
+ *          | {ok: false, code: string}>}
  */
-export async function issueResetLink({ userId, telegramUserId, audience, baseUrl }) {
-  const user = await db.users.getUser(userId);
-  if (!user) return { ok: false, reason: 'no_user' };
-
-  // ══════════════════════════════════════════════════════════════════════════
-  // THE ACCOUNT'S TYPE MUST EQUAL THE BOT'S AUDIENCE — checked AGAIN, here
-  // ══════════════════════════════════════════════════════════════════════════
-  // This is a SECOND refusal for one rule, and it is deliberate. It was one,
-  // and one was not enough: `linkTelegramToAccount` matched by mobile without
-  // the account type, a player's contact share linked the STAFF account on the
-  // same number, and this function then issued an admin a password-reset link
-  // to somebody who had proved nothing but possession of the phone. Measured on
-  // a running server (§32 S30).
-  //
-  // The rule used to be "PLAYER only", because only players recovered through
-  // Telegram. All three panels do now (owner, 2026-09-24), so the refusal is
-  // stated as the thing it was always protecting: the account this issues for
-  // must be of the same type as the bot that asked. A merchant bot cannot mint
-  // a staff reset; a player bot cannot mint a merchant one. The literal became
-  // a comparison, which is wider in what it permits and exactly as narrow in
-  // what it lets cross.
-  //
-  // `audience` is REQUIRED. Absent, there is no comparison to make, and a
-  // caller that has not said which door this came from is a caller that has
-  // not checked — so it refuses rather than assuming.
-  if (!audience || user.accountType !== audience) {
-    console.error(`[password-reset] REFUSED: a ${audience || 'unspecified'} bot asked for a `
-      + `${user.accountType} account (${userId}) — reaching this means a lookup is not scoped`);
-    return { ok: false, reason: 'wrong_audience' };
-  }
-  // A blocked account does not get a route back in. The refusal is here rather
-  // than at redemption so the bot can say something true instead of handing
-  // over a link that will fail.
-  if (user.isBlocked || user.status === 'BLOCKED') return { ok: false, reason: 'blocked' };
-
+export async function startResetFromMiniApp({ panel, telegramUser, initData, contact, baseUrl = null }) {
   const token = mint();
-  const { expiresAt } = await db.telegram.issuePasswordReset({
-    tokenHash: hash(token), userId, telegramUserId, ttlSeconds: TTL_SECONDS,
+  const result = await db.telegram.resetPasswordByContact({
+    panel, telegramUser, initData, contact, tokenHash: hash(token), ttlSeconds: TTL_SECONDS,
   });
-
-  // ── The link opens the RIGHT PANEL ──────────────────────────────────────
-  // A staff reset sent to the player app is a token spent on the wrong door,
-  // and it is single-use — so the one link they were given is gone and the
-  // screen they reached cannot tell them why. `panelOrigin` is the one owner
-  // of where each panel lives; an explicit `baseUrl` still wins, which is what
-  // a test passes.
-  const root = String(baseUrl || panelOrigin(audience) || '').replace(/\/+$/, '');
-  return {
-    ok: true,
-    url: `${root}/#/reset/${token}`,
-    minutes: Math.max(1, Math.round((new Date(expiresAt).getTime() - Date.now()) / 60000)),
-  };
+  if (!result.ok) return result;
+  // The link opens the RIGHT PANEL: a staff token spent on the player app is
+  // a single-use link gone to the wrong door.
+  const root = String(baseUrl || panelOrigin(panel) || '').replace(/\/+$/, '');
+  return { ok: true, token, url: `${root}/#/reset/${token}`, expiresAt: result.expiresAt };
 }
 
 /**
@@ -157,7 +106,7 @@ export async function redeemResetLink({ token, password, confirmPassword }) {
     return {
       ok: false,
       reason: 'weak',
-      message: `${err.message} Your reset link has been used up — share your contact with the bot again for a new one.`,
+      message: `${err.message} Your reset link has been used up — open "Forgot password" in Telegram again for a new one.`,
     };
   }
 

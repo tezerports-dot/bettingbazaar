@@ -79,17 +79,19 @@ import { initRealtimeBridge } from './startup/realtimeBridge.js'; // Phase X: mu
 import { registerFundingEventSubscribers } from './domains/funding/fundingEvents.js';
 
 // ─── ROUTES ───────────────────────────────────────────────────────────────────
-import authRoutes, { loginHandler, loginTwoFactorHandler } from './routes.js';
-// The player's form signup and form login. Separate from `authRoutes` because
-// they submit a CREDENTIAL and it must carry the credential chain — see the
-// mount below, and §32 S27 for what happens when the two are confused.
+import authRoutes from './routes.js';
+// The staff sign-in door's legs, each with the staff door's limits (§33).
+import { doorRoute } from './domains/identity/loginDoors.js';
+// The player's form signup and the player sign-in door. Separate from
+// `authRoutes` because they submit a CREDENTIAL and carry the credential chain
+// per route — see the mount below, and §32 S27.
 import playerAuthRoutes from './domains/identity/playerAuth.routes.js';
 import adminRoutes        from './routes/admin/index.js';      // ← new modular index
 import betRoutes          from './domains/markets/bet.routes.js';
-// Telegram bot webhook + the one-time-link session exchange. Public by design:
-// the caller is Telegram, and the webhook authenticates on the secret token
-// Telegram echoes, not on a session.
-import telegramRoutes     from './domains/telegram/telegram.routes.js';
+// The Telegram Mini App's own calls (Step 3). Public by design: the Mini App
+// has no session, and `initData` — signed by the one bot's token, single-use —
+// is its credential, verified per request.
+import miniAppRoutes      from './domains/telegram/miniApp.routes.js';
 import referralRedirect   from './routes/referralRedirect.routes.js';
 import userRoutes         from './domains/user/user.routes.js';
 import merchantRoutes     from './domains/merchant/merchant.routes.js';
@@ -131,10 +133,10 @@ import { requestContext } from './middleware/requestContext.js'; // X-6: correla
 import { tlsFingerprintDefense, startTlsFingerprintDefenseConfigRefresh } from './middleware/tlsFingerprintDefense.js';
 import { ipBlocklist, startIpBlocklistRefresh, realtimeAdmission } from './middleware/ipBlocklist.js';
 import { rejectAmbiguousFraming } from './middleware/headerNormalization.js';
-import { authLimiter, adminAuthLimiter, merchantAuthLimiter, betLimiter, twoFactorLimiter, loginPaceLimiter, signupLimiter, securityMonitor } from './middleware/security.js';
+import { authLimiter, signupLimiter, securityMonitor } from './middleware/security.js';
 // Item 12 (2026-07-13): IP-rotation defense — per-subnet backstop + optional
 // global surge breaker on sensitive endpoints, on top of the per-IP limiters.
-import { createSubnetLimiter, globalSurgeBreaker, startIpDefenseConfigRefresh } from './middleware/ipDefense.js';
+import { createSubnetLimiter, startIpDefenseConfigRefresh } from './middleware/ipDefense.js';
 // Bot-mitigation challenge on credential endpoints (docs/PROJECT_STATUS.md §3.3).
 // Pass-through until TURNSTILE_SECRET_KEY is set, like every other integration.
 import { requireCaptcha } from './middleware/captcha.js';
@@ -283,8 +285,6 @@ const _ASSET_UPLOAD_PATHS = new Set(['/api/admin/app-assets/upload']);
 //
 // SCOPED to that path on purpose. Keeping a raw copy of every request body
 // doubles what a 1 MB upload holds in memory, for a check only one route makes.
-// The Telegram webhooks do NOT need it — they authenticate with a secret HEADER,
-// not a body digest.
 const _RAW_BODY_PREFIX = '/api/game/wallet/';
 const _rawJson = express.json({
   limit: JSON_LIMIT,
@@ -541,15 +541,14 @@ app.get('/api/v1/health', legacyHealth);
 // until an admin sets a ceiling) catches distributed rotation across subnets.
 if (runtime.acceptsHttpApi) {
 startIpDefenseConfigRefresh();
-// ── The player's form signup, form login and verification gate ───────────
+// ── The player's form signup, the player sign-in door, the player's Telegram ─
 // Mounted BEFORE the session router so its own routes are matched first.
 //
 // The credential chain (pace → failure budget → subnet → captcha) is INSIDE
 // this router, per route, rather than on this mount — deliberately. The router
-// also carries `/verification`, which every gated player polls on a timer and
-// which checks no credential: putting the chain on the mount would make a poll
-// consume a login-failure budget and hand a captcha to a screen that has no
-// form on it. That is §32 S27 in the making, and S27 is on this file already.
+// also carries the Telegram polls and the player's own Telegram link, which
+// check no password: a chain on the mount would make a poll consume a
+// login-failure budget and hand a captcha to a screen with no form (§32 S27).
 app.use('/api/v1/auth', playerAuthRoutes);
 // Session lifecycle: /me, /logout, /health. No captcha here — every page load
 // calls /me to restore the session, so gating this router would 403 every user
@@ -571,20 +570,15 @@ app.use('/api/v1/auth', authLimiter, authRoutes);
 app.use('/api/2fa', twoFactorRoutes);
 app.use('/api', winnersRoutes);
 
-// `loginPaceLimiter` runs FIRST, deliberately. A paced request never reaches
-// the credential check, so it is not a failed attempt and must not consume the
-// failure budget behind it — otherwise a burst of throttled retries would lock
-// out the account it was protecting.
-app.post('/api/admin/login', loginPaceLimiter, adminAuthLimiter, createSubnetLimiter('adminAuth'), requireCaptcha('admin-login'), (req, res, next) => {
-  req.body = { ...req.body, loginType: req.body.loginType || 'admin' };
-  next();
-}, loginHandler);
-// Second leg of the admin login. 2FA is MANDATORY for admins and sub-admins
-// (docs/PROJECT_STATUS.md §3.3), so without this route an enrolled admin gets a
-// challenge token from the line above and has nowhere to redeem it. Rate
-// limited on the OTP tier, not the admin-password tier: six digits is a 10^6
-// space, so it warrants its own tighter budget.
-app.post('/api/admin/login/2fa', loginPaceLimiter, twoFactorLimiter, loginTwoFactorHandler);
+// ── The staff sign-in door (§33) ─────────────────────────────────────────────
+// routes.js's four legs with the staff limits (loginDoors.js): the password leg
+// paced FIRST (a paced request is not a failed attempt), then the admin failure
+// budget, the subnet limiter and the captcha; the Telegram polls on the poll
+// limiter, never the password pace.
+app.post('/api/admin/login', ...doorRoute('STAFF', 'login'));
+app.post('/api/admin/login/2fa', ...doorRoute('STAFF', 'twoFactor'));
+app.post('/api/admin/login/telegram', ...doorRoute('STAFF', 'telegram'));
+app.post('/api/admin/login/telegram/complete', ...doorRoute('STAFF', 'telegramComplete'));
 
 app.use('/api/admin', adminRoutes);   // ← now routes/admin/index.js (13 sub-routers)
 
@@ -621,19 +615,13 @@ app.use('/api/game',      gameProviderRoutes);
 // (/games, /categories, /admin/games, /admin/categories) don't collide with the
 // provider router's (/providers, /launch, /admin/game-providers).
 app.use('/api/game',      gameRegistryRoutes);
-app.use('/api/telegram',  telegramRoutes);
+app.use('/api/telegram',  miniAppRoutes);
 app.use('/api/bet',       betRoutes);
 app.use('/api',           userRoutes);
-// Scoped to the login PATH, not the whole merchant router.
-//
-// Mounting it router-wide looked equivalent because the limiter skips
-// successful requests — but skipSuccessfulRequests only skips 2xx. Every
-// ordinary 4xx a working merchant collects (a validation error on an order
-// action, a 404, a stale reference) would have counted against their LOGIN
-// budget, and four of those in an hour would lock them out of signing in
-// entirely. A limiter that bans people for using the product correctly is a
-// worse outage than the brute-force it prevents.
-app.use('/api/merchant/auth/login', loginPaceLimiter, merchantAuthLimiter, requireCaptcha('merchant-login'));
+// The merchant sign-in door's limits are ON its routes (merchant.routes.js,
+// loginDoors.js), never on a path prefix: the prefix mount that was here also
+// caught `/auth/login/2fa`, so its captcha refused every second factor once
+// Turnstile was switched on (§32 S28).
 
 // ── Merchant SIGNUP, guarded the way player signup is ─────────────────────
 //

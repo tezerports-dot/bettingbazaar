@@ -5,15 +5,16 @@
 
 import express   from 'express';
 import { db } from '#db';
-// AQ-2/AQ-8: sign via the single JWT authority; hash via the password authority
-// (argon2id + bcrypt verify-fallback). No direct bcrypt use remains here.
-import { signToken } from '../identity/jwt.util.js';
-import { hashPassword, verifyPassword } from '../identity/password.util.js';
+// AQ-8: hash via the password authority (argon2id + bcrypt verify-fallback).
+import { hashPassword } from '../identity/password.util.js';
 import { merchantAuth } from '../../middleware/merchantAuth.js';
-import { verificationEndpoint } from '../identity/verificationEndpoint.js';
-import { issueChallenge, verifyChallenge, CHALLENGE_AUDIENCE } from '../identity/twoFactorChallenge.js';
-import { verifySecondFactor, SECOND_FACTOR_RESULT } from '../identity/verifySecondFactor.js';
-import { twoFactorLimiter, loginPaceLimiter } from '../../middleware/security.js';
+import { twoFactorLimiter } from '../../middleware/security.js';
+// The merchant sign-in door: routes.js's handlers with this door's limits (§33).
+import { doorRoute } from '../identity/loginDoors.js';
+import { openChallenge } from '../identity/telegramChallenge.service.js';
+import { miniAppBot } from '../telegram/telegramClient.js';
+import { telegramStatus, telegramRelink, telegramTwoFactor } from '../identity/accountTelegram.js';
+import { normalisePhone, isValidMobile } from '../identity/signupFields.js';
 import {
   generateSecret, buildOtpauthUri, encryptSecret, decryptSecret,
   verifyToken, generateBackupCodes, hashBackupCode,
@@ -157,10 +158,17 @@ async function sendSystemMessage(orderId, message, io) {
 
 router.post('/auth/signup', async (req, res) => {
     try {
-        const { username, mobile, password, email, bankDetails } = req.body;
-        if (!username || !mobile || !password) {
-            return res.status(400).json({ success: false, message: 'username, mobile and password are required' });
+        const { username, password, email, bankDetails } = req.body;
+        if (!username || !req.body?.mobile || !password) {
+            return res.status(400).json({ success: false, code: 'FIELDS_REQUIRED', message: 'username, mobile and password are required' });
         }
+        // The mobile Telegram will verify: ten digits, as the player form takes
+        // it, because the link's phone must EQUAL it (telegram_link_phone_is_mobile).
+        if (!isValidMobile(req.body.mobile)) {
+            return res.status(400).json({ success: false, code: 'MOBILE_INVALID',
+                message: 'Enter your 10-digit mobile number — the one on your Telegram account — without +91.' });
+        }
+        const mobile = normalisePhone(req.body.mobile);
 
         // ONE TRANSACTION for the account, the merchant record and the wallet.
         //
@@ -208,12 +216,26 @@ router.post('/auth/signup', async (req, res) => {
             const message = created.reason === 'MOBILE_TAKEN'
                 ? 'Mobile number already registered'
                 : 'Those payment details are already registered to another merchant';
-            return res.status(409).json({ success: false, message });
+            return res.status(409).json({ success: false,
+                code: created.reason === 'MOBILE_TAKEN' ? 'MOBILE_TAKEN' : 'CREDENTIALS_TAKEN', message });
         }
 
+        // ── The Telegram step (Step 3) ─────────────────────────────────────
+        // Verification and approval are independent: the applicant verifies
+        // their mobile now, while the application waits, and signing in needs
+        // both. No bot is the platform's state: they verify at their first
+        // sign-in once one exists.
+        const bot = await miniAppBot();
+        const opened = bot
+            ? await openChallenge({ purpose: 'VERIFY', door: 'MERCHANT', userId: created.userId, req })
+            : null;
         res.json({
             success: true,
-            message: 'Application submitted. An admin will review and approve your account.',
+            verificationRequired: true,
+            verificationAvailable: Boolean(opened),
+            challengeToken: opened?.challengeToken ?? null,
+            telegram: opened?.telegram ?? null,
+            message: 'Application submitted. Verify your mobile number in Telegram now; an admin will review and approve your account.',
         });
     } catch (error) {
         console.error('Merchant signup error:', error);
@@ -221,183 +243,25 @@ router.post('/auth/signup', async (req, res) => {
     }
 });
 
-router.post('/auth/login', async (req, res) => {
-    try {
-        const { mobile, password } = req.body;
-        if (!mobile || !password) {
-            return res.status(400).json({ success: false, message: 'mobile and password are required' });
-        }
+// ── The merchant sign-in door (§33): routes.js's handlers, this door's limits.
+// The read is the merchant's LOGIN row (`users`, account_type MERCHANT) by
+// mobile; signing in by merchant username is gone (Step 3: "the same way").
+router.post('/auth/login', ...doorRoute('MERCHANT', 'login'));
+router.post('/auth/login/2fa', ...doorRoute('MERCHANT', 'twoFactor'));
+router.post('/auth/login/telegram', ...doorRoute('MERCHANT', 'telegram'));
+router.post('/auth/login/telegram/complete', ...doorRoute('MERCHANT', 'telegramComplete'));
 
-        // ── One lookup, no repair ────────────────────────────────────────
-        // This used to try the merchant record, then fall back to the account,
-        // then WRITE the mobile back onto the merchant record if it was
-        // missing — data repair inside an authentication path, for a state
-        // that signup can no longer produce. The mobile is a column with a
-        // unique index now, and signup writes it in the same transaction as
-        // the account, so there is one lookup and nothing to fix up.
-        const merchant = await db.merchants.getMerchantByLogin(mobile);
-        // The SAME answer as a wrong password, as the player and staff doors
-        // give. "No merchant account found for this mobile number" told
-        // anybody, one request at a time, which numbers were merchants'
-        // (2g review, 2026-10-04; threeSeparateEntities.test.js).
-        if (!merchant)
-            return res.status(401).json({ success: false, message: 'Invalid credentials' });
-
-        // Credentials are read by a function that has to be asked for BY NAME,
-        // so a hash cannot reach a response body by accident.
-        const creds = await db.merchants.getMerchantCredentials(merchant.merchantId);
-        const { valid: pwValid, needsRehash: pwNeedsRehash } = await verifyPassword(creds?.passwordHash, password);
-        if (!pwValid)
-            return res.status(401).json({ success: false, message: 'Invalid credentials' });
-
-        // AQ-8: upgrade a legacy bcrypt hash to argon2id on a successful login.
-        // Best-effort: a failed upgrade must not fail a login that has already
-        // been authenticated.
-        if (pwNeedsRehash) {
-            try {
-                // The login row owns the password (§33.5), not `merchants`.
-                await db.users.updateUser(merchant.userId, {
-                    passwordHash: await hashPassword(password),
-                });
-            } catch (e) { console.error('[merchant-login] hash upgrade failed:', e.message); }
-        }
-
-        // The credential read is the authority on 2FA state, not the rendered
-        // record — they come from the same row, but only one of them is the
-        // one the challenge is issued against.
-        merchant.twoFactorEnabled = creds?.twoFactorEnabled ?? false;
-
-        if (merchant.merchantApprovalStatus !== 'APPROVED' || merchant.status !== 'ACTIVE') {
-            const msgs = { PENDING: 'Application pending approval.', REJECTED: 'Application rejected.',
-                           SUSPENDED: 'Account suspended.' };
-            return res.status(403).json({ success: false,
-                message: msgs[merchant.status] || msgs[merchant.merchantApprovalStatus] || 'Account not active.' });
-        }
-
-        // ── Second factor ────────────────────────────────────────────────
-        // Password accepted, but for an enrolled merchant that is half the
-        // login. Hand back a five-minute challenge instead of a session; only
-        // /auth/login/2fa can turn it into one.
-        if (merchant.twoFactorEnabled) {
-            return res.status(200).json({
-                success: false,             // deliberately not a logged-in success
-                twoFactorRequired: true,
-                challengeToken: issueChallenge({
-                    id: merchant.merchantId, audience: CHALLENGE_AUDIENCE.MERCHANT,
-                }),
-                message: 'Enter the code from your authenticator app.',
-            });
-        }
-
-        // Not yet enrolled. 2FA is mandatory for merchants, so rather than
-        // refuse the login (which would lock out every existing merchant the
-        // moment this deploys) the session is issued with a flag the panel
-        // uses to force enrolment before anything else is reachable.
-        return await issueMerchantSession(merchant, res, { mustEnroll2FA: true });
-    } catch (error) {
-        console.error('Merchant login error:', error);
-        res.status(500).json({ success: false, message: 'Login failed. Please try again.' });
-    }
-});
-
-/**
- * Mint the merchant session. Extracted so the password-only path and the
- * post-OTP path cannot grant different claims — same reasoning as
- * issueSession in routes.js.
- */
-async function issueMerchantSession(merchant, res, extra = {}) {
-    const token = signToken(
-        { merchantId: merchant._id, userId: merchant.userId, mobile: merchant.mobile, isMerchant: true, isAdmin: false }
-    );
-    return res.json({
-        success: true, token, ...extra,
-        merchant: {
-            _id: merchant._id, userId: merchant.userId,
-            username: merchant.username, mobile: merchant.mobile, email: merchant.email,
-            status: merchant.status, isOnline: merchant.isOnline,
-            acceptsDeposits: merchant.acceptsDeposits !== false,
-            acceptsWithdrawals: merchant.acceptsWithdrawals !== false,
-            twoFactorEnabled: merchant.twoFactorEnabled || false,
-        },
-    });
-}
-
-/**
- * POST /api/merchant/auth/login/2fa — redeem a merchant challenge.
- *
- * Re-loads the merchant and re-applies the approval/status gate: the password
- * leg proved a password up to five minutes ago, and an admin may have
- * suspended the account since.
- */
-router.post('/auth/login/2fa', loginPaceLimiter, twoFactorLimiter, async (req, res) => {
-    try {
-        const { challengeToken, code } = req.body;
-        if (!challengeToken || !code)
-            return res.status(400).json({ success: false, message: 'Challenge token and code are required' });
-
-        const challenge = verifyChallenge(challengeToken, CHALLENGE_AUDIENCE.MERCHANT);
-        if (!challenge)
-            return res.status(401).json({ success: false, twoFactorExpired: true,
-                message: 'Login session expired. Please sign in again.' });
-
-        // Credentials, not the ordinary record: the 2FA columns are excluded
-        // from the general read, so passing the plain merchant here would look
-        // exactly like "not enrolled" and let a 2FA account in without one.
-        const merchant = await db.merchants.getMerchant(challenge.id);
-        const creds = await db.merchants.getMerchantCredentials(challenge.id);
-        if (!merchant || !creds)
-            return res.status(401).json({ success: false, message: 'Invalid credentials' });
-
-        if (merchant.merchantApprovalStatus !== 'APPROVED' || merchant.status !== 'ACTIVE') {
-            const msgs = { PENDING: 'Application pending approval.', REJECTED: 'Application rejected.',
-                           SUSPENDED: 'Account suspended.' };
-            return res.status(403).json({ success: false,
-                message: msgs[merchant.status] || msgs[merchant.merchantApprovalStatus] || 'Account not active.' });
-        }
-
-        const verdict = await verifySecondFactor(creds, code, {
-            spendCounter: (counter) => db.merchants.spendTwoFactorCounter(challenge.id, counter),
-            consumeBackupCode: (arg) => db.merchants.consumeTwoFactorBackupCode(challenge.id, arg),
-        });
-        if (!verdict.ok) {
-            if (verdict.result === SECOND_FACTOR_RESULT.MALFORMED_SECRET) {
-                console.error(`🚨 2FA secret undecryptable for merchant ${merchant._id} — check TOTP_ENCRYPTION_KEY`);
-                return res.status(500).json({ success: false,
-                    message: 'Two-factor verification is misconfigured on the server. Contact support.' });
-            }
-            return res.status(401).json({ success: false, message: 'Invalid authentication code' });
-        }
-        if (verdict.usedBackupCode) {
-            console.warn(`🔐 Recovery code used for merchant ${merchant._id} — ${verdict.backupCodesRemaining} remaining`);
-        }
-        return await issueMerchantSession(merchant, res);
-    } catch (error) {
-        console.error('Merchant 2FA login error:', error);
-        res.status(500).json({ success: false, message: 'Login failed. Please try again.' });
-    }
-});
+// ── The merchant's own Telegram link (accountTelegram.js) ──────────────────
+// `merchantAuth` leaves the login row's id on `req.userId`.
+router.get('/telegram', merchantAuth, telegramStatus);
+router.post('/telegram/relink', merchantAuth, telegramRelink);
+router.put('/telegram/two-factor', merchantAuth, telegramTwoFactor);
 
 // ─── 2FA ENROLMENT ───────────────────────────────────────────────────────────
 // Merchants live in their own collection, so they cannot use /api/2fa (which
 // is User-only). Same two-step handshake for the same reason: a secret that
 // goes live before the merchant proves they scanned it locks them out of an
 // account that moves real settlement money.
-
-// ═══════════════════════════════════════════════════════════════════════════
-// GET /api/merchant/verification — the MERCHANT gate
-// ═══════════════════════════════════════════════════════════════════════════
-/**
- * The same function the player and admin panels mount (§5).
- *
- * The one thing that differs is how the account is found. `merchantAuth` puts
- * the MERCHANT on `req.merchant` and its owner's id on `req.userId`, and what
- * the gate needs is the `users` row — because `account_type` is the column that
- * decides which bot and which channel this answer is about, and a merchant row
- * does not carry it. A merchant signup writes both (§33.5); this reads the one
- * that holds the login.
- */
-router.get('/verification', merchantAuth,
-  verificationEndpoint((req) => db.users.getUser(req.userId)));
 
 router.get('/2fa/status', merchantAuth, async (req, res) => {
     const m = req.merchant;

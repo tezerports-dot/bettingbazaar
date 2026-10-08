@@ -1,7 +1,7 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import { rateLimit, ipKeyGenerator } from 'express-rate-limit';
 import { createHash } from 'node:crypto';
-import { challengeSubject, CHALLENGE_AUDIENCE } from '../domains/identity/twoFactorChallenge.js';
+import { challengeSubject } from '../domains/identity/twoFactorChallenge.js';
 import { db } from '#db';
 // F-3 (2026-07-10): counters shared across instances via Redis; graceful
 // per-instance fallback when Redis is absent/unreachable.
@@ -222,7 +222,7 @@ export function actorKey(req) {
     // login, and the lockout never tripped (R6, 2026-09-30). The same key an
     // authenticated request from that account gets, so the budgets are one.
     const subject = challengeSubject(req.body.challengeToken);
-    if (subject) return subject.audience === CHALLENGE_AUDIENCE.MERCHANT ? `m:${subject.id}` : `u:${subject.id}`;
+    if (subject) return `u:${subject.id}`;
     // Not a valid challenge: the handler refuses it. Hashed, because a
     // rate-limit key becomes a Redis key name and appears in logs.
     return `c:${createHash('sha256').update(String(req.body.challengeToken)).digest('hex').slice(0, 32)}`;
@@ -326,6 +326,55 @@ export const signupLimiter = rateLimit({
         // counter their typos never touched.
         message: 'Too many accounts have been created from this connection. Please try again later.',
         retryAfter: 3600,
+    },
+});
+
+/**
+ * A browser waiting on the Mini App (Step 3). Every poll counted, keyed on the
+ * account the challenge token names — see RATE_LIMIT_TIERS.challengePoll for
+ * why the credential pace cannot sit here.
+ */
+export const challengePollLimiter = rateLimit({
+    store: createRateLimitStore('rl:tgpoll:'),
+    ...RATE_LIMIT_TIERS.challengePoll,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: actorKey,
+    message: {
+        success: false,
+        code: 'POLLING_TOO_FAST',
+        message: 'Still waiting for Telegram. Check again in a few seconds.',
+        retryAfter: 60,
+    },
+});
+
+/** "Login with Telegram" opening a challenge, per address (RATE_LIMIT_TIERS.telegramLogin). */
+export const telegramLoginLimiter = rateLimit({
+    store: createRateLimitStore('rl:tglogin:'),
+    ...RATE_LIMIT_TIERS.telegramLogin,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => ipKeyGenerator(req.ip),
+    message: {
+        success: false,
+        code: 'LOGIN_PACED',
+        message: 'Too many Telegram sign-ins from this connection. Wait a few minutes and try again.',
+        retryAfter: 600,
+    },
+});
+
+/** The Mini App's own calls, per address (RATE_LIMIT_TIERS.miniApp). */
+export const miniAppLimiter = rateLimit({
+    store: createRateLimitStore('rl:miniapp:'),
+    ...RATE_LIMIT_TIERS.miniApp,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => ipKeyGenerator(req.ip),
+    message: {
+        success: false,
+        code: 'MINI_APP_PACED',
+        message: 'Too many requests from this connection. Close the app and open it again in a few minutes.',
+        retryAfter: 600,
     },
 });
 

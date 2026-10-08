@@ -105,7 +105,7 @@ export const STAFF_PERMISSIONS = Object.freeze([
   { key: 'canManageSupportAssistant', group: 'content', label: 'Support assistant',
     description: 'The knowledge base the support assistant answers players from.' },
   { key: 'canManageTelegram', group: 'content', label: 'Telegram setup',
-    description: 'Sign-in and recovery bots, channels and bot message templates, for all three panels.' },
+    description: 'The one Telegram bot and its Mini App, which verify every account and approve staff and merchant sign-ins.' },
 
   // ── Platform ─────────────────────────────────────────────────────────────
   { key: 'canManageSystemSettings', group: 'platform', label: 'System settings',
@@ -132,10 +132,12 @@ export const ADMIN_ONLY_AREAS = Object.freeze([
 
 /**
  * Staff routes that ask for NO area, because they are about the caller
- * themselves: every account, of any kind, may ask whether it has passed its
- * own sign-in gate.
+ * themselves: every staff account, of any role, may see and move its own
+ * Telegram link (Step 3; accountTelegram.js).
  */
-export const SELF_ROUTES = Object.freeze(['GET /verification']);
+export const SELF_ROUTES = Object.freeze([
+  'GET /account/telegram', 'POST /account/telegram/relink', 'PUT /account/telegram/two-factor',
+]);
 
 export const PERMISSION_KEYS = Object.freeze(STAFF_PERMISSIONS.map((p) => p.key));
 const KNOWN = new Set(PERMISSION_KEYS);

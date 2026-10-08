@@ -588,7 +588,13 @@ export async function flagPaymentWarning(userId, { reason, maxWarnings = 0 }) {
  * runs only when the column is null. Onboarding can complete twice
  * (a retried webhook, a resumed flow) and must not consume two.
  */
-export async function claimJoiningNumber(userId) {
+export async function claimJoiningNumber(userId, { client = null } = {}) {
+  // `client`: the Telegram verification claims the number inside its own
+  // transaction (repositories/telegram.js), so the number, the link and the
+  // referral earnings commit together or not at all (§21).
+  const run = client
+    ? (text, params) => client.query(text, params)
+    : (text, params) => pgQuery(text, params, 'user_claim_joining_number');
   // ── The referral programme's member count moves in the SAME statement ────
   // `referral_programmes.verified_members` counted KYC approvals until KYC was
   // removed (2026-10-02), and then nothing advanced it: the admin's "Verified
@@ -599,7 +605,7 @@ export async function claimJoiningNumber(userId) {
   // pass (the row lock re-evaluates the WHERE), so nothing is counted twice.
   // The cap is in the counter's own WHERE; reaching it stops the count, as
   // the KYC path did, and refuses nobody their number.
-  const { rows } = await pgQuery(
+  const { rows } = await run(
     `WITH claimed AS (
        UPDATE users
           SET joining_number = nextval('joining_number_seq'), updated_at = now()
@@ -614,7 +620,7 @@ export async function claimJoiningNumber(userId) {
      )
      SELECT COALESCE((SELECT joining_number FROM claimed),
                      (SELECT joining_number FROM users WHERE user_id = $1)) AS joining_number`,
-    [String(userId)], 'user_claim_joining_number',
+    [String(userId)],
   );
   return toInt(rows[0]?.joining_number);
 }

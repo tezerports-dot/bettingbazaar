@@ -1,24 +1,29 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * routes.js — session lifecycle, and the STAFF password login.
+ * routes.js — the three sign-in doors, the one place a session is minted, and
+ * the session lifecycle.
  *
- * ── Players do not have passwords ───────────────────────────────────────────
- * Player signup and login run entirely through Telegram
- * (domains/telegram/*): the bot proves the phone number via a contact share,
- * hands out a one-time link, and POST /api/telegram/exchange trades that link
- * for a session by calling `issueSession` below. There is no player password
- * to guess, reset, phish, or reuse from another breach, so there is no player
- * `/register`, `/login`, or password-reset surface — those were removed rather
- * than left mounted, because a second way in is a second thing to defend.
+ * ── Step 3 (owner, 2026-10-07) ─────────────────────────────────────────────
+ * "they must verify and share contact on signup ... now they can do login
+ * without telegram mini app but add also login with telegram button too."
  *
- * What remains here:
- *   • `issueSession`  — the ONE place a session is minted, for staff and for
- *                       Telegram players alike.
- *   • `loginHandler` / `loginTwoFactorHandler`
- *                     — STAFF ONLY (admin, sub-admin, queue manager, mediator),
- *                       mounted by server.js at /api/admin/login. Merchants have
- *                       their own equivalent under /api/merchant/auth.
- *   • `/me`, `/logout`, `/health` — used by every panel on every page load.
+ * So a sign-in is a mobile, a password and a captcha, at the door of the
+ * account's own panel (CLAUDE.md §33):
+ *
+ *   • An account whose mobile Telegram has not yet verified is not signed in:
+ *     it is answered 403 TELEGRAM_VERIFICATION_REQUIRED with a Mini App link,
+ *     and finishing that step signs it in (`/login/2fa`).
+ *   • A staff or merchant sign-in is also approved in the account's own
+ *     Telegram (the second factor); a player's is, only if they switched it on.
+ *   • "Login with Telegram" (`/login/telegram`): a player is signed in by
+ *     Telegram alone; staff and merchants still give their password.
+ *
+ * Every leg of every door is one handler here, mounted per door with that
+ * door's limits (`loginDoors.js`). Writing a door's legs as copies would be the
+ * place one of three quietly stops asking (§5).
+ *
+ * What a token proves is ON the token (`amr`): `pwd`, `tg`, or both. Every path
+ * that honours a session asks `secondFactorMissing` of it (auth.middleware.js).
  */
 import express     from 'express';
 import { getBalances } from './domains/wallet/walletAuthority.service.js';
@@ -28,15 +33,23 @@ import { signToken, verifyJwt, decodeTokenClaims } from './domains/identity/jwt.
 // AQ-8: password hashing authority (argon2id + bcrypt verify-fallback).
 import { hashPassword, verifyPassword } from './domains/identity/password.util.js';
 import { isTokenRevoked, revokeToken } from '#db/repositories/identity.js';
-import { issueChallenge, verifyChallenge, CHALLENGE_AUDIENCE } from './domains/identity/twoFactorChallenge.js';
+import { verifyChallenge, issueChallenge, isChallengeToken } from './domains/identity/twoFactorChallenge.js';
 import { verifySecondFactor, SECOND_FACTOR_RESULT } from './domains/identity/verifySecondFactor.js';
-import { requires2FA } from './domains/identity/twoFactor.routes.js';
-import { sessionSuperseded, refuseSupersededSession, accountClosed, refuseClosedAccount, belongsElsewhere, refuseWrongPanel } from './domains/identity/auth.middleware.js';
+import {
+  sessionSuperseded, refuseSupersededSession, accountClosed, refuseClosedAccount,
+  belongsElsewhere, refuseWrongPanel, secondFactorMissing, refuseMissingSecondFactor,
+  staffBootstrap,
+} from './domains/identity/auth.middleware.js';
+import { normalisePhone } from './domains/identity/signupFields.js';
+import {
+  openChallenge, newChallengeId, telegramUnavailable, REDEEM_WINDOW_SECONDS,
+} from './domains/identity/telegramChallenge.service.js';
+import { miniAppBot } from './domains/telegram/telegramClient.js';
+import { verifyInitData } from './domains/telegram/miniAppAuth.js';
+import { miniAppRefusal } from './domains/telegram/miniAppRefusals.js';
+import { respondError } from './shared/httpError.js';
 
 const router = express.Router();
-
-// PASETO secret + expiry are owned by paseto.util.js (imported above); importing it
-// already fail-fasts on a missing secret, so no local re-declaration is needed.
 
 // httpOnly cookie options — secure in production, lax in dev
 const COOKIE_OPTS = {
@@ -60,187 +73,140 @@ function isStaffAccount(user) {
 }
 
 /**
- * WHICH DOOR a login arrived at, and who that door admits.
+ * WHICH DOOR a sign-in arrived at, and who that door admits.
  *
- * ── Why the guest list is a parameter and not a constant ───────────────────
- * There are two password doors now — the staff one at /api/admin/login and the
- * player one at /api/v1/auth/login — and they differ in exactly one thing: who
- * they let in. Everything else is identical, and identical in the places where
- * a divergence would be a security defect rather than a cosmetic one: reading
- * the credential hash from the one function that returns it, the blocked-account
- * refusal, the argon2 upgrade, the order the second factor is decided in, and
- * the fact that a 2FA challenge is issued INSTEAD of a session.
- *
- * Writing the second door as a second handler would have copied all of that,
- * and §5's rule says what happens next: the copies drift, silently, and the one
- * that stops challenging is the one nobody is watching. So one handler, and the
- * MOUNT states the guest list.
- *
- * ── Why the player door refuses staff ──────────────────────────────────────
- * Not because staff are untrusted, but because a staff session minted at a
- * player door would bypass the admin panel's own enrolment routing and land an
- * admin token in the player app's storage key. A person who is both plays on a
- * separate account, which is the correct posture on a gambling platform anyway.
- * They are TOLD where their door is rather than being refused as unknown — §32
- * S14: a refusal the reader cannot act on is a support ticket.
+ * `accountType` is in the WHERE of the read (§33.5): the staff door never loads
+ * a player row, and the merchant door never loads either. `admits` is the ROLE
+ * question on top of that (a STAFF row with no staff role is nobody's admin).
+ * The door is set by the mount (`loginDoors.js`), never by the request.
  */
 export const LOGIN_DOOR = {
   STAFF: {
     name: 'staff',
-    // ── The separation is a PREDICATE, not a check ───────────────────────
-    // `accountType` is what the row IS, and it is in the `WHERE` of the read —
-    // so the staff door never loads a player row at all. The role check below
-    // then decides what that staff member may reach.
-    //
-    // This replaced a check made AFTER the read, on `is_admin`. That version
-    // was correct and one flipped boolean away from not being: a player row
-    // with `is_admin` set would have been admitted at the staff door, and
-    // nothing in the read said the row belonged to a different population.
-    // A predicate cannot be got wrong afterwards.
     accountType: 'STAFF',
     admits: isStaffAccount,
-    refusal: 'This account is not a staff account. Sign in on the player app.',
+    refusal: 'This account is not a staff account. Sign in on the panel your account belongs to.',
   },
   PLAYER: {
     name: 'player',
     accountType: 'PLAYER',
-    // Nothing further to admit on: a PLAYER row is a player by construction.
-    // The refusal below is therefore unreachable in practice and is kept
-    // because a door that cannot say who it turns away is a door somebody will
-    // widen without noticing.
+    // A PLAYER row is a player by construction; kept so the door can say who
+    // it turns away.
     admits: () => true,
-    refusal: 'This is a staff account. Sign in through the admin panel.',
+    refusal: 'This is not a player account. Sign in on the panel your account belongs to.',
+  },
+  MERCHANT: {
+    name: 'merchant',
+    accountType: 'MERCHANT',
+    admits: () => true,
+    refusal: 'This is not a merchant account. Sign in on the panel your account belongs to.',
   },
 };
 
-// ── POST /api/admin/login (staff only) ───────────────────────────────────────
-export async function loginHandler(req, res) {
-  // Extracted as named export — allows server.js to import directly
-  // instead of splicing Express internal router stack (CRIT-05 fix).
-  try {
-    const { mobile, password, loginType } = req.body;
-    if (!mobile || !password)
-      return res.status(400).json({ success: false, message: 'Mobile and password are required' });
+/** Send a refusal `{ status, code, message, ...extra }`. */
+function send(res, r) {
+  const { status, ...body } = r;
+  return res.status(status).json({ success: false, ...body });
+}
 
-    // The door is resolved BEFORE the read, because it decides which population
-    // the read looks in. Defaults to STAFF: this handler's only unmounted
-    // caller would be a test, and a default of "anyone" is the wrong way for
-    // that to fail.
-    const door = req.loginDoor || LOGIN_DOOR.STAFF;
+const INVALID_CREDENTIALS = {
+  status: 401, code: 'INVALID_CREDENTIALS', message: 'Wrong mobile number or password.',
+};
 
-    const user = await db.users.getUserByMobile(String(mobile), door.accountType);
-    if (!user)
-      return res.status(401).json({ success: false, message: 'Invalid credentials' });
-
-    if (user.status === 'BLOCKED' || user.isBlocked)
-      return res.status(403).json({ success: false, message: 'Account blocked. Contact support.' });
-    if (accountClosed(user)) return refuseClosedAccount(res);
-
-    // The hash comes from the credentials read, which is the ONLY function that
-    // returns it. An ordinary user read cannot leak a password hash into a
-    // response body by accident, because the projection that builds a user does
-    // not contain one.
-    const credentials = await db.users.getUserCredentials(user.userId);
-    const { valid, needsRehash } = await verifyPassword(credentials?.passwordHash, password);
-    if (!valid)
-      return res.status(401).json({ success: false, message: 'Invalid credentials' });
-
-    // Transparently upgrade a legacy bcrypt hash to argon2id on a successful
-    // login. PERSISTED HERE, in its own statement: the version this replaced
-    // assigned it to a document and relied on a `user.save()` further down for
-    // the lastLogin update to carry it — so every path that returned before
-    // that save (a 2FA challenge, most notably) verified the old hash, computed
-    // the new one, and threw it away. An account with 2FA enabled could never
-    // be upgraded at all.
-    if (needsRehash) {
-      try {
-        await db.users.updateUser(user.userId, { passwordHash: await hashPassword(password) });
-      } catch { /* best-effort upgrade — never fail a valid login over it */ }
-    }
-
-    // Checked AFTER the password, so a wrong password and an account that
-    // belongs at the other door are indistinguishable to a caller probing for
-    // which numbers are staff. The door already scoped the READ by account
-    // type; this is the ROLE question on top of it.
-    if (!door.admits(user)) {
-      console.warn(`[auth] ${door.name} login refused for account ${user.userId}`);
-      return res.status(403).json({ success: false, message: door.refusal });
-    }
-
-    if (loginType === 'admin'         && !user.isAdmin)        return res.status(403).json({ success: false, message: 'Admin access required' });
-    if (loginType === 'subadmin'      && !user.isSubAdmin)     return res.status(403).json({ success: false, message: 'Sub-admin access required' });
-    if (loginType === 'queue_manager' && !user.isQueueManager) return res.status(403).json({ success: false, message: 'Queue manager access required' });
-
-    // ── Second factor ────────────────────────────────────────────────────
-    // The password is correct, but for an enrolled account that is only half
-    // the login. Issue a short-lived challenge INSTEAD of a session token and
-    // stop here. `issueSession` below is unreachable until /login/2fa
-    // redeems that challenge with a valid code.
-    if (user.twoFactorEnabled) {
-      return res.status(200).json({
-        success: false,               // deliberately NOT a logged-in success
-        twoFactorRequired: true,
-        challengeToken: issueChallenge({
-          id: user.userId,
-          audience: CHALLENGE_AUDIENCE.USER,
-          loginType: loginType || null,   // re-applied on redemption
-        }),
-        message: 'Enter the code from your authenticator app.',
-      });
-    }
-
-    return issueSession(user, res);
-  } catch (e) {
-    console.error('Login error:', e);
-    res.status(500).json({ success: false, message: 'Login failed. Please try again.' });
+/**
+ * Whether this account may sign in at this door at all, asked on EVERY leg —
+ * between two legs an admin may have blocked it or taken its role away, and a
+ * challenge minted at one door must not be redeemed at another.
+ */
+function accountRefusal(door, user, loginType = null) {
+  if (!user) return INVALID_CREDENTIALS;
+  if (user.accountType !== door.accountType || !door.admits(user)) {
+    return { status: 403, code: 'WRONG_DOOR', message: door.refusal };
   }
+  if (accountClosed(user)) {
+    return { status: 403, code: 'ACCOUNT_CLOSED', message: 'This account has been closed. Contact support.' };
+  }
+  if (user.status === 'BLOCKED' || user.isBlocked) {
+    return { status: 403, code: 'ACCOUNT_BLOCKED', message: 'This account is blocked. Contact support.' };
+  }
+  // The staff panel's role selector, re-applied on every leg.
+  if (loginType === 'admin' && !user.isAdmin) return { status: 403, code: 'ROLE_REQUIRED', message: 'Admin access required.' };
+  if (loginType === 'subadmin' && !user.isSubAdmin) return { status: 403, code: 'ROLE_REQUIRED', message: 'Sub-admin access required.' };
+  if (loginType === 'queue_manager' && !user.isQueueManager) return { status: 403, code: 'ROLE_REQUIRED', message: 'Queue manager access required.' };
+  return null;
+}
+
+const MERCHANT_STATE_MESSAGE = {
+  PENDING: 'Your application is waiting for an admin\'s approval. You can sign in once it is approved.',
+  REJECTED: 'Your application was not approved. Contact support.',
+  SUSPENDED: 'Your account is suspended. Contact support.',
+  INACTIVE: 'Your account is inactive. Contact support.',
+};
+
+/**
+ * A merchant door's own question, after the account's: is the merchant
+ * APPROVED and ACTIVE? Asked AFTER verification, so an applicant can verify
+ * their Telegram while their application waits (approval and verification are
+ * independent; signing in needs both).
+ */
+async function merchantRefusal(door, user) {
+  if (door.accountType !== 'MERCHANT') return { merchant: null };
+  const merchant = await db.merchants.getMerchantByUserId(user.userId);
+  if (!merchant) {
+    return { refusal: { status: 403, code: 'MERCHANT_NOT_ACTIVE', message: 'This merchant account is not set up. Contact support.' } };
+  }
+  if (merchant.merchantApprovalStatus !== 'APPROVED' || merchant.status !== 'ACTIVE') {
+    return {
+      refusal: {
+        status: 403, code: 'MERCHANT_NOT_ACTIVE',
+        message: MERCHANT_STATE_MESSAGE[merchant.status]
+          || MERCHANT_STATE_MESSAGE[merchant.merchantApprovalStatus]
+          || 'Your account is not active. Contact support.',
+      },
+    };
+  }
+  return { merchant };
 }
 
 /**
- * Mint the session and build the client payload.
+ * Mint the session for the door it was earned at. The ONE place a session
+ * comes into existence (§2 "Login doors"): proving who you are changes WHEN
+ * you get a session, never WHAT it contains.
  *
- * The ONE place a session comes into existence. Three callers reach it — the
- * staff password leg, the staff post-OTP leg, and the Telegram exchange — and
- * they share this function rather than each building their own, because
- * proving who you are must change WHEN you get a session, never WHAT it
- * contains. Three copies of this would be a standing invitation for one door
- * to quietly grant claims the others refuse.
+ * @param {object} door
+ * @param {object} user     the `users` row
+ * @param {object} res
+ * @param {object} o
+ * @param {string[]} o.amr  what this sign-in proved: 'pwd', 'tg', or both
+ * @param {object|null} [o.merchant]
  */
-export async function issueSession(user, res, { secondFactorPresented = false } = {}) {
+async function sessionFor(door, user, res, { amr, merchant = null }) {
+  if (door.accountType === 'MERCHANT') return issueMerchantSession(merchant, res, { amr });
+  return issueSession(user, res, { amr });
+}
+
+/**
+ * The player and staff session (the cookie for the player app, the bearer for
+ * the admin panel).
+ */
+export async function issueSession(user, res, { amr = ['pwd'] } = {}) {
   let role = 'user';
   if (user.isAdmin)          role = 'admin';
   else if (user.isSubAdmin)  role = 'subadmin';
   else if (user.isQueueManager) role = 'queue_manager';
   else if (user.isMediator)  role = 'mediator';
 
-  // ── Whether a second factor was actually presented, ON THE TOKEN ────────
-  // A CLAIM, not a lookup. `requires2FA()` says who must hold a factor, but
-  // nothing could previously ask "did THIS session prove one?" — the login
-  // handler challenged accounts that had already enrolled and issued a full
-  // session to everyone else, so a staff account that never enrolled was
-  // password-only over the whole admin surface, permanently and silently.
-  //
-  // Recording it here costs nothing to check later and cannot drift from the
-  // login path, because this is the only place a session is minted. It does not
-  // gate anything yet — the guard that refuses privilege without a factor is a
-  // separate, deliberate switch (F-011), because turning it on locks out any
-  // staff account that has not enrolled, the seeded admin first.
   const token = signToken(
     { userId: user.userId, mobile: user.mobile, role,
       isAdmin: user.isAdmin || false, isSubAdmin: user.isSubAdmin || false,
       isQueueManager: user.isQueueManager || false,
-      amr: secondFactorPresented ? ['pwd', 'otp'] : ['pwd'],
+      amr: [...new Set(amr)],
       permissions: user.subAdminPermissions || {} }
   );
 
   // ── BALANCES COME FROM THE WALLET ───────────────────────────────────────
   // There is no balance column on the accounts table, by design: balances live
-  // in `wallets`, in integer paise, behind a row lock, with one writer. The
-  // payload this replaced read `user.depositBalance` and `user.winningsBalance`
-  // off the account — fields that do not exist — so every one fell through to
-  // its `|| 0` and EVERY LOGIN told the player their wallet was empty. Both the
-  // staff password path and the Telegram path mint their session here, so it
-  // was every login on the platform.
+  // in `wallets`, in integer paise, behind a row lock, with one writer.
   const [balances, lastLogin] = await Promise.all([
     getBalances(user.userId),
     db.users.updateUser(user.userId, { lastLogin: new Date() }),
@@ -253,11 +219,8 @@ export async function issueSession(user, res, { secondFactorPresented = false } 
     role, isAdmin: user.isAdmin || false, isSubAdmin: user.isSubAdmin || false,
     isQueueManager: user.isQueueManager || false, permissions: user.subAdminPermissions || {},
     depositBalance: dep, winningsBalance: win, lockedBalance: balances.lockedBalance,
-    // Sent separately, and never folded into walletBalance. The reserve is NOT
-    // freely spendable — only `betReservePercent` of a stake may come from it —
-    // so adding it to a headline "available" figure is what made players try
-    // bets the engine then refused. GET /api/user/bet-limits publishes the true
-    // ceiling, computed by the same rule the bet route enforces.
+    // Sent separately, and never folded into walletBalance: only
+    // `betReservePercent` of a stake may come from the reserve.
     reserveBalance: balances.reserveBalance,
     walletBalance: dep + win,
     bankDetails: user.bankDetails || null, profilePic: user.profilePic || '',
@@ -270,94 +233,354 @@ export async function issueSession(user, res, { secondFactorPresented = false } 
   res.cookie('auth_token', token, COOKIE_OPTS);
   return res.json({
     success: true, token, user: userPayload,
-    // The merchant panel already routes on this; the admin panel had no
-    // equivalent, so an admin who never enrolled was never even asked. Computed
-    // from `requires2FA()` so the panel and the policy cannot disagree.
-    ...(requires2FA(user) && !user.twoFactorEnabled ? { mustEnroll2FA: true } : {}),
+    // The staff bootstrap (§33): no Mini App bot yet, so this staff session is
+    // a password alone. The admin panel shows a standing banner naming the
+    // Telegram screen that ends it.
+    ...(user.accountType === 'STAFF' && await staffBootstrap() ? { bootstrap: true } : {}),
   });
 }
 
 /**
- * POST /api/admin/login/2fa — redeem a challenge with an OTP or a recovery code.
- *
- * Re-loads and re-checks the account rather than trusting anything cached in
- * the challenge: between the two legs an admin may have been blocked, or have
- * had their staff role taken away. The challenge proves the password was right
- * five minutes ago, nothing more.
+ * The merchant session. Its token carries `merchantId` and `isMerchant`, which
+ * is how `merchantAuth` knows it, and the same `amr` every session carries.
  */
-export async function loginTwoFactorHandler(req, res) {
+export async function issueMerchantSession(merchant, res, { amr = ['pwd'] } = {}) {
+  const token = signToken({
+    merchantId: merchant._id, userId: merchant.userId, mobile: merchant.mobile,
+    isMerchant: true, isAdmin: false, amr: [...new Set(amr)],
+  });
+  return res.json({
+    success: true, token,
+    merchant: {
+      _id: merchant._id, userId: merchant.userId,
+      username: merchant.username, mobile: merchant.mobile, email: merchant.email,
+      status: merchant.status, isOnline: merchant.isOnline,
+      acceptsDeposits: merchant.acceptsDeposits !== false,
+      acceptsWithdrawals: merchant.acceptsWithdrawals !== false,
+      twoFactorEnabled: merchant.twoFactorEnabled || false,
+    },
+  });
+}
+
+/**
+ * The Telegram step an unverified account owes before it can be signed in:
+ * 403 TELEGRAM_VERIFICATION_REQUIRED with a fresh Mini App link. Finishing it
+ * signs them in through `/login/2fa`, because they have just proved both the
+ * password and the phone.
+ */
+async function verificationRequired(door, user, req, res, loginType) {
+  const opened = await openChallenge({ purpose: 'VERIFY', door: door.accountType, userId: user.userId, req, loginType });
+  return res.status(403).json({
+    success: false,
+    code: 'TELEGRAM_VERIFICATION_REQUIRED',
+    verificationRequired: true,
+    challengeToken: opened.challengeToken,
+    telegram: opened.telegram,
+    message: 'Verify your mobile number in Telegram to finish. Open the link, share your contact, then come back here.',
+  });
+}
+
+// ── POST {door}/login ────────────────────────────────────────────────────────
+export async function loginHandler(req, res) {
   try {
-    const { challengeToken, code } = req.body;
-    if (!challengeToken || !code) {
-      return res.status(400).json({ success: false, message: 'Challenge token and code are required' });
+    const { mobile, password, loginType = null, challengeToken = null } = req.body || {};
+    if (!mobile || !password) {
+      return send(res, { status: 400, code: 'CREDENTIALS_REQUIRED', message: 'Enter your mobile number and password.' });
     }
-
-    const challenge = verifyChallenge(challengeToken, CHALLENGE_AUDIENCE.USER);
-    if (!challenge) {
-      return res.status(401).json({ success: false, twoFactorExpired: true,
-        message: 'Login session expired. Please sign in again.' });
-    }
-
-    const user = await db.users.getUser(challenge.id);
-    if (!user) return res.status(401).json({ success: false, message: 'Invalid credentials' });
-
-    // Re-check the same gates the password leg applied — state can change
-    // between the two requests.
-    if (user.status === 'BLOCKED' || user.isBlocked)
-      return res.status(403).json({ success: false, message: 'Account blocked. Contact support.' });
-    if (accountClosed(user)) return refuseClosedAccount(res);
-    // The SAME door the password leg applied, on the account type AND the role.
-    // A challenge minted at one door and redeemed at the other is the shape
-    // this re-check exists to refuse: without it a player's valid challenge,
-    // posted to the staff endpoint, would be redeemed by the staff handler —
-    // and the separation would have been enforced on only one of the two legs.
-    //
-    // The type is checked explicitly here because this leg reads by USER ID,
-    // not by mobile, so the door's predicate never touched the query.
+    // Defaults to STAFF: a caller that never set a door would be a test, and a
+    // default of "anyone" is the wrong way for that to fail.
     const door = req.loginDoor || LOGIN_DOOR.STAFF;
-    if (user.accountType !== door.accountType || !door.admits(user))
-      return res.status(403).json({ success: false, message: door.refusal });
 
-    const t = challenge.loginType;
-    if (t === 'admin'         && !user.isAdmin)        return res.status(403).json({ success: false, message: 'Admin access required' });
-    if (t === 'subadmin'      && !user.isSubAdmin)     return res.status(403).json({ success: false, message: 'Sub-admin access required' });
-    if (t === 'queue_manager' && !user.isQueueManager) return res.status(403).json({ success: false, message: 'Queue manager access required' });
+    // The read is scoped by the door's population (§33.5). The mobile is read
+    // the way the form normalises it, so `+91 98765 43210` finds `9876543210`.
+    const user = await db.users.getUserByMobile(normalisePhone(mobile) || String(mobile), door.accountType);
+    if (!user) return send(res, INVALID_CREDENTIALS);
 
-    // Credentials, not the account record: the 2FA columns are excluded from
-    // the general read, so passing `user` here would look exactly like "not
-    // enrolled" and admit a 2FA-protected account without a second factor.
-    const creds = await db.users.getUserCredentials(user.userId);
-    const verdict = await verifySecondFactor(creds, code, {
-      spendCounter: (counter) => db.users.spendTwoFactorCounter(user.userId, counter),
-      consumeBackupCode: (arg) => db.users.consumeTwoFactorBackupCode(user.userId, arg),
+    // The hash comes from the credentials read, the ONLY function that
+    // returns it, so an ordinary user read cannot leak one.
+    const credentials = await db.users.getUserCredentials(user.userId);
+    const { valid, needsRehash } = await verifyPassword(credentials?.passwordHash, password);
+    if (!valid) return send(res, INVALID_CREDENTIALS);
+
+    // Upgrade a legacy bcrypt hash to argon2id, persisted in its own statement
+    // so a sign-in that stops at a Telegram step still upgrades it.
+    if (needsRehash) {
+      try {
+        await db.users.updateUser(user.userId, { passwordHash: await hashPassword(password) });
+      } catch { /* best-effort upgrade — never fail a valid login over it */ }
+    }
+
+    // After the password, so a wrong password and an account of another kind
+    // read the same to a caller probing which numbers hold which accounts.
+    const refused = accountRefusal(door, user, loginType);
+    if (refused) return send(res, refused);
+
+    const bot = await miniAppBot();
+    // ── The staff bootstrap (§33) ──────────────────────────────────────────
+    // No bot yet: a staff account signs in on its password, and says so.
+    if (!bot && door.accountType === 'STAFF') return issueSession(user, res, { amr: ['pwd'] });
+
+    // ── Verified yet? ──────────────────────────────────────────────────────
+    const link = await db.telegram.getLinkByUserId(user.userId);
+    if (!link) {
+      if (!bot) throw telegramUnavailable();
+      return verificationRequired(door, user, req, res, loginType);
+    }
+
+    const { merchant, refusal: notActive } = await merchantRefusal(door, user);
+    if (notActive) return send(res, notActive);
+
+    // ── Second factor ──────────────────────────────────────────────────────
+    // Always for staff and merchants (the link's CHECK says so); a player's
+    // own switch otherwise.
+    if (!link.twoFactor) return sessionFor(door, user, res, { amr: ['pwd'], merchant });
+
+    // A Telegram sign-in already approved for THIS account at THIS door — the
+    // staff and merchant "Login with Telegram", finished with the password.
+    // The account is in the redeem's WHERE, so another account's approval
+    // spends nothing here.
+    const presented = verifyChallenge(challengeToken, door.accountType);
+    if (presented) {
+      const spent = await db.telegram.redeemChallenge({
+        challengeId: presented.challengeId, audience: door.accountType,
+        purposes: ['TELEGRAM_LOGIN'], userId: user.userId,
+      });
+      if (spent.ok) return sessionFor(door, user, res, { amr: ['pwd', 'tg'], merchant });
+    }
+
+    if (!bot) throw telegramUnavailable();
+    const opened = await openChallenge({ purpose: 'LOGIN', door: door.accountType, userId: user.userId, req, loginType });
+    return res.status(200).json({
+      success: false,               // deliberately NOT a logged-in success
+      twoFactorRequired: true,
+      challengeToken: opened.challengeToken,
+      telegram: opened.telegram,
+      // An authenticator app enrolled before Step 3 may answer instead, until
+      // TOTP is removed in its own commit.
+      totpAvailable: await totpEnrolled(door, user),
+      message: 'Approve this sign-in in Telegram. Open the link on your phone, then come back here.',
     });
-    if (!verdict.ok) {
-      if (verdict.result === SECOND_FACTOR_RESULT.MALFORMED_SECRET) {
-        // Nothing the user types can succeed — do not send them in circles.
-        console.error(`🚨 2FA secret undecryptable for user ${user.userId} — check TOTP_ENCRYPTION_KEY`);
-        return res.status(500).json({ success: false,
-          message: 'Two-factor verification is misconfigured on the server. Contact support.' });
-      }
-      return res.status(401).json({ success: false, message: 'Invalid authentication code' });
-    }
-
-    if (verdict.usedBackupCode) {
-      console.warn(`🔐 Recovery code used for user ${user.userId} — ${verdict.backupCodesRemaining} remaining`);
-    }
-    // A code (or a recovery code) was just verified — say so on the token.
-    const response = await issueSession(user, res, { secondFactorPresented: true });
-    return response;
   } catch (e) {
-    console.error('2FA login error:', e);
-    res.status(500).json({ success: false, message: 'Login failed. Please try again.' });
+    return respondError(res, e, 'auth/login', { message: 'Sign-in failed. Please try again.' });
   }
 }
 
-// The two handlers above are NOT registered on this router. They are mounted by
-// server.js at /api/admin/login and /api/admin/login/2fa, on the admin rate
-// limit tier. The PLAYER door mounts the same two handlers in
-// playerAuth.routes.js with `req.loginDoor = LOGIN_DOOR.PLAYER` (§33: signing
-// in is a form; Telegram verifies, it does not authenticate).
+// ── The authenticator app, until TOTP is removed in its own commit ──────────
+async function totpCredentials(door, user) {
+  if (door.accountType === 'MERCHANT') {
+    const merchant = await db.merchants.getMerchantByUserId(user.userId);
+    if (!merchant) return null;
+    const creds = await db.merchants.getMerchantCredentials(merchant.merchantId);
+    return creds && {
+      creds,
+      store: {
+        spendCounter: (counter) => db.merchants.spendTwoFactorCounter(merchant.merchantId, counter),
+        consumeBackupCode: (arg) => db.merchants.consumeTwoFactorBackupCode(merchant.merchantId, arg),
+      },
+    };
+  }
+  const creds = await db.users.getUserCredentials(user.userId);
+  return creds && {
+    creds,
+    store: {
+      spendCounter: (counter) => db.users.spendTwoFactorCounter(user.userId, counter),
+      consumeBackupCode: (arg) => db.users.consumeTwoFactorBackupCode(user.userId, arg),
+    },
+  };
+}
+
+async function totpEnrolled(door, user) {
+  const found = await totpCredentials(door, user);
+  return Boolean(found?.creds?.twoFactorEnabled);
+}
+
+async function totpVerdict(door, user, code) {
+  const found = await totpCredentials(door, user);
+  if (!found?.creds?.twoFactorEnabled) return { ok: false };
+  return verifySecondFactor(found.creds, code, found.store);
+}
+
+/**
+ * What a poll is told when nothing was redeemed. 202 keeps the panel polling;
+ * a 401 tells it to stop and start the sign-in again.
+ */
+function notRedeemed(res, state) {
+  if (state === 'PENDING' || state === 'APPROVED') {
+    return res.status(202).json({
+      success: false, pending: true, code: 'TWO_FACTOR_PENDING',
+      message: 'Waiting for you to approve in Telegram.',
+    });
+  }
+  if (state === 'DENIED') {
+    return send(res, {
+      status: 401, code: 'TWO_FACTOR_DENIED',
+      message: 'This sign-in was refused in Telegram. If that was not you, change your password.',
+    });
+  }
+  return send(res, {
+    status: 401, code: 'TWO_FACTOR_EXPIRED', twoFactorExpired: true,
+    message: 'This sign-in has expired. Please sign in again.',
+  });
+}
+
+/**
+ * POST {door}/login/2fa `{ challengeToken }` — the browser that signed in (or
+ * signed up) asks whether Telegram has answered.
+ *
+ * Redeems a VERIFY or LOGIN challenge of this door, once, and re-asks every
+ * account question the first leg asked: the challenge proves the password was
+ * right minutes ago, nothing more.
+ */
+export async function loginTwoFactorHandler(req, res) {
+  try {
+    const door = req.loginDoor || LOGIN_DOOR.STAFF;
+    const { challengeToken, code } = req.body || {};
+    if (!challengeToken) {
+      return send(res, { status: 400, code: 'CHALLENGE_REQUIRED', message: 'Sign in again to continue.' });
+    }
+    const challenge = verifyChallenge(challengeToken, door.accountType);
+    if (!challenge?.userId) return notRedeemed(res, 'EXPIRED');
+
+    // ── An authenticator code, until TOTP is removed ───────────────────────
+    if (code) {
+      const user = await db.users.getUser(challenge.userId);
+      const refused = accountRefusal(door, user, challenge.loginType);
+      if (refused) return send(res, refused);
+      if (!(await db.telegram.getLinkByUserId(user.userId))) return notRedeemed(res, 'EXPIRED');
+      const verdict = await totpVerdict(door, user, code);
+      if (!verdict.ok) {
+        if (verdict.result === SECOND_FACTOR_RESULT.MALFORMED_SECRET) {
+          console.error(`🚨 2FA secret undecryptable for ${user.userId} — check TOTP_ENCRYPTION_KEY`);
+        }
+        return send(res, { status: 401, code: 'INVALID_CODE', message: 'Invalid authentication code.' });
+      }
+      const { merchant, refusal: notActive } = await merchantRefusal(door, user);
+      if (notActive) return send(res, notActive);
+      return sessionFor(door, user, res, { amr: ['pwd', 'otp'], merchant });
+    }
+
+    const spent = await db.telegram.redeemChallenge({
+      challengeId: challenge.challengeId, audience: door.accountType,
+      purposes: ['VERIFY', 'LOGIN'], userId: challenge.userId,
+    });
+    if (!spent.ok) return notRedeemed(res, spent.state);
+
+    const user = await db.users.getUser(spent.userId);
+    const refused = accountRefusal(door, user, challenge.loginType);
+    if (refused) return send(res, refused);
+    const { merchant, refusal: notActive } = await merchantRefusal(door, user);
+    if (notActive) {
+      // Verified, and still waiting for approval: say so, so the panel can
+      // show "verified" rather than an error.
+      return send(res, { ...notActive, verified: spent.purpose === 'VERIFY' });
+    }
+    return sessionFor(door, user, res, { amr: ['pwd', 'tg'], merchant });
+  } catch (e) {
+    return respondError(res, e, 'auth/login/2fa', { message: 'Sign-in failed. Please try again.' });
+  }
+}
+
+/**
+ * POST {door}/login/telegram `{ initData? }` — "Login with Telegram".
+ *
+ * Inside Telegram (the Mini App sends its `initData`), the signed string is the
+ * proof: a player is signed in on it; staff and merchants are handed a token
+ * that their password then completes. Outside Telegram, a challenge is opened
+ * and the browser is given its Mini App link to open, and polls
+ * `/login/telegram/complete` (owner reading 2026-10-07: the Login Widget only
+ * serves one domain per bot, and three panels and the app are not one domain).
+ */
+export async function telegramLoginHandler(req, res) {
+  try {
+    const door = req.loginDoor || LOGIN_DOOR.STAFF;
+    const bot = await miniAppBot();
+    if (!bot) throw telegramUnavailable();
+
+    const raw = req.body?.initData;
+    if (!raw) {
+      const opened = await openChallenge({ purpose: 'TELEGRAM_LOGIN', door: door.accountType, userId: null, req });
+      return res.status(200).json({
+        success: false, pending: true,
+        challengeToken: opened.challengeToken,
+        telegram: opened.telegram,
+        message: 'Open Telegram to sign in, then come back here.',
+      });
+    }
+
+    const proof = verifyInitData(raw, { botToken: bot.token });
+    if (!proof.ok) return send(res, miniAppRefusal(proof.reason));
+
+    const isPlayer = door.accountType === 'PLAYER';
+    const challengeId = isPlayer ? null : newChallengeId();
+    const signedIn = await db.telegram.telegramSignIn({
+      audience: door.accountType, telegramUser: proof.user,
+      initData: { hash: proof.hash, expiresAt: proof.expiresAt },
+      challengeId, redeemWindowSeconds: REDEEM_WINDOW_SECONDS,
+      requestedIp: req.ip, requestedAgent: req.get('user-agent') || '',
+    });
+    if (!signedIn.ok) return send(res, miniAppRefusal(signedIn.code));
+
+    const user = await db.users.getUser(signedIn.userId);
+    const refused = accountRefusal(door, user);
+    if (refused) return send(res, refused);
+
+    if (!isPlayer) {
+      return res.status(200).json({
+        success: false, passwordRequired: true,
+        challengeToken: issueChallenge({
+          userId: null, door: door.accountType, challengeId, ttlSeconds: REDEEM_WINDOW_SECONDS,
+        }),
+        message: 'Telegram confirmed it is you. Enter your mobile number and password to finish.',
+      });
+    }
+    return sessionFor(door, user, res, { amr: ['tg'] });
+  } catch (e) {
+    return respondError(res, e, 'auth/login/telegram', { message: 'Telegram sign-in failed. Please try again.' });
+  }
+}
+
+/**
+ * POST {door}/login/telegram/complete `{ challengeToken }` — has the Mini App
+ * answered a "Login with Telegram" opened outside Telegram?
+ *
+ * A player is signed in on the approval (spent here, once). Staff and
+ * merchants are told their password is next, and the approval is spent only
+ * when the password arrives with this same token (`loginHandler`), bound in
+ * that redeem to the account the password proved.
+ */
+export async function telegramLoginCompleteHandler(req, res) {
+  try {
+    const door = req.loginDoor || LOGIN_DOOR.STAFF;
+    const challenge = verifyChallenge(req.body?.challengeToken, door.accountType);
+    if (!challenge) return notRedeemed(res, 'EXPIRED');
+
+    if (door.accountType !== 'PLAYER') {
+      const state = db.telegram.stateOf(await db.telegram.getChallenge(challenge.challengeId), {
+        audience: door.accountType, purposes: ['TELEGRAM_LOGIN'],
+      });
+      if (state !== 'APPROVED') return notRedeemed(res, state);
+      return res.status(200).json({
+        success: false, passwordRequired: true,
+        message: 'Telegram confirmed it is you. Enter your mobile number and password to finish.',
+      });
+    }
+
+    const spent = await db.telegram.redeemChallenge({
+      challengeId: challenge.challengeId, audience: door.accountType, purposes: ['TELEGRAM_LOGIN'],
+    });
+    if (!spent.ok) return notRedeemed(res, spent.state);
+    const user = await db.users.getUser(spent.userId);
+    const refused = accountRefusal(door, user);
+    if (refused) return send(res, refused);
+    return sessionFor(door, user, res, { amr: ['tg'] });
+  } catch (e) {
+    return respondError(res, e, 'auth/login/telegram/complete', { message: 'Telegram sign-in failed. Please try again.' });
+  }
+}
+
+// The handlers above are mounted per door by `loginDoors.js`: the player door
+// in playerAuth.routes.js, the staff door in server.js, the merchant door in
+// merchant.routes.js — each with that door's own limits.
 
 // ── GET /me — session restore on every page load ─────────────────────────────
 router.get('/me', async (req, res) => {
@@ -366,32 +589,25 @@ router.get('/me', async (req, res) => {
     if (!token) return res.status(401).json({ success: false, message: 'No token provided' });
 
     const decoded = verifyJwt(token);
+    if (isChallengeToken(decoded)) {
+      return res.status(401).json({ success: false, code: 'TWO_FACTOR_REQUIRED', message: 'Finish signing in first.' });
+    }
 
-    // Check the revocation list. NOT wrapped in a swallow: this used to ignore
-    // its own failure and continue, which meant a revoked token was accepted
-    // whenever the check broke. isTokenRevoked fails closed for the same reason.
+    // NOT wrapped in a swallow: isTokenRevoked fails closed.
     if (await isTokenRevoked(token)) {
       return res.status(401).json({ success: false, message: 'Token invalidated. Please login again.' });
     }
 
-    // The balances come from the WALLET. The accounts table has no balance
-    // columns, so reading them there returns undefined for every one and the
-    // session-check endpoint hands the panel a zero wallet on every page load.
     const user = await db.users.getUser(decoded.userId);
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
-    // The SAME check `authenticate` applies, from the same function. This
-    // endpoint does not go through that middleware — it verifies the token
-    // inline, above — so a copy here is not optional and a second
-    // implementation would be the thing that drifts. Measured before it
-    // existed: a password reset left the pre-reset session answering 200 here,
-    // on the endpoint every page load calls to restore a session.
+    // The SAME checks `authenticate` applies, from the same functions: this
+    // endpoint verifies the token inline and never calls that middleware
+    // (§32 S32).
     if (accountClosed(user)) return refuseClosedAccount(res);
     if (sessionSuperseded(user, decoded)) return refuseSupersededSession(res);
-    // The same door `authenticate` keeps (S32: the same check in both paths).
-    // `/me` serves the player app and the admin panel; a merchant session
-    // belongs to `merchantAuth` and restores itself through the merchant routes.
     if (belongsElsewhere(user, ['PLAYER', 'STAFF'])) return refuseWrongPanel(res, user);
+    if (await secondFactorMissing(user.accountType, decoded)) return refuseMissingSecondFactor(res);
 
     if (user.isBlocked || user.status === 'BLOCKED')
       return res.status(403).json({ success: false, message: 'Account blocked' });
@@ -412,20 +628,10 @@ router.get('/me', async (req, res) => {
         status: user.status || 'ACTIVE', joinedAt: user.joinedAt || null,
         lastLogin: user.lastLogin || null, phantomAccess: user.phantomAccess || 'NONE',
       },
-      // The same obligation the login response carries, from the same owner.
-      //
-      // It is here because login is not the only moment it can become true: an
-      // account PROMOTED to admin or sub-admin while holding a session owes a
-      // factor from that moment, and a flag established only at login would
-      // leave them on a password-only session over the whole admin surface
-      // until they next signed out. This endpoint is what every panel calls on
-      // load, so it is where a change of status is noticed.
-      //
-      // `requires2FA()` rather than a second reading of the flags, so the
-      // policy has one owner and this cannot disagree with the login response
-      // or with the route guards. False for a player, which is what makes the
-      // panel's gate a decision rather than a wall. F-011.
-      ...(requires2FA(user) && !user.twoFactorEnabled ? { mustEnroll2FA: true } : {}),
+      // The staff bootstrap, re-stated on every load: it ends the moment a bot
+      // is saved, and a panel that read it only at sign-in would keep the
+      // banner up over a session that is about to be refused.
+      ...(user.accountType === 'STAFF' && await staffBootstrap() ? { bootstrap: true } : {}),
     });
   } catch (e) {
     console.error('Auth check error:', e);
@@ -438,11 +644,8 @@ router.post('/logout', async (req, res) => {
   try {
     const token = extractToken(req);
     if (token) {
-      // A failed revocation used to be swallowed, and the response still said
-      // "Logged out successfully" — so somebody signing out on a shared device
-      // was told their session was dead while the token kept working until it
-      // expired. Report the failure instead: the cookie is cleared either way,
-      // but the caller must not be told the token is dead when it is not.
+      // A failed revocation is reported: the caller must not be told the token
+      // is dead when it is not.
       try {
         const decoded = decodeTokenClaims(token);
         const exp = decoded?.exp ? new Date(decoded.exp * 1000) : new Date(Date.now() + 7 * 86400000);
@@ -463,8 +666,5 @@ router.post('/logout', async (req, res) => {
     res.json({ success: true, message: 'Logged out successfully' });
   }
 });
-
-// `GET /api/v1/auth/health` was removed 2026-10-01: nothing called it, and
-// `/health` and `/health/ready` are the probes a balancer uses.
 
 export default router;
