@@ -194,7 +194,7 @@ describePg('every declared merchantOrderLimits field is admin-editable', () => {
     // itself (the issuance counter was the only one, and it is derived from
     // the treasury now — see the case below).
     const settable = leavesOf(SYSTEM_CONFIG_SPEC);
-    expect(settable.length).toBeGreaterThan(60);
+    expect(settable.length).toBeGreaterThan(40);
 
     const seed = await as(app, admin).get('/system/config');
     expect(seed.status).toBe(200);
@@ -255,50 +255,6 @@ describePg('every declared merchantOrderLimits field is admin-editable', () => {
     for (const path of removed) {
       expect(at(stored, path), `a save wrote the removed setting ${path.join('.')}`).toBeUndefined();
     }
-  });
-
-  it('checks EVERY board\'s phases fit its own block, the one-minute one included', async () => {
-    // §18.3: "a merge offset larger than the block fires before the cycle
-    // starts and nothing objects" — the ordering check compares phases only
-    // with each other, so the block length is the half it cannot see. That
-    // ceiling was two literals at one call site covering two of the three
-    // boards, and the one it omitted is the 60-second block, where an
-    // oversized merge is easiest to enter by accident.
-    const before = await as(app, admin).get('/system/config');
-    const wasOneMin = { ...before.body.config.cyclePhases.oneMin };
-
-    // Ordered correctly, so ONLY the block-length rule can refuse it.
-    const overflowing = {
-      mergeBeforeEndSec: 90, equalizerBeforeEndSec: 70,
-      closeBeforeEndSec: 50, celebrateBeforeEndSec: 30,
-    };
-    const res = await as(app, admin).put('/system/config')
-      .send({ cyclePhases: { oneMin: overflowing } });
-    expect(res.status, 'a 90s merge was accepted on a 60s block').toBe(400);
-    expect(String(res.body?.message ?? '')).toContain('oneMin');
-
-    const after = await as(app, admin).get('/system/config');
-    expect(after.body.config.cyclePhases.oneMin).toEqual(wasOneMin);
-
-    // And a legal set for the same board is accepted, so the test is not
-    // passing on a route that refuses `oneMin` outright.
-    //
-    // Built from constants, NOT derived from what is stored: another suite in
-    // the same run writes this board's phases, so a set nudged off the current
-    // value can violate the ORDERING rule and be refused for a reason this
-    // test is not about. It read as a failure of the block-length check.
-    const legal = {
-      mergeBeforeEndSec: 20, equalizerBeforeEndSec: 15,
-      closeBeforeEndSec: 10, celebrateBeforeEndSec: 5,
-    };
-    const ok = await as(app, admin).put('/system/config').send({ cyclePhases: { oneMin: legal } });
-    expect(ok.status, ok.body?.message).toBe(200);
-    const back = await as(app, admin).get('/system/config');
-    expect(back.body.config.cyclePhases.oneMin).toEqual(legal);
-
-    // Put the board back. Not asserted: if what was there is itself refused,
-    // it was already in that state before this file ran.
-    await as(app, admin).put('/system/config').send({ cyclePhases: { oneMin: wasOneMin } });
   });
 
   it('refuses an out-of-bounds value as the CALLER\'s mistake, not a 500', async () => {

@@ -148,9 +148,6 @@ function validatePatch(node, patch, path = []) {
  */
 const PAIRED_BOUNDS = Object.freeze([
   { scope: 'system', min: 'usdtBuy.minUsdt',      max: 'usdtBuy.maxUsdt' },
-  { scope: 'system', min: 'betLimits.oneMin.min', max: 'betLimits.oneMin.max' },
-  { scope: 'system', min: 'betLimits.thirtyMin.min', max: 'betLimits.thirtyMin.max' },
-  { scope: 'system', min: 'betLimits.fullDay.min', max: 'betLimits.fullDay.max' },
 ]);
 
 /** Read a dotted path out of a plain object. */
@@ -423,7 +420,7 @@ export async function applySystemConfig(patch, options = {}) {
 }
 
 /**
- * Write ONE dotted path — `betLimits.thirtyMin.min` — and version it.
+ * Write ONE dotted path — `usdtBuy.minUsdt` — and version it.
  *
  * A convenience over `applyConfig` for callers that hold a path and a value
  * rather than a nested patch. Everything else is identical: the spec still

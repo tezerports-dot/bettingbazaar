@@ -55,6 +55,7 @@ import { publicCycleView } from '../markets/cyclePublicView.js';
 import { fetchCycleHistory } from '../markets/cycleHistory.service.js';
 import { getSystemConfig } from '#db/repositories/config.js';
 import { boardRules, BOARD_RULES_VERSION } from '../markets/boardRules.js';
+import { enabledBoards, publicBoard } from '../markets/cycleTypes.js';
 import { systemConfigPayload } from '../configuration/systemConfigPayload.js';
 import { serverError, respondError, refusal } from '../../shared/httpError.js';
 import { isAccountMobileRefusal, ACCOUNT_IS_A_MOBILE_MESSAGE } from '../payment/payoutAccount.js';
@@ -315,6 +316,19 @@ router.get('/user/referrals', authenticatePlayer, async (req, res) => {
   } catch (error) {
     console.error('Referral summary error:', error);
     return res.status(500).json({ success: false, message: 'Failed to load your referral report' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/v1/boards — public: the switched-on boards in the admin's home-page
+// order, each with its timer, phase offsets and stake bounds (`publicBoard`).
+// The player panel draws its board tabs and times betting from this.
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/v1/boards', async (req, res) => {
+  try {
+    return res.json({ success: true, boards: (await enabledBoards()).map(publicBoard) });
+  } catch (error) {
+    return respondError(res, error, 'GET /api/v1/boards', { message: 'Could not load the boards' });
   }
 });
 

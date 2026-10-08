@@ -25,26 +25,24 @@
  */
 
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { CycleType, GameState, User, Bet, BettingSide, GameCycle, PlayProfile } from '../types';
-import { ANALYTICS_WINDOW } from '../constants';
+import { CycleType, GameState, User, Bet, BettingSide, GameCycle, PlayProfile, Board } from '../types';
+import { analyticsWindowFor } from '../constants';
+import apiClient from './apiClient';
 import { getBackend, setCdnBaseUrl } from './backend.service';
 import type { SignInStep } from './backend.interface';
 import { applyBranding } from './branding';
 
 
-// All components that need minBet / tokenRates should read from here. The order
-// sizes are read by the wallet itself (Step 2d), not cached here.
+// All components that need tokenRates should read from here. Stake bounds are
+// each board's (`boards`, below); the order sizes are read by the wallet itself
+// (Step 2d). Neither is cached here.
 interface SysConfig {
-  minBet:        number;
-  maxBet:        number;
-  maxFullDayBet: number;
   tokenBuyRate:  number;
   tokenSellRate: number;
   // Admin-editable footer tabs (SystemConfig.footerPages) — page keys, ordered.
   footerPages:   string[];
 }
 const DEFAULT_SYS_CONFIG: SysConfig = {
-  minBet: 10, maxBet: 100000, maxFullDayBet: 500000,
   tokenBuyRate: 1, tokenSellRate: 1,
   footerPages: ['home', 'results', 'winners', 'promo', 'profile'], // schema default
 };
@@ -94,12 +92,19 @@ interface GameContextType {
   /** Ask once whether Telegram has answered; seats the player when it has. */
   pollTelegramStep: (leg: 'challenge' | 'telegramLogin', challengeToken: string) => Promise<'pending' | 'done'>;
   logout: () => void;
+  /**
+   * The switched-on boards, in the admin's home-page order
+   * (`GET /api/v1/boards`). Empty until the first answer arrives.
+   */
+  boards: Board[];
+  /** The board being shown (its key is `cycleType`), or undefined while loading. */
+  currentBoard: Board | undefined;
   cycleType: CycleType;
   setCycleType: (type: CycleType) => void;
   isGhostMode: boolean;
   sysConfig: SysConfig;
   toggleGhostMode: () => void;
-  cycles: { [key in CycleType]: GameCycle };
+  cycles: Record<CycleType, GameCycle>;
   currentCycle: GameCycle;
   pastCycles: GameCycle[];
   /**
@@ -110,7 +115,7 @@ interface GameContextType {
   audience: PlayProfile;
   /** Show the boards of this profile (the header switch calls it). */
   setAudience: (audience: PlayProfile) => void;
-  /** Fetch one board's full ANALYTICS_WINDOW of results. See the callback. */
+  /** Fetch one board's full analytics window of results. See the callback. */
   loadCycleHistory: (type: CycleType) => void;
   gameState: GameState;
   serverTimeOffset: number;
@@ -126,6 +131,29 @@ interface GameContextType {
 }
 
 const GameContext = createContext<GameContextType | undefined>(undefined);
+
+/**
+ * A board's cycle before its snapshot arrives. Cycles start as this until
+ * cycle_snapshot arrives — no local stubs with fake PENDING_ ids, which caused
+ * "Cycle not found" errors when a bet was placed before the real cycle landed.
+ */
+const createNullCycle = (type: CycleType): GameCycle => ({
+  id:              `LOADING_${type}`,
+  type,
+  startTime:       0,
+  endTime:         0,
+  status:          GameState.OPEN,
+  timeRemaining:   0,
+  timeRemainingMs: 0,
+  totalDelhi:      0,
+  totalBombay:     0,
+  realDelhi:       0,
+  realBombay:      0,
+  phantomDelhi:    0,
+  phantomBombay:   0,
+  phantomBalanced: false,
+});
+const NO_STATS: LiveStats = Object.freeze({ totalDelhi: 0, totalBombay: 0 }) as LiveStats;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -189,7 +217,11 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
   // Memory only, never localStorage: a 5-minute half-authenticated credential
   // surviving a reload is a stale secret, not a convenience.
   const [isOnline, setIsOnline]     = useState(true);
-  const [cycleType, setCycleType]   = useState<CycleType>(CycleType.THIRTY_MIN);
+  // The first board in the admin's order until the player picks one (set when
+  // the boards arrive, and again if the shown board is switched off).
+  const [cycleType, setCycleType]   = useState<CycleType>('');
+  const [boards, setBoards]         = useState<Board[]>([]);
+  const boardsRef = useRef<Board[]>([]);
   const [isGhostMode, setIsGhostMode] = useState(false);
   const [sysConfig, setSysConfig] = useState<SysConfig>(DEFAULT_SYS_CONFIG);
   const [userBets, setUserBets]     = useState<Bet[]>([]);
@@ -206,42 +238,33 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
   const serverTimeOffset = 0; // kept for context API compat, components must not use for cycle math
   const isProcessingBet = useRef(false);
 
-  const liveStatsRef = useRef<{ [key in CycleType]: LiveStats }>({
-    [CycleType.ONE_MIN]:    { totalDelhi: 0, totalBombay: 0 },
-    [CycleType.THIRTY_MIN]: { totalDelhi: 0, totalBombay: 0 },
-    [CycleType.FULL_DAY]:   { totalDelhi: 0, totalBombay: 0 }
-  });
+  const liveStatsRef = useRef<Record<CycleType, LiveStats>>({});
   const subscribersRef = useRef<Set<{ type: CycleType, cb: (data: LiveStats) => void }>>(new Set());
 
-  // ── WS-FIRST INIT: cycles start as null until cycle_snapshot arrives ──────
-  // No local stubs with fake PENDING_ IDs — those caused "Cycle not found" errors
-  // when a bet was placed before syncWithServer replaced the stub.
-  // The server pushes cycle_snapshot within ~1 RTT of connect, so the null
-  // window is practically invisible.
-  const createNullCycle = (type: CycleType): GameCycle => ({
-    id:              `LOADING_${type}`,
-    type,
-    startTime:       0,
-    endTime:         0,
-    status:          GameState.OPEN,
-    timeRemaining:   0,
-    timeRemainingMs: 0,
-    totalDelhi:      0,
-    totalBombay:     0,
-    realDelhi:       0,
-    realBombay:      0,
-    phantomDelhi:    0,
-    phantomBombay:   0,
-    phantomBalanced: false,
-  });
-
-  const [cycles, setCycles] = useState<{ [key in CycleType]: GameCycle }>({
-    [CycleType.ONE_MIN]:    createNullCycle(CycleType.ONE_MIN),
-    [CycleType.THIRTY_MIN]: createNullCycle(CycleType.THIRTY_MIN),
-    [CycleType.FULL_DAY]:   createNullCycle(CycleType.FULL_DAY),
-  });
+  const [cycles, setCycles] = useState<Record<CycleType, GameCycle>>({});
   const cyclesRef = useRef(cycles);
   useEffect(() => { cyclesRef.current = cycles; }, [cycles]);
+
+  // ── The boards: rows an admin creates, orders and switches (owner, 2026-10-08)
+  // Read on mount, when the app comes back to the foreground, and when an
+  // event names a board this list does not hold yet (one created since).
+  const loadBoards = useCallback(async () => {
+    try {
+      const res: any = await apiClient.get('/api/v1/boards');
+      const list: Board[] = Array.isArray(res?.boards) ? res.boards : [];
+      boardsRef.current = list;
+      setBoards(list);
+      setCycleType((cur) => (list.some((b) => b.key === cur) ? cur : (list[0]?.key ?? cur)));
+    } catch { /* keep the last list; the next foreground or event retries */ }
+  }, []);
+  useEffect(() => {
+    void loadBoards();
+    const onVisible = () => { if (document.visibilityState === 'visible') void loadBoards(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [loadBoards]);
+  const loadBoardsRef = useRef(loadBoards);
+  loadBoardsRef.current = loadBoards;
 
   // ── CROSS-2: Fetch branding on init so getAssetUrl() works in production ──
   useEffect(() => {
@@ -354,8 +377,8 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
   const refreshCycles = requestCycleSnapshot;
 
   /**
-   * Ask for one board's full analytics window (ANALYTICS_WINDOW rows for that
-   * type — 1,440 for the 1-minute and 30-minute boards).
+   * Ask for one board's full analytics window (`analyticsWindowFor` rows —
+   * 1,440 for a repeating board, 30 for a daily one).
    *
    * On demand rather than on connect: this is ~288 KB and only matters to
    * someone who opens the analytics drawer, while connect is paid by every
@@ -370,7 +393,7 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
   const loadCycleHistory = useCallback((type: CycleType) => {
     const socket = (backend as any).socket;
     if (!socket?.connected) return;
-    const limit = ANALYTICS_WINDOW[type as string] ?? ANALYTICS_WINDOW['30_MIN'];
+    const limit = analyticsWindowFor(boardsRef.current.find((b) => b.key === type));
     socket.emit('request_cycle_history', { type, limit, audience: audienceRef.current });
   }, []);
 
@@ -422,7 +445,7 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
     //
     // Payloads arrive at three very different depths and a replace cannot serve
     // all three. Connect sends 50 rows per type (cheap, enough for the roadmap
-    // strip). The drawer asks for the full ANALYTICS_WINDOW of ONE board on
+    // strip). The drawer asks for the full analytics window of ONE board on
     // demand — 1,440 rows. And the server re-broadcasts the resolved type's
     // recent rows after every result, which for a 1-minute block is once a
     // minute: replacing on that would throw away a 1,440-row window the player
@@ -431,7 +454,7 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
     //
     // Union by id is idempotent, tolerates out-of-order and overlapping
     // payloads, and lets a shallow refresh top up a deep window instead of
-    // truncating it. Rows are then capped per type at ANALYTICS_WINDOW so the
+    // truncating it. Rows are then capped per board at its window so the
     // list cannot grow without bound across a long session.
     const handleCycleHistory = (data: { cycles: any[]; types?: string[] }) => {
       const incoming: GameCycle[] = (data.cycles || []).map((c: any) => ({
@@ -452,7 +475,7 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
         const perType: Record<string, number> = {};
         for (const c of [...byId.values()].sort((a, b) => (b.endTime || 0) - (a.endTime || 0))) {
           const t = String(c.type);
-          const cap = ANALYTICS_WINDOW[t] ?? ANALYTICS_WINDOW['30_MIN'];
+          const cap = analyticsWindowFor(boardsRef.current.find((b) => b.key === t));
           const key = `${t}:${c.audience ?? 'VIP'}`;
           if ((perType[key] = (perType[key] || 0) + 1) <= cap) kept.push(c);
         }
@@ -492,11 +515,11 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
   const subscribeToVolume = useCallback((type: CycleType, callback: (data: LiveStats) => void) => {
     const sub = { type, cb: callback };
     subscribersRef.current.add(sub);
-    callback(liveStatsRef.current[type]);
+    callback(liveStatsRef.current[type] ?? NO_STATS);
     return () => { subscribersRef.current.delete(sub); };
   }, []);
 
-  const getCurrentVolume = useCallback((type: CycleType) => liveStatsRef.current[type], []);
+  const getCurrentVolume = useCallback((type: CycleType) => liveStatsRef.current[type] ?? NO_STATS, []);
 
   
   // Extract user id to avoid optional chaining (?.) inside the deps array,
@@ -534,31 +557,22 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
         if (!watched.has(id)) { socket.emit('watch_cycle', { cycleId: id }); watched.add(id); }
       }
     };
-    // ── One place that turns a server type string into a CycleType ──────────
-    // Five handlers each had their own version of this, and every one ended in
-    // `: CycleType.FULL_DAY`. That fallback was harmless while there were two
-    // types and became a bug the moment there were three: a 1_MIN event with a
-    // type field the branch did not recognise was filed as FULL_DAY, so the
-    // 1-minute tab never updated and the full-day tab showed someone else's
-    // pools.
-    //
-    // The cycleId sniff stays as a last resort because some legacy events carry
-    // no type at all, but it is now keyed off the registry's id prefixes rather
-    // than a single hardcoded '30MIN'.
-    const CYCLE_ID_PREFIXES: Array<[string, CycleType]> = [
-      ['1MIN_',    CycleType.ONE_MIN],
-      ['30MIN_',   CycleType.THIRTY_MIN],
-      ['FULLDAY_', CycleType.FULL_DAY],
-    ];
+    // ── One place that turns a server event into a board key ───────────────
+    // The server names the board in `type`; a few legacy events carry only the
+    // cycleId, which starts with the board's id prefix. An event naming a board
+    // this list does not hold yet is still applied (the server is the
+    // authority) and the list is re-read, so the new board's tab appears.
+    // Unattributable events are dropped rather than applied to the wrong tab.
     const toCycleType = (raw: any, cycleId?: string): CycleType | null => {
-      const known = Object.values(CycleType).find(v => v === raw);
-      if (known) return known as CycleType;
-      if (typeof cycleId === 'string') {
-        const hit = CYCLE_ID_PREFIXES.find(([prefix]) => cycleId.startsWith(prefix));
-        if (hit) return hit[1];
+      const list = boardsRef.current;
+      if (typeof raw === 'string' && raw) {
+        if (list.length && !list.some((b) => b.key === raw)) void loadBoardsRef.current();
+        return raw;
       }
-      // Unattributable: better to drop the event than to apply it to the wrong
-      // tab, which is what every previous fallback did.
+      if (typeof cycleId === 'string') {
+        const hit = list.find((b) => cycleId.startsWith(`${b.idPrefix}_`));
+        if (hit) return hit.key;
+      }
       return null;
     };
 
@@ -612,13 +626,16 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
         }));
       };
 
-      // Every type, from the enum — the snapshot is the authoritative init, so a
-      // type missing here is a tab that stays on LOADING_ until the next
+      // Every board the snapshot carries — it is the authoritative init, so a
+      // board missing here is a tab that stays on LOADING_ until the next
       // new_cycle happens to fire.
-      for (const t of Object.values(CycleType)) applySnapshotType(t, t);
+      for (const t of Object.keys(map)) {
+        const ct = toCycleType(t);
+        if (ct) applySnapshotType(t, ct);
+      }
       // Watch exactly the live cycles the snapshot just described.
       syncWatched(Object.fromEntries(
-        Object.values(CycleType).map(t => [t, map[t]?.cycleId]),
+        Object.keys(map).map(t => [t, map[t]?.cycleId]),
       ));
       setIsOnline(true);
     };
@@ -647,7 +664,7 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
       if (!updates.length) return;
       const currentCycles = cyclesRef.current;
       const appliedUpdates = updates
-        .filter(([cycleId, update]) => currentCycles[update.cycleType].id === cycleId)
+        .filter(([cycleId, update]) => currentCycles[update.cycleType]?.id === cycleId)
         .map(([, update]) => update);
       for (const { cycleType, stats } of appliedUpdates) {
         liveStatsRef.current[cycleType] = stats;
@@ -657,7 +674,7 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
         const next = { ...prev };
         for (const { cycleType, stats } of appliedUpdates) {
           next[cycleType] = {
-            ...prev[cycleType],
+            ...(prev[cycleType] ?? createNullCycle(cycleType)),
             totalDelhi: stats.totalDelhi,
             totalBombay: stats.totalBombay,
           };
@@ -741,11 +758,11 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
       setCycles(prev => ({
         ...prev,
         [ct]: {
-          ...prev[ct],
+          ...(prev[ct] ?? createNullCycle(ct)),
           winner:      data.winner as BettingSide,
           status:      GameState.RESULT_DECLARED,
-          totalDelhi:  data.delhiPool  || data.totalDelhi  || prev[ct].totalDelhi,
-          totalBombay: data.bombayPool || data.totalBombay || prev[ct].totalBombay,
+          totalDelhi:  data.delhiPool  || data.totalDelhi  || prev[ct]?.totalDelhi  || 0,
+          totalBombay: data.bombayPool || data.totalBombay || prev[ct]?.totalBombay || 0,
           declaredAt:  Date.now()
         }
       }));
@@ -774,7 +791,7 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
       if (!mine(data)) return;
       const ct = toCycleType(data.type, data.cycleId);
       if (!ct) return;
-      setCycles(prev => ({ ...prev, [ct]: { ...prev[ct], status: data.phase as GameState } }));
+      setCycles(prev => ({ ...prev, [ct]: { ...(prev[ct] ?? createNullCycle(ct)), status: data.phase as GameState } }));
     };
 
     const handleFireworks = (data: any) => {
@@ -811,9 +828,6 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
       if (!data) return;
       setSysConfig(prev => ({
         ...prev,
-        minBet:        data.minBet        ?? prev.minBet,
-        maxBet:        data.maxBet        ?? prev.maxBet,
-        maxFullDayBet: data.maxFullDayBet  ?? prev.maxFullDayBet,
         tokenBuyRate:  data.tokenBuyRate  ?? prev.tokenBuyRate,
         tokenSellRate: data.tokenSellRate ?? prev.tokenSellRate,
         footerPages:   Array.isArray(data.footerPages) && data.footerPages.length ? data.footerPages : prev.footerPages,
@@ -973,7 +987,9 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
 
     isProcessingBet.current = true;
     try {
-      const result = await backend.placeBet(user.id, cycles[cycleType].id, amount, side);
+      const cycleId = cycles[cycleType]?.id;
+      if (!cycleId) return;
+      const result = await backend.placeBet(user.id, cycleId, amount, side);
 
       // BUG-U4 fix: read result.balance.{deposit,winnings,locked} not result.newBalance
       setUser(prev => {
@@ -992,7 +1008,9 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
   const placePhantomBet = useCallback(async (amount: number, side: BettingSide) => {
     if (!user) return;
     try {
-      await backend.placePhantomBet(user.id, cycles[cycleType].id, amount, side);
+      const cycleId = cycles[cycleType]?.id;
+      if (!cycleId) return;
+      await backend.placePhantomBet(user.id, cycleId, amount, side);
     } catch { addToast('Phantom Failed', 'error'); }
   }, [user, cycleType, cycles, addToast]);
 
@@ -1021,11 +1039,15 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
   // The server pushes cycle_update every second with status + timeRemaining.
   // CycleControl smooths the display with a local decrement between pushes.
 
+  const currentCycle = cycles[cycleType] ?? createNullCycle(cycleType);
+  const currentBoard = boards.find((b) => b.key === cycleType);
+
   return (
     <GameContext.Provider value={{
       user, isAuthenticated: !!user, isOnline, register, signIn, signInWithTelegram, pollTelegramStep, logout,
-      cycleType, setCycleType, cycles, currentCycle: cycles[cycleType],
-      pastCycles: myPastCycles, audience, setAudience, loadCycleHistory, gameState: cycles[cycleType].status, serverTimeOffset,
+      boards, currentBoard,
+      cycleType, setCycleType, cycles, currentCycle,
+      pastCycles: myPastCycles, audience, setAudience, loadCycleHistory, gameState: currentCycle.status, serverTimeOffset,
       placeBet, placePhantomBet, userBets, history, formatTime,
       updateProfile, subscribeToVolume, getCurrentVolume, refreshUserWallet,
       isGhostMode,

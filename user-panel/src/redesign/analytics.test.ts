@@ -15,15 +15,16 @@
  */
 import { describe, it, expect } from 'vitest';
 import { analyticsFor, computeAnalytics, MIN_SAMPLE, Side } from './analytics';
-import { ANALYTICS_WINDOW } from '../constants';
-import { CycleType } from '../types';
+import { ANALYTICS_WINDOW, analyticsWindowFor, chipsFor } from '../constants';
 import { canPlaceBet, BET_SUBMIT_MARGIN_MS } from '../GAME_CORE';
 
 const run = (n: number, side: Side): Side[] => Array.from({ length: n }, () => side);
+const INTERVAL = { kind: 'INTERVAL' };
+const DAILY = { kind: 'DAILY' };
 
 describe('analyticsFor', () => {
   it('reports an empty board as empty rather than filling it in', () => {
-    for (const type of Object.values(CycleType)) {
+    for (const type of [INTERVAL, DAILY, undefined]) {
       const A = analyticsFor([], type);
       expect(A.sample, `${type} sample`).toBe(0);
       expect(A.total, `${type} total`).toBe(0);
@@ -35,51 +36,49 @@ describe('analyticsFor', () => {
   it('keeps the sample equal to the real results given, at every size', () => {
     // The old behaviour: 2 real results in, 1,440 out.
     for (const n of [1, 2, 11, 12, 40]) {
-      const A = analyticsFor(run(n, 'DELHI'), CycleType.ONE_MIN);
+      const A = analyticsFor(run(n, 'DELHI'), INTERVAL);
       expect(A.sample, `${n} real results`).toBe(n);
       expect(A.seq.length).toBe(n);
     }
   });
 
   it('marks a window sufficient only at MIN_SAMPLE and above', () => {
-    expect(analyticsFor(run(MIN_SAMPLE - 1, 'DELHI'), CycleType.THIRTY_MIN).sufficient).toBe(false);
-    expect(analyticsFor(run(MIN_SAMPLE, 'DELHI'), CycleType.THIRTY_MIN).sufficient).toBe(true);
+    expect(analyticsFor(run(MIN_SAMPLE - 1, 'DELHI'), INTERVAL).sufficient).toBe(false);
+    expect(analyticsFor(run(MIN_SAMPLE, 'DELHI'), INTERVAL).sufficient).toBe(true);
   });
 
   it('caps the full-day window without padding a short one', () => {
-    // FULL_DAY looks back 30 results; the cap trims a long history and does
-    // nothing at all to a short one.
-    expect(analyticsFor(run(50, 'DELHI'), CycleType.FULL_DAY).sample).toBe(30);
-    expect(analyticsFor(run(4, 'DELHI'), CycleType.FULL_DAY).sample).toBe(4);
+    // A daily board looks back 30 results; the cap trims a long history and
+    // does nothing at all to a short one.
+    expect(analyticsFor(run(50, 'DELHI'), DAILY).sample).toBe(30);
+    expect(analyticsFor(run(4, 'DELHI'), DAILY).sample).toBe(4);
   });
 
-  it('carries the full 1,440-result window on both minute-based boards', () => {
+  it('carries the full 1,440-result window on every repeating board', () => {
     // The specified depth for the streak statistics: 24h of 1-minute blocks,
     // 30 days of half-hour ones. GameContext caps stored history to the same
     // map and the drawer requests exactly this many rows, so a change here
     // that is not matched there leaves the charts quietly describing less
     // history than they claim.
-    for (const t of [CycleType.ONE_MIN, CycleType.THIRTY_MIN]) {
-      expect(ANALYTICS_WINDOW[t], `${t} window`).toBe(1440);
-      expect(analyticsFor(run(2000, 'DELHI'), t).sample, `${t} sample`).toBe(1440);
-    }
+    expect(ANALYTICS_WINDOW.INTERVAL).toBe(1440);
+    expect(analyticsWindowFor(INTERVAL)).toBe(1440);
+    expect(analyticsFor(run(2000, 'DELHI'), INTERVAL).sample).toBe(1440);
   });
 
-  it('declares a window for every cycle type', () => {
-    for (const t of Object.values(CycleType)) {
-      expect(ANALYTICS_WINDOW[t], `no window for ${t}`).toBeGreaterThan(0);
-    }
+  it('gives a board nobody has described yet the repeating window, never zero', () => {
+    expect(analyticsWindowFor(undefined)).toBe(1440);
+    expect(analyticsWindowFor(null)).toBe(1440);
   });
 
   it('counts only the winners it was given', () => {
-    const A = analyticsFor([...run(3, 'DELHI'), ...run(2, 'BOMBAY')], CycleType.ONE_MIN);
+    const A = analyticsFor([...run(3, 'DELHI'), ...run(2, 'BOMBAY')], INTERVAL);
     expect(A.delhiWins).toBe(3);
     expect(A.bombayWins).toBe(2);
     expect(A.delhiWins + A.bombayWins).toBe(A.sample);
   });
 
-  it('falls back to the 30-minute window for an unknown type, still without padding', () => {
-    const A = analyticsFor(run(5, 'BOMBAY'), 'SOMETHING_ELSE');
+  it('falls back to the repeating window for an unknown board, still without padding', () => {
+    const A = analyticsFor(run(5, 'BOMBAY'), undefined);
     expect(A.sample).toBe(5);
   });
 });
@@ -104,14 +103,16 @@ describe('client betting cutoff', () => {
   const END = 1_800_000_000_000;
   const at = (msLeft: number) => END - msLeft;
 
-  it('closes the 1-minute board 1.5s before the server does', () => {
-    expect(canPlaceBet(CycleType.ONE_MIN, at(7_000), END)).toBe(true);
-    expect(canPlaceBet(CycleType.ONE_MIN, at(6_500), END)).toBe(false); // 5s + margin
-    expect(canPlaceBet(CycleType.ONE_MIN, at(5_100), END)).toBe(false); // server would still take it
+  it('closes a board 1.5s before the server does, on the board\'s own offset', () => {
+    expect(canPlaceBet(5, at(7_000), END)).toBe(true);
+    expect(canPlaceBet(5, at(6_500), END)).toBe(false); // 5s + margin
+    expect(canPlaceBet(5, at(5_100), END)).toBe(false); // server would still take it
+    expect(canPlaceBet(30, at(32_000), END)).toBe(true);
+    expect(canPlaceBet(30, at(31_000), END)).toBe(false);
   });
 
   it('never opens later than it closes, on any board', () => {
-    for (const t of Object.values(CycleType)) {
+    for (const t of [0, 5, 30]) {
       expect(canPlaceBet(t, at(0), END), `${t} at the buzzer`).toBe(false);
       expect(canPlaceBet(t, at(-1_000), END), `${t} past the end`).toBe(false);
     }
@@ -120,6 +121,15 @@ describe('client betting cutoff', () => {
   it('costs the margin and no more', () => {
     // A board must not lose a meaningful share of its betting window to this.
     expect(BET_SUBMIT_MARGIN_MS).toBeLessThanOrEqual(2_000);
-    expect(canPlaceBet(CycleType.ONE_MIN, at(60_000), END)).toBe(true);
+    expect(canPlaceBet(5, at(60_000), END)).toBe(true);
+  });
+});
+
+describe('chips', () => {
+  it('ladders from the board\'s minimum, never above its maximum', () => {
+    expect(chipsFor({ minBet: 10, maxBet: 100000 })).toEqual([10, 30, 90, 270, 810]);
+    expect(chipsFor({ minBet: 100, maxBet: 500000 })).toEqual([100, 300, 900, 2700, 8100]);
+    expect(chipsFor({ minBet: 50, maxBet: 500 })).toEqual([50, 150, 450]);
+    expect(chipsFor(undefined)).toEqual([]);
   });
 });

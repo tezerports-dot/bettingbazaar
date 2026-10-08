@@ -17,33 +17,31 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { analyticsFor, seqFromRuns, MIN_SAMPLE, Side } from './analytics';
 import { fmt } from './format';
-import { CycleType } from '../types';
-
-// How the window is described in the drawer header, per type.
-const CYCLE_WINDOW_LABEL: Record<CycleType, string> = {
-  [CycleType.ONE_MIN]:    '1-min',
-  [CycleType.THIRTY_MIN]: '30-min',
-  [CycleType.FULL_DAY]:   'full-day',
-};
+import { Board, CycleType } from '../types';
 
 interface Props {
   open: boolean;
   onClose: () => void;
-  // Keyed by every CycleType — GameScreen builds it from the enum, so a type
-  // missing here is a tab whose analytics silently show another type's history.
+  // Keyed by board — GameScreen builds it with an entry for every board, so a
+  // tab never shows another board's history.
   winnersByType: Partial<Record<CycleType, Side[]>>;
+  /** The switched-on boards, in the admin's order: the drawer's board switch. */
+  boards: Board[];
   // Requests one board's full analytics window. See GameContext.
   loadCycleHistory: (type: CycleType) => void;
 }
 
 const bead = (sd: Side) => ({ ch: sd === 'DELHI' ? 'D' : 'B', bg: sd === 'DELHI' ? 'var(--delhi)' : 'var(--bombay)' });
 
-const AnalyticsDrawer: React.FC<Props> = ({ open, onClose, winnersByType, loadCycleHistory }) => {
-  const [aCycle, setACycle] = useState<CycleType>(CycleType.THIRTY_MIN);
+const AnalyticsDrawer: React.FC<Props> = ({ open, onClose, winnersByType, boards, loadCycleHistory }) => {
+  const [picked, setACycle] = useState<CycleType>('');
+  // The board picked here, or the first in the admin's order.
+  const aCycle = boards.some((b) => b.key === picked) ? picked : (boards[0]?.key ?? '');
+  const aBoard = boards.find((b) => b.key === aCycle);
   const [aTab, setATab] = useState<'roadmap' | 'streaks' | 'gaps' | 'predict'>('roadmap');
 
-  // Pull the full ANALYTICS_WINDOW for the board being viewed — 1,440 results
-  // for the 1-minute and 30-minute boards, which is what the streak
+  // Pull the full analytics window for the board being viewed — 1,440 results
+  // for a repeating board, which is what the streak
   // distribution and gap tables are meant to describe. Connect only carries 50
   // rows per type, since it is paid by every visitor whether or not they open
   // this drawer; the deep window is fetched here, where it is actually read.
@@ -52,10 +50,10 @@ const AnalyticsDrawer: React.FC<Props> = ({ open, onClose, winnersByType, loadCy
   // held is cheap and idempotent: the response merges by cycle id in
   // GameContext rather than replacing.
   useEffect(() => {
-    if (open) loadCycleHistory(aCycle);
+    if (open && aCycle) loadCycleHistory(aCycle);
   }, [open, aCycle, loadCycleHistory]);
 
-  const A = useMemo(() => analyticsFor(winnersByType[aCycle] || [], aCycle), [winnersByType, aCycle]);
+  const A = useMemo(() => analyticsFor(winnersByType[aCycle] || [], aBoard), [winnersByType, aCycle, aBoard]);
 
   // Share of wins. With no results at all the `Math.max(1, …)` guard would
   // otherwise render a confident "Delhi 0% / Bombay 100%" off an empty board.
@@ -127,13 +125,11 @@ const AnalyticsDrawer: React.FC<Props> = ({ open, onClose, winnersByType, loadCy
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
             <div style={{ display: 'flex', flexDirection: 'column' }}>
               <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 16, color: 'var(--text)' }}>Results &amp; Streak Analytics</span>
-              <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text3)' }}>Last window · {fmt(A.total)} {CYCLE_WINDOW_LABEL[aCycle]} cycles</span>
+              <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text3)' }}>Last window · {fmt(A.total)} {aBoard?.name ?? ''} cycles</span>
             </div>
             <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
               <div style={{ display: 'flex', background: 'var(--surface3)', border: '1px solid var(--line)', borderRadius: 999, padding: 3, gap: 2 }}>
-                {cyBtn(CycleType.FULL_DAY, 'FULL DAY')}
-                {cyBtn(CycleType.THIRTY_MIN, '30 MIN')}
-                {cyBtn(CycleType.ONE_MIN, '1 MIN')}
+                {boards.map((b) => <React.Fragment key={b.key}>{cyBtn(b.key, b.name.toUpperCase())}</React.Fragment>)}
               </div>
               <button onClick={onClose} style={{ width: 32, height: 32, borderRadius: '50%', border: '1px solid var(--line)', background: 'var(--surface3)', color: 'var(--text2)', cursor: 'pointer', fontSize: 13 }}>✕</button>
             </div>

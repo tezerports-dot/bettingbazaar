@@ -5,7 +5,7 @@ import {
 } from './_adminShared.js';
 import { db } from '#db';
 // Cycle-type vocabulary — phantom access is scoped to one type, or BOTH.
-import { CYCLE_TYPE_VALUES } from '../../domains/markets/cycleTypes.js';
+import { allBoards } from '../../domains/markets/cycleTypes.js';
 // The wallet rows themselves — a delete is a decision, and a decision reads
 // what a movement would lock, never a stored copy of a balance.
 import { getBalancesPaise } from '#db/repositories/wallets.core.js';
@@ -465,10 +465,9 @@ router.post('/users/:userId/phantom-access', authenticate, hasPermission('canMan
     const { userId } = req.params;
     const { accessLevel } = req.body; // 'NONE', a cycle type, or 'BOTH' (= every type)
 
-    // Derived from the type registry rather than restated. As a literal list
-    // this silently rejected any newly added cycle type — the admin UI would
-    // offer the option and the save would 400.
-    const validLevels = ['NONE', ...CYCLE_TYPE_VALUES, 'BOTH'];
+    // Derived from the boards rather than restated: a literal list silently
+    // rejected any new board. `users_phantom_access_known` holds the same rule.
+    const validLevels = ['NONE', ...(await allBoards()).map((b) => b.key), 'BOTH'];
     if (!validLevels.includes(accessLevel)) {
       return res.status(400).json({
         success: false,

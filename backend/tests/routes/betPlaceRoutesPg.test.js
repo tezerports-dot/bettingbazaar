@@ -28,7 +28,8 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomInt } from 'node:crypto';
 import { pgConfigured, applySchema, closePg, pgQuery, withTransaction } from '#db/client.js';
 import { ensureCycle } from '#db/repositories/markets.js';
-import { getSystemConfig } from '#db/repositories/config.js';
+import { listBoards, createBoard, updateBoard } from '#db/repositories/boards.js';
+import { invalidateBoards } from '../../domains/markets/cycleTypes.js';
 import { getBalances } from '../../domains/wallet/walletAuthority.service.js';
 // Funded from the platform's own holding, posted with the credit: a wallet
 // that gains tokens from nowhere does not commit.
@@ -82,7 +83,9 @@ describePg('POST /api/bet/place', () => {
     await applySchema();
     const router = (await import('../../domains/markets/bet.routes.js')).default;
     app = mountRouter(router);
-    limits = (await getSystemConfig())?.betLimits;
+    // Each board's own stake bounds (the `boards` row).
+    const byKey = Object.fromEntries((await listBoards()).map((b) => [b.key, { min: b.minBet, max: b.maxBet }]));
+    limits = { fullDay: byKey.FULL_DAY, thirtyMin: byKey['30_MIN'] };
   }, 60_000);
 
   afterAll(async () => {
@@ -131,6 +134,67 @@ describePg('POST /api/bet/place', () => {
       const p = await fundedPlayer(1_000);
       const res = await place(p, { cycleId: cycle.cycleId, side: 'DELHI', amount: limits.fullDay.min, type: 'FULL_DAY' });
       expect(res.status, JSON.stringify(res.body)).toBe(200);
+    });
+  });
+
+  describe('a board an admin created runs on its own row', () => {
+    // One board per run (boards are never deleted); switched off afterwards so
+    // no generator started on this database runs it.
+    let board;
+    beforeAll(async () => {
+      board = await createBoard({
+        name: `Rt bet ${randomInt(0, 1e9)}`, kind: 'INTERVAL', durationMin: 5,
+        phases: { mergeBeforeEndSec: 40, equalizerBeforeEndSec: 30, closeBeforeEndSec: 20, celebrateBeforeEndSec: 5 },
+        minBet: 50, maxBet: 500,
+      });
+      invalidateBoards();
+    });
+    afterAll(async () => {
+      await updateBoard(board.key, { enabled: false }).catch(() => {});
+      invalidateBoards();
+    });
+
+    it('holds a stake to the board\'s own bounds', async () => {
+      const cycle = await openCycle(board.key, { startedAgoMs: 60_000, lengthMs: 4 * 60_000 });
+      made.push(cycle.cycleId);
+      const p = await fundedPlayer(2_000);
+      const low = await place(p, { cycleId: cycle.cycleId, side: 'DELHI', amount: 40 });
+      expect(low.status, JSON.stringify(low.body)).toBe(400);
+      const high = await place(p, { cycleId: cycle.cycleId, side: 'DELHI', amount: 510 });
+      expect(high.status, JSON.stringify(high.body)).toBe(400);
+      const ok = await place(p, { cycleId: cycle.cycleId, side: 'DELHI', amount: 50 });
+      expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+    });
+
+    it('closes betting on the board\'s own close offset, whatever the status says', async () => {
+      // 15s before the end: inside this board's 20s close, while the row still reads OPEN.
+      const cycle = await openCycle(board.key, { startedAgoMs: 60_000, lengthMs: 15_000 });
+      made.push(cycle.cycleId);
+      const p = await fundedPlayer(1_000);
+      const res = await place(p, { cycleId: cycle.cycleId, side: 'DELHI', amount: 50 });
+      expect(res.status, JSON.stringify(res.body)).toBe(400);
+      expect(res.body.code).toBe('BETTING_CLOSED');
+    });
+
+    it('takes no new bet once the board is switched off, and takes nothing', async () => {
+      const cycle = await openCycle(board.key, { startedAgoMs: 60_000, lengthMs: 4 * 60_000 });
+      made.push(cycle.cycleId);
+      const p = await fundedPlayer(1_000);
+      await updateBoard(board.key, { enabled: false });
+      invalidateBoards();
+      try {
+        const res = await place(p, { cycleId: cycle.cycleId, side: 'DELHI', amount: 50 });
+        expect(res.status, JSON.stringify(res.body)).toBe(409);
+        expect(res.body.code).toBe('BOARD_SWITCHED_OFF');
+        const { rows } = await pgQuery(`SELECT count(*)::int AS n FROM bets WHERE user_id = $1`, [p.userId]);
+        expect(rows[0].n).toBe(0);
+      } finally {
+        await updateBoard(board.key, { enabled: true });
+        invalidateBoards();
+      }
+      // Switched back on, the same round takes the bet: the refusal was the switch.
+      const ok = await place(p, { cycleId: cycle.cycleId, side: 'DELHI', amount: 50 });
+      expect(ok.status, JSON.stringify(ok.body)).toBe(200);
     });
   });
 

@@ -43,6 +43,7 @@ import { AnnouncementsPage } from './Pages/Promotions/AnnouncementsPage';
 import { BalanceAdjustment } from './Pages/Users/BalanceAdjustment';
 import { GameProviders }           from './Pages/GameProviders/GameProviders';
 import { GamesManager }            from './Pages/Games/GamesManager';
+import { BoardsManager }           from './Pages/Games/BoardsManager';
 import { FakeWinnersManager }  from './Pages/Winners/FakeWinnersManager';
 import { ChatSupport }         from './Pages/Chat/ChatSupport';
 // ── ENTERPRISE PLATFORM CONSOLES (Phase C, 2026-07-10) ─────────────────────
@@ -392,6 +393,11 @@ const App: React.FC = () => {
         {/* ── GAME PROVIDERS — admin only */}
         <Route path="/game-providers" element={
           <PermRoute permission="canManageGames"><Layout><GameProviders /></Layout></PermRoute>
+        } />
+
+        {/* ── BOARDS (timers, stakes, home order) — canManageGames */}
+        <Route path="/boards" element={
+          <PermRoute permission="canManageGames"><Layout><BoardsManager /></Layout></PermRoute>
         } />
 
         {/* ── GAME REGISTRY (catalogue + categories) — admin only */}

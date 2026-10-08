@@ -405,6 +405,18 @@ export const cycles = {
   },
 };
 
+// --- BOARDS (owner, 2026-10-08) ------------------------------------------------
+// Admin-created board games, each with its own timer, and their home-page order.
+// backend/routes/admin/boards.admin.routes.js. Screens that only LABEL boards
+// read the public list instead (hooks/useBoards.ts).
+export const boards = {
+  list: async () => (await api.get<any>('/api/admin/boards')).data,
+  create: async (body: Record<string, unknown>) => (await api.post<any>('/api/admin/boards', body)).data,
+  update: async (key: string, patch: Record<string, unknown>) =>
+    (await api.put<any>(`/api/admin/boards/${encodeURIComponent(key)}`, patch)).data,
+  setOrder: async (keys: string[]) => (await api.put<any>('/api/admin/boards/order', { keys })).data,
+};
+
 // --- TOKEN RATES ---------------------------------------------------------------
 // Removed 2026-07-08: token conversion is fixed 1:1 (Phase 006 flattening) —
 // rates are no longer admin-editable and the backend endpoints are gone.
@@ -709,10 +721,9 @@ export const subAdmins = {
 
   assignPhantomAccess: async (
     userId: string,
-    // Mirrors the User.phantomAccess enum. 'BOTH' predates the 1-minute block
-    // and means EVERY type — the server gate reads it as "skip the per-type
-    // check" (backend/domains/markets/bet.routes.js).
-    access: 'NONE' | '1_MIN' | '30_MIN' | 'FULL_DAY' | 'BOTH'
+    // 'NONE', a board's key, or 'BOTH' (= every board); the server holds it to
+    // an existing board (`users_phantom_access_known`).
+    access: string
   ) => {
     // Backend expects { accessLevel }
     const res = await api.post(`/api/admin/users/${userId}/phantom-access`, {
@@ -1109,6 +1120,7 @@ export default {
   users,
   merchants,
   cycles,
+  boards,
   depositPolicy,
   queueManager,
   teams,

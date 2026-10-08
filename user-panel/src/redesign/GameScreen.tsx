@@ -9,14 +9,15 @@
  *   • my bets       — userBets for the current cycle, summed per side
  *   • roadmap/stats — winners from pastCycles (analytics.ts), real results only
  *
- * GOVERNANCE §2/§3: min-bet comes from sysConfig (server authority), never a
- * hardcoded number. Chip denominations are UI-only (§10, constants.CHIP_VALUES).
+ * GOVERNANCE §2/§3: the min bet, chips, close offset and tabs come from the
+ * board (`GET /api/v1/boards`, server authority), never a hardcoded number.
+ * Chip denominations are UI-only (§11, constants.chipsFor).
  * §3: gold/accent hues resolve from brand CSS variables via the theme tokens.
  */
 import React, { useEffect, useMemo, useState } from 'react';
 import { useGame } from '../services/GameContext';
-import { BettingSide, CycleType, GameState } from '../types';
-import { CHIP_VALUES } from '../constants';
+import { BettingSide, GameState } from '../types';
+import { chipsFor } from '../constants';
 import { useShell } from './RedesignShell';
 import { useViewport } from './useViewport';
 import { useToast } from '../components/ui/Toast';
@@ -40,17 +41,9 @@ const bead = (sd: Side) => ({ ch: sd === 'DELHI' ? 'D' : 'B', bg: sd === 'DELHI'
 
 const GameScreen: React.FC = () => {
   const {
-    currentCycle, gameState, cycleType, setCycleType, placeBet, placePhantomBet,
-    userBets, isGhostMode, toggleGhostMode, user, isAuthenticated, sysConfig, pastCycles, loadCycleHistory, subscribeToVolume, getCurrentVolume, serverTimeOffset,
+    currentCycle, gameState, cycleType, setCycleType, placeBet, placePhantomBet, boards, currentBoard,
+    userBets, isGhostMode, toggleGhostMode, user, isAuthenticated, pastCycles, loadCycleHistory, subscribeToVolume, getCurrentVolume, serverTimeOffset,
   } = useGame();
-
-  // Short label for the results strip, per cycle type. A map rather than a
-  // ternary so a new tab shows its own label instead of borrowing another's.
-  const CYCLE_TAB_LABEL: Record<string, string> = {
-    [CycleType.ONE_MIN]:    '1M',
-    [CycleType.THIRTY_MIN]: '30M',
-    [CycleType.FULL_DAY]:   '24H',
-  };
 
   // Phantom-manager access (ghost mode). Only users granted phantomAccess for the
   // active cycle type see the toggle; enabling it routes bets through
@@ -99,7 +92,8 @@ const GameScreen: React.FC = () => {
   // land in time — see canPlaceBet. Kept separate so the countdown and the
   // MERGED/CLOSED labels stay truthful while the bet buttons close early.
   const betOpen = !!currentCycle?.endTime
-    && canPlaceBet(cycleType, Date.now() + serverTimeOffset, currentCycle.endTime);
+    && !!currentBoard
+    && canPlaceBet(currentBoard.phases.closeBeforeEndSec, Date.now() + serverTimeOffset, currentCycle.endTime);
   const isOpen = gameState === GameState.OPEN;
   const isMerged = gameState === GameState.MERGED;
   const isClosed = gameState === GameState.CLOSED;
@@ -117,23 +111,21 @@ const GameScreen: React.FC = () => {
   const lockB = myBetDelhi > 0;
   const potentialReturn = (myBetDelhi + myBetBombay) * 2;
 
-  // Winner sequences from real history (newest first), by cycle type.
+  // Winner sequences from real history (newest first), by board. Keyed by
+  // every board, so a tab cannot fall through to another board's history.
   const winnersByType = useMemo(() => {
-    const build = (t: CycleType): Side[] => (pastCycles || [])
-      .filter(c => c.type === t && (c.winner === 'DELHI' || c.winner === 'BOMBAY'))
-      .sort((a, b) => (b.endTime || 0) - (a.endTime || 0))
-      .map(c => c.winner as Side);
-    // Keyed by every CycleType, so a tab cannot fall through to another type's
-    // history — which is what `cycleType === THIRTY_MIN ? '30_MIN' : 'FULL_DAY'`
-    // did to any third type.
-    return Object.fromEntries(
-      Object.values(CycleType).map(t => [t, build(t)]),
-    ) as Record<CycleType, Side[]>;
-  }, [pastCycles]);
+    const out: Record<string, Side[]> = {};
+    for (const c of [...(pastCycles || [])].sort((a, b) => (b.endTime || 0) - (a.endTime || 0))) {
+      if (c.winner !== 'DELHI' && c.winner !== 'BOMBAY') continue;
+      (out[c.type] ??= []).push(c.winner as Side);
+    }
+    for (const b of boards) out[b.key] ??= [];
+    return out;
+  }, [pastCycles, boards]);
 
   const Ag = useMemo(
-    () => analyticsFor(winnersByType[cycleType] ?? [], cycleType),
-    [winnersByType, cycleType],
+    () => analyticsFor(winnersByType[cycleType] ?? [], currentBoard),
+    [winnersByType, cycleType, currentBoard],
   );
   const seqGame = Ag.seq;
   const stripBeads = seqGame.slice(0, mobile ? 14 : 26).map(bead);
@@ -142,9 +134,10 @@ const GameScreen: React.FC = () => {
   // Effective bet amount from chip or manual entry.
   const manualNum = parseInt(manualInput, 10);
   const betAmount = manualInput !== '' && !isNaN(manualNum) && manualNum > 0 ? manualNum : selectedChip;
-  const minBet = sysConfig?.minBet ?? 10; // schema default 10 (SystemConfig.betLimits.thirtyMin.min)
+  // The board's own minimum; 0 while the boards load (the server still holds it).
+  const minBet = currentBoard?.minBet ?? 0;
 
-  const chips = (CHIP_VALUES[cycleType] ?? CHIP_VALUES[CycleType.THIRTY_MIN]).map((v, i) => {
+  const chips = chipsFor(currentBoard).map((v, i) => {
     const st = CHIP_STYLES[i % 5];
     const sel = selectedChip === v && manualInput === '';
     return {
@@ -318,9 +311,9 @@ const GameScreen: React.FC = () => {
         {/* Cycle control */}
         <div style={{ flex: 'none', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '8px 4px 10px' }}>
           <div style={{ display: 'flex', background: 'var(--surface2)', border: '1px solid var(--line2)', borderRadius: 999, padding: 3, gap: 3, boxShadow: 'var(--shadow-sm)' }}>
-            {[{ t: CycleType.FULL_DAY, l: 'FULL DAY' }, { t: CycleType.THIRTY_MIN, l: '30 MIN' }, { t: CycleType.ONE_MIN, l: '1 MIN' }].map(o => {
+            {boards.map(b => ({ t: b.key, l: b.name.toUpperCase() })).map(o => {
               const on = cycleType === o.t;
-              return <button key={o.l} onClick={() => setCycleType(o.t)} style={{ padding: '7px 15px', borderRadius: 999, border: 'none', cursor: 'pointer', fontSize: 10, fontWeight: 800, letterSpacing: '.06em', background: on ? 'linear-gradient(180deg,var(--gold2),var(--gold))' : 'transparent', color: on ? '#1a1200' : 'var(--text3)', boxShadow: on ? 'var(--shadow-sm)' : 'none' }}>{o.l}</button>;
+              return <button key={o.t} onClick={() => setCycleType(o.t)} style={{ padding: '7px 15px', borderRadius: 999, border: 'none', cursor: 'pointer', fontSize: 10, fontWeight: 800, letterSpacing: '.06em', background: on ? 'linear-gradient(180deg,var(--gold2),var(--gold))' : 'transparent', color: on ? '#1a1200' : 'var(--text3)', boxShadow: on ? 'var(--shadow-sm)' : 'none' }}>{o.l}</button>;
             })}
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', lineHeight: 1.1 }}>
@@ -440,7 +433,7 @@ const GameScreen: React.FC = () => {
         <div style={{ flex: 'none', padding: '8px 0 4px' }}>
           <button onClick={() => setDrawerOpen(true)} style={{ width: '100%', background: 'var(--surface)', border: '1px solid var(--line)', borderTop: '1px solid var(--line2)', borderRadius: 16, padding: '10px 14px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10, boxShadow: 'var(--shadow-sm)' }}>
             <span style={{ display: 'flex', alignItems: 'center', gap: 4, flex: 'none' }}>
-              <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.1em', color: 'var(--text3)' }}>{CYCLE_TAB_LABEL[cycleType] ?? '30M'}</span>
+              <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.1em', color: 'var(--text3)' }}>{currentBoard?.name ?? ''}</span>
             </span>
             <div style={{ flex: 1, display: 'flex', gap: 5, overflow: 'hidden', alignItems: 'center' }}>
               {stripBeads.length === 0
@@ -457,7 +450,7 @@ const GameScreen: React.FC = () => {
 
       {desktop && rightPanel}
 
-      <AnalyticsDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} winnersByType={winnersByType} loadCycleHistory={loadCycleHistory} />
+      <AnalyticsDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} winnersByType={winnersByType} boards={boards} loadCycleHistory={loadCycleHistory} />
       <BoardRulesModal isAuthenticated={!!isAuthenticated} />
     </div>
   );

@@ -74,10 +74,7 @@ export function systemConfigPayload(cfg) {
       chain, label: USDT_CHAIN_SPEC[chain].label,
     })),
 
-    // Bet limits live in the betLimits subdoc, not on config.value.
-    minBet:              cfg?.betLimits?.thirtyMin?.min ?? 10,
-    maxBet:              cfg?.betLimits?.thirtyMin?.max ?? 100000,
-    maxFullDayBet:       cfg?.betLimits?.fullDay?.max   ?? 500000,
+    // Stake bounds are each board's (`GET /api/v1/boards`), not platform-wide.
 
     // The INR peg. Not admin-owned, so it is a constant rather than a
     // fallback — and it comes from tokenRates.js, which is the one place that

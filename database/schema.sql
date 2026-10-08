@@ -653,8 +653,6 @@ CREATE TABLE IF NOT EXISTS users (
 
   CONSTRAINT users_status_check
     CHECK (status IN ('ACTIVE','BLOCKED','SUSPENDED','DELETED')),
-  CONSTRAINT users_phantom_access_check
-    CHECK (phantom_access IN ('NONE','1_MIN','30_MIN','FULL_DAY','BOTH')),
   CONSTRAINT users_sub_admin_role_check
     CHECK (sub_admin_role IN ('PHANTOM_MANAGER','PHANTOM_EQUALIZER','USER_OPS',
                               'MERCHANT_OPS','CONTENT_MANAGER','ANALYST','CUSTOM')),
@@ -1199,6 +1197,78 @@ CREATE OR REPLACE TRIGGER deposit_policies_immutable
 --
 -- 3. A CYCLE WITH NO WINNER IS NOT OFFERED FOR SETTLEMENT. Same constraint,
 --    read the other way.
+-- ═══════════════════════════════════════════════════════════════════════════
+-- BOARDS (owner, 2026-10-08: admins create any number of board games, each
+-- with its own timer, and set their order on the home page)
+--
+-- One row per board; `cycles.cycle_type` names its board. Written only by
+-- `database/repositories/boards.js`. The row holds everything a board's
+-- cycles run by, and the database refuses a board the engine cannot run:
+--   INTERVAL  blocks tile the hour, so the duration divides 60;
+--   DAILY     one 24-hour block from `anchor_hour_ist`;
+--   phases    merge > equalizer > close > celebrate >= 0, inside the block;
+--   stakes    0 < min <= max.
+-- The key and id prefix name the board's cycles for good, so they never
+-- change; a board with cycles is never deleted (`cycles_board_fk`), only
+-- switched off, and the engine still finishes and settles its open cycles.
+-- ═══════════════════════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS boards (
+  board_key        TEXT PRIMARY KEY,
+  name             TEXT NOT NULL,
+  kind             TEXT NOT NULL,
+  duration_min     INTEGER NOT NULL,
+  anchor_hour_ist  INTEGER,
+  merge_sec        INTEGER NOT NULL,
+  equalizer_sec    INTEGER NOT NULL,
+  close_sec        INTEGER NOT NULL,
+  celebrate_sec    INTEGER NOT NULL,
+  min_bet_paise    BIGINT NOT NULL,
+  max_bet_paise    BIGINT NOT NULL,
+  id_prefix        TEXT NOT NULL UNIQUE,
+  enabled          BOOLEAN NOT NULL DEFAULT TRUE,
+  home_order       INTEGER NOT NULL DEFAULT 0,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT boards_key_shape    CHECK (board_key ~ '^[A-Z0-9_]{1,24}$'),
+  CONSTRAINT boards_prefix_shape CHECK (id_prefix ~ '^[A-Z0-9]{1,12}$'),
+  CONSTRAINT boards_name_shape   CHECK (length(btrim(name)) BETWEEN 1 AND 40),
+  CONSTRAINT boards_kind_known   CHECK (kind IN ('INTERVAL', 'DAILY')),
+  CONSTRAINT boards_phases_ordered CHECK (
+    merge_sec > equalizer_sec AND equalizer_sec > close_sec AND close_sec > celebrate_sec
+    AND celebrate_sec >= 0 AND merge_sec < duration_min * 60),
+  CONSTRAINT boards_stakes CHECK (min_bet_paise > 0 AND min_bet_paise <= max_bet_paise),
+  CONSTRAINT boards_home_order CHECK (home_order >= 0)
+);
+CREATE INDEX IF NOT EXISTS boards_home_idx ON boards (home_order, board_key);
+
+-- The key, kind and prefix are what the board's cycles are named and timed
+-- by; changing one would orphan every cycle already run.
+CREATE OR REPLACE FUNCTION bb_board_identity_fixed() RETURNS trigger AS $$
+BEGIN
+  IF NEW.board_key IS DISTINCT FROM OLD.board_key OR NEW.kind IS DISTINCT FROM OLD.kind
+     OR NEW.id_prefix IS DISTINCT FROM OLD.id_prefix THEN
+    RAISE EXCEPTION 'a board''s key, kind and id prefix never change'
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'boards_identity_fixed';
+  END IF;
+  NEW.updated_at := now();
+  RETURN NEW;
+END $$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS boards_identity_fixed ON boards;
+CREATE TRIGGER boards_identity_fixed BEFORE UPDATE ON boards
+  FOR EACH ROW EXECUTE FUNCTION bb_board_identity_fixed();
+
+-- The three boards the platform has always run, as they were configured
+-- (the former SystemConfig.cyclePhases / .betLimits defaults). Inserted once;
+-- an admin's later edits are never overwritten.
+INSERT INTO boards (board_key, name, kind, duration_min, anchor_hour_ist,
+                    merge_sec, equalizer_sec, close_sec, celebrate_sec,
+                    min_bet_paise, max_bet_paise, id_prefix, home_order)
+VALUES
+  ('FULL_DAY', 'Full day', 'DAILY',    1440, 18, 300, 120, 30, 10, 10000, 50000000, 'FULLDAY', 0),
+  ('30_MIN',   '30 min',   'INTERVAL',   30, NULL, 180, 120, 30, 10, 1000, 10000000, '30MIN', 1),
+  ('1_MIN',    '1 min',    'INTERVAL',    1, NULL,  12,   9,  5,  3, 1000, 10000000, '1MIN', 2)
+ON CONFLICT (board_key) DO NOTHING;
+
 CREATE TABLE IF NOT EXISTS cycles (
   cycle_id    TEXT PRIMARY KEY,
   cycle_type  TEXT NOT NULL,
@@ -1231,7 +1301,6 @@ CREATE TABLE IF NOT EXISTS cycles (
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
 
-  CONSTRAINT cycles_type_known   CHECK (cycle_type IN ('1_MIN', '30_MIN', 'FULL_DAY')),
   -- The seven states the engine actually uses, in the order it moves through
   -- them: OPEN takes bets, MERGED folds in the phantom pools, CLOSED stops
   -- betting, RESULT_DECLARED names the winner, COMPLETED settles. PAUSED and
@@ -1273,6 +1342,13 @@ DO $$ BEGIN
   ALTER TABLE cycles DROP CONSTRAINT IF EXISTS cycles_completed_has_winner;
   ALTER TABLE cycles ADD CONSTRAINT cycles_completed_has_winner CHECK (
     status NOT IN ('COMPLETED', 'RESULT_DECLARED') OR winner IS NOT NULL);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+-- Every cycle runs on a board (replaces the fixed `cycles_type_known` list).
+ALTER TABLE cycles DROP CONSTRAINT IF EXISTS cycles_type_known;
+DO $$ BEGIN
+  ALTER TABLE cycles ADD CONSTRAINT cycles_board_fk
+    FOREIGN KEY (cycle_type) REFERENCES boards (board_key) ON UPDATE RESTRICT ON DELETE RESTRICT;
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 -- Which players a cycle is for (owner, 2026-10-08): VIP (deposited money) or
@@ -4153,3 +4229,34 @@ DROP TRIGGER IF EXISTS treasury_entries_movement_balanced ON treasury_entries;
 CREATE CONSTRAINT TRIGGER treasury_entries_movement_balanced
   AFTER INSERT ON treasury_entries DEFERRABLE INITIALLY DEFERRED
   FOR EACH ROW EXECUTE FUNCTION bb_cons_movement_check();
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- BOARDS, continued: rules that need objects defined above
+-- ═══════════════════════════════════════════════════════════════════════════
+-- The timer the engine can run. Here rather than in the CREATE TABLE so a
+-- changed definition converges on an existing database (S31). NULL-safe: a
+-- DAILY board without its hour must fail, not pass as unknown.
+ALTER TABLE boards DROP CONSTRAINT IF EXISTS boards_timer_runs;
+ALTER TABLE boards ADD CONSTRAINT boards_timer_runs CHECK (
+     (kind = 'INTERVAL' AND duration_min BETWEEN 1 AND 60 AND 60 % duration_min = 0 AND anchor_hour_ist IS NULL)
+  OR (kind = 'DAILY' AND duration_min = 1440 AND anchor_hour_ist IS NOT NULL AND anchor_hour_ist BETWEEN 0 AND 23));
+
+-- A board's name is shown to every player: never a mobile number (§24).
+ALTER TABLE boards DROP CONSTRAINT IF EXISTS boards_name_not_a_mobile;
+ALTER TABLE boards ADD CONSTRAINT boards_name_not_a_mobile CHECK (NOT bb_text_has_a_mobile(name));
+
+-- Phantom access names a board (or NONE / BOTH = every board). Was a fixed
+-- CHECK of the three original boards; a board is now a row, so a trigger asks.
+ALTER TABLE users DROP CONSTRAINT IF EXISTS users_phantom_access_check;
+CREATE OR REPLACE FUNCTION bb_phantom_access_known() RETURNS trigger AS $$
+BEGIN
+  IF NEW.phantom_access NOT IN ('NONE', 'BOTH')
+     AND NOT EXISTS (SELECT 1 FROM boards WHERE board_key = NEW.phantom_access) THEN
+    RAISE EXCEPTION 'phantom access % names no board', NEW.phantom_access
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'users_phantom_access_check';
+  END IF;
+  RETURN NEW;
+END $$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS users_phantom_access_known ON users;
+CREATE TRIGGER users_phantom_access_known BEFORE INSERT OR UPDATE OF phantom_access ON users
+  FOR EACH ROW EXECUTE FUNCTION bb_phantom_access_known();

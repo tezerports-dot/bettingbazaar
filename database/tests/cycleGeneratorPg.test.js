@@ -157,9 +157,9 @@ describePg('the cycle generator', () => {
   it('creates one cycle per block however many ticks race for it', async () => {
     const gen = generator();
     await Promise.all([
-      gen.ensureIntervalCycle('30_MIN', 'VIP'),
-      gen.ensureIntervalCycle('30_MIN', 'VIP'),
-      gen.ensureIntervalCycle('30_MIN', 'VIP'),
+      gen.ensureActiveCycle('30_MIN', 'VIP'),
+      gen.ensureActiveCycle('30_MIN', 'VIP'),
+      gen.ensureActiveCycle('30_MIN', 'VIP'),
     ]);
 
     // The unique index on (cycle_type, audience, start_time) decides. Three
@@ -173,9 +173,9 @@ describePg('the cycle generator', () => {
   it('runs a separate cycle for GENERAL players in the same block, never shared with VIP', async () => {
     const gen = generator();
     await Promise.all([
-      gen.ensureIntervalCycle('30_MIN', 'GENERAL'),
-      gen.ensureIntervalCycle('30_MIN', 'GENERAL'),
-      gen.ensureIntervalCycle('30_MIN', 'VIP'),
+      gen.ensureActiveCycle('30_MIN', 'GENERAL'),
+      gen.ensureActiveCycle('30_MIN', 'GENERAL'),
+      gen.ensureActiveCycle('30_MIN', 'VIP'),
     ]);
     const vip = await currentCycleWithPools('30_MIN', 'VIP');
     const general = await currentCycleWithPools('30_MIN', 'GENERAL');
@@ -194,7 +194,7 @@ describePg('the cycle generator', () => {
   });
 
   it('stores no real pool figures on the cycle row', async () => {
-    await generator().ensureIntervalCycle('30_MIN', 'VIP');
+    await generator().ensureActiveCycle('30_MIN', 'VIP');
     const { rows } = await pgQuery(
       `SELECT column_name FROM information_schema.columns
         WHERE table_name = 'cycles' AND column_name IN

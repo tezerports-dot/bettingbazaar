@@ -39,7 +39,7 @@
  * three times.
  */
 import { db } from '#db';
-import { CYCLE_TYPE_VALUES, isCycleType } from './cycleTypes.js';
+import { allBoards } from './cycleTypes.js';
 import { publicCycleView } from './cyclePublicView.js';
 import { AUDIENCES } from '#db/repositories/markets.js';
 
@@ -108,8 +108,9 @@ export async function fetchCycleHistory({ types, limit, audience } = {}) {
   // unknown type, an unknown audience from a client is not an error: it reads
   // as VIP, the profile every visitor starts on (schema default: 'VIP').
   const who = AUDIENCES.includes(audience) ? audience : 'VIP';
-  const wanted = (Array.isArray(types) ? types : types ? [types] : CYCLE_TYPE_VALUES)
-    .filter(isCycleType);
+  const known = (await allBoards()).map((b) => b.key);
+  const wanted = (Array.isArray(types) ? types : types ? [types] : known)
+    .filter((t) => known.includes(t));
   if (wanted.length === 0) return { cycles: [], types: [], audience: who };
 
   const n = normaliseLimit(limit, wanted.length);

@@ -15,10 +15,12 @@ import { usePermissions } from '../../hooks/usePermission';
 import api from '../../services/api';
 import type { User, Transaction } from '../../types';
 import toast from 'react-hot-toast';
+import { useBoards } from '../../hooks/useBoards';
 
 type ModalTab = 'profile' | 'bank' | 'history';
 
 export const UsersList: React.FC = () => {
+  const { boards } = useBoards();
   // A control is OFFERED only to an account whose area admits it. The Users
   // screen is the players area; adding to or deducting from a balance is
   // canAdjustBalances, and phantom access is canManagePhantomAgents. A
@@ -368,10 +370,8 @@ export const UsersList: React.FC = () => {
               <label className="label" htmlFor="phantom-access-level">Phantom Access Level</label>
               <select id="phantom-access-level" value={phantomLevel} onChange={e => setPhantomLevel(e.target.value)} className="input">
                 <option value="NONE">NONE — No phantom betting</option>
-                <option value="1_MIN">1_MIN — 1-minute cycles only</option>
-                <option value="30_MIN">30_MIN — 30-minute cycles only</option>
-                <option value="FULL_DAY">FULL_DAY — Full-day cycles only</option>
-                <option value="BOTH">BOTH — All cycles</option>
+                {boards.map((b) => <option key={b.key} value={b.key}>{b.name} — this board only</option>)}
+                <option value="BOTH">BOTH — every board</option>
               </select>
             </div>
             <p className="text-xs text-yellow-400">⚠️ Phantom bets are cosmetic — they never win and don't affect real pools. Use to balance pool display only.</p>

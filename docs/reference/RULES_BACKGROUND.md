@@ -172,14 +172,12 @@ wrong owner gets working code deleted by the next reader.
 |---|---|
 | Token buy/sell rates | **Removed 2026-07-08** — conversion is fixed 1:1 (1 token = ₹1) and not configurable. Public rate endpoints return a constant for client compatibility. Do not reintroduce configurable rates. |
 | Deposit/reserve split, reserve usage rules | `deposit_policies` via `domains/configuration/depositPolicy.service.js` — whole-document versioned, one ACTIVE per currency. |
-| Bet min/max per cycle type | `SystemConfig.betLimits` (`config_documents`) |
-| Cycle phase offset defaults | `DEFAULT_CYCLE_PHASES` in `database/spec/config.spec.js`, re-exported by `domains/markets/cycleTypes.js`. It **is** the schema default. Runtime authority stays `SystemConfig.cyclePhases`. Three copies had already drifted once — the admin phase timeline drew a betting-close boundary 30 seconds off what the engine acted on. |
+| Boards: timer, phases, stake bounds, switch, home order | `boards` via `database/repositories/boards.js` (owner, 2026-10-08), read through `domains/markets/cycleTypes.js`. Replaced `DEFAULT_CYCLE_PHASES`, `SystemConfig.cyclePhases` and `SystemConfig.betLimits`: three copies of the phase offsets had already drifted once, the admin phase timeline drawing a betting-close boundary 30 seconds off what the engine acted on. See §18. |
 | Resolved-cycle history feed | `domains/markets/cycleHistory.service.js` — the one query behind every cycle-history read. Window is **per type**, `limit` rows each; capped at 1,440 for one type and 200 when several are requested together (three deep windows is ~864 KB against socket.io's 1 MB default). Rows project through `publicCycleView`. |
 | Analytics window depth | `ANALYTICS_WINDOW` in `user-panel/src/constants.ts`. A **target**, not a display cap; the server ceiling is enforced independently in `cycleHistory.service.js`. |
 | Deposit/withdrawal limits, platform-wide | `SystemConfig` |
 | **Whether a business number is admin-editable at all** | `SYSTEM_CONFIG_SPEC` in `database/spec/config.spec.js` — **declaring a field there is what makes it editable.** The PUT in `system.admin.routes.js` derives what it accepts by WALKING the spec; the GET spreads the spec-defaulted document. So a setting is served, accepted and bounds-checked by virtue of being declared, and nobody has to remember to wire it. It was three hand-written lists that disagreed: twelve `merchantOrderLimits` fields declared and **four** writable; `withdrawalHoldMinutes`, both `loadShedding` ceilings and all eight `ipDefense` fields read by live middleware and reachable from nothing — two of them under a comment calling them "admin-editable"; and the one-minute board's four phase offsets run by the engine and invisible to both halves. `maxConsecutiveRejections` was the sharpest: **returned by the GET and dropped by the PUT**, so it was rendered on the settings screen and inert — an operator raising the cap was told it saved and served the old number, §3 in both directions at once. See F-022. |
 | **A value the PLATFORM writes, not an operator** | **Not in `config_documents` at all** (2g, 2026-10-04). Deriving the admin accept list from the spec is only safe if nothing in the spec is a platform value: `adminTokenSupply.minted` was the running total of tokens ever issued, checked against a 10-billion cap, and an operator who could set it to 0 would have re-authorised minting the whole supply. It was marked `internal(…)` so derived lists skipped it. Minting is gone (no token is ever created, every movement is a transfer), and the last internal value and the marker went with it. A future value the platform writes gets its own table and one writer, so the spec stays a list of settings. |
-| **A board's ceiling on its earliest phase offset** | `maxMergeBeforeEndSec` on the cycle META (`domains/markets/cycleTypes.js`), reached through `MAX_MERGE_BEFORE_END_SEC`. §18.3's "phases must fit the block" is the half the ordering invariant cannot see, and it was two literals passed at one call site covering two of the three boards. The board it omitted was the 60-second one, where an oversized merge is easiest to enter. A new board declares its own value (§18.2). |
 | The FLOOR on any order | `SystemConfig.minDeposit` / `minWithdrawal` — **both 500 tokens**, the same rule read from either end. The buy floor was 100 and the sell floor 500: one policy written as two numbers, drifted. A floor exists because every buy HOLDS a merchant's tokens for the length of its window (F-018), so an order too small to be worth that inventory still takes it out of circulation. |
 | The CEILING on any order | **A buy: the team's pool**, and it is ENFORCED rather than checked: `holdForBuyWithin` holds the tokens in the transaction that assigns the order (2c; before 2c it was the merchant's own tokens, reserved by the deposit escrow). **A sell: the player's winnings**, locked in the same transaction as the order. There is no per-merchant order range: `merchants.min_order`/`max_order` were **removed 2026-09-10**, along with their columns, their admin route fields and their panel inputs. Nothing read them. The old assignment query never named either column; the only filter on them lived in an admin SCREEN, while a comment in `merchant.routes.js` said assignment filtered on them and was believed twice. Do not reintroduce a per-merchant range. |
 | Consecutive-refusal cap, and who may not serve whom | `domains/merchant/merchantRefusal.service.js` — the ONE owner of "a merchant did not serve this order". **Whose fault an expiry is depends on the DIRECTION**: a BUY that expires before PAID is the PLAYER not paying and is not a refusal at all; a BUY that is PAID and unanswered, a SELL that expires, and any decline are the merchant's. Counting every expiry against the merchant suspended honest merchants for players who changed their minds. **There is no timer on any of it**: a suspension and a bar are lifted by an admin or sub-admin who reads the reason and reinstates, and `approveMerchant` zeroes `consecutive_rejections` in the same statement — left standing at the cap, the reinstated merchant is re-suspended by the very next refusal and the admin's decision lasts one order. A decline and an EXPIRED assignment are the same event and count identically, against the same streak and the same bar; they mix, so two lapses and a decline is three. The cap is `SystemConfig.merchantOrderLimits.maxConsecutiveRejections` (schema default 3); the pairs are `order_rejections`, applied in `assignmentCandidates`' WHERE so a barred merchant is never a candidate. The streak advances and is read in one `UPDATE … RETURNING`, and only a COMPLETED order resets it. See F-021. |
@@ -654,59 +652,65 @@ and the rest) are NOT here: they were adopted and verified, not held.
 
 ---
 
-## 18. Adding a cycle type, board or game
+## 18. Adding a board or game
 
 **A new board inherits the money system. It does not re-implement any part of
 it, and no instruction to that effect is needed on the request.**
 
-### 18.1 Inherited automatically — never given a per-type case
+Since 2026-10-08 a board is a row in `boards`, created by an admin on the Boards
+page. The owner asked for "any number of board games, each with its own timer"
+and to set their order on the home page. Before that, each of the three boards
+was declared in seven places: a `META` entry, `DEFAULT_CYCLE_PHASES`,
+`maxMergeBeforeEndSec`, `SystemConfig.betLimits`, the phantom-access enum, the
+frontend enum and phase map, and the per-type test loops. Every one of those
+was a copy that could drift, and two had (the phase timeline drew bets closing
+30 seconds off what the engine acted on; the merge ceiling covered two boards
+of three). They are all gone. The row is the one owner.
+
+### 18.1 Inherited automatically — never given a per-board case
 
 Bet funding split · reserve funding · winnings fee · payout multiplier ·
 settlement, payout, idempotency and crash resume · the wallet ledger · realtime
 snapshots, rooms and live pools · bet rate limiting · cache and rate-limit
-counters · cron, retention and reconciliation.
+counters · cron, retention and reconciliation · the VIP/GENERAL split.
 
-**The rule that follows:** if adding a type requires editing one of those, you
-have found a type-specific branch that should not exist. **Fix the branch; do
+**The rule that follows:** if adding a board requires editing one of those, you
+have found a board-specific branch that should not exist. **Fix the branch; do
 not add a case to it.** Adding the case is how a ternary came to announce every
 unknown board's winner under the wrong name.
 
-### 18.2 Declared per type — the complete list
+### 18.2 Declared per board — on its row
 
-1. One `META` entry in `domains/markets/cycleTypes.js`.
-2. `DEFAULT_CYCLE_PHASES.<phasesKey>` — one declaration, read by the schema
-   default and both consumers.
-2a. `maxMergeBeforeEndSec` on the type's `META` entry — the longest the earliest
-   phase may be for THIS board. The ordering invariant below compares phases
-   only with each other; this is the only thing that knows the block's length.
-   Omit it and the admin config route refuses the board's phases by name rather
-   than accepting a merge that fires before the cycle starts.
-3. `SystemConfig.betLimits.<limitsKey>` — declare them even when they equal
-   another board's, so retuning one cannot silently retune the other.
-4. The phantom-access enum, so an agent can be scoped without being granted all.
-5. Frontend: the cycle-type enum, chip values and phase map, each a §5 mirror
-   needing its citing comment.
-6. `cycleTypes.test.js` — covered by the existing per-type loops.
-7. A lifecycle test **if the new board's phases are a different order of
-   magnitude**. Everything else runs at 30-minute timings where the 1-second
-   status tick has minutes of slack; that proves the settlement machinery and
-   proves nothing about a board whose phases are seconds apart.
+Name, timer kind (INTERVAL minutes, or DAILY from an IST hour), the four phase
+offsets, minimum and maximum stake, the on/off switch and the home order. The
+key and id prefix derive from the name at creation and never change
+(`boards_identity_fixed`), because rounds are named by them. A board is
+switched off, never deleted: its open round still finishes and settles. The
+player panel reads every board fact from `GET /api/v1/boards`; chips are the
+minimum × 1/3/9/27/81, capped at the maximum.
 
-### 18.3 Invariants
+### 18.3 Invariants — held by the schema, for every writer
 
 - Phase ordering: `merge > equalizer > close > celebrate >= 0`, and
-  `merge < duration`. A set failing this is discarded at read time and the board
-  silently runs on defaults.
+  `merge < duration` (`boards_phases_ordered`, `boards_timer_runs`). They used
+  to be checked at read time, and a failing set silently ran on defaults; now
+  such a row cannot be written.
 - **Phases must fit the block.** The ordering invariant compares phases only
-  with each other, never with the duration — a merge offset larger than the
-  block fires before the cycle starts and nothing objects.
-- The celebration lock and next-cycle timer derive from the type's own celebrate
-  offset. A 10-second lock on a 60-second block eats a sixth of the next cycle.
+  with each other; `merge < duration × 60` is the half that knows the block's
+  length.
+- An interval divides 60, so rounds tile the hour and every instance computes
+  the same block from the clock alone. A DAILY board needs its anchor hour:
+  `NULL BETWEEN 0 AND 23` is NULL, which a CHECK passes, so the constraint asks
+  `IS NOT NULL` explicitly.
+- The celebration lock and next-cycle timer derive from the board's own
+  celebrate offset. A 10-second lock on a 60-second block eats a sixth of the
+  next cycle.
 - Status ticks are 1s, so a close→declare window under ~2s can be missed. The
   phase logic tolerates it by letting a still-OPEN cycle complete directly. Do
   not "fix" that tolerance.
-- Unknown types fail loudly. Callers on a broadcast path skip the row rather
-  than defaulting — one unrecognised cycle must not take a screen down.
+- A cycle whose board cannot be read is skipped loudly, never defaulted: a
+  guessed board would close betting or declare a winner at an arbitrary moment.
+  `cycles_board_fk` makes a cycle on an unknown board impossible to write.
 
 ### 18.4 Operational gate
 

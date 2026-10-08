@@ -19,10 +19,9 @@ import { pgConfigured, pgQuery, applySchema, closePg } from '../client.js';
 import {
   setConfigPath,
   getConfig, getSystemConfig, getConfigs, applyConfig, applySystemConfig,
-  getConfigHistory, restoreConfigVersion, defaultsFor,
+  getConfigHistory, restoreConfigVersion,
   invalidateConfigCache,
 } from '../repositories/config.js';
-import { DEFAULT_CYCLE_PHASES } from '../spec/config.spec.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 
@@ -50,18 +49,9 @@ describePg('the configuration store', () => {
     const cfg = await getConfig('system', { docKey: KEY });
     expect(cfg.payoutFeePercent).toBe(0);
     expect(cfg.winningsFeePercent).toBe(1);
-    expect(cfg.betLimits.thirtyMin.max).toBe(100000);
+    expect(cfg.usdtBuy.maxUsdt).toBe(10000);
     expect(cfg.riskRules.maxWarnings).toBe(3);
     expect(cfg.version).toBe(0);
-  });
-
-  it('uses ONE copy of the cycle phase constants', async () => {
-    // These were declared three times and had already drifted: the admin panel
-    // drew the 30-minute block closing betting 60s before the end while the
-    // engine closed it at 30s.
-    const cfg = await getConfig('system', { docKey: KEY });
-    expect(cfg.cyclePhases.thirtyMin).toEqual({ ...DEFAULT_CYCLE_PHASES.thirtyMin });
-    expect(defaultsFor('system').cyclePhases.oneMin).toEqual({ ...DEFAULT_CYCLE_PHASES.oneMin });
   });
 
   it('fills in a key that was never stored, without losing the ones that were', async () => {
@@ -69,7 +59,7 @@ describePg('the configuration store', () => {
     const cfg = await getConfig('system', { docKey: KEY, fresh: true });
     expect(cfg.payoutFeePercent).toBe(2.5);
     expect(cfg.winningsFeePercent).toBe(1);            // still the default
-    expect(cfg.cyclePhases.fullDay.mergeBeforeEndSec).toBe(300);
+    expect(cfg.riskRules.maxWarnings).toBe(3);
   });
 
   // ── The two things the document model could not do ────────────────────────
@@ -108,7 +98,6 @@ describePg('the configuration store', () => {
       [{ winningsFeePercent: -5 }, /'winningsFeePercent' must be >= 0/],
       [{ payoutMultiplier: 0 }, /'payoutMultiplier' must be >= 1/],
       [{ withdrawalHoldMinutes: 100000 }, /'withdrawalHoldMinutes' must be <= 1440/],
-      [{ cycleDurationMinutes: 5 }, /'cycleDurationMinutes' must be >= 10/],
       // A member always carries at least one order on their team's rail.
       [{ teamRouting: { concurrency: { UPI_BANK: 0 } } },
         /'teamRouting\.concurrency\.UPI_BANK' must be >= 1/],
@@ -176,15 +165,15 @@ describePg('the configuration store', () => {
   it('flattens a nested patch into the paths that changed', async () => {
     await applyConfig({
       scope: 'system', docKey: KEY, actor: 'admin-2',
-      patch: { riskRules: { maxWarnings: 5 }, betLimits: { fullDay: { min: 200 } } },
+      patch: { riskRules: { maxWarnings: 5 }, usdtBuy: { minUsdt: 200 } },
     });
     const [entry] = await getConfigHistory('system', { docKey: KEY });
-    expect(entry.changed).toEqual({ 'riskRules.maxWarnings': 5, 'betLimits.fullDay.min': 200 });
+    expect(entry.changed).toEqual({ 'riskRules.maxWarnings': 5, 'usdtBuy.minUsdt': 200 });
 
     const cfg = await getConfig('system', { docKey: KEY, fresh: true });
     expect(cfg.riskRules.maxWarnings).toBe(5);
-    expect(cfg.betLimits.fullDay.min).toBe(200);
-    expect(cfg.betLimits.fullDay.max).toBe(500000);   // sibling untouched
+    expect(cfg.usdtBuy.minUsdt).toBe(200);
+    expect(cfg.usdtBuy.maxUsdt).toBe(10000);   // sibling untouched
   });
 
   it('refuses a stale write rather than silently overwriting another admin', async () => {
@@ -274,9 +263,9 @@ describePg('the configuration store', () => {
   // ── The admin System Settings write path ──────────────────────────────────
   it('writes a dotted path to the document the platform actually reads', async () => {
     const before = await getConfig('system', { docKey: KEY, fresh: true });
-    expect(before.betLimits.thirtyMin.min).toBe(10);
+    expect(before.usdtBuy.minUsdt).toBe(100);
 
-    await setConfigPath('system', 'betLimits.thirtyMin.min', 25, {
+    await setConfigPath('system', 'usdtBuy.minUsdt', 300, {
       docKey: KEY, actor: 'admin1', reason: 'probe',
     });
 
@@ -285,7 +274,7 @@ describePg('the configuration store', () => {
     // while getSystemConfig read config_documents. Every setting appeared to
     // save and none of them took effect.
     const after = await getConfig('system', { docKey: KEY, fresh: true });
-    expect(after.betLimits.thirtyMin.min).toBe(25);
+    expect(after.usdtBuy.minUsdt).toBe(300);
   });
 
   it('records the dotted path it changed, not the whole document', async () => {
@@ -300,8 +289,8 @@ describePg('the configuration store', () => {
   it('refuses a dotted path the spec does not declare', async () => {
     await expect(setConfigPath('system', 'notADeclaredKey', 1, { docKey: KEY }))
       .rejects.toThrow(/refusing to write undeclared setting 'notADeclaredKey'/);
-    await expect(setConfigPath('system', 'betLimits.thirtyMin.nope', 1, { docKey: KEY }))
-      .rejects.toThrow(/betLimits\.thirtyMin\.nope/);
+    await expect(setConfigPath('system', 'usdtBuy.nope', 1, { docKey: KEY }))
+      .rejects.toThrow(/usdtBuy\.nope/);
   });
 
   it('is a no-op for an empty patch rather than a version bump', async () => {

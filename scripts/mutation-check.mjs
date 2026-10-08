@@ -1015,8 +1015,8 @@ const MUTATIONS = [
     id: 'M188', file: 'backend/domains/markets/bet.routes.js', config: PG,
     test: 'backend/tests/routes/betPlaceRoutesPg.test.js',
     why: 'the stake limits come from the type the client SENDS, so a full-day bet goes under the full-day floor by claiming to be a 30-minute bet',
-    from: `const limitsKey = isCycleType(cycle.type) ? limitsKeyFor(cycle.type) : 'thirtyMin';`,
-    to: `const limitsKey = isCycleType(req.body.type) ? limitsKeyFor(req.body.type) : 'thirtyMin';`,
+    from: `const board  = await boardOf(cycle.type);`,
+    to: `const board  = await boardOf(req.body.type ?? cycle.type);`,
   },
   {
     id: 'M189', file: 'database/repositories/bets.js', config: PG,
@@ -3257,6 +3257,49 @@ const MUTATIONS = [
     why: 'the current cycle of a type is read without its audience, so a GENERAL screen is handed the VIP cycle',
     from: `WHERE c.cycle_type = $1 AND c.audience = $3 AND c.status = ANY($2::text[])`,
     to: `WHERE c.cycle_type = $1 AND ($3::text IS NOT NULL) AND c.status = ANY($2::text[])`,
+  },
+  // ── Boards as rows (owner, 2026-10-08) ──────────────────────────────────────
+  {
+    id: 'MBD1', file: 'backend/domains/markets/bet.routes.js', config: PG,
+    test: 'backend/tests/routes/betPlaceRoutesPg.test.js',
+    why: 'a board the admin switched off keeps taking new bets',
+    from: `    if (!board?.enabled) {`,
+    to: `    if (!board) {`,
+  },
+  {
+    id: 'MBD2', file: 'backend/domains/markets/bet.routes.js', config: PG,
+    test: 'backend/tests/routes/betPlaceRoutesPg.test.js',
+    why: 'betting closes on the board\'s result offset instead of its close offset, so stakes land after the equalizer',
+    from: `if (Date.now() >= cycle.endTime - (board.phases.closeBeforeEndSec * 1000)) {`,
+    to: `if (Date.now() >= cycle.endTime - (board.phases.celebrateBeforeEndSec * 1000)) {`,
+  },
+  {
+    id: 'MBD3', file: 'database/schema.sql', config: PG,
+    test: 'database/tests/boardsPg.test.js',
+    why: 'a DAILY board with no start hour passes the CHECK as unknown, and the engine cannot place its round',
+    from: `anchor_hour_ist IS NOT NULL AND anchor_hour_ist BETWEEN 0 AND 23));`,
+    to: `anchor_hour_ist BETWEEN 0 AND 23));`,
+  },
+  {
+    id: 'MBD4', file: 'database/repositories/boards.js', config: PG,
+    test: 'database/tests/boardsPg.test.js',
+    why: 'an order that leaves a board out is saved, so two boards share a place on the home page',
+    from: `    if (all.size !== keys.length || keys.some((k) => !all.has(k))) {`,
+    to: `    if (keys.some((k) => !all.has(k))) {`,
+  },
+  {
+    id: 'MBD5', file: 'backend/domains/markets/cycleGenerator.service.js', config: PG,
+    test: 'database/tests/boardsPg.test.js',
+    why: 'the engine keeps opening rounds on a board the admin switched off',
+    from: `        if (!board?.enabled) return;`,
+    to: `        if (!board) return;`,
+  },
+  {
+    id: 'MBD6', file: 'database/schema.sql', config: PG,
+    test: 'database/tests/boardsPg.test.js',
+    why: 'a board\'s id prefix can be changed, orphaning the names of every round it ran',
+    from: `     OR NEW.id_prefix IS DISTINCT FROM OLD.id_prefix THEN`,
+    to: `     THEN`,
   },
 ];
 

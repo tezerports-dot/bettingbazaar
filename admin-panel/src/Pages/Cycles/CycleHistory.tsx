@@ -8,22 +8,27 @@ import { Modal } from '../../components/Modal';
 import { usePagination } from '../../hooks/usePagination';
 import { formatters } from '../../utils/formatters';
 import { usePermissions } from '../../hooks/usePermission';
+import { useBoards } from '../../hooks/useBoards';
 import api from '../../services/api';
 import type { Cycle } from '../../types';
 import toast from 'react-hot-toast';
 
-// Cycle types shown in the history filters, badges and counts. One list rather
-// than three hardcoded pairs: the badge previously rendered every type it did
-// not recognise as "FULL DAY", and the filter tabs simply had no way to reach
-// a third type's rows.
-const CYCLE_TYPES = ['1_MIN', '30_MIN', 'FULL_DAY'] as const;
-const CYCLE_TYPE_META: Record<string, { label: string; cls: string; tone: string }> = {
-  '1_MIN':    { label: '1-Min',    cls: 'bg-teal-500/20 text-teal-500',     tone: 'var(--success)' },
-  '30_MIN':   { label: '30-Min',   cls: 'bg-blue-500/20 text-blue-500',     tone: 'var(--info)' },
-  'FULL_DAY': { label: 'Full Day', cls: 'bg-purple-500/20 text-purple-500', tone: 'var(--warning)' },
-};
+// The history's filters, badges and counts are the boards (rows an admin
+// creates, in the admin's order). A hand-written list once had no way to reach
+// a third board's rows. Badge colours cycle through these by board position.
+const BOARD_TONES = [
+  { cls: 'bg-blue-500/20 text-blue-500',     tone: 'var(--info)' },
+  { cls: 'bg-purple-500/20 text-purple-500', tone: 'var(--warning)' },
+  { cls: 'bg-teal-500/20 text-teal-500',     tone: 'var(--success)' },
+];
 
 export const CycleHistory: React.FC = () => {
+  const { boards, boardName } = useBoards();
+  const metaOf = (type: string) => {
+    const i = boards.findIndex((b) => b.key === type);
+    const t = BOARD_TONES[(i < 0 ? 0 : i) % BOARD_TONES.length];
+    return { label: boardName(type), cls: i < 0 ? 'bg-gray-500/20 text-gray-400' : t.cls, tone: t.tone };
+  };
   const [cycles, setCycles] = useState<Cycle[]>([]);
   const [total, setTotal] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
@@ -86,7 +91,7 @@ export const CycleHistory: React.FC = () => {
   };
 
   const getCycleTypeBadge = (type: string) => {
-    const t = CYCLE_TYPE_META[type];
+    const t = metaOf(type);
     return (
       <span className={`px-2 py-1 rounded-sm text-xs font-medium ${t?.cls ?? 'bg-gray-500/20 text-gray-400'}`}>
         {t?.label ?? type}
@@ -203,10 +208,10 @@ export const CycleHistory: React.FC = () => {
       {phantomPanel}
       <Kpis items={[
         { label: 'Total Cycles', value: total },
-        ...CYCLE_TYPES.map((t) => ({
-          label: CYCLE_TYPE_META[t].label,
-          value: cycles.filter((c) => c.type === t).length,
-          tone: CYCLE_TYPE_META[t].tone,
+        ...boards.map((b) => ({
+          label: b.name,
+          value: cycles.filter((c) => c.type === b.key).length,
+          tone: metaOf(b.key).tone,
         })),
         { label: 'Total Paid Out', value: formatters.currency(totalPaidOut), tone: 'var(--warning)' },
         { label: 'Net Revenue', value: formatters.currency(totalNetRevenue), tone: totalNetRevenue >= 0 ? 'var(--success)' : 'var(--danger)' },
@@ -215,10 +220,10 @@ export const CycleHistory: React.FC = () => {
       <Toolbar
         tabs={[
           { label: 'All', active: typeFilter === 'ALL', onClick: () => setTypeFilter('ALL') },
-          ...CYCLE_TYPES.map((t) => ({
-            label: CYCLE_TYPE_META[t].label,
-            active: typeFilter === t,
-            onClick: () => setTypeFilter(t),
+          ...boards.map((b) => ({
+            label: b.name,
+            active: typeFilter === b.key,
+            onClick: () => setTypeFilter(b.key),
           })),
         ]}
         search={{ value: search, onChange: setSearch, placeholder: 'Search cycle id…' }}

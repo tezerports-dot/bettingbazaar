@@ -91,7 +91,7 @@ export const STAFF_PERMISSIONS = Object.freeze([
 
   // ── Games & cycles ───────────────────────────────────────────────────────
   { key: 'canManageGames', group: 'games', label: 'Games and providers',
-    description: 'Game registry, categories, casino / crash / sports providers and their transactions.' },
+    description: 'Game registry, categories, casino / crash / sports providers and their transactions, and the boards (timers, stakes, home order).' },
   { key: 'canManageCycles', group: 'games', label: 'Cycle controls',
     description: 'Act on a live cycle: equalise the phantom book or change its state.' },
 

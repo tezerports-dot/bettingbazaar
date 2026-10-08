@@ -1,178 +1,96 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * domains/markets/cycleTypes.js — the cycle-type vocabulary, in one place.
+ * domains/markets/cycleTypes.js — the boards a cycle can run on, read from
+ * the `boards` table (owner, 2026-10-08: admins create any number of board
+ * games, each with its own timer, and order them on the home page).
  *
- * ── Why this exists ────────────────────────────────────────────────────────
- * A cycle type is not one fact, it is six: the enum value the model accepts,
- * the label shown to humans, which `SystemConfig.cyclePhases` key holds its
- * timings, which `SystemConfig.betLimits` key holds its stake bounds, the
- * prefix its `cycleId` is built from, and how long its block runs.
+ * A cycle's `type` is its board's key. Everything that used to be a fixed
+ * per-type literal here (label, id prefix, block length, phase offsets, stake
+ * bounds) is a column of the board's row, written only by
+ * `database/repositories/boards.js` and held to the engine's invariants by the
+ * schema (`boards_timer_runs`, `boards_phases_ordered`, `boards_stakes`). So no
+ * caller validates a board's timings or falls back to a default: a row that
+ * exists can run.
  *
- * Before this module those six were spread across the model's enum, two
- * ternaries in the generator (`type === '30_MIN' ? '30-MIN' : 'FULL-DAY'`),
- * another in `bet.routes.js` (`isFullDay ? 'fullDay' : 'thirtyMin'`), and two
- * near-identical `ensureActive*Cycle` methods. Adding `1_MIN` to that shape
- * would have been six edits in five files, and the ternaries fail SILENTLY
- * when they miss one: a new type would have been labelled "FULL-DAY" in every
- * result announcement and would have inherited the 30-minute stake limits
- * without anyone writing a line saying so.
+ * Read through a short cache because the cycle tick asks every second. An
+ * admin's change calls `invalidateBoards()` on this instance; another instance
+ * sees it within `BOARDS_CACHE_MS`. A changed timer applies from the board's
+ * next round: a round already open keeps the start and end it was created with.
  *
- * So the vocabulary is declared once and read everywhere. `phasesFor` and
- * `limitsKeyFor` throw on an unknown type rather than defaulting, because a
- * silent default is exactly how the old ternaries would have gone wrong.
- *
- * ── What this module does NOT own ──────────────────────────────────────────
- * The phase timings and stake limits themselves. Those are Business Policy
- * (`SystemConfig.cyclePhases` / `.betLimits`, §1) and admin-editable at
- * runtime; this module only names which key belongs to which type.
+ * Callers ask `boardOf(type)` and treat `null` as "no such board": loud and
+ * skipped, never defaulted (a guessed board would close betting or declare a
+ * winner at an arbitrary moment).
  */
+import { db } from '#db';
 
-/** Enum values, exactly as stored in `Cycle.type`. */
-export const CYCLE_TYPES = Object.freeze({
-  ONE_MIN:    '1_MIN',
-  THIRTY_MIN: '30_MIN',
-  FULL_DAY:   'FULL_DAY',
-});
+/** How stale a board read may be on an instance that did not make the change. */
+export const BOARDS_CACHE_MS = 5000;
 
-/**
- * Per-type metadata.
- *
- * `interval` marks the types whose blocks TILE THE HOUR — their start time is
- * `floor(minute / duration) * duration`, so the same creation path serves them
- * all. FULL_DAY is anchored to a calendar date instead and keeps its own path;
- * that is a genuine difference in kind, not duplication worth collapsing.
- */
-const META = Object.freeze({
-  [CYCLE_TYPES.ONE_MIN]: Object.freeze({
-    label: '1-MIN',
-    phasesKey: 'oneMin',
-    limitsKey: 'oneMin',
-    idPrefix: '1MIN',
-    interval: true,
-    // Fixed, unlike the 30-minute block's admin-tunable duration. The phase
-    // offsets (12/9/5/3s before end) leave 48s of open betting in a 60s block;
-    // a shorter duration would put the merge before the cycle started, and the
-    // ordering invariant could not catch that because it only checks the
-    // phases against each other.
-    fixedDurationMin: 1,
-    // The ceiling on the earliest phase — see `maxMergeFor` below. 60s, the
-    // block's own length, because this board's duration is fixed.
-    maxMergeBeforeEndSec: 60,
-    newCycleMessage: 'New 1-minute cycle started!',
-    mergeMessage: 'Pools merging...',
-    closeMessage: 'Bets closed! Calculating winner...',
-  }),
-  [CYCLE_TYPES.THIRTY_MIN]: Object.freeze({
-    label: '30-MIN',
-    phasesKey: 'thirtyMin',
-    limitsKey: 'thirtyMin',
-    idPrefix: '30MIN',
-    interval: true,
-    // null = read SystemConfig.cycleDurationMinutes (admin-tunable, must divide
-    // 60 evenly). The '30_MIN' label does not change when that value does.
-    fixedDurationMin: null,
-    // 600s — BELOW the 10-minute minimum an admin may choose for this board's
-    // duration, so the merge fits whatever duration is in force rather than
-    // whatever it was when the phases were set.
-    maxMergeBeforeEndSec: 600,
-    newCycleMessage: 'New 30-minute cycle started!',
-    mergeMessage: 'Pools merging...',
-    closeMessage: 'Bets closed! Calculating winner...',
-  }),
-  [CYCLE_TYPES.FULL_DAY]: Object.freeze({
-    label: 'FULL-DAY',
-    phasesKey: 'fullDay',
-    limitsKey: 'fullDay',
-    idPrefix: 'FULLDAY',
-    interval: false,
-    fixedDurationMin: null,
-    maxMergeBeforeEndSec: 3600,
-    newCycleMessage: 'New full-day cycle started!',
-    mergeMessage: 'Daily pools merging...',
-    closeMessage: 'Daily bets closed! Calculating winner...',
-  }),
-});
+let cache = null;
+let cachedAt = 0;
+let inflight = null;
 
-/** Every valid `Cycle.type`, in display order (shortest block first). */
-export const CYCLE_TYPE_VALUES = Object.freeze(Object.keys(META));
-
-/** The hour-tiling types, which share one creation path. */
-export const INTERVAL_CYCLE_TYPES = Object.freeze(
-  CYCLE_TYPE_VALUES.filter((t) => META[t].interval),
-);
-
-/** True for a value that is a known cycle type. */
-export function isCycleType(type) {
-  return Object.prototype.hasOwnProperty.call(META, type);
+async function load() {
+  const list = await db.boards.listBoards();
+  cache = { list, byKey: new Map(list.map((b) => [b.key, b])) };
+  cachedAt = Date.now();
+  return cache;
 }
 
-/**
- * Metadata for a type.
- * @throws if the type is unknown — see the header: silence is the failure mode.
- */
-export function cycleMeta(type) {
-  const meta = META[type];
-  if (!meta) throw new Error(`Unknown cycle type '${type}'`);
-  return meta;
+async function boards() {
+  if (cache && Date.now() - cachedAt < BOARDS_CACHE_MS) return cache;
+  if (!inflight) inflight = load().finally(() => { inflight = null; });
+  return inflight;
 }
 
-/** Human label used in result announcements and logs, e.g. '1-MIN'. */
-export function cycleLabel(type) {
-  return cycleMeta(type).label;
+/** Drop the cache; the next read goes to the database. Called after every board write. */
+export function invalidateBoards() {
+  cache = null;
+  cachedAt = 0;
 }
 
-/**
- * The type's phase offsets, resolved from an already-loaded `cyclePhases`
- * config object (the generator caches it for 30s and passes it in).
- */
-export function phasesFor(type, allPhases) {
-  return allPhases?.[cycleMeta(type).phasesKey];
+/** Every board, switched on or off, in home-page order. */
+export async function allBoards() {
+  return (await boards()).list;
 }
 
-/** Which `SystemConfig.betLimits` key holds this type's stake bounds. */
-export function limitsKeyFor(type) {
-  return cycleMeta(type).limitsKey;
+/** The boards players see and the engine starts new rounds on, in home-page order. */
+export async function enabledBoards() {
+  return (await boards()).list.filter((b) => b.enabled);
 }
 
-/**
- * The fallback phase offsets, in seconds before the cycle end.
- *
- * RE-EXPORTED, NOT DEFINED. The one owner is the config store's spec, which is
- * where a fresh install gets its `cyclePhases` from — so the fallback a
- * consumer uses when the stored set is missing or invalid is the same object
- * the stored set was seeded from, and the two cannot drift apart. It used to be
- * declared three times (schema defaults, the generator's fallback, and the
- * admin route's timeline) and had ALREADY drifted: the admin panel drew the
- * 30-minute block closing betting at 60s while the engine closed it at 30s.
- *
- * It surfaces here because `phasesFor()` is the only thing that reads it, and
- * every consumer already imports that from this module. The dependency runs
- * backend -> #db and never the other way, which is why the constant lives on
- * that side of the boundary rather than this one.
- *
- * The invariant every set must satisfy: merge > equalizer > close >
- * celebrate >= 0, and merge < the cycle's duration. `validPhaseSet` in the
- * generator enforces it at read time; `cycleTypes.test.js` pins it for every
- * type so a bad default can never be what a consumer falls back to.
- */
-/**
- * The ceiling on a board's earliest phase offset, keyed by its `phasesKey`.
- *
- * §18.3 states the invariant the ordering check CANNOT see: "Phases must fit
- * the block. The ordering invariant compares phases only with each other, never
- * with the duration — a merge offset larger than the block fires before the
- * cycle starts and nothing objects." This is the other half, and it lives on
- * the META because it is a property of the BOARD.
- *
- * It had been two literals passed at one call site, for two of the three
- * boards. The one-minute board — whose 60-second block makes it the one where
- * an oversized merge is easiest to enter — was not validated at all, because
- * its phases were not admin-reachable and nobody had needed to.
- *
- * A new board declares its own value here (§18.2).
- */
-export const MAX_MERGE_BEFORE_END_SEC = Object.freeze(
-  Object.fromEntries(Object.values(META).map((m) => [m.phasesKey, m.maxMergeBeforeEndSec])),
-);
+/** One board by key (switched off included: its open rounds still finish), or null. */
+export async function boardOf(type) {
+  return (await boards()).byKey.get(type) ?? null;
+}
 
-export { DEFAULT_CYCLE_PHASES } from '#db/spec/config.spec.js';
+/** Name used in result announcements and logs. */
+export function cycleLabel(board) {
+  return board.name;
+}
+
+/** What players are told as a round moves on. */
+export function boardMessages(board) {
+  return {
+    newCycle: `New ${board.name} round started!`,
+    merge: 'Pools merging...',
+    close: 'Bets closed! Calculating winner...',
+  };
+}
+
+/** The public view of a board: what the player panel needs to draw and time it. */
+export function publicBoard(b) {
+  return {
+    key: b.key,
+    name: b.name,
+    kind: b.kind,
+    durationMin: b.durationMin,
+    anchorHourIst: b.anchorHourIst,
+    phases: { ...b.phases },
+    minBet: b.minBet,
+    maxBet: b.maxBet,
+    homeOrder: b.homeOrder,
+    // The panel attributes a legacy event that names only its cycleId by this.
+    idPrefix: b.idPrefix,
+  };
+}

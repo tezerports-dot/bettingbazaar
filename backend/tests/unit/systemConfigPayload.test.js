@@ -43,9 +43,9 @@ describe('the system-config payload', () => {
     // The whole point of the `??`/`||` distinction. With `||` every one of
     // these silently became the default.
     const zeroed = systemConfigPayload({
-      payoutMultiplier: 0, betLimits: { thirtyMin: { min: 0, max: 0 }, fullDay: { max: 0 } },
+      payoutMultiplier: 0,
     });
-    for (const k of ['payoutMultiplier', 'minBet', 'maxBet', 'maxFullDayBet']) {
+    for (const k of ['payoutMultiplier']) {
       expect(zeroed[k], `${k}: a configured 0 must survive, not fall back`).toBe(0);
     }
   });
@@ -56,7 +56,6 @@ describe('the system-config payload', () => {
     expect(empty.orderSizes).toEqual({ CASH: [...CASH_SIZES], UPI_BANK: [...UPI_BANK_SIZES] });
     expect(empty.usdtBuy).toEqual({ minUsdt: 100, maxUsdt: 10_000, stepUsdt: 100 });
     expect(empty.payoutMultiplier).toBe(2);
-    expect(empty.minBet).toBe(10);
   });
 
   it('treats false and empty string as configured, not missing', () => {

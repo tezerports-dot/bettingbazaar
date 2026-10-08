@@ -13,10 +13,8 @@ import * as betAuthority from '#db/repositories/bets.js';
 import { assessBet, computeBetFundingPlan, computeMaxStake } from '../risk/riskValidation.service.js';
 // Shared trading vocabulary (Phase 011) — one source for sides/statuses.
 import { MARKET_SIDES } from '../trading/tradingModels.js';
-// Cycle-type vocabulary: which betLimits key belongs to which type.
-import { CYCLE_TYPES, DEFAULT_CYCLE_PHASES, isCycleType, limitsKeyFor, phasesFor } from './cycleTypes.js';
-// Phase offsets, for the clock-based betting cutoff below. Same single
-// declaration the generator and the admin phase view read.
+// The cycle's board: its stake bounds and phase offsets (the `boards` row).
+import { boardOf } from './cycleTypes.js';
 // Derived cycle pools (FLAGS.DERIVED_CYCLE_POOLS, default off) — see
 // cyclePool.service.js for why the running total is the scaling ceiling.
 import { computeRealPools } from './cyclePool.service.js';
@@ -143,17 +141,25 @@ router.post('/place', authenticatePlayer, betLimiter, async (req, res) => {
       });
     }
 
-    // ── The stake limits are the CYCLE'S ─────────────────────────────────────
+    // ── The stake limits are the CYCLE'S BOARD'S ─────────────────────────────
     // Keyed on `cycle.type`, never on the `type` the client sent. They used to
     // be read from the request body, so a full-day bet (floor ₹100) went
     // through at ₹10 by claiming to be a 30-minute bet, and a 30-minute bet
     // reached the full-day ceiling by claiming the opposite (R6, 2026-09-30).
     // The body's `type` is now only echoed back in the response.
-    const config    = await getSystemConfig();
-    const isFullDay = cycle.type === CYCLE_TYPES.FULL_DAY;
-    const limitsKey = isCycleType(cycle.type) ? limitsKeyFor(cycle.type) : 'thirtyMin';
-    const minBet    = config?.betLimits?.[limitsKey]?.min ?? (isFullDay ? 100  : 10);      // schema default: 100 / 10
-    const maxBet    = config?.betLimits?.[limitsKey]?.max ?? (isFullDay ? 500000 : 100000); // schema default: 500000 / 100000
+    //
+    // A board switched off takes no new bet; its open round still settles.
+    const config = await getSystemConfig();
+    const board  = await boardOf(cycle.type);
+    if (!board?.enabled) {
+      return res.status(409).json({
+        success: false,
+        message: 'This board is switched off. Pick another board.',
+        code: 'BOARD_SWITCHED_OFF',
+      });
+    }
+    const minBet = board.minBet;
+    const maxBet = board.maxBet;
 
     // ── Risk Platform gate (Phase 010) — the single validation authority ────
     // positive/whole/multiples-of-10, min/max, and the config-gated
@@ -187,15 +193,9 @@ router.post('/place', authenticatePlayer, betLimiter, async (req, res) => {
     // whoever benefits from a slow tick" is not a property a real-money board
     // should have.
     //
-    // The clock does not slip, so the clock is the gate. `config` is already
-    // loaded above for the stake limits, so this costs no extra read. An
-    // unrecognised type keeps the status-only behaviour rather than being
-    // rejected outright — it cannot be created through the model's enum, and
-    // failing closed on the money path over an impossible value is worse.
-    const phases = isCycleType(cycle.type)
-      ? (phasesFor(cycle.type, config?.cyclePhases) || phasesFor(cycle.type, DEFAULT_CYCLE_PHASES))
-      : null;
-    if (phases && Date.now() >= cycle.endTime - (phases.closeBeforeEndSec * 1000)) {
+    // The clock does not slip, so the clock is the gate: the board's own
+    // close offset, read above with its stake limits.
+    if (Date.now() >= cycle.endTime - (board.phases.closeBeforeEndSec * 1000)) {
       return res.status(400).json({
         success: false,
         message: 'Betting closed for this cycle',

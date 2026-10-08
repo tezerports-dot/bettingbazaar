@@ -85,7 +85,8 @@ export interface User {
 
   // 'BOTH' predates the 1-minute block and means EVERY type — the server gate
   // reads it as "skip the per-type check".
-  phantomAccess: 'NONE' | '1_MIN' | '30_MIN' | 'FULL_DAY' | 'BOTH';
+  // 'NONE', a board's key, or 'BOTH' (= every board).
+  phantomAccess: string;
 
   roles: string[];
   subAdminPermissions?: Record<string, boolean>;
@@ -107,9 +108,29 @@ export interface User {
 // Cycles
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Mirrors CYCLE_TYPE_VALUES in backend/domains/markets/cycleTypes.js, which is
-// the authority for this vocabulary (CLAUDE.md §1, §4 citation).
-export type CycleType = '1_MIN' | '30_MIN' | 'FULL_DAY';
+// A board's key, which is its cycles' `type`. Boards are rows an admin creates
+// (`boards`, backend/domains/markets/cycleTypes.js), so any key the server lists.
+export type CycleType = string;
+
+/** A board as `GET /api/admin/boards` sends it (database/repositories/boards.js `toBoard`). */
+export interface Board {
+  key: string;
+  name: string;
+  kind: 'INTERVAL' | 'DAILY';
+  durationMin: number;
+  anchorHourIst: number | null;
+  phases: {
+    mergeBeforeEndSec: number;
+    equalizerBeforeEndSec: number;
+    closeBeforeEndSec: number;
+    celebrateBeforeEndSec: number;
+  };
+  minBet: number;
+  maxBet: number;
+  idPrefix: string;
+  enabled: boolean;
+  homeOrder: number;
+}
 export type CycleStatus =
   | 'OPEN'
   | 'MERGED'

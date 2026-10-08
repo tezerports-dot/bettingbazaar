@@ -12,37 +12,10 @@ import { getSystemConfig } from '#db/repositories/config.js';
 // so this route neither restates a default nor keeps its own list of fields.
 import { SYSTEM_CONFIG_SPEC } from '#db/spec/config.spec.js';
 import { db } from '#db';
-import { MAX_MERGE_BEFORE_END_SEC } from '../../domains/markets/cycleTypes.js';
 import { respondError } from '../../shared/httpError.js';
 import { systemConfigPayload } from '../../domains/configuration/systemConfigPayload.js';
 
 const router = express.Router();
-
-// ── Cycle-phase validation (Business Config Audit) ────────────────────────────
-// A phase set is {merge,equalizer,close,celebrate}BeforeEndSec (seconds before a
-// cycle's end). Enforce the state-machine invariant merge>equalizer>close>
-// celebrate>=0 and that merge fits inside the block. maxMerge caps the earliest
-// phase: 600s for 30-min-type blocks (< the 10-min minimum duration so it fits
-// any admin-chosen duration), larger for the full-day block. Returns an error
-// string, or null when valid.
-function validateCyclePhaseSet(label, p, maxMerge) {
-  if (!p || typeof p !== 'object') return `cyclePhases.${label} must be an object with all four offsets.`;
-  const fields = ['mergeBeforeEndSec', 'equalizerBeforeEndSec', 'closeBeforeEndSec', 'celebrateBeforeEndSec'];
-  for (const f of fields) {
-    const v = p[f];
-    if (!Number.isInteger(v) || v < 0 || v > 86400) {
-      return `cyclePhases.${label}.${f} must be an integer between 0 and 86400 seconds.`;
-    }
-  }
-  const { mergeBeforeEndSec: m, equalizerBeforeEndSec: e, closeBeforeEndSec: c, celebrateBeforeEndSec: fr } = p;
-  if (!(m > e && e > c && c > fr)) {
-    return `cyclePhases.${label} offsets must strictly decrease: merge > equalizer > close > celebrate.`;
-  }
-  if (m >= maxMerge) {
-    return `cyclePhases.${label}.mergeBeforeEndSec must be less than ${maxMerge}s so the phase fits inside the block.`;
-  }
-  return null;
-}
 
 // ── Footer navigation validation (2026-07-13) ─────────────────────────────────
 // The complete set of user-panel pages an admin may place in the footer bar.
@@ -114,22 +87,11 @@ router.get('/system/config', authenticate, hasPermission('canManageSystemSetting
         // Five groups used to be REBUILT here key by key over the spread, each
         // with its own `??` restating a schema default. Every restatement
         // matched, so none of them was wrong — but a rebuild is a SHRINK: the
-        // `cyclePhases` block named `thirtyMin` and `fullDay` only, so the
-        // one-minute board's four phase offsets were declared, defaulted,
-        // consumed by the engine, and invisible to the admin panel. §18.2 asks
-        // for one declaration read by both consumers; a rebuild is a second
-        // list that goes stale the next time a board is added.
+        // field list that goes stale the next time a field is declared.
         ...config,
         // `total` is how many tokens EXIST — 20,000,000,000, all of them
         // already created and held by the platform until they are transferred.
         adminTokenSupply: { total: config.adminTokenSupply?.total ?? 20000000000 }, // schema default: 20,000,000,000
-        // The legacy flat names the panels ask for, over the nested owners
-        // above. These are aliases, not second owners — each one reads the
-        // value it renames.
-        minBet:                config.betLimits?.thirtyMin?.min   || 10,
-        maxBet:                config.betLimits?.thirtyMin?.max   || 100000,
-        max30MinBet:           config.betLimits?.thirtyMin?.max   || 100000,
-        maxFullDayBet:         config.betLimits?.fullDay?.max     || 500000,
         // The INR peg, from its one owner. It was a literal here and in the
         // response below, a third and fourth declaration of a rule that already
         // had two.
@@ -141,8 +103,6 @@ router.get('/system/config', authenticate, hasPermission('canManageSystemSetting
         betReservePercent:     config.betReservePercent ?? 1, // schema default: 1
         // Winnings platform fee (Phase A) — % of gross 2x retained at settlement
         winningsFeePercent:    config.winningsFeePercent ?? 1, // schema default: 1
-        // Cycle duration (Phase X X-5) — short-block betting window length
-        cycleDurationMinutes:  config.cycleDurationMinutes ?? 30, // schema default: 30
         // Data retention (Phase X X-7) — months of operational data kept
         retentionMonths:       config.retentionMonths ?? 6, // schema default: 6
         // Business Config Audit (2026-07-11) — formerly-hardcoded business values
@@ -178,22 +138,16 @@ router.put('/system/config', authenticate, hasPermission('canManageSystemSetting
     const actor = { userId: req.user.userId, userName: req.user.username };
 
     const {
-      minBet, maxBet, max30MinBet, maxFullDayBet,
       registrationEnabled,
       maintenanceMode, maintenanceMessage,
       depositMethods, withdrawalMethods,
       webUrl, iosUrl, minVersion, latestVersion,
       payoutFeePercent, usdtPricing, riskRules, betReservePercent, winningsFeePercent,
-      cycleDurationMinutes, retentionMonths,
-      payoutMultiplier, cyclePhases,
+      retentionMonths,
+      payoutMultiplier,
       footerPages, alertWebhookUrl, tlsFingerprintDefense,
     } = req.body;
 
-    if (cycleDurationMinutes !== undefined &&
-        (!Number.isInteger(cycleDurationMinutes) || cycleDurationMinutes < 10 ||
-         cycleDurationMinutes > 60 || 60 % cycleDurationMinutes !== 0)) {
-      return res.status(400).json({ success: false, message: 'cycleDurationMinutes must be an integer that divides 60 evenly (10, 12, 15, 20, 30, or 60).' });
-    }
     if (retentionMonths !== undefined &&
         (!Number.isInteger(retentionMonths) || retentionMonths < 1 || retentionMonths > 120)) {
       return res.status(400).json({ success: false, message: 'retentionMonths must be an integer between 1 and 120.' });
@@ -273,22 +227,6 @@ router.put('/system/config', authenticate, hasPermission('canManageSystemSetting
         (!Number.isInteger(payoutMultiplier) || payoutMultiplier < 1 || payoutMultiplier > 10)) {
       return res.status(400).json({ success: false, message: 'payoutMultiplier must be an integer between 1 and 10.' });
     }
-    // Every declared board, not two of three. The ceiling on each one's
-    // earliest phase is a property of the BOARD and lives on its META entry;
-    // it was two literals here, and the one-minute board — the 60-second block
-    // where an oversized merge is easiest to enter — had no check at all
-    // because its phases were not admin-reachable.
-    for (const phasesKey of Object.keys(SYSTEM_CONFIG_SPEC.fields.cyclePhases?.fields ?? {})) {
-      if (cyclePhases?.[phasesKey] === undefined) continue;
-      const maxMerge = MAX_MERGE_BEFORE_END_SEC[phasesKey];
-      if (maxMerge === undefined) {
-        // A board declared in the spec with no META entry cannot be validated,
-        // and §18.1 says an unknown type fails loudly rather than defaulting.
-        return res.status(400).json({ success: false, message: `cyclePhases.${phasesKey} has no declared block length; it cannot be validated.` });
-      }
-      const err = validateCyclePhaseSet(phasesKey, cyclePhases[phasesKey], maxMerge);
-      if (err) return res.status(400).json({ success: false, message: err });
-    }
     if (footerPages !== undefined) {
       if (!Array.isArray(footerPages) || footerPages.length < 2 || footerPages.length > 5) {
         return res.status(400).json({ success: false, message: 'footerPages must be an array of 2 to 5 page keys.' });
@@ -341,10 +279,6 @@ router.put('/system/config', authenticate, hasPermission('canManageSystemSetting
     };
     collectDeclared(SYSTEM_CONFIG_SPEC, req.body);
 
-    if (minBet          !== undefined) fieldWrites.push(['SystemConfig', 'betLimits.thirtyMin.min', minBet]);
-    if (maxBet          !== undefined) fieldWrites.push(['SystemConfig', 'betLimits.thirtyMin.max', maxBet]);
-    if (max30MinBet     !== undefined) fieldWrites.push(['SystemConfig', 'betLimits.thirtyMin.max', max30MinBet]);
-    if (maxFullDayBet   !== undefined) fieldWrites.push(['SystemConfig', 'betLimits.fullDay.max', maxFullDayBet]);
     if (registrationEnabled   !== undefined) fieldWrites.push(['SystemConfig', 'registrationEnabled', registrationEnabled]);
     if (maintenanceMode       !== undefined) fieldWrites.push(['SystemConfig', 'maintenanceMode', maintenanceMode]);
     if (maintenanceMessage    !== undefined) fieldWrites.push(['SystemConfig', 'maintenanceMessage', maintenanceMessage]);
@@ -378,8 +312,6 @@ router.put('/system/config', authenticate, hasPermission('canManageSystemSetting
     // Winnings platform fee (Phase A) — consumed by markets/gameEngine.js via
     // riskValidation.computeWinningsPayout
     if (winningsFeePercent !== undefined) fieldWrites.push(['SystemConfig', 'winningsFeePercent', winningsFeePercent]);
-    // Cycle duration (Phase X X-5) — consumed by cycleGenerator.ensureActive30MinCycle
-    if (cycleDurationMinutes !== undefined) fieldWrites.push(['SystemConfig', 'cycleDurationMinutes', cycleDurationMinutes]);
     // Data retention (Phase X X-7) — consumed by operations/retention.service.js
     if (retentionMonths !== undefined) fieldWrites.push(['SystemConfig', 'retentionMonths', retentionMonths]);
     if (riskRules?.enforceMultiplesOf10     !== undefined) fieldWrites.push(['SystemConfig', 'riskRules.enforceMultiplesOf10', !!riskRules.enforceMultiplesOf10]);
@@ -395,20 +327,6 @@ router.put('/system/config', authenticate, hasPermission('canManageSystemSetting
     if (payoutMultiplier   !== undefined) fieldWrites.push(['SystemConfig', 'payoutMultiplier', payoutMultiplier]);
     // The payment order windows are per rail, in SystemConfig.teamRouting,
     // accepted by declaration above.
-    // Cycle phase offsets — consumed (cached) by markets/cycleGenerator.getCyclePhases.
-    // Written per-type as a whole validated subdocument.
-    // Validated above, board by board; written the same way. Only the four
-    // declared offsets are carried across, so a stray key in the body cannot
-    // ride along into the document.
-    for (const phasesKey of Object.keys(SYSTEM_CONFIG_SPEC.fields.cyclePhases?.fields ?? {})) {
-      if (cyclePhases?.[phasesKey] === undefined) continue;
-      fieldWrites.push(['SystemConfig', `cyclePhases.${phasesKey}`, {
-        mergeBeforeEndSec:     cyclePhases[phasesKey].mergeBeforeEndSec,
-        equalizerBeforeEndSec: cyclePhases[phasesKey].equalizerBeforeEndSec,
-        closeBeforeEndSec:     cyclePhases[phasesKey].closeBeforeEndSec,
-        celebrateBeforeEndSec: cyclePhases[phasesKey].celebrateBeforeEndSec,
-      }]);
-    }
     // Footer navigation (2026-07-13) — consumed by the user panel Footer via system_config
     if (footerPages !== undefined) {
       // Normalize legacy "chat" entries before persisting
