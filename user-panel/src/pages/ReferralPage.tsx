@@ -3,13 +3,14 @@
  * ReferralPage.tsx — the whole referral story, in one place.
  *
  * ── Why none of this lives on the wallet screen ─────────────────────────────
- * Only the DISBURSED portion ever reaches the winnings wallet. Everything else
+ * Only the DISBURSED portion ever reaches the General balance. Everything else
  * is a promise whose value depends on when the operator next funds the queue. Folding an unrealised promise into a balance
  * is how a player comes to believe they hold money they cannot withdraw — the
  * same class of mistake as counting the reserve as spendable.
  *
  * ── Three numbers, deliberately separated ───────────────────────────────────
- *   Paid to winnings   — already in the wallet. Real, withdrawable.
+ *   Paid to General    — in the General balance; withdrawable once its 10×
+ *                        turnover is played (owner, 2026-10-08).
  *   Next disbursal     — confirmed and owed, waiting only on the operator.
  *   Not payable        — voided or otherwise blocked.
  *
@@ -205,7 +206,7 @@ const ReferralPage: React.FC = () => {
       {/* ── The three numbers ─────────────────────────────────────────── */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10, marginBottom: 14 }}>
         {[
-          { k: 'Paid to winnings', v: t.disbursed, tone: 'var(--green)', sub: 'Already in your wallet' },
+          { k: 'Paid to General', v: t.disbursed, tone: 'var(--green)', sub: 'Unlocks once its turnover is played' },
           { k: 'Next disbursal',   v: t.nextDisbursal, tone: 'var(--gold-ink)', sub: 'Confirmed, awaiting payout' },
           { k: 'Not payable',      v: t.blocked, tone: t.blocked > 0 ? 'var(--red)' : 'var(--text3)', sub: 'Voided or blocked' },
         ].map((c) => (

@@ -398,7 +398,7 @@ export async function referralSummaryFor(userId, { limit = 200 } = {}) {
       referrals:   detail.length,
       // Earned and confirmed — not blocked.
       confirmed:   paiseToRupees(sum('confirmedPaise')),
-      // Already paid into the winnings wallet.
+      // Already paid into the GENERAL balance.
       disbursed:   paiseToRupees(sum('disbursedPaise')),
       // Confirmed but not yet paid — this is what the next disbursal draws on.
       nextDisbursal: paiseToRupees(sum('confirmedPaise') - sum('disbursedPaise')),
