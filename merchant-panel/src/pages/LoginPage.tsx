@@ -3,29 +3,49 @@
 // Operator sign-in and merchant application — design handoff
 // "BB Merchant Panel.dc.html". A merchant's settlement rail is assigned by an
 // admin after approval, so it is deliberately not asked for here.
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Navigate } from 'react-router';
-import { Lock, Smartphone, Mail, User as UserIcon, ShieldCheck, CheckCircle } from 'lucide-react';
-import toast from 'react-hot-toast';
-import { useAuth } from '../services/AuthContext';
+import { Lock, Smartphone, Mail, User as UserIcon, ShieldCheck, CheckCircle, Send } from 'lucide-react';
+import { useAuth, type TelegramChallenge } from '../services/AuthContext';
 import { useRetryCountdown } from '../hooks/useRetryCountdown';
+import { useTelegramPoll } from '../hooks/useTelegramPoll';
 import { api } from '../services/api';
 import { APP_CONFIG, ROUTES } from '../constants';
-import { Button, Field, Logo, Spinner, inputStyle } from '../components/ui';
+import type { AuthResponse, MiniAppSetup, TelegramLink } from '../types';
+import { Banner, Button, Field, Logo, Spinner, inputStyle } from '../components/ui';
+import { TelegramStep } from '../components/TelegramStep';
 import { PlatformUnreachable } from '../components/PlatformUnreachable';
 
 type Tab = 'login' | 'signup';
 
 const MIN_PASSWORD_LENGTH = 8; // backend: merchant.routes.js POST /auth/signup
 
+/** What the screen is waiting on in Telegram. */
+type Wait =
+  /** A VERIFY or LOGIN challenge, polled at `/login/2fa` (sign-in or signup). */
+  | { kind: 'challenge'; challenge: TelegramChallenge; from: Tab }
+  /** "Login with Telegram", polled at `/login/telegram/complete`. */
+  | { kind: 'telegram-login'; challengeToken: string; telegram: TelegramLink | null; message: string };
+
+/** The finished-but-not-signed-in screen: an application in, or a verified merchant awaiting approval. */
+interface Notice { title: string; body: string; }
+
+/** The body `request()` attaches to a refusal. */
+type Refusal = { status?: number; message?: string; data?: { code?: string; verified?: boolean; message?: string } };
+
+const refusalText = (err: unknown, fallback: string): string => {
+  const e = err as Refusal;
+  return (typeof e?.data?.message === 'string' && e.data.message) || e?.message || fallback;
+};
+
 const LoginPage: React.FC = () => {
-  const { merchant, loading: authLoading, login, pendingChallenge, submitTwoFactor, cancelTwoFactor, unreachable, refreshProfile } = useAuth();
+  const { merchant, loading: authLoading, login, acceptSession, unreachable, refreshProfile } = useAuth();
   const [tab, setTab] = useState<Tab>('login');
 
   const [mobile, setMobile] = useState('');
   const [password, setPassword] = useState('');
   const [signingIn, setSigningIn] = useState(false);
-  const [otp, setOtp] = useState('');
+  const [loginError, setLoginError] = useState<string | null>(null);
 
   // Sign-in is paced at one attempt per 10 seconds. Without a visible timer a
   // 429 reads as a broken form, and the natural response — retry immediately —
@@ -39,7 +59,60 @@ const LoginPage: React.FC = () => {
 
   const [form, setForm] = useState({ username: '', mobile: '', email: '', password: '', confirmPassword: '' });
   const [applying, setApplying] = useState(false);
-  const [applied, setApplied] = useState(false);
+  const [applyError, setApplyError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<Notice | null>(null);
+
+  // ── Telegram ──────────────────────────────────────────────────────────────
+  // Whether the platform's bot is set up, and the "Forgot password" link.
+  // Unknown (null) hides both buttons, as `available: false` does.
+  const [setup, setSetup] = useState<MiniAppSetup | null>(null);
+  useEffect(() => {
+    let live = true;
+    api.getMiniAppSetup().then((s) => { if (live) setSetup(s); }).catch(() => { /* hidden, as unavailable */ });
+    return () => { live = false; };
+  }, []);
+
+  const [wait, setWait] = useState<Wait | null>(null);
+  const [waitError, setWaitError] = useState<string | null>(null);
+  const [startingTelegram, setStartingTelegram] = useState(false);
+  /** An approved "Login with Telegram" token the password now completes. */
+  const [telegramApproved, setTelegramApproved] = useState<string | null>(null);
+
+  const endWait = useCallback(() => { setWait(null); setWaitError(null); }, []);
+
+  const challengeToken = wait?.kind === 'challenge' ? wait.challenge.challengeToken : null;
+  const challengePoll = useMemo(
+    () => (challengeToken && !waitError ? () => api.pollLoginChallenge(challengeToken) : null),
+    [challengeToken, waitError],
+  );
+  useTelegramPoll<AuthResponse>(challengePoll, {
+    onDone: (session) => { endWait(); acceptSession(session); },
+    onError: (err) => {
+      const e = err as Refusal;
+      // Verified, and the account still waits for an admin: that is the
+      // signup finishing, not a failure.
+      if (e?.status === 403 && e.data?.code === 'MERCHANT_NOT_ACTIVE' && e.data.verified) {
+        endWait();
+        setNotice({ title: 'Mobile verified', body: 'Verified. Your account is waiting for approval.' });
+        return;
+      }
+      setWaitError(refusalText(err, 'Telegram approval failed. Please sign in again.'));
+    },
+  });
+
+  const telegramLoginToken = wait?.kind === 'telegram-login' ? wait.challengeToken : null;
+  const telegramLoginPoll = useMemo(
+    () => (telegramLoginToken && !waitError ? () => api.pollTelegramLogin(telegramLoginToken) : null),
+    [telegramLoginToken, waitError],
+  );
+  useTelegramPoll<true>(telegramLoginPoll, {
+    onDone: () => {
+      setTelegramApproved(telegramLoginToken);
+      endWait();
+      setTab('login');
+    },
+    onError: (err) => setWaitError(refusalText(err, 'Telegram sign-in failed. Please try again.')),
+  });
 
   if (!authLoading && merchant) return <Navigate to={ROUTES.DASHBOARD} replace />;
   /**
@@ -56,39 +129,44 @@ const LoginPage: React.FC = () => {
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setSigningIn(true);
+    setLoginError(null);
     try {
-      await login({ mobile, password });
+      const step = await login({ mobile, password, challengeToken: telegramApproved ?? undefined });
+      setTelegramApproved(null);
+      if (step) {
+        setWaitError(null);
+        setWait({ kind: 'challenge', challenge: step, from: 'login' });
+      }
     } catch (err) {
-      // AuthContext surfaces the message; keep the operator on the form. A
-      // pace refusal also starts the countdown, so the button says how long
-      // rather than just refusing again.
+      // Shown in the server's words. A pace refusal also starts the
+      // countdown, so the button says how long rather than just refusing again.
       startFrom(err);
+      setLoginError(refusalText(err, 'Login failed'));
     } finally {
       setSigningIn(false);
     }
   };
 
-  const handleOtp = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setSigningIn(true);
+  const handleTelegramLogin = async () => {
+    setStartingTelegram(true);
+    setLoginError(null);
     try {
-      await submitTwoFactor(otp.trim());
-      setOtp('');
+      const opened = await api.startTelegramLogin();
+      setWaitError(null);
+      setTelegramApproved(null);
+      setWait({ kind: 'telegram-login', challengeToken: opened.challengeToken, telegram: opened.telegram, message: opened.message || '' });
     } catch (err) {
-      // AuthContext toasts the reason. Clear the field so a stale wrong code
-      // is not resubmitted by a second Enter press — but KEEP it on a pace
-      // refusal: it was never submitted, and a 30-second TOTP retyped after a
-      // 10-second wait is usually still the right one.
-      if (!startFrom(err)) setOtp('');
+      setLoginError(refusalText(err, 'Telegram sign-in failed. Please try again.'));
     } finally {
-      setSigningIn(false);
+      setStartingTelegram(false);
     }
   };
 
   const handleApply = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (form.password !== form.confirmPassword) { toast.error('Passwords do not match'); return; }
-    if (form.password.length < MIN_PASSWORD_LENGTH) { toast.error(`Password must be at least ${MIN_PASSWORD_LENGTH} characters`); return; }
+    setApplyError(null);
+    if (form.password !== form.confirmPassword) { setApplyError('Passwords do not match'); return; }
+    if (form.password.length < MIN_PASSWORD_LENGTH) { setApplyError(`Password must be at least ${MIN_PASSWORD_LENGTH} characters`); return; }
     setApplying(true);
     try {
       const res = await api.merchantSignup({
@@ -98,9 +176,20 @@ const LoginPage: React.FC = () => {
         password: form.password,
         confirmPassword: form.confirmPassword,
       });
-      if (res.success) setApplied(true);
-    } catch (error: any) {
-      toast.error(error.message || 'Application failed');
+      if (!res.success) { setApplyError(res.message || 'Application failed'); return; }
+      if (res.challengeToken && res.telegram) {
+        setWaitError(null);
+        setWait({
+          kind: 'challenge', from: 'signup',
+          challenge: { challengeToken: res.challengeToken, telegram: res.telegram, message: res.message, verify: true },
+        });
+      } else {
+        // No bot set up yet (`verificationAvailable: false`): the server says
+        // what happens next — verification at the first sign-in.
+        setNotice({ title: 'Application submitted', body: res.message });
+      }
+    } catch (error) {
+      setApplyError(refusalText(error, 'Application failed'));
     } finally {
       setApplying(false);
     }
@@ -151,60 +240,61 @@ const LoginPage: React.FC = () => {
           background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 20,
           boxShadow: 'var(--shadow)', overflow: 'hidden',
         }}>
-          {/* The tab strip is hidden mid-2FA: the password has already been
-              accepted, and letting the operator wander to "Apply as Merchant"
-              would silently abandon a challenge that expires in 5 minutes. */}
-          {!pendingChallenge && (
+          {/* The tab strip is hidden while Telegram is awaited: the password
+              has already been accepted, and wandering to the other tab would
+              silently abandon a challenge that expires in minutes. */}
+          {!wait && !notice && (
           <div style={{ display: 'flex', padding: 6, gap: 4, background: 'var(--surface-2)', borderBottom: '1px solid var(--border)' }}>
-            <button onClick={() => setTab('login')} style={tabStyle('login')}>Login</button>
-            <button onClick={() => setTab('signup')} style={tabStyle('signup')}>Apply as Merchant</button>
+            <button type="button" onClick={() => setTab('login')} style={tabStyle('login')}>Login</button>
+            <button type="button" onClick={() => setTab('signup')} style={tabStyle('signup')}>Apply as Merchant</button>
           </div>
           )}
 
           <div style={{ padding: '22px 22px 24px' }}>
-            {pendingChallenge ? (
-              <form onSubmit={handleOtp} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-                <div>
-                  <div style={{ fontSize: 15, fontWeight: 800, marginBottom: 4 }}>Two-factor authentication</div>
-                  <div style={{ fontSize: 12, color: 'var(--muted)' }}>
-                    Enter the 6-digit code from your authenticator app.
-                  </div>
+            {wait ? (
+              <TelegramStep
+                title={wait.kind === 'telegram-login'
+                  ? 'Login with Telegram'
+                  : wait.challenge.verify ? 'Verify your mobile in Telegram' : 'Approve in Telegram'}
+                body={(wait.kind === 'telegram-login' ? wait.message : wait.challenge.message)
+                  || 'Open the link on your phone, approve in Telegram, then come back here.'}
+                telegram={wait.kind === 'telegram-login' ? wait.telegram : wait.challenge.telegram}
+                waiting={!waitError}
+                error={waitError}
+                onBack={endWait}
+                backLabel={wait.kind === 'challenge' && wait.from === 'signup' ? 'Back to login' : 'Back to sign in'}
+              />
+            ) : notice ? (
+              <div style={{ textAlign: 'center', padding: '14px 0' }}>
+                <CheckCircle size={44} style={{ color: 'var(--ok)' }} />
+                <div style={{ fontSize: 16, fontWeight: 800, color: 'var(--text)', margin: '12px 0 6px' }}>
+                  {notice.title}
                 </div>
-                <input
-                  value={otp}
-                  onChange={(e) => setOtp(e.target.value.replace(/[^0-9A-Za-z-]/g, '').slice(0, 9))}
-                  inputMode="numeric"
-                  autoComplete="one-time-code"
-                  autoFocus
-                  placeholder="000000"
-                  style={{
-                    width: '100%', height: 52, borderRadius: 10, border: '1px solid var(--border)',
-                    background: 'var(--surface-2)', color: 'var(--text)', textAlign: 'center',
-                    fontSize: 20, letterSpacing: '0.3em', fontFamily: 'monospace', outline: 'none',
-                  }}
-                />
-                <button type="submit" disabled={signingIn || blocked || otp.trim().length < 6} style={{
-                  width: '100%', height: 44, borderRadius: 10, border: 'none', cursor: 'pointer',
-                  background: 'var(--accent)', color: 'var(--accent-ink)', fontWeight: 700, fontSize: 14,
-                  opacity: signingIn || blocked || otp.trim().length < 6 ? 0.6 : 1,
-                }}>
-                  {blocked ? `Try again in ${secondsLeft}s` : signingIn ? 'Verifying…' : 'Verify and sign in'}
-                </button>
-                <button type="button" onClick={() => { cancelTwoFactor(); setOtp(''); }} style={{
-                  background: 'transparent', border: 'none', color: 'var(--muted)', fontSize: 12, cursor: 'pointer',
-                }}>
-                  Back to sign in
-                </button>
-                <div style={{ fontSize: 11, color: 'var(--muted)', lineHeight: 1.5 }}>
-                  Lost your phone? Enter one of your recovery codes instead — each works once.
-                </div>
-              </form>
+                <p role="status" style={{ fontSize: 13, fontWeight: 600, color: 'var(--muted)', lineHeight: 1.55, margin: '0 0 18px' }}>
+                  {notice.body} An admin reviews your application and assigns your settlement rail — INR or USDT.
+                  You can sign in once it is approved.
+                </p>
+                <Button variant="outline" tone="neutral" full onClick={() => { setNotice(null); setTab('login'); }} style={{ borderColor: 'var(--border)', color: 'var(--text)' }}>
+                  Back to login
+                </Button>
+              </div>
             ) : tab === 'login' ? (
               <form onSubmit={handleLogin} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-                <Field label="Mobile number">
+                {telegramApproved && (
+                  <Banner tone="ok" title="Telegram confirmed it is you">
+                    Enter your mobile number and password to finish.{' '}
+                    <button type="button" onClick={() => setTelegramApproved(null)} style={{
+                      background: 'none', border: 0, padding: 0, color: 'var(--brand)', fontWeight: 700, cursor: 'pointer',
+                    }}>
+                      Cancel
+                    </button>
+                  </Banner>
+                )}
+                <Field label="Mobile number" htmlFor="login-mobile">
                   <div style={{ position: 'relative' }}>
                     <Smartphone size={17} style={iconStyle} />
                     <input
+                      id="login-mobile"
                       value={mobile}
                       onChange={(e) => setMobile(e.target.value)}
                       placeholder="10-digit mobile"
@@ -215,10 +305,11 @@ const LoginPage: React.FC = () => {
                     />
                   </div>
                 </Field>
-                <Field label="Password">
+                <Field label="Password" htmlFor="login-password">
                   <div style={{ position: 'relative' }}>
                     <Lock size={17} style={iconStyle} />
                     <input
+                      id="login-password"
                       type="password"
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
@@ -229,27 +320,33 @@ const LoginPage: React.FC = () => {
                     />
                   </div>
                 </Field>
+                {loginError && (
+                  <div role="alert" style={{
+                    padding: '10px 12px', borderRadius: 10, fontSize: 12.5, fontWeight: 600, lineHeight: 1.5,
+                    background: 'var(--danger-bg)', color: 'var(--danger)',
+                  }}>
+                    {loginError}
+                  </div>
+                )}
                 <Button type="submit" full busy={signingIn} disabled={!mobile || !password || blocked} style={{ padding: 13, fontSize: 14, borderRadius: 12 }}>
                   {blocked ? `Try again in ${secondsLeft}s` : signingIn ? 'Signing in…' : 'Sign in securely'}
                 </Button>
+                {setup?.available && !telegramApproved && (
+                  <Button variant="outline" full busy={startingTelegram} onClick={handleTelegramLogin} style={{ padding: 12, fontSize: 13.5, borderRadius: 12 }}>
+                    <Send size={15} /> Login with Telegram
+                  </Button>
+                )}
+                {setup?.available && setup.resetUrl && (
+                  <a href={setup.resetUrl} target="_blank" rel="noopener noreferrer" style={{
+                    textAlign: 'center', fontSize: 12.5, fontWeight: 700, color: 'var(--brand)',
+                  }}>
+                    Forgot password?
+                  </a>
+                )}
                 <p style={{ margin: 0, textAlign: 'center', fontSize: 12.5, color: 'var(--muted)' }}>
                   Trouble signing in? Contact your operations admin.
                 </p>
               </form>
-            ) : applied ? (
-              <div style={{ textAlign: 'center', padding: '14px 0' }}>
-                <CheckCircle size={44} style={{ color: 'var(--ok)' }} />
-                <div style={{ fontSize: 16, fontWeight: 800, color: 'var(--text)', margin: '12px 0 6px' }}>
-                  Application submitted
-                </div>
-                <p style={{ fontSize: 13, fontWeight: 600, color: 'var(--muted)', lineHeight: 1.55, margin: '0 0 18px' }}>
-                  An admin reviews your application and assigns your settlement rail — INR or USDT.
-                  You can sign in once it is approved.
-                </p>
-                <Button variant="outline" tone="neutral" full onClick={() => { setApplied(false); setTab('login'); }} style={{ borderColor: 'var(--border)', color: 'var(--text)' }}>
-                  Back to login
-                </Button>
-              </div>
             ) : (
               <form onSubmit={handleApply} style={{ display: 'flex', flexDirection: 'column', gap: 13 }}>
                 <div style={{
@@ -258,13 +355,15 @@ const LoginPage: React.FC = () => {
                 }}>
                   <ShieldCheck size={16} style={{ color: 'var(--warn)', flexShrink: 0, marginTop: 1 }} />
                   <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--warn)', lineHeight: 1.5 }}>
-                    Applications are reviewed by an admin before you can sign in.
+                    Applications are reviewed by an admin before you can sign in. You verify your
+                    mobile in Telegram right after applying.
                   </span>
                 </div>
-                <Field label="Username">
+                <Field label="Username" htmlFor="apply-username">
                   <div style={{ position: 'relative' }}>
                     <UserIcon size={17} style={iconStyle} />
                     <input
+                      id="apply-username"
                       value={form.username}
                       onChange={(e) => setForm((f) => ({ ...f, username: e.target.value }))}
                       placeholder="Choose a username"
@@ -273,10 +372,11 @@ const LoginPage: React.FC = () => {
                     />
                   </div>
                 </Field>
-                <Field label="Mobile number">
+                <Field label="Mobile number" htmlFor="apply-mobile">
                   <div style={{ position: 'relative' }}>
                     <Smartphone size={17} style={iconStyle} />
                     <input
+                      id="apply-mobile"
                       value={form.mobile}
                       onChange={(e) => setForm((f) => ({ ...f, mobile: e.target.value }))}
                       placeholder="10-digit mobile"
@@ -286,10 +386,11 @@ const LoginPage: React.FC = () => {
                     />
                   </div>
                 </Field>
-                <Field label="Email (optional)">
+                <Field label="Email (optional)" htmlFor="apply-email">
                   <div style={{ position: 'relative' }}>
                     <Mail size={17} style={iconStyle} />
                     <input
+                      id="apply-email"
                       type="email"
                       value={form.email}
                       onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
@@ -298,10 +399,11 @@ const LoginPage: React.FC = () => {
                     />
                   </div>
                 </Field>
-                <Field label="Password" hint={`Minimum ${MIN_PASSWORD_LENGTH} characters.`}>
+                <Field label="Password" htmlFor="apply-password" hint={`Minimum ${MIN_PASSWORD_LENGTH} characters.`}>
                   <div style={{ position: 'relative' }}>
                     <Lock size={17} style={iconStyle} />
                     <input
+                      id="apply-password"
                       type="password"
                       value={form.password}
                       onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
@@ -312,10 +414,11 @@ const LoginPage: React.FC = () => {
                     />
                   </div>
                 </Field>
-                <Field label="Confirm password">
+                <Field label="Confirm password" htmlFor="apply-confirm">
                   <div style={{ position: 'relative' }}>
                     <Lock size={17} style={iconStyle} />
                     <input
+                      id="apply-confirm"
                       type="password"
                       value={form.confirmPassword}
                       onChange={(e) => setForm((f) => ({ ...f, confirmPassword: e.target.value }))}
@@ -326,6 +429,14 @@ const LoginPage: React.FC = () => {
                     />
                   </div>
                 </Field>
+                {applyError && (
+                  <div role="alert" style={{
+                    padding: '10px 12px', borderRadius: 10, fontSize: 12.5, fontWeight: 600, lineHeight: 1.5,
+                    background: 'var(--danger-bg)', color: 'var(--danger)',
+                  }}>
+                    {applyError}
+                  </div>
+                )}
                 <Button type="submit" tone="brand" full busy={applying} style={{ padding: 13, fontSize: 14, borderRadius: 12 }}>
                   Submit application
                 </Button>

@@ -246,9 +246,6 @@ const App: React.FC = () => (
                           {/* Finance */}
                           <Route path="/wallet"          element={lazy(<WalletPage />)} />
 
-                          {/* Where a bot login link lands. Recovery is no longer a
-                              page in this app — it is a second Telegram bot. */}
-
                           {/* Referral earnings live HERE, not on the wallet:
                               only the disbursed part reaches the winnings
                               balance, and the rest is a promise. */}

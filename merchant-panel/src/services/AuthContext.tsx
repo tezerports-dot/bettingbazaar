@@ -2,22 +2,21 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { useNavigate } from 'react-router';
 import toast from 'react-hot-toast';
-import { MerchantProfile, LoginCredentials } from '../types';
+import { MerchantProfile, LoginCredentials, AuthResponse, TelegramLink } from '../types';
 import { api } from './api';
 
 interface AuthContextType {
   merchant: MerchantProfile | null;
   loading: boolean;
-  login: (credentials: LoginCredentials) => Promise<void>;
   /**
-   * Set when the password was accepted but a second factor is still owed.
-   * Held in React state ONLY — never localStorage. It is a five-minute
-   * half-authenticated credential, so persisting it would leave it readable
-   * long after it expired and restore a login nobody came back to finish.
+   * The password leg. Resolves `null` once signed in (and navigates), or the
+   * Telegram step still owed: approve this sign-in, or verify the mobile.
+   * The step is held by the sign-in screen in React state ONLY, never
+   * localStorage: it is a five-minute half-authenticated credential.
    */
-  pendingChallenge: string | null;
-  submitTwoFactor: (code: string) => Promise<void>;
-  cancelTwoFactor: () => void;
+  login: (credentials: LoginCredentials) => Promise<TelegramChallenge | null>;
+  /** A session a Telegram poll answered with (`/login/2fa`): sign in with it. */
+  acceptSession: (response: AuthResponse) => void;
   logout: () => void;
   refreshProfile: () => Promise<void>;
   /**
@@ -44,6 +43,15 @@ const serverRefusal = (err: any): string | null =>
   err?.data && typeof err.data === 'object' && err.data.success === false && typeof err.data.message === 'string'
     ? err.data.message : null;
 
+/** What the sign-in screen waits on in Telegram. */
+export interface TelegramChallenge {
+  challengeToken: string;
+  telegram: TelegramLink | null;
+  message: string;
+  /** True: the mobile is being verified (403 TELEGRAM_VERIFICATION_REQUIRED); false: this sign-in is being approved. */
+  verify: boolean;
+}
+
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const useAuth = () => {
@@ -57,7 +65,6 @@ export const useAuth = () => {
 export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [merchant, setMerchant] = useState<MerchantProfile | null>(null);
   const [loading, setLoading] = useState(true);
-  const [pendingChallenge, setPendingChallenge] = useState<string | null>(null);
   const [unreachable, setUnreachable] = useState(false);
   const navigate = useNavigate();
 
@@ -140,65 +147,40 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     initAuth();
   }, []);
 
-  const login = async (credentials: LoginCredentials) => {
+  const acceptSession = (response: AuthResponse) => {
+    const merchantData = response.user || response.merchant;
+    if (!merchantData) return;
+    setMerchant(merchantData);
+    setUnreachable(false);
+    toast.success('Login successful!');
+    navigate('/dashboard');
+  };
+
+  const login = async (credentials: LoginCredentials): Promise<TelegramChallenge | null> => {
     try {
       setLoading(true);
-      const response = await api.merchantLogin(credentials.mobile, credentials.password);
-      // Half-done: password accepted, OTP owed. The form swaps to the code
-      // step; deliberately no session and no navigation.
-      if (response.twoFactorRequired && response.challengeToken) {
-        setPendingChallenge(response.challengeToken);
-        return;
+      const response = await api.merchantLogin(credentials.mobile, credentials.password, credentials.challengeToken);
+      // Half-done: the password was accepted and Telegram is owed. No
+      // session and no navigation; the screen shows the Telegram step.
+      if ((response.twoFactorRequired || response.verificationRequired) && response.challengeToken) {
+        return {
+          challengeToken: response.challengeToken,
+          telegram: response.telegram ?? null,
+          message: response.message || '',
+          verify: Boolean(response.verificationRequired),
+        };
       }
-      const merchantData = response.user || response.merchant;
-      if (merchantData) {
-        setMerchant(merchantData);
-        setPendingChallenge(null);
-        toast.success('Login successful!');
-        // A merchant who has not enrolled is sent straight to enrolment: 2FA
-        // is mandatory for an account that settles real money, and the
-        // backend flags this rather than locking out every existing merchant
-        // on deploy day.
-        navigate(response.mustEnroll2FA ? '/profile?enroll2fa=1' : '/dashboard');
-      }
-    } catch (error: any) {
-      toast.error(error.message || 'Login failed');
-      throw error;
+      acceptSession(response);
+      return null;
     } finally {
+      // A refusal is thrown to the sign-in screen, which shows it in the
+      // server's words (role="alert").
       setLoading(false);
     }
   };
-
-  const submitTwoFactor = async (code: string) => {
-    if (!pendingChallenge) throw new Error('Login session expired. Please sign in again.');
-    try {
-      setLoading(true);
-      const response = await api.merchantLoginTwoFactor(pendingChallenge, code);
-      const merchantData = response.user || response.merchant;
-      if (response.success && merchantData) {
-        setMerchant(merchantData);
-        setPendingChallenge(null);
-        toast.success('Login successful!');
-        navigate('/dashboard');
-        return;
-      }
-      throw new Error(response.message || 'Invalid authentication code');
-    } catch (error: any) {
-      // An expired challenge cannot be retried with a fresh code — the
-      // password leg has to happen again, so drop it and say so plainly.
-      if (/expired/i.test(error?.message || '')) setPendingChallenge(null);
-      toast.error(error.message || 'Invalid authentication code');
-      throw error;
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const cancelTwoFactor = () => setPendingChallenge(null);
 
   const logout = () => {
     setMerchant(null);
-    setPendingChallenge(null);
     api.logout();
     
     const publicPaths = ['/chat/'];
@@ -225,7 +207,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   };
 
   return (
-    <AuthContext.Provider value={{ merchant, loading, login, pendingChallenge, submitTwoFactor, cancelTwoFactor, logout, refreshProfile, unreachable }}>
+    <AuthContext.Provider value={{ merchant, loading, login, acceptSession, logout, refreshProfile, unreachable }}>
       {children}
     </AuthContext.Provider>
   );

@@ -15,7 +15,7 @@
  *
  *   · the login form says NOTHING about whether a number is registered;
  *   · a refusal is shown VERBATIM, because the server names the field;
- *   · a 2FA challenge is a second STEP, never an error.
+ *   · a Telegram step (verify, approve) is a second STEP, never an error.
  *
  * And two are new, both from the owner's spec: the invite code is pre-filled
  * and NON-EDITABLE when the player arrived by a referral link, and the screen
@@ -27,15 +27,24 @@ import userEvent from '@testing-library/user-event';
 
 const register = vi.fn();
 const signIn = vi.fn();
-const signInWithSecondFactor = vi.fn();
+const signInWithTelegram = vi.fn();
+const pollTelegramStep = vi.fn();
 vi.mock('../../services/GameContext', () => ({
-  useGame: () => ({ register, signIn, signInWithSecondFactor }),
+  useGame: () => ({ register, signIn, signInWithTelegram, pollTelegramStep }),
 }));
 
 const checkInvite = vi.fn();
+const getTelegramSetup = vi.fn();
 vi.mock('../../services/backend.service', () => ({
-  getBackend: () => ({ checkInvite }),
+  getBackend: () => ({ checkInvite, getTelegramSetup }),
 }));
+
+/** What the server answers when the account owes a Telegram step. */
+const STEP = {
+  kind: 'telegram', leg: 'challenge', challengeToken: 'chal-1',
+  telegram: { url: 'https://t.me/bb_bot?startapp=cabc', botUsername: 'bb_bot', expiresAt: '' },
+  message: 'Open the link, share your contact, then come back here.',
+} as const;
 
 let stored: string | null = null;
 vi.mock('../../services/referralCapture', () => ({
@@ -59,9 +68,11 @@ async function fillSignup(over: Partial<Record<string, string>> = {}) {
 beforeEach(() => {
   stored = null;
   onClose.mockReset();
-  register.mockReset().mockResolvedValue(undefined);
-  signIn.mockReset().mockResolvedValue({});
-  signInWithSecondFactor.mockReset().mockResolvedValue(undefined);
+  register.mockReset().mockResolvedValue(STEP);
+  signIn.mockReset().mockResolvedValue({ kind: 'done', user: {} });
+  signInWithTelegram.mockReset().mockResolvedValue({ ...STEP, leg: 'telegramLogin' });
+  pollTelegramStep.mockReset().mockResolvedValue('pending');
+  getTelegramSetup.mockReset().mockResolvedValue({ available: true, botUsername: 'bb_bot', resetUrl: 'https://t.me/bb_bot?startapp=reset-PLAYER' });
   checkInvite.mockReset().mockResolvedValue({ valid: true, invitedBy: 'player3210' });
 });
 
@@ -78,7 +89,9 @@ describe('the signup form', () => {
     }
   });
 
-  it('submits what the player typed, and closes', async () => {
+  it('submits what the player typed, then shows the Telegram step', async () => {
+    // Step 3: the account is not usable until Telegram verifies the mobile,
+    // so a signup ends on the link to open, never on a closed modal.
     open('register');
     await fillSignup();
     await userEvent.click(screen.getByRole('button', { name: /create account/i }));
@@ -87,7 +100,19 @@ describe('the signup form', () => {
       password: 'a-long-enough-phrase', confirmPassword: 'a-long-enough-phrase',
       referralCode: undefined,
     });
-    expect(onClose).toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+    const link = await screen.findByRole('link', { name: /open telegram/i });
+    expect(link.getAttribute('href')).toBe(STEP.telegram.url);
+    expect(screen.getByText(STEP.message)).toBeTruthy();
+  });
+
+  it('says so, without a link, when Telegram is not configured', async () => {
+    register.mockResolvedValue({ kind: 'unavailable', message: 'Your account is created. Sign in later to finish.' });
+    open('register');
+    await fillSignup();
+    await userEvent.click(screen.getByRole('button', { name: /create account/i }));
+    expect((await screen.findByRole('status')).textContent).toMatch(/sign in later/i);
+    expect(screen.queryByRole('link', { name: /open telegram/i })).toBeNull();
   });
 
   it('keeps every character typed into every field', async () => {
@@ -161,7 +186,7 @@ describe('the signup form', () => {
     // Somebody who does not know a Telegram step is coming will read the gate
     // that appears a second later as an error.
     open('register');
-    expect(screen.getByText(/open our telegram bot from this same mobile number/i)).toBeTruthy();
+    expect(screen.getByText(/share your contact to verify it/i)).toBeTruthy();
   });
 });
 
@@ -231,11 +256,11 @@ describe('the login form', () => {
     expect(alert.textContent).not.toMatch(/not registered|no account|unknown/i);
   });
 
-  it('treats a 2FA challenge as a STEP, not an error', async () => {
-    // `success: false` comes back with the challenge, deliberately. A screen
-    // that read that as a failure would show "Invalid credentials" to somebody
-    // whose password was correct.
-    signIn.mockResolvedValue({ twoFactorRequired: true, challengeToken: 'chal-1' });
+  it('treats a Telegram step as a STEP, not an error', async () => {
+    // Approval on, or a mobile never verified: the password was right. A
+    // screen that read that as a failure would show "Invalid credentials" to
+    // somebody whose password was correct.
+    signIn.mockResolvedValue(STEP);
     open('login');
     await userEvent.type(field(/mobile number/i), '9876543210');
     await userEvent.type(field(/^password$/i), 'a-long-enough-phrase');
@@ -243,32 +268,52 @@ describe('the login form', () => {
 
     expect(screen.queryByRole('alert')).toBeNull();
     expect(onClose).not.toHaveBeenCalled();
-    expect(field(/authenticator code/i)).toBeTruthy();
+    expect(await screen.findByRole('link', { name: /open telegram/i })).toBeTruthy();
   });
 
-  it('redeems the challenge with the six digits', async () => {
-    signIn.mockResolvedValue({ twoFactorRequired: true, challengeToken: 'chal-1' });
+  it('polls the step and closes once Telegram approves', async () => {
+    signIn.mockResolvedValue(STEP);
+    pollTelegramStep.mockResolvedValue('done');
     open('login');
     await userEvent.type(field(/mobile number/i), '9876543210');
     await userEvent.type(field(/^password$/i), 'a-long-enough-phrase');
     await userEvent.click(screen.getByRole('button', { name: /^log in$/i }));
-
-    await userEvent.type(field(/authenticator code/i), '123456');
-    await userEvent.click(screen.getByRole('button', { name: /verify/i }));
-    expect(signInWithSecondFactor).toHaveBeenCalledWith('chal-1', '123456');
-    expect(onClose).toHaveBeenCalled();
+    await vi.waitFor(() => expect(onClose).toHaveBeenCalled(), { timeout: 5000 });
+    expect(pollTelegramStep).toHaveBeenCalledWith('challenge', 'chal-1');
   });
 
-  it('will not submit fewer than six digits', async () => {
-    signIn.mockResolvedValue({ twoFactorRequired: true, challengeToken: 'chal-1' });
+  it('stops polling and shows the refusal when Telegram denies it', async () => {
+    signIn.mockResolvedValue(STEP);
+    pollTelegramStep.mockRejectedValue(new Error('This sign-in was refused in Telegram.'));
     open('login');
     await userEvent.type(field(/mobile number/i), '9876543210');
     await userEvent.type(field(/^password$/i), 'a-long-enough-phrase');
     await userEvent.click(screen.getByRole('button', { name: /^log in$/i }));
+    expect((await screen.findByRole('alert', {}, { timeout: 5000 })).textContent).toMatch(/refused in telegram/i);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.queryByRole('link', { name: /open telegram/i })).toBeNull();
+  });
 
-    await userEvent.type(field(/authenticator code/i), '123');
-    expect((screen.getByRole('button', { name: /verify/i }) as HTMLButtonElement).disabled).toBe(true);
-    expect(signInWithSecondFactor).not.toHaveBeenCalled();
+  it('offers Log in with Telegram, polled on its own route', async () => {
+    open('login');
+    await userEvent.click(await screen.findByRole('button', { name: /log in with telegram/i }));
+    expect(signInWithTelegram).toHaveBeenCalled();
+    expect(await screen.findByRole('link', { name: /open telegram/i })).toBeTruthy();
+  });
+
+  it('sends Forgot password to the Mini App reset link', async () => {
+    open('login');
+    const link = await screen.findByRole('link', { name: /forgot password/i });
+    expect(link.getAttribute('href')).toBe('https://t.me/bb_bot?startapp=reset-PLAYER');
+  });
+
+  it('offers neither Telegram button when no bot is configured', async () => {
+    getTelegramSetup.mockResolvedValue({ available: false, botUsername: '', resetUrl: null });
+    open('login');
+    await screen.findByRole('button', { name: /^log in$/i });
+    await Promise.resolve();
+    expect(screen.queryByRole('button', { name: /log in with telegram/i })).toBeNull();
+    expect(screen.queryByRole('link', { name: /forgot password/i })).toBeNull();
   });
 
   it('counts down instead of blaming the password when the server PACES it', async () => {

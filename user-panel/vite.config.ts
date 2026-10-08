@@ -70,6 +70,12 @@ export default defineConfig({
     // while the browser is completely unable to reconstruct original source.
     sourcemap: 'hidden',
     rollupOptions: {
+      // Two pages: the app, and the Telegram Mini App (mini-app.html), which
+      // Telegram opens on its own and which must not share the app's router.
+      input: {
+        main: path.resolve(import.meta.dirname, 'index.html'),
+        miniApp: path.resolve(import.meta.dirname, 'mini-app.html'),
+      },
       output: {
         // Only split chunks for packages this panel actually imports. The
         // former 'three-vendor' entry listed three/@react-three/*, which no

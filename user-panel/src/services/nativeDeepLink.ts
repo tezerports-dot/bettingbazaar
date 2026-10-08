@@ -5,8 +5,8 @@
  * ── What arrives here ──────────────────────────────────────────────────────
  * The App Link filter in AndroidManifest.xml routes taps on
  * `https://<PUBLIC_APP_ORIGIN>/#/…` to this app. The one the platform sends
- * today is the bot's password-reset link, `/#/reset/<token>`: a player who
- * forgot their password taps it in Telegram and lands on the reset screen in
+ * today is the password-reset link the Mini App opens, `/#/reset/<token>`: a
+ * player who forgot their password taps it in Telegram and lands on the reset screen in
  * the app they already have, instead of a browser. (Sign-in itself is a form —
  * CLAUDE.md §33 — so no link here grants a session.)
  *
