@@ -1,13 +1,17 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 //
-// Command Center sign-in — recreated from the design handoff. Auth flow
-// (mobile + password, role-based post-login redirect) is unchanged.
-import React, { useState } from 'react';
+// Command Center sign-in. Mobile + password, then the sign-in is approved in
+// Telegram (Step 3: one Mini App bot; docs/PROJECT_STATUS.md, "API contract").
+// "Login with Telegram" runs the other way round: Telegram first, then the
+// password. Role-based landing is unchanged.
+import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router';
-import { ArrowRight } from 'lucide-react';
+import { ArrowRight, Send } from 'lucide-react';
 import { useAuthStore } from '../services/auth';
+import api, { type MiniAppInfo, type TelegramBlock } from '../services/api';
 import { signedOutReason as readSignedOutReason } from '../services/signedOut';
 import { useRetryCountdown } from '../hooks/useRetryCountdown';
+import { useTelegramPoll, isRefusal, refusalText, type PollStep } from '../hooks/useTelegramPoll';
 import { LogoMark, getBrand } from '../components/Logo';
 import toast from 'react-hot-toast';
 
@@ -20,14 +24,89 @@ const ROLES: { id: LoginType; label: string }[] = [
   { id: 'queue_manager', label: 'Queue Manager' },
 ];
 
+/**
+ * Where the sign-in is.
+ *   form        mobile + password (with `challengeToken` once a "Login with
+ *               Telegram" has been approved and the password finishes it)
+ *   approve     password accepted; approve (or verify) in Telegram, poll /login/2fa
+ *   tgLogin     "Login with Telegram" opened; poll /login/telegram/complete
+ */
+type Step =
+  | { kind: 'form'; challengeToken?: string; note?: string }
+  | { kind: 'approve'; challengeToken: string; telegram: TelegramBlock | null; message: string }
+  | { kind: 'tgLogin'; challengeToken: string; telegram: TelegramBlock | null; message: string };
+
+const inputStyle: React.CSSProperties = {
+  width: '100%', height: 42, borderRadius: 10, border: '1px solid var(--input-border)',
+  background: 'var(--input)', color: 'var(--text)', padding: '0 13px', fontSize: 13, outline: 'none',
+};
+
+const alertStyle: React.CSSProperties = {
+  marginBottom: 14, padding: '12px 14px', borderRadius: 10, fontSize: 13, fontWeight: 600, lineHeight: 1.5,
+  background: 'var(--danger-bg)', color: 'var(--danger)', border: '1px solid var(--border)',
+};
+
+const linkButton: React.CSSProperties = {
+  width: '100%', height: 38, marginTop: 8, background: 'transparent', border: 'none',
+  color: 'var(--muted)', fontSize: 12, cursor: 'pointer',
+};
+
+const expiresAtText = (iso?: string): string => {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? '' : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+};
+
+/**
+ * The "waiting on Telegram" card, for both directions. Module level (§32 S23).
+ * The link is an anchor the operator presses, not a `window.open` after the
+ * server answered: a browser blocks a window that no click opened.
+ */
+const TelegramStepCard: React.FC<{
+  title: string;
+  message: string;
+  telegram: TelegramBlock | null;
+  error: string | null;
+  onBack: () => void;
+}> = ({ title, message, telegram, error, onBack }) => (
+  <div className="card" style={{ padding: 24 }}>
+    <div style={{ fontSize: 15, fontWeight: 800, marginBottom: 4 }}>{title}</div>
+    {message && (
+      <div style={{ fontSize: 12.5, color: 'var(--text-2)', marginBottom: 16, lineHeight: 1.5 }}>{message}</div>
+    )}
+    {error && <div role="alert" style={alertStyle}>{error}</div>}
+    {telegram?.url && !error && (
+      <a
+        href={telegram.url}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="btn btn-primary"
+        style={{ width: '100%', height: 44, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, textDecoration: 'none' }}
+      >
+        <Send size={16} /> Open Telegram{telegram.botUsername ? ` (@${telegram.botUsername})` : ''}
+      </a>
+    )}
+    {!error && (
+      <div role="status" aria-live="polite" style={{ fontSize: 12, color: 'var(--muted)', marginTop: 14, lineHeight: 1.5 }}>
+        Waiting for your approval in Telegram…
+        {telegram?.expiresAt && expiresAtText(telegram.expiresAt) ? ` This link works until ${expiresAtText(telegram.expiresAt)}.` : ''}
+      </div>
+    )}
+    <button type="button" onClick={onBack} style={linkButton}>Back to sign in</button>
+  </div>
+);
+
 export const Login: React.FC = () => {
   const [mobile, setMobile] = useState('');
   const [password, setPassword] = useState('');
   const [loginType, setLoginType] = useState<LoginType>('admin');
   const [isLoading, setIsLoading] = useState(false);
-  const [otp, setOtp] = useState('');
+  const [step, setStep] = useState<Step>({ kind: 'form' });
+  const [formError, setFormError] = useState<string | null>(null);
+  const [stepError, setStepError] = useState<string | null>(null);
+  const [miniApp, setMiniApp] = useState<MiniAppInfo | null>(null);
   const navigate = useNavigate();
-  const { login, submitTwoFactor, cancelTwoFactor, pendingChallenge } = useAuthStore();
+  const { login, adoptSession } = useAuthStore();
   const brand = getBrand();
   // Sign-in is paced at one attempt per 10 seconds. Without a visible timer a
   // 429 reads as a broken form, and the natural response — retry immediately —
@@ -38,32 +117,21 @@ export const Login: React.FC = () => {
   // the first and only thing they see (§32 S48). Read once per page load.
   const [signedOutReason] = useState(() => readSignedOutReason());
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setIsLoading(true);
-    try {
-      await login(mobile, password, loginType);
-      // Password accepted but a second factor is owed — the form swaps to the
-      // OTP step and this submit is done. Not an error, not a session yet.
-      if (useAuthStore.getState().pendingChallenge) { setIsLoading(false); return; }
-      routeAfterLogin();
-    } catch (error: any) {
-      // A pace refusal is not a credential failure and must not be reported as
-      // one — "check your credentials" sends an admin to reset a password that
-      // was never wrong.
-      if (!startFrom(error)) {
-        toast.error(error.response?.data?.message || 'Login failed. Check your credentials.');
-      }
-    } finally {
-      setIsLoading(false);
-    }
-  };
+  // Whether Telegram is set up for staff at all: "Login with Telegram" and
+  // "Forgot password" are offered only when it is. A failed read hides both.
+  useEffect(() => {
+    let alive = true;
+    api.telegram.miniApp()
+      .then((info) => { if (alive) setMiniApp(info ?? null); })
+      .catch(() => { if (alive) setMiniApp(null); });
+    return () => { alive = false; };
+  }, []);
 
   /**
-   * Landing route by role. Shared by the password-only path and the post-OTP
-   * path so a 2FA login cannot land somewhere different from a normal one.
+   * Landing route by role. Shared by every way of signing in so a Telegram
+   * sign-in cannot land somewhere different from a password one.
    */
-  const routeAfterLogin = () => {
+  const routeAfterLogin = useCallback(() => {
     const { admin } = useAuthStore.getState();
     if (!admin) throw new Error('Login failed');
 
@@ -83,34 +151,79 @@ export const Login: React.FC = () => {
       navigate(first);
     }
     toast.success('Login successful!');
-  };
+  }, [navigate]);
 
-  const handleOtpSubmit = async (e: React.FormEvent) => {
+  const backToForm = () => { setStep({ kind: 'form' }); setStepError(null); };
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
+    setFormError(null);
     try {
-      await submitTwoFactor(otp.trim());
-      setOtp('');
-      routeAfterLogin();
+      const answer = await login(mobile, password, loginType, step.kind === 'form' ? step.challengeToken : undefined);
+      if (answer.kind === 'session') { routeAfterLogin(); return; }
+      // Password accepted; Telegram is next. The password is not kept on
+      // screen: re-submitting it would only open a second challenge.
+      setPassword('');
+      setStepError(answer.telegram ? null : (answer.message || 'Telegram is not available right now. Try again shortly.'));
+      setStep({ kind: 'approve', challengeToken: answer.challengeToken, telegram: answer.telegram, message: answer.message });
     } catch (error: any) {
-      // Same distinction on the second factor, and the code is KEPT on a pace
-      // refusal: it was never submitted, and a 30-second TOTP retyped after a
-      // 10-second wait is usually still the right one.
-      // The server's words first: a refused code arrives as an axios error
-      // whose own message is "Request failed with status code 401".
-      if (!startFrom(error)) {
-        toast.error(error?.response?.data?.message || error?.message || 'Invalid authentication code');
-        setOtp('');
-      }
+      // A pace refusal is not a credential failure and must not be reported as
+      // one — "check your credentials" sends an admin to reset a password that
+      // was never wrong.
+      if (!startFrom(error)) setFormError(refusalText(error, 'Login failed. Check your credentials.'));
     } finally {
       setIsLoading(false);
     }
   };
 
-  const inputStyle: React.CSSProperties = {
-    width: '100%', height: 42, borderRadius: 10, border: '1px solid var(--input-border)',
-    background: 'var(--input)', color: 'var(--text)', padding: '0 13px', fontSize: 13, outline: 'none',
+  const startTelegramLogin = async () => {
+    setIsLoading(true);
+    setFormError(null);
+    try {
+      const opened = await api.auth.telegramLogin();
+      setStepError(null);
+      setStep({ kind: 'tgLogin', ...opened });
+    } catch (error: any) {
+      if (!startFrom(error)) setFormError(refusalText(error, 'Telegram sign-in is not available right now.'));
+    } finally {
+      setIsLoading(false);
+    }
   };
+
+  // ── Waiting on Telegram (one loop, `useTelegramPoll`) ─────────────────────
+  const waiting = (step.kind === 'approve' || step.kind === 'tgLogin') && !stepError;
+  const ask = useCallback(async (live: () => boolean): Promise<PollStep> => {
+    try {
+      if (step.kind === 'approve') {
+        const answer = await api.auth.loginTwoFactor(step.challengeToken);
+        if (!live()) return 'stop';
+        if (answer.kind === 'pending') return 'again';
+        adoptSession(answer.session);
+        routeAfterLogin();
+        return 'stop';
+      }
+      if (step.kind === 'tgLogin') {
+        const answer = await api.auth.telegramLoginComplete(step.challengeToken);
+        if (!live()) return 'stop';
+        if (answer.kind === 'pending') return 'again';
+        setStep({
+          kind: 'form', challengeToken: step.challengeToken,
+          note: 'Telegram confirmed it is you. Enter your mobile number and password to finish.',
+        });
+        return 'stop';
+      }
+      return 'stop';
+    } catch (error) {
+      if (!isRefusal(error)) throw error;          // a blip: ask again
+      if (live()) setStepError(refusalText(error, 'This sign-in was not approved. Please sign in again.'));
+      return 'stop';
+    }
+  }, [step, adoptSession, routeAfterLogin]);
+  useTelegramPoll(ask, waiting);
+
+  const telegramReady = miniApp?.available === true;
+  const finishingTelegram = step.kind === 'form' && !!step.challengeToken;
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'var(--bg)', color: 'var(--text)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }} className="om-fade">
@@ -123,59 +236,39 @@ export const Login: React.FC = () => {
         </div>
 
         {signedOutReason && (
-          <div role="alert" style={{
-            marginBottom: 14, padding: '12px 14px', borderRadius: 10, fontSize: 13, fontWeight: 600, lineHeight: 1.5,
-            background: 'var(--danger-bg)', color: 'var(--danger)', border: '1px solid var(--border)',
-          }}>
+          <div role="alert" style={alertStyle}>
             You were signed out: {signedOutReason}
           </div>
         )}
 
-        {/* Card */}
-        {/* ── OTP step ────────────────────────────────────────────────────
-            Swaps the whole card rather than appending a field: the password
-            has already been accepted and re-submitting it would restart the
-            login. Showing it still filled in would invite exactly that. */}
-        {pendingChallenge ? (
-        <div className="card" style={{ padding: 24 }}>
-          <div style={{ fontSize: 15, fontWeight: 800, marginBottom: 4 }}>Two-factor authentication</div>
-          <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 18 }}>
-            Enter the 6-digit code from your authenticator app.
-          </div>
-          <form onSubmit={handleOtpSubmit}>
-            <input
-              value={otp}
-              onChange={(e) => setOtp(e.target.value.replace(/[^0-9A-Za-z-]/g, '').slice(0, 9))}
-              inputMode="numeric"
-              autoComplete="one-time-code"
-              autoFocus
-              placeholder="000000"
-              style={{ ...inputStyle, textAlign: 'center', fontSize: 20, letterSpacing: '0.3em', fontFamily: 'monospace', height: 52 }}
-            />
-            <button
-              type="submit"
-              disabled={isLoading || blocked || otp.trim().length < 6}
-              className="btn btn-primary"
-              style={{ width: '100%', height: 42, marginTop: 14, opacity: isLoading || blocked || otp.trim().length < 6 ? 0.6 : 1 }}
-            >
-              {blocked ? `Try again in ${secondsLeft}s` : isLoading ? 'Verifying…' : 'Verify and sign in'}
-            </button>
-            <button
-              type="button"
-              onClick={() => { cancelTwoFactor(); setOtp(''); }}
-              style={{ width: '100%', height: 38, marginTop: 8, background: 'transparent', border: 'none', color: 'var(--muted)', fontSize: 12, cursor: 'pointer' }}
-            >
-              Back to sign in
-            </button>
-          </form>
-          <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 14, lineHeight: 1.5 }}>
-            Lost your phone? Enter one of your recovery codes instead — each works once.
-          </div>
-        </div>
-        ) : (
+        {step.kind === 'approve' && (
+          <TelegramStepCard
+            title="Approve in Telegram"
+            message={step.message || 'Open the link on your phone and approve this sign-in, then come back here.'}
+            telegram={step.telegram}
+            error={stepError}
+            onBack={backToForm}
+          />
+        )}
+
+        {step.kind === 'tgLogin' && (
+          <TelegramStepCard
+            title="Login with Telegram"
+            message={step.message || 'Open Telegram to sign in, then come back here.'}
+            telegram={step.telegram}
+            error={stepError}
+            onBack={backToForm}
+          />
+        )}
+
+        {step.kind === 'form' && (
         <div className="card" style={{ padding: 24 }}>
           <div style={{ fontSize: 15, fontWeight: 800, marginBottom: 4 }}>Sign in</div>
-          <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 18 }}>Choose your role to continue</div>
+          <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 18 }}>
+            {step.note || 'Choose your role to continue'}
+          </div>
+
+          {formError && <div role="alert" style={alertStyle}>{formError}</div>}
 
           <form onSubmit={handleSubmit}>
             {/* Role picker */}
@@ -203,10 +296,11 @@ export const Login: React.FC = () => {
             </div>
 
             {/* Mobile */}
-            <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: 'var(--text-2)', marginBottom: 7 }}>Mobile number</label>
+            <label htmlFor="mobile" style={{ display: 'block', fontSize: 12, fontWeight: 600, color: 'var(--text-2)', marginBottom: 7 }}>Mobile number</label>
             <div style={{ display: 'flex', alignItems: 'center', height: 42, borderRadius: 10, border: '1px solid var(--input-border)', background: 'var(--input)', marginBottom: 14, overflow: 'hidden' }}>
               <span style={{ padding: '0 12px', fontSize: 13, fontWeight: 700, color: 'var(--muted)', borderRight: '1px solid var(--border)', height: '100%', display: 'flex', alignItems: 'center', fontFamily: "'JetBrains Mono',monospace" }}>+91</span>
               <input
+                id="mobile"
                 type="tel"
                 value={mobile}
                 onChange={(e) => setMobile(e.target.value)}
@@ -241,14 +335,40 @@ export const Login: React.FC = () => {
                 : <>{isLoading ? 'Signing in…' : 'Sign in'} {!isLoading && <ArrowRight size={16} />}</>}
             </button>
           </form>
+
+          {finishingTelegram && (
+            <button type="button" onClick={backToForm} style={linkButton}>Start again</button>
+          )}
+
+          {telegramReady && !finishingTelegram && (
+            <button
+              type="button"
+              onClick={startTelegramLogin}
+              disabled={isLoading || blocked}
+              className="btn"
+              style={{
+                width: '100%', height: 42, marginTop: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                borderRadius: 10, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text)',
+                fontSize: 13, fontWeight: 700, cursor: isLoading || blocked ? 'not-allowed' : 'pointer',
+              }}
+            >
+              <Send size={15} /> Login with Telegram
+            </button>
+          )}
+
+          {telegramReady && miniApp?.resetUrl && (
+            <a
+              href={miniApp.resetUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ display: 'block', textAlign: 'center', marginTop: 12, fontSize: 12, color: 'var(--muted)' }}
+            >
+              Forgot password?
+            </a>
+          )}
         </div>
         )}
 
-        {/* Says only what is true. This line previously disclaimed 2FA
-            entirely — correct at the time, since no TOTP challenge existed.
-            It does now (identity/twoFactorChallenge.js), but it is only real
-            for accounts that have ENROLLED, so the wording still promises
-            nothing about this particular session. */}
         <div style={{ textAlign: 'center', fontSize: 11, color: 'var(--muted)', marginTop: 16 }}>
           Sessions and privileged actions are logged to Audit Logs
         </div>

@@ -20,7 +20,10 @@ vi.mock('../services/sse', () => ({
   default: { on: vi.fn(), off: vi.fn(), connect: vi.fn(), disconnect: vi.fn() },
 }));
 vi.mock('../services/api', () => ({
-  default: { auth: { login: vi.fn(), loginTwoFactor: vi.fn(), logout, verifySession: vi.fn() } },
+  default: {
+    auth: { login: vi.fn(), loginTwoFactor: vi.fn(), telegramLogin: vi.fn(), telegramLoginComplete: vi.fn(), logout, verifySession: vi.fn() },
+    telegram: { miniApp: vi.fn().mockResolvedValue({ success: true, available: false, botUsername: '', resetUrl: null }) },
+  },
 }));
 
 const KEY = 'adminSignedOutReason';
@@ -119,33 +122,63 @@ describe('endRefusedSession keeps the reason across the reload', () => {
 });
 
 /**
- * A refused second factor is said in the server's words.
- *
- * The code is refused 401 and axios throws on it with its own message,
- * "Request failed with status code 401". The old response interceptor reloaded
- * the page over every 401, so nobody read it; now that a 401 with no session
- * is left to the form, the form has to say what the server said.
+ * The Telegram step (Step 3): the password is accepted, the sign-in is
+ * approved in Telegram, and the screen polls `/login/2fa`. A refusal there is
+ * said in the server's words (`role="alert"`, S44) and the polling stops.
  */
-describe('the second-factor step', () => {
+describe('the Approve in Telegram step', () => {
   beforeEach(() => { sessionStorage.clear(); localStorage.clear(); cleanup(); });
 
-  it('toasts the server\'s refusal, not the HTTP client\'s', async () => {
+  const TELEGRAM = { url: 'https://t.me/bb_bot/app?startapp=c1', botUsername: 'bb_bot', expiresAt: '2026-10-08T10:00:00Z' };
+
+  const toTelegramStep = async () => {
     vi.resetModules();
-    const toast = (await import('react-hot-toast')).default;
-    const said = vi.spyOn(toast, 'error');
     const { default: api } = await import('../services/api');
-    (api.auth.loginTwoFactor as any).mockRejectedValue(Object.assign(new Error('Request failed with status code 401'), {
-      response: { status: 401, data: { success: false, message: 'Invalid authentication code' } },
-    }));
-    const { useAuthStore } = await import('../services/auth');
-    useAuthStore.setState({ pendingChallenge: 'c-1', isAuthenticated: false, token: null });
+    (api.auth.login as any).mockResolvedValue({ kind: 'telegram', challengeToken: 'c-1', telegram: TELEGRAM, message: 'Approve this sign-in in Telegram.' });
     const { Login } = await import('./Login');
-    const { fireEvent, waitFor } = await import('@testing-library/react');
+    const { fireEvent } = await import('@testing-library/react');
     render(<MemoryRouter><Login /></MemoryRouter>);
-    fireEvent.change(screen.getByPlaceholderText('000000'), { target: { value: '123456' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Verify and sign in' }));
-    await waitFor(() => expect(said).toHaveBeenCalledWith('Invalid authentication code'));
-    // A wrong code keeps the step: the next code can be typed.
-    expect(useAuthStore.getState().pendingChallenge).toBe('c-1');
-  });
+    fireEvent.change(screen.getByLabelText('Mobile number'), { target: { value: '9000000001' } });
+    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'pw' } });
+    fireEvent.click(screen.getByRole('button', { name: /Sign in/ }));
+    return api;
+  };
+
+  it('opens the Mini App link in a new tab and stops on a denial, in the server\'s words', async () => {
+    const api = await toTelegramStep();
+    (api.auth.loginTwoFactor as any).mockRejectedValue(Object.assign(new Error('Request failed with status code 401'), {
+      response: { status: 401, data: { success: false, code: 'TWO_FACTOR_DENIED', message: 'This sign-in was refused in Telegram.' } },
+    }));
+    const link = await screen.findByRole('link', { name: /Open Telegram/ });
+    expect(link.getAttribute('href')).toBe(TELEGRAM.url);
+    expect(link.getAttribute('target')).toBe('_blank');
+    expect(link.getAttribute('rel')).toContain('noopener');
+    const { waitFor } = await import('@testing-library/react');
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('This sign-in was refused in Telegram.'), { timeout: 5000 });
+    expect(api.auth.loginTwoFactor).toHaveBeenCalledWith('c-1');
+    expect(api.auth.loginTwoFactor).toHaveBeenCalledTimes(1);
+  }, 10000);
+
+  it('keeps polling on 202 and signs in on approval (the opposite case)', async () => {
+    const api = await toTelegramStep();
+    (api.auth.loginTwoFactor as any)
+      .mockResolvedValueOnce({ kind: 'pending' })
+      .mockResolvedValue({ kind: 'session', session: { token: 't', admin: { userId: 'a-1', username: 'owner', isAdmin: true }, bootstrap: false } });
+    await screen.findByRole('link', { name: /Open Telegram/ });
+    const { useAuthStore } = await import('../services/auth');
+    const { waitFor } = await import('@testing-library/react');
+    await waitFor(() => expect(useAuthStore.getState().isAuthenticated).toBe(true), { timeout: 8000 });
+    expect(api.auth.loginTwoFactor).toHaveBeenCalledTimes(2);
+  }, 12000);
+
+  it('stops asking once the operator goes back', async () => {
+    const api = await toTelegramStep();
+    (api.auth.loginTwoFactor as any).mockResolvedValue({ kind: 'pending' });
+    await screen.findByRole('link', { name: /Open Telegram/ });
+    const { fireEvent } = await import('@testing-library/react');
+    fireEvent.click(screen.getByRole('button', { name: 'Back to sign in' }));
+    await new Promise((r) => setTimeout(r, 3500));
+    expect(api.auth.loginTwoFactor).not.toHaveBeenCalled();
+    expect(screen.getByLabelText('Password')).toBeInTheDocument();
+  }, 10000);
 });

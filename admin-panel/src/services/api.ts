@@ -60,62 +60,127 @@ api.interceptors.response.use(
     if (error.response?.status === 401 && storedToken()) {
       endRefusedSession(serverRefusal(error.response.data));
     }
+    // A held session that Telegram never approved is not a session: the 403
+    // `TWO_FACTOR_REQUIRED` every staff route answers once a bot is saved over a
+    // bootstrap (password-only) session. Any other 403 is "not permitted",
+    // which ends nothing.
+    const body = error.response?.data as { code?: unknown } | undefined;
+    if (error.response?.status === 403 && body?.code === 'TWO_FACTOR_REQUIRED' && storedToken()) {
+      endRefusedSession(serverRefusal(error.response.data));
+    }
     return Promise.reject(error);
   }
 );
 
 // --- AUTH ---------------------------------------------------------------------
+/**
+ * The staff door (`/api/admin/login…`, backend/domains/identity/loginDoors.js).
+ * Every staff sign-in is approved in Telegram (Step 3): the password leg
+ * answers with a Telegram step, never a session, unless the platform is in the
+ * bootstrap (no bot saved yet), when it answers a password-only session with
+ * `bootstrap: true`.
+ */
+
+/** A staff session as the door sends it: `{ token, user, bootstrap? }`. */
+export interface StaffSession {
+  token: string;
+  admin: Admin;
+  /** No bot saved yet: this session is a password alone (§33 bootstrap). */
+  bootstrap: boolean;
+}
+
+/** What the password leg answered. */
+export type LoginAnswer =
+  | { kind: 'session'; session: StaffSession }
+  /**
+   * Approve in Telegram, then poll `/login/2fa`: either a sign-in to approve
+   * (200 `twoFactorRequired`) or a first verification of this account's mobile
+   * (403 `TELEGRAM_VERIFICATION_REQUIRED`). The panel treats both the same.
+   */
+  | { kind: 'telegram'; challengeToken: string; telegram: TelegramBlock | null; message: string };
+
+/** One poll of `/login/2fa`. A refusal (401 DENIED/EXPIRED, an account refusal) throws. */
+export type PollAnswer = { kind: 'pending' } | { kind: 'session'; session: StaffSession };
+
+/** One poll of `/login/telegram/complete`. A refusal throws. */
+export type TelegramLoginAnswer = { kind: 'pending' } | { kind: 'passwordRequired' };
+
+const sessionOf = (data: any): StaffSession | null =>
+  data?.success && data?.token
+    ? { token: data.token, admin: data.user, bootstrap: data.bootstrap === true }
+    : null;
+
+/** A 2xx the panel has no branch for, thrown in the shape every caller reads. */
+const unexpected = (status: number, data: any): Error =>
+  Object.assign(new Error(data?.message || 'Sign-in failed. Please try again.'), { response: { status, data } });
 
 export const auth = {
   /**
+   * The password leg. `challengeToken` is sent only to finish a "Login with
+   * Telegram" whose approval has already arrived (`passwordRequired`).
+   *
    * loginType:
    *   'admin'         -- full admin
-   *   'subadmin'      -- sub-admin (permissions from subAdminPermissions on User doc)
+   *   'subadmin'      -- sub-admin
    *   'queue_manager' -- queue manager (sees only queue dashboard)
    */
   login: async (
     mobile: string,
     password: string,
-    loginType: 'admin' | 'subadmin' | 'queue_manager' = 'admin'
-  ) => {
-    const res = await api.post<any>('/api/admin/login', { mobile, password, loginType }); // MED-02: use /api/admin/login for adminAuthLimiter
-    // 2FA: the server answers success:false + twoFactorRequired and hands back
-    // a five-minute challenge instead of a session. This is NOT an error —
-    // the password was accepted; the login is simply half done.
-    if (res.data?.twoFactorRequired && res.data?.challengeToken) {
-      return { success: false, twoFactorRequired: true, challengeToken: res.data.challengeToken as string };
+    loginType: 'admin' | 'subadmin' | 'queue_manager' = 'admin',
+    challengeToken?: string,
+  ): Promise<LoginAnswer> => {
+    try {
+      const res = await api.post<any>('/api/admin/login', {
+        mobile, password, loginType, ...(challengeToken ? { challengeToken } : {}),
+      });
+      const session = sessionOf(res.data);
+      if (session) return { kind: 'session', session };
+      // Not an error: the password was accepted and Telegram is next.
+      if (res.data?.twoFactorRequired && res.data?.challengeToken) {
+        return {
+          kind: 'telegram', challengeToken: res.data.challengeToken,
+          telegram: res.data.telegram ?? null, message: res.data.message || '',
+        };
+      }
+      throw unexpected(res.status, res.data);
+    } catch (err: any) {
+      const data = err?.response?.data;
+      if (err?.response?.status === 403 && data?.code === 'TELEGRAM_VERIFICATION_REQUIRED' && data?.challengeToken) {
+        return { kind: 'telegram', challengeToken: data.challengeToken, telegram: data.telegram ?? null, message: data.message || '' };
+      }
+      throw err;
     }
-    if (res.data?.success && res.data?.token) {
-      // `mustEnroll2FA` is carried through, not dropped. The server has sent it
-      // since 2026-09-10 — computed from `requires2FA()` so the panel and the
-      // policy cannot disagree — and this mapper returned a fixed
-      // `{token, admin}` shape that discarded it, so an admin who must hold a
-      // second factor and never enrolled was never once asked. The merchant
-      // panel has routed on the same flag all along (F-011).
-      return {
-        success: true,
-        data: { token: res.data.token, admin: res.data.user },
-        mustEnroll2FA: !!res.data.mustEnroll2FA,
-      };
-    }
-    return res.data;
   },
 
-  /** Second leg: exchange the challenge for a real session. */
-  loginTwoFactor: async (challengeToken: string, code: string) => {
-    const res = await api.post<any>('/api/admin/login/2fa', { challengeToken, code });
-    if (res.data?.success && res.data?.token) {
-      // Carried here too, though it is always false on this leg by
-      // construction: reaching it means a factor was presented, so the account
-      // is enrolled. Reading the server's answer rather than assuming that
-      // keeps one owner for the question.
+  /** Has Telegram answered? 202 keeps polling; a session signs in. */
+  loginTwoFactor: async (challengeToken: string): Promise<PollAnswer> => {
+    const res = await api.post<any>('/api/admin/login/2fa', { challengeToken });
+    if (res.status === 202) return { kind: 'pending' };
+    const session = sessionOf(res.data);
+    if (session) return { kind: 'session', session };
+    throw unexpected(res.status, res.data);
+  },
+
+  /** "Login with Telegram", from the browser: a challenge and its Mini App link. */
+  telegramLogin: async () => {
+    const res = await api.post<any>('/api/admin/login/telegram', {});
+    if (res.data?.pending && res.data?.challengeToken) {
       return {
-        success: true,
-        data: { token: res.data.token, admin: res.data.user },
-        mustEnroll2FA: !!res.data.mustEnroll2FA,
+        challengeToken: res.data.challengeToken as string,
+        telegram: (res.data.telegram ?? null) as TelegramBlock | null,
+        message: (res.data.message || '') as string,
       };
     }
-    return res.data;
+    throw unexpected(res.status, res.data);
+  },
+
+  /** Has the Mini App approved the "Login with Telegram"? Then the password is next. */
+  telegramLoginComplete: async (challengeToken: string): Promise<TelegramLoginAnswer> => {
+    const res = await api.post<any>('/api/admin/login/telegram/complete', { challengeToken });
+    if (res.status === 202) return { kind: 'pending' };
+    if (res.data?.passwordRequired) return { kind: 'passwordRequired' };
+    throw unexpected(res.status, res.data);
   },
 
   logout: async () => {
@@ -127,13 +192,12 @@ export const auth = {
   verifySession: async () => {
     const res = await api.get<any>('/api/v1/auth/me');
     if (res.data?.success && res.data?.user) {
-      // Carried for the same reason as on login, and this is the path that
-      // catches an account PROMOTED to staff while holding a session: the
-      // obligation begins at the promotion, not at their next sign-in.
+      // `bootstrap` is re-stated on every load: it ends the moment a bot is
+      // saved, and a banner read only at sign-in would outlive it.
       return {
         success: true,
-        data: { admin: res.data.user },
-        mustEnroll2FA: !!res.data.mustEnroll2FA,
+        data: { admin: res.data.user as Admin },
+        bootstrap: res.data.bootstrap === true,
       };
     }
     return res.data;
@@ -428,232 +492,88 @@ export const queueManager = {
   },
 };
 
-// --- TELEGRAM & REFERRALS -------------------------------------------------
+// --- TELEGRAM -----------------------------------------------------------------
 /**
- * The identity and payout control plane. Every endpoint behind these is
- * `isAdmin`, never `isAdminOrSubAdmin`: they move the platform's identity root
- * and release national identity numbers, and admin 2FA is mandatory, so
- * "isAdmin" also means "proved a second factor".
+ * One bot carries the Mini App that verifies every account and approves every
+ * staff and merchant sign-in (Step 3; docs/PROJECT_STATUS.md, "API contract").
+ * Server: backend/routes/admin/telegram.admin.routes.js and
+ * backend/domains/telegram/miniApp.routes.js.
  */
-/**
- * Which panel a Telegram screen is configuring.
- *
- * §5 MIRROR of `ACCOUNT_TYPES` in database/repositories/users.js, which is the
- * one owner of these values — an account's `account_type` IS its Telegram
- * audience, which is what stops "which bot serves this person" acquiring a
- * second answer. Change them in the same commit.
- */
-export type Audience = 'PLAYER' | 'MERCHANT' | 'STAFF';
-export const AUDIENCES: Audience[] = ['PLAYER', 'MERCHANT', 'STAFF'];
-
-/** What the admin panel calls each one, so three screens say the same words. */
-export const AUDIENCE_LABEL: Record<Audience, string> = {
-  PLAYER: 'User panel',
-  MERCHANT: 'Merchant panel',
-  STAFF: 'Admin panel',
-};
 
 /**
- * The answer to "may this staff account use the admin panel yet?"
- *
- * The SAME shape the player and merchant panels receive, because it is the same
- * server function behind all three mounts (§5). `bootstrap` is the one field
- * only this panel acts on — see the gate component.
+ * A Telegram block, as every door and the relink route send it: the Mini App
+ * deep link to open, the bot it belongs to, and when the challenge behind it
+ * lapses. §5 mirror of `openChallenge`'s `telegram` (backend/routes.js).
  */
-export interface StaffVerification {
+export interface TelegramBlock {
+  url: string;
+  botUsername: string;
+  expiresAt: string;
+}
+
+/** `GET|PUT /api/admin/telegram/bot` — the bot, never its token. */
+export interface TelegramBot {
   success: boolean;
-  verified: boolean;
-  bootstrap: boolean;
-  audience: Audience;
-  reason: string | null;
-  contactShared: boolean;
-  channelJoined: boolean;
-  bot: { username: string } | null;
-  botLink: string;
-  channel: { inviteLink: string; username: string };
-  generation: number;
-  throttled?: boolean;
+  configured: boolean;
+  botId: string | null;
+  botUsername: string;
+  miniAppShortName: string;
+  updatedAt: string | null;
+  updatedBy: string | null;
+}
+
+/** `GET /api/telegram/mini-app?panel=STAFF` — public. */
+export interface MiniAppInfo {
+  success: boolean;
+  available: boolean;
+  botUsername: string;
+  resetUrl: string | null;
+}
+
+/** `GET /api/admin/account/telegram` — the signed-in staff account's own link. */
+export interface MyTelegram {
+  available: boolean;
+  linked: boolean;
+  telegramUsername: string | null;
+  firstName: string | null;
+  verifiedAt: string | null;
+  linkedAt: string | null;
+  twoFactor: { enabled: boolean; required: boolean };
 }
 
 export const telegram = {
-  /**
-   * The staff gate's own read. Cache-only unless `verify` is passed, which the
-   * "I've done it" button sends once — the server floors it per account.
-   */
-  getVerification: async (opts: { verify?: boolean } = {}) => {
-    // Two whole literals rather than one interpolated path, deliberately:
-    // `check:ui-coverage` resolves a panel call by reading the string at the
-    // call site, and a path carrying `${…}` is one it cannot follow to a route.
-    // A gate that cannot see a call cannot tell a working button from a dead
-    // one (§28), and the fix is to write something it can read — not to exempt
-    // the file.
-    const res = opts.verify
-      ? await api.get<any>('/api/admin/verification?verify=1')
-      : await api.get<any>('/api/admin/verification');
-    return res.data as StaffVerification;
-  },
-
-  getConfig: async (audience: Audience = 'PLAYER') => {
-    const res = await api.get<any>(`/api/admin/telegram/config?audience=${audience}`);
-    return res.data as {
-      success: boolean;
-      active?: {
-        generation: number; botUsername: string; recoveryBotUsername?: string;
-        channelId: string; channelUsername?: string; channelInviteLink?: string;
-        botTokenConfigured: boolean; recoveryBotConfigured: boolean;
-        /** Whether the live credential comes from the bot registry or from the generation. */
-        signinSource?: 'registry' | 'generation';
-        recoverySource?: 'registry' | 'generation' | 'none';
-      } | null;
-      history?: Array<{
-        generation: number; botUsername: string; channelId: string; channelUsername?: string;
-        active: boolean; activatedAt: string; reason?: string;
-        activatedBy?: { username?: string } | null;
-      }>;
-      message?: string;
-    };
+  getBot: async () => {
+    const res = await api.get<TelegramBot>('/api/admin/telegram/bot');
+    return res.data;
   },
 
   /**
-   * Activate a new generation.
-   *
-   * Tokens are write-only by design: there is no read path for one, so an
-   * operator changing a bot supplies a fresh value rather than editing what is
-   * stored. The server verifies it against Telegram BEFORE storing, because a
-   * config with a dead token takes signup and login down until someone notices.
+   * Either field may be sent alone. The token is asked of Telegram before it
+   * is stored; a refusal (400 TOKEN_INVALID, SHORT_NAME_INVALID, 409 NO_BOT)
+   * arrives as an axios error carrying the server's `message`.
    */
-  activate: async (body: {
-    // REQUIRED, and with no default on purpose: activating a channel is what
-    // makes every cached membership for that panel stale, so a guessed audience
-    // re-gates a population the operator was not thinking about.
-    audience: Audience;
-    botToken: string; recoveryBotToken?: string; channelId: string;
-    channelUsername?: string; channelInviteLink?: string; webhookBaseUrl?: string; reason?: string;
-  }) => {
-    const res = await api.post<any>('/api/admin/telegram/config', body);
-    return res.data as {
-      success: boolean; generation?: number; botUsername?: string;
-      webhook?: string; message?: string;
-    };
+  saveBot: async (body: { token?: string; miniAppShortName?: string }) => {
+    const res = await api.put<TelegramBot>('/api/admin/telegram/bot', body);
+    return res.data;
   },
 
-  /**
-   * Replace the CHANNEL only, carrying the current bots forward.
-   *
-   * Separate from `activate` because in an incident the two are almost never
-   * the same event: a channel is deleted while the bot is fine. Requiring a
-   * working bot token to be re-pasted to fix an unrelated channel is one more
-   * way to fail under pressure.
-   *
-   * Every player is asked to join the new channel on their next protected
-   * action; nothing else about their account moves.
-   */
-  replaceChannel: async (body: {
-    audience: Audience;
-    channelId: string; channelUsername?: string; channelInviteLink?: string; reason?: string;
-  }) => {
-    const res = await api.post<any>('/api/admin/telegram/channel', body);
-    return res.data as {
-      success: boolean; generation?: number;
-      channelId?: string; channelUsername?: string; message?: string;
-    };
-  },
-};
-
-/** A bot in the fleet, as the panel sees it — never with a token. */
-export interface FleetBot {
-  id: string;
-  label: string;
-  role: 'signin' | 'recovery' | 'broadcast' | 'moderation' | 'generic';
-  /** Which panel this bot serves. One bot serves exactly one. */
-  audience: Audience;
-  botId: string;
-  username: string;
-  status: 'ACTIVE' | 'STANDBY' | 'RETIRED';
-  live: boolean;
-  webhookUrl: string;
-  webhookRegisteredAt: string | null;
-  lastError: string;
-  addedAt: string;
-  activatedAt: string | null;
-  retiredAt: string | null;
-  notes: string;
-}
-
-/**
- * The bot fleet.
- *
- * Spares are registered and verified while everything is calm, and sit on
- * STANDBY. When Telegram suspends the live bot, `promote` is the whole incident
- * response — no token to find, no @BotFather to open, no deploy.
- */
-export const telegramBots = {
-  list: async () => {
-    const res = await api.get<any>('/api/admin/telegram/bots');
-    // `loads` arrives with the listing rather than from a second call: the
-    // screen renders each figure INTO the bot's own row, and two fetches would
-    // let the table and the numbers beside it come from different moments.
-    return res.data as {
-      success: boolean; bots?: FleetBot[];
-      /** botId → accounts assigned. Live sign-in bots only. */
-      loads?: Record<string, number>;
-      message?: string;
-    };
+  /** Whether Telegram is available for staff, and the "Forgot password" link. */
+  miniApp: async () => {
+    const res = await api.get<MiniAppInfo>('/api/telegram/mini-app', { params: { panel: 'STAFF' } });
+    return res.data;
   },
 
-  register: async (body: {
-    label: string; role: FleetBot['role']; audience: Audience; token: string; notes?: string;
-  }) => {
-    const res = await api.post<any>('/api/admin/telegram/bots', body);
-    return res.data as { success: boolean; bot?: FleetBot; message?: string };
+  myTelegram: async () => {
+    const res = await api.get<MyTelegram>('/api/admin/account/telegram');
+    return res.data;
   },
 
-  promote: async (id: string, webhookBaseUrl?: string) => {
-    const res = await api.post<any>(`/api/admin/telegram/bots/${id}/promote`, { webhookBaseUrl });
-    return res.data as {
-      success: boolean; bot?: FleetBot; displaced?: FleetBot | null;
-      webhook?: string; alreadyLive?: boolean; message?: string;
-    };
-  },
-
-  retryWebhook: async (id: string, webhookBaseUrl?: string) => {
-    const res = await api.post<any>(`/api/admin/telegram/bots/${id}/webhook`, { webhookBaseUrl });
-    return res.data as { success: boolean; bot?: FleetBot; message?: string };
-  },
-
-  retire: async (id: string) => {
-    const res = await api.post<any>(`/api/admin/telegram/bots/${id}/retire`, {});
-    return res.data as { success: boolean; bot?: FleetBot; message?: string };
-  },
-};
-
-export interface BotTemplate {
-  key: string;
-  body: string;
-  default: string;
-  customised: boolean;
-  variables: string[];
-  updatedAt: string | null;
-}
-
-/**
- * What the bot says.
- *
- * The welcome message is the first sentence anyone reads from this platform and
- * carries the requirement that their Telegram account be on the mobile they
- * signed up with. Getting it wrong shows up weeks later as failed verifications, so it
- * is editable here rather than in a deploy.
- */
-export const telegramTemplates = {
-  list: async () => {
-    const res = await api.get<any>('/api/admin/telegram/templates');
-    return res.data as { success: boolean; templates?: BotTemplate[]; message?: string };
-  },
-
-  /** An empty body reverts the key to the shipped wording. */
-  save: async (key: string, body: string) => {
-    const res = await api.put<any>(`/api/admin/telegram/templates/${key}`, { body });
-    return res.data as { success: boolean; template?: BotTemplate; message?: string };
+  /** Opens a RELINK challenge; approved from the NEW Telegram account. */
+  relink: async () => {
+    const res = await api.post<{ success: boolean; telegram: TelegramBlock; message?: string }>(
+      '/api/admin/account/telegram/relink', {},
+    );
+    return res.data;
   },
 };
 
@@ -1191,31 +1111,8 @@ export const chat = {
   },
 };
 
-// --- TWO-FACTOR ENROLMENT -----------------------------------------------------
-// Admins and sub-admins live in the User collection, so they use the shared
-// /api/2fa router. Two steps on purpose: /setup stores a PENDING secret and
-// only /activate makes it live, so closing the tab mid-scan cannot leave an
-// account demanding codes from an authenticator entry that was never created.
-export const twoFactor = {
-  status: async () => {
-    const res = await api.get<any>('/api/2fa/status');
-    return res.data;
-  },
-  /** Returns { secret, otpauthUri } — render the URI as a QR. */
-  setup: async () => {
-    const res = await api.post<any>('/api/2fa/setup', {});
-    return res.data;
-  },
-  /** Returns { backupCodes } — shown exactly once, never again. */
-  activate: async (code: string) => {
-    const res = await api.post<any>('/api/2fa/activate', { code });
-    return res.data;
-  },
-};
-
 export default {
   auth,
-  twoFactor,
   analytics,
   users,
   merchants,
@@ -1224,8 +1121,6 @@ export default {
   queueManager,
   teams,
   telegram,
-  telegramBots,
-  telegramTemplates,
   referrals,
   subAdmins,
   finance,

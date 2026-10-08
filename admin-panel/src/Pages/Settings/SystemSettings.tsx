@@ -4,7 +4,6 @@ import { Save, Power, AlertTriangle } from 'lucide-react';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import api from '../../services/api';
 import toast from 'react-hot-toast';
-import TwoFactorSetup from '../../components/TwoFactorSetup';
 
 // BB token buy/sell rates remain removed: internal token conversion is fixed 1:1.
 // USDT pricing below is buy-only: no user or merchant USDT sell rail exists.
@@ -363,12 +362,6 @@ export const SystemSettings: React.FC = () => {
         <h1 className="text-2xl font-bold mb-2">System Settings</h1>
         <p className="text-gray-400">Configure platform-wide settings</p>
       </div>
-
-      {/* Account security — THIS admin's own second factor, not a
-          platform-wide setting. It sits first because an operator who has not
-          enrolled is the single most valuable unprotected credential on the
-          platform (docs/PROJECT_STATUS.md §3.3). */}
-      <TwoFactorSetup />
 
       {/* Maintenance Mode Warning */}
       {formData.maintenanceMode && (
