@@ -3216,7 +3216,7 @@ const MUTATIONS = [
   {
     id: 'MBR2', file: 'backend/domains/user/user.routes.js', config: PG,
     test: 'backend/tests/routes/boardRulesAndGeneralPg.test.js',
-    why: 'an older version of the rules is recorded as accepted, so a changed rule is never shown again',
+    why: 'a version the player was never shown is recorded as accepted, so the next rules change is never put in front of them',
     from: `if (version !== BOARD_RULES_VERSION) {`,
     to: `if (!version) {`,
   },

@@ -53,6 +53,11 @@ describePg('board rules and the GENERAL profile routes', () => {
     expect(stale.body.code).toBe('BOARD_RULES_CHANGED');
     expect((await as(app, p).get('/user/board-rules')).body.acceptedVersion).toBe(0);
 
+    // A version the player was never shown is not theirs to accept either.
+    const unseen = await as(app, p).post('/user/board-rules/accept').send({ version: BOARD_RULES_VERSION + 1 });
+    expect(unseen.status).toBe(409);
+    expect((await as(app, p).get('/user/board-rules')).body.acceptedVersion).toBe(0);
+
     const ok = await as(app, p).post('/user/board-rules/accept').send({ version: BOARD_RULES_VERSION });
     expect(ok.status).toBe(200);
     expect(ok.body.acceptedVersion).toBe(BOARD_RULES_VERSION);
