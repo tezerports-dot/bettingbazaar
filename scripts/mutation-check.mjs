@@ -2757,7 +2757,7 @@ const MUTATIONS = [
     why: 'a pocket may go below zero again — a token spent that was never there',
     from: `ALTER TABLE wallets ADD CONSTRAINT wallets_pockets_nonneg CHECK (
   deposit_paise >= 0 AND winnings_paise >= 0 AND token_paise >= 0
-  AND reserve_paise >= 0 AND locked_paise >= 0);`,
+  AND reserve_paise >= 0 AND locked_paise >= 0 AND promo_paise >= 0);`,
     to: `ALTER TABLE wallets ADD CONSTRAINT wallets_pockets_nonneg CHECK (true);`,
   },
   {
@@ -3189,6 +3189,36 @@ const MUTATIONS = [
         AND (NEW.refunded_reserve_paise < NEW.debited_reserve_paise
              OR NEW.refunded_deposit_paise < NEW.debited_deposit_paise)) THEN`,
     to: `  IF false THEN`,
+  },
+
+  // ── The GENERAL balance and the board rules (owner, 2026-10-08) ─────────────
+  {
+    id: 'MPR1', file: 'database/repositories/promo.js', config: PG,
+    test: 'database/tests/promoPg.test.js',
+    why: 'a completed bonus unlocks the whole GENERAL balance, so winnings made with other open bonuses become withdrawable early',
+    from: `const release = done ? Math.min(n(g.amount_paise), promoHeld) : 0;`,
+    to: `const release = done ? promoHeld : 0;`,
+  },
+  {
+    id: 'MPR2', file: 'database/repositories/promo.js', config: PG,
+    test: 'database/tests/promoPg.test.js',
+    why: 'a stake reported twice is counted twice, so a retry halves the turnover a bonus asks for',
+    from: `VALUES ($1, $2, $3, 0) ON CONFLICT (stake_ref) DO NOTHING RETURNING stake_ref\`,`,
+    to: `VALUES ($1 || clock_timestamp()::text, $2, $3, 0) ON CONFLICT (stake_ref) DO NOTHING RETURNING stake_ref\`,`,
+  },
+  {
+    id: 'MBR1', file: 'backend/domains/markets/bet.routes.js', config: PG,
+    test: 'backend/tests/routes/betPlaceRoutesPg.test.js',
+    why: 'a player who never read the board rules can stake money on a board',
+    from: `if (await db.boardRules.acceptedVersion(userId) < BOARD_RULES_VERSION) {`,
+    to: `if (false) {`,
+  },
+  {
+    id: 'MBR2', file: 'backend/domains/user/user.routes.js', config: PG,
+    test: 'backend/tests/routes/boardRulesAndGeneralPg.test.js',
+    why: 'an older version of the rules is recorded as accepted, so a changed rule is never shown again',
+    from: `if (version !== BOARD_RULES_VERSION) {`,
+    to: `if (!version) {`,
   },
 ];
 

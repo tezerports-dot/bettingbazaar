@@ -35,6 +35,8 @@ import { getBalances } from '../../domains/wallet/walletAuthority.service.js';
 import { fundWallet } from '#db/tests/_funding.js';
 import { actor, mountRouter, as } from './_harness.js';
 import { linkTelegram } from '../miniAppFixture.js';
+import { accept as acceptBoardRules } from '#db/repositories/boardRules.js';
+import { BOARD_RULES_VERSION } from '../../domains/markets/boardRules.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 
@@ -66,8 +68,8 @@ describePg('POST /api/bet/place', () => {
   let limits;
   const made = [];
 
-  const fundedPlayer = async (rupees) => {
-    const p = await actor({});
+  const fundedPlayer = async (rupees, { boardRules = true } = {}) => {
+    const p = await actor({ boardRules });
     await linkTelegram(p.userId);
     await fundWallet(p.userId, rupees * 100, `rt-bet-fund-${p.userId}`);
     return p;
@@ -128,6 +130,39 @@ describePg('POST /api/bet/place', () => {
       const p = await fundedPlayer(1_000);
       const res = await place(p, { cycleId: cycle.cycleId, side: 'DELHI', amount: limits.fullDay.min, type: 'FULL_DAY' });
       expect(res.status, JSON.stringify(res.body)).toBe(200);
+    });
+  });
+
+  describe('the board rules are read and accepted before a first bet', () => {
+    it('refuses a player who has not accepted them, takes nothing, and takes the bet once they have', async () => {
+      const cycle = await openCycle('FULL_DAY', { startedAgoMs: HOUR, lengthMs: 20 * HOUR });
+      made.push(cycle.cycleId);
+      const p = await fundedPlayer(1_000, { boardRules: false });
+      const body = { cycleId: cycle.cycleId, side: 'DELHI', amount: limits.fullDay.min, type: 'FULL_DAY' };
+      const before = await getBalances(p.userId);
+
+      const refused = await place(p, body);
+      expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+      expect(refused.body.code).toBe('BOARD_RULES_NOT_ACCEPTED');
+      const { rows } = await pgQuery(`SELECT count(*)::int AS n FROM bets WHERE user_id = $1`, [p.userId]);
+      expect(rows[0].n).toBe(0);
+      const after = await getBalances(p.userId);
+      expect(after.depositBalance).toBe(before.depositBalance);
+      expect(after.lockedBalance).toBe(before.lockedBalance);
+
+      await acceptBoardRules(p.userId, BOARD_RULES_VERSION);
+      const taken = await place(p, body);
+      expect(taken.status, JSON.stringify(taken.body)).toBe(200);
+    });
+
+    it('refuses a player who accepted an OLDER version of the rules', async () => {
+      const cycle = await openCycle('FULL_DAY', { startedAgoMs: HOUR, lengthMs: 20 * HOUR });
+      made.push(cycle.cycleId);
+      const p = await fundedPlayer(1_000, { boardRules: false });
+      await pgQuery('UPDATE users SET board_rules_version = $2 WHERE user_id = $1', [p.userId, BOARD_RULES_VERSION - 1]);
+      const res = await place(p, { cycleId: cycle.cycleId, side: 'BOMBAY', amount: limits.fullDay.min, type: 'FULL_DAY' });
+      expect(res.status).toBe(409);
+      expect(res.body.code).toBe('BOARD_RULES_NOT_ACCEPTED');
     });
   });
 

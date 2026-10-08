@@ -54,6 +54,7 @@ import { getUserLedger, getBalances } from '../wallet/walletAuthority.service.js
 import { publicCycleView } from '../markets/cyclePublicView.js';
 import { fetchCycleHistory } from '../markets/cycleHistory.service.js';
 import { getSystemConfig } from '#db/repositories/config.js';
+import { boardRules, BOARD_RULES_VERSION } from '../markets/boardRules.js';
 import { systemConfigPayload } from '../configuration/systemConfigPayload.js';
 import { serverError, respondError, refusal } from '../../shared/httpError.js';
 import { isAccountMobileRefusal, ACCOUNT_IS_A_MOBILE_MESSAGE } from '../payment/payoutAccount.js';
@@ -312,6 +313,47 @@ router.get('/user/referrals', authenticatePlayer, async (req, res) => {
   } catch (error) {
     console.error('Referral summary error:', error);
     return res.status(500).json({ success: false, message: 'Failed to load your referral report' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The board rules a player is shown and accepts before betting (owner,
+// 2026-10-08). The text is `domains/markets/boardRules.js`, with the winnings
+// fee in force; the bet route refuses until the current version is accepted.
+//
+// GET  /api/v1/board-rules               — public: { version, sections }
+// GET  /api/user/board-rules             — { version, acceptedVersion }
+// POST /api/user/board-rules/accept      — { version } (must be the current one)
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/v1/board-rules', async (req, res) => {
+  try {
+    const config = await getSystemConfig();
+    return res.json({ success: true, ...boardRules({ feePercent: config.winningsFeePercent }) });
+  } catch (error) {
+    return respondError(res, error, 'GET /api/v1/board-rules', { message: 'Could not load the board rules' });
+  }
+});
+
+router.get('/user/board-rules', authenticatePlayer, async (req, res) => {
+  try {
+    const acceptedVersion = await db.boardRules.acceptedVersion(req.user.userId);
+    return res.json({ success: true, version: BOARD_RULES_VERSION, acceptedVersion });
+  } catch (error) {
+    return respondError(res, error, 'GET /api/user/board-rules', { message: 'Could not load the board rules' });
+  }
+});
+
+router.post('/user/board-rules/accept', authenticatePlayer, async (req, res) => {
+  try {
+    const version = Number(req.body?.version);
+    if (version !== BOARD_RULES_VERSION) {
+      throw refusal(409, 'BOARD_RULES_CHANGED', 'The board rules have changed. Please read them again.');
+    }
+    const r = await db.boardRules.accept(req.user.userId, version);
+    if (!r.ok) throw refusal(404, 'ACCOUNT_NOT_FOUND', 'Account not found');
+    return res.json({ success: true, acceptedVersion: r.version });
+  } catch (error) {
+    return respondError(res, error, 'POST /api/user/board-rules/accept', { message: 'Could not save that you accepted the rules' });
   }
 });
 

@@ -1860,6 +1860,11 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS play_profile TEXT NOT NULL DEFAULT 'V
 ALTER TABLE users DROP CONSTRAINT IF EXISTS users_play_profile_known;
 ALTER TABLE users ADD CONSTRAINT users_play_profile_known CHECK (play_profile IN ('VIP', 'GENERAL'));
 
+-- Which version of the board rules the player accepted before betting
+-- (`repositories/boardRules.js`; the text is `domains/markets/boardRules.js`).
+-- 0 = never; the bet route refuses until it reaches the current version.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS board_rules_version INTEGER NOT NULL DEFAULT 0;
+
 CREATE TABLE IF NOT EXISTS promo_grants (
   grant_id                TEXT PRIMARY KEY,
   user_id                 TEXT NOT NULL,

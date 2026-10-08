@@ -3538,8 +3538,8 @@ checked and is correct; the evidence is named.
 
 | Measure | Count |
 |---|---|
-| Route declarations in `backend/**` | 285 |
-| Reachable with **no auth middleware** | 32 |
+| Route declarations in `backend/**` | 288 |
+| Reachable with **no auth middleware** | 33 |
 | Staff routes carrying an **area** (permission key) | 166 |
 | Staff routes a sub-admin can **never** be given (full admin only) | 7 |
 
@@ -3566,6 +3566,7 @@ new route and decide. Each of the three questions is defined in §2.
 - `GET /providers  (backend/domains/casino/gameProvider.routes.js)`
 - `GET /r/:code  (backend/routes/referralRedirect.routes.js)`
 - `GET /status  (backend/domains/support/support.routes.js)`
+- `GET /v1/board-rules  (backend/domains/user/user.routes.js)`
 - `GET /v1/content/faq  (backend/domains/user/user.routes.js)`
 - `GET /v1/content/support-links  (backend/domains/user/user.routes.js)`
 - `GET /v1/game/cycles/history  (backend/domains/user/user.routes.js)`
@@ -3599,8 +3600,8 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 411 |
-| Parameters only (safe by construction) | 269 |
+| `pgQuery` call sites | 413 |
+| Parameters only (safe by construction) | 271 |
 | Interpolating into statement text (each needs a reading) | 135 |
 | Statement text built elsewhere and passed in (each needs a reading) | 7 |
 
@@ -3619,7 +3620,7 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Panel | .ts/.tsx files | `dangerouslySetInnerHTML` | `.innerHTML =` |
 |---|---|---|---|
-| `user-panel` | 93 | 0 | 0 |
+| `user-panel` | 95 | 0 | 0 |
 | `admin-panel` | 110 | 0 | 0 |
 | `merchant-panel` | 50 | 0 | 0 |
 

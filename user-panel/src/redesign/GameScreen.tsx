@@ -25,6 +25,7 @@ import { analyticsFor, Side } from './analytics';
 import AnalyticsDrawer from './AnalyticsDrawer';
 import { getAssetUrl } from '../services/backend.service';
 import { canPlaceBet } from '../GAME_CORE';
+import { BoardRulesModal } from './BoardRules';
 
 // UI-only chip face palette (GOVERNANCE §10 — presentation, not validation).
 const CHIP_STYLES = [
@@ -457,6 +458,7 @@ const GameScreen: React.FC = () => {
       {desktop && rightPanel}
 
       <AnalyticsDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} winnersByType={winnersByType} loadCycleHistory={loadCycleHistory} />
+      <BoardRulesModal isAuthenticated={!!isAuthenticated} />
     </div>
   );
 };

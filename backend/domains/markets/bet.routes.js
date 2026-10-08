@@ -27,6 +27,7 @@ import { cycleSnapshotPublisher } from './cycleSnapshotPublisher.js';
 // released — the one outcome no automated path can resolve on its own.
 import { sendAlert } from '../../services/alerting.service.js';
 import { getSystemConfig } from '#db/repositories/config.js';
+import { BOARD_RULES_VERSION } from './boardRules.js';
 import { emitToStaff } from '../notification/staffEventAreas.js';
 
 const router = express.Router();
@@ -113,6 +114,18 @@ router.post('/place', authenticatePlayer, betLimiter, async (req, res) => {
 
     if (!MARKET_SIDES.includes(side)) {
       return res.status(400).json({ success: false, message: 'Invalid side — must be DELHI or BOMBAY' });
+    }
+
+    // ── The player has read how the boards work ──────────────────────────────
+    // Owner, 2026-10-08: players are told how a round is won and that the
+    // pools include house bets, and accept it, before they stake anything
+    // (`domains/markets/boardRules.js`). After the replay gate, so a retry of
+    // a bet placed under an older acceptance still answers with that bet.
+    if (await db.boardRules.acceptedVersion(userId) < BOARD_RULES_VERSION) {
+      return res.status(409).json({
+        success: false, code: 'BOARD_RULES_NOT_ACCEPTED',
+        message: 'Please read and accept the board rules before you bet.',
+      });
     }
 
     // ── Cycle check ──────────────────────────────────────────────────────────

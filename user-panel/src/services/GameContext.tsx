@@ -49,6 +49,7 @@ const DEFAULT_SYS_CONFIG: SysConfig = {
   footerPages: ['home', 'results', 'winners', 'promo', 'profile'], // schema default
 };
 import { useToast } from '../components/ui/Toast';
+import { BOARD_RULES_EVENT } from '../redesign/BoardRules';
 
 const backend = getBackend();
 
@@ -928,6 +929,8 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
 
       setUserBets(prev => [result.bet, ...prev]);
     } catch (err: any) {
+      // The rules pop-up is the answer to this refusal (redesign/BoardRules.tsx).
+      if (err?.code === 'BOARD_RULES_NOT_ACCEPTED') { window.dispatchEvent(new Event(BOARD_RULES_EVENT)); return; }
       addToast(err.message || 'Bet Failed', 'error');
     } finally { isProcessingBet.current = false; }
   }, [user, cycleType, cycles, addToast]);
