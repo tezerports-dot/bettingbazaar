@@ -69,3 +69,50 @@ export function signContact({
 export function freshTelegramUserId() {
   return String(5_000_000_000 + crypto.randomInt(0, 999_999_999));
 }
+
+/**
+ * Store the test token as the platform's one bot (through the repository: the
+ * admin route would ask Telegram's `getMe`) and drop the client's cache.
+ */
+export async function saveTestBot({ miniAppShortName = '' } = {}) {
+  const [{ saveBot }, { encryptField }, { invalidateBotCache }] = await Promise.all([
+    import('../../database/repositories/telegram.js'),
+    import('../domains/identity/fieldCrypto.util.js'),
+    import('../domains/telegram/telegramClient.js'),
+  ]);
+  const saved = await saveBot({
+    botId: TEST_BOT.botId, botUsername: TEST_BOT.username,
+    tokenEncrypted: encryptField(TEST_BOT_TOKEN), miniAppShortName,
+  });
+  invalidateBotCache();
+  return saved;
+}
+
+/** No bot: the state a fresh deployment is in. */
+export async function removeTestBot() {
+  const [{ pgQuery }, { invalidateBotCache }] = await Promise.all([
+    import('../../database/client.js'),
+    import('../domains/telegram/telegramClient.js'),
+  ]);
+  await pgQuery('DELETE FROM telegram_bot');
+  invalidateBotCache();
+}
+
+/**
+ * Mark an account verified, as the Mini App's contact share would: a link whose
+ * phone is the account's mobile (the row's trigger insists). Staff and merchant
+ * links carry Telegram approval, as the CHECK insists.
+ */
+export async function linkTelegram(userId, { telegramUserId = freshTelegramUserId(), twoFactor } = {}) {
+  const { pgQuery } = await import('../../database/client.js');
+  const { rows } = await pgQuery(
+    `INSERT INTO telegram_links (user_id, audience, telegram_user_id, phone, two_factor)
+     SELECT user_id, account_type, $2, mobile, COALESCE($3, account_type <> 'PLAYER')
+       FROM users WHERE user_id = $1
+     ON CONFLICT (user_id) DO UPDATE SET telegram_user_id = EXCLUDED.telegram_user_id
+     RETURNING telegram_user_id`,
+    [String(userId), String(telegramUserId), twoFactor ?? null],
+  );
+  if (!rows[0]) throw new Error(`linkTelegram: no account ${userId}`);
+  return rows[0].telegram_user_id;
+}

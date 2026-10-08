@@ -27,14 +27,13 @@
  * has to find what the form wrote.
  *
  * Two rows this deliberately asserts the ABSENCE of at signup: the Telegram
- * identity (the contact share creates it, later) and the joining number (the
- * channel join claims it). Both were present at this point in the old flow, and
+ * link and the joining number (the contact share creates both, later; Step 3). Both were present at this point in the old flow, and
  * a change that quietly restored either would break the referral queue's
  * ordering without breaking anything a happy path would notice.
  */
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { pgConfigured, pgQuery, applySchema, closePg } from '../client.js';
-import { getIdentityByUserId, linkTelegramToAccount } from '../repositories/telegram.js';
+import { getLinkByUserId, createChallenge, answerChallenge } from '../repositories/telegram.js';
 import { getUser, getUserByMobile, getUserCredentials, newUserId, claimJoiningNumber } from '../repositories/users.js';
 import { createAccountFromSignup } from '../repositories/identity.js';
 
@@ -44,7 +43,7 @@ describePg('signup → login, end to end on one store', () => {
   beforeAll(async () => { await applySchema(); });
   afterAll(async () => { await closePg(); });
   beforeEach(async () => {
-    await pgQuery(`TRUNCATE telegram_identities, users
+    await pgQuery(`TRUNCATE telegram_links, telegram_challenges, telegram_init_data_uses, users
                    RESTART IDENTITY CASCADE`);
   });
 
@@ -85,9 +84,9 @@ describePg('signup → login, end to end on one store', () => {
     expect(JSON.stringify(await getUser(userId))).not.toContain('argon2id');
   });
 
-  it('creates NO Telegram identity and NO joining number at signup', async () => {
+  it('creates NO Telegram link and NO joining number at signup', async () => {
     const userId = await signUp();
-    expect(await getIdentityByUserId(userId, { activeOnly: false })).toBeNull();
+    expect(await getLinkByUserId(userId)).toBeNull();
     expect((await getUser(userId)).joiningNumber).toBeFalsy();
   });
 
@@ -95,11 +94,16 @@ describePg('signup → login, end to end on one store', () => {
     const userId = await signUp();
     // The seam the whole verification step rests on: Telegram's own verified
     // number, matched against what was typed on the form.
-    const linked = await linkTelegramToAccount({ audience: 'PLAYER', telegramUserId: 't-1', phone: '9995550001' });
-    expect(linked).toMatchObject({ ok: true, userId });
-    const identity = await getIdentityByUserId(userId);
-    expect(identity.userId).toBe(userId);
-    expect(identity.phone).toBe((await getUser(userId)).mobile);
+    const ch = await createChallenge({ challengeId: 'cseam1', purpose: 'VERIFY', audience: 'PLAYER', userId, ttlSeconds: 300 });
+    const at = new Date(Date.now() + 300_000);
+    const linked = await answerChallenge({
+      challengeId: ch.challengeId, decision: 'approve', telegramUser: { id: 't-1' },
+      initData: { hash: 'seam-i', expiresAt: at }, contact: { hash: 'seam-c', expiresAt: at, userId: 't-1', phone: '9995550001' },
+    });
+    expect(linked).toMatchObject({ ok: true, userId, verified: true });
+    const link = await getLinkByUserId(userId);
+    expect(link.userId).toBe(userId);
+    expect(link.phone).toBe((await getUser(userId)).mobile);
   });
 
   it('completing verification numbers the account, once', async () => {

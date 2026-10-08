@@ -27,7 +27,7 @@ import { newUserId, getUser } from '#db/repositories/users.js';
 import { hashPassword } from '../../domains/identity/password.util.js';
 import { verifyJwt } from '../../domains/identity/jwt.util.js';
 import { sessionIsLive } from '../../domains/identity/auth.middleware.js';
-import { generateSecret, generateToken, encryptSecret } from '../../domains/identity/totp.service.js';
+import { linkTelegram, saveTestBot, removeTestBot } from '../miniAppFixture.js';
 import { mountRouter, actor, as, request } from './_harness.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
@@ -57,6 +57,8 @@ describePg('a deleted account is closed', () => {
   const player = async () => {
     const who = await actor({});
     await db.users.updateUser(who.userId, { passwordHash: await hashPassword(PASSWORD) });
+    // Verified at signup (Step 3): an unverified account is not signed in at all.
+    await linkTelegram(who.userId);
     return who;
   };
   // A distinct address per login, so the pace and subnet limiters are not
@@ -114,19 +116,29 @@ describePg('a deleted account is closed', () => {
 
   it('refuses the SECOND leg of a login when the account was closed between the legs', async () => {
     const gone = await player();
-    const secret = generateSecret();
-    await pgQuery(`UPDATE users SET two_factor_enabled = TRUE, two_factor_secret = $2 WHERE user_id = $1`,
-      [gone.userId, encryptSecret(secret)]);
-    const first = await login(gone.mobile);
-    expect(first.body.challengeToken, JSON.stringify(first.body)).toBeTruthy();
+    await pgQuery('UPDATE telegram_links SET two_factor = TRUE WHERE user_id = $1', [gone.userId]);
+    await saveTestBot();
+    try {
+      const first = await login(gone.mobile);
+      expect(first.body.challengeToken, JSON.stringify(first.body)).toBeTruthy();
+      // Approved in Telegram while the account was still open…
+      const challengeId = new URL(first.body.telegram.url).searchParams.get('startapp');
+      const link = await db.telegram.getLinkByUserId(gone.userId);
+      const approved = await db.telegram.answerChallenge({
+        challengeId, decision: 'approve', telegramUser: { id: link.telegramUserId },
+        initData: { hash: `closed-${challengeId}`, expiresAt: new Date(Date.now() + 300_000) },
+      });
+      expect(approved.ok, JSON.stringify(approved)).toBe(true);
 
-    expect((await remove(gone)).status).toBe(200);
-    const second = await request(authApp).post('/api/v1/auth/login/2fa')
-      .set('X-Forwarded-For', '10.78.1.9')
-      .send({ challengeToken: first.body.challengeToken, code: generateToken(secret) });
-    expect(second.status).toBe(403);
-    expect(second.body.code).toBe('ACCOUNT_CLOSED');
-    expect(second.body.token).toBeUndefined();
+      // …and closed before the browser redeemed it.
+      expect((await remove(gone)).status).toBe(200);
+      const second = await request(authApp).post('/api/v1/auth/login/2fa')
+        .set('X-Forwarded-For', '10.78.1.9')
+        .send({ challengeToken: first.body.challengeToken });
+      expect(second.status).toBe(403);
+      expect(second.body.code).toBe('ACCOUNT_CLOSED');
+      expect(second.body.token).toBeUndefined();
+    } finally { await removeTestBot(); }
   });
 
   it('deletes PLAYER accounts only: a sub-admin cannot close the admin, a colleague or a merchant login', async () => {

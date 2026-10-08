@@ -24,7 +24,8 @@ import { createMerchantAccount } from '#db/repositories/merchants.js';
 import { newUserId } from '#db/repositories/users.js';
 import { hashPassword } from '../../domains/identity/password.util.js';
 import { signToken } from '../../domains/identity/paseto.util.js';
-import { issueResetLink } from '../../domains/identity/passwordReset.service.js';
+import { startResetFromMiniApp } from '../../domains/identity/passwordReset.service.js';
+import { linkTelegram, saveTestBot, removeTestBot } from '../miniAppFixture.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 
@@ -58,21 +59,31 @@ describePg('a merchant password reset', () => {
     await pgQuery(
       `UPDATE merchants SET status='ACTIVE', merchant_approval_status='APPROVED' WHERE merchant_id = $1`,
       [merchantId]);
+    await linkTelegram(userId, { telegramUserId: `77${String(Date.now()).slice(-8)}` });
+    await saveTestBot();
   }, 60_000);
 
-  afterAll(async () => { await closePg(); });
+  afterAll(async () => { await removeTestBot(); await closePg(); });
 
   it('signs in with the NEW password, refuses the old one, and evicts the old session', async () => {
     // A session the merchant opened before the reset — signed the way the
     // merchant login signs one.
-    const oldSession = signToken({ merchantId, userId: merchantId, mobile, isMerchant: true, isAdmin: false });
-    const before = await request(app).get('/merchant/2fa/status').set('Authorization', `Bearer ${oldSession}`);
+    const oldSession = signToken({ merchantId, userId: merchantId, mobile, isMerchant: true, isAdmin: false, amr: ['pwd', 'tg'] });
+    const before = await request(app).get('/merchant/telegram').set('Authorization', `Bearer ${oldSession}`);
     expect(before.status, JSON.stringify(before.body)).toBe(200);
     // `iat` is whole seconds; the cutoff must land after it.
     await new Promise((r) => setTimeout(r, 1100));
 
-    const issued = await issueResetLink({
-      userId, telegramUserId: `rt-tg-${userId}`, audience: 'MERCHANT', baseUrl: 'https://merchant.example',
+    // Forgot password, answered in the Mini App: the contact of the linked
+    // Telegram account, on the merchant's own mobile (Step 3).
+    const { pgQuery: q } = await import('#db/client.js');
+    const tg = (await q('SELECT telegram_user_id FROM telegram_links WHERE user_id = $1', [userId])).rows[0].telegram_user_id;
+    const at = new Date(Date.now() + 300_000);
+    const issued = await startResetFromMiniApp({
+      panel: 'MERCHANT', telegramUser: { id: tg },
+      initData: { hash: `mpr-i-${userId}`, expiresAt: at },
+      contact: { hash: `mpr-c-${userId}`, expiresAt: at, userId: tg, phone: mobile },
+      baseUrl: 'https://merchant.example',
     });
     expect(issued.ok, JSON.stringify(issued)).toBe(true);
     const token = issued.url.split('/#/reset/')[1];
@@ -81,12 +92,17 @@ describePg('a merchant password reset', () => {
       .send({ token, password: NEW, confirmPassword: NEW });
     expect(reset.status, JSON.stringify(reset.body)).toBe(200);
 
+    // The new password is accepted: the merchant's Telegram approval is next.
     const withNew = await request(app).post('/merchant/auth/login').send({ mobile, password: NEW });
     expect(withNew.status, JSON.stringify(withNew.body)).toBe(200);
+    expect(withNew.body.twoFactorRequired, JSON.stringify(withNew.body)).toBe(true);
+    // The door paces one try per mobile; the pace is not what this asks.
+    const { loginPaceLimiter } = await import('../../middleware/security.js');
+    await loginPaceLimiter.resetKey(`p:${mobile}`);
     const withOld = await request(app).post('/merchant/auth/login').send({ mobile, password: OLD });
     expect(withOld.status).toBe(401);
 
-    const after = await request(app).get('/merchant/2fa/status').set('Authorization', `Bearer ${oldSession}`);
+    const after = await request(app).get('/merchant/telegram').set('Authorization', `Bearer ${oldSession}`);
     expect(after.status).toBe(401);
     expect(after.body.code).toBe('SESSION_SUPERSEDED');
     // And the live order feed, which verifies its token inline.

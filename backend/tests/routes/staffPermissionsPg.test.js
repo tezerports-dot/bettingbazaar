@@ -64,7 +64,7 @@ describePg('staff permissions: every area, every route', () => {
 
   it('reads the real router: every route is an area, an admin-only route, or a self route', () => {
     const adminOnly = new Set(ADMIN_ONLY_AREAS.flatMap((a) => a.routes));
-    expect(routes.length).toBeGreaterThan(150);
+    expect(routes.length).toBeGreaterThan(140);
     for (const r of routes) {
       const key = `${r.method.toUpperCase()} ${r.path}`;
       if (r.adminOnly) expect(adminOnly.has(key), key).toBe(true);

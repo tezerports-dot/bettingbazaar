@@ -142,7 +142,10 @@ export async function actor({
   await updateUser(id, patch);
   if (roles.length) await setRoles(id, roles);
 
-  const token = signToken({ userId: id });
+  // What the sign-in would have proved (Step 3): staff approve every sign-in in
+  // Telegram, so a staff actor's token says so; a player's is the password.
+  const staff = isAdmin || isSubAdmin || isQueueManager || roles.length > 0;
+  const token = signToken({ userId: id, amr: staff ? ['pwd', 'tg'] : ['pwd'] });
   return { userId: id, mobile, token, auth: `Bearer ${token}` };
 }
 
@@ -178,7 +181,8 @@ export async function merchantActor({
   });
   if (status === 'SUSPENDED') await updateMerchant(merchantId, { status, suspensionReason });
   if (approval !== 'PENDING') await updateMerchant(merchantId, { merchantApprovalStatus: approval });
-  const token = signToken({ merchantId, userId: merchantId, mobile, isMerchant: true, isAdmin: false });
+  // A merchant session is a password AND Telegram (Step 3), as the login mints it.
+  const token = signToken({ merchantId, userId: merchantId, mobile, isMerchant: true, isAdmin: false, amr: ['pwd', 'tg'] });
   return { merchantId, mobile, token, auth: `Bearer ${token}` };
 }
 

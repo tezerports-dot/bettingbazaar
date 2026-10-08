@@ -28,6 +28,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { pgConfigured, applySchema, closePg, pgQuery } from '#db/client.js';
+import { linkTelegram, saveTestBot, removeTestBot } from '../miniAppFixture.js';
 import { getUserByMobile, newUserId, createUser, setRoles, ACCOUNT_TYPES } from '#db/repositories/users.js';
 import { createMerchantAccount } from '#db/repositories/merchants.js';
 import { hashPassword } from '../../domains/identity/password.util.js';
@@ -121,8 +122,14 @@ describePg('three separate entities, one mobile', () => {
     await pgQuery(
       `UPDATE merchants SET status='ACTIVE', merchant_approval_status='APPROVED'
         WHERE merchant_id = $1`, [merchant.merchant.merchantId]);
+
+    // Step 3: each account verified its mobile in Telegram at signup, and the
+    // one bot is configured. Staff and merchants then owe Telegram's approval
+    // (a challenge, not a session); a player signs in on the password.
+    for (const id of [player.userId, staff.user.userId, merchant.userId]) await linkTelegram(id);
+    await saveTestBot();
   });
-  afterAll(async () => { await closePg(); });
+  afterAll(async () => { await removeTestBot(); await closePg(); });
 
   it('writes THREE rows on one mobile, one per type', async () => {
     const { rows } = await pgQuery(
@@ -162,8 +169,12 @@ describePg('three separate entities, one mobile', () => {
     const seen = {};
     for (const [door, path] of Object.entries(DOORS)) {
       for (const [who, password] of Object.entries(PW)) {
+        // Every door now paces one credential try per mobile (loginDoors.js):
+        // the pace is not what this asks.
+        await loginPaceLimiter.resetKey(`p:${MOBILE}`);
         const res = await post(path, { mobile: MOBILE, password });
-        seen[`${door}<-${who}`] = { status: res.status, ok: res.body.success === true };
+        // ADMITTED: a session, or the Telegram approval this door owes next.
+        seen[`${door}<-${who}`] = { status: res.status, ok: res.body.success === true || res.body.twoFactorRequired === true };
       }
     }
     const expected = {
