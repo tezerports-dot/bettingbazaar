@@ -115,7 +115,7 @@ const MENU_SECTIONS = [
 
 const APP_VERSION = import.meta.env.VITE_APP_VERSION ?? '';
 
-const RedesignShell: React.FC<React.PropsWithChildren<{}>> = ({ children }) => {
+const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
   const { user, isAuthenticated, logout } = useGame();
   const { theme, toggleTheme } = useTheme();
   const { desktop } = useViewport();

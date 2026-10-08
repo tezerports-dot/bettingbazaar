@@ -9,7 +9,7 @@
  * launching reuses the existing provider/session/wallet spine.
  */
 import React, { useEffect, useState } from 'react';
-import { Plus, Trash2, Save, X, Star, Gamepad2, Tag } from 'lucide-react';
+import { Plus, Trash2, Save, X, Star } from 'lucide-react';
 import api from '../../services/api';
 import { Toolbar } from '../../components/design';
 import toast from 'react-hot-toast';

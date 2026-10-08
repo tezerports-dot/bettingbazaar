@@ -41,7 +41,7 @@ const applyTheme = (t: ThemeMode) => {
   if (meta) meta.setAttribute('content', t === 'dark' ? '#0A0E17' : '#F1EEE5');
 };
 
-export const ThemeProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }) => {
+export const ThemeProvider: React.FC<React.PropsWithChildren> = ({ children }) => {
   const [theme, setThemeState] = useState<ThemeMode>(readInitialTheme);
 
   useEffect(() => { applyTheme(theme); }, [theme]);

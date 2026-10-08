@@ -27,8 +27,6 @@
  * `accepted_currencies[1]` rather than an application-layer virtual, so the
  * scalar the panels read cannot drift from the array assignment filters on.
  */
-import { USDT_CHAIN_SPEC } from '../../backend/domains/merchant/merchantCurrency.js';
-import { nonNegative } from '../numbers.js';
 import { pgQuery, getPool, connectGuarded } from '../client.js';
 import { randomBytes } from 'node:crypto';
 import { rupeesToPaise, paiseToRupees } from '../../backend/shared/money.js';
@@ -61,13 +59,6 @@ const COLUMNS = `merchant_id, user_id, name, public_ref, username, mobile, email
   lost_disputes, high_risk_at,
   total_orders_completed, total_orders_all, is_supervisor, supervisor_rail,
   created_at, updated_at`;
-
-/**
- * The same columns, qualified. A join against a CTE that also has
- * `merchant_id` makes the bare list ambiguous, and PostgreSQL says so at
- * runtime rather than at load — derived from COLUMNS so the two cannot drift.
- */
-const M_COLUMNS = COLUMNS.split(',').map((c) => `m.${c.trim()}`).join(', ');
 
 /** node-postgres returns BIGINT as a STRING. Cast once, here, at the boundary. */
 const toInt = (v) => (v === null || v === undefined ? null : Number(v));

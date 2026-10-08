@@ -1,6 +1,6 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 
-import { express, authenticate, isAdmin, hasPermission } from '../../routes/admin/_adminShared.js';
+import { express, authenticate, hasPermission } from '../../routes/admin/_adminShared.js';
 import { db } from '#db';
 import { moveDepositMoney } from '../payment/depositCredit.js';
 // The one owner of how an admin decision ends a withdrawal's money (F-027),
@@ -121,6 +121,7 @@ router.get('/dispute-orders/:orderId', authenticate, hasPermission('canResolveDi
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
     res.json({ success: true, dispute: order });
   } catch (err) {
+    console.error('GET /dispute-orders/:orderId error:', err);
     res.status(500).json({ success: false, message: 'Failed to fetch dispute' });
   }
 });
@@ -131,6 +132,7 @@ router.get('/dispute-orders/:orderId/chat', authenticate, hasPermission('canReso
     const messages = await listMessages(req.params.orderId);
     res.json({ success: true, messages });
   } catch (err) {
+    console.error('GET /dispute-orders/:orderId/chat error:', err);
     res.status(500).json({ success: false, message: 'Failed to fetch chat' });
   }
 });
@@ -162,6 +164,7 @@ router.post('/dispute-orders/:orderId/chat', authenticate, hasPermission('canRes
 
     res.json({ success: true, message: msg });
   } catch (err) {
+    console.error('POST /dispute-orders/:orderId/chat error:', err);
     res.status(500).json({ success: false, message: 'Failed to send message' });
   }
 });

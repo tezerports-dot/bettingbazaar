@@ -322,7 +322,6 @@ Held-major register (a row leaves when its blocker is gone):
 | Package | Held on | Major | Rewrite the newer major forces |
 |---|---|---|---|
 | typescript | all panels | 5.x | 7.x is a preview |
-| eslint | admin | 8.x | flat config replaces `.eslintrc` |
 | tailwindcss | merchant, user | 3.x | v4 stylesheet and config rewrite |
 | recharts | admin | 2.x | v3 renamed chart props |
 | framer-motion | admin, user | 11.x | v12 renamed the package and `motion` import |

@@ -1,5 +1,5 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Save, Power, AlertTriangle } from 'lucide-react';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import api from '../../services/api';
@@ -194,11 +194,7 @@ export const SystemSettings: React.FC = () => {
     latestVersion: '1.0.0',
   });
 
-  useEffect(() => {
-    loadConfig();
-  }, []);
-
-  const loadConfig = async () => {
+  const loadConfig = useCallback(async () => {
     try {
       const response = await api.system.getConfig();
       if (response.success && response.data) {
@@ -315,12 +311,14 @@ export const SystemSettings: React.FC = () => {
           latestVersion: response.data.latestVersion || '1.0.0',
         });
       }
-    } catch (error) {
+    } catch {
       toast.error('Failed to load system config');
     } finally {
       setIsLoading(false);
     }
-  };
+  }, []);
+
+  useEffect(() => { loadConfig(); }, [loadConfig]);
 
   const handleSave = async () => {
     setIsSaving(true);

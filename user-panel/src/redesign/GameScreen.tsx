@@ -13,7 +13,7 @@
  * hardcoded number. Chip denominations are UI-only (§10, constants.CHIP_VALUES).
  * §3: gold/accent hues resolve from brand CSS variables via the theme tokens.
  */
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useGame } from '../services/GameContext';
 import { BettingSide, CycleType, GameState } from '../types';
 import { CHIP_VALUES } from '../constants';

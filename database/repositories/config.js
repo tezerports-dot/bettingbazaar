@@ -324,7 +324,7 @@ export async function applyConfig({
   if (!pool) throw new Error('Postgres not configured (DATABASE_URL unset)');
   const client = await connectGuarded(pool);
   let failure = null;
-  let committed = null;
+  let committed;
   let stale = null;
 
   try {

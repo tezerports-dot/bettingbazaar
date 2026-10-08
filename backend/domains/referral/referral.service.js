@@ -22,9 +22,6 @@ import { REFERRAL_REWARD_PAISE } from './referralRewards.js';
 import { creditWinnings } from '../wallet/walletAuthority.service.js';
 import { paiseToRupees } from '../../shared/money.js';
 
-/** Levels paid, in the order they are paid within one joiner. */
-const LEVELS = [1, 2];
-
 // ── Joining numbers ─────────────────────────────────────────────────────────
 
 /**

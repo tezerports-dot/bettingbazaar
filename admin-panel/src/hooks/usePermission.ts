@@ -1,4 +1,5 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
+import { useCallback } from 'react';
 import { useAuthStore } from '../services/auth';
 import type { PermissionKey } from '../utils/permissions';
 
@@ -14,19 +15,22 @@ import type { PermissionKey } from '../utils/permissions';
 export const usePermissions = () => {
   const { admin } = useAuthStore();
 
+  // These three are stable for one signed-in account, so a memo or an effect
+  // may depend on them.
+
   /** True if the current user has this permission (or is a full admin). */
-  const can = (permission: PermissionKey): boolean => {
+  const can = useCallback((permission: PermissionKey): boolean => {
     if (!admin) return false;
     if (admin.isAdmin) return true;
     if (!admin.isSubAdmin || !admin.permissions) return false;
     return (admin.permissions as any)[permission] === true;
-  };
+  }, [admin]);
 
   /** True if the user has ANY of the listed permissions. */
-  const canAny = (permissions: PermissionKey[]): boolean => permissions.some(can);
+  const canAny = useCallback((permissions: PermissionKey[]): boolean => permissions.some(can), [can]);
 
   /** True if the user has ALL of the listed permissions. */
-  const canAll = (permissions: PermissionKey[]): boolean => permissions.every(can);
+  const canAll = useCallback((permissions: PermissionKey[]): boolean => permissions.every(can), [can]);
 
   return {
     can,

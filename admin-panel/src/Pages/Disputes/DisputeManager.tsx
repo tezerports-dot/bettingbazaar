@@ -1,7 +1,7 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 
 
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle, CheckCircle, RefreshCw, Send,
   MessageSquare, Scale, Image as ImgIcon, Clock,
@@ -89,16 +89,16 @@ export const DisputeManager: React.FC = () => {
   const [filterStatus, setFilterStatus]   = useState('all');
 
   // ── Load disputes list ────────────────────────────────────────────────────
-  const load = async () => {
+  const load = useCallback(async () => {
     setIsLoading(true);
     try {
       const res = await api.get<any>('/api/admin/dispute-orders', { params: { status: filterStatus } });
       setDisputes(res.data?.disputes || []);
     } catch { toast.error('Failed to load disputes'); }
     finally { setIsLoading(false); }
-  };
+  }, [filterStatus]);
 
-  useEffect(() => { load(); }, [filterStatus]);
+  useEffect(() => { load(); }, [load]);
 
   
   const loadChat = async (d: Dispute) => {

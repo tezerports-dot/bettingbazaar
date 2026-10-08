@@ -54,7 +54,6 @@ import { publicCycleView } from '../markets/cyclePublicView.js';
 import { fetchCycleHistory } from '../markets/cycleHistory.service.js';
 import { getSystemConfig } from '#db/repositories/config.js';
 import { systemConfigPayload } from '../configuration/systemConfigPayload.js';
-import { INR_TOKEN_RATE } from '../configuration/tokenRates.js';
 import { serverError } from '../../shared/httpError.js';
 import { isAccountMobileRefusal, ACCOUNT_IS_A_MOBILE_MESSAGE } from '../payment/payoutAccount.js';
 

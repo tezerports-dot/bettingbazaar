@@ -233,6 +233,10 @@ jobs:
         run: npm ci --legacy-peer-deps
       - name: Backend syntax check
         run: node --check backend/server.js
+      # Correctness rules over backend/, database/ and scripts/ (undefined
+      # names, unreachable code, duplicate keys, bindings nothing reads).
+      - name: Backend lint
+        run: npm run lint
       # A deleted import with its call sites left behind is a ReferenceError
       # that PARSES, LINTS and passes every test that does not execute the line
       # — so it surfaces as a 500 on one route in production. The first run of
@@ -353,17 +357,17 @@ jobs:
       # The user panel now carries logic worth testing on its own — origin
       # failover decides which host the app talks to when one stops answering,
       # and a silent regression there is an outage the build would not catch.
-      - name: User panel typecheck + unit tests + build
+      - name: User panel lint + typecheck + unit tests + build
         working-directory: user-panel
-        run: npm ci --legacy-peer-deps && npx tsc --noEmit && npm test && npm run build
+        run: npm ci --legacy-peer-deps && npm run lint && npx tsc --noEmit && npm test && npm run build
       # The admin and merchant panels carry their own logic worth testing — the
       # money formatters an operator reads, the sub-admin permission catalogue,
       # and the settlement-rail rules (which unit money is shown in, whether a
       # TRC-20 payout address is valid, whether a counterparty is named). A test
       # that never runs in CI rots, so both panels run their suites here too.
-      - name: Admin panel typecheck + unit tests + build
+      - name: Admin panel lint + typecheck + unit tests + build
         working-directory: admin-panel
-        run: npm ci --legacy-peer-deps && npx tsc --noEmit && npm test && npx vite build
-      - name: Merchant panel typecheck + unit tests + build
+        run: npm ci --legacy-peer-deps && npm run lint && npx tsc --noEmit && npm test && npx vite build
+      - name: Merchant panel lint + typecheck + unit tests + build
         working-directory: merchant-panel
-        run: npm ci --legacy-peer-deps && npx tsc --noEmit && npm test && npx vite build
+        run: npm ci --legacy-peer-deps && npm run lint && npx tsc --noEmit && npm test && npx vite build

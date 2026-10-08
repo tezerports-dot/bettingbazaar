@@ -16,16 +16,13 @@
 
 import { DataTable } from '../../components/DataTable';
 import { DateRangePicker } from '../../components/DateRangePicker';
-import { SearchBar } from '../../components/SearchBar';
 import { Kpis, Toolbar } from '../../components/design';
 import { usePagination } from '../../hooks/usePagination';
-import { useDebounce } from '../../hooks/useDebounce';
 import { formatters } from '../../utils/formatters';
 import api from '../../services/api';
 import toast from 'react-hot-toast';
 
-import React, { useEffect, useState } from 'react';
-import { Shield, Download } from 'lucide-react';
+import React, { useCallback, useEffect, useState } from 'react';
 
 interface AuditLog {
   _id: string;
@@ -52,13 +49,8 @@ export const AuditLogs: React.FC = () => {
   const [endDate, setEndDate] = useState('');
 
   const { page, limit, setPage } = usePagination();
-  const debouncedSearch = useDebounce(search);
 
-  useEffect(() => {
-    loadLogs();
-  }, [page, debouncedSearch, startDate, endDate]);
-
-  const loadLogs = async () => {
+  const loadLogs = useCallback(async () => {
     setIsLoading(true);
     try {
       const response = await api.system.getAuditLogs(page, limit);
@@ -66,12 +58,14 @@ export const AuditLogs: React.FC = () => {
         setLogs(response.data);
         setTotal(response.pagination?.total || 0);
       }
-    } catch (error) {
+    } catch {
       toast.error('Failed to load audit logs');
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [page, limit]);
+
+  useEffect(() => { loadLogs(); }, [loadLogs]);
 
   const getActionColor = (action: string) => {
     if (action.includes('DELETE') || action.includes('BLOCK')) return 'text-red-500';

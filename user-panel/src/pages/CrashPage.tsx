@@ -31,7 +31,7 @@ const CrashPage: React.FC = () => {
   const [gameName, setGameName] = useState('');
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
-  useEffect(() => { if (!anyCrash) navigate('/', { replace: true }); }, [anyCrash]);
+  useEffect(() => { if (!anyCrash) navigate('/', { replace: true }); }, [anyCrash, navigate]);
   useEffect(() => {
     (async () => {
       try { const d = await window.fetch(apiUrl('/api/game/games?category=crash')).then(r => r.json()); if (d.success) setGames(d.games || []); }

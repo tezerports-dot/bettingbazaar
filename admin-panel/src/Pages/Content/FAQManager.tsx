@@ -1,6 +1,6 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
-import React, { useEffect, useState } from 'react';
-import { HelpCircle, Plus, Edit, Trash2, Eye, EyeOff } from 'lucide-react';
+import React, { useCallback, useEffect, useState } from 'react';
+import { Plus, Edit, Trash2, Eye, EyeOff } from 'lucide-react';
 import { DataTable } from '../../components/DataTable';
 import { Kpis, Toolbar } from '../../components/design';
 import { Modal } from '../../components/Modal';
@@ -23,23 +23,21 @@ export const FAQManager: React.FC = () => {
     isPublished: true,
   });
 
-  useEffect(() => {
-    loadFAQs();
-  }, []);
-
-  const loadFAQs = async () => {
+  const loadFAQs = useCallback(async () => {
     setIsLoading(true);
     try {
       const response = await api.content.getAllFAQs();
       if (response.success && response.data) {
         setFaqs(response.data);
       }
-    } catch (error) {
+    } catch {
       toast.error('Failed to load FAQs');
     } finally {
       setIsLoading(false);
     }
-  };
+  }, []);
+
+  useEffect(() => { loadFAQs(); }, [loadFAQs]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

@@ -20,9 +20,6 @@ import { CYCLE_TYPES, DEFAULT_CYCLE_PHASES, isCycleType, limitsKeyFor, phasesFor
 // Derived cycle pools (FLAGS.DERIVED_CYCLE_POOLS, default off) — see
 // cyclePool.service.js for why the running total is the scaling ceiling.
 import { computeRealPools } from './cyclePool.service.js';
-// Real/phantom pools reveal the minority-side winner — the public bet broadcast
-// must carry totals only. assertPublicCycleSafe throws if one slips in.
-import { assertPublicCycleSafe } from './cyclePublicView.js';
 // Coalesces per-bet pool changes into one snapshot/sec/cycle instead of a
 // per-bet fan-out to every connected client (cycleSnapshotPublisher.js).
 import { cycleSnapshotPublisher } from './cycleSnapshotPublisher.js';
@@ -104,7 +101,6 @@ router.post('/place', authenticatePlayer, betLimiter, async (req, res) => {
       throw keyErr;
     }
     const betTxBase  = `bet_${userId}_${clientKey}`;
-    const betPublicId = betAuthority.publicIdFor(betTxBase);
 
     // Fast replay gate: this exact request already produced a bet. Answer with it
     // and touch NOTHING — no stake move, no pool change, no second Transaction
@@ -282,7 +278,7 @@ router.post('/place', authenticatePlayer, betLimiter, async (req, res) => {
     // split the source of truth mid-bet. The authority now owns it, and picks
     // the store per postgres/moneyAuthority.js.
     // ── The stake, split across pockets ─────────────────────────────────────
-    // The bet's identity (betTxBase / betPublicId) was established at the top of
+    // The bet's identity (betTxBase) was established at the top of
     // the handler from the REQUIRED Idempotency-Key. It is the txId of every
     // slice's ledger row and the Bet row's _id, so on both stores the unique
     // index — not a convention — is what makes a redelivery idempotent.

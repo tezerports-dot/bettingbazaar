@@ -48,7 +48,6 @@ const DEFAULT_SYS_CONFIG: SysConfig = {
   tokenBuyRate: 1, tokenSellRate: 1,
   footerPages: ['home', 'results', 'winners', 'promo', 'profile'], // schema default
 };
-import { logger } from './logging.service';
 import { useToast } from '../components/ui/Toast';
 
 const backend = getBackend();
@@ -121,36 +120,6 @@ const GameContext = createContext<GameContextType | undefined>(undefined);
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-const getCycleTimes = (type: CycleType, refTimeMs: number) => {
-  const IST_OFFSET = 5.5 * 60 * 60 * 1000;
-  const istTime = new Date(refTimeMs + IST_OFFSET);
-  let startMs: number;
-  let endMs: number;
-
-  if (type === CycleType.THIRTY_MIN) {
-    const minutes = istTime.getUTCMinutes();
-    const seconds = istTime.getUTCSeconds();
-    const blockStartMinute = minutes < 30 ? 0 : 30;
-    const elapsedInBlock = ((minutes - blockStartMinute) * 60 * 1000) + (seconds * 1000);
-    startMs = refTimeMs - elapsedInBlock;
-    endMs   = startMs + (30 * 60 * 1000);
-  } else {
-    const currentIstYear  = istTime.getUTCFullYear();
-    const currentIstMonth = istTime.getUTCMonth();
-    const currentIstDate  = istTime.getUTCDate();
-    const today1800_IST   = Date.UTC(currentIstYear, currentIstMonth, currentIstDate, 18, 0, 0, 0);
-    const today1800_Real  = today1800_IST - IST_OFFSET;
-    if (refTimeMs < today1800_Real) {
-      endMs   = today1800_Real;
-      startMs = endMs - (24 * 3600 * 1000);
-    } else {
-      startMs = today1800_Real;
-      endMs   = startMs + (24 * 3600 * 1000);
-    }
-  }
-  return { startTime: startMs, endTime: endMs };
-};
-
 /**
  * Merge a balance push into the user. FOUR pockets, not three.
  *
@@ -205,13 +174,7 @@ const applyBalances = (prev: User, src: BalancePush): User => ({
 export const spendableBalance = (user: Partial<User> | null | undefined): number =>
   (user?.depositBalance || 0) + (user?.winningsBalance || 0);
 
-// Read ?ref= from URL and persist for registration
-if (typeof window !== 'undefined') {
-  const _hashParams = new URLSearchParams(window.location.hash.split('?')[1] || '');
-  const _refFromUrl = _hashParams.get('ref');
-}
-
-export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }) => {
+export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) => {
   const { addToast } = useToast();
   const [user, setUser]             = useState<User | null>(null);
   // Memory only, never localStorage: a 5-minute half-authenticated credential
@@ -227,7 +190,6 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
   // Status and timeRemaining come from cycle_update WS events, not local math.
   const serverTimeOffset = 0; // kept for context API compat, components must not use for cycle math
   const isProcessingBet = useRef(false);
-  const isRefreshing    = useRef(false);
 
   const liveStatsRef = useRef<{ [key in CycleType]: LiveStats }>({
     [CycleType.ONE_MIN]:    { totalDelhi: 0, totalBombay: 0 },
@@ -279,6 +241,14 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
       } catch { /* branding is non-critical */ }
     };
     fetchBranding();
+  }, []);
+
+  // ── WS-FIRST: request a fresh snapshot instead of HTTP fetch ───────────────
+  const requestCycleSnapshot = useCallback(() => {
+    const socket = (backend as any).socket;
+    if (socket?.connected) {
+      socket.emit('request_cycle_snapshot');
+    }
   }, []);
 
   // ── SESSION RESTORE: Rehydrate user from stored JWT on every page load ────
@@ -363,14 +333,6 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
     window.addEventListener('storage', onStorage);
     return () => window.removeEventListener('storage', onStorage);
   }, [user]);
-
-  // ── WS-FIRST: request a fresh snapshot instead of HTTP fetch ───────────────
-  const requestCycleSnapshot = useCallback(() => {
-    const socket = (backend as any).socket;
-    if (socket?.connected) {
-      socket.emit('request_cycle_snapshot');
-    }
-  }, []);
 
   // Keep refreshCycles as a thin alias so any remaining callers compile.
   // It now triggers a WS snapshot request, NOT an HTTP fetch.
@@ -486,7 +448,7 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
       if (sseBridge && sseHandler) sseBridge.removeEventListener('cycle_history', sseHandler);
       if (socket) socket.off('cycle_history', handleCycleHistory);
     };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
   const subscribeToVolume = useCallback((type: CycleType, callback: (data: LiveStats) => void) => {
     const sub = { type, cb: callback };
@@ -879,7 +841,7 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
         socket.off('user_update',         handleUserBalanceUpdate);
       }
     };
-  }, [refreshCycles, currentUserId]);
+  }, [refreshCycles, currentUserId, addToast]);
 
   // ── PERSONAL WS EVENTS: apply server-pushed data directly, zero HTTP ─────
   useEffect(() => {
@@ -974,7 +936,7 @@ export const GameProvider: React.FC<React.PropsWithChildren<{}>> = ({ children }
     if (!user) return;
     try {
       await backend.placePhantomBet(user.id, cycles[cycleType].id, amount, side);
-    } catch (err: any) { addToast('Phantom Failed', 'error'); }
+    } catch { addToast('Phantom Failed', 'error'); }
   }, [user, cycleType, cycles, addToast]);
 
   const updateProfile = async (updates: any) => {

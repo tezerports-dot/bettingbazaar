@@ -24,7 +24,7 @@
  * somebody who submitted a Tron hash reads as a different system's error, and
  * they will submit it again.
  */
-import { MERCHANT_CURRENCY, USDT_CHAIN_SPEC, USDT_CHAINS, isUsdtTxHash } from '../merchant/merchantCurrency.js';
+import { MERCHANT_CURRENCY, USDT_CHAIN_SPEC, isUsdtTxHash } from '../merchant/merchantCurrency.js';
 import { markUTRAsUsed, normalizeUTR } from '../../middleware/utrValidation.js';
 
 /** The minimum length of a bank UTR. Twelve is the shortest a bank issues. */

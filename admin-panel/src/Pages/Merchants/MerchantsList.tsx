@@ -7,12 +7,11 @@
 // order's rail (database/repositories/teamRouting.js). Teams are managed on
 // the Supervisors & Teams screen.
 import sseService from '../../services/sse';
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Eye, Ban, CheckCircle, Plus, Settings, History, RefreshCw, DollarSign, ExternalLink } from 'lucide-react';
 import { DataTable } from '../../components/DataTable';
 import { StatusBadge } from '../../components/StatusBadge';
 import { DisputeRecordBadge } from '../../components/DisputeRecordBadge';
-import { SearchBar } from '../../components/SearchBar';
 import { Kpis, Toolbar, AvatarCell } from '../../components/design';
 import { Modal } from '../../components/Modal';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
@@ -64,8 +63,6 @@ export const MerchantsList: React.FC = () => {
   const { page, limit, setPage } = usePagination();
   const debouncedSearch = useDebounce(search);
 
-  useEffect(() => { loadMerchants(); }, [page, debouncedSearch, statusFilter]);
-
   // Real-time: update the isOnline dot when a merchant toggles their status.
   useEffect(() => {
     const handleStatusChange = (data: any) => {
@@ -81,14 +78,17 @@ export const MerchantsList: React.FC = () => {
     };
   }, []);
 
-  const loadMerchants = async () => {
+  const loadMerchants = useCallback(async () => {
     setIsLoading(true);
     try {
-      const res = await api.merchants.getAll(page, limit, statusFilter === 'ALL' ? undefined : statusFilter);
+      // The search box narrows on the server (`listMerchants`), on every page.
+      const res = await api.merchants.getAll(page, limit, statusFilter === 'ALL' ? undefined : statusFilter, debouncedSearch || undefined);
       if (res.success && res.data) { setMerchants(res.data); setTotal(res.pagination?.total || 0); }
     } catch { toast.error('Failed to load merchants'); }
     finally { setIsLoading(false); }
-  };
+  }, [page, limit, statusFilter, debouncedSearch]);
+
+  useEffect(() => { loadMerchants(); }, [loadMerchants]);
 
   const openDetails = async (merchantId: string, tab: DetailTab = 'info') => {
     try {
@@ -513,7 +513,7 @@ export const MerchantsList: React.FC = () => {
 
       {confirmAction && (
         <ConfirmDialog isOpen={!!confirmAction} onClose={() => setConfirmAction(null)}
-          onConfirm={() => { confirmAction.type === 'suspend' ? handleSuspend(confirmAction.merchant._id) : handleActivate(confirmAction.merchant._id); }}
+          onConfirm={() => { if (confirmAction.type === 'suspend') handleSuspend(confirmAction.merchant._id); else handleActivate(confirmAction.merchant._id); }}
           title={confirmAction.type === 'suspend' ? 'Suspend Merchant' : 'Activate Merchant'}
           message={`Are you sure you want to ${confirmAction.type} ${confirmAction.merchant.name}?`}
           type={confirmAction.type === 'suspend' ? 'danger' : 'warning'}

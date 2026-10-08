@@ -5,7 +5,7 @@
 // endpoint + SSE) and admin actions (equalizer / pause / resume / cancel) are
 // unchanged; only the presentation is rebuilt. There is intentionally no manual
 // "Declare Result" — winners are algorithmic (Markets Platform), not admin-set.
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Activity, RefreshCw, Play, Pause, XCircle, Scale } from 'lucide-react';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import api from '../../services/api';
@@ -42,6 +42,33 @@ export const LiveCycles: React.FC = () => {
   const [now, setNow] = useState(Date.now());
   const [confirmAction, setConfirmAction] = useState<{ type: string; cycle: Cycle } | null>(null);
 
+  const loadCycles = useCallback(async () => {
+    try {
+      const response = await api.get<any>('/api/admin/cycles/phases');
+      if (response.data?.success && response.data?.cycles) {
+        setCycles(response.data.cycles.map((c: any) => ({
+          _id: c.cycleId,
+          cycleId: c.cycleId,
+          type: c.type,
+          status: c.status,
+          startTime: c.startTime,
+          endTime: c.endTime,
+          totalDelhi: c.pools?.totalDelhi || 0,
+          totalBombay: c.pools?.totalBombay || 0,
+          realDelhi: c.pools?.realDelhi || 0,
+          realBombay: c.pools?.realBombay || 0,
+          phantomDelhi: c.pools?.phantomDelhi || 0,
+          phantomBombay: c.pools?.phantomBombay || 0,
+          phantomBalanced: c.phantomBalanced || false,
+        })) as Cycle[]);
+      }
+    } catch {
+      toast.error('Failed to load cycles');
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     loadCycles();
     const handleCycleUpdate = (update: any) => {
@@ -71,39 +98,12 @@ export const LiveCycles: React.FC = () => {
       sseService.off('new_cycle', reload);
       sseService.off('cycle_result', reload);
     };
-  }, []);
+  }, [loadCycles]);
 
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
   }, []);
-
-  const loadCycles = async () => {
-    try {
-      const response = await api.get<any>('/api/admin/cycles/phases');
-      if (response.data?.success && response.data?.cycles) {
-        setCycles(response.data.cycles.map((c: any) => ({
-          _id: c.cycleId,
-          cycleId: c.cycleId,
-          type: c.type,
-          status: c.status,
-          startTime: c.startTime,
-          endTime: c.endTime,
-          totalDelhi: c.pools?.totalDelhi || 0,
-          totalBombay: c.pools?.totalBombay || 0,
-          realDelhi: c.pools?.realDelhi || 0,
-          realBombay: c.pools?.realBombay || 0,
-          phantomDelhi: c.pools?.phantomDelhi || 0,
-          phantomBombay: c.pools?.phantomBombay || 0,
-          phantomBalanced: c.phantomBalanced || false,
-        })) as Cycle[]);
-      }
-    } catch {
-      toast.error('Failed to load cycles');
-    } finally {
-      setIsLoading(false);
-    }
-  };
 
   const act = async (type: string, cycleId: string) => {
     try {

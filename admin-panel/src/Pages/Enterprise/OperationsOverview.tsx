@@ -6,7 +6,7 @@
  * configurable business value and where to edit it.
  */
 import React, { useCallback, useEffect, useState } from 'react';
-import { RefreshCw, Activity, BookOpenCheck, Radio, Megaphone, Trophy, Trash2 } from 'lucide-react';
+import { RefreshCw, Megaphone, Trophy, Trash2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import api from '../../services/api';
 import { Toolbar } from '../../components/design';
@@ -56,7 +56,6 @@ export const OperationsOverview: React.FC = () => {
   const [overview, setOverview] = useState<any>(null);
   const [catalog, setCatalog] = useState<Array<{ value: string; owner: string; edit: string }>>([]);
   const [auditFeed, setAuditFeed] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
   // Which ways of reaching a human are actually configured, and what admins
   // have been doing. Both endpoints existed with no screen calling them.
   const [channels, setChannels] = useState<Array<{ code: string; label: string; active: boolean }>>([]);
@@ -72,7 +71,6 @@ export const OperationsOverview: React.FC = () => {
   const canSeeAudit = can('canViewAuditLogs');
 
   const load = useCallback(async () => {
-    setLoading(true);
     try {
       const [ovRes, catRes, auditRes, chanRes, actRes] = await Promise.all([
         api.get<any>('/api/admin/operations/overview'),
@@ -90,8 +88,6 @@ export const OperationsOverview: React.FC = () => {
       if (actRes.data?.success) setAdminActivity(actRes.data.activity || []);
     } catch {
       toast.error('Failed to load operations data');
-    } finally {
-      setLoading(false);
     }
   }, [canSeeAudit]);
 

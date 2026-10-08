@@ -2,7 +2,7 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import React, { useEffect, useState } from 'react';
 import Modal from '../ui/Modal';
-import { getBackend, getAssetUrl } from '../../services/backend.service';
+import { getBackend } from '../../services/backend.service';
 import { apiUrl } from '../../services/apiUrl';
 import { currentOrigin } from '../../services/originFailover';
 import { isNativeShell } from '../../services/nativeLifecycle';
@@ -31,7 +31,7 @@ const ShareModal: React.FC<ShareModalProps> = ({ onClose }) => {
           text: title,
           url: url
         });
-      } catch (e) {
+      } catch {
         console.warn('Share dismissed');
       }
     } else {

@@ -24,8 +24,6 @@
 // scoring, device risk, behaviour analysis, responsible-gaming limits.
 
 import { db } from '#db';
-// Shared trading vocabulary (Phase 011) — canonical sides, no local strings.
-import { oppositeSide } from '../trading/tradingModels.js';
 import { getSystemConfig } from '#db/repositories/config.js';
 import { MERCHANT_CURRENCY } from '../merchant/merchantCurrency.js';
 import {

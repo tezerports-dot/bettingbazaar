@@ -4,7 +4,7 @@
 // palette, theme toggle, live status and account menu. Recreated from the
 // design handoff "Betting Bazaar Admin.dc.html". All routing, permission
 // filtering, auth and branding wiring is preserved from the previous shell.
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router';
 import {
   LayoutDashboard, Users, Store, Activity, Layers, Landmark,
@@ -189,17 +189,17 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  const canSee = (item: MenuItem): boolean => {
+  const canSee = useCallback((item: MenuItem): boolean => {
     if (isAdmin) return true;
     if (item.adminOnly) return false;
     if (item.queueManagerAccess && isQueueManager) return true;
     if (item.permission) return canAny(Array.isArray(item.permission) ? item.permission : [item.permission]);
     return true; // dashboard etc. — any authenticated user
-  };
+  }, [isAdmin, isQueueManager, canAny]);
 
   const visibleGroups = useMemo(
     () => NAV_GROUPS.map((g) => ({ ...g, items: g.items.filter(canSee) })).filter((g) => g.items.length),
-    [admin, isAdmin, isQueueManager]
+    [canSee]
   );
 
   const paletteItems: PaletteItem[] = useMemo(

@@ -1,6 +1,6 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import React, { useEffect, useState } from 'react';
-import { PlusCircle, MinusCircle, RefreshCw, Search } from 'lucide-react';
+import { PlusCircle, MinusCircle, Search } from 'lucide-react';
 import api from '../../services/api';
 import toast from 'react-hot-toast';
 

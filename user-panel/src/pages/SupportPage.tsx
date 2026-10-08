@@ -37,7 +37,7 @@
  * If the assistant is dormant or its call fails, the composer opens a ticket
  * exactly as it did before — the human path never depends on it.
  */
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useCallback, useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router';
 import { getBackend } from '../services/backend.service';
 import { apiUrl } from '../services/apiUrl';
@@ -65,6 +65,9 @@ const authHeaders = () => {
   return { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
 };
 
+const render = (messages: any[]): ChatMsg[] =>
+  messages.map((m) => ({ me: m.senderType === 'USER', t: m.content, who: m.senderType === 'USER' ? 'You' : 'Support' }));
+
 const SupportChat: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   const [msgs, setMsgs] = useState<ChatMsg[]>([]);
   const [text, setText] = useState('');
@@ -82,11 +85,8 @@ const SupportChat: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   const [escalate, setEscalate] = useState<string>('');
   const bottom = useRef<HTMLDivElement>(null);
 
-  const render = (messages: any[]): ChatMsg[] =>
-    messages.map((m) => ({ me: m.senderType === 'USER', t: m.content, who: m.senderType === 'USER' ? 'You' : 'Support' }));
-
   /** Load the newest open ticket so a returning player continues the thread. */
-  const loadThread = async () => {
+  const loadThread = useCallback(async () => {
     try {
       const r = await fetch(apiUrl('/api/support/tickets'), { headers: authHeaders() });
       const d = await r.json();
@@ -97,22 +97,22 @@ const SupportChat: React.FC<{ onClose: () => void }> = ({ onClose }) => {
       if (td?.success) { setTicket(td.ticket); setMsgs(render(td.messages || [])); }
     } catch { /* the panel still lets them open a new ticket */ }
     finally { setLoading(false); }
-  };
+  }, []);
 
   /**
    * Is the assistant worth asking? Unauthenticated on purpose (the route is),
    * and failure is silently "no" — a status probe must never stop a player
    * reaching a human.
    */
-  const loadAssistant = async () => {
+  const loadAssistant = useCallback(async () => {
     try {
       const r = await fetch(apiUrl('/api/support/status'));
       const d = await r.json();
       setAssistantOn(Boolean(d?.success && d?.enabled));
     } catch { setAssistantOn(false); }
-  };
+  }, []);
 
-  useEffect(() => { loadThread(); loadAssistant(); }, []);
+  useEffect(() => { loadThread(); loadAssistant(); }, [loadThread, loadAssistant]);
   useEffect(() => { bottom.current?.scrollIntoView({ behavior: 'smooth' }); }, [msgs.length]);
 
   /**

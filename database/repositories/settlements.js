@@ -37,7 +37,7 @@
  * some bets on one result and the rest on another. Correcting a declared result
  * is a void-and-resettle, not an in-place edit.
  */
-import { getPool, pgQuery, connectGuarded } from '../client.js';
+import { pgQuery } from '../client.js';
 import { rupeesToPaise } from '../../backend/shared/money.js';
 import { moneyOperations } from '../../backend/services/metrics.service.js';
 import { MONEY_PATHS } from '../moneyPaths.js';

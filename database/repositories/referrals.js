@@ -13,7 +13,7 @@
  * otherwise two runs of the disburser pay different people. `queue_position` is
  * that decision, unique so two earnings cannot claim one slot.
  */
-import { pgQuery, getPool, connectGuarded } from '../client.js';
+import { pgQuery } from '../client.js';
 import { randomBytes } from 'node:crypto';
 import { rupeesToPaise, paiseToRupees } from '../../backend/shared/money.js';
 

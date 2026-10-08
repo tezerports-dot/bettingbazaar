@@ -208,10 +208,13 @@ function derivedIdempotencyKey(kind, parts) {
  * recordAccountingEvent — the ONLY way an entry enters the ledger.
  * Idempotent: if idempotencyKey already exists, returns the existing entry
  * with { idempotent: true } and writes nothing.
+ *
+ * A caller's `metadata` and `recordedBy` are NOT stored: `accounting_events`
+ * has no column for either, so they are not read here.
  */
 export async function recordAccountingEvent({
   eventType, idempotencyKey, postings, refModel, refId,
-  occurredAt, description, metadata, recordedBy = 'reconciler',
+  occurredAt, description,
 }) {
   if (!Object.values(EVENT_TYPES).includes(eventType)) {
     throw new Error(`Unknown accounting event type '${eventType}'. Add it to chartOfAccounts.js first.`);

@@ -99,7 +99,7 @@ async function createOpenAICompatibleMessage({ model, maxTokens, system, userCon
   });
 
   if (!response.ok) {
-    let detail = '';
+    let detail;
     try { detail = JSON.stringify(await response.json()); } catch { detail = await response.text().catch(() => ''); }
     throw new Error(`OpenAI-compatible chat API failed (${response.status}): ${detail || response.statusText}`);
   }

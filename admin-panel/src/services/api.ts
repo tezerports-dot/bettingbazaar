@@ -4,15 +4,7 @@ import { endRefusedSession, serverRefusal } from './signedOut';
 import type { StaffPermissionCatalog } from '../utils/permissions';
 import type {
   Admin,
-  User,
-  Cycle,
-  Merchant,
-  MerchantProfile,
-  PaymentOrder,
-  Transaction,
   Branding,
-  DashboardStats,
-  CDNImage,
   FAQ,
   SupportLinks,
   SupervisorRail, TeamSupervisor, TeamView, TeamMemberView, TeamPoolRequest, TeamRedFlag,
@@ -300,8 +292,8 @@ export const users = {
 // --- MERCHANTS ----------------------------------------------------------------
 
 export const merchants = {
-  getAll: async (page = 1, limit = 50, status?: string) => {
-    const res = await api.get<any>('/api/admin/merchants', { params: { page, limit, status } });
+  getAll: async (page = 1, limit = 50, status?: string, search?: string) => {
+    const res = await api.get<any>('/api/admin/merchants', { params: { page, limit, status, search } });
     if (res.data?.success && res.data?.merchants) {
       return { success: true, data: res.data.merchants, pagination: res.data.pagination };
     }

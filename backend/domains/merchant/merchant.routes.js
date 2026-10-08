@@ -8,7 +8,6 @@ import { db } from '#db';
 // AQ-8: hash via the password authority (argon2id + bcrypt verify-fallback).
 import { hashPassword } from '../identity/password.util.js';
 import { merchantAuth } from '../../middleware/merchantAuth.js';
-import { twoFactorLimiter } from '../../middleware/security.js';
 // The merchant sign-in door: routes.js's handlers with this door's limits (§33).
 import { doorRoute } from '../identity/loginDoors.js';
 import { openChallenge } from '../identity/telegramChallenge.service.js';

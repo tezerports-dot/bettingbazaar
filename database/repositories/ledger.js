@@ -38,7 +38,6 @@
  * before it starts taking writes — not a licence to leave reads pointing at the
  * old store afterwards.
  */
-import { MONEY_PATHS } from '../moneyPaths.js';
 import {
   recordEvent as pgRecordEvent, getEvent as pgGetEvent, getLedger as pgGetLedger,
   trialBalance as pgTrialBalance, accountBalancePaise as pgAccountBalance,

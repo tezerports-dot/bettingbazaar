@@ -87,7 +87,7 @@ const ProfileSettings: React.FC = () => {
       }
     }
     return out;
-  }, [isUsdt, editingPayment, form.usdtAddressTrc20, form.usdtAddressBep20]);
+  }, [isUsdt, editingPayment, form]);
 
   const holdsNoAddress = isUsdt
     && !form.usdtAddressTrc20.trim() && !form.usdtAddressBep20.trim();

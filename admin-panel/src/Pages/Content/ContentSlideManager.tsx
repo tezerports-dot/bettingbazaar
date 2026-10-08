@@ -21,7 +21,7 @@
  *   5. Delete
  */
 
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Upload, Link2, Trash2, Eye, EyeOff, Plus, RefreshCw,
   ArrowUp, ArrowDown, Image as ImageIcon, BookOpen, Lightbulb,
@@ -62,9 +62,7 @@ export const ContentSlideManager: React.FC = () => {
   const [saving, setSaving]         = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => { loadSlides(); }, [activeTab]);
-
-  const loadSlides = async () => {
+  const loadSlides = useCallback(async () => {
     setLoading(true);
     try {
       const res = await api.get<any>(`/api/admin/promo?location=${activeTab}`);
@@ -73,7 +71,9 @@ export const ContentSlideManager: React.FC = () => {
       }
     } catch { toast.error('Failed to load slides'); }
     finally { setLoading(false); }
-  };
+  }, [activeTab]);
+
+  useEffect(() => { loadSlides(); }, [loadSlides]);
 
   const handleFileUpload = async (file: File) => {
     if (!file.type.startsWith('image/')) { toast.error('Only image files are supported'); return; }

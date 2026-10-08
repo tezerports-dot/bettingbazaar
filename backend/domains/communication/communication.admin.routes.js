@@ -46,7 +46,6 @@ router.get('/communication/audit-feed', authenticate, hasPermission('canViewAnal
 router.get('/communication/admin-activity', authenticate, hasPermission('canViewAuditLogs'), async (req, res) => {
   try {
     const hours = Math.min(24 * 30, Math.max(1, parseInt(req.query.hours) || 24));
-    const since = new Date(Date.now() - hours * 60 * 60 * 1000);
 
     // Ten entries per actor are taken by the WINDOW, before the grouping. The
     // pipeline this replaced pushed every matching entry into an array per

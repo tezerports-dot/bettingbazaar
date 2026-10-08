@@ -31,7 +31,7 @@ export function useTelegramPoll(
     let timer: ReturnType<typeof setTimeout> | undefined;
     const live = () => alive;
     const tick = async () => {
-      let step: PollStep = 'again';
+      let step: PollStep;
       try {
         step = await askRef.current(live);
       } catch {

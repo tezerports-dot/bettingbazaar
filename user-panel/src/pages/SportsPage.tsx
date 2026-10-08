@@ -31,7 +31,7 @@ const SportsPage: React.FC = () => {
   const [filter, setFilter] = useState<'all' | 'live'>('all');
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
-  useEffect(() => { if (!anySports) navigate('/', { replace: true }); }, [anySports]);
+  useEffect(() => { if (!anySports) navigate('/', { replace: true }); }, [anySports, navigate]);
   const provider = enabledSports[0];
 
   const openSportsbook = useCallback(async (sportName?: string) => {

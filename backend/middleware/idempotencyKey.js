@@ -49,7 +49,7 @@ export const MAX_KEY_LENGTH = 128;
  * Excludes ':' on purpose — see the header. A UUID, an ObjectId, a ULID and a
  * `<scope>-<n>` counter all pass.
  */
-const KEY_PATTERN = /^[A-Za-z0-9_.\-]+$/;
+const KEY_PATTERN = /^[A-Za-z0-9_.-]+$/;
 
 export class IdempotencyKeyError extends Error {
   constructor(message) {

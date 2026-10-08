@@ -1,6 +1,5 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import React, { useEffect } from 'react';
-import { Show } from './Show';
 
 interface ModalProps {
   children: React.ReactNode;

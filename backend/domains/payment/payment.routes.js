@@ -33,7 +33,7 @@ import { requestDeposit, requestWithdrawal } from '../funding/fundingAuthority.s
 // The one owner of order access: it verifies the tamper tag AND decides who
 // may act on the order, so a route cannot be added without both.
 import { orderAccessGuard } from '../../middleware/order-crypto-access.js';
-import { emitWalletUpdate, emitAdminUpdate, emitOrderUpdate } from '../notification/realtimeEmitters.js';
+import { emitAdminUpdate } from '../notification/realtimeEmitters.js';
 import { serverError, respondError } from '../../shared/httpError.js';
 
 const router = express.Router();

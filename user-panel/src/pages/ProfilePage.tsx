@@ -17,7 +17,7 @@ import { useGame } from '../services/GameContext';
 import { useTheme } from '../redesign/ThemeContext';
 import { getBackend } from '../services/backend.service';
 import { fmt } from '../redesign/format';
-import ScreenShell, { card, capLabel, goldButton, inputStyle, fieldLabel } from '../redesign/Screen';
+import ScreenShell, { card, goldButton, inputStyle, fieldLabel } from '../redesign/Screen';
 import ProfileTelegram from './ProfileTelegram';
 
 const backend = getBackend();

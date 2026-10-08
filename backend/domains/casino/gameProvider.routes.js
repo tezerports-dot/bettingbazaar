@@ -134,10 +134,10 @@ router.get('/providers', async (req, res) => {
 // ── PLAYER: launch a game session ───────────────────────────────────────────
 
 // POST /api/game/launch
-// Body: { providerKey, gameId?, gameName?, mode? }
+// Body: { providerKey, gameId?, gameName? }
 router.post('/launch', authenticatePlayer, async (req, res) => {
   try {
-    const { providerKey, gameId = '', gameName = '', mode = 'real' } = req.body;
+    const { providerKey, gameId = '', gameName = '' } = req.body;
 
     const listed = await db.games.getProvider(providerKey);
     if (!listed?.enabled) {

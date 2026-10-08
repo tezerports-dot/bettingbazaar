@@ -136,7 +136,9 @@ export const TokenFlow: React.FC = () => {
     setLoading(false);
   };
 
-  useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [days]);
+  // The dates apply on Apply; only the trend window reloads by itself.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, [days]);
 
   return (
     <div className="space-y-8">
