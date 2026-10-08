@@ -2716,6 +2716,35 @@ const MUTATIONS = [
     from: `        purposes: ['TELEGRAM_LOGIN'], userId: user.userId,`,
     to: `        purposes: ['TELEGRAM_LOGIN'],`,
   },
+  // ── Forgot password, set in the Mini App for every panel (2026-10-08) ────
+  {
+    id: 'MS9', file: 'database/repositories/telegram.js', config: PG,
+    test: 'backend/tests/routes/telegramLoginPg.test.js',
+    why: 'a reset leaves alive the sessions it exists to evict',
+    from: `      \`UPDATE users SET password_hash = $2, sessions_valid_from = $3, updated_at = now()`,
+    to: `      \`UPDATE users SET password_hash = $2, sessions_valid_from = CASE WHEN $3::timestamptz IS NULL THEN now() ELSE sessions_valid_from END, updated_at = now()`,
+  },
+  {
+    id: 'MS10', file: 'backend/domains/identity/passwordReset.service.js', config: PG,
+    test: 'backend/tests/routes/telegramLoginPg.test.js',
+    why: 'a staff password below the staff floor is set through the Mini App',
+    from: `  assertNewPassword(panel, { password, confirmPassword, mobile: contact.phone });`,
+    to: ``,
+  },
+  {
+    id: 'MS11', file: 'database/repositories/telegram.js', config: PG,
+    test: 'database/tests/telegramPg.test.js',
+    why: "a player's contact share resets the staff account on the same mobile",
+    from: `lockAccount(client, 'mobile = $1 AND account_type = $2', [contact.phone, panel]);`,
+    to: `lockAccount(client, 'mobile = $1 AND $2::text IS NOT NULL ORDER BY account_type DESC', [contact.phone, panel]);`,
+  },
+  {
+    id: 'MS12', file: 'backend/domains/identity/loginDoors.js', config: UNIT,
+    test: 'backend/tests/unit/loginPacing.test.js',
+    why: 'the player door, the one sign-in with no Telegram approval behind it, stops asking for a captcha',
+    from: `    requireCaptcha('player-login'),`,
+    to: ``,
+  },
   {
     id: 'MC1', file: 'database/schema.sql', config: PG,
     test: 'database/tests/conservationPg.test.js',

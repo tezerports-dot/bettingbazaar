@@ -266,6 +266,21 @@ export function registerCronJobs(rebuildLeaderboard) {
     } catch (e) { console.error('[retention] payment proof scrub error:', e.message); }
   });
 
+  // ── Spent and expired credentials — runs hourly ────────────────────────────
+  // Telegram challenges, single-use Mini App proofs and revoked session tokens
+  // each carry `expires_at`, and every read filters on it, so this reclaims
+  // SPACE only: a late sweep never makes anything usable. Both repositories
+  // said they were swept on a schedule and nothing scheduled them (§32 S5),
+  // so the claimed-proof table grew by a row for every Mini App action.
+  registerRecurring('credential-sweep', 60 * 60 * 1000, async () => {
+    try {
+      const tg = await db.telegram.sweepExpired();
+      const tokens = await db.identity.sweepExpired();
+      const n = tg.challenges + tg.initDataUses + tokens.revokedTokens;
+      if (n > 0) console.log('[credential-sweep]', JSON.stringify({ ...tg, ...tokens }));
+    } catch (e) { console.error('[credential-sweep] cron error:', e.message); }
+  });
+
   // ── Automated database backup — runs daily ─────────────────────────────────
   // pg_dump (custom format) → S3 (backups/), keeping the newest BACKUP_KEEP
   // (14). Skips loudly (log + alert) when pg_dump or S3 is unavailable; a

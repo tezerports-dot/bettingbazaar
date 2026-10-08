@@ -13,7 +13,8 @@
  *   POST /api/telegram/mini-app/context    what was this opened for (reads only)
  *   POST /api/telegram/mini-app/approve    answer a challenge
  *   POST /api/telegram/mini-app/signup     a player signs up inside Telegram
- *   POST /api/telegram/mini-app/password-reset  forgot password, by contact
+ *   POST /api/telegram/mini-app/password-reset  forgot password, by contact,
+ *                                          set right there for every panel
  *
  * What the page was opened FOR is the `start_param` Telegram signed into
  * `initData` (telegramClient.miniAppLink): a challenge id (`c…`), a reset for a
@@ -29,7 +30,7 @@ import { miniAppBot, miniAppLink } from './telegramClient.js';
 import { verifyInitData, verifyContact } from './miniAppAuth.js';
 import { miniAppRefusal } from './miniAppRefusals.js';
 import { CHALLENGE_PARAM, telegramUnavailable, REDEEM_WINDOW_SECONDS } from '../identity/telegramChallenge.service.js';
-import { startResetFromMiniApp } from '../identity/passwordReset.service.js';
+import { resetFromMiniApp } from '../identity/passwordReset.service.js';
 import { hashPassword } from '../identity/password.util.js';
 import { assertPlayerPassword } from '../identity/passwordPolicy.js';
 import { isValidMobile, normaliseReferralCode } from '../identity/signupFields.js';
@@ -260,12 +261,15 @@ router.post('/mini-app/signup', miniAppLimiter, signupLimiter,
 });
 
 /**
- * POST /api/telegram/mini-app/password-reset `{ initData, contact, panel? }`.
+ * POST /api/telegram/mini-app/password-reset
+ * `{ initData, contact, panel?, password, confirmPassword }`.
  *
  * The panel is the one the page was opened for (`reset-<PANEL>`), or the body's
- * when the page was opened plainly. Answers with the reset link of THAT panel;
- * the page opens it, and the new password is set at
- * `POST /api/v1/auth/password/reset`.
+ * when the page was opened plainly. The new password is set right here, for
+ * every panel (2026-10-08), in the transaction that spends the proof
+ * (`passwordReset.service.js` says why there is no link any more). It is
+ * checked against the account's floor BEFORE anything is spent: the `initData`
+ * is single-use, and a refused password must not cost the person the page.
  */
 router.post('/mini-app/password-reset', miniAppLimiter, async (req, res) => {
   try {
@@ -275,18 +279,20 @@ router.post('/mini-app/password-reset', miniAppLimiter, async (req, res) => {
     if (!ACCOUNT_TYPES.includes(panel)) {
       throw refusal(400, 'PANEL_INVALID', 'Choose which account to reset: player, merchant or staff.');
     }
+    if (!req.body?.password) throw refusal(400, 'PASSWORD_REQUIRED', 'Type the new password, twice.');
     const contact = proveContact(bot, req.body?.contact, { required: true });
-    const result = await startResetFromMiniApp({
+
+    const result = await resetFromMiniApp({
       panel, telegramUser: proof.user, initData: initDataClaim(proof), contact,
+      password: req.body.password, confirmPassword: req.body.confirmPassword,
     });
     if (!result.ok) throw refuseWith(result.code);
     return res.json({
-      success: true, panel,
-      resetToken: result.token, resetUrl: result.url, expiresAt: result.expiresAt,
-      message: 'Open the link to choose a new password. It works once, for 15 minutes.',
+      success: true, panel, changed: true,
+      message: 'Your password has been changed, and every device that was signed in has been signed out. Sign in with the new password now.',
     });
   } catch (err) {
-    return respondError(res, err, 'telegram/mini-app/password-reset', { message: 'Could not start the password reset. Please try again.' });
+    return respondError(res, err, 'telegram/mini-app/password-reset', { message: 'Could not reset the password. Please try again.' });
   }
 });
 

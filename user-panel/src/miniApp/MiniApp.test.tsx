@@ -19,7 +19,7 @@ import MiniApp from './MiniApp';
 
 const SIGNED = 'contact=%7B%7D&auth_date=1&hash=abc';
 const app = (shared = true) => ({
-  initData: 'query_id=1&hash=x', ready: vi.fn(), expand: vi.fn(), close: vi.fn(), openLink: vi.fn(),
+  initData: 'query_id=1&hash=x', ready: vi.fn(), expand: vi.fn(), close: vi.fn(),
   requestContact: vi.fn((cb) => cb(shared, shared ? { response: SIGNED, responseUnsafe: { contact: {} } } : undefined)),
   requestWriteAccess: vi.fn(),
 });
@@ -99,14 +99,59 @@ describe('the Mini App', () => {
     expect(box.disabled).toBe(true);
   });
 
-  it('resets by contact and opens the reset link', async () => {
+  it('sets the new password in the Mini App for a merchant, at the merchant floor, with the signed contact', async () => {
     context.mockResolvedValue(ctx({ kind: 'RESET', panel: 'MERCHANT', needsContact: true }));
-    passwordReset.mockResolvedValue({ panel: 'MERCHANT', resetUrl: 'https://x/merchant/#/reset/t', message: 'Open the link.' });
+    passwordReset.mockResolvedValue({ panel: 'MERCHANT', changed: true, message: 'Your password has been changed. Sign in with the new password now.' });
     const a = app();
     render(<MiniApp app={a} />);
-    fireEvent.click(await screen.findByRole('button', { name: /share contact and reset/i }));
-    fireEvent.click(await screen.findByRole('button', { name: /choose a new password/i }));
-    expect(passwordReset).toHaveBeenCalledWith(a.initData, SIGNED, undefined);
-    expect(a.openLink).toHaveBeenCalledWith('https://x/merchant/#/reset/t');
+    const box = await screen.findByLabelText(/^new password$/i);
+    const go = () => screen.getByRole('button', { name: /share contact and reset/i }) as HTMLButtonElement;
+    // Eleven characters: a player's password, not a merchant's.
+    fireEvent.change(box, { target: { value: 'Eleven-char' } });
+    fireEvent.change(screen.getByLabelText(/confirm new password/i), { target: { value: 'Eleven-char' } });
+    expect(screen.getByText(/at least 12 characters/i)).toBeTruthy();
+    expect(go().disabled).toBe(true);
+    fireEvent.change(box, { target: { value: 'Twelve-chars' } });
+    fireEvent.change(screen.getByLabelText(/confirm new password/i), { target: { value: 'Twelve-chars' } });
+    fireEvent.click(go());
+    expect(await screen.findByText(/sign in with the new password/i)).toBeTruthy();
+    expect(passwordReset).toHaveBeenCalledWith(a.initData, SIGNED, { password: 'Twelve-chars', confirmPassword: 'Twelve-chars' });
+    expect(screen.queryByRole('button', { name: /choose a new password/i })).toBeNull();
+  });
+
+  it('asks a player opening it plainly for the player floor, and names the panel', async () => {
+    context.mockResolvedValue(ctx({ kind: 'NONE', panel: null, needsContact: false }));
+    passwordReset.mockResolvedValue({ panel: 'PLAYER', changed: true, message: 'Changed.' });
+    const a = app();
+    render(<MiniApp app={a} />);
+    fireEvent.click(await screen.findByRole('button', { name: /forgot password/i }));
+    expect(screen.getByText(/at least 8 characters/i)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText(/^new password$/i), { target: { value: 'Eight-ch' } });
+    fireEvent.change(screen.getByLabelText(/confirm new password/i), { target: { value: 'Eight-ch' } });
+    fireEvent.click(screen.getByRole('button', { name: /share contact and reset/i }));
+    expect(await screen.findByText('Changed.')).toBeTruthy();
+    expect(passwordReset).toHaveBeenCalledWith(a.initData, SIGNED, { password: 'Eight-ch', confirmPassword: 'Eight-ch', panel: 'PLAYER' });
+  });
+
+  it('does not open the contact prompt when the two passwords differ', async () => {
+    context.mockResolvedValue(ctx({ kind: 'RESET', panel: 'PLAYER', needsContact: true }));
+    const a = app();
+    render(<MiniApp app={a} />);
+    fireEvent.change(await screen.findByLabelText(/^new password$/i), { target: { value: 'first-password' } });
+    fireEvent.change(screen.getByLabelText(/confirm new password/i), { target: { value: 'second-password' } });
+    fireEvent.click(screen.getByRole('button', { name: /share contact and reset/i }));
+    expect((await screen.findByRole('alert')).textContent).toMatch(/do not match/i);
+    expect(a.requestContact).not.toHaveBeenCalled();
+    expect(passwordReset).not.toHaveBeenCalled();
+  });
+
+  it("shows the server's refusal of the password as it is worded", async () => {
+    context.mockResolvedValue(ctx({ kind: 'RESET', panel: 'STAFF', needsContact: true }));
+    passwordReset.mockRejectedValue(new Error('That password is one repeated or sequential run of characters.'));
+    render(<MiniApp app={app()} />);
+    fireEvent.change(await screen.findByLabelText(/^new password$/i), { target: { value: 'aaaaaaaaaaaa' } });
+    fireEvent.change(screen.getByLabelText(/confirm new password/i), { target: { value: 'aaaaaaaaaaaa' } });
+    fireEvent.click(screen.getByRole('button', { name: /share contact and reset/i }));
+    expect((await screen.findByRole('alert')).textContent).toBe('That password is one repeated or sequential run of characters.');
   });
 });

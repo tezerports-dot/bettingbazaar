@@ -140,6 +140,19 @@ describe('every credential path is actually paced', () => {
     }
   });
 
+  it('asks for a captcha at the player door only (owner, 2026-10-08: staff and merchants "only need 2FA")', async () => {
+    const { doorRoute } = await import('../../domains/identity/loginDoors.js');
+    const hasCaptcha = (chain) => chain.some((fn) => fn.name === 'captchaGate');
+    expect(hasCaptcha(doorRoute('PLAYER', 'login'))).toBe(true);
+    expect(hasCaptcha(doorRoute('STAFF', 'login'))).toBe(false);
+    expect(hasCaptcha(doorRoute('MERCHANT', 'login'))).toBe(false);
+    for (const door of ['PLAYER', 'STAFF', 'MERCHANT']) {
+      for (const leg of ['twoFactor', 'telegram', 'telegramComplete']) {
+        expect(hasCaptcha(doorRoute(door, leg)), `${door} ${leg}`).toBe(false);
+      }
+    }
+  });
+
   it('bounds the Telegram poll and the second-factor budget on both polling legs', async () => {
     const { doorRoute } = await import('../../domains/identity/loginDoors.js');
     const sec = await import('../../middleware/security.js');

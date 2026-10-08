@@ -1,7 +1,7 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * repositories/telegram.js — the one bot, the links it proves, the questions
- * the Mini App answers, and the password resets it starts (Step 3, owner
+ * the Mini App answers, and the passwords it resets (Step 3, owner
  * 2026-10-07).
  *
  * ── What Telegram is for now ────────────────────────────────────────────────
@@ -33,7 +33,7 @@
  * and a sentence. Nothing here throws at a person for something they did.
  *
  * ── Expiry is enforced by the READS ────────────────────────────────────────
- * Every challenge, reset and claim carries `expires_at` and every read or
+ * Every challenge and claim carries `expires_at` and every read or
  * update filters on it with the DATABASE clock. `sweepExpired` reclaims space
  * only; a late sweep never makes anything usable.
  */
@@ -611,13 +611,26 @@ export async function signUpVerifiedPlayer({
  * the phone, the account of that mobile ON THAT PANEL is the one reset, and the
  * share verifies or relinks it on the way.
  *
- * The reset row is issued in the same transaction; asking again invalidates the
- * previous token (one live token per account).
+ * The new password and the session cutoff are written in the SAME transaction
+ * as the proof is claimed (2026-10-08). There is no reset token: a token minted
+ * here would have to be carried to a page that sets the password, and the
+ * merchant and admin panels have no such page; the person is already in the
+ * Mini App with the proof in hand, so the password is set where they are.
+ * One transaction also means a refusal leaves nothing behind: the proof is
+ * not spent, nothing is linked, the old password still works.
+ *
+ * `validFrom` is the caller's clock, the one that stamps a session's `iat`
+ * (`sessionSuperseded` compares the two): the database's clock running ahead of
+ * the server's would refuse the session they sign in with straight after.
  */
 export async function resetPasswordByContact({
-  panel, telegramUser, initData, contact, tokenHash, ttlSeconds = 900,
+  panel, telegramUser, initData, contact, passwordHash, validFrom,
 }) {
   assertAudience(panel, 'resetPasswordByContact');
+  if (!passwordHash) throw new Error('resetPasswordByContact requires a passwordHash');
+  if (!(validFrom instanceof Date) || Number.isNaN(validFrom.getTime())) {
+    throw new Error('resetPasswordByContact requires validFrom (a Date)');
+  }
   return acting(async (client) => {
     await claimProof(client, initData);
     if (String(contact.userId) !== String(telegramUser.id)) refuse('CONTACT_NOT_OWN');
@@ -627,43 +640,19 @@ export async function resetPasswordByContact({
     if (!account) refuse('NO_ACCOUNT');
     const outcome = await linkWithin(client, account, { telegramUser, phone: contact.phone });
 
+    // The password and the cutoff in ONE statement: the commonest reason
+    // somebody resets is that a session they did not open holds the account,
+    // and a reset that leaves those sessions alive is a gesture (§33.6).
     await client.query(
-      `DELETE FROM password_resets WHERE user_id = $1 AND consumed_at IS NULL`, [account.user_id],
-    );
-    const { rows } = await client.query(
-      `INSERT INTO password_resets (token_hash, user_id, telegram_user_id, expires_at)
-       VALUES ($1, $2, $3, now() + ($4 || ' seconds')::interval)
-       RETURNING expires_at`,
-      [String(tokenHash), account.user_id, String(telegramUser.id), String(ttlSeconds)],
+      `UPDATE users SET password_hash = $2, sessions_valid_from = $3, updated_at = now()
+        WHERE user_id = $1 AND account_type = $4`,
+      [account.user_id, String(passwordHash), validFrom, panel],
     );
     return {
-      ok: true, userId: account.user_id, expiresAt: rows[0].expires_at,
+      ok: true, userId: account.user_id,
       verified: outcome.verified, relinked: outcome.relinked,
     };
   });
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// PASSWORD RESETS
-// ═══════════════════════════════════════════════════════════════════════════
-
-/**
- * Redeem a reset token — ONCE.
- *
- * `consumed_at` is set in the same atomic UPDATE that reads the row, so twenty
- * racing redemptions produce one winner. Expiry is in the WHERE: a sweep that
- * has not run never makes a stale link usable.
- */
-export async function consumePasswordReset(tokenHash) {
-  const { rows } = await pgQuery(
-    `UPDATE password_resets
-        SET consumed_at = now()
-      WHERE token_hash = $1 AND consumed_at IS NULL AND expires_at > now()
-      RETURNING user_id, telegram_user_id`,
-    [String(tokenHash)], 'pw_reset_consume',
-  );
-  const r = rows[0];
-  return r ? { userId: r.user_id, telegramUserId: r.telegram_user_id } : null;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -672,11 +661,10 @@ export async function consumePasswordReset(tokenHash) {
 
 /**
  * Reclaim space from rows that can no longer be used. Space ONLY — every read
- * above already refuses an expired row. Scheduled as the `telegram-sweep` cron.
+ * above already refuses an expired row. Scheduled as the `credential-sweep` cron
+ * (backend/startup/cronJobs.js).
  */
 export async function sweepExpired() {
-  const resets = await pgQuery(
-    `DELETE FROM password_resets WHERE expires_at <= now()`, [], 'tg_sweep_resets');
   // A challenge is kept for a day after it lapses: "who asked to sign in to my
   // account, from where" is the first question after a denied approval.
   const challenges = await pgQuery(
@@ -684,7 +672,6 @@ export async function sweepExpired() {
   const uses = await pgQuery(
     `DELETE FROM telegram_init_data_uses WHERE expires_at <= now()`, [], 'tg_sweep_init_data');
   return {
-    passwordResets: resets.rowCount ?? 0,
     challenges: challenges.rowCount ?? 0,
     initDataUses: uses.rowCount ?? 0,
   };

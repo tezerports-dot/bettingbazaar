@@ -24,7 +24,7 @@ import { pgConfigured, applySchema, closePg, pgQuery } from '#db/client.js';
 import { db } from '#db';
 import { createMerchantAccount } from '#db/repositories/merchants.js';
 import { newUserId, createUser, setRoles, getUserByMobile } from '#db/repositories/users.js';
-import { hashPassword } from '../../domains/identity/password.util.js';
+import { hashPassword, verifyPassword } from '../../domains/identity/password.util.js';
 import { verifyJwt } from '../../domains/identity/jwt.util.js';
 import {
   saveTestBot, removeTestBot, linkTelegram, signInitData, signContact, freshTelegramUserId,
@@ -370,36 +370,87 @@ describePg('Step 3: sign-in doors and the Mini App', () => {
   });
 
   // ── Forgot password ────────────────────────────────────────────────────
+  // Set in the Mini App for every panel (2026-10-08): the merchant and admin
+  // panels had no page for a reset link, so a link was no reset at all.
   describe('forgot password', () => {
-    it('the matching contact yields a reset link for that panel; the new password works and old sessions die', async () => {
+    const NEW = 'A-Brand-New-Merchant-Pass-3!';
+    const hashOf = async (userId) =>
+      (await pgQuery('SELECT password_hash FROM users WHERE user_id = $1', [userId])).rows[0].password_hash;
+    const resetAs = (who, panel, body = {}, initData = null) => post('/api/telegram/mini-app/password-reset', {
+      initData: initData || signInitData({ telegramUserId: who.tgId, startParam: `reset-${panel}` }),
+      contact: signContact({ telegramUserId: who.tgId, phone: who.mobile }),
+      password: NEW, confirmPassword: NEW, ...body,
+    });
+
+    it('a merchant sets the new password in the Mini App; it signs in, and the old one does not', async () => {
       const m = await merchant();
       const info = await request(app).get('/api/telegram/mini-app?panel=MERCHANT');
       expect(info.body.resetUrl).toContain('startapp=reset-MERCHANT');
 
-      const reset = await post('/api/telegram/mini-app/password-reset', {
-        initData: signInitData({ telegramUserId: m.tgId, startParam: 'reset-MERCHANT' }),
-        contact: signContact({ telegramUserId: m.tgId, phone: m.mobile }),
-      });
+      const reset = await resetAs(m, 'MERCHANT');
       expect(reset.status, JSON.stringify(reset.body)).toBe(200);
-      expect(reset.body.panel).toBe('MERCHANT');
-      const NEW = 'A-Brand-New-Merchant-Pass-3!';
-      const set = await post('/api/v1/auth/password/reset', { token: reset.body.resetToken, password: NEW, confirmPassword: NEW });
-      expect(set.status, JSON.stringify(set.body)).toBe(200);
+      expect(reset.body).toMatchObject({ panel: 'MERCHANT', changed: true });
+      expect(reset.body.token).toBeUndefined();
+      expect(reset.body.resetToken).toBeUndefined();
+      expect((await verifyPassword(await hashOf(m.userId), NEW)).valid).toBe(true);
       const res = await post('/api/merchant/auth/login', { mobile: m.mobile, password: NEW });
       expect(res.body.twoFactorRequired).toBe(true);
-      // Single use.
-      expect((await post('/api/v1/auth/password/reset', { token: reset.body.resetToken, password: NEW, confirmPassword: NEW })).status).toBe(400);
     });
 
-    it('a contact of another number is refused, and no reset is issued', async () => {
+    it("evicts every session the account had, and signs nobody in", async () => {
+      const p = await player();
+      const session = await login('PLAYER', p.mobile);
+      expect(session.status).toBe(200);
+      const me = () => request(app).get('/api/v1/auth/me').set('Authorization', `Bearer ${session.body.token}`);
+      expect((await me()).status).toBe(200);
+      const reset = await resetAs(p, 'PLAYER');
+      expect(reset.status, JSON.stringify(reset.body)).toBe(200);
+      expect(reset.body.token).toBeUndefined();
+      expect((await me()).status).toBe(401);
+    });
+
+    it("a password under the account's floor is refused BEFORE the proof is spent, so the same page can try again", async () => {
+      const s = await staff();
+      const initData = signInitData({ telegramUserId: s.tgId, startParam: 'reset-STAFF' });
+      const weak = 'Eight-ch';                         // a player's floor, not staff's (12)
+      const refused = await resetAs(s, 'STAFF', { password: weak, confirmPassword: weak }, initData);
+      expect(refused.status).toBe(400);
+      expect(refused.body.code).toBe('WEAK_PASSWORD');
+      expect(refused.body.message).toMatch(/12/);
+      expect((await verifyPassword(await hashOf(s.userId), PASSWORD)).valid).toBe(true);
+
+      const retried = await resetAs(s, 'STAFF', {}, initData);
+      expect(retried.status, JSON.stringify(retried.body)).toBe(200);
+      expect((await verifyPassword(await hashOf(s.userId), NEW)).valid).toBe(true);
+      // ...and now it is spent.
+      expect((await resetAs(s, 'STAFF', {}, initData)).status).toBe(409);
+    });
+
+    it('two different passwords, or none, are refused by name and change nothing', async () => {
+      const p = await player();
+      const differ = await resetAs(p, 'PLAYER', { confirmPassword: `${NEW}x` });
+      expect(differ.status).toBe(400);
+      expect(differ.body.code).toBe('PASSWORDS_DIFFER');
+      const none = await resetAs(p, 'PLAYER', { password: '', confirmPassword: '' });
+      expect(none.status).toBe(400);
+      expect(none.body.code).toBe('PASSWORD_REQUIRED');
+      expect((await verifyPassword(await hashOf(p.userId), PASSWORD)).valid).toBe(true);
+    });
+
+    it('a contact of another number is refused, and the password is unchanged', async () => {
       const p = await player();
       const res = await post('/api/telegram/mini-app/password-reset', {
         initData: signInitData({ telegramUserId: p.tgId, startParam: 'reset-PLAYER' }),
         contact: signContact({ telegramUserId: p.tgId, phone: '9000000003' }),
+        password: NEW, confirmPassword: NEW,
       });
       expect(res.status).toBe(404);
-      const { rows } = await pgQuery('SELECT count(*)::int AS n FROM password_resets WHERE user_id = $1', [p.userId]);
-      expect(rows[0].n).toBe(0);
+      expect((await verifyPassword(await hashOf(p.userId), PASSWORD)).valid).toBe(true);
+    });
+
+    it('the old reset-link route is gone', async () => {
+      const res = await post('/api/v1/auth/password/reset', { token: 'x'.repeat(43), password: NEW, confirmPassword: NEW });
+      expect(res.status).toBe(404);
     });
   });
 

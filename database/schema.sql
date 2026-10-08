@@ -2891,34 +2891,18 @@ ALTER TABLE users ADD CONSTRAINT users_phantom_access_needs_player
   CHECK (account_type = 'PLAYER' OR phantom_access = 'NONE');
 
 -- ── The password reset ────────────────────────────────────────────────────
--- A person who has forgotten their password opens the Mini App and shares
--- their contact; if Telegram's phone is the account's mobile for that panel,
--- they are given a token that lets them SET a new one (Step 3, owner
--- 2026-10-07: no admin reset, no prior link needed). There is no email on this
--- platform, so the number Telegram has verified is the only channel a reset
--- can travel on.
+-- A person who has forgotten their password opens the Mini App, types the new
+-- one and shares their contact; if Telegram's phone is the account's mobile
+-- for that panel, the password is set there and then, and every session the
+-- account had is evicted in the same statement (Step 3, owner 2026-10-07: no
+-- admin reset, no prior link needed; 2026-10-08: set in the Mini App for every
+-- panel). It signs nobody in. There is no email on this platform, so the
+-- number Telegram has verified is the only channel a reset can travel on.
 --
--- ── What the token does NOT do ────────────────────────────────────────────
--- It does not sign anybody in (owner, 2026-09-24). It grants the right to
--- choose a password, and then they log in like anybody else — and setting it
--- REVOKES existing sessions, because the reason somebody resets is often that
--- a session is not theirs.
---
--- Stored as a SHA-256 hash, like every other bearer credential here, so a
--- database dump yields nothing usable. Bound to the Telegram account that asked
--- for it, single-use (`consumed_at` set in the SAME atomic UPDATE that reads
--- it), and short-lived. Expiry is enforced by the READS — every query filters
--- on it — so a sweep that has not run cannot make a stale link usable.
-CREATE TABLE IF NOT EXISTS password_resets (
-  token_hash       TEXT PRIMARY KEY,
-  user_id          TEXT NOT NULL REFERENCES users (user_id) ON DELETE CASCADE,
-  telegram_user_id TEXT NOT NULL,
-  consumed_at      TIMESTAMPTZ,
-  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-  expires_at       TIMESTAMPTZ NOT NULL
-);
-CREATE INDEX IF NOT EXISTS password_resets_user_idx ON password_resets (user_id);
-CREATE INDEX IF NOT EXISTS password_resets_expiry_idx ON password_resets (expires_at);
+-- There is no reset token, so there is no table for one: the reset links the
+-- Mini App used to mint opened a page only the player app had. Dropped so a
+-- database that had it converges on this file (§32 S31).
+DROP TABLE IF EXISTS password_resets;
 
 -- ── Sessions issued before this instant are dead ────────────────────────────
 -- The revocation list is keyed by the TOKEN, so it can retire a token somebody

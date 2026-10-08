@@ -3,15 +3,16 @@
  * domains/identity/loginDoors.js — each sign-in leg, with its door's limits.
  *
  * The four legs (routes.js) are the same handlers at all three doors; what
- * differs per door is the failure budget, the captcha action and the subnet
- * tier. Each mount spreads `doorRoute(door, leg)` onto its own router:
+ * differs per door is the failure budget, the subnet tier, and the captcha
+ * (the player door only: staff and merchants have the Telegram approval).
+ * Each mount spreads `doorRoute(door, leg)` onto its own router:
  *
  *   player    /api/v1/auth/login…         playerAuth.routes.js
  *   staff     /api/admin/login…           server.js
  *   merchant  /api/merchant/auth/login…   merchant.routes.js
  *
  * ── Why the chain is per LEG and never on a prefix (§32 S28) ───────────────
- *   login                  pace → failure budget → subnet → captcha. A
+ *   login                  pace → failure budget → subnet (→ captcha). A
  *                          password is checked here and nowhere else.
  *   login/2fa,             poll limiter → second-factor failure budget. A
  *   login/telegram/complete  browser waiting on Telegram asks every 2–3 s, so
@@ -44,15 +45,16 @@ const CREDENTIAL_CHAIN = {
     requireCaptcha('player-login'),
   ],
   STAFF: () => [
+    // No captcha for staff or merchants (owner, 2026-10-08): "they will only
+    // need 2FA". Every staff and merchant sign-in waits for its Telegram
+    // approval, which a script holding a guessed password cannot give.
     loginPaceLimiter, adminAuthLimiter, createSubnetLimiter('adminAuth'),
-    requireCaptcha('admin-login'),
     // The admin panel's role selector defaults to a full admin, as it always
     // has: a sub-admin's panel sends its own.
     (req, _res, next) => { req.body = { ...req.body, loginType: req.body?.loginType || 'admin' }; next(); },
   ],
   MERCHANT: () => [
     loginPaceLimiter, merchantAuthLimiter, createSubnetLimiter('merchantAuth'),
-    requireCaptcha('merchant-login'),
   ],
 };
 

@@ -3535,8 +3535,8 @@ checked and is correct; the evidence is named.
 
 | Measure | Count |
 |---|---|
-| Route declarations in `backend/**` | 284 |
-| Reachable with **no auth middleware** | 33 |
+| Route declarations in `backend/**` | 283 |
+| Reachable with **no auth middleware** | 32 |
 | Staff routes carrying an **area** (permission key) | 166 |
 | Staff routes a sub-admin can **never** be given (full admin only) | 7 |
 
@@ -3575,7 +3575,6 @@ new route and decide. Each of the three questions is defined in §2.
 - `POST /mini-app/context  (backend/domains/telegram/miniApp.routes.js)`
 - `POST /mini-app/password-reset  (backend/domains/telegram/miniApp.routes.js)`
 - `POST /mini-app/signup  (backend/domains/telegram/miniApp.routes.js)`
-- `POST /password/reset  (backend/domains/identity/playerAuth.routes.js)`
 - `POST /register  (backend/domains/identity/playerAuth.routes.js)`
 - `POST /wallet/:providerKey  (backend/domains/casino/gameProvider.routes.js)`
 
@@ -3597,8 +3596,8 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 409 |
-| Parameters only (safe by construction) | 268 |
+| `pgQuery` call sites | 407 |
+| Parameters only (safe by construction) | 266 |
 | Interpolating into statement text (each needs a reading) | 134 |
 | Statement text built elsewhere and passed in (each needs a reading) | 7 |
 
@@ -3617,7 +3616,7 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Panel | .ts/.tsx files | `dangerouslySetInnerHTML` | `.innerHTML =` |
 |---|---|---|---|
-| `user-panel` | 93 | 0 | 0 |
+| `user-panel` | 91 | 0 | 0 |
 | `admin-panel` | 110 | 0 | 0 |
 | `merchant-panel` | 49 | 0 | 0 |
 

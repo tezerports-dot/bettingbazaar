@@ -23,7 +23,7 @@
 import express from 'express';
 import { miniAppBot, miniAppLink } from '../domains/telegram/telegramClient.js';
 import { recordReferralClick } from '../domains/referral/referral.service.js';
-import { panelOrigin } from '../config/panelOrigins.js';
+import { publicAppOrigin } from '../config/publicAppOrigin.js';
 
 const router = express.Router();
 
@@ -48,7 +48,7 @@ router.get('/r/:code', async (req, res) => {
       .catch((err) => console.warn('[referral-redirect] click not recorded:', err.message));
   }
 
-  const site = panelOrigin('PLAYER') || '';
+  const site = publicAppOrigin();
   const target = bot && code
     ? miniAppLink(bot, `ref-${code}`)
     : `${site}/${code ? `?ref=${encodeURIComponent(code)}` : ''}`;

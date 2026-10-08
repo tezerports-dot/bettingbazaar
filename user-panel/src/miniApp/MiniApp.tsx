@@ -10,7 +10,7 @@
  *   LOGIN, TELEGRAM_LOGIN,    approve or deny a sign-in, showing where and when
  *   TWO_FACTOR_OFF            it was asked for; a contact only when the server
  *                             says this Telegram account is not the linked one
- *   RESET                     share your contact, then open the reset link
+ *   RESET                     type a new password, share your contact; it is set
  *   SIGNUP                    a player's signup, the referral code locked
  *   NONE                      opened plainly: log in, sign up, or reset
  *
@@ -19,7 +19,7 @@
  * another number, who then cannot act on it (§32 S14).
  */
 import React, { useEffect, useState } from 'react';
-import { miniApi, shareContact, MiniAppRefusal, type MiniAppContext, type Panel, type WebApp } from './miniAppApi';
+import { miniApi, shareContact, MiniAppRefusal, PASSWORD_FLOOR, type MiniAppContext, type Panel, type WebApp } from './miniAppApi';
 
 const PANEL_WORD: Record<Panel, string> = { PLAYER: 'player', STAFF: 'staff', MERCHANT: 'merchant' };
 
@@ -44,12 +44,14 @@ const INPUT: React.CSSProperties = {
 const HINT: React.CSSProperties = { color: 'var(--tg-theme-hint-color, GrayText)', fontSize: 13 };
 
 /** A labelled password field, at module level so typing keeps the caret (§32 S23). */
-const PasswordField: React.FC<{ id: string; label: string; value: string; onChange: (v: string) => void }> =
-  ({ id, label, value, onChange }) => (
+const PasswordField: React.FC<{ id: string; label: string; value: string; onChange: (v: string) => void; hint?: string }> =
+  ({ id, label, value, onChange, hint }) => (
     <div style={{ marginTop: 12 }}>
       <label htmlFor={id} style={{ display: 'block', fontSize: 13, marginBottom: 4 }}>{label}</label>
       <input id={id} type="password" autoComplete="new-password" value={value}
+        aria-describedby={hint ? `${id}-hint` : undefined}
         onChange={(e) => onChange(e.target.value)} style={INPUT} />
+      {hint ? <p id={`${id}-hint`} style={{ ...HINT, margin: '4px 0 0' }}>{hint}</p> : null}
     </div>
   );
 
@@ -64,11 +66,15 @@ const MiniApp: React.FC<{ app: WebApp | null }> = ({ app }) => {
   const [error, setError] = useState('');
   const [done, setDone] = useState('');
   const [busy, setBusy] = useState(false);
-  const [mode, setMode] = useState<'home' | 'signup' | 'reset'>('home');
+  const [mode, setModeState] = useState<'home' | 'signup' | 'reset'>('home');
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
   const [invite, setInvite] = useState('');
-  const [resetUrl, setResetUrl] = useState('');
+
+  /** A new screen starts with empty password boxes: one screen's typing is not another's. */
+  const setMode = (next: 'home' | 'signup' | 'reset') => {
+    setModeState(next); setPassword(''); setConfirm(''); setError('');
+  };
 
   const initData = app?.initData || '';
 
@@ -78,8 +84,8 @@ const MiniApp: React.FC<{ app: WebApp | null }> = ({ app }) => {
     miniApi.context(initData)
       .then((c) => {
         setCtx(c);
-        if (c.start.kind === 'SIGNUP') { setMode('signup'); setInvite(c.start.referral?.code || ''); }
-        if (c.start.kind === 'RESET') setMode('reset');
+        if (c.start.kind === 'SIGNUP') { setModeState('signup'); setInvite(c.start.referral?.code || ''); }
+        if (c.start.kind === 'RESET') setModeState('reset');
       })
       .catch((e) => setError((e as Error).message));
   }, [app, initData]);
@@ -115,9 +121,12 @@ const MiniApp: React.FC<{ app: WebApp | null }> = ({ app }) => {
   });
 
   const reset = (panel?: Panel) => act(async () => {
+    // Asked before Telegram's contact prompt opens: the server would refuse it
+    // too, but only after the person had shared their number for nothing.
+    if (password !== confirm) throw new Error('The two passwords do not match.');
     const c = await contact();
-    const r = await miniApi.passwordReset(initData, c, panel);
-    setResetUrl(r.resetUrl);
+    const r = await miniApi.passwordReset(initData, c, { password, confirmPassword: confirm, ...(panel ? { panel } : {}) });
+    setPassword(''); setConfirm('');
     setDone(r.message);
   });
 
@@ -139,7 +148,6 @@ const MiniApp: React.FC<{ app: WebApp | null }> = ({ app }) => {
       {done && (
         <div role="status">
           <p>{done}</p>
-          {resetUrl && <button type="button" style={PRIMARY} onClick={() => app.openLink(resetUrl)}>Choose a new password</button>}
           <button type="button" style={SECONDARY} onClick={() => app.close()}>Close</button>
         </div>
       )}
@@ -186,7 +194,7 @@ const MiniApp: React.FC<{ app: WebApp | null }> = ({ app }) => {
                 <input id="mini-invite" value={invite} disabled={Boolean(start.referral?.code)}
                   onChange={(e) => setInvite(e.target.value.toUpperCase())} style={INPUT} />
               </div>
-              <button type="button" style={PRIMARY} disabled={busy || password.length < 8 || !confirm} onClick={signup}>
+              <button type="button" style={PRIMARY} disabled={busy || password.length < PASSWORD_FLOOR.PLAYER || !confirm} onClick={signup}>
                 Share contact and create account
               </button>
               {start.kind === 'NONE' && <button type="button" style={SECONDARY} onClick={() => setMode('home')}>Back</button>}
@@ -194,10 +202,21 @@ const MiniApp: React.FC<{ app: WebApp | null }> = ({ app }) => {
           )}
 
           {/* ── Forgot password ───────────────────────────────────────────── */}
+          {/* Set here, for every panel (2026-10-08): the merchant and admin
+              panels have no page a reset link could open. */}
           {mode === 'reset' && (
             <section>
-              <p>Reset the password of your {start.panel ? PANEL_WORD[start.panel] : 'player'} account. Share your contact; its number must be the account&apos;s mobile.</p>
-              <button type="button" style={PRIMARY} disabled={busy} onClick={() => reset(start.panel ? undefined : 'PLAYER')}>
+              <p>
+                Choose a new password for your {PANEL_WORD[start.panel || 'PLAYER']} account, then share your
+                contact; its number must be the account&apos;s mobile. Every device signed in to the account
+                is signed out.
+              </p>
+              <PasswordField id="mini-new-password" label="New password" value={password} onChange={setPassword}
+                hint={`At least ${PASSWORD_FLOOR[start.panel || 'PLAYER']} characters. A long phrase you can remember is best.`} />
+              <PasswordField id="mini-new-confirm" label="Confirm new password" value={confirm} onChange={setConfirm} />
+              <button type="button" style={PRIMARY}
+                disabled={busy || password.length < PASSWORD_FLOOR[start.panel || 'PLAYER'] || !confirm}
+                onClick={() => reset(start.panel ? undefined : 'PLAYER')}>
                 Share contact and reset
               </button>
               {start.kind === 'NONE' && <button type="button" style={SECONDARY} onClick={() => setMode('home')}>Back</button>}

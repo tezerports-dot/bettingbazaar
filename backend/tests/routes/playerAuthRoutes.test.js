@@ -392,8 +392,11 @@ describe('the limiters guard credentials, and only credentials', () => {
     expect(chain).toMatch(/createSubnetLimiter\('auth'\)/);
     expect(chain).toMatch(/globalSurgeBreaker\('auth'\)/);
     expect(routes).toMatch(/router\.post\('\/login', \.\.\.doorRoute\('PLAYER', 'login'\)\)/);
-    // The reset, which spends a reset token, carries the same chain.
-    expect(routes).toMatch(/router\.post\('\/password\/reset', \.\.\.credentialChain/);
+    // There is no reset token to spend here any more: a forgotten password is
+    // set in the Mini App, on a Telegram-signed proof, behind its own limiter.
+    expect(routes).not.toMatch(/router\.post\('\/password\/reset'/);
+    const miniApp = source('../../domains/telegram/miniApp.routes.js');
+    expect(miniApp).toMatch(/router\.post\('\/mini-app\/password-reset', miniAppLimiter,/);
   });
 
   it('keeps BOTH off the signup route, which submits no secret', () => {

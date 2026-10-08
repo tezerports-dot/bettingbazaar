@@ -87,14 +87,6 @@ export interface Backend {
   /** Is this invite code real, and whose? Used to confirm a pre-filled code. */
   checkInvite(code: string): Promise<{ valid: boolean; code?: string; invitedBy?: string }>;
 
-  /**
-   * Redeem a reset link (from the Mini App's "Forgot password") and SET a password.
-   *
-   * It does not sign anybody in — see `passwordReset.service.js`. The panel
-   * sends them to the login form afterwards.
-   */
-  resetPassword(token: string, password: string, confirmPassword: string): Promise<{
-    success: boolean; message?: string }>;
 
   // --- CORE SERVICES ---
   

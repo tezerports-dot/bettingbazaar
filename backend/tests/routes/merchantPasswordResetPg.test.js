@@ -1,7 +1,7 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
- * A merchant who resets their password through the merchant bot can sign in
- * with the NEW password, not the old one, and every session they had is gone.
+ * A merchant who resets their password in the Mini App can sign in with the
+ * NEW password, not the old one, and every session they had is gone.
  *
  * ── What it did before (R6, 2026-09-30) ────────────────────────────────────
  * A merchant's password was stored TWICE: `users.password_hash` on the login
@@ -12,8 +12,10 @@
  * was refused as invalid. And `merchantAuth` checked no session cutoff, so the
  * sessions the reset was meant to evict stayed alive.
  *
- * Driven through the real routes: the reset redemption the panel posts to,
- * the merchant login, and a merchantAuth-protected read.
+ * The reset is the service the Mini App route calls (`resetFromMiniApp`; the
+ * route itself is driven in telegramLoginPg.test.js); everything after it is
+ * the real routes: the merchant login, a merchantAuth-protected read and the
+ * live order feed.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import express from 'express';
@@ -24,7 +26,7 @@ import { createMerchantAccount } from '#db/repositories/merchants.js';
 import { newUserId } from '#db/repositories/users.js';
 import { hashPassword } from '../../domains/identity/password.util.js';
 import { signToken } from '../../domains/identity/paseto.util.js';
-import { startResetFromMiniApp } from '../../domains/identity/passwordReset.service.js';
+import { resetFromMiniApp } from '../../domains/identity/passwordReset.service.js';
 import { linkTelegram, saveTestBot, removeTestBot } from '../miniAppFixture.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
@@ -43,7 +45,6 @@ describePg('a merchant password reset', () => {
     app = express();
     app.use(express.json());
     app.use(cookieParser());
-    app.use('/auth', (await import('../../domains/identity/playerAuth.routes.js')).default);
     app.use('/merchant', (await import('../../domains/merchant/merchant.routes.js')).default);
     const { initSSERoutes } = await import('../../routes/sse.routes.js');
     app.use('/sse', initSSERoutes({ addMerchantClient: () => {} }, {}));
@@ -79,18 +80,13 @@ describePg('a merchant password reset', () => {
     const { pgQuery: q } = await import('#db/client.js');
     const tg = (await q('SELECT telegram_user_id FROM telegram_links WHERE user_id = $1', [userId])).rows[0].telegram_user_id;
     const at = new Date(Date.now() + 300_000);
-    const issued = await startResetFromMiniApp({
+    const reset = await resetFromMiniApp({
       panel: 'MERCHANT', telegramUser: { id: tg },
       initData: { hash: `mpr-i-${userId}`, expiresAt: at },
       contact: { hash: `mpr-c-${userId}`, expiresAt: at, userId: tg, phone: mobile },
-      baseUrl: 'https://merchant.example',
+      password: NEW, confirmPassword: NEW,
     });
-    expect(issued.ok, JSON.stringify(issued)).toBe(true);
-    const token = issued.url.split('/#/reset/')[1];
-
-    const reset = await request(app).post('/auth/password/reset')
-      .send({ token, password: NEW, confirmPassword: NEW });
-    expect(reset.status, JSON.stringify(reset.body)).toBe(200);
+    expect(reset.ok, JSON.stringify(reset)).toBe(true);
 
     // The new password is accepted: the merchant's Telegram approval is next.
     const withNew = await request(app).post('/merchant/auth/login').send({ mobile, password: NEW });

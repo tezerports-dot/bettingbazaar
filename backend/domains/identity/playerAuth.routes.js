@@ -1,7 +1,8 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 /**
  * playerAuth.routes.js — the player's FORM signup, the player sign-in door, the
- * player's own Telegram link, and the password reset.
+ * player's own Telegram link. (A forgotten password is reset in the Mini App:
+ * `domains/telegram/miniApp.routes.js`.)
  *
  * ── Step 3 (owner, 2026-10-07) ─────────────────────────────────────────────
  * "they must verify and share contact on signup ... now they can do login
@@ -21,7 +22,7 @@
  *
  * ── Rate limiting is per ROUTE, never on the router ────────────────────────
  * The sign-in legs carry their door's chain (`loginDoors.js`); signup carries
- * its own (`signupChain`); the reset carries the credential chain. The router
+ * its own (`signupChain`). The router
  * also serves `/invite/:code` and the session routes' neighbours, which check
  * no credential (§32 S27, S28).
  */
@@ -34,11 +35,10 @@ import {
   normalisePhone, isValidMobile, normaliseReferralCode,
 } from './signupFields.js';
 import { respondError, refusal } from '../../shared/httpError.js';
-import { redeemResetLink } from './passwordReset.service.js';
 import { authenticatePlayer } from './auth.middleware.js';
-import { authLimiter, loginPaceLimiter, signupLimiter } from '../../middleware/security.js';
+import { signupLimiter } from '../../middleware/security.js';
 import { requireCaptcha } from '../../middleware/captcha.js';
-import { createSubnetLimiter, globalSurgeBreaker } from '../../middleware/ipDefense.js';
+import { createSubnetLimiter } from '../../middleware/ipDefense.js';
 import { doorRoute } from './loginDoors.js';
 import { openChallenge } from './telegramChallenge.service.js';
 import { miniAppBot } from '../telegram/telegramClient.js';
@@ -47,38 +47,9 @@ import { telegramStatus, telegramRelink, telegramTwoFactor } from './accountTele
 const router = express.Router();
 
 /**
- * The chain a route that checks a PASSWORD carries, in this order.
- *
- * `loginPaceLimiter` FIRST, deliberately and for the reason the admin door
- * states: a paced request never reaches the credential check, so it is not a
- * failed attempt and must not consume the failure budget behind it — otherwise
- * a burst of throttled retries locks out the account it was protecting.
- *
- * `authLimiter` is the failure budget (four failures per thirty minutes, per
- * IP). It belongs HERE and not on the session router, which is where it used
- * to be: that router checks no credential, so every expired-token `GET /me`
- * was counted as a failed login attempt and four page loads locked a player out
- * of logging OUT (§32 S27). Now it guards a path that genuinely verifies a
- * password, which is the only kind of path it can do anything for.
- *
- * `requireCaptcha` is a pass-through until TURNSTILE_SECRET_KEY is set. Rate
- * limits count FAILURES per IP, so credential stuffing spread thin across
- * thousands of residential addresses never reaches any counter — three tries
- * per address and move on. A challenge prices the ATTEMPT instead.
- */
-const credentialChain = (action) => [
-  loginPaceLimiter, authLimiter,
-  // Per-IP catches the single abuser fastest; the subnet limiter catches an
-  // attacker rotating addresses within one block; the surge breaker (off until
-  // an admin sets a ceiling) catches rotation across subnets. Chained HERE, on
-  // the route that submits a password — never on the router prefix, which also
-  // carries the gate's poll. See createSubnetLimiter for what that cost.
-  createSubnetLimiter('auth'), globalSurgeBreaker('auth'),
-  requireCaptcha(action),
-];
-
-/**
- * And the chain SIGNUP carries, which is deliberately not that one.
+ * The chain SIGNUP carries, which is deliberately not the sign-in door's
+ * (`loginDoors.js`, the pace, the failure budget, the subnet limiter and the
+ * captcha, in that order).
  *
  * A registration submits no secret, so neither the pace nor the failure budget
  * has anything to bound — and both actively harm the person filling in the
@@ -238,43 +209,8 @@ router.get('/invite/:code', async (req, res) => {
 // the gate in Step 3: an unverified account is never signed in, so there is no
 // signed-in session for a gate to stand in front of.
 
-// ═══════════════════════════════════════════════════════════════════════════
-// POST /api/v1/auth/password/reset — set a password with a reset token
-// ═══════════════════════════════════════════════════════════════════════════
-/**
- * Unauthenticated by necessity: the whole point is that they cannot sign in.
- * The token comes from the Mini App (`POST /api/telegram/mini-app/password-reset`)
- * for an account of ANY panel; the account's own floor applies.
- *
- * The TOKEN is the credential, so this carries the credential chain — the
- * pace, the failure budget, the subnet limiter and the captcha. They stop this
- * endpoint being used to grind the password POLICY, and bound the damage if a
- * token ever leaks.
- *
- * It does NOT sign them in, and it evicts every session (passwordReset.service.js).
- */
-router.post('/password/reset', ...credentialChain('password-reset'), async (req, res) => {
-  try {
-    const result = await redeemResetLink({
-      token: req.body?.token,
-      password: req.body?.password,
-      confirmPassword: req.body?.confirmPassword,
-    });
-    if (result.ok) {
-      return res.json({
-        success: true,
-        message: 'Your password has been changed. Sign in with it now.',
-      });
-    }
-    // `invalid` covers unknown, already used and expired, with one sentence —
-    // a caller that can tell them apart can map which tokens were ever live.
-    const codes = { mismatch: 'PASSWORDS_DIFFER', weak: 'WEAK_PASSWORD' };
-    throw refusal(400, codes[result.reason] || 'RESET_TOKEN_INVALID', result.message
-      || 'This reset link is no longer valid. Open "Forgot password" in Telegram again for a new one.');
-  } catch (err) {
-    return respondError(res, err, 'auth/password-reset',
-      { message: 'Could not change your password. Please try again.' });
-  }
-});
+// `POST /api/v1/auth/password/reset` (redeem a reset link) was removed on
+// 2026-10-08: the password is set in the Mini App itself, for every panel
+// (`POST /api/telegram/mini-app/password-reset`, passwordReset.service.js).
 
 export default router;

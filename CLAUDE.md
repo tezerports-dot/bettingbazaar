@@ -147,14 +147,14 @@ exported constants. `SystemConfig.x` lives in `config_documents`, declared in
 | Upload categories | `services/cdn.service.js`: chat attachments, payment proofs, branding assets, Android APKs. Nothing else. |
 | The one Telegram bot | `miniAppBot()` (`domains/telegram/telegramClient.js`) over `telegram_bot` (one row, token encrypted), saved only by `PUT /api/admin/telegram/bot` after Telegram's `getMe`; its 30 s cache is the only cache. No channel, fleet, recovery bot, template or webhook. |
 | Whose mobile Telegram verified | `telegram_links` (`database/repositories/telegram.js`): one row per account, `phone` = the account's `mobile` (trigger), `audience` = `account_type`, one account per panel per Telegram account; staff and merchant rows carry `two_factor` (CHECK). Written only from a signed Mini App contact share. |
-| Panel origins for minted links | `panelOrigin()` (`backend/config/panelOrigins.js`). |
+| The player app's origin | `publicAppOrigin()` (`backend/config/publicAppOrigin.js`). No link is minted to the admin or merchant panel. |
 | A panel's name on screen | `PANEL_NAME` (`domains/identity/audiences.js`). |
 | A Telegram approval | `telegram_challenges` (VERIFY, LOGIN, TELEGRAM_LOGIN, RELINK, TWO_FACTOR_OFF), answered by the Mini App (`miniApp.routes.js`) and redeemed once by the polling door, guards in the UPDATE's WHERE; each `initData`/contact proof claimed once (`telegram_init_data_uses`). |
 | Whether an account may sign in | A `telegram_links` row (verified) at its own door; a session's `amr` says what was proved, and STAFF/MERCHANT need `tg` (`secondFactorMissing`). Staff `bootstrap` per §33. |
 | An account's population | `users.account_type` (`PLAYER`/`STAFF`/`MERCHANT`); mobile unique per type; `getUserByMobile` requires the type. Never move, promote or link an account across panels; staff flags only on STAFF rows. |
 | Whether a session is still valid | `sessions_valid_from` + `sessionIsLive()` (`domains/identity/auth.middleware.js`), on EVERY path that verifies a token (middleware, `/me`, `merchantAuth`, SSE, socket joins). |
 | A merchant's password | `users.password_hash` on its login row, never on `merchants`. |
-| Password reset | `domains/identity/passwordReset.service.js`: from a Mini App contact share matching the account's mobile (`startResetFromMiniApp`); grants choosing a password, never a session; hashed, single-use, expiring, in the URL fragment. |
+| Password reset | `domains/identity/passwordReset.service.js` (`resetFromMiniApp`), in the Mini App for every panel: the new password, checked against the account's floor BEFORE the proof is spent, then a contact share matching the account's mobile; set with every session evicted in the transaction that spends the proof (`telegram.resetPasswordByContact`). Never a session; no token, no link. |
 | Login doors | `LOGIN_DOOR` (`backend/routes.js`), one `loginHandler`; the read is scoped by `account_type` on both legs. |
 | Which panel a session may use | `belongsElsewhere`/`refuseWrongPanel`: `authenticatePlayer` on every player route; `authenticate` never admits MERCHANT; `403 WRONG_PANEL` (S51). |
 | Who gets a security alert | `listAlertRecipients` (linked, unblocked STAFF), messaged by the one bot from `services/alerting.service.js`. |
@@ -604,13 +604,15 @@ Ask each question of the change in front of you.
 
 ## 33. Signing up is a FORM. Telegram verifies the mobile; one bot, one Mini App.
 
-- **33.1 The form creates the account** (mobile, password, confirmation, captcha,
-  optional invite code; a referral link's code is pre-filled and locked). It
+- **33.1 The form creates the account** (mobile, password, confirmation,
+  optional invite code, and a captcha on the player's form; a referral link's
+  code is pre-filled and locked). It
   answers with a Telegram step, never a session: the Mini App's contact share,
   signed by Telegram, must be the account's own mobile (every account type).
   A referral counts only once the joiner is verified, in that transaction.
-- **33.2 Sign-in** is mobile, password and captcha at the account's own door.
-  An unverified account is answered `TELEGRAM_VERIFICATION_REQUIRED`; staff and
+- **33.2 Sign-in** is mobile and password at the account's own door, plus a
+  captcha at the player's only: staff and merchants "only need 2FA" (owner,
+  2026-10-08), the Telegram approval of every sign-in. An unverified account is answered `TELEGRAM_VERIFICATION_REQUIRED`; staff and
   merchants (always) and players (by their own switch) approve each sign-in in
   Telegram. "Login with Telegram" signs a player in on Telegram alone; staff and
   merchants still give their password with it. No authenticator app.
@@ -628,10 +630,11 @@ Ask each question of the change in front of you.
   one mobile. A query that can match two populations gets a predicate in the
   WHERE, plus a second refusal where takeover is possible. A constraint whose
   definition may change is dropped and re-added.
-- **33.6 Password reset:** a contact share in the Mini App matching the account's
-  mobile; setting it evicts every session in the same statement (checked on
-  both authenticated paths); the token is consumed before the password is
-  validated; the floor is the account type's. No admin reset.
+- **33.6 Password reset:** in the Mini App, for every panel: the new password,
+  then a contact share matching the account's mobile. The password is checked
+  against the account type's floor before the proof is spent; setting it
+  evicts every session in the same statement (checked on both authenticated
+  paths). No token, no link, no admin reset.
 - **33.7 Relink, never unlink:** an account moves to another Telegram account
   only by that account sharing a contact with the same mobile. A player turns
   approval off only with their Telegram's approval.

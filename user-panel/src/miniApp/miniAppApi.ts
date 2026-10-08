@@ -20,7 +20,6 @@ export interface WebApp {
   ready(): void;
   expand(): void;
   close(): void;
-  openLink(url: string): void;
   requestContact(cb: (shared: boolean, res?: { response?: string }) => void): void;
   requestWriteAccess?(cb: (allowed: boolean) => void): void;
 }
@@ -42,6 +41,14 @@ export function shareContact(app: WebApp): Promise<string | null> {
 }
 
 export type Panel = 'PLAYER' | 'STAFF' | 'MERCHANT';
+
+/**
+ * The shortest password each panel's account takes. A UI hint only (§11): it
+ * keeps Telegram's contact prompt from opening for a password the server will
+ * refuse. The server decides (`backend/domains/identity/passwordPolicy.js`,
+ * PLAYER_PASSWORD_MIN_LENGTH and STAFF_PASSWORD_MIN_LENGTH).
+ */
+export const PASSWORD_FLOOR: Record<Panel, number> = { PLAYER: 8, STAFF: 12, MERCHANT: 12 };
 export type StartKind = 'VERIFY' | 'LOGIN' | 'TELEGRAM_LOGIN' | 'RELINK' | 'TWO_FACTOR_OFF'
   | 'RESET' | 'SIGNUP' | 'NONE' | 'UNKNOWN';
 
@@ -85,9 +92,10 @@ export const miniApi = {
   signup: (initData: string, form: { contact: string; password: string; confirmPassword: string; referralCode?: string }) =>
     post<{ token: string }>('/api/telegram/mini-app/signup', { initData, ...form }),
 
-  passwordReset: (initData: string, contact: string, panel?: Panel) =>
-    post<{ resetUrl: string; message: string; panel: Panel }>(
-      '/api/telegram/mini-app/password-reset', { initData, contact, ...(panel ? { panel } : {}) }),
+  /** Forgot password: the new password is set here, for every panel; nobody is signed in. */
+  passwordReset: (initData: string, contact: string, form: { password: string; confirmPassword: string; panel?: Panel }) =>
+    post<{ changed: true; message: string; panel: Panel }>(
+      '/api/telegram/mini-app/password-reset', { initData, contact, ...form }),
 
   /** Login with Telegram, from inside Telegram: a player is signed in on the proof alone. */
   playerLogin: (initData: string) =>

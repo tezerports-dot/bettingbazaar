@@ -1087,8 +1087,8 @@ no bot templates, no webhooks.
   `expires_at`, who approved, the requesting address and device for the Mini
   App to show.
 - **Added** `telegram_init_data_uses` (hash PK, `expires_at`; swept).
-- **Kept** `password_resets` (hashed, single use, 15 min, the Telegram account
-  that asked).
+- **Dropped (2026-10-08)** `password_resets`: the reset is set in the Mini App
+  in the transaction that spends the proof, so there is no token to store.
 - **Dropped** `telegram_configs`, `telegram_bots`, `telegram_templates`,
   `telegram_identities` (replaced by `telegram_links`),
   `users.telegram_bot_id`, sequence `telegram_signin_rotation`, their indexes.
@@ -1161,11 +1161,14 @@ success, token, merchant }`; staff add `bootstrap` while it is true.
   kind, panel, approved, relinked }`. A `VERIFY` or `RELINK` needs `contact`;
   a `LOGIN`, `TELEGRAM_LOGIN` or `TWO_FACTOR_OFF` accepts the linked Telegram
   account, or a matching `contact` from a new one (which relinks).
-- `POST /api/telegram/mini-app/password-reset` `{ initData, contact }` (param
-  `reset-<PANEL>`) → `{ panel, resetToken, resetUrl, expiresAt }`; then
-  `POST /api/v1/auth/password/reset` `{ token, password, confirmPassword,
-  captchaToken }` (unchanged; any panel's account; evicts every session). The
-  share also verifies or relinks the account.
+- `POST /api/telegram/mini-app/password-reset` `{ initData, contact, password,
+  confirmPassword, panel? }` (param `reset-<PANEL>`, or `panel` when opened
+  plainly) → 200 `{ panel, changed: true, message }`. Any panel's account; the
+  password is checked against the account's floor (400 `PASSWORD_REQUIRED`,
+  `PASSWORDS_DIFFER`, `WEAK_PASSWORD`) before the proof is spent; setting it
+  evicts every session; nobody is signed in. The share also verifies or
+  relinks the account. `POST /api/v1/auth/password/reset` and the player app's
+  `#/reset/<token>` page were removed 2026-10-08.
 - The initData/contact refusals: 400 `INIT_DATA_INVALID`, `CONTACT_INVALID`,
   `CONTACT_REQUIRED`; 401 `INIT_DATA_STALE`; 403 `CONTACT_NOT_OWN`,
   `CONTACT_MISMATCH`, `TELEGRAM_NOT_LINKED`, `ACCOUNT_BLOCKED`,

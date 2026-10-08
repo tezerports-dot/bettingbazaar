@@ -79,6 +79,13 @@ const PW = `Cap7cha-Pr0be-${stamp}!`;
 const DOORS = [
   ['player signup',   '/api/v1/auth/register',     { mobile: `91${stamp}1`.slice(0, 10), password: PW, confirmPassword: PW }],
   ['player login',    '/api/v1/auth/login',        { mobile: `92${stamp}2`.slice(0, 10), password: PW }],
+];
+// ── Doors that must NOT challenge (owner, 2026-10-08) ─────────────────────
+// Staff and merchants "only need 2FA": every sign-in waits for their Telegram
+// approval, and a merchant application is unusable until Telegram verifies
+// its mobile. Their panels carry no captcha widget, so a challenge here would
+// refuse every staff and merchant sign-in the moment Turnstile is switched on.
+const UNCHALLENGED = [
   ['staff login',     '/api/admin/login',          { mobile: `93${stamp}3`.slice(0, 10), password: PW }],
   ['merchant login',  '/api/merchant/auth/login',  { mobile: `94${stamp}4`.slice(0, 10), password: PW }],
   ['merchant signup', '/api/merchant/auth/signup', { username: `cap${stamp}`, mobile: `95${stamp}5`.slice(0, 10), email: `c${stamp}@example.test`, password: PW, acceptedCurrencies: ['INR'] }],
@@ -113,7 +120,13 @@ for (const [label, path, body] of DOORS) {
      `${res.status} ${JSON.stringify(res.body).slice(0, 120)}`);
 }
 
+for (const [label, path, body] of UNCHALLENGED) {
+  const res = await probe(path, body);
+  ok(`${label} does NOT ask for a captcha (Telegram approval is its second factor)`,
+     res.body?.code !== 'CAPTCHA_REQUIRED', `${res.status} ${JSON.stringify(res.body).slice(0, 120)}`);
+}
+
 console.log(`\n${pass.join('\n')}`);
-if (fail.length) console.log(`\nDOORS THAT DO NOT CHALLENGE:\n${fail.join('\n')}`);
-console.log(`\n${pass.length} challenged, ${fail.length} did not\n`);
+if (fail.length) console.log(`\nDOORS THAT ANSWER WRONGLY:\n${fail.join('\n')}`);
+console.log(`\n${pass.length} as expected, ${fail.length} not\n`);
 process.exit(fail.length ? 1 : 0);

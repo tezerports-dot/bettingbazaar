@@ -97,7 +97,7 @@ In the backend's environment (`deploy/vps/.env`, section 6c):
 | Variable | Value | Why |
 |---|---|---|
 | `ANDROID_PACKAGE_ID` | `com.bettingbazaar.app` | Every uploaded APK is checked against it; `assetlinks.json` names it |
-| `ANDROID_SHA256_CERT_FINGERPRINTS` | the `SHA256:` value the script printed | Uploads signed with any other key are refused; reset links open the app |
+| `ANDROID_SHA256_CERT_FINGERPRINTS` | the `SHA256:` value the script printed | Uploads signed with any other key are refused; links to the site open the app |
 | `ALLOWED_ORIGINS` | your origins **plus `https://localhost`** | The app runs at `https://localhost` inside the phone. Without it, CORS refuses every request the app makes. Production refuses to boot with `ANDROID_PACKAGE_ID` set and this missing. |
 
 S3/CDN storage must be configured (production requires it anyway): uploaded APKs
@@ -228,15 +228,17 @@ you hand it to anyone:
 2. **It reaches the backend:** the app opens past the loading screen. A spinner
    that never ends means `ANDROID_API_URL` is wrong, or `https://localhost` is
    missing from `ALLOWED_ORIGINS`.
-3. **Sign up and log in:** the captcha passes (§3) and the Telegram
-   verification gate appears.
-4. **Links open Telegram:** the bot and channel buttons hand off to the
-   Telegram app. `upi://` payment links open a UPI app.
-5. **A reset link opens the app:** use "Forgot password" in the bot and tap the
-   link. It should open the app's reset screen. If a browser opens instead,
-   check `curl https://yourdomain.com/.well-known/assetlinks.json` and
-   `adb shell pm get-app-links com.bettingbazaar.app` (you want `verified`). The
-   reset still works in the browser either way.
+3. **Sign up and log in:** the captcha passes (§3), and signup hands you to
+   Telegram to share your contact. Coming back to the app, you can sign in.
+4. **Links open Telegram:** "Verify in Telegram", "Login with Telegram" and
+   "Forgot password" open the Telegram app's Mini App. `upi://` payment links
+   open a UPI app. A forgotten password is set inside Telegram; nothing opens
+   back in the app for it.
+5. **A link to the site opens the app:** send yourself
+   `https://yourdomain.com/#/wallet` and tap it. It should open the app on the
+   wallet. If a browser opens instead, check
+   `curl https://yourdomain.com/.well-known/assetlinks.json` and
+   `adb shell pm get-app-links com.bettingbazaar.app` (you want `verified`).
 6. **In-app update:**
    - Bump the version, build, upload, publish.
    - Reopen the installed app: **Update available** should appear.

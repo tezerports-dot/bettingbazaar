@@ -432,20 +432,6 @@ export class RealBackend implements Backend {
       `/v1/auth/invite/${encodeURIComponent(code)}`);
   }
 
-  /**
-   * Redeem a reset link. Same captcha posture as the other credential routes.
-   *
-   * NOT seated through `this.seat`: this call returns no token by design, and
-   * routing it through the seater would invite somebody to "fix" that by
-   * issuing one.
-   */
-  async resetPassword(token: string, password: string, confirmPassword: string) {
-    const captchaToken = (await getCaptchaToken()) ?? undefined;
-    return this.request<{ success: boolean; message?: string }>(
-      '/v1/auth/password/reset',
-      { method: 'POST', body: JSON.stringify({ token, password, confirmPassword, captchaToken }) });
-  }
-
   // -- SYSTEM CONFIG --------------------------------------------------------
   async getSystemConfig(): Promise<SystemConfigData> {
     // WS REPLACEMENT: server pushes 'system_config' on connect AND responds to

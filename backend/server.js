@@ -110,9 +110,6 @@ import { authLimiter, signupLimiter, securityMonitor } from './middleware/securi
 // Item 12 (2026-07-13): IP-rotation defense — per-subnet backstop + optional
 // global surge breaker on sensitive endpoints, on top of the per-IP limiters.
 import { createSubnetLimiter, startIpDefenseConfigRefresh } from './middleware/ipDefense.js';
-// Bot-mitigation challenge on credential endpoints (docs/PROJECT_STATUS.md §3.3).
-// Pass-through until TURNSTILE_SECRET_KEY is set, like every other integration.
-import { requireCaptcha } from './middleware/captcha.js';
 import GameEngine         from './domains/markets/gameEngine.js';
 import CycleGenerator     from './domains/markets/cycleGenerator.service.js';
 import SSEManager         from './domains/notification/sseManager.service.js';
@@ -612,13 +609,14 @@ app.use('/api',           userRoutes);
 //   · `signupLimiter` and a subnet limiter counting SUCCESSES ONLY, because
 //     what has to be bounded is how many ACCOUNTS one address ends up with. A
 //     mistyped form must never cost the next attempt (§32 S13).
-//   · The captcha, which is what stops a script filling the admin approval
+//   · No captcha (owner, 2026-10-08: merchants "only need 2FA"). An
+//     application is unusable until its mobile is verified by a Telegram
+//     contact share, which is what stops a script filling the admin approval
 //     queue with applications nobody submitted.
 app.use(
   '/api/merchant/auth/signup',
   signupLimiter,
   createSubnetLimiter('signup', { countOnly: 'successes' }),
-  requireCaptcha('merchant-signup'),
 );
 app.use('/api/merchant',  merchantRoutes);
 app.use('/api/merchant',  teamMerchantRoutes);

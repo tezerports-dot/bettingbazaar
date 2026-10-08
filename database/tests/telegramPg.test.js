@@ -10,7 +10,7 @@
  * back everything it touched, the claim of the proof included.
  *
  * Expiry is asserted on the READS: a sweep that is late must not make a
- * challenge or a reset usable.
+ * challenge usable.
  */
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { pgConfigured, pgQuery, applySchema, closePg } from '../client.js';
@@ -21,7 +21,7 @@ import {
   enablePlayerTwoFactor,
   createChallenge, getChallenge, redeemChallenge,
   answerChallenge, telegramSignIn, signUpVerifiedPlayer, resetPasswordByContact,
-  consumePasswordReset, sweepExpired,
+  sweepExpired,
 } from '../repositories/telegram.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
@@ -61,7 +61,7 @@ describePg('Telegram, Step 3 (PostgreSQL)', () => {
   afterAll(async () => { await closePg(); });
   beforeEach(async () => {
     await pgQuery(`TRUNCATE telegram_bot, telegram_links, telegram_challenges,
-                            telegram_init_data_uses, password_resets, referral_earnings, users
+                            telegram_init_data_uses, referral_earnings, users
                    RESTART IDENTITY CASCADE`);
   });
 
@@ -360,29 +360,76 @@ describePg('Telegram, Step 3 (PostgreSQL)', () => {
   });
 
   describe('password reset by contact', () => {
-    it('issues one live reset for the account of that mobile on that panel, verifying it on the way', async () => {
+    const hashOf = async (id) => (await pgQuery('SELECT password_hash FROM users WHERE user_id = $1', [id])).rows[0].password_hash;
+    const cutoffOf = async (id) => (await getUser(id)).sessionsValidFrom;
+    const reset = (over = {}) => {
+      const user = over.telegramUser || tgUser('1');
+      return resetPasswordByContact({
+        panel: 'PLAYER', telegramUser: user, initData: proof(), contact: contactOf(user, '9876543210'),
+        passwordHash: '$argon2id$new', validFrom: new Date(), ...over,
+      });
+    };
+
+    it('sets the password and the session cutoff of the account of that mobile on that panel, verifying it on the way', async () => {
       const id = await account();
-      const user = tgUser('1');
-      const first = await resetPasswordByContact({ panel: 'PLAYER', telegramUser: user, initData: proof(), contact: contactOf(user, '9876543210'), tokenHash: 't1' });
-      expect(first).toMatchObject({ ok: true, userId: id, verified: true });
-      await resetPasswordByContact({ panel: 'PLAYER', telegramUser: user, initData: proof(), contact: contactOf(user, '9876543210'), tokenHash: 't2' });
-      expect(await consumePasswordReset('t1')).toBeNull();
-      expect(await consumePasswordReset('t2')).toMatchObject({ userId: id, telegramUserId: '1' });
-      expect(await consumePasswordReset('t2')).toBeNull();
+      const validFrom = new Date();
+      expect(await reset({ validFrom })).toMatchObject({ ok: true, userId: id, verified: true });
+      expect(await hashOf(id)).toBe('$argon2id$new');
+      expect(new Date(await cutoffOf(id)).getTime()).toBe(validFrom.getTime());
+      expect(await getLinkByUserId(id)).toMatchObject({ telegramUserId: '1', phone: '9876543210' });
     });
 
-    it('a panel with no account on that mobile is refused', async () => {
+    it('acts once on one proof: the same initData cannot reset twice', async () => {
+      const id = await account();
+      const initData = proof();
+      expect((await reset({ initData })).ok).toBe(true);
+      const again = await reset({ initData, passwordHash: '$argon2id$second' });
+      expect(again.ok).toBe(false);
+      expect(await hashOf(id)).toBe('$argon2id$new');
+    });
+
+    it('a panel with no account on that mobile is refused, and nothing is spent or changed', async () => {
+      const id = await account();
+      expect((await reset({ panel: 'MERCHANT' })).code).toBe('NO_ACCOUNT');
+      expect(await hashOf(id)).toBe('$argon2id$fake');
+      expect(await count('telegram_init_data_uses')).toBe(0);
+      expect(await getLinkByUserId(id)).toBeNull();
+    });
+
+    it("a player's share never reaches the staff account on the same mobile (§33.5)", async () => {
+      const player = await account();
+      const staff = await account({ accountType: 'STAFF', isAdmin: true });
+      expect((await reset()).userId).toBe(player);
+      expect(await hashOf(player)).toBe('$argon2id$new');
+      expect(await hashOf(staff)).toBe('$argon2id$fake');
+      expect(await cutoffOf(staff)).toBeFalsy();
+    });
+
+    it("refuses a contact that is not the opener's own", async () => {
+      const id = await account();
+      const r = await reset({ contact: contactOf(tgUser('2'), '9876543210') });
+      expect(r.code).toBe('CONTACT_NOT_OWN');
+      expect(await hashOf(id)).toBe('$argon2id$fake');
+    });
+
+    it('is refused without a hash or a cutoff: a reset that evicted nobody would be a gesture', async () => {
       await account();
-      const user = tgUser('1');
-      expect((await resetPasswordByContact({ panel: 'MERCHANT', telegramUser: user, initData: proof(), contact: contactOf(user, '9876543210'), tokenHash: 't3' })).code)
-        .toBe('NO_ACCOUNT');
+      await expect(reset({ passwordHash: '' })).rejects.toThrow(/passwordHash/);
+      await expect(reset({ validFrom: null })).rejects.toThrow(/validFrom/);
     });
+  });
 
-    it('an expired reset is refused before any sweep', async () => {
+  describe('the sweep', () => {
+    it('reclaims expired proofs and day-old challenges, and leaves live ones', async () => {
+      await pgQuery(`INSERT INTO telegram_init_data_uses (hash, expires_at) VALUES ('old', now() - interval '1 second'), ('live', now() + interval '5 minutes')`);
       const id = await account();
-      await pgQuery(`INSERT INTO password_resets (token_hash, user_id, telegram_user_id, expires_at) VALUES ('old', $1, '1', now() - interval '1 second')`, [id]);
-      expect(await consumePasswordReset('old')).toBeNull();
-      expect((await sweepExpired()).passwordResets).toBe(1);
+      const old = await challenge({ userId: id });
+      await pgQuery(`UPDATE telegram_challenges SET expires_at = now() - interval '25 hours' WHERE challenge_id = $1`, [old.challengeId]);
+      const live = await challenge({ userId: id });
+      const swept = await sweepExpired();
+      expect(swept).toEqual({ challenges: 1, initDataUses: 1 });
+      expect(await count('telegram_init_data_uses')).toBe(1);
+      expect(await getChallenge(live.challengeId)).toBeTruthy();
     });
   });
 
