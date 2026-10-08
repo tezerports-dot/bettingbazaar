@@ -640,6 +640,40 @@ describePg('the domains written from scratch', () => {
       expect(Object.keys(publicList[0])).not.toContain('hasApiKey');
     });
 
+    // The home cards show a section only when it has a game (owner,
+    // 2026-10-08). A provider switched on with nothing added must count 0, and
+    // each section counts what its own page would list.
+    it('counts, per enabled provider, the games its section page would show', async () => {
+      const cat = (slug) => games.upsertCategory({ slug, name: slug }, { createOnly: true });
+      await cat('crash'); await cat('bb-originals'); await cat(`slots-${ID}`);
+      const prov = (key, category) => games.upsertProvider({
+        providerKey: key, name: key, category, apiUrl: 'https://api.test', enabled: true,
+      });
+      await prov(`gc-${ID}`, 'casino'); await prov(`gk-${ID}`, 'crash'); await prov(`gs-${ID}`, 'sports');
+      await prov(`ge-${ID}`, 'casino');
+      const game = (slug, providerKey, categorySlug, status = 'ACTIVE') => games.upsertGame({
+        slug: `${slug}-${ID}`, name: slug, providerKey, categorySlug, status,
+        launchStrategy: 'PROVIDER', externalGameId: slug,
+      });
+      await game('slot', `gc-${ID}`, `slots-${ID}`);
+      await game('slot-fix', `gc-${ID}`, `slots-${ID}`, 'MAINTENANCE');
+      await game('slot-off', `gc-${ID}`, `slots-${ID}`, 'INACTIVE');
+      await game('casino-crash', `gc-${ID}`, 'crash'); // Casino does not list crash
+      await game('crash-other', `gk-${ID}`, `slots-${ID}`); // Crash lists only crash
+      await game('book', `gs-${ID}`, null);
+
+      const count = async (key) => (await games.listPublicProviders())
+        .find((p) => p.key === key)?.gameCount;
+      expect(await count(`gc-${ID}`)).toBe(2);
+      expect(await count(`gk-${ID}`)).toBe(0);
+      expect(await count(`gs-${ID}`)).toBe(1);
+      expect(await count(`ge-${ID}`)).toBe(0);
+
+      // Opposite: the crash provider's first crash game makes it count.
+      await game('plane', `gk-${ID}`, 'crash');
+      expect(await count(`gk-${ID}`)).toBe(1);
+    });
+
     it('lets the key decide, so two creates cannot both win', async () => {
       const [a, b] = await Promise.all([
         games.createProvider({ providerKey: `pc-${ID}`, name: 'First' }),

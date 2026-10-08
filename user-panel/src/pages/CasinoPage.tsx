@@ -21,6 +21,7 @@ interface RegistryGame {
 }
 interface RegistryCategory { slug: string; name: string; icon: string; order: number; gameCount: number; }
 
+// Mirror of CASINO_EXCLUDED_CATEGORIES (database/repositories/games.js, listPublicProviders), §5.
 const NON_CASINO = new Set(['crash', 'bb-originals']);
 const CATEGORY_EMOJI: Record<string, string> = { slots: '🎰', 'game-shows': '🎪', 'indian-games': '🃏', 'table-games': '🎲' };
 

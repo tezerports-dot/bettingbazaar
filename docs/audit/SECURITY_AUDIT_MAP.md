@@ -3620,7 +3620,7 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Panel | .ts/.tsx files | `dangerouslySetInnerHTML` | `.innerHTML =` |
 |---|---|---|---|
-| `user-panel` | 95 | 0 | 0 |
+| `user-panel` | 96 | 0 | 0 |
 | `admin-panel` | 110 | 0 | 0 |
 | `merchant-panel` | 50 | 0 | 0 |
 
