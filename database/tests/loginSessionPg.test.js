@@ -17,6 +17,9 @@ import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { pgConfigured, pgQuery, applySchema, closePg } from '../client.js';
 import { createUser, getUserByMobile, getUser } from '../repositories/users.js';
 import { applyDeltaPaise } from '../repositories/wallets.core.js';
+// A fixture's tokens come from somewhere too: the platform's own holding,
+// posted with the credit (see `_funding.js`).
+import { TEST_FUNDING } from './_funding.js';
 
 // PASETO refuses to load without a key, and this suite imports the login path.
 process.env.JWT_SECRET ||= 'test-only-secret-long-enough-for-paseto-key-derivation';
@@ -33,7 +36,7 @@ function recorder() {
 }
 
 const fund = (field, paise, key) =>
-  applyDeltaPaise({ userId: 'u1', field, deltaPaise: paise, txId: key, type: 'CREDIT', reason: 'test' });
+  applyDeltaPaise({ userId: 'u1', field, deltaPaise: paise, txId: key, type: 'CREDIT', reason: 'test', counterparty: TEST_FUNDING });
 
 describePg('the session a login hands back', () => {
   let issueSession;
@@ -44,7 +47,7 @@ describePg('the session a login hands back', () => {
   });
   afterAll(async () => { await closePg(); });
   beforeEach(async () => {
-    await pgQuery('TRUNCATE users, wallets, wallet_ledger RESTART IDENTITY CASCADE');
+    await pgQuery('TRUNCATE users, wallets, wallet_ledger, treasury_entries, treasury_accounts RESTART IDENTITY CASCADE');
     await createUser({ userId: 'u1', username: 'Asha', mobile: '9990001111' });
   });
 

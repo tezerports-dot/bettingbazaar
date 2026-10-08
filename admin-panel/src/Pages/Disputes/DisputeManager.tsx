@@ -13,6 +13,11 @@ import api from '../../services/api';
 import toast from 'react-hot-toast';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
+/** One dispute as the server's one mapper sends it (`toDisputeView`,
+ *  backend/domains/disputes/disputeResolution.admin.routes.js), for the cards
+ *  and for the dialog alike. The parties are `{ userId, username }` and
+ *  `{ merchantId, name }`: this type said `merchantId.username`, which is never
+ *  sent, so the card's "Merchant:" line was always blank (§23). */
 interface Dispute {
   _id: string;
   orderId: string;
@@ -21,13 +26,14 @@ interface Dispute {
   fiatAmount: number;
   status: string;
   createdAt: string;
-  userId?: { username: string; mobile: string };
-  merchantId?: { username: string; mobile: string };
+  userId?: { userId: string; username: string; mobile?: string } | null;
+  merchantId?: { merchantId: string; name: string; mobile?: string } | null;
   disputeReason?: string;
-  disputeResolution?: string;
-  disputeDecision?: string;
-  disputeResolvedAt?: string;
-  disputeResolvedBy?: { username: string };
+  disputeResolution?: string | null;
+  disputeDecision?: string | null;
+  disputeEscalated?: boolean;
+  resolvedAt?: string | null;
+  resolvedBy?: string | null;
   utrNumber?: string;
   proofScreenshot?: string;
   /** Who each decision suspends, from the server's one rule
@@ -86,19 +92,53 @@ export const DisputeManager: React.FC = () => {
   const [resolution, setResolution]       = useState('');
   const [isSaving, setIsSaving]           = useState(false);
 
-  const [filterStatus, setFilterStatus]   = useState('all');
+  // ── The filters are the SERVER's (`DISPUTE_FILTERS`, orders.record.js) ────
+  // This screen kept its own four ("all", "DISPUTED", "RESOLVED", "ESCALATED"),
+  // which the queue read as order states: it opened on state 'all' and listed
+  // nothing, and two of the four asked for states no order can be in. Now it
+  // asks with no filter on arrival, shows the one the server applied, and
+  // offers exactly the list the server sends back (§5, §32 S25).
+  const [filter, setFilter]               = useState<string | null>(null);
+  const [applied, setApplied]             = useState<string>('');
+  const [filters, setFilters]             = useState<{ key: string; label: string }[]>([]);
+  // The server pages the queue; the screen shows where it is in it rather than
+  // silently showing the first page as if it were all of it (§32 S47).
+  const [page, setPage]                   = useState(1);
+  const [pages, setPages]                 = useState(1);
+  const [total, setTotal]                 = useState(0);
+  const [perPage, setPerPage]             = useState(0);
 
   // ── Load disputes list ────────────────────────────────────────────────────
   const load = async () => {
     setIsLoading(true);
     try {
-      const res = await api.get<any>('/api/admin/dispute-orders', { params: { status: filterStatus } });
-      setDisputes(res.data?.disputes || []);
-    } catch { toast.error('Failed to load disputes'); }
+      const res = await api.get<any>('/api/admin/dispute-orders', {
+        params: { page, ...(filter ? { filter } : {}) },
+      });
+      const body = res.data ?? {};
+      setDisputes(body.disputes || []);
+      setFilters(Array.isArray(body.filters) ? body.filters : []);
+      setApplied(typeof body.filter === 'string' ? body.filter : '');
+      setTotal(Number(body.total) || 0);
+      setPages(Math.max(Number(body.pages) || 1, 1));
+      setPerPage(Number(body.limit) || 0);
+      // A page that emptied under us (the last dispute on it was decided):
+      // step back to the last page that has any.
+      if ((body.disputes || []).length === 0 && Number(body.total) > 0 && page > Number(body.pages)) {
+        setPage(Math.max(Number(body.pages) || 1, 1));
+      }
+    } catch (e: any) { toast.error(e?.response?.data?.message || 'Failed to load disputes'); }
     finally { setIsLoading(false); }
   };
 
-  useEffect(() => { load(); }, [filterStatus]);
+  useEffect(() => { load(); }, [filter, page]);
+
+  // The select shows the choice at once; the answer then confirms what the
+  // server applied.
+  const chooseFilter = (key: string) => { setFilter(key); setApplied(key); setPage(1); };
+  const appliedLabel = filters.find((f) => f.key === applied)?.label;
+  const firstShown = total === 0 ? 0 : (page - 1) * perPage + 1;
+  const lastShown = Math.min(total, (page - 1) * perPage + disputes.length);
 
   
   const loadChat = async (d: Dispute) => {
@@ -231,12 +271,11 @@ export const DisputeManager: React.FC = () => {
           <p className="text-gray-400 text-sm mt-1">Resolve payment order disputes — read full chat evidence before deciding</p>
         </div>
         <div className="flex items-center gap-3">
-          <select aria-label="Filter disputes by status" value={filterStatus} onChange={e => setFilterStatus(e.target.value)} className="input text-sm">
-            <option value="all">All Disputes</option>
-            <option value="DISPUTED">Open</option>
-            <option value="RESOLVED">Resolved</option>
-            <option value="ESCALATED">Escalated</option>
-          </select>
+          {filters.length > 0 && (
+            <select aria-label="Filter disputes by status" value={applied} onChange={e => chooseFilter(e.target.value)} className="input text-sm">
+              {filters.map((f) => <option key={f.key} value={f.key}>{f.label}</option>)}
+            </select>
+          )}
           <button onClick={load} title="Reload the dispute queue" aria-label="Reload the dispute queue"
             className="p-2 hover:bg-dark-700 rounded-lg"><RefreshCw size={16} /></button>
         </div>
@@ -248,10 +287,14 @@ export const DisputeManager: React.FC = () => {
       ) : disputes.length === 0 ? (
         <div className="text-center py-16 text-gray-500">
           <CheckCircle size={48} className="mx-auto mb-4 opacity-30" />
-          <p className="text-lg">No disputes found</p>
+          <p className="text-lg">{appliedLabel ? `No disputes under "${appliedLabel}"` : 'No disputes found'}</p>
         </div>
       ) : (
         <div className="space-y-3">
+          <p role="status" className="text-sm text-gray-400">
+            Showing {firstShown}–{lastShown} of {total} {total === 1 ? 'dispute' : 'disputes'}
+            {appliedLabel ? ` · ${appliedLabel}` : ''}{pages > 1 ? ` · page ${page} of ${pages}` : ''}
+          </p>
           {disputes.map(d => (
             <div key={d._id} className="bg-dark-800 rounded-xl p-4 border border-dark-700">
               <div className="flex items-start justify-between">
@@ -264,7 +307,7 @@ export const DisputeManager: React.FC = () => {
                     </span>
                   </div>
                   <p className="text-sm"><span className="text-gray-400">User: </span>{d.userId?.username} ({d.userId?.mobile})</p>
-                  <p className="text-sm"><span className="text-gray-400">Merchant: </span>{d.merchantId?.username}</p>
+                  <p className="text-sm"><span className="text-gray-400">Merchant: </span>{d.merchantId?.name}</p>
                   {d.disputeReason && <p className="text-xs text-yellow-400">Reason: {d.disputeReason}</p>}
                   <p className="text-xs text-gray-500">{fmtDate(d.createdAt)}</p>
                 </div>
@@ -283,13 +326,37 @@ export const DisputeManager: React.FC = () => {
                       </button>
                     </div>
                   )}
-                  {d.status === 'RESOLVED' && d.disputeDecision && (
-                    <p className="text-xs text-green-400">Decision: {d.disputeDecision.replace(/_/g, ' ')}</p>
+                  {/* The decision, whenever there is one. This asked for
+                      status 'RESOLVED', which no order is ever in (a decided
+                      dispute is COMPLETED or CANCELLED), so no decision was
+                      ever shown. */}
+                  {d.disputeDecision && (
+                    <p className="text-xs text-green-400">
+                      Decision: {d.disputeDecision.replace(/_/g, ' ')}
+                      {d.resolvedAt ? ` · ${fmtDate(d.resolvedAt)}` : ''}
+                    </p>
+                  )}
+                  {d.status === 'DISPUTED' && d.disputeEscalated && (
+                    <p className="text-xs text-amber-300">Escalated</p>
                   )}
                 </div>
               </div>
             </div>
           ))}
+          {pages > 1 && (
+            <div className="flex items-center justify-end gap-2">
+              <button onClick={() => setPage((p) => Math.max(p - 1, 1))} disabled={page <= 1}
+                aria-label="Previous page of disputes"
+                className="px-3 py-1.5 bg-dark-700 text-gray-300 text-xs font-semibold rounded-lg disabled:opacity-40">
+                Previous
+              </button>
+              <button onClick={() => setPage((p) => Math.min(p + 1, pages))} disabled={page >= pages}
+                aria-label="Next page of disputes"
+                className="px-3 py-1.5 bg-dark-700 text-gray-300 text-xs font-semibold rounded-lg disabled:opacity-40">
+                Next
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -303,7 +370,7 @@ export const DisputeManager: React.FC = () => {
                 <div className="flex justify-between"><span className="text-gray-400">Amount</span><span className="font-bold">{formatters.currency(selected.fiatAmount || selected.amount)}</span></div>
                 <div className="flex justify-between"><span className="text-gray-400">Type</span><span>{selected.type}</span></div>
                 <div className="flex justify-between"><span className="text-gray-400">User</span><span>{selected.userId?.username} ({selected.userId?.mobile})</span></div>
-                <div className="flex justify-between"><span className="text-gray-400">Merchant</span><span>{selected.merchantId?.username}</span></div>
+                <div className="flex justify-between"><span className="text-gray-400">Merchant</span><span>{selected.merchantId?.name}</span></div>
               </div>
               {selected.disputeReason && (
                 <div className="mt-1 text-yellow-400 text-xs">⚠ Reason: {selected.disputeReason}</div>

@@ -84,9 +84,13 @@ export async function seedPlayer({ balancePaise = 0, verified = true } = {}) {
   // member of, and the gate admits (§31's owner decision, 2026-09-17).
   if (verified) await verifyActor({ userId, mobile, audience: 'PLAYER' });
 
+  // A seeded balance comes OUT OF THE PLATFORM'S OWN HOLDING, posted with the
+  // credit: since the conservation guards (owner, 2026-10-07) a wallet that
+  // gains tokens from nowhere does not commit, so a seed that invented them
+  // would stage a state production cannot reach (§32 S16).
   if (balancePaise > 0) {
-    const { creditDeposit } = await import('../../domains/wallet/walletAuthority.service.js');
-    await creditDeposit(userId, balancePaise / 100, `${userId}_seed`);
+    const { fundWallet } = await import('#db/tests/_funding.js');
+    await fundWallet(userId, balancePaise, `${userId}_seed`);
   }
   return { ...user, userId, mobile };
 }
@@ -127,7 +131,7 @@ export async function seedMerchant({
     name, username: name, mobile, email: `${name}@example.test`,
     currency, status: 'PENDING',
     bankDetails: currency === 'INR'
-      ? { accountNo, ifsc: 'HDFC0000001', accountHolderName: name, upiId: `${name}@upi`, bankName: 'HDFC Bank' }
+      ? { accountNo, ifsc: 'HDFC0000001', accountHolderName: name, bankName: 'HDFC Bank' }
       : null,
     usdtAddressTrc20, usdtAddressBep20,
   });

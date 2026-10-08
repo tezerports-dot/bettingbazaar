@@ -422,6 +422,56 @@ describePg('accounts (PostgreSQL)', () => {
       expect((await setRoles('u-4', [])).isAdmin).toBe(false);
     });
   });
+
+  // ── The payout account is a bank account, and nothing else (§2, §24) ──────
+  // Every sell is a bank transfer to the player's account and no UPI handle is
+  // ever a destination or shown. The Profile screen still had a UPI ID field
+  // (typed, never sent) and the sell copied `bankDetails.upiId` onto every
+  // order a member reads. The row now holds the four fields a transfer needs.
+  describe('the payout account', () => {
+    const ACCOUNT = {
+      accountHolderName: 'Asha Rao', accountNumber: '000111222333',
+      ifscCode: 'HDFC0000001', bankName: 'HDFC Bank',
+    };
+    const CONSTRAINT = /users_bank_details_bank_account_only/;
+
+    it('keeps the four fields a bank transfer needs (the opposite case)', async () => {
+      await createUser(mk());
+      const u = await updateUser('u-1', { bankDetails: ACCOUNT });
+      expect(u.bankDetails).toEqual(ACCOUNT);
+    });
+
+    it('refuses a UPI handle, or any other field, beside the account', async () => {
+      await createUser(mk());
+      await expect(updateUser('u-1', { bankDetails: { ...ACCOUNT, upiId: 'asha@okaxis' } }))
+        .rejects.toThrow(CONSTRAINT);
+      // Whatever it is called: the row admits the four names and no fifth.
+      await expect(pgQuery(
+        `UPDATE users SET bank_details = $2 WHERE user_id = $1`,
+        ['u-1', JSON.stringify({ ...ACCOUNT, vpa: '9990000001@ybl' })],
+      )).rejects.toThrow(CONSTRAINT);
+      expect((await getUser('u-1')).bankDetails, 'a refused write still landed').toBeNull();
+    });
+
+    it('converges a database that still holds one (§32 S31)', async () => {
+      // A row written before the rule: the account, a handle, a stray key, and
+      // a row holding a JSON null rather than no value at all.
+      await createUser(mk());
+      await createUser(mk({ userId: 'u-2', username: 'bob', mobile: '9990000002' }));
+      await pgQuery('ALTER TABLE users DROP CONSTRAINT IF EXISTS users_bank_details_bank_account_only');
+      await pgQuery(`UPDATE users SET bank_details = $2 WHERE user_id = $1`,
+        ['u-1', JSON.stringify({ ...ACCOUNT, upiId: 'asha@okaxis', accountHolder: 'Asha' })]);
+      await pgQuery(`UPDATE users SET bank_details = 'null'::jsonb WHERE user_id = 'u-2'`);
+
+      await applySchema();
+
+      expect((await getUser('u-1')).bankDetails).toEqual(ACCOUNT);
+      expect((await getUser('u-2')).bankDetails).toBeNull();
+      const { rows } = await pgQuery(
+        `SELECT 1 FROM pg_constraint WHERE conname = 'users_bank_details_bank_account_only' AND convalidated`);
+      expect(rows, 'the constraint is not back, validated').toHaveLength(1);
+    });
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

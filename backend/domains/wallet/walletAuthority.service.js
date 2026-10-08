@@ -20,6 +20,8 @@
  */
 
 import { sseBalancePush } from '../notification/realtimeEmitters.js';
+import { db } from '#db';
+import { paiseToRupees } from '../../shared/money.js';
 import * as pg from '#db/repositories/wallets.js';
 import { applyAdjustment, listAdjustments, ADJUSTABLE_FIELDS } from '#db/repositories/balanceAdjustments.js';
 
@@ -118,15 +120,6 @@ export async function lockWithdrawal(userId, amount, withdrawalId) {
 }
 
 /**
- * Approve withdrawal — burn lockedBalance (money leaves platform).
- * Writes WalletLedger entry. Idempotent.
- */
-export async function releaseWithdrawal(userId, amount, withdrawalId) {
-  const txId = `wd_release_${withdrawalId}`;
-  return pg.releaseWithdrawal(userId, amount, withdrawalId);
-}
-
-/**
  * Reject withdrawal — return the locked amount to winningsBalance.
  * Writes WalletLedger entry. Idempotent.
  *
@@ -139,44 +132,48 @@ export async function releaseWithdrawal(userId, amount, withdrawalId) {
  * the old delegation so historical idempotency continuity holds.
  */
 export async function refundWithdrawal(userId, amount, withdrawalId) {
-  const txId = `refund_${withdrawalId}`;
-  return pg.refundWithdrawal(userId, amount, withdrawalId);
+  return pushBalances(userId, await pg.refundWithdrawal(userId, amount, withdrawalId));
+}
+
+// ── A player's half of a team pool movement ─────────────────────────────────
+// A completed buy, a settled sell and a settled sell refunded move the team's
+// pool, the player's wallet and the treasury between them in ONE transaction,
+// and the database refuses any of the three alone (owner, 2026-10-07). The
+// transaction is `teamPools.js`'s, which takes the order and pool locks first;
+// the wallet half inside it is `wallets.js`'s `…Within`. These are the doors.
+
+/**
+ * A completed BUY: the team's held tokens to the player, split by the order's
+ * own allocation. `requireState` is asked under the order's lock.
+ * @returns {Promise<{ok:boolean, reason?:string, alreadyTaken?:boolean}>}
+ */
+export async function completeBuy(orderId, { actor = 'deposit-credit', requireState } = {}) {
+  const done = await db.teamPools.spendForBuy(orderId, { actor, requireState });
+  if (done.ok && done.balances) pushBalances(done.userId, { balances: rupeeBalances(done.balances) });
+  return done;
 }
 
 /**
- * Give a withdrawal's stake back to the player, from wherever it is — still
- * locked or already consumed — exactly once. The ledger decides the branch,
- * under the wallet lock; see the repository function. Every admin refund of a
- * withdrawal goes through this one (withdrawalHold.endWithdrawal).
+ * A SELL settles: the player's locked stake to the team's pool. No push — the
+ * locked stake is not on the player's balance widget.
  */
-export async function returnWithdrawalStake(userId, amount, withdrawalId) {
-  return pushBalances(userId, await pg.returnWithdrawalStake(userId, amount, withdrawalId));
+export async function settleSell(orderId, { actor = 'system', requireState = null } = {}) {
+  return db.teamPools.creditSellToPool(orderId, { actor, requireState });
 }
 
 /**
- * releaseLockedStake — settle-time release of a bet's locked stake (F-2,
- * 2026-07-10). THE sanctioned writer for lockedBalance/lockedDepositAmount/
- * lockedWinningsAmount at settlement (§7) — replaces the raw `$inc`s that
- * lived in domains/settlement/settlementService.js.
- *
- * Concurrency contract: settlement passes can legitimately overlap (engine
- * tick + payout recovery task, or two nodes — the cycle lock re-admits
- * PROCESSING on purpose). Safety comes from the ledger's UNIQUE txId index
- * acting as the atomic gate: the ledger insert and the balance `$inc`
- * happen inside one transaction, so a concurrent duplicate aborts the
- * whole transaction (11000 / transient write-conflict retry → 11000) and
- * the `$inc` never lands twice. Callers pass a deterministic txId
- * (`unlock_win_<anchorBetId>` for wins, `unlock_lost_<betId>` for losses —
- * the loss format predates F-2, preserving idempotency continuity with
- * historical ledger entries).
+ * A settled SELL refunded: the tokens back out of the pool (or the platform
+ * covers them) and the stake back to the player as winnings.
  */
-export async function releaseLockedStake(userId, { amount, fromDeposit = 0, fromWinnings = 0, txId, reason }) {
-  if (!txId) throw new Error('releaseLockedStake requires a deterministic txId');
-  if (!(amount > 0)) throw new Error(`releaseLockedStake: invalid amount ${amount}`);
-  return pg.releaseLockedStake(userId, { amount, fromDeposit, fromWinnings, txId, reason });
+export async function refundSettledSell(orderId, { actor = 'admin', reason = null, coverShortfall = false } = {}) {
+  const done = await db.teamPools.reverseSellFromPool(orderId, { actor, reason, coverShortfall });
+  if (done.ok && done.balances) pushBalances(done.userId, { balances: rupeeBalances(done.balances) });
+  return done;
 }
 
-
+function rupeeBalances(paise) {
+  return Object.fromEntries(Object.entries(paise).map(([f, v]) => [f, paiseToRupees(v)]));
+}
 
 /**
  * Admin manual balance adjustment — money and its audit row, one transaction.
@@ -214,21 +211,6 @@ export async function getBalanceAdjustments(filter) {
 }
 
 
-export async function creditDeposit(userId, amount, orderId) {
-  return pushBalances(userId, await pg.creditDeposit(userId, amount, orderId));
-}
-
-/**
- * Credit a deposit's reserve-allocation share to reserveBalance — the
- * sanctioned single writer for reserveBalance (§7). Idempotent, ledgered.
- */
-export async function creditReserve(userId, amount, orderId) {
-  // No SSE push here — see pushBalances: the reserve is not the player's money
-  // to watch move, and it is not shown on the balance widget.
-  return pg.creditReserve(userId, amount, orderId);
-}
-
-
 /**
  * Lock winnings for a withdrawal. `within` is the order's prepared INSERT
  * (`db.orders.prepareOrderRecord`): it commits in the SAME transaction as the
@@ -236,15 +218,6 @@ export async function creditReserve(userId, amount, orderId) {
  */
 export async function debitWinningsForWithdrawal(userId, amount, orderId, { within = null } = {}) {
   return pushBalances(userId, await pg.debitWinningsForWithdrawal(userId, amount, orderId, { within }));
-}
-
-/**
- * Refund balance for a cancelled/rejected order.
- * Accepts field param: 'depositBalance' or 'winningsBalance'.
- * Unlike refundWithdrawal, this does not hardcode the balance field.
- */
-export async function refundOrder(userId, amount, orderId, field) {
-  return pushBalances(userId, await pg.refundOrder(userId, amount, orderId, field));
 }
 
 /**

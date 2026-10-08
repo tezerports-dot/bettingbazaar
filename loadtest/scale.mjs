@@ -33,7 +33,8 @@
  *   node loadtest/scale.mjs --http --base http://127.0.0.1:8096
  */
 import { performance } from 'node:perf_hooks';
-import { pgQuery, closePg } from '#db/client.js';
+import { pgQuery, withTransaction, closePg } from '#db/client.js';
+import { ACCOUNTS, postMovement } from '#db/repositories/treasury.js';
 
 const arg = (n, d) => {
   const i = process.argv.indexOf(`--${n}`);
@@ -91,9 +92,13 @@ async function seed() {
   // guard at the top of this file: the harness refuses to run against any
   // database but `bb_load`, which exists to be filled and emptied. Never run
   // this against a database holding anything anybody needs.
+  // The treasury goes with the wallets. Tokens in a wallet are matched by a
+  // USER_FLOAT balance (owner, 2026-10-07), so emptying one side and not the
+  // other would leave the books open before the first row is seeded.
   await step('truncate the load tables', `
     TRUNCATE TABLE bets, accounting_events, order_transitions, order_states,
-                   wallets, merchants, cycles, users CASCADE`);
+                   wallets, treasury_entries, treasury_accounts,
+                   merchants, cycles, users CASCADE`);
 
   // ── PLAYERS ───────────────────────────────────────────────────────────────
   // A mobile is unique PER account_type (§2), so a ten-digit number derived
@@ -121,18 +126,53 @@ async function seed() {
     UPDATE users SET is_blocked = true, block_reason = 'load harness', blocked_at = now()
     WHERE user_id LIKE 'load-u-%' AND status = 'BLOCKED'`);
 
-  await step('wallets', `
-    INSERT INTO wallets (user_id, deposit_paise, winnings_paise, token_paise, reserve_paise, locked_paise)
-    SELECT user_id, (random() * 5000000)::bigint, (random() * 2000000)::bigint,
-           (random() * 5000000)::bigint, (random() * 500000)::bigint, 0
-    FROM users WHERE user_id LIKE 'load-u-%'`);
+  // ── The seeded balances come from SOMEWHERE ───────────────────────────────
+  // A wallet that gains tokens with nothing moving the other way does not
+  // commit: the deferred conservation check compares every wallet delta in the
+  // transaction against USER_FLOAT's (owner, 2026-10-07). So the insert and the
+  // movement that funds it are ONE transaction — the platform's own holding
+  // paying out, exactly as a referral reward or an admin credit does — and the
+  // load database is a state production could actually be in (§32 S16).
+  {
+    const t0 = performance.now();
+    const funded = await withTransaction(async (client) => {
+      const { rowCount } = await client.query(`
+        INSERT INTO wallets (user_id, deposit_paise, winnings_paise, token_paise, reserve_paise, locked_paise)
+        SELECT user_id, (random() * 5000000)::bigint, (random() * 2000000)::bigint,
+               (random() * 5000000)::bigint, (random() * 500000)::bigint, 0
+        FROM users WHERE user_id LIKE 'load-u-%'`);
+      // Read the total back rather than predicting it: the amounts are random,
+      // and `bb_wallet_value_paise` is the same definition the guard uses.
+      const { rows } = await client.query(
+        `SELECT COALESCE(SUM(bb_wallet_value_paise(w)), 0)::bigint AS paise FROM wallets w`);
+      const paise = Number(rows[0].paise);
+      const moved = await postMovement({
+        client,
+        movementId: 'load_seed_wallets',
+        operation: 'LOAD_SEED_FUNDING',
+        legs: { [ACCOUNTS.TOKEN_SUPPLY]: 0 - paise, [ACCOUNTS.USER_FLOAT]: paise },
+        actor: 'loadtest/scale.mjs',
+        reason: 'Load harness wallet seed',
+      });
+      // A refusal here is the ceiling: the seeded balances outgrow the
+      // configured supply. Say which, rather than failing at COMMIT with the
+      // constraint name and no numbers.
+      if (!moved.ok) {
+        throw new Error(`seeded balances (${fmt(paise / 100)} tokens) exceed the configured `
+          + `token supply — raise adminTokenSupply.total or seed fewer players (${moved.reason})`);
+      }
+      return { rowCount, paise };
+    });
+    console.log(`  ${'wallets'.padEnd(34)} ${((performance.now() - t0) / 1000).toFixed(1)}s`
+      + `  ${fmt(funded.rowCount)} rows, ${fmt(funded.paise / 100)} tokens from TOKEN_SUPPLY`);
+  }
 
   // ── MERCHANTS ─────────────────────────────────────────────────────────────
   await step('merchants', `
     INSERT INTO merchants (merchant_id, name, public_ref, username, mobile, password_hash,
                            status, merchant_approval_status, is_online, accepts_deposits,
                            accepts_withdrawals, accepted_currencies,
-                           bank_upi_id, bank_account_holder_name,
+                           bank_account_holder_name,
                            min_deposit_paise, max_deposit_paise, min_withdraw_paise, max_withdraw_paise,
                            max_concurrent_orders, created_at)
     SELECT 'load-m-' || i, 'Load Merchant ' || i, 'LM' || lpad(i::text, 6, '0'),
@@ -141,7 +181,7 @@ async function seed() {
            CASE WHEN i % 23 = 0 THEN 'INACTIVE' ELSE 'ACTIVE' END,
            CASE WHEN i % 17 = 0 THEN 'PENDING' ELSE 'APPROVED' END,
            (i % 3 <> 0), true, true, ARRAY['INR'],
-           'load' || i || '@upi', 'Load Merchant ' || i,
+           'Load Merchant ' || i,
            50000, 100000000, 50000, 100000000, 5,
            now() - (i % 200) * interval '1 day'
     FROM generate_series(1, $1) i`, [merchants]);

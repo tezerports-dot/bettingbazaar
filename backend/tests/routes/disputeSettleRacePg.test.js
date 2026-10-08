@@ -40,14 +40,28 @@ const payoutUtr = () => `UTRDS${String(Date.now()).slice(-7)}${String(++payoutSe
 
 const describePg = pgConfigured() ? describe : describe.skip;
 
-/** Resolve once some backend is waiting on a lock for a statement matching `like`. */
-async function untilBlocked(like, timeoutMs = 5000) {
+/**
+ * Resolve, with its pid, once a backend running a statement matching `like` is
+ * queued behind one of `behind` — this test's own lock holder, or a waiter
+ * already queued behind it.
+ *
+ * Scoped by who blocks it, not by the statement's text alone: pg_stat_activity
+ * lists every session on the SERVER, and the text carries `$1`, not the order.
+ * Unscoped, any other session waiting on a lock with similar text (another
+ * suite, another database on the same server) stood in for the dispute, the
+ * worker queued on the order first, and settled it: "the worker settled a
+ * withdrawal disputed in the gap".
+ */
+async function untilBlocked(like, behind, timeoutMs = 5000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const { rows } = await pgQuery(
-      `SELECT 1 FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query ILIKE $1 LIMIT 1`,
-      [like]);
-    if (rows.length) return;
+      `SELECT pid FROM pg_stat_activity
+        WHERE datname = current_database() AND wait_event_type = 'Lock' AND query ILIKE $1
+          AND pg_blocking_pids(pid) && $2::int[]
+        LIMIT 1`,
+      [like, behind]);
+    if (rows.length) return rows[0].pid;
     await new Promise((r) => setTimeout(r, 20));
   }
   throw new Error(`nothing blocked on ${like} within ${timeoutMs}ms — the interleaving never happened`);
@@ -111,19 +125,24 @@ describePg('a dispute that lands while the hold is being settled', () => {
     return { m, who, team, orderId, lockedBefore };
   };
 
-  /** Hold one row lock in its own transaction until `release()` is called. */
+  /**
+   * Hold one row lock in its own transaction until `unlock()` is called; `pid`
+   * is the holding backend, which is what the waiters are found behind.
+   */
   const holdRow = async (sql, params) => {
     let release;
     const released = new Promise((r) => { release = r; });
     let locked;
     const isLocked = new Promise((r) => { locked = r; });
+    let pid;
     const done = withTransaction(async (client) => {
+      pid = (await client.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
       await client.query(sql, params);
       locked();
       await released;
     });
     await isLocked;
-    return async () => { release(); await done; };
+    return { pid, unlock: async () => { release(); await done; } };
   };
 
   it('is not settled underneath, and is not erased from the dispute queue', async () => {
@@ -131,18 +150,21 @@ describePg('a dispute that lands while the hold is being settled', () => {
     const poolBefore = await getPool(team.teamId);
 
     // Hold the ORDER's row: the lock the dispute and the settlement gate share.
-    const unlock = await holdRow('SELECT 1 FROM order_states WHERE order_id = $1 FOR UPDATE', [orderId]);
+    const held = await holdRow('SELECT 1 FROM order_states WHERE order_id = $1 FOR UPDATE', [orderId]);
 
     // The player's dispute queues on it first…
     const raising = as(playerApp, who).post(`/order/${orderId}/dispute`)
       .send({ reason: 'Marked sent, nothing reached my bank.' }).then((r) => r);
-    await untilBlocked('%SELECT * FROM order_states WHERE order_id%FOR UPDATE%');
+    const disputing = await untilBlocked('%SELECT * FROM order_states WHERE order_id%FOR UPDATE%', [held.pid]);
 
-    // …then the worker reads the order (PAID, not disputed) and queues behind it.
+    // …then the worker reads the order (PAID, not disputed) and queues behind
+    // it. A later waiter on a row waits on the one ahead of it, so it is found
+    // behind the holder or the dispute.
     const settling = settleHold(orderId);
-    await untilBlocked('%SELECT team_id, token_amount_paise, order_type, state FROM order_states%FOR UPDATE%');
+    await untilBlocked('%token_amount_paise%FROM order_states WHERE order_id%FOR UPDATE%',
+      [held.pid, disputing]);
 
-    await unlock();
+    await held.unlock();
     const raised = await raising;
     expect(raised.status, raised.body?.message).toBe(200);
     expect(await settling, 'the worker settled a withdrawal disputed in the gap').toBe(false);
@@ -159,23 +181,29 @@ describePg('a dispute that lands while the hold is being settled', () => {
   });
 
   it('a dispute landing AFTER the settlement committed stays an open dispute over money that moved', async () => {
-    // The other interleaving. The pool credit commits (tokens to the team),
-    // then the worker parks on the PLAYER's wallet — releasing their stake —
-    // and the dispute lands before the order is mirrored. The money moving is
-    // correct: the settlement won the lock first. Erasing the dispute is not.
+    // The other interleaving, with the queue the other way round: the worker
+    // reaches the order's lock FIRST and the dispute waits behind it, so the
+    // settlement commits whole — the pool credited, the stake consumed and
+    // USER_FLOAT → TEAM_FLOAT, in ONE transaction (owner, 2026-10-07; there is
+    // no longer a gap between the two halves to land in). The money moving is
+    // correct: the settlement won the lock. Erasing the dispute is not — and
+    // the dispute holds the order's lock before the mirror asks for it, so the
+    // mirror finds DISPUTED rather than writing over it.
     const { who, team, orderId } = await dueHold();
     const poolBefore = await getPool(team.teamId);
 
-    const unlock = await holdRow('SELECT 1 FROM wallets WHERE user_id = $1 FOR UPDATE', [who.userId]);
+    const held = await holdRow('SELECT 1 FROM order_states WHERE order_id = $1 FOR UPDATE', [orderId]);
     const settling = settleHold(orderId);
-    await untilBlocked('%FROM wallets WHERE user_id%FOR UPDATE%');
+    const settlingPid = await untilBlocked('%token_amount_paise%FROM order_states WHERE order_id%FOR UPDATE%', [held.pid]);
 
-    const raised = await as(playerApp, who).post(`/order/${orderId}/dispute`)
-      .send({ reason: 'Marked sent, nothing reached my bank.' });
+    const raising = as(playerApp, who).post(`/order/${orderId}/dispute`)
+      .send({ reason: 'Marked sent, nothing reached my bank.' }).then((r) => r);
+    await untilBlocked('%SELECT * FROM order_states WHERE order_id%FOR UPDATE%', [held.pid, settlingPid]);
+
+    await held.unlock();
+    expect(await settling, 'the settlement had the lock first and must have settled').toBe(true);
+    const raised = await raising;
     expect(raised.status, raised.body?.message).toBe(200);
-
-    await unlock();
-    await settling.catch(() => false);
 
     const after = await getOrderRecord(orderId);
     expect(after.state, 'the mirror wrote COMPLETED over a dispute raised after settlement').toBe('DISPUTED');

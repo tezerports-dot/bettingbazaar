@@ -42,11 +42,14 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { pgConfigured, applySchema, closePg, pgQuery, withTransaction } from '#db/client.js';
+// A fixture's tokens come from the platform's own holding, posted with the
+// credit: the database refuses a wallet that gains tokens from nowhere.
+import { fundWallet } from '#db/tests/_funding.js';
 import { createOrderRecord, getOrderRecord } from '#db/repositories/orders.record.js';
 import { transitionOrder } from '#db/repositories/orders.js';
 import { getPool, spendForBuy } from '#db/repositories/teamPools.js';
 import { setCashReady } from '#db/repositories/teamRouting.js';
-import { getBalances, creditDeposit, creditReserve } from '../../domains/wallet/walletAuthority.service.js';
+import { getBalances } from '../../domains/wallet/walletAuthority.service.js';
 import { moveDepositMoney } from '../../domains/payment/depositCredit.js';
 import { tryAssignMerchant, markOrderPaid } from '../../domains/payment/paymentProcessing.service.js';
 import { teamFixture, readyToPay } from '../teamFixture.js';
@@ -174,8 +177,9 @@ describePg('admin force-action on a payment order', () => {
 
     // The confirm path's own two movements, replayed. Both must be no-ops: the
     // pool's spend is keyed on the order as the player's credit is.
+    // One movement now, not two: the credit is INSIDE the spend's transaction
+    // (owner, 2026-10-07), so replaying the spend replays both halves.
     expect(await spendForBuy(orderId)).toEqual({ ok: true, alreadyTaken: true });
-    await creditDeposit(player.userId, 1000, orderId);
     const afterBoth = await getBalances(player.userId);
     expect(Number(afterBoth.depositBalance)).toBe(Number(afterAdmin.depositBalance));
     expect(await getPool(team.teamId)).toEqual(poolAfterAdmin);
@@ -246,7 +250,7 @@ describePg('admin force-action on a payment order', () => {
     const before = await getBalances(player.userId);
 
     const moved = await moveDepositMoney(readAsPaid, {
-      creditDeposit, creditReserve, releaseUTR: async () => {}, requireState: 'PAID',
+      releaseUTR: async () => {}, requireState: 'PAID',
     });
 
     expect(moved).toMatchObject({ ok: false, reason: 'order_state' });
@@ -279,8 +283,9 @@ describePg('admin force-action on a payment order', () => {
     // 1,000 tokens: a cash payout is a denomination (`createWithdrawalOrder`
     // refuses 2,000 by name), so that is the amount a real queued sell carries.
     const { debitWinningsForWithdrawal } = await import('../../domains/wallet/walletAuthority.service.js');
-    const { creditWinnings } = await import('../../domains/wallet/walletAuthority.service.js');
-    await creditWinnings(player.userId, 1000, 'route test seed', 'Test', orderId, `rt_seed_${orderId}`);
+    // Seeded out of the platform's holding, NOT against this order's id: the
+    // seed's own treasury legs would otherwise read as legs of the order.
+    await fundWallet(player.userId, 1000_00, `rt_seed_${orderId}`, 'winningsBalance');
     await debitWinningsForWithdrawal(player.userId, 1000, orderId);
 
     const afterDebit = await getBalances(player.userId);
@@ -317,8 +322,8 @@ describePg('admin force-action on a payment order', () => {
     // the gate rather than a label.
     const player = await actor({});
     const orderId = oid('wd-key');
-    const { debitWinningsForWithdrawal, creditWinnings } = await import('../../domains/wallet/walletAuthority.service.js');
-    await creditWinnings(player.userId, 1000, 'route test seed', 'Test', orderId, `rt_seed_${orderId}`);
+    const { debitWinningsForWithdrawal } = await import('../../domains/wallet/walletAuthority.service.js');
+    await fundWallet(player.userId, 1000_00, `rt_seed_${orderId}`, 'winningsBalance');
     await debitWinningsForWithdrawal(player.userId, 1000, orderId);
     await createOrderRecord({
       orderId, userId: player.userId, type: 'WITHDRAWAL',
@@ -352,8 +357,8 @@ describePg('admin force-action on a payment order', () => {
   it('refunds a rejected withdrawal exactly once', async () => {
     const player = await actor({});
     const orderId = oid('wd-twice');
-    const { debitWinningsForWithdrawal, creditWinnings } = await import('../../domains/wallet/walletAuthority.service.js');
-    await creditWinnings(player.userId, 1000, 'route test seed', 'Test', orderId, `rt_seed_${orderId}`);
+    const { debitWinningsForWithdrawal } = await import('../../domains/wallet/walletAuthority.service.js');
+    await fundWallet(player.userId, 1000_00, `rt_seed_${orderId}`, 'winningsBalance');
     await debitWinningsForWithdrawal(player.userId, 1000, orderId);
     await createOrderRecord({
       orderId, userId: player.userId, type: 'WITHDRAWAL',

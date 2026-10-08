@@ -50,7 +50,7 @@ export const MerchantsList: React.FC = () => {
       setMerchantEarnings(res.earnings || res);
     } catch { setMerchantEarnings(null); }
   };
-  // Which payment details a merchant keeps: UPI + bank (INR) or USDT wallet
+  // Which payment details a merchant keeps: a bank account (INR) or USDT wallet
   // addresses — never both. Written to merchants.accepted_currencies through
   // the capabilities route; switching clears the other set. Which ORDERS they
   // are offered is decided by their team's rail (supervisor_rail), not by this.
@@ -176,8 +176,8 @@ export const MerchantsList: React.FC = () => {
       setRail(next);
       toast.success(
         next === 'USDT'
-          ? 'Now a USDT merchant. Existing UPI/bank details were cleared.'
-          : 'Now an INR merchant — UPI & bank. The USDT addresses were cleared.'
+          ? 'Now a USDT merchant. Existing bank details were cleared.'
+          : 'Now an INR merchant — bank account. The USDT addresses were cleared.'
       );
       loadMerchants();
     } catch (e: any) {
@@ -317,7 +317,7 @@ export const MerchantsList: React.FC = () => {
 
               {/* Paused, not suspended. Three buy orders in a row expired with
                   nobody paying, which usually means nobody CAN pay this
-                  merchant — a dead QR, a closed UPI handle, a bank refusing.
+                  merchant — a wrong or frozen bank account, a bank refusing.
                   They are not accused of anything and keep every order they
                   hold; routing just stops offering them new ones
                   (teamRouting: assignment_paused_at IS NULL) until somebody
@@ -405,7 +405,7 @@ export const MerchantsList: React.FC = () => {
                 <div>
                   <p className="text-sm font-semibold text-gray-300">Settlement Rail</p>
                   <p className="text-xs text-gray-500 mt-1">
-                    Which payment details this merchant keeps: UPI &amp; bank, or USDT wallet addresses — never both.
+                    Which payment details this merchant keeps: a bank account, or USDT wallet addresses — never both.
                     Which orders they are offered is decided by their team&apos;s rail, on the Supervisors &amp; Teams screen.
                   </p>
                 </div>
@@ -421,7 +421,7 @@ export const MerchantsList: React.FC = () => {
                           : 'bg-dark-800 border-dark-600 text-gray-400 hover:text-gray-200'
                       }`}
                     >
-                      {option === 'INR' ? 'INR · UPI & bank' : 'USDT · wallet addresses'}
+                      {option === 'INR' ? 'INR · bank account' : 'USDT · wallet addresses'}
                     </button>
                   ))}
                 </div>

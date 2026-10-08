@@ -21,6 +21,11 @@ const notify    = vi.fn(() => Promise.resolve([{ channel: 'IN_APP', delivered: t
 
 vi.mock('../../services/alerting.service.js', () => ({ sendAlert }));
 vi.mock('../../domains/communication/communication.service.js', () => ({ notify }));
+// A completed deposit clears the player's unpaid streak: a database write this
+// suite has no database for, and not what it is asserting.
+vi.mock('../../domains/payment/playerPaymentFailure.service.js', () => ({
+  clearPlayerPaymentFailures: async () => {},
+}));
 
 const { moveDepositMoney } = await import('../../domains/payment/depositCredit.js');
 
@@ -31,13 +36,20 @@ const paidOrder = () => ({
 });
 
 /**
- * Movers whose team-pool spend refuses, which is the whole scenario: the order
- * holds nothing and the pool's `available` cannot cover it. Every buy holds at
+ * A completion that refuses, which is the whole scenario: the order holds
+ * nothing and the pool's `available` cannot cover it. Every buy holds at
  * assignment, so this is an anomaly — which is exactly why it must be reported.
+ *
+ * `completeBuy` is ONE injectable mover, not three. The pool spend, the
+ * player's credit and the TEAM_FLOAT → USER_FLOAT movement are one transaction
+ * (owner, 2026-10-07), so a refusal credits nobody BY CONSTRUCTION rather than
+ * because this function remembered to stop — and the pairing that used to be
+ * asserted over stubs here is proven against a real database in
+ * `database/tests/depositConservationPg.test.js`.
  */
 const refusingMovers = () => ({
-  spendPool: vi.fn(() => Promise.resolve({ ok: false, reason: 'pool_short' })),
-  creditDeposit: vi.fn(), creditReserve: vi.fn(), releaseUTR: vi.fn(),
+  completeBuy: vi.fn(() => Promise.resolve({ ok: false, reason: 'pool_short' })),
+  releaseUTR: vi.fn(),
   requireState: 'PAID',
 });
 
@@ -52,8 +64,6 @@ describe('a paid deposit that cannot be credited', () => {
     const result = await moveDepositMoney(paidOrder(), movers);
 
     expect(result).toMatchObject({ ok: false, reason: 'pool_short' });
-    expect(movers.creditDeposit).not.toHaveBeenCalled();
-    expect(movers.creditReserve).not.toHaveBeenCalled();
     // The UTR stays claimed: releasing it would let the same payment be
     // presented against a second order while this one is still live (§27).
     expect(movers.releaseUTR).not.toHaveBeenCalled();
@@ -120,13 +130,12 @@ describe('a paid deposit that cannot be credited', () => {
     // alerting on it would page an operator about a buy that is fine.
     const movers = {
       ...refusingMovers(),
-      spendPool: vi.fn(() => Promise.resolve({ ok: false, reason: 'order_state' })),
+      completeBuy: vi.fn(() => Promise.resolve({ ok: false, reason: 'order_state' })),
     };
     const result = await moveDepositMoney(paidOrder(), movers);
 
     expect(result).toMatchObject({ ok: false, reason: 'order_state' });
-    expect(movers.creditDeposit).not.toHaveBeenCalled();
-    expect(movers.creditReserve).not.toHaveBeenCalled();
+    expect(movers.releaseUTR).not.toHaveBeenCalled();
     expect(sendAlert).not.toHaveBeenCalled();
     expect(notify).not.toHaveBeenCalled();
   });
@@ -135,20 +144,21 @@ describe('a paid deposit that cannot be credited', () => {
     const movers = refusingMovers();
     delete movers.requireState;
     await expect(moveDepositMoney(paidOrder(), movers)).rejects.toThrow(/requireState/);
-    expect(movers.spendPool).not.toHaveBeenCalled();
+    expect(movers.completeBuy).not.toHaveBeenCalled();
   });
 
   it('reports NOTHING when the pool spend succeeds', async () => {
     // The mirror. An alert on a healthy deposit is worse than no alert: it
     // trains whoever reads them to ignore the channel.
     const movers = {
-      spendPool: vi.fn(() => Promise.resolve({ ok: true, taken: 'held' })),
-      creditDeposit: vi.fn(), creditReserve: vi.fn(), releaseUTR: vi.fn(),
+      completeBuy: vi.fn(() => Promise.resolve({ ok: true, taken: 'held', total: 10_000 })),
+      releaseUTR: vi.fn(),
       requireState: 'PAID',
     };
     const result = await moveDepositMoney(paidOrder(), movers);
 
     expect(result.ok).toBe(true);
+    expect(movers.releaseUTR).toHaveBeenCalledWith('DEP_abc123');
     expect(sendAlert).not.toHaveBeenCalled();
     expect(notify).not.toHaveBeenCalled();
   });

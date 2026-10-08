@@ -24,8 +24,11 @@
  *      agrees with the domains it describes).
  *
  * (2) is the claim no isolated suite can make — that the platform's own books
- * and its customers' books tell the same story — and the last test shows the
- * failure it catches.
+ * and its customers' books tell the same story. It is now also a property of
+ * the DATABASE, in every transaction (owner, 2026-10-07): the last test shows
+ * the write it used to notice afterwards being REFUSED instead. What this
+ * suite still adds is the end-to-end arithmetic across the real writers, and
+ * that each step leaves the books closed rather than only the last one.
  *
  * Nothing is CREATED anywhere in this flow (§2): every token starts in
  * TOKEN_SUPPLY, the platform's holding, and moves. So the final assertion is
@@ -35,17 +38,16 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { pgConfigured, pgQuery, applySchema, closePg } from '../client.js';
 import { getBalancesPaise } from '../repositories/wallets.core.js';
+import { ACCOUNTS, trialBalance, postMovement } from '../repositories/treasury.js';
 import {
-  ACCOUNTS, trialBalance, postMovement, stakeLostToHouse, housePaidWinnings,
-} from '../repositories/treasury.js';
-import {
-  creditDeposit, creditReserve, creditWinnings, lockBetStake, releaseLockedStake,
-  debitWinningsForWithdrawal, releaseWithdrawal, refundWithdrawal,
+  creditWinnings, debitWinningsForWithdrawal, refundWithdrawal,
 } from '../repositories/wallets.js';
+import { placeBet, loseBet, winBet } from '../repositories/bets.core.js';
 import { createOrderRecord } from '../repositories/orders.record.js';
 import { assignToTeam } from '../repositories/teamRouting.js';
 import { releaseBuyHold, spendForBuy, creditSellToPool } from '../repositories/teamPools.js';
 import { teamFixture } from '../../backend/tests/teamFixture.js';
+import { refusedBy } from './_funding.js';
 import { moveDepositMoney } from '../../backend/domains/payment/depositCredit.js';
 
 const hasPg = pgConfigured();
@@ -126,7 +128,7 @@ describePg('Cross-domain money conservation', () => {
     return got;
   };
   // Assigned and never marked paid in this suite, so it completes from ASSIGNED.
-  const confirm = (o) => moveDepositMoney(o, { creditDeposit, creditReserve, releaseUTR: async () => {}, requireState: 'ASSIGNED' });
+  const confirm = (o) => moveDepositMoney(o, { releaseUTR: async () => {}, requireState: 'ASSIGNED' });
 
   // ── The full chain, books closed at every step ─────────────────────────────
   it('conserves every paise across pool funding → buy → bet → settle → sell', async () => {
@@ -149,24 +151,33 @@ describePg('Cross-domain money conservation', () => {
     expect(s.pools).toBe(8_000_000);
     expect(s.userDetail.depositBalance).toBe(2_000_000);
 
-    // 3. A 15,000-token bet is staked and lost. The stake goes to the HOUSE.
-    await lockBetStake(USER, {
-      amountPaise: 1_500_000, txId: id('bet'), refId: 'bet-1',
-      slices: [{ field: 'depositBalance', suffix: '_dep', amountPaise: 1_500_000, reason: 'Bet stake' }],
-    });
+    // 3. A 15,000-token bet is staked and lost. The stake goes to the HOUSE,
+    //    in the transaction that settles the bet — one fact, one commit.
+    const stake = [{ field: 'depositBalance', suffix: '_dep', amountPaise: 1_500_000, reason: 'Bet stake' }];
+    const lost = id('bet_lost');
+    expect(await placeBet({
+      betId: lost, userId: USER, cycleId: 'mc-cycle-1', side: 'UP', slices: stake,
+    })).toMatchObject({ ok: true });
     await closes('stake locked');            // internal to the player; nothing moved
-    await releaseLockedStake(USER, {
-      amount: 15_000, fromDeposit: 15_000, txId: id('settle'), reason: 'Bet lost',
-    });
-    await stakeLostToHouse(1_500_000, { movementId: id('lost'), refModel: 'Bet', refId: 'bet-1' });
+    expect(await loseBet({ betId: lost, userId: USER, slices: stake })).toMatchObject({ ok: true });
     s = await closes('stake lost to house');
     expect(s.treasury[ACCOUNTS.HOUSE_RESERVE]).toBe(1_500_000);
 
-    // 4. A later bet wins 12,000, paid out of the house reserve it was funded by.
-    await creditWinnings(USER, 12_000, 'Bet win payout', 'Bet', 'bet-2', id('win'));
-    await housePaidWinnings(1_200_000, { movementId: id('paid'), refModel: 'Bet', refId: 'bet-2' });
+    // 4. A later bet stakes 3,000 and wins 12,000. The stake joins the house;
+    //    the payout comes out of it, and the shortfall from the platform's own
+    //    holding — a transfer, never a creation.
+    const nextStake = [{ field: 'depositBalance', suffix: '_dep', amountPaise: 300_000, reason: 'Bet stake' }];
+    const won = id('bet_won');
+    expect(await placeBet({
+      betId: won, userId: USER, cycleId: 'mc-cycle-2', side: 'UP', slices: nextStake,
+    })).toMatchObject({ ok: true });
+    expect(await winBet({
+      betId: won, userId: USER, slices: nextStake, payoutPaise: 1_200_000,
+    })).toMatchObject({ ok: true });
     s = await closes('winnings paid');
-    expect(s.treasury[ACCOUNTS.HOUSE_RESERVE]).toBe(300_000);
+    // 15,000 staked and lost + 3,000 staked, less a 12,000 payout: the house
+    // holds 6,000 and nothing was invented.
+    expect(s.treasury[ACCOUNTS.HOUSE_RESERVE]).toBe(600_000);
 
     // 5. The player sells the 12,000: the stake is locked at admission, the
     //    order routed to a member, and on settlement the pool is credited the
@@ -175,17 +186,19 @@ describePg('Cross-domain money conservation', () => {
     await debitWinningsForWithdrawal(USER, 12_000, sell.orderId);
     await closes('sell admitted');           // winnings → locked; nothing left the player
     await assign(sell);
+    // The pool credit, the stake leaving `locked` and USER_FLOAT → TEAM_FLOAT
+    // are one transaction: there is no moment where the tokens are in both
+    // places, or in neither (owner, 2026-10-07).
     expect((await creditSellToPool(sell.orderId)).ok).toBe(true);
-    await releaseWithdrawal(USER, 12_000, sell.orderId);
     s = await closes('sell settled');
     expect(s.pools).toBe(9_200_000);
-    expect(s.user).toBe(500_000);
+    expect(s.user).toBe(200_000);
 
     // The whole system, closed: what left the platform is exactly what the
     // pools, the player and the house now hold.
     const t = s.treasury;
-    expect(t[ACCOUNTS.TOKEN_SUPPLY]).toBe(-10_000_000);
-    expect(t[ACCOUNTS.TEAM_FLOAT] + t[ACCOUNTS.USER_FLOAT] + t[ACCOUNTS.HOUSE_RESERVE]).toBe(10_000_000);
+    expect(t[ACCOUNTS.TEAM_FLOAT] + t[ACCOUNTS.USER_FLOAT] + t[ACCOUNTS.HOUSE_RESERVE])
+      .toBe(0 - t[ACCOUNTS.TOKEN_SUPPLY]);
     expect(team.teamId).toBeTruthy();
   });
 
@@ -209,12 +222,9 @@ describePg('Cross-domain money conservation', () => {
 
   it('conserves when a sell is refunded before it settled', async () => {
     await teams.workingTeam({ rail: 'UPI_BANK', poolTokens: 0 });
-    // Winnings arrive from the house so the player has something to sell.
+    // Winnings arrive from the platform's own holding, which is what
+    // `creditWinnings` posts with them — one transaction, no second call.
     await creditWinnings(USER, 11_000, 'seed', 'Bet', 'b', id('seed'));
-    await postMovement({
-      movementId: id('seed_house'), operation: 'HOUSE_WINNINGS_PAID',
-      legs: { [ACCOUNTS.TOKEN_SUPPLY]: -1_100_000, [ACCOUNTS.USER_FLOAT]: 1_100_000 },
-    });
     await closes('seeded');
 
     const sell = await order('WITHDRAWAL', 11_000);
@@ -250,22 +260,25 @@ describePg('Cross-domain money conservation', () => {
     await closes('straggler');
   });
 
-  it('catches a treasury posting that disagrees with the pools it describes', async () => {
-    // The failure mode the closed-books check exists for: both ledgers
-    // internally consistent, telling different stories about the same money.
+  it('REFUSES a treasury posting that disagrees with the pools it describes', async () => {
+    // The failure the closed-books check was built to NOTICE, which the
+    // database now refuses outright (owner, 2026-10-07): a payout posted to
+    // the treasury that no pool and no wallet performed. It used to commit,
+    // leaving two internally-consistent ledgers telling different stories
+    // about the same money until something ran this suite.
     await teams.workingTeam({ rail: 'UPI_BANK', poolTokens: 50_000 });
 
-    // A payout posted to the treasury that no pool and no wallet performed.
-    await postMovement({
+    const refusal = await refusedBy(postMovement({
       movementId: id('ghost'), operation: 'TEAM_BUY_PAID',
       legs: { [ACCOUNTS.TEAM_FLOAT]: -1_000_000, [ACCOUNTS.USER_FLOAT]: 1_000_000 },
-    });
+    }));
+    // Whichever side is noticed first, the transaction does not commit.
+    expect(refusal.constraint).toMatch(/^bb_conservation_(user|team)_float$/);
 
-    const tb = await trialBalance();
-    const h = await holdings();
-    expect(tb.conservesToZero).toBe(true);                       // treasury still closes
-    expect(tb.balances[ACCOUNTS.USER_FLOAT]).toBe(1_000_000);    // but claims the player holds 10,000
-    expect(h.user).toBe(0);                                      // and the player holds nothing
-    expect(tb.balances[ACCOUNTS.TEAM_FLOAT]).not.toBe(h.pools);  // and the pools still hold it all
+    // Nothing moved, and the books still close.
+    await closes('after the refusal');
+    const { rows } = await pgQuery(
+      `SELECT COUNT(*)::int n FROM treasury_entries WHERE operation = 'TEAM_BUY_PAID'`);
+    expect(rows[0].n).toBe(0);
   });
 });

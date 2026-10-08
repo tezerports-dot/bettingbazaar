@@ -19,7 +19,8 @@
  *   PENDING_QUEUE ─▶ ASSIGNED ─▶ PROCESSING ─▶ PAID ─▶ COMPLETED
  *         │              │            │          │
  *         └──────────────┴────────────┴──────────┴──▶ CANCELLED / FAILED /
- *                                                     REJECTED / DISPUTED
+ *                                                     DISPUTED
+ *                          PAID ─▶ REJECTED   the member's "payment not received"
  *
  * ALLOWED_FROM is the whole rule, as data. Every transition names the states it
  * accepts and the guard lives in the UPDATE's WHERE clause, so a caller
@@ -117,9 +118,15 @@ export const ALLOWED_FROM = Object.freeze({
   // REJECTED, when its dispute window closes with no dispute raised.
   [ORDER_STATES.CANCELLED]:  [ORDER_STATES.PENDING_QUEUE, ORDER_STATES.ASSIGNED, ORDER_STATES.PROCESSING, ORDER_STATES.PAID, ORDER_STATES.DISPUTED, ORDER_STATES.REJECTED],
   [ORDER_STATES.FAILED]:     [ORDER_STATES.PENDING_QUEUE, ORDER_STATES.ASSIGNED, ORDER_STATES.PROCESSING, ORDER_STATES.PAID],
-  // PAID: the member says the player's payment never arrived. The buy waits
-  // here, its pool hold intact, until the player disputes or the window closes.
-  [ORDER_STATES.REJECTED]:   [ORDER_STATES.PENDING_QUEUE, ORDER_STATES.ASSIGNED, ORDER_STATES.PROCESSING, ORDER_STATES.PAID],
+  // PAID, and only PAID: the member says the payment the player CLAIMED never
+  // arrived (owner, 2026-10-07). Before the Paid tap there is no claim to deny,
+  // so there is no edge: an unpaid buy expires instead, and whose lapse that is
+  // is `playerCouldPay`'s question. This listed PENDING_QUEUE, ASSIGNED and
+  // PROCESSING too, so a member's "payment not received" on an accepted buy
+  // went through and warned and flagged a player who had said nothing yet.
+  // The buy waits here, its pool hold intact, until the player disputes or the
+  // window closes (`rejectedBuyWindow.service.js`).
+  [ORDER_STATES.REJECTED]:   [ORDER_STATES.PAID],
 });
 
 /**

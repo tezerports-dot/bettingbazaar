@@ -363,14 +363,14 @@ export const confirmPayment = async (orderId: string, utrNumber?: string): Promi
 /**
  * Reject an order the player says they paid, because the money never arrived.
  *
- * Different from `rejectOrder` above, which declines an order BEFORE payment
- * and returns it to the queue. This one cancels the order, adds a warning to
- * the player's account and can auto-block them — so the backend requires a
- * reason of at least ten characters and a proof image, and refuses without
- * either.
+ * Different from `rejectOrder` below, which declines an order BEFORE payment
+ * and returns it to the queue. This one rejects a PAID buy (only a PAID one:
+ * owner, 2026-10-07) and adds a warning and a flag to the player's account —
+ * so the backend requires a reason of at least ten characters and a proof
+ * image, and refuses without either.
  *
  * Three steps, in this order: ask for a presigned URL (which also checks the
- * order is this merchant's and is actually awaiting confirmation), PUT the
+ * order is this merchant's PAID buy, or answers 400 NOT_PAID_YET), PUT the
  * file, then send the reference. The proof is verified server-side against
  * THIS merchant and THIS order before it is stored, so a key from somewhere
  * else is refused.
@@ -579,8 +579,7 @@ export const setCashReady = async (ready: boolean): Promise<boolean> => {
 // =======================================================================
 
 // The backend enforces rail exclusivity on this endpoint: an INR merchant may
-// send upiId/bankDetails, a USDT merchant may send only the wallet
-// addresses. Sending a field for the wrong rail is a 400, not a silent no-op
+// send bankDetails, a USDT merchant may send only the wallet addresses. Sending a field for the wrong rail is a 400, not a silent no-op
 // (backend/domains/merchant/merchant.routes.js PUT /profile).
 //
 // The two addresses are independent: send one to set it, send an empty string
@@ -588,7 +587,6 @@ export const setCashReady = async (ready: boolean): Promise<boolean> => {
 // refused — a merchant with no address receives no orders, and that is worth
 // saying rather than accepting silently.
 export const updateProfile = async (data: {
-  upiId?: string;
   bankDetails?: { accountHolderName?: string; bankName?: string; accountNo?: string; ifsc?: string };
   usdtAddressTrc20?: string;
   usdtAddressBep20?: string;

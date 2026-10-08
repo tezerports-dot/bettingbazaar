@@ -26,11 +26,52 @@
  */
 import { db } from '#db';
 import { getSystemConfig } from '#db/repositories/config.js';
-import { cancelOrder } from './orderLifecycle.service.js';
+import { cancelOrder, canTransition, ORDER_STATES } from './orderLifecycle.service.js';
 import { emitOrderUpdate, emitAdminUpdate, emitMerchantUpdate } from '../notification/realtimeEmitters.js';
 
 /** schema default: 15 (SYSTEM_CONFIG_SPEC.rejectedBuyDisputeMinutes, bounded 5–1440). */
 const DEFAULT_WINDOW_MINUTES = 15;
+
+/** What a member is told on a buy the player has not marked paid. */
+const NOT_PAID_YET_MESSAGE =
+  'The player has not tapped Paid on this buy yet, so there is no payment to reject. '
+  + 'Wait for their Paid tap, then check your account and confirm the money or reject it; '
+  + 'a buy that is never paid expires on its own.';
+
+/**
+ * May a member say this buy's money never arrived? Null when they may; else
+ * the refusal, with its status (§32 S35) and a message they can act on (S14).
+ *
+ * ── Only once the player has tapped Paid (owner, 2026-10-07) ──────────────
+ * "Payment not received" denies a payment the player CLAIMED. Before the Paid
+ * tap there is no claim, and the button warned and flagged a player who had
+ * said nothing yet. The rule is the state machine's, not this function's:
+ * REJECTED's one edge is from PAID (`ALLOWED_FROM`, in the transition's WHERE),
+ * so this reads the table rather than keeping a second list. What it adds is
+ * the wording, early: a buy that may still become PAID is "not yet" (400), and
+ * anything past PAID is a conflict with where the order now stands (409).
+ *
+ * Asked by BOTH doors to the rejection, so they cannot admit different states
+ * (§32 S3): the proof upload (`upload.routes.js`) and the reject itself
+ * (`merchant.routes.js`), before and after its transition.
+ *
+ * @param {{ type: string, status: string }} order
+ * @returns {null | { status: 400|409, code: string, message: string }}
+ */
+export function unpaidRejectRefusal(order) {
+  if (order.type !== 'DEPOSIT') {
+    return { status: 400, code: 'NOT_A_BUY', message: 'Only a buy order can be rejected as unpaid.' };
+  }
+  if (canTransition(order.status, ORDER_STATES.REJECTED)) return null;
+  if (canTransition(order.status, ORDER_STATES.PAID)) {
+    return { status: 400, code: 'NOT_PAID_YET', message: NOT_PAID_YET_MESSAGE };
+  }
+  return {
+    status: 409,
+    code: 'NOT_REJECTABLE',
+    message: `This buy is ${order.status ?? 'missing'} now, so it cannot be rejected as unpaid.`,
+  };
+}
 
 /** How long a player has to dispute a buy the member rejected as unpaid. */
 export async function rejectedBuyDisputeMinutes() {

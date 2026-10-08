@@ -189,7 +189,7 @@ router.put('/merchants/:merchantId/capabilities', authenticate, hasPermission('c
     const merchant = await db.merchants.getMerchant(merchantId);
     if (!merchant) return res.status(404).json({ success: false, message: 'Merchant not found' });
 
-    // A merchant settles on exactly ONE rail — an INR merchant (UPI + bank) or
+    // A merchant settles on exactly ONE rail — an INR merchant (bank account) or
     // a USDT merchant (TRC-20), never both. Accepts either `merchantType:
     // 'USDT'` or the equivalent `acceptedCurrencies: ['USDT']`; both write the
     // one stored authority, and the row's CHECK refuses anything else.
@@ -208,7 +208,7 @@ router.put('/merchants/:merchantId/capabilities', authenticate, hasPermission('c
         // order. Cleared here; the merchant re-enters the credentials for
         // their new rail from the panel.
         if (nextRail === MERCHANT_CURRENCY.USDT) {
-          patch.bankUpiId = null; patch.bankAccountNo = null;
+          patch.bankAccountNo = null;
           patch.bankIfsc = null; patch.bankAccountHolderName = null;
         } else {
           patch.usdtAddressTrc20 = null; patch.usdtAddressBep20 = null;

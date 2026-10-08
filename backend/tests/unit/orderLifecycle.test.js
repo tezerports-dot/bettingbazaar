@@ -55,11 +55,26 @@ describe('the rule table is the same one the database enforces', () => {
     expect(nextStates(ORDER_STATES.PENDING_QUEUE).sort())
       // NOT PROCESSING: nobody takes an order straight out of the queue any
       // more. Every order reaches a member through team routing, which moves it
-      // to ASSIGNED first (§3.10, 2c).
-      .toEqual(['ASSIGNED', 'CANCELLED', 'FAILED', 'REJECTED']);
+      // to ASSIGNED first (§3.10, 2c). Not REJECTED: see below.
+      .toEqual(['ASSIGNED', 'CANCELLED', 'FAILED']);
     // Nothing leaves COMPLETED except a dispute. Everything else is a reversal.
     expect(nextStates(ORDER_STATES.COMPLETED)).toEqual(['DISPUTED']);
     // ...and a dispute resolves in exactly two directions.
     expect(nextStates(ORDER_STATES.DISPUTED).sort()).toEqual(['CANCELLED', 'COMPLETED']);
+  });
+
+  it('reaches REJECTED from PAID alone: "payment not received" needs a payment claimed (owner, 2026-10-07)', async () => {
+    // The member's rejection denies a payment the player said they made. The
+    // table listed the queue, ASSIGNED and PROCESSING too, so an accepted buy
+    // the player had not paid yet could be rejected and its player warned.
+    const { ALLOWED_FROM } = await import('#db/repositories/orders.core.js');
+    expect(ALLOWED_FROM[ORDER_STATES.REJECTED]).toEqual([ORDER_STATES.PAID]);
+    for (const before of [ORDER_STATES.PENDING_QUEUE, ORDER_STATES.ASSIGNED, ORDER_STATES.PROCESSING]) {
+      expect(canTransition(before, ORDER_STATES.REJECTED), before).toBe(false);
+    }
+    // The opposite: the rejection the button exists for.
+    expect(canTransition(ORDER_STATES.PAID, ORDER_STATES.REJECTED)).toBe(true);
+    // …and what follows it is unchanged: the player's dispute, or the window closing.
+    expect(nextStates(ORDER_STATES.REJECTED).sort()).toEqual(['CANCELLED', 'DISPUTED']);
   });
 });

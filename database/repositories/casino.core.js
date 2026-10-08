@@ -11,12 +11,13 @@
  *     A ROLLBACK or REFUND credit does not currently have to prove a matching
  *     prior debit.
  *
- * `gameProvider.routes.js` handles a rollback with
- * `refundOrder(userId, amount, roundId, 'depositBalance')` — no check that the
- * round was ever bet on, and no bound on the amount. A provider that is buggy,
- * replayed, or hostile can therefore MINT REAL MONEY by posting a rollback for
- * a round that never had a bet, or a rollback larger than the bet it reverses.
- * Nothing in that path can tell such a callback from a legitimate one.
+ * `gameProvider.routes.js` handled a rollback with a plain wallet credit
+ * (`refundOrder(userId, amount, roundId, 'depositBalance')`, since deleted) —
+ * no check that the round was ever bet on, and no bound on the amount. A
+ * provider that is buggy, replayed, or hostile could therefore MINT REAL MONEY
+ * by posting a rollback for a round that never had a bet, or a rollback larger
+ * than the bet it reverses. Nothing in that path could tell such a callback
+ * from a legitimate one.
  *
  * Here a refund is bounded by arithmetic the DATABASE enforces:
  *
@@ -39,8 +40,10 @@
  * matters most in the domain.
  */
 import { getPool, pgQuery, connectGuarded } from '../client.js';
-import { applyMovementWithin } from './wallets.core.js';
+import { applyMovementWithin, lockWalletWithin } from './wallets.core.js';
+import { getSystemConfig } from './config.js';
 import { moneyOperations } from '../../backend/services/metrics.service.js';
+import { reserveBasisPoints, splitStakeMinor } from '../../backend/domains/risk/stakeFunding.js';
 import { MONEY_PATHS } from '../moneyPaths.js';
 
 export const CASINO_TX = Object.freeze({
@@ -60,6 +63,43 @@ const ROUND_COLUMN = Object.freeze({
 
 const REVERSALS = Object.freeze([CASINO_TX.ROLLBACK, CASINO_TX.REFUND]);
 
+/**
+ * The pockets a casino stake draws on (owner, 2026-10-08: "Yes, like boards").
+ *
+ * A BET takes from the pockets a board bet takes from, by the board's own rule
+ * — `splitStakeMinor`, the arithmetic `computeBetFundingPlan` applies to a
+ * board stake: `SystemConfig.betReservePercent` of the stake from the reserve,
+ * floored, as far as the reserve covers it; the rest from the deposit first
+ * and then winnings. The split is decided from the wallet row this transaction
+ * holds locked, so it is what moves (a split planned from an earlier read
+ * would refuse a stake a concurrent one had made unfundable as planned, while
+ * the pockets could still fund it). The round records each part
+ * (`debited_<pocket>_paise`).
+ *
+ * Listed in the order a reversal returns them, each with its columns on
+ * `casino_rounds` (`debited_<column>_paise`, `refunded_<column>_paise`). A
+ * ROLLBACK or REFUND gives each part back to the pocket it came from, and a
+ * PARTIAL one returns the reserve share first, then deposit, then winnings —
+ * the order the rule draws them. A board refund has no partial case
+ * (it returns every slice whole); here winnings come back LAST, so a rollback
+ * never makes a deposit withdrawable, and no reversal returns more to a pocket
+ * than the round took from it. `casino_rounds_split_refund_bound` and the
+ * `casino_rounds_return_order` trigger hold the row to both.
+ */
+const STAKE_POCKETS = Object.freeze([
+  Object.freeze({ field: 'reserveBalance',  column: 'reserve' }),
+  Object.freeze({ field: 'depositBalance',  column: 'deposit' }),
+  Object.freeze({ field: 'winningsBalance', column: 'winnings' }),
+]);
+
+/**
+ * A casino WIN pays into winnings, the withdrawable pocket — as a board win
+ * does (`bets.core` WON credits `winningsBalance`; owner, 2026-10-07: "a
+ * player wins a casino game, it should go to their winnings balance"). It is
+ * not a return of the stake, so it moves no part of it.
+ */
+const WIN_POCKET = 'winningsBalance';
+
 const toPaise = (v) => Number(v ?? 0);
 
 function count(operation, outcome) {
@@ -76,7 +116,53 @@ function rowToRound(row) {
     debitedPaise:  toPaise(row.debited_paise),
     creditedPaise: toPaise(row.credited_paise),
     refundedPaise: toPaise(row.refunded_paise),
+    // Which pockets the stake came from, and how much of each has gone back.
+    debitedByPocket:  byPocket(row, 'debited'),
+    refundedByPocket: byPocket(row, 'refunded'),
   };
+}
+
+function byPocket(row, total) {
+  return Object.fromEntries(STAKE_POCKETS.map((p) => [p.field, toPaise(row[`${total}_${p.column}_paise`])]));
+}
+
+/**
+ * The parts a BET takes, split by the board rule from the LOCKED balances, or
+ * null when deposit and winnings cannot cover the main part.
+ */
+function stakeParts(balances, amountPaise, reserveBp) {
+  const split = splitStakeMinor({
+    amountMinor: amountPaise, reserveBp,
+    depositMinor: balances.depositBalance,
+    winningsMinor: balances.winningsBalance,
+    reserveMinor: balances.reserveBalance,
+  });
+  if (!split) return null;
+  const taken = {
+    reserveBalance: split.fromReserveMinor,
+    depositBalance: split.fromDepositMinor,
+    winningsBalance: split.fromWinningsMinor,
+  };
+  return STAKE_POCKETS.map((p) => ({ ...p, amountPaise: taken[p.field] })).filter((p) => p.amountPaise > 0);
+}
+
+/**
+ * The parts a reversal of `amountPaise` returns: what is still out in each
+ * pocket, in STAKE_POCKETS order — the reserve share, then deposit, then
+ * winnings. Null when the parts still out cannot make up the amount, which the
+ * round's own bound refuses first; a round whose split was never recorded
+ * reaches here, and is refused rather than guessed at.
+ */
+function returnParts(round, amountPaise) {
+  let left = amountPaise;
+  const parts = [];
+  for (const p of STAKE_POCKETS) {
+    const out = Math.max(0, round.debitedByPocket[p.field] - round.refundedByPocket[p.field]);
+    const back = Math.min(left, out);
+    if (back > 0) parts.push({ ...p, amountPaise: back });
+    left -= back;
+  }
+  return left === 0 ? parts : null;
 }
 
 /**
@@ -140,10 +226,9 @@ async function withRoundLock(userId, roundId, providerKey, fn) {
 
   try {
     await client.query('BEGIN');
-    await client.query(
-      `INSERT INTO wallets (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`, [uid],
-    );
-    await client.query(`SELECT 1 FROM wallets WHERE user_id = $1 FOR UPDATE`, [uid]);
+    // The balances AS OF the lock: a BET's split is decided from these, and
+    // no other movement for this player can land before it is written.
+    const { balances } = await lockWalletWithin(client, uid);
     // THIS player's stake on THIS provider's round — the whole key. Another
     // player's stake on the same table is a different row, and so is the same
     // round id at another provider.
@@ -152,7 +237,7 @@ async function withRoundLock(userId, roundId, providerKey, fn) {
         WHERE provider_key = $1 AND user_id = $2 AND round_id = $3 FOR UPDATE`, [provider, uid, rid],
     );
 
-    const { commit, value } = await fn({ client, uid, rid, provider, round: rowToRound(round.rows[0]) });
+    const { commit, value } = await fn({ client, uid, rid, provider, balances, round: rowToRound(round.rows[0]) });
     await client.query(commit ? 'COMMIT' : 'ROLLBACK');
     return value;
   } catch (error) {
@@ -175,10 +260,13 @@ async function withRoundLock(userId, roundId, providerKey, fn) {
  * @param {string} args.type    BET | WIN | ROLLBACK | REFUND
  * @param {number} args.amountPaise
  *
+ * A BET's stake is split across the pockets by the board rule (STAKE_POCKETS);
+ * a reversal returns each part to its own pocket; a WIN pays into winnings.
+ *
  * @returns one of
  *   { ok: true,  idempotent: false, round, balances }
  *   { ok: true,  idempotent: true,  round }              duplicate callback
- *   { ok: false, reason: 'insufficient' }                player cannot cover a BET
+ *   { ok: false, reason: 'insufficient' }                the pockets cannot cover a BET
  *   { ok: false, reason: 'no_prior_debit' }              rollback with nothing to reverse
  *   { ok: false, reason: 'refund_exceeds_debit', … }     rollback larger than the bet
  */
@@ -193,6 +281,12 @@ export async function recordCallback({
   if (!Number.isInteger(amountPaise) || amountPaise <= 0) {
     throw new TypeError(`recordCallback: amountPaise must be a positive integer, got ${amountPaise}`);
   }
+  // The board's reserve share, from the one config field a board bet reads
+  // (the spec fills its default). Read before the lock: it is policy, not a
+  // balance, and the wallet lock is not held across a config fetch.
+  const reserveBp = type === CASINO_TX.BET
+    ? reserveBasisPoints((await getSystemConfig()).betReservePercent)
+    : null;
 
   const result = await withRoundLock(userId, roundId, providerKey, async (ctx) => {
     // ── Whose round this is, is the KEY — not a check ───────────────────────
@@ -260,31 +354,65 @@ export async function recordCallback({
       return { commit: false, value: { ok: true, idempotent: true, round: ctx.round } };
     }
 
-    // Advance the round's running total. The `refunded_paise <= debited_paise`
-    // CHECK fires here if the guard above were ever removed or bypassed — the
-    // constraint is what makes the bound a property of the DATA rather than of
-    // this function.
+    // ── Which pockets move, and by how much ─────────────────────────────────
+    // After the idempotency gate on purpose (§32 S34): a redelivered BET whose
+    // stake the pockets could no longer fund is "already done", not
+    // "cannot afford". A BET is split from the balances the lock holds; a
+    // reversal returns what is still out of each pocket, winnings last; a WIN
+    // pays into winnings and touches no part of the stake.
+    const debiting = type === CASINO_TX.BET;
+    const parts = debiting ? stakeParts(ctx.balances, amountPaise, reserveBp)
+      : type === CASINO_TX.WIN ? [{ field: WIN_POCKET, amountPaise }]
+        : returnParts(ctx.round, amountPaise);
+    if (!parts) {
+      return {
+        commit: false,
+        value: { ok: false, reason: debiting ? 'insufficient' : 'stake_split_unknown', roundId: ctx.rid },
+      };
+    }
+
+    // Advance the round's running total and, for a stake or its return, each
+    // pocket's part. The round's CHECKs fire here whatever reached this UPDATE
+    // — `refunded_paise <= debited_paise`, the parts adding up to the totals,
+    // no pocket getting back more than it gave — and the return-order trigger
+    // with them: the constraints make the bounds a property of the DATA rather
+    // than of this function.
     const column = ROUND_COLUMN[type];
+    const stakeMoved = type === CASINO_TX.WIN ? [] : parts;
+    const sets = [`${column} = ${column} + $4`, ...stakeMoved.map((p, i) => {
+      const part = `${debiting ? 'debited' : 'refunded'}_${p.column}_paise`;
+      return `${part} = ${part} + $${5 + i}`;
+    })];
     const { rows: [updated] } = await ctx.client.query(
-      `UPDATE casino_rounds SET ${column} = ${column} + $4, updated_at = now()
+      `UPDATE casino_rounds SET ${sets.join(', ')}, updated_at = now()
         WHERE provider_key = $1 AND user_id = $2 AND round_id = $3 RETURNING *`,
-      [ctx.provider, ctx.uid, ctx.rid, amountPaise],
+      [ctx.provider, ctx.uid, ctx.rid, amountPaise, ...stakeMoved.map((p) => p.amountPaise)],
     );
 
-    const debiting = type === CASINO_TX.BET;
+    const note = reason || `Casino ${type} round ${ctx.rid}`;
     const movement = await applyMovementWithin(ctx, {
-      // A BET takes from deposit; everything else gives back. The old path
-      // refunds into `depositBalance` too, so the two stores agree on which
-      // pocket a reversal lands in.
-      legs: [{ field: 'depositBalance', deltaPaise: debiting ? 0 - amountPaise : amountPaise }],
-      ledger: [{
-        txId: `casino_${txId}`,
-        field: debiting ? 'depositBalance' : (type === CASINO_TX.WIN ? 'winningsBalance' : 'depositBalance'),
-        amountPaise: debiting ? 0 - amountPaise : amountPaise,
+      legs: parts.map((p) => ({ field: p.field, deltaPaise: debiting ? 0 - p.amountPaise : p.amountPaise })),
+      // One ledger row per pocket that moved, each naming that pocket — what
+      // the player's History shows. The first is keyed `casino_<provider id>`,
+      // the movement's key, whichever pocket it is; each further part
+      // `casino:<pocket>:<provider id>`. The two shapes differ before the
+      // provider's id begins, so no provider id can spell another callback's
+      // part key, and a replay always carries the first key.
+      ledger: parts.map((p, i) => ({
+        txId: i === 0 ? `casino_${txId}` : `casino:${p.field}:${txId}`,
+        field: p.field,
+        amountPaise: debiting ? 0 - p.amountPaise : p.amountPaise,
         type: debiting ? 'DEBIT' : 'CREDIT',
-        reason: reason || `Casino ${type} round ${ctx.rid}`,
+        reason: note,
         refId: ctx.rid,
-      }],
+      })),
+      // The house is the other side, in this transaction: a BET's stake joins
+      // HOUSE_RESERVE; a WIN or a reversal comes out of it, and past what it
+      // holds from the platform's own (`treasury.postHouseSettlement`).
+      counterparty: {
+        house: true, operation: `CASINO_${type}`, reason: note,
+        refModel: 'CasinoRound', refId: ctx.rid,
+      },
     });
 
     if (movement.idempotent) {
@@ -294,7 +422,7 @@ export async function recordCallback({
       return { commit: false, value: { ok: false, reason: 'inconsistent_idempotency', txId } };
     }
     if (!movement.ok) {
-      return { commit: false, value: { ok: false, reason: 'insufficient' } };
+      return { commit: false, value: { ok: false, reason: movement.refused ?? 'insufficient' } };
     }
 
     return {

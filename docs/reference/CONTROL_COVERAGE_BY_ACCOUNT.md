@@ -2,72 +2,77 @@
 
 > **GENERATED** by `npm run report:control-gaps` from the control manifests `npm run test:browser`
 > writes, one per account (`BB_PROFILE=<name>`) and screen size (`BB_VIEWPORT=phone`), and the drive
-> report. Never edit by hand; re-run the inventories and regenerate.
+> reports `npm run test:drive` writes (the default accounts, and `BB_PROFILE=<name>` for an account
+> pressed as itself). Never edit by hand; re-run the inventories and drives and regenerate.
 >
-> The drive and mutate passes press as ONE account per panel. A control another account is shown
-> and the default is not has therefore never been pressed by anything — those are listed under
-> **Only here**, and they are the gaps. Nothing here is a claim that a control WORKS (§35).
+> The default drive and the mutate pass press as ONE account per panel. A control another account is
+> shown and the default is not is listed under **Only here**. Where that account was driven as itself,
+> each is classified by the §35 kind of evidence its press produced; every other one has never been
+> pressed by anything — those are the gaps. Nothing here is a claim that a control WORKS: MUTATION is
+> only `test:mutate`'s to claim (§35).
 
 ## Inputs
 
 | Manifest | Account | Viewport | Screens | Controls | Taken |
 |---|---|---|---|---|---|
-| `controls.manifest.json` | default — the accounts the drive and mutate passes press as | desktop | 64 | 609 | 2026-10-04T08:00:36.197Z |
-| `controls.manifest.merchant-offline.json` | **merchant-offline** — a cash-team merchant who is offline | desktop | 6 | 37 | 2026-10-04T08:46:24.165Z |
-| `controls.manifest.merchant-paused.json` | **merchant-paused** — a cash-team merchant whose assignment is paused (three unpaid buys) | desktop | 6 | 37 | 2026-10-04T08:46:38.796Z |
-| `controls.manifest.merchant-supervisor.json` | **merchant-supervisor** — a supervisor running one full cash team, its members offline | desktop | 6 | 66 | 2026-10-04T08:45:39.672Z |
-| `controls.manifest.merchant-suspended.json` | **merchant-suspended** — a cash-team merchant an admin suspended while they were signed in | desktop | 1 | 5 | 2026-10-04T08:45:33.210Z |
-| `controls.manifest.merchant-upi.json` | **merchant-upi** — an INR merchant in a working UPI/bank team | desktop | 6 | 35 | 2026-10-04T08:45:54.426Z |
-| `controls.manifest.merchant-usdt.json` | **merchant-usdt** — a USDT merchant in a working USDT team, with an address on both chains | desktop | 6 | 35 | 2026-10-04T08:46:09.333Z |
-| `controls.manifest.phantom-agent.json` | **phantom-agent** — a phantom agent (phantom_access BOTH) — the only account that sees GHOST MODE | desktop | 16 | 147 | 2026-10-04T08:04:51.859Z |
-| `controls.manifest.phone.json` | **default** — the accounts the drive and mutate passes press as | phone | 64 | 627 | 2026-10-04T08:02:43.196Z |
-| `controls.manifest.player-blocked.json` | **player-blocked** — a player an admin has blocked | desktop | 16 | 137 | 2026-10-04T08:06:30.423Z |
-| `controls.manifest.player-unverified.json` | **player-unverified** — a player who has not shared their contact or joined the channel — the gate | desktop | 16 | 147 | 2026-10-04T08:05:57.183Z |
-| `controls.manifest.player-zero-balance.json` | **player-zero-balance** — a verified player with no money | desktop | 16 | 145 | 2026-10-04T08:05:24.476Z |
-| `controls.manifest.queue-manager.json` | **queue-manager** — a queue manager (no areas; works the payment queue) | desktop | 42 | 62 | 2026-10-04T08:12:06.469Z |
-| `controls.manifest.subadmin-all.json` | **subadmin-all** — a sub-admin granted every area | desktop | 42 | 443 | 2026-10-04T08:10:50.170Z |
-| `controls.manifest.subadmin-analytics.json` | **subadmin-analytics** — a sub-admin granted only "View analytics" | desktop | 42 | 91 | 2026-10-04T08:08:18.808Z |
-| `controls.manifest.subadmin-none.json` | **subadmin-none** — a sub-admin granted no areas | desktop | 42 | 10 | 2026-10-04T08:07:03.122Z |
-| `controls.manifest.subadmin-players.json` | **subadmin-players** — a sub-admin granted players and transactions, nothing that moves money | desktop | 42 | 80 | 2026-10-04T08:09:34.846Z |
+| `controls.manifest.json` | default — the accounts the drive and mutate passes press as | desktop | 64 | 609 | 2026-10-07T14:44:49.020Z |
+| `controls.manifest.merchant-offline.json` | **merchant-offline** — a cash-team merchant who is offline | desktop | 6 | 37 | 2026-10-07T14:58:07.346Z |
+| `controls.manifest.merchant-paused.json` | **merchant-paused** — a cash-team merchant whose assignment is paused (three unpaid buys) | desktop | 6 | 37 | 2026-10-07T14:58:22.138Z |
+| `controls.manifest.merchant-supervisor.json` | **merchant-supervisor** — a supervisor running one full cash team, its members offline | desktop | 6 | 66 | 2026-10-07T14:58:43.543Z |
+| `controls.manifest.merchant-suspended.json` | **merchant-suspended** — a cash-team merchant an admin suspended while they were signed in | desktop | 1 | 5 | 2026-10-07T14:58:37.075Z |
+| `controls.manifest.merchant-upi.json` | **merchant-upi** — an INR merchant in a working UPI/bank team | desktop | 6 | 35 | 2026-10-07T14:57:37.113Z |
+| `controls.manifest.merchant-usdt.json` | **merchant-usdt** — a USDT merchant in a working USDT team, with an address on both chains | desktop | 6 | 35 | 2026-10-07T14:57:52.315Z |
+| `controls.manifest.phantom-agent.json` | **phantom-agent** — a phantom agent (phantom_access BOTH) — the only account that sees GHOST MODE | desktop | 16 | 147 | 2026-10-07T14:49:00.694Z |
+| `controls.manifest.phone.json` | **default** — the accounts the drive and mutate passes press as | phone | 64 | 627 | 2026-10-07T14:46:51.500Z |
+| `controls.manifest.player-blocked.json` | **player-blocked** — a player an admin has blocked | desktop | 16 | 137 | 2026-10-07T14:50:41.867Z |
+| `controls.manifest.player-unverified.json` | **player-unverified** — a player who has not shared their contact or joined the channel — the gate | desktop | 16 | 147 | 2026-10-07T14:50:07.247Z |
+| `controls.manifest.player-zero-balance.json` | **player-zero-balance** — a verified player with no money | desktop | 16 | 145 | 2026-10-07T14:49:34.310Z |
+| `controls.manifest.queue-manager.json` | **queue-manager** — a queue manager (no areas; works the payment queue) | desktop | 42 | 62 | 2026-10-07T14:56:20.788Z |
+| `controls.manifest.subadmin-all.json` | **subadmin-all** — a sub-admin granted every area | desktop | 42 | 443 | 2026-10-07T14:55:03.648Z |
+| `controls.manifest.subadmin-analytics.json` | **subadmin-analytics** — a sub-admin granted only "View analytics" | desktop | 42 | 91 | 2026-10-07T14:52:31.673Z |
+| `controls.manifest.subadmin-none.json` | **subadmin-none** — a sub-admin granted no areas | desktop | 42 | 10 | 2026-10-07T14:51:15.133Z |
+| `controls.manifest.subadmin-players.json` | **subadmin-players** — a sub-admin granted players and transactions, nothing that moves money | desktop | 42 | 80 | 2026-10-07T14:53:47.766Z |
 
-Drive report: 982 presses, taken 2026-10-04T08:23:03.423Z.
+Drive report (default accounts): 986 presses, taken 2026-10-07T14:58:58.591Z.
+
+Drive report as **merchant-supervisor** (`drive.report.merchant-supervisor.json`): 58 presses, taken 2026-10-07T15:14:41.713Z.
 
 ## Summary
 
-| Account | Panel | Screens | Controls seen | **Only here (never pressed)** | Default's controls not shown | Screens that sent it elsewhere |
-|---|---|---|---|---|---|---|
-| merchant-offline | merchant-panel | 6 | 37 | **2** | 4 | 1 |
-| merchant-paused | merchant-panel | 6 | 37 | **1** | 1 | 1 |
-| merchant-supervisor | merchant-panel | 6 | 66 | **33** | 6 | 1 |
-| merchant-suspended | merchant-panel | 1 | 5 | **5** | 37 | 0 |
-| merchant-upi | merchant-panel | 6 | 35 | **1** | 3 | 1 |
-| merchant-usdt | merchant-panel | 6 | 35 | **1** | 3 | 1 |
-| phantom-agent | user-panel | 16 | 147 | **13** | 5 | 1 |
-| default (phone) | user-panel, admin-panel, merchant-panel | 64 | 627 | **27** | 9 | 2 |
-| player-blocked | user-panel | 16 | 137 | **13** | 14 | 1 |
-| player-unverified | user-panel | 16 | 147 | **14** | 5 | 1 |
-| player-zero-balance | user-panel | 16 | 145 | **13** | 6 | 1 |
-| queue-manager | admin-panel | 42 | 62 | **7** | 417 | 1 |
-| subadmin-all | admin-panel | 42 | 443 | **14** | 5 | 0 |
-| subadmin-analytics | admin-panel | 42 | 91 | **2** | 377 | 0 |
-| subadmin-none | admin-panel | 42 | 10 | **0** | 424 | 0 |
-| subadmin-players | admin-panel | 42 | 80 | **12** | 403 | 1 |
+| Account | Panel | Screens | Controls seen | Only here | Only here, driven as this account (per slot, by kind) | **Only here, never pressed** | Default's controls not shown | Screens that sent it elsewhere |
+|---|---|---|---|---|---|---|---|---|
+| merchant-offline | merchant-panel | 6 | 37 | 2 | not driven as itself | **2** | 4 | 1 |
+| merchant-paused | merchant-panel | 6 | 37 | 1 | not driven as itself | **1** | 1 | 1 |
+| merchant-supervisor | merchant-panel | 6 | 66 | 33 | SCREEN_MOVED 18 · DISABLED 4 · DRIVEN_ELSEWHERE 10 · NOT_REACHED 3 (of 35 slots) | **6** | 6 | 1 |
+| merchant-suspended | merchant-panel | 1 | 5 | 5 | not driven as itself | **5** | 37 | 0 |
+| merchant-upi | merchant-panel | 6 | 35 | 1 | not driven as itself | **1** | 3 | 1 |
+| merchant-usdt | merchant-panel | 6 | 35 | 1 | not driven as itself | **1** | 3 | 1 |
+| phantom-agent | user-panel | 16 | 147 | 13 | not driven as itself | **13** | 5 | 1 |
+| default (phone) | user-panel, admin-panel, merchant-panel | 64 | 627 | 27 | not driven as itself | **27** | 9 | 2 |
+| player-blocked | user-panel | 16 | 137 | 13 | not driven as itself | **13** | 14 | 1 |
+| player-unverified | user-panel | 16 | 147 | 14 | not driven as itself | **14** | 5 | 1 |
+| player-zero-balance | user-panel | 16 | 145 | 13 | not driven as itself | **13** | 6 | 1 |
+| queue-manager | admin-panel | 42 | 62 | 7 | not driven as itself | **7** | 417 | 1 |
+| subadmin-all | admin-panel | 42 | 443 | 14 | not driven as itself | **14** | 5 | 0 |
+| subadmin-analytics | admin-panel | 42 | 91 | 2 | not driven as itself | **2** | 377 | 0 |
+| subadmin-none | admin-panel | 42 | 10 | 0 | not driven as itself | **0** | 424 | 0 |
+| subadmin-players | admin-panel | 42 | 80 | 12 | not driven as itself | **12** | 403 | 1 |
 
-Distinct controls that exist only for some non-default account or screen size, and that nothing has pressed: **94** (on 137 screen slots).
+Distinct controls that exist only for some non-default account or screen size, and that nothing has pressed: **67** (on 110 screen slots).
 
-The default accounts: 609 controls inventoried; 10 never pressed by the drive at all (absent from its report, or DISABLED/GONE/UNREACHABLE), and 64 deferred to a mutating case (DRIVEN_ELSEWHERE — a pointer, not a proof, §35.1).
+The default accounts: 609 controls inventoried; 26 on screens never pressed by the drive (absent from its report, or DISABLED/GONE/UNREACHABLE/THROTTLED), and 64 deferred to a mutating case (DRIVEN_ELSEWHERE — a pointer, not a proof, §35.1).
 
 ## Per account
 
 ### merchant-offline
 
-a cash-team merchant who is offline — merchant-panel, desktop, taken 2026-10-04T08:46:24.165Z.
+a cash-team merchant who is offline — merchant-panel, desktop, taken 2026-10-07T14:58:07.346Z.
 
 **Only here, never pressed by anything: 2 distinct control(s), on 4 screen slot(s).** Not shown to this account (the default sees them): 4. Screens that sent it elsewhere: 1.
 
 | Screen(s) | Kind | Control |
 |---|---|---|
-| `(shell)` | button | E e2e-merch-cdcp17-1 INR operator |
+| `(shell)` | button | E e2e-merch-5wkn85-1 INR operator |
 | `/`, `/dashboard`, `(shell)` | button | Go online |
 
 Screens that did not stay where they were opened:
@@ -78,13 +83,13 @@ Screens that did not stay where they were opened:
 
 ### merchant-paused
 
-a cash-team merchant whose assignment is paused (three unpaid buys) — merchant-panel, desktop, taken 2026-10-04T08:46:38.796Z.
+a cash-team merchant whose assignment is paused (three unpaid buys) — merchant-panel, desktop, taken 2026-10-07T14:58:22.138Z.
 
 **Only here, never pressed by anything: 1 distinct control(s), on 1 screen slot(s).** Not shown to this account (the default sees them): 1. Screens that sent it elsewhere: 1.
 
 | Screen(s) | Kind | Control |
 |---|---|---|
-| `(shell)` | button | E e2e-merch-1tuia7-1 INR operator |
+| `(shell)` | button | E e2e-merch-z90dk1-1 INR operator |
 
 Screens that did not stay where they were opened:
 
@@ -94,45 +99,47 @@ Screens that did not stay where they were opened:
 
 ### merchant-supervisor
 
-a supervisor running one full cash team, its members offline — merchant-panel, desktop, taken 2026-10-04T08:45:39.672Z.
+a supervisor running one full cash team, its members offline — merchant-panel, desktop, taken 2026-10-07T14:58:43.543Z.
 
-**Only here, never pressed by anything: 33 distinct control(s), on 35 screen slot(s).** Not shown to this account (the default sees them): 6. Screens that sent it elsewhere: 1.
+**Only here: 33 distinct control(s), on 35 screen slot(s). Pressed as this account by `BB_PROFILE=merchant-supervisor npm run test:drive` (2026-10-07T15:14:41.713Z), per slot, by kind of evidence: SCREEN_MOVED 18 · DISABLED 4 · DRIVEN_ELSEWHERE 10 · NOT_REACHED 3.** Never pressed by anything: 6 distinct (7 slots). Not shown to this account (the default sees them): 6. Screens that sent it elsewhere: 1.
 
-| Screen(s) | Kind | Control |
-|---|---|---|
-| `(shell)` | button | E e2e-merch-6gqj34-1 INR operator |
-| `/`, `/dashboard`, `(shell)` | button | Go online |
-| `/team` | input:text | New team name |
-| `/team` | button | Create team *(disabled)* |
-| `/team` | select | Request for e2e-team-CASH-6gqj34-3 |
-| `/team` | input:text | Tokens for e2e-team-CASH-6gqj34-3 |
-| `/team` | input:text | Note for the admin (optional) |
-| `/team` | button | Send e2e-team-CASH-6gqj34-3 request *(disabled)* |
-| `/team` | button | Show e2e-team-CASH-6gqj34-3 pool history |
-| `/team` | button | Log of e2e-merch-6gqj34-10 |
-| `/team` | button | Log of e2e-merch-6gqj34-12 |
-| `/team` | button | Log of e2e-merch-6gqj34-14 |
-| `/team` | button | Log of e2e-merch-6gqj34-16 |
-| `/team` | button | Log of e2e-merch-6gqj34-18 |
-| `/team` | button | Log of e2e-merch-6gqj34-20 |
-| `/team` | button | Log of e2e-merch-6gqj34-22 |
-| `/team` | button | Log of e2e-merch-6gqj34-4 |
-| `/team` | button | Log of e2e-merch-6gqj34-6 |
-| `/team` | button | Log of e2e-merch-6gqj34-8 |
-| `/team` | button | Remove e2e-merch-6gqj34-4 |
-| `/team` | button | Remove e2e-merch-6gqj34-6 |
-| `/team` | button | Remove e2e-merch-6gqj34-8 |
-| `/team` | button | Remove e2e-merch-6gqj34-10 |
-| `/team` | button | Remove e2e-merch-6gqj34-12 |
-| `/team` | button | Remove e2e-merch-6gqj34-14 |
-| `/team` | button | Remove e2e-merch-6gqj34-16 |
-| `/team` | button | Remove e2e-merch-6gqj34-18 |
-| `/team` | button | Remove e2e-merch-6gqj34-20 |
-| `/team` | button | Remove e2e-merch-6gqj34-22 |
-| `/team` | input:text | Add a member to e2e-team-CASH-6gqj34-3 — their merchant ID |
-| `/team` | button | Add *(disabled)* |
-| `/team` | input:text | Team name |
-| `/team` | button | Rename *(disabled)* |
+No kind here is MUTATION: the drive reads the screen, not the database. DRIVEN_ELSEWHERE is a pointer to `test:mutate`, not a proof; read that pass's output for the case. The shell is pressed by no pass, so a shell control counts as NOT_REACHED.
+
+| Screen(s) | Kind | Control | Pressed as this account |
+|---|---|---|---|
+| `(shell)` | button | E e2e-merch-92mhc3-1 INR operator | NOT_REACHED |
+| `/`, `/dashboard`, `(shell)` | button | Go online | SCREEN_MOVED, NOT_REACHED |
+| `/team` | input:text | New team name | SCREEN_MOVED |
+| `/team` | button | Create team *(disabled)* | DISABLED |
+| `/team` | select | Request for e2e-team-CASH-92mhc3-3 | SCREEN_MOVED |
+| `/team` | input:text | Tokens for e2e-team-CASH-92mhc3-3 | SCREEN_MOVED |
+| `/team` | input:text | Note for the admin (optional) | SCREEN_MOVED |
+| `/team` | button | Send e2e-team-CASH-92mhc3-3 request *(disabled)* | DISABLED |
+| `/team` | button | Show e2e-team-CASH-92mhc3-3 pool history | SCREEN_MOVED |
+| `/team` | button | Log of e2e-merch-92mhc3-10 | SCREEN_MOVED |
+| `/team` | button | Log of e2e-merch-92mhc3-12 | SCREEN_MOVED |
+| `/team` | button | Log of e2e-merch-92mhc3-14 | SCREEN_MOVED |
+| `/team` | button | Log of e2e-merch-92mhc3-16 | SCREEN_MOVED |
+| `/team` | button | Log of e2e-merch-92mhc3-18 | SCREEN_MOVED |
+| `/team` | button | Log of e2e-merch-92mhc3-20 | SCREEN_MOVED |
+| `/team` | button | Log of e2e-merch-92mhc3-22 | SCREEN_MOVED |
+| `/team` | button | Log of e2e-merch-92mhc3-4 | SCREEN_MOVED |
+| `/team` | button | Log of e2e-merch-92mhc3-6 | SCREEN_MOVED |
+| `/team` | button | Log of e2e-merch-92mhc3-8 | SCREEN_MOVED |
+| `/team` | button | Remove e2e-merch-92mhc3-4 | DRIVEN_ELSEWHERE |
+| `/team` | button | Remove e2e-merch-92mhc3-6 | DRIVEN_ELSEWHERE |
+| `/team` | button | Remove e2e-merch-92mhc3-8 | DRIVEN_ELSEWHERE |
+| `/team` | button | Remove e2e-merch-92mhc3-10 | DRIVEN_ELSEWHERE |
+| `/team` | button | Remove e2e-merch-92mhc3-12 | DRIVEN_ELSEWHERE |
+| `/team` | button | Remove e2e-merch-92mhc3-14 | DRIVEN_ELSEWHERE |
+| `/team` | button | Remove e2e-merch-92mhc3-16 | DRIVEN_ELSEWHERE |
+| `/team` | button | Remove e2e-merch-92mhc3-18 | DRIVEN_ELSEWHERE |
+| `/team` | button | Remove e2e-merch-92mhc3-20 | DRIVEN_ELSEWHERE |
+| `/team` | button | Remove e2e-merch-92mhc3-22 | DRIVEN_ELSEWHERE |
+| `/team` | input:text | Add a member to e2e-team-CASH-92mhc3-3 — their merchant ID | SCREEN_MOVED |
+| `/team` | button | Add *(disabled)* | DISABLED |
+| `/team` | input:text | Team name | SCREEN_MOVED |
+| `/team` | button | Rename *(disabled)* | DISABLED |
 
 Screens that did not stay where they were opened:
 
@@ -152,7 +159,7 @@ Screens that did not stay where they were opened:
 
 ### merchant-suspended
 
-a cash-team merchant an admin suspended while they were signed in — merchant-panel, desktop, taken 2026-10-04T08:45:33.210Z.
+a cash-team merchant an admin suspended while they were signed in — merchant-panel, desktop, taken 2026-10-07T14:58:37.075Z.
 
 **Only here, never pressed by anything: 5 distinct control(s), on 5 screen slot(s).** Not shown to this account (the default sees them): 37. Screens that sent it elsewhere: 0.
 
@@ -174,13 +181,13 @@ a cash-team merchant an admin suspended while they were signed in — merchant-p
 
 ### merchant-upi
 
-an INR merchant in a working UPI/bank team — merchant-panel, desktop, taken 2026-10-04T08:45:54.426Z.
+an INR merchant in a working UPI/bank team — merchant-panel, desktop, taken 2026-10-07T14:57:37.113Z.
 
 **Only here, never pressed by anything: 1 distinct control(s), on 1 screen slot(s).** Not shown to this account (the default sees them): 3. Screens that sent it elsewhere: 1.
 
 | Screen(s) | Kind | Control |
 |---|---|---|
-| `(shell)` | button | E e2e-merch-z1w7si-1 INR operator |
+| `(shell)` | button | E e2e-merch-aggzye-1 INR operator |
 
 Screens that did not stay where they were opened:
 
@@ -199,13 +206,13 @@ Screens that did not stay where they were opened:
 
 ### merchant-usdt
 
-a USDT merchant in a working USDT team, with an address on both chains — merchant-panel, desktop, taken 2026-10-04T08:46:09.333Z.
+a USDT merchant in a working USDT team, with an address on both chains — merchant-panel, desktop, taken 2026-10-07T14:57:52.315Z.
 
 **Only here, never pressed by anything: 1 distinct control(s), on 1 screen slot(s).** Not shown to this account (the default sees them): 3. Screens that sent it elsewhere: 1.
 
 | Screen(s) | Kind | Control |
 |---|---|---|
-| `(shell)` | button | E e2e-merch-gyn0zf-1 USDT operator |
+| `(shell)` | button | E e2e-merch-7x896u-1 USDT operator |
 
 Screens that did not stay where they were opened:
 
@@ -225,7 +232,7 @@ Screens that did not stay where they were opened:
 
 ### phantom-agent
 
-a phantom agent (phantom_access BOTH) — the only account that sees GHOST MODE — user-panel, desktop, taken 2026-10-04T08:04:51.859Z.
+a phantom agent (phantom_access BOTH) — the only account that sees GHOST MODE — user-panel, desktop, taken 2026-10-07T14:49:00.694Z.
 
 **Only here, never pressed by anything: 13 distinct control(s), on 14 screen slot(s).** Not shown to this account (the default sees them): 5. Screens that sent it elsewhere: 1.
 
@@ -263,7 +270,7 @@ Screens that did not stay where they were opened:
 
 ### default (phone)
 
-the accounts the drive and mutate passes press as — user-panel, admin-panel, merchant-panel, phone, taken 2026-10-04T08:02:43.196Z.
+the accounts the drive and mutate passes press as — user-panel, admin-panel, merchant-panel, phone, taken 2026-10-07T14:46:51.500Z.
 
 **Only here, never pressed by anything: 27 distinct control(s), on 27 screen slot(s).** Not shown to this account (the default sees them): 9. Screens that sent it elsewhere: 2.
 
@@ -286,16 +293,16 @@ the accounts the drive and mutate passes press as — user-panel, admin-panel, m
 | `/faq` | button | How do I buy tokens? + |
 | `/faq` | button | How do I withdraw winnings? + |
 | `/faq` | button | What happens if my deposit is stuck? + |
-| `/teams` | button | Remove e2e-merch-krkvsz-1 |
-| `/teams` | button | Remove e2e-merch-krkvsz-6 |
-| `/teams` | button | Remove e2e-merch-krkvsz-8 |
-| `/teams` | button | Remove e2e-merch-krkvsz-10 |
-| `/teams` | button | Remove e2e-merch-krkvsz-12 |
-| `/teams` | button | Remove e2e-merch-krkvsz-14 |
-| `/teams` | button | Remove e2e-merch-krkvsz-16 |
-| `/teams` | button | Remove e2e-merch-krkvsz-18 |
-| `/teams` | button | Remove e2e-merch-krkvsz-20 |
-| `/teams` | button | Remove e2e-merch-krkvsz-22 |
+| `/teams` | button | Remove e2e-merch-z69ydw-1 |
+| `/teams` | button | Remove e2e-merch-z69ydw-6 |
+| `/teams` | button | Remove e2e-merch-z69ydw-8 |
+| `/teams` | button | Remove e2e-merch-z69ydw-10 |
+| `/teams` | button | Remove e2e-merch-z69ydw-12 |
+| `/teams` | button | Remove e2e-merch-z69ydw-14 |
+| `/teams` | button | Remove e2e-merch-z69ydw-16 |
+| `/teams` | button | Remove e2e-merch-z69ydw-18 |
+| `/teams` | button | Remove e2e-merch-z69ydw-20 |
+| `/teams` | button | Remove e2e-merch-z69ydw-22 |
 
 Screens that did not stay where they were opened:
 
@@ -320,7 +327,7 @@ Screens that did not stay where they were opened:
 
 ### player-blocked
 
-a player an admin has blocked — user-panel, desktop, taken 2026-10-04T08:06:30.423Z.
+a player an admin has blocked — user-panel, desktop, taken 2026-10-07T14:50:41.867Z.
 
 **Only here, never pressed by anything: 13 distinct control(s), on 13 screen slot(s).** Not shown to this account (the default sees them): 14. Screens that sent it elsewhere: 1.
 
@@ -357,7 +364,7 @@ Screens that did not stay where they were opened:
 
 ### player-unverified
 
-a player who has not shared their contact or joined the channel — the gate — user-panel, desktop, taken 2026-10-04T08:05:57.183Z.
+a player who has not shared their contact or joined the channel — the gate — user-panel, desktop, taken 2026-10-07T14:50:07.247Z.
 
 **Only here, never pressed by anything: 14 distinct control(s), on 14 screen slot(s).** Not shown to this account (the default sees them): 5. Screens that sent it elsewhere: 1.
 
@@ -394,7 +401,7 @@ Screens that did not stay where they were opened:
 
 ### player-zero-balance
 
-a verified player with no money — user-panel, desktop, taken 2026-10-04T08:05:24.476Z.
+a verified player with no money — user-panel, desktop, taken 2026-10-07T14:49:34.310Z.
 
 **Only here, never pressed by anything: 13 distinct control(s), on 13 screen slot(s).** Not shown to this account (the default sees them): 6. Screens that sent it elsewhere: 1.
 
@@ -430,7 +437,7 @@ Screens that did not stay where they were opened:
 
 ### queue-manager
 
-a queue manager (no areas; works the payment queue) — admin-panel, desktop, taken 2026-10-04T08:12:06.469Z.
+a queue manager (no areas; works the payment queue) — admin-panel, desktop, taken 2026-10-07T14:56:20.788Z.
 
 **Only here, never pressed by anything: 7 distinct control(s), on 45 screen slot(s).** Not shown to this account (the default sees them): 417. Screens that sent it elsewhere: 1.
 
@@ -495,7 +502,7 @@ Screens that did not stay where they were opened:
 
 ### subadmin-all
 
-a sub-admin granted every area — admin-panel, desktop, taken 2026-10-04T08:10:50.170Z.
+a sub-admin granted every area — admin-panel, desktop, taken 2026-10-07T14:55:03.648Z.
 
 **Only here, never pressed by anything: 14 distinct control(s), on 14 screen slot(s).** Not shown to this account (the default sees them): 5. Screens that sent it elsewhere: 0.
 
@@ -503,16 +510,16 @@ a sub-admin granted every area — admin-panel, desktop, taken 2026-10-04T08:10:
 |---|---|---|
 | `/` | button | Blocked users 1 |
 | `/sub-admins` | link | Go to a screen you can use |
-| `/teams` | button | Remove e2e-merch-krkvsz-1 |
-| `/teams` | button | Remove e2e-merch-krkvsz-6 |
-| `/teams` | button | Remove e2e-merch-krkvsz-8 |
-| `/teams` | button | Remove e2e-merch-krkvsz-10 |
-| `/teams` | button | Remove e2e-merch-krkvsz-12 |
-| `/teams` | button | Remove e2e-merch-krkvsz-14 |
-| `/teams` | button | Remove e2e-merch-krkvsz-16 |
-| `/teams` | button | Remove e2e-merch-krkvsz-18 |
-| `/teams` | button | Remove e2e-merch-krkvsz-20 |
-| `/teams` | button | Remove e2e-merch-krkvsz-22 |
+| `/teams` | button | Remove e2e-merch-z69ydw-1 |
+| `/teams` | button | Remove e2e-merch-z69ydw-6 |
+| `/teams` | button | Remove e2e-merch-z69ydw-8 |
+| `/teams` | button | Remove e2e-merch-z69ydw-10 |
+| `/teams` | button | Remove e2e-merch-z69ydw-12 |
+| `/teams` | button | Remove e2e-merch-z69ydw-14 |
+| `/teams` | button | Remove e2e-merch-z69ydw-16 |
+| `/teams` | button | Remove e2e-merch-z69ydw-18 |
+| `/teams` | button | Remove e2e-merch-z69ydw-20 |
+| `/teams` | button | Remove e2e-merch-z69ydw-22 |
 | `/users` | button | Unblock |
 | `/users/phantom-agents` | button | Change scope |
 
@@ -520,7 +527,6 @@ a sub-admin granted every area — admin-panel, desktop, taken 2026-10-04T08:10:
 
 | Screen | This account | Default | What the screen said |
 |---|---|---|---|
-| `/live-cycles` | 7 | 10 | Active Cycles 2 Total Book ₹0 Phantom Exposure ₹0 Next Settlement 19:01 Refresh 30MIN_1791 |
 | `/cycle-history` | 18 | 8 | Total Cycles 11 1-Min 11 30-Min 0 Full Day 0 Total Paid Out ₹0 Net Revenue ₹0 All 1-Min 30 |
 | `/users` | 77 | 17 | Total Users 12 Active 11 Blocked 1 All Active Blocked Suspended PLAYER DEPOSIT WINNINGS LO |
 | `/merchants` | 95 | 51 | Merchants 22 Online 1 Approved 22 Pending 0 All Approved Pending Suspended Refresh Create  |
@@ -532,7 +538,7 @@ a sub-admin granted every area — admin-panel, desktop, taken 2026-10-04T08:10:
 
 ### subadmin-analytics
 
-a sub-admin granted only "View analytics" — admin-panel, desktop, taken 2026-10-04T08:08:18.808Z.
+a sub-admin granted only "View analytics" — admin-panel, desktop, taken 2026-10-07T14:52:31.673Z.
 
 **Only here, never pressed by anything: 2 distinct control(s), on 34 screen slot(s).** Not shown to this account (the default sees them): 377. Screens that sent it elsewhere: 0.
 
@@ -545,7 +551,7 @@ a sub-admin granted only "View analytics" — admin-panel, desktop, taken 2026-1
 
 | Screen | This account | Default | What the screen said |
 |---|---|---|---|
-| `/live-cycles` | 1 | 10 | Active Cycles 3 Total Book ₹0 Phantom Exposure ₹0 Next Settlement 00:33 Refresh 1MIN_17911 |
+| `/live-cycles` | 1 | 10 | Active Cycles 3 Total Book ₹0 Phantom Exposure ₹0 Next Settlement 00:20 Refresh 1MIN_17913 |
 | `/cycle-history` | 15 | 8 | Total Cycles 8 1-Min 8 30-Min 0 Full Day 0 Total Paid Out ₹0 Net Revenue ₹0 All 1-Min 30-M |
 | `/users` | 1 | 17 | You don’t have access to this screen |
 | `/merchants` | 1 | 51 | You don’t have access to this screen |
@@ -583,7 +589,7 @@ a sub-admin granted only "View analytics" — admin-panel, desktop, taken 2026-1
 
 ### subadmin-none
 
-a sub-admin granted no areas — admin-panel, desktop, taken 2026-10-04T08:07:03.122Z.
+a sub-admin granted no areas — admin-panel, desktop, taken 2026-10-07T14:51:15.133Z.
 
 **Only here, never pressed by anything: 0 distinct control(s), on 0 screen slot(s).** Not shown to this account (the default sees them): 424. Screens that sent it elsewhere: 0.
 
@@ -637,7 +643,7 @@ a sub-admin granted no areas — admin-panel, desktop, taken 2026-10-04T08:07:03
 
 ### subadmin-players
 
-a sub-admin granted players and transactions, nothing that moves money — admin-panel, desktop, taken 2026-10-04T08:09:34.846Z.
+a sub-admin granted players and transactions, nothing that moves money — admin-panel, desktop, taken 2026-10-07T14:53:47.766Z.
 
 **Only here, never pressed by anything: 12 distinct control(s), on 49 screen slot(s).** Not shown to this account (the default sees them): 403. Screens that sent it elsewhere: 1.
 
@@ -710,13 +716,29 @@ Screens that did not stay where they were opened:
 | Screen | Kind | Control | Drive verdict |
 |---|---|---|---|
 | `admin-panel/` | button | Blocked users 0 | not in the report |
-| `admin-panel/` | button | Merchant approvals 0 | not in the report |
 | `admin-panel/` | button | Online merchants 1 | not in the report |
+| `admin-panel/payment-references` | button | Look up | DISABLED |
+| `admin-panel/revenue` | button | Next | DISABLED |
+| `admin-panel/revenue` | button | Prev | DISABLED |
+| `admin-panel/sub-admins` | button | Grant | DISABLED |
+| `admin-panel/support-assistant` | button | Ingest document | DISABLED |
+| `admin-panel/teams` | button | Make supervisor | DISABLED |
+| `admin-panel/telegram` | button | Register bot | DISABLED |
+| `admin-panel/telegram` | button | Replace channel | DISABLED |
 | `merchant-panel/dashboard` | button | Go offline | not in the report |
+| `user-panel/` | button | 30M No results yet ANALYTICS ▲ | GONE |
 | `user-panel/casino` | button | 30M No results yet ANALYTICS ▲ | not in the report |
 | `user-panel/faq` | button | How does Delhi vs Bombay Bazaar work? + | not in the report |
 | `user-panel/faq` | button | Is there a minimum bet? + | not in the report |
 | `user-panel/faq` | button | What are the two cycle types? + | not in the report |
 | `user-panel/faq` | button | When can I withdraw my winnings? + | not in the report |
 | `user-panel/faq` | button | Why did the pools disappear before results? + | not in the report |
+| `user-panel/wallet` | button | 1,00,000 tokens | DISABLED |
+| `user-panel/wallet` | button | 1,000 tokens | DISABLED |
+| `user-panel/wallet` | button | 10,000 tokens | DISABLED |
+| `user-panel/wallet` | button | 5,00,000 tokens | DISABLED |
+| `user-panel/wallet` | button | 5,000 tokens | DISABLED |
+| `user-panel/wallet` | button | 50,000 tokens | DISABLED |
+| `user-panel/wallet` | button | 500 tokens | DISABLED |
+| `user-panel/wallet` | button | Continue to payment | DISABLED |
 

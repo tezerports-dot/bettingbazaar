@@ -5,7 +5,6 @@
 
 import express   from 'express';
 import { db } from '#db';
-import { creditDeposit, creditReserve } from '../wallet/walletAuthority.service.js';
 // AQ-2/AQ-8: sign via the single JWT authority; hash via the password authority
 // (argon2id + bcrypt verify-fallback). No direct bcrypt use remains here.
 import { signToken } from '../identity/jwt.util.js';
@@ -33,7 +32,7 @@ import {
 // Withdrawal settlement hold — confirm asserts payment, the worker settles it
 // once the dispute window passes. See withdrawalHold.service.js.
 import { holdMinutes } from '../payment/withdrawalHold.service.js';
-import { rejectedBuyDisputeMinutes } from '../payment/rejectedBuyWindow.service.js';
+import { rejectedBuyDisputeMinutes, unpaidRejectRefusal } from '../payment/rejectedBuyWindow.service.js';
 // A push to the PLAYER's socket goes through the player projection, like every
 // other thing a player receives.
 import { toPlayerOrderView } from '../payment/playerOrderView.js';
@@ -90,8 +89,8 @@ const NO_LONGER_YOURS = 'This order has been moved to another member, so nothing
  * the pool.
  */
 const formatMerchant = async (merchant, user = null) => {
-    // A merchant settles on exactly one rail; the panel renders UPI/bank OR the
-    // TRC-20 address from this, never both (domains/merchant/merchantCurrency.js).
+    // A merchant settles on exactly one rail; the panel renders the bank account
+    // OR the USDT addresses from this, never both (domains/merchant/merchantCurrency.js).
     // merchantTypeOf() is used rather than the `merchantType` virtual so lean()
     // documents (which carry no virtuals) format identically to hydrated ones.
     const merchantType = merchantTypeOf(merchant);
@@ -104,6 +103,10 @@ const formatMerchant = async (merchant, user = null) => {
         mobile:               user?.mobile   || merchant.mobile,
         email:                merchant.email,
         status:               merchant.status,
+        // A supervisor runs teams and takes no orders (§2): the panel hides
+        // the member's online switch and order settings for them, and the
+        // server refuses both (`SUPERVISOR_TAKES_NO_ORDERS`).
+        isSupervisor:         merchant.isSupervisor === true,
         isOnline:             merchant.isOnline,
         acceptsDeposits:      merchant.acceptsDeposits,
         acceptsWithdrawals:   merchant.acceptsWithdrawals,
@@ -158,7 +161,7 @@ async function sendSystemMessage(orderId, message, io) {
 
 router.post('/auth/signup', async (req, res) => {
     try {
-        const { username, mobile, password, email, upiId, bankDetails } = req.body;
+        const { username, mobile, password, email, bankDetails } = req.body;
         if (!username || !mobile || !password) {
             return res.status(400).json({ success: false, message: 'username, mobile and password are required' });
         }
@@ -188,8 +191,8 @@ router.post('/auth/signup', async (req, res) => {
             username, mobile,
             email: email || null,
             passwordHash: await hashPassword(password),
-            bankDetails: bankDetails || upiId ? {
-                upiId: upiId || bankDetails?.upiId || null,
+            // A bank account, never a UPI handle (§2, §24): one sent is not kept.
+            bankDetails: bankDetails ? {
                 bankName: bankDetails?.bankName || null,
                 accountNo: bankDetails?.accountNo || null,
                 ifsc: bankDetails?.ifsc || null,
@@ -310,14 +313,14 @@ async function issueMerchantSession(merchant, res, extra = {}) {
     const token = signToken(
         { merchantId: merchant._id, userId: merchant.userId, mobile: merchant.mobile, isMerchant: true, isAdmin: false }
     );
+    // The merchant's own view, from the one projection `GET /profile` answers
+    // with (§5): this was a second hand-built copy, and it lacked whatever was
+    // added there since — `isSupervisor` among it, so a supervisor signing in
+    // was shown a member's online switch until the next reload.
     return res.json({
         success: true, token, ...extra,
         merchant: {
-            _id: merchant._id, userId: merchant.userId,
-            username: merchant.username, mobile: merchant.mobile, email: merchant.email,
-            status: merchant.status, isOnline: merchant.isOnline,
-            acceptsDeposits: merchant.acceptsDeposits !== false,
-            acceptsWithdrawals: merchant.acceptsWithdrawals !== false,
+            ...(await formatMerchant(merchant)),
             twoFactorEnabled: merchant.twoFactorEnabled || false,
         },
     });
@@ -511,11 +514,15 @@ router.get('/profile', merchantAuth, async (req, res) => {
 });
 
 // FIX B5-d: PUT /profile — merchant edits their own settlement credentials.
-// Rail-exclusive (2026-07-27): an INR merchant may edit UPI/QR/bank and NOT the
-// USDT addresses; a USDT merchant may edit only those. Enforced here and not
-// merely hidden in the panel, so a hand-crafted request cannot leave a merchant
-// holding credentials for a rail they do not settle on. Only the admin
+// Rail-exclusive (2026-07-27): an INR merchant may edit the bank account and
+// NOT the USDT addresses; a USDT merchant may edit only those. Enforced here
+// and not merely hidden in the panel, so a hand-crafted request cannot leave a
+// merchant holding credentials for a rail they do not settle on. Only the admin
 // (PUT /merchants/:id/capabilities) can change which rail a merchant is on.
+//
+// There is no UPI handle to edit, so `upiId` is not read from the body: a
+// UPI_BANK buy is paid into the member's bank account and nobody is shown a
+// handle (§2 "How each rail is paid", §24).
 //
 // A USDT merchant holds an address PER CHAIN and may hold one, the other, or
 // both — the chains are separate networks and an address on one cannot receive
@@ -524,7 +531,7 @@ router.get('/profile', merchantAuth, async (req, res) => {
 // one is refused with a sentence rather than accepted silently.
 router.put('/profile', merchantAuth, async (req, res) => {
     try {
-        const { upiId, bankDetails, usdtAddressTrc20, usdtAddressBep20 } = req.body;
+        const { bankDetails, usdtAddressTrc20, usdtAddressBep20 } = req.body;
         const submittedAddresses = { TRC20: usdtAddressTrc20, BEP20: usdtAddressBep20 };
 
         const current = await db.merchants.getMerchant(req.merchantId);
@@ -534,14 +541,14 @@ router.put('/profile', merchantAuth, async (req, res) => {
         const railName = isUsdt ? 'USDT' : 'INR';
         const update  = {};
 
-        const wantsInrFields  = upiId !== undefined || bankDetails !== undefined;
+        const wantsInrFields  = bankDetails !== undefined;
         const wantsUsdtFields = USDT_CHAINS.some((chain) => submittedAddresses[chain] !== undefined);
 
         if (isUsdt && wantsInrFields) {
-            return res.status(400).json({ success: false, message: `This is a ${railName} merchant account — UPI, QR and bank details do not apply. Update the USDT wallet addresses instead.` });
+            return res.status(400).json({ success: false, message: `This is a ${railName} merchant account — bank details do not apply. Update the USDT wallet addresses instead.` });
         }
         if (!isUsdt && wantsUsdtFields) {
-            return res.status(400).json({ success: false, message: `This is a ${railName} merchant account — a USDT wallet address does not apply. Update UPI/bank details instead.` });
+            return res.status(400).json({ success: false, message: `This is a ${railName} merchant account — a USDT wallet address does not apply. Update the bank details instead.` });
         }
 
         if (wantsUsdtFields) {
@@ -580,9 +587,6 @@ router.put('/profile', merchantAuth, async (req, res) => {
             }
         }
 
-        if (upiId !== undefined) {
-            update['bankDetails.upiId'] = upiId;
-        }
         if (bankDetails) {
             if (bankDetails.accountHolderName !== undefined) update['bankDetails.accountHolderName'] = bankDetails.accountHolderName;
             if (bankDetails.bankName  !== undefined) update['bankDetails.bankName']  = bankDetails.bankName;
@@ -627,6 +631,29 @@ router.put('/profile', merchantAuth, async (req, res) => {
     }
 });
 
+/**
+ * Why a supervisor's online switch and order directions are refused — one
+ * sentence for both routes, written for the supervisor to act on (§32 S14).
+ * A supervisor is never a member (§2): their members go online and take the
+ * orders; the supervisor runs the teams.
+ */
+const SUPERVISOR_TAKES_NO_ORDERS = Object.freeze({
+    code: 'SUPERVISOR_TAKES_NO_ORDERS',
+    message: 'You are a supervisor: you run teams and take no orders yourself, so you have no online switch '
+        + 'or order settings. Your members go online and choose their orders from their own accounts; '
+        + 'their online time is on your Team page.',
+});
+
+/**
+ * Answer a write the merchant's row refused. The guard is in the write's
+ * WHERE (`setOnline`, `setOrderPreferences`); this read only says why.
+ */
+async function refusedWrite(req, res) {
+    const me = await db.merchants.getMerchant(req.merchantId);
+    if (me?.isSupervisor) return res.status(403).json({ success: false, ...SUPERVISOR_TAKES_NO_ORDERS });
+    return res.status(404).json({ success: false, message: 'Merchant profile not found.' });
+}
+
 router.put('/online-status', merchantAuth, async (req, res) => {
     try {
         const { isOnline } = req.body;
@@ -635,8 +662,10 @@ router.put('/online-status', merchantAuth, async (req, res) => {
         }
         // The flag and its timestamp move in ONE statement, so two rapid
         // toggles cannot interleave into "online, with the timestamp of going
-        // offline" — which is what the assignment score reads.
+        // offline" — which is what the assignment score reads. A supervisor
+        // going online is refused by that statement's WHERE.
         const merchant = await db.merchants.setOnline(req.merchantId, isOnline);
+        if (!merchant) return refusedWrite(req, res);
         // Notify admin panel via SSE so merchant list shows green/red dot without refresh
         if (global.sseManager && merchant) {
             global.sseManager.broadcastToAdmins('merchant_status_changed', {
@@ -649,8 +678,7 @@ router.put('/online-status', merchantAuth, async (req, res) => {
         }
         res.json({ success: true, merchant: await formatMerchant(merchant, req.user) });
     } catch (err) {
-        console.error('PUT /merchant/online-status error:', err);
-        res.status(500).json({ success: false, message: 'Failed to update online status.' });
+        return respondError(res, err, 'PUT /merchant/online-status', { message: 'Failed to update online status.' });
     }
 });
 
@@ -692,11 +720,13 @@ router.put('/preferences', merchantAuth, async (req, res) => {
         if (!Object.keys(update).length) {
             return res.status(400).json({ success: false, message: 'No valid preference fields provided.' });
         }
-        const merchant = await db.merchants.updateMerchant(req.merchantId, update);
+        // Its own writer, refusing a supervisor in the WHERE: the generic
+        // `updateMerchant` would set a direction on a row routing never reads.
+        const merchant = await db.merchants.setOrderPreferences(req.merchantId, update);
+        if (!merchant) return refusedWrite(req, res);
         res.json({ success: true, merchant: await formatMerchant(merchant, req.user) });
     } catch (err) {
-        console.error('PUT /merchant/preferences error:', err);
-        res.status(500).json({ success: false, message: 'Failed to update preferences.' });
+        return respondError(res, err, 'PUT /merchant/preferences', { message: 'Failed to update preferences.' });
     }
 });
 /*
@@ -1052,7 +1082,7 @@ router.post('/confirm/:id', merchantAuth, async (req, res) => {
             // `requireState`: asked under the order's lock, so a buy the player
             // disputed (or an admin decided) since it was read is not paid out
             // underneath them (security review, 2026-10-03).
-            deposited = await moveDepositMoney(order, { creditDeposit, creditReserve, releaseUTR, requireState: 'PAID' });
+            deposited = await moveDepositMoney(order, { releaseUTR, requireState: 'PAID' });
             if (!deposited.ok && deposited.reason === 'order_state') {
                 return res.status(409).json({
                     success: false,
@@ -1709,14 +1739,42 @@ router.get('/stats', merchantAuth, async (req, res) => {
 // `commitOrEnd` / `abortOrEnd` stubs, so code that read as a transaction and
 // was not is gone rather than made honest.
 // ─────────────────────────────────────────────────────────────────────────────
-// POST /api/merchant/orders/:id/reject
-// Merchant rejects a PAID/PROCESSING order.
-// Spec Section 11.2 / 13
+// POST /api/merchant/orders/:id/reject — "payment not received"
+// The member says the payment the player CLAIMED never arrived: a PAID buy
+// only (owner, 2026-10-07). `unpaidRejectRefusal` words every refusal.
 // ─────────────────────────────────────────────────────────────────────────────
 router.post('/orders/:id/reject', merchantAuth, async (req, res) => {
     try {
         const { id }   = req.params;
         const { reason, proofFileKey, proofCdnUrl } = req.body;
+
+        const order = await db.orders.getOrderRecord(id);
+        if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+        if (order.merchantId?.toString() !== req.merchantId?.toString()) {
+            return res.status(403).json({ success: false, message: 'This order is not assigned to you' });
+        }
+
+        // ── May this be said at all, before what it needs ────────────────────
+        // A BUY, and one the player has tapped Paid on. "The player's money
+        // never arrived" is a statement about a buy: a sell cancelled here
+        // would end with the player's stake still locked and nothing scheduled
+        // to return it; a member who cannot pay a sell declines it before
+        // paying (POST /reject/:id) instead. And before the Paid tap there is
+        // no claimed payment to deny (owner, 2026-10-07): this took a
+        // PROCESSING buy too, and warned and flagged a player who had said
+        // nothing yet. The member is told to wait for the tap (400).
+        //
+        // Asked BEFORE the reason and the proof (§32 S34): a member must not
+        // write an accusation and upload evidence to be told it cannot be
+        // made yet. Asked AFTER ownership, so a stranger learns nothing about
+        // where somebody else's buy stands. A snapshot that only words the
+        // answer: the rule is REJECTED's one edge in the state machine, from
+        // PAID, in the transition's WHERE below (trap 18).
+        const refused = unpaidRejectRefusal(order);
+        if (refused) {
+            return res.status(refused.status).json({ success: false, code: refused.code, message: refused.message });
+        }
 
         // ── The accusation carries its evidence ──────────────────────────────
         // Rejecting a PAID order says the player's money never arrived. It
@@ -1735,20 +1793,6 @@ router.post('/orders/:id/reject', merchantAuth, async (req, res) => {
                 success: false,
                 message: 'Proof is required: upload a screenshot or photo showing the payment did not arrive.',
             });
-        }
-
-        const order = await db.orders.getOrderRecord(id);
-        if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
-
-        if (order.merchantId?.toString() !== req.merchantId?.toString()) {
-            return res.status(403).json({ success: false, message: 'This order is not assigned to you' });
-        }
-        // "The player's money never arrived" is a statement about a BUY. A sell
-        // cancelled here would end with the player's stake still locked and
-        // nothing scheduled to return it; a member who cannot pay a sell
-        // declines it before paying (POST /reject/:id) instead.
-        if (order.type !== 'DEPOSIT') {
-            return res.status(400).json({ success: false, message: 'Only a buy order can be rejected as unpaid.' });
         }
 
         // Bound to THIS merchant and THIS order. Without the check a merchant
@@ -1784,11 +1828,13 @@ router.post('/orders/:id/reject', merchantAuth, async (req, res) => {
         // clock in the same transaction, so the sweep, the dispute route and
         // the screen all read one instant.
         //
-        // `expectFrom` is applied now (it was ignored), so a member cannot use
-        // this button to close a buy the player has already DISPUTED.
+        // No `expectFrom`: the rule table's one edge into REJECTED is PAID,
+        // applied in the UPDATE's WHERE under the row lock, so a buy that moved
+        // on since the read above (confirmed, disputed, expired) is refused by
+        // the database, and one not yet PAID never matches at all. It said
+        // `['PAID', 'PROCESSING']`, which is how an unpaid buy got through.
         const windowMinutes = await rejectedBuyDisputeMinutes();
         const rejected = await rejectOrderState(order.orderId, {
-            expectFrom: ['PAID', 'PROCESSING'],
             expectMerchant: req.merchantId,
             set: {
                 rejectedBy:     req.merchantId,
@@ -1806,11 +1852,22 @@ router.post('/orders/:id/reject', merchantAuth, async (req, res) => {
             }),
         });
         if (!rejected.ok || rejected.idempotent) {
-            return res.status(409).json({
-                success: false,
-                message: rejected.reason === 'merchant_changed'
-                    ? NO_LONGER_YOURS : `Cannot reject order in ${rejected.status ?? 'unknown'} status`,
-            });
+            if (rejected.reason === 'merchant_changed') {
+                return res.status(409).json({ success: false, message: NO_LONGER_YOURS });
+            }
+            if (rejected.reason === 'pool_paid') {
+                return res.status(409).json({
+                    success: false,
+                    message: 'The team\'s tokens for this buy were already paid to the player, so it can only be completed.',
+                });
+            }
+            // The database's answer, worded by the same function as the read
+            // above: a buy not yet PAID is "not yet" (400) whichever of the two
+            // caught it, and one past PAID is a conflict (409).
+            const why = unpaidRejectRefusal({ type: order.type, status: rejected.status }) ?? {
+                status: 409, code: 'NOT_REJECTABLE', message: `Cannot reject order in ${rejected.status ?? 'unknown'} status`,
+            };
+            return res.status(why.status).json({ success: false, code: why.code, message: why.message });
         }
         Object.assign(order, rejected.order);
         const disputeUntil = order.disputeWindowUntil;

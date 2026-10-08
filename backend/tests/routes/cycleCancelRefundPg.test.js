@@ -19,7 +19,10 @@ import cookieParser from 'cookie-parser';
 import { pgConfigured, applySchema, closePg, pgQuery } from '#db/client.js';
 import { ensureCycle, cancelCycle } from '#db/repositories/markets.js';
 import { voidCancelledCycle, voidCancelledCycles } from '#db/repositories/settlements.js';
-import { creditDeposit, getBalances } from '../../domains/wallet/walletAuthority.service.js';
+import { getBalances } from '../../domains/wallet/walletAuthority.service.js';
+// Funded from the platform's own holding, posted with the credit: a wallet
+// that gains tokens from nowhere does not commit.
+import { fundWallet } from '#db/tests/_funding.js';
 import { actor, as } from './_harness.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
@@ -54,7 +57,7 @@ describePg('cancelling a cycle returns its stakes', () => {
   const player = async () => {
     const p = await actor({});
     await linkTelegram(p);
-    await creditDeposit(p.userId, 1_000, `rt-cancel-fund-${p.userId}`);
+    await fundWallet(p.userId, 1_000 * 100, `rt-cancel-fund-${p.userId}`);
     return p;
   };
   const bet = (p, cycleId, side, amount) => as(app, p).post('/bet/place')

@@ -48,12 +48,15 @@ describePg('what a player is told about a merchant', () => {
   // Every credential `buildMerchantSnapshot` puts on the row. The row KEEPS
   // them — a dispute months later is decided from what was true at assignment —
   // and the projection is what refuses to pass them on.
-  const MERCHANT_UPI  = 'ravi@okhdfcbank';
   const MERCHANT_ACC  = '50100123456789';
   const MERCHANT_IFSC = 'HDFC0000123';
   const MERCHANT_NAME = 'Ravi Kumar';
   // Planted, as if a future snapshot carried it: nobody learns a number.
   const MERCHANT_MOBILE = '9876501234';
+  // Planted too. A member keeps no UPI handle and the snapshot carries none
+  // (`merchants.bank_upi_id` was dropped); a handle reappearing upstream must
+  // still not reach a player, and the projection is an allowlist.
+  const MERCHANT_UPI  = 'ravi@okhdfcbank';
   // BOTH chains. A player is entitled to the one THEIR order named.
   const MERCHANT_USDT_TRC20 = 'TQ5NMqJjW8sT1u9dCUnMcGbmVpFmvbwrsi';
   const MERCHANT_USDT_BEP20 = '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0';
@@ -263,7 +266,6 @@ describePg('what a player is told about a merchant', () => {
 
     const { getOrderRecord } = await import('#db/repositories/orders.record.js');
     const row = await getOrderRecord(orderId);
-    expect(row.merchantSnapshot.upiId).toBe(MERCHANT_UPI);
     expect(row.merchantSnapshot.accountNo).toBe(MERCHANT_ACC);
     expect(row.merchantSnapshot.usdtAddressTrc20).toBe(MERCHANT_USDT_TRC20);
     expect(row.merchantSnapshot.usdtAddressBep20).toBe(MERCHANT_USDT_BEP20);

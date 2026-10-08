@@ -82,7 +82,9 @@ interface PaymentOrder {
 }
 interface UserProfile {
   id: string; username: string;
-  bankDetails?: { upiId?: string; accountNumber?: string; ifscCode?: string; bankName?: string; accountHolderName?: string; };
+  // The bank account a sell is paid into; the row keeps nothing else
+  // (`users_bank_details_bank_account_only`, §24).
+  bankDetails?: { accountNumber?: string; ifscCode?: string; bankName?: string; accountHolderName?: string; };
 }
 type TabKey = 'exchange' | 'ledger' | 'bonuses' | 'payments';
 type BuyStep = 'amount' | 'pay_now' | 'waiting';

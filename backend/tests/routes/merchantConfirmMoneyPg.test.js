@@ -193,7 +193,7 @@ describePg('a member confirms a buy — the money', () => {
   // ── What a member is told ────────────────────────────────────────────────
   it("answers in the member's projection — every key allowed, none forbidden", async () => {
     // The row carries what a member must never see: the snapshot written at
-    // assignment (the member's own UPI and bank details, kept for disputes),
+    // assignment (the member's own bank details, kept for disputes),
     // the player's deposit split, the tamper tag. Asserting the KEY SET rather
     // than one absent field is §24.2: a new leak fails without anybody adding
     // a line here.

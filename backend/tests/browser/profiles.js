@@ -18,11 +18,15 @@
  * `scripts/report-control-gaps.mjs` compares them.
  *
  * `default` is not here: it is `seedActors()` itself, the account the drive and
- * mutate passes press as.
+ * mutate passes press as unless told otherwise. `BB_PROFILE=<name> npm run
+ * test:drive` presses a profile's panel AS that account, seeded by the same
+ * `seedProfile` call in the same order, and writes `drive.report.<name>.json`.
  */
 import { pgQuery } from '#db/client.js';
 import { pauseAssignment, suspendMerchant } from '#db/repositories/merchants.js';
+import { updateUser } from '#db/repositories/users.js';
 import { normaliseGrant, PERMISSION_KEYS } from '../../domains/identity/staffPermissions.js';
+import { hashPassword } from '../../domains/identity/password.util.js';
 import { seedPlayer, seedMerchant, seedTeam, seedAdmin, trc20, bep20 } from '../e2e/seed.js';
 import { playerToken, merchantToken, adminToken } from '../e2e/harness.js';
 
@@ -125,6 +129,22 @@ export const PROFILES = {
     what: 'a queue manager (no areas; works the payment queue)',
     ...staff({ isQueueManager: true }),
   },
+  // The server refuses this session (`/me`: 401 SESSION_SUPERSEDED), so the
+  // panel signs itself out; `signsOut` is what its sign-in form must then say
+  // (run.js). The merchant panel's `merchant-suspended`, for staff (§32 S48).
+  'staff-password-reset': {
+    what: 'a sub-admin whose password was reset from another device while they were signed in',
+    signsOut: /password was changed/,
+    panel: 'admin-panel',
+    seed: async () => {
+      const s = await staff({ isSubAdmin: true, keys: ['canManageUsers'] }).seed();
+      // The reset's own write (`passwordReset.service.js`): the password and
+      // the session cutoff in one patch, AFTER the session above was issued.
+      await new Promise((r) => setTimeout(r, 20));
+      await updateUser(s.who, { passwordHash: await hashPassword(`Reset-${Date.now()}-elsewhere`), sessionsValidFrom: new Date() });
+      return s;
+    },
+  },
   // ── Merchants ─────────────────────────────────────────────────────────
   'merchant-upi': {
     what: 'an INR merchant in a working UPI/bank team',
@@ -163,7 +183,9 @@ export const PROFILES = {
     panel: 'merchant-panel',
     seed: async () => {
       const { supervisor } = await seedTeam({ rail: 'CASH', online: [], exclusive: false });
-      return { token: merchantToken(supervisor), cached: merchantCache(supervisor, { isOnline: false }), who: supervisor.merchantId };
+      // `isSupervisor` as the server's profile says it (formatMerchant), so the
+      // cached first paint already has no online switch to offer.
+      return { token: merchantToken(supervisor), cached: merchantCache(supervisor, { isOnline: false, isSupervisor: true }), who: supervisor.merchantId };
     },
   },
 };

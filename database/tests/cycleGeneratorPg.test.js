@@ -19,6 +19,9 @@ import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { pgConfigured, pgQuery, applySchema, closePg } from '../client.js';
 import { placeBet } from '../repositories/bets.core.js';
 import { applyDeltaPaise } from '../repositories/wallets.core.js';
+// A fixture's tokens come from somewhere too: the platform's own holding,
+// posted with the credit (see `_funding.js`).
+import { TEST_FUNDING } from './_funding.js';
 import { getCycle, currentCycleWithPools } from '../repositories/markets.js';
 import CycleGenerator from '../../backend/domains/markets/cycleGenerator.service.js';
 
@@ -34,7 +37,7 @@ function generator() {
 }
 
 const fund = (userId, paise, key) =>
-  applyDeltaPaise({ userId, field: 'depositBalance', deltaPaise: paise, txId: key, type: 'CREDIT', reason: 'test' });
+  applyDeltaPaise({ userId, field: 'depositBalance', deltaPaise: paise, txId: key, type: 'CREDIT', reason: 'test', counterparty: TEST_FUNDING });
 
 const openCycle = (cycleId, { type = '30_MIN', endedMinutesAgo = null, phantomDelhi = 0, phantomBombay = 0 } = {}) => pgQuery(
   `INSERT INTO cycles (cycle_id, cycle_type, status, start_time, end_time,
@@ -56,8 +59,8 @@ describePg('the cycle generator', () => {
   afterAll(async () => { await closePg(); });
   beforeEach(async () => {
     await pgQuery(`TRUNCATE bets, bet_transitions, wallet_ledger, wallets, cycles,
-                            cycle_settlements
-                   RESTART IDENTITY CASCADE`);
+                            cycle_settlements,
+                            treasury_entries, treasury_accounts RESTART IDENTITY CASCADE`);
   });
 
   // ── Trap 3: the winner reaches the row the engine claims from ─────────────

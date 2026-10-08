@@ -94,8 +94,8 @@ exported constants. `SystemConfig.x` lives in `config_documents`, declared in
 | Supervisor and rail | `merchants.is_supervisor` + `supervisor_rail`, set only by `PUT /api/admin/merchants/:id/supervisor`. Rail fixed while running a team. A supervisor is never a member, and vice versa. |
 | Team membership, limits | `database/repositories/teams.js`, the one writer; one team per merchant (PK). `MAX_TEAMS` 4, `TEAM_SIZE` 10, counted inside the write under a parent-row lock (S6). Supervisor proposes, admin approves. |
 | Whether a team may work | `strength` in `teams.js` (`WORKING`/`GRACE`/`STOPPED`) from the DATABASE clock in IST; below ten it works until midnight IST, then stops until full. Only routing reads it. |
-| Team token pools | `team_pools` + append-only `team_pool_entries`, written only by `database/repositories/teamPools.js`. Tokens move only as transfers to/from `TOKEN_SUPPLY` on a fulfilled `team_pool_requests` row, in one transaction with the treasury movement and `admin_token_considerations`; guards in the UPDATE's WHERE. Fulfilling needs `canFundMerchants`, not `canManageTeams`. `TEAM_FLOAT` = sum of pools (`reconcileAgainstSubLedgers`). |
-| A member's online time | `merchant_online_sessions`, written only by the triggers on `merchants.is_online` (`bb_log_online_switch`): one open stretch per member, closed once, never edited (`bb_online_session_close_only`). "Active time" is this switch. |
+| Team token pools | `team_pools` + append-only `team_pool_entries`, written only by `database/repositories/teamPools.js`. Tokens move only as transfers to/from `TOKEN_SUPPLY` on a fulfilled `team_pool_requests` row, in one transaction with the treasury movement and `admin_token_considerations`; guards in the UPDATE's WHERE. Fulfilling needs `canFundMerchants`, not `canManageTeams`. `TEAM_FLOAT` = sum of pools, enforced per transaction by the database (Token conservation, below), so a pool that moves without it does not commit. |
+| A member's online time | `merchant_online_sessions`, written only by the triggers on `merchants.is_online` (`bb_log_online_switch`): one open stretch per member, closed once, never edited (`bb_online_session_close_only`). "Active time" is this switch. The switch is written only by `setOnline` (`merchants.js`; `updateMerchant` refuses it) and by `setSupervisorRole`, which switches a new supervisor off in the same statement. A supervisor takes no orders: never online (`setOnline`'s WHERE; `merchants_supervisor_never_online`), no order directions (`setOrderPreferences`' WHERE), refused 403 `SUPERVISOR_TAKES_NO_ORDERS`; going offline is never refused. |
 | Red flags | `team_red_flags` via `teamOversight.evaluateRedFlags` (`database/repositories/teamOversight.js`), once per IST day: `team_red_flag_days` is claimed in the flags' own transaction; hourly cron `team-red-flags` catches up 3 days. Numbers: `SystemConfig.redFlags`. `LOW_ACTIVITY`, the one kind: completed orders AND online time both below the team average by the percent, to the supervisor and admin. No commission-farming flag (owner, 2026-10-04). A flag acts on nothing. Completions are counted by `order_states.completed_at` (the sell settlement writes no COMPLETED transition; not a money gate, trap 17). |
 | What a supervisor sees of a member's order | `SUPERVISOR_ORDER_FIELDS` (`merchantOrderView.js`), a subset of the merchant list with no player detail; only APPROVED members, online time only since they joined; every read scoped to their own teams in the WHERE (trap 16); free text through `hideForSupervisor` (mobiles, UPI handles, numbers of 9+ digits). |
 | A supervisor's voice in a dispute | Chat sender `SUPERVISOR`, written only by `postSupervisorMessage` (`chat.js`; `postMessage` refuses the sender), whose INSERT asks DISPUTED, own team and `SUPERVISOR_MESSAGES_PER_DISPUTE` under a share lock on the order (S6); a mobile is refused by the row (`chat_messages_supervisor_no_mobile`). They read their own, their member's and the dispute manager's own messages (`supervisorMaySee`), never the player's or a system notice. |
@@ -114,11 +114,12 @@ exported constants. `SystemConfig.x` lives in `config_documents`, declared in
 | USDT pricing | `SystemConfig.usdtPricing` (`userMerchantBuyInr`, `merchantAdminBuyInr`); band ₹10–₹1,000 owned by `domains/configuration/tokenRates.js`, enforced on save and on read; 0 = unset = refused by name. No USDT sell rail. |
 | An order's payment rail | `order_states.payment_mode`, stamped at creation from the order's size or currency (`orderRails.js`: `paymentModeFor`, `railOf`) and frozen by trigger. Everything branches on the order's own value; there is no platform-wide switch. |
 | Merchant earnings | Team commission (§26): `database/repositories/teamCommission.js`, the one writer of `team_commissions` + `team_commission_shares`. Paid into the TEAM's pool from the platform-funded team commission pool (`MERCHANT_BONUS_POOL`); never from users, a spread or a deposit trigger. Every screen reads `toSummary` and the shares; none keeps its own percentages. |
-| Token supply | `SystemConfig.adminTokenSupply.total` (20 billion). None are ever created; every movement is a transfer, and the books prove holding + pools + wallets = total. |
-| Pool token movements | `teamPools.js`, the one writer; idempotent `tx_id`. A commission joins the pool as a `COMMISSION` entry with its `TOKEN_SUPPLY` → `TEAM_FLOAT` movement, in the paying transaction (`creditCommissionWithin`). |
+| Token supply | `SystemConfig.adminTokenSupply.total` (20 billion), read in the database by `bb_token_supply_paise()` (fallback = the spec default). None are ever created; every movement is a transfer, and the books prove holding + pools + wallets = total — per transaction, not per sweep (Token conservation, below). The platform cannot release more than the total (`treasury_supply_ceiling`), asked only when it releases, so lowering the total never blocks a buyback. |
+| Pool token movements | `teamPools.js`, the one writer; idempotent `tx_id`. A commission joins the pool as a `COMMISSION` entry with its `TOKEN_SUPPLY` → `TEAM_FLOAT` movement, in the paying transaction (`creditCommissionWithin`). A completed BUY (`spendForBuy`) and a settled or reversed SELL (`creditSellToPool`, `reverseSellFromPool`) move the POOL, the player's WALLET and the treasury in ONE transaction — never two with compensation. |
+| Token conservation | The DATABASE, per transaction, not a sweep (owner, 2026-10-07): `schema.sql`, "TOKEN CONSERVATION". Every movement's legs sum to zero; every treasury account moves by exactly its new `treasury_entries`; the wallets move with `USER_FLOAT` and the pools with `TEAM_FLOAT`; a pool's available and held tokens move with their `team_pool_entries`; no pocket, pool or platform account below zero and `TOKEN_SUPPLY` never above it. Checked at COMMIT by deferred constraint triggers over transaction-local buckets, so the cost is per row and not per table. A path that cannot keep this is a defect to fix, never a reason to relax it. |
 | What an admin↔merchant/team token movement was FOR | `admin_token_considerations` (`database/repositories/adminTokenConsiderations.js`), one row keyed by the movement. Never sum `fiat_amount_minor` across currencies; aggregate `inr_equivalent_paise`. Figure required, 0 allowed. USDT in only. Validated before tokens move. |
 | Tokens held for a buy | `order_states.pool_held_paise` in the team's pool, through `teamPools.js` only: held in the transaction that assigns (`holdForBuyWithin`), released on every ending and requeue (`releaseBuyHold`, `detachFromTeamWithin`), spent once on completion (`spendForBuy`). One live hold per order (`pool_held_paise = 0` in the WHERE). Never admit a buy by reading a balance: taking the hold IS the check. Cron `team-pool-hold-sweep` releases a hold left on an ended order and alerts on a completed buy still holding, never re-holds. |
-| Player balance changes | `domains/wallet/walletAuthority.service.js` only, stake locks included. |
+| Player balance changes | `domains/wallet/walletAuthority.service.js` only, stake locks included. A change in what the wallet HOLDS names its counterparty and moves `USER_FLOAT` with it in the same transaction (`wallets.core`: an account, `{house:true}` for a game, or `{postedByCaller:true}` when the pool spend posted it); a move between the same player's pockets names none. No pocket may go below zero (`wallets_pockets_nonneg`), for any writer. |
 | Player balance reads | `walletAuthority.getBalances()`; classified display or decision (§9). |
 | Money in/out of the ecosystem | `domains/funding/fundingAuthority.service.js`; rails are adapters in `providerRegistry.js`. |
 | The ledger | `accounting_events`, written only via `domains/revenue/revenueSettlement.service.js`: append-only double entry, integer paise, unique idempotency keys, balances derived. |
@@ -129,19 +130,20 @@ exported constants. `SystemConfig.x` lives in `config_documents`, declared in
 | Order state | `order_states.state` (CHECK). |
 | Order creation, tamper tag | `createOrderRecord` (`database/repositories/orders.record.js`), writing `order_hmac` in the same INSERT. No second creation path. |
 | A withdrawal's stake lock | Same transaction as its order: `debitWinningsForWithdrawal(…, { within: prepareOrderRecord(…) })`. |
-| Merchant side of a completed BUY | `moveDepositMoney`, once, from the hold; no second debit (S41). |
-| Ending a withdrawal's money | `withdrawalHold.endWithdrawal(orderId, 'REFUND' \| 'RELEASE')` for every position; never moves order state. One refund key, `refund_<orderId>`. |
+| Merchant side of a completed BUY | `moveDepositMoney` → `walletAuthority.completeBuy` → `teamPools.spendForBuy`, once, from the hold; no second debit (S41). The pool spend, the player's credit (`wallets.creditBuyWithin`, split by `buyCreditSplit`) and `TEAM_FLOAT` → `USER_FLOAT` are one transaction. |
+| Ending a withdrawal's money | `withdrawalHold.endWithdrawal(orderId, 'REFUND' \| 'RELEASE')` for every position; never moves order state. One refund key, `refund_<orderId>`; a settled sell's refund is `dispute_wd_refund_<orderId>` and its rival is `wd_release_<orderId>`, so a stake is consumed or returned, never both. |
 | Fields the lifecycle may write | `SETTABLE` in the order writer (§21). |
 | Whether a buy's tokens were paid out | `order_states.pool_paid_at`, stamped by `teamPools.spendForBuy` in the paying transaction after `requireState` under the order lock. Once set, `transition()` and `reassign()` refuse every move but `COMPLETED` (`pool_paid`). `moveDepositMoney` requires `requireState`; the admin APPROVE asks `canTransition` before money moves. |
 | Which member may move an order | Only the one it is assigned to: every member route passes `expectMerchant`, checked by `transition({ onlyMerchant })` under the order lock BEFORE the idempotent answer and again in the `WHERE` (`merchant_changed`). |
 | Whether a game WIN may be paid | Only against this player's own stake on that round (`bets` WON transition; casino `recordCallback` + `casino_rounds_win_needs_bet`). |
 | A casino round | Keyed `(provider_key, user_id, round_id)`; every read and lock names all three. |
 | Dispute decisions | Embedded on `order_states`. |
+| What the Dispute Manager can list | `DISPUTE_FILTERS` (`orders.record.js`: OPEN, ESCALATED, CLOSED, ALL; default `DEFAULT_DISPUTE_FILTER`), sent with every `GET /api/admin/dispute-orders` answer beside the total and page count, which are counted apart from the page. The screen renders that list and keeps none; an unknown key is 400 `UNKNOWN_DISPUTE_FILTER`, never read as an order state. |
 | Who lost a dispute | `dispute_faults` via `database/repositories/disputeFaults.js`, called only by `recordDisputeLoser` from all three deciding routes. Only a PAYMENT dispute counts: raised by the player or the platform (a member's red flag suspends nobody), from a buy `PAID`/`REJECTED` or a sell `PAID`/`COMPLETED` (`disputedFromState`). Loser (`partyAtFault`): buy completed or sell cancelled → member (on a buy, only if they rejected it or were shown a reference); else player. The Dispute Manager shows the server's answer, never its own copy. Record, count and suspension in one transaction keyed by order. At 3 losses only a full admin may lift (`mayLiftHighRisk` in the WHERE). |
-| Window after a rejected BUY | `order_states.dispute_window_until` (DATABASE clock, set in the reject transition), `domains/payment/rejectedBuyWindow.service.js`, `SystemConfig.rejectedBuyDisputeMinutes` (whole minutes, `int(…)`). The member cannot red-flag their own rejection. The hold stays until the window lapses or a dispute is decided. |
+| Window after a rejected BUY | `order_states.dispute_window_until` (DATABASE clock, set in the reject transition), `domains/payment/rejectedBuyWindow.service.js`, `SystemConfig.rejectedBuyDisputeMinutes` (whole minutes, `int(…)`). Only a PAID buy is rejected as unpaid: REJECTED's one edge is from PAID (`ALLOWED_FROM`, in the WHERE); before the Paid tap the reject and its proof upload answer 400 `NOT_PAID_YET` (`unpaidRejectRefusal`) and the card does not offer it. The member cannot red-flag their own rejection. The hold stays until the window lapses or a dispute is decided. |
 | Window after a SELL is marked paid | `SystemConfig.withdrawalHoldMinutes` (default and floor 60), via `withdrawalHold.service.js`; the player sees `disputeUntil`. |
 | USDT buy amount | A whole multiple of `USDT_BUY_STEP` (100, fixed) between `SystemConfig.usdtBuy.minUsdt` and `maxUsdt` (admin; defaults 100 and 10,000; min ≤ max). The tokens follow from the frozen rate. |
-| Referral rewards | `REFERRAL_REWARD_PAISE` (flat ₹25) + `referral_programmes`; ledger and payout via `domains/referral/referral.service.js` only. Never a share of losses or tied to settlement. |
+| Referral rewards | `REFERRAL_REWARD_PAISE` (flat ₹25) + `referral_programmes`; ledger and payout via `domains/referral/referral.service.js` only, through `wallets.creditWinnings`, which pays out of the platform's own holding (`TOKEN_SUPPLY` → `USER_FLOAT`) in the paying transaction. Never a share of losses or tied to settlement. |
 | Player identity | A Telegram-proven mobile plus a password. No email, no KYC, no Aadhaar, no identity document or upload path (owner, 2026-10-02; `identitySurfaceRemoved.test.js`). `users.mobile` is immutable. |
 | Upload categories | `services/cdn.service.js`: chat attachments, payment proofs, branding assets, Android APKs. Nothing else. |
 | Live bot and channel | `activeConfig()` (`domains/telegram/telegramClient.js`) over `telegram_configs` + the bot registry; the registry wins; its 30 s cache is the only cache. |
@@ -356,6 +358,23 @@ A new board inherits the money system and re-implements none of it.
 Integer paise in `BIGINT`; `SELECT … FOR UPDATE` around every balance mutation;
 append-only double-entry ledger; unique `tx_id` idempotency; `*_transitions`
 audit tables; `CHECK` constraints. A change that weakens any of these is wrong.
+
+**Conservation is the database's, and it is immediate** (owner, 2026-10-07).
+A transaction that would create, lose or duplicate a token does not COMMIT: the
+guards are in `schema.sql` ("TOKEN CONSERVATION"), listed in §2's *Token
+conservation* row, and they apply to every writer — a repository, a cron, a
+seed, a fixture, a hand-written `UPDATE`. So:
+
+- a wallet, pool or treasury write states where the tokens came from or went,
+  in the SAME transaction (`wallets.core` counterparties, `postMovement`);
+- a refusal is an answer the caller can phrase (`account_short`, `pool_short`,
+  `insufficient`), never a constraint error reaching a user;
+- two writes with compensation between them are wrong where one transaction
+  will do: the money is in both places or neither in the window between;
+- a test's own funding comes from somewhere (`database/tests/_funding.js`);
+- there is no periodic reconciliation to lean on. `reconcileAgainstSubLedgers`
+  stays a REPORT for an admin, run on demand, never the thing that catches a
+  double spend.
 
 ---
 
@@ -693,3 +712,13 @@ three actors, pen test) · `test:browser` (every screen; needs `BB_BASE`) ·
 Reports (write `docs/reference/`): `report:controls`, `report:workflows`,
 `report:routes` (`BB_ROUTE_COVERAGE=<dir>/<tier>.jsonl`), `report:control-gaps`
 (`BB_PROFILE`, `BB_VIEWPORT=phone`).
+
+## graphify
+
+This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
+
+Rules:
+- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
+- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
+- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
+- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).

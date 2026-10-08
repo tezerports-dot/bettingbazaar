@@ -16,6 +16,9 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { pgConfigured, pgQuery, applySchema, closePg } from '../client.js';
 import { getBalancesPaise, applyDeltaPaise } from '../repositories/wallets.core.js';
+// A fixture's tokens come from somewhere too: the platform's own holding,
+// posted with the credit (see `_funding.js`).
+import { TEST_FUNDING } from './_funding.js';
 import { applyProviderCallback } from '../repositories/casino.js';
 import { openSession, hasLiveSession } from '../repositories/games.js';
 
@@ -34,9 +37,9 @@ describePg('casino debits need the player\'s own live session (PostgreSQL)', () 
   afterAll(async () => { await closePg(); });
   beforeEach(async () => {
     await pgQuery(`DELETE FROM game_sessions WHERE user_id IN ($1, $2)`, [VICTIM, OTHER]);
-    await pgQuery(`TRUNCATE casino_transactions, casino_rounds, wallet_ledger, wallets RESTART IDENTITY CASCADE`);
+    await pgQuery(`TRUNCATE casino_transactions, casino_rounds, wallet_ledger, wallets, treasury_entries, treasury_accounts RESTART IDENTITY CASCADE`);
     for (const u of [VICTIM, OTHER]) {
-      await applyDeltaPaise({ userId: u, field: 'depositBalance', deltaPaise: 100_000, txId: `fund-${u}`, type: 'CREDIT', reason: 'test' });
+      await applyDeltaPaise({ userId: u, field: 'depositBalance', deltaPaise: 100_000, txId: `fund-${u}`, type: 'CREDIT', reason: 'test', counterparty: TEST_FUNDING });
     }
   });
 

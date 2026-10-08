@@ -22,7 +22,7 @@
  * settlement working while the real function threw on every call.
  */
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
-import { pgConfigured, pgQuery, applySchema, closePg } from '../client.js';
+import { pgConfigured, pgQuery, applySchema, closePg, withTransaction } from '../client.js';
 import { debitWinningsForWithdrawal, creditWinnings, getBalances } from '../repositories/wallets.js';
 import { createOrderRecord, pendingWithdrawalTotal, getOrderRecord } from '../repositories/orders.record.js';
 
@@ -42,9 +42,27 @@ async function fund(userId, rupees) {
   return userId;
 }
 
+// Every order row this run writes, so `afterAll` can take them back out.
+const made = [];
+
 describePg('withdrawal admission', () => {
   beforeAll(async () => { await applySchema(); });
-  afterAll(async () => { await closePg(); });
+  afterAll(async () => {
+    // Trap 10: this run's own orders, removed outside any assertion. They are
+    // real queued CASH withdrawals, and the queue sweep is global: left behind,
+    // they sat ahead of retryAndMatchPg's own cash orders whenever that file
+    // ran after this one, and failed it. Wallet and ledger rows stay; they are
+    // append-only and keyed by this run's ids.
+    try {
+      await withTransaction(async (c) => {
+        await c.query('SET LOCAL session_replication_role = replica');
+        await c.query('DELETE FROM order_transitions WHERE order_id = ANY($1)', [made]);
+        await c.query('DELETE FROM order_states WHERE order_id = ANY($1)', [made]);
+      });
+    } finally {
+      await closePg();
+    }
+  });
   beforeEach(async () => { /* per-run ids keep runs isolated; no truncation */ });
 
   it('moves winnings into locked rather than out of the wallet', async () => {
@@ -151,12 +169,15 @@ describePg('withdrawal admission', () => {
 
   it('reports in-flight withdrawals without letting them gate anything', async () => {
     const u = uid();
+    const first = oid();
+    const second = oid();
+    made.push(first, second);
     await createOrderRecord({
-      orderId: oid(), userId: u, type: 'WITHDRAWAL',
+      orderId: first, userId: u, type: 'WITHDRAWAL',
       tokenAmountRupees: 300, escrowLocked: true, escrowStatus: 'LOCKED',
     });
     await createOrderRecord({
-      orderId: oid(), userId: u, type: 'WITHDRAWAL',
+      orderId: second, userId: u, type: 'WITHDRAWAL',
       tokenAmountRupees: 200, escrowLocked: true, escrowStatus: 'LOCKED',
     });
     // A DISPLAY figure, for telling a player why their spendable winnings look

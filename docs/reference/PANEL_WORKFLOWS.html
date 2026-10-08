@@ -169,8 +169,7 @@ stateDiagram-v2
     ASSIGNED --> PAID
     PAID --> COMPLETED
     PROCESSING --> COMPLETED
-    PAID --> REJECTED : member — the money never came
-    PROCESSING --> REJECTED : the same button, before Paid
+    PAID --> REJECTED : member — the money never came (from PAID only)
     REJECTED --> DISPUTED : player, inside the window
     REJECTED --> CANCELLED : window closed
     PROCESSING --> DISPUTED
@@ -407,18 +406,26 @@ settles until the window passes. The zero-hold "settle at once" branch is gone (
 <div class="tablewrap"><table>
 <thead><tr><th>Refused when</th><th>Status</th><th>Message</th></tr></thead>
 <tbody>
+<tr><td>No such order</td><td>404</td><td>Order not found</td></tr>
+<tr><td>Not theirs</td><td>403</td><td>This order is not assigned to you</td></tr>
+<tr><td>A sell</td><td>400 <code>NOT_A_BUY</code></td><td>Only a buy order can be rejected as unpaid.</td></tr>
+<tr><td>The player has not tapped Paid (ASSIGNED, PROCESSING)</td><td>400 <code>NOT_PAID_YET</code></td><td>The player has not tapped Paid on this buy yet, so there is no payment to reject. Wait for their Paid tap, then check your account and confirm the money or reject it; a buy that is never paid expires on its own.</td></tr>
+<tr><td>Past PAID (rejected already, disputed, completed, cancelled)</td><td>409 <code>NOT_REJECTABLE</code></td><td>This buy is … now, so it cannot be rejected as unpaid.</td></tr>
 <tr><td>Reason under 10 characters</td><td>400</td><td>A rejection reason of at least 10 characters is required — it is what the player is shown.</td></tr>
 <tr><td>No proof file</td><td>400</td><td>Proof is required: upload a screenshot or photo showing the payment did not arrive.</td></tr>
-<tr><td>Not theirs</td><td>403</td><td>This order is not assigned to you</td></tr>
-<tr><td>A sell</td><td>400</td><td>Only a buy order can be rejected as unpaid.</td></tr>
 <tr><td>Proof not theirs, for this order</td><td>400</td><td>Proof could not be verified: …</td></tr>
-<tr><td>Not PAID or PROCESSING</td><td>409</td><td>Cannot reject order in … status</td></tr>
+<tr><td>The team's tokens already paid out (a confirm won the race)</td><td>409</td><td>The team's tokens for this buy were already paid to the player, so it can only be completed.</td></tr>
 </tbody>
 </table></div>
-<p class="danger"><strong>Open, for the owner:</strong> the route accepts a PROCESSING buy
-(<code>expectFrom: ['PAID', 'PROCESSING']</code>), so a member can press this before the
-player has tapped Paid, and the player is still warned and flagged. The design (§3.10 of
-PROJECT_STATUS) describes it after Paid only.</p>
+<p>In that order: the state is asked after ownership and before the reason and proof, so a
+member is never asked for evidence of an accusation that cannot be made yet. A PAID buy
+only (owner, 2026-10-07): REJECTED's one edge in the state machine is from PAID, so the
+transition's WHERE refuses an unpaid buy whatever asked, and the proof upload
+(<code>POST /api/merchant/order-reject-proof/:orderId/upload-url</code>) asks the same
+question (<code>unpaidRejectRefusal</code>) and gives the same 400. The card offers
+<em>Payment never arrived — reject</em> on a PAID buy alone; before the tap it shows
+<em>Waiting for the user to pay …</em> with what to do once they tap, and that an unpaid
+buy expires on its own.</p>
 <p><strong>On success:</strong> REJECTED, the hold kept, <code>dispute_window_until</code>
 written; the player gets a pop-up (<code>order_rejected</code>) with a countdown and a
 Raise-a-dispute button. The proof image is never shown to the player. The dialog
@@ -441,7 +448,10 @@ payment dispute the player or the platform raised does.</p>
 <h3>2.3 Dashboard — <code>/dashboard</code></h3>
 <p><code>Dashboard.tsx</code>: the live order list (the same <code>OrderCard</code>), stats,
 the <strong>Online</strong> switch (<code>PUT /online-status</code>; its triggers open and
-close the stretch the red flag reads) and, for a member of a cash team, the
+close the stretch the red flag reads; a member's only: a supervisor sees "Supervisor ·
+your members take the orders" and <strong>Open your teams</strong> instead, in the top
+bar and sidebar too, and the server answers their "online" with 403
+<code>SUPERVISOR_TAKES_NO_ORDERS</code>) and, for a member of a cash team, the
 <strong>Ready</strong> card (<code>CashReadyCard.tsx</code>, <code>PUT /cash-ready</code>;
 409 <em>"Ready is only for members of a cash team. Ask your supervisor to add you to
 one."</em>). Ready switches itself off when a cash buy is assigned. An assignment
@@ -463,7 +473,7 @@ Every refusal below is from <code>backend/domains/team/teamRefusals.js</code>.</
 <tr><td>Create team</td><td>POST /supervisor/teams</td><td>409 A supervisor can run at most 4 teams. · 400 A team name is 1–60 characters. · 400 Take the phone number out of the team name: every member sees it.</td></tr>
 <tr><td>Rename · Delete team</td><td>PUT · DELETE /supervisor/teams/:teamId</td><td>404 That team is not one of yours. · 409 Remove every member before deleting the team. · 409 This team has traded tokens, so it is kept as the record of where they went. It cannot be deleted.</td></tr>
 <tr><td>Add (by merchant ID)</td><td>POST /supervisor/teams/:teamId/members</td><td>404 No merchant has that ID. Ask them for the ID shown on their Profile. · 409 That merchant has not been approved by an admin yet, so they cannot join a team. · 409 A supervisor cannot be a member of a team. · 409 That merchant is already in a team. They must leave it first. · 409 That team already has 10 members.</td></tr>
-<tr><td>Remove member</td><td>DELETE /supervisor/teams/:teamId/members/:merchantId</td><td>404</td></tr>
+<tr><td>Remove member (asks first: "Remove &lt;name&gt; from &lt;team&gt;" or "Keep &lt;name&gt;")</td><td>DELETE /supervisor/teams/:teamId/members/:merchantId</td><td>404</td></tr>
 <tr><td>Buy tokens · Sell tokens back</td><td>POST /supervisor/teams/:teamId/pool-requests</td><td>409 This team already has a request of that kind waiting. Cancel it, or wait for an admin to decide it. · 409 The team's pool does not have that many tokens available… (a sell-back)</td></tr>
 <tr><td>Cancel request</td><td>DELETE /supervisor/pool-requests/:requestId</td><td>409 That request has already been decided or cancelled. Refresh to see its outcome.</td></tr>
 <tr><td>Show pool history</td><td>GET /supervisor/teams/:teamId/pool</td><td></td></tr>
@@ -487,20 +497,24 @@ figures. Never a teammate's row.</p>
 
 <h3>2.6 Profile — <code>/profile</code></h3>
 <p><code>ProfileSettings.tsx</code> → <code>PUT /api/merchant/profile</code>,
-<code>PUT /preferences</code> (accept buys / accept sells, which routing reads), 2FA
-enrolment, and the merchant ID to give a supervisor.</p>
+<code>PUT /preferences</code> (accept buys / accept sells, which routing reads; a
+member's only: a supervisor is told they take no orders, and the server answers 403
+<code>SUPERVISOR_TAKES_NO_ORDERS</code>), 2FA enrolment, and the merchant ID to give a
+supervisor.</p>
 <div class="tablewrap"><table>
 <thead><tr><th>Refused when</th><th>Status</th><th>Message</th></tr></thead>
 <tbody>
-<tr><td>Bank details on a USDT account</td><td>400</td><td>This is a USDT merchant account — UPI, QR and bank details do not apply. Update the USDT wallet addresses instead.</td></tr>
-<tr><td>USDT address on an INR account</td><td>400</td><td>This is an INR merchant account — a USDT wallet address does not apply. Update UPI/bank details instead.</td></tr>
+<tr><td>Bank details on a USDT account</td><td>400</td><td>This is a USDT merchant account — bank details do not apply. Update the USDT wallet addresses instead.</td></tr>
+<tr><td>USDT address on an INR account</td><td>400</td><td>This is an INR merchant account — a USDT wallet address does not apply. Update the bank details instead.</td></tr>
 <tr><td>Nothing valid in the body</td><td>400</td><td>No valid profile fields provided.</td></tr>
 <tr><td>Malformed details</td><td>400</td><td>Those payment details are not in a valid format.</td></tr>
 <tr><td><strong>A mobile as the account number, a payments-bank IFSC, or a mobile in a name</strong></td><td>400</td><td>Those bank details contain a mobile number: … The other side of an order sees these details, so they cannot be used. Use an account at a regular bank, and the name as the bank has it.</td></tr>
 </tbody>
 </table></div>
 <p class="note">On a UPI_BANK team the bank account is what the buying player pays into,
-so routing skips a member without holder, account number and IFSC.</p>
+so routing skips a member without holder, account number and IFSC. There is no UPI ID
+field: a member keeps no UPI handle (<code>merchants.bank_upi_id</code> was dropped), and a
+<code>upiId</code> sent to this route or to signup is not kept.</p>
 
 <h3>2.7 What the merchant is NOT shown</h3>
 <div class="factbox">
@@ -524,10 +538,14 @@ The tier check <code>isAdminOrSubAdmin</code> that F-001 recorded is gone (F-047
 <h3>3.1 Disputes — <code>/disputes</code></h3>
 <p><code>DisputeManager.tsx</code> → <code>disputeResolution.admin.routes.js</code>, all
 <code>canResolveDisputes</code>: the list, one order, the chat (which shows the
-supervisor's messages), escalate, and resolve.</p>
+supervisor's messages), escalate, and resolve. The list's filter is the server's own list
+(<code>DISPUTE_FILTERS</code>, sent with every answer: Open, Open escalated, Closed, All
+disputes); the screen opens on Open, says "Showing a–b of N disputes" and pages through
+the server's total.</p>
 <div class="tablewrap"><table>
 <thead><tr><th>Refused when</th><th>Status</th><th>Message</th></tr></thead>
 <tbody>
+<tr><td>A filter the queue does not offer</td><td>400</td><td>There is no dispute filter "…". Choose one of: OPEN, ESCALATED, CLOSED, ALL.</td></tr>
 <tr><td>Decision not one the route accepts</td><td>400</td><td>Invalid decision</td></tr>
 <tr><td>Notes blank</td><td>400</td><td>Resolution notes required</td></tr>
 <tr><td>No such order</td><td>404</td><td>Order not found</td></tr>
@@ -633,6 +651,7 @@ wait, the processing windows, the UTR deadline), <code>rejectedBuyDisputeMinutes
 <div class="tablewrap"><table>
 <thead><tr><th>Screen</th><th>What it is</th></tr></thead>
 <tbody>
+<tr><td>Sign in (<code>Login.tsx</code>)</td><td>Role, mobile, password, then the second factor. A session the server refuses (403 <em>"Account blocked"</em>, a closed account, <code>WRONG_PANEL</code>; 401 <em>"Your password was changed. Please sign in again."</em>) is cleared and the panel reloads at its own <code>/admin/</code>, where the form announces <em>"You were signed out: &lt;the server's words&gt;"</em> (<code>role="alert"</code>), once (<code>services/signedOut.ts</code>). A 401 with no session (a wrong password or code) is left to the form, which says the server's words.</td></tr>
 <tr><td>Queue manager</td><td>Pending orders; assign or reassign by hand through the same routing (<code>queueManagerOrPermission</code>)</td></tr>
 <tr><td>Stalled withdrawals</td><td>Sells waiting past their window (<code>canResolveDisputes</code>)</td></tr>
 <tr><td>Revenue · Token flow · Transactions · Reports</td><td>Read over <code>accounting_events</code>; Revenue funds the team commission pool (<code>canManageCommission</code>)</td></tr>
@@ -770,7 +789,7 @@ why a QR that pays a mobile is refused.</p>
 <tr><td>Game · Casino · Crash · Sports</td><td>Place a bet (an <code>Idempotency-Key</code> is required). Affordability is the wallet authority's, against the rows the write locks. Settlement pays gross 2× minus <code>winningsFeePercent</code> (1).</td></tr>
 <tr><td>My bets · History · Results · Winners · Leaderboard</td><td>Read-only.</td></tr>
 <tr><td>Referrals</td><td>A flat ₹25 per referral from a bounded programme. Never a share of losses, never tied to settlement.</td></tr>
-<tr><td>Support · Profile · Promo · Rules · FAQ</td><td>Tickets; bank details (<code>users.mobile</code> never changes); content.</td></tr>
+<tr><td>Support · Profile · Promo · Rules · FAQ</td><td>Tickets; the bank account a sell is paid into (<code>PUT /api/user/:userId/bank-details</code>: holder, number, IFSC, bank; no UPI ID, and the row keeps no fifth field, <code>users_bank_details_bank_account_only</code>; <code>users.mobile</code> never changes); content.</td></tr>
 </tbody>
 </table></div>
 <p class="danger"><strong>Never read <code>p?.payout</code> from

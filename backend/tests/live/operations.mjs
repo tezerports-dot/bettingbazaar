@@ -41,8 +41,10 @@ import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { pgQuery, closePg } from '#db/client.js';
+import { pgQuery, withTransaction, closePg } from '#db/client.js';
 import { db } from '#db';
+import { ACCOUNTS, postMovement } from '#db/repositories/treasury.js';
+import { fundWallet } from '#db/tests/_funding.js';
 import { deriveOrderHmac } from '../../middleware/order-crypto-access.js';
 
 const run = promisify(execFile);
@@ -59,6 +61,35 @@ function record(phase, id, verdict, detail) {
   results.push({ phase, id, verdict, detail });
   const mark = verdict === 'PASS' ? 'PASS  ' : verdict === 'RAN' ? 'RAN   ' : verdict === 'SKIP' ? 'SKIP  ' : 'FAIL  ';
   console.log(`  ${mark} ${id}${detail ? ` — ${detail}` : ''}`);
+}
+
+/**
+ * Tokens IN and OUT of this harness's own wallets.
+ *
+ * A wallet's value moves with USER_FLOAT in the same transaction or the commit
+ * is refused (owner, 2026-10-07), and that is as true of a drill's seed and its
+ * cleanup as of a player's deposit. So the seed funds out of the platform's
+ * holding through the real writer, and the cleanup RETURNS whatever is left
+ * before the rows go — a DELETE that drops value is tokens vanishing, which is
+ * exactly what the guard refuses.
+ */
+async function dropWallets(where, params = []) {
+  await withTransaction(async (client) => {
+    const { rows } = await client.query(
+      `SELECT COALESCE(SUM(bb_wallet_value_paise(w)), 0)::bigint AS paise
+         FROM wallets w WHERE ${where}`, params);
+    const paise = Number(rows[0].paise);
+    await client.query(`DELETE FROM wallets WHERE ${where}`, params);
+    if (paise === 0) return;
+    const moved = await postMovement({
+      client,
+      movementId: `ops_sweep_${Math.random().toString(36).slice(2, 10)}`,
+      operation: 'OPS_HARNESS_SWEEP',
+      legs: { [ACCOUNTS.USER_FLOAT]: 0 - paise, [ACCOUNTS.TOKEN_SUPPLY]: paise },
+      actor: 'operations.mjs', reason: 'Ops harness wallet cleanup',
+    });
+    if (!moved.ok) throw new Error(`ops cleanup could not return ${paise} paise: ${moved.reason}`);
+  });
 }
 
 /** The ledger's own invariant, asked of whatever database we are pointed at. */
@@ -412,9 +443,13 @@ async function cron() {
     `DELETE FROM order_states o WHERE o.order_id LIKE 'ops-%'
        AND NOT EXISTS (SELECT 1 FROM order_transitions t WHERE t.order_id = o.order_id)`,
     "DELETE FROM merchants WHERE merchant_id LIKE 'ops-%'",
-    "DELETE FROM wallets WHERE user_id LIKE 'ops-%'",
-    "DELETE FROM users WHERE user_id LIKE 'ops-%'",
   ]) await pgQuery(sql).catch((e) => console.log(`  (cleanup) ${e.message.slice(0, 90)}`));
+  // The wallets go through `dropWallets`: anything they still hold is returned
+  // to the platform's holding in the same transaction as the DELETE.
+  await dropWallets("user_id LIKE 'ops-%'")
+    .catch((e) => console.log(`  (cleanup) ${e.message.slice(0, 90)}`));
+  await pgQuery("DELETE FROM users WHERE user_id LIKE 'ops-%'")
+    .catch((e) => console.log(`  (cleanup) ${e.message.slice(0, 90)}`));
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -643,8 +678,9 @@ async function crash() {
          VALUES ($1, $1, $2, 'PLAYER', 'ACTIVE')`,
         [userId, String(6500000000 + Math.floor(Math.random() * 499999999))],
       );
-      await pgQuery(
-        'INSERT INTO wallets (user_id, deposit_paise) VALUES ($1, 10000)', [userId]);
+      // 100 tokens, out of the platform's holding and posted with the credit:
+      // a wallet cannot gain tokens from nowhere.
+      await fundWallet(userId, 10000, `${userId}_stake`);
       // ── THROUGH `placeBet`, not an INSERT, and this was the whole problem ──
       // The first version inserted PENDING bets with raw SQL and set
       // `locked_paise` by hand. `winBet` reconstructs the funding SLICES to
@@ -769,7 +805,7 @@ async function crash() {
     await pgQuery('DELETE FROM bets WHERE cycle_id = $1', [cycleId]).catch(() => {});
     await pgQuery('DELETE FROM cycles WHERE cycle_id = $1', [cycleId]).catch(() => {});
     await pgQuery('DELETE FROM wallet_ledger WHERE user_id = ANY($1::text[])', [userIds]).catch(() => {});
-    await pgQuery('DELETE FROM wallets WHERE user_id = ANY($1::text[])', [userIds]).catch(() => {});
+    await dropWallets('user_id = ANY($1::text[])', [userIds]).catch(() => {});
     await pgQuery('DELETE FROM users WHERE user_id = ANY($1::text[])', [userIds]).catch(() => {});
   }
 }

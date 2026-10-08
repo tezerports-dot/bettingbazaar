@@ -41,6 +41,9 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { pgConfigured, applySchema, closePg } from '#db/client.js';
 import { getBalancesPaise, applyMovementPaise } from '#db/repositories/wallets.core.js';
+// A fixture's tokens come from the platform's own holding, posted with the
+// credit — the database refuses a wallet that gains tokens from nowhere.
+import { TEST_FUNDING } from '#db/tests/_funding.js';
 import { ADJUSTABLE_FIELDS } from '#db/repositories/balanceAdjustments.js';
 import { mountRouter, actor, as, request } from './_harness.js';
 
@@ -64,6 +67,7 @@ describePg('admin balance adjustment — the single writer path', () => {
     userId,
     legs: [{ field, deltaPaise: paise }],
     ledger: [{ txId: `seed_${field}_${userId}`, field, amountPaise: paise, type: 'CREDIT' }],
+    counterparty: TEST_FUNDING,
   });
 
   const adjust = (body) => as(app, admin).post('/admin/balance-adjust').send(body);

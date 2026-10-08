@@ -4,8 +4,9 @@
 // detail drawer and the dashboard all behave identically.
 //
 // Backend contract (backend/domains/merchant/merchant.routes.js):
-//   accept   POST /accept/:id            ASSIGNED|PENDING_QUEUE → PROCESSING
-//   reject   POST /reject/:id  {reason}  → REJECTED, requires a reason
+//   accept   POST /accept/:id            ASSIGNED → PROCESSING
+//   reject   POST /reject/:id  {reason}  ASSIGNED → back to the queue (a decline),
+//              requires a reason
 //   confirm  POST /confirm/:id {utrNumber?}
 //              The reference sits on OPPOSITE sides of the two order types,
 //              because opposite parties make the payment.
@@ -24,11 +25,14 @@
 //              (Step 2d). Replaceable until the player taps "I've paid".
 //   payment-not-received
 //            POST /orders/:id/reject {reason, proofFileKey, proofCdnUrl}
-//              PAID|PROCESSING → CANCELLED. Different from `reject` above,
-//              which declines an order before payment. This one accuses the
-//              player of not paying: it warns their account and can auto-block
-//              them, so the route REQUIRES a reason of 10+ characters and a
-//              verified proof image, and refuses without either.
+//              a PAID buy → REJECTED, the team's tokens held while the player
+//              may dispute. Different from `reject` above, which declines an
+//              order before payment. This one says the payment the player
+//              claimed never arrived: it warns and flags their account, so the
+//              route REQUIRES a reason of 10+ characters and a verified proof
+//              image, and refuses without either. Before the Paid tap there is
+//              no claim to deny: the card does not offer it, and the route and
+//              the proof upload answer 400 NOT_PAID_YET (owner, 2026-10-07).
 import { useCallback, useMemo, useState } from 'react';
 import toast from 'react-hot-toast';
 import { api } from '../services/api';

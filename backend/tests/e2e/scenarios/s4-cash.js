@@ -112,9 +112,13 @@ export default async function run() {
   const sT = playerToken(seller);
   const { creditWinnings } = await import('../../../domains/wallet/walletAuthority.service.js');
   await creditWinnings(seller.userId, 20000, 'e2e seed winnings', `${seller.userId}_e2e_win`, `${seller.userId}_e2e_win`);
-  await pgQuery(`UPDATE users SET bank_details = $2 WHERE user_id = $1`,
-    [seller.userId, JSON.stringify({ accountNumber: '900033334444', ifscCode: 'HDFC0000009', accountHolder: 'E2E Seller' })],
-    'e2e_bank');
+  // Saved through the player's own Profile route, as production saves it
+  // (§32 S16); the raw UPDATE this replaces wrote `accountHolder`, a key
+  // nothing reads and the row now refuses (`users_bank_details_bank_account_only`).
+  const saved = await PUT(sT, `/api/user/${seller.userId}/bank-details`, {
+    accountHolderName: 'E2E Seller', accountNumber: '900033334444', ifscCode: 'HDFC0000009', bankName: 'HDFC Bank',
+  });
+  if (saved.status !== 200) throw new Error(`could not save the seller's bank account: ${saved.status} ${saved.body?.message ?? ''}`);
   const oddSell = await POST(sT, '/api/payment/withdrawal/create', { tokenAmount: 7770 });
   check(A, 'player', 'a sell that is not an order size is refused by name', '400 NOT_AN_ORDER_SIZE',
     `${oddSell.status} ${oddSell.body.code ?? ''}`, oddSell.status === 400 && oddSell.body.code === 'NOT_AN_ORDER_SIZE');
@@ -160,6 +164,26 @@ export default async function run() {
   const payable = await GET(pT, `/api/payment/order/${oid}/status`);
   check(A, 'player', 'the player is given exactly that QR to pay', link,
     payable.body.payTo?.paymentLink ?? 'missing', payable.body.payTo?.paymentLink === link);
+
+  // ── "Payment not received" waits for the tap (owner, 2026-10-07) ─────────
+  // The member's rejection denies a payment the player CLAIMED; with the QR
+  // scanned and no tap yet there is none. Both doors refuse, and the player is
+  // neither warned nor flagged.
+  const earlyProof = await POST(mT, `/api/merchant/order-reject-proof/${oid}/upload-url`,
+    { fileName: 'statement.jpg', contentType: 'image/jpeg', fileSize: 1024 });
+  const earlyReject = await POST(mT, `/api/merchant/orders/${oid}/reject`,
+    { reason: 'No credit for this order in my account', proofFileKey: 'merchant-reject-proof/none.jpg' });
+  const unwarned = (await pgQuery('SELECT warning_count, payment_flagged FROM users WHERE user_id = $1',
+    [p.userId], 'e2e')).rows[0] ?? {};
+  const unpaid = await stateOf(oid);
+  check(A, 'merchant', '"payment not received" and its proof upload before the player taps Paid',
+    '400 NOT_PAID_YET from both; still PROCESSING; player not warned or flagged',
+    `${earlyProof.status} ${earlyProof.body.code ?? ''}; ${earlyReject.status} ${earlyReject.body.code ?? ''}; `
+      + `${unpaid.state}; warnings ${unwarned.warning_count}, flagged ${unwarned.payment_flagged}`,
+    earlyProof.status === 400 && earlyProof.body.code === 'NOT_PAID_YET'
+      && earlyReject.status === 400 && earlyReject.body.code === 'NOT_PAID_YET'
+      && unpaid.state === 'PROCESSING' && Number(unwarned.warning_count) === 0 && unwarned.payment_flagged === false,
+    'REJECTED has one edge in the state machine, from PAID; the message tells the member to wait for the tap');
 
   // ── The tap reaches PAID; the reference follows; then the member confirms ─
   const tap = await POST(pT, `/api/payment/order/${oid}/mark-paid`, {});

@@ -24,6 +24,8 @@ import { assignToTeam, routingCandidates, railOf, setCashReady, routingSettings 
 import { createOrderRecord, getOrderRecord } from '../repositories/orders.record.js';
 import { transitionOrder, reassignOrder } from '../repositories/orders.js';
 import { getTreasuryBalances, ACCOUNTS } from '../repositories/treasury.js';
+import { debitWinningsForWithdrawal, getBalances } from '../repositories/wallets.js';
+import { fundWallet } from './_funding.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 const T = (tokens) => tokens * 100;
@@ -78,9 +80,19 @@ describePg('team routing and pool holds (PostgreSQL)', () => {
   const order = async (type, tokens, { currency = 'INR', usdtChain = null } = {}) => {
     const orderId = `TR_${randomBytes(6).toString('hex')}`;
     orders.push(orderId);
-    return createOrderRecord({
-      orderId, userId: `u_${orderId}`, type, tokenAmountRupees: tokens, currency, usdtChain,
+    const userId = `u_${orderId}`;
+    const record = await createOrderRecord({
+      orderId, userId, type, tokenAmountRupees: tokens, currency, usdtChain,
     });
+    // A SELL's tokens are the PLAYER's, locked with the order. The settlement
+    // consumes that lock in the same transaction as the pool credit, so a sell
+    // whose stake was never locked is refused — and a fixture that skipped it
+    // would be testing a state the platform cannot produce (§32 S16).
+    if (type === 'WITHDRAWAL') {
+      await fundWallet(userId, T(tokens), `tr_seed_${orderId}`, 'winningsBalance');
+      await debitWinningsForWithdrawal(userId, tokens, orderId);
+    }
+    return record;
   };
   const assign = (o, cap = 3, barred = []) => assignToTeam(o, {
     cap, barredMerchantIds: barred, buildSet: async () => ({ assignedAt: new Date() }),
@@ -427,11 +439,16 @@ describePg('team routing and pool holds (PostgreSQL)', () => {
     const mid = await getTreasuryBalances();
     expect(mid[ACCOUNTS.TEAM_FLOAT] - before[ACCOUNTS.TEAM_FLOAT]).toBe(T(80000));
     expect(mid[ACCOUNTS.USER_FLOAT] - before[ACCOUNTS.USER_FLOAT]).toBe(-T(80000));
+    // The player's stake left `locked` in the SAME transaction: never in both
+    // places, never in neither.
+    expect(await getBalances(`u_${o.orderId}`)).toMatchObject({ lockedBalance: 0, winningsBalance: 0 });
 
     expect((await reverseSellFromPool(o.orderId)).ok).toBe(true);
     expect(await reverseSellFromPool(o.orderId)).toEqual({ ok: true, alreadyReversed: true });
     expect((await getPool(t.teamId)).availablePaise).toBe(0);
     expect((await getTreasuryBalances())[ACCOUNTS.TEAM_FLOAT]).toBe(before[ACCOUNTS.TEAM_FLOAT]);
+    // …and the stake came back as winnings, with the tokens the pool returned.
+    expect(await getBalances(`u_${o.orderId}`)).toMatchObject({ winningsBalance: 80000, lockedBalance: 0 });
   });
 
   it('a refund of a sell the team already used is refused, and nothing moves', async () => {
@@ -443,6 +460,8 @@ describePg('team routing and pool holds (PostgreSQL)', () => {
     expect((await assign(buy)).teamId).toBe(t.teamId);  // holds the 60,000
     expect(await reverseSellFromPool(sell.orderId)).toEqual({ ok: false, reason: 'pool_short' });
     expect(await getPool(t.teamId)).toMatchObject({ availablePaise: 0, heldPaise: T(60000) });
+    // Nothing moved on the player's side either: the refund is one transaction.
+    expect(await getBalances(`u_${sell.orderId}`)).toMatchObject({ winningsBalance: 0, lockedBalance: 0 });
   });
 
   it('a USDT order reaches only a member holding an address on ITS chain (§25)', async () => {
@@ -480,7 +499,8 @@ describePg('team routing and pool holds (PostgreSQL)', () => {
 
     const before = await getTreasuryBalances();
     expect(await reverseSellFromPool(sell.orderId, { coverShortfall: true }))
-      .toEqual({ ok: true, covered: true, teamId: t.teamId });
+      .toMatchObject({ ok: true, covered: true, teamId: t.teamId, userId: `u_${sell.orderId}` });
+    expect(await getBalances(`u_${sell.orderId}`)).toMatchObject({ winningsBalance: 60000 });
     const after = await getTreasuryBalances();
     // From the platform's own holding to the user side: the player's refund is
     // backed by a movement, and the team's pool is untouched.

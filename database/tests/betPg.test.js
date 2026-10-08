@@ -27,6 +27,9 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { pgConfigured, pgQuery, applySchema, closePg, getPool } from '../client.js';
 import { getBalancesPaise, applyDeltaPaise } from '../repositories/wallets.core.js';
+// A fixture's tokens come from somewhere too: the platform's own holding,
+// posted with the credit (see `_funding.js`).
+import { TEST_FUNDING } from './_funding.js';
 import {
   BET_STATUS, placeBet, winBet, loseBet, voidBet, refundBet,
   getBet, getBetHistory, reconcileUserStakes, findBetsMissingStakeMovement,
@@ -40,7 +43,7 @@ const U = 'pg-bet-user';
 
 /** Fund a pocket directly, so a test starts from a known position. */
 const fund = (field, paise, key, userId = U) =>
-  applyDeltaPaise({ userId, field, deltaPaise: paise, txId: key, type: 'CREDIT', reason: 'test funding' });
+  applyDeltaPaise({ userId, field, deltaPaise: paise, txId: key, type: 'CREDIT', reason: 'test funding', counterparty: TEST_FUNDING });
 
 const slice = (field, amountPaise) => ({ field, amountPaise });
 
@@ -62,7 +65,7 @@ describePg('Bet lifecycle (PostgreSQL)', () => {
   beforeAll(async () => { await applySchema(); });
   afterAll(async () => { await closePg(); });
   beforeEach(async () => {
-    await pgQuery('TRUNCATE bet_transitions, bets, wallet_ledger, wallets, cycles RESTART IDENTITY CASCADE');
+    await pgQuery('TRUNCATE bet_transitions, bets, wallet_ledger, wallets, cycles, treasury_entries, treasury_accounts RESTART IDENTITY CASCADE');
   });
 
   // ── Placement ─────────────────────────────────────────────────────────────
@@ -230,7 +233,7 @@ describePg('Bet lifecycle (PostgreSQL)', () => {
     });
 
     it('a refund returns a SPLIT stake to each source pocket separately', async () => {
-      await pgQuery('TRUNCATE bet_transitions, bets, wallet_ledger, wallets, cycles RESTART IDENTITY CASCADE');
+      await pgQuery('TRUNCATE bet_transitions, bets, wallet_ledger, wallets, cycles, treasury_entries, treasury_accounts RESTART IDENTITY CASCADE');
       await fund('depositBalance', 50_000, 'g1');
       await fund('winningsBalance', 50_000, 'g2');
       const split = [slice('depositBalance', 20_000), slice('winningsBalance', 10_000)];

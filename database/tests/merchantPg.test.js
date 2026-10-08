@@ -228,23 +228,18 @@ describePg('the merchant record', () => {
   });
 
   // ── Payment credentials are an identity ───────────────────────────────────
-  it('refuses two merchants sharing a UPI id, a bank account, or a USDT address', async () => {
-    const upi = `pay${RUN}${seq}@bank`;
-    await make({ bankDetails: { upiId: upi, accountNo: `AC${RUN}${seq}`, ifsc: 'HDFC0001' } });
+  it('refuses two merchants sharing a bank account', async () => {
+    await make({ bankDetails: { accountNo: `AC${RUN}${seq}`, ifsc: 'HDFC0001' } });
 
     // Money routed to one would arrive at the other, and nothing afterwards
     // could say which was intended.
-    await expect(createMerchant({
-      merchantId: `${ID}-b`, name: 'B', bankDetails: { upiId: upi },
-    })).rejects.toThrow(/merchants_upi_unique/);
-
     await expect(createMerchant({
       merchantId: `${ID}-c`, name: 'C',
       bankDetails: { accountNo: `AC${RUN}${seq}`, ifsc: 'HDFC0001' },
     })).rejects.toThrow(/merchants_bank_account_unique/);
 
     // …but two merchants with NO credentials on a rail are fine. A partial
-    // index, not a plain unique one, or the second merchant with no UPI id
+    // index, not a plain unique one, or the second merchant with no account
     // would collide with the first.
     await createMerchant({ merchantId: `${ID}-d`, name: 'D' });
     await createMerchant({ merchantId: `${ID}-e`, name: 'E' });
@@ -382,14 +377,15 @@ describePg('the merchant record', () => {
     // and that coupling is what makes a rename a hundred-file change.
     await make();
     await updateMerchant(ID, {
-      isOnline: true, panelUrl: 'https://panel.test',
-      bankDetails: { upiId: `v${RUN}${seq}@bank`, ifsc: 'HDFC0009' },
+      acceptsWithdrawals: false, panelUrl: 'https://panel.test',
+      bankDetails: { bankName: `Bank ${RUN}${seq}`, ifsc: 'HDFC0009' },
       limits: { minDeposit: 250 },
     });
     const m = await getMerchant(ID);
-    expect(m.isOnline).toBe(true);
+    expect(m.acceptsWithdrawals).toBe(false);
     expect(m.panelUrl).toBe('https://panel.test');
-    expect(m.bankDetails.upiId).toBe(`v${RUN}${seq}@bank`);
+    expect(m.bankDetails.bankName).toBe(`Bank ${RUN}${seq}`);
+    expect(m.bankDetails.ifsc).toBe('HDFC0009');
     // Rupees in, paise stored.
     expect(m.limits.minDeposit).toBe(250);
     const { rows } = await pgQuery(
@@ -404,6 +400,43 @@ describePg('the merchant record', () => {
     // Generated and identity columns are protected too.
     await expect(updateMerchant(ID, { merchant_type: 'USDT' })).rejects.toThrow(/refusing to write/);
     await expect(updateMerchant(ID, { public_ref: 'MDEADBEEF' })).rejects.toThrow(/refusing to write/);
+    // The online switch has one writer, `setOnline`, whose WHERE keeps a
+    // supervisor offline; a generic patch would be a path around it (§2, §3).
+    await expect(updateMerchant(ID, { isOnline: true })).rejects.toThrow(/refusing to write.*isOnline/);
+    await expect(updateMerchant(ID, { lastOnlineToggle: new Date() })).rejects.toThrow(/refusing to write/);
+  });
+
+  // ── No UPI handle (CLAUDE.md §2 "How each rail is paid", §24) ────────────
+  // `bank_upi_id` was written by Profile and copied into every order's
+  // snapshot, and nothing read it: a UPI_BANK buy is paid into the member's
+  // bank account and nobody is shown a handle. A writer still naming it is
+  // REFUSED, not silently dropped, so a stale caller fails where it stands.
+  it('keeps no UPI handle, and refuses a write that names one', async () => {
+    await make({ bankDetails: { accountNo: `UP${RUN}${seq}`, ifsc: 'HDFC0007' } });
+    for (const patch of [{ 'bankDetails.upiId': 'x@bank' }, { bankDetails: { upiId: 'x@bank' } },
+      { bankUpiId: 'x@bank' }, { bank_upi_id: 'x@bank' }]) {
+      await expect(updateMerchant(ID, patch), JSON.stringify(patch))
+        .rejects.toThrow(/refusing to write unknown or protected column/);
+    }
+    // Handed one at creation, it is not kept anywhere.
+    await createMerchant({ merchantId: `${ID}-h`, name: 'H', bankDetails: { upiId: `h${RUN}${seq}@bank` } });
+    const m = await getMerchant(`${ID}-h`);
+    expect(m.bankDetails).not.toHaveProperty('upiId');
+    expect(JSON.stringify(m)).not.toContain('@bank');
+  });
+
+  it('drops the column from a database that still has it (§32 S31)', async () => {
+    // A database built before the drop: the column, its index and a value.
+    await pgQuery('ALTER TABLE merchants ADD COLUMN IF NOT EXISTS bank_upi_id TEXT');
+    await pgQuery(`CREATE UNIQUE INDEX IF NOT EXISTS merchants_upi_unique
+      ON merchants (bank_upi_id) WHERE bank_upi_id IS NOT NULL AND bank_upi_id <> ''`);
+    await applySchema();
+    const cols = await pgQuery(
+      `SELECT column_name FROM information_schema.columns
+        WHERE table_name = 'merchants' AND column_name LIKE '%upi%'`);
+    expect(cols.rows).toEqual([]);
+    const idx = await pgQuery(`SELECT 1 FROM pg_indexes WHERE indexname = 'merchants_upi_unique'`);
+    expect(idx.rows).toEqual([]);
   });
 
   it('will not delete a merchant that is working an order', async () => {

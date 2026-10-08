@@ -17,6 +17,9 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { pgConfigured, applySchema, closePg, pgQuery } from '#db/client.js';
 import { getBalancesPaise, applyMovementPaise } from '#db/repositories/wallets.core.js';
+// A fixture's tokens come from the platform's own holding, posted with the
+// credit — the database refuses a wallet that gains tokens from nowhere.
+import { TEST_FUNDING } from '#db/tests/_funding.js';
 import { createOrderRecord } from '#db/repositories/orders.record.js';
 import { getUser, flagPaymentWarning, softDeleteUser } from '#db/repositories/users.js';
 import { listNotifications } from '#db/repositories/engagement.js';
@@ -227,6 +230,7 @@ describePg('admin user routes', () => {
       userId: plain.userId,
       legs: [{ field: 'depositBalance', deltaPaise: 1000_00 }],
       ledger: [{ txId: `dseed_${plain.userId}`, field: 'depositBalance', amountPaise: 1000_00, type: 'CREDIT' }],
+      counterparty: TEST_FUNDING,
     });
     // Deposit → locked, the shape an in-flight withdrawal leaves behind.
     await applyMovementPaise({

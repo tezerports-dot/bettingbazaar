@@ -23,7 +23,8 @@
  * report someone has to run.
  *
  * The pool movement and the user credit are ONE transaction. Either the pool
- * paid and the user received, or neither happened.
+ * paid and the user received, or neither happened — and the database refuses
+ * any other outcome (owner, 2026-10-07).
  *
  * ── Clawback, not deletion ──────────────────────────────────────────────────
  * A bonus granted in error is reversed by a second movement that returns it to
@@ -32,15 +33,20 @@
  * given a signup bonus?" — a question that deleting the row destroys, and one
  * that fraud review actually asks.
  *
- * A clawback may drive the user's balance negative. It is authorised to: the
- * money may already have been spent, and refusing to record a reversal that has
- * already happened in the real world is worse than recording an overdraft.
+ * A clawback never drives a pocket negative: that would be tokens nobody holds.
+ * One the user can no longer cover is refused, and a person recovers it.
+ *
+ * ── No production caller ────────────────────────────────────────────────────
+ * Nothing in the backend grants a bonus today, and nothing funds BONUS_POOL,
+ * REFERRAL_POOL or COMMISSION_POOL; a grant from an unfunded pool is refused.
+ * Kept for later by the owner (DECISION_LOG 2026-10-07): the first bonus funds
+ * its pool and wires its caller in the same change.
  */
 import { getPool, pgQuery, connectGuarded } from '../client.js';
 import { applyMovementWithin } from './wallets.core.js';
 import { moneyOperations } from '../../backend/services/metrics.service.js';
 import { MONEY_PATHS } from '../moneyPaths.js';
-import { ACCOUNTS, poolPaidUser, allocateFromHouse } from './treasury.js';
+import { ACCOUNTS } from './treasury.js';
 
 export const GRANT_STATUS = Object.freeze({
   PAID:         'PAID',
@@ -137,20 +143,17 @@ async function withGrantLock(userId, grantId, fn) {
  * @returns one of
  *   { ok: true,  idempotent: false, grant, balances }
  *   { ok: true,  idempotent: true,  grant }   already granted; nothing moved
- *   { ok: false, reason: 'pool_movement_failed' }
+ *   { ok: false, reason: 'pool_movement_failed', detail }   nothing moved
  *
- * ── Why the pool movement is NOT in the same transaction ────────────────────
- * It cannot be: the treasury is its own set of row locks in its own
- * transaction, and taking a treasury lock while holding a wallet lock would
- * invert the lock order this codebase holds everywhere else (wallet first) and
- * deadlock against any path that takes them the other way.
- *
- * So the pool moves FIRST, keyed on the same grantId. If the user credit then
- * fails, the pool has paid out for a grant that does not exist — visible
- * immediately as treasury drift, and repaired by re-running the grant, which is
- * idempotent on both halves. The alternative ordering (user first) would leave
- * a user credited from a pool that never paid, which breaks the conservation
- * invariant instead of merely offsetting it, and is much harder to find.
+ * ── One transaction ─────────────────────────────────────────────────────────
+ * The grant row, the user's credit and pool → USER_FLOAT commit together
+ * (owner, 2026-10-07): the database refuses a wallet change without its
+ * USER_FLOAT leg, and a pool driven below zero (`treasury_accounts_sign`). The
+ * lock order is the one every path keeps — the wallet, then the grant, then
+ * the treasury accounts — so there is nothing to order around. (This was two
+ * transactions, the pool first, on the belief that a treasury lock taken under
+ * a wallet lock inverts the order; it does not, and the gap between them was a
+ * pool that paid for a grant that did not exist.)
  */
 export async function grantBonus({
   grantId, userId, kind, amountPaise, refModel = null, refId = null, reason = null,
@@ -162,24 +165,6 @@ export async function grantBonus({
   }
   if (!Number.isInteger(amountPaise) || amountPaise <= 0) {
     throw new TypeError(`grantBonus: amountPaise must be a positive integer, got ${amountPaise}`);
-  }
-
-  // Already granted? Answer before touching the treasury, so a replay does not
-  // post a pool movement it will then discard.
-  const existing = await getGrant(grantId);
-  if (existing) {
-    count(`BONUS_${kind}`, 'idempotent');
-    return { ok: true, idempotent: true, grant: existing };
-  }
-
-  const paid = await poolPaidUser(amountPaise, spec.pool, {
-    movementId: `bonus_${grantId}`,
-    reason: reason || `${kind} bonus`,
-    refModel, refId: refId ?? userId,
-  });
-  if (!paid.ok) {
-    count(`BONUS_${kind}`, 'pool_movement_failed');
-    return { ok: false, reason: 'pool_movement_failed', detail: paid.reason };
   }
 
   const result = await withGrantLock(userId, grantId, async (ctx) => {
@@ -207,13 +192,18 @@ export async function grantBonus({
         field: spec.field, amountPaise, type: 'CREDIT',
         reason: reason || `${kind} bonus`, refId: refId ? String(refId) : ctx.gid,
       }],
+      counterparty: {
+        account: spec.pool, operation: `PAYOUT_${spec.pool}`,
+        reason: reason || `${kind} bonus`, refModel, refId: refId ?? userId,
+      },
     });
 
     if (movement.idempotent) {
       return { commit: false, value: { ok: false, reason: 'inconsistent_idempotency', grantId: ctx.gid } };
     }
     if (!movement.ok) {
-      return { commit: false, value: { ok: false, reason: 'insufficient' } };
+      // The pool cannot cover it (or the treasury refused): nothing moved.
+      return { commit: false, value: { ok: false, reason: 'pool_movement_failed', detail: movement.refused ?? 'insufficient' } };
     }
 
     return {
@@ -231,12 +221,17 @@ export async function grantBonus({
 }
 
 /**
- * Take a bonus back: debit the user and return it to the pool.
+ * Take a bonus back: debit the user and return it to the pool, in one
+ * transaction (USER_FLOAT → the grant's pool).
  *
  * PAID → CLAWED_BACK, guarded in the UPDATE's WHERE clause. The grant row
  * stays, so the history shows both that the bonus was given and that it was
  * recovered — which is the question fraud review asks and the one deleting the
  * row would destroy.
+ *
+ * A clawback the user can no longer cover is REFUSED (`insufficient`): a
+ * negative pocket is tokens nobody holds, and the row refuses it
+ * (`wallets_pockets_nonneg`). Recovering spent bonus money is a person's job.
  */
 export async function clawBackBonus({ grantId, userId, actor = null, reason = null }) {
   if (!grantId) throw new Error('clawBackBonus requires a grantId');
@@ -259,25 +254,24 @@ export async function clawBackBonus({ grantId, userId, actor = null, reason = nu
 
     const spec = BONUS_KIND[grant.kind];
     const movement = await applyMovementWithin(ctx, {
-      legs: [{
-        field: spec.field, deltaPaise: 0 - grant.amountPaise,
-        // Authorised to go negative: the money may already be spent, and
-        // refusing to record a reversal that has already happened is worse
-        // than recording an overdraft.
-        allowNegative: true,
-      }],
+      legs: [{ field: spec.field, deltaPaise: 0 - grant.amountPaise }],
       ledger: [{
         txId: `bonus_clawback_${ctx.gid}`,
         field: spec.field, amountPaise: 0 - grant.amountPaise, type: 'DEBIT',
         reason: reason || `${grant.kind} bonus clawed back`, refId: ctx.gid,
       }],
+      counterparty: {
+        account: grant.pool, operation: `CLAWBACK_${grant.pool}`, actor,
+        reason: reason || `${grant.kind} bonus clawed back`,
+        refModel: grant.refModel, refId: grant.refId ?? ctx.gid,
+      },
     });
 
     if (movement.idempotent) {
       return { commit: false, value: { ok: false, reason: 'inconsistent_idempotency', grantId: ctx.gid } };
     }
     if (!movement.ok) {
-      return { commit: false, value: { ok: false, reason: 'insufficient' } };
+      return { commit: false, value: { ok: false, reason: movement.refused ?? 'insufficient' } };
     }
 
     return {
@@ -289,19 +283,6 @@ export async function clawBackBonus({ grantId, userId, actor = null, reason = nu
       },
     };
   });
-
-  // Return it to the pool AFTER the user side committed, and only then — the
-  // mirror image of grantBonus's ordering, for the same lock-order reason. A
-  // failure here shows as treasury drift rather than as money the user still
-  // holds, which is the safer of the two ways to be wrong.
-  if (result.ok && !result.idempotent) {
-    const grant = result.grant;
-    await allocateFromHouse(grant.amountPaise, grant.pool, {
-      movementId: `bonus_clawback_${grantId}`,
-      actor, reason: reason || `${grant.kind} bonus clawed back`,
-      refModel: grant.refModel, refId: grant.refId ?? grantId,
-    }).catch((e) => console.error(`[bonus] pool return failed for ${grantId}:`, e.message));
-  }
 
   count('BONUS_CLAWBACK', !result.ok ? (result.reason ?? 'error') : result.idempotent ? 'idempotent' : 'applied');
   return result;

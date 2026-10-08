@@ -145,4 +145,19 @@ describePg('user account routes', () => {
       accountHolderName: 'New Name', accountNumber: '222', ifscCode: 'BBBB0000002', bankName: 'New Bank',
     });
   });
+
+  it('saves the bank account and not a UPI handle sent beside it', async () => {
+    // Every sell is a bank transfer to this account; no UPI handle is ever a
+    // destination or shown (§2, §24). The Profile screen used to ask for one.
+    const me = await actor({});
+    const res = await as(app, me).put(`/user/${me.userId}/bank-details`).send({
+      accountHolderName: 'A Player', accountNumber: '123456789012',
+      ifscCode: 'HDFC0001234', bankName: 'HDFC Bank', upiId: 'aplayer@okaxis',
+    });
+    expect(res.status, res.body.message).toBe(200);
+    expect((await getUser(me.userId)).bankDetails).toEqual({
+      accountHolderName: 'A Player', accountNumber: '123456789012',
+      ifscCode: 'HDFC0001234', bankName: 'HDFC Bank',
+    });
+  });
 });
