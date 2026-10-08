@@ -18,8 +18,6 @@ import {
   // a player may start a purchase is a business pace, not a security budget.
   depositCreateLimiter,
 } from '../../middleware/security.js';
-// Wallet operations are for channel members — same gate as betting.
-import { requireChannelMembership } from '../../middleware/requireChannelMembership.js';
 // Item 12: per-subnet backstop against IP rotation on withdrawal creation.
 import { createSubnetLimiter, globalSurgeBreaker } from '../../middleware/ipDefense.js';
 import { markOrderPaid, submitPaymentReference, cancelOrder, claimUtrGrace, retryOrder } from './paymentProcessing.service.js';
@@ -52,7 +50,7 @@ function forPlayer(order) {
 // No KYC gate on any money route: KYC was removed 2026-10-02 (owner). The
 // channel-membership gate, which requires the Telegram contact share, is the
 // identity check.
-router.post('/deposit/create', authenticatePlayer, requireChannelMembership({ action: 'add funds' }), depositCreateLimiter, async (req, res) => {
+router.post('/deposit/create', authenticatePlayer, depositCreateLimiter, async (req, res) => {
   try {
     const result = await requestDeposit({ userId: req.user.userId, tokenAmount: Number(req.body.tokenAmount) });
     res.json({ success: true, message: 'Deposit request created. Waiting for merchant assignment.', ...result });
@@ -76,7 +74,6 @@ router.post('/deposit/create', authenticatePlayer, requireChannelMembership({ ac
  */
 router.post('/usdt/deposit/create',
   authenticatePlayer,
-  requireChannelMembership({ action: 'add funds' }),
   usdtDepositLimiter,
   async (req, res) => {
     try {
@@ -103,7 +100,7 @@ router.post('/usdt/deposit/create',
 // builders of one payload is exactly how the config object drifted the first
 // time; the answer then was one owner, and it is the answer here.
 
-router.post('/withdrawal/create', authenticatePlayer, requireChannelMembership({ action: 'withdraw' }), withdrawalLimiter, createSubnetLimiter('withdrawal'), globalSurgeBreaker('withdrawal'), async (req, res) => {
+router.post('/withdrawal/create', authenticatePlayer, withdrawalLimiter, createSubnetLimiter('withdrawal'), globalSurgeBreaker('withdrawal'), async (req, res) => {
   try {
     const result = await requestWithdrawal({ userId: req.user.userId, tokenAmount: Number(req.body.tokenAmount) });
     res.json({ success: true, message: 'Withdrawal request created. Waiting for merchant assignment.', ...result });
