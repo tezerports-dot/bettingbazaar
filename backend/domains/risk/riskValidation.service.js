@@ -29,6 +29,8 @@ import { MERCHANT_CURRENCY } from '../merchant/merchantCurrency.js';
 import {
   offeredSizes, railForSize, usdtBuyBounds, isUsdtBuyAmount, USDT_BUY_STEP,
 } from '../merchant/denominations.js';
+// The bet-funding rule's arithmetic: one copy, which a casino BET applies too.
+import { reserveBasisPoints, splitStakeMinor, maxStakeMinor } from './stakeFunding.js';
 
 function reject(message, code = 'RISK_VALIDATION') {
   return Object.assign(new Error(message), { status: 400, code });
@@ -142,10 +144,7 @@ export function computeBetFundingPlan({ amount, reservePercent, availableDeposit
   const availRes = Math.max(0, availableReserve  || 0);
 
   const amountMinor = Math.round(amount * 100);
-  const reserveBp   = Math.round(reservePercent * 100); // percent → integer basis points
-  // Floored, remainder to main — conserves the stake exactly (Spec 4.4 discipline).
-  const reserveTargetMinor = Math.floor(amountMinor * reserveBp / 10000);
-  const mainTargetMinor    = amountMinor - reserveTargetMinor;
+  const reserveBp   = reserveBasisPoints(reservePercent);
 
   const availDepMinor = Math.round(availDep * 100);
   const availWinMinor = Math.round(availWin * 100);
@@ -158,17 +157,19 @@ export function computeBetFundingPlan({ amount, reservePercent, availableDeposit
     );
   }
 
-  // Reserve leg — shortfall shifts to main (Spec 5.2C).
-  const fromReserveMinor = Math.min(reserveTargetMinor, availResMinor);
-  const adjustedMainMinor = mainTargetMinor + (reserveTargetMinor - fromReserveMinor);
-
-  // Main leg — deposit first (betting-only balance), winnings as overflow.
-  const fromDepositMinor  = Math.min(adjustedMainMinor, availDepMinor);
-  const fromWinningsMinor = adjustedMainMinor - fromDepositMinor;
-  if (fromWinningsMinor > availWinMinor) {
-    // Guard for pathological float inputs the total pre-check missed.
+  // The split itself is `splitStakeMinor` (stakeFunding.js): the reserve share
+  // floored, its shortfall shifted to main (Spec 5.2C); main from deposit
+  // first, winnings as overflow. A casino BET applies the same function.
+  const split = splitStakeMinor({
+    amountMinor, reserveBp,
+    depositMinor: availDepMinor, winningsMinor: availWinMinor, reserveMinor: availResMinor,
+  });
+  if (!split) {
+    // The reserve can fund only its share, so the total above can pass while
+    // deposit + winnings still fall short of the main part.
     throw reject('Insufficient balance for this bet.', 'INSUFFICIENT_BALANCE');
   }
+  const { fromReserveMinor, fromDepositMinor, fromWinningsMinor } = split;
 
   // Drained bucket → return the caller's float verbatim (see doc comment).
   const fromReserve  = fromReserveMinor  === availResMinor ? availRes : fromReserveMinor  / 100;
@@ -180,21 +181,6 @@ export function computeBetFundingPlan({ amount, reservePercent, availableDeposit
     fromDepositMinor, fromWinningsMinor, fromReserveMinor,
     reservePercentApplied: reserveBp / 100,
   };
-}
-
-/**
- * How much of `adjustedMain` a stake of `amountMinor` needs from the deposit and
- * winnings pockets, given the reserve available.
- *
- * Extracted so `computeMaxStake` and `computeBetFundingPlan` cannot disagree
- * about the rule. The whole point of publishing a maximum is that the number
- * shown is the number the engine will accept; two expressions of "how much main
- * does this stake need" would drift the first time either is touched, and the
- * symptom would be a player told they can bet ₹206 being refused at ₹206.
- */
-function mainNeededForMinor(amountMinor, reserveBp, availResMinor) {
-  const reserveTargetMinor = Math.floor(amountMinor * reserveBp / 10000);
-  return amountMinor - Math.min(reserveTargetMinor, availResMinor);
 }
 
 /**
@@ -233,27 +219,16 @@ export function computeMaxStake({ reservePercent, availableDeposit, availableWin
   const availWinMinor = Math.round(Math.max(0, availableWinnings || 0) * 100);
   const availResMinor = Math.round(Math.max(0, availableReserve  || 0) * 100);
 
-  const reserveBp    = Math.round(reservePercent * 100);
-  const totalMinor   = availDepMinor + availWinMinor + availResMinor;
-  const mainAvailMinor = availDepMinor + availWinMinor;
-
-  let maxStakeMinor = 0;
-  if (totalMinor > 0) {
-    // Largest A in [0, total] with mainNeededFor(A) <= mainAvail. `mainNeededFor`
-    // is non-decreasing in A, so the predicate is monotone and the search exact.
-    let lo = 0;
-    let hi = totalMinor;
-    while (lo < hi) {
-      const mid = Math.ceil((lo + hi) / 2);
-      if (mainNeededForMinor(mid, reserveBp, availResMinor) <= mainAvailMinor) lo = mid;
-      else hi = mid - 1;
-    }
-    maxStakeMinor = lo;
-  }
+  const reserveBp = reserveBasisPoints(reservePercent);
+  // `maxStakeMinor` (stakeFunding.js) searches with the same expression the
+  // split applies; a casino provider is told the same ceiling.
+  const ceilingMinor = maxStakeMinor({
+    reserveBp, depositMinor: availDepMinor, winningsMinor: availWinMinor, reserveMinor: availResMinor,
+  });
 
   return {
-    maxStakeMinor,
-    maxStake: maxStakeMinor / 100,
+    maxStakeMinor: ceilingMinor,
+    maxStake: ceilingMinor / 100,
     reservePercentApplied: reserveBp / 100,
   };
 }

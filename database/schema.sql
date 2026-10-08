@@ -438,6 +438,66 @@ ALTER TABLE casino_rounds DROP CONSTRAINT IF EXISTS casino_rounds_win_needs_bet;
 ALTER TABLE casino_rounds ADD CONSTRAINT casino_rounds_win_needs_bet
   CHECK (credited_paise = 0 OR debited_paise > 0) NOT VALID;
 
+-- ── Which pockets a round's stake came from (owner, 2026-10-08) ───────────
+-- "Yes, like boards": a casino stake is split across the pockets by the board
+-- rule (a reserve share, then deposit, then winnings), and a ROLLBACK or REFUND
+-- returns each part to the pocket it came from. The round records each part,
+-- in the BET's own transaction (`casino.core.recordCallback`), so a reversal
+-- reads where the stake came from off the row it locks.
+--
+-- The CHECKs hold the row to the rule whatever writes it: the parts add up to
+-- the totals, and no pocket gets back more than the round took from it — so a
+-- reversal can never turn a deposit into withdrawable winnings. NOT VALID
+-- because a development database can hold rounds staked before the split was
+-- recorded (and rows a mutation run let through): validating them would stop
+-- the apply here and leave every statement below unrun (§32 S31). They bind
+-- every INSERT and UPDATE from now on, and a fresh database has no other row.
+ALTER TABLE casino_rounds ADD COLUMN IF NOT EXISTS debited_deposit_paise   BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE casino_rounds ADD COLUMN IF NOT EXISTS debited_winnings_paise  BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE casino_rounds ADD COLUMN IF NOT EXISTS debited_reserve_paise   BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE casino_rounds ADD COLUMN IF NOT EXISTS refunded_deposit_paise  BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE casino_rounds ADD COLUMN IF NOT EXISTS refunded_winnings_paise BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE casino_rounds ADD COLUMN IF NOT EXISTS refunded_reserve_paise  BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE casino_rounds DROP CONSTRAINT IF EXISTS casino_rounds_split_nonneg;
+ALTER TABLE casino_rounds ADD CONSTRAINT casino_rounds_split_nonneg CHECK (
+  debited_deposit_paise >= 0 AND debited_winnings_paise >= 0 AND debited_reserve_paise >= 0
+  AND refunded_deposit_paise >= 0 AND refunded_winnings_paise >= 0 AND refunded_reserve_paise >= 0) NOT VALID;
+ALTER TABLE casino_rounds DROP CONSTRAINT IF EXISTS casino_rounds_split_debit;
+ALTER TABLE casino_rounds ADD CONSTRAINT casino_rounds_split_debit CHECK (
+  debited_paise = debited_deposit_paise + debited_winnings_paise + debited_reserve_paise) NOT VALID;
+ALTER TABLE casino_rounds DROP CONSTRAINT IF EXISTS casino_rounds_split_refund;
+ALTER TABLE casino_rounds ADD CONSTRAINT casino_rounds_split_refund CHECK (
+  refunded_paise = refunded_deposit_paise + refunded_winnings_paise + refunded_reserve_paise) NOT VALID;
+ALTER TABLE casino_rounds DROP CONSTRAINT IF EXISTS casino_rounds_split_refund_bound;
+ALTER TABLE casino_rounds ADD CONSTRAINT casino_rounds_split_refund_bound CHECK (
+  refunded_deposit_paise <= debited_deposit_paise
+  AND refunded_winnings_paise <= debited_winnings_paise
+  AND refunded_reserve_paise <= debited_reserve_paise) NOT VALID;
+
+-- A PARTIAL reversal returns the reserve share first, then deposit, then
+-- winnings — the order the rule draws them — so winnings come back last. A
+-- running total cannot say that (a later BET on the same round reopens the
+-- deposit part after winnings went back), so it is asked of each UPDATE: a
+-- pocket's returned part may rise only once every pocket before it is back
+-- in full.
+CREATE OR REPLACE FUNCTION bb_casino_stake_return_order() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF (NEW.refunded_deposit_paise > OLD.refunded_deposit_paise
+        AND NEW.refunded_reserve_paise < NEW.debited_reserve_paise)
+     OR (NEW.refunded_winnings_paise > OLD.refunded_winnings_paise
+        AND (NEW.refunded_reserve_paise < NEW.debited_reserve_paise
+             OR NEW.refunded_deposit_paise < NEW.debited_deposit_paise)) THEN
+    RAISE EXCEPTION 'casino round %: a stake is returned reserve share first, then deposit, then winnings',
+      NEW.round_id
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'casino_rounds_return_order';
+  END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS casino_rounds_return_order ON casino_rounds;
+CREATE TRIGGER casino_rounds_return_order
+  BEFORE UPDATE ON casino_rounds FOR EACH ROW EXECUTE FUNCTION bb_casino_stake_return_order();
+
 CREATE TABLE IF NOT EXISTS casino_transactions (
   id            BIGSERIAL PRIMARY KEY,
   tx_id         TEXT NOT NULL UNIQUE,      -- the PROVIDER's id; the idempotency gate
@@ -3654,6 +3714,16 @@ CREATE OR REPLACE TRIGGER merchants_log_online_switch
 CREATE OR REPLACE TRIGGER merchants_log_online_insert
   AFTER INSERT ON merchants FOR EACH ROW
   WHEN (NEW.is_online) EXECUTE FUNCTION bb_log_online_switch();
+-- A supervisor is never a member (CLAUDE.md §2) and online time is a member's,
+-- so a supervisor's row is never online. `setOnline` keeps it so in its WHERE
+-- and `setSupervisorRole` switches the row off in the statement that makes the
+-- supervisor; the row refuses every other path. Convergent (§32 S31): a row
+-- written before the rule is switched off first, which the trigger above logs
+-- as the end of its stretch.
+UPDATE merchants SET is_online = FALSE, last_online_toggle = now() WHERE is_supervisor AND is_online;
+ALTER TABLE merchants DROP CONSTRAINT IF EXISTS merchants_supervisor_never_online;
+ALTER TABLE merchants ADD CONSTRAINT merchants_supervisor_never_online
+  CHECK (NOT (is_supervisor AND is_online));
 -- Convergent with the switch on a database that predates the log (§32 S31):
 -- an online merchant has an open stretch, an offline one has none.
 INSERT INTO merchant_online_sessions (merchant_id, started_at)

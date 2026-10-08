@@ -168,6 +168,14 @@ export interface MerchantProfile {
   email: string;
   mobile: string;
   isOnline: boolean;
+  /**
+   * A supervisor runs teams and takes no orders (CLAUDE.md §2: never a
+   * member), so they have no online switch and no order preferences; the
+   * server refuses both (`SUPERVISOR_TAKES_NO_ORDERS`). Sent by
+   * `formatMerchant` (backend/domains/merchant/merchant.routes.js) on
+   * /profile and in the login answer.
+   */
+  isSupervisor?: boolean;
   isApproved?: boolean;
   status?: string;
   role?: string;

@@ -422,6 +422,10 @@ const SupervisorTeamCard: React.FC<{
 }> = ({ team, members, poolRequests, commissions, busy, today, week, flags, run }) => {
   const [ref, setRef] = useState('');
   const [name, setName] = useState(team.name);
+  // Which member's removal is waiting for a second press. Removing is not
+  // undone by pressing again: bringing them back is a new proposal an admin
+  // must approve, so the first press only asks.
+  const [confirming, setConfirming] = useState<string | null>(null);
   const inputId = `add-${team.teamId}`;
   const nameId = `name-${team.teamId}`;
   return (
@@ -435,15 +439,31 @@ const SupervisorTeamCard: React.FC<{
       <ul style={{ listStyle: 'none', padding: 0, margin: '0 0 12px' }}>
         {members.length === 0 && <li style={{ fontSize: 12.5, color: 'var(--muted)' }}>No members yet.</li>}
         {members.map((m) => (
-          <li key={m.merchantId} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
+          <li key={m.merchantId} style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: 8, padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
             <span style={{ fontSize: 13, fontWeight: 700 }}>
               {m.name} <span className="bb-mono" style={{ fontSize: 11, color: 'var(--muted)' }}>{m.publicRef}</span>
               {m.status === 'PENDING' && <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--warn)' }}>waiting for admin</span>}
             </span>
-            <Button tone="danger" variant="ghost" disabled={!!busy}
-              onClick={() => void run(`rm-${m.merchantId}`, () => removeTeamMember(team.teamId, m.merchantId), `${m.name} removed`)}>
-              Remove {m.name}
-            </Button>
+            {confirming === m.merchantId ? (
+              <div role="group" aria-label={`Confirm removing ${m.name}`} style={{ flexBasis: '100%', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
+                <span style={{ flex: '1 1 220px', fontSize: 12.5, color: 'var(--text-2)' }}>
+                  {m.status === 'PENDING'
+                    ? `Withdraw ${m.name} from ${team.name}? To propose them again you add them again, and an admin approves again.`
+                    : `Remove ${m.name} from ${team.name}? To bring them back you add them again, and an admin approves again.`}
+                </span>
+                <Button tone="danger" disabled={!!busy}
+                  onClick={() => { setConfirming(null); void run(`rm-${m.merchantId}`, () => removeTeamMember(team.teamId, m.merchantId), `${m.name} removed`); }}>
+                  Remove {m.name} from {team.name}
+                </Button>
+                <Button variant="ghost" tone="neutral" disabled={!!busy} onClick={() => setConfirming(null)}>
+                  Keep {m.name}
+                </Button>
+              </div>
+            ) : (
+              <Button tone="danger" variant="ghost" disabled={!!busy} onClick={() => setConfirming(m.merchantId)}>
+                Remove {m.name}
+              </Button>
+            )}
           </li>
         ))}
       </ul>

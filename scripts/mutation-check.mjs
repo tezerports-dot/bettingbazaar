@@ -114,27 +114,19 @@ const MUTATIONS = [
   },
   // M46 (setKycStatus outside its transaction) deleted 2026-10-02 with KYC.
   // ── The sign-in surface: expiry, single use, and disclosure control ────────
+  // M47 (a reset link spent twice) deleted 2026-10-08 with the reset token: a
+  // reset is set in the Mini App now, spending its initData AND its contact,
+  // each claimed once. Removing either claim alone is an equivalent mutant (the
+  // other still refuses the replay); the shared claim is MS3's.
   {
-    id: 'M47', file: 'database/repositories/telegram.js', config: PG,
-    test: 'database/tests/telegramPg.test.js',
-    why: 'a password-reset link can be spent twice, so a link read off a forwarded chat sets a second password on an account that was just reset',
-    // Repointed 2026-09-30. It guarded the login TOKEN, deleted with bot
-    // sign-in (§33.1); the reset token is the only single-use credential a bot
-    // still issues, and no CI tier covered it until this mutant's suite did.
-    // M156 (the login CODE) was deleted outright — `code_hash` no longer exists.
-    from: `WHERE token_hash = $1 AND consumed_at IS NULL AND expires_at > now()`,
-    to: `WHERE token_hash = $1 AND expires_at > now()`,
-  },
-  {
-    id: 'M48', file: 'database/repositories/telegram.js', config: PG,
-    test: 'database/tests/telegramPg.test.js',
-    why: 'an expired reset link stays redeemable until a sweep happens to run',
-    // Repointed 2026-09-30. It guarded `telegram_pending_links` (onboarding),
-    // deleted with bot signup (§33.1). The property — expiry lives in the
-    // WHERE, so a late sweep cannot make a bearer credential usable — now
-    // matters on the reset token, which is the only one a bot still issues.
-    from: `WHERE token_hash = $1 AND consumed_at IS NULL AND expires_at > now()`,
-    to: `WHERE token_hash = $1 AND consumed_at IS NULL`,
+    id: 'M48', file: 'backend/domains/telegram/miniAppAuth.js', config: UNIT,
+    test: 'backend/tests/unit/miniAppAuth.test.js',
+    why: 'a Mini App proof of any age is accepted, so an initData copied off a screen hours ago still approves a sign-in or resets a password',
+    // Repointed 2026-10-08. It guarded the reset token's expiry, deleted with
+    // the token; what a reset, a verification and an approval now spend is
+    // the signed initData, and its age is checked here.
+    from: `  if (nowSeconds - authDate > maxAgeSeconds || authDate - nowSeconds > FUTURE_SKEW_SECONDS) {`,
+    to: `  if (authDate - nowSeconds > FUTURE_SKEW_SECONDS) {`,
   },
   // M49 and M50 (the Aadhaar export lock; deleting only FAILED Aadhaar rows)
   // deleted 2026-10-02 with KYC: the queue they guarded no longer exists.
@@ -188,12 +180,16 @@ const MUTATIONS = [
   // ── The controls that were defined nowhere ───────────────────────────────
   // M57/M58 guarded the IP deny-list, removed 2026-09-30 (it never ran).
   {
-    id: 'M59', file: 'database/repositories/balanceAdjustments.js', config: PG,
+    // Retargeted 2026-10-07: `allowNegative` is gone (no writer may take a
+    // pocket below zero, `wallets_pockets_nonneg`), so adding it changed
+    // nothing and the entry SURVIVED forever. The guard that answers an
+    // over-debit is the WHERE in `moveBalances`; without it the CHECK still
+    // holds, but the admin gets a constraint error instead of INSUFFICIENT.
+    id: 'M59', file: 'database/repositories/wallets.core.js', config: PG,
     test: 'database/tests/securityChatAdjustmentPg.test.js',
-    why: 'the negative-balance guard is lifted, so an admin can debit a pocket below zero',
-    from: `      legs: [{ field, deltaPaise: delta }],`,
-    to: `      legs: [{ field, deltaPaise: delta }],
-      allowNegative: true,`,
+    why: 'the over-debit guard leaves the UPDATE, so an admin debit past the balance is a constraint error, not a refusal they can read',
+    from: `    if (delta < 0) guards.push(\`AND \${column} + \${placeholder} >= 0\`);`,
+    to: ``,
   },
   {
     id: 'M60', file: 'database/repositories/balanceAdjustments.js', config: PG,
@@ -2746,6 +2742,13 @@ const MUTATIONS = [
     to: ``,
   },
   {
+    id: 'MS13', file: 'backend/routes.js', config: PG,
+    test: 'backend/tests/routes/telegramLoginPg.test.js',
+    why: 'the merchant sign-in answers with its own copy of the profile, without isSupervisor, so a supervisor who just signed in is offered the online switch the server refuses',
+    from: `  return res.json({ success: true, token, merchant: formatMerchant(merchant) });`,
+    to: `  return res.json({ success: true, token, merchant: { _id: merchant._id, userId: merchant.userId, status: merchant.status } });`,
+  },
+  {
     id: 'MC1', file: 'database/schema.sql', config: PG,
     test: 'database/tests/conservationPg.test.js',
     why: 'a pocket may go below zero again — a token spent that was never there',
@@ -2855,6 +2858,334 @@ const MUTATIONS = [
         await client.query(rollback);`,
     to: `      if (false) {
         await client.query(rollback);`,
+  },
+  // ── A casino WIN pays into winnings (owner, 2026-10-07) ──────────────────
+  // Retargeted 2026-10-08 ("Yes, like boards"): `CALLBACK_POCKET` and
+  // `STAKE_POCKET` are gone. A WIN's pocket is `WIN_POCKET`; a BET is split
+  // across the pockets by the board rule (`stakeParts`) and a reversal returns
+  // each part home (`returnParts`), so ROLLBACK and REFUND are ONE path now and
+  // MCW2/MCW3 measure the same edit through the repository and the transport.
+  {
+    id: 'MCW1', file: 'database/repositories/casino.core.js', config: PG,
+    test: 'database/tests/casinoWinPocketPg.test.js',
+    why: 'a casino WIN is paid into the deposit again, so it cannot be withdrawn the way a board win can',
+    from: `const WIN_POCKET = 'winningsBalance';`,
+    to: `const WIN_POCKET = 'depositBalance';`,
+  },
+  {
+    id: 'MCW2', file: 'database/repositories/casino.core.js', config: PG,
+    test: 'database/tests/casinoWinPocketPg.test.js',
+    why: 'a ROLLBACK or REFUND returns the stake into winnings: a BET and its reversal turn a deposit into withdrawable money',
+    from: `    if (back > 0) parts.push({ ...p, amountPaise: back });`,
+    to: `    if (back > 0) parts.push({ ...p, field: 'winningsBalance', amountPaise: back });`,
+  },
+  {
+    id: 'MCW3', file: 'database/repositories/casino.core.js', config: PG,
+    test: 'backend/tests/routes/casinoWinPocketRoutesPg.test.js',
+    why: 'a reversal posted to POST /api/game/wallet/:providerKey returns the stake into winnings: a deposit becomes withdrawable with no game played',
+    from: `    if (back > 0) parts.push({ ...p, amountPaise: back });`,
+    to: `    if (back > 0) parts.push({ ...p, field: 'winningsBalance', amountPaise: back });`,
+  },
+  {
+    id: 'MCW4', file: 'database/repositories/casino.core.js', config: PG,
+    test: 'database/tests/casinoWinPocketPg.test.js',
+    why: 'a casino BET takes its deposit part from winnings instead of the deposit',
+    edits: [
+      [`    depositBalance: split.fromDepositMinor,`, `    depositBalance: split.fromWinningsMinor,`],
+      [`    winningsBalance: split.fromWinningsMinor,`, `    winningsBalance: split.fromDepositMinor,`],
+    ],
+  },
+  {
+    id: 'MCW5', file: 'database/repositories/casino.core.js', config: PG,
+    test: 'database/tests/casinoWinPocketPg.test.js',
+    why: 'the ledger row names the deposit while the winnings moved, so History describes a movement that did not happen',
+    from: `        field: p.field,`,
+    to: `        field: 'depositBalance',`,
+  },
+  {
+    // MCW1's edit, measured through the transport: the signed provider
+    // callback and the player's History, not the repository alone.
+    id: 'MCW6', file: 'database/repositories/casino.core.js', config: PG,
+    test: 'backend/tests/routes/casinoWinPocketRoutesPg.test.js',
+    why: 'a WIN posted to POST /api/game/wallet/:providerKey lands in the deposit, and History shows it as the deposit wallet',
+    from: `const WIN_POCKET = 'winningsBalance';`,
+    to: `const WIN_POCKET = 'depositBalance';`,
+  },
+  {
+    // Two edits, because the callback is idempotent twice over on purpose —
+    // the provider id is UNIQUE in casino_transactions and, as `casino_<id>`,
+    // in wallet_ledger. Loosening either alone pays nothing twice.
+    id: 'MCW7', file: 'database/repositories/casino.core.js', config: PG,
+    test: 'database/tests/casinoWinPocketPg.test.js',
+    why: 'a redelivered WIN is keyed afresh each time, so the provider retrying pays the winnings again',
+    edits: [
+      [`        [String(txId), ctx.rid, ctx.uid, ctx.provider, type, amountPaise],`,
+        `        [\`\${txId}:\${Math.random()}\`, ctx.rid, ctx.uid, ctx.provider, type, amountPaise],`],
+      [`        txId: i === 0 ? \`casino_\${txId}\` : \`casino:\${p.field}:\${txId}\`,`,
+        `        txId: i === 0 ? \`casino_\${txId}:\${Math.random()}\` : \`casino:\${p.field}:\${txId}:\${Math.random()}\`,`],
+    ],
+  },
+
+  // ── The Dispute Manager's queue: one vocabulary, the server's (helper/harness-2) ─
+  {
+    id: 'M440', file: 'database/repositories/orders.record.js', config: PG,
+    test: 'backend/tests/routes/disputeQueuePg.test.js',
+    why: 'a filter the queue does not know is quietly read as the default, so a screen asking for a state it invented is shown a list instead of being told',
+    from: `  const chosen = Object.hasOwn(DISPUTE_FILTERS, key) ? DISPUTE_FILTERS[key] : null;`,
+    to: `  const chosen = DISPUTE_FILTERS[key] ?? DISPUTE_FILTERS[DEFAULT_DISPUTE_FILTER];`,
+  },
+  {
+    id: 'M441', file: 'database/repositories/orders.record.js', config: PG,
+    test: 'backend/tests/routes/disputeQueuePg.test.js',
+    why: '"Closed" asks for a recorded decision, so a dispute closed by a refund (which records none) is in no list but "All"',
+    from: "  CLOSED:    { label: 'Closed', where: `o.state <> 'DISPUTED' AND ${EVER_DISPUTED}` },",
+    to: "  CLOSED:    { label: 'Closed', where: `o.state <> 'DISPUTED' AND o.dispute_decision IS NOT NULL` },",
+  },
+  {
+    id: 'M442', file: 'database/repositories/orders.record.js', config: PG,
+    test: 'backend/tests/routes/disputeQueuePg.test.js',
+    why: '"All disputes" lists only the open ones, so a decided dispute is in the queue nowhere an admin would look for it',
+    from: "  ALL:       { label: 'All disputes', where: `(o.state = 'DISPUTED' OR ${EVER_DISPUTED})` },",
+    to: "  ALL:       { label: 'All disputes', where: `o.state = 'DISPUTED'` },",
+  },
+  {
+    id: 'M443', file: 'database/repositories/orders.record.js', config: PG,
+    test: 'backend/tests/routes/disputeQueuePg.test.js',
+    why: '"Escalated" lists every open dispute, escalated or not',
+    from: "  ESCALATED: { label: 'Open, escalated', where: `o.state = 'DISPUTED' AND o.dispute_escalated` },",
+    to: "  ESCALATED: { label: 'Open, escalated', where: `o.state = 'DISPUTED'` },",
+  },
+  {
+    id: 'M444', file: 'database/repositories/orders.record.js', config: PG,
+    test: 'backend/tests/routes/disputeQueuePg.test.js',
+    why: 'the total is the rows on this page, so the 51st dispute is never mentioned and a page past the end says there are none (S47)',
+    from: `  const total = rows.length ? Number(rows[0].total_matching) : 0;`,
+    to: `  const total = rows.filter((r) => r.order_id).length;`,
+  },
+  {
+    id: 'M445', file: 'database/repositories/orders.record.js', config: PG,
+    test: 'backend/tests/routes/disputeQueuePg.test.js',
+    why: 'the screen opens on every dispute ever raised instead of the work still to do',
+    from: `export const DEFAULT_DISPUTE_FILTER = 'OPEN';`,
+    to: `export const DEFAULT_DISPUTE_FILTER = 'ALL';`,
+  },
+  {
+    id: 'M446', file: 'backend/domains/disputes/disputeResolution.admin.routes.js', config: PG,
+    test: 'backend/tests/routes/disputeQueuePg.test.js',
+    why: 'the dispute the dialog opens is the raw order, not the queue\'s view, so it carries no "who would be suspended" and the Resolve tab says nobody is',
+    from: `    res.json({ success: true, dispute: toDisputeView(order) });`,
+    to: `    res.json({ success: true, dispute: order });`,
+  },
+
+  // ── A supervisor takes no orders, so has no online switch (helper/harness-2) ─
+  {
+    id: 'M447', file: 'database/repositories/merchants.js', config: PG,
+    test: 'backend/tests/routes/supervisorTakesNoOrdersPg.test.js',
+    why: 'a supervisor goes online, and a member\'s online time is logged for somebody who is not a member (§2)',
+    from: `      WHERE merchant_id = $1 AND (NOT $2 OR NOT is_supervisor)`,
+    to: `      WHERE merchant_id = $1`,
+  },
+  {
+    id: 'M448', file: 'database/repositories/merchants.js', config: PG,
+    test: 'backend/tests/routes/supervisorTakesNoOrdersPg.test.js',
+    why: 'the guard refuses a supervisor going OFFLINE too, so a row left online could never be switched off',
+    from: `      WHERE merchant_id = $1 AND (NOT $2 OR NOT is_supervisor)`,
+    to: `      WHERE merchant_id = $1 AND NOT is_supervisor`,
+  },
+  {
+    id: 'M449', file: 'database/repositories/merchants.js', config: PG,
+    test: 'backend/tests/routes/supervisorTakesNoOrdersPg.test.js',
+    why: 'a supervisor sets order directions on a row routing never reads, and the screen says it saved',
+    from: `      WHERE merchant_id = $1 AND NOT is_supervisor`,
+    to: `      WHERE merchant_id = $1`,
+  },
+  {
+    id: 'M450', file: 'database/repositories/teams.js', config: PG,
+    test: 'backend/tests/routes/supervisorTakesNoOrdersPg.test.js',
+    why: 'a member online when an admin makes them a supervisor stays online as one, their stretch still open',
+    from: `                is_online = is_online AND NOT $2,`,
+    to: `                is_online = is_online,`,
+  },
+  {
+    id: 'M451', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
+    test: 'backend/tests/routes/supervisorTakesNoOrdersPg.test.js',
+    why: 'the refusal says "not found" instead of telling the supervisor what they are and who goes online instead (S14)',
+    from: `    if (me?.isSupervisor) return res.status(403).json({ success: false, ...SUPERVISOR_TAKES_NO_ORDERS });`,
+    to: `    if (me?.isSupervisor) return res.status(404).json({ success: false, message: 'Merchant profile not found.' });`,
+  },
+  {
+    id: 'M452', file: 'backend/domains/merchant/merchantSelfView.js', config: PG,
+    test: 'backend/tests/routes/supervisorTakesNoOrdersPg.test.js',
+    why: 'the profile never says the account is a supervisor\'s, so the panel offers the switches the server refuses',
+    // The projection moved out of merchant.routes.js (2026-10-08) so the
+    // Step 3 sign-in door answers with it too (MS13).
+    from: `    isSupervisor:         merchant.isSupervisor === true,`,
+    to: `    isSupervisor:         false,`,
+  },
+  {
+    id: 'M453', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
+    test: 'backend/tests/routes/supervisorTakesNoOrdersPg.test.js',
+    why: 'the preferences route goes back to the generic patch, which has no supervisor guard',
+    from: `        const merchant = await db.merchants.setOrderPreferences(req.merchantId, update);`,
+    to: `        const merchant = await db.merchants.updateMerchant(req.merchantId, update);`,
+  },
+  {
+    id: 'M454', file: 'database/repositories/merchants.js', config: PG,
+    test: 'database/tests/merchantPg.test.js',
+    why: 'the generic patch can write the online switch again: a second writer beside `setOnline`, around its supervisor guard (§3)',
+    from: `  'status', 'suspension_reason', 'accepts_deposits', 'accepts_withdrawals',`,
+    to: `  'status', 'suspension_reason', 'is_online', 'accepts_deposits', 'accepts_withdrawals',`,
+  },
+  {
+    id: 'M455', file: 'database/schema.sql', config: PG,
+    test: 'backend/tests/routes/supervisorTakesNoOrdersPg.test.js',
+    why: 'the row no longer refuses a supervisor online, so any path but `setOnline` (a fixture, a script, the next route) can put one there',
+    from: `  CHECK (NOT (is_supervisor AND is_online));`,
+    to: `  CHECK (TRUE);`,
+  },
+  {
+    id: 'M456', file: 'database/schema.sql', config: PG,
+    test: 'backend/tests/routes/supervisorTakesNoOrdersPg.test.js',
+    why: 'a database holding a supervisor online from before the rule is not switched off first, so applying the schema fails on the constraint (§32 S31)',
+    from: `UPDATE merchants SET is_online = FALSE, last_online_toggle = now() WHERE is_supervisor AND is_online;`,
+    to: `-- (not converged)`,
+  },
+  // ── A casino BET draws on the pockets a board bet draws on (owner, 2026-10-08)
+  // "Yes, like boards": the reserve share, then deposit, then winnings, split
+  // by the board's own function from the LOCKED wallet row and recorded on the
+  // round; a reversal returns each part to its pocket, winnings last.
+  {
+    id: 'MCB1', file: 'database/repositories/casino.core.js', config: PG,
+    test: 'database/tests/casinoStakePocketPg.test.js',
+    why: 'a casino BET draws on the deposit alone again, so a stake the deposit cannot cover is refused while winnings would cover it',
+    from: `    winningsMinor: balances.winningsBalance,`,
+    to: `    winningsMinor: 0,`,
+  },
+  {
+    id: 'MCB2', file: 'database/repositories/casino.core.js', config: PG,
+    test: 'database/tests/casinoStakePocketPg.test.js',
+    why: 'a casino BET skips the reserve share a board bet takes, so the same pockets fund a casino stake differently from a board stake',
+    from: `    reserveMinor: balances.reserveBalance,`,
+    to: `    reserveMinor: 0,`,
+  },
+  {
+    // The board's arithmetic, broken where it lives: the casino follows it,
+    // which is what "reusing the board's code" means (§5, §18.1).
+    id: 'MCB3', file: 'backend/domains/risk/stakeFunding.js', config: PG,
+    test: 'database/tests/casinoStakePocketPg.test.js',
+    why: 'the shared stake split takes winnings before the deposit, and a casino BET splits the same wrong way as a board bet',
+    from: `  const fromDepositMinor  = Math.min(mainMinor, depositMinor);`,
+    to: `  const fromDepositMinor  = Math.max(0, mainMinor - winningsMinor);`,
+  },
+  {
+    // §32 S6: the split decided from a balance read BEFORE the wallet lock —
+    // on the same connection, so the mutant waits on the lock like the
+    // original and only the read is stale.
+    id: 'MCB4', file: 'database/repositories/casino.core.js', config: PG,
+    test: 'database/tests/casinoStakePocketPg.test.js',
+    why: 'two BETs racing for the last of the deposit both plan from the same read, and the second is refused although winnings would fund it',
+    from: `    const { balances } = await lockWalletWithin(client, uid);`,
+    to: `    const { rows: [read] } = await client.query(
+      'SELECT deposit_paise, winnings_paise, reserve_paise FROM wallets WHERE user_id = $1', [uid]);
+    const balances = { depositBalance: Number(read?.deposit_paise ?? 0),
+      winningsBalance: Number(read?.winnings_paise ?? 0), reserveBalance: Number(read?.reserve_paise ?? 0) };
+    await lockWalletWithin(client, uid);`,
+  },
+  {
+    // §32 S34: affordability asked before idempotency.
+    id: 'MCB5', file: 'database/repositories/casino.core.js', config: PG,
+    test: 'database/tests/casinoStakePocketPg.test.js',
+    why: 'a redelivered BET the pockets could no longer fund is answered "insufficient" instead of "already done", so the provider reverses a stake that stands',
+    from: `    if (!ctx.round) {
+      await ctx.client.query(
+        \`INSERT INTO casino_rounds (round_id, user_id, provider_key, game_id)`,
+    to: `    if (type === CASINO_TX.BET && !stakeParts(ctx.balances, amountPaise, reserveBp)) {
+      return { commit: false, value: { ok: false, reason: 'insufficient' } };
+    }
+    if (!ctx.round) {
+      await ctx.client.query(
+        \`INSERT INTO casino_rounds (round_id, user_id, provider_key, game_id)`,
+  },
+  {
+    id: 'MCB6', file: 'database/repositories/casino.core.js', config: PG,
+    test: 'database/tests/casinoStakePocketPg.test.js',
+    why: 'a reversal returns a split stake all to the deposit, so the winnings part comes back non-withdrawable',
+    from: `    if (back > 0) parts.push({ ...p, amountPaise: back });`,
+    to: `    if (back > 0) parts.push({ ...p, field: 'depositBalance', amountPaise: back });`,
+  },
+  {
+    id: 'MCB7', file: 'database/repositories/casino.core.js', config: PG,
+    test: 'database/tests/casinoStakePocketPg.test.js',
+    why: 'a partial rollback returns the winnings part first, so a rollback makes part of a deposit-funded stake withdrawable',
+    from: `  Object.freeze({ field: 'reserveBalance',  column: 'reserve' }),
+  Object.freeze({ field: 'depositBalance',  column: 'deposit' }),
+  Object.freeze({ field: 'winningsBalance', column: 'winnings' }),`,
+    to: `  Object.freeze({ field: 'winningsBalance', column: 'winnings' }),
+  Object.freeze({ field: 'reserveBalance',  column: 'reserve' }),
+  Object.freeze({ field: 'depositBalance',  column: 'deposit' }),`,
+  },
+  {
+    // The round does not record its split: the sum CHECK refuses the BET, so
+    // the record cannot be skipped silently.
+    id: 'MCB8', file: 'database/repositories/casino.core.js', config: PG,
+    test: 'database/tests/casinoStakePocketPg.test.js',
+    why: 'a BET moves the pockets without recording on the round which pockets it took, so a reversal cannot return the parts home',
+    from: `    const stakeMoved = type === CASINO_TX.WIN ? [] : parts;`,
+    to: `    const stakeMoved = [];`,
+  },
+  {
+    id: 'MCB9', file: 'database/repositories/casino.js', config: PG,
+    test: 'database/tests/casinoStakePocketPg.test.js',
+    why: 'the provider is told a balance that leaves out the reserve share a BET can draw on, so it refuses stakes the callback would take',
+    from: `    reserveMinor: w.reserveBalance,`,
+    to: `    reserveMinor: 0,`,
+  },
+  {
+    // MCB9's edit, measured through the transport: the balance in the signed
+    // callback's own answer.
+    id: 'MCB10', file: 'database/repositories/casino.js', config: PG,
+    test: 'backend/tests/routes/casinoStakePocketRoutesPg.test.js',
+    why: 'POST /api/game/wallet/:providerKey answers a balance that is not what a BET can draw on',
+    from: `    reserveMinor: w.reserveBalance,`,
+    to: `    reserveMinor: 0,`,
+  },
+  {
+    id: 'MCB11', file: 'database/schema.sql', config: PG,
+    test: 'database/tests/casinoStakePocketPg.test.js',
+    why: 'a round\'s debit total and its parts can disagree, so the record of where a stake came from stops describing the stake',
+    from: `ALTER TABLE casino_rounds ADD CONSTRAINT casino_rounds_split_debit CHECK (
+  debited_paise = debited_deposit_paise + debited_winnings_paise + debited_reserve_paise) NOT VALID;`,
+    to: `ALTER TABLE casino_rounds ADD CONSTRAINT casino_rounds_split_debit CHECK (
+  true OR debited_paise = debited_deposit_paise + debited_winnings_paise + debited_reserve_paise) NOT VALID;`,
+  },
+  {
+    id: 'MCB12', file: 'database/schema.sql', config: PG,
+    test: 'database/tests/casinoStakePocketPg.test.js',
+    why: 'a round\'s refund total and the parts returned can disagree',
+    from: `ALTER TABLE casino_rounds ADD CONSTRAINT casino_rounds_split_refund CHECK (
+  refunded_paise = refunded_deposit_paise + refunded_winnings_paise + refunded_reserve_paise) NOT VALID;`,
+    to: `ALTER TABLE casino_rounds ADD CONSTRAINT casino_rounds_split_refund CHECK (
+  true OR refunded_paise = refunded_deposit_paise + refunded_winnings_paise + refunded_reserve_paise) NOT VALID;`,
+  },
+  {
+    id: 'MCB13', file: 'database/schema.sql', config: PG,
+    test: 'database/tests/casinoStakePocketPg.test.js',
+    why: 'a writer outside recordCallback can return more to a pocket than the round took from it — deposit turned into winnings by an UPDATE',
+    from: `ALTER TABLE casino_rounds ADD CONSTRAINT casino_rounds_split_refund_bound CHECK (
+  refunded_deposit_paise <= debited_deposit_paise`,
+    to: `ALTER TABLE casino_rounds ADD CONSTRAINT casino_rounds_split_refund_bound CHECK (
+  true OR refunded_deposit_paise <= debited_deposit_paise`,
+  },
+  {
+    id: 'MCB14', file: 'database/schema.sql', config: PG,
+    test: 'database/tests/casinoStakePocketPg.test.js',
+    why: 'a writer outside recordCallback can return the winnings part while deposit is still out',
+    from: `  IF (NEW.refunded_deposit_paise > OLD.refunded_deposit_paise
+        AND NEW.refunded_reserve_paise < NEW.debited_reserve_paise)
+     OR (NEW.refunded_winnings_paise > OLD.refunded_winnings_paise
+        AND (NEW.refunded_reserve_paise < NEW.debited_reserve_paise
+             OR NEW.refunded_deposit_paise < NEW.debited_deposit_paise)) THEN`,
+    to: `  IF false THEN`,
   },
 ];
 

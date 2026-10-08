@@ -23,6 +23,7 @@ import request from 'supertest';
 import { pgConfigured, applySchema, closePg, pgQuery } from '#db/client.js';
 import { db } from '#db';
 import { createMerchantAccount } from '#db/repositories/merchants.js';
+import { setSupervisorRole } from '#db/repositories/teams.js';
 import { newUserId, createUser, setRoles, getUserByMobile } from '#db/repositories/users.js';
 import { hashPassword, verifyPassword } from '../../domains/identity/password.util.js';
 import { verifyJwt } from '../../domains/identity/jwt.util.js';
@@ -218,6 +219,24 @@ describePg('Step 3: sign-in doors and the Mini App', () => {
         expect(res.body.code).toBe('TWO_FACTOR_DENIED');
       });
     }
+
+    // The sign-in hands the panel the profile's own projection (§5). A copy
+    // built by hand lacked `isSupervisor`, so a supervisor who had just signed
+    // in was shown a member's online switch until the next reload.
+    it('a supervisor is told so by the sign-in itself, and a member is not (the opposite)', async () => {
+      const sup = await merchant();
+      const role = await setSupervisorRole(sup.merchantId, { rail: 'CASH' });
+      expect(role.ok, JSON.stringify(role)).toBe(true);
+      const mem = await merchant();
+      for (const [who, isSupervisor] of [[sup, true], [mem, false]]) {
+        const first = await login('MERCHANT', who.mobile);
+        await approve(first.body.telegram, who.tgId);
+        const session = await poll('MERCHANT', first.body.challengeToken);
+        expect(session.status, JSON.stringify(session.body)).toBe(200);
+        expect(session.body.merchant.isSupervisor).toBe(isSupervisor);
+        expect(session.body.merchant).toHaveProperty('assignmentPausedAt');
+      }
+    });
 
     it('another Telegram account cannot approve a staff sign-in without the matching contact', async () => {
       const s = await staff();

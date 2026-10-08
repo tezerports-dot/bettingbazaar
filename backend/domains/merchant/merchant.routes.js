@@ -49,8 +49,10 @@ import { respondError } from '../../shared/httpError.js';
 /** Is Postgres the source of truth for the merchant side of a settlement? */
 import {
   MERCHANT_CURRENCY, merchantTypeOf, formatOrderFiat,
-  USDT_CHAINS, USDT_CHAIN_SPEC, isUsdtAddress, usdtAddressFor, usdtChainsHeldBy,
+  USDT_CHAINS, USDT_CHAIN_SPEC, isUsdtAddress, usdtAddressFor,
 } from './merchantCurrency.js';
+// The merchant's own view of their account, which sign-in answers with too.
+import { formatMerchant } from './merchantSelfView.js';
 import { toMerchantOrderView, toMerchantOrderViews } from './merchantOrderView.js';
 import { railOf, routingSettings, PAYMENT_MODES } from '#db/repositories/teamRouting.js';
 // What a cash buy's ATM link may be (Step 2d).
@@ -79,62 +81,6 @@ const NO_LONGER_YOURS = 'This order has been moved to another member, so nothing
 
 
 
-/**
- * The merchant's own view of their account. A member holds no tokens — their
- * team's pool does (§3.10) — so there is no balance here; the Team page shows
- * the pool.
- */
-const formatMerchant = async (merchant, user = null) => {
-    // A merchant settles on exactly one rail; the panel renders the bank account
-    // OR the USDT addresses from this, never both (domains/merchant/merchantCurrency.js).
-    // merchantTypeOf() is used rather than the `merchantType` virtual so lean()
-    // documents (which carry no virtuals) format identically to hydrated ones.
-    const merchantType = merchantTypeOf(merchant);
-    return {
-        id:                   merchant._id,
-        _id:                  merchant._id,
-        userId:               merchant.userId,
-        name:                 merchant.name,
-        username:             user?.username || merchant.username,
-        mobile:               user?.mobile   || merchant.mobile,
-        email:                merchant.email,
-        status:               merchant.status,
-        isOnline:             merchant.isOnline,
-        acceptsDeposits:      merchant.acceptsDeposits,
-        acceptsWithdrawals:   merchant.acceptsWithdrawals,
-        merchantType,
-        acceptedCurrencies:   merchant.acceptedCurrencies,
-        bankDetails:          merchant.bankDetails,
-        // One per chain, and the list of chains they can actually be paid on
-        // — which is what decides whether any USDT order reaches them.
-        usdtAddressTrc20:     merchant.usdtAddressTrc20 || '',
-        usdtAddressBep20:     merchant.usdtAddressBep20 || '',
-        usdtChains:           usdtChainsHeldBy(merchant),
-        limits:               merchant.limits,
-        // Whether the platform has stopped sending them new buy orders (three
-        // unpaid in a row, §2). A merchant was never told: the Dashboard read
-        // "Online · Accepting orders" while no order could reach them. Only the
-        // TIME is sent — the stored reason is written for an admin.
-        assignmentPausedAt:   merchant.assignmentPausedAt ?? null,
-        // A CASH member's Ready: at the machine and able to take a buy. Each
-        // buy assigned to them switches it off (§3.10, 2c).
-        cashReady:            merchant.cashReady === true,
-        earnings:             merchant.earnings,
-        totalProcessedVolume: merchant.totalProcessedVolume,
-        // Performance figures the panel's dashboard/profile show; all are
-        // maintained by the order lifecycle — read-only here.
-        totalDepositsProcessed:    merchant.totalDepositsProcessed,
-        totalDepositAmount:        merchant.totalDepositAmount,
-        totalWithdrawalsProcessed: merchant.totalWithdrawalsProcessed,
-        totalWithdrawalAmount:     merchant.totalWithdrawalAmount,
-        successRate:               merchant.successRate,
-        avgResponseMinutes:        merchant.avgResponseMinutes,
-        disputeRate:               merchant.disputeRate,
-        totalOrdersCompleted:      merchant.totalOrdersCompleted,
-        rating:               merchant.rating,
-        createdAt:            merchant.createdAt,
-    };
-};
 
 // ─── AUTH: SIGNUP & LOGIN ─────────────────────────────────────────────────────
 
@@ -264,7 +210,7 @@ router.get('/profile', merchantAuth, async (req, res) => {
         res.json({
             success: true,
             merchant: {
-                ...(await formatMerchant(merchant, req.user)),
+                ...formatMerchant(merchant, req.user),
                 prices: { buyPrice: 1, sellPrice: 1, profit: 0 },
             },
         });
@@ -382,7 +328,7 @@ router.put('/profile', merchantAuth, async (req, res) => {
             throw e;
         }
 
-        res.json({ success: true, merchant: await formatMerchant(merchant, req.user) });
+        res.json({ success: true, merchant: formatMerchant(merchant, req.user) });
     } catch (err) {
         console.error('PUT /merchant/profile error:', err);
         if (err?.name === 'ValidationError') {
@@ -392,6 +338,29 @@ router.put('/profile', merchantAuth, async (req, res) => {
     }
 });
 
+/**
+ * Why a supervisor's online switch and order directions are refused — one
+ * sentence for both routes, written for the supervisor to act on (§32 S14).
+ * A supervisor is never a member (§2): their members go online and take the
+ * orders; the supervisor runs the teams.
+ */
+const SUPERVISOR_TAKES_NO_ORDERS = Object.freeze({
+    code: 'SUPERVISOR_TAKES_NO_ORDERS',
+    message: 'You are a supervisor: you run teams and take no orders yourself, so you have no online switch '
+        + 'or order settings. Your members go online and choose their orders from their own accounts; '
+        + 'their online time is on your Team page.',
+});
+
+/**
+ * Answer a write the merchant's row refused. The guard is in the write's
+ * WHERE (`setOnline`, `setOrderPreferences`); this read only says why.
+ */
+async function refusedWrite(req, res) {
+    const me = await db.merchants.getMerchant(req.merchantId);
+    if (me?.isSupervisor) return res.status(403).json({ success: false, ...SUPERVISOR_TAKES_NO_ORDERS });
+    return res.status(404).json({ success: false, message: 'Merchant profile not found.' });
+}
+
 router.put('/online-status', merchantAuth, async (req, res) => {
     try {
         const { isOnline } = req.body;
@@ -400,8 +369,10 @@ router.put('/online-status', merchantAuth, async (req, res) => {
         }
         // The flag and its timestamp move in ONE statement, so two rapid
         // toggles cannot interleave into "online, with the timestamp of going
-        // offline" — which is what the assignment score reads.
+        // offline" — which is what the assignment score reads. A supervisor
+        // going online is refused by that statement's WHERE.
         const merchant = await db.merchants.setOnline(req.merchantId, isOnline);
+        if (!merchant) return refusedWrite(req, res);
         // Notify admin panel via SSE so merchant list shows green/red dot without refresh
         if (global.sseManager && merchant) {
             global.sseManager.broadcastToAdmins('merchant_status_changed', {
@@ -412,10 +383,9 @@ router.put('/online-status', merchantAuth, async (req, res) => {
                 updatedAt:  new Date(),
             });
         }
-        res.json({ success: true, merchant: await formatMerchant(merchant, req.user) });
+        res.json({ success: true, merchant: formatMerchant(merchant, req.user) });
     } catch (err) {
-        console.error('PUT /merchant/online-status error:', err);
-        res.status(500).json({ success: false, message: 'Failed to update online status.' });
+        return respondError(res, err, 'PUT /merchant/online-status', { message: 'Failed to update online status.' });
     }
 });
 
@@ -457,11 +427,13 @@ router.put('/preferences', merchantAuth, async (req, res) => {
         if (!Object.keys(update).length) {
             return res.status(400).json({ success: false, message: 'No valid preference fields provided.' });
         }
-        const merchant = await db.merchants.updateMerchant(req.merchantId, update);
-        res.json({ success: true, merchant: await formatMerchant(merchant, req.user) });
+        // Its own writer, refusing a supervisor in the WHERE: the generic
+        // `updateMerchant` would set a direction on a row routing never reads.
+        const merchant = await db.merchants.setOrderPreferences(req.merchantId, update);
+        if (!merchant) return refusedWrite(req, res);
+        res.json({ success: true, merchant: formatMerchant(merchant, req.user) });
     } catch (err) {
-        console.error('PUT /merchant/preferences error:', err);
-        res.status(500).json({ success: false, message: 'Failed to update preferences.' });
+        return respondError(res, err, 'PUT /merchant/preferences', { message: 'Failed to update preferences.' });
     }
 });
 /*

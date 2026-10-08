@@ -245,6 +245,52 @@ export default async function run() {
       'the merchant acts; the PLATFORM has to stop routing to them');
   }
 
+  // ══ 6b. A supervisor has no online switch and no order directions ════════
+  // A supervisor does no transactions (owner, 2026-10-02) and online time is a
+  // member's (§2). Through the whole server — door, session, route, the
+  // writes' WHERE — not a mounted router. The member beside them is the
+  // opposite: the same switch, taken. Nobody is routed anything (`online: []`,
+  // `exclusive: false`).
+  {
+    const team = await seedTeam({ rail: 'UPI_BANK', online: [], exclusive: false });
+    const sT = merchantToken(team.supervisor);
+    const sid = team.supervisor.merchantId;
+    const stretches = async (id) => Number((await pgQuery(
+      'SELECT count(*) AS n FROM merchant_online_sessions WHERE merchant_id = $1', [id])).rows[0].n);
+
+    const told = await GET(sT, '/api/merchant/profile');
+    check(A, 'merchant', 'the panel is told the account is a supervisor\'s', 'isSupervisor true',
+      `${told.status} isSupervisor ${told.body?.merchant?.isSupervisor}`,
+      told.status === 200 && told.body?.merchant?.isSupervisor === true,
+      'the panel hides the switch from this, so it must be on the profile it reads');
+
+    const on = await PUT(sT, '/api/merchant/online-status', { isOnline: true });
+    const row = (await pgQuery('SELECT is_online FROM merchants WHERE merchant_id = $1', [sid])).rows[0];
+    check(A, 'merchant', 'a supervisor pressing "Go online" is refused, saying why', '403 SUPERVISOR_TAKES_NO_ORDERS, offline, no stretch',
+      `${on.status} ${on.body?.code ?? ''} → is_online ${row?.is_online}, ${await stretches(sid)} stretch(es)`,
+      on.status === 403 && on.body?.code === 'SUPERVISOR_TAKES_NO_ORDERS'
+        && row?.is_online === false && (await stretches(sid)) === 0,
+      'a member\'s online time logged for somebody who is not a member is a false record (§2)');
+
+    const prefs = await PUT(sT, '/api/merchant/preferences', { acceptsDeposits: false });
+    check(A, 'merchant', 'a supervisor cannot switch order directions', '403 SUPERVISOR_TAKES_NO_ORDERS',
+      `${prefs.status} ${prefs.body?.code ?? ''}`,
+      prefs.status === 403 && prefs.body?.code === 'SUPERVISOR_TAKES_NO_ORDERS');
+
+    const member = team.members[0];
+    const mT = merchantToken(member);
+    try {
+      const memberOn = await PUT(mT, '/api/merchant/online-status', { isOnline: true });
+      const open = Number((await pgQuery(
+        'SELECT count(*) AS n FROM merchant_online_sessions WHERE merchant_id = $1 AND ended_at IS NULL',
+        [member.merchantId])).rows[0].n);
+      check(A, 'merchant', 'a member of that team still goes online (the opposite)', '200, one open stretch',
+        `${memberOn.status}, ${open} open`, memberOn.status === 200 && open === 1);
+    } finally {
+      await PUT(mT, '/api/merchant/online-status', { isOnline: false });
+    }
+  }
+
   // ══ 7. Support links: the admin saves, the player panel reads ════════════
   {
     const before = (await GET(aT, '/api/admin/content/support-links')).body?.supportLinks ?? {};

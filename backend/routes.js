@@ -47,6 +47,7 @@ import { miniAppBot } from './domains/telegram/telegramClient.js';
 import { verifyInitData } from './domains/telegram/miniAppAuth.js';
 import { miniAppRefusal } from './domains/telegram/miniAppRefusals.js';
 import { respondError } from './shared/httpError.js';
+import { formatMerchant } from './domains/merchant/merchantSelfView.js';
 
 const router = express.Router();
 
@@ -247,16 +248,10 @@ export async function issueMerchantSession(merchant, res, { amr = ['pwd'] } = {}
     merchantId: merchant._id, userId: merchant.userId, mobile: merchant.mobile,
     isMerchant: true, isAdmin: false, amr: [...new Set(amr)],
   });
-  return res.json({
-    success: true, token,
-    merchant: {
-      _id: merchant._id, userId: merchant.userId,
-      username: merchant.username, mobile: merchant.mobile, email: merchant.email,
-      status: merchant.status, isOnline: merchant.isOnline,
-      acceptsDeposits: merchant.acceptsDeposits !== false,
-      acceptsWithdrawals: merchant.acceptsWithdrawals !== false,
-    },
-  });
+  // The panel's own view, from the one projection `GET /profile` answers with
+  // (§5): a hand-built copy here lacked `isSupervisor`, so a supervisor signing
+  // in was shown a member's online switch until the next reload.
+  return res.json({ success: true, token, merchant: formatMerchant(merchant) });
 }
 
 /**

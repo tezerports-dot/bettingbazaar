@@ -3596,9 +3596,9 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 407 |
-| Parameters only (safe by construction) | 266 |
-| Interpolating into statement text (each needs a reading) | 134 |
+| `pgQuery` call sites | 408 |
+| Parameters only (safe by construction) | 265 |
+| Interpolating into statement text (each needs a reading) | 136 |
 | Statement text built elsewhere and passed in (each needs a reading) | 7 |
 
 <details><summary>Call sites whose statement text is built elsewhere</summary>
@@ -3618,7 +3618,7 @@ new route and decide. Each of the three questions is defined in §2.
 |---|---|---|---|
 | `user-panel` | 91 | 0 | 0 |
 | `admin-panel` | 110 | 0 | 0 |
-| `merchant-panel` | 49 | 0 | 0 |
+| `merchant-panel` | 50 | 0 | 0 |
 
 <!-- END GENERATED -->
 

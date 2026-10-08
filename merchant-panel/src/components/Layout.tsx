@@ -43,7 +43,10 @@ const Layout: React.FC<LayoutProps> = ({ children, actionable = 0 }) => {
 
   const rail = railOf(merchant);
   const copy = railCopy(rail);
-  const online = !!merchant?.isOnline;
+  // One helper for every screen (§5). A supervisor has no online switch: they
+  // take no orders (CLAUDE.md §2), and the server refuses it.
+  const availability = availabilityOf(merchant);
+  const { online, switchable } = availability;
   const active = useMemo(
     () => NAV.find((item) => location.pathname.startsWith(item.path)) ?? NAV[0],
     [location.pathname]
@@ -136,24 +139,26 @@ const Layout: React.FC<LayoutProps> = ({ children, actionable = 0 }) => {
                     animation: online ? 'bb-pulse 2s ease infinite' : 'none',
                   }} />
                   <span style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--text)' }}>
-                    {availabilityOf(merchant).short}
+                    {availability.short}
                   </span>
                 </div>
-                <button
-                  onClick={toggleOnline}
-                  style={{
-                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, width: '100%',
-                    padding: 10, borderRadius: 11, border: 0, cursor: 'pointer', fontSize: 12.5,
-                    fontWeight: 700, color: '#fff', background: online ? 'var(--offline)' : 'var(--ok)',
-                  }}
-                >
-                  <Power size={15} /> {online ? 'Go offline' : 'Go online'}
-                </button>
+                {switchable && (
+                  <button
+                    onClick={toggleOnline}
+                    style={{
+                      display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, width: '100%',
+                      padding: 10, borderRadius: 11, border: 0, cursor: 'pointer', fontSize: 12.5,
+                      fontWeight: 700, color: '#fff', background: online ? 'var(--offline)' : 'var(--ok)',
+                    }}
+                  >
+                    <Power size={15} /> {online ? 'Go offline' : 'Go online'}
+                  </button>
+                )}
                 <div style={{ marginTop: 11, fontSize: 11, fontWeight: 600, color: 'var(--muted)' }}>
-                  {copy.name} merchant · {copy.credentialsLabel}
+                  {switchable ? `${copy.name} merchant · ${copy.credentialsLabel}` : 'Your members go online from their own accounts'}
                 </div>
               </div>
-            ) : (
+            ) : switchable && (
               <button
                 onClick={toggleOnline}
                 title={online ? 'Go offline' : 'Go online'}
@@ -191,23 +196,33 @@ const Layout: React.FC<LayoutProps> = ({ children, actionable = 0 }) => {
             <div style={{ fontSize: isMobile ? 10.5 : 12, fontWeight: 600, color: 'var(--muted)' }}>{active.sub}</div>
           </div>
 
-          <button
-            onClick={toggleOnline}
-            title={online ? 'Go offline' : 'Go online'}
-            style={{
-              display: 'flex', alignItems: 'center', gap: 7, padding: '8px 13px', borderRadius: 11,
-              border: `1px solid ${online ? 'transparent' : 'var(--border)'}`,
-              background: online ? 'var(--ok-bg)' : 'var(--surface-2)',
-              color: online ? 'var(--ok)' : 'var(--offline)',
-              fontSize: 12.5, fontWeight: 700, cursor: 'pointer', flexShrink: 0,
-            }}
-          >
+          {switchable ? (
+            <button
+              onClick={toggleOnline}
+              title={online ? 'Go offline' : 'Go online'}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 7, padding: '8px 13px', borderRadius: 11,
+                border: `1px solid ${online ? 'transparent' : 'var(--border)'}`,
+                background: online ? 'var(--ok-bg)' : 'var(--surface-2)',
+                color: online ? 'var(--ok)' : 'var(--offline)',
+                fontSize: 12.5, fontWeight: 700, cursor: 'pointer', flexShrink: 0,
+              }}
+            >
+              <span style={{
+                width: 8, height: 8, borderRadius: '50%', background: 'currentColor',
+                animation: online ? 'bb-pulse 2s ease infinite' : 'none',
+              }} />
+              {online ? 'Online' : 'Offline'}
+            </button>
+          ) : (
+            // Not a control: a supervisor's account has no switch to press.
             <span style={{
-              width: 8, height: 8, borderRadius: '50%', background: 'currentColor',
-              animation: online ? 'bb-pulse 2s ease infinite' : 'none',
-            }} />
-            {online ? 'Online' : 'Offline'}
-          </button>
+              padding: '8px 13px', borderRadius: 11, border: '1px solid var(--border)',
+              background: 'var(--surface-2)', color: 'var(--text-2)', fontSize: 12.5, fontWeight: 700, flexShrink: 0,
+            }}>
+              Supervisor
+            </span>
+          )}
 
           <button onClick={toggleTheme} title={`Switch to ${theme === 'light' ? 'dark' : 'light'} theme`} style={iconButtonStyle}>
             {theme === 'light' ? <Moon size={17} /> : <Sun size={17} />}

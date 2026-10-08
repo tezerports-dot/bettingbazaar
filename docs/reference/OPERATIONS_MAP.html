@@ -572,7 +572,7 @@ assigned to, before the idempotent answer and again in the WHERE (<code>merchant
   <div class="body">
   <div class="scroll"><table>
   <tr><th>Button</th><th>Route</th><th>From</th><th>What it does</th><th>Refusals</th></tr>
-  <tr><td>Online</td><td><code>PUT /online-status</code></td><td>—</td><td>opens or closes an online stretch (trigger on <code>is_online</code>); routing needs it on</td><td>400</td></tr>
+  <tr><td>Online</td><td><code>PUT /online-status</code></td><td>—</td><td>opens or closes an online stretch (trigger on <code>is_online</code>); routing needs it on. A member's switch only: a supervisor is shown none</td><td>400 · 403 <code>SUPERVISOR_TAKES_NO_ORDERS</code> going online as a supervisor (in <code>setOnline</code>'s WHERE; the row: <code>merchants_supervisor_never_online</code>)</td></tr>
   <tr><td>Ready (cash)</td><td><code>PUT /cash-ready</code></td><td>—</td><td>at the ATM, able to take one cash buy; the assignment switches it off</td><td>409 when not an approved member of a cash team</td></tr>
   <tr><td>Accept</td><td><code>POST /accept/:id</code></td><td>ASSIGNED</td><td>PROCESSING; the player now sees where to pay</td><td>404 · 403 · 409</td></tr>
   <tr><td>Decline</td><td><code>POST /reject/:id</code></td><td>ASSIGNED</td><td>back to the queue and re-routed at once, this member barred; counts on the refusal streak</td><td>400 without a reason · 404 · 409</td></tr>
@@ -685,7 +685,10 @@ flowchart TD
   <p>The transition is the gate: two admins deciding at once produce one decision and one 409. A buy
   whose pool tokens were already paid out can only be completed (<code>pool_paid</code>). The Dispute
   Manager shows who will be suspended before the press, from the server's answer, and the supervisor's
-  messages in the thread. The queue's other routes (<code>/payment-orders/:id/action</code>,
+  messages in the thread. Its filters are the queue's own (<code>DISPUTE_FILTERS</code>,
+  <code>orders.record.js</code>: Open, Open escalated, Closed, All disputes), sent with every answer
+  with the total and page count; it opens on Open, and a filter the queue does not offer is a 400
+  naming the ones it does. The queue's other routes (<code>/payment-orders/:id/action</code>,
   <code>/resolve</code>) reach the same loser record.</p>
   </div>
 </div>
@@ -695,7 +698,7 @@ flowchart TD
   <div class="body">
   <div class="scroll"><table>
   <tr><th>Action</th><th>Route</th><th>Area</th></tr>
-  <tr><td>Make or unmake a supervisor, and set the rail</td><td><code>PUT /merchants/:id/supervisor</code></td><td><code>canManageTeams</code></td></tr>
+  <tr><td>Make or unmake a supervisor, and set the rail</td><td><code>PUT /merchants/:id/supervisor</code> (making one switches them offline in the same statement: a supervisor takes no orders)</td><td><code>canManageTeams</code></td></tr>
   <tr><td>Approve, reject or remove a member</td><td><code>POST /team-members/:id/approve|reject</code>, <code>DELETE /team-members/:id</code></td><td><code>canManageTeams</code></td></tr>
   <tr><td>Fulfil or reject a pool request</td><td><code>POST /team-pool-requests/:id/fulfil|reject</code></td><td><code>canFundMerchants</code></td></tr>
   <tr><td>See teams, pools, commission paid and waiting</td><td><code>GET /teams</code></td><td><code>canManageTeams</code></td></tr>
@@ -857,7 +860,8 @@ a realtime layer. Several of these are the only thing between a stuck row and a 
 <tr><th>ID</th><th>Where</th><th>What actually happens</th><th>State</th></tr>
 <tr><td>F-011</td><td>staff sign-in</td><td>sessions carry <code>amr</code> and the panels route to enrolment; the server-side guard is the owner's switch</td><td><span class="chip waiting">partly fixed</span></td></tr>
 <tr><td>F-009</td><td>casino iframe</td><td><code>frame-src</code> is unset, so the provider's frame stays empty; which origins to allow is the owner's decision</td><td><span class="chip waiting">decision needed</span></td></tr>
-<tr><td>—</td><td>Dispute Manager</td><td>the screen opens on "All Disputes", which sends <code>status=all</code>; <code>disputeQueue</code> (<code>orders.record.js</code>) widens only on <code>'ALL'</code> and otherwise asks for <code>o.state = status</code>, so the default view lists nothing. "Resolved" and "Escalated" ask for states no order has (<code>order_states.state</code> CHECK). Only "Open" lists a dispute. Found by <code>test:mutate</code>'s <code>admin/disputes</code> cases (2g harness).</td><td><span class="chip waiting">open</span></td></tr>
+<tr><td>—</td><td>Dispute Manager</td><td>the screen kept its own filters and opened on "All Disputes" (<code>status=all</code>), which <code>disputeQueue</code> read as an order state, so the default view listed nothing; "Resolved" and "Escalated" asked for states no order has. Now the queue owns the one vocabulary (<code>DISPUTE_FILTERS</code>) and sends it with every answer, the screen renders that list and opens on Open, an unknown filter is a 400, and the total is counted apart from the page and paged through (S47). Found by <code>test:mutate</code>'s <code>admin/disputes</code> cases (2g harness); fixed on helper/harness-2 (M440–M446).</td><td><span class="chip moved">fixed</span></td></tr>
+<tr><td>—</td><td>supervisor's switches</td><td>a supervisor was offered "Go online" (Dashboard, top bar, sidebar) and the order-direction switches (Profile), and the server took them, logging a member's online time for somebody who is not a member (§2). Now <code>setOnline</code> and <code>setOrderPreferences</code> refuse a supervisor in their WHERE (403 <code>SUPERVISOR_TAKES_NO_ORDERS</code>, saying who goes online instead), the row refuses it (<code>merchants_supervisor_never_online</code>), being made a supervisor switches the row off in the same statement, and the panel shows a supervisor no switch. Found by <code>BB_PROFILE=merchant-supervisor test:drive</code>; fixed on helper/harness-2 (M447–M456).</td><td><span class="chip moved">fixed</span></td></tr>
 <tr><td>—</td><td>reject as unpaid</td><td>closed (owner, 2026-10-07): "payment not received" was accepted on a PROCESSING (and ASSIGNED) buy, before the player tapped Paid, and warned and flagged the player. REJECTED is now reached from PAID alone in the state machine; the route and the proof upload answer 400 <code>NOT_PAID_YET</code> (<code>unpaidRejectRefusal</code>). Found by the 2g review.</td><td><span class="chip moved">fixed</span></td></tr>
 <tr><td>—</td><td>merchant login</td><td>the merchant door is its own handler (<code>merchant.routes.js</code>), not <code>loginHandler</code> with a door in <code>LOGIN_DOOR</code> as CLAUDE.md §2 says; it now answers an unknown mobile as it answers a wrong password (fixed in 2g, M424). Folding it into <code>loginHandler</code> belongs with Step 3's login rework.</td><td><span class="chip waiting">open</span></td></tr>
 <tr><td>—</td><td>conservation proof</td><td><code>reconcileAgainstSubLedgers()</code> (USER_FUNDS + reserve against the wallets, TEAM_FLOAT against the pools, USER_FLOAT against the wallets) has no production caller: only <code>ledgerPg.test.js</code> runs it, and <code>ledger-reconcile</code> does not. The books are checked in tests, never on a running platform. Found while writing this map (2g).</td><td><span class="chip refused">open · owner's call</span></td></tr>

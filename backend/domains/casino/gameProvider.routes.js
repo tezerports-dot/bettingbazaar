@@ -334,6 +334,9 @@ router.post('/wallet/:providerKey', async (req, res) => {
         invalid_amount:       'Invalid amount',
         no_live_session:      'No open game session for this player with this provider',
         no_prior_bet:         'No standing bet by this player on this round',
+        // A round staked before the split was recorded: where its stake came
+        // from is unknown, so it is not returned to a guessed pocket.
+        stake_split_unknown:  'This round\'s stake was not recorded by pocket; it cannot be reversed automatically',
       }[applied.reason] || `Callback refused: ${applied.reason}`;
       console.error(`[casino] refusing ${type} for round ${roundId}: ${applied.reason}`);
       // A refusal is 400 with the balance attached: suppliers reconcile against

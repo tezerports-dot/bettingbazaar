@@ -529,6 +529,17 @@ async function endBuys(buys) {
  * "Decide dispute". Answers what the screen showed on the way, because a
  * decision the admin could not reach is a different finding from one that
  * moved the wrong money.
+ *
+ * The dispute must be on the screen an admin ARRIVES at. Until 2g's harness
+ * pass it was not: the default view asked the queue for orders in state 'all'
+ * and listed nothing, and these cases had to switch the filter to "Open" to
+ * find their own dispute. A card missing on arrival is now a failure of the
+ * screen (`missingOnArrival`), not a step to work around.
+ *
+ * `note` is what the Resolve tab says the chosen decision will do to whoever
+ * loses — the server's answer (`suspendsIfTo…`), which the dialog read from a
+ * detail view that did not carry it, so it said "Nobody is suspended" on every
+ * dispute.
  */
 async function decideOnScreen(page, cfg, base, orderId, decision) {
   await go(page, cfg, base, '/disputes');
@@ -537,30 +548,25 @@ async function decideOnScreen(page, cfg, base, orderId, decision) {
     .filter({ has: page.getByRole('button', { name: /View Chat \+ Resolve/i }) })
     .last();
   // What a person arriving sees first: the default filter, untouched.
-  const onArrival = await cardFor().count() > 0;
-  if (!onArrival) {
-    // The filter a person reaches for next: the open disputes.
-    const filter = page.getByLabel('Filter disputes by status');
-    if (await filter.count()) {
-      await filter.selectOption('DISPUTED');
-      await settle(page, 8000);
-    }
-  }
   if (await cardFor().count() === 0) {
     const routed = await page.locator('main').innerText().catch(() => '(no <main>)');
-    return { ok: false, why: `no card for ${orderId} even under "Open" — routed region: ${routed.replace(/\s+/g, ' ').slice(0, 180)}` };
+    return {
+      ok: false, missingOnArrival: true,
+      why: `no card for ${orderId} on the Dispute Manager as it opens — routed region: ${routed.replace(/\s+/g, ' ').slice(0, 180)}`,
+    };
   }
   const open = cardFor().getByRole('button', { name: /View Chat \+ Resolve/i }).first();
   await open.click({ timeout: 8000 });
   await settle(page, 6000);
   const dialog = page.locator('[role="dialog"]').last();
-  if (!(await dialog.isVisible().catch(() => false))) return { ok: false, why: 'View Chat + Resolve opened no dialog', onArrival };
+  if (!(await dialog.isVisible().catch(() => false))) return { ok: false, why: 'View Chat + Resolve opened no dialog' };
   await dialog.getByRole('button', { name: /^\s*Resolve\s*$/i }).first().click({ timeout: 8000 });
   await settle(page, 2000);
   await dialog.locator('#decision').selectOption(decision);
   await dialog.locator('#resolution-notes').fill(`mutating drive: ${decision}`);
+  const note = (await dialog.getByRole('note').first().innerText().catch(() => '')).replace(/\s+/g, ' ').trim();
   const decide = dialog.getByRole('button', { name: /Decide dispute/i }).first();
-  if (await decide.isDisabled()) return { ok: false, why: '"Decide dispute" stayed disabled with notes typed', onArrival };
+  if (await decide.isDisabled()) return { ok: false, why: '"Decide dispute" stayed disabled with notes typed' };
   const answered = page.waitForResponse(
     (r) => r.url().includes(`/dispute-orders/${orderId}/resolve`) && r.request().method() === 'POST',
     { timeout: 15000 },
@@ -571,7 +577,7 @@ async function decideOnScreen(page, cfg, base, orderId, decision) {
   const said = reply ? `${reply.status()} ${(await reply.text().catch(() => '')).replace(/\s+/g, ' ').slice(0, 120)}` : 'no request left the panel';
   // Without a reload: the queue must have learned what it just did (§31).
   const stillOffered = await cardFor().count() > 0;
-  return { ok: true, said, onArrival, stillOffered };
+  return { ok: true, said, note, stillOffered };
 }
 
 
@@ -1036,14 +1042,18 @@ const CASES = [
         const playerBefore = await boughtPaise(mine.player.userId);
         const poolBefore = await db.teamPools.getPool(fx.team.teamId);
         const pressed = await decideOnScreen(page, cfg, base, mine.orderId, 'RELEASE_TO_USER');
-        if (!pressed.ok) return ['NOT DRIVEN', pressed.why];
+        if (!pressed.ok) return [pressed.missingOnArrival ? 'FAILED' : 'NOT DRIVEN', pressed.why];
 
         const row = await orderRow(mine.orderId);
         const credited = (await boughtPaise(mine.player.userId)) - playerBefore;
         const poolAfter = await db.teamPools.getPool(fx.team.teamId);
         const spent = poolBefore.heldPaise - poolAfter.heldPaise;
         const neighbour = await orderRow(theirs.orderId);
-        const arrival = pressed.onArrival ? '' : ' (NOT listed under the default "All Disputes" filter — found under "Open")';
+        // The member was shown a reference: deciding for the player is the
+        // member's loss, and the dialog must have said so before the press.
+        if (!/team member on this order will be suspended/i.test(pressed.note)) {
+          return ['FAILED', `before deciding for the player the dialog said "${pressed.note}" — the member is the one suspended`];
+        }
         if (row?.state !== 'COMPLETED' || row.dispute_decision !== 'RELEASE_TO_USER') {
           return ['FAILED', `pressed Decide dispute; ${mine.orderId} is ${row?.state} / ${row?.dispute_decision ?? 'no decision'} — ${pressed.said}`];
         }
@@ -1059,7 +1069,7 @@ const CASES = [
         if (party !== 'MERCHANT') return ['FAILED', `the member was shown a reference and lost; the fault row says ${party ?? 'nobody'}`];
         if (pressed.stillOffered) return ['FAILED', 'decided, and the queue still offers "View Chat + Resolve" for it without a reload'];
         return ['DROVE', `${mine.orderId} COMPLETED: player +${credited / 100} tokens, team pool hold −${spent / 100}, `
-          + `fault MERCHANT; the bystander dispute untouched${arrival}`];
+          + 'fault MERCHANT as the dialog warned; listed on arrival; the bystander dispute untouched'];
       } finally {
         await endBuys(fx.buys);
         await fx.restore();
@@ -1153,12 +1163,14 @@ const CASES = [
       try {
         const poolBefore = await db.teamPools.getPool(fx.team.teamId);
         const pressed = await decideOnScreen(page, cfg, base, mine.orderId, 'RELEASE_TO_MERCHANT');
-        if (!pressed.ok) return ['NOT DRIVEN', pressed.why];
+        if (!pressed.ok) return [pressed.missingOnArrival ? 'FAILED' : 'NOT DRIVEN', pressed.why];
 
         const row = await orderRow(mine.orderId);
         const poolAfter = await db.teamPools.getPool(fx.team.teamId);
         const neighbour = await orderRow(theirs.orderId);
-        const arrival = pressed.onArrival ? '' : ' (NOT listed under the default "All Disputes" filter — found under "Open")';
+        if (!/player will be suspended/i.test(pressed.note)) {
+          return ['FAILED', `before deciding for the team the dialog said "${pressed.note}" — the player is the one suspended`];
+        }
         if (row?.state !== 'CANCELLED' || row.dispute_decision !== 'RELEASE_TO_MERCHANT') {
           return ['FAILED', `pressed Decide dispute; ${mine.orderId} is ${row?.state} / ${row?.dispute_decision ?? 'no decision'} — ${pressed.said}`];
         }
@@ -1177,8 +1189,21 @@ const CASES = [
         const party = await faultParty(mine.orderId);
         if (party !== 'PLAYER') return ['FAILED', `the player's claim was refused; the fault row says ${party ?? 'nobody'}`];
         if (pressed.stillOffered) return ['FAILED', 'decided, and the queue still offers "View Chat + Resolve" for it without a reload'];
+        // Where an admin looks for it afterwards: "Closed", one of the filters
+        // the queue sends, with the decision on its card. The card drew the
+        // decision only for status 'RESOLVED', which no order is ever in.
+        const filter = page.getByLabel('Filter disputes by status');
+        if (await filter.count() === 0) return ['FAILED', 'decided, and the Dispute Manager offers no filter to find it under'];
+        await filter.selectOption('CLOSED');
+        await settle(page, 8000);
+        const closed = page.locator('div').filter({ hasText: mine.orderId }).filter({ hasText: /Decision:/ }).last();
+        const card = await closed.count() ? (await closed.innerText()).replace(/\s+/g, ' ') : '';
+        if (!/Decision: RELEASE TO MERCHANT/.test(card)) {
+          const routed = (await page.locator('main').innerText().catch(() => '')).replace(/\s+/g, ' ').slice(0, 180);
+          return ['FAILED', `under "Closed" ${mine.orderId} shows no decision — ${card || routed}`];
+        }
         return ['DROVE', `${mine.orderId} CANCELLED: hold of ${BUY_TOKENS} tokens back to the pool, player not credited, `
-          + `fault PLAYER; the bystander dispute untouched${arrival}`];
+          + 'fault PLAYER as the dialog warned; listed on arrival, and under "Closed" with its decision; the bystander dispute untouched'];
       } finally {
         await endBuys(fx.buys);
         await fx.restore();
@@ -2446,6 +2471,17 @@ const CASES = [
       if (await remove.count() === 0) return ['NOT DRIVEN', `no "Remove ${victim.username}" on /team — ${(await words(page)).slice(0, 160)}`];
       const hit = await clickThrough(remove.first(), { timeout: 8000 });
       if (!hit.ok) return ['NOT DRIVEN', `Remove could not be pressed: ${hit.why}`];
+      await settle(page, 1500);
+      // The first press only asks. Nothing may have moved yet.
+      const asked = page.getByRole('group', { name: `Confirm removing ${victim.username}` });
+      if (await asked.count() === 0) return ['FAILED', `pressed "Remove ${victim.username}" and no confirmation was asked`];
+      if (!(await db.teams.membershipOf(victim.merchantId))) {
+        return ['FAILED', `${victim.username} left the team on the FIRST press, before the confirmation was answered`];
+      }
+      const confirm = asked.getByRole('button', { name: new RegExp(`^\\s*Remove ${escapeRe(victim.username)} from ${escapeRe(s.team.name)}\\s*$`) });
+      if (await confirm.count() === 0) return ['FAILED', `the confirmation has no "Remove ${victim.username} from ${s.team.name}"`];
+      const yes = await clickThrough(confirm.first(), { timeout: 8000 });
+      if (!yes.ok) return ['NOT DRIVEN', `the confirmation could not be pressed: ${yes.why}`];
       await settle(page, 8000);
 
       const gone = await db.teams.membershipOf(victim.merchantId);
@@ -2457,7 +2493,7 @@ const CASES = [
       }
       if (team.approvedCount !== 9) return ['FAILED', `the team counts ${team.approvedCount} approved, expected 9`];
       if (await remove.count() > 0) return ['FAILED', `${victim.username} left the team and the screen still offers to remove them`];
-      return ['DROVE', `${victim.username} out of ${s.team.teamId} (9 approved now), ${neighbour.username} still APPROVED, screen updated`];
+      return ['DROVE', `asked first (nothing moved), then ${victim.username} out of ${s.team.teamId} (9 approved now), ${neighbour.username} still APPROVED, screen updated`];
     },
   },
 
