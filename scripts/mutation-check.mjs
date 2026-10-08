@@ -2921,16 +2921,18 @@ const MUTATIONS = [
     to: `  const fromDepositMinor  = Math.max(0, mainMinor - winningsMinor);`,
   },
   {
-    // §32 S6: the split decided from a balance read BEFORE the wallet lock.
+    // §32 S6: the split decided from a balance read BEFORE the wallet lock —
+    // on the same connection, so the mutant waits on the lock like the
+    // original and only the read is stale.
     id: 'MCB4', file: 'database/repositories/casino.core.js', config: PG,
     test: 'database/tests/casinoStakePocketPg.test.js',
     why: 'two BETs racing for the last of the deposit both plan from the same read, and the second is refused although winnings would fund it',
-    edits: [
-      [`import { applyMovementWithin, lockWalletWithin } from './wallets.core.js';`,
-        `import { applyMovementWithin, lockWalletWithin, getBalancesPaise } from './wallets.core.js';`],
-      [`    const { balances } = await lockWalletWithin(client, uid);`,
-        `    const balances = await getBalancesPaise(uid); await lockWalletWithin(client, uid);`],
-    ],
+    from: `    const { balances } = await lockWalletWithin(client, uid);`,
+    to: `    const { rows: [read] } = await client.query(
+      'SELECT deposit_paise, winnings_paise, reserve_paise FROM wallets WHERE user_id = $1', [uid]);
+    const balances = { depositBalance: Number(read?.deposit_paise ?? 0),
+      winningsBalance: Number(read?.winnings_paise ?? 0), reserveBalance: Number(read?.reserve_paise ?? 0) };
+    await lockWalletWithin(client, uid);`,
   },
   {
     // §32 S34: affordability asked before idempotency.

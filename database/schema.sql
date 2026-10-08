@@ -447,9 +447,11 @@ ALTER TABLE casino_rounds ADD CONSTRAINT casino_rounds_win_needs_bet
 --
 -- The CHECKs hold the row to the rule whatever writes it: the parts add up to
 -- the totals, and no pocket gets back more than the round took from it — so a
--- reversal can never turn a deposit into withdrawable winnings. The two sum
--- CHECKs are NOT VALID because a development database can hold rounds staked
--- before the split was recorded; they bind every write from now on.
+-- reversal can never turn a deposit into withdrawable winnings. NOT VALID
+-- because a development database can hold rounds staked before the split was
+-- recorded (and rows a mutation run let through): validating them would stop
+-- the apply here and leave every statement below unrun (§32 S31). They bind
+-- every INSERT and UPDATE from now on, and a fresh database has no other row.
 ALTER TABLE casino_rounds ADD COLUMN IF NOT EXISTS debited_deposit_paise   BIGINT NOT NULL DEFAULT 0;
 ALTER TABLE casino_rounds ADD COLUMN IF NOT EXISTS debited_winnings_paise  BIGINT NOT NULL DEFAULT 0;
 ALTER TABLE casino_rounds ADD COLUMN IF NOT EXISTS debited_reserve_paise   BIGINT NOT NULL DEFAULT 0;
@@ -459,7 +461,7 @@ ALTER TABLE casino_rounds ADD COLUMN IF NOT EXISTS refunded_reserve_paise  BIGIN
 ALTER TABLE casino_rounds DROP CONSTRAINT IF EXISTS casino_rounds_split_nonneg;
 ALTER TABLE casino_rounds ADD CONSTRAINT casino_rounds_split_nonneg CHECK (
   debited_deposit_paise >= 0 AND debited_winnings_paise >= 0 AND debited_reserve_paise >= 0
-  AND refunded_deposit_paise >= 0 AND refunded_winnings_paise >= 0 AND refunded_reserve_paise >= 0);
+  AND refunded_deposit_paise >= 0 AND refunded_winnings_paise >= 0 AND refunded_reserve_paise >= 0) NOT VALID;
 ALTER TABLE casino_rounds DROP CONSTRAINT IF EXISTS casino_rounds_split_debit;
 ALTER TABLE casino_rounds ADD CONSTRAINT casino_rounds_split_debit CHECK (
   debited_paise = debited_deposit_paise + debited_winnings_paise + debited_reserve_paise) NOT VALID;
@@ -470,7 +472,7 @@ ALTER TABLE casino_rounds DROP CONSTRAINT IF EXISTS casino_rounds_split_refund_b
 ALTER TABLE casino_rounds ADD CONSTRAINT casino_rounds_split_refund_bound CHECK (
   refunded_deposit_paise <= debited_deposit_paise
   AND refunded_winnings_paise <= debited_winnings_paise
-  AND refunded_reserve_paise <= debited_reserve_paise);
+  AND refunded_reserve_paise <= debited_reserve_paise) NOT VALID;
 
 -- A PARTIAL reversal returns the reserve share first, then deposit, then
 -- winnings — the order the rule draws them — so winnings come back last. A

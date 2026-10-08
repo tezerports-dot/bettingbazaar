@@ -351,43 +351,56 @@ describePg('a casino stake draws on the pockets a board bet draws on (PostgreSQL
   });
 
   describe('the database holds the row to the rule, whatever writes it', () => {
-    /** A round with a split stake: reserve 1,000 · deposit 5,000 · winnings 4,000. */
+    /**
+     * A round with a split stake (reserve 1,000 · deposit 5,000 · winnings
+     * 4,000) and a probe of it: the write is attempted, and whatever happened
+     * the row is put back exactly as the BET left it (trap 10). A probe that
+     * a broken guard let through must not leave a row behind that the next
+     * schema apply, or the next suite, trips over.
+     */
     async function splitRound() {
       const u = await player({ deposit: 5_000, winnings: 10_000, reserve: 2_000 });
       const roundId = rid();
       await call(u, { roundId, type: 'BET', amountRupees: 100 });
       const where = `provider_key = '${PROVIDER}' AND user_id = '${u}' AND round_id = '${roundId}'`;
-      return { u, roundId, where };
+      const probe = async (sql) => {
+        try {
+          return await refusedBy(pgQuery(sql.replace('$WHERE', where)));
+        } finally {
+          await pgQuery(`UPDATE casino_rounds SET debited_paise = 10000, refunded_paise = 0,
+                  debited_reserve_paise = 1000, debited_deposit_paise = 5000, debited_winnings_paise = 4000,
+                  refunded_reserve_paise = 0, refunded_deposit_paise = 0, refunded_winnings_paise = 0
+            WHERE ${where}`);
+        }
+      };
+      return { u, roundId, where, probe };
     }
 
     it('the parts must add up to the stake', async () => {
-      const { where } = await splitRound();
-      expect((await refusedBy(pgQuery(
-        `UPDATE casino_rounds SET debited_paise = debited_paise + 1 WHERE ${where}`))).constraint)
+      const { probe } = await splitRound();
+      expect((await probe(`UPDATE casino_rounds SET debited_paise = debited_paise + 1 WHERE $WHERE`)).constraint)
         .toBe('casino_rounds_split_debit');
-      expect((await refusedBy(pgQuery(
-        `UPDATE casino_rounds SET refunded_paise = 100 WHERE ${where}`))).constraint)
+      expect((await probe(`UPDATE casino_rounds SET refunded_paise = 100 WHERE $WHERE`)).constraint)
         .toBe('casino_rounds_split_refund');
     });
 
     it('no pocket gets back more than the round took from it', async () => {
-      const { where } = await splitRound();
+      const { probe } = await splitRound();
       // Within the round's total bound, but one paisa more deposit than the
       // stake took from the deposit.
-      expect((await refusedBy(pgQuery(
-        `UPDATE casino_rounds SET refunded_paise = 6001, refunded_reserve_paise = 1000,
-                refunded_deposit_paise = 5001 WHERE ${where}`))).constraint)
+      expect((await probe(`UPDATE casino_rounds SET refunded_paise = 6001, refunded_reserve_paise = 1000,
+                refunded_deposit_paise = 5001 WHERE $WHERE`)).constraint)
         .toBe('casino_rounds_split_refund_bound');
     });
 
     it('winnings come back last: no reversal reaches them while a deposit or reserve part is out', async () => {
-      const { where } = await splitRound();
-      expect((await refusedBy(pgQuery(
-        `UPDATE casino_rounds SET refunded_paise = 100, refunded_winnings_paise = 100 WHERE ${where}`))).constraint)
+      const { where, probe } = await splitRound();
+      expect((await probe(
+        `UPDATE casino_rounds SET refunded_paise = 100, refunded_winnings_paise = 100 WHERE $WHERE`)).constraint)
         .toBe('casino_rounds_return_order');
       // The deposit before the reserve share is out of order too.
-      expect((await refusedBy(pgQuery(
-        `UPDATE casino_rounds SET refunded_paise = 100, refunded_deposit_paise = 100 WHERE ${where}`))).constraint)
+      expect((await probe(
+        `UPDATE casino_rounds SET refunded_paise = 100, refunded_deposit_paise = 100 WHERE $WHERE`)).constraint)
         .toBe('casino_rounds_return_order');
       // In order, it is accepted — the opposite behaviour — and put back.
       try {
