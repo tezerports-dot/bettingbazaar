@@ -18,6 +18,7 @@
  */
 import { db } from '#db';
 import crypto from 'crypto';
+import { REFERRAL_REWARD_PAISE } from './referralRewards.js';
 import { creditWinnings } from '../wallet/walletAuthority.service.js';
 import { paiseToRupees } from '../../shared/money.js';
 

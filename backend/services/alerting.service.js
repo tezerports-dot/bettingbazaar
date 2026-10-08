@@ -39,11 +39,10 @@ export async function sendAlert(key, title, details = {}) {
     const url = await getWebhookUrl();
 
     // ── TWO SINKS, INDEPENDENT ──────────────────────────────────────────────
-    // The webhook and the admin Telegram channel are not alternatives: an
-    // operator may run one, the other, or both. The owner asked for the admin
-    // bot to carry "security alerts to the admin channel" (2026-09-24), and an
-    // operator who has that configured must not have to also stand up a Slack
-    // endpoint to receive anything.
+    // The webhook and Telegram are not alternatives: an operator may run one,
+    // the other, or both. Security alerts go by the one bot to every staff
+    // member who linked Telegram (owner, 2026-10-07), and an operator who has
+    // that must not have to also stand up a Slack endpoint to receive anything.
     //
     // The COOLDOWN is shared and checked once, above, so a crash-looping job
     // cannot flood one sink because the other was quiet. And it is claimed only
@@ -65,7 +64,7 @@ export async function sendAlert(key, title, details = {}) {
       }, { timeoutMs: 5000, retries: 2, baseMs: 250, capMs: 2000, jitter: 'full' }));
     }
 
-    const telegram = await postToAdminChannel(text, details);
+    const telegram = await postToStaff(text, details);
     if (telegram) sinks.push(telegram);
 
     if (!sinks.length) return; // alerting not configured — silent no-op by design
@@ -86,54 +85,46 @@ export async function sendAlert(key, title, details = {}) {
 }
 
 /**
- * The admin Telegram channel, or null when there is not one.
+ * Every linked staff member, by the one bot (Step 3), or null when there is no
+ * bot or nobody to tell.
  *
  * Returns a PROMISE to await (or null), rather than awaiting here, so the two
  * sinks run concurrently and a slow Bot API call does not delay the webhook.
  *
  * ── Why this cannot loop ──────────────────────────────────────────────────
- * Alerts are raised by, among other things, the channel gate — which is about
- * Telegram. A failure here is logged and swallowed; it never calls `sendAlert`.
- * The one path that could still recurse is an alert raised while resolving the
- * config, and there is none: `activeConfig` throws or returns null, and both
- * are handled without alerting.
+ * A failure here is logged and swallowed; it never calls `sendAlert`.
  *
- * ── Why the STAFF audience specifically ──────────────────────────────────
- * This is the ADMIN channel. Posting an account-takeover alert into the player
- * channel would publish it to the entire user base, which is the worst possible
- * outcome of getting this line wrong — so the audience is a literal here rather
- * than anything a caller can influence.
+ * ── Why STAFF specifically ───────────────────────────────────────────────
+ * `listAlertRecipients` reads STAFF links of STAFF accounts only, blocked and
+ * closed accounts left out. An account-takeover alert reaching a player would
+ * publish platform security detail to the user base, so the population is the
+ * repository's literal, not anything a caller can influence.
  */
-async function postToAdminChannel(text, details) {
+async function postToStaff(text, details) {
   try {
-    const { activeConfig, callApi } = await import('../domains/telegram/telegramClient.js');
-    const cfg = await activeConfig('STAFF');
-    if (!cfg?.botToken || !cfg?.channelId) return null;
+    const [{ miniAppBot, sendDirectMessage }, { listAlertRecipients }] = await Promise.all([
+      import('../domains/telegram/telegramClient.js'),
+      import('#db/repositories/telegram.js'),
+    ]);
+    if (!(await miniAppBot())) return null;
+    const recipients = await listAlertRecipients();
+    if (!recipients.length) return null;
 
     // Details as a fenced block: an alert is read on a phone, and a wall of
-    // unformatted JSON in a chat is a wall nobody reads. `JSON.stringify` is
-    // given a replacer-free two-space indent because these payloads are a
-    // handful of ids, never a document.
+    // unformatted JSON in a chat is a wall nobody reads.
     const body = Object.keys(details || {}).length
       ? `${text}\n<pre>${escapeHtml(JSON.stringify(details, null, 2))}</pre>`
       : text;
 
-    return callApi(cfg.botToken, 'sendMessage', {
-      chat_id: cfg.channelId,
-      text: body,
-      parse_mode: 'HTML',
-      disable_web_page_preview: true,
-    }).then((res) => {
-      if (!res.ok) {
-        // The commonest cause is the staff bot not being an administrator of
-        // the staff channel. Nothing else on the platform would ever say so,
-        // and the symptom is an alerting channel that is simply always empty.
-        console.error(`[alerting] could not post to the admin channel: ${res.error}`);
-      }
-      return res;
-    });
+    return Promise.allSettled(recipients.map((chatId) => sendDirectMessage(chatId, body)
+      .then((res) => {
+        // The commonest cause is a staff member who never allowed the bot to
+        // write to them; nothing else would ever say so.
+        if (!res.ok) console.error(`[alerting] could not message staff ${chatId}: ${res.error}`);
+        return res;
+      })));
   } catch (e) {
-    console.error('[alerting] admin channel sink failed:', e.message);
+    console.error('[alerting] staff Telegram sink failed:', e.message);
     return null;
   }
 }

@@ -412,7 +412,6 @@ describePg('Telegram, Step 3 (PostgreSQL)', () => {
 // have to distinguish from a proven one.
 // ─────────────────────────────────────────────────────────────────────────────
 import { createAccountFromSignup } from '../repositories/identity.js';
-import { getUser, newUserId } from '../repositories/users.js';
 
 const signup = (over = {}) => ({
   userId: newUserId(), mobile: '9990001111', username: 'newplayer',

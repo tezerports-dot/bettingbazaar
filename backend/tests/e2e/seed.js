@@ -18,37 +18,21 @@ export const trc20 = () => 'T' + Array.from({ length: 33 }, () => B58[Math.floor
 export const bep20 = () => '0x' + Array.from({ length: 40 }, () => '0123456789abcdef'[Math.floor(Math.random() * 16)]).join('');
 
 /**
- * Give one actor the two rows a verified person HAS, for their own audience.
+ * Give one actor the Telegram link a verified account HAS (Step 3).
  *
- * ── Why this is one function and not three ────────────────────────────────
- * §33.7 made the gate per-panel: a player verifies through the PLAYER fleet
- * and channel, a merchant through the MERCHANT ones, an admin through STAFF.
- * That is three near-identical inserts differing only in the audience, which
- * is §5's shape — and the half that gets forgotten is always the one nobody
- * was thinking about when they gated the next panel. The audience is a
- * PARAMETER so there is nothing to forget.
- *
- * These are the rows the contact-share webhook and the membership check write.
- * The harness writes them directly because `registerBot` verifies the token
- * against Telegram itself, and there is no Telegram here.
- *
- * Skipped when that audience has no channel: there is nothing to be a member
- * of, and `configureTelegram()` is what arranges for there to be one.
+ * Every account verifies its mobile in the Mini App at signup, so an account
+ * without this row cannot sign in: it is the state production reaches, not an
+ * optional extra (§32 S16). Written directly because the real writer proves a
+ * contact Telegram signed, and there is no Telegram here. The phone is the
+ * account's mobile (the row's trigger insists), and staff and merchant links
+ * carry 2FA (its CHECK insists).
  */
 export async function verifyActor({ userId, mobile, audience }) {
-  const active = await pgQuery(
-    `SELECT generation FROM telegram_configs WHERE active AND audience = $1 LIMIT 1`,
-    [audience], 'e2e_active_generation',
-  );
-  if (!active.rows[0]) return false;
   await pgQuery(
-    `INSERT INTO telegram_identities (
-       telegram_user_id, audience, user_id, phone, contact_shared_at,
-       contact_active, channel_status, channel_checked_at,
-       channel_generation, linked_generation)
-     VALUES ($1, $2, $3, $4, now(), TRUE, 'member', now(), $5, $5)
-     ON CONFLICT (telegram_user_id, audience) DO NOTHING`,
-    [`e2e-tg-${userId}`, audience, userId, mobile, active.rows[0].generation],
+    `INSERT INTO telegram_links (user_id, audience, telegram_user_id, phone, two_factor)
+     VALUES ($1, $2, $3, $4, $2 <> 'PLAYER')
+     ON CONFLICT (user_id) DO NOTHING`,
+    [userId, audience, String(7_000_000_000 + Math.floor(Math.random() * 999_999_999)), mobile],
     'e2e_verify_actor',
   );
   return true;
@@ -66,22 +50,7 @@ export async function seedPlayer({ balancePaise = 0, verified = true } = {}) {
     userId, username: userId, mobile, status: 'ACTIVE',
   });
 
-  // ── The Telegram verification a real player cannot deposit without ──────
-  //
-  // §32 S19, and it cost a whole suite its meaning. Every money scenario here
-  // runs behind `requireChannelMembership`, which refuses an unlinked player
-  // with TELEGRAM_NOT_LINKED — but ONLY when a channel is configured. Nothing
-  // here configured one, so the suite passed on a database where nobody had,
-  // and answered 403 on four scenarios the moment it met a database where
-  // somebody had. It was reading whatever the database happened to hold.
-  //
-  // So the seed ESTABLISHES it, through the same rows the webhook writes: a
-  // contact share proving the mobile, and a channel membership stamped with
-  // the generation that is actually live. `verified: false` is available for a
-  // scenario that wants to test the gate itself.
-  //
-  // Skipped silently when no channel is configured — there is nothing to be a
-  // member of, and the gate admits (§31's owner decision, 2026-09-17).
+  // The Telegram verification every account completes at signup (Step 3).
   if (verified) await verifyActor({ userId, mobile, audience: 'PLAYER' });
 
   // A seeded balance comes OUT OF THE PLATFORM'S OWN HOLDING, posted with the
@@ -357,7 +326,7 @@ export async function seedStaff({ subAdmin = false, queueManager = false, permis
   return { ...user, userId, mobile };
 }
 
-export async function seedAdmin({ enrol2fa = true, verified = true } = {}) {
+export async function seedAdmin({ verified = true } = {}) {
   const userId = rid('admin');
   const mobile = mob();
   const user = await db.users.createUser({
@@ -377,19 +346,7 @@ export async function seedAdmin({ enrol2fa = true, verified = true } = {}) {
     accountType: 'STAFF',
     isAdmin: true,
   });
-  if (enrol2fa) {
-    const { pgQuery } = await import('#db/client.js');
-    await pgQuery(
-      `UPDATE users SET two_factor_enabled = TRUE, two_factor_enrolled_at = now(),
-                        two_factor_secret = $2
-        WHERE user_id = $1`,
-      [userId, 'e2e-enrolled-secret'], 'e2e_enrol_admin',
-    );
-  }
-  // STAFF gates the moment a staff bot and channel exist — the bootstrap
-  // exemption (§2, §33.7) covers only `no_bot`/`no_channel`, and is
-  // deliberately that narrow. On a platform where somebody HAS configured the
-  // staff surface, an unlinked admin is blocked like anybody else.
+  // Telegram approves every staff sign-in (Step 3): the link below is that.
   if (verified) await verifyActor({ userId, mobile, audience: 'STAFF' });
   return { ...user, userId, mobile };
 }

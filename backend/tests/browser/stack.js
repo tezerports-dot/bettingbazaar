@@ -332,96 +332,26 @@ export async function awaitBudget(label) {
 
 
 /**
- * Configure the Telegram surface every panel now gates on, and hand back a restore.
+ * A configured platform: the one Mini App bot exists (Step 3).
  *
- * ── Why a browser pass cannot skip this any more ──────────────────────────
- * §33.7 gated all three panels. `VerificationGateModal` BLOCKS — it does not
- * wait to be refused — and two of its five reasons are the PLATFORM's own
- * state: with no bot and no channel it renders a modal with no button, over
- * the whole screen, deliberately (telling somebody to open a bot that does not
- * exist is §32 S14 on the one screen they cannot get past).
+ * Without it the panels offer no Telegram buttons and staff sign in under the
+ * bootstrap exemption, so a pass over an unconfigured database would measure
+ * a platform nobody runs (§32 S19: a pass that needs a value SETS it). The
+ * seeded actors are already verified (`seed.verifyActor`), so nothing here
+ * blocks a screen.
  *
- * Measured, and this is what made it visible: a full drive of the player and
- * merchant panels came back **168 of 176 controls UNREACHABLE**, every one
- * `elementHandle.click: Timeout 4000ms exceeded`. Nothing was broken. The
- * modal was over everything, correctly, because the database it ran against
- * had zero rows in `telegram_bots` and zero in `telegram_configs`.
- *
- * Note the two halves fail in OPPOSITE directions, which is why this was not
- * obvious: the SERVER admits an unconfigured platform's requests (the
- * 2026-09-17 owner decision — the channel gate fails open with an alert), so
- * every API tier stayed green while the SCREEN was blocked. Only something
- * that opens a browser can see the difference.
- *
- * So the pass arranges for a configured platform, which is what a running one
- * is — §32 S19, a pass that needs a value SETS it rather than reading whatever
- * the database happened to hold. The rows are written directly, because
- * `registerBot` verifies the token against Telegram itself and there is no
- * Telegram here.
- *
- * The restore goes in a `finally` (trap 10): a configured channel re-gates
- * every player the moment its generation moves, so leaving one behind is not
- * a stale fixture, it is a platform running under rules nobody chose.
+ * The bot is the test token (`miniAppFixture`), written through the repository
+ * because the admin route asks Telegram's `getMe` and there is no Telegram
+ * here. Restored in the caller's `finally` (trap 10): a bot this pass did not
+ * find is removed again, one it found is left alone.
  */
-export async function configureTelegram(audiences = ['PLAYER', 'STAFF', 'MERCHANT']) {
+export async function configureTelegram() {
   const { pgQuery } = await import('#db/client.js');
-  const { encryptField } = await import('../../domains/identity/fieldCrypto.util.js');
-
-  const before = await pgQuery('SELECT generation FROM telegram_configs WHERE active', [], 'drive_tg_before');
-  const head = await pgQuery('SELECT COALESCE(MAX(generation), 0) AS top FROM telegram_configs', [], 'drive_tg_head');
-  let generation = Number(head.rows[0].top) + 1;
-
-  const bots = [], generations = [];
-  for (const audience of audiences) {
-    const botId = `bb-browser-${audience.toLowerCase()}`;
-    await pgQuery(
-      `INSERT INTO telegram_bots (bot_id, label, role, audience, username,
-                                  token_encrypted, webhook_secret, status, activated_at)
-       VALUES ($1, $2, 'signin', $3, $4, $5, $6, 'ACTIVE', now())
-       ON CONFLICT (bot_id) DO NOTHING`,
-      [botId, `browser pass ${audience}`, audience, `bb_browser_${audience.toLowerCase()}`,
-       encryptField(`0:browser-pass-${audience}`), 'browser-pass-secret'],
-      'drive_tg_bot',
-    );
-    bots.push(botId);
-
-    // One ACTIVE config per audience is a partial unique index, so the
-    // incumbent is stood down first rather than collided with.
-    await pgQuery('UPDATE telegram_configs SET active = FALSE WHERE audience = $1 AND active',
-      [audience], 'drive_tg_standdown');
-    await pgQuery(
-      `INSERT INTO telegram_configs (generation, audience, bot_username, channel_id,
-                                     channel_username, channel_invite_link, active,
-                                     activated_at, activated_by, reason)
-       VALUES ($1, $2, $3, $4, $5, $6, TRUE, now(), 'browser-pass',
-               'configured by the browser pass; removed in its finally')`,
-      [generation, audience, `bb_browser_${audience.toLowerCase()}`, `-100${generation}`,
-       `bb_${audience.toLowerCase()}_channel`, `https://t.me/+browser${generation}`],
-      'drive_tg_config',
-    );
-    generations.push(generation);
-    generation += 1;
-  }
-
-  return async () => {
-    // Identities first: they carry the generation, and a row pointing at a
-    // configuration that no longer exists is the stale membership §33.7 says
-    // must be unrepresentable rather than merely unlikely.
-    // `::bigint[]` is not decoration. Without the cast node-postgres sends the
-    // JS numbers as text and neither DELETE matched a single row — the bots
-    // (a text array) went, the configs and identities stayed, and the next run
-    // met three ACTIVE channels with no bots behind them. Verified by reading
-    // the table back: 3 configs and 3 identities survived a restore that
-    // reported no error at all (trap 10, in the cleanup meant to prevent it).
-    await pgQuery('DELETE FROM telegram_identities WHERE channel_generation = ANY($1::bigint[]) OR linked_generation = ANY($1::bigint[])',
-      [generations], 'drive_tg_restore_identities');
-    await pgQuery('DELETE FROM telegram_configs WHERE generation = ANY($1::bigint[])', [generations], 'drive_tg_restore_configs');
-    await pgQuery('DELETE FROM telegram_bots WHERE bot_id = ANY($1::text[])', [bots], 'drive_tg_restore_bots');
-    for (const r of before.rows) {
-      await pgQuery('UPDATE telegram_configs SET active = TRUE WHERE generation = $1',
-        [r.generation], 'drive_tg_restore_active');
-    }
-  };
+  const { saveTestBot, removeTestBot } = await import('../miniAppFixture.js');
+  const before = await pgQuery('SELECT 1 FROM telegram_bot', [], 'drive_tg_before');
+  if (before.rows.length) return async () => {};
+  await saveTestBot();
+  return async () => { await removeTestBot(); };
 }
 
 /**
