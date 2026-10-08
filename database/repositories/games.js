@@ -156,16 +156,37 @@ export async function listProviders({ enabledOnly = false } = {}) {
  * for it to leave the admin surface. The lobby needs a name, a category and a
  * picture.
  */
+/**
+ * The enabled providers, each with `gameCount`: how many games a player would
+ * see for it on its own section's page. The home cards and the footer show a
+ * section only when one of its providers has a game (owner, 2026-10-08), so a
+ * provider switched on with nothing added yet offers no empty page.
+ *
+ * Counted by the rules each page lists by: visible (ACTIVE or MAINTENANCE);
+ * Crash lists `category=crash` only; Casino lists everything except
+ * `CASINO_EXCLUDED_CATEGORIES` (mirrored as `NON_CASINO` in
+ * `user-panel/src/pages/CasinoPage.tsx`); Sports lists any category.
+ */
+const CASINO_EXCLUDED_CATEGORIES = Object.freeze(['crash', 'bb-originals']);
+
 export async function listPublicProviders() {
   const { rows } = await pgQuery(
-    `SELECT provider_key, name, category, logo_url, description
-       FROM game_providers WHERE enabled ORDER BY category, name`,
-    [], 'provider_list_public',
+    `SELECT p.provider_key, p.name, p.category, p.logo_url, p.description,
+            (SELECT count(*) FROM games g
+              WHERE g.provider_key = p.provider_key
+                AND g.status IN ('ACTIVE', 'MAINTENANCE')
+                AND CASE p.category
+                      WHEN 'crash'  THEN g.category_slug = 'crash'
+                      WHEN 'casino' THEN g.category_slug IS NULL OR g.category_slug <> ALL($1::text[])
+                      ELSE TRUE
+                    END)::int AS game_count
+       FROM game_providers p WHERE p.enabled ORDER BY p.category, p.name`,
+    [CASINO_EXCLUDED_CATEGORIES], 'provider_list_public',
   );
   return rows.map((r) => ({
     key: r.provider_key, providerKey: r.provider_key, name: r.name,
     category: r.category, logoUrl: r.logo_url, description: r.description,
-    enabled: true,
+    enabled: true, gameCount: Number(r.game_count),
   }));
 }
 

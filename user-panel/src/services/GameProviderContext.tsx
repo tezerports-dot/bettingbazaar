@@ -17,6 +17,9 @@ interface Provider {
   enabled: boolean;
   description: string;
   logoUrl: string;
+  /** Games a player would see for this provider on its section's page
+   *  (`listPublicProviders`, database/repositories/games.js). */
+  gameCount: number;
 }
 
 interface ProviderGroups {
@@ -61,7 +64,7 @@ export const GameProviderProvider: React.FC<{ children: React.ReactNode }> = ({ 
       // Check session cache first
       // M-02: 5-minute TTL — branding changes take up to 5 min to reflect in game provider list.
       // GOVERNANCE §5: config cached client-side must document staleness window here.
-      const cached = sessionStorage.getItem('_gp_cache');
+      const cached = sessionStorage.getItem('_gp_cache_v2');
       if (cached) {
         const { data, ts } = JSON.parse(cached);
         if (Date.now() - ts < 5 * 60 * 1000) { setProviders(data); setLoading(false); return; }
@@ -71,7 +74,7 @@ export const GameProviderProvider: React.FC<{ children: React.ReactNode }> = ({ 
       if (d.success) {
         const data: ProviderGroups = d.providers || { casino: [], crash: [], sports: [] };
         setProviders(data);
-        sessionStorage.setItem('_gp_cache', JSON.stringify({ data, ts: Date.now() }));
+        sessionStorage.setItem('_gp_cache_v2', JSON.stringify({ data, ts: Date.now() }));
       }
     } catch (e) { console.warn('[GameProviderContext] Provider fetch failed:', e instanceof Error ? e.message : e); } // LOW-04
     finally { setLoading(false); }
@@ -86,11 +89,14 @@ export const GameProviderProvider: React.FC<{ children: React.ReactNode }> = ({ 
   return (
     <Ctx.Provider value={{
       providers, loading,
-      anyCasino:  enabledCasino.length > 0,
-      anyCrash:   enabledCrash.length  > 0,
-      anySports:  enabledSports.length > 0,
+      // A section is live only when it has a game to show, not merely a
+      // provider switched on (owner, 2026-10-08): the home cards, the footer
+      // tabs and each page's redirect all read these.
+      anyCasino:  enabledCasino.some(p => p.gameCount > 0),
+      anyCrash:   enabledCrash.some(p => p.gameCount > 0),
+      anySports:  enabledSports.some(p => p.gameCount > 0),
       enabledCasino, enabledCrash, enabledSports,
-      refresh: () => { sessionStorage.removeItem('_gp_cache'); fetch(); },
+      refresh: () => { sessionStorage.removeItem('_gp_cache_v2'); fetch(); },
     }}>
       {children}
     </Ctx.Provider>
