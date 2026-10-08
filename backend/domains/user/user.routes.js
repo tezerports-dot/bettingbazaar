@@ -38,6 +38,7 @@
 import express from 'express';
 import { db } from '#db';
 import { authenticatePlayer } from '../identity/auth.middleware.js';
+import { paiseToRupees } from '../../shared/money.js';
 import { toPlayerLedgerEntry } from '../wallet/playerLedgerView.js';
 import { getUserLedger, getBalances } from '../wallet/walletAuthority.service.js';
 // The withdrawal rate limiters (withdrawalLimiter, createSubnetLimiter,
@@ -54,7 +55,7 @@ import { publicCycleView } from '../markets/cyclePublicView.js';
 import { fetchCycleHistory } from '../markets/cycleHistory.service.js';
 import { getSystemConfig } from '#db/repositories/config.js';
 import { systemConfigPayload } from '../configuration/systemConfigPayload.js';
-import { serverError } from '../../shared/httpError.js';
+import { serverError, respondError, refusal } from '../../shared/httpError.js';
 import { isAccountMobileRefusal, ACCOUNT_IS_A_MOBILE_MESSAGE } from '../payment/payoutAccount.js';
 
 const router = express.Router();
@@ -311,6 +312,49 @@ router.get('/user/referrals', authenticatePlayer, async (req, res) => {
   } catch (error) {
     console.error('Referral summary error:', error);
     return res.status(500).json({ success: false, message: 'Failed to load your referral report' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/user/general — the GENERAL (promotional) profile: the profile in
+// use, the balance, and each referral bonus with its 10× turnover progress
+// (owner, 2026-10-08; `db.promo`). Amounts in rupees, like every player route.
+//
+// PUT /api/user/play-profile { profile: 'VIP' | 'GENERAL' } — switch profile.
+// The panel switches to VIP when the player opens Deposit.
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/user/general', authenticatePlayer, async (req, res) => {
+  try {
+    const s = await db.promo.promoSummary(req.user.userId);
+    return res.json({
+      success: true,
+      profile: s.profile,
+      promoBalance: paiseToRupees(s.promoBalancePaise),
+      outstandingTurnover: paiseToRupees(s.outstandingTurnoverPaise),
+      turnoverMultiplier: s.turnoverMultiplier,
+      grants: s.grants.map((g) => ({
+        grantId: g.grantId,
+        source: g.source,
+        amount: paiseToRupees(g.amountPaise),
+        requiredTurnover: paiseToRupees(g.requiredTurnoverPaise),
+        turnover: paiseToRupees(g.turnoverPaise),
+        completedAt: g.completedAt,
+        unlocked: paiseToRupees(g.unlockedPaise),
+        createdAt: g.createdAt,
+      })),
+    });
+  } catch (error) {
+    return respondError(res, error, 'GET /api/user/general', { message: 'Failed to load your General balance' });
+  }
+});
+
+router.put('/user/play-profile', authenticatePlayer, async (req, res) => {
+  try {
+    const r = await db.promo.setPlayProfile(req.user.userId, String(req.body?.profile ?? ''));
+    if (!r.ok) throw refusal(404, 'ACCOUNT_NOT_FOUND', 'Account not found');
+    return res.json({ success: true, profile: r.profile });
+  } catch (error) {
+    return respondError(res, error, 'PUT /api/user/play-profile', { message: 'Could not switch profile' });
   }
 });
 
