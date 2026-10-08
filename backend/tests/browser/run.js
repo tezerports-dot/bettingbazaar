@@ -21,10 +21,8 @@
  * ── What it does NOT cover, stated because §29 requires it ──────────────────
  * It installs the token each panel persists rather than typing credentials into
  * the login form, so **the three login screens are not covered by this pass**.
- * The captcha is not what stops that — `TURNSTILE_SECRET_KEY` is unset here and
- * `middleware/captcha.js` is a pass-through in that case — it is the OTP and
- * password flows behind them. That is a real gap and it is named rather than
- * papered over.
+ * `signInJourney.js` (`npm run test:signin-journey`) covers them: it types into
+ * each panel's sign-in form and answers on the Telegram Mini App page.
  *
  * It also does not click. Opening a screen finds a screen that is broken on
  * arrival; it cannot find a button that does nothing. `check:ui-coverage` is
