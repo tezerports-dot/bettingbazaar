@@ -372,11 +372,11 @@ export async function recordCallback({
     }
 
     // Advance the round's running total and, for a stake or its return, each
-    // pocket's part. The `refunded_paise <= debited_paise` CHECK fires here if
-    // the guard above were ever removed or bypassed, and the split's CHECKs
-    // hold the parts to the totals and to the pockets they came from — the
-    // constraints make the bounds a property of the DATA rather than of this
-    // function.
+    // pocket's part. The round's CHECKs fire here whatever reached this UPDATE
+    // — `refunded_paise <= debited_paise`, the parts adding up to the totals,
+    // no pocket getting back more than it gave — and the return-order trigger
+    // with them: the constraints make the bounds a property of the DATA rather
+    // than of this function.
     const column = ROUND_COLUMN[type];
     const stakeMoved = type === CASINO_TX.WIN ? [] : parts;
     const sets = [`${column} = ${column} + $4`, ...stakeMoved.map((p, i) => {
