@@ -118,30 +118,44 @@ describe('every credential path is actually paced', () => {
   // reading the mount is the cheapest guard against a fifth one.
   const read = (p) => readFileSync(new URL(`../../${p}`, import.meta.url), 'utf8');
 
-  it('admin password and admin 2FA', () => {
-    const server = read('server.js');
-    expect(server).toMatch(/app\.post\('\/api\/admin\/login',\s*loginPaceLimiter,/);
-    expect(server).toMatch(/app\.post\('\/api\/admin\/login\/2fa',\s*loginPaceLimiter,/);
-  });
-
-  it('merchant password and merchant 2FA', () => {
-    expect(read('server.js')).toMatch(/'\/api\/merchant\/auth\/login',\s*loginPaceLimiter,/);
-    expect(read('domains/merchant/merchant.routes.js'))
-      .toMatch(/router\.post\('\/auth\/login\/2fa',\s*loginPaceLimiter,/);
-  });
-
-  it('paces BEFORE the failure budget on every one of them', () => {
-    // Order matters: a paced request never reached the credential check, so it
-    // is not a failed attempt. If the budget ran first, a burst of throttled
-    // retries would lock out the very account the pace was protecting.
-    const server = read('server.js');
-    for (const [, chain] of server.matchAll(/app\.(?:post|use)\('([^']*login[^']*)',\s*([^)]*)\)/g)) {
-      if (!chain.includes('loginPaceLimiter')) continue;
-      const pace = chain.indexOf('loginPaceLimiter');
-      for (const budget of ['adminAuthLimiter', 'merchantAuthLimiter', 'twoFactorLimiter']) {
-        const at = chain.indexOf(budget);
-        if (at !== -1) expect(pace).toBeLessThan(at);
+  // Step 3: every door's legs come from ONE table (loginDoors.js), mounted by
+  // each panel's router. So the chain is asserted on the table, and the mounts
+  // on the source.
+  it('every door mounts all four legs through doorRoute', () => {
+    const mounts = {
+      'server.js': ['/api/admin/login', 'STAFF'],
+      'domains/merchant/merchant.routes.js': ['/auth/login', 'MERCHANT'],
+      'domains/identity/playerAuth.routes.js': ['/login', 'PLAYER'],
+    };
+    for (const [file, [path, door]] of Object.entries(mounts)) {
+      const src = read(file);
+      for (const [suffix, leg] of [['', 'login'], ['/2fa', 'twoFactor'], ['/telegram', 'telegram'], ['/telegram/complete', 'telegramComplete']]) {
+        expect(src, `${file} ${path}${suffix}`).toContain(`('${path}${suffix}', ...doorRoute('${door}', '${leg}'))`);
       }
+    }
+  });
+
+  it('paces the password BEFORE the failure budget and the captcha, at every door', async () => {
+    const { doorRoute } = await import('../../domains/identity/loginDoors.js');
+    const sec = await import('../../middleware/security.js');
+    const budgets = { PLAYER: sec.authLimiter, STAFF: sec.adminAuthLimiter, MERCHANT: sec.merchantAuthLimiter };
+    for (const door of ['PLAYER', 'STAFF', 'MERCHANT']) {
+      const chain = doorRoute(door, 'login');
+      expect(chain[0], door).toBe(sec.loginPaceLimiter);
+      expect(chain.indexOf(budgets[door]), door).toBeGreaterThan(0);
+    }
+  });
+
+  it('bounds the Telegram poll and the second-factor budget on both polling legs', async () => {
+    const { doorRoute } = await import('../../domains/identity/loginDoors.js');
+    const sec = await import('../../middleware/security.js');
+    for (const door of ['PLAYER', 'STAFF', 'MERCHANT']) {
+      for (const leg of ['twoFactor', 'telegramComplete']) {
+        const chain = doorRoute(door, leg);
+        expect(chain.indexOf(sec.challengePollLimiter), `${door} ${leg}`).toBe(0);
+        expect(chain.indexOf(sec.twoFactorLimiter), `${door} ${leg}`).toBe(1);
+      }
+      expect(doorRoute(door, 'telegram')[0]).toBe(sec.telegramLoginLimiter);
     }
   });
 });
