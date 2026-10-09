@@ -140,6 +140,8 @@ after the overlap (token TTL / order lifetime). Verification accepts current **o
 | `BB_WORKERS` | PM2 cluster workers for this container's role (`ecosystem.config.cjs`); production runs api 4 + realtime 2. The scheduler is always 1. |
 | `BB_SCHEMA_APPLY` | `boot` (default): apply `schema.sql` at boot under an advisory lock. `skip`: only check it is applied — the production compose, where the one-shot `migrate` service applies it once per deploy. |
 | `METRICS_PORT_BASE` | Each PM2 worker also serves `/metrics` (same token) on this port + its index, on the private network, so a scraper sees every worker. |
+| `DIRECT_DATABASE_URL` | PostgreSQL itself, bypassing the pooler, for the nightly `pg_dump` (`backup.service.js` `dumpDatabaseUrl`). Set by the production compose; unset, the backup uses `DATABASE_URL`. |
+| `API_ALLOWED_HOSTS` | Comma-separated exact hostnames Admin > Settings > API Host may choose from (`backend/config/apiHosts.js`). Each must also be built into the app (`VITE_API_URL`, `VITE_API_BACKUP_URL` or `VITE_API_ALLOWED_HOSTS`), or the app ignores the choice. Empty: no choice is offered and apps use their primary. |
 | `PGBOUNCER_STATS_URL` | The PgBouncer admin console (`…/pgbouncer`, a `stats_users` account); enables `bb_pgbouncer_pool` on `/metrics`. |
 | `ARGON2_MEMORY_KIB` / `ARGON2_TIME_COST` / `ARGON2_PARALLELISM` | Password-hash cost (OWASP minimum by default; raise on capable hardware). |
 | `BB_RUNTIME_ROLE` | `api` / `realtime` / `scheduler` for a split k8s fleet (see `deploy/k8s/`). |
@@ -276,7 +278,8 @@ before ANY API, game or realtime connection (`App.tsx` `EndpointGate`):
    dev build), exact allowlisted hostname, no IP literal, no credentials, port,
    path, query or fragment. The answer can never add a host.
 3. Probe the validated origin's `/health/live`; if discovery failed or that origin
-   does not answer, probe the primary, then the backup.
+   does not answer, probe the primary, the backup, then every other host in
+   `VITE_API_ALLOWED_HOSTS`, in order.
 4. Nothing answered: a "Can't connect / Try again" screen. Never an unvalidated host.
 
 At runtime a **transport** failure (DNS, TLS, connection refused, timeout) probes
@@ -285,6 +288,13 @@ connections, keeping their listeners — to the first that answers. An HTTP erro
 status never triggers it. Only GET/HEAD are retried; a POST whose answer was lost
 fails to the caller, since it may already have been applied. TLS validation is
 the platform's and is never relaxed.
+
+**Choosing the host (Admin > Settings > API Host).** The backend answers
+`GET /api/v1/client/endpoint` with `{"url": "https://<host>"}` for the host saved
+as `SystemConfig.apiHost`, which must be one of `API_ALLOWED_HOSTS`; with none
+chosen it answers 404 and apps use their primary. Set `VITE_API_DISCOVERY_URL`
+to that route (e.g. `https://api.example.com/api/v1/client/endpoint`). A change
+reaches apps on their next start, within the route's 60 s cache.
 
 The app reports what happened (kinds only, never a host or a token) to
 `POST /api/v1/client/endpoint-events`, counted as `bb_client_endpoint_events_total`.

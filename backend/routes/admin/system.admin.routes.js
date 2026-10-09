@@ -11,6 +11,7 @@ import { getSystemConfig } from '#db/repositories/config.js';
 // The declaration of what a setting IS — its default and its bounds. Read here
 // so this route neither restates a default nor keeps its own list of fields.
 import { SYSTEM_CONFIG_SPEC } from '#db/spec/config.spec.js';
+import { approvedApiHosts } from '../../config/apiHosts.js';
 import { db } from '#db';
 import { respondError } from '../../shared/httpError.js';
 import { systemConfigPayload } from '../../domains/configuration/systemConfigPayload.js';
@@ -92,6 +93,11 @@ router.get('/system/config', authenticate, hasPermission('canManageSystemSetting
         // `total` is how many tokens EXIST — 20,000,000,000, all of them
         // already created and held by the platform until they are transferred.
         adminTokenSupply: { total: config.adminTokenSupply?.total ?? 20000000000 }, // schema default: 20,000,000,000
+        // The hosts `apiHost` may be set to (API_ALLOWED_HOSTS), for the API Host
+        // picker. Read-only: it is the deployment's list, not a setting, and the
+        // PUT ignores it (undeclared). The saved choice is checked against the
+        // same list on the way in (`oneOf` in the spec).
+        apiHostChoices:        approvedApiHosts(),
         // The INR peg, from its one owner. It was a literal here and in the
         // response below, a third and fourth declaration of a rule that already
         // had two.

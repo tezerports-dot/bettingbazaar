@@ -82,6 +82,7 @@ import {
 } from './services/metrics.service.js';
 import { createRateLimitStore } from './middleware/redisRateLimitStore.js';
 import clientTelemetryRoutes from './routes/clientTelemetry.routes.js';
+import clientEndpointRoutes from './routes/clientEndpoint.routes.js';
 import { startPgBouncerStats } from '#db/pgbouncerStats.js';
 // Plan items 19/21/28/24/4/51 (2026-07-13): central security + network config,
 // OWASP filter, service registry, storage abstraction.
@@ -583,6 +584,8 @@ const errorReportLimiter = rateLimit({ windowMs: 60000, max: 10, store: createRa
 
 // How player apps found their API origin (discovery, failover) — counters only.
 app.use('/api', clientTelemetryRoutes);
+// Where player apps should connect (Admin > Settings > API Host) — discovery's answer.
+app.use('/api', clientEndpointRoutes);
 app.post('/api/internal/error-report', errorReportLimiter, async (req, res) => {
   try {
     const { message, stack, component, url, panel } = req.body;

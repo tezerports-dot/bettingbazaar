@@ -247,6 +247,9 @@ jobs:
         run: npm run test:pg -- --reporter=default --reporter=github-actions
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:6432/bb_test
+          # Server operations (pg_dump, CREATE DATABASE) go to PostgreSQL itself,
+          # as in production (backup.service.js dumpDatabaseUrl).
+          DIRECT_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bb_test
   audit:
     runs-on: ubuntu-latest
     strategy:

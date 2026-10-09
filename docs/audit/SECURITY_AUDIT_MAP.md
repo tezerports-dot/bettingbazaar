@@ -3538,8 +3538,8 @@ checked and is correct; the evidence is named.
 
 | Measure | Count |
 |---|---|
-| Route declarations in `backend/**` | 294 |
-| Reachable with **no auth middleware** | 35 |
+| Route declarations in `backend/**` | 295 |
+| Reachable with **no auth middleware** | 36 |
 | Staff routes carrying an **area** (permission key) | 166 |
 | Staff routes a sub-admin can **never** be given (full admin only) | 7 |
 
@@ -3568,6 +3568,7 @@ new route and decide. Each of the three questions is defined in §2.
 - `GET /status  (backend/domains/support/support.routes.js)`
 - `GET /v1/board-rules  (backend/domains/user/user.routes.js)`
 - `GET /v1/boards  (backend/domains/user/user.routes.js)`
+- `GET /v1/client/endpoint  (backend/routes/clientEndpoint.routes.js)`
 - `GET /v1/content/faq  (backend/domains/user/user.routes.js)`
 - `GET /v1/content/support-links  (backend/domains/user/user.routes.js)`
 - `GET /v1/game/cycles/history  (backend/domains/user/user.routes.js)`

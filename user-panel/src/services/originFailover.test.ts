@@ -235,6 +235,23 @@ describe('reportOriginUnreachable — runtime failover', () => {
     expect(new Set(calls.map((u) => new URL(u).origin))).toEqual(new Set([PRIMARY, BACKUP]));
   });
 
+  it('primary and backup both down: fails over to the next allowlisted host', async () => {
+    const m = await load({ VITE_API_URL: PRIMARY, VITE_API_BACKUP_URL: BACKUP, VITE_API_ALLOWED_HOSTS: 'edge.example.org' });
+    network({ alive: [PRIMARY] });
+    await m.bootstrapApiEndpoint();
+    expect(m.candidateOrder()).toEqual([PRIMARY, BACKUP, EXTRA]);
+    network({ alive: [EXTRA] });
+    expect(await m.reportOriginUnreachable(PRIMARY)).toBe(EXTRA);
+    expect(m.currentOrigin()).toBe(EXTRA);
+  });
+
+  it('the admin-chosen (discovered) host comes first, then every other trusted host', async () => {
+    const m = await load({ VITE_API_URL: PRIMARY, VITE_API_BACKUP_URL: BACKUP, VITE_API_DISCOVERY_URL: DISCOVERY, VITE_API_ALLOWED_HOSTS: 'edge.example.org' });
+    network({ discovery: json({ url: EXTRA }), alive: [EXTRA] });
+    expect(await m.bootstrapApiEndpoint()).toBe(EXTRA);
+    expect(m.candidateOrder()).toEqual([EXTRA, PRIMARY, BACKUP]);
+  });
+
   it('a TLS failure is just "unreachable" — the next trusted origin, never a relaxed retry', async () => {
     const m = await load({ VITE_API_URL: PRIMARY, VITE_API_BACKUP_URL: BACKUP });
     network({ alive: [PRIMARY] });

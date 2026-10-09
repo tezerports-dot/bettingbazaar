@@ -255,8 +255,14 @@ export function failoverAvailable(): boolean {
   return candidateOrder().length > 1;
 }
 
-function candidateOrder(): string[] {
-  return Array.from(new Set([discovered, ...configuredOrigins()].filter(Boolean)));
+/**
+ * Where to look, in order: the discovered origin (Admin > Settings > API Host),
+ * the configured primary, the configured backup, then every other host on the
+ * build-time allowlist (VITE_API_ALLOWED_HOSTS). Each is a host this build
+ * already trusts, so failing over across all of them adds no trust.
+ */
+export function candidateOrder(): string[] {
+  return Array.from(new Set([discovered, ...trustedApiOrigins()].filter(Boolean)));
 }
 
 // ── Network ───────────────────────────────────────────────────────────────────
@@ -311,7 +317,7 @@ let bootInFlight: Promise<string | null> | null = null;
  *   1. No discovery URL and no configured origin: a same-origin web deploy.
  *   2. Discovery (bounded attempts, each with a timeout) → validate → probe.
  *   3. Discovery failed, or its origin did not answer: the configured primary,
- *      then the configured backup, each probed.
+ *      the configured backup, then every allowlisted host, each probed.
  */
 export function bootstrapApiEndpoint(): Promise<string | null> {
   if (state === 'ready') return Promise.resolve(active);
@@ -366,7 +372,8 @@ let searchInFlight: Promise<string | null> | null = null;
  * the origin answered, and leaving a host that is talking to us would turn a
  * server bug into a multi-origin outage.
  *
- * Probes the trusted candidates (discovered, primary, backup) in order and
+ * Probes the trusted candidates (discovered, primary, backup, the rest of the
+ * allowlist) in order and
  * adopts the first that answers. Returns the origin to use next, or null.
  */
 export function reportOriginUnreachable(origin: string): Promise<string | null> {

@@ -114,6 +114,9 @@ export const SystemSettings: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [showMaintenanceConfirm, setShowMaintenanceConfirm] = useState(false);
+  // The deployment's approved API hosts (API_ALLOWED_HOSTS), served with the
+  // config. Read-only: the server refuses any other value for `apiHost`.
+  const [apiHostChoices, setApiHostChoices] = useState<string[]>([]);
 
   const [formData, setFormData] = useState({
     maintenanceMode: false,
@@ -174,6 +177,9 @@ export const SystemSettings: React.FC = () => {
       requireJa3Hash: false,
       blockJa3Hashes: [] as string[],
     },
+    // The API host player apps are sent to; '' = their configured primary.
+    // schema default: '' (SYSTEM_CONFIG_SPEC.apiHost)
+    apiHost: '',
     // App distribution
     webUrl:        '',
     iosUrl:        '',
@@ -185,6 +191,7 @@ export const SystemSettings: React.FC = () => {
     try {
       const response = await api.system.getConfig();
       if (response.success && response.data) {
+        setApiHostChoices(Array.isArray(response.data.apiHostChoices) ? response.data.apiHostChoices : []);
         setFormData({
           maintenanceMode: response.data.maintenanceMode || false,
           maintenanceMessage: response.data.maintenanceMessage || '',
@@ -267,6 +274,7 @@ export const SystemSettings: React.FC = () => {
             requireJa3Hash: response.data.tlsFingerprintDefense?.requireJa3Hash ?? false,
             blockJa3Hashes: response.data.tlsFingerprintDefense?.blockJa3Hashes || [],
           },
+          apiHost:       response.data.apiHost       ?? '', // schema default: ''
           webUrl:        response.data.webUrl        || '',
           iosUrl:        response.data.iosUrl        || '',
           minVersion:    response.data.minVersion    || '1.0.0',
@@ -412,6 +420,44 @@ export const SystemSettings: React.FC = () => {
             <AlertTriangle className="text-yellow-500 shrink-0" size={16} />
             <p className="text-sm text-yellow-400">
               New user registrations are currently disabled
+            </p>
+          </div>
+        )}
+      </div>
+
+      {/* API Host — where player apps connect (SystemConfig.apiHost) */}
+      <div className="card">
+        <h3 className="text-lg font-semibold mb-1">API Host</h3>
+        <p className="text-xs text-gray-500 mb-4">
+          The server player apps connect to. Apps ask for this when they start, and switch to their
+          backups by themselves if it stops answering. Only hosts the deployment already serves can be
+          chosen (API_ALLOWED_HOSTS); a host must also be built into the app, or the app ignores it.
+        </p>
+        <label className="label" htmlFor="api-host">Host</label>
+        <select
+          id="api-host"
+          className="input w-full"
+          value={formData.apiHost}
+          onChange={(e) => setFormData({ ...formData, apiHost: e.target.value })}
+        >
+          <option value="">Default (the app's configured primary)</option>
+          {apiHostChoices.map((host) => (
+            <option key={host} value={host}>{host}</option>
+          ))}
+          {formData.apiHost && !apiHostChoices.includes(formData.apiHost) && (
+            <option value={formData.apiHost}>{formData.apiHost} (no longer approved)</option>
+          )}
+        </select>
+        {apiHostChoices.length === 0 && (
+          <p role="status" className="mt-2 text-sm text-yellow-400">
+            No approved hosts are configured on the server, so apps use their built-in primary.
+          </p>
+        )}
+        {formData.apiHost && !apiHostChoices.includes(formData.apiHost) && (
+          <div role="alert" className="mt-3 flex items-center space-x-2 p-3 bg-red-500/10 border border-red-500/30 rounded-lg">
+            <AlertTriangle className="text-red-500 shrink-0" size={16} />
+            <p className="text-sm text-red-400">
+              This host was removed from the approved list, so apps are not being sent to it. Choose another.
             </p>
           </div>
         )}
