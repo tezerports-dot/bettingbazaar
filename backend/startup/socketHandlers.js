@@ -17,7 +17,7 @@ import { PERMISSION_KEYS } from '../domains/identity/staffPermissions.js';
 // client must not be able to join arbitrary or oversized room names).
 const isValidCycleId = (id) => typeof id === 'string' && id.length > 0 && id.length <= 64 && /^[A-Za-z0-9:_-]+$/.test(id);
 
-export function attachSocketHandlers(io, cycleGenerator, gameEngine) {
+export function attachSocketHandlers(io, cycleGenerator) {
 
   io.on('connection', async (socket) => {
     console.log('👤 Client connected:', socket.id);
@@ -96,11 +96,6 @@ export function attachSocketHandlers(io, cycleGenerator, gameEngine) {
         );
         socket.emit('promo_data', { location, content });
       } catch { socket.emit('promo_data', { location, content: [] }); }
-    });
-
-    socket.on('request_game_state', async () => {
-      const gameState = await gameEngine.getGameState();
-      socket.emit('game_state', gameState);
     });
 
     // ── Public cycle rooms (realtime cost/concurrency fix) ────────────────────

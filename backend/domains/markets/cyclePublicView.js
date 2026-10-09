@@ -42,6 +42,11 @@ export const FORBIDDEN_PUBLIC_CYCLE_FIELDS = Object.freeze([
   'phantomBetsClosed', 'phantomBalanced',
 ]);
 
+/** The per-side pool fields, under every name a public payload has used. */
+const HIDDEN_SIDE_FIELDS = Object.freeze([
+  'delhiPool', 'bombayPool', 'totalDelhi', 'totalBombay', 'newTotalDelhi', 'newTotalBombay',
+]);
+
 /**
  * ms epoch, whatever the field's runtime type. `startTime`/`endTime` are Number
  * on the schema, but a hydrated Date or an ISO string has slipped through
@@ -50,14 +55,39 @@ export const FORBIDDEN_PUBLIC_CYCLE_FIELDS = Object.freeze([
 const toMs = (d) => (d instanceof Date ? d.getTime() : Number(d));
 
 /**
- * The safe pool numbers: combined totals only, never the real/phantom split.
- * Returned as both `delhiPool`/`bombayPool` and `totalDelhi`/`totalBombay` so
- * either frontend generation reads a value rather than `undefined` → 0.
+ * Whether a cycle's per-side pools are withheld from players (owner,
+ * 2026-10-08): from the merge until a winner is declared, and on any cycle
+ * whose house pools are already balanced, i.e. an OPEN cycle the ticker has not
+ * yet moved to MERGED.
+ *
+ * `equalizePhantomPools` sets both house pools to the same figure, so after it
+ * the two combined sides differ by real money alone, and the smaller one is the
+ * winner (`cycleGenerator.completeCycle`) while blind betting is still open.
+ * The screen hiding them was not enough: they were still in every payload.
+ */
+export function poolsHidden(cycle) {
+  if (cycle.winner) return false;
+  return cycle.status === 'MERGED' || cycle.status === 'CLOSED' || cycle.phantomBalanced === true;
+}
+
+/**
+ * The safe pool numbers: combined totals only, never the real/phantom split,
+ * and while `poolsHidden` the total of both sides alone (`poolsHidden: true`,
+ * `totalPool`, no side). Otherwise both `delhiPool`/`bombayPool` and
+ * `totalDelhi`/`totalBombay`, so either frontend generation reads a value
+ * rather than `undefined` → 0.
  */
 export function publicCyclePools(cycle) {
-  const delhiPool = cycle.totalDelhi || 0;
-  const bombayPool = cycle.totalBombay || 0;
-  return { delhiPool, bombayPool };
+  const delhi = cycle.totalDelhi || 0;
+  const bombay = cycle.totalBombay || 0;
+  const totalPool = delhi + bombay;
+  if (poolsHidden(cycle)) return { poolsHidden: true, totalPool };
+  return {
+    poolsHidden: false,
+    delhiPool: delhi, bombayPool: bombay,
+    totalDelhi: delhi, totalBombay: bombay,
+    totalPool,
+  };
 }
 
 /**
@@ -65,7 +95,6 @@ export function publicCyclePools(cycle) {
  * Byte-for-byte the object `sanitiseCycleForUser` used to build by hand.
  */
 export function publicCycleView(cycle) {
-  const { delhiPool, bombayPool } = publicCyclePools(cycle);
   return {
     id:          cycle.cycleId,
     type:        cycle.type,
@@ -73,11 +102,7 @@ export function publicCycleView(cycle) {
     status:      cycle.status,
     startTime:   toMs(cycle.startTime),
     endTime:     toMs(cycle.endTime),
-    delhiPool,
-    bombayPool,
-    totalDelhi:  delhiPool,
-    totalBombay: bombayPool,
-    totalPool:   delhiPool + bombayPool,
+    ...publicCyclePools(cycle),
     winner:      cycle.winner    || null,
     isSettled:   cycle.isSettled || 'PENDING',
     // NEVER included: realDelhi, realBombay, phantomDelhi, phantomBombay,
@@ -104,6 +129,15 @@ export function assertPublicCycleSafe(payload) {
           `cyclePublicView: forbidden field '${key}' in a public cycle payload — `
           + 'real/phantom pools must never reach a non-admin client (they reveal the winner).',
         );
+      }
+    }
+    // A hidden cycle carries its total alone (`poolsHidden`): a side figure
+    // beside the flag is the leak the flag exists to stop.
+    if (payload.poolsHidden === true) {
+      for (const key of HIDDEN_SIDE_FIELDS) {
+        if (key in payload) {
+          throw new Error(`cyclePublicView: '${key}' in a public payload whose pools are hidden.`);
+        }
       }
     }
   }

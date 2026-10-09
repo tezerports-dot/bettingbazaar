@@ -59,7 +59,7 @@ export class CycleSnapshotPublisher {
   constructor() {
     this.io = null;
     this.sseManager = null;
-    /** cycleId -> { cycleType, totalDelhi, totalBombay, betCount, dirty, updatedAt } */
+    /** cycleId -> { cycleType, totalDelhi, totalBombay, poolsHidden, betCount, dirty, updatedAt } */
     this.snapshots = new Map();
     this.timer = null;
     this.metrics = { flushes: 0, snapshotsPublished: 0, betsCoalesced: 0, lastFlushSize: 0, pruned: 0 };
@@ -75,8 +75,10 @@ export class CycleSnapshotPublisher {
   /**
    * Record one bet's post-$inc absolute totals. Coalesces: many bets in a window
    * collapse to the latest value. Does NOT emit — the timer does.
+   * `poolsHidden` is the cycle's, from `cyclePublicView.poolsHidden`: when set,
+   * the payload carries the total alone.
    */
-  recordBet(cycleId, { cycleType, totalDelhi, totalBombay } = {}) {
+  recordBet(cycleId, { cycleType, totalDelhi, totalBombay, poolsHidden = false } = {}) {
     if (!cycleId) return;
     const prev = this.snapshots.get(cycleId);
     if (prev) this.metrics.betsCoalesced++;
@@ -84,6 +86,7 @@ export class CycleSnapshotPublisher {
       cycleType: cycleType ?? prev?.cycleType,
       totalDelhi: Number(totalDelhi) || 0,
       totalBombay: Number(totalBombay) || 0,
+      poolsHidden: poolsHidden === true,
       betCount: (prev?.betCount || 0) + 1,
       dirty: true,
       updatedAt: Date.now(),
@@ -106,12 +109,14 @@ export class CycleSnapshotPublisher {
    * derives ratios/percentages itself, so the wire stays tiny. Guarded.
    */
   buildPayload(cycleId, snap) {
+    const totalPool = snap.totalDelhi + snap.totalBombay;
+    const pools = snap.poolsHidden
+      ? { poolsHidden: true, totalPool }
+      : { poolsHidden: false, totalDelhi: snap.totalDelhi, totalBombay: snap.totalBombay, totalPool };
     return assertPublicCycleSafe({
       cycleId,
       cycleType: snap.cycleType,
-      totalDelhi: snap.totalDelhi,
-      totalBombay: snap.totalBombay,
-      totalPool: snap.totalDelhi + snap.totalBombay,
+      ...pools,
       betCount: snap.betCount,
       ts: Date.now(),
     });
@@ -149,7 +154,9 @@ export class CycleSnapshotPublisher {
         // Removing it would silently stop live pool movement for exactly the
         // users least able to report why. Scoping the SSE side needs a
         // subscription registry, which is a feature, not a cleanup.
-        const legacy = { cycleId, cycleType: snap.cycleType, newTotalDelhi: snap.totalDelhi, newTotalBombay: snap.totalBombay };
+        const legacy = assertPublicCycleSafe(snap.poolsHidden
+          ? { cycleId, cycleType: snap.cycleType, poolsHidden: true, totalPool: payload.totalPool }
+          : { cycleId, cycleType: snap.cycleType, newTotalDelhi: snap.totalDelhi, newTotalBombay: snap.totalBombay });
         this.sseManager?.broadcast('bet_placed', legacy);
 
         published++;

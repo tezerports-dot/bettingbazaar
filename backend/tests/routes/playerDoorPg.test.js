@@ -54,7 +54,6 @@ async function connectSocket(token) {
   attachSocketHandlers(
     { on: (_e, fn) => { connect = fn; } },
     { sendCycleSnapshot: () => {}, getCycleSnapshotData: async () => [] },
-    { getGameState: async () => ({}) },
   );
   await connect(socket);
   return { handlers, joined };

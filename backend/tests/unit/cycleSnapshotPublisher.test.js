@@ -82,6 +82,19 @@ describe('CycleSnapshotPublisher — coalescing', () => {
     );
   });
 
+  it('a hidden cycle\'s snapshot carries the total alone, on the room and on SSE', () => {
+    const h = harness();
+    h.pub.recordBet('c1', { cycleType: '30_MIN', totalDelhi: 1200, totalBombay: 800, poolsHidden: true });
+    h.pub.flush();
+    const [pu] = h.poolUpdates();
+    expect(pu.payload).toMatchObject({ cycleId: 'c1', poolsHidden: true, totalPool: 2000 });
+    for (const f of ['totalDelhi', 'totalBombay', 'delhiPool', 'bombayPool']) expect(pu.payload).not.toHaveProperty(f);
+    const [, sse] = h.sseManager.broadcast.mock.calls[0];
+    expect(sse).toEqual({ cycleId: 'c1', cycleType: '30_MIN', poolsHidden: true, totalPool: 2000 });
+    // A watcher who joins now is seeded with the same.
+    expect(h.pub.peek('c1')).not.toHaveProperty('totalDelhi');
+  });
+
   it('emits only dirty cycles — an idle flush sends nothing', () => {
     const h = harness();
     h.pub.recordBet('c1', { cycleType: '30_MIN', totalDelhi: 1, totalBombay: 1 });

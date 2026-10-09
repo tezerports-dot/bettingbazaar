@@ -650,7 +650,7 @@ if (!runtime.runsSchedulers) {
 global.sseManager = sseManager;
 if (runtime.acceptsRealtime) {
   app.use('/api/sse', initSSERoutes(sseManager, cycleGenerator));
-  attachSocketHandlers(io, cycleGenerator, gameEngine);
+  attachSocketHandlers(io, cycleGenerator);
 
   // Realtime cost/concurrency fix: coalesce per-bet pool broadcasts into ≤1
   // snapshot/sec/cycle. One publisher per process; on a single-server deploy

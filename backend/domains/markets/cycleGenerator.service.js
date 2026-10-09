@@ -7,7 +7,7 @@ import { fetchCycleHistory } from './cycleHistory.service.js';
 import { computeRealPools } from './cyclePool.service.js';
 // Public cycle payloads must never carry real/phantom pools (they reveal the
 // minority-side winner). assertPublicCycleSafe throws if one slips in.
-import { assertPublicCycleSafe } from './cyclePublicView.js';
+import { assertPublicCycleSafe, publicCyclePools } from './cyclePublicView.js';
 // The boards (one row each, admin-created): timer, phases, labels. See
 // cycleTypes.js; every board's timing is read from its row.
 import { allBoards, enabledBoards, boardOf, cycleLabel, boardMessages } from './cycleTypes.js';
@@ -710,9 +710,8 @@ class CycleGenerator {
             // Real halves derived from the bets, phantom halves off the row.
             // The read this replaced took `realDelhi` as a document field — not
             // a column — so both sides fell through to `|| 0` and every
-            // connecting client was told the pools were empty.
-            const combinedDelhi  = cycle.totalDelhi;
-            const combinedBombay = cycle.totalBombay;
+            // connecting client was told the pools were empty. From the merge
+            // until the result, the total alone (`poolsHidden`).
 
             // Wrapped: this is the live state pushed to every connecting client,
             // so it is the highest-value place to prove no real/phantom pool
@@ -729,10 +728,7 @@ class CycleGenerator {
                 // CycleControl reads timeRemainingMs first — missing it caused timer = 0 on load.
                 timeRemaining,
                 timeRemainingMs,
-                totalDelhi:      combinedDelhi,
-                totalBombay:     combinedBombay,
-                delhiPool:       combinedDelhi,
-                bombayPool:      combinedBombay,
+                ...publicCyclePools(cycle),
                 winner:          cycle.winner,
                 isSettled:       cycle.isSettled ? 'COMPLETED' : 'PENDING',
                 timestamp:       now,

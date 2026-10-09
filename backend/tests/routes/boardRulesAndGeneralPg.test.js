@@ -39,6 +39,8 @@ describePg('board rules and the GENERAL profile routes', () => {
     expect(text).toMatch(/LESS real player money/);
     expect(text).toMatch(/house/i);
     expect(text).toMatch(/not real players/);
+    expect(text).toMatch(/only the total of both sides is shown until the result/);
+    expect(text).toMatch(/may decide or cancel a round\. A cancelled round returns every stake/);
     const fee = (await getSystemConfig()).winningsFeePercent;
     expect(text).toContain(`${fee}%`);
   });
