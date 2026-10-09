@@ -86,6 +86,8 @@ COPY backend ./backend
 # only while something else answered for the data.
 COPY database ./database
 COPY scripts ./scripts
+# PM2 cluster mode for the api and realtime roles (deploy/vps/docker-compose.prod.yml).
+COPY ecosystem.config.cjs ./
 COPY --from=builder /app/user-panel/dist      ./dist
 COPY --from=builder /app/admin-panel/dist     ./admin-panel/dist
 COPY --from=builder /app/merchant-panel/dist  ./merchant-panel/dist

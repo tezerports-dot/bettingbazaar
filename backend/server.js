@@ -77,7 +77,12 @@ import retentionRoutes, { rebuildLeaderboard } from './routes/retention.routes.j
 import gameProviderRoutes from './domains/casino/gameProvider.routes.js';
 import gameRegistryRoutes from './domains/gameRegistry/gameRegistry.routes.js';
 import { seedGameRegistry } from './domains/gameRegistry/gameRegistry.seed.js';
-import { httpMetrics, metricsHandler, setRealtimeStatsProvider } from './services/metrics.service.js';
+import {
+  httpMetrics, metricsHandler, setRealtimeStatsProvider, setSseStatsProvider, setRedisHealthProvider,
+} from './services/metrics.service.js';
+import { createRateLimitStore } from './middleware/redisRateLimitStore.js';
+import clientTelemetryRoutes from './routes/clientTelemetry.routes.js';
+import { startPgBouncerStats } from './services/pgbouncerStats.js';
 // Plan items 19/21/28/24/4/51 (2026-07-13): central security + network config,
 // OWASP filter, service registry, storage abstraction.
 import { CORS_SHAPE, RATE_LIMIT_TIERS, isPhantomBetPlacement } from './config/security.config.js';
@@ -325,7 +330,7 @@ startLoadShedConfigRefresh();
 // require it as a Bearer token so the endpoint isn't public; unset = open
 // (single-service/dev). Registered BEFORE the API rate limiter — scrapers poll
 // frequently and must not consume the user budget.
-app.get('/metrics', (req, res) => {
+function authorisedMetrics(req, res) {
   const token = process.env.METRICS_TOKEN;
   if (!token && process.env.NODE_ENV === 'production') {
     return res.status(503).end('metrics token not configured');
@@ -334,7 +339,26 @@ app.get('/metrics', (req, res) => {
     return res.status(401).end('unauthorized');
   }
   return metricsHandler(req, res);
-});
+}
+app.get('/metrics', authorisedMetrics);
+// bb_pgbouncer_pool on /metrics when PGBOUNCER_STATS_URL is set (production compose).
+startPgBouncerStats();
+
+// PM2 cluster mode: on the shared port, /metrics answers from whichever worker
+// the connection lands on. METRICS_PORT_BASE gives each worker its own scrape
+// port (base + NODE_APP_INSTANCE) on the private network — never published —
+// behind the same token, so a scraper sees every worker.
+const METRICS_PORT_BASE = Number(process.env.METRICS_PORT_BASE || 0);
+if (METRICS_PORT_BASE > 0) {
+  const metricsPort = METRICS_PORT_BASE + Number(process.env.NODE_APP_INSTANCE || 0);
+  const metricsApp = express();
+  metricsApp.disable('x-powered-by');
+  metricsApp.get('/metrics', authorisedMetrics);
+  const metricsServer = http.createServer(metricsApp);
+  metricsServer.on('error', (e) => console.error(`[metrics] worker scrape port ${metricsPort} failed:`, e.message));
+  metricsServer.listen(metricsPort, '0.0.0.0', () => console.log(`📈 Worker metrics on :${metricsPort}`));
+  metricsServer.unref();
+}
 // Phantom managers fire many equalizer (ghost) bets in quick succession to
 // balance the display pool, so their placements must NOT be throttled. Exempt
 // POST /api/bet/phantom from the global backstop: the route is already gated
@@ -343,6 +367,9 @@ app.get('/metrics', (req, res) => {
 // (The isPhantomBetPlacement predicate lives in config/security.config.js.)
 app.use('/api/', rateLimit({
   ...RATE_LIMIT_TIERS.global, standardHeaders: true, legacyHeaders: false,
+  // Shared across PM2 workers and containers (§36): a per-process counter is
+  // N× looser with N workers.
+  store: createRateLimitStore('rl:global:'),
   skip: isPhantomBetPlacement,
   message: { success: false, message: 'Too many requests. Please try again later.' }
 }));
@@ -552,7 +579,10 @@ app.post('/api/admin/login/telegram/complete', ...doorRoute('STAFF', 'telegramCo
 app.use('/api/admin', adminRoutes);   // ← now routes/admin/index.js (13 sub-routers)
 
 // Public error report endpoint (no JWT — panel may be mid-crash)
-const errorReportLimiter = rateLimit({ windowMs: 60000, max: 10, message: { success: false, message: 'Too many error reports' } });
+const errorReportLimiter = rateLimit({ windowMs: 60000, max: 10, store: createRateLimitStore('rl:errorreport:'), message: { success: false, message: 'Too many error reports' } });
+
+// How player apps found their API origin (discovery, failover) — counters only.
+app.use('/api', clientTelemetryRoutes);
 app.post('/api/internal/error-report', errorReportLimiter, async (req, res) => {
   try {
     const { message, stack, component, url, panel } = req.body;
@@ -662,17 +692,24 @@ if (runtime.acceptsRealtime) {
   // Expose realtime delivery gauges on /metrics (connected sockets + publisher
   // stats). Event-loop lag is already a default metric. IoC so metrics.service
   // imports neither io nor the publisher.
+  setSseStatsProvider(() => sseManager.getStats());
   setRealtimeStatsProvider(() => ({
     connectedSockets: io?.engine?.clientsCount ?? 0,
     ...cycleSnapshotPublisher.stats(),
   }));
 
-  // Cross-instance real-time bridge (Phase X): fan out socket.io + SSE events
-  // across all realtime instances via Redis. No-op without REDIS_URL.
-  initRealtimeBridge(io, sseManager);
 } else {
   app.use('/api/sse', (_req, res) => res.status(404).json({ success: false, message: 'Realtime disabled on this API role' }));
 }
+
+// Cross-instance real-time bridge (Phase X): fan out socket.io + SSE events
+// across all instances via Redis. No-op without REDIS_URL. EVERY role joins
+// it, not only the realtime one: the scheduler produces the cycle lifecycle
+// and the api role produces bet_placed / balance_update / order_update, and
+// without the bridge those emits reached only the producer's own (empty)
+// io and SSE — measured 2026-10-09 with the role split: 0 of 2,000 clients
+// saw a cycle_phase until this moved out of the realtime-only block.
+initRealtimeBridge(io, sseManager);
 
 // ─── SPA FALLBACKS ───────────────────────────────────────────────────────────
 // AQ-6 (Express 5): named wildcards ('/admin/*splat') — '/admin/*' is invalid
@@ -771,7 +808,10 @@ Promise.allSettled([
     // The deny-list loads here, awaited: a server that cannot read it fails
     // startup rather than serving as if nothing were blocked.
     .then(() => startIpBlocklistRefresh()),
-  connectRedis().then(r => { global.redis = r; }),
+  connectRedis().then(r => {
+    global.redis = r;
+    if (r) setRedisHealthProvider(() => r.status === 'ready');
+  }),
   // CAP-71: RAG vector store. Apply the pgvector schema ONLY when RAG retrieval
   // is actually configured (DATABASE_URL + embedding provider key) — so a
   // money-only Postgres without the pgvector extension is never touched.
@@ -794,6 +834,9 @@ Promise.allSettled([
     return;
   }
   console.log('✅ DB services initialized');
+  // PM2 (`wait_ready`): this worker is serving. A rolling reload waits for it
+  // before stopping the next old worker, so capacity never drops to zero.
+  if (typeof process.send === 'function') process.send('ready');
   if (runtime.runsSchedulers) {
     gameEngine.start();
     cycleGenerator.start();

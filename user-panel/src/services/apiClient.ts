@@ -17,13 +17,21 @@ declare global {
   interface Window { __bbAuthToken__?: string | null; }
 }
 
-import { currentOrigin, reportOriginUnreachable, failoverAvailable } from './originFailover';
+import { currentOrigin, reportOriginUnreachable, failoverAvailable, whenEndpointReady } from './originFailover';
 
-// Resolved per request, not once at module load: when the configured origin
-// stops answering, originFailover adopts the next one and every subsequent
-// request follows without a reload. With a single configured origin this
-// returns exactly what the old `import.meta.env.VITE_API_URL || ''` did.
+// Resolved per request, not once at module load: when the adopted origin stops
+// answering, originFailover moves to the next trusted one and every subsequent
+// request follows without a reload. No request leaves before the endpoint has
+// been discovered and validated (`whenEndpointReady`).
 const MAX_RETRIES = 2;
+
+/**
+ * Only these are retried after a transport failure. A POST whose response was
+ * lost may already have been applied (a payment order, a bet), so replaying it
+ * — against the same origin or another — could apply it twice. It fails to the
+ * caller instead; failover still moves the NEXT request to a live origin.
+ */
+const IDEMPOTENT = new Set(['GET', 'HEAD']);
 
 // ── In-flight deduplication ───────────────────────────────────────────────────
 /**
@@ -83,6 +91,7 @@ async function apiFetch(
   body?: unknown,
   options: { retry?: number; signal?: AbortSignal } = {}
 ): Promise<unknown> {
+  await whenEndpointReady();
   // Deduplicate GET requests only. A retry re-enters through `performFetch`
   // directly, not here, so a retry of a shared call stays that one shared call.
   if (method !== 'GET') return performFetch(method, path, body, options);
@@ -129,10 +138,10 @@ async function performFetch(
     // error status does not land here, which is deliberate: a 500 means the
     // origin answered, and abandoning a host that is talking to us would turn
     // a server-side bug into a multi-origin outage.
-    if (attempt < MAX_RETRIES) {
-      // Before retrying, give the failover a chance to move to an origin that
-      // is actually reachable, so the retry is not aimed at the same dead host.
-      if (failoverAvailable()) await reportOriginUnreachable(origin);
+    // Give the failover a chance to move to an origin that is actually
+    // reachable, so the next request (or the retry) is not aimed at a dead host.
+    if (failoverAvailable()) await reportOriginUnreachable(origin);
+    if (attempt < MAX_RETRIES && IDEMPOTENT.has(method)) {
       await new Promise(r => setTimeout(r, 300 * 2 ** attempt));
       return performFetch(method, path, body, { ...options, retry: attempt + 1 });
     }

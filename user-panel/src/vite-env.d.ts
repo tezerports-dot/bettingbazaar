@@ -9,14 +9,20 @@
 // consumers), and it is worse than useless here because it reads as supported
 // configuration. `VITE_WS_URL` was exactly that and was removed on 2026-08-31:
 // it was declared, documented nowhere, and read by no code — realtime resolves
-// its origin through `originFailover`/`apiClient` like every other call.
+// its origin through `originFailover` like every other call.
 interface ImportMetaEnv {
   /** Absolute API origin. Optional on a same-origin web deploy; MANDATORY for
    *  the native build, which has no same-origin backend to fall back on. */
   readonly VITE_API_URL: string;
-  /** Comma-separated alternate origins serving the same deployment, tried in
-   *  order when the primary stops answering (`services/originFailover.ts`). */
-  readonly VITE_API_FALLBACK_URLS?: string;
+  /** ONE explicitly configured backup origin (https hostname), used when the
+   *  primary stops answering (`services/originFailover.ts`). */
+  readonly VITE_API_BACKUP_URL?: string;
+  /** HTTPS URL answering `{"url": "https://…"}` — the endpoint-discovery
+   *  service read during the LoadingScreen (`services/originFailover.ts`). */
+  readonly VITE_API_DISCOVERY_URL?: string;
+  /** Comma-separated EXACT hostnames discovery may name, beyond the primary's
+   *  and the backup's. No wildcards, no IP addresses. */
+  readonly VITE_API_ALLOWED_HOSTS?: string;
   /** The panel's public origin — the backend's `PUBLIC_APP_ORIGIN`. MANDATORY
    *  for the native build: it decides which deep links the shell trusts, and
    *  its host is baked into the APK's App Link filter. */

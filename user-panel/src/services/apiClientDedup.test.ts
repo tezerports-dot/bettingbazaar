@@ -31,6 +31,9 @@ async function load(fetchImpl: typeof fetch) {
   vi.stubGlobal('localStorage', {
     getItem: () => null, setItem: () => {}, removeItem: () => {},
   } as unknown as Storage);
+  // Same-origin deploy: the endpoint is ready without a network call, which
+  // is the precondition every request now waits on.
+  await (await import('./originFailover')).bootstrapApiEndpoint();
   return (await import('./apiClient')).apiClient;
 }
 

@@ -34,8 +34,8 @@ reuse a name on a different transport for a different meaning.
 |---|---|---|---|
 | `new_cycle` | socket.io | server→client | `cycleGenerator.service.js` |
 | `cycle_snapshot` | socket.io | server→client | `cycleGenerator.service.js` |
-| `cycle_phase` | socket.io | server→client | `cycles.admin.routes.js` |
-| `cycle_result` | socket.io + SSE | server→client, server→admin | `cycles.admin.routes.js` |
+| `cycle_phase` | SSE + socket.io (public) | server→client | Compact v2 (below). `realtimeEmitters.emitCyclePhase`, from `cycleGenerator.service.js` and `cycles.admin.routes.js` |
+| `cycle_result` | SSE + socket.io (public) | server→client, server→admin | Compact v2 (below). `realtimeEmitters.emitCycleResult`, from `cycleGenerator.service.js` and `cycles.admin.routes.js` (forced) |
 | `cycle_history` | socket.io | server→client | `startup/socketHandlers.js` |
 | `game_state` | socket.io | server→client | `startup/socketHandlers.js` |
 | `phantom_equalized` | socket.io | server→client | `cycleGenerator.service.js`, `cycles.admin.routes.js` |
@@ -44,6 +44,42 @@ reuse a name on a different transport for a different meaning.
 | `admin_bet_placed` | socket.io | server→admin | `markets/bet.routes.js` |
 | `payout_success` | socket.io | server→user room | `realtimeEmitters.js` (per-winner wallet credit) |
 | `payout_complete` | socket.io | server→client | `gameEngine.js` (cycle payouts finished — distinct from the per-user event above) |
+
+#### Compact lifecycle protocol, v2 (2026-10-09)
+
+Owner: `backend/domains/notification/realtimeProtocol.js`; decoder mirror
+`user-panel/src/services/realtimeProtocol.ts`. Same event names, smaller bodies.
+
+| Field | Meaning | Values |
+|---|---|---|
+| `v` | protocol version | `2`. Adding a field keeps it; renaming, removing or re-coding one raises it. A client drops a payload whose `v` it does not support (the minimum-version gate moves old apps forward); a payload with no `v` is the legacy verbose form and still decodes. |
+| `t` | event code | `1` cycle_phase · `2` cycle_result |
+| `c` | cycle id | string |
+| `k` | board key (the cycle's `type`) | string |
+| `a` | audience | `1` VIP · `2` GENERAL |
+| `p` | phase (cycle_phase) | `1` OPEN · `2` MERGED · `3` CLOSED · `4` PAUSED · `5` CANCELLED · `6` RESULT_DECLARED · `7` COMPLETED |
+| `w` | winner (cycle_result) | `1` DELHI · `2` BOMBAY |
+| `d`, `b` | combined Delhi / Bombay pool after the result (cycle_result), rupees | numbers — the same figures the verbose result carried; never a real or phantom pool |
+| `ts` | server time | epoch ms |
+| `f` | staff forced the result (cycle_result) | `1`, else absent |
+
+Dropped from the wire: the fixed `message` sentence and the ISO timestamp string.
+Never on it: anything per side before the result, any private field (the encoder
+builds an allowlist and runs `assertPublicCycleSafe`). Per-user and per-cycle data
+stays in the `user-<id>` and `cycle:<id>` rooms.
+
+Measured serialized size (`backend/tests/unit/scaling/realtimeProtocol.test.js`
+shapes; `bb_realtime_payload_bytes_total / bb_realtime_events_total` live):
+
+| Event | Before (verbose) | After (v2) | Saved |
+|---|---|---|---|
+| `cycle_phase` MERGED | 155 B | 83 B | 46% |
+| `cycle_phase` CLOSED | 173 B | 83 B | 52% |
+| `cycle_result` | 202 B | 104 B | 49% |
+| One round, one audience (2 phases + result) | 530 B | 270 B | 49% |
+
+Each is sent once per client on each of SSE and socket.io, so per connected
+client and round this is ~260 B less per transport, before compression.
 
 ### Wallet, user & withdrawals
 

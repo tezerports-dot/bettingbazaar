@@ -366,6 +366,7 @@ class SSEManager {
     getStats() {
         return {
             active:        this.clients.size,
+            activeUsers:   [...this.userClients.values()].reduce((a, s) => a + s.size, 0),
             activeMerchants: [...this.merchantClients.values()].reduce((a, s) => a + s.size, 0),
             activeAdmins:  this.adminClients.size,
             totalIn:       this.stats.totalConnections,

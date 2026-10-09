@@ -53,6 +53,29 @@ if (!apiUrl) {
   }
 }
 
+// ── Backup origin and discovery (services/originFailover.ts) ───────────────
+// Optional, but when set they are held to the same rules as the primary: an
+// https hostname, origin only. The allowlist is exact hostnames — a wildcard,
+// a URL or an IP address is refused here rather than silently dropped later.
+for (const name of ['VITE_API_BACKUP_URL', 'VITE_API_DISCOVERY_URL']) {
+  const value = process.env[name];
+  if (!value) continue;
+  let u;
+  try { u = new URL(value); } catch { errors.push(`${name} is not a valid URL: ${value}`); continue; }
+  if (u.protocol !== 'https:') errors.push(`${name} must be https (got "${u.protocol}").`);
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(u.hostname) || u.hostname.startsWith('[')) {
+    errors.push(`${name} must be a hostname, not an IP address (got "${u.hostname}").`);
+  }
+  if (name === 'VITE_API_BACKUP_URL' && u.pathname !== '/') {
+    errors.push(`${name} must be an origin only, no path (got "${u.pathname}").`);
+  }
+}
+for (const host of String(process.env.VITE_API_ALLOWED_HOSTS || '').split(',').map((h) => h.trim()).filter(Boolean)) {
+  if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i.test(host) || /^\d{1,3}(\.\d{1,3}){3}$/.test(host)) {
+    errors.push(`VITE_API_ALLOWED_HOSTS entry "${host}" is not an exact hostname (no wildcards, URLs or IP addresses).`);
+  }
+}
+
 // ── The public app origin — whose links this app opens ──────────────────────
 // Its HOST is baked into AndroidManifest.xml as the App Link the app claims,
 // and the deep-link handler trusts only links from it. The bot's password-reset

@@ -1,6 +1,7 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import React, { Component, ErrorInfo, ReactNode } from 'react';
 import { logger } from '../../services/logging.service';
+import { apiUrl } from '../../services/apiUrl';
 
 interface Props {
   children?: ReactNode;
@@ -25,12 +26,8 @@ const storeCrashReport = (
   componentStack?: string,
   panel: 'user' | 'merchant' | 'unknown' = 'unknown',
 ): void => {
-  const apiBase: string =
-    (typeof (import.meta as any).env?.VITE_API_URL === 'string' &&
-     (import.meta as any).env.VITE_API_URL.trim() !== '')
-      ? (import.meta as any).env.VITE_API_URL.replace(/\/$/,  '')
-      : window.location.origin;
-  fetch(`${apiBase}/api/internal/error-report`, {
+  // The adopted, validated origin ('' = same origin) — never a raw build value.
+  fetch(apiUrl('/api/internal/error-report'), {
     method:  'POST',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include',

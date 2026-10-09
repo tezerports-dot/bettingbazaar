@@ -34,6 +34,7 @@ import express from 'express';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { authenticatePlayer } from '../identity/auth.middleware.js';
 import { db } from '#db';
+import { createRateLimitStore } from '../../middleware/redisRateLimitStore.js';
 import { answer, ragStatus } from './ragService.js';
 import { serverError, respondError } from '../../shared/httpError.js';
 
@@ -44,6 +45,7 @@ const router = express.Router();
 // is only the fallback for the theoretically-unauthenticated case.
 const askLimiter = rateLimit({
   windowMs: 60_000,
+  store: createRateLimitStore('rl:supportask:'),   // shared across workers (§36)
   max: Number(process.env.RAG_ASK_RATE || 10),
   standardHeaders: true,
   legacyHeaders: false,
@@ -85,6 +87,7 @@ router.post('/ask', authenticatePlayer, askLimiter, async (req, res) => {
 // Opening a ticket writes a row per call, so it is limited like /ask.
 const ticketLimiter = rateLimit({
   windowMs: 60_000,
+  store: createRateLimitStore('rl:supportticket:'),
   max: Number(process.env.SUPPORT_TICKET_RATE || 5),
   standardHeaders: true,
   legacyHeaders: false,

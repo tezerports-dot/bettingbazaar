@@ -162,6 +162,91 @@ jobs:
   # the default branch — the root `overrides` block had been updated and the
   # panels' had not. Each lockfile is audited on its own below so that drift
   # fails the build instead of being invisible to it.
+
+  # The same database behaviour THROUGH PgBouncer in transaction pooling mode,
+  # as production runs it (deploy/vps/pgbouncer/pgbouncer.ini). Two parts: the
+  # pooling-specific tier (prepared statements, transactions, session state,
+  # advisory locks, connection exhaustion), then the whole real-database money
+  # suite with every connection going through the pooler.
+  pgbouncer:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: bb_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      # PgBouncer 1.26, pinned by digest like the production compose; configured
+      # from env (the image's entrypoint) with the production pool settings.
+      pgbouncer:
+        image: edoburu/pgbouncer@sha256:9c78945868a6a142c7fc40ccd843bbe5a606df163c7ffce4de70e0d628d696a2
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@postgres:5432/bb_test
+          AUTH_TYPE: scram-sha-256
+          LISTEN_PORT: '6432'
+          POOL_MODE: transaction
+          MAX_CLIENT_CONN: '1000'
+          DEFAULT_POOL_SIZE: '30'
+          MIN_POOL_SIZE: '10'
+          RESERVE_POOL_SIZE: '10'
+          RESERVE_POOL_TIMEOUT: '3'
+          MAX_DB_CONNECTIONS: '50'
+          MAX_PREPARED_STATEMENTS: '200'
+          ADMIN_USERS: postgres
+          STATS_USERS: postgres
+          IGNORE_STARTUP_PARAMETERS: extra_float_digits,options
+        ports:
+          - 6432:6432
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install dependencies (reproducible)
+        run: npm ci --legacy-peer-deps
+      - name: Wait for PgBouncer to reach PostgreSQL
+        run: |
+          for i in $(seq 1 30); do
+            PGPASSWORD=postgres psql -h localhost -p 6432 -U postgres -d bb_test -c 'select 1' && exit 0
+            sleep 2
+          done
+          exit 1
+      - name: Quiet expected Postgres error logging (keeps test output readable)
+        run: |
+          PGPASSWORD=postgres psql -h localhost -U postgres -d bb_test -v ON_ERROR_STOP=1 <<'SQL'
+          ALTER SYSTEM SET log_min_error_statement = 'panic';
+          ALTER SYSTEM SET log_min_messages = 'fatal';
+          SELECT pg_reload_conf();
+          SQL
+      - name: Transaction-pooling compatibility tier
+        run: npm run test:pgbouncer -- --reporter=default --reporter=github-actions
+        env:
+          PGBOUNCER_URL: postgresql://postgres:postgres@localhost:6432/bb_test
+          PGBOUNCER_ADMIN_URL: postgresql://postgres:postgres@localhost:6432/pgbouncer
+          DIRECT_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/bb_test
+      # The backup drill in this suite shells out to pg_dump (see the test job).
+      - name: Install postgresql-client 18 (matches the service)
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+            | sudo gpg --dearmor -o /usr/share/keyrings/pgdg.gpg
+          echo "deb [signed-by=/usr/share/keyrings/pgdg.gpg] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list > /dev/null
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-client-18
+      - name: Money-path suite through PgBouncer
+        run: npm run test:pg -- --reporter=default --reporter=github-actions
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:6432/bb_test
   audit:
     runs-on: ubuntu-latest
     strategy:

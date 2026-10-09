@@ -179,7 +179,12 @@ describe('the public code paths cannot name a real/phantom field', () => {
     // socket connect, and the public cycle_result — are wrapped, so a forbidden
     // field added to either throws at runtime instead of shipping.
     expect(gen).toMatch(/snapshot\[type\] = assertPublicCycleSafe\(/);
-    expect(gen).toMatch(/emitPublic\('cycle_result', assertPublicCycleSafe\(/);
+    // cycle_result is sent in the compact v2 format (realtimeProtocol.js), whose
+    // encoder runs the guard before it builds the allowlisted wire object.
+    expect(gen).toMatch(/emitCycleResult\(\{/);
+    expect(gen).not.toMatch(/emitPublic\('cycle_result'/);
+    const proto = src('domains/notification/realtimeProtocol.js');
+    expect(proto).toMatch(/export function encodeCycleResult[\s\S]*?assertPublicCycleSafe\(/);
     // The breakdown that legitimately remains in this file goes to admins only.
     expect(gen).toMatch(/emitAdmin\('admin_cycle_result'/);
   });
