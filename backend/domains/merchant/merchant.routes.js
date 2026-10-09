@@ -1750,6 +1750,21 @@ router.post('/orders/:id/reject', merchantAuth, async (req, res) => {
         if (order.type !== 'DEPOSIT') {
             return res.status(400).json({ success: false, message: 'Only a buy order can be rejected as unpaid.' });
         }
+        // Only once the player has SAID they paid (owner, 2026-10-04). Before
+        // that there is no payment to deny: this was accepted on a PROCESSING
+        // buy too, so a member could reject a buy the player had not paid yet
+        // and put a payment warning on them. An unpaid buy expires on its own,
+        // and the expiry decides whose it was (`playerCouldPay`). Asked before
+        // the proof is checked, so nothing is consumed; the transition below
+        // asks the same state in its WHERE, for a buy that moves in between.
+        if (order.status !== 'PAID') {
+            return res.status(409).json({
+                success: false,
+                code: 'NOT_PAID_YET',
+                message: 'The player has not said they paid this order yet, so there is no payment to reject. '
+                    + 'If they never pay, the order expires on its own.',
+            });
+        }
 
         // Bound to THIS merchant and THIS order. Without the check a merchant
         // could name a key they never uploaded, or one staged against a
@@ -1788,7 +1803,7 @@ router.post('/orders/:id/reject', merchantAuth, async (req, res) => {
         // this button to close a buy the player has already DISPUTED.
         const windowMinutes = await rejectedBuyDisputeMinutes();
         const rejected = await rejectOrderState(order.orderId, {
-            expectFrom: ['PAID', 'PROCESSING'],
+            expectFrom: ['PAID'],
             expectMerchant: req.merchantId,
             set: {
                 rejectedBy:     req.merchantId,

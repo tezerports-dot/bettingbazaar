@@ -3597,6 +3597,114 @@ ALTER TABLE order_states ADD CONSTRAINT order_states_pool_hold_has_team CHECK (p
 CREATE INDEX IF NOT EXISTS order_states_team_open_idx ON order_states (team_id)
   WHERE state IN ('ASSIGNED', 'PROCESSING', 'PAID', 'DISPUTED');
 
+-- ── Every pool movement balances, checked at the moment it happens ────────
+-- Owner, 2026-10-04: the check is EVENT-based, at the time a team's pool and
+-- its orders move, so no token can be spent twice. At the COMMIT of any
+-- transaction that writes a team's pool, one of its pool entries, or an
+-- order's hold, that team must balance:
+--   held     = the sum of the holds on its orders. Every held token is
+--              promised to exactly one buy, so none is promised twice or lost;
+--   the pool = its own latest ledger entry, and every entry follows from the
+--              one before it. Nothing changed the pool without the entry that
+--              records it, and no gap can hide inside a later entry.
+-- (Neither figure can go negative: the CHECKs above.) A team that does not
+-- balance is refused, SQLSTATE BB001, and the whole transaction rolls back,
+-- whoever wrote it. Deferred to COMMIT because one movement writes the pool,
+-- the order and the entry in turn, and only the end of it has to balance.
+-- `database/repositories/poolBalance.js` turns BB001 into a refusal and an
+-- alert. The hold itself stays the UPDATE's WHERE (§32 S6): this is the check
+-- that every path, present or future, kept the books with it.
+CREATE INDEX IF NOT EXISTS order_states_team_holds_idx ON order_states (team_id)
+  WHERE pool_held_paise > 0;
+CREATE INDEX IF NOT EXISTS team_pool_entries_team_latest_idx ON team_pool_entries (team_id, id DESC);
+
+-- NULL when the team balances, else what does not.
+CREATE OR REPLACE FUNCTION bb_team_pool_imbalance(p_team TEXT) RETURNS TEXT AS $$
+DECLARE
+  pool_available BIGINT; pool_held BIGINT; holds BIGINT;
+  last_available BIGINT; last_held BIGINT;
+BEGIN
+  SELECT COALESCE(SUM(pool_held_paise), 0) INTO holds
+    FROM order_states WHERE team_id = p_team AND pool_held_paise > 0;
+  SELECT available_paise, held_paise INTO pool_available, pool_held
+    FROM team_pools WHERE team_id = p_team;
+  IF NOT FOUND THEN
+    IF holds <> 0 THEN
+      RETURN format('team %s: its orders hold %s paise and it has no pool', p_team, holds);
+    END IF;
+    RETURN NULL;
+  END IF;
+  IF pool_held <> holds THEN
+    RETURN format('team %s: the pool holds %s paise and its orders hold %s', p_team, pool_held, holds);
+  END IF;
+  SELECT available_after_paise, held_after_paise INTO last_available, last_held
+    FROM team_pool_entries WHERE team_id = p_team ORDER BY id DESC LIMIT 1;
+  IF COALESCE(last_available, 0) <> pool_available OR COALESCE(last_held, 0) <> pool_held THEN
+    RETURN format('team %s: the pool reads %s available, %s held and its ledger %s, %s',
+      p_team, pool_available, pool_held, COALESCE(last_available, 0), COALESCE(last_held, 0));
+  END IF;
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql STABLE;
+
+CREATE OR REPLACE FUNCTION bb_team_pool_must_balance() RETURNS trigger AS $$
+DECLARE
+  teams TEXT[] := ARRAY[NEW.team_id];
+  t TEXT;
+  why TEXT;
+  prev_available BIGINT;
+  prev_held BIGINT;
+BEGIN
+  IF TG_TABLE_NAME = 'order_states' AND TG_OP = 'UPDATE' AND OLD.team_id IS DISTINCT FROM NEW.team_id THEN
+    teams := teams || OLD.team_id;
+  END IF;
+  -- An entry continues from the one before it: what that one left, plus this
+  -- change, is what this one says. Comparing the pool with its LATEST entry
+  -- alone is not enough: a pool changed with no entry, then moved properly,
+  -- would have its gap carried into the new entry's figures and look whole.
+  -- Entries of one team are written under its pool row's lock, so their ids
+  -- are in the order they happened.
+  IF TG_TABLE_NAME = 'team_pool_entries' THEN
+    SELECT available_after_paise, held_after_paise INTO prev_available, prev_held
+      FROM team_pool_entries WHERE team_id = NEW.team_id AND id < NEW.id ORDER BY id DESC LIMIT 1;
+    IF COALESCE(prev_available, 0) + NEW.available_delta_paise <> NEW.available_after_paise
+       OR COALESCE(prev_held, 0) + NEW.held_delta_paise <> NEW.held_after_paise THEN
+      RAISE EXCEPTION 'team pool out of balance: team %: entry % does not follow from the one before it (%, % then %, %)',
+        NEW.team_id, NEW.tx_id, COALESCE(prev_available, 0), COALESCE(prev_held, 0),
+        NEW.available_after_paise, NEW.held_after_paise
+        USING ERRCODE = 'BB001', CONSTRAINT = 'team_pool_balanced';
+    END IF;
+  END IF;
+  FOREACH t IN ARRAY teams LOOP
+    CONTINUE WHEN t IS NULL;
+    why := bb_team_pool_imbalance(t);
+    IF why IS NOT NULL THEN
+      RAISE EXCEPTION 'team pool out of balance: %', why
+        USING ERRCODE = 'BB001', CONSTRAINT = 'team_pool_balanced';
+    END IF;
+  END LOOP;
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS team_pools_balanced ON team_pools;
+CREATE CONSTRAINT TRIGGER team_pools_balanced AFTER INSERT OR UPDATE ON team_pools
+  DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION bb_team_pool_must_balance();
+DROP TRIGGER IF EXISTS team_pool_entries_balanced ON team_pool_entries;
+CREATE CONSTRAINT TRIGGER team_pool_entries_balanced AFTER INSERT ON team_pool_entries
+  DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION bb_team_pool_must_balance();
+DROP TRIGGER IF EXISTS order_states_hold_balanced_ins ON order_states;
+CREATE CONSTRAINT TRIGGER order_states_hold_balanced_ins AFTER INSERT ON order_states
+  DEFERRABLE INITIALLY DEFERRED FOR EACH ROW
+  WHEN (NEW.pool_held_paise > 0)
+  EXECUTE FUNCTION bb_team_pool_must_balance();
+DROP TRIGGER IF EXISTS order_states_hold_balanced_upd ON order_states;
+CREATE CONSTRAINT TRIGGER order_states_hold_balanced_upd AFTER UPDATE OF pool_held_paise, team_id ON order_states
+  DEFERRABLE INITIALLY DEFERRED FOR EACH ROW
+  WHEN (OLD.pool_held_paise IS DISTINCT FROM NEW.pool_held_paise
+        OR (OLD.team_id IS DISTINCT FROM NEW.team_id AND (OLD.pool_held_paise > 0 OR NEW.pool_held_paise > 0)))
+  EXECUTE FUNCTION bb_team_pool_must_balance();
+
 -- Ready: a CASH member at the machine. Cleared by the assignment it attracts.
 ALTER TABLE merchants ADD COLUMN IF NOT EXISTS cash_ready BOOLEAN NOT NULL DEFAULT FALSE;
 -- Ties in routing go to whoever was assigned least recently.

@@ -38,6 +38,17 @@ describe('the state table', () => {
   });
 });
 
+describe('a buy is rejected as unpaid only once the player said they paid', () => {
+  // Owner, 2026-10-04. Before Paid there is no payment to deny; the order
+  // expires instead and the expiry decides whose it was.
+  it('admits REJECTED from PAID and from nothing else', () => {
+    for (const from of Object.values(ORDER_STATES)) {
+      expect({ from, ok: canTransition(from, ORDER_STATES.REJECTED) })
+        .toEqual({ from, ok: from === ORDER_STATES.PAID });
+    }
+  });
+});
+
 describe('the rule table is the same one the database enforces', () => {
   it('matches the repository ALLOWED_FROM exactly', async () => {
     const { ALLOWED_FROM } = await import('#db/repositories/orders.core.js');
@@ -55,8 +66,9 @@ describe('the rule table is the same one the database enforces', () => {
     expect(nextStates(ORDER_STATES.PENDING_QUEUE).sort())
       // NOT PROCESSING: nobody takes an order straight out of the queue any
       // more. Every order reaches a member through team routing, which moves it
-      // to ASSIGNED first (§3.10, 2c).
-      .toEqual(['ASSIGNED', 'CANCELLED', 'FAILED', 'REJECTED']);
+      // to ASSIGNED first (§3.10, 2c). NOT REJECTED: a buy is rejected as
+      // unpaid only once the player said they paid (owner, 2026-10-04).
+      .toEqual(['ASSIGNED', 'CANCELLED', 'FAILED']);
     // Nothing leaves COMPLETED except a dispute. Everything else is a reversal.
     expect(nextStates(ORDER_STATES.COMPLETED)).toEqual(['DISPUTED']);
     // ...and a dispute resolves in exactly two directions.

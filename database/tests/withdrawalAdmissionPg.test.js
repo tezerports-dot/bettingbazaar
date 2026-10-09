@@ -22,7 +22,7 @@
  * settlement working while the real function threw on every call.
  */
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
-import { pgConfigured, pgQuery, applySchema, closePg } from '../client.js';
+import { pgConfigured, pgQuery, applySchema, closePg, withTransaction } from '../client.js';
 import { debitWinningsForWithdrawal, creditWinnings, getBalances } from '../repositories/wallets.js';
 import { createOrderRecord, pendingWithdrawalTotal, getOrderRecord } from '../repositories/orders.record.js';
 
@@ -151,16 +151,27 @@ describePg('withdrawal admission', () => {
 
   it('reports in-flight withdrawals without letting them gate anything', async () => {
     const u = uid();
-    await createOrderRecord({
-      orderId: oid(), userId: u, type: 'WITHDRAWAL',
-      tokenAmountRupees: 300, escrowLocked: true, escrowStatus: 'LOCKED',
-    });
-    await createOrderRecord({
-      orderId: oid(), userId: u, type: 'WITHDRAWAL',
-      tokenAmountRupees: 200, escrowLocked: true, escrowStatus: 'LOCKED',
-    });
-    // A DISPLAY figure, for telling a player why their spendable winnings look
-    // lower than they expect. It is deliberately not consulted before a debit.
-    expect(await pendingWithdrawalTotal(u)).toBe(500);
+    const orders = [oid(), oid()];
+    try {
+      await createOrderRecord({
+        orderId: orders[0], userId: u, type: 'WITHDRAWAL',
+        tokenAmountRupees: 300, escrowLocked: true, escrowStatus: 'LOCKED',
+      });
+      await createOrderRecord({
+        orderId: orders[1], userId: u, type: 'WITHDRAWAL',
+        tokenAmountRupees: 200, escrowLocked: true, escrowStatus: 'LOCKED',
+      });
+      // A DISPLAY figure, for telling a player why their spendable winnings look
+      // lower than they expect. It is deliberately not consulted before a debit.
+      expect(await pendingWithdrawalTotal(u)).toBe(500);
+    } finally {
+      // Removed, not left queued: these are real PENDING_QUEUE sells, and a
+      // later suite's routing or queue-order check would meet them (trap 10).
+      await withTransaction(async (c) => {
+        await c.query('SET LOCAL session_replication_role = replica');
+        await c.query('DELETE FROM order_transitions WHERE order_id = ANY($1)', [orders]);
+        await c.query('DELETE FROM order_states WHERE order_id = ANY($1)', [orders]);
+      });
+    }
   });
 });

@@ -2658,6 +2658,78 @@ const MUTATIONS = [
     to: `        if (!merchant)
             return res.status(401).json({ success: false, message: 'No merchant account found for this mobile number' });`,
   },
+  // ── "Payment not received" only after the player said they paid (owner, 2026-10-04) ──
+  {
+    id: 'M425', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
+    test: 'backend/tests/routes/merchantRejectPaidRoutes.test.js',
+    why: 'a member rejects a buy the player has not paid yet, as unpaid',
+    from: `        if (order.status !== 'PAID') {
+            return res.status(409).json({
+                success: false,
+                code: 'NOT_PAID_YET',`,
+    to: `        if (order.status !== 'PAID' && order.status !== 'PROCESSING') {
+            return res.status(409).json({
+                success: false,
+                code: 'NOT_PAID_YET',`,
+  },
+  {
+    id: 'M426', file: 'database/repositories/orders.core.js', config: UNIT,
+    test: 'backend/tests/unit/orderLifecycle.test.js',
+    why: 'the transition table lets a buy be rejected as unpaid before the player said they paid',
+    from: `  [ORDER_STATES.REJECTED]:   [ORDER_STATES.PAID],`,
+    to: `  [ORDER_STATES.REJECTED]:   [ORDER_STATES.PROCESSING, ORDER_STATES.PAID],`,
+  },
+  {
+    id: 'M427', file: 'backend/domains/merchant/merchant.routes.js', config: PG,
+    test: 'backend/tests/routes/merchantRejectPaidRoutes.test.js',
+    why: 'the reject transition asks for a state the table does not allow, so every reject fails',
+    from: `            expectFrom: ['PAID'],
+            expectMerchant: req.merchantId,`,
+    to: `            expectFrom: ['PAID', 'PROCESSING'],
+            expectMerchant: req.merchantId,`,
+  },  // ── Every team pool movement balances at its own commit (owner, 2026-10-04) ──
+  {
+    id: 'M428', file: 'database/schema.sql', config: PG,
+    test: 'database/tests/teamPoolBalancePg.test.js',
+    why: 'an order holds tokens the pool does not count, so one pool hold can be promised to two buys',
+    from: `  IF pool_held <> holds THEN`,
+    to: `  IF FALSE THEN`,
+  },
+  {
+    id: 'M429', file: 'database/schema.sql', config: PG,
+    test: 'database/tests/teamPoolBalancePg.test.js',
+    why: 'a pool changes with no ledger entry recording it',
+    from: `  IF COALESCE(last_available, 0) <> pool_available OR COALESCE(last_held, 0) <> pool_held THEN`,
+    to: `  IF FALSE THEN`,
+  },
+  {
+    id: 'M430', file: 'database/schema.sql', config: PG,
+    test: 'database/tests/teamPoolBalancePg.test.js',
+    why: 'a gap in a pool hides inside the next entry, so a pool changed by hand looks whole after one movement',
+    from: `    IF COALESCE(prev_available, 0) + NEW.available_delta_paise <> NEW.available_after_paise`,
+    to: `    IF FALSE AND COALESCE(prev_available, 0) + NEW.available_delta_paise <> NEW.available_after_paise`,
+  },
+  {
+    id: 'M431', file: 'database/repositories/orders.core.js', config: PG,
+    test: 'database/tests/teamPoolBalancePg.test.js',
+    why: 'a hold refused by the pool check crashes the assignment instead of being a refusal',
+    from: `    if (isPoolImbalance(error)) {`,
+    to: `    if (false) {`,
+  },
+  {
+    id: 'M432', file: 'database/repositories/teamRouting.js', config: PG,
+    test: 'database/tests/teamPoolBalancePg.test.js',
+    why: 'routing reports an out-of-balance team as "not queued" and stops trying other members',
+    from: `    if (!moved.ok && moved.reason === POOL_OUT_OF_BALANCE_REASON) { lastRefusal = moved.reason; continue; }`,
+    to: `    if (false) { lastRefusal = moved.reason; continue; }`,
+  },
+  {
+    id: 'M433', file: 'database/repositories/teamPools.js', config: PG,
+    test: 'database/tests/teamPoolBalancePg.test.js',
+    why: 'a pool movement refused by the pool check throws instead of answering pool_out_of_balance',
+    from: `  if (isPoolImbalance(e)) {`,
+    to: `  if (false) {`,
+  },
 ];
 
 // A mutation naming a file or test that no longer exists is not a mutation that

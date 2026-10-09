@@ -25,7 +25,7 @@
  * or a different merchant cannot be attached to this one.
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
-import { pgConfigured, applySchema, closePg } from '#db/client.js';
+import { pgConfigured, applySchema, closePg, withTransaction } from '#db/client.js';
 import { createOrderRecord, getOrderRecord } from '#db/repositories/orders.record.js';
 import { getUser, setBlocked } from '#db/repositories/users.js';
 import { mountRouter, actor, merchantActor, as } from './_harness.js';
@@ -90,6 +90,36 @@ describePg('merchant rejects a paid order', () => {
     expect(row.rejectedReason).toBe(REASON);
     // And the evidence, stored with it.
     expect(row.rejectionProofUrl).toBe('https://cdn.test/x.jpg');
+  });
+
+  // Owner, 2026-10-04: only after the player SAYS they paid. This was taken
+  // on a PROCESSING buy too, so a member could reject a buy before the player
+  // paid it and put a payment warning on them.
+  it('refuses a buy the player has not marked paid, and moves nothing', async () => {
+    cdn.verify.mockResolvedValue({ cdnUrl: 'https://cdn.test/x.jpg', fileKey: good.proofFileKey });
+    const merchant = await merchantActor({});
+    const player = await actor({});
+    const orderId = oid();
+    try {
+      await createOrderRecord({
+        orderId, userId: player.userId, type: 'DEPOSIT',
+        tokenAmountRupees: 500, fiatAmountRupees: 500,
+        state: 'PROCESSING', merchantId: merchant.merchantId,
+      });
+      const res = await as(app, merchant).post(`/orders/${orderId}/reject`).send(good);
+      expect(res.status).toBe(409);
+      expect(res.body.code).toBe('NOT_PAID_YET');
+      const row = await getOrderRecord(orderId);
+      expect(row.status).toBe('PROCESSING');
+      expect(row.disputeWindowUntil ?? null).toBeNull();
+      expect(Number((await getUser(player.userId)).warningCount || 0)).toBe(0);
+    } finally {
+      await withTransaction(async (c) => {
+        await c.query('SET LOCAL session_replication_role = replica');
+        await c.query('DELETE FROM order_transitions WHERE order_id = $1', [orderId]);
+        await c.query('DELETE FROM order_states WHERE order_id = $1', [orderId]);
+      });
+    }
   });
 
   it('refuses a missing or throwaway reason, and moves nothing', async () => {

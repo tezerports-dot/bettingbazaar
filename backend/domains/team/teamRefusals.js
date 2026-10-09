@@ -32,6 +32,7 @@ const REFUSALS = Object.freeze({
   request_not_pending:   [409, 'That request has already been decided or cancelled. Refresh to see its outcome.'],
   request_not_found:     [404, 'No such request.'],
   supply_cap_exceeded:   [409, 'The platform does not hold that many tokens to sell. Sell fewer.'],
+  pool_out_of_balance:   [409, "Nothing was moved: this team's pool did not add up when it was checked. The platform has been alerted; try again once it is fixed."],
   // Oversight (Step 2f)
   member_not_found:      [404, 'That merchant is not an approved member of one of your teams. A member\'s log opens once an admin approves them.'],
   dispute_not_found:     [404, 'That dispute is not on an order of one of your teams.'],

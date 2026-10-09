@@ -52,6 +52,8 @@ export const LIFECYCLE = Object.freeze({
   NOT_FOUND:          'not_found',
   POOL_PAID:          'pool_paid',
   MERCHANT_CHANGED:   'merchant_changed',
+  // The team's pool did not balance at COMMIT: nothing moved (poolBalance.js).
+  POOL_OUT_OF_BALANCE: 'pool_out_of_balance',
 });
 
 /**

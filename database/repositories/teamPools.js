@@ -26,6 +26,7 @@ import { pgQuery, withTransaction } from '../client.js';
 import { randomBytes } from 'node:crypto';
 import { ACCOUNTS, postMovement } from './treasury.js';
 import { recordConsideration, assertRecordable, DIRECTIONS } from './adminTokenConsiderations.js';
+import { isPoolImbalance, reportPoolImbalance, POOL_OUT_OF_BALANCE_REASON } from './poolBalance.js';
 
 export const POOL_DIRECTIONS = Object.freeze({ BUY: 'BUY', SELL: 'SELL' });
 
@@ -35,6 +36,21 @@ const newRequestId = () => `tpr_${randomBytes(10).toString('hex')}`;
 /** Thrown inside a transaction to unwind it and answer with a reason. */
 class Refused extends Error {
   constructor(reason) { super(reason); this.reason = reason; }
+}
+
+/**
+ * A refusal from this file, or the database's check that the team's pool
+ * still balances at COMMIT (poolBalance.js, owner 2026-10-04), as
+ * `{ ok: false, reason }`. Nothing moved in either case. Anything else is a
+ * real failure and is rethrown.
+ */
+function asRefusal(e) {
+  if (e instanceof Refused) return { ok: false, reason: e.reason };
+  if (isPoolImbalance(e)) {
+    reportPoolImbalance(e);
+    return { ok: false, reason: POOL_OUT_OF_BALANCE_REASON };
+  }
+  throw e;
 }
 
 function toPool(teamId, row) {
@@ -214,8 +230,7 @@ export async function fulfilRequest({ requestId, actor, consideration }) {
   try {
     return await withTransaction(async (client) => fulfilWithin(client, { requestId, actor, consideration, movementId, direction }));
   } catch (e) {
-    if (e instanceof Refused) return { ok: false, reason: e.reason };
-    throw e;
+    return asRefusal(e);
   }
 }
 
@@ -339,7 +354,11 @@ export { Refused as PoolRefused };
  * A no-op on an order that holds nothing, so every ending path may call it.
  */
 export async function releaseBuyHold(orderId, { actor = 'system', reason = null } = {}) {
-  return withTransaction((client) => releaseBuyHoldWithin(client, orderId, { actor, reason }));
+  try {
+    return await withTransaction((client) => releaseBuyHoldWithin(client, orderId, { actor, reason }));
+  } catch (e) {
+    return asRefusal(e);
+  }
 }
 
 /**
@@ -454,8 +473,7 @@ export async function spendForBuy(orderId, { actor = 'system', requireState = nu
       return { ok: true, taken, teamId };
     });
   } catch (e) {
-    if (e instanceof Refused) return { ok: false, reason: e.reason };
-    throw e;
+    return asRefusal(e);
   }
 }
 
@@ -500,8 +518,7 @@ export async function creditSellToPool(orderId, { actor = 'system', requireState
       return { ok: true, teamId };
     });
   } catch (e) {
-    if (e instanceof Refused) return { ok: false, reason: e.reason };
-    throw e;
+    return asRefusal(e);
   }
 }
 
@@ -565,8 +582,7 @@ export async function reverseSellFromPool(orderId, { actor = 'system', reason = 
       return { ok: true, teamId };
     });
   } catch (e) {
-    if (e instanceof Refused) return { ok: false, reason: e.reason };
-    throw e;
+    return asRefusal(e);
   }
 }
 
@@ -599,6 +615,19 @@ export async function creditCommissionWithin(client, { teamId, commissionId, amo
   // the commission row's own once-only key was bypassed; never pay twice.
   if (moved.idempotent) throw new Refused('already_paid');
   return toPool(teamId, pool[0]);
+}
+
+/**
+ * Every team whose pool does not balance right now (`bb_team_pool_imbalance`).
+ * The database refuses such a movement at its own commit (poolBalance.js);
+ * this finds one that got past it, which only a write with triggers switched
+ * off (a manual repair) can do. Read by the hold sweep, which alerts.
+ */
+export async function findUnbalancedPools() {
+  const { rows } = await pgQuery(
+    `SELECT team_id, why FROM (SELECT team_id, bb_team_pool_imbalance(team_id) AS why FROM team_pools) t
+      WHERE why IS NOT NULL`, [], 'team_pool_unbalanced');
+  return rows.map((r) => ({ teamId: r.team_id, why: r.why }));
 }
 
 /**

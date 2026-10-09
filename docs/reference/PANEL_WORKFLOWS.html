@@ -170,7 +170,6 @@ stateDiagram-v2
     PAID --> COMPLETED
     PROCESSING --> COMPLETED
     PAID --> REJECTED : member — the money never came
-    PROCESSING --> REJECTED : the same button, before Paid
     REJECTED --> DISPUTED : player, inside the window
     REJECTED --> CANCELLED : window closed
     PROCESSING --> DISPUTED
@@ -412,13 +411,14 @@ settles until the window passes. The zero-hold "settle at once" branch is gone (
 <tr><td>Not theirs</td><td>403</td><td>This order is not assigned to you</td></tr>
 <tr><td>A sell</td><td>400</td><td>Only a buy order can be rejected as unpaid.</td></tr>
 <tr><td>Proof not theirs, for this order</td><td>400</td><td>Proof could not be verified: …</td></tr>
-<tr><td>Not PAID or PROCESSING</td><td>409</td><td>Cannot reject order in … status</td></tr>
+<tr><td>The player has not tapped Paid yet</td><td>409</td><td>The player has not said they paid this order yet, so there is no payment to reject. If they never pay, the order expires on its own. (<code>NOT_PAID_YET</code>)</td></tr>
+<tr><td>It moved before the transition</td><td>409</td><td>Cannot reject order in … status</td></tr>
 </tbody>
 </table></div>
-<p class="danger"><strong>Open, for the owner:</strong> the route accepts a PROCESSING buy
-(<code>expectFrom: ['PAID', 'PROCESSING']</code>), so a member can press this before the
-player has tapped Paid, and the player is still warned and flagged. The design (§3.10 of
-PROJECT_STATUS) describes it after Paid only.</p>
+<p class="note"><strong>PAID only (owner, 2026-10-04).</strong> It was also accepted on a
+PROCESSING buy, before the player had tapped Paid, and still warned the player. Now the
+route refuses before the proof is checked, the transition asks PAID in its WHERE, and the
+transition table admits REJECTED from PAID alone.</p>
 <p><strong>On success:</strong> REJECTED, the hold kept, <code>dispute_window_until</code>
 written; the player gets a pop-up (<code>order_rejected</code>) with a countdown and a
 Raise-a-dispute button. The proof image is never shown to the player. The dialog

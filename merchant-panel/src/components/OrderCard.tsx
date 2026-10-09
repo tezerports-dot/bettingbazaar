@@ -313,10 +313,11 @@ export const OrderCard: React.FC<{
           </div>
         )}
         {canRelease && (
-          /* Distinct from Dispute above, and heavier: a dispute goes to an admin
-             to decide, while this cancels the order and warns the player
-             directly. Given its own row so the two are not mistaken for each
-             other at a glance. */
+          /* Distinct from Flag above, and heavier: a flag goes to an admin to
+             decide, while this rejects the buy as unpaid and warns the player
+             directly (it waits, tokens held, for the player's dispute window).
+             Only on a PAID buy, as the server allows (NOT_PAID_YET). Given its
+             own row so the two are not mistaken for each other at a glance. */
           <button
             onClick={() => actions.onPaymentNotReceived(order)}
             style={{

@@ -43,6 +43,7 @@ import {
 } from './orders.core.js';
 import { setOrderFields, getOrderRecord } from './orders.record.js';
 import { pgQuery } from '../client.js';
+import { POOL_OUT_OF_BALANCE_REASON } from './poolBalance.js';
 
 /**
  * The outcomes, matching orderLifecycle.service.js's LIFECYCLE vocabulary so
@@ -58,11 +59,16 @@ const REASON = Object.freeze({
   POOL_PAID:          'pool_paid',
   // The member acting no longer holds the order (`expectMerchant`).
   MERCHANT_CHANGED:   'merchant_changed',
+  // The team's pool did not balance at COMMIT (poolBalance.js): nothing moved.
+  POOL_OUT_OF_BALANCE: POOL_OUT_OF_BALANCE_REASON,
 });
 
 /** The refusal a caller branches on, from the writer's own reason. */
 const refusalReason = (r) => (
-  { not_found: REASON.NOT_FOUND, pool_paid: REASON.POOL_PAID, merchant_changed: REASON.MERCHANT_CHANGED }[r]
+  {
+    not_found: REASON.NOT_FOUND, pool_paid: REASON.POOL_PAID, merchant_changed: REASON.MERCHANT_CHANGED,
+    [POOL_OUT_OF_BALANCE_REASON]: REASON.POOL_OUT_OF_BALANCE,
+  }[r]
     ?? REASON.ILLEGAL_TRANSITION
 );
 

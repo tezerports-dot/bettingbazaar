@@ -239,7 +239,6 @@ stateDiagram-v2
   PROCESSING --> PAID: player taps Paid (buy) · member marks sent (sell)
   PAID --> COMPLETED: buy confirmed · sell hold window passes
   PAID --> REJECTED: member says the buy's money never came
-  PROCESSING --> REJECTED: the same button, before the player tapped Paid
   REJECTED --> DISPUTED: player disputes inside the window
   REJECTED --> CANCELLED: window closes, hold back to the pool
   PAID --> DISPUTED: player (after 10 min) · member red flag · sweep
@@ -500,8 +499,16 @@ flowchart TD
   <tr><td>Settled sell refunded</td><td>available − amount; a shortfall the platform covers once</td><td>reversed</td></tr>
   <tr><td>Commission paid</td><td>available + 10% of the rise (<code>COMMISSION</code> entry)</td><td>TOKEN_SUPPLY → TEAM_FLOAT</td></tr>
   </table></div>
-  <p>Reconciliation proves <code>TEAM_FLOAT</code> = Σ pools, and holding + pools + wallets = the 20 billion
-  supply. A team with pool history cannot be deleted.</p>
+  <div class="note ok">
+    <span class="tag">Checked at every movement, by the database (owner, 2026-10-04)</span>
+    <p>At the COMMIT of every transaction that writes a team's pool, a pool entry or an order's hold,
+    the database asks whether that team still balances: held equals the holds on its orders, the pool
+    equals its latest entry, and each entry follows from the one before. Otherwise SQLSTATE BB001: the
+    whole transaction rolls back, the caller gets <code>pool_out_of_balance</code>, and an alert goes out
+    (<code>poolBalance.js</code>). Routing then tries the next member. The hold sweep alerts on any pool
+    found out of balance, which only a write with triggers off can leave.</p>
+  </div>
+  <p>A team with pool history cannot be deleted.</p>
   </div>
 </div>
 
@@ -579,7 +586,7 @@ assigned to, before the idempotent answer and again in the WHERE (<code>merchant
   <tr><td>Scan the ATM QR</td><td><code>POST /orders/:id/cash-link</code></td><td>PROCESSING, cash buy</td><td><code>setCashLink</code>; the player gets one Pay button; a re-scan replaces it until Paid</td><td><code>ACCEPT_FIRST</code> · <code>NOT_A_CASH_BUY</code> · <code>CASH_LINK_CLOSED</code> · <code>INVALID_CASH_LINK</code></td></tr>
   <tr><td>Confirm (buy)</td><td><code>POST /confirm/:id</code></td><td>PAID, with a reference</td><td><code>moveDepositMoney</code>: spend the hold, credit the split, release the UTR; COMPLETED; commission</td><td>400 · 409 <code>order_state</code></td></tr>
   <tr><td>Mark sent (sell)</td><td><code>POST /confirm/:id</code></td><td>ASSIGNED / PROCESSING</td><td>claims the UTR, PAID, credit HELD for the window</td><td><code>PAYOUT_REFERENCE_REQUIRED</code> · 409 on a claimed UTR</td></tr>
-  <tr><td>Reject as unpaid</td><td><code>POST /orders/:id/reject</code></td><td>PAID buy, and also PROCESSING (<code>expectFrom</code>; see open items)</td><td>REJECTED with <code>dispute_window_until</code>; the hold stays; the player gets a pop-up and a payment warning</td><td>400 · 403 · 404 · 409</td></tr>
+  <tr><td>Reject as unpaid</td><td><code>POST /orders/:id/reject</code></td><td>PAID buy only (owner, 2026-10-04)</td><td>REJECTED with <code>dispute_window_until</code>; the hold stays; the player gets a pop-up and a payment warning</td><td>400 · 403 · 404 · 409 <code>NOT_PAID_YET</code></td></tr>
   <tr><td>Red flag</td><td><code>POST /orders/:id/red-flag</code></td><td>PROCESSING / PAID</td><td>DISPUTED, to the dispute manager; never on their own rejection</td><td>400 · 404 · 409</td></tr>
   </table></div>
   <p>The rejection proof image is <b>never shown to the player</b>; they get the reason. A decline, an
@@ -858,9 +865,9 @@ a realtime layer. Several of these are the only thing between a stuck row and a 
 <tr><td>F-011</td><td>staff sign-in</td><td>sessions carry <code>amr</code> and the panels route to enrolment; the server-side guard is the owner's switch</td><td><span class="chip waiting">partly fixed</span></td></tr>
 <tr><td>F-009</td><td>casino iframe</td><td><code>frame-src</code> is unset, so the provider's frame stays empty; which origins to allow is the owner's decision</td><td><span class="chip waiting">decision needed</span></td></tr>
 <tr><td>—</td><td><code>test:mutate</code></td><td>the two <code>admin/payment-control</code> dispute cases open a screen deleted in 2c and report NOT DRIVEN; the dispute decision is pressed by <code>test:drive</code> and proved by <code>test:pg</code> and <code>test:e2e</code></td><td><span class="chip waiting">harness gap</span></td></tr>
-<tr><td>—</td><td>reject as unpaid</td><td>the member's "payment not received" is accepted on a PROCESSING buy too (<code>expectFrom: ['PAID', 'PROCESSING']</code>), before the player has tapped Paid, and still warns and flags the player; the design (§3.10) describes it after Paid only. Found by the 2g review.</td><td><span class="chip waiting">owner's call</span></td></tr>
+<tr><td>—</td><td>reject as unpaid</td><td>was accepted on a PROCESSING buy too; now PAID only (owner, 2026-10-04): <code>NOT_PAID_YET</code>, the transition's WHERE and <code>ALLOWED_FROM</code></td><td><span class="chip moved">fixed</span></td></tr>
 <tr><td>—</td><td>merchant login</td><td>the merchant door is its own handler (<code>merchant.routes.js</code>), not <code>loginHandler</code> with a door in <code>LOGIN_DOOR</code> as CLAUDE.md §2 says; it now answers an unknown mobile as it answers a wrong password (fixed in 2g, M424). Folding it into <code>loginHandler</code> belongs with Step 3's login rework.</td><td><span class="chip waiting">open</span></td></tr>
-<tr><td>—</td><td>conservation proof</td><td><code>reconcileAgainstSubLedgers()</code> (USER_FUNDS + reserve against the wallets, TEAM_FLOAT against the pools, USER_FLOAT against the wallets) has no production caller: only <code>ledgerPg.test.js</code> runs it, and <code>ledger-reconcile</code> does not. The books are checked in tests, never on a running platform. Found while writing this map (2g).</td><td><span class="chip refused">open · owner's call</span></td></tr>
+<tr><td>—</td><td>conservation proof</td><td>Team pools are now checked by the database at every movement's commit (the team pool section). The whole ledger is not yet: bets, casino, fees, referral rewards and admin adjustments change wallets with no matching treasury movement, and the general ledger for orders and cycles is posted afterwards by <code>ledger-reconcile</code>. The owner wants it live and atomic on every transaction: planned as Step 2h (PROJECT_STATUS §3.10).</td><td><span class="chip waiting">planned · 2h</span></td></tr>
 <tr><td>F-018</td><td>assignment → confirm</td><td>closed by 2c: the pool hold IS the assignment, in one transaction</td><td><span class="chip moved">fixed</span></td></tr>
 <tr><td>F-017</td><td>deposit confirm</td><td>both routes move money through <code>moveDepositMoney</code> (2026-10-01)</td><td><span class="chip moved">fixed</span></td></tr>
 <tr><td>F-001</td><td>staff routes</td><td>superseded by F-047: every staff route asks a permission area</td><td><span class="chip moved">fixed</span></td></tr>

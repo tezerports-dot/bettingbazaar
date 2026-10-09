@@ -96,6 +96,15 @@ export function registerCronJobs(rebuildLeaderboard) {
           'Completed buy orders still hold team pool tokens — the player was credited but the pool was never charged',
           { orders: unspent.map((u) => u.orderId) }).catch(() => {});
       }
+      // Every movement is checked at its own commit (poolBalance.js); a pool
+      // out of balance here was written past that check, by hand.
+      const unbalanced = await db.teamPools.findUnbalancedPools();
+      if (unbalanced.length) {
+        console.error('[team-pool] pools out of balance:', JSON.stringify(unbalanced));
+        sendAlert('team-pool-out-of-balance',
+          'Team pools do not balance: held tokens or the ledger disagree with the pool',
+          { teams: unbalanced }).catch(() => {});
+      }
     } catch (e) { console.error('[team-pool] cron error:', e.message); }
   });
 

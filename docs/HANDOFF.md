@@ -1,7 +1,8 @@
 # BettingBazaar project handoff (2026-10-04)
 
 This file is everything a new Claude session needs to carry on the
-BettingBazaar redesign from Step 3, the way the work has been done so far.
+BettingBazaar redesign from Step 2h (the live supply check), then Step 3,
+the way the work has been done so far.
 It assumes no access to the old project's threads, memory or files. The
 owner is **Vikram**. Where this file and `CLAUDE.md` disagree on a coding
 rule, `CLAUDE.md` wins. Where they disagree on a decision or on what is left,
@@ -25,8 +26,12 @@ A prompt to start the new session is at the end (section 9).
     `claude/2f-red-flags-wip`.
 - **Step 2g is done**: PR #203 from branch `ccr-4027856e-w3uqtr` (built on
   `claude/2g-close-out-wip`), merged with a merge commit once CI is green. See section 2. **Step 2 is complete.**
-- **Next: Step 3** (section 3), in a fresh session, after Vikram answers the
-  two questions in section 2.
+- **After 2g**, on Vikram's two answers (2026-10-04): "Payment not received"
+  is PAID only, and team pools are checked by the database at every
+  movement's commit. A PR from `ccr-4027856e-w3uqtr` (see PROJECT_STATUS
+  §3.10, "After 2g").
+- **Next: Step 2h**, the live supply check for the whole ledger, in a fresh
+  session; then **Step 3** (section 3).
 - **Step 2f is done.** It contains:
   - Online-time log: `merchant_online_sessions`, written only by triggers on
     `merchants.is_online`.
@@ -80,15 +85,15 @@ A prompt to start the new session is at the end (section 9).
   the paused banner's stale UPI/QR advice; the browser pass's sign-in loop;
   a supervisor browser profile added, `merchant-pending` dropped.
 
-**Questions for Vikram (ask before Step 3 if not yet answered):**
-1. `reconcileAgainstSubLedgers()` (the proof that pools + wallets + holding
-   = supply) runs only in `ledgerPg`, never on a running platform. Run it in
-   the 1-minute `ledger-reconcile` job and alert on drift? Recommended: yes,
-   as a small change of its own.
-2. "Payment not received" (`POST /api/merchant/orders/:id/reject`) is
-   accepted on a PROCESSING buy, before the player tapped Paid, and still
-   warns the player. Narrow it to PAID? Recommended: yes (§37 work: test,
-   mutation, both maps).
+**Vikram's answers (2026-10-04):**
+1. The supply check is not a timer: *"should run on each transaction …
+   live ledger entries live calculated so no double mint or any double spend
+   arises, same for entire ledger, pure atomic."* Team pools are done; the
+   whole ledger is **Step 2h**, planned in PROJECT_STATUS §3.10 with what
+   the code does today. Before building it, confirm with him the
+   counterparty of a bet (house vs. the other side's pool) and how a casino
+   provider's wins and losses are booked.
+2. "Payment not received" only after Paid: done.
 
 **Recorded, not yet done:**
 - The merchant login is its own handler, not `loginHandler` with a
@@ -314,7 +319,7 @@ These are his standing instructions:
     rewrites source files temporarily (trap 12).
   - Each anchor must match exactly once (trap 13). The harness applies
     replacements literally.
-  - New mutations go at the end of `MUTATIONS`. The last id is **M424**
+  - New mutations go at the end of `MUTATIONS`. The last id is **M433**
     (M394 to M396 and M401 were deleted with the farming flag; ids are
     never reused). The harness covers backend code only; a panel fix is
     mutated by hand and the result written in the commit.
@@ -417,12 +422,12 @@ Working rules:
 ## 9. Prompt to start the new session
 
 ```
-Continue the BettingBazaar redesign with Step 3 (Telegram Mini App). Repo
-tezerports-dot/bettingbazaar; Steps 1 and 2 (2a to 2g) are merged into
-main. Read docs/HANDOFF.md end to end and follow it (decisions, my working
-rules, open questions in section 2), then CLAUDE.md. Plan Step 3 from
-section 3 and PROJECT_STATUS §3.10, ask me anything undecided first, then
+Continue the BettingBazaar redesign with Step 2h, the live supply check for
+the whole ledger. Repo tezerports-dot/bettingbazaar; Steps 1 and 2a-2g and
+the team-pool live check are merged into main. Read docs/HANDOFF.md end to
+end and follow it (decisions, my working rules, section 2), then CLAUDE.md.
+Plan 2h from PROJECT_STATUS §3.10, ask me the open questions first, then
 build it in batches, each tested, committed and reported. Open a PR to main,
 drive CI green and merge it with a merge commit, then report to me as
-section 5 says.
+section 5 says. After 2h, do Step 3 in a fresh session.
 ```

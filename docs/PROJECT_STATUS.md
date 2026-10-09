@@ -943,12 +943,11 @@ Owner answers, 2026-10-02 (two rounds; the second replaced the security deposit 
     (5) No pass opened the panel as a supervisor: `merchant-supervisor` added.
     `merchant-pending` dropped (a state login cannot produce, §3.8 item 6).
   - *Open, recorded (owner's call where marked):*
-    - `reconcileAgainstSubLedgers()` (USER_FUNDS and TEAM_FLOAT against the
-      wallets and pools) has no production caller; only `ledgerPg` runs it.
-      Proposed: run it in `ledger-reconcile` and alert on drift. **Owner.**
-    - "Payment not received" is accepted on a PROCESSING buy (before the
-      player tapped Paid) and still warns the player; the design says after
-      Paid. Proposed: narrow `expectFrom` to PAID. **Owner.**
+    - ~~`reconcileAgainstSubLedgers()` has no production caller~~ — owner,
+      2026-10-04: not a timer; the check must run live on every transaction
+      for the whole ledger. Team pools DONE after 2g (below); the rest is 2h.
+    - ~~"Payment not received" accepted on a PROCESSING buy~~ — owner,
+      2026-10-04: PAID only. DONE after 2g (below).
     - The merchant login is its own handler, not `loginHandler` with a
       `LOGIN_DOOR` entry as CLAUDE.md §2 says. With Step 3's login work.
     - The admin panel's `verifySession` also drops a refused staff session
@@ -959,6 +958,65 @@ Owner answers, 2026-10-02 (two rounds; the second replaced the security deposit 
       `drive.js` presses as a member only.
     - `test:mutate`'s two `admin/payment-control` cases still open a screen
       deleted in 2c (NOT DRIVEN).
+
+- **After 2g (2026-10-04), the owner's two answers. DONE.**
+  - *"Payment not received" only from PAID.* The route answers
+    `NOT_PAID_YET` before the proof is checked, the transition asks PAID in
+    its WHERE, and `ALLOWED_FROM[REJECTED]` is `[PAID]`. Tests: the route
+    (PROCESSING refused, nothing moved, no warning) and the transition table;
+    mutations M425–M427.
+  - *Team pools checked live, at every movement.* Deferred constraint
+    triggers (`bb_team_pool_must_balance`, schema.sql) check the team at the
+    COMMIT of every transaction that writes its pool, an entry or an order's
+    hold: held = the holds on its orders, the pool = its latest entry, each
+    entry follows from the one before. Otherwise SQLSTATE BB001: rolled back,
+    `pool_out_of_balance` to the caller, an alert (`poolBalance.js`); routing
+    tries the next member; the hold sweep alerts on a pool found out of
+    balance. `teamPoolBalancePg` (6): every real path still commits and
+    balances; a hold the pool does not carry, one hold promised to two buys,
+    a pool change with no entry and an entry with no change are refused; a
+    pool changed by hand refuses the next movement cleanly (the first version
+    let the next entry absorb the gap: the chain fixed it); two racing buys
+    leave one hold. Mutations M428–M433.
+- **2h Live supply check for the whole ledger. PLANNED (owner, 2026-10-04):**
+  *"Supply check should run on each transaction … live … so no double mint
+  or any double spend arises, same for entire ledger, pure atomic."*
+  - *What is true today (read from the code, 2026-10-04).* The treasury
+    (`treasury.js`) is double entry and every movement's legs sum to zero, so
+    a movement cannot mint. But only buys and sells move it in the same
+    transaction as the wallet or pool (`TEAM_FLOAT ↔ USER_FLOAT`; bonus
+    payouts also do, through `poolPaidUser`). Bets (stake, loss, winnings,
+    fees), casino rounds, referral rewards and admin balance adjustments
+    change wallets with NO treasury movement: `stakeLostToHouse` and
+    `housePaidWinnings` have no caller outside tests. So `USER_FLOAT` stops
+    equalling Σ wallets the moment anyone bets. The general ledger
+    (`accounting_events`) for completed orders and settled cycles is written
+    afterwards by the 1-minute `ledger-reconcile` job, not in the
+    transaction.
+  - *The design.*
+    1. Every wallet change goes through one writer (`applyMovementWithin`,
+       `wallets.core.js`). It will require a COUNTERPARTY for any change
+       that alters the player's total, and post that treasury movement in
+       the same transaction: `TEAM_FLOAT` (buy, sell), `HOUSE_RESERVE`
+       (stake lost, winnings, fee, reserve use), a casino float per provider,
+       `REFERRAL_POOL`/`BONUS_POOL` (rewards), `OPERATIONAL_FLOAT` (admin
+       adjustment). Moves between one player's own pockets (deposit → locked)
+       change no total and need none.
+    2. A commit-time check in the database, per transaction, with
+       transaction-local running sums (no table scans, so it can run on
+       every bet): Σ wallet deltas = Δ`USER_FLOAT`, Σ pool deltas =
+       Δ`TEAM_FLOAT`, each treasury movement sums to zero, and the treasury
+       total stays the supply. Anything else is refused and alerted, as for
+       pools.
+    3. Wallets chained like pools: each `wallet_ledger` row follows from the
+       one before, and the wallet row equals its latest entry.
+    4. The general ledger posted in the same transaction as the completion or
+       settlement; `ledger-reconcile` becomes an alarm, not the writer.
+  - *To confirm with the owner before building:* which account is the
+    counterparty of a bet (house vs. the opposite side's pool in this P2P
+    model), and how a casino provider's wins and losses are booked.
+  - *Size:* touches every money path (wallets, bets, settlement, casino,
+    referrals, adjustments, ledger); its own session, before Step 3.
 
 ### Step 3 — Telegram Mini App replaces every bot, all three panels
 - One bot per panel, which sends no messages; the Mini App does contact

@@ -27,6 +27,7 @@ import { pgQuery } from '../client.js';
 import { STRENGTH_SQL } from './teams.js';
 import { RAILS, railOf } from './orderRails.js';
 import { holdForBuyWithin, PoolRefused } from './teamPools.js';
+import { POOL_OUT_OF_BALANCE_REASON } from './poolBalance.js';
 import { transitionOrder } from './orders.js';
 import { USDT_CHAIN_SPEC } from '../../backend/domains/merchant/merchantCurrency.js';
 
@@ -192,6 +193,9 @@ export async function assignToTeam(order, { cap, barredMerchantIds = [], buildSe
       if (e instanceof PoolRefused) { lastRefusal = e.reason; continue; }
       throw e;
     }
+    // The candidate's team did not balance when the hold was taken: nothing
+    // moved, it is reported (poolBalance.js), and the next candidate is tried.
+    if (!moved.ok && moved.reason === POOL_OUT_OF_BALANCE_REASON) { lastRefusal = moved.reason; continue; }
     if (!moved.ok) return { ok: false, reason: 'not_queued' };
     if (moved.idempotent) return { ok: false, reason: 'not_queued' };
     return { ok: true, order: moved.order, merchantId: cand.merchantId, teamId: cand.teamId };

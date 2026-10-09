@@ -41,6 +41,7 @@
  */
 import { getPool, pgQuery, connectGuarded } from '../client.js';
 import { EVENT_TYPES } from '../../backend/domains/revenue/chartOfAccounts.js';
+import { isPoolImbalance, reportPoolImbalance, POOL_OUT_OF_BALANCE_REASON } from './poolBalance.js';
 
 export const ORDER_STATES = Object.freeze({
   PENDING_QUEUE: 'PENDING_QUEUE',
@@ -117,9 +118,12 @@ export const ALLOWED_FROM = Object.freeze({
   // REJECTED, when its dispute window closes with no dispute raised.
   [ORDER_STATES.CANCELLED]:  [ORDER_STATES.PENDING_QUEUE, ORDER_STATES.ASSIGNED, ORDER_STATES.PROCESSING, ORDER_STATES.PAID, ORDER_STATES.DISPUTED, ORDER_STATES.REJECTED],
   [ORDER_STATES.FAILED]:     [ORDER_STATES.PENDING_QUEUE, ORDER_STATES.ASSIGNED, ORDER_STATES.PROCESSING, ORDER_STATES.PAID],
-  // PAID: the member says the player's payment never arrived. The buy waits
-  // here, its pool hold intact, until the player disputes or the window closes.
-  [ORDER_STATES.REJECTED]:   [ORDER_STATES.PENDING_QUEUE, ORDER_STATES.ASSIGNED, ORDER_STATES.PROCESSING, ORDER_STATES.PAID],
+  // PAID only: the member says the payment the player SAID they made never
+  // arrived. The buy waits here, its pool hold intact, until the player
+  // disputes or the window closes. Not from an earlier state: before Paid
+  // there is no payment to deny, and the order expires instead (owner,
+  // 2026-10-04).
+  [ORDER_STATES.REJECTED]:   [ORDER_STATES.PAID],
 });
 
 /**
@@ -276,8 +280,16 @@ async function withOrderLock(orderId, fn) {
     await client.query(commit ? 'COMMIT' : 'ROLLBACK');
     return value;
   } catch (error) {
-    failure = error;
     try { await client.query('ROLLBACK'); } catch { /* already unwound */ }
+    // A buy's hold or release rides this transaction (`within`), and the
+    // database checks the team's pool at COMMIT (poolBalance.js). An
+    // out-of-balance team is a refusal like any other: nothing moved, the
+    // caller's `ok: false` path handles it, and the connection is healthy.
+    if (isPoolImbalance(error)) {
+      reportPoolImbalance(error, { orderId: oid });
+      return { ok: false, reason: POOL_OUT_OF_BALANCE_REASON };
+    }
+    failure = error;
     throw error;
   } finally {
     // Destroy rather than reuse a client whose backend may have gone away
