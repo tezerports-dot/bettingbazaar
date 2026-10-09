@@ -1,6 +1,6 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file.
 import { describe, it, expect } from 'vitest';
-import { foldPgBouncerStats } from '../../../services/pgbouncerStats.js';
+import { foldPgBouncerStats } from '#db/pgbouncerStats.js';
 
 describe('foldPgBouncerStats', () => {
   it('sums the app database pools and converts microseconds to seconds', () => {

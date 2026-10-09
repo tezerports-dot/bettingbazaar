@@ -82,7 +82,7 @@ import {
 } from './services/metrics.service.js';
 import { createRateLimitStore } from './middleware/redisRateLimitStore.js';
 import clientTelemetryRoutes from './routes/clientTelemetry.routes.js';
-import { startPgBouncerStats } from './services/pgbouncerStats.js';
+import { startPgBouncerStats } from '#db/pgbouncerStats.js';
 // Plan items 19/21/28/24/4/51 (2026-07-13): central security + network config,
 // OWASP filter, service registry, storage abstraction.
 import { CORS_SHAPE, RATE_LIMIT_TIERS, isPhantomBetPlacement } from './config/security.config.js';

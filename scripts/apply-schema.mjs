@@ -6,7 +6,7 @@
  *
  *   node scripts/apply-schema.mjs        (DATABASE_URL from the environment)
  */
-import { applySchema, closePg } from '../database/client.js';
+import { applySchema, closePg } from '#db/client.js';
 
 try {
   const t0 = Date.now();

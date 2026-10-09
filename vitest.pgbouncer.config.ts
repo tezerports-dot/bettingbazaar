@@ -12,7 +12,7 @@ export default defineConfig({
     env: { BB_RATE_LIMIT_RELAX: '1' },
     globals: true,
     environment: 'node',
-    include: ['backend/tests/pgbouncer/**/*.test.js'],
+    include: ['database/tests/pgbouncer/**/*.test.js'],
     testTimeout: 60000,
     fileParallelism: false,
   },

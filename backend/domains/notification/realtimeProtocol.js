@@ -94,7 +94,5 @@ export function encodeCycleResult({ cycleId, type, audience, winner, delhiPool, 
   }, RESULT_KEYS);
 }
 
-/** Inverse tables, for the decoder tests and for anyone reading a capture. */
+/** Inverse phase table, for the decoder tests and for anyone reading a capture. */
 export const PHASE_NAMES = Object.freeze(Object.fromEntries(Object.entries(PHASE_CODES).map(([k, v]) => [v, k])));
-export const AUDIENCE_NAMES = Object.freeze(Object.fromEntries(Object.entries(AUDIENCE_CODES).map(([k, v]) => [v, k])));
-export const SIDE_NAMES = Object.freeze(Object.fromEntries(Object.entries(SIDE_CODES).map(([k, v]) => [v, k])));

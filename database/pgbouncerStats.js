@@ -9,7 +9,7 @@
  * query protocol, so it never shares the application's pool. A scrape that
  * cannot reach it emits nothing rather than zeros.
  */
-import { setPgBouncerStatsProvider } from './metrics.service.js';
+import { setPgBouncerStatsProvider } from '../backend/services/metrics.service.js';
 
 const DB_NAME = () => {
   try { return new URL(process.env.DATABASE_URL).pathname.replace(/^\//, '') || null; } catch { return null; }

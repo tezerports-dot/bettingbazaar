@@ -137,7 +137,7 @@ describe('advisory locks', () => {
   });
 
   it('the schema apply lock (one simple-protocol query = one transaction) is released at its end', async () => {
-    const { SCHEMA_APPLY_LOCK } = await import('../../../database/client.js');
+    const { SCHEMA_APPLY_LOCK } = await import('../../client.js');
     await app.query(`${SCHEMA_APPLY_LOCK} SELECT 1;`);
     const { rows } = await direct().query(`SELECT count(*)::int AS n FROM pg_locks WHERE locktype = 'advisory'`);
     expect(rows[0].n).toBe(0);

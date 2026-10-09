@@ -3538,8 +3538,8 @@ checked and is correct; the evidence is named.
 
 | Measure | Count |
 |---|---|
-| Route declarations in `backend/**` | 293 |
-| Reachable with **no auth middleware** | 34 |
+| Route declarations in `backend/**` | 294 |
+| Reachable with **no auth middleware** | 35 |
 | Staff routes carrying an **area** (permission key) | 166 |
 | Staff routes a sub-admin can **never** be given (full admin only) | 7 |
 
@@ -3581,6 +3581,7 @@ new route and decide. Each of the three questions is defined in §2.
 - `POST /mini-app/password-reset  (backend/domains/telegram/miniApp.routes.js)`
 - `POST /mini-app/signup  (backend/domains/telegram/miniApp.routes.js)`
 - `POST /register  (backend/domains/identity/playerAuth.routes.js)`
+- `POST /v1/client/endpoint-events  (backend/routes/clientTelemetry.routes.js)`
 - `POST /wallet/:providerKey  (backend/domains/casino/gameProvider.routes.js)`
 
 </details>
@@ -3601,14 +3602,13 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 417 |
-| Parameters only (safe by construction) | 272 |
-| Interpolating into statement text (each needs a reading) | 138 |
-| Statement text built elsewhere and passed in (each needs a reading) | 7 |
+| `pgQuery` call sites | 419 |
+| Parameters only (safe by construction) | 274 |
+| Interpolating into statement text (each needs a reading) | 139 |
+| Statement text built elsewhere and passed in (each needs a reading) | 6 |
 
 <details><summary>Call sites whose statement text is built elsewhere</summary>
 
-- `database/client.js — sql`
 - `database/repositories/adminTokenConsiderations.js — text`
 - `database/repositories/identity.js — text`
 - `database/repositories/merchants.js — text`
@@ -3621,7 +3621,7 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Panel | .ts/.tsx files | `dangerouslySetInnerHTML` | `.innerHTML =` |
 |---|---|---|---|
-| `user-panel` | 98 | 0 | 0 |
+| `user-panel` | 101 | 0 | 0 |
 | `admin-panel` | 113 | 0 | 0 |
 | `merchant-panel` | 50 | 0 | 0 |
 

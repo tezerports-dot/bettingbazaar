@@ -210,7 +210,7 @@ let discovered = '';
 let lastSearchAt = 0;
 
 let readyResolve: (o: string) => void = () => {};
-let readyPromise: Promise<string> = new Promise((r) => { readyResolve = r; });
+const readyPromise: Promise<string> = new Promise((r) => { readyResolve = r; });
 
 type Listener = (origin: string) => void;
 const listeners = new Set<Listener>();
@@ -392,12 +392,4 @@ export function reportOriginUnreachable(origin: string): Promise<string | null> 
   searchInFlight = search;
   void search.finally(() => { if (searchInFlight === search) searchInFlight = null; });
   return search;
-}
-
-/** Tests only: forget everything this module learned. */
-export function __resetForTests(): void {
-  state = 'idle'; active = ''; discovered = ''; lastSearchAt = 0;
-  bootInFlight = null; searchInFlight = null; listeners.clear(); pending.length = 0;
-  readyPromise = new Promise((r) => { readyResolve = r; });
-  Object.assign(endpointStats, { discoveryOk: 0, discoveryFailed: 0, failovers: 0, lastEvent: null });
 }

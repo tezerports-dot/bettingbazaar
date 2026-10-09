@@ -25,6 +25,8 @@ export default defineConfig({
     // here. Splitting them into a third config would mean a third CI step and
     // a third place to forget.
     include: ['database/tests/**/*.test.js', 'backend/tests/routes/**/*.test.js'],
+    // The PgBouncer tier has its own config and CI job (vitest.pgbouncer.config.ts).
+    exclude: ['database/tests/pgbouncer/**', '**/node_modules/**'],
     // Route modules refuse to load without signing keys, so they are set
     // before any import runs. Repository tests do not need them and are
     // unaffected by their presence.

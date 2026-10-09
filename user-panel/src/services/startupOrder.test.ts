@@ -48,7 +48,7 @@ async function boot() {
     calls.push(String(url));
     if (url === DISCOVERY) { await gate; return new Response(JSON.stringify({ url: ORIGIN }), { status: 200 }); }
     if (String(url).endsWith('/health/live')) return new Response('{}', { status: 200 });
-    if (String(url).includes('/api/v1/client/')) return new Response(null, { status: 204 });
+    if (String(url).endsWith('/api/v1/client/endpoint-events')) return new Response(null, { status: 204 });
     if (String(url).endsWith('/api/v1/boards')) return new Response('{"boards":[]}', { status: 200 });
     throw new TypeError('Failed to fetch');
   }));
@@ -67,7 +67,7 @@ describe('startup order', () => {
     await new Promise((r) => setTimeout(r, 20));
     expect(sseCalls).toEqual([]);
     expect(ioCalls).toEqual([]);
-    expect(calls.filter((u) => u.includes('/api/'))).toEqual([]);  // the API call is still waiting
+    expect(calls.filter((u) => u.startsWith(ORIGIN))).toEqual([]);  // the API call is still waiting
 
     releaseDiscovery();
     await booting;
@@ -81,10 +81,10 @@ describe('startup order', () => {
   it('apiClient waits for the endpoint and never replays a POST after a transport failure', async () => {
     const { failover, calls, releaseDiscovery } = await boot();
     const { apiClient } = await import('./apiClient');
-    const post = apiClient.post('/api/payment/order', { size: 500 });
+    const post = apiClient.post('/api/bet/place', { amount: 100 });
     releaseDiscovery();
     await failover.bootstrapApiEndpoint();
     await expect(post).rejects.toThrow();
-    expect(calls.filter((u) => u === `${ORIGIN}/api/payment/order`)).toHaveLength(1);
+    expect(calls.filter((u) => u === `${ORIGIN}/api/bet/place`)).toHaveLength(1);
   });
 });
