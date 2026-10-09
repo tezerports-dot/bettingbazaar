@@ -42,11 +42,29 @@ migrate, backups and operators. The memory budget is in `postgresql.conf`.
   together, so the Redis rate-limit store is shared (every further `/api` request got 429).
 - PgBouncer: 0 clients waiting; PostgreSQL backends stayed under the cap.
 - That run found that the scheduler's events reached no client (the Redis bridge was
-  only wired in the realtime role). Fixed in `server.js`; the re-run that confirms
-  cross-role delivery was NOT completed in this session.
+  only wired in the realtime role). Fixed in `server.js`; confirmed by the re-run below.
 
-NOT verified here: worker kill / `pm2 reload` under load, PgBouncer and PostgreSQL
-restarts under load, PostgreSQL 18, and anything on the real 8-core server.
+### Re-run after the bridge fix (2026-10-09, same 4-core dev container, fresh database)
+
+Same layout and load (1,000 Socket.IO + 1,000 SSE clients, 100 HTTP loops, 500-connection
+spike, 150 s), PgBouncer 1.22 running `deploy/vps/pgbouncer/pgbouncer.ini` (hosts and
+auth file adjusted for the container), with `pm2 reload bb-api` at 50 s and a PgBouncer
+stop/start at 95 s:
+
+- Cross-role delivery confirmed: 2,000/2,000 clients saw a `cycle_phase` (10,000 per
+  transport) and every `cycle_result`; 0 order violations, 0 decode failures.
+  `cycle_phase` averaged 82 bytes and `cycle_result` 94 bytes on the wire.
+- 3,670 req/s, p50 23.8 ms, p95 57.3 ms, p99 84.3 ms; worker RSS about 255 MB.
+- `pm2 reload` rolled all four api workers with no failed probe; a request probe
+  once a second through the whole run got no 5xx and no network failure (it hit
+  the shared `/api` limit, so it measured availability, not latency).
+- The PgBouncer restart: readiness answered 503 while the pooler was down (16,509
+  of the readiness loop's requests, about 2 s), `bb_pg_connect_errors_total` counted
+  the refused connects, and everything recovered without a restart; the next round
+  merged on time. `cl_waiting` 0 afterwards.
+
+NOT verified here: a PostgreSQL restart under load, PostgreSQL 18, and anything on
+the real 8-core server.
 
 ## Owner's production load test (before launch)
 
