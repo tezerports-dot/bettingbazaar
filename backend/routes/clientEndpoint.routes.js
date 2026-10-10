@@ -18,6 +18,7 @@
 import express from 'express';
 import { db } from '#db';
 import { apiOriginFor } from '../config/apiHosts.js';
+import { servedGatewayDocument } from '../domains/configuration/gatewayConfig.js';
 import { serverError } from '../shared/httpError.js';
 
 /** How long a client or cache may reuse the answer. A change of host reaches apps within this. */
@@ -34,6 +35,24 @@ router.get('/v1/client/endpoint', async (req, res) => {
     return res.json({ url });
   } catch (err) {
     return serverError(res, err, 'client endpoint');
+  }
+});
+
+/**
+ * GET /api/v1/client/gateway-config — the operator's offline-signed gateway
+ * document (`domains/configuration/gatewayConfig.js`), served as it was
+ * signed. 404 when none is configured or it no longer verifies. The app
+ * verifies it against its build-time key whatever this route says, so any
+ * mirror of the file is as good as this one.
+ */
+router.get('/v1/client/gateway-config', async (req, res) => {
+  try {
+    const text = await servedGatewayDocument();
+    res.set('Cache-Control', `public, max-age=${ENDPOINT_MAX_AGE_SECONDS}`);
+    if (!text) return res.status(404).json({ success: false, code: 'NO_GATEWAY_CONFIG', message: 'No signed gateway document is served' });
+    return res.type('application/json').send(text);
+  } catch (err) {
+    return serverError(res, err, 'client gateway config');
   }
 });
 

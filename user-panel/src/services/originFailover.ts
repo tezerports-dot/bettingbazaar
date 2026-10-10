@@ -16,9 +16,19 @@
  *   VITE_API_BACKUP_URL      ONE explicitly configured backup origin
  *   VITE_API_DISCOVERY_URL   HTTPS URL answering {"url": "https://…"}
  *   VITE_API_ALLOWED_HOSTS   extra exact hostnames discovery may name
+ *   VITE_GATEWAY_CONFIG_PUBLIC_KEY  Ed25519 key the signed gateway document
+ *                            must verify against (`gatewayConfig.ts`)
+ *   VITE_GATEWAY_CONFIG_URLS HTTPS mirrors of that document (comma-separated);
+ *                            each adopted origin's /api/v1/client/gateway-config
+ *                            is asked too
+ *
+ * The one runtime addition: the hosts of a gateway document signed OFFLINE and
+ * verified against the build-time key (`gatewayConfig.ts`). Nothing unsigned —
+ * discovery, a server, a saved setting — can add a host.
  *
  * The discovery answer is UNTRUSTED input. It can only choose among hosts this
- * build already trusts (the primary's, the backup's, and the allowed list):
+ * build already trusts (the primary's, the backup's, the allowed list and the
+ * verified signed hosts):
  * exact hostname match, no wildcard, no IP literal, https only (http only for
  * localhost in a dev build), no credentials, port, path, query or fragment.
  * Nothing it says can add a host. TLS validation is the platform's and is
@@ -35,6 +45,10 @@
  * user, and the client takes no IP, geo or ISP as input.
  */
 
+import {
+  GATEWAY_MAX_DOCUMENT_BYTES, acceptGatewayDocument, loadStoredGateway, parsePublicKey, signedHosts,
+} from './gatewayConfig';
+
 /** How long a single origin gets to answer the health probe. */
 const PROBE_TIMEOUT_MS = 4000;
 /** How long one discovery request may take. */
@@ -43,6 +57,8 @@ const DISCOVERY_TIMEOUT_MS = 5000;
 const DISCOVERY_ATTEMPTS = 3;
 /** Backoff before discovery attempt n+1 (ms). */
 const DISCOVERY_BACKOFF_MS = [500, 1500];
+/** How long one gateway document request may take. */
+const GATEWAY_TIMEOUT_MS = 5000;
 /** A discovery answer larger than this is not a `{url}` document. */
 const DISCOVERY_MAX_BYTES = 4096;
 /** Transport failures closer together than this share one failover search. */
@@ -120,7 +136,7 @@ export function originPolicy(): OriginPolicy {
     .filter((h) => /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(h) && !IPV4.test(h));
   const fromConfig = [configuredOrigin('VITE_API_URL', production), configuredOrigin('VITE_API_BACKUP_URL', production)]
     .filter(Boolean).map(hostOf);
-  return { allowedHosts: Array.from(new Set([...fromConfig, ...listed])), production };
+  return { allowedHosts: Array.from(new Set([...fromConfig, ...listed, ...signedHosts()])), production };
 }
 
 /** Primary then backup — the explicitly configured origins, in order. */
@@ -137,8 +153,8 @@ export function trustedApiOrigins(): string[] {
   return Array.from(new Set([...configuredOrigins(), ...allowedHosts.map((h) => `https://${h}`)]));
 }
 
-export function discoveryUrl(): string {
-  const raw = readEnv('VITE_API_DISCOVERY_URL').trim();
+/** A build-time URL the app fetches a document from: https (http only to loopback in dev), no credentials. */
+function buildTimeUrl(raw: string): string {
   if (!raw) return '';
   try {
     const u = new URL(raw);
@@ -147,6 +163,20 @@ export function discoveryUrl(): string {
     if (u.username || u.password) return '';
     return u.toString();
   } catch { return ''; }
+}
+
+export function discoveryUrl(): string {
+  return buildTimeUrl(readEnv('VITE_API_DISCOVERY_URL').trim());
+}
+
+/** The build-time gateway key, or null (no signed document is ever accepted). */
+export function gatewayPublicKey(): Uint8Array | null {
+  return parsePublicKey(readEnv('VITE_GATEWAY_CONFIG_PUBLIC_KEY'));
+}
+
+/** The build-time mirrors of the signed gateway document. */
+export function gatewayConfigUrls(): string[] {
+  return Array.from(new Set(readEnv('VITE_GATEWAY_CONFIG_URLS').split(',').map((u) => buildTimeUrl(u.trim())).filter(Boolean)));
 }
 
 // ── Observability (client side) ──────────────────────────────────────────────
@@ -228,6 +258,7 @@ function adopt(origin: string, source: 'discovery' | 'configured' | 'same-origin
   record({ kind: 'adopted', origin: origin || '(same origin)', source });
   readyResolve(origin);
   flushReports();
+  refreshInBackground(origin);
   if (changed) listeners.forEach((fn) => { try { fn(origin); } catch { /* a listener never stops failover */ } });
   return origin;
 }
@@ -257,9 +288,10 @@ export function failoverAvailable(): boolean {
 
 /**
  * Where to look, in order: the discovered origin (Admin > Settings > API Host),
- * the configured primary, the configured backup, then every other host on the
- * build-time allowlist (VITE_API_ALLOWED_HOSTS). Each is a host this build
- * already trusts, so failing over across all of them adds no trust.
+ * the configured primary, the configured backup, every other host on the
+ * build-time allowlist (VITE_API_ALLOWED_HOSTS), then the hosts of the verified
+ * signed gateway document. Each is a host this build trusts, so failing over
+ * across all of them adds no trust.
  */
 export function candidateOrder(): string[] {
   return Array.from(new Set([discovered, ...trustedApiOrigins()].filter(Boolean)));
@@ -305,6 +337,43 @@ export async function discoverOnce(url: string, policy: OriginPolicy): Promise<s
   return origin;
 }
 
+/**
+ * Ask each URL for the signed gateway document and accept every one that
+ * verifies (the floor keeps the highest). The answer is untrusted until
+ * verified, so no credentials, no redirects, a size cap. Resolves true when
+ * the signed hosts changed.
+ */
+export async function refreshGatewayConfig(key: Uint8Array, urls: string[]): Promise<boolean> {
+  const before = signedHosts().join(',');
+  for (const url of urls) {
+    try {
+      const res = await withTimeout(GATEWAY_TIMEOUT_MS, (signal) => fetch(url, {
+        method: 'GET', cache: 'no-store', credentials: 'omit', redirect: 'error',
+        referrerPolicy: 'no-referrer', headers: { Accept: 'application/json' }, signal,
+      }));
+      if (!res.ok) continue;
+      const text = (await res.text()).trim();
+      if (text.length > GATEWAY_MAX_DOCUMENT_BYTES) continue;
+      await acceptGatewayDocument(text, key);
+    } catch (e: any) {
+      console.info('[endpoint] gateway document not taken', String(e?.message || e));
+    }
+  }
+  return signedHosts().join(',') !== before;
+}
+
+let backgroundRefresh: Promise<unknown> = Promise.resolve();
+
+/** After an origin is adopted: look for a newer signed document, never blocking startup. */
+function refreshInBackground(origin: string): void {
+  const key = gatewayPublicKey();
+  if (!key || !origin) return;
+  backgroundRefresh = refreshGatewayConfig(key, [...gatewayConfigUrls(), `${origin}/api/v1/client/gateway-config`]);
+}
+
+/** Settles when the last background look for a signed document has finished (tests wait on it). */
+export function gatewayRefreshSettled(): Promise<unknown> { return backgroundRefresh; }
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 let bootInFlight: Promise<string | null> | null = null;
@@ -317,7 +386,10 @@ let bootInFlight: Promise<string | null> | null = null;
  *   1. No discovery URL and no configured origin: a same-origin web deploy.
  *   2. Discovery (bounded attempts, each with a timeout) → validate → probe.
  *   3. Discovery failed, or its origin did not answer: the configured primary,
- *      the configured backup, then every allowlisted host, each probed.
+ *      the configured backup, every allowlisted host, then the hosts of the
+ *      verified signed gateway document, each probed.
+ *   4. None answered: fetch the signed document from its mirrors and probe
+ *      any host it newly names.
  */
 export function bootstrapApiEndpoint(): Promise<string | null> {
   if (state === 'ready') return Promise.resolve(active);
@@ -327,7 +399,9 @@ export function bootstrapApiEndpoint(): Promise<string | null> {
   const run = (async () => {
     const dUrl = discoveryUrl();
     const configured = configuredOrigins();
-    if (!dUrl && configured.length === 0) return adopt('', 'same-origin');
+    const key = gatewayPublicKey();
+    if (key) await loadStoredGateway(key);
+    if (!dUrl && configured.length === 0 && signedHosts().length === 0) return adopt('', 'same-origin');
 
     if (dUrl) {
       const policy = originPolicy();
@@ -347,8 +421,16 @@ export function bootstrapApiEndpoint(): Promise<string | null> {
       }
     }
 
+    const tried = new Set<string>();
     for (const candidate of candidateOrder()) {
+      tried.add(candidate);
       if (await probe(candidate)) return adopt(candidate, candidate === discovered ? 'discovery' : 'configured');
+    }
+    const mirrors = gatewayConfigUrls();
+    if (key && mirrors.length > 0 && await refreshGatewayConfig(key, mirrors)) {
+      for (const candidate of candidateOrder()) {
+        if (!tried.has(candidate) && await probe(candidate)) return adopt(candidate, 'configured');
+      }
     }
     // A single configured origin with no discovery: nothing to compare it
     // with, so adopt it and let requests report the outage (the old behaviour).

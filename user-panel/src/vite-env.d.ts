@@ -23,6 +23,10 @@ interface ImportMetaEnv {
   /** Comma-separated EXACT hostnames discovery may name, beyond the primary's
    *  and the backup's. No wildcards, no IP addresses. */
   readonly VITE_API_ALLOWED_HOSTS?: string;
+  /** Ed25519 public key (base64url, 32 bytes) a signed gateway document must verify against (`services/gatewayConfig.ts`). */
+  readonly VITE_GATEWAY_CONFIG_PUBLIC_KEY?: string;
+  /** HTTPS mirrors of the signed gateway document, comma-separated. */
+  readonly VITE_GATEWAY_CONFIG_URLS?: string;
   /** The panel's public origin — the backend's `PUBLIC_APP_ORIGIN`. MANDATORY
    *  for the native build: it decides which deep links the shell trusts, and
    *  its host is baked into the APK's App Link filter. */

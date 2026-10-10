@@ -142,6 +142,8 @@ after the overlap (token TTL / order lifetime). Verification accepts current **o
 | `METRICS_PORT_BASE` | Each PM2 worker also serves `/metrics` (same token) on this port + its index, on the private network, so a scraper sees every worker. |
 | `DIRECT_DATABASE_URL` | PostgreSQL itself, bypassing the pooler, for the nightly `pg_dump` (`backup.service.js` `dumpDatabaseUrl`). Set by the production compose; unset, the backup uses `DATABASE_URL`. |
 | `API_ALLOWED_HOSTS` | Comma-separated exact hostnames Admin > Settings > API Host may choose from (`backend/config/apiHosts.js`). Each must also be built into the app (`VITE_API_URL`, `VITE_API_BACKUP_URL` or `VITE_API_ALLOWED_HOSTS`), or the app ignores the choice. Empty: no choice is offered and apps use their primary. |
+| `GATEWAY_CONFIG_FILE` | Path of the offline-signed gateway document this server serves at `GET /api/v1/client/gateway-config` (`domains/configuration/gatewayConfig.js`). Unset: 404. |
+| `GATEWAY_CONFIG_PUBLIC_KEY` | The Ed25519 public key (base64url) that document must verify against; a document that does not verify now (wrong key, expired) is not served. The private key is never on a server (`docs/governance/GATEWAY_KEY_ROTATION.md`). |
 | `PGBOUNCER_STATS_URL` | The PgBouncer admin console (`…/pgbouncer`, a `stats_users` account); enables `bb_pgbouncer_pool` on `/metrics`. |
 | `ARGON2_MEMORY_KIB` / `ARGON2_TIME_COST` / `ARGON2_PARALLELISM` | Password-hash cost (OWASP minimum by default; raise on capable hardware). |
 | `BB_RUNTIME_ROLE` | `api` / `realtime` / `scheduler` for a split k8s fleet (see `deploy/k8s/`). |
@@ -259,6 +261,8 @@ a **rebuild**, not a restart. An APK carries whatever was set when it was built.
 | `VITE_API_BACKUP_URL` | no | ONE explicitly configured backup origin (an https hostname serving the same deployment — a second load balancer or CDN name, never an IP), used when the primary stops answering. |
 | `VITE_API_DISCOVERY_URL` | no | HTTPS URL answering `{"url": "https://…"}`, read during the loading screen. The answer is accepted only if its host is the primary's, the backup's or in `VITE_API_ALLOWED_HOSTS`. Serve nothing secret from it. |
 | `VITE_API_ALLOWED_HOSTS` | no | Comma-separated EXACT hostnames discovery may name beyond the primary's and the backup's. No wildcards, URLs or IP addresses (the native build refuses them). |
+| `VITE_GATEWAY_CONFIG_PUBLIC_KEY` | no | Ed25519 public key (base64url, 32 bytes) a signed gateway document must verify against. Unset: no document is fetched or believed. |
+| `VITE_GATEWAY_CONFIG_URLS` | no | Comma-separated HTTPS mirrors of the signed gateway document (a static host or CDN off the API hosts). Each adopted origin's `/api/v1/client/gateway-config` is asked too. |
 | `VITE_MERCHANT_PANEL_URL` | no | Where `/merchant` links point on a split-origin deploy. |
 | `VITE_TURNSTILE_SITE_KEY` | no | Turnstile **site** key (public half). The captcha gate is a pass-through until this and the backend's `TURNSTILE_SECRET_KEY` are both set — see docs/PROJECT_STATUS.md §3.3. |
 | `VITE_APP_VERSION` | never set by hand | Injected at build time from `package.json`; §2 forbids a version literal in a source file. |
@@ -278,9 +282,16 @@ before ANY API, game or realtime connection (`App.tsx` `EndpointGate`):
    dev build), exact allowlisted hostname, no IP literal, no credentials, port,
    path, query or fragment. The answer can never add a host.
 3. Probe the validated origin's `/health/live`; if discovery failed or that origin
-   does not answer, probe the primary, the backup, then every other host in
-   `VITE_API_ALLOWED_HOSTS`, in order.
-4. Nothing answered: a "Can't connect / Try again" screen. Never an unvalidated host.
+   does not answer, probe the primary, the backup, every other host in
+   `VITE_API_ALLOWED_HOSTS`, then the hosts of the signed gateway document, in order.
+4. None answered: fetch the signed gateway document from `VITE_GATEWAY_CONFIG_URLS`
+   and probe any host it newly names.
+5. Nothing answered: a "Can't connect / Try again" screen. Never an unvalidated host.
+
+**The signed gateway document** is the only way an installed app learns a host
+it was not built with. It is signed offline (`npm run gateway-config -- sign`),
+verified in the app against `VITE_GATEWAY_CONFIG_PUBLIC_KEY`, remembered, and
+re-verified at every launch; see `docs/governance/GATEWAY_KEY_ROTATION.md`.
 
 At runtime a **transport** failure (DNS, TLS, connection refused, timeout) probes
 the trusted origins again and moves the next request — and the SSE and Socket.IO
