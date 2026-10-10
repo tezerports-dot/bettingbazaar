@@ -17,6 +17,7 @@ import { PAYMENT_STATE_LABELS, PAYMENT_STATE_COLOR, type PaymentOrderState } fro
 // M-05: WalletTransactionDTO normalizer — GOVERNANCE §4: this module must have consumers.
 import { normalizeTransaction } from '../services/walletTransactionDTO';
 import ScreenShell, { card } from '../redesign/Screen';
+import BonusPlayPrompt from '../redesign/BonusPlayPrompt';
 // The INR sizes, as tiles grouped by the rail each size is on (Step 2d).
 import OrderSizePicker, { railOfSize, type OrderSizes } from '../components/OrderSizePicker';
 // The USDT rail: whole steps of USDT between the admin's bounds, served by a
@@ -730,6 +731,7 @@ const WalletPage: React.FC = () => {
 
   return (
     <ScreenShell icon="💳" title="Wallet" sub="Buy & sell tokens · P2P exchange">
+      <BonusPlayPrompt />
       {/* Balance hero */}
       <div style={{ borderRadius: 18, padding: 18, background: 'linear-gradient(135deg,#1a1205,#0c0a06 60%),radial-gradient(120% 140% at 100% 0,rgba(var(--brand-primary-rgb), .25),transparent 55%)', border: '1px solid var(--line2)', boxShadow: 'var(--shadow)', position: 'relative', overflow: 'hidden' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>

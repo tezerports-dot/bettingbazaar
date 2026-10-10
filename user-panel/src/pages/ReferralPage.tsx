@@ -25,6 +25,7 @@
  */
 import React, { useCallback, useEffect, useState } from 'react';
 import ScreenShell, { card } from '../redesign/Screen';
+import BonusPlayPrompt from '../redesign/BonusPlayPrompt';
 import { apiClient } from '../services/apiClient';
 import { getBackend } from '../services/backend.service';
 
@@ -137,6 +138,7 @@ const ReferralPage: React.FC = () => {
 
   return (
     <ScreenShell icon="🎁" title="Refer & Earn" sub="Invite players, earn on two levels">
+      <BonusPlayPrompt />
       {/* ── Your link ─────────────────────────────────────────────────── */}
       <div style={{ ...card, marginBottom: 14 }}>
         <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.12em', textTransform: 'uppercase', color: 'var(--text3)', marginBottom: 8 }}>

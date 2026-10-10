@@ -37,14 +37,17 @@ export function usePlayProfile(isAuthenticated: boolean, key: string) {
 
   useEffect(() => { load(); }, [load, key]);
 
-  const choose = useCallback(async (profile: PlayProfile) => {
+  /** Switch profile; true once the server has it. */
+  const choose = useCallback(async (profile: PlayProfile): Promise<boolean> => {
     setError('');
     try {
       const res: any = await apiClient.put('/api/user/play-profile', { profile });
       if (!res?.success) throw new Error(res?.message || 'Could not switch profile');
       await load();
+      return true;
     } catch (e: any) {
       setError(e?.message || 'Could not switch profile');
+      return false;
     }
   }, [load]);
 
