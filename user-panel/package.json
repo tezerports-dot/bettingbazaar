@@ -21,7 +21,7 @@
     "@capacitor/splash-screen": "^8.0.2",
     "@capacitor/status-bar": "^8.0.3",
     "@noble/ed25519": "3.2.0",
-    "framer-motion": "11.18.2",
+    "framer-motion": "14.0.0",
     "lucide-react": "^1.48.0",
     "qrcode": "1.5.4",
     "react": "^19.3.0",
