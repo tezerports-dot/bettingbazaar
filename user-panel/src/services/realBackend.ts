@@ -33,56 +33,61 @@ import {
 } from '../types';
 import { io, Socket } from 'socket.io-client';
 import { setToken } from './apiClient'; // GOVERNANCE.md M-9: single write path for auth_token
+import {
+  currentOrigin, whenEndpointReady, endpointState, onOriginChange,
+  reportOriginUnreachable, failoverAvailable,
+} from './originFailover';
 // Bot-mitigation token, attached to credential submits only. Resolves null and
 // submits without one when Turnstile is unconfigured or unreachable — the
 // server applies the policy, so an outage there must not block the form here.
 import { getCaptchaToken } from './captcha';
 
-const GLOBAL_CONFIG = (window as any).BAZAAR_CONFIG || {};
 const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
 
 // --- USER PANEL URL RESOLUTION ------------------------------------------------
-// The default launch (docs/GO_LIVE_RUNBOOK.md) serves the user panel and the
-// Express backend from the SAME origin behind NGINX, so a relative '/api' just
-// works and no env var is needed — that is the last fallback below.
-//
-// SPLIT-ORIGIN deploys (panel on a different host than the API, or the Capacitor
-// Android shell whose origin is https://localhost) instead set, at BUILD time:
-//   VITE_API_URL = https://your-backend-domain   (no trailing slash, no /api)
-// and we append '/api' because this file uses short paths (/auth/login, /v1/...,
-// /admin/...). Native builds are additionally guarded by scripts/assert-native-env.mjs.
-//
+// Every URL is built from the origin `originFailover` adopted, per call, so a
+// failover mid-session is followed without a reload — and nothing here opens a
+// connection before that origin has been discovered and validated
+// (`whenEndpointReady`). An empty origin is a same-origin web deploy: relative
+// '/api' works. In local development (Vite on localhost) the two realtime
+// transports go straight to the backend, because the dev proxy carries only
+// /api, /app-assets and /storage (vite.config.ts).
+function apiBase(): string {
+  const o = currentOrigin();
+  return o ? `${o}/api` : '/api';
+}
+function socketUrl(): string {
+  return currentOrigin() || (isLocal ? 'http://localhost:8080' : window.location.origin);
+}
+function sseUrl(): string {
+  const o = currentOrigin();
+  return o ? `${o}/api/sse/events` : (isLocal ? 'http://localhost:8080/api/sse/events' : '/api/sse/events');
+}
 
-// -------------------------------------------------------------------------------
-const _viteApiUrl: string | undefined = (import.meta as any).env?.VITE_API_URL;
-
-const API_BASE_URL: string =
-  (_viteApiUrl ? _viteApiUrl.replace(/\/$/, '') + '/api' : null) ||   // split-origin: absolute backend URL
-  GLOBAL_CONFIG.API_URL ||
-  (isLocal ? 'http://localhost:8080/api' : '/api');                   // same-origin default
-
-const SOCKET_URL: string =
-  (_viteApiUrl ? _viteApiUrl.replace(/\/$/, '') : null) ||             // split-origin: backend origin for WS
-  GLOBAL_CONFIG.SOCKET_URL ||
-  (isLocal ? 'http://localhost:8080' : window.location.origin);       // same-origin default
-
-// SSE URL -- public broadcast stream (all users, anonymous or logged-in)
-const SSE_URL: string =
-  (_viteApiUrl ? _viteApiUrl.replace(/\/$/, '') + '/api/sse/events' : null) ||
-  (isLocal ? 'http://localhost:8080/api/sse/events' : '/api/sse/events');
+/** Retried after a transport failure or a 5xx; anything else may have been applied. */
+const IDEMPOTENT = new Set(['GET', 'HEAD']);
 
 
 class SSEEventBridge extends EventTarget {
   private sse: EventSource | null = null;
 
-  constructor() {
-    super();
+  /** Opened by RealBackend once the endpoint is validated — never at construction. */
+  start() {
+    if (this.sse) return;
+    this._connect();
+  }
+
+  /** Reopen against the current origin (after a failover). */
+  restart() {
+    try { this.sse?.close(); } catch { /* already closed */ }
+    this.sse = null;
     this._connect();
   }
 
   private _connect() {
     try {
-      this.sse = new EventSource(SSE_URL);
+      const url = sseUrl();
+      this.sse = new EventSource(url);
 
       // Register all public events we care about
       const publicEvents = [
@@ -101,7 +106,11 @@ class SSEEventBridge extends EventTarget {
       }
 
       this.sse.onopen  = () => console.log('[SSE] SSE: Connected to public stream');
-      this.sse.onerror = () => console.warn('[SSE] SSE: Connection issue -- browser will auto-reconnect');
+      this.sse.onerror = () => {
+        console.warn('[SSE] SSE: Connection issue -- browser will auto-reconnect');
+        // A probe, not a switch: it moves only if this origin is really gone.
+        if (failoverAvailable()) void reportOriginUnreachable(currentOrigin());
+      };
     } catch (err) {
       console.error('[SSE] SSE: EventSource creation failed:', err);
     }
@@ -113,19 +122,33 @@ export class RealBackend implements Backend {
   public  sseBridge: SSEEventBridge;
 
   constructor() {
-    // SSE connects immediately for ALL users -- public stream, zero WS overhead
+    // SSE is the public stream for ALL users. Created now, OPENED only once the
+    // API origin is validated: no realtime connection to an unvalidated host.
     this.sseBridge = new SSEEventBridge();
 
-    
-    
-    const token = this.getToken();
-    if (token) {
-      this._connectWebSocket(token);
-    }
+    void whenEndpointReady().then(() => {
+      this.sseBridge.start();
+      const token = this.getToken();
+      if (token) this._connectWebSocket(token);
+      // A failover moves both realtime transports to the new origin, keeping
+      // every listener the screens attached.
+      onOriginChange(() => {
+        this.sseBridge.restart();
+        if (this.socket) {
+          (this.socket.io as any).uri = socketUrl();
+          this.socket.disconnect();
+          this.socket.connect();
+        }
+      });
+    });
   }
 
   
   private _connectWebSocket(token?: string | null) {
+    if (endpointState() !== 'ready') {
+      void whenEndpointReady().then(() => this._connectWebSocket(token));
+      return;
+    }
     if (this.socket?.connected) {
       // Already connected -- just refresh auth token if provided
       if (token) {
@@ -135,7 +158,7 @@ export class RealBackend implements Backend {
     }
 
     const authToken = token || this.getToken();
-    this.socket = io(SOCKET_URL, {
+    this.socket = io(socketUrl(), {
       transports:           ['websocket'],
       upgrade:              false,
       autoConnect:          true,
@@ -150,6 +173,7 @@ export class RealBackend implements Backend {
 
     this.socket.on('connect_error', (err) => {
       console.warn('Socket connect error:', err.message);
+      if (failoverAvailable()) void reportOriginUnreachable(currentOrigin());
     });
 
     // Join personal room on every (re)connect if logged in
@@ -242,6 +266,9 @@ export class RealBackend implements Backend {
   }
 
   private async request<T>(endpoint: string, options: RequestInit = {}, retries = 3): Promise<T> {
+    await whenEndpointReady();
+    const origin = currentOrigin();
+    const idempotent = IDEMPOTENT.has(String(options.method || 'GET').toUpperCase());
     const token = this.getToken();
     const headers: HeadersInit = {
       'Content-Type': 'application/json',
@@ -250,7 +277,7 @@ export class RealBackend implements Backend {
     };
 
     try {
-      const response = await fetch(`${API_BASE_URL}${endpoint}`, { ...options, headers, credentials: 'include' });
+      const response = await fetch(`${apiBase()}${endpoint}`, { ...options, headers, credentials: 'include' });
 
       if (response.status === 401) {
         localStorage.removeItem('auth_token');
@@ -263,7 +290,7 @@ export class RealBackend implements Backend {
           { status: 401, code: body.code, data: body });
       }
 
-      if (response.status >= 500 && retries > 0) {
+      if (response.status >= 500 && retries > 0 && idempotent) {
         console.warn(`Server Error ${response.status} at ${endpoint}. Retrying... (${retries} left)`);
         await this.delay(1000 * (4 - retries));
         return this.request<T>(endpoint, options, retries - 1);
@@ -282,7 +309,12 @@ export class RealBackend implements Backend {
       return await response.json();
 
     } catch (error: any) {
-      if ((error.name === 'TypeError' || error.message === 'Failed to fetch') && retries > 0) {
+      const transport = error.name === 'TypeError' || error.message === 'Failed to fetch';
+      // A transport failure may mean this origin is gone: let failover find a
+      // live one for the next request. Only an idempotent request is replayed —
+      // a POST whose answer was lost may already have been applied.
+      if (transport && failoverAvailable()) await reportOriginUnreachable(origin);
+      if (transport && idempotent && retries > 0) {
         console.warn(`Network Error at ${endpoint}. Retrying... (${retries} left)`);
         await this.delay(1000 * (4 - retries));
         return this.request<T>(endpoint, options, retries - 1);

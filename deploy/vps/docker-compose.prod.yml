@@ -6,11 +6,21 @@
 #
 # What runs:
 #   caddy      TLS termination + reverse proxy   (ports 80/443 — the only ones open)
-#   api        BB_RUNTIME_ROLE=api        HTTP + the three panels
-#   realtime   BB_RUNTIME_ROLE=realtime   WebSocket + SSE
-#   scheduler  BB_RUNTIME_ROLE=scheduler  game cycles + cron  (EXACTLY ONE)
+#   api        BB_RUNTIME_ROLE=api        HTTP + the three panels   PM2 cluster, 4 workers
+#   realtime   BB_RUNTIME_ROLE=realtime   WebSocket + SSE           PM2 cluster, 2 workers
+#   scheduler  BB_RUNTIME_ROLE=scheduler  game cycles + cron  (EXACTLY ONE process)
+#   migrate    applies database/schema.sql once per deploy, then exits
+#   pgbouncer  connection pooler (transaction mode) — every Node process connects HERE
 #   postgres   PostgreSQL 18, the datastore — money, identity, config, content
 #   redis      cache, locks, rate-limit counters, realtime fan-out
+#
+# 6 backend workers on the 8-core / 16 GB server (owner, 2026-10-09): a
+# starting point to confirm with the load test, not a measured optimum.
+# Tuning and its evidence: docs/governance/PGBOUNCER_AND_CLUSTER.md.
+#
+# Rolling restart of the workers without dropping requests:
+#   docker compose -f docker-compose.prod.yml exec api node_modules/.bin/pm2 reload all
+#   docker compose -f docker-compose.prod.yml exec realtime node_modules/.bin/pm2 reload all
 #   minio      S3-compatible storage (OPTIONAL — see the profile note below)
 #
 # Everything except Caddy is on an internal network with no published ports, so
@@ -39,7 +49,20 @@ x-app-base: &app-base
   environment: &app-env
     NODE_ENV: production
     # Container hostnames, not localhost — these override anything in .env.
-    DATABASE_URL: postgresql://${POSTGRES_USER:-bb}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-bettingbazaar}
+    # Through PgBouncer (transaction pooling), never straight to PostgreSQL.
+    DATABASE_URL: postgresql://${POSTGRES_USER:-bb}:${POSTGRES_PASSWORD}@pgbouncer:6432/${POSTGRES_DB:-bettingbazaar}
+    # PostgreSQL itself, for the nightly pg_dump (backup.service.js): a dump's
+    # session settings and long snapshot do not belong on a transaction pool.
+    DIRECT_DATABASE_URL: postgresql://${POSTGRES_USER:-bb}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-bettingbazaar}
+    # Per-process client pool towards PgBouncer (cheap client slots; PgBouncer
+    # caps the real server connections at max_db_connections).
+    PG_POOL_SIZE: "25"
+    # The migrate service applied the schema; workers only check it is there.
+    BB_SCHEMA_APPLY: skip
+    # Each PM2 worker serves /metrics on 9400 + its index (private network).
+    METRICS_PORT_BASE: "9400"
+    # SHOW POOLS / SHOW STATS for bb_pgbouncer_* on /metrics.
+    PGBOUNCER_STATS_URL: postgresql://${POSTGRES_USER:-bb}:${POSTGRES_PASSWORD}@pgbouncer:6432/pgbouncer
     REDIS_URL: redis://redis:6379
     # Loopback-equivalent link inside the Docker network — no TLS needed, and
     # the money DB never leaves the host. NEVER set this against a remote
@@ -50,8 +73,12 @@ x-app-base: &app-base
     # at once — four wrong passwords from anyone would lock out everyone.
     TRUST_PROXY: "1"
   depends_on:
-    postgres:   { condition: service_healthy }
-    redis:      { condition: service_started }
+    migrate:    { condition: service_completed_successfully }
+    pgbouncer:  { condition: service_healthy }
+    redis:      { condition: service_healthy }
+  # docker stop sends SIGTERM to pm2-runtime, which stops each worker with
+  # SIGINT and waits kill_timeout (30 s); server.js drains within 25 s.
+  stop_grace_period: 40s
   networks: [bb]
 
 services:
@@ -74,20 +101,24 @@ services:
   # ── Application, three runtime roles ────────────────────────────────────────
   api:
     <<: *app-base
+    command: ["node_modules/.bin/pm2-runtime", "ecosystem.config.cjs"]
     environment:
       <<: *app-env
       BB_RUNTIME_ROLE: api
+      BB_WORKERS: "4"
       PORT: "8080"
-      # Argon2 runs on the libuv threadpool: 4 threads × ~80ms is ~50 logins/sec.
-      # 8 roughly doubles that at ~19 MiB extra per thread. Raise only with RAM
-      # to spare, and measure (docs/governance/LATENCY.md).
-      UV_THREADPOOL_SIZE: "8"
+      # Argon2 runs on the libuv threadpool: 4 threads × ~80ms is ~50 logins/sec
+      # per worker. With 4 workers the default 4 threads each is already ~200/sec;
+      # raise only with RAM to spare, and measure (docs/governance/LATENCY.md).
+      UV_THREADPOOL_SIZE: "4"
 
   realtime:
     <<: *app-base
+    command: ["node_modules/.bin/pm2-runtime", "ecosystem.config.cjs"]
     environment:
       <<: *app-env
       BB_RUNTIME_ROLE: realtime
+      BB_WORKERS: "2"
       PORT: "8080"
 
   # EXACTLY ONE. It owns the game-cycle producer and the cron jobs. They are
@@ -100,15 +131,57 @@ services:
       BB_RUNTIME_ROLE: scheduler
       PORT: "8080"
 
+  # Applies database/schema.sql ONCE per `up`, straight to PostgreSQL (DDL is
+  # not routed through the pooler), then exits; the workers wait for it.
+  migrate:
+    <<: *app-base
+    command: ["node", "scripts/apply-schema.mjs"]
+    restart: "no"
+    environment:
+      <<: *app-env
+      DATABASE_URL: postgresql://${POSTGRES_USER:-bb}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-bettingbazaar}
+    depends_on:
+      postgres: { condition: service_healthy }
+    healthcheck: { disable: true }
+
   # ── Datastores (no published ports — internal network only) ─────────────────
+  # PgBouncer 1.26 (pinned by digest), transaction pooling. Internal only — no
+  # published port. Config and sizing: ./pgbouncer/pgbouncer.ini.
+  pgbouncer:
+    image: edoburu/pgbouncer@sha256:9c78945868a6a142c7fc40ccd843bbe5a606df163c7ffce4de70e0d628d696a2
+    restart: unless-stopped
+    environment:
+      # Read only by the entrypoint, to write /etc/pgbouncer/userlist.txt.
+      DATABASE_URL: postgresql://${POSTGRES_USER:-bb}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-bettingbazaar}
+      AUTH_TYPE: scram-sha-256
+    volumes:
+      - ./pgbouncer/pgbouncer.ini:/etc/pgbouncer/pgbouncer.ini:ro
+    depends_on:
+      postgres: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 6432 -U ${POSTGRES_USER:-bb} -d ${POSTGRES_DB:-bettingbazaar}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    networks: [bb]
+
   postgres:
     image: postgres:18
     restart: unless-stopped
+    # Tuned for the 16 GB / 8-core server — see ./postgres/postgresql.conf.
+    command: ["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"]
+    shm_size: 1g
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-bb}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB:-bettingbazaar}
-    volumes: ["postgres-data:/var/lib/postgresql/data"]
+    volumes:
+      # postgres:18 keeps PGDATA at /var/lib/postgresql/18/docker; the volume
+      # is mounted at the parent so the data lives in it (a mount at
+      # …/postgresql/data is the pre-18 layout and leaves the data outside).
+      - postgres-data:/var/lib/postgresql
+      - ./postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+    stop_grace_period: 60s
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-bb} -d ${POSTGRES_DB:-bettingbazaar}"]
       interval: 5s
@@ -119,8 +192,15 @@ services:
   redis:
     image: redis:8-alpine
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes"]
+    # noeviction: BullMQ jobs and rate-limit counters must never be evicted;
+    # at the cap Redis refuses writes loudly instead of dropping state.
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "1gb", "--maxmemory-policy", "noeviction"]
     volumes: ["redis-data:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
     networks: [bb]
 
   # ── Optional object storage (see the header note) ───────────────────────────

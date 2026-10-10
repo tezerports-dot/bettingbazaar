@@ -73,8 +73,6 @@ export function cycleLabel(board) {
 export function boardMessages(board) {
   return {
     newCycle: `New ${board.name} round started!`,
-    merge: 'Pools merging...',
-    close: 'Bets closed! Calculating winner...',
   };
 }
 

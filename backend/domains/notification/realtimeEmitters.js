@@ -3,6 +3,40 @@
 
 // The wallet is the only place a balance is read from. See sseBalancePush.
 import { getBalances } from '#db/repositories/wallets.js';
+import { encodeCyclePhase, encodeCycleResult } from './realtimeProtocol.js';
+import { recordRealtimeEvent } from '../../services/metrics.service.js';
+
+// ─── PUBLIC CYCLE LIFECYCLE ───────────────────────────────────────────────────
+/**
+ * The one way `cycle_phase` and `cycle_result` are sent, by the engine and by
+ * the admin cycle actions alike: encoded in the compact v2 format
+ * (`realtimeProtocol.js`) and broadcast on BOTH public transports — SSE for
+ * every player, socket.io for connected sockets. The admin actions used to
+ * reach socket.io only, so a player on SSE never heard a pause or a cancel.
+ *
+ * Public by design: these carry no per-user data. Anything per user goes to
+ * the `user-<id>` room (below); per-cycle pools go to `cycle:<id>`.
+ */
+function broadcastPublic(event, payload, { io = global.io, sseManager = global.sseManager } = {}) {
+  recordRealtimeEvent(event, payload);
+  try { sseManager?.broadcast?.(event, payload); } catch (err) {
+    console.warn(`[realtimeEmitters] ${event} SSE broadcast error:`, err.message);
+  }
+  try { io?.emit?.(event, payload); } catch (err) {
+    console.warn(`[realtimeEmitters] ${event} socket broadcast error:`, err.message);
+  }
+  return payload;
+}
+
+/** @param {{cycleId, type?, audience?, phase, at?}} fields  @param {{io?, sseManager?}} [transports] */
+export function emitCyclePhase(fields, transports) {
+  return broadcastPublic('cycle_phase', encodeCyclePhase(fields), transports);
+}
+
+/** @param {{cycleId, type?, audience?, winner, delhiPool?, bombayPool?, forced?, at?}} fields */
+export function emitCycleResult(fields, transports) {
+  return broadcastPublic('cycle_result', encodeCycleResult(fields), transports);
+}
 
 // ─── WALLET UPDATE ─────────────────────────────────────────────────────────────
 /**

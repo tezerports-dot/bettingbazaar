@@ -49,6 +49,7 @@ import { brandLogo, fallBackToMark, uploadedAsset } from './services/brandAssets
 import NativeUpdateGate from './components/NativeUpdateGate';
 import { RejectedBuyPopup } from './components/DisputeWindow';
 import { isNativeShell } from './services/nativeLifecycle';
+import { bootstrapApiEndpoint, endpointState } from './services/originFailover';
 const APP_VERSION = import.meta.env.VITE_APP_VERSION ?? '0.0.0';
 
 const backend = getBackend();
@@ -146,6 +147,55 @@ const UpdateRequiredScreen = ({ latest }: { latest: string }) => (
   </div>
 );
 
+/**
+ * Nothing trusted answered: the discovery service and every configured origin
+ * failed. Say so and offer a retry — never connect somewhere unvalidated.
+ */
+const ConnectionErrorScreen = ({ onRetry, retrying }: { onRetry: () => void; retrying: boolean }) => (
+  <div role="alert" className="flex flex-col items-center justify-center h-full p-8 text-center" style={{ background: 'var(--app-bg, #0A0E17)', color: 'var(--text)' }}>
+    <img
+      src={brandLogo('logo.png')}
+      alt="Betting Bazaar"
+      className="h-32 w-auto object-contain mb-6"
+      onError={fallBackToMark}
+    />
+    <h1 className="text-2xl font-black uppercase tracking-tight mb-2">Can't connect</h1>
+    <p className="text-sm mb-8 leading-relaxed max-w-xs mx-auto" style={{ color: 'var(--text2)' }}>
+      We couldn't reach the Betting Bazaar servers. Check your internet connection and try again.
+    </p>
+    <button
+      onClick={onRetry}
+      disabled={retrying}
+      className="w-full max-w-xs bg-[var(--brand-primary, #D4AF37)] text-black font-black py-4 rounded-2xl shadow-xl transition-all active:scale-95 disabled:opacity-60"
+    >
+      {retrying ? 'CONNECTING…' : 'TRY AGAIN'}
+    </button>
+  </div>
+);
+
+// ── EndpointGate ─────────────────────────────────────────────────────────────
+// Step one of the startup order (services/originFailover.ts): discover and
+// validate the API origin while the LoadingScreen shows. Nothing below mounts
+// — no API call, no session check, no socket — until it has.
+const EndpointGate: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [phase, setPhase] = useState<'resolving' | 'ready' | 'failed'>(
+    endpointState() === 'ready' ? 'ready' : 'resolving');
+  const [retrying, setRetrying] = useState(false);
+
+  const attempt = React.useCallback(async () => {
+    setRetrying(true);
+    const origin = await bootstrapApiEndpoint();
+    setRetrying(false);
+    setPhase(origin === null ? 'failed' : 'ready');
+  }, []);
+
+  useEffect(() => { if (phase === 'resolving') void attempt(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (phase === 'ready') return <>{children}</>;
+  if (phase === 'failed') return <ConnectionErrorScreen onRetry={attempt} retrying={retrying} />;
+  return <LoadingScreen />;
+};
+
 // ── SystemGuard ─────────────────────────────────────────────────────────────
 const SystemGuard: React.FC<{ children: React.ReactElement }> = ({ children }) => {
   const [status, setStatus]         = useState<'OK' | 'OUTDATED' | 'MAINTENANCE' | 'LOADING'>('LOADING');
@@ -219,6 +269,7 @@ const lazy = (node: React.ReactNode) => <Suspense fallback={<PageSkeleton />}>{n
 const App: React.FC = () => (
   <ThemeProvider>
     <ErrorBoundary panel="user">
+      <EndpointGate>
       {/* Outside SystemGuard on purpose: a required update must show even
           during maintenance or while the web gate is loading. */}
       <NativeUpdateGate />
@@ -277,6 +328,7 @@ const App: React.FC = () => (
           </ToastProvider>
         </Suspense>
       </SystemGuard>
+      </EndpointGate>
     </ErrorBoundary>
   </ThemeProvider>
 );

@@ -266,11 +266,12 @@ Notable client services:
 
 - `services/realBackend.ts` — the concrete backend, behind `backend.interface.ts`
   so a mock can be swapped in.
-- `services/originFailover.ts` — probes `/health/live` across a static, build-time
-  candidate list (`VITE_API_URL` + `VITE_API_FALLBACK_URLS`) and remembers the
-  winner for 30 minutes. Fails over on **transport** errors only, never on an HTTP
-  status, and never mid-request — a money POST is never replayed against a second
-  origin. Takes no client IP/geo/ISP as input.
+- `services/originFailover.ts` — discovers and validates the API origin before any
+  connection opens (`VITE_API_DISCOVERY_URL`, answer checked against the build-time
+  hostname allowlist), then fails over between the primary and ONE configured
+  backup (`VITE_API_URL`, `VITE_API_BACKUP_URL`) on **transport** errors only,
+  never on an HTTP status, and never mid-request — a money POST is never replayed.
+  Takes no client IP/geo/ISP as input (docs/governance/ENV.md).
 - `services/nativeLifecycle.ts` — rebuilds the socket on every Android foreground
   transition, because a resumed WebView can report `connected` over a dead socket
   for tens of seconds while the cycle screen renders stale pools.
@@ -752,7 +753,7 @@ than a store listing; `iosBundleId` stays `null` until a native client exists.
 | System config (limits, maintenance) | `system_config` socket event | ✅ |
 | Auth token storage | One key per app: `auth_token` / `admin-auth` / `merchantToken` (§1) | ✅ |
 | 2FA UX | QR enrolment + OTP step | ✅ all three panels |
-| Origin failover | `VITE_API_URL` + `VITE_API_FALLBACK_URLS` | ✅ user panel only — admin and merchant have no equivalent |
+| Endpoint discovery and failover | `VITE_API_DISCOVERY_URL` + allowlist, `VITE_API_URL` + `VITE_API_BACKUP_URL` | ✅ user panel only — admin and merchant have no equivalent |
 | Reconnect / stale-data banner | Design blueprint §6 requires a "Live" state, a reconnecting banner and a non-blocking "data may be delayed" state | ⚠️ partial — verify per panel |
 | Version literal | `VITE_APP_VERSION` from each panel's own `package.json`; never typed in a component (§2) | ✅ |
 | Brand hex sweep (C-03) | 93 remaining `#D4AF37` literals across 25 files in user + admin panels; merchant is at zero | ⚠️ open |

@@ -13,6 +13,8 @@ import { assertPublicCycleSafe, publicCyclePools } from './cyclePublicView.js';
 import { allBoards, enabledBoards, boardOf, cycleLabel, boardMessages } from './cycleTypes.js';
 import { AUDIENCES } from '#db/repositories/markets.js';
 import { emitToStaff } from '../notification/staffEventAreas.js';
+import { emitCyclePhase, emitCycleResult } from '../notification/realtimeEmitters.js';
+import { recordRealtimeEvent } from '../../services/metrics.service.js';
 
 /**
  * Each board runs one cycle per slot for each audience (VIP, GENERAL), and the
@@ -114,7 +116,13 @@ class CycleGenerator {
     // All users (public) — broadcasts over SSE (one-way stream, all clients)
     // SSE is cheaper than WS for broadcast data: no per-client handshake,
     // HTTP/2 multiplexes streams, browser reconnects automatically.
+    /** The two public transports, for the shared emitters in realtimeEmitters.js. */
+    transports() {
+        return { io: this.io, sseManager: this.sseManager };
+    }
+
     emitPublic(event, data) {
+        recordRealtimeEvent(event, data);
         // Broadcast to ALL connected clients via BOTH channels simultaneously.
         // SSE: browser EventSource clients (user panel public stream)
         
@@ -184,7 +192,6 @@ class CycleGenerator {
                     console.error(`❌ updateCycleStatuses: no board '${cycle.type}' for ${cycle.cycleId} — skipping`);
                     continue;
                 }
-                const messages = boardMessages(board);
 
                 // The board's phase offsets, seconds before endTime. The schema
                 // holds them in order and inside the block (`boards_phases_ordered`).
@@ -201,14 +208,10 @@ class CycleGenerator {
                     // announcement below must not fire twice, so skip it.
                     if (!merged.ok) continue;
                     cycle.status = 'MERGED';
-                    this.emitPublic('cycle_phase', {
-                        cycleId: cycle.cycleId,
-                        type:    cycle.type,
-                        audience: cycle.audience,
-                        phase:   'MERGED',
-                        message: messages.merge,
-                        timestamp: new Date()
-                    });
+                    // Compact v2 wire format (realtimeProtocol.js).
+                    emitCyclePhase({
+                        cycleId: cycle.cycleId, type: cycle.type, audience: cycle.audience, phase: 'MERGED',
+                    }, this.transports());
                     console.log(`📊 Cycle ${cycle.cycleId} (${cycle.type}): MERGED`);
                 }
 
@@ -230,14 +233,9 @@ class CycleGenerator {
                     });
                     if (!closed.ok) continue;
                     cycle.status = 'CLOSED';
-                    this.emitPublic('cycle_phase', {
-                        cycleId: cycle.cycleId,
-                        type:    cycle.type,
-                        audience: cycle.audience,
-                        phase:   'CLOSED',
-                        message: messages.close,
-                        timestamp: new Date()
-                    });
+                    emitCyclePhase({
+                        cycleId: cycle.cycleId, type: cycle.type, audience: cycle.audience, phase: 'CLOSED',
+                    }, this.transports());
                     console.log(`🔒 Cycle ${cycle.cycleId} (${cycle.type}): CLOSED`);
                 }
 
@@ -359,16 +357,15 @@ class CycleGenerator {
 
             // Public result — combined pool only, guarded against a real/phantom
             // field being added here later.
-            this.emitPublic('cycle_result', assertPublicCycleSafe({
-                cycleId:   cycle.cycleId,
-                type:      cycle.type,
-                audience:  cycle.audience,
+            // Compact v2 wire format; the encoder runs assertPublicCycleSafe.
+            emitCycleResult({
+                cycleId:    cycle.cycleId,
+                type:       cycle.type,
+                audience:   cycle.audience,
                 winner,
                 delhiPool:  combinedDelhi,
                 bombayPool: combinedBombay,
-                message:   `${cycleType} Winner: ${winner}!`,
-                timestamp: new Date()
-            }));
+            }, this.transports());
 
             // Admin result — full breakdown
             this.emitAdmin('admin_cycle_result', {

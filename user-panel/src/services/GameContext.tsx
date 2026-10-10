@@ -29,6 +29,7 @@ import { CycleType, GameState, User, Bet, BettingSide, GameCycle, PlayProfile, B
 import { analyticsWindowFor } from '../constants';
 import apiClient from './apiClient';
 import { getBackend, setCdnBaseUrl } from './backend.service';
+import { decodeCyclePhase, decodeCycleResult } from './realtimeProtocol';
 import type { SignInStep } from './backend.interface';
 import { applyBranding } from './branding';
 
@@ -760,8 +761,10 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
       syncWatched({ [ct]: data.cycleId });
     };
 
-    const handleCycleResult = (data: any) => {
-      if (!mine(data)) return;
+    const handleCycleResult = (raw: unknown) => {
+      // Compact v2 wire format (services/realtimeProtocol.ts); null = unreadable, dropped.
+      const data = decodeCycleResult(raw);
+      if (!data || !mine(data)) return;
       const ct = toCycleType(data.type, data.cycleId);
       if (!ct) return;
       // The result names both sides again: the pools are no longer hidden.
@@ -802,10 +805,11 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
       }
     };
 
-    const handleCyclePhase = (data: any) => {
-      // cycle_phase does carry `type` (cycleGenerator emits it); the cycleId is
-      // the fallback for older payloads.
-      if (!mine(data)) return;
+    const handleCyclePhase = (raw: unknown) => {
+      // cycle_phase carries the board key `type`; the cycleId is the fallback
+      // for an admin action on a cycle whose row could not be read.
+      const data = decodeCyclePhase(raw);
+      if (!data || !mine(data)) return;
       const ct = toCycleType(data.type, data.cycleId);
       if (!ct) return;
       setCycles(prev => ({ ...prev, [ct]: { ...(prev[ct] ?? createNullCycle(ct)), status: data.phase as GameState } }));

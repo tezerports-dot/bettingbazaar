@@ -136,7 +136,13 @@ after the overlap (token TTL / order lifetime). Verification accepts current **o
 | `APP_BASE_URL` / `CANONICAL_HOST` | Public URL; optional canonical-host 301. |
 | `ALERT_WEBHOOK_URL` | Fallback money-path alert sink (or set `SystemConfig.alertWebhookUrl` in-app). |
 | `DEFAULT_ADMIN_MOBILE` / `DEFAULT_ADMIN_PASSWORD` | First-boot admin bootstrap — **change the password immediately after first login**. |
-| `PG_POOL_SIZE` | Postgres pool per instance. Keep `instances × PG_POOL_SIZE ≤` the database's `max_connections`, minus what admin tooling and replication reserve (§21). |
+| `PG_POOL_SIZE` | Postgres client pool per process. Behind PgBouncer (production compose) these are cheap client slots: keep `processes × PG_POOL_SIZE ≤` PgBouncer's `max_client_conn`; PgBouncer's `max_db_connections` is what must stay below PostgreSQL's `max_connections`. Without a pooler, keep `processes × PG_POOL_SIZE ≤ max_connections` minus what admin tooling and replication reserve. |
+| `BB_WORKERS` | PM2 cluster workers for this container's role (`ecosystem.config.cjs`); production runs api 4 + realtime 2. The scheduler is always 1. |
+| `BB_SCHEMA_APPLY` | `boot` (default): apply `schema.sql` at boot under an advisory lock. `skip`: only check it is applied — the production compose, where the one-shot `migrate` service applies it once per deploy. |
+| `METRICS_PORT_BASE` | Each PM2 worker also serves `/metrics` (same token) on this port + its index, on the private network, so a scraper sees every worker. |
+| `DIRECT_DATABASE_URL` | PostgreSQL itself, bypassing the pooler, for the nightly `pg_dump` (`backup.service.js` `dumpDatabaseUrl`). Set by the production compose; unset, the backup uses `DATABASE_URL`. |
+| `API_ALLOWED_HOSTS` | Comma-separated exact hostnames Admin > Settings > API Host may choose from (`backend/config/apiHosts.js`). Each must also be built into the app (`VITE_API_URL`, `VITE_API_BACKUP_URL` or `VITE_API_ALLOWED_HOSTS`), or the app ignores the choice. Empty: no choice is offered and apps use their primary. |
+| `PGBOUNCER_STATS_URL` | The PgBouncer admin console (`…/pgbouncer`, a `stats_users` account); enables `bb_pgbouncer_pool` on `/metrics`. |
 | `ARGON2_MEMORY_KIB` / `ARGON2_TIME_COST` / `ARGON2_PARALLELISM` | Password-hash cost (OWASP minimum by default; raise on capable hardware). |
 | `BB_RUNTIME_ROLE` | `api` / `realtime` / `scheduler` for a split k8s fleet (see `deploy/k8s/`). |
 
@@ -250,7 +256,9 @@ a **rebuild**, not a restart. An APK carries whatever was set when it was built.
 |---|---|---|
 | `VITE_API_URL` | web: no · **native: yes** | Absolute API origin. Optional for a same-origin web deploy (relative `/api` works); mandatory for the Android build, which has no same-origin backend to fall back on. Origin only — no trailing slash, no `/api` suffix. |
 | `VITE_APP_ORIGIN` | web: no · **native: yes** | The panel's public origin, and it **must equal the backend's `PUBLIC_APP_ORIGIN`**. Decides which incoming deep links the shell trusts, and its host is baked into the APK's App Link filter at build time. Player auth is Telegram-only, so an APK with this wrong is an APK nobody can sign in to. |
-| `VITE_API_FALLBACK_URLS` | no | Comma-separated alternate origins serving the SAME deployment, tried in order when the primary does not answer. |
+| `VITE_API_BACKUP_URL` | no | ONE explicitly configured backup origin (an https hostname serving the same deployment — a second load balancer or CDN name, never an IP), used when the primary stops answering. |
+| `VITE_API_DISCOVERY_URL` | no | HTTPS URL answering `{"url": "https://…"}`, read during the loading screen. The answer is accepted only if its host is the primary's, the backup's or in `VITE_API_ALLOWED_HOSTS`. Serve nothing secret from it. |
+| `VITE_API_ALLOWED_HOSTS` | no | Comma-separated EXACT hostnames discovery may name beyond the primary's and the backup's. No wildcards, URLs or IP addresses (the native build refuses them). |
 | `VITE_MERCHANT_PANEL_URL` | no | Where `/merchant` links point on a split-origin deploy. |
 | `VITE_TURNSTILE_SITE_KEY` | no | Turnstile **site** key (public half). The captcha gate is a pass-through until this and the backend's `TURNSTILE_SECRET_KEY` are both set — see docs/PROJECT_STATUS.md §3.3. |
 | `VITE_APP_VERSION` | never set by hand | Injected at build time from `package.json`; §2 forbids a version literal in a source file. |
@@ -259,21 +267,40 @@ a **rebuild**, not a restart. An APK carries whatever was set when it was built.
 `VITE_APP_ORIGIN` (`user-panel/scripts/assert-native-env.mjs`), because both
 failures are invisible until the APK is on a handset.
 
-### Origin failover
+### Endpoint discovery and failover
 
-Every listed host must serve the same app — this is the multi-domain redundancy
-in `backend/config/network.config.js` (`DOMAINS`), where each hostname serves
-identical routes and behaviour. The client probes `/health/live` and adopts the
-first origin that responds, remembering it for 30 minutes so a recovered primary
-is eventually retried.
+`user-panel/src/services/originFailover.ts`, during the loading screen and
+before ANY API, game or realtime connection (`App.tsx` `EndpointGate`):
 
-Failover triggers on **transport** failures only (DNS, TLS, connection refused,
-timeout). An HTTP error status means the origin answered, and abandoning a host
-that is talking to us would turn a server-side bug into a multi-origin outage.
+1. No discovery URL and no `VITE_API_URL`: a same-origin web deploy, ready at once.
+2. GET `VITE_API_DISCOVERY_URL` — no credentials, redirects refused, 5 s timeout,
+   3 attempts — and validate the `url`: https only (http only for localhost in a
+   dev build), exact allowlisted hostname, no IP literal, no credentials, port,
+   path, query or fragment. The answer can never add a host.
+3. Probe the validated origin's `/health/live`; if discovery failed or that origin
+   does not answer, probe the primary, the backup, then every other host in
+   `VITE_API_ALLOWED_HOSTS`, in order.
+4. Nothing answered: a "Can't connect / Try again" screen. Never an unvalidated host.
 
-This addresses origin availability. It takes no client IP, geo or ISP as an
-input — the candidate order is static and identical for every user — and it is
-not a circumvention mechanism (`CLAUDE.md` §20, 2026-07-28).
+At runtime a **transport** failure (DNS, TLS, connection refused, timeout) probes
+the trusted origins again and moves the next request — and the SSE and Socket.IO
+connections, keeping their listeners — to the first that answers. An HTTP error
+status never triggers it. Only GET/HEAD are retried; a POST whose answer was lost
+fails to the caller, since it may already have been applied. TLS validation is
+the platform's and is never relaxed.
+
+**Choosing the host (Admin > Settings > API Host).** The backend answers
+`GET /api/v1/client/endpoint` with `{"url": "https://<host>"}` for the host saved
+as `SystemConfig.apiHost`, which must be one of `API_ALLOWED_HOSTS`; with none
+chosen it answers 404 and apps use their primary. Set `VITE_API_DISCOVERY_URL`
+to that route (e.g. `https://api.example.com/api/v1/client/endpoint`). A change
+reaches apps on their next start, within the route's 60 s cache.
+
+The app reports what happened (kinds only, never a host or a token) to
+`POST /api/v1/client/endpoint-events`, counted as `bb_client_endpoint_events_total`.
+
+This is availability engineering: every candidate is fixed at build time and
+identical for every user, and the client takes no IP, geo or ISP as input.
 
 ## Identity at rest (Aadhaar, bot tokens)
 

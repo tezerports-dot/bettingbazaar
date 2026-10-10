@@ -58,3 +58,6 @@ backend/app-releases/
 
 # graphify knowledge graph (built locally with `graphify extract . --code-only`)
 graphify-out/
+
+# Redis snapshots from a local redis-server started in a working directory
+*.rdb

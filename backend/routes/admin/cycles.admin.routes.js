@@ -7,6 +7,7 @@ import { db } from '#db';
 import { allBoards } from '../../domains/markets/cycleTypes.js';
 import { voidCancelledCycle } from '#db/repositories/settlements.js';
 import { sendAlert } from '../../services/alerting.service.js';
+import { emitCyclePhase, emitCycleResult } from '../../domains/notification/realtimeEmitters.js';
 
 const router = express.Router();
 
@@ -233,7 +234,7 @@ router.post('/manage-cycle', authenticate, hasPermission('canManageCycles'), asy
       case 'PAUSE':
         result = await db.markets.setPaused(cycleId, true);
         if (!result.ok) return refuse(result);
-        global.io?.emit('cycle_phase', { cycleId, phase: 'PAUSED', message: 'Cycle paused by admin' });
+        emitCyclePhase({ cycleId, type: result.cycle.type, audience: result.cycle.audience, phase: 'PAUSED' });
         break;
 
       case 'RESUME':
@@ -242,16 +243,13 @@ router.post('/manage-cycle', authenticate, hasPermission('canManageCycles'), asy
         // The phase is whatever the row settled on, not an assumed OPEN: a
         // cycle resumed past its window comes back CLOSED and the clients need
         // to hear that, or they will offer a bet the server refuses.
-        global.io?.emit('cycle_phase', {
-          cycleId, phase: result.cycle.status,
-          message: `Cycle resumed by admin (${result.cycle.status})`,
-        });
+        emitCyclePhase({ cycleId, type: result.cycle.type, audience: result.cycle.audience, phase: result.cycle.status });
         break;
 
       case 'CANCEL': {
         result = await db.markets.cancelCycle(cycleId, { by: req.user.userId });
         if (!result.ok) return refuse(result);
-        global.io?.emit('cycle_phase', { cycleId, phase: 'CANCELLED', message: 'Cycle cancelled by admin' });
+        emitCyclePhase({ cycleId, type: result.cycle.type, audience: result.cycle.audience, phase: 'CANCELLED' });
         // Return every stake NOW, so the players see their money back. The
         // cancel has committed, so a failure here must not become a 500 (§21):
         // the engine's recovery sweep finishes whatever this does not.
@@ -275,7 +273,8 @@ router.post('/manage-cycle', authenticate, hasPermission('canManageCycles'), asy
         // of "this cycle has a result" — and one guard refusing a second one.
         result = await db.markets.declareWinner(cycleId, winner, { by: `admin:${req.user.userId}` });
         if (!result.ok) return refuse(result);
-        global.io?.emit('cycle_result', { cycleId, winner, forced: true });
+        // Disclosed in the board rules ("exceptional situations"); `f: 1` on the wire.
+        emitCycleResult({ cycleId, type: result.cycle.type, audience: result.cycle.audience, winner, forced: true });
         break;
       }
 

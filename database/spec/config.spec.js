@@ -29,6 +29,7 @@
  * value a reader falls back to when the key is absent — one constant, not two.
  */
 import { ORDER_SIZES, USDT_BUY_STEP } from '../../backend/domains/merchant/denominations.js';
+import { approvedApiHosts } from '../../backend/config/apiHosts.js';
 
 /** A number setting: `n(default, min, max)`. Bounds are inclusive. */
 const n = (def, min = null, max = null) => ({ type: 'number', default: def, min, max });
@@ -67,6 +68,14 @@ export const SYSTEM_CONFIG_SPEC = group({
   // No androidUrl: the Android app's location is the newest published row of
   // android_releases (uploaded on the admin Android App page), not a typed link.
   iosUrl: s(''), webUrl: s(''),
+
+  // ── The API host player apps are sent to (Admin > Settings > API Host) ────
+  // Served by `GET /api/v1/client/endpoint` as the app's discovery answer.
+  // One of the deployment's approved hosts (`API_ALLOWED_HOSTS`,
+  // backend/config/apiHosts.js), or '' for no preference (the app uses its
+  // configured primary). The list is read at save time: an admin picks among
+  // hosts the operator serves and can never add one.
+  apiHost: { type: 'string', default: '', oneOf: () => ['', ...approvedApiHosts()] },
 
   // Support links used to be declared here TOO, beside the dedicated
   // `supportLinks` scope below. Both existed, so the admin page wrote one and

@@ -31,7 +31,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import {
-  dumpToFile, restoreFromFile, pgRestoreAvailable,
+  dumpToFile, restoreFromFile, pgRestoreAvailable, dumpDatabaseUrl,
 } from '../../backend/services/backup.service.js';
 
 // Probed at MODULE SCOPE, not in beforeAll. Vitest registers every test during
@@ -42,9 +42,14 @@ import {
 const RESTORE_TOOLING = await pgRestoreAvailable();
 const describePg = pgConfigured() && RESTORE_TOOLING ? describe : describe.skip;
 
-/** A URL for a sibling database on the same server. */
+/**
+ * A URL for a sibling database on the same server. Built from the server the
+ * backup service dumps (`dumpDatabaseUrl`: DIRECT_DATABASE_URL when a pooler
+ * sits in front), because CREATE/DROP DATABASE and pg_dump are server
+ * operations — a pooler serves only the databases it lists.
+ */
 function siblingUrl(name) {
-  const u = new URL(process.env.DATABASE_URL);
+  const u = new URL(dumpDatabaseUrl());
   u.pathname = `/${name}`;
   return u.toString();
 }
@@ -93,7 +98,7 @@ describePg('the backup round trip', () => {
     await onDb(admin, `DROP DATABASE IF EXISTS ${RESTORE_DB}`);
     await onDb(admin, `CREATE DATABASE ${RESTORE_DB}`);
 
-    await dumpToFile(archive, process.env.DATABASE_URL);
+    await dumpToFile(archive, dumpDatabaseUrl());
     await restoreFromFile(archive, restoreUrl);
   }, 180_000);
 

@@ -10,7 +10,9 @@
 import fs from 'fs';
 import path from 'path';
 import { rupeesToPaise } from '../backend/shared/money.js'; // Integer Money Engine (cap #9)
-import { pgQueryDuration, setPoolStatsProvider } from '../backend/services/metrics.service.js';
+import {
+  pgQueryDuration, setPoolStatsProvider, setPgServerStatsProvider, recordPgConnectError,
+} from '../backend/services/metrics.service.js';
 
 let pool = null;
 
@@ -120,6 +122,7 @@ export async function pgQuery(text, params, operation = 'query') {
     return result;
   } catch (error) {
     end({ outcome: 'error' });
+    recordPgConnectError(error);
     throw error;
   }
 }
@@ -148,7 +151,7 @@ export async function pgQuery(text, params, operation = 'query') {
 export async function withTransaction(fn) {
   const pool = await getPool();
   if (!pool) throw new Error('Postgres not configured (DATABASE_URL unset)');
-  const client = await connectGuarded(pool);
+  const client = await connectGuarded(pool).catch((e) => { recordPgConnectError(e); throw e; });
   try {
     await client.query('BEGIN');
     const result = await fn(client);
@@ -164,12 +167,35 @@ export async function withTransaction(fn) {
   }
 }
 
-/** Apply schema.sql idempotently (every statement IF NOT EXISTS / OR REPLACE). */
-export async function applySchema() {
+/**
+ * Apply schema.sql idempotently (every statement IF NOT EXISTS / OR REPLACE).
+ *
+ * Serialised: under PM2 cluster mode several workers boot at once, and two
+ * concurrent applies of the same DDL deadlock or fail on a `CREATE … IF NOT
+ * EXISTS` race. The file is sent as ONE simple-protocol query, which
+ * PostgreSQL runs as one implicit transaction, so a transaction-scoped
+ * advisory lock at its head holds until it commits — and works unchanged
+ * through PgBouncer in transaction pooling mode (a session lock would not).
+ *
+ * `BB_SCHEMA_APPLY=skip` (the production compose, where the one-shot
+ * `migrate` service applies it once per deploy) only checks the schema is
+ * there, so a rolling restart of a worker takes no DDL lock under live traffic.
+ */
+export const SCHEMA_APPLY_LOCK = `SELECT pg_advisory_xact_lock(hashtext('bb_schema_apply'));`;
+
+export async function applySchema({ mode = process.env.BB_SCHEMA_APPLY || 'boot' } = {}) {
   if (!pgConfigured()) return false;
+  if (mode === 'skip') {
+    const { rows } = await pgQuery(`SELECT to_regclass('public.cycles') IS NOT NULL AS present`, [], 'schema_check');
+    if (!rows[0]?.present) {
+      throw new Error('BB_SCHEMA_APPLY=skip but the schema is not applied — run the migrate service first');
+    }
+    console.log('✅ PostgreSQL schema present (applied by the migrate step)');
+    return true;
+  }
   const sql = fs.readFileSync(
     path.join(path.dirname(new URL(import.meta.url).pathname), 'schema.sql'), 'utf8');
-  await pgQuery(sql);
+  await pgQuery(`${SCHEMA_APPLY_LOCK}\n${sql}`, undefined, 'schema_apply');
   console.log('✅ PostgreSQL schema applied');
   await reportMissingExtensions();
   return true;
@@ -255,6 +281,28 @@ export function getPoolStats() {
 // dependency-cruiser's no-circular rule enforces). The /metrics bb_pg_pool_connections
 // gauge samples through this without importing pgClient.
 setPoolStatsProvider(getPoolStats);
+
+/**
+ * What PostgreSQL itself sees: its backend connections by state, and its
+ * ceiling. Behind PgBouncer this is the number that must stay below
+ * max_connections however many clients the workers open. Null before the
+ * pool has opened, so a scrape never opens one.
+ */
+export async function getPgServerStats() {
+  if (!pool) return null;
+  const { rows } = await pgQuery(
+    `SELECT COALESCE(state, 'other') AS state, count(*)::int AS n
+       FROM pg_stat_activity WHERE backend_type = 'client backend' GROUP BY 1
+     UNION ALL SELECT 'max', current_setting('max_connections')::int`, [], 'metrics_pg_connections');
+  const out = { active: 0, idle: 0, idle_in_transaction: 0, other: 0, max: 0 };
+  for (const r of rows) {
+    const key = r.state === 'idle in transaction' ? 'idle_in_transaction'
+      : (r.state in out ? r.state : 'other');
+    out[key] += Number(r.n);
+  }
+  return out;
+}
+setPgServerStatsProvider(getPgServerStats);
 
 /** Rupees(float) → integer paise at the Postgres boundary. THE money unit.
  *  Delegates to the Integer Money Engine (shared/money.js) for the canonical

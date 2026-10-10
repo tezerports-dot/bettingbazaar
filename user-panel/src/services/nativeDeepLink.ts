@@ -31,20 +31,20 @@
  * one to an arbitrary route. The allow-list is the deployment's own origins.
  */
 import { isNativeShell } from './nativeLifecycle';
-import { originCandidates, readEnv } from './originFailover';
+import { trustedApiOrigins, readEnv } from './originFailover';
 
 /**
  * Origins whose links this app will act on.
  *
  * `VITE_APP_ORIGIN` is the panel's public origin — the one the backend's
  * `PUBLIC_APP_ORIGIN` names (the referral link sends people there), and the
- * host the App Link filter claims. The API origins are included because a single-service deploy
- * serves the panel and the API from the same host, and a multi-domain deploy
- * (`network.config.js` DOMAINS) serves the same app from every one of them.
+ * host the App Link filter claims. The API origins this build trusts (primary,
+ * backup, and the discovery allowlist) are included because a single-service
+ * deploy serves the panel and the API from the same host.
  */
 function trustedOrigins(): string[] {
   const appOrigin = readEnv('VITE_APP_ORIGIN');
-  const raw = [appOrigin, ...originCandidates()].filter(Boolean);
+  const raw = [appOrigin, ...trustedApiOrigins()].filter(Boolean);
 
   const origins = raw
     .map((value) => {

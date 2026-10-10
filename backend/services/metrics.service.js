@@ -8,6 +8,13 @@
 import client from 'prom-client';
 
 export const registry = new client.Registry();
+// Under PM2 cluster mode every worker has its own registry, so every series
+// carries which role and which worker produced it (NODE_APP_INSTANCE is PM2's
+// 0-based worker index). Dashboards sum or max across `worker`.
+registry.setDefaultLabels({
+  role: String(process.env.BB_RUNTIME_ROLE || 'all'),
+  worker: String(process.env.NODE_APP_INSTANCE ?? process.env.pm_id ?? '0'),
+});
 client.collectDefaultMetrics({ register: registry });
 
 // ── HTTP ──────────────────────────────────────────────────────────────────────
@@ -176,6 +183,137 @@ new client.Gauge({
       for (const stat of REALTIME_STATS) if (Number.isFinite(s[stat])) this.set({ stat }, s[stat]);
     } catch { /* realtime unavailable — emit nothing */ }
   },
+});
+
+// ── Realtime event rate and payload size (owner, 2026-10-09) ────────────────
+// One increment per broadcast (not per recipient): events/sec and the average
+// serialized size are bytes_total / events_total. Labels are event NAMES, a
+// closed set of code constants — never an id.
+const realtimeEvents = new client.Counter({
+  name: 'bb_realtime_events_total',
+  help: 'Public realtime broadcasts by event name',
+  labelNames: ['event'],
+  registers: [registry],
+});
+const realtimePayloadBytes = new client.Counter({
+  name: 'bb_realtime_payload_bytes_total',
+  help: 'Serialized JSON bytes of public realtime broadcasts, by event name (divide by bb_realtime_events_total for the average)',
+  labelNames: ['event'],
+  registers: [registry],
+});
+/** Count one broadcast and its serialized size. Never throws. */
+export function recordRealtimeEvent(event, payload) {
+  try {
+    const name = String(event).slice(0, 48);
+    realtimeEvents.inc({ event: name });
+    realtimePayloadBytes.inc({ event: name }, Buffer.byteLength(JSON.stringify(payload ?? null)));
+  } catch { /* metrics never break a broadcast */ }
+}
+
+// ── SSE connections, Redis health, server-side PostgreSQL connections ───────
+// IoC providers like the pool gauge above, registered by server.js.
+let sseStatsProvider = null;
+export function setSseStatsProvider(fn) { sseStatsProvider = typeof fn === 'function' ? fn : null; }
+new client.Gauge({
+  name: 'bb_sse_connections',
+  help: 'Open SSE streams on this worker by audience (public|user|merchant|admin)',
+  labelNames: ['audience'],
+  registers: [registry],
+  collect() {
+    try {
+      const s = sseStatsProvider ? sseStatsProvider() : null;
+      if (!s) return;
+      this.set({ audience: 'public' }, s.active ?? 0);
+      this.set({ audience: 'user' }, s.activeUsers ?? 0);
+      this.set({ audience: 'merchant' }, s.activeMerchants ?? 0);
+      this.set({ audience: 'admin' }, s.activeAdmins ?? 0);
+    } catch { /* emit nothing */ }
+  },
+});
+
+let redisHealthProvider = null;
+export function setRedisHealthProvider(fn) { redisHealthProvider = typeof fn === 'function' ? fn : null; }
+new client.Gauge({
+  name: 'bb_redis_up',
+  help: '1 when this worker\'s Redis connection is ready, 0 otherwise (absent when Redis is not configured)',
+  registers: [registry],
+  collect() {
+    try {
+      const up = redisHealthProvider ? redisHealthProvider() : null;
+      if (up === null || up === undefined) return;
+      this.set(up ? 1 : 0);
+    } catch { /* emit nothing */ }
+  },
+});
+
+// What the DATABASE sees, through PgBouncer: server connections by state and
+// the configured ceiling. Sampled on scrape with one cheap query.
+let pgServerStatsProvider = null;
+export function setPgServerStatsProvider(fn) { pgServerStatsProvider = typeof fn === 'function' ? fn : null; }
+new client.Gauge({
+  name: 'bb_pg_server_connections',
+  help: 'PostgreSQL backend connections by state (active|idle|idle_in_transaction|other|max)',
+  labelNames: ['state'],
+  registers: [registry],
+  async collect() {
+    try {
+      const s = pgServerStatsProvider ? await pgServerStatsProvider() : null;
+      if (!s) return;
+      for (const [state, n] of Object.entries(s)) if (Number.isFinite(n)) this.set({ state }, n);
+    } catch { /* database unavailable — emit nothing */ }
+  },
+});
+
+// PgBouncer pool utilisation from its admin console (SHOW POOLS / SHOW STATS),
+// sampled on scrape when PGBOUNCER_STATS_URL is set. cl_waiting > 0 or a
+// growing maxwait means clients queue for a server connection; rejected
+// connections show up as bb_pg_connect_errors_total below.
+let pgBouncerStatsProvider = null;
+export function setPgBouncerStatsProvider(fn) { pgBouncerStatsProvider = typeof fn === 'function' ? fn : null; }
+new client.Gauge({
+  name: 'bb_pgbouncer_pool',
+  help: 'PgBouncer pool state for the app database (cl_active|cl_waiting|sv_active|sv_idle|sv_used|maxwait_seconds|avg_wait_seconds|avg_query_seconds)',
+  labelNames: ['metric'],
+  registers: [registry],
+  async collect() {
+    try {
+      const s = pgBouncerStatsProvider ? await pgBouncerStatsProvider() : null;
+      if (!s) return;
+      for (const [metric, n] of Object.entries(s)) if (Number.isFinite(n)) this.set({ metric }, n);
+    } catch { /* pooler unavailable — emit nothing */ }
+  },
+});
+
+// Connection-level refusals: PgBouncer at max_client_conn, a pool wait that
+// timed out, PostgreSQL out of slots. Classified from the driver's message.
+export const pgConnectErrors = new client.Counter({
+  name: 'bb_pg_connect_errors_total',
+  help: 'Database connection refusals by reason',
+  labelNames: ['reason'], // client_limit | wait_timeout | server_slots | connect_failed
+  registers: [registry],
+});
+
+/** Count a database error when it is a connection refusal. Never throws. */
+export function recordPgConnectError(err) {
+  try {
+    const m = String(err?.message || '');
+    const reason = /no more connections allowed|max_client_conn/i.test(m) ? 'client_limit'
+      : /query_wait_timeout|timeout exceeded when trying to connect/i.test(m) ? 'wait_timeout'
+        : /too many clients|remaining connection slots/i.test(m) ? 'server_slots'
+          : /ECONNREFUSED|ECONNRESET|server conn crashed|server login failed|Connection terminated/i.test(m) ? 'connect_failed'
+            : null;
+    if (reason) pgConnectErrors.inc({ reason });
+  } catch { /* metrics never break a query */ }
+}
+
+// Client-reported endpoint events (discovery, adoption, failover), counted
+// from `POST /api/v1/client/endpoint-events`. Every label is a closed enum
+// validated by the route; the host is the server's own, from a fixed list.
+export const clientEndpointEvents = new client.Counter({
+  name: 'bb_client_endpoint_events_total',
+  help: 'Endpoint discovery/failover events reported by player apps',
+  labelNames: ['kind', 'source', 'reason', 'host'],
+  registers: [registry],
 });
 
 /** GET /metrics handler. */

@@ -119,7 +119,19 @@ function runPgTool(tool, args, url, { allowExitCodes = [0] } = {}) {
  * Written to a FILE, not held in a buffer: a whole database in memory is an
  * out-of-memory kill at exactly the size where the backup starts to matter.
  */
-export async function dumpToFile(destPath, url = process.env.DATABASE_URL) {
+/**
+ * The database a dump or restore talks to: PostgreSQL itself, never the
+ * pooler. Behind PgBouncer in transaction mode (the production compose),
+ * DATABASE_URL reaches a pool whose server connection changes between
+ * transactions, and pg_dump's session settings and long snapshot are exactly
+ * what that breaks. DIRECT_DATABASE_URL names the server; without it (a deploy
+ * with no pooler) DATABASE_URL already is the server.
+ */
+export function dumpDatabaseUrl() {
+  return process.env.DIRECT_DATABASE_URL || process.env.DATABASE_URL;
+}
+
+export async function dumpToFile(destPath, url = dumpDatabaseUrl()) {
   await runPgTool('pg_dump', ['--format=custom', '--compress=6', `--file=${destPath}`], url);
   return { path: destPath, sizeBytes: fs.statSync(destPath).size };
 }
@@ -148,7 +160,7 @@ export async function restoreFromFile(srcPath, url) {
 }
 
 export async function runBackup() {
-  if (!process.env.DATABASE_URL) return { ok: false, skipped: 'DATABASE_URL not set' };
+  if (!dumpDatabaseUrl()) return { ok: false, skipped: 'DATABASE_URL not set' };
   if (!isS3Configured()) {
     console.warn('[backup] skipped — S3 not configured (backups need durable off-box storage)');
     return { ok: false, skipped: 'S3 not configured' };
@@ -166,7 +178,7 @@ export async function runBackup() {
     // 1. Dump to a temp file — bounded disk, not memory. A whole database held
     //    in a buffer is an out-of-memory kill at exactly the size where the
     //    backup starts to matter.
-    const { sizeBytes: size } = await dumpToFile(tmp, process.env.DATABASE_URL);
+    const { sizeBytes: size } = await dumpToFile(tmp, dumpDatabaseUrl());
 
     // 2. Stream to S3.
     const key = `${PREFIX}bb-${stamp}.dump`;

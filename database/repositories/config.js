@@ -198,6 +198,15 @@ function coerce(field, value, path) {
       return value;
     case 'string':
       if (typeof value !== 'string') throw invalidConfig(`config: '${path}' must be a string, got ${JSON.stringify(value)}`);
+      // A choice from a set the spec computes at save time (`oneOf`), e.g. the
+      // deployment's approved API hosts. Anything else is refused by name.
+      if (field.oneOf) {
+        const choices = field.oneOf();
+        if (!choices.includes(value)) {
+          const named = choices.map((c) => (c === '' ? '(none)' : c)).join(', ');
+          throw invalidConfig(`config: '${path}' must be one of ${named}; got ${JSON.stringify(value)}`);
+        }
+      }
       return value;
     case 'string[]':
       if (!Array.isArray(value) || value.some((v) => typeof v !== 'string')) {
