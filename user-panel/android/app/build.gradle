@@ -87,7 +87,13 @@ dependencies {
     implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
     implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
     implementation project(':capacitor-android')
+    // The app's network client: every hostname resolved over DNS-over-HTTPS
+    // (DohDns, SecureTransport; CLAUDE.md §2 "How the Android app reaches the network").
+    implementation "com.squareup.okhttp3:okhttp:$okhttpVersion"
+    implementation "com.squareup.okhttp3:okhttp-dnsoverhttps:$okhttpVersion"
     testImplementation "junit:junit:$junitVersion"
+    testImplementation "com.squareup.okhttp3:mockwebserver3:$okhttpVersion"
+    testImplementation "com.squareup.okhttp3:okhttp-tls:$okhttpVersion"
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
     androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
     implementation project(':capacitor-cordova-android-plugins')

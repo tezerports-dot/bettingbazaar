@@ -13,4 +13,6 @@ ext {
     androidxJunitVersion = '1.3.0'
     androidxEspressoCoreVersion = '3.7.0'
     cordovaAndroidVersion = '14.0.1'
+    // OkHttp + its DNS-over-HTTPS module: SecureNetwork, the app's one network client.
+    okhttpVersion = '5.5.0'
 }

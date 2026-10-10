@@ -1,4 +1,7 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
+// FIRST, before anything that can send a request: inside the Android app every
+// request goes through the native DNS-over-HTTPS client (services/secureTransport.ts).
+import './services/secureTransportInstall';
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';

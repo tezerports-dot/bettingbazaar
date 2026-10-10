@@ -19,12 +19,13 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
 import java.security.MessageDigest;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
+
+import okhttp3.Response;
+import okhttp3.ResponseBody;
 
 /**
  * ApkUpdater — the app updates itself, in the app.
@@ -82,7 +83,7 @@ public class ApkUpdaterPlugin extends Plugin {
             File dir = updatesDir();
             File target = new File(dir, sha256.toLowerCase() + ".apk");
             File part = new File(dir, sha256.toLowerCase() + ".part");
-            HttpURLConnection conn = null;
+            Response response = null;
             try {
                 // Already downloaded and verified — e.g. the player went to
                 // Settings to allow installs and came back. Hash it again anyway:
@@ -94,21 +95,20 @@ public class ApkUpdaterPlugin extends Plugin {
                 if (stale != null) for (File f : stale) //noinspection ResultOfMethodCallIgnored
                     f.delete();
 
-                conn = (HttpURLConnection) new URL(url).openConnection();
-                conn.setConnectTimeout(TIMEOUT_MS);
-                conn.setReadTimeout(TIMEOUT_MS);
-                conn.setInstanceFollowRedirects(true);
-                int code = conn.getResponseCode();
+                // Through the app's one network client, so the download host is
+                // resolved over DNS-over-HTTPS like every other request
+                // (SecureNetwork). https only; a redirect off TLS is refused.
+                response = SecureNetwork.transport().download(url, TIMEOUT_MS);
+                int code = response.code();
                 if (code != 200) { call.reject("The update could not be downloaded (HTTP " + code + ").", "HTTP_" + code); return; }
-                // A redirect to a plaintext host would have been refused by the
-                // network security config; check the final URL all the same.
-                if (!UpdateVerifier.isHttps(conn.getURL().toString())) { call.reject("The update link is not secure (https).", "INSECURE_URL"); return; }
+                if (!UpdateVerifier.isHttps(response.request().url().toString())) { call.reject("The update link is not secure (https).", "INSECURE_URL"); return; }
+                ResponseBody body = response.body();
 
-                long total = conn.getContentLengthLong() > 0 ? conn.getContentLengthLong() : expectedSize;
+                long total = body.contentLength() > 0 ? body.contentLength() : expectedSize;
                 MessageDigest md = MessageDigest.getInstance("SHA-256");
                 long received = 0;
                 long lastReport = 0;
-                try (InputStream in = conn.getInputStream(); OutputStream out = new FileOutputStream(part)) {
+                try (InputStream in = body.byteStream(); OutputStream out = new FileOutputStream(part)) {
                     byte[] buf = new byte[64 * 1024];
                     int n;
                     while ((n = in.read(buf)) != -1) {
@@ -134,7 +134,7 @@ public class ApkUpdaterPlugin extends Plugin {
                 part.delete();
                 call.reject("The update could not be downloaded. Check your connection and try again.", "NETWORK", e);
             } finally {
-                if (conn != null) conn.disconnect();
+                if (response != null) response.close();
                 busy.set(false);
             }
         });

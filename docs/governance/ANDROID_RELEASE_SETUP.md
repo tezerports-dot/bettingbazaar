@@ -247,6 +247,19 @@ you hand it to anyone:
    - Repeat with **Mandatory** ticked: the old version must be blocked.
 7. **Resume:** background the app for a minute and come back. The live cycle
    data resumes.
+8. **It does not use the phone's DNS** (CLAUDE.md §2, *How the Android app
+   reaches the network*). Every request is looked up over encrypted DNS
+   (Cloudflare, then Google), never through the Wi-Fi or carrier resolver.
+   - On a network whose own DNS cannot find your API host (for example a
+     phone hotspot from a second phone with Private DNS set to a filtering
+     provider that blocks your domain), the app still loads, signs in, places
+     a bet and shows live rounds. A browser on the same phone cannot open the
+     site.
+   - Upload a profile picture, and run an in-app update (step 6): both go the
+     same way.
+   - Know the trade: on a network that blocks BOTH 1.1.1.1 and 8.8.8.8 (some
+     offices, some captive portals) the app cannot reach the server at all;
+     there is deliberately no fall back to the phone's DNS.
 
 **A debug build can never update to a release build, or the reverse.** They
 are signed with different keys and Android refuses the update. Test updates
