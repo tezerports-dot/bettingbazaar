@@ -159,6 +159,7 @@ const GameScreen: React.FC = () => {
   // bar). While the pools are hidden no side figure exists (§2), so neither
   // card may show one: blind while merged, nothing if still hidden at the result.
   const shareMode = shareModeFor({ loading: loadingCycle, blind: showMerged, poolsHidden, delhi: poolDelhi, bombay: poolBombay });
+  const blindBandShown = shareMode === 'blind' && !isClosed;
   const shares = sharesOf(poolDelhi, poolBombay);
 
   // My open bets this cycle.
@@ -412,7 +413,8 @@ const GameScreen: React.FC = () => {
                 <span className="bb-skel" style={{ display: 'inline-block', width: 54, height: 16, borderRadius: 5, background: 'var(--surface3)' }} />
               </>
             ) : showMerged ? (
-              <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 15, color: 'var(--gold-ink)' }}>POOL ₹{fmt(total)}</span>
+              // The blind band on the cards carries the total; it is said once (owner, 2026-10-10).
+              blindBandShown ? null : <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 15, color: 'var(--gold-ink)' }}>POOL ₹{fmt(total)}</span>
             ) : isOpen && total === 0 ? (
               <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text3)' }}>No bets yet this round. Be the first.</span>
             ) : (
@@ -457,7 +459,7 @@ const GameScreen: React.FC = () => {
             </div>
 
             {/* Merged: one band across both cards in place of the VS medallion */}
-            {shareMode === 'blind' && !isClosed && <BlindBand total={total} compact={cardH < 200} />}
+            {blindBandShown && <BlindBand total={total} compact={cardH < 200} />}
             {!isClosed && !isResult && shareMode !== 'blind' && (
               <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%,-50%)', width: mobile ? 42 : 50, height: mobile ? 42 : 50, borderRadius: '50%', background: 'var(--bg)', border: '2px solid var(--gold)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 4 }}>
                 <span className="font-grotesk" style={{ fontWeight: 700, fontStyle: 'italic', fontSize: 17, color: 'var(--gold-ink)' }}>VS</span>
