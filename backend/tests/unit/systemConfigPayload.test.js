@@ -175,3 +175,25 @@ describe('the settlement rail, and the amounts it allows', () => {
     expect(systemConfigFallback().orderSizes.UPI_BANK.length).toBeGreaterThan(0);
   });
 });
+
+// The player screen's extras (Admin › Player Screen, owner 2026-10-10).
+import { SYSTEM_CONFIG_SPEC } from '#db/spec/config.spec.js';
+
+describe('boardExtras — the player screen switches', () => {
+  const declared = SYSTEM_CONFIG_SPEC.fields.boardExtras.fields;
+
+  it('serves every declared switch, unset, at its declared default', () => {
+    const served = systemConfigPayload(null).boardExtras;
+    expect(Object.keys(served).sort()).toEqual(Object.keys(declared).sort());
+    for (const [key, decl] of Object.entries(declared)) expect(served[key], key).toEqual(decl.default);
+  });
+
+  it('serves an admin\'s OFF and 0 as set, not as missing', () => {
+    const served = systemConfigPayload({ boardExtras: {
+      urgencyChips: false, closingWarnSeconds: 0, resultCelebration: false, bonusProgress: false, promoCards: false,
+    } }).boardExtras;
+    expect(served).toEqual({
+      urgencyChips: false, closingWarnSeconds: 0, resultCelebration: false, bonusProgress: false, promoCards: false,
+    });
+  });
+});

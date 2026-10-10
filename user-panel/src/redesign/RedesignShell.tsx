@@ -15,16 +15,17 @@
  */
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router';
-import { useGame, spendableBalance } from '../services/GameContext';
+import { useGame, spendableBalance, useBoardExtras } from '../services/GameContext';
 import { useGameProviders } from '../services/GameProviderContext';
 import { useTheme } from './ThemeContext';
 import { useViewport } from './useViewport';
 import { fmt } from './format';
 import AuthModal from '../components/Modals/AuthModal';
 import NotificationBell from '../components/Layout/NotificationBell';
+import { PromoCarousel, useHomeCards } from './BoardExtras';
 import ShareModal from '../components/Modals/ShareModal';
 import AnnouncementBanner from '../components/AnnouncementBanner';
-import { brandLogo } from '../services/brandAssets';
+import { useHeaderLogo } from '../services/brandAssets';
 import { ProfileSwitch, usePlayProfile } from './ProfileSwitch';
 
 interface ShellContextValue {
@@ -80,7 +81,9 @@ const TABS = [
   { label: 'Results', icon: '📊', path: '/results' },
   { label: 'Wallet', icon: '💰', path: '/wallet' },
   { label: 'Promo', icon: '💡', path: '/promo' },
-  { label: 'Profile', icon: '👤', path: '/profile' },
+  // The last tab opens the menu drawer (owner, 2026-10-10): the header lost
+  // its bell to make room for the profile pill, and Profile lives in the menu.
+  { label: 'Menu', icon: '☰', path: '#menu', action: 'menu' as const },
 ];
 
 const MENU_SECTIONS = [
@@ -119,7 +122,25 @@ const APP_VERSION = import.meta.env.VITE_APP_VERSION ?? '';
 const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
   const { user, isAuthenticated, logout, setAudience } = useGame();
   const { theme, toggleTheme } = useTheme();
-  const { desktop } = useViewport();
+  const { desktop, vw } = useViewport();
+  // A phone narrower than this cannot hold the wallet pill, the wordmark and
+  // four 40px buttons on one row, so the buttons shrink and the theme switch
+  // moves into the menu (where it is always offered too).
+  const compact = vw < 420;
+  // A laptop gets a side rail instead of the bottom tab bar (owner,
+  // 2026-10-10): a wide screen driven by a mouse. A tablet held sideways is
+  // as wide but touch-first, so it keeps the bar under the thumb.
+  const [finePointer] = useState(() => {
+    try { return window.matchMedia('(pointer: fine)').matches; } catch { return true; }
+  });
+  const laptop = desktop && finePointer;
+  const [railOpen, setRailOpen] = useState(() => {
+    try { return localStorage.getItem('bb_rail') !== 'closed'; } catch { return true; }
+  });
+  const toggleRail = () => setRailOpen((o) => {
+    try { localStorage.setItem('bb_rail', o ? 'closed' : 'open'); } catch { /* per-viewer nicety only */ }
+    return !o;
+  });
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -128,7 +149,7 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
   const [logoFailed, setLogoFailed] = useState(false);
 
-  const logoSrc = brandLogo('logo-header.png');
+  const logoSrc = useHeaderLogo();
   // ── DELIBERATELY deposit + winnings, and NOT the reserve ──────────────────
   // This pill is smaller than the total on the wallet screen, on purpose. The
   // reserve is not freely spendable — only `betReservePercent` of a stake may
@@ -169,19 +190,85 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
     [anyCasino, anyCrash, anySports],
   );
   const isActive = (path: string) => (path === '/' ? location.pathname === '/' : location.pathname.startsWith(path));
+  const onBoard = location.pathname === '/';
+  // Admin › Page Slides › Home promo cards, for the phone carousel; read only
+  // where it shows (Admin › Player Screen's switch, the board, not a laptop).
+  const extras = useBoardExtras();
+  const homeCards = useHomeCards(extras.promoCards && onBoard && !desktop);
 
+  const iconSize = compact ? 34 : 40;
   const iconBtn: React.CSSProperties = {
-    width: 40, height: 40, borderRadius: 12, border: '1px solid var(--line)',
+    flex: 'none', width: iconSize, height: iconSize, borderRadius: 12, border: '1px solid var(--line)',
     background: 'var(--surface2)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
   };
+
+  /** One handler for a menu entry, from the drawer or the laptop rail. */
+  const pickMenuItem = (it: (typeof MENU_SECTIONS)[number]['items'][number]) => {
+    if ('action' in it && it.action === 'share') { setMenuOpen(false); setShareOpen(true); return; }
+    go(it.path);
+  };
+
+  // ░░ SIDE RAIL (laptop) ░░ The menu's own sections, always in view; it
+  // folds to icons. Phones and tablets keep the bottom tab bar instead.
+  const rail = laptop ? (
+    <nav aria-label="Main menu" className="bb-noscroll" style={{
+      flex: 'none', width: railOpen ? 232 : 68, transition: 'width .18s ease', overflowY: 'auto', overflowX: 'hidden',
+      background: 'var(--surface)', borderRight: '1px solid var(--line)', display: 'flex', flexDirection: 'column', padding: '10px 10px 14px',
+    }}>
+      {MENU_SECTIONS.map(sec => (
+        <div key={sec.title} style={{ marginTop: 6 }}>
+          {railOpen
+            ? <div style={{ padding: '8px 10px 4px', fontSize: 9, fontWeight: 800, letterSpacing: '.16em', textTransform: 'uppercase', color: 'var(--text3)' }}>{sec.title}</div>
+            : <div style={{ height: 1, background: 'var(--line)', margin: '8px 6px' }} />}
+          {sec.items.map(it => {
+            const active = 'action' in it ? false : isActive(it.path);
+            return (
+              <button key={it.path + it.label} type="button" onClick={() => pickMenuItem(it)} title={railOpen ? undefined : it.label}
+                aria-label={railOpen ? undefined : it.label} aria-current={active ? 'page' : undefined} style={{
+                  width: '100%', display: 'flex', alignItems: 'center', gap: 11, padding: railOpen ? '9px 10px' : '9px 0',
+                  justifyContent: railOpen ? 'flex-start' : 'center', border: 'none', borderRadius: 10, cursor: 'pointer', textAlign: 'left', marginBottom: 2,
+                  background: active ? 'color-mix(in srgb,var(--gold) 14%,transparent)' : 'transparent',
+                  boxShadow: active ? 'inset 3px 0 0 var(--gold)' : 'none',
+                }}>
+                <span aria-hidden="true" style={{ width: 30, height: 30, flex: 'none', borderRadius: 9, background: 'var(--surface3)', border: '1px solid var(--line)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 15 }}>{it.icon}</span>
+                {railOpen && <span style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: active ? 'var(--gold-ink)' : 'var(--text)' }}>{it.label}</span>}
+              </button>
+            );
+          })}
+        </div>
+      ))}
+      <div style={{ flex: 1 }} />
+      {isAuthenticated && (
+        <button type="button" onClick={() => { logout(); navigate('/'); }} title={railOpen ? undefined : 'Sign Out'} aria-label={railOpen ? undefined : 'Sign Out'} style={{
+          width: '100%', display: 'flex', alignItems: 'center', gap: 11, padding: railOpen ? '9px 10px' : '9px 0', justifyContent: railOpen ? 'flex-start' : 'center',
+          border: 'none', borderRadius: 10, cursor: 'pointer', textAlign: 'left', marginTop: 12, background: 'transparent', color: 'var(--red)',
+        }}>
+          <span aria-hidden="true" style={{ width: 30, height: 30, flex: 'none', borderRadius: 9, background: 'color-mix(in srgb,var(--red) 8%,transparent)', border: '1px solid color-mix(in srgb,var(--red) 35%,transparent)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 15 }}>🚪</span>
+          {railOpen && <span style={{ fontSize: 13, fontWeight: 700 }}>Sign Out</span>}
+        </button>
+      )}
+      {!isAuthenticated && railOpen && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 12 }}>
+          <button type="button" onClick={() => openAuth('login')} style={{ padding: 10, borderRadius: 11, border: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 13, color: '#1a1200', background: 'linear-gradient(135deg,var(--gold2),var(--gold))' }}>Sign In</button>
+          <button type="button" onClick={() => openAuth('register')} style={{ padding: 10, borderRadius: 11, border: '1px solid var(--line2)', cursor: 'pointer', fontWeight: 800, fontSize: 13, color: 'var(--gold-ink)', background: 'color-mix(in srgb,var(--gold) 8%,transparent)' }}>Register</button>
+        </div>
+      )}
+    </nav>
+  ) : null;
 
   return (
     <ShellContext.Provider value={ctx}>
       <div className="bb-app" data-theme={theme}>
         {/* ░░ TOP BAR ░░ */}
+        {/*
+          Three columns, not an absolutely-centred logo: the wordmark gets
+          exactly the room the pill and the buttons leave, and scales down
+          into it. Centred over the whole bar it was sized in pixels, so on a
+          phone it grew under the buttons on both sides.
+        */}
         <header style={{
-          flex: 'none', height: 60, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
-          padding: '0 14px', background: 'color-mix(in srgb, var(--bg) 82%, transparent)', backdropFilter: 'blur(14px)',
+          flex: 'none', height: 60, display: 'grid', gridTemplateColumns: laptop ? 'auto auto minmax(0,1fr) auto' : 'auto minmax(0,1fr) auto', alignItems: 'center',
+          gap: compact ? 8 : 12, padding: compact ? '0 10px' : '0 14px', background: 'color-mix(in srgb, var(--bg) 82%, transparent)', backdropFilter: 'blur(14px)',
           borderBottom: '1px solid var(--line)', position: 'relative', zIndex: 60,
         }}>
           {/*
@@ -201,17 +288,28 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
             working — the drawer's own Sign In button has always called it. Only
             this button was wired to the wrong half.
           */}
+          {/* A laptop's menu is the side rail, so its one menu button sits on
+              the same (left) side and folds the rail (owner, 2026-10-10). */}
+          {laptop && (
+            <button onClick={toggleRail} aria-label={railOpen ? 'Collapse menu' : 'Expand menu'} aria-expanded={railOpen} style={{ ...iconBtn, color: 'var(--text)' }}>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round">
+                <line x1="4" y1="7" x2="20" y2="7" /><line x1="4" y1="12" x2="20" y2="12" /><line x1="4" y1="17" x2="20" y2="17" />
+              </svg>
+            </button>
+          )}
           <button onClick={() => (isAuthenticated ? go('/wallet') : openAuth('login'))} style={{
-            display: 'flex', alignItems: 'center', gap: 9, background: 'var(--pill)', border: '1px solid var(--pill-line)',
-            padding: '7px 13px 7px 8px', borderRadius: 999, cursor: 'pointer', boxShadow: 'var(--shadow-sm)',
+            display: 'flex', alignItems: 'center', gap: compact ? 6 : 9, background: 'var(--pill)', border: '1px solid var(--pill-line)',
+            padding: compact ? '6px 10px 6px 6px' : '7px 13px 7px 8px', borderRadius: 999, cursor: 'pointer', boxShadow: 'var(--shadow-sm)',
           }}>
-            <span style={{
-              flex: 'none', width: 26, height: 26, borderRadius: '50%',
-              background: 'linear-gradient(to bottom right,var(--gold2),var(--gold))', display: 'flex', alignItems: 'center',
-              justifyContent: 'center', color: '#1a1200', fontWeight: 900, fontSize: 13, border: '1px solid rgba(255,255,255,.2)',
-            }}>₹</span>
+            {!compact && (
+              <span style={{
+                flex: 'none', width: 26, height: 26, borderRadius: '50%',
+                background: 'linear-gradient(to bottom right,var(--gold2),var(--gold))', display: 'flex', alignItems: 'center',
+                justifyContent: 'center', color: '#1a1200', fontWeight: 900, fontSize: 13, border: '1px solid rgba(255,255,255,.2)',
+              }}>₹</span>
+            )}
             <span style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.05, textAlign: 'left' }}>
-              <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 15, color: 'var(--text)', letterSpacing: '.01em' }}>
+              <span className="font-grotesk" style={{ fontWeight: 700, fontSize: compact ? 13 : 15, color: 'var(--text)', letterSpacing: '.01em', whiteSpace: 'nowrap' }}>
                 {totalBal !== null ? `₹${fmt(totalBal)}` : 'Sign in'}
               </span>
               <span style={{ fontSize: 8, fontWeight: 700, letterSpacing: '.12em', textTransform: 'uppercase', color: 'var(--green)' }}>
@@ -220,55 +318,45 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
             </span>
           </button>
 
-          <button onClick={() => go('/')} style={{
-            position: 'absolute', left: '50%', transform: 'translateX(-50%)', background: 'none', border: 'none',
-            cursor: 'pointer', height: '100%', display: 'flex', alignItems: 'center', padding: '0 10px',
+          <button onClick={() => go('/')} aria-label="Home" style={{
+            minWidth: 0, width: '100%', height: '100%', background: 'none', border: 'none', cursor: 'pointer',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0,
           }}>
             {!logoFailed ? (
               <img src={logoSrc} alt="Betting Bazaar" onError={() => setLogoFailed(true)} style={{
-                height: desktop ? 46 : 40, width: 'auto', maxWidth: desktop ? 320 : 240, objectFit: 'contain',
-                filter: 'drop-shadow(0 2px 8px var(--glow))',
+                display: 'block', width: 'auto', height: 'auto', maxWidth: '100%', maxHeight: desktop ? 44 : 36,
+                objectFit: 'contain',
               }} />
             ) : (
-              <span className="font-grotesk" style={{ color: 'var(--gold-ink)', fontWeight: 700, fontSize: 20, letterSpacing: '.14em' }}>
+              <span className="font-grotesk" style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--gold-ink)', fontWeight: 700, fontSize: compact ? 15 : 20, letterSpacing: '.14em' }}>
                 BETTING&nbsp;BAZAAR
               </span>
             )}
           </button>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            {/*
-              The notification inbox. `notify()` has been persisting rows on
-              real events all along — an admin blocking an account writes the
-              explanation meant for that player — and `NotificationBell` was
-              built to show them, against three routes that work
-              (`/api/user/notifications`, `.../unread-count`, `.../read`).
-
-              It was never mounted. It hung off the OLD `Layout/Header`, this
-              shell replaced that header, and the bell was not carried across —
-              so the component, its tests and its endpoints were all green
-              while no screen in the panel rendered it. A player was blocked,
-              the platform recorded why, and they were locked out with no way
-              to read it (§28: a backend feature with no UI is not shipped).
-
-              It takes `isAuthenticated` because it polls: signed out there is
-              nothing to count and no token to count it with.
-            */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: compact ? 6 : 8 }}>
             {general && <ProfileSwitch general={general} choose={choose} error={profileError} />}
-            <NotificationBell isAuthenticated={isAuthenticated} />
-            <button onClick={toggleTheme} aria-label="Toggle theme" style={{ ...iconBtn, color: 'var(--gold-ink)', fontSize: 17 }}>
-              {theme === 'dark' ? '☀️' : '🌙'}
-            </button>
-            <button onClick={openMenu} aria-label="Menu" style={{ ...iconBtn, color: 'var(--text)' }}>
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round">
-                <line x1="4" y1="7" x2="20" y2="7" /><line x1="4" y1="12" x2="20" y2="12" /><line x1="4" y1="17" x2="20" y2="17" />
-              </svg>
-            </button>
+            {!compact && (
+              <button onClick={toggleTheme} aria-label="Toggle theme" style={{ ...iconBtn, color: 'var(--gold-ink)', fontSize: 17 }}>
+                {theme === 'dark' ? '☀️' : '🌙'}
+              </button>
+            )}
+            {laptop
+              ? <NotificationBell isAuthenticated={isAuthenticated} />
+              : (
+                <button onClick={openMenu} aria-label="Menu" style={{ ...iconBtn, color: 'var(--text)' }}>
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round">
+                    <line x1="4" y1="7" x2="20" y2="7" /><line x1="4" y1="12" x2="20" y2="12" /><line x1="4" y1="17" x2="20" y2="17" />
+                  </svg>
+                </button>
+              )}
           </div>
         </header>
 
-        {/* ░░ MAIN + CATEGORY STRIP ░░ */}
-        <main style={{ flex: 1, minHeight: 0, position: 'relative', overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
+        {/* ░░ RAIL (laptop) + MAIN + CATEGORY STRIP ░░ */}
+        <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
+        {rail}
+        <main style={{ minWidth: 0, flex: 1, minHeight: 0, position: 'relative', overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
           {/*
             What the platform is telling everyone. `announcements` had an admin
             page that writes them and a route that serves them, and no screen
@@ -281,53 +369,60 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
             cannot get in.
           */}
           <AnnouncementBanner />
-          <div className="bb-noscroll" style={{
-            flex: 'none', display: 'flex', gap: 10, padding: '8px 14px', overflowX: 'auto',
-            background: 'color-mix(in srgb, var(--bg) 55%, transparent)', borderBottom: '1px solid var(--line)',
+          {/* Phone and tablet, on the board: the promo carousel straight under
+              the header (owner, 2026-10-10). A laptop shows the same cards in
+              the board's side columns instead. */}
+          {onBoard && !desktop && <PromoCarousel cards={homeCards} />}
+          {/*
+            The games, as flat tabs that slide sideways and belong to the bar
+            above them (owner, 2026-10-10: "like stake does with casino,
+            sports", "not this round type button"). Each name glows green; the
+            one you are on shines brighter white, with a sparkle. One per
+            category that has somewhere to go.
+          */}
+          <nav aria-label="Games" className="bb-noscroll bb-gametabs" style={{
+            flex: 'none', display: 'flex', gap: 2, padding: '0 8px', overflowX: 'auto',
+            borderBottom: '1px solid var(--line)', background: 'var(--bg)', scrollSnapType: 'x proximity',
           }}>
             {liveCategories.map(cat => {
               const active = isActive(cat.path);
               return (
                 <button key={cat.path} onClick={() => go(cat.path)}
-                  // Which category you are IN, said out loud. It was a border
-                  // colour and a glow and nothing else, so a screen reader read
-                  // four identical buttons. `aria-current="page"` because these
-                  // navigate — they are not a toggle.
+                  // Which category you are IN, said out loud. `aria-current="page"`
+                  // because these navigate — they are not a toggle.
                   aria-current={active ? 'page' : undefined}
-                  style={{
-                  flex: 'none', width: 158, height: 60, borderRadius: 14, padding: '0 14px', display: 'flex',
-                  alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer',
-                  background: active ? 'linear-gradient(135deg,var(--surface2),var(--surface3))' : 'var(--surface)',
-                  border: `1.5px solid ${active ? cat.accent : 'var(--line)'}`,
-                  boxShadow: active ? `0 0 18px -4px ${cat.accent}` : 'var(--shadow-sm)', position: 'relative', overflow: 'hidden',
-                }}>
-                  <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', lineHeight: 1.15, textAlign: 'left', minWidth: 0 }}>
-                    <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 12, letterSpacing: '.03em', color: cat.accent, whiteSpace: 'nowrap' }}>{cat.title}</span>
-                    <span style={{ fontSize: 9, fontWeight: 600, color: 'var(--text2)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 96 }}>{cat.sub}</span>
-                  </span>
-                  <span style={{ fontSize: 26, lineHeight: 1, filter: `drop-shadow(0 0 8px ${cat.accent})` }}>{cat.icon}</span>
+                  title={cat.sub}
+                  className={`bb-gametab${active ? ' bb-gametab--on' : ''}`}>
+                  <span aria-hidden="true" style={{ fontSize: 15, lineHeight: 1 }}>{cat.icon}</span>
+                  <span className="font-grotesk bb-gametab__name">{cat.title}</span>
+                  {active && <span aria-hidden="true" className="bb-gametab__spark">✦</span>}
                 </button>
               );
             })}
-          </div>
+          </nav>
 
           <div key={location.pathname} className="bb-rise" style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
             {children}
           </div>
         </main>
+        </div>
 
-        {/* ░░ BOTTOM TAB BAR (mobile/tablet) ░░ */}
-        {!desktop && (
+        {/* ░░ BOTTOM TAB BAR, phones and tablets (owner, 2026-10-10) ░░
+            Fixed at the foot of the app, tablets included, so the main places
+            are one tap away; a tablet held sideways keeps the tabs at a
+            phone-like width in the middle. A laptop has the side rail. */}
+        {!laptop && (
           <nav style={{
-            flex: 'none', display: 'flex', background: 'color-mix(in srgb, var(--bg) 92%, transparent)',
+            flex: 'none', display: 'flex', justifyContent: 'center', background: 'color-mix(in srgb, var(--bg) 92%, transparent)',
             backdropFilter: 'blur(14px)', borderTop: '1px solid var(--line2)', paddingBottom: 'env(safe-area-inset-bottom)',
             position: 'relative', zIndex: 60,
           }}>
             {TABS.map(tab => {
-              const active = isActive(tab.path);
+              const isMenu = 'action' in tab && tab.action === 'menu';
+              const active = isMenu ? menuOpen : isActive(tab.path);
               return (
-                <button key={tab.path} onClick={() => go(tab.path)} style={{
-                  flex: 1, height: 58, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                <button key={tab.path} onClick={() => (isMenu ? openMenu() : go(tab.path))} aria-label={isMenu ? 'Open menu' : undefined} style={{
+                  flex: 1, maxWidth: desktop ? 150 : undefined, height: 58, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
                   gap: 3, border: 'none', background: 'none', cursor: 'pointer', color: active ? 'var(--gold-ink)' : 'var(--text3)',
                   position: 'relative',
                 }}>
@@ -351,6 +446,16 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
             }}>
               <div style={{ flex: 'none', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '20px 20px 16px', borderBottom: '1px solid var(--line)' }}>
                 <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 15, letterSpacing: '.14em', color: 'var(--gold-ink)', textTransform: 'uppercase' }}>Menu</span>
+                {/*
+                  The notification inbox, moved here from the header (owner,
+                  2026-10-10) so the header has room for the profile pill.
+                  `notify()` persists real events (an admin blocking an account
+                  writes the explanation meant for that player), so the inbox
+                  must stay reachable (§28): it is the first thing in the menu.
+                */}
+                <div style={{ marginLeft: 'auto', marginRight: 8 }}>
+                  <NotificationBell isAuthenticated={isAuthenticated} />
+                </div>
                 <button onClick={() => setMenuOpen(false)} style={{ width: 32, height: 32, borderRadius: '50%', border: '1px solid var(--line)', background: 'var(--surface3)', color: 'var(--text2)', cursor: 'pointer', fontSize: 13 }}>✕</button>
               </div>
               <nav className="bb-noscroll" style={{ flex: 1, overflowY: 'auto', padding: '12px 10px' }}>
@@ -360,10 +465,7 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
                     {sec.items.map(it => {
                       const active = isActive(it.path);
                       return (
-                        <button key={it.path + it.label} onClick={() => {
-                          if ('action' in it && it.action === 'share') { setMenuOpen(false); setShareOpen(true); return; }
-                          go(it.path);
-                        }} style={{
+                        <button key={it.path + it.label} onClick={() => pickMenuItem(it)} style={{
                           width: '100%', display: 'flex', alignItems: 'center', gap: 12, padding: '11px 12px', border: 'none',
                           borderRadius: 11, background: active ? 'color-mix(in srgb,var(--gold) 12%,transparent)' : 'transparent',
                           cursor: 'pointer', textAlign: 'left', marginBottom: 2,
@@ -378,6 +480,9 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
                 ))}
               </nav>
               <div style={{ flex: 'none', padding: '12px 16px 14px', borderTop: '1px solid var(--line)' }}>
+                <button onClick={toggleTheme} style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: 10, marginBottom: 10, borderRadius: 12, border: '1px solid var(--line)', background: 'var(--surface3)', color: 'var(--text)', cursor: 'pointer', fontWeight: 700, fontSize: 12 }}>
+                  <span aria-hidden="true">{theme === 'dark' ? '☀️' : '🌙'}</span>{theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+                </button>
                 {!isAuthenticated ? (
                   <div style={{ display: 'flex', gap: 8 }}>
                     <button onClick={() => openAuth('login')} style={{ flex: 1, padding: 11, borderRadius: 12, border: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 13, color: '#1a1200', background: 'linear-gradient(135deg,var(--gold2),var(--gold))' }}>Sign In</button>

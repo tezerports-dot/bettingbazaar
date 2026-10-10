@@ -344,7 +344,11 @@ router.get('/v1/boards', async (req, res) => {
 router.get('/v1/board-rules', async (req, res) => {
   try {
     const config = await getSystemConfig();
-    return res.json({ success: true, ...boardRules({ feePercent: config.winningsFeePercent }) });
+    return res.json({ success: true, ...boardRules({
+      feePercent: config.winningsFeePercent,
+      // schema default: false (database/spec/config.spec.js riskRules)
+      bothSides: !(config.riskRules?.blockOppositeSideBetting ?? false),
+    }) });
   } catch (error) {
     return respondError(res, error, 'GET /api/v1/board-rules', { message: 'Could not load the board rules' });
   }

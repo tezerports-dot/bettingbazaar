@@ -202,7 +202,7 @@ export interface DashboardMetrics {
   systemHealth: 'HEALTHY' | 'DEGRADED' | 'DOWN';
 }
 
-export type PromoLocation = 'HOME_POPUP' | 'TRICKS_PAGE' | 'RULES_PAGE';
+export type PromoLocation = 'HOME_POPUP' | 'TRICKS_PAGE' | 'RULES_PAGE' | 'HOME';
 export type MediaType     = 'IMAGE' | 'VIDEO';
 
 export interface PromoContent {
@@ -219,6 +219,25 @@ export interface PromoContent {
   scheduledEnd?: number;
 }
 
+
+/**
+ * A screen a home promo card is drawn for, as the server describes it
+ * (database/spec/promoDevices.js, sent beside the cards in `promo_data`).
+ */
+export interface PromoDevice {
+  key: 'LAPTOP' | 'TABLET' | 'PHONE' | 'SMALL_PHONE' | string;
+  minWidth: number;
+  maxWidth: number | null;
+  ratio: { w: number; h: number };
+}
+
+/** A published home promo card: its own image per screen, keyed by device. */
+export interface HomePromoCard {
+  promoId: string;
+  title: string;
+  linkUrl: string | null;
+  images: Record<string, string>;
+}
 
 export interface ChatMessage {
   id: string;

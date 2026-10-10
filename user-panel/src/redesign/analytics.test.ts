@@ -15,7 +15,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { analyticsFor, computeAnalytics, MIN_SAMPLE, Side } from './analytics';
-import { ANALYTICS_WINDOW, analyticsWindowFor, chipsFor } from '../constants';
+import { ANALYTICS_WINDOW, analyticsWindowFor, chipScales, chipsFor } from '../constants';
 import { canPlaceBet, BET_SUBMIT_MARGIN_MS } from '../GAME_CORE';
 
 const run = (n: number, side: Side): Side[] => Array.from({ length: n }, () => side);
@@ -126,10 +126,60 @@ describe('client betting cutoff', () => {
 });
 
 describe('chips', () => {
-  it('ladders from the board\'s minimum, never above its maximum', () => {
+  it('is the 10 · 30 · 90 · 270 · 810 ladder at the board\'s lowest scale', () => {
     expect(chipsFor({ minBet: 10, maxBet: 100000 })).toEqual([10, 30, 90, 270, 810]);
     expect(chipsFor({ minBet: 100, maxBet: 500000 })).toEqual([100, 300, 900, 2700, 8100]);
-    expect(chipsFor({ minBet: 50, maxBet: 500 })).toEqual([50, 150, 450]);
+    expect(chipsFor({ minBet: 50, maxBet: 500 })).toEqual([100, 300]);
     expect(chipsFor(undefined)).toEqual([]);
+  });
+
+  it('scales by 10× steps, within the board\'s bounds', () => {
+    const board = { minBet: 10, maxBet: 100000 };
+    expect(chipScales(board)).toEqual({ min: 0, max: 4 });
+    expect(chipsFor(board, 1)).toEqual([100, 300, 900, 2700, 8100]);
+    expect(chipsFor(board, 2)).toEqual([1000, 3000, 9000, 27000, 81000]);
+    // Above the maximum, the chips that would exceed it are dropped.
+    expect(chipsFor(board, 4)).toEqual([100000]);
+    // A scale outside the range is held to it.
+    expect(chipsFor(board, 9)).toEqual([100000]);
+    expect(chipsFor(board, -3)).toEqual([10, 30, 90, 270, 810]);
+    // A ₹100 board cannot scale down to 10.
+    expect(chipScales({ minBet: 100, maxBet: 500000 })).toEqual({ min: 1, max: 4 });
+    expect(chipScales({ minBet: 0, maxBet: 10 })).toBeNull();
+  });
+});
+
+describe('streaks count at every length they reached (owner, 2026-10-10)', () => {
+  // Newest first: DDD B DD B D BBBB D  → Delhi runs 3,2,1,1 · Bombay runs 1,1,4
+  const D = 'DELHI' as const, B = 'BOMBAY' as const;
+  const seq = [D, D, D, B, D, D, B, D, B, B, B, B, D];
+  const A = computeAnalytics(seq);
+
+  it('counts a ×3 at ×2 and ×3, and a ×4 at ×2, ×3 and ×4', () => {
+    expect(A.dist['2']).toEqual({ D: 2, B: 1 });
+    expect(A.dist['3']).toEqual({ D: 1, B: 1 });
+    expect(A.dist['4']).toEqual({ D: 0, B: 1 });
+    expect(A.dist['5']).toEqual({ D: 0, B: 0 });
+  });
+
+  it('lists lengths 2 … 7 at least, and up to the longest streak seen', () => {
+    expect(A.lengths).toEqual([2, 3, 4, 5, 6, 7]);
+    const long = computeAnalytics([...Array(9).fill(D), B]);
+    expect(long.lengths[long.lengths.length - 1]).toBe(9);
+    expect(long.dist['9']).toEqual({ D: 1, B: 0 });
+  });
+
+  it('measures gaps from where each streak reached the length', () => {
+    // Delhi reached ×2 at index 1 (the newest DDD) and at index 4 (DD at 4–5).
+    expect(A.gaps.D2.count).toBe(2);
+    expect(A.gaps.D2.ago).toBe(1);
+    expect(A.gaps.D2.last5).toEqual([3]);
+  });
+
+  it('leaves the streak still running out of the continuation rate', () => {
+    // Finished runs: B1 D2 B1 D1 B4 D1. Reached ×2: D2, B4 → reached ×3: B4.
+    expect(A.cont(2)).toBe(0.5);
+    // The current Delhi ×3 is not counted as having stopped at 3.
+    expect(A.cont(3)).toBe(1);
   });
 });

@@ -9,24 +9,28 @@
  *   • my bets       — userBets for the current cycle, summed per side
  *   • roadmap/stats — winners from pastCycles (analytics.ts), real results only
  *
- * GOVERNANCE §2/§3: the min bet, chips, close offset and tabs come from the
- * board (`GET /api/v1/boards`, server authority), never a hardcoded number.
- * Chip denominations are UI-only (§11, constants.chipsFor).
+ * GOVERNANCE §2/§3: the min bet, chip bounds, close offset and tabs come from
+ * the board (`GET /api/v1/boards`, server authority), never a hardcoded number.
+ * Chip denominations are UI-only (§11, constants.chipsFor): the 10 · 30 · 90 ·
+ * 270 · 810 ladder, scaled by the 10× switch beside the chips.
  * §3: gold/accent hues resolve from brand CSS variables via the theme tokens.
  */
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useGame } from '../services/GameContext';
 import { BettingSide, GameState } from '../types';
-import { chipsFor } from '../constants';
+import { CHIP_SCALE_STEP, chipScales, chipsFor } from '../constants';
 import { useShell } from './RedesignShell';
 import { useViewport } from './useViewport';
 import { useToast } from '../components/ui/Toast';
 import { fmt, timeStr } from './format';
 import { analyticsFor, Side } from './analytics';
-import AnalyticsDrawer from './AnalyticsDrawer';
+import AnalyticsPanel from './AnalyticsPanel';
+import { BetCardFigure, BetCardFill, BlindBand, shareModeFor, sharesOf } from './BetCardShare';
 import { getAssetUrl } from '../services/backend.service';
 import { canPlaceBet } from '../GAME_CORE';
 import { BoardRulesModal } from './BoardRules';
+import { ClosingChip, ResultCelebration, TONE_COLOR, timerTone, useHomeCards } from './BoardExtras';
+import { CitiesArt, HowToPlayArt, PromoCard } from './BoardArt';
 
 // UI-only chip face palette (GOVERNANCE §10 — presentation, not validation).
 const CHIP_STYLES = [
@@ -39,11 +43,51 @@ const CHIP_STYLES = [
 
 const bead = (sd: Side) => ({ ch: sd === 'DELHI' ? 'D' : 'B', bg: sd === 'DELHI' ? 'var(--delhi)' : 'var(--bombay)' });
 
+// The betting cards' height on a phone or tablet, bounded.
+const FIT_MIN = 120;
+const FIT_MAX = 300;
+
+/**
+ * Phone and tablet: the cards take what is left of the screen once the promo
+ * banner, the tabs, the timer, the chips and the amount box have their room,
+ * so a player never scrolls to place a bet (owner, 2026-10-10: "the user dont
+ * need to scroll just to place bets"). Measured inside the scrolling <main>,
+ * again whenever anything above or below the cards changes size.
+ */
+function useFitHeight(stage: React.RefObject<HTMLElement | null>, below: React.RefObject<HTMLElement | null>, enabled: boolean): number | null {
+  const [h, setH] = useState<number | null>(null);
+  useEffect(() => {
+    if (!enabled) { setH(null); return; }
+    const main = stage.current?.closest('main');
+    if (!main) return;
+    const measure = () => {
+      const s = stage.current, b = below.current;
+      if (!s || !b) return;
+      const top = s.getBoundingClientRect().top - main.getBoundingClientRect().top + main.scrollTop;
+      const room = main.clientHeight - top - b.offsetHeight - 8;
+      setH(Math.max(FIT_MIN, Math.min(FIT_MAX, Math.floor(room))));
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    if (typeof ResizeObserver === 'undefined') return () => window.removeEventListener('resize', measure);
+    const ro = new ResizeObserver(measure);
+    const watch = () => { ro.disconnect(); ro.observe(main); Array.from(main.children).forEach(c => ro.observe(c)); if (below.current) ro.observe(below.current); };
+    watch();
+    const mo = new MutationObserver(() => { watch(); measure(); });
+    mo.observe(main, { childList: true });
+    return () => { window.removeEventListener('resize', measure); ro.disconnect(); mo.disconnect(); };
+  }, [enabled, stage, below]);
+  return h;
+}
+
 const GameScreen: React.FC = () => {
   const {
     currentCycle, gameState, cycleType, setCycleType, placeBet, placePhantomBet, boards, currentBoard,
     userBets, isGhostMode, toggleGhostMode, user, isAuthenticated, pastCycles, loadCycleHistory, subscribeToVolume, getCurrentVolume, serverTimeOffset,
+    sysConfig,
   } = useGame();
+  // Admin › Player Screen (SystemConfig.boardExtras).
+  const extras = sysConfig.boardExtras;
 
   // Phantom-manager access (ghost mode). Only users granted phantomAccess for the
   // active cycle type see the toggle; enabling it routes bets through
@@ -64,7 +108,10 @@ const GameScreen: React.FC = () => {
 
   const [selectedChip, setSelectedChip] = useState<number | null>(null);
   const [manualInput, setManualInput] = useState('');
-  const [drawerOpen, setDrawerOpen] = useState(false);
+  const analyticsRef = useRef<HTMLElement | null>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
+  const controlsRef = useRef<HTMLDivElement>(null);
+  const fitH = useFitHeight(stageRef, controlsRef, !desktop);
 
   // Re-render the countdown every second (endTime is authoritative).
   const [, tick] = useState(0);
@@ -86,8 +133,6 @@ const GameScreen: React.FC = () => {
   // From the merge until the result the server sends the total alone.
   const poolsHidden = pools ? pools.poolsHidden : !!currentCycle?.poolsHidden;
   const total = poolsHidden ? (pools?.totalPool ?? currentCycle?.totalPool ?? 0) : poolDelhi + poolBombay;
-  const dPct = total ? Math.round((poolDelhi / total) * 100) : 50;
-  const bPct = 100 - dPct;
 
   // Phase flags.
   // True phase (agrees with the server) vs. whether a tap right now would still
@@ -104,14 +149,30 @@ const GameScreen: React.FC = () => {
   const showMerged = isMerged || (poolsHidden && !isResult);
 
   const secondsLeft = currentCycle?.endTime ? Math.max(0, Math.floor((currentCycle.endTime - Date.now()) / 1000)) : 0;
+  // Seconds until bets CLOSE (the board's own close offset), for the timer's
+  // tone and the closing chip. Display only: the server's cutoff decides.
+  const secondsToClose = Math.max(0, secondsLeft - (currentBoard?.phases.closeBeforeEndSec ?? 0));
+  const tone = extras.urgencyChips && (isOpen || isMerged) ? timerTone(secondsToClose, extras.closingWarnSeconds) : 'calm';
+  // Nothing loaded yet: a placeholder, never a ₹0 that reads as an empty room.
+  const loadingCycle = !currentCycle?.endTime;
+  // Each card carries its own side's share (owner, 2026-10-10: no separate VS
+  // bar). While the pools are hidden no side figure exists (§2), so neither
+  // card may show one: blind while merged, nothing if still hidden at the result.
+  const shareMode = shareModeFor({ loading: loadingCycle, blind: showMerged, poolsHidden, delhi: poolDelhi, bombay: poolBombay });
+  const blindBandShown = shareMode === 'blind' && !isClosed;
+  const shares = sharesOf(poolDelhi, poolBombay);
 
   // My open bets this cycle.
   const cycleBets = (userBets || []).filter(b => b.cycleId === currentCycle?.id && b.status === 'PENDING' && !b.isPhantom);
   const myBetDelhi = cycleBets.filter(b => b.side === BettingSide.DELHI).reduce((a, b) => a + (b.amount || 0), 0);
   const myBetBombay = cycleBets.filter(b => b.side === BettingSide.BOMBAY).reduce((a, b) => a + (b.amount || 0), 0);
-  const lockD = myBetBombay > 0;
-  const lockB = myBetDelhi > 0;
-  const potentialReturn = (myBetDelhi + myBetBombay) * 2;
+  // Both sides may be backed in one cycle (owner, 2026-10-10); only one side
+  // can win, so the return is stated per side, never summed. Whether the
+  // platform refuses a second side is the server's (`riskRules.
+  // blockOppositeSideBetting`, admin, default off): its refusal reaches the
+  // player as the server's own message.
+  const returnIfDelhi = myBetDelhi * 2;
+  const returnIfBombay = myBetBombay * 2;
 
   // Winner sequences from real history (newest first), by board. Keyed by
   // every board, so a tab cannot fall through to another board's history.
@@ -125,13 +186,22 @@ const GameScreen: React.FC = () => {
     return out;
   }, [pastCycles, boards]);
 
+  const panelWinners = useMemo(() => winnersByType[cycleType] ?? [], [winnersByType, cycleType]);
+
+  // Admin › Page Slides › Home promo cards: beside the game when the side
+  // columns show (the right column first, where the roadmap was); on a phone
+  // or tablet they are the shell's carousel under the header. The roadmap
+  // went: the analytics under the board carry the same results.
+  const homeCards = useHomeCards(extras.promoCards && desktop);
+  const rightCards = homeCards.filter((_, i) => i % 2 === 0);
+  const leftCards = homeCards.filter((_, i) => i % 2 === 1);
+
   const Ag = useMemo(
     () => analyticsFor(winnersByType[cycleType] ?? [], currentBoard),
     [winnersByType, cycleType, currentBoard],
   );
   const seqGame = Ag.seq;
   const stripBeads = seqGame.slice(0, mobile ? 14 : 26).map(bead);
-  const roadmapBeads = [...seqGame.slice(0, 60)].reverse().map(bead);
 
   // Effective bet amount from chip or manual entry.
   const manualNum = parseInt(manualInput, 10);
@@ -139,12 +209,30 @@ const GameScreen: React.FC = () => {
   // The board's own minimum; 0 while the boards load (the server still holds it).
   const minBet = currentBoard?.minBet ?? 0;
 
-  const chips = chipsFor(currentBoard).map((v, i) => {
+  // The 10× switch: a power of CHIP_SCALE_STEP, held to what this board's
+  // stake bounds allow, back at its lowest on every board change.
+  const scales = chipScales(currentBoard);
+  const [chipScale, setChipScale] = useState(0);
+  useEffect(() => { setChipScale(scales?.min ?? 0); setSelectedChip(null); }, [cycleType, scales?.min]);
+  const scale = scales ? Math.max(scales.min, Math.min(scales.max, chipScale)) : 0;
+  const canScaleUp = !!scales && scale < scales.max;
+  const canScaleDown = !!scales && scale > scales.min;
+  const rescale = (dir: 1 | -1) => {
+    if (dir === 1 ? !canScaleUp : !canScaleDown) return;
+    setChipScale(scale + dir);
+    // A picked chip follows the switch, so the stake shown is the stake placed.
+    setSelectedChip(prev => (prev && manualInput === '' ? (dir === 1 ? prev * CHIP_SCALE_STEP : prev / CHIP_SCALE_STEP) : prev));
+  };
+  // 2,700 reads as 2.7K on a chip face; the stake itself is the full number.
+  const chipLabel = (v: number) => (v >= 1000 ? `${v / 1000}K` : String(v));
+
+  const chips = chipsFor(currentBoard, scale).map((v, i) => {
     const st = CHIP_STYLES[i % 5];
     const sel = selectedChip === v && manualInput === '';
     return {
       value: v, colorHex: st.colorHex, gFrom: st.gFrom, gTo: st.gTo, txt: st.txt, sel,
-      font: v >= 1000 ? 12 : 15,
+      label: chipLabel(v),
+      font: chipLabel(v).length >= 4 ? 12 : 15,
     };
   });
 
@@ -166,8 +254,6 @@ const GameScreen: React.FC = () => {
     if (!betOpen) { addToast('Bets just closed for this cycle', 'error'); return; }
     if (!betAmount) { addToast('Pick a chip or enter an amount first', 'error'); return; }
     if (betAmount < minBet) { addToast(`Minimum bet for this cycle is ₹${minBet}`, 'error'); return; }
-    if (side === BettingSide.DELHI && myBetBombay > 0) { addToast('You already backed BOMBAY this cycle — one side per cycle', 'error'); return; }
-    if (side === BettingSide.BOMBAY && myBetDelhi > 0) { addToast('You already backed DELHI this cycle — one side per cycle', 'error'); return; }
     if (navigator.vibrate) navigator.vibrate(40);
     if (isGhostMode) placePhantomBet(betAmount, side); else placeBet(betAmount, side);
   };
@@ -178,8 +264,10 @@ const GameScreen: React.FC = () => {
   const cardMaxW = desktop ? 560 : 520;
   const cardH = desktop
     ? Math.max(196, Math.min(296, Math.round((vh || 760) * 0.29)))
-    : Math.max(160, Math.min(296, Math.round((vh || 760) * 0.33)));
+    : fitH ?? Math.max(160, Math.min(296, Math.round((vh || 760) * 0.33)));
   const sideFont = mobile ? 20 : 24;
+  // The share figure grows with the card; small phones keep it compact.
+  const bigShare = cardH >= 200;
 
   // Admin-configurable bet-card backgrounds (Branding → CDN, GOVERNANCE §12).
   // Empty ⇒ default themed gradient. Read from app_branding like the other
@@ -192,29 +280,28 @@ const GameScreen: React.FC = () => {
 
   const sideStyle = (side: BettingSide): React.CSSProperties => {
     const isWinner = isResult && winner === side;
-    const lock = side === BettingSide.DELHI ? lockD : lockB;
-    // A bet on the OTHER side blocks placing here (handleBet), but this card stays
-    // fully coloured — NO grey-out (owner UX). Only result/closed states dim.
+    // Only result/closed states dim a card; a bet on the other side does not
+    // lock this one (both sides allowed, owner 2026-10-10).
     // `!betOpen` dims the cards for the ~1.5s before the true close, so the
     // board stops inviting a tap it can no longer deliver. The phase LABEL
     // still flips at the real cutoff — that clock is the server's, not ours.
     const opacity = isResult && winner !== side ? .35 : (isClosed || !betOpen) ? .6 : 1;
     const filter = isResult && winner !== side ? 'grayscale(.7)' : 'none';
-    const cursor = (isClosed || isResult || lock || !betOpen) ? 'not-allowed' : 'pointer';
+    const cursor = (isClosed || isResult || !betOpen) ? 'not-allowed' : 'pointer';
     const gradient = side === BettingSide.DELHI
       ? 'linear-gradient(160deg,#2A0A0A,#140406 55%,#050203)'
       : 'linear-gradient(160deg,#07172E,#04101F 55%,#020814)';
     const img = cardImg[side];
-    // Admin-set CDN image (if any) under a dark scrim so the labels stay legible;
-    // otherwise the default themed gradient (GOVERNANCE §12).
+    // Admin-set CDN image (if any) is the card: only a light top and bottom
+    // fade keeps the labels legible over it. Otherwise the themed gradient.
     const background = img
-      ? `linear-gradient(160deg, rgba(4,3,6,.45), rgba(4,3,6,.72)), url("${img}") center/cover no-repeat`
+      ? `linear-gradient(180deg, rgba(4,3,6,.42) 0%, rgba(4,3,6,0) 32%, rgba(4,3,6,0) 62%, rgba(4,3,6,.55) 100%), url("${img}") center/cover no-repeat`
       : gradient;
     return {
       width: '50%', height: '100%', position: 'relative', border: 'none', cursor, overflow: 'hidden',
       background,
       opacity, filter, transition: 'opacity .3s, filter .3s', display: 'flex', flexDirection: 'column',
-      alignItems: 'center', justifyContent: 'space-between', padding: '16px 8px',
+      alignItems: 'center', justifyContent: 'space-between', padding: cardH < 170 ? '12px 8px' : '16px 8px',
       ...(isWinner ? {} : {}),
     };
   };
@@ -223,38 +310,26 @@ const GameScreen: React.FC = () => {
   const labelCap: React.CSSProperties = { fontSize: 10, fontWeight: 800, letterSpacing: '.16em', textTransform: 'uppercase', color: 'var(--text2)' };
 
   // ── side panels (desktop) ────────────────────────────────────────────────
+  // The Refer & Earn card takes the side column's top slot (owner,
+  // 2026-10-10); each side's pool is on its own betting card on every screen size.
+  // Its image is Branding's `referPromoImageUrl` (admin › Branding, CDN);
+  // with none uploaded it is a styled card saying the same thing.
+  const referImg = getAssetUrl(brand.referPromoImageUrl || '');
+  const openReferrals = () => { window.location.hash = '#/referrals'; };
   const leftPanel = (
     <aside className="bb-noscroll" style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 12, overflowY: 'auto' }}>
-      <div style={sectionCard}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
-          <span style={labelCap}>Live Pool</span>
-          <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 9, fontWeight: 800, color: 'var(--green)' }}><span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--green)', boxShadow: '0 0 8px var(--green)' }} />LIVE</span>
-        </div>
-        {!showMerged ? (
-          <>
-            <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', marginBottom: 6 }}>
-              <span style={{ fontSize: 11, fontWeight: 800, color: 'var(--delhi)' }}>DELHI</span>
-              <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 16, color: 'var(--text)' }}>₹{fmt(poolDelhi)}</span>
-            </div>
-            <div style={{ height: 9, borderRadius: 6, overflow: 'hidden', display: 'flex', background: 'color-mix(in srgb,var(--delhi) 18%, transparent)', marginBottom: 12 }}>
-              <div style={{ height: '100%', background: 'linear-gradient(90deg,var(--delhi),color-mix(in srgb,var(--delhi) 60%,#000))', width: dPct + '%' }} />
-              <div style={{ height: '100%', flex: 1, background: 'linear-gradient(90deg,color-mix(in srgb,var(--bombay) 60%,#000),var(--bombay))' }} />
-            </div>
-            <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between' }}>
-              <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 16, color: 'var(--text)' }}>₹{fmt(poolBombay)}</span>
-              <span style={{ fontSize: 11, fontWeight: 800, color: 'var(--bombay)' }}>BOMBAY</span>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 10, fontSize: 10, fontWeight: 700, color: 'var(--text3)' }}>
-              <span>{dPct}% share</span><span>{bPct}% share</span>
-            </div>
-          </>
+      <button type="button" onClick={openReferrals} aria-label="Refer and earn: invite friends" style={{ ...sectionCard, padding: 0, overflow: 'hidden', cursor: 'pointer', textAlign: 'left', display: 'block', width: '100%' }}>
+        {referImg ? (
+          <img src={referImg} alt="Refer and earn" style={{ display: 'block', width: '100%', height: 'auto' }} />
         ) : (
-          <div style={{ padding: '2px 0' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}><span style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.08em', color: '#F0A860' }}>⚡ POOLS MERGED</span><span style={{ fontSize: 8, fontWeight: 700, color: 'var(--text3)' }}>BLIND · HIDDEN</span></div>
-            <div className="font-grotesk" style={{ fontWeight: 700, fontSize: 26, color: 'var(--gold-ink)', textShadow: '0 0 16px var(--glow)' }}>₹{fmt(total)}</div>
+          <div style={{ padding: 18, background: 'radial-gradient(120% 100% at 100% 0,color-mix(in srgb,var(--gold) 28%,transparent),transparent 60%),linear-gradient(160deg,var(--surface2),var(--surface))' }}>
+            <div style={{ fontSize: 34, lineHeight: 1 }} aria-hidden="true">🎁</div>
+            <div className="font-grotesk" style={{ fontWeight: 700, fontSize: 18, color: 'var(--text)', marginTop: 10 }}>Refer &amp; Earn</div>
+            <div style={{ fontSize: 12, color: 'var(--text2)', lineHeight: 1.5, marginTop: 4 }}>Invite friends and get a bonus for each one who joins and verifies.</div>
+            <div style={{ display: 'inline-block', marginTop: 12, padding: '8px 14px', borderRadius: 10, fontSize: 12, fontWeight: 800, color: 'var(--bg)', background: 'linear-gradient(180deg,var(--gold2),var(--gold))' }}>Invite now</div>
           </div>
         )}
-      </div>
+      </button>
       <div style={sectionCard}>
         <div style={{ ...labelCap, marginBottom: 12 }}>Payout</div>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
@@ -265,35 +340,32 @@ const GameScreen: React.FC = () => {
       </div>
       <div style={{ ...sectionCard, padding: '14px 16px' }}>
         <div style={{ ...labelCap, marginBottom: 10 }}>Total pool</div>
-        <div className="font-grotesk" style={{ fontWeight: 700, fontSize: 24, color: 'var(--gold-ink)' }}>₹{fmt(total)}</div>
+        {loadingCycle
+          ? <div className="bb-skel" style={{ width: 110, height: 26, borderRadius: 7, background: 'var(--surface3)' }} />
+          : <div className="font-grotesk" style={{ fontWeight: 700, fontSize: 24, color: 'var(--gold-ink)' }}>₹{fmt(total)}</div>}
       </div>
+      {leftCards.map((c, i) => <PromoCard key={c.promoId ?? c.id ?? i} card={c} />)}
+      <CitiesArt />
     </aside>
   );
 
   const rightPanel = (
     <aside className="bb-noscroll" style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 12, overflowY: 'auto' }}>
-      <div style={sectionCard}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-          <span style={labelCap}>Roadmap</span>
-          <button onClick={() => setDrawerOpen(true)} style={{ fontSize: 9, fontWeight: 800, color: 'var(--gold-ink)', background: 'none', border: '1px solid var(--line2)', borderRadius: 999, padding: '3px 10px', cursor: 'pointer' }}>FULL ANALYSIS</button>
-        </div>
-        {roadmapBeads.length === 0 ? (
-          // Real results only (analytics.ts no longer pads a thin window), so a
-          // board with no settled cycles genuinely has nothing to plot.
-          <div style={{ fontSize: 10, color: 'var(--text3)', padding: '10px 0', textAlign: 'center' }}>No results on this board yet.</div>
-        ) : (
-          <div className="bb-noscroll" style={{ display: 'grid', gridAutoFlow: 'column', gridTemplateRows: 'repeat(6,18px)', gap: 4, overflowX: 'auto', paddingBottom: 4 }}>
-            {roadmapBeads.map((b, i) => <span key={i} style={{ width: 18, height: 18, borderRadius: '50%', background: b.bg, color: '#fff', fontSize: 8, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{b.ch}</span>)}
-          </div>
-        )}
-      </div>
+      {rightCards[0] && <PromoCard card={rightCards[0]} />}
       <div style={sectionCard}>
         <span style={labelCap}>My open bets · this cycle</span>
         {(myBetDelhi > 0 || myBetBombay > 0) ? (
           <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
             {myBetDelhi > 0 && <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'color-mix(in srgb,var(--delhi) 12%,transparent)', border: '1px solid color-mix(in srgb,var(--delhi) 30%,transparent)', borderRadius: 10, padding: '9px 12px' }}><span style={{ fontSize: 11, fontWeight: 800, color: 'var(--delhi)' }}>DELHI</span><span className="font-grotesk" style={{ fontWeight: 700, color: 'var(--text)' }}>₹{fmt(myBetDelhi)}</span></div>}
             {myBetBombay > 0 && <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'color-mix(in srgb,var(--bombay) 12%,transparent)', border: '1px solid color-mix(in srgb,var(--bombay) 30%,transparent)', borderRadius: 10, padding: '9px 12px' }}><span style={{ fontSize: 11, fontWeight: 800, color: 'var(--bombay)' }}>BOMBAY</span><span className="font-grotesk" style={{ fontWeight: 700, color: 'var(--text)' }}>₹{fmt(myBetBombay)}</span></div>}
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 2px 0' }}><span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text3)' }}>Potential return</span><span className="font-grotesk" style={{ fontWeight: 700, color: 'var(--gold-ink)' }}>₹{fmt(potentialReturn)}</span></div>
+            {myBetDelhi > 0 && myBetBombay > 0 ? (
+              <>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 2px 0' }}><span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text3)' }}>If Delhi wins</span><span className="font-grotesk" style={{ fontWeight: 700, color: 'var(--gold-ink)' }}>₹{fmt(returnIfDelhi)}</span></div>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 2px' }}><span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text3)' }}>If Bombay wins</span><span className="font-grotesk" style={{ fontWeight: 700, color: 'var(--gold-ink)' }}>₹{fmt(returnIfBombay)}</span></div>
+              </>
+            ) : (
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 2px 0' }}><span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text3)' }}>Potential return</span><span className="font-grotesk" style={{ fontWeight: 700, color: 'var(--gold-ink)' }}>₹{fmt(returnIfDelhi + returnIfBombay)}</span></div>
+            )}
           </div>
         ) : (
           <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, padding: '14px 0' }}>
@@ -302,6 +374,8 @@ const GameScreen: React.FC = () => {
           </div>
         )}
       </div>
+      {rightCards.slice(1).map((c, i) => <PromoCard key={c.promoId ?? c.id ?? i} card={c} />)}
+      <HowToPlayArt />
     </aside>
   );
 
@@ -311,66 +385,83 @@ const GameScreen: React.FC = () => {
 
       <section style={{ minWidth: 0, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
         {/* Cycle control */}
-        <div style={{ flex: 'none', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '8px 4px 10px' }}>
-          <div style={{ display: 'flex', background: 'var(--surface2)', border: '1px solid var(--line2)', borderRadius: 999, padding: 3, gap: 3, boxShadow: 'var(--shadow-sm)' }}>
+        <div style={{ flex: 'none', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: mobile ? '4px 2px 6px' : '8px 4px 12px' }}>
+          <div style={{ flex: 'none', display: 'flex', background: 'var(--surface2)', border: '1px solid var(--line2)', borderRadius: 999, padding: 3, gap: 3, boxShadow: 'var(--shadow-sm)' }}>
             {boards.map(b => ({ t: b.key, l: b.name.toUpperCase() })).map(o => {
               const on = cycleType === o.t;
-              return <button key={o.t} onClick={() => setCycleType(o.t)} style={{ padding: '7px 15px', borderRadius: 999, border: 'none', cursor: 'pointer', fontSize: 10, fontWeight: 800, letterSpacing: '.06em', background: on ? 'linear-gradient(180deg,var(--gold2),var(--gold))' : 'transparent', color: on ? '#1a1200' : 'var(--text3)', boxShadow: on ? 'var(--shadow-sm)' : 'none' }}>{o.l}</button>;
+              return <button key={o.t} onClick={() => setCycleType(o.t)} style={{ padding: mobile ? '7px 11px' : '7px 15px', whiteSpace: 'nowrap', borderRadius: 999, border: 'none', cursor: 'pointer', fontSize: 10, fontWeight: 800, letterSpacing: '.06em', background: on ? 'linear-gradient(180deg,var(--gold2),var(--gold))' : 'transparent', color: on ? '#1a1200' : 'var(--text3)', boxShadow: on ? 'var(--shadow-sm)' : 'none' }}>{o.l}</button>;
             })}
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', lineHeight: 1.1 }}>
-            <span style={{ fontSize: 8, fontWeight: 800, letterSpacing: '.12em', textTransform: 'uppercase', color: phaseColor, marginBottom: 2 }}>{phaseLabel}</span>
+            <span style={{ fontSize: 8, fontWeight: 800, letterSpacing: '.12em', textTransform: 'uppercase', whiteSpace: 'nowrap', color: phaseColor, marginBottom: 2 }}>{phaseLabel}</span>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <span style={{ width: 7, height: 7, borderRadius: '50%', background: phaseColor, boxShadow: `0 0 8px ${phaseColor}` }} />
-              <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 19, letterSpacing: '.04em', color: 'var(--text)', fontVariantNumeric: 'tabular-nums' }}>{isResult ? '00:00' : timeStr(secondsLeft)}</span>
+              <span style={{ width: 7, height: 7, borderRadius: '50%', background: phaseColor }} />
+              {loadingCycle
+                ? <span className="bb-skel" aria-label="Loading the round" style={{ display: 'inline-block', width: 62, height: 20, borderRadius: 6, background: 'var(--surface3)' }} />
+                : <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 19, letterSpacing: '.04em', color: TONE_COLOR[tone], fontVariantNumeric: 'tabular-nums', transition: 'color .3s' }}>{isResult ? '00:00' : timeStr(secondsLeft)}</span>}
             </div>
           </div>
         </div>
 
         {/* Title + inline pools */}
-        <div style={{ flex: 'none', textAlign: 'center', padding: '2px 0 8px' }}>
+        <div style={{ flex: 'none', textAlign: 'center', padding: mobile ? '0 0 6px' : '2px 0 12px' }}>
           <h2 className="font-grotesk" style={{ margin: 0, fontWeight: 700, fontSize: 15, letterSpacing: '.02em', color: 'var(--text)' }}>DELHI BAZAAR <span style={{ color: 'var(--gold-ink)', fontStyle: 'italic', fontWeight: 700 }}>vs</span> BOMBAY BAZAAR</h2>
-          {!desktop && (
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 26, marginTop: 5 }}>
-              {showMerged ? (
-                <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 15, color: 'var(--gold-ink)', textShadow: '0 0 14px var(--glow)' }}>POOL ₹{fmt(total)}</span>
-              ) : (
-                <>
-                  <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 13, color: 'var(--delhi)', fontVariantNumeric: 'tabular-nums' }}>₹{fmt(poolDelhi)}</span>
-                  <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 13, color: 'var(--bombay)', fontVariantNumeric: 'tabular-nums' }}>₹{fmt(poolBombay)}</span>
-                </>
-              )}
-            </div>
-          )}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 26, marginTop: 5 }}>
+            {loadingCycle ? (
+              <>
+                <span className="bb-skel" style={{ display: 'inline-block', width: 54, height: 16, borderRadius: 5, background: 'var(--surface3)' }} />
+                <span className="bb-skel" style={{ display: 'inline-block', width: 54, height: 16, borderRadius: 5, background: 'var(--surface3)' }} />
+              </>
+            ) : showMerged ? (
+              // The blind band on the cards carries the total; it is said once (owner, 2026-10-10).
+              blindBandShown ? null : <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 15, color: 'var(--gold-ink)' }}>POOL ₹{fmt(total)}</span>
+            ) : isOpen && total === 0 ? (
+              <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text3)' }}>No bets yet this round. Be the first.</span>
+            ) : (
+              <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 15, color: 'var(--gold-ink)', fontVariantNumeric: 'tabular-nums' }}>POOL ₹{fmt(total)}</span>
+            )}
+          </div>
         </div>
 
         {/* Stage */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '6px 0' }}>
-          <div style={{ position: 'relative', width: '100%', maxWidth: cardMaxW, height: cardH, borderRadius: 20, boxShadow: 'var(--shadow)' }}>
-            <div className={isResult ? 'bb-pulse' : ''} style={{ position: 'absolute', inset: 0, borderRadius: 20, overflow: 'hidden', display: 'flex', border: '1.5px solid var(--line2)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: mobile ? '4px 0' : '6px 0 8px' }}>
+          <div ref={stageRef} style={{ position: 'relative', width: '100%', maxWidth: cardMaxW, height: cardH, borderRadius: 20, boxShadow: 'var(--shadow)' }}>
+            <div className={isResult ? 'bb-pulse' : ''} style={{ position: 'absolute', inset: 0, borderRadius: 20, overflow: 'hidden', display: 'flex', flexDirection: 'column', border: '1.5px solid var(--line2)' }}>
+             <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
               {/* Delhi */}
               <button onClick={() => handleBet(BettingSide.DELHI)} aria-disabled={isClosed || isResult} style={sideStyle(BettingSide.DELHI)}>
-                <div style={{ position: 'absolute', inset: 0, background: 'radial-gradient(120% 82% at 50% 128%, rgba(229,72,76,.55), transparent 62%)' }} />
-                <div style={{ position: 'absolute', inset: 0, background: 'repeating-linear-gradient(90deg, rgba(255,255,255,.045) 0 2px, transparent 2px 30px)', opacity: .5 }} />
-                {isResult && winner === BettingSide.DELHI && <div className="bb-shimmer" />}
-                <span style={{ position: 'relative', zIndex: 2, fontSize: 9, fontWeight: 800, letterSpacing: '.18em', textTransform: 'uppercase', color: 'rgba(255,255,255,.55)' }}>India Gate</span>
-                <span className="font-grotesk" style={{ position: 'relative', zIndex: 2, fontWeight: 700, fontSize: sideFont, letterSpacing: '.08em', textTransform: 'uppercase', color: isResult && winner === BettingSide.DELHI ? '#FFD700' : 'var(--delhi)', textShadow: '0 2px 12px rgba(0,0,0,.9)' }}>{isResult && winner === BettingSide.DELHI ? '🏆 DELHI' : 'Delhi'}</span>
+                {!cardImg[BettingSide.DELHI] && <div style={{ position: 'absolute', inset: 0, background: 'radial-gradient(120% 82% at 50% 128%, rgba(229,72,76,.55), transparent 62%)' }} />}
+                {!cardImg[BettingSide.DELHI] && <div style={{ position: 'absolute', inset: 0, background: 'repeating-linear-gradient(90deg, rgba(255,255,255,.045) 0 2px, transparent 2px 30px)', opacity: .5 }} />}
+                <BetCardFill side="DELHI" mode={shareMode} pct={shares.DELHI} />
+                {isResult && winner === BettingSide.DELHI && <div className="bb-shimmer" style={{ zIndex: 1 }} />}
+                <span style={{ position: 'relative', zIndex: 2, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+                <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.18em', textTransform: 'uppercase', color: 'rgba(255,255,255,.55)' }}>India Gate</span>
+                <span className="font-grotesk" style={{ fontWeight: 700, fontSize: sideFont, letterSpacing: '.08em', textTransform: 'uppercase', color: isResult && winner === BettingSide.DELHI ? '#FFD700' : 'var(--delhi)', textShadow: '0 2px 12px rgba(0,0,0,.9)' }}>{isResult && winner === BettingSide.DELHI ? '🏆 DELHI' : 'Delhi'}</span>
+                </span>
+                <BetCardFigure side="DELHI" mode={shareMode} pct={shares.DELHI} pool={poolDelhi} big={bigShare} />
                 {myBetDelhi > 0 ? <span style={{ position: 'relative', zIndex: 2, background: 'var(--delhi)', color: '#fff', fontSize: 10, fontWeight: 800, padding: '3px 11px', borderRadius: 999, boxShadow: '0 0 16px var(--delhi)' }}>You ₹{fmt(myBetDelhi)}</span> : <span />}
               </button>
-              <div style={{ width: 1.5, height: '100%', background: 'linear-gradient(180deg,transparent,var(--gold),transparent)', boxShadow: '0 0 12px var(--gold)', zIndex: 3 }} />
+              <div style={{ width: 1.5, height: '100%', background: 'linear-gradient(180deg,transparent,var(--gold),transparent)', zIndex: 3 }} />
               {/* Bombay */}
               <button onClick={() => handleBet(BettingSide.BOMBAY)} aria-disabled={isClosed || isResult} style={sideStyle(BettingSide.BOMBAY)}>
-                <div style={{ position: 'absolute', inset: 0, background: 'radial-gradient(120% 82% at 50% 128%, rgba(46,134,222,.55), transparent 62%)' }} />
-                <div style={{ position: 'absolute', inset: 0, background: 'repeating-linear-gradient(90deg, rgba(255,255,255,.045) 0 2px, transparent 2px 30px)', opacity: .5 }} />
-                {isResult && winner === BettingSide.BOMBAY && <div className="bb-shimmer" />}
-                <span style={{ position: 'relative', zIndex: 2, fontSize: 9, fontWeight: 800, letterSpacing: '.18em', textTransform: 'uppercase', color: 'rgba(255,255,255,.55)' }}>Gateway of India</span>
-                <span className="font-grotesk" style={{ position: 'relative', zIndex: 2, fontWeight: 700, fontSize: sideFont, letterSpacing: '.08em', textTransform: 'uppercase', color: isResult && winner === BettingSide.BOMBAY ? '#FFD700' : 'var(--bombay)', textShadow: '0 2px 12px rgba(0,0,0,.9)' }}>{isResult && winner === BettingSide.BOMBAY ? '🏆 BOMBAY' : 'Bombay'}</span>
+                {!cardImg[BettingSide.BOMBAY] && <div style={{ position: 'absolute', inset: 0, background: 'radial-gradient(120% 82% at 50% 128%, rgba(46,134,222,.55), transparent 62%)' }} />}
+                {!cardImg[BettingSide.BOMBAY] && <div style={{ position: 'absolute', inset: 0, background: 'repeating-linear-gradient(90deg, rgba(255,255,255,.045) 0 2px, transparent 2px 30px)', opacity: .5 }} />}
+                <BetCardFill side="BOMBAY" mode={shareMode} pct={shares.BOMBAY} />
+                {isResult && winner === BettingSide.BOMBAY && <div className="bb-shimmer" style={{ zIndex: 1 }} />}
+                <span style={{ position: 'relative', zIndex: 2, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+                <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.18em', textTransform: 'uppercase', color: 'rgba(255,255,255,.55)' }}>Gateway of India</span>
+                <span className="font-grotesk" style={{ fontWeight: 700, fontSize: sideFont, letterSpacing: '.08em', textTransform: 'uppercase', color: isResult && winner === BettingSide.BOMBAY ? '#FFD700' : 'var(--bombay)', textShadow: '0 2px 12px rgba(0,0,0,.9)' }}>{isResult && winner === BettingSide.BOMBAY ? '🏆 BOMBAY' : 'Bombay'}</span>
+                </span>
+                <BetCardFigure side="BOMBAY" mode={shareMode} pct={shares.BOMBAY} pool={poolBombay} big={bigShare} />
                 {myBetBombay > 0 ? <span style={{ position: 'relative', zIndex: 2, background: 'var(--bombay)', color: '#fff', fontSize: 10, fontWeight: 800, padding: '3px 11px', borderRadius: 999, boxShadow: '0 0 16px var(--bombay)' }}>You ₹{fmt(myBetBombay)}</span> : <span />}
               </button>
+             </div>
             </div>
 
-            {!isClosed && !isResult && (
-              <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%,-50%)', width: 50, height: 50, borderRadius: '50%', background: 'var(--bg)', border: '2px solid var(--gold)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 4, boxShadow: '0 0 22px var(--glow)' }}>
+            {/* Merged: one band across both cards in place of the VS medallion */}
+            {blindBandShown && <BlindBand total={total} compact={cardH < 200} />}
+            {!isClosed && !isResult && shareMode !== 'blind' && (
+              <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%,-50%)', width: mobile ? 42 : 50, height: mobile ? 42 : 50, borderRadius: '50%', background: 'var(--bg)', border: '2px solid var(--gold)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 4 }}>
                 <span className="font-grotesk" style={{ fontWeight: 700, fontStyle: 'italic', fontSize: 17, color: 'var(--gold-ink)' }}>VS</span>
               </div>
             )}
@@ -381,17 +472,17 @@ const GameScreen: React.FC = () => {
                 <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.2em', color: 'var(--gold-ink)' }}>RESULT PENDING…</span>
               </div>
             )}
-            {isMerged && (
-              <div style={{ position: 'absolute', top: 10, left: '50%', transform: 'translateX(-50%)', zIndex: 6, background: 'rgba(0,0,0,.7)', border: '1px solid var(--gold)', borderRadius: 12, padding: '6px 14px', textAlign: 'center', backdropFilter: 'blur(4px)' }}>
-                <div className="font-grotesk" style={{ fontWeight: 700, fontSize: 13, letterSpacing: '.1em', color: 'var(--gold-ink)' }}>⚡ POOLS MERGED</div>
-                <div style={{ fontSize: 8, fontWeight: 700, letterSpacing: '.08em', color: '#F0A860', marginTop: 1 }}>BLIND BETTING · POOLS HIDDEN</div>
+            {extras.urgencyChips && (
+              <div style={{ position: 'absolute', top: 8, left: 0, right: 0, display: 'flex', justifyContent: 'center', zIndex: 5, pointerEvents: 'none' }}>
+                <ClosingChip open={(isOpen || isMerged) && betOpen} secondsToClose={secondsToClose} warnSeconds={extras.closingWarnSeconds} />
               </div>
             )}
+            {extras.resultCelebration && <ResultCelebration result={isResult ? { cycleId: currentCycle?.id, winner } : null} />}
           </div>
         </div>
 
         {/* Bet controls */}
-        <div style={{ flex: 'none', padding: '6px 0 2px' }}>
+        <div ref={controlsRef} style={{ flex: 'none', padding: mobile ? '6px 0 2px' : '10px 0 2px' }}>
           {canUseGhostMode && (
             <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 4 }}>
               <button onClick={() => { toggleGhostMode(); setSelectedChip(null); setManualInput(''); }} style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 10, fontWeight: 800, letterSpacing: '.04em', padding: '5px 14px', borderRadius: 999, cursor: 'pointer', border: `1px solid ${isGhostMode ? '#a78bfa' : 'var(--line2)'}`, background: isGhostMode ? 'rgba(139,111,224,.22)' : 'var(--surface2)', color: isGhostMode ? '#c4b5fd' : 'var(--text3)', boxShadow: isGhostMode ? '0 0 16px -4px rgba(139,111,224,.6)' : 'none' }}>
@@ -399,18 +490,18 @@ const GameScreen: React.FC = () => {
               </button>
             </div>
           )}
-          <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'flex-end', gap: mobile ? 11 : 18, padding: '8px 6px 4px', background: isGhostMode ? 'rgba(139,111,224,.07)' : 'transparent', border: isGhostMode ? '1px solid rgba(139,111,224,.28)' : '1px solid transparent', borderRadius: 14, transition: 'background .2s' }}>
+          <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: mobile ? 8 : 16, padding: mobile ? '8px 6px 2px' : '10px 6px 4px', background: isGhostMode ? 'rgba(139,111,224,.07)' : 'transparent', border: isGhostMode ? '1px solid rgba(139,111,224,.28)' : '1px solid transparent', borderRadius: 14, transition: 'background .2s' }}>
             {chips.map(chip => {
-              const size = mobile ? 52 : desktop ? 60 : 56;
+              const size = mobile ? 48 : desktop ? 60 : 56;
               return (
-                <button key={chip.value} onClick={() => onChip(chip.value)} style={{ position: 'relative', width: size, height: size, border: 'none', background: 'none', cursor: 'pointer', transform: chip.sel ? 'translateY(-10px) scale(1.08)' : 'translateY(0) scale(1)', zIndex: chip.sel ? 5 : 1, transition: 'transform .16s ease-out' }}>
+                <button key={chip.value} onClick={() => onChip(chip.value)} aria-label={`Chip ₹${chip.value}`} aria-pressed={chip.sel} style={{ flex: 'none', position: 'relative', width: size, height: size, border: 'none', background: 'none', cursor: 'pointer', transform: chip.sel ? 'translateY(-10px) scale(1.08)' : 'translateY(0) scale(1)', zIndex: chip.sel ? 5 : 1, transition: 'transform .16s ease-out' }}>
                   <span style={{ position: 'absolute', inset: 0, borderRadius: '50%', background: 'linear-gradient(to top right,var(--brand-secondary, #B8860B),var(--brand-accent, #F5C77A) 50%,var(--brand-secondary, #B8860B))', boxShadow: chip.sel ? '0 16px 24px -6px rgba(0,0,0,.7)' : '0 5px 10px -4px rgba(0,0,0,.5)', border: '1px solid #8A7018' }} />
                   <span style={{ position: 'absolute', inset: '4%', borderRadius: '50%', background: `repeating-conic-gradient(from 0deg, ${chip.colorHex} 0deg 45deg, transparent 45deg 60deg)`, opacity: .92 }} />
                   <span style={{ position: 'absolute', inset: '4%', borderRadius: '50%', boxShadow: 'inset 0 2px 4px rgba(0,0,0,.4)', pointerEvents: 'none' }} />
                   <span style={{ position: 'absolute', inset: '18%', borderRadius: '50%', background: 'linear-gradient(to bottom,#FFFACD,var(--brand-primary, #D4AF37) 55%,var(--brand-secondary, #B8860B))', padding: 2, boxShadow: '0 1px 3px rgba(0,0,0,.6)' }}>
                     <span style={{ width: '100%', height: '100%', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative', overflow: 'hidden', background: `linear-gradient(to bottom right, ${chip.gFrom}, ${chip.gTo})`, boxShadow: 'inset 0 2px 4px rgba(0,0,0,.35)' }}>
                       <span style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '45%', background: 'rgba(255,255,255,.16)', borderBottom: '1px solid rgba(255,255,255,.06)', borderRadius: '50% 50% 42% 42%' }} />
-                      <span className="font-grotesk" style={{ fontWeight: 800, fontSize: chip.font, color: chip.txt, textShadow: '0 2px 2px rgba(0,0,0,.8)', position: 'relative', zIndex: 2, letterSpacing: '-.02em' }}>{chip.value}</span>
+                      <span className="font-grotesk" style={{ fontWeight: 800, fontSize: chip.font, color: chip.txt, textShadow: '0 2px 2px rgba(0,0,0,.8)', position: 'relative', zIndex: 2, letterSpacing: '-.02em' }}>{chip.label}</span>
                     </span>
                   </span>
                   <span style={{ position: 'absolute', inset: 0, borderRadius: '50%', overflow: 'hidden', pointerEvents: 'none' }}><span className="bb-chipshine" style={{ position: 'absolute', top: '-50%', left: '-50%', width: '200%', height: '200%', background: 'linear-gradient(to right,transparent,rgba(255,255,255,.32),transparent)' }} /></span>
@@ -418,41 +509,41 @@ const GameScreen: React.FC = () => {
                 </button>
               );
             })}
+            {scales && scales.max > scales.min && (
+              <div role="group" aria-label="Chip size" style={{ flex: 'none', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2, padding: 3, borderRadius: 14, background: 'var(--surface2)', border: '1px solid var(--line2)', boxShadow: 'var(--shadow-sm)' }}>
+                <button onClick={() => rescale(1)} disabled={!canScaleUp} aria-label="Chips 10 times bigger" style={{ width: 34, height: 20, border: 'none', borderRadius: 9, cursor: canScaleUp ? 'pointer' : 'not-allowed', background: canScaleUp ? 'linear-gradient(180deg,var(--gold2),var(--gold))' : 'transparent', color: canScaleUp ? '#1a1200' : 'var(--text3)', fontSize: 10, fontWeight: 900, lineHeight: 1 }}>▲</button>
+                <span className="font-grotesk" style={{ fontSize: 11, fontWeight: 800, color: 'var(--gold-ink)', letterSpacing: '.02em' }}>10×</span>
+                <button onClick={() => rescale(-1)} disabled={!canScaleDown} aria-label="Chips 10 times smaller" style={{ width: 34, height: 20, border: 'none', borderRadius: 9, cursor: canScaleDown ? 'pointer' : 'not-allowed', background: canScaleDown ? 'linear-gradient(180deg,var(--gold2),var(--gold))' : 'transparent', color: canScaleDown ? '#1a1200' : 'var(--text3)', fontSize: 10, fontWeight: 900, lineHeight: 1 }}>▼</button>
+              </div>
+            )}
           </div>
-          <div style={{ position: 'relative', width: '100%', maxWidth: 360, margin: '8px auto 0', padding: '0 8px' }}>
+          <div style={{ position: 'relative', width: '100%', maxWidth: 360, margin: mobile ? '8px auto 0' : '12px auto 0', padding: '0 8px' }}>
             <input type="number" min={1} placeholder={`Or type amount (min ₹${minBet})`} value={manualInput} onChange={e => onManual(e.target.value)} className="font-grotesk" style={{ width: '100%', height: 42, background: 'var(--surface2)', border: `1px solid ${betAmount && manualInput !== '' ? 'var(--gold)' : 'var(--line2)'}`, borderRadius: 12, padding: '0 44px 0 15px', color: 'var(--text)', fontSize: 13, fontWeight: 700, outline: 'none' }} />
             <span style={{ position: 'absolute', right: 20, top: '50%', transform: 'translateY(-50%)', color: 'var(--gold-ink)', fontWeight: 800, fontSize: 12, pointerEvents: 'none' }}>₹</span>
-            {(myBetDelhi > 0 || myBetBombay > 0) && !isResult && (
-              <div style={{ textAlign: 'center', fontSize: 9, fontWeight: 800, letterSpacing: '.06em', color: 'var(--gold-ink)', marginTop: 8 }}>🔒 One side per cycle — locked to {myBetDelhi > 0 ? 'DELHI' : 'BOMBAY'}</div>
-            )}
             {isGhostMode && (
               <div style={{ textAlign: 'center', fontSize: 9, fontWeight: 800, letterSpacing: '.06em', color: '#c4b5fd', marginTop: 8 }}>👻 GHOST MODE ACTIVE · phantom bets balance the pool and are never paid out</div>
             )}
           </div>
         </div>
 
-        {/* Result strip → analytics drawer */}
+        {/* Result strip, then the analytics inline beneath it */}
         <div style={{ flex: 'none', padding: '8px 0 4px' }}>
-          <button onClick={() => setDrawerOpen(true)} style={{ width: '100%', background: 'var(--surface)', border: '1px solid var(--line)', borderTop: '1px solid var(--line2)', borderRadius: 16, padding: '10px 14px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10, boxShadow: 'var(--shadow-sm)' }}>
-            <span style={{ display: 'flex', alignItems: 'center', gap: 4, flex: 'none' }}>
-              <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.1em', color: 'var(--text3)' }}>{currentBoard?.name ?? ''}</span>
-            </span>
+          <div style={{ width: '100%', background: 'var(--surface)', border: '1px solid var(--line)', borderTop: '1px solid var(--line2)', borderRadius: 16, padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 10, boxShadow: 'var(--shadow-sm)' }}>
+            <span style={{ flex: 'none', fontSize: 9, fontWeight: 800, letterSpacing: '.1em', color: 'var(--text3)' }}>{currentBoard?.name ?? ''}</span>
             <div style={{ flex: 1, display: 'flex', gap: 5, overflow: 'hidden', alignItems: 'center' }}>
               {stripBeads.length === 0
                 ? <span style={{ fontSize: 9, color: 'var(--text3)' }}>No results yet</span>
                 : stripBeads.map((b, i) => <span key={i} style={{ flex: 'none', width: 20, height: 20, borderRadius: '50%', background: b.bg, color: '#fff', fontSize: 9, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: 'var(--shadow-sm)' }}>{b.ch}</span>)}
             </div>
-            <span style={{ flex: 'none', display: 'flex', alignItems: 'center', gap: 6, color: 'var(--gold-ink)' }}>
-              <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.08em' }}>ANALYTICS</span>
-              <span style={{ width: 26, height: 26, borderRadius: '50%', border: '1px solid var(--line2)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11 }}>▲</span>
-            </span>
-          </button>
+          </div>
+        </div>
+        <div style={{ flex: 'none', padding: '6px 0 4px' }}>
+          <AnalyticsPanel ref={analyticsRef} board={currentBoard} winners={panelWinners} loadCycleHistory={loadCycleHistory} />
         </div>
       </section>
 
       {desktop && rightPanel}
 
-      <AnalyticsDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} winnersByType={winnersByType} boards={boards} loadCycleHistory={loadCycleHistory} />
       <BoardRulesModal isAuthenticated={!!isAuthenticated} />
     </div>
   );

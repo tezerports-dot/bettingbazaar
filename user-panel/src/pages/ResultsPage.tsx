@@ -8,20 +8,23 @@ import { useGame } from '../services/GameContext';
 import { fmt, ago } from '../redesign/format';
 import { Side } from '../redesign/analytics';
 import ScreenShell, { card, capLabel } from '../redesign/Screen';
-import AnalyticsDrawer from '../redesign/AnalyticsDrawer';
+import AnalyticsPanel from '../redesign/AnalyticsPanel';
 
+const NO_WINNERS: Side[] = [];
 const sideBg = (sd: string) => (sd === 'DELHI' ? 'var(--delhi)' : 'var(--bombay)');
 
 const ResultsPage: React.FC = () => {
   const { pastCycles, loadCycleHistory, boards } = useGame();
-  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [picked, setPicked] = useState('');
+  // The board picked here, or the first in the admin's order.
+  const aBoard = boards.find(b => b.key === picked) ?? boards[0];
 
   const cycles = useMemo(() => (pastCycles || [])
     .filter(c => c.winner === 'DELHI' || c.winner === 'BOMBAY')
     .sort((a, b) => (b.endTime || 0) - (a.endTime || 0)), [pastCycles]);
 
   // An entry for every board, from the server's list — a hand-written set of
-  // boards once omitted one, and its tab in the drawer showed an empty board.
+  // boards once omitted one, and its analytics showed an empty board.
   const winnersByType = useMemo(() => Object.fromEntries(
     boards.map(b => [b.key, cycles.filter(c => c.type === b.key).map(c => c.winner as Side)]),
   ) as Record<string, Side[]>, [cycles, boards]);
@@ -36,8 +39,20 @@ const ResultsPage: React.FC = () => {
       <div style={{ display: 'flex', alignItems: 'center', gap: 16, background: 'var(--surface)', border: '1px solid var(--line2)', borderRadius: 18, padding: 18, boxShadow: 'var(--shadow)', marginBottom: 14 }}>
         <span className="font-grotesk" style={{ width: 66, height: 66, flex: 'none', borderRadius: '50%', background: latest ? sideBg(latest) : 'var(--surface3)', color: '#fff', fontWeight: 700, fontSize: 28, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: latest ? `0 0 24px -4px ${sideBg(latest)}` : 'none' }}>{latest ? (latest === 'DELHI' ? 'D' : 'B') : '—'}</span>
         <div style={{ flex: 1 }}><div style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--text3)' }}>Latest winner</div><div className="font-grotesk" style={{ fontWeight: 700, fontSize: 26, color: 'var(--text)' }}>{latest ? `${latest.charAt(0)}${latest.slice(1).toLowerCase()} Bazaar` : 'Awaiting result'}</div></div>
-        <button onClick={() => setDrawerOpen(true)} style={{ flex: 'none', padding: '11px 15px', borderRadius: 12, border: '1px solid var(--line2)', background: 'color-mix(in srgb,var(--gold) 12%,transparent)', color: 'var(--gold-ink)', fontSize: 11, fontWeight: 800, cursor: 'pointer' }}>📈 Analytics</button>
       </div>
+
+      {/* Analytics, per board */}
+      {boards.length > 0 && (
+        <div style={{ marginBottom: 14 }}>
+          <div className="bb-noscroll" style={{ display: 'flex', gap: 6, overflowX: 'auto', marginBottom: 8 }}>
+            {boards.map(b => {
+              const on = aBoard?.key === b.key;
+              return <button key={b.key} onClick={() => setPicked(b.key)} aria-pressed={on} style={{ flex: 'none', padding: '6px 13px', borderRadius: 999, border: `1px solid ${on ? 'var(--gold)' : 'var(--line2)'}`, cursor: 'pointer', fontSize: 10, fontWeight: 800, background: on ? 'var(--gold)' : 'var(--surface2)', color: on ? '#1a1200' : 'var(--text2)' }}>{b.name.toUpperCase()}</button>;
+            })}
+          </div>
+          <AnalyticsPanel board={aBoard} winners={(aBoard && winnersByType[aBoard.key]) || NO_WINNERS} loadCycleHistory={loadCycleHistory} />
+        </div>
+      )}
 
       {/* Roadmap */}
       <div style={{ ...card, marginBottom: 14 }}>
@@ -82,7 +97,6 @@ const ResultsPage: React.FC = () => {
         })}
       </div>
 
-      <AnalyticsDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} winnersByType={winnersByType} boards={boards} loadCycleHistory={loadCycleHistory} />
     </ScreenShell>
   );
 };

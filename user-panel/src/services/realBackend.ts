@@ -28,7 +28,7 @@
 import { Backend, SignInStep, PollResult, TelegramSetup, MyTelegram, TelegramBlock } from './backend.interface';
 import {
   User, Bet, BettingSide,
-  PromoContent, PromoLocation,
+  PromoContent, PromoLocation, HomePromoCard, PromoDevice,
   SystemConfigData, GameCycle
 } from '../types';
 import { io, Socket } from 'socket.io-client';
@@ -653,6 +653,25 @@ export class RealBackend implements Backend {
   }
   async getPublicContent(location: PromoLocation): Promise<PromoContent[]> {
     return this.getPromoContent(location);
+  }
+
+  // The home cards come with `devices`: each screen's frame, from the server's
+  // one list (database/spec/promoDevices.js), so the app keeps no copy.
+  async getHomeCards(): Promise<{ cards: HomePromoCard[]; devices: PromoDevice[] }> {
+    return new Promise((resolve) => {
+      if (!this.socket) { resolve({ cards: [], devices: [] }); return; }
+      let settled = false;
+      const timer = setTimeout(() => { if (!settled) { settled = true; resolve({ cards: [], devices: [] }); } }, 8000);
+      const handler = (data: { location: string; content?: HomePromoCard[]; devices?: PromoDevice[] }) => {
+        if (settled || data.location !== 'HOME') return;
+        settled = true;
+        clearTimeout(timer);
+        this.socket?.off('promo_data', handler);
+        resolve({ cards: data.content || [], devices: data.devices || [] });
+      };
+      this.socket.on('promo_data', handler);
+      this.socket.emit('request_promo', { location: 'HOME' });
+    });
   }
 
   // getMerchantProfile / updateMerchantProfile / getMerchantPaymentOrders /

@@ -100,6 +100,16 @@ export function systemConfigPayload(cfg) {
     webUrl:              cfg?.webUrl     ?? '',
     iosUrl:              cfg?.iosUrl     ?? '',
 
+    // The player screen's extras (Admin › Player Screen). Every value equals
+    // its declared default when unset (config.spec.js `boardExtras`).
+    boardExtras: {
+      urgencyChips:       cfg?.boardExtras?.urgencyChips       ?? true, // schema default: true
+      closingWarnSeconds: cfg?.boardExtras?.closingWarnSeconds ?? 10,   // schema default: 10
+      resultCelebration:  cfg?.boardExtras?.resultCelebration  ?? true, // schema default: true
+      bonusProgress:      cfg?.boardExtras?.bonusProgress      ?? true, // schema default: true
+      promoCards:         cfg?.boardExtras?.promoCards         ?? true, // schema default: true
+    },
+
     // Signup gating. Only the HTTP route used to carry these. `!== false` keeps
     // an unset flag meaning "on", which is what both copies already did.
     registrationEnabled: cfg?.registrationEnabled !== false,

@@ -6,12 +6,16 @@
  *   - TRICKS_PAGE  → user Promo / Tips & Tricks page
  *   - RULES_PAGE   → user Rules / How to Play page
  *
+ * Shown inside Images › Page banners & slides. Home promo cards are not slides:
+ * each has an image per screen, set under Images › Promo cards
+ * (PromoDeviceCards.tsx).
+ *
  * Each slide = one PromoContent document with:
  *   location : TRICKS_PAGE | RULES_PAGE
  *   fileUrl  : CDN URL of the image
  *   title    : caption shown below image (optional)
  *   priority : sort order (higher = shown first)
- *   status   : ACTIVE | INACTIVE
+ *   status   : PUBLISHED | DRAFT (ACTIVE is read as PUBLISHED)
  *
  * Admin can:
  *   1. Upload images directly (presigned S3 URL flow)
@@ -39,10 +43,14 @@ interface Slide {
   title?: string;
   fileUrl?: string;
   priority: number;
-  status: 'ACTIVE' | 'INACTIVE';
+  // The server answers its own vocabulary (`PUBLISHED`/`DRAFT`/`ARCHIVED`,
+  // content.admin.routes.js `PROMO_STATUS`); `ACTIVE` is accepted as PUBLISHED.
+  status: 'PUBLISHED' | 'DRAFT' | 'ARCHIVED' | 'ACTIVE';
   location: Location;
   createdAt: string;
 }
+
+const isLive = (slide: Slide) => slide.status === 'PUBLISHED' || slide.status === 'ACTIVE';
 
 const TABS: { key: Location; label: string; icon: React.ReactNode }[] = [
   { key: 'TRICKS_PAGE', label: 'Tips & Tricks', icon: <Lightbulb size={15} /> },
@@ -115,22 +123,24 @@ export const ContentSlideManager: React.FC = () => {
         location:  activeTab,
         mediaType: 'IMAGE',
         priority:  form.priority,
-        status:    'ACTIVE',
+        status:    'PUBLISHED',
       });
       toast.success('Slide added');
       setShowAdd(false);
       setForm({ title: '', fileUrl: '', priority: 0, urlMode: true });
       loadSlides();
-    } catch { toast.error('Failed to save slide'); }
+    } catch (e: any) { toast.error(e?.response?.data?.message || 'Failed to save slide'); }
     finally { setSaving(false); }
   };
 
   const toggleStatus = async (slide: Slide) => {
-    const newStatus = slide.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE';
+    // Hiding sends DRAFT: the server has no INACTIVE, and answered the old
+    // toggle with 400 "Unknown promo status", so a slide could not be hidden.
+    const newStatus = isLive(slide) ? 'DRAFT' : 'PUBLISHED';
     try {
       await api.put(`/api/admin/promo/${slide._id}`, { status: newStatus });
       setSlides(prev => prev.map(s => s._id === slide._id ? { ...s, status: newStatus } : s));
-      toast.success(newStatus === 'ACTIVE' ? 'Slide published' : 'Slide hidden');
+      toast.success(newStatus === 'PUBLISHED' ? 'Slide published' : 'Slide hidden');
     } catch { toast.error('Failed to update status'); }
   };
 
@@ -178,8 +188,8 @@ export const ContentSlideManager: React.FC = () => {
 
       {/* Slide count info */}
       <div className="text-xs text-gray-500">
-        {slides.filter(s => s.status === 'ACTIVE').length} active slide(s) •&nbsp;
-        {slides.filter(s => s.status === 'INACTIVE').length} hidden —&nbsp;
+        {slides.filter(isLive).length} active slide(s) •&nbsp;
+        {slides.filter(s => !isLive(s)).length} hidden —&nbsp;
         users see active slides in swipeable full-screen view
       </div>
 
@@ -194,7 +204,7 @@ export const ContentSlideManager: React.FC = () => {
         <div className="card text-center py-16 text-gray-500">
           <ImageIcon size={48} className="mx-auto mb-3 opacity-30" />
           <p className="font-medium">No slides yet</p>
-          <p className="text-xs mt-1">Add images that users will see on the {activeTab === 'TRICKS_PAGE' ? 'Tips & Tricks' : 'Rules'} page</p>
+          <p className="text-xs mt-1">Add images that users will see on the {TABS.find(t => t.key === activeTab)?.label} page</p>
         </div>
       ) : (
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
@@ -202,7 +212,7 @@ export const ContentSlideManager: React.FC = () => {
             <div
               key={slide._id}
               className={`relative rounded-xl overflow-hidden border transition-all
-                ${slide.status === 'ACTIVE'
+                ${isLive(slide)
                   ? 'border-gold-500/40 shadow-[0_0_12px_rgba(var(--gold-rgb),0.15)]'
                   : 'border-dark-600 opacity-50 grayscale'}`}
             >
@@ -249,10 +259,11 @@ export const ContentSlideManager: React.FC = () => {
                   <div className="flex gap-0.5">
                     <button
                       onClick={() => toggleStatus(slide)}
-                      className={`p-1 rounded-sm ${slide.status === 'ACTIVE' ? 'bg-green-600/60 hover:bg-green-600' : 'bg-gray-600/60 hover:bg-gray-600'}`}
-                      title={slide.status === 'ACTIVE' ? 'Hide from users' : 'Publish'}
+                      className={`p-1 rounded-sm ${isLive(slide) ? 'bg-green-600/60 hover:bg-green-600' : 'bg-gray-600/60 hover:bg-gray-600'}`}
+                      title={isLive(slide) ? 'Hide from users' : 'Publish'}
+                      aria-label={isLive(slide) ? 'Hide from users' : 'Publish'}
                     >
-                      {slide.status === 'ACTIVE' ? <Eye size={10} /> : <EyeOff size={10} />}
+                      {isLive(slide) ? <Eye size={10} /> : <EyeOff size={10} />}
                     </button>
                     <button
                       onClick={() => setConfirmDel(slide)}
@@ -275,7 +286,7 @@ export const ContentSlideManager: React.FC = () => {
         <Modal isOpen onClose={() => { setShowAdd(false); setForm({ title: '', fileUrl: '', priority: 0, urlMode: true }); }} title="Add Slide">
           <div className="space-y-4">
             <p className="text-xs text-gray-400">
-              Adding to: <span className="text-white font-medium">{activeTab === 'TRICKS_PAGE' ? 'Tips & Tricks' : 'Rules / How to Play'}</span>
+              Adding to: <span className="text-white font-medium">{TABS.find(t => t.key === activeTab)?.label}</span>
             </p>
             {/* FIX-15: Image spec guidance for content creators */}
             <div className="bg-yellow-900/20 border border-yellow-700/30 rounded-lg px-3 py-2 text-[11px]">

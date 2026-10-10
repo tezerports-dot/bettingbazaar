@@ -11,7 +11,8 @@
  * PostgreSQL has no TTL index, and that is the better answer: a sweep that is
  * late must not leave an expired banner on the home page.
  */
-import { pgQuery } from '../client.js';
+import { pgQuery, withTransaction } from '../client.js';
+import { isPromoDevice } from '../spec/promoDevices.js';
 import { randomBytes } from 'node:crypto';
 
 const newId = () => randomBytes(12).toString('hex');
@@ -113,41 +114,96 @@ const toPromo = (r) => (r ? {
   promoId: r.promo_id, _id: r.promo_id,
   title: r.title, description: r.description,
   type: r.kind, location: r.location, mediaType: r.media_type,
-  fileUrl: r.file_url, priority: r.priority, status: r.status,
+  fileUrl: r.file_url, linkUrl: r.link_url ?? null, priority: r.priority, status: r.status,
+  // A HOME card's picture per screen, keyed by device (spec/promoDevices.js).
+  images: r.images ?? {},
   isActive: r.is_active, createdBy: r.created_by,
   createdAt: r.created_at, updatedAt: r.updated_at,
 } : null);
 
-export async function upsertPromo({
-  promoId = null, title = '', description = '', kind = 'BANNER', location = 'HOME',
-  mediaType = 'IMAGE', fileUrl = null, priority = 0, status = 'DRAFT',
-  isActive = false, createdBy = null,
-}) {
-  const id = String(promoId || newId());
-  const { rows } = await pgQuery(
-    `INSERT INTO promo_content (promo_id, title, description, kind, location,
-       media_type, file_url, priority, status, is_active, created_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-     ON CONFLICT (promo_id) DO UPDATE SET
-       title = EXCLUDED.title, description = EXCLUDED.description,
-       kind = EXCLUDED.kind, location = EXCLUDED.location,
-       media_type = EXCLUDED.media_type, file_url = EXCLUDED.file_url,
-       priority = EXCLUDED.priority, status = EXCLUDED.status,
-       is_active = EXCLUDED.is_active, updated_at = now()
-     RETURNING *`,
-    [id, String(title), String(description), String(kind), String(location),
-      String(mediaType), fileUrl, Number(priority) || 0, String(status),
-      Boolean(isActive), createdBy], 'promo_upsert',
-  );
+// Every read of a card carries its device images with it.
+const PROMO_SELECT = `SELECT p.*,
+    (SELECT COALESCE(jsonb_object_agg(i.device, i.file_url), '{}'::jsonb)
+       FROM promo_content_images i WHERE i.promo_id = p.promo_id) AS images
+  FROM promo_content p`;
+
+const promoError = (message) => Object.assign(new Error(message), { status: 400 });
+
+/**
+ * Apply a card's device images, then hold the card to the rule a CHECK cannot
+ * see across two tables: a PUBLISHED home card has at least one image, and no
+ * image belongs to a card that is not a home card. In the writing transaction,
+ * under the card's row lock, so the rule is the committed state's.
+ *
+ * `images`: { DEVICE: url } sets that device's image, { DEVICE: null } removes
+ * it; a device not named is left alone. Undefined touches none.
+ */
+async function applyPromoImages(client, promoId, images, updatedBy) {
+  for (const [device, url] of Object.entries(images || {})) {
+    if (!isPromoDevice(device)) throw promoError(`Unknown device: ${device}`);
+    if (url) {
+      await client.query(
+        `INSERT INTO promo_content_images (promo_id, device, file_url, updated_by)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (promo_id, device) DO UPDATE SET
+           file_url = EXCLUDED.file_url, updated_by = EXCLUDED.updated_by, updated_at = now()`,
+        [promoId, device, String(url), updatedBy]);
+    } else {
+      await client.query('DELETE FROM promo_content_images WHERE promo_id = $1 AND device = $2', [promoId, device]);
+    }
+  }
+  const { rows } = await client.query(
+    `SELECT p.location, p.status, (SELECT count(*) FROM promo_content_images i WHERE i.promo_id = p.promo_id)::int AS n
+       FROM promo_content p WHERE p.promo_id = $1 FOR UPDATE`, [promoId]);
+  const card = rows[0];
+  if (!card) return;
+  if (card.location !== 'HOME' && card.n > 0) throw promoError('Only a home promo card has device images.');
+  if (card.location === 'HOME' && card.status === 'PUBLISHED' && card.n === 0) {
+    throw promoError('A published card needs an image for at least one screen.');
+  }
+}
+
+async function readPromo(client, promoId) {
+  const { rows } = await client.query(`${PROMO_SELECT} WHERE p.promo_id = $1`, [String(promoId)]);
   return toPromo(rows[0]);
 }
 
-/** What a panel actually shows in one slot. */
+export async function upsertPromo({
+  promoId = null, title = '', description = '', kind = 'BANNER', location = 'HOME',
+  mediaType = 'IMAGE', fileUrl = null, linkUrl = null, priority = 0, status = 'DRAFT',
+  isActive = false, createdBy = null, images = undefined,
+}) {
+  const id = String(promoId || newId());
+  return withTransaction(async (client) => {
+    await client.query(
+      `INSERT INTO promo_content (promo_id, title, description, kind, location,
+         media_type, file_url, priority, status, is_active, created_by, link_url)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+       ON CONFLICT (promo_id) DO UPDATE SET
+         title = EXCLUDED.title, description = EXCLUDED.description,
+         kind = EXCLUDED.kind, location = EXCLUDED.location,
+         media_type = EXCLUDED.media_type, file_url = EXCLUDED.file_url,
+         link_url = EXCLUDED.link_url,
+         priority = EXCLUDED.priority, status = EXCLUDED.status,
+         is_active = EXCLUDED.is_active, updated_at = now()`,
+      [id, String(title), String(description), String(kind), String(location),
+        String(mediaType), fileUrl, Number(priority) || 0, String(status),
+        Boolean(isActive), createdBy, linkUrl || null]);
+    await applyPromoImages(client, id, images, createdBy);
+    return readPromo(client, id);
+  });
+}
+
+/**
+ * What a panel actually shows in one slot. A home card with no image for any
+ * screen has nothing to draw, so it is not sent.
+ */
 export async function listLivePromos(location = 'HOME', { limit = 20 } = {}) {
   const { rows } = await pgQuery(
-    `SELECT * FROM promo_content
-      WHERE status = 'PUBLISHED' AND is_active AND location = $1
-      ORDER BY priority DESC, created_at DESC LIMIT $2`,
+    `${PROMO_SELECT}
+      WHERE p.status = 'PUBLISHED' AND p.is_active AND p.location = $1
+        AND (p.location <> 'HOME' OR EXISTS (SELECT 1 FROM promo_content_images i WHERE i.promo_id = p.promo_id))
+      ORDER BY p.priority DESC, p.created_at DESC LIMIT $2`,
     [String(location), Math.min(Math.max(Number(limit) || 20, 1), 100)], 'promo_list_live',
   );
   return rows.map(toPromo);
@@ -155,11 +211,11 @@ export async function listLivePromos(location = 'HOME', { limit = 20 } = {}) {
 
 export async function listPromos({ location = null, status = null, limit = 100 } = {}) {
   const where = []; const params = [];
-  if (location) { params.push(String(location)); where.push(`location = $${params.length}`); }
-  if (status)   { params.push(String(status));   where.push(`status = $${params.length}`); }
+  if (location) { params.push(String(location)); where.push(`p.location = $${params.length}`); }
+  if (status)   { params.push(String(status));   where.push(`p.status = $${params.length}`); }
   const { rows } = await pgQuery(
-    `SELECT * FROM promo_content ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-      ORDER BY priority DESC, created_at DESC
+    `${PROMO_SELECT} ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+      ORDER BY p.priority DESC, p.created_at DESC
       LIMIT ${Math.min(Math.max(Number(limit) || 100, 1), 500)}`,
     params, 'promo_list',
   );
@@ -174,14 +230,15 @@ export async function listPromos({ location = null, status = null, limit = 100 }
  * status to DRAFT and the media to null. Here an absent key is left alone by
  * the statement itself rather than by a read-modify-write, so two admins
  * editing different fields of the same promo do not overwrite each other.
+ * `patch.images` changes only the devices it names, in the same transaction.
  *
  * Returns null when no such promo exists, so the route answers 404 instead of
  * reporting success for a row it never touched.
  */
-export async function updatePromo(promoId, patch = {}) {
+export async function updatePromo(promoId, patch = {}, { updatedBy = null } = {}) {
   const COLUMN = {
     title: 'title', description: 'description', kind: 'kind', type: 'kind',
-    location: 'location', mediaType: 'media_type', fileUrl: 'file_url',
+    location: 'location', mediaType: 'media_type', fileUrl: 'file_url', linkUrl: 'link_url',
     priority: 'priority', status: 'status', isActive: 'is_active',
   };
   const sets = []; const params = [String(promoId)];
@@ -191,18 +248,22 @@ export async function updatePromo(promoId, patch = {}) {
     params.push(value);
     sets.push(`${column} = $${params.length}`);
   }
-  if (!sets.length) return getPromo(promoId);
-  const { rows } = await pgQuery(
-    `UPDATE promo_content SET ${sets.join(', ')}, updated_at = now()
-      WHERE promo_id = $1 RETURNING *`,
-    params, 'promo_update',
-  );
-  return toPromo(rows[0]);
+  return withTransaction(async (client) => {
+    if (sets.length) {
+      const { rowCount } = await client.query(
+        `UPDATE promo_content SET ${sets.join(', ')}, updated_at = now() WHERE promo_id = $1`, params);
+      if (!rowCount) return null;
+    } else if (!(await readPromo(client, promoId))) {
+      return null;
+    }
+    await applyPromoImages(client, String(promoId), patch.images, updatedBy);
+    return readPromo(client, promoId);
+  });
 }
 
 export async function getPromo(promoId) {
   const { rows } = await pgQuery(
-    'SELECT * FROM promo_content WHERE promo_id = $1', [String(promoId)], 'promo_get',
+    `${PROMO_SELECT} WHERE p.promo_id = $1`, [String(promoId)], 'promo_get',
   );
   return toPromo(rows[0]);
 }

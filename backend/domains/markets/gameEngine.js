@@ -434,7 +434,10 @@ class GameEngine {
     async notifyWinners(cycle, winnerPayouts, betsPerWinner, refusals) {
         if (!winnerPayouts.length || !this.io) return;
 
-        const refusedByUser = refusals.reduce(
+        // Only refused WINNING bets count against a winner's paid bets: a
+        // player may hold both sides (owner, 2026-10-10), and a refused LOSING
+        // bet must not hide the win that WAS paid.
+        const refusedByUser = refusals.filter((r) => r.outcome === 'WON').reduce(
             (m, r) => m.set(r.userId, (m.get(r.userId) ?? 0) + 1), new Map(),
         );
         const paidWinners = refusedByUser.size === 0 ? winnerPayouts : winnerPayouts.filter(

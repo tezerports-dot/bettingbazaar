@@ -297,6 +297,30 @@ export const SYSTEM_CONFIG_SPEC = group({
     blockJa3Hashes: sa([]),
   }),
 
+  // ── The player screen's extras (owner, 2026-10-10) ──────────────────────
+  // Admin › Player Screen. Presentation only: each switch shows or hides one
+  // piece of the player app, and none of them carries a figure the platform
+  // does not already send that player (their own timer, their own payout,
+  // their own bonus turnover, the published promo cards). Served to every
+  // client in `systemConfigPayload` as `boardExtras`.
+  boardExtras: group({
+    // The timer turning amber then red, and the "Closing 0:09" chip on the
+    // betting cards (no LIVE pill: owner, 2026-10-10).
+    urgencyChips:        b(true),
+    // Seconds before bets close that the timer turns red and the chip shows.
+    // The timer is amber for twice this long first. 0 = no closing chip.
+    closingWarnSeconds:  int(10, 0, 120),
+    // On the result: the winning side large, and the player's own payout
+    // counting up.
+    resultCelebration:   b(true),
+    // The General wallet's unlock progress as a bar.
+    bonusProgress:       b(true),
+    // The published HOME promo cards (Admin › Page Slides): the board's side
+    // columns on a laptop, a one-card-wide 3:1 banner carousel under the
+    // header on a phone or tablet.
+    promoCards:          b(true),
+  }),
+
   registrationEnabled: b(true),
   depositMethods:      sa(['UPI', 'BANK_TRANSFER']),
   withdrawalMethods:   sa(['UPI', 'BANK_TRANSFER']),
@@ -358,6 +382,8 @@ export const BRANDING_SPEC = group({
   loginPageBannerUrl: s(''), registerPageBannerUrl: s(''),
   // ── Bet-card backgrounds ──────────────────────────────────────────────────
   betCardDelhiImageUrl: s(''), betCardBombayImageUrl: s(''),
+  // ── The board's Refer & Earn card (desktop/tablet side column) ────────────
+  referPromoImageUrl: s(''),
 });
 
 /**

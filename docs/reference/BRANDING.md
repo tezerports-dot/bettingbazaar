@@ -62,5 +62,6 @@ Never concatenate `cdnBase + '/' + logo` without normalising both sides (C-07 fi
 | `registerPageBannerUrl` | AuthModal.tsx register tab |
 | `betCardDelhiImageUrl` | redesign `GameScreen` DELHI bet-card background (resolved via `getAssetUrl`) |
 | `betCardBombayImageUrl` | redesign `GameScreen` BOMBAY bet-card background (resolved via `getAssetUrl`) |
+| `referPromoImageUrl` | redesign `GameScreen` Refer & Earn card in the wide-screen side column; opens `/referrals` (resolved via `getAssetUrl`) |
 
 ---

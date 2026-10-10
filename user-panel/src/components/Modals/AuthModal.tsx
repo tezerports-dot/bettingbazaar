@@ -47,7 +47,7 @@ import { storedReferralCode } from '../../services/referralCapture';
 import { useGame } from '../../services/GameContext';
 import { getBackend } from '../../services/backend.service';
 import { useRetryCountdown } from '../../hooks/useRetryCountdown';
-import { brandLogo } from '../../services/brandAssets';
+import { useHeaderLogo } from '../../services/brandAssets';
 import TelegramStep from './TelegramStep';
 import type { SignInStep, TelegramSetup } from '../../services/backend.interface';
 
@@ -169,6 +169,7 @@ const AuthModal: React.FC<AuthModalProps> = ({ onClose, initialMode }) => {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [logoFailed, setLogoFailed] = useState(false);
+  const logoSrc = useHeaderLogo();
 
   /**
    * The login pace, shown as a live countdown.
@@ -320,7 +321,7 @@ const AuthModal: React.FC<AuthModalProps> = ({ onClose, initialMode }) => {
       <div className="bb-rise" style={{ position: 'relative', zIndex: 1, width: '100%', maxWidth: 400, background: 'var(--surface)', border: '1px solid var(--line2)', borderRadius: 22, padding: '26px 22px', boxShadow: 'var(--shadow)' }}>
         <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 14 }}>
           {!logoFailed
-            ? <img src={brandLogo('logo-header.png')} alt="Betting Bazaar" onError={() => setLogoFailed(true)} style={{ height: 34, width: 'auto', maxWidth: 220, objectFit: 'contain', filter: 'drop-shadow(0 2px 10px var(--glow))' }} />
+            ? <img src={logoSrc} alt="Betting Bazaar" onError={() => setLogoFailed(true)} style={{ display: 'block', height: 'auto', width: '100%', maxWidth: 240, maxHeight: 52, objectFit: 'contain', filter: 'drop-shadow(0 2px 10px var(--glow))' }} />
             : <span className="font-grotesk" style={{ color: 'var(--gold-ink)', fontWeight: 700, fontSize: 20, letterSpacing: '.14em' }}>BETTING BAZAAR</span>}
         </div>
 

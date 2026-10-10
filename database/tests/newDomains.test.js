@@ -772,8 +772,12 @@ describePg('the domains written from scratch', () => {
 
     it('refuses a published promo with nothing to show', async () => {
       await expect(content.upsertPromo({
-        promoId: `pm-${ID}`, title: 'Empty', status: 'PUBLISHED', mediaType: 'IMAGE',
+        promoId: `pm-${ID}`, title: 'Empty', location: 'TRICKS_PAGE', status: 'PUBLISHED', mediaType: 'IMAGE',
       })).rejects.toThrow(/promo_published_has_media/);
+      // A home card: no image for any screen.
+      await expect(content.upsertPromo({
+        promoId: `pm-${ID}-h`, title: 'Empty', status: 'PUBLISHED', mediaType: 'IMAGE',
+      })).rejects.toMatchObject({ status: 400 });
     });
 
     it('holds one asset per slot', async () => {

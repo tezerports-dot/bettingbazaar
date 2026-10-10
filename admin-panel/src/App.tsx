@@ -27,15 +27,14 @@ import { SubAdminsList } from './Pages/SubAdmins/SubAdminsList';
 import { BrandingSettings } from './Pages/Branding/BrandingSettings';
 import { FAQManager } from './Pages/Content/FAQManager';
 import { SupportLinks } from './Pages/Content/SupportLinks';
-import { CDNManager } from './Pages/Content/CDNManager';
-import { ContentSlideManager } from './Pages/Content/ContentSlideManager';
+import { ImagesPage } from './Pages/Images/ImagesPage';
 import { SystemSettings } from './Pages/Settings/SystemSettings';
+import { PlayerScreenSettings } from './Pages/Settings/PlayerScreenSettings';
 import { AuditLogs } from './Pages/Settings/AuditLogs';
 import ErrorLogs from './Pages/Settings/ErrorLogs';
 import { DisputeManager } from './Pages/Disputes/DisputeManager';
 import { StalledWithdrawals } from './Pages/Disputes/StalledWithdrawals';
 import { UtrMonitor } from './Pages/Utr/UtrMonitor';
-import { AppAssetsPage } from './Pages/AppAssets/AppAssetsPage';
 import { AndroidAppPage } from './Pages/AndroidApp/AndroidAppPage';
 import { BlockedIpsPage } from './Pages/Security/BlockedIpsPage';
 // ── NEW FEATURE PAGES ──────────────────────────────────────────────────────
@@ -266,30 +265,25 @@ const App: React.FC = () => {
             <Layout><FAQManager /></Layout>
           </PermRoute>
         } />
-        <Route path="/content/slides" element={
+        {/* Images: every image of the player app, one page (owner, 2026-10-10).
+            The old addresses of its parts land on their tab. */}
+        <Route path="/images" element={
           <PermRoute permission="canManageContent">
-            <Layout><ContentSlideManager /></Layout>
+            <Layout><ImagesPage /></Layout>
           </PermRoute>
         } />
+        <Route path="/content/slides" element={<Navigate to="/images?tab=pages" replace />} />
+        <Route path="/content/cdn" element={<Navigate to="/images?tab=library" replace />} />
+        <Route path="/app-assets" element={<Navigate to="/images?tab=logos" replace />} />
         <Route path="/content/support" element={
           <PermRoute permission="canManageContent">
             <Layout><SupportLinks /></Layout>
-          </PermRoute>
-        } />
-        <Route path="/content/cdn" element={
-          <PermRoute permission="canManageContent">
-            <Layout><CDNManager /></Layout>
           </PermRoute>
         } />
         <Route path="/branding" element={
           <PermRoute permission="canManageContent">
             <Layout><BrandingSettings /></Layout>
           </PermRoute>
-        } />
-
-        {/* App Assets — admin only */}
-        <Route path="/app-assets" element={
-          <PermRoute permission="canManageContent"><Layout><AppAssetsPage /></Layout></PermRoute>
         } />
 
         {/* Android App — upload, publish and force updates. Admin only: a
@@ -342,6 +336,9 @@ const App: React.FC = () => {
         } />
         <Route path="/sub-admins" element={
           <AdminOnly><Layout><SubAdminsList /></Layout></AdminOnly>
+        } />
+        <Route path="/player-screen" element={
+          <PermRoute permission="canManageSystemSettings"><Layout><PlayerScreenSettings /></Layout></PermRoute>
         } />
         <Route path="/settings" element={
           <PermRoute permission="canManageSystemSettings"><Layout><SystemSettings /></Layout></PermRoute>

@@ -38,6 +38,8 @@
   --red: #EF4A4A;
   --delhi: #E5484C;
   --bombay: #2E86DE;
+  --blind: #8B5CF6;
+  --blind2: #D946EF;
   --chip-bg: rgba(255, 255, 255, .02);
   --shadow: 0 18px 44px -14px rgba(0, 0, 0, .7);
   --shadow-sm: 0 6px 18px -8px rgba(0, 0, 0, .6);
@@ -70,6 +72,8 @@
   --red: #DC3545;
   --delhi: #D22F2F;
   --bombay: #1461B8;
+  --blind: #7C3AED;
+  --blind2: #C026D3;
   --chip-bg: rgba(20, 22, 40, .02);
   --shadow: 0 16px 38px -18px rgba(40, 44, 74, .30);
   --shadow-sm: 0 8px 20px -12px rgba(40, 44, 74, .22);
@@ -139,8 +143,77 @@
 .bb-chipfloat { animation: bb-chipfloat 2.6s ease-in-out infinite; }
 .bb-chipshine { animation: bb-chipshine 3.4s ease-in-out infinite; }
 
+/* Game tabs under the header (owner, 2026-10-10): flat, part of the bar; each
+   name glows green, the open one shines brighter in the text colour with a
+   sparkle and a glowing underline. */
+.bb-gametab {
+  flex: none; position: relative; display: flex; align-items: center; gap: 7px;
+  height: 42px; padding: 0 12px; border: none; background: none; cursor: pointer;
+  white-space: nowrap; scroll-snap-align: start;
+}
+.bb-gametab__name {
+  font-weight: 700; font-size: 13px; letter-spacing: .04em; color: var(--green);
+  text-shadow: 0 0 8px color-mix(in srgb, var(--green) 55%, transparent);
+  transition: color .2s, text-shadow .2s;
+}
+.bb-gametab--on .bb-gametab__name {
+  color: var(--text);
+  text-shadow: 0 0 6px color-mix(in srgb, var(--text) 85%, transparent), 0 0 16px color-mix(in srgb, var(--text) 55%, transparent);
+}
+.bb-gametab--on::after {
+  content: ''; position: absolute; left: 10px; right: 10px; bottom: 0; height: 2px; border-radius: 2px;
+  background: var(--text); box-shadow: 0 0 10px var(--text);
+}
+.bb-gametab__spark {
+  position: absolute; top: 5px; right: 2px; font-size: 9px; color: var(--text);
+  text-shadow: 0 0 6px var(--text); animation: bb-sparkle 1.6s ease-in-out infinite;
+}
+@keyframes bb-sparkle { 0%, 100% { opacity: .2; transform: scale(.6) rotate(0deg); } 50% { opacity: 1; transform: scale(1.15) rotate(45deg); } }
+
+/* ── Card shares (redesign/BetCardShare.tsx) ──────────────────────────────────
+   Each betting card fills from the bottom in its side's colour up to its share
+   of the pool. Merged, both cards are lit evenly and a violet band across them
+   reads BLIND BETTING. */
+@keyframes bb-share-flow { from { background-position: 0% 50%; } to { background-position: 200% 50%; } }
+@keyframes bb-share-text { 0%, 100% { text-shadow: 0 0 8px rgba(255, 255, 255, .55), 0 2px 3px rgba(0, 0, 0, .7); } 50% { text-shadow: 0 0 16px rgba(255, 255, 255, .9), 0 0 26px var(--blind2), 0 2px 3px rgba(0, 0, 0, .7); } }
+
+.bb-share-fill {
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 1; pointer-events: none;
+  background: linear-gradient(0deg, color-mix(in srgb, var(--share-c) 62%, transparent) 0%, color-mix(in srgb, var(--share-c) 30%, transparent) 100%);
+  border-top: 2px solid color-mix(in srgb, var(--share-c) 70%, #fff);
+  box-shadow: 0 -6px 18px -6px color-mix(in srgb, var(--share-c) 80%, transparent);
+  transition: height .7s cubic-bezier(.2, .8, .2, 1);
+}
+.bb-share-fill--blind {
+  border-top: none; box-shadow: none;
+  background: linear-gradient(0deg, color-mix(in srgb, var(--share-c) 34%, transparent), color-mix(in srgb, var(--share-c) 18%, transparent));
+}
+.bb-share-figure {
+  position: relative; z-index: 2; display: flex; flex-direction: column; align-items: center; gap: 3px;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, .85), 0 0 12px rgba(0, 0, 0, .5);
+}
+.bb-share-figure__pct { font-weight: 700; line-height: 1; color: #fff; font-variant-numeric: tabular-nums; letter-spacing: .01em; }
+.bb-share-figure__pool { font-weight: 700; line-height: 1.1; color: rgba(255, 255, 255, .84); font-variant-numeric: tabular-nums; }
+.bb-share-blind {
+  position: absolute; left: 0; right: 0; top: calc(50% + 10px); transform: translateY(-50%); z-index: 4; pointer-events: none;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; padding: 7px 0;
+  background: linear-gradient(90deg, var(--blind), var(--blind2), color-mix(in srgb, var(--blind) 60%, #000), var(--blind2), var(--blind));
+  background-size: 200% 100%;
+  border-top: 1px solid rgba(255, 255, 255, .22); border-bottom: 1px solid rgba(0, 0, 0, .35);
+  box-shadow: 0 8px 20px -8px rgba(0, 0, 0, .7);
+  animation: bb-share-flow 3.2s linear infinite;
+}
+.bb-share-blind__text {
+  color: #fff; font-weight: 700; letter-spacing: .32em; padding-left: .32em; line-height: 1.1;
+  animation: bb-share-text 1.8s ease-in-out infinite;
+}
+.bb-share-blind--compact { flex-direction: row; gap: 10px; padding: 5px 0; }
+.bb-share-blind__pool { font-weight: 700; color: rgba(255, 255, 255, .88); letter-spacing: .08em; }
+
 @media (prefers-reduced-motion: reduce) {
-  .bb-shimmer::after, .bb-skel, .bb-spin, .bb-pulse, .bb-rise, .bb-chipfloat, .bb-chipshine {
+  .bb-shimmer::after, .bb-skel, .bb-spin, .bb-gametab__spark, .bb-pulse, .bb-rise, .bb-chipfloat, .bb-chipshine,
+  .bb-share-blind, .bb-share-blind__text {
     animation: none !important;
   }
+  .bb-share-fill { transition: none; }
 }

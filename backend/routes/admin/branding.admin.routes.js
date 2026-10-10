@@ -232,6 +232,10 @@ router.post('/branding/upload-url', authenticate, hasPermission('canManageConten
     if (!fileName || !contentType || !fileSize) {
       return res.status(400).json({ success: false, message: 'fileName, contentType and fileSize are required' });
     }
+    // The category becomes a segment of the object key (`branding/<category>/…`).
+    if (!/^[a-z0-9-]{1,32}$/.test(String(category))) {
+      return res.status(400).json({ success: false, message: 'category must be lowercase letters, digits or dashes' });
+    }
     const result = await generateBrandingUploadUrl(
       fileName,
       contentType,

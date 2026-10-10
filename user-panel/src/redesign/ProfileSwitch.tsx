@@ -20,7 +20,15 @@ export interface GeneralSummary {
   promoBalance: number;
   outstandingTurnover: number;
   turnoverMultiplier: number;
+  /** Each referral grant's requirement and progress (`GET /api/user/general`). */
+  grants?: { requiredTurnover: number; turnover: number; completedAt?: string | null }[];
 }
+
+/**
+ * Fired on `window` after any switch, so every reader (the header pill, the
+ * Wallet's toggle) re-reads the server's answer instead of keeping its own.
+ */
+export const PROFILE_CHANGED_EVENT = 'bb:play-profile-changed';
 
 /** The player's profile and General balance, re-read whenever `key` changes. */
 export function usePlayProfile(isAuthenticated: boolean, key: string) {
@@ -36,15 +44,24 @@ export function usePlayProfile(isAuthenticated: boolean, key: string) {
   }, [isAuthenticated]);
 
   useEffect(() => { load(); }, [load, key]);
+  useEffect(() => {
+    const onChange = () => { load(); };
+    window.addEventListener(PROFILE_CHANGED_EVENT, onChange);
+    return () => window.removeEventListener(PROFILE_CHANGED_EVENT, onChange);
+  }, [load]);
 
-  const choose = useCallback(async (profile: PlayProfile) => {
+  /** Switch profile; true once the server has it. */
+  const choose = useCallback(async (profile: PlayProfile): Promise<boolean> => {
     setError('');
     try {
       const res: any = await apiClient.put('/api/user/play-profile', { profile });
       if (!res?.success) throw new Error(res?.message || 'Could not switch profile');
       await load();
+      window.dispatchEvent(new Event(PROFILE_CHANGED_EVENT));
+      return true;
     } catch (e: any) {
       setError(e?.message || 'Could not switch profile');
+      return false;
     }
   }, [load]);
 
