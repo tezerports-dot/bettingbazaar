@@ -58,7 +58,7 @@ import { brandingPayload, currentBranding } from '../domains/branding/brandingPa
 // remembered in a string in a route file to reach the screen that shows it.
 
 /** Apply the required SSE headers and flush immediately. */
-function initSSEResponse(res) {
+export function initSSEResponse(res) {
     res.setHeader('Content-Type',      'text/event-stream');
     res.setHeader('Cache-Control',     'no-cache');
     // Access-Control-Allow-Origin is set by the global CORS middleware in server.js

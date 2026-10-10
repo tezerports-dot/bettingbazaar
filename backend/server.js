@@ -11,6 +11,7 @@ import https        from 'https';
 import { Server as SocketIOServer } from 'socket.io';
 import cors         from 'cors';
 import compression  from 'compression';
+import { eventStreamCompression, isEventStream } from './middleware/eventStreamCompression.js';
 import rateLimit    from 'express-rate-limit';
 // AQ-6 (Express 5): the sanitizer package this replaced reassigned the now read-only
 // req.query and throws on every request under Express 5 — replaced with an
@@ -191,39 +192,21 @@ const PORT = network.port; // item 28: single parse point in config/network.conf
 // identical to what was inline here before; edit THAT file to change policy.
 app.use(rejectAmbiguousFraming);
 app.use(attachProxyProtocolRequestMetadata);
-// ── compression, MINUS the event streams ────────────────────────────────────
-// `compression()` with no filter compresses `text/event-stream` too, because
-// the `compressible` package says text/* is compressible — and zlib holds its
-// output until roughly 16 KB has accumulated or somebody calls `res.flush()`.
-// Nothing on the SSE path calls it, so every stream to a client that accepts
-// gzip — which is every browser — opened successfully and then delivered
-// NOTHING.
-//
-// MEASURED, on a running server: `curl -N` with no Accept-Encoding gets the
-// `retry:` line and the cycle snapshot immediately; the same request with
-// `Accept-Encoding: gzip` produced **10 bytes in 12 seconds** — a gzip header
-// and no member. In a real browser (Chromium, `new EventSource`): `readyState`
-// 1, no error, and **zero events in 12 seconds**. So the player's live pools,
-// the merchant's order push and the admin's dispute push were all silent in
-// every browser, on every panel, while the server logged them as sent.
-//
-// It hid because every tier below a browser is right: the route test never
-// negotiates an encoding, and `curl` without the header is the way anybody
-// checks an SSE endpoint by hand. And a stream that says nothing looks exactly
-// like a stream with nothing to say.
-//
-// The fix is HERE rather than a `res.flush()` after each write. There are five
-// write sites; adding a flush to each is §21's shape exactly — a second thing
-// the author must remember, absent on the sixth. Not compressing a stream is
-// one decision in one place, and it is the right one anyway: an event stream is
-// small, frequent messages, which is the shape compression helps least.
+// ── compression ─────────────────────────────────────────────────────────────
+// Ordinary responses here; the event streams by their own compressor, which
+// keeps one gzip context per connection and flushes after every event
+// (`middleware/eventStreamCompression.js`, where the measurements are). This
+// one must never touch a stream: `compression()` with no filter would gzip
+// `text/event-stream` and, with nothing flushing it, hold every event until
+// ~16 KB had piled up — which once made every stream silent in every browser
+// while the server logged them as sent (S37).
 app.use(compression({
   filter(req, res) {
-    const type = String(res.getHeader('Content-Type') ?? '');
-    if (type.includes('text/event-stream')) return false;
+    if (isEventStream(res)) return false;
     return compression.filter(req, res);
   },
 }));
+app.use('/api/sse', eventStreamCompression);
 // The CSP's `frame-src` is read from `game_providers`, so the first read has to
 // happen before a response can need it, and it has to keep happening. Not
 // awaited: a database that is not up yet must not stop the server binding, and
