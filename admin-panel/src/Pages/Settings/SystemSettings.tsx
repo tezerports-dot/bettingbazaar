@@ -110,6 +110,50 @@ const ALL_ORDER_SIZES = ORDER_SIZE_RAILS.flatMap((r) => r.sizes);
 const USDT_BUY_STEP = 100;
 const usdtStepOk = (v: number) => Number.isInteger(v) && v >= USDT_BUY_STEP && v <= 100000 && v % USDT_BUY_STEP === 0;
 
+/** Mirror of `gatewayDocumentStatus` (backend/domains/configuration/gatewayConfig.js). */
+type GatewayDocumentStatus =
+  | { state: 'NOT_CONFIGURED' }
+  | { state: 'SERVING'; version: number; issuedAt: string; expiresAt: string; hostCount: number }
+  | { state: 'NOT_SERVING'; code: string; message: string };
+
+/** Days left at which a served document's line turns to a warning. UI-only (§11), never sent to the server. */
+const GATEWAY_WARN_DAYS = 30;
+
+/**
+ * The signed gateway document, in one line under API Host. Nothing here is a
+ * setting: the document is signed offline and replaced only on the server
+ * (docs/governance/GATEWAY_KEY_ROTATION.md). The line says whether apps are
+ * getting it and when it lapses, so an expiry is seen before it happens.
+ */
+const GatewayStatusLine: React.FC<{ status: GatewayDocumentStatus | null }> = ({ status }) => {
+  if (!status) return null;
+  if (status.state === 'NOT_CONFIGURED') {
+    return (
+      <p role="status" className="mt-3 text-sm text-gray-400">
+        Signed gateway document: none configured. Apps use only the hosts built into them.
+      </p>
+    );
+  }
+  if (status.state === 'NOT_SERVING') {
+    return (
+      <p role="alert" className="mt-3 text-sm text-red-400">
+        Signed gateway document: not being served ({status.code}: {status.message}). Put a newly
+        signed document on the server (GATEWAY_KEY_ROTATION.md).
+      </p>
+    );
+  }
+  const daysLeft = Math.floor((Date.parse(status.expiresAt) - Date.now()) / 86_400_000);
+  const soon = daysLeft < GATEWAY_WARN_DAYS;
+  return (
+    <p role="status" className={`mt-3 text-sm ${soon ? 'text-yellow-400' : 'text-green-400'}`}>
+      Signed gateway document: serving version {status.version} with {status.hostCount}{' '}
+      {status.hostCount === 1 ? 'host' : 'hosts'}, expires {new Date(status.expiresAt).toLocaleDateString()}{' '}
+      ({daysLeft} {daysLeft === 1 ? 'day' : 'days'} left).
+      {soon && ' Sign a replacement before it lapses.'}
+    </p>
+  );
+};
+
 export const SystemSettings: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
@@ -117,6 +161,9 @@ export const SystemSettings: React.FC = () => {
   // The deployment's approved API hosts (API_ALLOWED_HOSTS), served with the
   // config. Read-only: the server refuses any other value for `apiHost`.
   const [apiHostChoices, setApiHostChoices] = useState<string[]>([]);
+  // The signed gateway document's state (`gatewayDocumentStatus`,
+  // domains/configuration/gatewayConfig.js). Read-only, like the choices.
+  const [gateway, setGateway] = useState<GatewayDocumentStatus | null>(null);
 
   const [formData, setFormData] = useState({
     maintenanceMode: false,
@@ -192,6 +239,7 @@ export const SystemSettings: React.FC = () => {
       const response = await api.system.getConfig();
       if (response.success && response.data) {
         setApiHostChoices(Array.isArray(response.data.apiHostChoices) ? response.data.apiHostChoices : []);
+        setGateway(response.data.gatewayDocument ?? null);
         setFormData({
           maintenanceMode: response.data.maintenanceMode || false,
           maintenanceMessage: response.data.maintenanceMessage || '',
@@ -461,6 +509,7 @@ export const SystemSettings: React.FC = () => {
             </p>
           </div>
         )}
+        <GatewayStatusLine status={gateway} />
       </div>
 
       {/* Order sizes (Step 2d) */}
