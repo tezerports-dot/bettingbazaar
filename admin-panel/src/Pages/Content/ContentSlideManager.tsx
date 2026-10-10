@@ -5,9 +5,12 @@
  * Admin page to manage full-screen image slides for:
  *   - TRICKS_PAGE  → user Promo / Tips & Tricks page
  *   - RULES_PAGE   → user Rules / How to Play page
+ *   - HOME         → the promo cards row on the player's Home, above the board
+ *                    (owner, 2026-10-10; shown while Admin › Player Screen's
+ *                    "Promo cards row" is on). The title is the card's label.
  *
  * Each slide = one PromoContent document with:
- *   location : TRICKS_PAGE | RULES_PAGE
+ *   location : TRICKS_PAGE | RULES_PAGE | HOME
  *   fileUrl  : CDN URL of the image
  *   title    : caption shown below image (optional)
  *   priority : sort order (higher = shown first)
@@ -32,7 +35,7 @@ import api from '../../services/api';
 import toast from 'react-hot-toast';
 import { Toolbar } from '../../components/design';
 
-type Location = 'TRICKS_PAGE' | 'RULES_PAGE';
+type Location = 'TRICKS_PAGE' | 'RULES_PAGE' | 'HOME';
 
 interface Slide {
   _id: string;
@@ -47,6 +50,7 @@ interface Slide {
 const TABS: { key: Location; label: string; icon: React.ReactNode }[] = [
   { key: 'TRICKS_PAGE', label: 'Tips & Tricks', icon: <Lightbulb size={15} /> },
   { key: 'RULES_PAGE',  label: 'Rules / How to Play', icon: <BookOpen size={15} /> },
+  { key: 'HOME',        label: 'Home promo cards', icon: <ImageIcon size={15} /> },
 ];
 
 export const ContentSlideManager: React.FC = () => {
@@ -194,7 +198,7 @@ export const ContentSlideManager: React.FC = () => {
         <div className="card text-center py-16 text-gray-500">
           <ImageIcon size={48} className="mx-auto mb-3 opacity-30" />
           <p className="font-medium">No slides yet</p>
-          <p className="text-xs mt-1">Add images that users will see on the {activeTab === 'TRICKS_PAGE' ? 'Tips & Tricks' : 'Rules'} page</p>
+          <p className="text-xs mt-1">Add images that users will see on the {TABS.find(t => t.key === activeTab)?.label} {activeTab === 'HOME' ? 'row' : 'page'}</p>
         </div>
       ) : (
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
@@ -275,7 +279,7 @@ export const ContentSlideManager: React.FC = () => {
         <Modal isOpen onClose={() => { setShowAdd(false); setForm({ title: '', fileUrl: '', priority: 0, urlMode: true }); }} title="Add Slide">
           <div className="space-y-4">
             <p className="text-xs text-gray-400">
-              Adding to: <span className="text-white font-medium">{activeTab === 'TRICKS_PAGE' ? 'Tips & Tricks' : 'Rules / How to Play'}</span>
+              Adding to: <span className="text-white font-medium">{TABS.find(t => t.key === activeTab)?.label}</span>
             </p>
             {/* FIX-15: Image spec guidance for content creators */}
             <div className="bg-yellow-900/20 border border-yellow-700/30 rounded-lg px-3 py-2 text-[11px]">

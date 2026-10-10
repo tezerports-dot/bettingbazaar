@@ -112,6 +112,7 @@ const NAV_GROUPS: MenuGroup[] = [
   ] },
   { key: 'admin', label: 'Admin', items: [
     { path: '/sub-admins',       icon: ShieldCheck, label: 'Sub-Admins',       title: 'Sub-Admins',       sub: 'Roles, permissions & access control', adminOnly: true },
+    { path: '/player-screen',    icon: SlidersHorizontal, label: 'Player Screen', title: 'Player Screen', sub: 'Show or hide the player app extras', permission: 'canManageSystemSettings' },
     { path: '/settings',         icon: Settings,    label: 'System Settings',  title: 'System Settings',  sub: 'Platform configuration', permission: 'canManageSystemSettings' },
     { path: '/audit-logs',       icon: Shield,      label: 'Audit Logs',       title: 'Audit Logs',       sub: 'Administrative action trail', permission: 'canViewAuditLogs' },
     { path: '/blocked-ips',      icon: ShieldBan,   label: 'Blocked IPs',      title: 'Blocked IPs',      sub: 'Refuse every request from an address or range', permission: 'canManageIpBlocks' },

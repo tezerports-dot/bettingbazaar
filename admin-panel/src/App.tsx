@@ -30,6 +30,7 @@ import { SupportLinks } from './Pages/Content/SupportLinks';
 import { CDNManager } from './Pages/Content/CDNManager';
 import { ContentSlideManager } from './Pages/Content/ContentSlideManager';
 import { SystemSettings } from './Pages/Settings/SystemSettings';
+import { PlayerScreenSettings } from './Pages/Settings/PlayerScreenSettings';
 import { AuditLogs } from './Pages/Settings/AuditLogs';
 import ErrorLogs from './Pages/Settings/ErrorLogs';
 import { DisputeManager } from './Pages/Disputes/DisputeManager';
@@ -342,6 +343,9 @@ const App: React.FC = () => {
         } />
         <Route path="/sub-admins" element={
           <AdminOnly><Layout><SubAdminsList /></Layout></AdminOnly>
+        } />
+        <Route path="/player-screen" element={
+          <PermRoute permission="canManageSystemSettings"><Layout><PlayerScreenSettings /></Layout></PermRoute>
         } />
         <Route path="/settings" element={
           <PermRoute permission="canManageSystemSettings"><Layout><SystemSettings /></Layout></PermRoute>

@@ -42,15 +42,30 @@ interface SysConfig {
   tokenSellRate: number;
   // Admin-editable footer tabs (SystemConfig.footerPages) — page keys, ordered.
   footerPages:   string[];
+  // Admin › Player Screen (SystemConfig.boardExtras, config.spec.js).
+  boardExtras:   BoardExtras;
+}
+/** Mirrors `boardExtras` in database/spec/config.spec.js (systemConfigPayload.js). */
+export interface BoardExtras {
+  urgencyChips:       boolean;
+  closingWarnSeconds: number;
+  resultCelebration:  boolean;
+  bonusProgress:      boolean;
+  promoCards:         boolean;
 }
 const DEFAULT_SYS_CONFIG: SysConfig = {
   tokenBuyRate: 1, tokenSellRate: 1,
   footerPages: ['home', 'results', 'winners', 'promo', 'profile'], // schema default
+  // schema defaults: true / 10 / true / true / true
+  boardExtras: { urgencyChips: true, closingWarnSeconds: 10, resultCelebration: true, bonusProgress: true, promoCards: true },
 };
 import { useToast } from '../components/ui/Toast';
 import { BOARD_RULES_EVENT } from '../redesign/BoardRules';
 
 const backend = getBackend();
+
+/** Fired on `window` with `{ cycleId, amount, winner }` when this player is paid a win. */
+export const MY_PAYOUT_EVENT = 'bb:my-payout';
 
 interface LiveStats { totalDelhi: number; totalBombay: number; totalPool: number; poolsHidden: boolean; }
 
@@ -800,6 +815,10 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
         });
       }
       const amount = data.amount || data.payout || 0;
+      // The board's result celebration counts this up when it is this cycle's.
+      if (amount > 0 && data.cycleId) {
+        window.dispatchEvent(new CustomEvent(MY_PAYOUT_EVENT, { detail: { cycleId: String(data.cycleId), amount, winner: data.winner ?? null } }));
+      }
       if (amount > 0) {
         addToast(`🏆 You Won ₹${amount.toLocaleString()}! Winnings credited.`, 'success');
       }
@@ -852,6 +871,7 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
         tokenBuyRate:  data.tokenBuyRate  ?? prev.tokenBuyRate,
         tokenSellRate: data.tokenSellRate ?? prev.tokenSellRate,
         footerPages:   Array.isArray(data.footerPages) && data.footerPages.length ? data.footerPages : prev.footerPages,
+        boardExtras:   data.boardExtras && typeof data.boardExtras === 'object' ? { ...prev.boardExtras, ...data.boardExtras } : prev.boardExtras,
       }));
     };
 
@@ -1079,6 +1099,13 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
     </GameContext.Provider>
   );
 };
+
+/**
+ * Admin › Player Screen's switches, for screens that may render outside the
+ * provider (a page under test): the schema defaults there.
+ */
+export const useBoardExtras = (): BoardExtras =>
+  useContext(GameContext)?.sysConfig.boardExtras ?? DEFAULT_SYS_CONFIG.boardExtras; // schema defaults
 
 export const useGame = () => {
   const context = useContext(GameContext);

@@ -202,7 +202,7 @@ export interface DashboardMetrics {
   systemHealth: 'HEALTHY' | 'DEGRADED' | 'DOWN';
 }
 
-export type PromoLocation = 'HOME_POPUP' | 'TRICKS_PAGE' | 'RULES_PAGE';
+export type PromoLocation = 'HOME_POPUP' | 'TRICKS_PAGE' | 'RULES_PAGE' | 'HOME';
 export type MediaType     = 'IMAGE' | 'VIDEO';
 
 export interface PromoContent {

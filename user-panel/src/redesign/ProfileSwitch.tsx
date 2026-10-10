@@ -20,6 +20,8 @@ export interface GeneralSummary {
   promoBalance: number;
   outstandingTurnover: number;
   turnoverMultiplier: number;
+  /** Each referral grant's requirement and progress (`GET /api/user/general`). */
+  grants?: { requiredTurnover: number; turnover: number; completedAt?: string | null }[];
 }
 
 /**

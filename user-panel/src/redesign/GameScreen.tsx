@@ -29,6 +29,7 @@ import VsStrip from './VsStrip';
 import { getAssetUrl } from '../services/backend.service';
 import { canPlaceBet } from '../GAME_CORE';
 import { BoardRulesModal } from './BoardRules';
+import { PromoCardsRow, ResultCelebration, TONE_COLOR, timerTone, UrgencyChips } from './BoardExtras';
 
 // UI-only chip face palette (GOVERNANCE §10 — presentation, not validation).
 const CHIP_STYLES = [
@@ -45,7 +46,10 @@ const GameScreen: React.FC = () => {
   const {
     currentCycle, gameState, cycleType, setCycleType, placeBet, placePhantomBet, boards, currentBoard,
     userBets, isGhostMode, toggleGhostMode, user, isAuthenticated, pastCycles, loadCycleHistory, subscribeToVolume, getCurrentVolume, serverTimeOffset,
+    sysConfig,
   } = useGame();
+  // Admin › Player Screen (SystemConfig.boardExtras).
+  const extras = sysConfig.boardExtras;
 
   // Phantom-manager access (ghost mode). Only users granted phantomAccess for the
   // active cycle type see the toggle; enabling it routes bets through
@@ -106,6 +110,12 @@ const GameScreen: React.FC = () => {
   const showMerged = isMerged || (poolsHidden && !isResult);
 
   const secondsLeft = currentCycle?.endTime ? Math.max(0, Math.floor((currentCycle.endTime - Date.now()) / 1000)) : 0;
+  // Seconds until bets CLOSE (the board's own close offset), for the timer's
+  // tone and the closing chip. Display only: the server's cutoff decides.
+  const secondsToClose = Math.max(0, secondsLeft - (currentBoard?.phases.closeBeforeEndSec ?? 0));
+  const tone = extras.urgencyChips && (isOpen || isMerged) ? timerTone(secondsToClose, extras.closingWarnSeconds) : 'calm';
+  // Nothing loaded yet: a placeholder, never a ₹0 that reads as an empty room.
+  const loadingCycle = !currentCycle?.endTime;
 
   // My open bets this cycle.
   const cycleBets = (userBets || []).filter(b => b.cycleId === currentCycle?.id && b.status === 'PENDING' && !b.isPhantom);
@@ -276,7 +286,9 @@ const GameScreen: React.FC = () => {
       </div>
       <div style={{ ...sectionCard, padding: '14px 16px' }}>
         <div style={{ ...labelCap, marginBottom: 10 }}>Total pool</div>
-        <div className="font-grotesk" style={{ fontWeight: 700, fontSize: 24, color: 'var(--gold-ink)' }}>₹{fmt(total)}</div>
+        {loadingCycle
+          ? <div className="bb-skel" style={{ width: 110, height: 26, borderRadius: 7, background: 'var(--surface3)' }} />
+          : <div className="font-grotesk" style={{ fontWeight: 700, fontSize: 24, color: 'var(--gold-ink)' }}>₹{fmt(total)}</div>}
       </div>
     </aside>
   );
@@ -328,6 +340,7 @@ const GameScreen: React.FC = () => {
       {desktop && leftPanel}
 
       <section style={{ minWidth: 0, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+        {extras.promoCards && <PromoCardsRow />}
         {/* Cycle control */}
         <div style={{ flex: 'none', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '8px 4px 10px' }}>
           <div style={{ display: 'flex', background: 'var(--surface2)', border: '1px solid var(--line2)', borderRadius: 999, padding: 3, gap: 3, boxShadow: 'var(--shadow-sm)' }}>
@@ -337,10 +350,15 @@ const GameScreen: React.FC = () => {
             })}
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', lineHeight: 1.1 }}>
-            <span style={{ fontSize: 8, fontWeight: 800, letterSpacing: '.12em', textTransform: 'uppercase', color: phaseColor, marginBottom: 2 }}>{phaseLabel}</span>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
+              {extras.urgencyChips && <UrgencyChips open={(isOpen || isMerged) && betOpen} secondsToClose={secondsToClose} warnSeconds={extras.closingWarnSeconds} />}
+              <span style={{ fontSize: 8, fontWeight: 800, letterSpacing: '.12em', textTransform: 'uppercase', color: phaseColor }}>{phaseLabel}</span>
+            </span>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <span style={{ width: 7, height: 7, borderRadius: '50%', background: phaseColor, boxShadow: `0 0 8px ${phaseColor}` }} />
-              <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 19, letterSpacing: '.04em', color: 'var(--text)', fontVariantNumeric: 'tabular-nums' }}>{isResult ? '00:00' : timeStr(secondsLeft)}</span>
+              <span style={{ width: 7, height: 7, borderRadius: '50%', background: phaseColor }} />
+              {loadingCycle
+                ? <span className="bb-skel" aria-label="Loading the round" style={{ display: 'inline-block', width: 62, height: 20, borderRadius: 6, background: 'var(--surface3)' }} />
+                : <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 19, letterSpacing: '.04em', color: TONE_COLOR[tone], fontVariantNumeric: 'tabular-nums', transition: 'color .3s' }}>{isResult ? '00:00' : timeStr(secondsLeft)}</span>}
             </div>
           </div>
         </div>
@@ -349,8 +367,15 @@ const GameScreen: React.FC = () => {
         <div style={{ flex: 'none', textAlign: 'center', padding: '2px 0 8px' }}>
           <h2 className="font-grotesk" style={{ margin: 0, fontWeight: 700, fontSize: 15, letterSpacing: '.02em', color: 'var(--text)' }}>DELHI BAZAAR <span style={{ color: 'var(--gold-ink)', fontStyle: 'italic', fontWeight: 700 }}>vs</span> BOMBAY BAZAAR</h2>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 26, marginTop: 5 }}>
-            {showMerged ? (
-              <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 15, color: 'var(--gold-ink)', textShadow: '0 0 14px var(--glow)' }}>POOL ₹{fmt(total)}</span>
+            {loadingCycle ? (
+              <>
+                <span className="bb-skel" style={{ display: 'inline-block', width: 54, height: 16, borderRadius: 5, background: 'var(--surface3)' }} />
+                <span className="bb-skel" style={{ display: 'inline-block', width: 54, height: 16, borderRadius: 5, background: 'var(--surface3)' }} />
+              </>
+            ) : showMerged ? (
+              <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 15, color: 'var(--gold-ink)' }}>POOL ₹{fmt(total)}</span>
+            ) : isOpen && total === 0 ? (
+              <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text3)' }}>No bets yet this round. Be the first.</span>
             ) : (
               <>
                 <span className="font-grotesk" style={{ fontWeight: 700, fontSize: desktop ? 16 : 13, color: 'var(--delhi)', fontVariantNumeric: 'tabular-nums' }}>₹{fmt(poolDelhi)}</span>
@@ -378,7 +403,7 @@ const GameScreen: React.FC = () => {
                 <span className="font-grotesk" style={{ position: 'relative', zIndex: 2, fontWeight: 700, fontSize: sideFont, letterSpacing: '.08em', textTransform: 'uppercase', color: isResult && winner === BettingSide.DELHI ? '#FFD700' : 'var(--delhi)', textShadow: '0 2px 12px rgba(0,0,0,.9)' }}>{isResult && winner === BettingSide.DELHI ? '🏆 DELHI' : 'Delhi'}</span>
                 {myBetDelhi > 0 ? <span style={{ position: 'relative', zIndex: 2, background: 'var(--delhi)', color: '#fff', fontSize: 10, fontWeight: 800, padding: '3px 11px', borderRadius: 999, boxShadow: '0 0 16px var(--delhi)' }}>You ₹{fmt(myBetDelhi)}</span> : <span />}
               </button>
-              <div style={{ width: 1.5, height: '100%', background: 'linear-gradient(180deg,transparent,var(--gold),transparent)', boxShadow: '0 0 12px var(--gold)', zIndex: 3 }} />
+              <div style={{ width: 1.5, height: '100%', background: 'linear-gradient(180deg,transparent,var(--gold),transparent)', zIndex: 3 }} />
               {/* Bombay */}
               <button onClick={() => handleBet(BettingSide.BOMBAY)} aria-disabled={isClosed || isResult} style={sideStyle(BettingSide.BOMBAY)}>
                 {!cardImg[BettingSide.BOMBAY] && <div style={{ position: 'absolute', inset: 0, background: 'radial-gradient(120% 82% at 50% 128%, rgba(46,134,222,.55), transparent 62%)' }} />}
@@ -391,7 +416,7 @@ const GameScreen: React.FC = () => {
             </div>
 
             {!isClosed && !isResult && (
-              <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%,-50%)', width: 50, height: 50, borderRadius: '50%', background: 'var(--bg)', border: '2px solid var(--gold)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 4, boxShadow: '0 0 22px var(--glow)' }}>
+              <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%,-50%)', width: 50, height: 50, borderRadius: '50%', background: 'var(--bg)', border: '2px solid var(--gold)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 4 }}>
                 <span className="font-grotesk" style={{ fontWeight: 700, fontStyle: 'italic', fontSize: 17, color: 'var(--gold-ink)' }}>VS</span>
               </div>
             )}
@@ -402,6 +427,7 @@ const GameScreen: React.FC = () => {
                 <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.2em', color: 'var(--gold-ink)' }}>RESULT PENDING…</span>
               </div>
             )}
+            {extras.resultCelebration && <ResultCelebration result={isResult ? { cycleId: currentCycle?.id, winner } : null} />}
           </div>
         </div>
 

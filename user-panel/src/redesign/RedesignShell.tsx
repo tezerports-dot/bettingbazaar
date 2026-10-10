@@ -319,7 +319,7 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
             {!logoFailed ? (
               <img src={logoSrc} alt="Betting Bazaar" onError={() => setLogoFailed(true)} style={{
                 display: 'block', width: 'auto', height: 'auto', maxWidth: '100%', maxHeight: desktop ? 44 : 36,
-                objectFit: 'contain', filter: 'drop-shadow(0 2px 8px var(--glow))',
+                objectFit: 'contain',
               }} />
             ) : (
               <span className="font-grotesk" style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--gold-ink)', fontWeight: 700, fontSize: compact ? 15 : 20, letterSpacing: '.14em' }}>

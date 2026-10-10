@@ -20,6 +20,8 @@ import ScreenShell, { card } from '../redesign/Screen';
 import WalletProfileToggle from '../redesign/WalletProfileToggle';
 import { usePlayProfile } from '../redesign/ProfileSwitch';
 import { fmt } from '../redesign/format';
+import { UnlockBar } from '../redesign/BoardExtras';
+import { useBoardExtras } from '../services/GameContext';
 // The INR sizes, as tiles grouped by the rail each size is on (Step 2d).
 import OrderSizePicker, { railOfSize, type OrderSizes } from '../components/OrderSizePicker';
 // The USDT rail: whole steps of USDT between the admin's bounds, served by a
@@ -711,6 +713,8 @@ const WalletPage: React.FC = () => {
   const total = r2(balances.depositBalance + balances.winningsBalance + balances.reserveBalance);
   // VIP / General: which wallet the player plays from (owner, 2026-10-10).
   const { general, choose: chooseProfile, error: profileError } = usePlayProfile(true, 'wallet');
+  // Admin › Player Screen: the unlock bar's switch (SystemConfig.boardExtras).
+  const { bonusProgress } = useBoardExtras();
   const onGeneral = general?.profile === 'GENERAL';
 
   // ── Which rail THIS size is on ───────────────────────────────────────────
@@ -748,6 +752,7 @@ const WalletPage: React.FC = () => {
               ? <>Play <strong style={{ color: 'var(--text)' }}>₹{fmt(general.outstandingTurnover)}</strong> more and it unlocks into withdrawable winnings ({general.turnoverMultiplier}× the bonus is played first).</>
               : 'Played with, it unlocks into withdrawable winnings.'}
           </div>
+          {bonusProgress && <UnlockBar grants={general.grants} />}
           <button type="button" onClick={() => { window.location.hash = '#/'; }} disabled={!(general.promoBalance > 0)} style={{ marginTop: 14, width: '100%', padding: 12, borderRadius: 12, border: 'none', cursor: general.promoBalance > 0 ? 'pointer' : 'not-allowed', fontSize: 13, fontWeight: 800, color: 'var(--bg)', background: 'var(--green)', opacity: general.promoBalance > 0 ? 1 : 0.5 }}>
             Play with your bonus
           </button>

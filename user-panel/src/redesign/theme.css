@@ -115,6 +115,7 @@
 @keyframes bb-shimmer { 0% { transform: translateX(-160%) skewX(-14deg); } 60%, 100% { transform: translateX(220%) skewX(-14deg); } }
 @keyframes bb-spin { to { transform: rotate(360deg); } }
 @keyframes bb-skel { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
+@keyframes bb-livedot { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .35; transform: scale(.7); } }
 @keyframes bb-pulse {
   0%, 100% { box-shadow: 0 0 0 1px var(--gold), 0 0 26px -4px var(--glow); }
   50% { box-shadow: 0 0 0 2px var(--gold), 0 0 46px 2px var(--glow); }
@@ -137,6 +138,7 @@
   animation: bb-shimmer 2.4s ease-in-out infinite;
 }
 .bb-skel { animation: bb-skel 1.4s ease-in-out infinite; }
+.bb-livedot { animation: bb-livedot 1.2s ease-in-out infinite; }
 .bb-spin { animation: bb-spin 1s linear infinite; }
 .bb-pulse { animation: bb-pulse 1.5s ease-in-out infinite; }
 .bb-rise { animation: bb-rise .34s ease both; }
@@ -222,7 +224,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .bb-shimmer::after, .bb-skel, .bb-spin, .bb-pulse, .bb-rise, .bb-chipfloat, .bb-chipshine,
+  .bb-shimmer::after, .bb-skel, .bb-livedot, .bb-spin, .bb-pulse, .bb-rise, .bb-chipfloat, .bb-chipshine,
   .bb-vs__blind, .bb-vs__blindtext, .bb-vs__core, .bb-vs__burst {
     animation: none !important;
   }
