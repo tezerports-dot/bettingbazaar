@@ -9,6 +9,7 @@
  * trusted origins.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { generateKeyPairSync, sign, createPublicKey } from 'node:crypto';
 
 const PRIMARY = 'https://api.example.com';
 const BACKUP = 'https://api-backup.example.net';
@@ -18,9 +19,11 @@ const DISCOVERY = 'https://discover.example.com/endpoint.json';
 async function load(env: Record<string, string>) {
   vi.unstubAllEnvs();
   vi.stubEnv('NODE_ENV', env.NODE_ENV ?? 'production');
-  for (const k of ['VITE_API_URL', 'VITE_API_BACKUP_URL', 'VITE_API_DISCOVERY_URL', 'VITE_API_ALLOWED_HOSTS']) {
+  for (const k of ['VITE_API_URL', 'VITE_API_BACKUP_URL', 'VITE_API_DISCOVERY_URL', 'VITE_API_ALLOWED_HOSTS',
+    'VITE_GATEWAY_CONFIG_PUBLIC_KEY', 'VITE_GATEWAY_CONFIG_URLS']) {
     vi.stubEnv(k, env[k] ?? '');
   }
+  localStorage.clear();
   vi.resetModules();
   return import('./originFailover');
 }
@@ -28,7 +31,7 @@ async function load(env: Record<string, string>) {
 type Route = (url: string, init?: RequestInit) => Promise<Response> | Response;
 
 /** fetch stub: discovery answers `discovery`; only `alive` origins pass /health/live. */
-function network({ discovery, alive = [] }: { discovery?: Route; alive?: string[] }) {
+function network({ discovery, alive = [], routes = {} }: { discovery?: Route; alive?: string[]; routes?: Record<string, Route> }) {
   const calls: string[] = [];
   const fn = vi.fn(async (url: string, init?: RequestInit) => {
     calls.push(String(url));
@@ -36,6 +39,7 @@ function network({ discovery, alive = [] }: { discovery?: Route; alive?: string[
       if (!discovery) throw new TypeError('Failed to fetch');
       return discovery(String(url), init);
     }
+    if (routes[String(url)]) return routes[String(url)](String(url), init);
     const origin = String(url).replace('/health/live', '');
     if (alive.includes(origin)) return new Response('{}', { status: 200 });
     throw new TypeError('Failed to fetch');
@@ -47,7 +51,11 @@ function network({ discovery, alive = [] }: { discovery?: Route; alive?: string[
 const json = (body: unknown, status = 200) => () => new Response(JSON.stringify(body), { status });
 
 beforeEach(() => { vi.useRealTimers(); });
-afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); vi.restoreAllMocks(); vi.useRealTimers(); });
+afterEach(async () => {
+  // A background look for a signed document must not land in the next test's storage.
+  await (await import('./originFailover')).gatewayRefreshSettled();
+  vi.unstubAllGlobals(); vi.unstubAllEnvs(); vi.restoreAllMocks(); vi.useRealTimers();
+});
 
 describe('validateApiOrigin — the whole trust decision', () => {
   const policy = { allowedHosts: ['api.example.com', 'edge.example.org'], production: true };
@@ -286,5 +294,73 @@ describe('reportOriginUnreachable — runtime failover', () => {
     const { fn } = network({ alive: [BACKUP] });
     expect(await m.reportOriginUnreachable(PRIMARY)).toBeNull();
     expect(fn).not.toHaveBeenCalled();
+  });
+});
+
+describe('the signed gateway document — the one runtime source of new hosts', () => {
+  const MIRROR = 'https://cdn.example.net/gateway.json';
+  const SIGNED = 'https://fresh.example.io';
+  const NOW_ISO = new Date().toISOString();
+  const LATER_ISO = new Date(Date.now() + 30 * 86_400_000).toISOString();
+
+  const { privateKey } = generateKeyPairSync('ed25519');
+  const KEY = createPublicKey(privateKey).export({ format: 'jwk' }).x as string;
+  const otherKey = generateKeyPairSync('ed25519').privateKey;
+
+  function doc(hosts: string[], version = 2, key = privateKey) {
+    const bytes = Buffer.from(JSON.stringify({ format: 'bb-gateway-config/1', version, issuedAt: NOW_ISO, expiresAt: LATER_ISO, hosts }));
+    return JSON.stringify({ payload: bytes.toString('base64url'), signature: sign(null, bytes, key).toString('base64url') });
+  }
+  const text = (body: string) => () => new Response(body, { status: 200 });
+
+  it('every configured host is down: the mirror\'s signed document names a new host, which is adopted', async () => {
+    const m = await load({ VITE_API_URL: PRIMARY, VITE_API_BACKUP_URL: BACKUP, VITE_GATEWAY_CONFIG_PUBLIC_KEY: KEY, VITE_GATEWAY_CONFIG_URLS: MIRROR });
+    const { fn } = network({ alive: [SIGNED], routes: { [MIRROR]: text(doc(['fresh.example.io'])) } });
+    expect(await m.bootstrapApiEndpoint()).toBe(SIGNED);
+    expect(m.candidateOrder()).toEqual([PRIMARY, BACKUP, SIGNED]);    // signed hosts come last
+    const init = fn.mock.calls.find(([u]) => u === MIRROR)![1] as RequestInit;
+    expect(init.credentials).toBe('omit');
+    expect(init.redirect).toBe('error');
+  });
+
+  it('a document signed by another key adds nothing: the app reports the outage', async () => {
+    const m = await load({ VITE_API_URL: PRIMARY, VITE_GATEWAY_CONFIG_PUBLIC_KEY: KEY, VITE_GATEWAY_CONFIG_URLS: MIRROR });
+    const { calls } = network({ alive: [SIGNED], routes: { [MIRROR]: text(doc(['fresh.example.io'], 2, otherKey)) } });
+    expect(await m.bootstrapApiEndpoint()).toBe(PRIMARY);   // single configured origin, adopted as before
+    expect(calls.some((u) => u.startsWith(SIGNED))).toBe(false);
+    expect(m.candidateOrder()).toEqual([PRIMARY]);
+  });
+
+  it('with no build-time key, a document is never fetched or believed', async () => {
+    const m = await load({ VITE_API_URL: PRIMARY, VITE_API_BACKUP_URL: BACKUP, VITE_GATEWAY_CONFIG_URLS: MIRROR });
+    const { calls } = network({ alive: [SIGNED], routes: { [MIRROR]: text(doc(['fresh.example.io'])) } });
+    expect(await m.bootstrapApiEndpoint()).toBeNull();
+    expect(calls).not.toContain(MIRROR);
+  });
+
+  it('after adoption it asks the mirror and the adopted origin, and remembers the hosts across a restart', async () => {
+    const m = await load({ VITE_API_URL: PRIMARY, VITE_GATEWAY_CONFIG_PUBLIC_KEY: KEY, VITE_GATEWAY_CONFIG_URLS: MIRROR });
+    const fromOrigin = `${PRIMARY}/api/v1/client/gateway-config`;
+    const { calls } = network({ alive: [PRIMARY], routes: { [fromOrigin]: text(doc(['fresh.example.io'], 3)) } });
+    expect(await m.bootstrapApiEndpoint()).toBe(PRIMARY);
+    await m.gatewayRefreshSettled();
+    expect(m.candidateOrder()).toEqual([PRIMARY, SIGNED]);
+    expect(calls).toEqual(expect.arrayContaining([MIRROR, fromOrigin]));
+
+    // A restart (fresh module state, same storage), primary gone, mirror unreachable.
+    vi.resetModules();
+    const again = await import('./originFailover');
+    network({ alive: [SIGNED] });
+    expect(await again.bootstrapApiEndpoint()).toBe(SIGNED);
+  });
+
+  it('discovery may name a signed host; it may still not name an unsigned one', async () => {
+    const m = await load({ VITE_API_URL: PRIMARY, VITE_API_DISCOVERY_URL: DISCOVERY, VITE_GATEWAY_CONFIG_PUBLIC_KEY: KEY });
+    network({ alive: [PRIMARY], routes: { [`${PRIMARY}/api/v1/client/gateway-config`]: text(doc(['fresh.example.io'])) }, discovery: json({ url: PRIMARY }) });
+    await m.bootstrapApiEndpoint();
+    await m.gatewayRefreshSettled();
+    expect(m.originPolicy().allowedHosts).toContain('fresh.example.io');
+    expect(m.validateApiOrigin(SIGNED, m.originPolicy())).toBe(SIGNED);
+    expect(m.validateApiOrigin('https://evil.example.com', m.originPolicy())).toBeNull();
   });
 });
