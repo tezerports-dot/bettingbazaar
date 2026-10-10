@@ -29,6 +29,7 @@
  */
 import React, { useCallback, useEffect, useState } from 'react';
 import { apiUrl } from '../services/apiUrl';
+import { secureFetch } from '../services/secureTransport';
 
 interface Announcement {
   announcementId: string;
@@ -60,7 +61,7 @@ const AnnouncementBanner: React.FC = () => {
 
   const load = useCallback(async () => {
     try {
-      const res = await fetch(apiUrl('/api/announcements'));
+      const res = await secureFetch(apiUrl('/api/announcements'));
       if (!res.ok) return;
       const data = await res.json();
       if (Array.isArray(data?.announcements)) setLive(data.announcements);

@@ -12,6 +12,7 @@ import { useNavigate } from 'react-router';
 import { useGameProviders } from '../services/GameProviderContext';
 import ScreenShell, { card } from '../redesign/Screen';
 import { apiUrl } from '../services/apiUrl';
+import { secureFetch } from '../services/secureTransport';
 
 interface RegistryGame {
   slug: string; name: string; providerKey: string; categorySlug: string;
@@ -63,8 +64,8 @@ const CasinoPage: React.FC = () => {
     (async () => {
       try {
         const [g, c] = await Promise.all([
-          window.fetch(apiUrl('/api/game/games')).then(r => r.json()),
-          window.fetch(apiUrl('/api/game/categories')).then(r => r.json()),
+          secureFetch(apiUrl('/api/game/games')).then(r => r.json()),
+          secureFetch(apiUrl('/api/game/categories')).then(r => r.json()),
         ]);
         if (g.success) setGames(g.games || []);
         if (c.success) setCategories((c.categories || []).filter((x: RegistryCategory) => !NON_CASINO.has(x.slug)));
@@ -80,7 +81,7 @@ const CasinoPage: React.FC = () => {
     setLaunching(game.slug);
     try {
       const token = localStorage.getItem('auth_token') || '';
-      const r = await fetch(apiUrl('/api/game/launch'), { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ providerKey: game.providerKey, gameId: game.externalGameId, gameName: game.name }) });
+      const r = await secureFetch(apiUrl('/api/game/launch'), { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ providerKey: game.providerKey, gameId: game.externalGameId, gameName: game.name }) });
       const data = await r.json();
       if (data.success && data.launchUrl) { setGameUrl(data.launchUrl); setActiveGameName(game.name); }
       else alert(data.message || 'Could not launch game');

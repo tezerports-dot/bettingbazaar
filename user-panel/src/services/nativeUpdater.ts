@@ -12,6 +12,7 @@
  */
 import { registerPlugin, type PluginListenerHandle } from '@capacitor/core';
 import { apiUrl } from './apiUrl';
+import { secureFetch } from './secureTransport';
 
 export interface ReleaseInfo {
   versionCode: number;
@@ -93,7 +94,7 @@ export async function checkForUpdate(): Promise<UpdateCheck | null> {
   try {
     const sdk = await deviceSdk();
     const query = `versionCode=${installed}${sdk ? `&sdk=${sdk}` : ''}`;
-    const res = await fetch(apiUrl(`/api/app/android/update?${query}`), { cache: 'no-store' });
+    const res = await secureFetch(apiUrl(`/api/app/android/update?${query}`), { cache: 'no-store' });
     if (!res.ok) return null;
     const body = await res.json();
     if (!body?.success) return null;

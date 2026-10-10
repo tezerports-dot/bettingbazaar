@@ -9,8 +9,9 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onCreate(Bundle savedInstanceState) {
         // Local plugins are registered before super.onCreate builds the bridge;
-        // npm plugins are discovered by `cap sync`, this one lives in the app.
+        // npm plugins are discovered by `cap sync`, these live in the app.
         registerPlugin(ApkUpdaterPlugin.class);
+        registerPlugin(SecureHttpPlugin.class);
         super.onCreate(savedInstanceState);
     }
 }

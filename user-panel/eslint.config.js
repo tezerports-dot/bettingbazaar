@@ -41,6 +41,29 @@ export default defineConfig([
     },
   },
   {
+    // This panel alone (it is the one inside the Android shell): every request
+    // goes through services/secureTransport.ts, which sends it over encrypted
+    // DNS in the app (CLAUDE.md §2, "How the player app reaches the network").
+    // A direct call here would quietly use the phone's DNS instead.
+    files: ['src/**/*.{ts,tsx}'],
+    ignores: ['src/**/*.test.{ts,tsx}', 'src/test/**', 'src/services/secureTransport.ts'],
+    rules: {
+      'no-restricted-globals': ['error',
+        { name: 'fetch', message: 'Use secureFetch from services/secureTransport.' },
+        { name: 'EventSource', message: 'Use openEventStream from services/secureTransport.' },
+        { name: 'XMLHttpRequest', message: 'Use secureFetch from services/secureTransport.' },
+        { name: 'WebSocket', message: 'The player app opens no socket (CLAUDE.md §12); requests go through services/secureTransport.' },
+      ],
+      'no-restricted-properties': ['error',
+        { object: 'window', property: 'fetch', message: 'Use secureFetch from services/secureTransport.' },
+        { object: 'globalThis', property: 'fetch', message: 'Use secureFetch from services/secureTransport.' },
+        { object: 'self', property: 'fetch', message: 'Use secureFetch from services/secureTransport.' },
+        { object: 'window', property: 'EventSource', message: 'Use openEventStream from services/secureTransport.' },
+        { object: 'navigator', property: 'sendBeacon', message: 'Use secureFetch from services/secureTransport.' },
+      ],
+    },
+  },
+  {
     files: ['*.config.{js,ts}', 'scripts/**'],
     languageOptions: { globals: globals.node },
   },

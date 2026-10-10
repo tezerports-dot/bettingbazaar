@@ -13,6 +13,7 @@
  * socket and keeps a session, and this page must do neither.
  */
 import { apiUrl } from '../services/apiUrl';
+import { secureFetch } from '../services/secureTransport';
 
 /** The slice of `window.Telegram.WebApp` this page uses. */
 export interface WebApp {
@@ -71,7 +72,7 @@ export class MiniAppRefusal extends Error {
 }
 
 async function post<T>(path: string, body: Record<string, unknown>): Promise<T> {
-  const res = await fetch(apiUrl(path), {
+  const res = await secureFetch(apiUrl(path), {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body), credentials: 'omit',
   });

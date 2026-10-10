@@ -40,6 +40,7 @@ import {
 // submits without one when Turnstile is unconfigured or unreachable — the
 // server applies the policy, so an outage there must not block the form here.
 import { getCaptchaToken } from './captcha';
+import { secureFetch, openEventStream, type EventStream } from './secureTransport';
 
 const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
 
@@ -87,7 +88,7 @@ const STREAM_EVENTS = [
 ] as const;
 
 class SSEEventBridge extends EventTarget {
-  private sse: EventSource | null = null;
+  private sse: EventStream | null = null;
   /** The token the open stream was admitted with; null = the public stream. */
   private openedWith: string | null = null;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -138,13 +139,14 @@ class SSEEventBridge extends EventTarget {
     try {
       const token = asPublic ? null : this.token();
       this.openedWith = token;
-      const es = new EventSource(sseUrl(token));
+      // Through the encrypted-DNS transport in the Android shell (secureTransport.ts).
+      const es = openEventStream(sseUrl(token));
       this.sse = es;
 
       for (const eventName of STREAM_EVENTS) {
-        es.addEventListener(eventName, (e: MessageEvent) => {
+        es.addEventListener(eventName, (e: Event) => {
           try {
-            const data = JSON.parse(e.data);
+            const data = JSON.parse((e as MessageEvent).data);
             this.last.set(eventName, data);
             this.dispatchEvent(Object.assign(new Event(eventName), { data }));
           } catch { /* ignore malformed events */ }
@@ -160,7 +162,7 @@ class SSEEventBridge extends EventTarget {
         // by the browser. A refused session falls back to the public stream so
         // the boards keep moving (its API calls sign it out on their own 401);
         // anything else is retried here.
-        if (es.readyState !== EventSource.CLOSED || this.sse !== es) return;
+        if (es.readyState !== es.CLOSED || this.sse !== es) return;
         this.sse = null;
         this.retryTimer = setTimeout(() => { this.retryTimer = null; this._connect(Boolean(token)); }, 3000);
       };
@@ -227,7 +229,7 @@ export class RealBackend implements Backend {
     };
 
     try {
-      const response = await fetch(`${apiBase()}${endpoint}`, { ...options, headers, credentials: 'include' });
+      const response = await secureFetch(`${apiBase()}${endpoint}`, { ...options, headers, credentials: 'include' });
 
       if (response.status === 401) {
         localStorage.removeItem('auth_token');
@@ -634,7 +636,7 @@ export class RealBackend implements Backend {
     });
     if (!urlRes.success || !urlRes.uploadUrl) throw new Error('No upload URL returned');
 
-    const s3Res = await fetch(urlRes.uploadUrl, {
+    const s3Res = await secureFetch(urlRes.uploadUrl, {
       method:  'PUT',
       headers: { 'Content-Type': file.type },
       body:    file

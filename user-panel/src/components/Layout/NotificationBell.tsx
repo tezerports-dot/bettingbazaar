@@ -19,6 +19,7 @@
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { apiUrl } from '../../services/apiUrl';
+import { secureFetch } from '../../services/secureTransport';
 
 interface Note {
   id: number;
@@ -62,7 +63,7 @@ export const NotificationBell: React.FC<{ isAuthenticated: boolean }> = ({ isAut
   const loadCount = useCallback(async () => {
     if (!isAuthenticated) { setUnread(0); return; }
     try {
-      const r = await fetch(apiUrl('/api/user/notifications/unread-count'), { headers: authHeaders() });
+      const r = await secureFetch(apiUrl('/api/user/notifications/unread-count'), { headers: authHeaders() });
       const d = await r.json();
       // A failed poll leaves the last known count alone rather than showing
       // zero — "nothing for you" is a claim, and a network blip is not evidence
@@ -81,7 +82,7 @@ export const NotificationBell: React.FC<{ isAuthenticated: boolean }> = ({ isAut
   const openPanel = async () => {
     setOpen(true); setLoading(true); setError('');
     try {
-      const r = await fetch(apiUrl('/api/user/notifications'), { headers: authHeaders() });
+      const r = await secureFetch(apiUrl('/api/user/notifications'), { headers: authHeaders() });
       const d = await r.json();
       if (!d?.success) throw new Error(d?.message || 'Could not load notifications');
       setNotes(d.notifications || []);
@@ -103,7 +104,7 @@ export const NotificationBell: React.FC<{ isAuthenticated: boolean }> = ({ isAut
     setNotes((prev) => prev.map((n) => ({ ...n, isRead: true })));
     setUnread(0);
     try {
-      const r = await fetch(apiUrl('/api/user/notifications/read'), {
+      const r = await secureFetch(apiUrl('/api/user/notifications/read'), {
         method: 'POST', headers: authHeaders(), body: JSON.stringify({}),
       });
       const d = await r.json();
