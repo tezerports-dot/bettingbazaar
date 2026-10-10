@@ -25,6 +25,7 @@ address.
 | **C.** Internal tunnel (WireGuard) | ✅ | edge ↔ origin, the only path in (steps 1, 4) |
 | **D.** Layer-7 DDoS protection | ✅ | Cloudflare WAF + rate rules, on top of the app's own IP defense (step 5) |
 | Origin firewall lockdown | ✅ | `harden-origin-firewall.sh` (step 3) |
+| Encrypted Client Hello (ECH) | ✅ | Cloudflare setting, no app change (step 5a) |
 | **B.** Automatic domain rotation *when blocked* | ❌ | see below |
 
 **On B.** Static multi-domain is already supported and is the right tool for
@@ -182,6 +183,64 @@ edge IP is never public either. Then:
 - **Bot Fight / "I'm Under Attack" mode:** keep the toggle handy; under a real L7
   flood it challenges every client at the edge before traffic ever reaches the
   tunnel.
+
+### 5a. Encrypted Client Hello (ECH) — player privacy on the wire
+
+Without ECH, the first message of every HTTPS connection (the TLS ClientHello)
+carries the site's hostname in plain text (the SNI field), so anyone on the path
+— café Wi-Fi, an ISP log — sees which site a player opened even though the rest
+is encrypted. ECH encrypts that message. It is a standard TLS extension
+(the successor to "Encrypted SNI") and Cloudflare implements it for proxied
+hostnames; nothing in the app or the Caddyfiles changes.
+
+**Turn it on** (Cloudflare dashboard, your zone):
+
+- **SSL/TLS → Edge Certificates → Encrypted ClientHello (ECH): On.** On the Free
+  plan it is on by default and is not a toggle; on paid plans check it is on.
+- The hostname must be **proxied** (orange cloud, step 5) and the zone must use
+  **Cloudflare's nameservers** — ECH is published through DNS, so Cloudflare has
+  to answer for the zone.
+- **DNS → Settings → DNSSEC: On** (recommended). The ECH key reaches browsers in
+  an `HTTPS` DNS record that Cloudflare publishes for you; DNSSEC stops that
+  record being tampered with.
+
+That is the whole server side. Cloudflare publishes the `HTTPS` record with an
+`ech=` key, rotates the keys itself, and serves the outer handshake under its
+shared name `cloudflare-ech.com`, so the real hostname is only in the encrypted
+part.
+
+**Check it** (any machine, no app access needed):
+
+```bash
+# 1. The ECH key is published — the answer's data must contain "ech=":
+curl -s -H 'accept: application/dns-json' \
+  'https://cloudflare-dns.com/dns-query?name=yourdomain.com&type=HTTPS'
+
+# 2. A real browser negotiated it: open this in Chrome or Firefox and look
+#    for the line "sni=encrypted" ("sni=plaintext" means ECH was not used):
+#    https://yourdomain.com/cdn-cgi/trace
+```
+
+**What ECH does not control — be honest about this.** The server side is all an
+operator can switch on. Whether a given visit is actually encrypted depends on
+the player's side:
+
+- **Browser.** Current Chrome, Edge, Firefox and Brave support ECH; Safari and
+  many in-app webviews do not yet, and fall back to a normal handshake.
+- **Secure DNS.** Browsers only use ECH when they fetch the `HTTPS` record over
+  encrypted DNS (DNS-over-HTTPS — Chrome/Firefox's "secure DNS" setting, often
+  on automatically). On plain DNS they skip ECH and connect normally.
+- **The Android app.** It sends requests through OkHttp on Android's own TLS
+  stack (`user-panel/android/.../SecureNetwork.java`), which does not send ECH
+  today. Its DNS lookups are already encrypted (DoH) and its traffic is
+  TLS-encrypted as before, but the hostname stays visible in the handshake.
+- **The server IP is still visible.** ECH hides the name, not the address — the
+  connection still goes to a Cloudflare IP. ECH is a privacy measure for
+  players, not a way to hide the service or get around blocking, and it does
+  not change what is legal where you operate.
+
+Every fallback above is a normal, working TLS connection — ECH never breaks a
+visit, it only adds privacy where both ends support it.
 
 The app is not relying on Cloudflare for correctness — its own rate limiters,
 `ipDefense`, TLS-fingerprint defense and Turnstile still run at the origin. This
