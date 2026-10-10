@@ -142,10 +142,7 @@ class CycleGenerator {
         emitToStaff(this.io, event, data);
     }
 
-    
-    emitUser(userId, event, data) {
-        this.io?.to(`user-${userId}`).emit(event, data);
-    }
+
 
     // ─────────────────────────────────────────────────────────────────────────
 
@@ -736,18 +733,6 @@ class CycleGenerator {
     }
 
     
-    /** Both audiences' snapshots, each tagged; the panel applies its player's. */
-    async sendCycleSnapshot(socket) {
-        try {
-            for (const audience of AUDIENCES) {
-                const snapshot = await this.getCycleSnapshotData(audience);
-                socket.emit('cycle_snapshot', { audience, cycles: snapshot, timestamp: Date.now() });
-            }
-        } catch (err) {
-            console.error('❌ sendCycleSnapshot error:', err);
-        }
-    }
-
     async getActiveCycles() {
         try {
             return await db.markets.activeCyclesWithPools({

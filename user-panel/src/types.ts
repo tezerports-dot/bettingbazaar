@@ -222,7 +222,7 @@ export interface PromoContent {
 
 /**
  * A screen a home promo card is drawn for, as the server describes it
- * (database/spec/promoDevices.js, sent beside the cards in `promo_data`).
+ * (database/spec/promoDevices.js, sent beside the cards by `GET /api/v1/content/promo/:location`).
  */
 export interface PromoDevice {
   key: 'LAPTOP' | 'TABLET' | 'PHONE' | 'SMALL_PHONE' | string;

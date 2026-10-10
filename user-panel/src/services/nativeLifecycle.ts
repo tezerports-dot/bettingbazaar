@@ -5,9 +5,9 @@
  * ── The failure this prevents ──────────────────────────────────────────────
  * Android suspends a backgrounded app's network activity. When the player
  * switches away — to a UPI app to fund a deposit, which is a normal part of the
- * flow here — the socket is frozen. On resume it frequently still reports
- * `connected` over a WebSocket that is dead, and socket.io only notices when
- * the server's ping timeout elapses, tens of seconds later.
+ * flow here — the live stream is frozen. On resume it frequently still looks
+ * open over a connection that is dead, and nothing notices until the
+ * connection finally errors, tens of seconds later.
  *
  * In that window the cycle screen keeps rendering the pools, odds and timer it
  * had before, with nothing to indicate they are stale. On a betting screen
@@ -15,12 +15,13 @@
  * cycle that has since closed is rejected by the backend — correct, but a
  * baffling experience.
  *
- * So every foreground transition rebuilds the socket rather than waiting for a
- * timeout to discover the obvious.
+ * So every foreground transition reopens the stream (which re-sends the cycle
+ * snapshot) rather than waiting for an error to discover the obvious.
  *
  * ── Web is untouched ───────────────────────────────────────────────────────
  * Nothing registers outside the native shell. A browser tab does not get its
- * sockets frozen this way, and socket.io's own reconnection is adequate there.
+ * connections frozen this way, and EventSource's own reconnection is adequate
+ * there.
  */
 
 /** True only inside the Capacitor Android shell. */

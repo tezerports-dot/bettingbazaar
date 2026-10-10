@@ -64,6 +64,34 @@ sudo mkswap /swapfile && sudo swapon /swapfile
 echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 ```
 
+**Open-file limit.** Every player's live stream, every PgBouncer and Redis
+connection, and (for Caddy/NGINX) both ends of every proxied request is a file
+descriptor. Ubuntu's default soft limit is 1024 per process, so the ~1,025th
+concurrent player fails with `EMFILE: too many open files` whatever the
+hardware. Raise it in all three places a process can get its limit from:
+
+```bash
+# 1. Login sessions (PAM): a PM2 or node started from your shell.
+sudo tee -a /etc/security/limits.conf <<'LIMITS'
+* soft nofile 65535
+* hard nofile 65535
+root soft nofile 65535
+root hard nofile 65535
+LIMITS
+
+# 2. systemd services (PM2's boot unit, dockerd): they do NOT read limits.conf.
+sudo mkdir -p /etc/systemd/system.conf.d
+printf '[Manager]\nDefaultLimitNOFILE=65535\n' | sudo tee /etc/systemd/system.conf.d/nofile.conf
+sudo systemctl daemon-reexec
+```
+
+3. Containers: `deploy/vps/docker-compose.prod.yml` sets `ulimits: nofile` on
+the app roles, Caddy and PgBouncer, because a container ignores the host's
+`limits.conf`. Log out and back in (for 1), then check: `ulimit -n` in a new
+shell, `cat /proc/$(pgrep -f 'pm2' | head -1)/limits | grep 'open files'` for
+PM2, and `docker compose -f docker-compose.prod.yml exec realtime sh -c 'ulimit -n'`
+for a container. Each should print 65535.
+
 ## 2. Node 22 + PM2
 
 ```bash
@@ -296,6 +324,17 @@ pm2 start ecosystem.config.cjs --env production
 pm2 save
 pm2 startup systemd          # prints a command — RUN THE COMMAND IT PRINTS
 pm2 install pm2-logrotate    # or the logs will fill the disk
+```
+
+The unit `pm2 startup` writes is a systemd service, so it takes its open-file
+limit from systemd, not `limits.conf` (§1). With `DefaultLimitNOFILE` set it
+inherits 65535; to pin it on the unit itself as well:
+
+```bash
+sudo systemctl edit pm2-$USER     # add the two lines below, save
+#   [Service]
+#   LimitNOFILE=65535
+sudo systemctl restart pm2-$USER
 ```
 
 ## 9. NGINX + TLS

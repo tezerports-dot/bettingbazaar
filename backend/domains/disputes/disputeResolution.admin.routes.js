@@ -8,7 +8,7 @@ import { moveDepositMoney } from '../payment/depositCredit.js';
 import { endWithdrawal } from '../payment/withdrawalHold.service.js';
 import { recordDisputeLoser, faultPreview } from './disputeOutcome.service.js';
 import { releaseUTR } from '../../middleware/utrValidation.js';
-import { emitMerchantUpdate } from '../notification/realtimeEmitters.js';
+import { emitMerchantUpdate, emitToPlayer } from '../notification/realtimeEmitters.js';
 import { respondError } from '../../shared/httpError.js';
 // The order state machine. Resolving a dispute is a guarded transition, and it
 // runs BEFORE any money moves so that it is what decides the race.
@@ -174,7 +174,7 @@ router.post('/dispute-orders/:orderId/chat', authenticate, hasPermission('canRes
     // over the order's own type in the merchant's list.
     const order = await db.orders.getOrderRecord(req.params.orderId);
     if (order) {
-      global.io?.to(`user-${order.userId}`).emit('support_reply', { orderId: order._id, message: message.trim() });
+      emitToPlayer(order.userId, 'support_reply', { orderId: order._id, message: message.trim() });
     }
 
     res.json({ success: true, message: msg });
@@ -391,8 +391,8 @@ router.post('/dispute-orders/:orderId/resolve', authenticate, hasPermission('can
 
     // ── Notify both parties ───────────────────────────────────────────────────
     const payload = { orderId: order._id, status: newStatus, decision, resolution };
-    global.io?.to(`user-${order.userId}`).emit('order_update', payload);
-    global.io?.to(`user-${order.userId}`).emit('support_reply', {
+    emitToPlayer(order.userId, 'order_update', payload);
+    emitToPlayer(order.userId, 'support_reply', {
       orderId: order._id,
       message: `Your dispute has been resolved. Decision: ${decision.replace(/_/g, ' ')}`,
     });

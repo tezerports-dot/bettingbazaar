@@ -19,6 +19,7 @@
  */
 import { express, hasPermission } from './_adminShared.js';
 import { db } from '#db';
+import { emitToPlayer } from '../../domains/notification/realtimeEmitters.js';
 
 const router = express.Router();
 
@@ -121,7 +122,7 @@ router.post('/chat/ban', hasPermission('canModerateChat'), async (req, res) => {
       banUntil: Number(hours) > 0 ? new Date(Date.now() + Number(hours) * 3_600_000) : null,
     });
 
-    if (global.io) global.io.to(`user-${userId}`).emit('chat_banned', { until: ban.banUntil });
+    emitToPlayer(userId, 'chat_banned', { until: ban.banUntil });
     await audit(req, {
       action: 'BAN_CHAT_USER', category: 'SECURITY', targetType: 'User',
       targetId: String(userId), details: { reason: ban.reason, banUntil: ban.banUntil },
@@ -213,9 +214,7 @@ router.post('/support/tickets/:id/reply', hasPermission('canManageSupportTickets
     });
     if (!result.ok) return res.status(404).json({ success: false, message: 'Ticket not found' });
 
-    if (global.io) {
-      global.io.to(`user-${result.ticket.userId}`).emit('support_reply', { ticketId: result.ticket.ticketId });
-    }
+    emitToPlayer(result.ticket.userId, 'support_reply', { ticketId: result.ticket.ticketId });
     res.json({ success: true, message: result.message, ticket: result.ticket });
   } catch (error) {
     console.error('[support] reply error:', error.message);

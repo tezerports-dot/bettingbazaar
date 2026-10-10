@@ -268,13 +268,14 @@ exported constants. `SystemConfig.x` lives in `config_documents`, declared in
 - The panel SSE client hears only names in its own list: compare BOTH lists
   when adding or renaming an event.
 - Merchant pushes go through `emitMerchantUpdate` (the merchant panel has no
-  socket client).
+  socket client). Player pushes go through `emitToPlayer`, down the player's
+  SSE stream (the player app opens no socket).
 
 ## 13. Branding
 
-- The `Branding` row is the single source. `sendBranding()` in
-  `socketHandlers.js` alone builds the branding payload; saving re-emits the
-  full document.
+- The `Branding` row is the single source. `brandingPayload()` in
+  `domains/branding/brandingPayload.js` alone builds the branding payload
+  (`currentBranding()` reads and builds it); saving re-emits the full document.
 - Each panel on the event: store `localStorage.app_branding`, apply the CSS
   variables, set `document.title` from its own panel-name field.
 - Logo URLs: strip the CDN base's trailing slash and the path's leading slash.

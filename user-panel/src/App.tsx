@@ -243,8 +243,10 @@ const SystemGuard: React.FC<{ children: React.ReactElement }> = ({ children }) =
       }
     };
 
-    const socket = (backend as any).socket;
-    if (socket) socket.on('system_config', applyConfig);
+    // Live config (maintenance, versions) arrives on the stream on every admin save.
+    const stream = (backend as any).sseBridge as EventTarget | undefined;
+    const onConfig = (e: Event) => applyConfig((e as any).data);
+    stream?.addEventListener('system_config', onConfig);
 
     checkSystem();
     const loadingGuard = setTimeout(() => {
@@ -254,7 +256,7 @@ const SystemGuard: React.FC<{ children: React.ReactElement }> = ({ children }) =
     return () => {
       clearTimeout(loadingGuard);
       clearInterval(interval);
-      if (socket) socket.off('system_config', applyConfig);
+      stream?.removeEventListener('system_config', onConfig);
     };
   }, []);
 

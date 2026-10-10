@@ -12,9 +12,9 @@ the same bootstrap sequence:
 
 **Backend (single source of truth):**
 1. The `Branding` row (key=`'main'`) holds all branding fields.
-2. `sendBranding()` in `socketHandlers.js` reads the `Branding` document and pushes the full
-   payload on every client connect. It is the **sole constructor** of the branding socket payload.
-   It must **never** emit hardcoded filenames or colors.
+2. `brandingPayload()` in `domains/branding/brandingPayload.js` is the **sole constructor** of
+   the branding payload (`currentBranding()` reads the row and builds it). The SSE stream sends
+   it the moment it opens (`sse.routes.js`). It must **never** emit hardcoded filenames or colors.
 3. `PUT /api/admin/branding` saves **all** Branding schema fields via `$set` spread, then
    re-emits `branding_updated` with the full document so all panels update live.
 

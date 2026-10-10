@@ -432,7 +432,9 @@ class GameEngine {
      * balance is read fresh and is therefore true.
      */
     async notifyWinners(cycle, winnerPayouts, betsPerWinner, refusals) {
-        if (!winnerPayouts.length || !this.io) return;
+        // Down each winner's own SSE channel (emitToPlayer), so it does not
+        // depend on this process holding a socket server.
+        if (!winnerPayouts.length) return;
 
         // Only refused WINNING bets count against a winner's paid bets: a
         // player may hold both sides (owner, 2026-10-10), and a refused LOSING
@@ -454,7 +456,6 @@ class GameEngine {
             // Chunked and yielding, so a very large settlement does not
             // monopolise the event loop while still sending per-user updates.
             await emitPayoutSuccessBatch({
-                io: this.io,
                 payouts: paidWinners,
                 balanceMap,
                 cycleId: cycle.cycleId,
