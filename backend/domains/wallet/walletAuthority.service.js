@@ -39,7 +39,7 @@ export { ADJUSTABLE_FIELDS };
  */
 function pushBalances(userId, result) {
   const b = result?.balances;
-  if (b) sseBalancePush(userId, b.depositBalance || 0, b.winningsBalance || 0);
+  if (b) sseBalancePush(userId, b);
   return result;
 }
 

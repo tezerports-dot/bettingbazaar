@@ -5,8 +5,9 @@
  * `system_config`):
  *
  *   • `ClosingChip`       — timer tone, "Closing 0:09" chip on the cards
- *   • `ResultCelebration` — the winning side large, and this player's own
- *                            payout counting up (from their `payout_success`)
+ *   • `ResultCelebration` — the winning side large, and this player's whole
+ *                            round in one line (`round_result`, then the
+ *                            `payout_success` credit)
  *   • `useHomeCards`      — the published HOME cards (Admin › Page Slides),
  *                            beside the game on a laptop (`BoardArt.tsx`),
  *                            in `PromoCarousel` under the header on a phone
@@ -15,7 +16,7 @@
  * None of them shows a figure the platform does not already send this player.
  */
 import React, { useEffect, useRef, useState } from 'react';
-import { MY_PAYOUT_EVENT } from '../services/GameContext';
+import { MY_PAYOUT_EVENT, MY_ROUND_EVENT } from '../services/GameContext';
 import { getBackend } from '../services/backend.service';
 import { PromoCard, type HomeCard } from './BoardArt';
 import { fmt } from './format';
@@ -75,46 +76,76 @@ function useCountUp(to: number, ms = 1200): number {
   return v;
 }
 
-/** How long a payout that lands after the round has rolled over stays up. */
+/** How long a result that lands after the round has rolled over stays up. */
 export const LATE_PAYOUT_MS = 6000;
 
-interface Paid { cycleId: string; amount: number; winner: string | null; at: number }
+/** This player's round: what they staked, what it returns, what has been credited. */
+interface Mine { cycleId: string; winner: string | null; staked: number; payout: number; paid: number; at: number }
 
 /**
- * Over the board on the result: who won, large, and — for a player the
- * server just paid on this cycle — their own payout counting up. The payout
- * is the `payout_success` the server sends that player alone. Settlement can
- * land after a short board has already opened its next round, so a payout
- * also shows on its own, for `LATE_PAYOUT_MS`, with the winner it names.
+ * What the pop-up says for this player: won (the credited amount once
+ * `payout_success` lands, the declared one until then), lost (a stake with
+ * nothing back), or nothing (no bet on this round).
  */
-export const ResultCelebration: React.FC<{ result: { cycleId?: string; winner?: string | null } | null }> = ({ result }) => {
-  const [paid, setPaid] = useState<Paid | null>(null);
+export function roundOutcome(m: Mine | null): { kind: 'won' | 'lost' | 'none'; amount: number } {
+  if (!m) return { kind: 'none', amount: 0 };
+  const won = m.paid > 0 ? m.paid : m.payout;
+  if (won > 0) return { kind: 'won', amount: won };
+  if (m.staked > 0) return { kind: 'lost', amount: m.staked };
+  return { kind: 'none', amount: 0 };
+}
+
+/**
+ * Over the board on the result: who won, large, and ONE line for this player's
+ * whole round (owner, 2026-10-10: one pop-up per player per cycle, however
+ * many bets). The figure is `round_result`, which the server sends the moment
+ * the winner is declared, summed over all their bets and net of the fee; the
+ * `payout_success` settlement sends later replaces it with what was credited.
+ * A result that lands after a short board has opened its next round shows on
+ * its own, for `LATE_PAYOUT_MS`, with the winner it names.
+ */
+export const ResultCelebration: React.FC<{ cycleId?: string; result: { cycleId?: string; winner?: string | null } | null }> = ({ cycleId, result }) => {
+  const [mine, setMine] = useState<Mine | null>(null);
   const [, tick] = useState(0);
+  const cycleRef = useRef(cycleId);
+  cycleRef.current = cycleId;
   useEffect(() => {
-    const on = (e: Event) => {
-      const d = (e as CustomEvent).detail as { cycleId: string; amount: number; winner?: string | null } | undefined;
-      if (!d || !(d.amount > 0)) return;
-      setPaid(prev => ({
-        cycleId: d.cycleId, winner: d.winner ?? null, at: Date.now(),
-        amount: prev && prev.cycleId === d.cycleId ? prev.amount + d.amount : d.amount,
+    const onRound = (e: Event) => {
+      const d = (e as CustomEvent).detail as { cycleId: string; winner?: string | null; staked: number; payout: number } | undefined;
+      if (!d || d.cycleId !== cycleRef.current) return;
+      e.preventDefault(); // shown here, so no toast as well
+      setMine(prev => ({
+        cycleId: d.cycleId, winner: d.winner ?? null, staked: d.staked, payout: d.payout, at: Date.now(),
+        paid: prev && prev.cycleId === d.cycleId ? prev.paid : 0,
       }));
     };
-    window.addEventListener(MY_PAYOUT_EVENT, on);
-    return () => window.removeEventListener(MY_PAYOUT_EVENT, on);
+    const onPaid = (e: Event) => {
+      const d = (e as CustomEvent).detail as { cycleId: string; amount: number; winner?: string | null } | undefined;
+      if (!d || !(d.amount > 0)) return;
+      setMine(prev => prev && prev.cycleId === d.cycleId
+        ? { ...prev, paid: prev.paid + d.amount }
+        : { cycleId: d.cycleId, winner: d.winner ?? null, staked: 0, payout: 0, paid: d.amount, at: Date.now() });
+    };
+    window.addEventListener(MY_ROUND_EVENT, onRound);
+    window.addEventListener(MY_PAYOUT_EVENT, onPaid);
+    return () => {
+      window.removeEventListener(MY_ROUND_EVENT, onRound);
+      window.removeEventListener(MY_PAYOUT_EVENT, onPaid);
+    };
   }, []);
   // Take the late banner down when its time is up.
   useEffect(() => {
-    if (!paid) return;
+    if (!mine) return;
     const id = setTimeout(() => tick(n => n + 1), LATE_PAYOUT_MS + 50);
     return () => clearTimeout(id);
-  }, [paid]);
+  }, [mine]);
 
-  const late = paid && Date.now() - paid.at < LATE_PAYOUT_MS ? paid : null;
+  const late = mine && Date.now() - mine.at < LATE_PAYOUT_MS ? mine : null;
   const winner = result?.winner === 'DELHI' || result?.winner === 'BOMBAY' ? result.winner : (late && !result ? late.winner : null);
-  const mine = result
-    ? (paid && result.cycleId && paid.cycleId === result.cycleId ? paid.amount : 0)
-    : (late ? late.amount : 0);
-  const shown = useCountUp(mine);
+  const outcome = roundOutcome(result
+    ? (mine && result.cycleId && mine.cycleId === result.cycleId ? mine : null)
+    : late);
+  const shown = useCountUp(outcome.kind === 'won' ? outcome.amount : 0);
   if (winner !== 'DELHI' && winner !== 'BOMBAY') return null;
   const tone = winner === 'DELHI' ? 'var(--delhi)' : 'var(--bombay)';
   return (
@@ -123,10 +154,16 @@ export const ResultCelebration: React.FC<{ result: { cycleId?: string; winner?: 
       <span className="font-grotesk" style={{ fontWeight: 800, fontSize: 34, letterSpacing: '.08em', color: tone, textShadow: '0 2px 18px rgba(0,0,0,.8)' }}>
         🏆 {winner === 'DELHI' ? 'DELHI' : 'BOMBAY'} {result ? 'WINS' : 'WON'}
       </span>
-      {mine > 0 && (
+      {outcome.kind === 'won' && (
         <>
           <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.16em', color: 'var(--green)', marginTop: 6 }}>YOU WON</span>
           <span className="font-grotesk" style={{ fontWeight: 800, fontSize: 40, color: 'var(--green)', fontVariantNumeric: 'tabular-nums' }}>₹{fmt(shown)}</span>
+        </>
+      )}
+      {outcome.kind === 'lost' && (
+        <>
+          <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.16em', color: 'rgba(255,255,255,.7)', marginTop: 6 }}>NOT THIS ROUND</span>
+          <span className="font-grotesk" style={{ fontWeight: 800, fontSize: 22, color: 'rgba(255,255,255,.85)', fontVariantNumeric: 'tabular-nums' }}>Your ₹{fmt(outcome.amount)} bet did not win</span>
         </>
       )}
     </div>

@@ -38,6 +38,29 @@ export function emitCycleResult(fields, transports) {
   return broadcastPublic('cycle_result', encodeCycleResult(fields), transports);
 }
 
+// ─── ONE PLAYER ───────────────────────────────────────────────────────────────
+/**
+ * The one way a push addressed to ONE player is sent: down that player's own
+ * SSE channel (`GET /api/sse/player/events`, `sseManager.sendToUser`), which
+ * the Redis relay carries to whichever instance holds their stream.
+ *
+ * The player app opens no socket (2026-10-10): its live connection is that one
+ * stream, so the `user-<id>` socket room this replaced has no member and an
+ * emit to it reaches nobody. Every per-player event — `user_balance_update`,
+ * `user_update`, `payout_success`, `order_update`, `support_reply`,
+ * `chat_banned` — goes through here, under the one name the panel listens for
+ * (§12), so no call site picks a transport of its own.
+ *
+ * Best-effort: a push follows a committed write and must never throw into it.
+ */
+export function emitToPlayer(userId, event, data) {
+  try {
+    global.sseManager?.sendToUser?.(String(userId), event, data);
+  } catch (err) {
+    console.warn(`[realtimeEmitters] ${event} player push error:`, err.message);
+  }
+}
+
 // ─── WALLET UPDATE ─────────────────────────────────────────────────────────────
 /**
  * emitWalletUpdate — Push current wallet balances to a user via SSE.
@@ -75,14 +98,7 @@ export async function emitWalletUpdate(userId, balanceOverride = null) {
       };
     }
 
-    // SSE (primary transport for wallet updates)
-    if (global.sseManager) {
-      global.sseManager.sendToUser(String(userId), 'balance_update', payload);
-    }
-    
-    if (global.io) {
-      global.io.to(`user-${userId}`).emit('user_balance_update', payload);
-    }
+    emitToPlayer(userId, 'user_balance_update', payload);
   } catch (err) {
     console.warn('[realtimeEmitters] emitWalletUpdate error:', err.message);
   }
@@ -101,7 +117,6 @@ function nextTick() {
  * winner set cannot monopolize the event loop.
  *
  * @param {object} params
- * @param {object} params.io - Socket.IO server
  * @param {Array<{userId:string,payout:number,betAmount:number}>} params.payouts
  * @param {Object<string, object>} params.balanceMap - keyed by user id
  * @param {string} params.cycleId
@@ -109,8 +124,8 @@ function nextTick() {
  * @param {number} [params.batchSize]
  * @returns {Promise<number>} sent packet count
  */
-export async function emitPayoutSuccessBatch({ io, payouts, balanceMap, cycleId, winner, batchSize = 500 }) {
-  if (!io || !Array.isArray(payouts) || payouts.length === 0) return 0;
+export async function emitPayoutSuccessBatch({ payouts, balanceMap, cycleId, winner, batchSize = 500 }) {
+  if (!Array.isArray(payouts) || payouts.length === 0) return 0;
   const size = Math.max(1, Number(batchSize) || 500);
   let sent = 0;
 
@@ -119,7 +134,7 @@ export async function emitPayoutSuccessBatch({ io, payouts, balanceMap, cycleId,
     for (const wp of batch) {
       const freshUser = balanceMap?.[wp.userId];
       if (!freshUser) continue;
-      io.to(`user-${wp.userId}`).emit('payout_success', {
+      emitToPlayer(wp.userId, 'payout_success', {
         type:            'PAYOUT_SUCCESS',
         cycleId,
         winner,
@@ -160,29 +175,25 @@ export async function emitPayoutSuccessBatch({ io, payouts, balanceMap, cycleId,
  * regardless, so a dropped event costs a stale figure for seconds, and throwing
  * here would cost the transaction.
  */
-export function sseBalancePush(userId, depositBalance, winningsBalance) {
-  try {
-    const round2 = (n) => Math.round((n || 0) * 100) / 100;
-    global.sseManager?.sendToUser?.(String(userId), 'balance_update', {
-      depositBalance:  round2(depositBalance),
-      winningsBalance: round2(winningsBalance),
-      totalBalance:    round2(depositBalance + winningsBalance),
-    });
-  } catch { /* SSE is best-effort — never block the transaction */ }
+export function sseBalancePush(userId, balances) {
+  // The same event, under the same name, as `emitWalletUpdate` (§12): this
+  // was `balance_update`, a second name for one change that no panel heard.
+  // A pocket the movement did not report is left out, so the panel keeps
+  // what it has rather than being told zero.
+  const round2 = (n) => Math.round((n || 0) * 100) / 100;
+  const payload = { timestamp: Date.now() };
+  for (const k of ['depositBalance', 'winningsBalance', 'reserveBalance', 'lockedBalance']) {
+    if (typeof balances?.[k] === 'number') payload[k] = round2(balances[k]);
+  }
+  payload.walletBalance = round2((balances?.depositBalance || 0) + (balances?.winningsBalance || 0));
+  emitToPlayer(userId, 'user_balance_update', payload);
 }
 
 export function emitOrderUpdate(userId, event, data) {
-  try {
-    if (global.sseManager) {
-      global.sseManager.sendToUser(String(userId), event, data);
-    }
-    
-    if (global.io) {
-      global.io.to(`user-${userId}`).emit('order_update', { type: 'ORDER_UPDATE', event, ...data });
-    }
-  } catch (err) {
-    console.warn('[realtimeEmitters] emitOrderUpdate error:', err.message);
-  }
+  // One name, `order_update`, with what happened in `event`. The SSE copy used
+  // to go out under `event` itself (order_assigned, order_paid, …) — a second
+  // set of names for the same change, on a channel nothing had opened.
+  emitToPlayer(userId, 'order_update', { type: 'ORDER_UPDATE', event, ...data });
 }
 
 // ─── MERCHANT UPDATE ──────────────────────────────────────────────────────────

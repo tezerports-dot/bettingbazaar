@@ -12,10 +12,12 @@
  *   • 'new_cycle' / 'cycle_result' / 'cycle_phase' / 'bet_placed' keep state current.
  *   • Timer is derived client-side from cycle.endTime — zero server push needed.
  *   • getCycleState() HTTP is completely gone.
- *   • refreshCycles() is gone — replaced by requestCycleSnapshot().
+ *   • No socket (2026-10-10): the ONE live connection is the SSE stream
+ *     (`realBackend.ts` sseBridge) — public signed out, the player stream
+ *     signed in. A fresh snapshot is the stream reopening, which re-sends it.
  *
- * PAYOUT CHANGE: Balance updates come via 'payout_success' WS event.
- *   • GameEngine emits payout_success to user-{id} room with fresh balances.
+ * PAYOUT CHANGE: Balance updates come via the 'payout_success' stream event.
+ *   • GameEngine pushes payout_success down the winner's player stream with fresh balances.
  *   • No HTTP refresh after result — balance is applied instantly.
  *
  * RESULT TIMING: Declared exactly at 00:00:10 (10 s before cycle end).
@@ -66,6 +68,15 @@ const backend = getBackend();
 
 /** Fired on `window` with `{ cycleId, amount, winner }` when this player is paid a win. */
 export const MY_PAYOUT_EVENT = 'bb:my-payout';
+
+/**
+ * Fired on `window`, cancelable, with `{ cycleId, winner, staked, payout }`
+ * (rupees) when this player's result for a round is declared: one per player
+ * per cycle, all their bets summed (`round_result`, owner 2026-10-10). The
+ * board's pop-up calls `preventDefault()` when it is showing that cycle;
+ * otherwise this context says it once as a toast.
+ */
+export const MY_ROUND_EVENT = 'bb:my-round';
 
 interface LiveStats { totalDelhi: number; totalBombay: number; totalPool: number; poolsHidden: boolean; }
 
@@ -201,7 +212,7 @@ const NO_STATS: LiveStats = Object.freeze({ totalDelhi: 0, totalBombay: 0, total
  * One merge, so a sixth caller cannot reintroduce the omission — §5: the same
  * payload assembled in several places drifts, and it drifts silently.
  *
- * `src` is either a socket payload (`depositBalance`…) or a bet result's
+ * `src` is either a stream payload (`depositBalance`…) or a bet result's
  * `balance` (`deposit`…), so both spellings are read.
  */
 type BalancePush = Partial<Record<
@@ -256,6 +267,8 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
   const [isGhostMode, setIsGhostMode] = useState(false);
   const [sysConfig, setSysConfig] = useState<SysConfig>(DEFAULT_SYS_CONFIG);
   const [userBets, setUserBets]     = useState<Bet[]>([]);
+  // Cycles this player has already been told the result of (one notice per round).
+  const announcedRef = useRef<Set<string>>(new Set());
   const [history, setHistory]       = useState<string[]>([]);
   const [pastCycles, setPastCycles] = useState<GameCycle[]>([]);
   // The audience whose boards are shown, and the last snapshot of each, so a
@@ -312,14 +325,6 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
     fetchBranding();
   }, []);
 
-  // ── WS-FIRST: request a fresh snapshot instead of HTTP fetch ───────────────
-  const requestCycleSnapshot = useCallback(() => {
-    const socket = (backend as any).socket;
-    if (socket?.connected) {
-      socket.emit('request_cycle_snapshot');
-    }
-  }, []);
-
   // ── SESSION RESTORE: Rehydrate user from stored JWT on every page load ────
   // /auth/me now returns the full profile (balances, bankDetails etc.)
   // so wallet never shows 0 after refresh.
@@ -335,16 +340,9 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
           const u = { ...res.user };
           setUser(u);
 
-          
-          const socket = (backend as any).socket;
-          if (socket?.connected && u.id) {
-            socket.emit('join_user_room', u.id);
-          } else if (socket && u.id) {
-            socket.once('connect', () => socket.emit('join_user_room', u.id));
-          }
 
-          // Request a fresh cycle snapshot — arrives within 1 RTT.
-          requestCycleSnapshot();
+          // The stream opened with this token (realBackend reads it at open),
+          // so this player's pushes and the cycle snapshot are already coming.
 
           // Load full profile + recent bets from server immediately.
           // /auth/me gives us live balances; getUserData also gives us bets[].
@@ -366,7 +364,7 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
       } catch { /* Token expired or invalid — user stays null, login modal appears */ }
     };
     restoreSession();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
   // ── CROSS-TAB SESSION SYNC ────────────────────────────────────────────────
   // The bot's sign-in link almost never lands in the tab the player started in.
@@ -403,44 +401,74 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
     return () => window.removeEventListener('storage', onStorage);
   }, [user]);
 
-  // Keep refreshCycles as a thin alias so any remaining callers compile.
-  // It now triggers a WS snapshot request, NOT an HTTP fetch.
-  const refreshCycles = requestCycleSnapshot;
+  /**
+   * Merge `cycle_history` rows INTO the stored history by cycle id, never swap.
+   *
+   * Payloads arrive at three very different depths and a replace cannot serve
+   * all three. The stream's open sends 50 rows per type (cheap, enough for the
+   * roadmap strip). The drawer asks for the full analytics window of ONE board
+   * on demand — 1,440 rows. And the server re-broadcasts the resolved type's
+   * recent rows after every result, which for a 1-minute block is once a
+   * minute: replacing on that would throw away a 1,440-row window the player
+   * just waited for, sixty times an hour.
+   *
+   * Union by id is idempotent, tolerates out-of-order and overlapping
+   * payloads, and lets a shallow refresh top up a deep window instead of
+   * truncating it. Rows are then capped per board at its window so the list
+   * cannot grow without bound across a long session.
+   */
+  const mergeCycleHistory = useCallback((rows: any[]) => {
+    const incoming: GameCycle[] = (rows || []).map((c: any) => ({
+      ...c,
+      totalDelhi:  c.totalDelhi  || c.delhiPool  || 0,
+      totalBombay: c.totalBombay || c.bombayPool || 0,
+    }));
+    if (incoming.length === 0) { setIsOnline(true); return; }
+
+    setPastCycles(prev => {
+      // Incoming wins on a collision: it is the fresher read of that cycle
+      // (a row can arrive mid-settlement and be restated once settled).
+      const byId = new Map<string, GameCycle>();
+      for (const c of prev)     byId.set(String(c.id), c);
+      for (const c of incoming) byId.set(String(c.id), c);
+
+      const kept: GameCycle[] = [];
+      const perType: Record<string, number> = {};
+      for (const c of [...byId.values()].sort((a, b) => (b.endTime || 0) - (a.endTime || 0))) {
+        const t = String(c.type);
+        const cap = analyticsWindowFor(boardsRef.current.find((b) => b.key === t));
+        const key = `${t}:${c.audience ?? 'VIP'}`;
+        if ((perType[key] = (perType[key] || 0) + 1) <= cap) kept.push(c);
+      }
+      return kept;
+    });
+    setIsOnline(true);
+  }, []);
 
   /**
    * Ask for one board's full analytics window (`analyticsWindowFor` rows —
    * 1,440 for a repeating board, 30 for a daily one).
    *
-   * On demand rather than on connect: this is ~288 KB and only matters to
-   * someone who opens the analytics drawer, while connect is paid by every
+   * On demand rather than at stream open: this is ~288 KB and only matters to
+   * someone who opens the analytics drawer, while the open is paid by every
    * anonymous visitor on a handset. The server caps a multi-type request far
-   * lower for the same reason, so this asks for ONE type at a time.
-   *
-   * Fire-and-forget, deliberately. The response arrives on the same passive
-   * `cycle_history` listener as every other payload and merges by id there —
-   * awaiting it would race the once-a-minute post-result broadcast, which is
-   * the same event name, and resolve with 50 rows instead of the deep window.
+   * lower for the same reason, so this asks for ONE type at a time, over HTTP
+   * (`GET /api/v1/game/cycles/history`), and merges like every other payload.
    */
   const loadCycleHistory = useCallback((type: CycleType) => {
-    const socket = (backend as any).socket;
-    if (!socket?.connected) return;
     const limit = analyticsWindowFor(boardsRef.current.find((b) => b.key === type));
-    socket.emit('request_cycle_history', { type, limit, audience: audienceRef.current });
-  }, []);
+    void backend.getCycleHistory(type, limit, audienceRef.current).then(mergeCycleHistory);
+  }, [mergeCycleHistory]);
 
   const setAudience = useCallback((next: PlayProfile) => {
     if (next === audienceRef.current) return;
     audienceRef.current = next;
     setAudienceState(next);
-    // The other audience's boards, from the snapshot already received for it;
-    // a fresh one is asked for so a stale copy is corrected within a moment.
+    // The other audience's boards, from the snapshot already received for it.
+    // The stream re-broadcasts every audience's snapshot at each new round, and
+    // its open sent both audiences' history, so nothing needs asking for.
     const cached = snapshotsRef.current[next];
     if (cached) applySnapshotRef.current?.(cached);
-    const socket = (backend as any).socket;
-    if (socket?.connected) {
-      socket.emit('request_cycle_snapshot');
-      socket.emit('request_cycle_history', { limit: 50, audience: next });
-    }
   }, []);
 
   // History holds both audiences' rows; the screens see their own audience's.
@@ -464,84 +492,18 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
     } catch { /* non-critical */ }
   }, [user?.id]);
 
-  // ZERO-POLL HISTORY: cycle history arrives via SSE (public broadcast).
-  // SSE delivers cycle_history on connect AND after every cycle_result automatically.
-  
+  // ZERO-POLL HISTORY: cycle history arrives on the stream — both audiences'
+  // recent rows at open, and a board's recent rows after every result.
   useEffect(() => {
     const sseBridge = (backend as any).sseBridge as EventTarget | undefined;
-    const socket    = (backend as any).socket;
-
-    // Every `cycle_history` payload is MERGED INTO the stored history by cycle
-    // id, never swapped for it.
-    //
-    // Payloads arrive at three very different depths and a replace cannot serve
-    // all three. Connect sends 50 rows per type (cheap, enough for the roadmap
-    // strip). The drawer asks for the full analytics window of ONE board on
-    // demand — 1,440 rows. And the server re-broadcasts the resolved type's
-    // recent rows after every result, which for a 1-minute block is once a
-    // minute: replacing on that would throw away a 1,440-row window the player
-    // just waited for, sixty times an hour, and replacing only the named types
-    // would still do it to the board they are actually looking at.
-    //
-    // Union by id is idempotent, tolerates out-of-order and overlapping
-    // payloads, and lets a shallow refresh top up a deep window instead of
-    // truncating it. Rows are then capped per board at its window so the
-    // list cannot grow without bound across a long session.
-    const handleCycleHistory = (data: { cycles: any[]; types?: string[] }) => {
-      const incoming: GameCycle[] = (data.cycles || []).map((c: any) => ({
-        ...c,
-        totalDelhi:  c.totalDelhi  || c.delhiPool  || 0,
-        totalBombay: c.totalBombay || c.bombayPool || 0,
-      }));
-      if (incoming.length === 0) { setIsOnline(true); return; }
-
-      setPastCycles(prev => {
-        // Incoming wins on a collision: it is the fresher read of that cycle
-        // (a row can arrive mid-settlement and be restated once settled).
-        const byId = new Map<string, GameCycle>();
-        for (const c of prev)     byId.set(String(c.id), c);
-        for (const c of incoming) byId.set(String(c.id), c);
-
-        const kept: GameCycle[] = [];
-        const perType: Record<string, number> = {};
-        for (const c of [...byId.values()].sort((a, b) => (b.endTime || 0) - (a.endTime || 0))) {
-          const t = String(c.type);
-          const cap = analyticsWindowFor(boardsRef.current.find((b) => b.key === t));
-          const key = `${t}:${c.audience ?? 'VIP'}`;
-          if ((perType[key] = (perType[key] || 0) + 1) <= cap) kept.push(c);
-        }
-        return kept;
-      });
-      setIsOnline(true);
-    };
-
-    // Primary: SSE bridge (works for ALL users — anonymous included)
-    let sseHandler: ((e: Event) => void) | null = null;
-    if (sseBridge) {
-      sseHandler = (e: Event) => handleCycleHistory((e as any).data);
-      sseBridge.addEventListener('cycle_history', sseHandler);
+    if (!sseBridge) {
+      backend.getCycleHistory().then(mergeCycleHistory).catch(() => {});
+      return;
     }
-
-    
-    if (socket) {
-      socket.on('cycle_history', handleCycleHistory);
-      // Both audiences' recent rows: a profile switch then has its history.
-      socket.emit('request_cycle_history', { limit: 50, audience: 'VIP' });
-      socket.emit('request_cycle_history', { limit: 50, audience: 'GENERAL' });
-    }
-
-    // Tertiary: HTTP fallback if neither is available yet
-    if (!socket && !sseBridge) {
-      backend.getCycleHistory().then(hist => {
-        if (hist.length) { setPastCycles(hist); setIsOnline(true); }
-      }).catch(() => {});
-    }
-
-    return () => {
-      if (sseBridge && sseHandler) sseBridge.removeEventListener('cycle_history', sseHandler);
-      if (socket) socket.off('cycle_history', handleCycleHistory);
-    };
-  }, []);
+    const onHistory = (e: Event) => mergeCycleHistory((e as any).data?.cycles);
+    sseBridge.addEventListener('cycle_history', onHistory);
+    return () => sseBridge.removeEventListener('cycle_history', onHistory);
+  }, [mergeCycleHistory]);
 
   const subscribeToVolume = useCallback((type: CycleType, callback: (data: LiveStats) => void) => {
     const sub = { type, cb: callback };
@@ -558,10 +520,9 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
   const currentUserId = user ? user.id : undefined;
 
   useEffect(() => {
-    const socket    = (backend as any).socket;
     const sseBridge = (backend as any).sseBridge as EventTarget | undefined;
 
-    // Helper: subscribe to SSE bridge events (public broadcasts)
+    // Helper: subscribe to stream events (public, and this player's own)
     const onSSE = (event: string, handler: (data: any) => void) => {
       if (!sseBridge) return () => {};
       const wrapped = (e: Event) => handler((e as any).data);
@@ -569,25 +530,6 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
       return () => sseBridge.removeEventListener(event, wrapped);
     };
 
-    // ── Cycle-room watching (realtime cost fix) ──────────────────────────────
-    // We tell the server which cycle(s) we are viewing so it can scope the
-    // coalesced pool_update snapshot to watchers instead of broadcasting to
-    // every connection. `desired` is the id per cycle type; `watched` is what
-    // we've actually joined. syncWatched(patch) reconciles the two — join new,
-    // leave stale — and is called whenever the live cycles change.
-    const desired: Record<string, string | undefined> = {};
-    const watched = new Set<string>();
-    const syncWatched = (patch: Record<string, string | undefined>) => {
-      Object.assign(desired, patch);
-      if (!socket) return;
-      const want = new Set(Object.values(desired).filter(Boolean) as string[]);
-      for (const id of Array.from(watched)) {
-        if (!want.has(id)) { socket.emit('unwatch_cycle', { cycleId: id }); watched.delete(id); }
-      }
-      for (const id of want) {
-        if (!watched.has(id)) { socket.emit('watch_cycle', { cycleId: id }); watched.add(id); }
-      }
-    };
     // ── One place that turns a server event into a board key ───────────────
     // The server names the board in `type`; a few legacy events carry only the
     // cycleId, which starts with the board's id prefix. An event naming a board
@@ -665,22 +607,9 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
         const ct = toCycleType(t);
         if (ct) applySnapshotType(t, ct);
       }
-      // Watch exactly the live cycles the snapshot just described.
-      syncWatched(Object.fromEntries(
-        Object.keys(map).map(t => [t, map[t]?.cycleId]),
-      ));
       setIsOnline(true);
     };
     applySnapshotRef.current = handleCycleSnapshot;
-
-    // Request snapshot on every (re)connect so cycles are never stale after a
-    // server restart or temporary network drop. The server drops our room
-    // membership on disconnect, so forget what we thought we were watching and
-    // let the fresh snapshot re-join us.
-    const handleReconnect = () => {
-      watched.clear();
-      socket?.emit('request_cycle_snapshot');
-    };
 
     // ── ALL HANDLERS DECLARED FIRST (avoids TDZ when minified) ──────────────
     // const/let are not hoisted like function declarations. Registering them with
@@ -727,15 +656,6 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
       }
     };
 
-    // pool_update is the canonical coalesced snapshot (≤1/sec/cycle), delivered
-    // to the cycle room we watch. It carries the same absolute totals as the
-    // legacy per-bet bet_placed, so we normalise the field names and reuse the
-    // exact same applier — no separate code path, no double logic.
-    const handlePoolUpdate = (data: any) => {
-      if (typeof data?.cycleId !== 'string' || !data.cycleId) return;
-      handleBetPlaced(data);
-    };
-
     const handleNewCycle = (data: any) => {
       // Server created a fresh cycle (sent 12s after cycle_result).
       if (!mine(data)) return;
@@ -772,8 +692,6 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
           declaredAt:      undefined,
         }
       }));
-      // Switch our watch to the fresh cycle for this type (leaves the old one).
-      syncWatched({ [ct]: data.cycleId });
     };
 
     const handleCycleResult = (raw: unknown) => {
@@ -803,10 +721,6 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
       }));
     };
 
-    const handlePayoutComplete = (_data: any) => {
-      // cycle_history pushed automatically by server after cycle_result — no action needed.
-    };
-
     const handlePayoutSuccess = (data: any) => {
       if (data.winningsBalance !== undefined) {
         setUser(prev => {
@@ -819,9 +733,28 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
       if (amount > 0 && data.cycleId) {
         window.dispatchEvent(new CustomEvent(MY_PAYOUT_EVENT, { detail: { cycleId: String(data.cycleId), amount, winner: data.winner ?? null } }));
       }
-      if (amount > 0) {
+      // One notice per round: `round_result` already told this player, so the
+      // credit only moves the balance. A payout whose round was never
+      // announced (the stream was down at the result) still says so once.
+      if (amount > 0 && !announcedRef.current.has(String(data.cycleId))) {
+        announcedRef.current.add(String(data.cycleId));
         addToast(`🏆 You Won ₹${amount.toLocaleString()}! Winnings credited.`, 'success');
       }
+    };
+
+    const handleRoundResult = (data: any) => {
+      const cycleId = data?.cycleId != null ? String(data.cycleId) : '';
+      const staked = Number(data?.stakedPaise) / 100;
+      const payout = Number(data?.payoutPaise) / 100;
+      if (!cycleId || !(staked > 0) || !Number.isFinite(payout) || announcedRef.current.has(cycleId)) return;
+      if (announcedRef.current.size > 200) announcedRef.current.clear();
+      announcedRef.current.add(cycleId);
+      const shown = window.dispatchEvent(new CustomEvent(MY_ROUND_EVENT, {
+        cancelable: true, detail: { cycleId, winner: data.winner ?? null, staked, payout },
+      }));
+      if (!shown) return; // the board's pop-up has it
+      if (payout > 0) addToast(`🏆 You Won ₹${payout.toLocaleString()}!`, 'success');
+      else addToast(`${data.winner === 'DELHI' ? 'Delhi' : 'Bombay'} won. Your ₹${staked.toLocaleString()} bet did not win this round.`, 'info');
     };
 
     const handleCyclePhase = (raw: unknown) => {
@@ -875,82 +808,35 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
       }));
     };
 
-    // ── SSE subscriptions — public events (work for anonymous users too) ──────
-    const unsubSSESnapshot    = onSSE('cycle_snapshot',   handleCycleSnapshot);
-    const unsubSSEBetPlaced   = onSSE('bet_placed',       handleBetPlaced);
-    const unsubSSENewCycle    = onSSE('new_cycle',        handleNewCycle);
-    const unsubSSEResult      = onSSE('cycle_result',     handleCycleResult);
-    const unsubSSEPhase       = onSSE('cycle_phase',      handleCyclePhase);
-    const unsubSSEFireworks   = onSSE('fireworks',        handleFireworks);
-    const unsubSSECelebration = onSSE('celebration',      handleCelebration);
-    const unsubSSEBranding    = onSSE('branding_updated', handleBrandingUpdated);
-    const unsubSSESysConfig   = onSSE('system_config',    handleSystemConfig);
-
-    
-    if (socket) {
-      socket.on('cycle_snapshot', handleCycleSnapshot);
-      socket.on('connect',        handleReconnect);
-      
-      if (socket.connected) {
-        socket.emit('request_cycle_snapshot');
-      }
-    }
-
-    
-    if (!socket) return () => {
-      if (betPlacedFlushTimer != null) window.clearTimeout(betPlacedFlushTimer);
-      unsubSSESnapshot(); unsubSSEBetPlaced(); unsubSSENewCycle();
-      unsubSSEResult(); unsubSSEPhase(); unsubSSEFireworks();
-      unsubSSECelebration(); unsubSSEBranding(); unsubSSESysConfig();
-    };
-
-    // WS: private per-user events + public fallback
-    socket.on('payout_success',      handlePayoutSuccess);
-    socket.on('payout_complete',     handlePayoutComplete);
-    socket.on('user_balance_update', handleUserBalanceUpdate);
-    // Admin adjust-balance emits 'user_update' (not 'user_balance_update').
-    // Listen to both so admin wallet top-ups reflect instantly without refresh.
-    socket.on('user_update',         handleUserBalanceUpdate);
-    // No socket `bet_placed` listener: the server stopped emitting it globally
-    // (2026-08-31). This client watches its cycle rooms and receives the
-    // room-scoped `pool_update` below, which carries the same totals. The SSE
-    // subscription above KEEPS listening to `bet_placed` — that is the only
-    // live-pool path for a client whose WebSocket is blocked and which
-    // therefore has no socket at all.
-    socket.on('pool_update',         handlePoolUpdate);
-    socket.on('new_cycle',           handleNewCycle);
-    socket.on('cycle_result',        handleCycleResult);
-    socket.on('cycle_phase',         handleCyclePhase);
-    socket.on('fireworks',           handleFireworks);
-    socket.on('celebration',         handleCelebration);
-    socket.on('branding_updated',    handleBrandingUpdated);
-    socket.on('system_config',       handleSystemConfig);
+    // ── Stream subscriptions ─────────────────────────────────────────────────
+    // Public events (anonymous visitors too), and — on the player stream only —
+    // this player's own pushes. `bet_placed` is the coalesced pool snapshot
+    // (≤1/s per live cycle, cycleSnapshotPublisher.js).
+    const unsubs = [
+      onSSE('cycle_snapshot',      handleCycleSnapshot),
+      onSSE('bet_placed',          handleBetPlaced),
+      onSSE('new_cycle',           handleNewCycle),
+      onSSE('cycle_result',        handleCycleResult),
+      onSSE('cycle_phase',         handleCyclePhase),
+      onSSE('fireworks',           handleFireworks),
+      onSSE('celebration',         handleCelebration),
+      onSSE('branding_updated',    handleBrandingUpdated),
+      onSSE('system_config',       handleSystemConfig),
+      onSSE('round_result',        handleRoundResult),
+      onSSE('payout_success',      handlePayoutSuccess),
+      onSSE('user_balance_update', handleUserBalanceUpdate),
+      // Admin adjust-balance pushes 'user_update' (not 'user_balance_update').
+      // Listen to both so admin wallet top-ups reflect instantly without refresh.
+      onSSE('user_update',         handleUserBalanceUpdate),
+    ];
 
     return () => {
       if (betPlacedFlushTimer != null) window.clearTimeout(betPlacedFlushTimer);
-      unsubSSESnapshot(); unsubSSEBetPlaced(); unsubSSENewCycle();
-      unsubSSEResult(); unsubSSEPhase(); unsubSSEFireworks();
-      unsubSSECelebration(); unsubSSEBranding(); unsubSSESysConfig();
-      if (socket) {
-        socket.off('cycle_snapshot',      handleCycleSnapshot);
-        socket.off('connect',             handleReconnect);
-        socket.off('pool_update',         handlePoolUpdate);
-        socket.off('new_cycle',           handleNewCycle);
-        socket.off('cycle_result',        handleCycleResult);
-        socket.off('payout_complete',     handlePayoutComplete);
-        socket.off('payout_success',      handlePayoutSuccess);
-        socket.off('cycle_phase',         handleCyclePhase);
-        socket.off('fireworks',           handleFireworks);
-        socket.off('celebration',         handleCelebration);
-        socket.off('branding_updated',    handleBrandingUpdated);
-        socket.off('system_config',       handleSystemConfig);
-        socket.off('user_balance_update', handleUserBalanceUpdate);
-        socket.off('user_update',         handleUserBalanceUpdate);
-      }
+      unsubs.forEach((off) => off());
     };
-  }, [refreshCycles, currentUserId, addToast]);
+  }, [currentUserId, addToast]);
 
-  // ── PERSONAL WS EVENTS: apply server-pushed data directly, zero HTTP ─────
+  // ── PERSONAL EVENTS: apply server-pushed data directly, zero HTTP ────────
   useEffect(() => {
     if (!user?.id) return;
 
@@ -1009,6 +895,7 @@ export const GameProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
     setIsGhostMode(false);   // FIX: ghost mode must be cleared on logout
     setAudience('VIP');      // a visitor sees the VIP boards
     localStorage.removeItem('auth_token');
+    backend.syncRealtimeSession?.();   // back to the public stream
   };
 
   // ── BET PLACEMENT ─────────────────────────────────────────────────────────

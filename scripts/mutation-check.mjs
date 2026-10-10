@@ -24,16 +24,16 @@ const MUTATIONS = [
     id: 'M15', file: 'database/repositories/bets.core.js', config: PG,
     test: 'database/tests/betSettlementPg.test.js',
     why: 'the settling UPDATE does not write the fee',
-    from: `      \`UPDATE bets SET status = $2, payout_paise = $3, platform_fee_paise = $5,
-                       settled_at = now(), updated_at = now()
-        WHERE bet_id = $1 AND status = $4
-        RETURNING updated_at\`,
-      [ctx.bid, spec.to, payoutPaise, spec.expect, platformFeePaise],`,
-    to: `      \`UPDATE bets SET status = $2, payout_paise = $3,
-                       settled_at = now(), updated_at = now()
-        WHERE bet_id = $1 AND status = $4
-        RETURNING updated_at\`,
-      [ctx.bid, spec.to, payoutPaise, spec.expect],`,
+    from: `    \`UPDATE bets SET status = $2, payout_paise = $3, platform_fee_paise = $5,
+                     settled_at = now(), updated_at = now()
+      WHERE bet_id = $1 AND status = $4
+      RETURNING updated_at\`,
+    [ctx.bid, spec.to, payoutPaise, spec.expect, platformFeePaise],`,
+    to: `    \`UPDATE bets SET status = $2, payout_paise = $3,
+                     settled_at = now(), updated_at = now()
+      WHERE bet_id = $1 AND status = $4
+      RETURNING updated_at\`,
+    [ctx.bid, spec.to, payoutPaise, spec.expect],`,
   },
   {
     id: 'M16', file: 'database/repositories/bets.core.js', config: PG,
@@ -1089,13 +1089,6 @@ const MUTATIONS = [
     to: `    if (false) return refuseSupersededSession(res);`,
   },  // ── A session is checked the same way on every path that accepts one (R6)
   {
-    id: 'M198', file: 'backend/startup/socketHandlers.js', config: PG,
-    test: 'backend/tests/routes/sessionCutoffEverywherePg.test.js',
-    why: 'a signed-out or password-reset session still joins its player room and receives balance pushes',
-    from: `        if (!user || !(await sessionIsLive(token, decoded, user))) return;`,
-    to: `        if (!user) return;`,
-  },
-  {
     id: 'M199', file: 'backend/domains/identity/auth.middleware.js', config: PG,
     test: 'backend/tests/routes/sessionCutoffEverywherePg.test.js',
     why: 'the shared session check ignores the reset cutoff, so every inline path honours a superseded session',
@@ -1455,18 +1448,18 @@ const MUTATIONS = [
     to: `    if (uid === null) return refuse();`,
   },
   {
-    id: 'M258', file: 'backend/startup/socketHandlers.js', config: PG,
+    id: 'M258', file: 'backend/routes/sse.routes.js', config: PG,
     test: 'backend/tests/routes/playerDoorPg.test.js',
-    why: 'a merchant\'s or staff member\'s session joins a player socket room',
-    from: `        if (user.accountType === 'PLAYER' && user.userId?.toString() === userId?.toString()) {`,
-    to: `        if (user.userId?.toString() === userId?.toString()) {`,
+    why: 'the player stream is opened by the staff door, so a full admin\'s session is given a player\'s private channel',
+    from: `import { authenticatePlayer } from '../domains/identity/auth.middleware.js';`,
+    to: `import { authenticate as authenticatePlayer } from '../domains/identity/auth.middleware.js';`,
   },
   {
-    id: 'M259', file: 'backend/startup/socketHandlers.js', config: PG,
+    id: 'M259', file: 'backend/routes/sse.routes.js', config: PG,
     test: 'backend/tests/routes/playerDoorPg.test.js',
-    why: 'a full admin\'s session joins ANY player\'s room: every balance push and order update for that player',
-    from: `        if (user.accountType === 'PLAYER' && user.userId?.toString() === userId?.toString()) {`,
-    to: `        if ((user.accountType === 'PLAYER' && user.userId?.toString() === userId?.toString()) || user.isAdmin) {`,
+    why: 'the private channel is the one the client names, so any player\'s session receives another player\'s balance pushes and order updates',
+    from: `        sseManager.addUserClient(String(req.userId), res);`,
+    to: `        sseManager.addUserClient(String(req.query.userId || req.userId), res);`,
   },
   {
     id: 'M260', file: 'backend/routes/admin/users.admin.routes.js', config: PG,
@@ -3241,7 +3234,7 @@ const MUTATIONS = [
     test: 'database/tests/promoPg.test.js',
     why: 'a returned General stake is counted as turnover, so a cancelled round brings the unlock closer',
     from: `if (spec.returnsStake) await unlockIfNothingOutstandingWithin(ctx, \`promo_unlock_rest_\${ctx.bid}\`);
-      else await recordTurnoverWithin(ctx, { stakeRef: ctx.bid, amountPaise: bet.stakePaise });`,
+    else await recordTurnoverWithin(ctx, { stakeRef: ctx.bid, amountPaise: bet.stakePaise });`,
     to: `await recordTurnoverWithin(ctx, { stakeRef: ctx.bid, amountPaise: bet.stakePaise });`,
   },
   {
@@ -3300,6 +3293,90 @@ const MUTATIONS = [
     why: 'a board\'s id prefix can be changed, orphaning the names of every round it ran',
     from: `     OR NEW.id_prefix IS DISTINCT FROM OLD.id_prefix THEN`,
     to: `     THEN`,
+  },
+  {
+    id: 'MLB1', file: 'database/repositories/wallets.core.js', config: PG,
+    test: 'database/tests/settleBetsBatchPg.test.js',
+    why: 'a player with two settled stakes in one page gets ledger rows that do not chain: the first row claims the balance the second left',
+    from: `    after.set(\`\${s.uid}|\${LOCK}\`, lockAfter + s.stakePaise);`,
+    to: `    after.set(\`\${s.uid}|\${LOCK}\`, lockAfter);`,
+  },
+  {
+    id: 'MLB2', file: 'database/repositories/wallets.core.js', config: PG,
+    test: 'database/tests/settleBetsBatchPg.test.js',
+    why: 'a batched settlement leaves the deposit part of the lock counted, so a later return would put deposit money back that was already spent',
+    from: `    add(s.uid, DEP, 0 - (s.parts.depositBalance ?? 0));`,
+    to: `    add(s.uid, DEP, 0);`,
+  },
+  {
+    id: 'MLB3', file: 'database/repositories/bets.core.js', config: PG,
+    test: 'database/tests/settleBetsBatchPg.test.js',
+    why: 'a GENERAL cycle is batched, so its lost stakes never count as turnover and its wins pay into withdrawable winnings',
+    from: `    if (!row || row.audience !== 'VIP' || seen.has(bid)) return null;`,
+    to: `    if (!row || seen.has(bid)) return null;`,
+  },
+  {
+    id: 'MLB4', file: 'database/repositories/bets.core.js', config: PG,
+    test: 'database/tests/settleBetsBatchPg.test.js',
+    why: "the batch takes the owner from the caller, so a bet named under another player is settled out of that player's lock",
+    from: `    if (bet.userId !== String(b.userId) || bet.status !== spec.expect) return null;`,
+    to: `    if (bet.status !== spec.expect) return null;`,
+  },
+  {
+    id: 'MLB5', file: 'database/repositories/treasury.js', config: PG,
+    test: 'database/tests/settleBetsBatchPg.test.js',
+    why: "the house's entries are written but its balances are not, so HOUSE_RESERVE and USER_FLOAT stop matching their entries",
+    from: `    [moved, moved.map((a) => balance[a])],`,
+    to: `    [moved, moved.map((a) => Number(locked.rows.find((r) => r.account === a).balance_paise))],`,
+  },
+  {
+    id: 'MLB6', file: 'database/repositories/treasury.js', config: PG,
+    test: 'database/tests/settleBetsBatchPg.test.js',
+    why: 'every win in a page reads the reserve as it stood before the page, so two wins spend the same reserve tokens',
+    from: `      const fromReserve = Math.min(balance[ACCOUNTS.HOUSE_RESERVE], d);`,
+    to: `      const fromReserve = Math.min(Number(locked.rows.find((x) => x.account === ACCOUNTS.HOUSE_RESERVE).balance_paise), d);`,
+  },
+  {
+    id: 'MLB7', file: 'database/repositories/wallets.core.js', config: PG,
+    test: 'database/tests/settleBetsBatchPg.test.js',
+    why: "a batched win's payout row records the balance before the payout as the balance after it",
+    from: `      after.set(ck, after.get(ck) - s.credit.amountPaise);`,
+    to: `      after.set(ck, after.get(ck));`,
+  },
+  {
+    id: 'MLB8', file: 'database/repositories/bets.core.js', config: PG,
+    test: 'database/tests/settleBetsBatchPg.test.js',
+    why: 'a batched win pays into the deposit, so winnings that should be withdrawable are not',
+    from: `      ? { field: 'winningsBalance', amountPaise: x.payoutPaise,`,
+    to: `      ? { field: 'depositBalance', amountPaise: x.payoutPaise,`,
+  },
+  {
+    id: 'MRR1', file: 'backend/domains/markets/roundResult.service.js', config: PG,
+    test: 'database/tests/roundResultPg.test.js',
+    why: 'the round result pays the losing side, so the pop-up congratulates the player who lost',
+    from: `    if (s.side === winner) {`,
+    to: `    if (s.side !== winner) {`,
+  },
+  {
+    id: 'MRR2', file: 'backend/domains/markets/roundResult.service.js', config: PG,
+    test: 'database/tests/roundResultPg.test.js',
+    why: 'the stake is not summed, so a losing player is told nothing and a winner sees no stake',
+    from: `    r.stakedPaise += s.stakePaise;`,
+    to: `    r.stakedPaise = s.stakePaise;`,
+  },
+  {
+    id: 'MRR3', file: 'database/repositories/bets.core.js', config: PG,
+    test: 'database/tests/roundResultPg.test.js',
+    why: 'phantom bets are announced, so a synthetic player id is sent a round result',
+    from: `      WHERE cycle_id = $1 AND NOT is_phantom AND status IN ('PENDING', 'WON', 'LOST')`,
+    to: `      WHERE cycle_id = $1 AND status IN ('PENDING', 'WON', 'LOST')`,
+  },
+  {
+    id: 'MRR4', file: 'database/repositories/bets.core.js', config: PG,
+    test: 'database/tests/roundResultPg.test.js',
+    why: 'only PENDING bets are read, so a round announced after settlement began tells a settled winner nothing',
+    from: `      WHERE cycle_id = $1 AND NOT is_phantom AND status IN ('PENDING', 'WON', 'LOST')`,
+    to: `      WHERE cycle_id = $1 AND NOT is_phantom AND status IN ('PENDING')`,
   },
 ];
 

@@ -25,24 +25,33 @@ introduces it.
 reuse a name on a different transport for a different meaning.
 
 - **socket.io** — public, browser-connected clients (`startup/socketHandlers.js`).
-- **SSE** — private authenticated streams (`/api/sse/admin/events`, `/api/sse/merchant/events`), fanned out by `global.sseManager`, cross-instance via `startup/realtimeBridge.js`.
+- **SSE** — the public stream (`/api/sse/events`), the **player stream** (`/api/sse/player/events`: the public events plus one signed-in player's own, through `realtimeEmitters.emitToPlayer`), and the private staff and merchant streams (`/api/sse/admin/events`, `/api/sse/merchant/events`), fanned out by `global.sseManager`, cross-instance via `startup/realtimeBridge.js`.
+
+**The player app opens no socket (2026-10-10).** Its one live connection is the
+public or the player stream, and what it used to ask over the socket
+(`request_cycle_snapshot`, `request_cycle_history`, `request_branding`,
+`request_system_config`, `request_promo`, `watch_cycle`, `join_user_room`) is
+either sent when the stream opens or asked over HTTP; those socket handlers are
+deleted. No panel opens a socket now, so a "socket.io" row below names a
+transport that reaches no client.
 - **emitter** — `domains/notification/realtimeEmitters.js` (`emitOrderUpdate` / `emitMerchantUpdate` / `emitAdminUpdate`), which routes to the right room/stream for the recipient.
 
 ### Cycle & game
 
 | Event | Transport | Direction | Emitted from |
 |---|---|---|---|
-| `new_cycle` | socket.io | server→client | `cycleGenerator.service.js` |
-| `cycle_snapshot` | socket.io | server→client | `cycleGenerator.service.js` |
+| `new_cycle` | SSE + socket.io (public) | server→client | `cycleGenerator.service.js` |
+| `cycle_snapshot` | SSE + socket.io (public) | server→client | `cycleGenerator.service.js` (each new round), `sse.routes.js` (when a stream opens, both audiences) |
 | `cycle_phase` | SSE + socket.io (public) | server→client | Compact v2 (below). `realtimeEmitters.emitCyclePhase`, from `cycleGenerator.service.js` and `cycles.admin.routes.js` |
 | `cycle_result` | SSE + socket.io (public) | server→client, server→admin | Compact v2 (below). `realtimeEmitters.emitCycleResult`, from `cycleGenerator.service.js` and `cycles.admin.routes.js` (forced) |
-| `cycle_history` | socket.io | server→client | `startup/socketHandlers.js` |
+| `cycle_history` | SSE + socket.io (public) | server→client | `cycleGenerator.service.js` (after each result), `sse.routes.js` (when a stream opens). A deeper window is `GET /api/v1/game/cycles/history`. |
 | `game_state` | socket.io | server→client | `startup/socketHandlers.js` |
 | `phantom_equalized` | socket.io | server→client | `cycleGenerator.service.js`, `cycles.admin.routes.js` |
-| `bet_placed` | **SSE only** (server→client) + socket.io (server→**admin** room) | The global socket.io broadcast was removed 2026-08-31. Player clients on a socket use `pool_update` instead; the SSE copy is the ONLY live-pool path for a client whose WebSocket is blocked, and `sseManager` has no room concept to scope it to. Do not "finish the cleanup" by deleting it. | `cycleSnapshotPublisher.js` (coalesced), `markets/bet.routes.js` (admin) |
-| `pool_update` | socket.io, room `cycle:<cycleId>` | server→watchers of that cycle | The canonical coalesced pool snapshot, ≤1 per live cycle per second. Requires the client to `watch_cycle`. From the merge until the result it carries `poolsHidden: true` and `totalPool` only (as do `cycle_snapshot` and the SSE `bet_placed`; `cyclePublicView.poolsHidden`). | `cycleSnapshotPublisher.js` |
+| `bet_placed` | **SSE only** (server→client) + socket.io (server→**admin** room) | The player app's ONLY live-pool feed since 2026-10-10 (it opens no socket): coalesced, ≤1 per live cycle per second. Do not delete it. | `cycleSnapshotPublisher.js` (coalesced), `markets/bet.routes.js` (admin) |
+| `pool_update` | socket.io, room `cycle:<cycleId>` | server→watchers of that cycle | **No watcher since 2026-10-10**: `watch_cycle` went with the player app's socket; the SSE `bet_placed` carries the same totals. Goes with socket.io itself. The canonical coalesced pool snapshot, ≤1 per live cycle per second. From the merge until the result it carries `poolsHidden: true` and `totalPool` only (as do `cycle_snapshot` and the SSE `bet_placed`; `cyclePublicView.poolsHidden`). | `cycleSnapshotPublisher.js` |
 | `admin_bet_placed` | socket.io | server→admin | `markets/bet.routes.js` |
-| `payout_success` | socket.io | server→user room | `realtimeEmitters.js` (per-winner wallet credit) |
+| `round_result` | SSE, player stream | server→user | `markets/roundResult.service.announceRoundResults` → `emitToPlayer`, from both declaring paths (engine, admin FORCE_RESULT), at declaration, before settlement: one per player per cycle, all their bets summed, `{cycleId, winner, stakedPaise, payoutPaise}` (payout net of the fee, by `computeWinningsPayout`). Drives the board's one result pop-up (owner, 2026-10-10). |
+| `payout_success` | SSE, player stream | server→user | `realtimeEmitters.emitPayoutSuccessBatch` → `emitToPlayer` (per-winner wallet credit) |
 | `payout_complete` | socket.io | server→client | `gameEngine.js` (cycle payouts finished — distinct from the per-user event above) |
 
 #### Compact lifecycle protocol, v2 (2026-10-09)
@@ -85,8 +94,8 @@ client and round this is ~260 B less per transport, before compression.
 
 | Event | Transport | Direction | Emitted from |
 |---|---|---|---|
-| `user_balance_update` | socket.io | server→user | `realtimeEmitters.js` |
-| `user_update` | socket.io | server→admin | `users.admin.routes.js` |
+| `user_balance_update` | SSE, player stream | server→user | `realtimeEmitters.emitWalletUpdate`, `sseBalancePush` (every wallet movement; this one was `balance_update` until 2026-10-10, a second name for the same change that no panel heard) |
+| `user_update` | SSE, player stream | server→user | `retention.routes.js` (an admin balance adjustment) |
 | `new_withdrawal_request` | socket.io | server→admin | `domains/user/user.routes.js` |
 | `withdrawal_approved` | socket.io | server→user | `system.admin.routes.js` |
 | `withdrawal_rejected` | socket.io | server→user | `system.admin.routes.js` |
@@ -96,12 +105,12 @@ client and round this is ~260 B less per transport, before compression.
 | Event | Transport | Direction | Emitted from |
 |---|---|---|---|
 | `new_order` | emitter | server→merchant | `paymentProcessing.service.js`, `merchant.assignment.routes.js` |
-| `order_assigned` | emitter | server→user | `merchant.routes.js`, `merchant.assignment.routes.js` |
+| `order_assigned` | emitter (as `order_update` with `event: 'order_assigned'` to the player) | server→user | `merchant.routes.js`, `merchant.assignment.routes.js` |
 | `order_paid` | emitter | server→merchant | `paymentProcessing.service.js` — listened for by the merchant panel since 2026-10-01; before that it was sent and never delivered |
-| `order_update` | emitter (merchant SSE) + socket.io (`user-<id>` room) | server→user/merchant | `merchant.routes.js`, `disputeResolution.admin.routes.js`, `paymentProcessing.service.js` (a moved UTR deadline — this was the unregistered typo `order_updated` until 2026-10-01), `rejectedBuyWindow.service.js` (a rejected buy's window closed: CANCELLED, 2c+) |
-| `order_completed` | emitter | server→user | `merchant.routes.js`, `paymentOrder.routes.js` |
-| `order_rejected` | emitter (SSE name; on socket.io it arrives as `order_update` with `event: 'order_rejected'`, which is what the player panel listens to) | server→user | `merchant.routes.js` — carries `status: 'REJECTED'` and `disputeUntil` since 2c+ (2026-10-03); the player panel's `RejectedBuyPopup` counts down to it |
-| `order_expired` | emitter | server→user | `paymentProcessing.service.js` |
+| `order_update` | emitter (merchant SSE) + player stream (`emitToPlayer`; `event` names what happened) | server→user/merchant | `merchant.routes.js`, `disputeResolution.admin.routes.js`, `paymentProcessing.service.js` (a moved UTR deadline — this was the unregistered typo `order_updated` until 2026-10-01), `rejectedBuyWindow.service.js` (a rejected buy's window closed: CANCELLED, 2c+) |
+| `order_completed` | emitter (as `order_update` with `event: 'order_completed'` to the player) | server→user | `merchant.routes.js`, `paymentOrder.routes.js` |
+| `order_rejected` | emitter (to the player it arrives as `order_update` with `event: 'order_rejected'`, which is what the player panel listens to) | server→user | `merchant.routes.js` — carries `status: 'REJECTED'` and `disputeUntil` since 2c+ (2026-10-03); the player panel's `RejectedBuyPopup` counts down to it |
+| `order_expired` | emitter (as `order_update` with `event: 'order_expired'` to the player) | server→user | `paymentProcessing.service.js` |
 | `order_red_flagged` | SSE | server→admin | `merchant.routes.js` |
 | `queue_order_update` | SSE | server→admin | `disputeResolution.admin.routes.js` and others |
 | `queue_snapshot` | SSE | server→admin | on connect to the admin stream |
@@ -122,11 +131,12 @@ client and round this is ~260 B less per transport, before compression.
 
 | Event | Transport | Direction | Emitted from |
 |---|---|---|---|
-| `branding` | socket.io | server→client | `startup/socketHandlers.js` (on connect), `branding.admin.routes.js` |
-| `branding_updated` | socket.io | server→client | `branding.admin.routes.js` |
-| `system_config` | socket.io + SSE | server→client | `startup/socketHandlers.js`, `system.admin.routes.js` |
+| `branding` | SSE + socket.io | server→client | `sse.routes.js` (when a stream opens), `brandingPayload.broadcastBranding` |
+| `branding_updated` | SSE + socket.io | server→client | `brandingPayload.broadcastBranding` (an admin save) |
+| `system_config` | SSE + socket.io | server→client | `sse.routes.js` (when a stream opens), `system.admin.routes.js` (an admin save); always `systemConfigPayload` |
 | `deposit_policy_updated` | socket.io + SSE | server→admin | `depositPolicy.admin.routes.js` |
-| `promo_data` | socket.io | server→client | `startup/socketHandlers.js` |
+
+`promo_data` (socket.io, `request_promo`'s answer) was removed 2026-10-10 with the player app's socket; promos are `GET /api/v1/content/promo/:location`.
 
 ### Chat & support
 
@@ -134,8 +144,8 @@ client and round this is ~260 B less per transport, before compression.
 |---|---|---|---|
 | `new_chat_message` | socket.io | server→participants | `merchant.routes.js` |
 | `chat_message_deleted` | socket.io | server→participants | `chat.admin.routes.js` |
-| `chat_banned` | socket.io | server→user | `chat.admin.routes.js` |
-| `support_reply` | socket.io | server→user | `chat.admin.routes.js`, `disputeResolution.admin.routes.js` |
+| `chat_banned` | SSE, player stream | server→user | `chat.admin.routes.js` |
+| `support_reply` | SSE, player stream | server→user | `chat.admin.routes.js`, `disputeResolution.admin.routes.js` |
 
 ### Admin telemetry & plumbing
 

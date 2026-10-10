@@ -59,6 +59,7 @@ import { enabledBoards, publicBoard } from '../markets/cycleTypes.js';
 import { systemConfigPayload } from '../configuration/systemConfigPayload.js';
 import { serverError, respondError, refusal } from '../../shared/httpError.js';
 import { isAccountMobileRefusal, ACCOUNT_IS_A_MOBILE_MESSAGE } from '../payment/payoutAccount.js';
+import { PROMO_DEVICES } from '#db/spec/promoDevices.js';
 
 const router = express.Router();
 
@@ -491,11 +492,23 @@ router.get('/v1/system/config', async (req, res) => {
   }
 });
 
-// `GET /api/v1/content/promo/:location` was removed 2026-10-01. No client
-// called it: the player app asks over the socket (`request_promo` →
-// `promo_data`, socketHandlers.js), which reads the same `listLivePromos` and
-// also upper-cases the location this route did not. Two doors to one read is a
-// second one to keep correct for nobody.
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/v1/content/promo/:location  (public)
+// The player app's promo read (Rules, Promo and the home pop-up). It asked over
+// the socket (`request_promo`) until the app stopped opening one (2026-10-10);
+// that handler is deleted, so this is again the one door. PUBLISHED and active,
+// most important first, through `listLivePromos` — the read the panels make.
+// `devices`: each screen's frame (spec/promoDevices.js), so the app draws a
+// home card's own image for the screen it is on and keeps no copy of the list.
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/v1/content/promo/:location', async (req, res) => {
+  try {
+    const location = String(req.params.location || 'HOME').toUpperCase();
+    res.json({ success: true, location, content: await db.content.listLivePromos(location), devices: PROMO_DEVICES });
+  } catch (error) {
+    return respondError(res, error, 'GET /api/v1/content/promo/:location', { message: 'Could not load this content' });
+  }
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/v1/content/faq  (public)

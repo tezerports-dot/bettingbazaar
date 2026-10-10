@@ -516,6 +516,135 @@ export async function applyMovementWithin({ client, uid }, { legs, merged, ledge
 }
 
 /**
+ * Settle many locked stakes, inside the caller's transaction, in a fixed number
+ * of statements however many there are. The caller holds every wallet named
+ * here locked (sorted by user id, before anything else).
+ *
+ * Each stake is what `applyMovementWithin` does for one settled bet: the lock
+ * and its provenance counters fall by the stake's parts, ONE ledger row
+ * (`txId`, lockedBalance, DEBIT) records it, and a winning bet's payout is
+ * credited to its pocket with its own row (`credit.txId`, CREDIT). Each row
+ * carries the balance that bet's movement left in that pocket, chained in the
+ * order given, so a player with several bets in the batch gets one UPDATE for
+ * the sum and rows that read exactly as consecutive single settlements.
+ *
+ * The USER_FLOAT half is the caller's (`treasury.postHouseResultsWithin`), in
+ * the same transaction; the conservation triggers refuse the COMMIT otherwise.
+ *
+ * @param {object} client
+ * @param {Array<{uid: string, txId: string, stakePaise: number,
+ *   parts: Object<string, number>, reason?: string, refId?: string,
+ *   credit?: {field: string, amountPaise: number, txId: string, reason?: string}}>} stakes
+ *   `parts` is the stake by source pocket (depositBalance, winningsBalance, …)
+ * @returns {Promise<{ok: true} | {ok: false, reason: 'replayed'|'insufficient'}>}
+ *   on a refusal the caller rolls the transaction back
+ */
+export async function consumeLocksWithin(client, stakes) {
+  if (!stakes.length) return { ok: true };
+  for (const s of stakes) {
+    if (!s.txId) throw new Error('every settled stake needs a txId (idempotency key)');
+    if (!Number.isInteger(s.stakePaise) || s.stakePaise <= 0) {
+      throw new TypeError(`stake ${s.txId}: stakePaise must be a positive integer, got ${s.stakePaise}`);
+    }
+    if (s.credit) {
+      columnFor(s.credit.field);
+      if (!s.credit.txId || !Number.isInteger(s.credit.amountPaise) || s.credit.amountPaise <= 0) {
+        throw new TypeError(`stake ${s.txId}: a credit needs a txId and a positive integer amountPaise`);
+      }
+    }
+  }
+  const keys = stakes.flatMap((s) => (s.credit ? [s.txId, s.credit.txId] : [s.txId]));
+  // The replay probe, as in applyMovementWithin: a key already written means
+  // this batch is not the first, and the caller settles bet by bet instead.
+  const { rows: replayed } = await client.query(
+    `SELECT 1 FROM wallet_ledger WHERE tx_id = ANY($1) LIMIT 1`, [keys]);
+  if (replayed.length) return { ok: false, reason: 'replayed' };
+
+  // One movement per player: every column their stakes move, summed.
+  const LOCK = FIELD_COLUMN.lockedBalance;
+  const DEP = FIELD_COLUMN.lockedDepositAmount;
+  const WIN = FIELD_COLUMN.lockedWinningsAmount;
+  const per = new Map(); // uid → Map(column → delta)
+  const add = (uid, column, delta) => {
+    const m = per.get(uid) || new Map();
+    m.set(column, (m.get(column) ?? 0) + delta);
+    per.set(uid, m);
+  };
+  for (const s of stakes) {
+    add(s.uid, LOCK, 0 - s.stakePaise);
+    add(s.uid, DEP, 0 - (s.parts.depositBalance ?? 0));
+    add(s.uid, WIN, 0 - (s.parts.winningsBalance ?? 0));
+    if (s.credit) add(s.uid, columnFor(s.credit.field), s.credit.amountPaise);
+  }
+  const uids = [...per.keys()];
+  const columns = [...new Set([...per.values()].flatMap((m) => [...m.keys()]))];
+  // One array per column; the guard for each is in the WHERE, as in
+  // moveBalances, so a wallet that cannot cover its sum matches no row and the
+  // batch is refused rather than written.
+  const params = [uids];
+  const sets = [];
+  const guards = [];
+  for (const column of columns) {
+    params.push(uids.map((u) => per.get(u).get(column) ?? 0));
+    const a = `d.c${params.length}`;
+    sets.push(`${column} = w.${column} + ${a}`);
+    guards.push(`AND w.${column} + ${a} >= 0`);
+  }
+  const unnest = params.map((_, k) => `$${k + 1}::${k ? 'bigint' : 'text'}[]`).join(', ');
+  const names = ['uid', ...params.slice(1).map((_, k) => `c${k + 2}`)].join(', ');
+  const { rows: moved } = await client.query(
+    `UPDATE wallets w SET ${sets.join(', ')}, updated_at = now()
+       FROM unnest(${unnest}) AS d(${names})
+      WHERE w.user_id = d.uid ${guards.join(' ')}
+      RETURNING w.user_id, ${columns.map((c) => `w.${c}`).join(', ')}`,
+    params,
+  );
+  if (moved.length !== uids.length) return { ok: false, reason: 'insufficient' };
+
+  // Each row chains back from where its pocket ended: walking the stakes
+  // backwards, a bet's movement left the running balance, and the balance
+  // before it is that minus what it moved.
+  const after = new Map(); // `${uid}|${column}` → balance
+  for (const r of moved) for (const c of columns) after.set(`${r.user_id}|${c}`, Number(r[c]));
+  const rows = new Array(stakes.length);
+  for (let i = stakes.length - 1; i >= 0; i -= 1) {
+    const s = stakes[i];
+    const own = [];
+    // Both rows of one bet carry the balances after that bet's whole movement,
+    // so read every pocket before stepping any of them back.
+    const lockAfter = after.get(`${s.uid}|${LOCK}`);
+    own.push({ tx: s.txId, field: 'lockedBalance', amount: s.stakePaise, after: lockAfter, type: 'DEBIT', reason: s.reason, ref: s.refId });
+    if (s.credit) {
+      const ck = `${s.uid}|${columnFor(s.credit.field)}`;
+      own.push({ tx: s.credit.txId, field: s.credit.field, amount: s.credit.amountPaise, after: after.get(ck), type: 'CREDIT', reason: s.credit.reason, ref: s.refId });
+      after.set(ck, after.get(ck) - s.credit.amountPaise);
+    }
+    after.set(`${s.uid}|${LOCK}`, lockAfter + s.stakePaise);
+    rows[i] = own;
+  }
+  const flat = rows.flat();
+  try {
+    await client.query(
+      `INSERT INTO wallet_ledger
+         (tx_id, user_id, field, amount_paise, balance_before_paise, balance_after_paise, tx_type, description, ref_id)
+       SELECT r.tx, r.uid, r.field, r.amount,
+              CASE r.type WHEN 'DEBIT' THEN r.after + r.amount ELSE r.after - r.amount END,
+              r.after, r.type, r.reason, r.ref
+         FROM unnest($1::text[], $2::text[], $3::text[], $4::bigint[], $5::bigint[], $6::text[], $7::text[], $8::text[])
+              WITH ORDINALITY AS r(tx, uid, field, amount, after, type, reason, ref, n)
+        ORDER BY r.n`,
+      [flat.map((r) => r.tx), rows.flatMap((own, i) => own.map(() => stakes[i].uid)), flat.map((r) => r.field),
+       flat.map((r) => r.amount), flat.map((r) => r.after), flat.map((r) => r.type),
+       flat.map((r) => r.reason ?? null), flat.map((r) => (r.ref ? String(r.ref) : null))],
+    );
+  } catch (error) {
+    if (error.code === '23505') return { ok: false, reason: 'replayed' };
+    throw error;
+  }
+  return { ok: true };
+}
+
+/**
  * applyDeltaPaise — move one balance field by a signed paise amount.
  *
  * @param {object}  args

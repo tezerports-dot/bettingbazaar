@@ -8,13 +8,15 @@
  * neither the cutoff nor, for the sockets, the revocation list — so a player
  * who reset their password because somebody else held a session left that
  * session receiving their balance pushes, and a reset staff session kept the
- * admin order feed.
+ * admin order feed. A player's pushes now travel on their SSE stream
+ * (`/api/sse/player/events`, 2026-10-10), admitted by `authenticatePlayer`.
  *
  * The cutoff is set the way a reset sets it (`sessions_valid_from = now()`),
  * AFTER the token is signed; `iat` is whole seconds, so the test waits one.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import express from 'express';
+import cookieParser from 'cookie-parser';
 import request from 'supertest';
 import { pgConfigured, applySchema, closePg, pgQuery } from '#db/client.js';
 import { signToken } from '../../domains/identity/paseto.util.js';
@@ -33,12 +35,25 @@ async function connectSocket(token) {
     emit: () => {}, join: (room) => joined.push(...[room].flat()), leave: () => {},
   };
   let connect;
-  attachSocketHandlers(
-    { on: (_e, fn) => { connect = fn; } },
-    { sendCycleSnapshot: () => {}, getCycleSnapshotData: async () => [] },
-  );
+  attachSocketHandlers({ on: (_e, fn) => { connect = fn; } });
   await connect(socket);
   return { handlers, joined };
+}
+
+/** The player's live stream, real route and admission; records the channel it opened. */
+async function openPlayerStream(token) {
+  const { initSSERoutes } = await import('../../routes/sse.routes.js');
+  const joined = [];
+  const sse = {
+    addClient: () => 1,
+    addUserClient: (uid, res) => { joined.push(uid); res.end(); },
+    sendToClient: () => {},
+  };
+  const app = express();
+  app.use(cookieParser());
+  app.use('/sse', initSSERoutes(sse, { getCycleSnapshotData: async () => ({}) }));
+  const res = await request(app).get(`/sse/player/events?token=${encodeURIComponent(token)}`);
+  return { status: res.status, body: res.body, joined };
 }
 
 describePg('a superseded session is refused everywhere', () => {
@@ -55,16 +70,17 @@ describePg('a superseded session is refused everywhere', () => {
 
   afterAll(async () => { await closePg(); });
 
-  it('a player joins their own room while live, and not once the session is superseded', async () => {
+  it("a player's stream opens their channel while live, and not once the session is superseded", async () => {
     const p = await actor({});
-    const live = await connectSocket(p.token);
-    await live.handlers.join_user_room(p.userId);
-    expect(live.joined).toEqual([`user-${p.userId}`]);
+    const live = await openPlayerStream(p.token);
+    expect(live.status).toBe(200);
+    expect(live.joined).toEqual([String(p.userId)]);
 
     await new Promise((r) => setTimeout(r, 1100));
     await supersede(p.userId);
-    const stale = await connectSocket(p.token);
-    await stale.handlers.join_user_room(p.userId);
+    const stale = await openPlayerStream(p.token);
+    expect(stale.status).toBe(401);
+    expect(stale.body.code).toBe('SESSION_SUPERSEDED');
     expect(stale.joined).toEqual([]);
   });
 
@@ -92,13 +108,13 @@ describePg('a superseded session is refused everywhere', () => {
     expect(res.body.code).toBe('SESSION_SUPERSEDED');
   });
 
-  it('a signed-out (revoked) token cannot join a room', async () => {
+  it("a signed-out (revoked) token opens no player's channel", async () => {
     const p = await actor({});
     const token = signToken({ userId: p.userId });
     const { revokeToken } = await import('#db/repositories/identity.js');
     await revokeToken(token);
-    const s = await connectSocket(token);
-    await s.handlers.join_user_room(p.userId);
+    const s = await openPlayerStream(token);
+    expect(s.status).toBe(401);
     expect(s.joined).toEqual([]);
   });
 });

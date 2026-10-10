@@ -1,8 +1,9 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file.
 /**
- * Startup order (owner, 2026-10-09): no API, SSE or Socket.IO connection
- * leaves before the API endpoint is discovered and validated, and the first
- * ones then go to the validated origin. Also: a POST is never replayed after a
+ * Startup order (owner, 2026-10-09): no API or SSE connection leaves before
+ * the API endpoint is discovered and validated, and the first ones then go to
+ * the validated origin. The app opens no socket (2026-10-10): the one live
+ * connection is the stream, the player stream when a session is held. Also: a POST is never replayed after a
  * transport failure (it may already have been applied).
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
@@ -10,26 +11,18 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 const ORIGIN = 'https://api.example.com';
 const DISCOVERY = 'https://discover.example.com/e.json';
 
-const ioCalls: string[] = [];
 const sseCalls: string[] = [];
 
-vi.mock('socket.io-client', () => ({
-  io: (url: string) => {
-    ioCalls.push(url);
-    const handlers: Record<string, unknown> = {};
-    return { on: (e: string, h: unknown) => { handlers[e] = h; }, once: () => {}, off: () => {}, emit: () => {},
-      connect: () => {}, disconnect: () => {}, connected: false, io: { uri: url } };
-  },
-}));
-
 class FakeEventSource {
+  static CLOSED = 2;
+  readyState = 0;
   constructor(url: string) { sseCalls.push(url); }
   addEventListener() {}
   close() {}
   onopen: unknown; onerror: unknown;
 }
 
-afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); vi.resetModules(); ioCalls.length = 0; sseCalls.length = 0; });
+afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); vi.resetModules(); sseCalls.length = 0; });
 
 async function boot() {
   vi.stubEnv('NODE_ENV', 'production');
@@ -66,15 +59,14 @@ describe('startup order', () => {
     const booting = failover.bootstrapApiEndpoint();
     await new Promise((r) => setTimeout(r, 20));
     expect(sseCalls).toEqual([]);
-    expect(ioCalls).toEqual([]);
     expect(calls.filter((u) => u.startsWith(ORIGIN))).toEqual([]);  // the API call is still waiting
 
     releaseDiscovery();
     await booting;
     await pending;
     await new Promise((r) => setTimeout(r, 0));
-    expect(sseCalls).toEqual([`${ORIGIN}/api/sse/events`]);
-    expect(ioCalls).toEqual([ORIGIN]);
+    // A session is held (auth_token), so the one stream is the player's.
+    expect(sseCalls).toEqual([`${ORIGIN}/api/sse/player/events?token=${encodeURIComponent('a.eyJpZCI6InUxIn0.c')}`]);
     expect(calls).toContain(`${ORIGIN}/api/v1/boards`);
   });
 

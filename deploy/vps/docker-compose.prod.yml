@@ -79,6 +79,14 @@ x-app-base: &app-base
   # docker stop sends SIGTERM to pm2-runtime, which stops each worker with
   # SIGINT and waits kill_timeout (30 s); server.js drains within 25 s.
   stop_grace_period: 40s
+  # Every open stream, socket, PgBouncer and Redis connection is a file
+  # descriptor. A container does NOT read the host's
+  # /etc/security/limits.conf (that is PAM, for login sessions); without this
+  # it gets the container runtime's default soft limit, which can be 1024, and
+  # the ~1,025th concurrent player stream fails with EMFILE. 65535 per process,
+  # the same figure as the host limit in deploy/VPS_UBUNTU_SETUP.md.
+  ulimits: &nofile
+    nofile: { soft: 65535, hard: 65535 }
   networks: [bb]
 
 services:
@@ -86,6 +94,9 @@ services:
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
+    # Caddy holds two descriptors per proxied connection (client + upstream),
+    # so it reaches the limit before the app does.
+    ulimits: *nofile
     ports: ["80:80", "443:443", "443:443/udp"]
     environment:
       # Comma-separated in .env → Caddy needs them space-separated.
@@ -154,6 +165,8 @@ services:
       # Read only by the entrypoint, to write /etc/pgbouncer/userlist.txt.
       DATABASE_URL: postgresql://${POSTGRES_USER:-bb}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-bettingbazaar}
       AUTH_TYPE: scram-sha-256
+    # max_client_conn (pgbouncer.ini) needs a descriptor per client.
+    ulimits: *nofile
     volumes:
       - ./pgbouncer/pgbouncer.ini:/etc/pgbouncer/pgbouncer.ini:ro
     depends_on:

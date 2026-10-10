@@ -14,6 +14,7 @@ import { allBoards, enabledBoards, boardOf, cycleLabel, boardMessages } from './
 import { AUDIENCES } from '#db/repositories/markets.js';
 import { emitToStaff } from '../notification/staffEventAreas.js';
 import { emitCyclePhase, emitCycleResult } from '../notification/realtimeEmitters.js';
+import { announceRoundResults } from './roundResult.service.js';
 import { recordRealtimeEvent } from '../../services/metrics.service.js';
 
 /**
@@ -142,10 +143,7 @@ class CycleGenerator {
         emitToStaff(this.io, event, data);
     }
 
-    
-    emitUser(userId, event, data) {
-        this.io?.to(`user-${userId}`).emit(event, data);
-    }
+
 
     // ─────────────────────────────────────────────────────────────────────────
 
@@ -366,6 +364,8 @@ class CycleGenerator {
                 delhiPool:  combinedDelhi,
                 bombayPool: combinedBombay,
             }, this.transports());
+            // Each player's own result, now: settlement can follow seconds later.
+            void announceRoundResults({ cycleId: cycle.cycleId, winner });
 
             // Admin result — full breakdown
             this.emitAdmin('admin_cycle_result', {
@@ -736,18 +736,6 @@ class CycleGenerator {
     }
 
     
-    /** Both audiences' snapshots, each tagged; the panel applies its player's. */
-    async sendCycleSnapshot(socket) {
-        try {
-            for (const audience of AUDIENCES) {
-                const snapshot = await this.getCycleSnapshotData(audience);
-                socket.emit('cycle_snapshot', { audience, cycles: snapshot, timestamp: Date.now() });
-            }
-        } catch (err) {
-            console.error('❌ sendCycleSnapshot error:', err);
-        }
-    }
-
     async getActiveCycles() {
         try {
             return await db.markets.activeCyclesWithPools({

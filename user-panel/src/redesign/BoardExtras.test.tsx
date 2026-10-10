@@ -6,8 +6,8 @@
 import React from 'react';
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, act } from '@testing-library/react';
-import { LATE_PAYOUT_MS, PromoCarousel, promoDeviceFor, ResultCelebration, UnlockBar, ClosingChip, timerTone, unlockProgress } from './BoardExtras';
-import { MY_PAYOUT_EVENT } from '../services/GameContext';
+import { LATE_PAYOUT_MS, roundOutcome, PromoCarousel, promoDeviceFor, ResultCelebration, UnlockBar, ClosingChip, timerTone, unlockProgress } from './BoardExtras';
+import { MY_PAYOUT_EVENT, MY_ROUND_EVENT } from '../services/GameContext';
 
 describe('timerTone', () => {
   it('is red inside the warning, amber for the span before it, calm otherwise', () => {
@@ -56,6 +56,48 @@ describe('ResultCelebration', () => {
     pay('30MIN_2', 540);
     expect(await screen.findByText('YOU WON')).toBeInTheDocument();
     expect(await screen.findByText('₹540', {}, { timeout: 3000 })).toBeInTheDocument();
+  });
+
+  const round = (cycleId: string, staked: number, payout: number, winner = 'DELHI') => {
+    let shownHere = false;
+    act(() => {
+      shownHere = !window.dispatchEvent(new CustomEvent(MY_ROUND_EVENT, { cancelable: true, detail: { cycleId, winner, staked, payout } }));
+    });
+    return shownHere;
+  };
+
+  it('shows the whole round as ONE win the moment it is declared, then the credited amount', async () => {
+    render(<ResultCelebration cycleId="30MIN_4" result={{ cycleId: '30MIN_4', winner: 'DELHI' }} />);
+    // Three bets (100 + 100 on DELHI, 50 on BOMBAY) are one event, one line.
+    expect(round('30MIN_4', 250, 396)).toBe(true);
+    expect(screen.getAllByText('YOU WON')).toHaveLength(1);
+    expect(await screen.findByText('₹396', {}, { timeout: 3000 })).toBeInTheDocument();
+    pay('30MIN_4', 396);
+    expect(screen.getAllByText('YOU WON')).toHaveLength(1);
+    expect(await screen.findByText('₹396', {}, { timeout: 3000 })).toBeInTheDocument();
+  });
+
+  it('says a losing round once, with the stake, and no YOU WON', () => {
+    render(<ResultCelebration cycleId="30MIN_5" result={{ cycleId: '30MIN_5', winner: 'BOMBAY' }} />);
+    expect(round('30MIN_5', 300, 0, 'BOMBAY')).toBe(true);
+    expect(screen.getByText('NOT THIS ROUND')).toBeInTheDocument();
+    expect(screen.getByText(/Your ₹300 bet did not win/)).toBeInTheDocument();
+    expect(screen.queryByText('YOU WON')).toBeNull();
+  });
+
+  it("leaves another board's round to the toast (does not claim it)", () => {
+    render(<ResultCelebration cycleId="30MIN_6" result={{ cycleId: '30MIN_6', winner: 'DELHI' }} />);
+    expect(round('1MIN_6', 100, 198)).toBe(false);
+    expect(screen.queryByText('YOU WON')).toBeNull();
+  });
+
+  it('roundOutcome: credited beats declared; a stake with nothing back is a loss; no stake is nothing', () => {
+    const m = { cycleId: 'c', winner: 'DELHI', at: 0 };
+    expect(roundOutcome({ ...m, staked: 100, payout: 198, paid: 0 })).toEqual({ kind: 'won', amount: 198 });
+    expect(roundOutcome({ ...m, staked: 100, payout: 198, paid: 197 })).toEqual({ kind: 'won', amount: 197 });
+    expect(roundOutcome({ ...m, staked: 100, payout: 0, paid: 0 })).toEqual({ kind: 'lost', amount: 100 });
+    expect(roundOutcome({ ...m, staked: 0, payout: 0, paid: 0 })).toEqual({ kind: 'none', amount: 0 });
+    expect(roundOutcome(null)).toEqual({ kind: 'none', amount: 0 });
   });
 
   it('shows nothing before a winner is known', () => {

@@ -31,10 +31,9 @@ import {
   PromoContent, PromoLocation, HomePromoCard, PromoDevice,
   SystemConfigData, GameCycle
 } from '../types';
-import { io, Socket } from 'socket.io-client';
 import { setToken } from './apiClient'; // GOVERNANCE.md M-9: single write path for auth_token
 import {
-  currentOrigin, whenEndpointReady, endpointState, onOriginChange,
+  currentOrigin, whenEndpointReady, onOriginChange,
   reportOriginUnreachable, failoverAvailable,
 } from './originFailover';
 // Bot-mitigation token, attached to credential submits only. Resolves null and
@@ -49,27 +48,57 @@ const isLocal = window.location.hostname === 'localhost' || window.location.host
 // failover mid-session is followed without a reload — and nothing here opens a
 // connection before that origin has been discovered and validated
 // (`whenEndpointReady`). An empty origin is a same-origin web deploy: relative
-// '/api' works. In local development (Vite on localhost) the two realtime
-// transports go straight to the backend, because the dev proxy carries only
-// /api, /app-assets and /storage (vite.config.ts).
+// '/api' works. In local development (Vite on localhost) the SSE stream goes
+// straight to the backend, because the dev proxy carries only /api,
+// /app-assets and /storage (vite.config.ts) and does not stream.
 function apiBase(): string {
   const o = currentOrigin();
   return o ? `${o}/api` : '/api';
 }
-function socketUrl(): string {
-  return currentOrigin() || (isLocal ? 'http://localhost:8080' : window.location.origin);
-}
-function sseUrl(): string {
-  const o = currentOrigin();
-  return o ? `${o}/api/sse/events` : (isLocal ? 'http://localhost:8080/api/sse/events' : '/api/sse/events');
+/**
+ * The ONE live connection this app opens (2026-10-10; it opens no socket).
+ * Signed out: the public stream. Signed in: the player stream, which carries
+ * the same public events plus this player's own pushes, admitted by the server's
+ * player door (`authenticatePlayer`). EventSource sends no headers, so the
+ * token travels as the query parameter the private streams take.
+ */
+function sseUrl(token: string | null): string {
+  const o = currentOrigin() || (isLocal ? 'http://localhost:8080' : '');
+  return token
+    ? `${o}/api/sse/player/events?token=${encodeURIComponent(token)}`
+    : `${o}/api/sse/events`;
 }
 
 /** Retried after a transport failure or a 5xx; anything else may have been applied. */
 const IDEMPOTENT = new Set(['GET', 'HEAD']);
 
 
+/**
+ * Every event this app hears, all on the one stream. Public: the cycle
+ * lifecycle, pools, history, branding and config. Private (player stream only):
+ * `realtimeEmitters.emitToPlayer`'s names. A name not listed here is never
+ * heard (§12: compare BOTH lists when adding or renaming an event).
+ */
+const STREAM_EVENTS = [
+  'cycle_snapshot', 'new_cycle', 'cycle_result',
+  'cycle_phase', 'celebration', 'fireworks', 'cycle_history',
+  'bet_placed', 'system_config', 'branding', 'branding_updated',
+  'user_balance_update', 'user_update', 'round_result', 'payout_success', 'order_update',
+] as const;
+
 class SSEEventBridge extends EventTarget {
   private sse: EventSource | null = null;
+  /** The token the open stream was admitted with; null = the public stream. */
+  private openedWith: string | null = null;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * The latest payload of each event. `system_config` and `branding` arrive
+   * once, at open, and a screen that asks after that must not wait for the
+   * next open to hear them.
+   */
+  readonly last = new Map<string, unknown>();
+
+  constructor(private readonly token: () => string | null) { super(); }
 
   /** Opened by RealBackend once the endpoint is validated — never at construction. */
   start() {
@@ -77,149 +106,108 @@ class SSEEventBridge extends EventTarget {
     this._connect();
   }
 
-  /** Reopen against the current origin (after a failover). */
+  /** Reopen against the current origin and session (failover, foreground, sign-in). */
   restart() {
+    if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = null; }
     try { this.sse?.close(); } catch { /* already closed */ }
     this.sse = null;
     this._connect();
   }
 
-  private _connect() {
+  /** Reopen only if the session changed since the stream opened (sign-in, sign-out). */
+  syncAuth() {
+    if (!this.sse && !this.retryTimer) return;      // not started yet: start() will pick it up
+    if (this.token() !== this.openedWith) this.restart();
+  }
+
+  /**
+   * The current value of a once-per-open event, or the next one, or `fallback`
+   * after `timeoutMs`. Never rejects.
+   */
+  latest<T>(event: string, timeoutMs: number, fallback: T): Promise<T> {
+    if (this.last.has(event)) return Promise.resolve(this.last.get(event) as T);
+    return new Promise((resolve) => {
+      const done = (v: T) => { clearTimeout(timer); this.removeEventListener(event, on); resolve(v); };
+      const on = (e: Event) => done((e as any).data as T);
+      const timer = setTimeout(() => done(fallback), timeoutMs);
+      this.addEventListener(event, on);
+    });
+  }
+
+  private _connect(asPublic = false) {
     try {
-      const url = sseUrl();
-      this.sse = new EventSource(url);
+      const token = asPublic ? null : this.token();
+      this.openedWith = token;
+      const es = new EventSource(sseUrl(token));
+      this.sse = es;
 
-      // Register all public events we care about
-      const publicEvents = [
-        'cycle_snapshot', 'new_cycle', 'cycle_result',
-        'cycle_phase', 'celebration', 'fireworks', 'cycle_history',
-        'bet_placed', 'system_config', 'branding', 'branding_updated',
-      ];
-
-      for (const eventName of publicEvents) {
-        this.sse.addEventListener(eventName, (e: MessageEvent) => {
+      for (const eventName of STREAM_EVENTS) {
+        es.addEventListener(eventName, (e: MessageEvent) => {
           try {
             const data = JSON.parse(e.data);
+            this.last.set(eventName, data);
             this.dispatchEvent(Object.assign(new Event(eventName), { data }));
           } catch { /* ignore malformed events */ }
         });
       }
 
-      this.sse.onopen  = () => console.log('[SSE] SSE: Connected to public stream');
-      this.sse.onerror = () => {
-        console.warn('[SSE] SSE: Connection issue -- browser will auto-reconnect');
+      es.onopen  = () => console.log(`[SSE] Connected (${token ? 'player' : 'public'} stream)`);
+      es.onerror = () => {
         // A probe, not a switch: it moves only if this origin is really gone.
         if (failoverAvailable()) void reportOriginUnreachable(currentOrigin());
+        // A dropped stream reconnects by itself (`retry: 3000`). A REFUSED one
+        // — the player door's 401/403, or a 5xx — is CLOSED and never retried
+        // by the browser. A refused session falls back to the public stream so
+        // the boards keep moving (its API calls sign it out on their own 401);
+        // anything else is retried here.
+        if (es.readyState !== EventSource.CLOSED || this.sse !== es) return;
+        this.sse = null;
+        this.retryTimer = setTimeout(() => { this.retryTimer = null; this._connect(Boolean(token)); }, 3000);
       };
     } catch (err) {
-      console.error('[SSE] SSE: EventSource creation failed:', err);
+      console.error('[SSE] EventSource creation failed:', err);
     }
   }
 }
 
 export class RealBackend implements Backend {
-  private socket: Socket | null = null;
   public  sseBridge: SSEEventBridge;
 
   constructor() {
-    // SSE is the public stream for ALL users. Created now, OPENED only once the
-    // API origin is validated: no realtime connection to an unvalidated host.
-    this.sseBridge = new SSEEventBridge();
+    // The one live connection, for every visitor. Created now, OPENED only
+    // once the API origin is validated: no realtime connection to an
+    // unvalidated host.
+    this.sseBridge = new SSEEventBridge(() => this.getToken());
 
     void whenEndpointReady().then(() => {
       this.sseBridge.start();
-      const token = this.getToken();
-      if (token) this._connectWebSocket(token);
-      // A failover moves both realtime transports to the new origin, keeping
-      // every listener the screens attached.
-      onOriginChange(() => {
-        this.sseBridge.restart();
-        if (this.socket) {
-          (this.socket.io as any).uri = socketUrl();
-          this.socket.disconnect();
-          this.socket.connect();
-        }
-      });
-    });
-  }
-
-  
-  private _connectWebSocket(token?: string | null) {
-    if (endpointState() !== 'ready') {
-      void whenEndpointReady().then(() => this._connectWebSocket(token));
-      return;
-    }
-    if (this.socket?.connected) {
-      // Already connected -- just refresh auth token if provided
-      if (token) {
-        (this.socket as any).auth = { token };
-      }
-      return;
-    }
-
-    const authToken = token || this.getToken();
-    this.socket = io(socketUrl(), {
-      transports:           ['websocket'],
-      upgrade:              false,
-      autoConnect:          true,
-      withCredentials:      false,
-      reconnectionAttempts: Infinity,
-      reconnectionDelay:    1000,
-      reconnectionDelayMax: 5000,
-      randomizationFactor:  0.5,
-      timeout:              45000,
-      auth: authToken ? { token: authToken } : undefined
-    });
-
-    this.socket.on('connect_error', (err) => {
-      console.warn('Socket connect error:', err.message);
-      if (failoverAvailable()) void reportOriginUnreachable(currentOrigin());
-    });
-
-    // Join personal room on every (re)connect if logged in
-    this.socket.on('connect', () => {
-      const userId = this.getUserIdFromToken();
-      if (userId) {
-        this.socket?.emit('join_user_room', userId);
-      }
+      // A failover moves the stream to the new origin, keeping every listener
+      // the screens attached.
+      onOriginChange(() => this.sseBridge.restart());
     });
   }
 
   /**
-   * Force the realtime socket to rebuild itself.
+   * Rebuild the live stream (the native shell, on every foreground).
    *
-   * socket.io reconnects on its own when it NOTICES a drop, and that covers
-   * ordinary network loss. It does not cover the Android case: while the app is
-   * backgrounded the OS freezes the connection, and on resume the socket can
-   * still report `connected` over a WebSocket that is dead. Detection then
-   * waits on the server's ping timeout — tens of seconds during which a live
-   * cycle screen shows pools and odds that stopped updating, with no visible
-   * sign anything is wrong.
-   *
-   * Tearing it down explicitly costs one reconnect per foreground, which is the
-   * right trade on a screen where stale numbers are what people bet against.
+   * EventSource reconnects on its own when it NOTICES a drop. It does not
+   * cover the Android case: while the app is backgrounded the OS freezes the
+   * connection, and on resume it can still look open over a dead socket, with
+   * a live cycle screen showing pools and timers that stopped moving. One
+   * reconnect per foreground is the right trade on a screen where stale numbers
+   * are what people bet against; the reopened stream re-sends the snapshot.
    */
   reconnectRealtime(): void {
-    if (!this.socket) {
-      this._connectWebSocket();
-      return;
-    }
-    (this.socket as any).auth = { token: this.getToken() };
-    this.socket.disconnect();
-    this.socket.connect();
+    this.sseBridge.restart();
+  }
+
+  /** Follow a sign-in or sign-out onto the right stream (public or player). */
+  syncRealtimeSession(): void {
+    this.sseBridge.syncAuth();
   }
 
   private getToken(): string | null {
     return localStorage.getItem('auth_token');
-  }
-
-  private getUserIdFromToken(): string | null {
-    try {
-      const token = this.getToken();
-      if (!token) return null;
-      const payload = JSON.parse(atob(token.split('.')[1]));
-      return payload?.id || payload?.userId || null;
-    } catch { return null; }
   }
 
   private async delay(ms: number) {
@@ -227,44 +215,6 @@ export class RealBackend implements Backend {
   }
 
   
-  private wsRequest<T>(
-    requestEvent: string,
-    responseEvent: string,
-    payload?: any,
-    timeoutMs = 8000,
-    defaultValue?: T
-  ): Promise<T> {
-    return new Promise((resolve, reject) => {
-      if (!this.socket) {
-        if (defaultValue !== undefined) resolve(defaultValue);
-        else reject(new Error('Socket not initialised'));
-        return;
-      }
-      let settled = false;
-      const timer = setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        this.socket?.off(responseEvent, handler);
-        if (defaultValue !== undefined) resolve(defaultValue);
-        else reject(new Error(`WS timeout waiting for ${responseEvent}`));
-      }, timeoutMs);
-
-      const handler = (data: T) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        resolve(data);
-      };
-
-      this.socket.once(responseEvent, handler);
-      if (payload !== undefined) {
-        this.socket.emit(requestEvent, payload);
-      } else {
-        this.socket.emit(requestEvent);
-      }
-    });
-  }
-
   private async request<T>(endpoint: string, options: RequestInit = {}, retries = 3): Promise<T> {
     await whenEndpointReady();
     const origin = currentOrigin();
@@ -282,6 +232,7 @@ export class RealBackend implements Backend {
       if (response.status === 401) {
         localStorage.removeItem('auth_token');
         document.cookie = 'auth_token=; Max-Age=0; path=/';
+        this.sseBridge.syncAuth();   // off the player stream: the session is gone
         // The server's own sentence and code travel with it: a sign-in form
         // reads "Wrong mobile number or password", and a Telegram poll reads
         // TWO_FACTOR_DENIED, neither of which "Unauthorized" says.
@@ -325,26 +276,18 @@ export class RealBackend implements Backend {
 
   // -- AUTH -----------------------------------------------------------------
   /**
-   * Seat a player, and re-authenticate the socket as them.
+   * Seat a player, and move the live stream onto their session.
    *
    * ── One place, because it was three ────────────────────────────────────
-   * The three ways in (the link exchange, the OTP verify, and now the form)
-   * each did this token dance themselves. It is four statements and every copy
-   * got them right — but a second way of seating a player that forgot to
-   * re-auth the socket leaves somebody signed in with a live feed still
-   * authenticated as nobody, and that is invisible until a private event does
-   * not arrive. So there is one.
+   * Every way in (the form, the Telegram poll) seats through here. A second way
+   * of seating a player that forgot to move the stream leaves somebody signed
+   * in on the public stream, and that is invisible until a private event — a
+   * payout, an order update — does not arrive. So there is one.
    */
   private seat<T extends { success: boolean; token?: string }>(res: T): T {
     if (res.success && res.token) {
       setToken(res.token);   // single call site — in-memory cache + localStorage
-      if (!this.socket) {
-        this._connectWebSocket(res.token);
-      } else {
-        (this.socket as any).auth = { token: res.token };
-        this.socket.disconnect();
-        this.socket.connect();
-      }
+      this.sseBridge.syncAuth();
     }
     return res;
   }
@@ -464,68 +407,64 @@ export class RealBackend implements Backend {
 
   // -- SYSTEM CONFIG --------------------------------------------------------
   async getSystemConfig(): Promise<SystemConfigData> {
-    // WS REPLACEMENT: server pushes 'system_config' on connect AND responds to
-    // 'request_system_config'. wsRequest registers the listener first, then emits
-    // the request -- whichever event (connect-push or explicit response) arrives
-    
-    //
-    // FIX: Previous HTTP version returned { success, config: { maintenanceMode } }
-    // but checkSystem() read config.maintenanceMode -> was always undefined.
-    // Server now sends fields FLAT so SystemConfigData is returned directly.
+    // The stream's `system_config`: sent at open and re-sent on every admin
+    // save, so the latest one IS the current config and asking costs nothing.
+    // Before the stream has delivered one, `GET /api/v1/system/config` — the
+    // same builder (systemConfigPayload.js), fields FLAT as SystemConfigData
+    // reads them.
     const defaults: SystemConfigData = {
       maintenanceMode: false, maintenanceMessage: '',
       minVersion: '1.0.0',   latestVersion: '1.0.0',
     };
+    const streamed = await this.sseBridge.latest<SystemConfigData | null>('system_config', 3000, null);
+    if (streamed) return streamed;
     try {
-      return await this.wsRequest<SystemConfigData>(
-        'request_system_config', 'system_config', undefined, 8000, defaults
-      );
+      const res = await this.request<{ config?: SystemConfigData }>('/v1/system/config');
+      return res.config ?? defaults;
     } catch {
       return defaults;
     }
   }
 
   // -- SUBSCRIPTIONS ---------------------------------------------------------
-  subscribeToUserUpdates(userId: string, callback: (data: any) => void) {
-    if (!this.socket) return () => {};
-    const balanceHandler = (data: any) => callback(data);
-    const payoutHandler  = (data: any) => callback({ ...data, type: 'PAYOUT_SUCCESS' });
-    const orderHandler   = (data: any) => callback({ ...data, type: 'ORDER_UPDATE' }); // CROSS-4 fix
-    this.socket.on('user_update',    balanceHandler);
-    this.socket.on('payout_success', payoutHandler);
-    this.socket.on('order_update',   orderHandler);
-    return () => {
-      this.socket?.off('user_update',    balanceHandler);
-      this.socket?.off('payout_success', payoutHandler);
-      this.socket?.off('order_update',   orderHandler);
-    };
+  /** One stream listener, returning its remover. */
+  private onStream(event: string, handler: (data: any) => void): () => void {
+    const wrapped = (e: Event) => handler((e as any).data);
+    this.sseBridge.addEventListener(event, wrapped);
+    return () => this.sseBridge.removeEventListener(event, wrapped);
+  }
+
+  // `userId` is the screen's; the stream is already this session's own.
+  subscribeToUserUpdates(_userId: string, callback: (data: any) => void) {
+    const offs = [
+      this.onStream('user_update',    (data) => callback(data)),
+      this.onStream('payout_success', (data) => callback({ ...data, type: 'PAYOUT_SUCCESS' })),
+      this.onStream('order_update',   (data) => callback({ ...data, type: 'ORDER_UPDATE' })), // CROSS-4 fix
+    ];
+    return () => offs.forEach((off) => off());
   }
 
   subscribeToBranding(callback: (branding: any) => void) {
-    if (!this.socket) return () => {};
-    const brandingHandler = (data: any) => callback(data);
-    const updatedHandler = (data: any) => callback(data?.branding ?? data);
-    this.socket.on('branding', brandingHandler);
-    this.socket.on('branding_updated', updatedHandler);
-    return () => {
-      this.socket?.off('branding', brandingHandler);
-      this.socket?.off('branding_updated', updatedHandler);
-    };
+    const offs = [
+      this.onStream('branding',         (data) => callback(data)),
+      this.onStream('branding_updated', (data) => callback(data?.branding ?? data)),
+    ];
+    return () => offs.forEach((off) => off());
   }
 
 
   // -- CYCLE MANAGEMENT ------------------------------------------------------
   // BUG-U2 FIX: backend returns { success, cycles:[] } -- unwrap and normalise fields.
-  async getCycleHistory(type?: string, limit = 50): Promise<GameCycle[]> {
-    // WS REPLACEMENT: replaces GET /v1/game/cycles/history.
-    // Server also auto-pushes 'cycle_history' after every cycle result, so
-    // GameContext doesn't need a polling interval -- it just listens passively.
+  async getCycleHistory(type?: string, limit = 50, audience?: string): Promise<GameCycle[]> {
+    // `limit` is PER TYPE (cycleHistory.service.js). The stream sends 50 rows
+    // per type at open and re-sends a board's recent rows after each result;
+    // this is for a deeper window, one board at a time.
     try {
-      const res = await this.wsRequest<{ cycles: any[] }>(
-        'request_cycle_history', 'cycle_history', { type, limit }, 8000, { cycles: [] }
-      );
-      const arr = res.cycles || [];
-      return arr.map((c: any) => ({
+      const q = new URLSearchParams({ limit: String(limit) });
+      if (type) q.set('type', type);
+      if (audience) q.set('audience', audience);
+      const res = await this.request<{ cycles: any[] }>(`/v1/game/cycles/history?${q}`);
+      return (res.cycles || []).map((c: any) => ({
         ...c,
         totalDelhi:  c.totalDelhi  || c.delhiPool  || 0,
         totalBombay: c.totalBombay || c.bombayPool || 0,
@@ -585,7 +524,7 @@ export class RealBackend implements Backend {
   // getAIAnalysis / getServerTime / uploadImage and the ticker, admin-
   // notification and order-chat subscriptions removed 2026-10-01: no screen
   // called any of them (report:routes). History arrives with getUserData,
-  // WinnersPage fetches /v1/winners itself, the cycle comes over the socket,
+  // WinnersPage fetches /v1/winners itself, the cycle comes over the stream,
   // and the server emits neither `ticker_update` nor `admin_notification`.
 
   // -- WALLET -----------------------------------------------------------------
@@ -615,41 +554,26 @@ export class RealBackend implements Backend {
   // -- BRANDING --------------------------------------------------------------
   // CROSS-2 FIX: Fetch branding on app init so getAssetUrl() works in production
   async getBranding() {
-    // WS REPLACEMENT: server pushes 'branding' on every connect and on 'request_branding'.
-    // No HTTP call needed -- branding arrives before any component mounts.
-    try {
-      const data = await this.wsRequest<any>(
-        'request_branding', 'branding', undefined, 8000,
-        { appName: 'BettingBazaar', cdnBaseUrl: '', primaryColor: 'var(--brand-primary, #D4AF37)', assets: {} }
-      );
-      return data;
-    } catch {
-      return { appName: 'BettingBazaar', cdnBaseUrl: '', primaryColor: 'var(--brand-primary, #D4AF37)', assets: {} };
-    }
+    // The stream sends `branding` the moment it opens; this is that payload,
+    // or the defaults if it has not arrived in 8 s.
+    return this.sseBridge.latest<any>('branding', 8000,
+      { appName: 'BettingBazaar', cdnBaseUrl: '', primaryColor: 'var(--brand-primary, #D4AF37)', assets: {} });
   }
 
 
   // -- PROMO CONTENT ----------------------------------------------------------
   // BUG-U3 FIX: Both methods now unwrap { success, content:[] } before returning
   async getPromoContent(location: PromoLocation): Promise<PromoContent[]> {
-    // WS REPLACEMENT: replaces GET /v1/content/promo/:location.
-    // Server responds to 'request_promo' with 'promo_data' containing { location, content }.
-    // We match on the location field so concurrent requests for different locations
-    // don't resolve each other's promises.
-    return new Promise((resolve) => {
-      if (!this.socket) { resolve([]); return; }
-      let settled = false;
-      const timer = setTimeout(() => { if (!settled) { settled = true; resolve([]); } }, 8000);
-      const handler = (data: { location: string; content: PromoContent[] }) => {
-        if (settled || data.location !== location) return;
-        settled = true;
-        clearTimeout(timer);
-        this.socket?.off('promo_data', handler);
-        resolve(data.content || []);
-      };
-      this.socket.on('promo_data', handler); // use .on not .once (multiple locations possible)
-      this.socket.emit('request_promo', { location });
-    });
+    // `GET /api/v1/content/promo/:location` — the published promos, most
+    // important first. An empty list on any failure: a missing pop-up is not
+    // worth an error on the screen that shows it.
+    try {
+      const res = await this.request<{ content?: PromoContent[] }>(
+        `/v1/content/promo/${encodeURIComponent(location)}`);
+      return res.content || [];
+    } catch {
+      return [];
+    }
   }
   async getPublicContent(location: PromoLocation): Promise<PromoContent[]> {
     return this.getPromoContent(location);
@@ -658,20 +582,14 @@ export class RealBackend implements Backend {
   // The home cards come with `devices`: each screen's frame, from the server's
   // one list (database/spec/promoDevices.js), so the app keeps no copy.
   async getHomeCards(): Promise<{ cards: HomePromoCard[]; devices: PromoDevice[] }> {
-    return new Promise((resolve) => {
-      if (!this.socket) { resolve({ cards: [], devices: [] }); return; }
-      let settled = false;
-      const timer = setTimeout(() => { if (!settled) { settled = true; resolve({ cards: [], devices: [] }); } }, 8000);
-      const handler = (data: { location: string; content?: HomePromoCard[]; devices?: PromoDevice[] }) => {
-        if (settled || data.location !== 'HOME') return;
-        settled = true;
-        clearTimeout(timer);
-        this.socket?.off('promo_data', handler);
-        resolve({ cards: data.content || [], devices: data.devices || [] });
-      };
-      this.socket.on('promo_data', handler);
-      this.socket.emit('request_promo', { location: 'HOME' });
-    });
+    // The same door as getPromoContent; an empty row on any failure.
+    try {
+      const res = await this.request<{ content?: HomePromoCard[]; devices?: PromoDevice[] }>(
+        '/v1/content/promo/HOME');
+      return { cards: res.content || [], devices: res.devices || [] };
+    } catch {
+      return { cards: [], devices: [] };
+    }
   }
 
   // getMerchantProfile / updateMerchantProfile / getMerchantPaymentOrders /

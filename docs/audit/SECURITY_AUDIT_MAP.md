@@ -2984,7 +2984,9 @@ signed-out staff and merchant sessions kept their live feeds.
   and asserts what it joined, for a player and an admin, live and then
   superseded, plus a revoked token and the admin SSE stream. Four cases fail
   on the old code.
-- **Mutation-proved:** M198, M199 KILLED.
+- **Mutation-proved:** M198, M199 KILLED. M198 retired 2026-10-10 with the
+  socket player room it guarded: the player stream is `authenticatePlayer`
+  itself (M199 against the same test; M258, M259 against `playerDoorPg`).
 
 ### F-039 — a contact card with no `user_id` verified a number the sender does not hold
 `FIXED` · critical (account takeover of any account not yet Telegram-verified) · §32 S6, §22.2 · found 2026-09-30 (R6 review)
@@ -3538,8 +3540,8 @@ checked and is correct; the evidence is named.
 
 | Measure | Count |
 |---|---|
-| Route declarations in `backend/**` | 295 |
-| Reachable with **no auth middleware** | 36 |
+| Route declarations in `backend/**` | 297 |
+| Reachable with **no auth middleware** | 37 |
 | Staff routes carrying an **area** (permission key) | 166 |
 | Staff routes a sub-admin can **never** be given (full admin only) | 7 |
 
@@ -3570,6 +3572,7 @@ new route and decide. Each of the three questions is defined in §2.
 - `GET /v1/boards  (backend/domains/user/user.routes.js)`
 - `GET /v1/client/endpoint  (backend/routes/clientEndpoint.routes.js)`
 - `GET /v1/content/faq  (backend/domains/user/user.routes.js)`
+- `GET /v1/content/promo/:location  (backend/domains/user/user.routes.js)`
 - `GET /v1/content/support-links  (backend/domains/user/user.routes.js)`
 - `GET /v1/game/cycles/history  (backend/domains/user/user.routes.js)`
 - `GET /v1/system/config  (backend/domains/user/user.routes.js)`
@@ -3603,8 +3606,8 @@ new route and decide. Each of the three questions is defined in §2.
 
 | Measure | Count |
 |---|---|
-| `pgQuery` call sites | 417 |
-| Parameters only (safe by construction) | 270 |
+| `pgQuery` call sites | 418 |
+| Parameters only (safe by construction) | 271 |
 | Interpolating into statement text (each needs a reading) | 141 |
 | Statement text built elsewhere and passed in (each needs a reading) | 6 |
 

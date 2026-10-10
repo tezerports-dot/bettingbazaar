@@ -362,16 +362,16 @@ router.put('/system/config', authenticate, hasPermission('canManageSystemSetting
       });
     }
 
-    if (global.io) {
+    {
       const updatedConfig = await getSystemConfig();
       // The one payload every client receives (systemConfigPayload.js). This
       // was a third hand-built copy, and after 2d it still sent the removed
       // min/max limits and none of the order sizes, so every open player app
       // was told, on each admin save, that nothing was on offer (§5).
+      // SSE first and unconditionally: it is the player app's live connection.
       const broadcastPayload = systemConfigPayload(updatedConfig);
-      global.cachedSystemConfig = broadcastPayload;
-      global.io.emit('system_config', broadcastPayload);
-      if (global.sseManager) global.sseManager.broadcast('system_config', broadcastPayload);
+      global.sseManager?.broadcast('system_config', broadcastPayload);
+      global.io?.emit('system_config', broadcastPayload);
     }
 
     res.json({ success: true, message: 'System config updated' });

@@ -98,7 +98,8 @@ describe('the system-config payload', () => {
   it('is assembled in one place — neither consumer builds its own', () => {
     // The regression that matters: someone reintroducing a literal beside the
     // builder is how these drifted the first time.
-    for (const f of ['backend/startup/socketHandlers.js', 'backend/domains/user/user.routes.js']) {
+    // The stream's opening push replaced the socket's (2026-10-10).
+    for (const f of ['backend/routes/sse.routes.js', 'backend/domains/user/user.routes.js', 'backend/routes/admin/system.admin.routes.js']) {
       const src = read(f);
       expect(src, `${f} must call the builder`).toMatch(/systemConfigPayload\(/);
       // No second declaration of a default that the builder already owns.

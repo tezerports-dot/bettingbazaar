@@ -27,6 +27,7 @@ import {
 } from '../domains/identity/auth.middleware.js';
 import { publicLeaderboard } from '../domains/analytics/leaderboardPublicView.js';
 import { emitToStaff } from '../domains/notification/staffEventAreas.js';
+import { emitToPlayer } from '../domains/notification/realtimeEmitters.js';
 import { toPlayerBonus } from '../domains/wallet/playerLedgerView.js';
 import { getBalancesRupees } from '#db/repositories/wallets.core.js';
 
@@ -352,12 +353,12 @@ router.post('/admin/balance-adjust', authenticate, hasPermission('canAdjustBalan
     //
     // The balances come from the movement itself, never a re-read: a re-read can
     // pick up a LATER movement and attribute it to this one.
+    emitToPlayer(userId, 'user_update', {
+      depositBalance:  result.balances?.depositBalance  ?? 0,
+      winningsBalance: result.balances?.winningsBalance ?? 0,
+      server_ts: Date.now(),
+    });
     if (global.io) {
-      global.io.to(`user-${userId}`).emit('user_update', {
-        depositBalance:  result.balances?.depositBalance  ?? 0,
-        winningsBalance: result.balances?.winningsBalance ?? 0,
-        server_ts: Date.now(),
-      });
       emitToStaff(global.io, 'admin_stats_delta', { type: 'BALANCE_ADJUSTED', server_ts: Date.now() });
     }
 

@@ -52,10 +52,12 @@
 		}
 	}
 
-	# ── SSE (admin + merchant streams) → realtime role ───────────────────────
+	# ── SSE (public, player, admin + merchant streams) → realtime role ──────
+	# The player app's ONLY live connection (it opens no socket since
+	# 2026-10-10), so this is where the audience's connections land.
 	# flush_interval -1 disables response buffering. Without it Caddy holds
-	# events in a buffer and the admin queue appears frozen until something
-	# else forces a flush.
+	# events in a buffer and the boards and the admin queue appear frozen until
+	# something else forces a flush.
 	handle /api/sse/* {
 		reverse_proxy realtime:8080 {
 			flush_interval -1

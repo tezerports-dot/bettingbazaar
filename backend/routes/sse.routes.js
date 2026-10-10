@@ -6,8 +6,12 @@
  *
  * v2.0.0 — Added private SSE channels for merchant and admin panels.
  *
- * THREE ENDPOINTS:
+ * FOUR ENDPOINTS:
  *   GET /api/sse/events                — Public: cycles, branding, system_config
+ *   GET /api/sse/player/events         — The public stream PLUS one signed-in
+ *                                        player's own pushes (balance, payout,
+ *                                        order). The player app's only live
+ *                                        connection; it opens no socket.
  *   GET /api/sse/merchant/events       — Private: merchant order events (PASETO auth)
  *   GET /api/sse/admin/events          — Private: admin queue/cycle events (PASETO auth)
  *
@@ -42,30 +46,16 @@ import { AUDIENCES } from '#db/repositories/markets.js';
 // this.
 import { toMerchantOrderViews } from '../domains/merchant/merchantOrderView.js';
 import { staffMayReceive } from '../domains/notification/staffEventAreas.js';
+// The player door, whole: the same admission every player route asks (§32 S32).
+import { authenticatePlayer } from '../domains/identity/auth.middleware.js';
+import { getSystemConfig } from '#db/repositories/config.js';
+import { systemConfigPayload, systemConfigFallback } from '../domains/configuration/systemConfigPayload.js';
+import { brandingPayload, currentBranding } from '../domains/branding/brandingPayload.js';
 
 // The admin queue projection used to be a hand-written field list here. It is
 // the repository's `toOrder` now — one description of what an order looks like
 // rather than two, so a column added to the order does not have to be
 // remembered in a string in a route file to reach the screen that shows it.
-
-const PUBLIC_SYSTEM_CONFIG_FIELDS = [
-    'minBetAmount',
-    'maxBetAmount',
-    'bettingEnabled',
-    'maintenanceMode',
-    'supportMessage',
-    'appVersion',
-    'downloadLinks',
-    'publicAnnouncements',
-];
-
-function toPublicSystemConfig(config) {
-    const source = typeof config?.toObject === 'function' ? config.toObject() : (config || {});
-    return PUBLIC_SYSTEM_CONFIG_FIELDS.reduce((safe, key) => {
-        if (Object.prototype.hasOwnProperty.call(source, key)) safe[key] = source[key];
-        return safe;
-    }, {});
-}
 
 /** Apply the required SSE headers and flush immediately. */
 function initSSEResponse(res) {
@@ -80,17 +70,38 @@ function initSSEResponse(res) {
     res.write('retry: 3000\n\n');
 }
 
+/**
+ * EventSource sends no headers, so the player stream's token arrives as
+ * `?token=`; it is handed to `authenticatePlayer` as the bearer header that
+ * door reads. A cookie or a real header, when present, wins.
+ */
+function playerTokenFromQuery(req, _res, next) {
+    const { token } = req.query;
+    if (typeof token === 'string' && token && !req.headers.authorization) {
+        req.headers.authorization = `Bearer ${token}`;
+    }
+    next();
+}
+
 export function initSSERoutes(sseManager, cycleGenerator) {
     const router = express.Router();
+    router.use('/player/events', playerTokenFromQuery);
 
-    // ── GET /api/sse/events ── PUBLIC ─────────────────────────────────────────
-    router.get('/events', async (req, res) => {
-        initSSEResponse(res);
-
-        const clientId = sseManager.addClient(res);
-
-        // 1. Cycle snapshot
-        // One per audience, each tagged: the panel applies its player's own.
+    /**
+     * What every public stream is sent the moment it opens: both audiences'
+     * snapshots, the system config, the branding and recent history.
+     *
+     * The config and branding are READ here, through their one builder each
+     * (systemConfigPayload, currentBranding). This used to send
+     * `global.cachedSystemConfig` filtered through a second, eight-field list
+     * of its own, and `global.cachedBranding`; both caches were filled only by
+     * a socket connecting to the same process, so a stream opened before any
+     * socket got neither, and one opened after got a config without the order
+     * sizes, footer tabs or player-screen switches the screens read (§5).
+     */
+    async function sendOpening(clientId, req) {
+        // 1. Cycle snapshot — one per audience, each tagged: the panel applies
+        //    its player's own.
         try {
             for (const audience of AUDIENCES) {
                 const snapshot = await cycleGenerator.getCycleSnapshotData(audience);
@@ -102,24 +113,20 @@ export function initSSERoutes(sseManager, cycleGenerator) {
             console.error('❌ SSE initial cycle_snapshot error:', e.message);
         }
 
-        // 2. System config
-        if (global.cachedSystemConfig) {
-            sseManager.sendToClient(clientId, 'system_config', toPublicSystemConfig(global.cachedSystemConfig));
-        }
+        // 2. System config — the builder with no row on a database blip, the
+        //    same answer the HTTP route and the admin broadcast give.
+        let config;
+        try { config = systemConfigPayload(await getSystemConfig()); } catch { config = systemConfigFallback(); }
+        sseManager.sendToClient(clientId, 'system_config', config);
 
-        // 3. Branding
-        if (global.cachedBranding) {
-            sseManager.sendToClient(clientId, 'branding', global.cachedBranding);
-        }
+        // 3. Branding — the declared defaults on a database blip.
+        let branding;
+        try { branding = await currentBranding(); } catch { branding = brandingPayload(db.config.defaultsFor('branding')); }
+        sseManager.sendToClient(clientId, 'branding', branding);
 
-        // 4. Cycle history — every type, `limit` rows EACH.
-        //
-        // The endTime cursor this used to carry is gone: it paginated one
-        // interleaved list, and there is no longer one list to page through.
-        // Nothing sent a cursor — the client takes this payload as its whole
-        // history and re-requests over the socket when it wants more — so this
-        // removes an unused parameter rather than a feature. Per-type paging
-        // belongs on `request_cycle_history`, which takes a type.
+        // 4. Cycle history — every type, `limit` rows EACH, both audiences.
+        //    Deeper windows are one board at a time over
+        //    GET /api/v1/game/cycles/history.
         try {
             const limit = normalizeLimit(req.query.limit, 50, 100);
             for (const audience of AUDIENCES) {
@@ -131,6 +138,36 @@ export function initSSERoutes(sseManager, cycleGenerator) {
         } catch (e) {
             console.error('❌ SSE initial cycle_history error:', e.message);
         }
+    }
+
+    // ── GET /api/sse/events ── PUBLIC ─────────────────────────────────────────
+    // A visitor who is not signed in.
+    router.get('/events', async (req, res) => {
+        initSSEResponse(res);
+        await sendOpening(sseManager.addClient(res), req);
+    });
+
+    // ── GET /api/sse/player/events ── PUBLIC + ONE PLAYER ─────────────────────
+    //
+    // Query param: ?token=<player PASETO> (EventSource sends no headers).
+    //
+    // A signed-in player's one live connection: everything the public stream
+    // carries, plus the pushes addressed to them (`sseManager.sendToUser`:
+    // user_balance_update, user_update, round_result, payout_success,
+    // order_update). One
+    // connection rather than two, so a player costs the server one stream.
+    //
+    // Admission is `authenticatePlayer` itself — revocation, challenge token,
+    // session cutoff, closed or blocked account, wrong panel — not a copy of
+    // it: the socket's `join_user_room` was a second door that once admitted
+    // on the signature alone (R6). The query token is presented to it as the
+    // bearer header; a cookie, when the browser sends one, is read first by
+    // the middleware exactly as on every other player route.
+    router.get('/player/events', authenticatePlayer, async (req, res) => {
+        initSSEResponse(res);
+        const clientId = sseManager.addClient(res);
+        sseManager.addUserClient(String(req.userId), res);
+        await sendOpening(clientId, req);
     });
 
     // ── GET /api/sse/merchant/events ── PRIVATE ───────────────────────────────

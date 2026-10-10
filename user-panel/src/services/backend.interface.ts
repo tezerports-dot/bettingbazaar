@@ -97,7 +97,7 @@ export interface Backend {
   } | null>;
 
   getPublicContent(location: PromoLocation): Promise<PromoContent[]>;
-  /** The home promo cards and the screens they are drawn for (`promo_data`). */
+  /** The home promo cards and the screens they are drawn for (`GET /api/v1/content/promo/HOME`). */
   getHomeCards(): Promise<{ cards: HomePromoCard[]; devices: PromoDevice[] }>;
 
   updateUserProfile(userId: string, updates: any): Promise<User>;
@@ -118,7 +118,7 @@ export interface Backend {
   placePhantomBet(userId: string, cycleId: string, amount: number, side: BettingSide): Promise<{ bet: Bet }>;
 
   
-  getCycleHistory(): Promise<GameCycle[]>;
+  getCycleHistory(type?: string, limit?: number, audience?: string): Promise<GameCycle[]>;
 
   // --- REAL-TIME SUBSCRIPTIONS ---
 
@@ -160,9 +160,12 @@ export interface Backend {
   // for nothing. The admin panel has its own API layer.
 
   /**
-   * Force the realtime connection to rebuild. Optional: only the real backend
-   * holds a socket. Used by the native shell on foreground, where Android can
-   * leave a frozen connection reporting itself as healthy.
+   * Force the live stream to rebuild. Optional: only the real backend holds
+   * one. Used by the native shell on foreground, where Android can leave a
+   * frozen connection reporting itself as healthy.
    */
   reconnectRealtime?(): void;
+
+  /** Move the live stream onto the current session (after a sign-out). */
+  syncRealtimeSession?(): void;
 }

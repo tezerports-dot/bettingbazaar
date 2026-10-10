@@ -40,23 +40,24 @@ import { mountRouter, actor, as, request } from './_harness.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 
-/** A socket with the real handlers attached, and a record of what it joined. */
-async function connectSocket(token) {
-  const { attachSocketHandlers } = await import('../../startup/socketHandlers.js');
-  const handlers = {};
+/**
+ * The player's live stream (`GET /api/sse/player/events`) with the real route
+ * and admission, and a record of whose private channel it opened. An admitted
+ * stream is ended at once so the request returns.
+ */
+async function openPlayerStream(token, extraQuery = '') {
+  const { initSSERoutes } = await import('../../routes/sse.routes.js');
   const joined = [];
-  const socket = {
-    id: 'door-socket', handshake: { headers: {}, auth: { token } },
-    on: (event, fn) => { handlers[event] = fn; },
-    emit: () => {}, join: (room) => joined.push(...[room].flat()), leave: () => {},
+  const sse = {
+    addClient: () => 1,
+    addUserClient: (uid, res) => { joined.push(uid); res.end(); },
+    sendToClient: () => {},
   };
-  let connect;
-  attachSocketHandlers(
-    { on: (_e, fn) => { connect = fn; } },
-    { sendCycleSnapshot: () => {}, getCycleSnapshotData: async () => [] },
-  );
-  await connect(socket);
-  return { handlers, joined };
+  const app = express();
+  app.use(cookieParser());
+  app.use('/sse', initSSERoutes(sse, { getCycleSnapshotData: async () => ({}) }));
+  const res = await request(app).get(`/sse/player/events?token=${encodeURIComponent(token)}${extraQuery}`);
+  return { status: res.status, body: res.body, joined };
 }
 
 /**
@@ -240,36 +241,37 @@ describePg('the player door', () => {
     expect(me.status, JSON.stringify(me.body)).toBe(200);
   });
 
-  // ── The same door on the socket (§37 step 3: which other path gets here?) ─
-  // A player's room carries their balance pushes, order updates and support
-  // replies. It admitted any full admin to ANY player's room, and a merchant's
-  // or staff member's session to a room under its own login id.
-  it("admits a full admin's session to no player's socket room", async () => {
-    const player = await actor({});
+  // ── The same door on the live stream (§37 step 3: which other path gets here?)
+  // A player's private channel carries their balance pushes, order updates and
+  // support replies. Its socket predecessor admitted any full admin to ANY
+  // player's room; the stream is `authenticatePlayer` itself.
+  it("opens no player's private channel for a full admin's session", async () => {
     const admin = await actor({ isAdmin: true });
-    const s = await connectSocket(admin.token);
-    await s.handlers.join_user_room(player.userId);
-    await s.handlers.join_user_room(admin.userId);
+    const s = await openPlayerStream(admin.token);
+    expect(s.status).toBe(403);
+    expect(s.body.code).toBe('WRONG_PANEL');
     expect(s.joined).toEqual([]);
   });
 
-  it("admits a merchant's session to no player room, its own login id included", async () => {
+  it("opens no private channel for a merchant's session", async () => {
     const merchant = await realMerchant();
-    const s = await connectSocket(merchant.token);
-    await s.handlers.join_user_room(merchant.loginUserId);
+    const s = await openPlayerStream(merchant.token);
+    expect(s.status).not.toBe(200);
     expect(s.joined).toEqual([]);
-    // The merchant room join had no client and is gone; the merchant panel's
-    // live feed is its SSE stream.
-    expect(s.handlers.join_merchant_room).toBeUndefined();
   });
 
-  it("still admits a player to their own room and to nobody else's (the opposite behaviour)", async () => {
+  it('opens a player their own channel and nobody else\'s (the opposite behaviour)', async () => {
     const player = await actor({});
+    const s = await openPlayerStream(player.token);
+    expect(s.status).toBe(200);
+    // The channel is the TOKEN's player; nothing the client sends names it.
+    expect(s.joined).toEqual([String(player.userId)]);
+
+    // Naming another player in the request changes nothing.
     const other = await actor({});
-    const s = await connectSocket(player.token);
-    await s.handlers.join_user_room(other.userId);
-    await s.handlers.join_user_room(player.userId);
-    expect(s.joined).toEqual([`user-${player.userId}`]);
+    const named = await openPlayerStream(player.token, `&userId=${encodeURIComponent(other.userId)}`);
+    expect(named.status).toBe(200);
+    expect(named.joined).toEqual([String(player.userId)]);
   });
 
   it('refuses no PLAYER at the door on any player route (the opposite behaviour, swept)', async () => {

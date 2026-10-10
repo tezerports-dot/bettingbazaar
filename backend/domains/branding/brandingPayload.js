@@ -72,8 +72,10 @@ export async function currentBranding() {
  * the other, so the two events disagreed about what branding was.
  */
 export function broadcastBranding(payload) {
+  // SSE too: the player app's live connection is its SSE stream (2026-10-10),
+  // and this reached socket.io alone, so a saved logo waited for a reload.
+  global.sseManager?.broadcast('branding_updated', { branding: payload, timestamp: new Date() });
   if (!global.io) return payload;
-  global.cachedBranding = payload;
   global.io.emit('branding_updated', { branding: payload, timestamp: new Date() });
   global.io.emit('branding', payload);
   return payload;
