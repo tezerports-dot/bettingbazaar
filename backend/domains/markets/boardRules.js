@@ -16,18 +16,22 @@
  *   VIP / General boards apart                cycles.audience, bets.core.placeBet
  *   blind pools: total only, merge → result   cyclePublicView.poolsHidden
  *   staff may decide or cancel a round        admin/cycles.admin.routes.js manage-cycle
+ *   both sides may be backed (unless the      riskValidation.assessBet
+ *     admin's opposite-side block is on)        (riskRules.blockOppositeSideBetting)
  *
  * BOARD_RULES_VERSION goes up whenever the text changes in substance; a player
  * who accepted an older version is asked again before their next bet.
  */
 
-export const BOARD_RULES_VERSION = 3;
+export const BOARD_RULES_VERSION = 4;
 
 /**
- * @param {{ feePercent: number }} live  the winnings fee in force
- *   (`SystemConfig.winningsFeePercent`), so the text states the real number
+ * @param {{ feePercent: number, bothSides?: boolean }} live  the winnings fee
+ *   in force (`SystemConfig.winningsFeePercent`), so the text states the real
+ *   number; `bothSides` is false only while the admin's opposite-side block
+ *   (`SystemConfig.riskRules.blockOppositeSideBetting`) is on.
  */
-export function boardRules({ feePercent }) {
+export function boardRules({ feePercent, bothSides = true }) {
   return {
     version: BOARD_RULES_VERSION,
     sections: [
@@ -42,6 +46,14 @@ export function boardRules({ feePercent }) {
           + 'House bets are never paid out and do not decide the winner, but because of them the pools on screen '
           + 'do not show which side has less real money. Once the pools merge, only the total of both sides is '
           + 'shown until the result.',
+      },
+      {
+        title: 'Backing a side',
+        body: bothSides
+          ? 'You may back Delhi, Bombay or both in the same round. Each bet is settled on its own: '
+            + 'only the bets on the winning side are paid.'
+          : 'You may back only one side in a round: once you have a bet on Delhi or Bombay, '
+            + 'a bet on the other side of that round is refused.',
       },
       {
         title: 'Payout',

@@ -80,7 +80,9 @@ const TABS = [
   { label: 'Results', icon: '📊', path: '/results' },
   { label: 'Wallet', icon: '💰', path: '/wallet' },
   { label: 'Promo', icon: '💡', path: '/promo' },
-  { label: 'Profile', icon: '👤', path: '/profile' },
+  // The last tab opens the menu drawer (owner, 2026-10-10): the header lost
+  // its bell to make room for the profile pill, and Profile lives in the menu.
+  { label: 'Menu', icon: '☰', path: '#menu', action: 'menu' as const },
 ];
 
 const MENU_SECTIONS = [
@@ -250,25 +252,7 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
           </button>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: compact ? 6 : 8 }}>
-            {/*
-              The notification inbox. `notify()` has been persisting rows on
-              real events all along — an admin blocking an account writes the
-              explanation meant for that player — and `NotificationBell` was
-              built to show them, against three routes that work
-              (`/api/user/notifications`, `.../unread-count`, `.../read`).
-
-              It was never mounted. It hung off the OLD `Layout/Header`, this
-              shell replaced that header, and the bell was not carried across —
-              so the component, its tests and its endpoints were all green
-              while no screen in the panel rendered it. A player was blocked,
-              the platform recorded why, and they were locked out with no way
-              to read it (§28: a backend feature with no UI is not shipped).
-
-              It takes `isAuthenticated` because it polls: signed out there is
-              nothing to count and no token to count it with.
-            */}
             {general && <ProfileSwitch general={general} choose={choose} error={profileError} />}
-            <NotificationBell isAuthenticated={isAuthenticated} />
             {!compact && (
               <button onClick={toggleTheme} aria-label="Toggle theme" style={{ ...iconBtn, color: 'var(--gold-ink)', fontSize: 17 }}>
                 {theme === 'dark' ? '☀️' : '🌙'}
@@ -339,9 +323,10 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
             position: 'relative', zIndex: 60,
           }}>
             {TABS.map(tab => {
-              const active = isActive(tab.path);
+              const isMenu = 'action' in tab && tab.action === 'menu';
+              const active = isMenu ? menuOpen : isActive(tab.path);
               return (
-                <button key={tab.path} onClick={() => go(tab.path)} style={{
+                <button key={tab.path} onClick={() => (isMenu ? openMenu() : go(tab.path))} aria-label={isMenu ? 'Open menu' : undefined} style={{
                   flex: 1, height: 58, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
                   gap: 3, border: 'none', background: 'none', cursor: 'pointer', color: active ? 'var(--gold-ink)' : 'var(--text3)',
                   position: 'relative',
@@ -366,6 +351,16 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
             }}>
               <div style={{ flex: 'none', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '20px 20px 16px', borderBottom: '1px solid var(--line)' }}>
                 <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 15, letterSpacing: '.14em', color: 'var(--gold-ink)', textTransform: 'uppercase' }}>Menu</span>
+                {/*
+                  The notification inbox, moved here from the header (owner,
+                  2026-10-10) so the header has room for the profile pill.
+                  `notify()` persists real events (an admin blocking an account
+                  writes the explanation meant for that player), so the inbox
+                  must stay reachable (§28): it is the first thing in the menu.
+                */}
+                <div style={{ marginLeft: 'auto', marginRight: 8 }}>
+                  <NotificationBell isAuthenticated={isAuthenticated} />
+                </div>
                 <button onClick={() => setMenuOpen(false)} style={{ width: 32, height: 32, borderRadius: '50%', border: '1px solid var(--line)', background: 'var(--surface3)', color: 'var(--text2)', cursor: 'pointer', fontSize: 13 }}>✕</button>
               </div>
               <nav className="bb-noscroll" style={{ flex: 1, overflowY: 'auto', padding: '12px 10px' }}>

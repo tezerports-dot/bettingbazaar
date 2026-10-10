@@ -17,7 +17,9 @@ import { PAYMENT_STATE_LABELS, PAYMENT_STATE_COLOR, type PaymentOrderState } fro
 // M-05: WalletTransactionDTO normalizer — GOVERNANCE §4: this module must have consumers.
 import { normalizeTransaction } from '../services/walletTransactionDTO';
 import ScreenShell, { card } from '../redesign/Screen';
-import BonusPlayPrompt from '../redesign/BonusPlayPrompt';
+import WalletProfileToggle from '../redesign/WalletProfileToggle';
+import { usePlayProfile } from '../redesign/ProfileSwitch';
+import { fmt } from '../redesign/format';
 // The INR sizes, as tiles grouped by the rail each size is on (Step 2d).
 import OrderSizePicker, { railOfSize, type OrderSizes } from '../components/OrderSizePicker';
 // The USDT rail: whole steps of USDT between the admin's bounds, served by a
@@ -707,6 +709,9 @@ const WalletPage: React.FC = () => {
   // right now, which is `limits.maxStake` — conflating the two is the bug this
   // screen exists to stop repeating.
   const total = r2(balances.depositBalance + balances.winningsBalance + balances.reserveBalance);
+  // VIP / General: which wallet the player plays from (owner, 2026-10-10).
+  const { general, choose: chooseProfile, error: profileError } = usePlayProfile(true, 'wallet');
+  const onGeneral = general?.profile === 'GENERAL';
 
   // ── Which rail THIS size is on ───────────────────────────────────────────
   // Read off the server's own grouping, which is the rule `paymentModeFor`
@@ -731,7 +736,24 @@ const WalletPage: React.FC = () => {
 
   return (
     <ScreenShell icon="💳" title="Wallet" sub="Buy & sell tokens · P2P exchange">
-      <BonusPlayPrompt />
+      <WalletProfileToggle general={general} choose={chooseProfile} error={profileError} vipTotal={total} />
+      {onGeneral && general ? (
+        /* The General wallet: the referral bonus, what it still needs, and the
+           way to the board that plays it. Figures are `promo.js`'s. */
+        <div style={{ ...card, border: '1px solid color-mix(in srgb,var(--green) 40%,transparent)', background: 'color-mix(in srgb,var(--green) 8%,var(--surface))' }}>
+          <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.16em', textTransform: 'uppercase', color: 'var(--green)' }}>General balance</div>
+          <div className="font-grotesk" style={{ fontWeight: 700, fontSize: 38, color: 'var(--text)', margin: '2px 0 6px' }}>₹{fmt(general.promoBalance)}</div>
+          <div style={{ fontSize: 12, color: 'var(--text2)', lineHeight: 1.55 }}>
+            {general.outstandingTurnover > 0
+              ? <>Play <strong style={{ color: 'var(--text)' }}>₹{fmt(general.outstandingTurnover)}</strong> more and it unlocks into withdrawable winnings ({general.turnoverMultiplier}× the bonus is played first).</>
+              : 'Played with, it unlocks into withdrawable winnings.'}
+          </div>
+          <button type="button" onClick={() => { window.location.hash = '#/'; }} disabled={!(general.promoBalance > 0)} style={{ marginTop: 14, width: '100%', padding: 12, borderRadius: 12, border: 'none', cursor: general.promoBalance > 0 ? 'pointer' : 'not-allowed', fontSize: 13, fontWeight: 800, color: 'var(--bg)', background: 'var(--green)', opacity: general.promoBalance > 0 ? 1 : 0.5 }}>
+            Play with your bonus
+          </button>
+          <div style={{ fontSize: 10, color: 'var(--text3)', marginTop: 8 }}>Buying tokens below moves you back to your VIP wallet.</div>
+        </div>
+      ) : (<>
       {/* Balance hero */}
       <div style={{ borderRadius: 18, padding: 18, background: 'linear-gradient(135deg,#1a1205,#0c0a06 60%),radial-gradient(120% 140% at 100% 0,rgba(var(--brand-primary-rgb), .25),transparent 55%)', border: '1px solid var(--line2)', boxShadow: 'var(--shadow)', position: 'relative', overflow: 'hidden' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -771,6 +793,8 @@ const WalletPage: React.FC = () => {
           </div>
         )}
       </div>
+
+      </>)}
 
       {/* Tabs */}
       <div className="bb-noscroll" style={{ display: 'flex', gap: 8, margin: '14px 0', overflowX: 'auto' }}>

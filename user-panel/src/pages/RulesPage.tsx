@@ -16,7 +16,7 @@ const backend = getBackend();
 
 const RULE_BLOCKS = [
   { ic: '🎯', t: 'Pick a side', d: 'Every cycle pits Delhi Bazaar against Bombay Bazaar. Choose a chip value, then tap the side you back.' },
-  { ic: '🪙', t: 'Chips & bet amount', d: 'Chips step up 3× (₹10 · 30 · 90 · 270 · 810 on the 1-min and 30-min boards; ×10 on full-day). Tap a chip then a side to stake it. One side per cycle.' },
+  { ic: '🪙', t: 'Chips & bet amount', d: 'Chips step up 3× (₹10 · 30 · 90 · 270 · 810); the 10× arrows scale them up or down within the board’s stake limits. Tap a chip then a side to stake it. You may back both sides in the same cycle.' },
   { ic: '⚡', t: 'Pools merge', d: 'Shortly before results — minutes on the longer boards, seconds on the 1-min one — the pools merge and hide. Betting continues blind until bets close.' },
 ];
 

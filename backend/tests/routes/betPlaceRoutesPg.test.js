@@ -39,6 +39,7 @@ import { linkTelegram } from '../miniAppFixture.js';
 import { accept as acceptBoardRules } from '#db/repositories/boardRules.js';
 import * as promo from '#db/repositories/promo.js';
 import { BOARD_RULES_VERSION } from '../../domains/markets/boardRules.js';
+import { getSystemConfig, setConfigPath } from '#db/repositories/config.js';
 
 const describePg = pgConfigured() ? describe : describe.skip;
 
@@ -358,6 +359,52 @@ describePg('POST /api/bet/place', () => {
       const after = await getBalances(p.userId);
       expect(after.lockedBalance).toBe(before.lockedBalance + 100);
       expect(after.depositBalance).toBe(before.depositBalance - 100);
+    });
+  });
+
+  // ── Both sides of one round (owner, 2026-10-10) ───────────────────────────
+  // The panel no longer refuses a second side; the server's own switch
+  // (`riskRules.blockOppositeSideBetting`, admin, default off) is the only rule.
+  describe('backing both sides of one cycle', () => {
+    const stakeOf = () => Math.max(limits.thirtyMin.min, 100);
+
+    it('accepts a bet on each side, each its own row with its own stake locked', async () => {
+      const cycle = await openCycle('30_MIN', { startedAgoMs: 60_000, lengthMs: 25 * 60_000 });
+      made.push(cycle.cycleId);
+      const p = await fundedPlayer(1_000);
+      const before = await getBalances(p.userId);
+      const stake = stakeOf();
+
+      const d = await place(p, { cycleId: cycle.cycleId, side: 'DELHI', amount: stake, type: '30_MIN' });
+      const b = await place(p, { cycleId: cycle.cycleId, side: 'BOMBAY', amount: stake, type: '30_MIN' });
+
+      expect(d.status, JSON.stringify(d.body)).toBe(200);
+      expect(b.status, JSON.stringify(b.body)).toBe(200);
+      const { rows } = await pgQuery(
+        `SELECT side, stake_paise::bigint AS s FROM bets WHERE user_id = $1 AND cycle_id = $2 AND status = 'PENDING' ORDER BY side`,
+        [p.userId, cycle.cycleId]);
+      expect(rows.map((r) => [r.side, Number(r.s)])).toEqual([['BOMBAY', stake * 100], ['DELHI', stake * 100]]);
+      const after = await getBalances(p.userId);
+      expect(after.lockedBalance).toBe(before.lockedBalance + 2 * stake);
+    });
+
+    it('refuses the second side while the admin\'s opposite-side block is on', async () => {
+      const was = (await getSystemConfig({ fresh: true }))?.riskRules?.blockOppositeSideBetting ?? false;
+      const cycle = await openCycle('30_MIN', { startedAgoMs: 60_000, lengthMs: 25 * 60_000 });
+      made.push(cycle.cycleId);
+      const p = await fundedPlayer(1_000);
+      try {
+        await setConfigPath('system', 'riskRules.blockOppositeSideBetting', true, { reason: 'test: both-sides refusal' });
+        const d = await place(p, { cycleId: cycle.cycleId, side: 'DELHI', amount: stakeOf(), type: '30_MIN' });
+        const b = await place(p, { cycleId: cycle.cycleId, side: 'BOMBAY', amount: stakeOf(), type: '30_MIN' });
+        expect(d.status, JSON.stringify(d.body)).toBe(200);
+        expect(b.status, JSON.stringify(b.body)).toBe(400);
+        expect(b.body.code).toBe('OPPOSITE_SIDE_BLOCKED');
+      } finally {
+        await setConfigPath('system', 'riskRules.blockOppositeSideBetting', was, { reason: 'test: restore' });
+      }
+      const { rows } = await pgQuery(`SELECT side FROM bets WHERE user_id = $1 AND cycle_id = $2`, [p.userId, cycle.cycleId]);
+      expect(rows.map((r) => r.side)).toEqual(['DELHI']);
     });
   });
 

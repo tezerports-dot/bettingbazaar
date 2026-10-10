@@ -112,9 +112,13 @@ const GameScreen: React.FC = () => {
   const cycleBets = (userBets || []).filter(b => b.cycleId === currentCycle?.id && b.status === 'PENDING' && !b.isPhantom);
   const myBetDelhi = cycleBets.filter(b => b.side === BettingSide.DELHI).reduce((a, b) => a + (b.amount || 0), 0);
   const myBetBombay = cycleBets.filter(b => b.side === BettingSide.BOMBAY).reduce((a, b) => a + (b.amount || 0), 0);
-  const lockD = myBetBombay > 0;
-  const lockB = myBetDelhi > 0;
-  const potentialReturn = (myBetDelhi + myBetBombay) * 2;
+  // Both sides may be backed in one cycle (owner, 2026-10-10); only one side
+  // can win, so the return is stated per side, never summed. Whether the
+  // platform refuses a second side is the server's (`riskRules.
+  // blockOppositeSideBetting`, admin, default off): its refusal reaches the
+  // player as the server's own message.
+  const returnIfDelhi = myBetDelhi * 2;
+  const returnIfBombay = myBetBombay * 2;
 
   // Winner sequences from real history (newest first), by board. Keyed by
   // every board, so a tab cannot fall through to another board's history.
@@ -189,8 +193,6 @@ const GameScreen: React.FC = () => {
     if (!betOpen) { addToast('Bets just closed for this cycle', 'error'); return; }
     if (!betAmount) { addToast('Pick a chip or enter an amount first', 'error'); return; }
     if (betAmount < minBet) { addToast(`Minimum bet for this cycle is ₹${minBet}`, 'error'); return; }
-    if (side === BettingSide.DELHI && myBetBombay > 0) { addToast('You already backed BOMBAY this cycle — one side per cycle', 'error'); return; }
-    if (side === BettingSide.BOMBAY && myBetDelhi > 0) { addToast('You already backed DELHI this cycle — one side per cycle', 'error'); return; }
     if (navigator.vibrate) navigator.vibrate(40);
     if (isGhostMode) placePhantomBet(betAmount, side); else placeBet(betAmount, side);
   };
@@ -215,15 +217,14 @@ const GameScreen: React.FC = () => {
 
   const sideStyle = (side: BettingSide): React.CSSProperties => {
     const isWinner = isResult && winner === side;
-    const lock = side === BettingSide.DELHI ? lockD : lockB;
-    // A bet on the OTHER side blocks placing here (handleBet), but this card stays
-    // fully coloured — NO grey-out (owner UX). Only result/closed states dim.
+    // Only result/closed states dim a card; a bet on the other side does not
+    // lock this one (both sides allowed, owner 2026-10-10).
     // `!betOpen` dims the cards for the ~1.5s before the true close, so the
     // board stops inviting a tap it can no longer deliver. The phase LABEL
     // still flips at the real cutoff — that clock is the server's, not ours.
     const opacity = isResult && winner !== side ? .35 : (isClosed || !betOpen) ? .6 : 1;
     const filter = isResult && winner !== side ? 'grayscale(.7)' : 'none';
-    const cursor = (isClosed || isResult || lock || !betOpen) ? 'not-allowed' : 'pointer';
+    const cursor = (isClosed || isResult || !betOpen) ? 'not-allowed' : 'pointer';
     const gradient = side === BettingSide.DELHI
       ? 'linear-gradient(160deg,#2A0A0A,#140406 55%,#050203)'
       : 'linear-gradient(160deg,#07172E,#04101F 55%,#020814)';
@@ -316,7 +317,14 @@ const GameScreen: React.FC = () => {
           <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
             {myBetDelhi > 0 && <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'color-mix(in srgb,var(--delhi) 12%,transparent)', border: '1px solid color-mix(in srgb,var(--delhi) 30%,transparent)', borderRadius: 10, padding: '9px 12px' }}><span style={{ fontSize: 11, fontWeight: 800, color: 'var(--delhi)' }}>DELHI</span><span className="font-grotesk" style={{ fontWeight: 700, color: 'var(--text)' }}>₹{fmt(myBetDelhi)}</span></div>}
             {myBetBombay > 0 && <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'color-mix(in srgb,var(--bombay) 12%,transparent)', border: '1px solid color-mix(in srgb,var(--bombay) 30%,transparent)', borderRadius: 10, padding: '9px 12px' }}><span style={{ fontSize: 11, fontWeight: 800, color: 'var(--bombay)' }}>BOMBAY</span><span className="font-grotesk" style={{ fontWeight: 700, color: 'var(--text)' }}>₹{fmt(myBetBombay)}</span></div>}
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 2px 0' }}><span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text3)' }}>Potential return</span><span className="font-grotesk" style={{ fontWeight: 700, color: 'var(--gold-ink)' }}>₹{fmt(potentialReturn)}</span></div>
+            {myBetDelhi > 0 && myBetBombay > 0 ? (
+              <>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 2px 0' }}><span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text3)' }}>If Delhi wins</span><span className="font-grotesk" style={{ fontWeight: 700, color: 'var(--gold-ink)' }}>₹{fmt(returnIfDelhi)}</span></div>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 2px' }}><span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text3)' }}>If Bombay wins</span><span className="font-grotesk" style={{ fontWeight: 700, color: 'var(--gold-ink)' }}>₹{fmt(returnIfBombay)}</span></div>
+              </>
+            ) : (
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 2px 0' }}><span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text3)' }}>Potential return</span><span className="font-grotesk" style={{ fontWeight: 700, color: 'var(--gold-ink)' }}>₹{fmt(returnIfDelhi + returnIfBombay)}</span></div>
+            )}
           </div>
         ) : (
           <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, padding: '14px 0' }}>
@@ -451,9 +459,6 @@ const GameScreen: React.FC = () => {
           <div style={{ position: 'relative', width: '100%', maxWidth: 360, margin: '8px auto 0', padding: '0 8px' }}>
             <input type="number" min={1} placeholder={`Or type amount (min ₹${minBet})`} value={manualInput} onChange={e => onManual(e.target.value)} className="font-grotesk" style={{ width: '100%', height: 42, background: 'var(--surface2)', border: `1px solid ${betAmount && manualInput !== '' ? 'var(--gold)' : 'var(--line2)'}`, borderRadius: 12, padding: '0 44px 0 15px', color: 'var(--text)', fontSize: 13, fontWeight: 700, outline: 'none' }} />
             <span style={{ position: 'absolute', right: 20, top: '50%', transform: 'translateY(-50%)', color: 'var(--gold-ink)', fontWeight: 800, fontSize: 12, pointerEvents: 'none' }}>₹</span>
-            {(myBetDelhi > 0 || myBetBombay > 0) && !isResult && (
-              <div style={{ textAlign: 'center', fontSize: 9, fontWeight: 800, letterSpacing: '.06em', color: 'var(--gold-ink)', marginTop: 8 }}>🔒 One side per cycle — locked to {myBetDelhi > 0 ? 'DELHI' : 'BOMBAY'}</div>
-            )}
             {isGhostMode && (
               <div style={{ textAlign: 'center', fontSize: 9, fontWeight: 800, letterSpacing: '.06em', color: '#c4b5fd', marginTop: 8 }}>👻 GHOST MODE ACTIVE · phantom bets balance the pool and are never paid out</div>
             )}
