@@ -148,3 +148,38 @@ describe('chips', () => {
     expect(chipScales({ minBet: 0, maxBet: 10 })).toBeNull();
   });
 });
+
+describe('streaks count at every length they reached (owner, 2026-10-10)', () => {
+  // Newest first: DDD B DD B D BBBB D  → Delhi runs 3,2,1,1 · Bombay runs 1,1,4
+  const D = 'DELHI' as const, B = 'BOMBAY' as const;
+  const seq = [D, D, D, B, D, D, B, D, B, B, B, B, D];
+  const A = computeAnalytics(seq);
+
+  it('counts a ×3 at ×2 and ×3, and a ×4 at ×2, ×3 and ×4', () => {
+    expect(A.dist['2']).toEqual({ D: 2, B: 1 });
+    expect(A.dist['3']).toEqual({ D: 1, B: 1 });
+    expect(A.dist['4']).toEqual({ D: 0, B: 1 });
+    expect(A.dist['5']).toEqual({ D: 0, B: 0 });
+  });
+
+  it('lists lengths 2 … 7 at least, and up to the longest streak seen', () => {
+    expect(A.lengths).toEqual([2, 3, 4, 5, 6, 7]);
+    const long = computeAnalytics([...Array(9).fill(D), B]);
+    expect(long.lengths[long.lengths.length - 1]).toBe(9);
+    expect(long.dist['9']).toEqual({ D: 1, B: 0 });
+  });
+
+  it('measures gaps from where each streak reached the length', () => {
+    // Delhi reached ×2 at index 1 (the newest DDD) and at index 4 (DD at 4–5).
+    expect(A.gaps.D2.count).toBe(2);
+    expect(A.gaps.D2.ago).toBe(1);
+    expect(A.gaps.D2.last5).toEqual([3]);
+  });
+
+  it('leaves the streak still running out of the continuation rate', () => {
+    // Finished runs: B1 D2 B1 D1 B4 D1. Reached ×2: D2, B4 → reached ×3: B4.
+    expect(A.cont(2)).toBe(0.5);
+    // The current Delhi ×3 is not counted as having stopped at 3.
+    expect(A.cont(3)).toBe(1);
+  });
+});

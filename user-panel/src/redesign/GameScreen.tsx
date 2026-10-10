@@ -90,7 +90,6 @@ const GameScreen: React.FC = () => {
   const poolsHidden = pools ? pools.poolsHidden : !!currentCycle?.poolsHidden;
   const total = poolsHidden ? (pools?.totalPool ?? currentCycle?.totalPool ?? 0) : poolDelhi + poolBombay;
   const dPct = total ? Math.round((poolDelhi / total) * 100) : 50;
-  const bPct = 100 - dPct;
 
   // Phase flags.
   // True phase (agrees with the server) vs. whether a tap right now would still
@@ -247,38 +246,26 @@ const GameScreen: React.FC = () => {
   const labelCap: React.CSSProperties = { fontSize: 10, fontWeight: 800, letterSpacing: '.16em', textTransform: 'uppercase', color: 'var(--text2)' };
 
   // ── side panels (desktop) ────────────────────────────────────────────────
+  // The Refer & Earn card takes the side column's top slot (owner,
+  // 2026-10-10); the pools moved above the VS strip on every screen size.
+  // Its image is Branding's `referPromoImageUrl` (admin › Branding, CDN);
+  // with none uploaded it is a styled card saying the same thing.
+  const referImg = getAssetUrl(brand.referPromoImageUrl || '');
+  const openReferrals = () => { window.location.hash = '#/referrals'; };
   const leftPanel = (
     <aside className="bb-noscroll" style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 12, overflowY: 'auto' }}>
-      <div style={sectionCard}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
-          <span style={labelCap}>Live Pool</span>
-          <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 9, fontWeight: 800, color: 'var(--green)' }}><span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--green)', boxShadow: '0 0 8px var(--green)' }} />LIVE</span>
-        </div>
-        {!showMerged ? (
-          <>
-            <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', marginBottom: 6 }}>
-              <span style={{ fontSize: 11, fontWeight: 800, color: 'var(--delhi)' }}>DELHI</span>
-              <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 16, color: 'var(--text)' }}>₹{fmt(poolDelhi)}</span>
-            </div>
-            <div style={{ height: 9, borderRadius: 6, overflow: 'hidden', display: 'flex', background: 'color-mix(in srgb,var(--delhi) 18%, transparent)', marginBottom: 12 }}>
-              <div style={{ height: '100%', background: 'linear-gradient(90deg,var(--delhi),color-mix(in srgb,var(--delhi) 60%,#000))', width: dPct + '%' }} />
-              <div style={{ height: '100%', flex: 1, background: 'linear-gradient(90deg,color-mix(in srgb,var(--bombay) 60%,#000),var(--bombay))' }} />
-            </div>
-            <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between' }}>
-              <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 16, color: 'var(--text)' }}>₹{fmt(poolBombay)}</span>
-              <span style={{ fontSize: 11, fontWeight: 800, color: 'var(--bombay)' }}>BOMBAY</span>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 10, fontSize: 10, fontWeight: 700, color: 'var(--text3)' }}>
-              <span>{dPct}% share</span><span>{bPct}% share</span>
-            </div>
-          </>
+      <button type="button" onClick={openReferrals} aria-label="Refer and earn: invite friends" style={{ ...sectionCard, padding: 0, overflow: 'hidden', cursor: 'pointer', textAlign: 'left', display: 'block', width: '100%' }}>
+        {referImg ? (
+          <img src={referImg} alt="Refer and earn" style={{ display: 'block', width: '100%', height: 'auto' }} />
         ) : (
-          <div style={{ padding: '2px 0' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}><span style={{ fontSize: 10, fontWeight: 800, letterSpacing: '.08em', color: '#F0A860' }}>⚡ POOLS MERGED</span><span style={{ fontSize: 8, fontWeight: 700, color: 'var(--text3)' }}>BLIND · HIDDEN</span></div>
-            <div className="font-grotesk" style={{ fontWeight: 700, fontSize: 26, color: 'var(--gold-ink)', textShadow: '0 0 16px var(--glow)' }}>₹{fmt(total)}</div>
+          <div style={{ padding: 18, background: 'radial-gradient(120% 100% at 100% 0,color-mix(in srgb,var(--gold) 28%,transparent),transparent 60%),linear-gradient(160deg,var(--surface2),var(--surface))' }}>
+            <div style={{ fontSize: 34, lineHeight: 1 }} aria-hidden="true">🎁</div>
+            <div className="font-grotesk" style={{ fontWeight: 700, fontSize: 18, color: 'var(--text)', marginTop: 10 }}>Refer &amp; Earn</div>
+            <div style={{ fontSize: 12, color: 'var(--text2)', lineHeight: 1.5, marginTop: 4 }}>Invite friends and get a bonus for each one who joins and verifies.</div>
+            <div style={{ display: 'inline-block', marginTop: 12, padding: '8px 14px', borderRadius: 10, fontSize: 12, fontWeight: 800, color: 'var(--bg)', background: 'linear-gradient(180deg,var(--gold2),var(--gold))' }}>Invite now</div>
           </div>
         )}
-      </div>
+      </button>
       <div style={sectionCard}>
         <div style={{ ...labelCap, marginBottom: 12 }}>Payout</div>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
@@ -361,18 +348,16 @@ const GameScreen: React.FC = () => {
         {/* Title + inline pools */}
         <div style={{ flex: 'none', textAlign: 'center', padding: '2px 0 8px' }}>
           <h2 className="font-grotesk" style={{ margin: 0, fontWeight: 700, fontSize: 15, letterSpacing: '.02em', color: 'var(--text)' }}>DELHI BAZAAR <span style={{ color: 'var(--gold-ink)', fontStyle: 'italic', fontWeight: 700 }}>vs</span> BOMBAY BAZAAR</h2>
-          {!desktop && (
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 26, marginTop: 5 }}>
-              {showMerged ? (
-                <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 15, color: 'var(--gold-ink)', textShadow: '0 0 14px var(--glow)' }}>POOL ₹{fmt(total)}</span>
-              ) : (
-                <>
-                  <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 13, color: 'var(--delhi)', fontVariantNumeric: 'tabular-nums' }}>₹{fmt(poolDelhi)}</span>
-                  <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 13, color: 'var(--bombay)', fontVariantNumeric: 'tabular-nums' }}>₹{fmt(poolBombay)}</span>
-                </>
-              )}
-            </div>
-          )}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 26, marginTop: 5 }}>
+            {showMerged ? (
+              <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 15, color: 'var(--gold-ink)', textShadow: '0 0 14px var(--glow)' }}>POOL ₹{fmt(total)}</span>
+            ) : (
+              <>
+                <span className="font-grotesk" style={{ fontWeight: 700, fontSize: desktop ? 16 : 13, color: 'var(--delhi)', fontVariantNumeric: 'tabular-nums' }}>₹{fmt(poolDelhi)}</span>
+                <span className="font-grotesk" style={{ fontWeight: 700, fontSize: desktop ? 16 : 13, color: 'var(--bombay)', fontVariantNumeric: 'tabular-nums' }}>₹{fmt(poolBombay)}</span>
+              </>
+            )}
+          </div>
         </div>
 
         {/* VS strip: live share of the pool, BLIND BETTING once merged */}

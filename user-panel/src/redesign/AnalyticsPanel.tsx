@@ -100,13 +100,13 @@ const AnalyticsPanel = forwardRef<HTMLElement, Props>(({ board, winners, loadCyc
   const contP = Math.round(A.cont(cur.len) * 100);
   const breakP = 100 - contP;
 
-  const keys = ['2', '3', '4', '5', '6', '7+'];
+  const keys = A.lengths.map(String);
   let maxCount = 1;
   keys.forEach(k => { maxCount = Math.max(maxCount, A.dist[k].D, A.dist[k].B); });
   const distRows = keys.map(k => ({ len: k, dCount: A.dist[k].D, bCount: A.dist[k].B, dW: Math.round((A.dist[k].D / maxCount) * 100) + '%', bW: Math.round((A.dist[k].B / maxCount) * 100) + '%' }));
 
   const gapRows: Array<{ side: string; len: string; avg: number | null; ago: string | number; last5: number[] }> = [];
-  ['2', '3', '4', '5'].forEach(k => {
+  keys.forEach(k => {
     (['D', 'B'] as const).forEach(sd => {
       const g = A.gaps[sd + k];
       if (g && g.count >= 2) gapRows.push({ side: sd === 'D' ? 'Delhi' : 'Bombay', len: k, avg: g.avg, ago: g.ago === 0 ? 'now' : (g.ago ?? '—'), last5: g.last5 });
@@ -188,12 +188,12 @@ const AnalyticsPanel = forwardRef<HTMLElement, Props>(({ board, winners, loadCyc
             </div>
             <div style={{ ...box, padding: '14px 14px 6px' }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-                <span style={heading}>How often each streak length occurs</span>
+                <span style={heading}>Streaks that reached each length</span>
                 <span style={{ display: 'flex', gap: 10, fontSize: 9, fontWeight: 800 }}><span style={{ color: 'var(--delhi)' }}>● Delhi</span><span style={{ color: 'var(--bombay)' }}>● Bombay</span></span>
               </div>
               {distRows.map(r => (
                 <div key={r.len} style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
-                  <span style={{ flex: 'none', width: 32, fontSize: 10, fontWeight: 800, color: 'var(--text2)' }}>×{r.len}</span>
+                  <span style={{ flex: 'none', width: 32, fontSize: 10, fontWeight: 800, color: 'var(--text2)' }}>×{r.len}+</span>
                   <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 4 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><div style={{ height: 10, borderRadius: 4, background: 'linear-gradient(90deg,var(--delhi),color-mix(in srgb,var(--delhi) 60%,#000))', width: r.dW, minWidth: 2 }} /><span style={{ fontSize: 10, fontWeight: 800, color: 'var(--text3)' }}>{r.dCount}</span></div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><div style={{ height: 10, borderRadius: 4, background: 'linear-gradient(90deg,var(--bombay),color-mix(in srgb,var(--bombay) 60%,#000))', width: r.bW, minWidth: 2 }} /><span style={{ fontSize: 10, fontWeight: 800, color: 'var(--text3)' }}>{r.bCount}</span></div>
@@ -206,13 +206,13 @@ const AnalyticsPanel = forwardRef<HTMLElement, Props>(({ board, winners, loadCyc
       case 'gaps':
         return thin ? shortfall : (
           <div style={box}>
-            <span style={heading}>Cycles between streaks of each length</span>
-            <p style={{ fontSize: 10, color: 'var(--text3)', lineHeight: 1.5, margin: '6px 0 10px' }}>Average gap, and the last 5 gaps between one such streak and the next.</p>
+            <span style={heading}>Cycles between streaks reaching each length</span>
+            <p style={{ fontSize: 10, color: 'var(--text3)', lineHeight: 1.5, margin: '6px 0 10px' }}>Average gap, and the last 5 gaps between one streak reaching that length and the next. A ×3 also counts as reaching ×2.</p>
             {gapRows.length === 0 && <div style={{ fontSize: 11, color: 'var(--text3)', padding: '8px 0' }}>Not enough repeated streaks in this window yet.</div>}
             {gapRows.map((g, i) => (
               <div key={i} style={{ borderTop: '1px solid var(--line)', padding: '10px 0' }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 7 }}>
-                  <span style={heading}>{g.side} streak ×{g.len}</span>
+                  <span style={heading}>{g.side} streak ×{g.len}+</span>
                   <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text3)' }}>avg <b style={{ color: 'var(--gold-ink)' }}>{g.avg ?? '—'}</b> cyc · last {g.ago} ago</span>
                 </div>
                 <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>

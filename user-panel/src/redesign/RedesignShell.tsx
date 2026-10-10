@@ -315,10 +315,13 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
           </div>
         </main>
 
-        {/* ░░ BOTTOM TAB BAR (mobile/tablet) ░░ */}
-        {!desktop && (
+        {/* ░░ BOTTOM TAB BAR, every screen size (owner, 2026-10-10) ░░
+            Fixed at the foot of the app on laptops too, so the main places
+            are one tap away; on a wide screen the tabs keep a phone-like
+            width in the middle instead of stretching across it. */}
+        {(
           <nav style={{
-            flex: 'none', display: 'flex', background: 'color-mix(in srgb, var(--bg) 92%, transparent)',
+            flex: 'none', display: 'flex', justifyContent: 'center', background: 'color-mix(in srgb, var(--bg) 92%, transparent)',
             backdropFilter: 'blur(14px)', borderTop: '1px solid var(--line2)', paddingBottom: 'env(safe-area-inset-bottom)',
             position: 'relative', zIndex: 60,
           }}>
@@ -327,7 +330,7 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
               const active = isMenu ? menuOpen : isActive(tab.path);
               return (
                 <button key={tab.path} onClick={() => (isMenu ? openMenu() : go(tab.path))} aria-label={isMenu ? 'Open menu' : undefined} style={{
-                  flex: 1, height: 58, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                  flex: 1, maxWidth: desktop ? 150 : undefined, height: 58, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
                   gap: 3, border: 'none', background: 'none', cursor: 'pointer', color: active ? 'var(--gold-ink)' : 'var(--text3)',
                   position: 'relative',
                 }}>

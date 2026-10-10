@@ -43,14 +43,20 @@ export interface Analytics {
   delhiWins: number;
   bombayWins: number;
   runs: Run[];
+  /** The streak lengths reported, 2 up to the longest seen (at least 7). */
+  lengths: number[];
+  /** Per length L: how many streaks REACHED L (a ×3 counts at ×2 and ×3). */
   dist: Record<string, { D: number; B: number }>;
+  /** Per side and length ('D3'…): cycles between one streak reaching L and the next. */
   gaps: Record<string, { count: number; avg: number | null; last5: number[]; ago: number | null }>;
+  /** Of the finished streaks that reached L, the share that reached L + 1. */
   cont: (L: number) => number;
   current: Run;
   seq: Side[]; // index 0 = newest
 }
 
-const DIST_KEYS = ['2', '3', '4', '5', '6', '7+'];
+/** Longest streak length listed; longer runs still count at every length up to it. */
+const MAX_LISTED = 15;
 
 /**
  * Results a window needs before its streak statistics are worth showing.
@@ -78,38 +84,53 @@ export function computeAnalytics(seq: Side[]): Analytics {
     i = j;
   }
 
-  const dist: Analytics['dist'] = {};
-  DIST_KEYS.forEach(k => (dist[k] = { D: 0, B: 0 }));
-  runs.forEach(r => {
-    if (r.len < 2) return;
-    const k = r.len >= 7 ? '7+' : String(r.len);
-    dist[k][r.side === 'DELHI' ? 'D' : 'B']++;
-  });
+  // ── Every streak counts at every length it passed through (owner,
+  // 2026-10-10) ──────────────────────────────────────────────────────────
+  // A Delhi ×3 was a Delhi ×2 first, so it is counted at ×2 AND ×3. Counting
+  // only exact lengths made "how often does a ×2 happen" miss every ×2 that
+  // went on to become longer, and skewed the continuation and gaps with it.
+  const longest = runs.reduce((m, r) => Math.max(m, r.len), 0);
+  const lengths: number[] = [];
+  for (let L = 2; L <= Math.min(MAX_LISTED, Math.max(7, longest)); L++) lengths.push(L);
 
+  const dist: Analytics['dist'] = {};
+  for (const L of lengths) {
+    dist[String(L)] = {
+      D: runs.filter(r => r.side === 'DELHI' && r.len >= L).length,
+      B: runs.filter(r => r.side === 'BOMBAY' && r.len >= L).length,
+    };
+  }
+
+  // Where (cycles ago, 0 = the latest result) each streak REACHED length L.
+  // A run occupies indices start … start+len-1 (newest first), so its L-th
+  // result, counting from its oldest, sits at start + len - L.
   const gaps: Analytics['gaps'] = {};
-  DIST_KEYS.forEach(k => {
+  for (const L of lengths) {
     (['D', 'B'] as const).forEach(sd => {
       const sideName: Side = sd === 'D' ? 'DELHI' : 'BOMBAY';
       const occ = runs
-        .filter(r => (k === '7+' ? r.len >= 7 : r.len === Number(k)) && r.side === sideName)
-        .map(r => r.start);
+        .filter(r => r.side === sideName && r.len >= L)
+        .map(r => r.start + r.len - L);
       const g: number[] = [];
       for (let x = 1; x < occ.length; x++) g.push(occ[x] - occ[x - 1]);
       const avg = g.length ? Math.round(g.reduce((a, b) => a + b, 0) / g.length) : null;
-      gaps[sd + k] = { count: occ.length, avg, last5: g.slice(0, 5), ago: occ.length ? occ[0] : null };
+      gaps[sd + L] = { count: occ.length, avg, last5: g.slice(0, 5), ago: occ.length ? occ[0] : null };
     });
-  });
+  }
 
+  // Continuation from FINISHED streaks only: the newest run is still going,
+  // so whether it passes L + 1 is not known yet and must not count either way.
+  const finished = runs.slice(1);
   const cont = (L: number) => {
-    const atLeast = runs.filter(r => r.len >= L).length;
-    const more = runs.filter(r => r.len >= L + 1).length;
+    const atLeast = finished.filter(r => r.len >= L).length;
+    const more = finished.filter(r => r.len >= L + 1).length;
     return atLeast ? more / atLeast : 0;
   };
 
   return {
     sample: total,
     sufficient: total >= MIN_SAMPLE,
-    total, delhiWins, bombayWins, runs, dist, gaps, cont,
+    total, delhiWins, bombayWins, runs, lengths, dist, gaps, cont,
     current: runs[0] || { side: 'DELHI', len: 1, start: 0 },
     seq,
   };

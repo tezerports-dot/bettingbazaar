@@ -358,6 +358,8 @@ export const BRANDING_SPEC = group({
   loginPageBannerUrl: s(''), registerPageBannerUrl: s(''),
   // ── Bet-card backgrounds ──────────────────────────────────────────────────
   betCardDelhiImageUrl: s(''), betCardBombayImageUrl: s(''),
+  // ── The board's Refer & Earn card (desktop/tablet side column) ────────────
+  referPromoImageUrl: s(''),
 });
 
 /**

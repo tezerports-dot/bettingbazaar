@@ -165,6 +165,8 @@ export const BrandingSettings: React.FC = () => {
     // Game bet-card backgrounds (CDN URLs) — consumed by the redesign GameScreen
     betCardDelhiImageUrl: '',
     betCardBombayImageUrl: '',
+    // The board's Refer & Earn card (user panel, wide screens)
+    referPromoImageUrl: '',
 
     // Social links removed — managed in SupportLinks page (H-04 / GOVERNANCE §2)
   });
@@ -358,6 +360,7 @@ export const BrandingSettings: React.FC = () => {
           <CdnUrlField id="splash" name="splashScreen" label="Splash Screen / Loading Image" hint="Shown while app loads. Full-width banner." value={formData.splashScreen} onChange={(v) => set('splashScreen', v)} />
           <CdnUrlField id="betcard-delhi" name="betCardDelhiImageUrl" label="Bet Card Background — DELHI" hint="Background image for the DELHI bet card on the game screen. Wide/landscape, e.g. 560×300px. Falls back to the default gradient when empty." value={formData.betCardDelhiImageUrl} onChange={(v) => set('betCardDelhiImageUrl', v)} />
           <CdnUrlField id="betcard-bombay" name="betCardBombayImageUrl" label="Bet Card Background — BOMBAY" hint="Background image for the BOMBAY bet card on the game screen. Wide/landscape, e.g. 560×300px. Falls back to the default gradient when empty." value={formData.betCardBombayImageUrl} onChange={(v) => set('betCardBombayImageUrl', v)} />
+          <CdnUrlField id="refer-promo" name="referPromoImageUrl" label="Refer & Earn Card Image" hint="Clickable card beside the game board on tablets and laptops; opens Refer & Earn. Portrait or square, e.g. 572×640px. Falls back to a styled Refer & Earn card when empty." value={formData.referPromoImageUrl} onChange={(v) => set('referPromoImageUrl', v)} />
         </div>
       )}
 
