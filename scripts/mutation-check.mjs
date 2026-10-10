@@ -1089,13 +1089,6 @@ const MUTATIONS = [
     to: `    if (false) return refuseSupersededSession(res);`,
   },  // ── A session is checked the same way on every path that accepts one (R6)
   {
-    id: 'M198', file: 'backend/startup/socketHandlers.js', config: PG,
-    test: 'backend/tests/routes/sessionCutoffEverywherePg.test.js',
-    why: 'a signed-out or password-reset session still joins its player room and receives balance pushes',
-    from: `        if (!user || !(await sessionIsLive(token, decoded, user))) return;`,
-    to: `        if (!user) return;`,
-  },
-  {
     id: 'M199', file: 'backend/domains/identity/auth.middleware.js', config: PG,
     test: 'backend/tests/routes/sessionCutoffEverywherePg.test.js',
     why: 'the shared session check ignores the reset cutoff, so every inline path honours a superseded session',
@@ -1455,18 +1448,18 @@ const MUTATIONS = [
     to: `    if (uid === null) return refuse();`,
   },
   {
-    id: 'M258', file: 'backend/startup/socketHandlers.js', config: PG,
+    id: 'M258', file: 'backend/routes/sse.routes.js', config: PG,
     test: 'backend/tests/routes/playerDoorPg.test.js',
-    why: 'a merchant\'s or staff member\'s session joins a player socket room',
-    from: `        if (user.accountType === 'PLAYER' && user.userId?.toString() === userId?.toString()) {`,
-    to: `        if (user.userId?.toString() === userId?.toString()) {`,
+    why: 'the player stream is opened by the staff door, so a full admin\'s session is given a player\'s private channel',
+    from: `import { authenticatePlayer } from '../domains/identity/auth.middleware.js';`,
+    to: `import { authenticate as authenticatePlayer } from '../domains/identity/auth.middleware.js';`,
   },
   {
-    id: 'M259', file: 'backend/startup/socketHandlers.js', config: PG,
+    id: 'M259', file: 'backend/routes/sse.routes.js', config: PG,
     test: 'backend/tests/routes/playerDoorPg.test.js',
-    why: 'a full admin\'s session joins ANY player\'s room: every balance push and order update for that player',
-    from: `        if (user.accountType === 'PLAYER' && user.userId?.toString() === userId?.toString()) {`,
-    to: `        if ((user.accountType === 'PLAYER' && user.userId?.toString() === userId?.toString()) || user.isAdmin) {`,
+    why: 'the private channel is the one the client names, so any player\'s session receives another player\'s balance pushes and order updates',
+    from: `        sseManager.addUserClient(String(req.userId), res);`,
+    to: `        sseManager.addUserClient(String(req.query.userId || req.userId), res);`,
   },
   {
     id: 'M260', file: 'backend/routes/admin/users.admin.routes.js', config: PG,

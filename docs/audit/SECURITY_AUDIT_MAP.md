@@ -2984,7 +2984,9 @@ signed-out staff and merchant sessions kept their live feeds.
   and asserts what it joined, for a player and an admin, live and then
   superseded, plus a revoked token and the admin SSE stream. Four cases fail
   on the old code.
-- **Mutation-proved:** M198, M199 KILLED.
+- **Mutation-proved:** M198, M199 KILLED. M198 retired 2026-10-10 with the
+  socket player room it guarded: the player stream is `authenticatePlayer`
+  itself (M199 against the same test; M258, M259 against `playerDoorPg`).
 
 ### F-039 — a contact card with no `user_id` verified a number the sender does not hold
 `FIXED` · critical (account takeover of any account not yet Telegram-verified) · §32 S6, §22.2 · found 2026-09-30 (R6 review)

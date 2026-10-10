@@ -45,7 +45,7 @@ const describePg = pgConfigured() ? describe : describe.skip;
  * and admission, and a record of whose private channel it opened. An admitted
  * stream is ended at once so the request returns.
  */
-async function openPlayerStream(token) {
+async function openPlayerStream(token, extraQuery = '') {
   const { initSSERoutes } = await import('../../routes/sse.routes.js');
   const joined = [];
   const sse = {
@@ -56,7 +56,7 @@ async function openPlayerStream(token) {
   const app = express();
   app.use(cookieParser());
   app.use('/sse', initSSERoutes(sse, { getCycleSnapshotData: async () => ({}) }));
-  const res = await request(app).get(`/sse/player/events?token=${encodeURIComponent(token)}`);
+  const res = await request(app).get(`/sse/player/events?token=${encodeURIComponent(token)}${extraQuery}`);
   return { status: res.status, body: res.body, joined };
 }
 
@@ -266,6 +266,12 @@ describePg('the player door', () => {
     expect(s.status).toBe(200);
     // The channel is the TOKEN's player; nothing the client sends names it.
     expect(s.joined).toEqual([String(player.userId)]);
+
+    // Naming another player in the request changes nothing.
+    const other = await actor({});
+    const named = await openPlayerStream(player.token, `&userId=${encodeURIComponent(other.userId)}`);
+    expect(named.status).toBe(200);
+    expect(named.joined).toEqual([String(player.userId)]);
   });
 
   it('refuses no PLAYER at the door on any player route (the opposite behaviour, swept)', async () => {
