@@ -53,9 +53,10 @@ public class SecureDnsTest {
     private static <E extends Exception> E sneaky(Exception e) throws E { throw (E) e; }
 
     /**
-     * What OkHttp's DnsOverHttps (5.5) throws when it cannot reach its server:
+     * What OkHttp's DnsOverHttps 5.5 throws when it cannot reach its server:
      * the transport's own IOException, NOT an UnknownHostException, even though
-     * Dns.lookup declares only that. Observed against a closed local port.
+     * Dns.lookup declares only that. (5.4 wraps it in an UnknownHostException
+     * instead; both shapes are tested.) Observed against a closed local port.
      */
     private static Exception unreachable() {
         return new ConnectException("Failed to connect to /1.1.1.1:443");
