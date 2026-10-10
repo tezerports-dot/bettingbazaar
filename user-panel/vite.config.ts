@@ -1,25 +1,20 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import { defineConfig } from 'vite';
-import { readFileSync, writeFileSync } from 'fs';
 import react from '@vitejs/plugin-react';
 import path from 'path';
+import { stampServiceWorker } from './scripts/sw-precache.mjs';
 
 export default defineConfig({
   plugins: [
     react(),
     {
-      // Inject a build timestamp into the service worker so the cache name
-      // changes on every deploy — users always get fresh JS without hard refresh
-      name: 'inject-sw-build-id',
+      // Stamp the service worker with the shell it precaches and a build id
+      // hashed from those bytes (scripts/sw-precache.mjs). A changed bundle
+      // changes the worker, so installed clients pick up the new build.
+      name: 'stamp-service-worker',
       closeBundle() {
-        const swPath = 'dist/service-worker.js';
-        try {
-          const buildId = Date.now().toString(36);
-          let sw = readFileSync(swPath, 'utf8');
-          sw = sw.replace('__BUILD_ID__', buildId);
-          writeFileSync(swPath, sw);
-          console.log(`✅ SW build ID injected: ${buildId}`);
-        } catch { /* SW may not exist in dev */ }
+        const stamped = stampServiceWorker(path.resolve(import.meta.dirname, 'dist'));
+        if (stamped) console.log(`✅ SW build ${stamped.id}: ${stamped.list.length} files precached`);
       }
     }
   ],
