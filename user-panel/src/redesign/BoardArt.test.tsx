@@ -19,20 +19,25 @@ describe('cardHref', () => {
 });
 
 describe('PromoCard', () => {
+  const R = { w: 3, h: 1 };
+  it('draws its image in the screen\'s own frame', () => {
+    render(<PromoCard card={{ promoId: 'p0', title: 'Frame', image: 'https://cdn.example/f.png', ratio: { w: 18, h: 5 } }} />);
+    expect(screen.getByRole('img', { name: 'Frame' }).style.aspectRatio).toBe('18 / 5');
+  });
   it('is a link to its own page, named by its label', () => {
-    render(<PromoCard card={{ promoId: 'p1', title: 'Refer & Earn', fileUrl: 'https://cdn.example/r.png', linkUrl: '/referrals' }} />);
+    render(<PromoCard card={{ promoId: 'p1', title: 'Refer & Earn', image: 'https://cdn.example/r.png', ratio: R, linkUrl: '/referrals' }} />);
     const a = screen.getByRole('link', { name: 'Refer & Earn' });
     expect(a).toHaveAttribute('href', '#/referrals');
     expect(a).not.toHaveAttribute('target');
   });
   it('opens an https link in a new tab, without handing it this window', () => {
-    render(<PromoCard card={{ promoId: 'p2', title: 'Channel', fileUrl: 'https://cdn.example/c.png', linkUrl: 'https://t.me/x' }} />);
+    render(<PromoCard card={{ promoId: 'p2', title: 'Channel', image: 'https://cdn.example/c.png', ratio: R, linkUrl: 'https://t.me/x' }} />);
     const a = screen.getByRole('link', { name: 'Channel' });
     expect(a).toHaveAttribute('target', '_blank');
     expect(a).toHaveAttribute('rel', 'noopener noreferrer');
   });
   it('is not a link when it has none', () => {
-    render(<PromoCard card={{ promoId: 'p3', title: 'News', fileUrl: 'https://cdn.example/n.png' }} />);
+    render(<PromoCard card={{ promoId: 'p3', title: 'News', image: 'https://cdn.example/n.png', ratio: R }} />);
     expect(screen.queryByRole('link')).toBeNull();
     expect(screen.getByRole('img', { name: 'News' })).toBeInTheDocument();
   });

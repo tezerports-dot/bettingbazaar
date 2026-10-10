@@ -4,117 +4,7 @@ import { Save, Palette, RefreshCw } from 'lucide-react';
 import api from '../../services/api';
 import toast from 'react-hot-toast';
 
-/**
- * Upload one branding image and resolve to its CDN URL.
- *
- * Branding uploads are a THREE-step presigned flow, matching every other upload
- * in the platform (chat, payment proof): ask the backend for a presigned
- * URL, PUT the bytes straight to S3, then tell the backend it landed. The file
- * never passes through the API server.
- *
- * Both inputs on this page previously POSTed multipart to
- * `/api/admin/cdn/upload`, which has never existed in this repository — and no
- * multipart parser is mounted anywhere, so it could not have worked even if the
- * path had matched. They also sent `localStorage.getItem('admin-auth')` as the
- * bearer token, but that key holds a JSON blob (`{state:{token}}`), not the
- * token, so the header would have been rejected regardless. Both failures
- * landed in the same silent `catch`, which is why this looked like a flaky
- * upload rather than a feature that was never wired up.
- *
- * `api` is the shared axios instance; its interceptor extracts the real token
- * and its baseURL has no `/api` prefix, hence the full path here. The S3 PUT
- * deliberately does NOT go through it — a presigned URL rejects an unexpected
- * Authorization header.
- */
-async function uploadBrandingImage(file: File, category: string): Promise<string> {
-  const { data: presign } = await api.post('/api/admin/branding/upload-url', {
-    fileName: file.name,
-    contentType: file.type,
-    fileSize: file.size,
-    category,
-  });
-  if (!presign?.uploadUrl) throw new Error(presign?.message || 'Could not get an upload URL');
-
-  const put = await fetch(presign.uploadUrl, {
-    method: 'PUT',
-    body: file,
-    headers: { 'Content-Type': file.type },
-  });
-  if (!put.ok) throw new Error(`Storage rejected the upload (HTTP ${put.status})`);
-
-  await api.post('/api/admin/branding/confirm-upload', {
-    fileKey: presign.fileKey,
-    cdnUrl: presign.cdnUrl,
-    category,
-    title: file.name,
-    fileSize: file.size,
-  });
-
-  return presign.cdnUrl as string;
-}
-
-/** Surface the most specific message the failure carries. */
-function uploadErrorMessage(err: unknown): string {
-  return (
-    (err as { response?: { data?: { message?: string } } })?.response?.data?.message ||
-    (err as Error)?.message ||
-    'Upload failed'
-  );
-}
-
-// Image URL preview component
-// C-06 fix: CdnUrlField now supports BOTH URL input and file upload.
-// GOVERNANCE §12: admin branding page must be a single page for all image assets.
-const CdnUrlField: React.FC<{ id: string; name: string; label: string; hint?: string; value: string; onChange: (v: string) => void }> = ({ id, name, label, hint, value, onChange }) => {
-  const [error, setError] = useState(false);
-  const [uploading, setUploading] = useState(false);
-
-  const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setUploading(true);
-    try {
-      // Only the Main Logo field uploads as 'logo': the server makes a 'logo'
-      // upload the live logo at once. Every field used to send 'logo', so
-      // uploading a bet-card background or a banner silently replaced the
-      // logo in all three panels.
-      onChange(await uploadBrandingImage(file, name === 'logo' ? 'logo' : 'image'));
-      setError(false);
-      toast.success('Image uploaded');
-    } catch (err: unknown) {
-      toast.error(uploadErrorMessage(err));
-    } finally {
-      setUploading(false);
-      e.target.value = '';
-    }
-  };
-
-  return (
-    <div className="space-y-2">
-      <label htmlFor={id} className="label">{label}</label>
-      {hint && <p className="text-xs text-gray-400 -mt-1">{hint}</p>}
-      <div className="flex gap-2">
-        <input id={id} name={name} type="url" value={value}
-          onChange={(e) => { onChange(e.target.value); setError(false); }}
-          className="input font-mono text-sm flex-1" placeholder="https://cdn.yourdomain.com/..."
-        />
-        <label className={`btn-secondary text-xs px-3 py-2 cursor-pointer whitespace-nowrap flex-shrink-0${uploading ? ' opacity-50 pointer-events-none' : ''}`}>
-          {uploading ? '⏳' : '📎 Upload'}
-          <input type="file" accept="image/*" className="hidden" onChange={handleFile} disabled={uploading} />
-        </label>
-      </div>
-      {value && !error && (
-        <img src={value} alt={label} className="h-12 object-contain rounded-sm border border-dark-600"
-          onError={() => setError(true)} />
-      )}
-      {value && error && (
-        <p className="text-xs text-red-400">⚠ Cannot preview this URL — check it's publicly accessible.</p>
-      )}
-    </div>
-  );
-}
-
-type Tab = 'identity' | 'images' | 'promo' | 'panels';
+type Tab = 'identity' | 'panels';
 
 export const BrandingSettings: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
@@ -138,12 +28,8 @@ export const BrandingSettings: React.FC = () => {
     contactEmail: '',
     contactPhone: '',
 
-    // Core Images (CDN URLs)
-    logo: '',
-    icon: '',
-    favicon: '',
+    // The CDN every stored image path is resolved against.
     cdnBaseUrl: '',
-    splashScreen: '',
 
     // Panel Names
     userPanelName: 'Betting Bazaar',
@@ -151,22 +37,10 @@ export const BrandingSettings: React.FC = () => {
     merchantPanelName: 'Merchant Portal',
     queueManagerPanelName: 'Queue Manager',
 
-    // Promo / Popup Images (CDN URLs)
-    homePopupImageUrl: '',
-    homePopupLinkUrl: '',
-    homePopupEnabled: false,
-    tricksTipsBannerUrl: '',
-    rulesPageImageUrl: '',
-    depositPageBannerUrl: '',
-    withdrawalPageBannerUrl: '',
-    loginPageBannerUrl: '',
-    registerPageBannerUrl: '',
-
-    // Game bet-card backgrounds (CDN URLs) — consumed by the redesign GameScreen
-    betCardDelhiImageUrl: '',
-    betCardBombayImageUrl: '',
-    // The board's Refer & Earn card (user panel, wide screens)
-    referPromoImageUrl: '',
+    // Every image (logo, icons, board cards, banners) is set on the Images
+    // page (Pages/Images), the one place images are edited (owner,
+    // 2026-10-10). This page saves only the keys above, so it never writes
+    // back an image someone changed there.
 
     // Social links removed — managed in SupportLinks page (H-04 / GOVERNANCE §2)
   });
@@ -175,7 +49,7 @@ export const BrandingSettings: React.FC = () => {
     try {
       const res = await api.branding.getCurrent();
       if (res.success && res.data) {
-        setFormData(prev => ({ ...prev, ...res.data }));
+        setFormData(prev => ({ ...prev, ...Object.fromEntries(Object.keys(prev).map(k => [k, res.data[k] ?? (prev as any)[k]])) }));
       }
     } catch { toast.error('Failed to load branding'); }
     finally { setIsLoading(false); }
@@ -196,8 +70,6 @@ export const BrandingSettings: React.FC = () => {
 
   const TABS: { key: Tab; label: string }[] = [
     { key: 'identity', label: 'Identity & Colors' },
-    { key: 'images',   label: 'Core Images'        },
-    { key: 'promo',    label: 'Promo & Popups'      },
     { key: 'panels',   label: 'Panel Names'          },
   ];
 
@@ -208,7 +80,7 @@ export const BrandingSettings: React.FC = () => {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold mb-2">Branding Settings</h1>
-          <p className="text-gray-400">Manage platform branding: logos, colours, panel names, and popup/banner images. Social links are in Content → Support Links.</p>
+          <p className="text-gray-400">Manage platform branding: name, colours and panel names. Every image (logo, icons, promo cards, banners) is on the <a href="#/images" className="underline text-blue-400">Images</a> page. Social links are in Content → Support Links.</p>
         </div>
         <div className="flex gap-2">
           <button onClick={loadBranding} className="btn-secondary flex items-center"><RefreshCw size={14} className="mr-1"/>Reload</button>
@@ -216,11 +88,6 @@ export const BrandingSettings: React.FC = () => {
             <Save size={14} className="mr-1"/>{isSaving ? 'Saving...' : 'Save All'}
           </button>
         </div>
-      </div>
-
-      {/* CDN Notice */}
-      <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-3 text-sm text-gray-300">
-        <p><span className="text-blue-400 font-semibold">CDN URLs only</span> — Upload images to your CDN provider, then paste the public URL here. No files are stored on the server (0 RAM usage).</p>
       </div>
 
       {/* Tabs */}
@@ -348,47 +215,6 @@ export const BrandingSettings: React.FC = () => {
               That page is the single authority for WhatsApp, Telegram, Instagram and YouTube links.
             </p>
           </div>
-        </div>
-      )}
-
-      {/* Core Images */}
-      {activeTab === 'images' && (
-        <div className="card space-y-6">
-          <CdnUrlField id="logo" name="logo" label="Main Logo" hint="Used in all panels top-left. Recommended: PNG with transparency, 200×60px" value={formData.logo} onChange={(v) => set('logo', v)} />
-          <CdnUrlField id="icon" name="icon" label="App Icon / Avatar" hint="Square icon used in browser tabs, notifications. Recommended: 512×512px" value={formData.icon} onChange={(v) => set('icon', v)} />
-          <CdnUrlField id="favicon" name="favicon" label="Favicon URL" hint="Small browser tab icon. .ico or 32×32px PNG" value={formData.favicon} onChange={(v) => set('favicon', v)} />
-          <CdnUrlField id="splash" name="splashScreen" label="Splash Screen / Loading Image" hint="Shown while app loads. Full-width banner." value={formData.splashScreen} onChange={(v) => set('splashScreen', v)} />
-          <CdnUrlField id="betcard-delhi" name="betCardDelhiImageUrl" label="Bet Card Background — DELHI" hint="Background image for the DELHI bet card on the game screen. Wide/landscape, e.g. 560×300px. Falls back to the default gradient when empty." value={formData.betCardDelhiImageUrl} onChange={(v) => set('betCardDelhiImageUrl', v)} />
-          <CdnUrlField id="betcard-bombay" name="betCardBombayImageUrl" label="Bet Card Background — BOMBAY" hint="Background image for the BOMBAY bet card on the game screen. Wide/landscape, e.g. 560×300px. Falls back to the default gradient when empty." value={formData.betCardBombayImageUrl} onChange={(v) => set('betCardBombayImageUrl', v)} />
-          <CdnUrlField id="refer-promo" name="referPromoImageUrl" label="Refer & Earn Card Image" hint="Clickable card beside the game board on tablets and laptops; opens Refer & Earn. Portrait or square, e.g. 572×640px. Falls back to a styled Refer & Earn card when empty." value={formData.referPromoImageUrl} onChange={(v) => set('referPromoImageUrl', v)} />
-        </div>
-      )}
-
-      {/* Promo & Popups */}
-      {activeTab === 'promo' && (
-        <div className="card space-y-6">
-          <div className="bg-gold-500/10 border border-gold-500/30 rounded-lg p-3 text-sm text-gray-300">
-            These images appear in the user app as banners, popups, and tips. All are CDN URLs — upload to your CDN and paste the URL below.
-          </div>
-
-          <div className="space-y-2">
-            <CdnUrlField id="home-popup-img" name="homePopupImageUrl" label="Home Page Popup Image" hint="Shown as a modal popup on the home screen" value={formData.homePopupImageUrl} onChange={(v) => set('homePopupImageUrl', v)} />
-            <div>
-              <label htmlFor="home-popup-link" className="label">Popup Click Link (optional)</label>
-              <input id="home-popup-link" name="homePopupLinkUrl" type="url" value={formData.homePopupLinkUrl} onChange={(e) => set('homePopupLinkUrl', e.target.value)} className="input" placeholder="https://... (where popup click goes)" />
-            </div>
-            <div className="flex items-center gap-3">
-              <input id="home-popup-enabled" name="homePopupEnabled" type="checkbox" checked={formData.homePopupEnabled} onChange={(e) => set('homePopupEnabled', e.target.checked)} className="w-4 h-4 rounded-sm" />
-              <label htmlFor="home-popup-enabled" className="text-sm">Enable home popup</label>
-            </div>
-          </div>
-
-          <CdnUrlField id="tricks-banner" name="tricksTipsBannerUrl" label="Tricks & Tips Page Banner" hint="Banner shown at top of tricks/tips page in user app" value={formData.tricksTipsBannerUrl} onChange={(v) => set('tricksTipsBannerUrl', v)} />
-          <CdnUrlField id="rules-image" name="rulesPageImageUrl" label="Rules Page Image" hint="Illustration shown on the game rules page" value={formData.rulesPageImageUrl} onChange={(v) => set('rulesPageImageUrl', v)} />
-          <CdnUrlField id="deposit-banner" name="depositPageBannerUrl" label="Deposit Page Banner" hint="Promotional banner shown on the deposit/buy tokens page" value={formData.depositPageBannerUrl} onChange={(v) => set('depositPageBannerUrl', v)} />
-          <CdnUrlField id="withdrawal-banner" name="withdrawalPageBannerUrl" label="Withdrawal Page Banner" hint="Banner shown on withdraw/sell tokens page" value={formData.withdrawalPageBannerUrl} onChange={(v) => set('withdrawalPageBannerUrl', v)} />
-          <CdnUrlField id="login-banner" name="loginPageBannerUrl" label="Login Page Background / Banner" hint="Background or side image on the login screen" value={formData.loginPageBannerUrl} onChange={(v) => set('loginPageBannerUrl', v)} />
-          <CdnUrlField id="register-banner" name="registerPageBannerUrl" label="Registration Page Banner" hint="Banner shown on the sign-up screen" value={formData.registerPageBannerUrl} onChange={(v) => set('registerPageBannerUrl', v)} />
         </div>
       )}
 

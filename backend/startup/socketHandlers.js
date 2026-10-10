@@ -11,6 +11,7 @@ import { getSystemConfig } from '#db/repositories/config.js';
 import { systemConfigPayload, systemConfigFallback } from '../domains/configuration/systemConfigPayload.js';
 import { roomsForViewer } from '../domains/notification/staffEventAreas.js';
 import { PERMISSION_KEYS } from '../domains/identity/staffPermissions.js';
+import { PROMO_DEVICES } from '#db/spec/promoDevices.js';
 
 // Public cycle-room id guard: the room name is client-supplied, so bound it to
 // the shape a real cycleId has (no auth needed — pool totals are public — but a
@@ -94,8 +95,10 @@ export function attachSocketHandlers(io, cycleGenerator) {
         const content = await db.content.listLivePromos(
           location ? String(location).toUpperCase() : 'HOME',
         );
-        socket.emit('promo_data', { location, content });
-      } catch { socket.emit('promo_data', { location, content: [] }); }
+        // `devices`: each screen's frame (spec/promoDevices.js), so the app
+        // draws a home card's own image for the screen it is on.
+        socket.emit('promo_data', { location, content, devices: PROMO_DEVICES });
+      } catch { socket.emit('promo_data', { location, content: [], devices: PROMO_DEVICES }); }
     });
 
     // ── Public cycle rooms (realtime cost/concurrency fix) ────────────────────

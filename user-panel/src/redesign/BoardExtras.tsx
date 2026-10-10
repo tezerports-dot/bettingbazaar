@@ -19,6 +19,8 @@ import { MY_PAYOUT_EVENT } from '../services/GameContext';
 import { getBackend } from '../services/backend.service';
 import { PromoCard, type HomeCard } from './BoardArt';
 import { fmt } from './format';
+import { useViewport } from './useViewport';
+import type { HomePromoCard, PromoDevice } from '../types';
 
 // ── Timer tone ───────────────────────────────────────────────────────────────
 export type TimerTone = 'calm' | 'amber' | 'red';
@@ -132,25 +134,40 @@ export const ResultCelebration: React.FC<{ result: { cycleId?: string; winner?: 
 };
 
 // ── Promo cards ──────────────────────────────────────────────────────────────
-/** The published HOME cards with an image, most important first; [] when off. */
-export function useHomeCards(enabled: boolean): HomeCard[] {
-  const [cards, setCards] = useState<HomeCard[]>([]);
-  useEffect(() => {
-    if (!enabled) { setCards([]); return; }
-    let alive = true;
-    getBackend().getPublicContent('HOME')
-      .then(c => { if (alive) setCards((c as unknown as HomeCard[]).filter(x => x.fileUrl)); })
-      .catch(() => { if (alive) setCards([]); });
-    return () => { alive = false; };
-  }, [enabled]);
-  return cards;
+/** The screen a width belongs to, from the server's list; null if none. */
+export function promoDeviceFor(vw: number, devices: PromoDevice[]): PromoDevice | null {
+  return devices.find(d => vw >= d.minWidth && (d.maxWidth === null || vw <= d.maxWidth)) ?? null;
 }
 
 /**
- * Phone and tablet: the cards as a carousel right under the header (owner,
- * 2026-10-10). One card fills the width, short (`PROMO_BANNER_RATIO`) and
- * uncropped; the next one is seen only by swiping ("for next promo to see
- * they need to slide"). The dots sit on the card and take you to one.
+ * The published home cards that have an image for THIS screen, most important
+ * first, each with that image and the screen's frame; [] when off. A card with
+ * no image for this screen is not shown here (owner, 2026-10-10: each device
+ * its own design). Follows the width as the window is resized or turned.
+ */
+export function useHomeCards(enabled: boolean): HomeCard[] {
+  const { vw } = useViewport();
+  const [data, setData] = useState<{ cards: HomePromoCard[]; devices: PromoDevice[] }>({ cards: [], devices: [] });
+  useEffect(() => {
+    if (!enabled) { setData({ cards: [], devices: [] }); return; }
+    let alive = true;
+    getBackend().getHomeCards()
+      .then(d => { if (alive) setData(d); })
+      .catch(() => { if (alive) setData({ cards: [], devices: [] }); });
+    return () => { alive = false; };
+  }, [enabled]);
+  const device = promoDeviceFor(vw, data.devices);
+  if (!enabled || !device) return [];
+  return data.cards
+    .filter(c => c.images?.[device.key])
+    .map(c => ({ promoId: c.promoId, title: c.title, linkUrl: c.linkUrl, image: c.images[device.key], ratio: device.ratio }));
+}
+
+/**
+ * Tablet, phone and small phone: the cards as a carousel right under the
+ * header (owner, 2026-10-10). One card fills the width in its screen's own
+ * frame; the next one is seen only by swiping. The dots sit on the card and
+ * take you to one.
  */
 export const PromoCarousel: React.FC<{ cards: HomeCard[] }> = ({ cards }) => {
   const track = useRef<HTMLDivElement | null>(null);
@@ -166,14 +183,14 @@ export const PromoCarousel: React.FC<{ cards: HomeCard[] }> = ({ cards }) => {
     if (el) el.scrollTo({ left: i * el.clientWidth, behavior: 'smooth' });
   };
   return (
-    <section aria-label="Promotions" style={{ flex: 'none', padding: '8px 12px 2px' }}>
-      <div style={{ position: 'relative', borderRadius: 14, overflow: 'hidden', border: '1px solid var(--line)' }}>
+    <section aria-label="Promotions" style={{ flex: 'none', padding: '10px 14px 4px' }}>
+      <div style={{ position: 'relative', borderRadius: 14, overflow: 'hidden', border: '1px solid var(--line)', boxShadow: 'var(--shadow-sm)' }}>
         <div ref={track} onScroll={onScroll} className="bb-noscroll" style={{
           display: 'flex', overflowX: 'auto', scrollSnapType: 'x mandatory', overscrollBehaviorX: 'contain', WebkitOverflowScrolling: 'touch',
         }}>
           {cards.map((c, i) => (
             <div key={c.promoId ?? c.id ?? i} style={{ flex: '0 0 100%', scrollSnapAlign: 'start', scrollSnapStop: 'always' }}>
-              <PromoCard card={c} banner />
+              <PromoCard card={c} rounded={false} />
             </div>
           ))}
         </div>

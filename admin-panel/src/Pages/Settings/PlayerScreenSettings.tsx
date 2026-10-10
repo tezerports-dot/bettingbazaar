@@ -8,7 +8,7 @@
  *
  * Presentation only. None of these shows a figure the platform does not
  * already send that player: their own timer, their own payout, their own
- * bonus turnover, and the promo cards published under Page Slides › Home.
+ * bonus turnover, and the promo cards published under Images › Promo cards.
  */
 import React, { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
@@ -38,8 +38,8 @@ const SWITCHES: { key: Exclude<keyof BoardExtras, 'closingWarnSeconds'>; label: 
     what: 'The winning side in large type and, for a player who won, their own payout counting up.' },
   { key: 'bonusProgress', label: 'Bonus unlock bar', where: 'Wallet › General wallet',
     what: "How much of the referral bonus's play requirement is done, as a bar." },
-  { key: 'promoCards', label: 'Promo cards', where: 'Board side columns (laptop); a swipeable banner under the header (phone, tablet)',
-    what: 'The cards published under Content › Page Slides › Home promo cards, each opening its own link. Off, or with none published, the side columns show the built-in artwork instead.' },
+  { key: 'promoCards', label: 'Promo cards', where: 'Board side columns (laptop); a swipeable banner under the header (tablet, phone, small phone)',
+    what: 'The cards set under Images › Promo cards, each screen showing its own image and each card opening its own link. Off, or with none published, the side columns show the built-in artwork instead.' },
 ];
 
 export const PlayerScreenSettings: React.FC = () => {

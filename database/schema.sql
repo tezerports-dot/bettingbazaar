@@ -1587,6 +1587,35 @@ ALTER TABLE promo_content ADD COLUMN IF NOT EXISTS link_url TEXT;
 ALTER TABLE promo_content DROP CONSTRAINT IF EXISTS promo_link_known;
 ALTER TABLE promo_content ADD CONSTRAINT promo_link_known CHECK (
   link_url IS NULL OR link_url ~ '^/[A-Za-z0-9/_-]*$' OR link_url ~ '^https://[^\s]+$');
+-- A HOME card has one image per screen it is drawn for (owner, 2026-10-10:
+-- "the promo sizes and designs for each needs different"), never one image
+-- stretched to all of them, so its `file_url` is unused: the images are
+-- `promo_content_images`, one per device, the devices listed in
+-- database/spec/promoDevices.js. A card is shown on a screen only when it has
+-- that screen's image. Slides (TRICKS_PAGE, RULES_PAGE) keep `file_url`.
+-- The old rule goes first: it asked every published card for a file_url.
+ALTER TABLE promo_content DROP CONSTRAINT IF EXISTS promo_published_has_media;
+UPDATE promo_content SET file_url = NULL WHERE location = 'HOME' AND file_url IS NOT NULL;
+ALTER TABLE promo_content ADD CONSTRAINT promo_published_has_media CHECK (
+  location = 'HOME' OR status <> 'PUBLISHED' OR media_type = 'TEXT' OR file_url IS NOT NULL);
+ALTER TABLE promo_content DROP CONSTRAINT IF EXISTS promo_home_uses_device_images;
+ALTER TABLE promo_content ADD CONSTRAINT promo_home_uses_device_images CHECK (
+  location <> 'HOME' OR file_url IS NULL);
+
+CREATE TABLE IF NOT EXISTS promo_content_images (
+  promo_id   TEXT NOT NULL REFERENCES promo_content (promo_id) ON DELETE CASCADE,
+  device     TEXT NOT NULL,
+  file_url   TEXT NOT NULL,
+  updated_by TEXT,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (promo_id, device)
+);
+ALTER TABLE promo_content_images DROP CONSTRAINT IF EXISTS promo_image_device_known;
+ALTER TABLE promo_content_images ADD CONSTRAINT promo_image_device_known CHECK (
+  device IN ('LAPTOP', 'TABLET', 'PHONE', 'SMALL_PHONE'));
+ALTER TABLE promo_content_images DROP CONSTRAINT IF EXISTS promo_image_url_https;
+ALTER TABLE promo_content_images ADD CONSTRAINT promo_image_url_https CHECK (
+  file_url ~ '^https?://[^\s]+$');
 
 CREATE TABLE IF NOT EXISTS faqs (
   faq_id       TEXT PRIMARY KEY,

@@ -10,7 +10,7 @@ import {
   LayoutDashboard, Users, Store, Activity, Layers, Landmark,
   FileText, Palette, Settings, ChevronLeft, ChevronRight,
   TrendingUp, ShieldCheck, HelpCircle, Image as ImageIcon,
-  MessageCircle, Shield, History, Scale, Upload, Search, Sun, Moon, Bell,
+  MessageCircle, Shield, History, Scale, Search, Sun, Moon, Bell,
   SlidersHorizontal, Trophy, Star, Gamepad2, Bot, Share2,
   type LucideIcon, ArrowLeftRight, BookOpenCheck, Flag, Hourglass, Fingerprint,
   Ghost, Smartphone, ShieldBan, Send, AlertTriangle} from 'lucide-react';
@@ -103,11 +103,9 @@ const NAV_GROUPS: MenuGroup[] = [
   ] },
   { key: 'content', label: 'Content & Branding', items: [
     { path: '/content/faq',     icon: HelpCircle,    label: 'FAQ Manager',      title: 'FAQ Manager',     sub: 'Help centre questions & categories', permission: 'canManageContent' },
-    { path: '/content/slides',  icon: ImageIcon,     label: 'Page Slides',      title: 'Page Slides',     sub: 'Home & promo slide content', permission: 'canManageContent' },
+    { path: '/images',          icon: ImageIcon,     label: 'Images',           title: 'Images',          sub: 'Every image of the player app: promo cards per screen, board, logo, banners', permission: 'canManageContent' },
     { path: '/content/support', icon: MessageCircle, label: 'Support Links',    title: 'Support Links',   sub: 'Contact & social channels', permission: 'canManageContent' },
-    { path: '/content/cdn',     icon: ImageIcon,     label: 'CDN Library',      title: 'CDN Library',     sub: 'Uploaded media assets', permission: 'canManageContent' },
-    { path: '/branding',        icon: Palette,       label: 'Branding',         title: 'Branding',        sub: 'App name, logo, colours & tagline', permission: 'canManageContent' },
-    { path: '/app-assets',      icon: Upload,        label: 'App Assets',       title: 'App Assets',      sub: 'Logo, loading splash & icons — web and Android app', permission: 'canManageContent' },
+    { path: '/branding',        icon: Palette,       label: 'Branding',         title: 'Branding',        sub: 'App name, colours, tagline & panel names', permission: 'canManageContent' },
     { path: '/android-app',     icon: Smartphone,    label: 'Android App',      title: 'Android App',     sub: 'Upload, publish & force updates', permission: 'canManageAndroidApp' },
   ] },
   { key: 'admin', label: 'Admin', items: [

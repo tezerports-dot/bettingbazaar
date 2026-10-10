@@ -25,7 +25,7 @@ import { useToast } from '../components/ui/Toast';
 import { fmt, timeStr } from './format';
 import { analyticsFor, Side } from './analytics';
 import AnalyticsPanel from './AnalyticsPanel';
-import VsStrip from './VsStrip';
+import { BetCardFigure, BetCardFill, BlindBand, shareModeFor, sharesOf } from './BetCardShare';
 import { getAssetUrl } from '../services/backend.service';
 import { canPlaceBet } from '../GAME_CORE';
 import { BoardRulesModal } from './BoardRules';
@@ -133,7 +133,6 @@ const GameScreen: React.FC = () => {
   // From the merge until the result the server sends the total alone.
   const poolsHidden = pools ? pools.poolsHidden : !!currentCycle?.poolsHidden;
   const total = poolsHidden ? (pools?.totalPool ?? currentCycle?.totalPool ?? 0) : poolDelhi + poolBombay;
-  const dPct = total ? Math.round((poolDelhi / total) * 100) : 50;
 
   // Phase flags.
   // True phase (agrees with the server) vs. whether a tap right now would still
@@ -156,6 +155,11 @@ const GameScreen: React.FC = () => {
   const tone = extras.urgencyChips && (isOpen || isMerged) ? timerTone(secondsToClose, extras.closingWarnSeconds) : 'calm';
   // Nothing loaded yet: a placeholder, never a ₹0 that reads as an empty room.
   const loadingCycle = !currentCycle?.endTime;
+  // Each card carries its own side's share (owner, 2026-10-10: no separate VS
+  // bar). While the pools are hidden no side figure exists (§2), so neither
+  // card may show one: blind while merged, nothing if still hidden at the result.
+  const shareMode = shareModeFor({ loading: loadingCycle, blind: showMerged, poolsHidden, delhi: poolDelhi, bombay: poolBombay });
+  const shares = sharesOf(poolDelhi, poolBombay);
 
   // My open bets this cycle.
   const cycleBets = (userBets || []).filter(b => b.cycleId === currentCycle?.id && b.status === 'PENDING' && !b.isPhantom);
@@ -260,9 +264,9 @@ const GameScreen: React.FC = () => {
   const cardH = desktop
     ? Math.max(196, Math.min(296, Math.round((vh || 760) * 0.29)))
     : fitH ?? Math.max(160, Math.min(296, Math.round((vh || 760) * 0.33)));
-  // The VS bar is the foot of the cards themselves (owner, 2026-10-10).
-  const vsBand = mobile ? 46 : 54;
   const sideFont = mobile ? 20 : 24;
+  // The share figure grows with the card; small phones keep it compact.
+  const bigShare = cardH >= 200;
 
   // Admin-configurable bet-card backgrounds (Branding → CDN, GOVERNANCE §12).
   // Empty ⇒ default themed gradient. Read from app_branding like the other
@@ -296,7 +300,7 @@ const GameScreen: React.FC = () => {
       width: '50%', height: '100%', position: 'relative', border: 'none', cursor, overflow: 'hidden',
       background,
       opacity, filter, transition: 'opacity .3s, filter .3s', display: 'flex', flexDirection: 'column',
-      alignItems: 'center', justifyContent: 'space-between', padding: '16px 8px',
+      alignItems: 'center', justifyContent: 'space-between', padding: cardH < 170 ? '12px 8px' : '16px 8px',
       ...(isWinner ? {} : {}),
     };
   };
@@ -306,7 +310,7 @@ const GameScreen: React.FC = () => {
 
   // ── side panels (desktop) ────────────────────────────────────────────────
   // The Refer & Earn card takes the side column's top slot (owner,
-  // 2026-10-10); the pools moved above the VS strip on every screen size.
+  // 2026-10-10); each side's pool is on its own betting card on every screen size.
   // Its image is Branding's `referPromoImageUrl` (admin › Branding, CDN);
   // with none uploaded it is a styled card saying the same thing.
   const referImg = getAssetUrl(brand.referPromoImageUrl || '');
@@ -380,7 +384,7 @@ const GameScreen: React.FC = () => {
 
       <section style={{ minWidth: 0, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
         {/* Cycle control */}
-        <div style={{ flex: 'none', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: mobile ? '4px 2px 6px' : '8px 4px 10px' }}>
+        <div style={{ flex: 'none', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: mobile ? '4px 2px 6px' : '8px 4px 12px' }}>
           <div style={{ flex: 'none', display: 'flex', background: 'var(--surface2)', border: '1px solid var(--line2)', borderRadius: 999, padding: 3, gap: 3, boxShadow: 'var(--shadow-sm)' }}>
             {boards.map(b => ({ t: b.key, l: b.name.toUpperCase() })).map(o => {
               const on = cycleType === o.t;
@@ -399,7 +403,7 @@ const GameScreen: React.FC = () => {
         </div>
 
         {/* Title + inline pools */}
-        <div style={{ flex: 'none', textAlign: 'center', padding: mobile ? '0 0 4px' : '2px 0 8px' }}>
+        <div style={{ flex: 'none', textAlign: 'center', padding: mobile ? '0 0 6px' : '2px 0 12px' }}>
           <h2 className="font-grotesk" style={{ margin: 0, fontWeight: 700, fontSize: 15, letterSpacing: '.02em', color: 'var(--text)' }}>DELHI BAZAAR <span style={{ color: 'var(--gold-ink)', fontStyle: 'italic', fontWeight: 700 }}>vs</span> BOMBAY BAZAAR</h2>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 26, marginTop: 5 }}>
             {loadingCycle ? (
@@ -412,16 +416,13 @@ const GameScreen: React.FC = () => {
             ) : isOpen && total === 0 ? (
               <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text3)' }}>No bets yet this round. Be the first.</span>
             ) : (
-              <>
-                <span className="font-grotesk" style={{ fontWeight: 700, fontSize: desktop ? 16 : 13, color: 'var(--delhi)', fontVariantNumeric: 'tabular-nums' }}>₹{fmt(poolDelhi)}</span>
-                <span className="font-grotesk" style={{ fontWeight: 700, fontSize: desktop ? 16 : 13, color: 'var(--bombay)', fontVariantNumeric: 'tabular-nums' }}>₹{fmt(poolBombay)}</span>
-              </>
+              <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 15, color: 'var(--gold-ink)', fontVariantNumeric: 'tabular-nums' }}>POOL ₹{fmt(total)}</span>
             )}
           </div>
         </div>
 
         {/* Stage */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: mobile ? '4px 0' : '6px 0' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: mobile ? '4px 0' : '6px 0 8px' }}>
           <div ref={stageRef} style={{ position: 'relative', width: '100%', maxWidth: cardMaxW, height: cardH, borderRadius: 20, boxShadow: 'var(--shadow)' }}>
             <div className={isResult ? 'bb-pulse' : ''} style={{ position: 'absolute', inset: 0, borderRadius: 20, overflow: 'hidden', display: 'flex', flexDirection: 'column', border: '1.5px solid var(--line2)' }}>
              <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
@@ -429,9 +430,13 @@ const GameScreen: React.FC = () => {
               <button onClick={() => handleBet(BettingSide.DELHI)} aria-disabled={isClosed || isResult} style={sideStyle(BettingSide.DELHI)}>
                 {!cardImg[BettingSide.DELHI] && <div style={{ position: 'absolute', inset: 0, background: 'radial-gradient(120% 82% at 50% 128%, rgba(229,72,76,.55), transparent 62%)' }} />}
                 {!cardImg[BettingSide.DELHI] && <div style={{ position: 'absolute', inset: 0, background: 'repeating-linear-gradient(90deg, rgba(255,255,255,.045) 0 2px, transparent 2px 30px)', opacity: .5 }} />}
-                {isResult && winner === BettingSide.DELHI && <div className="bb-shimmer" />}
-                <span style={{ position: 'relative', zIndex: 2, fontSize: 9, fontWeight: 800, letterSpacing: '.18em', textTransform: 'uppercase', color: 'rgba(255,255,255,.55)' }}>India Gate</span>
-                <span className="font-grotesk" style={{ position: 'relative', zIndex: 2, fontWeight: 700, fontSize: sideFont, letterSpacing: '.08em', textTransform: 'uppercase', color: isResult && winner === BettingSide.DELHI ? '#FFD700' : 'var(--delhi)', textShadow: '0 2px 12px rgba(0,0,0,.9)' }}>{isResult && winner === BettingSide.DELHI ? '🏆 DELHI' : 'Delhi'}</span>
+                <BetCardFill side="DELHI" mode={shareMode} pct={shares.DELHI} />
+                {isResult && winner === BettingSide.DELHI && <div className="bb-shimmer" style={{ zIndex: 1 }} />}
+                <span style={{ position: 'relative', zIndex: 2, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+                <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.18em', textTransform: 'uppercase', color: 'rgba(255,255,255,.55)' }}>India Gate</span>
+                <span className="font-grotesk" style={{ fontWeight: 700, fontSize: sideFont, letterSpacing: '.08em', textTransform: 'uppercase', color: isResult && winner === BettingSide.DELHI ? '#FFD700' : 'var(--delhi)', textShadow: '0 2px 12px rgba(0,0,0,.9)' }}>{isResult && winner === BettingSide.DELHI ? '🏆 DELHI' : 'Delhi'}</span>
+                </span>
+                <BetCardFigure side="DELHI" mode={shareMode} pct={shares.DELHI} pool={poolDelhi} big={bigShare} />
                 {myBetDelhi > 0 ? <span style={{ position: 'relative', zIndex: 2, background: 'var(--delhi)', color: '#fff', fontSize: 10, fontWeight: 800, padding: '3px 11px', borderRadius: 999, boxShadow: '0 0 16px var(--delhi)' }}>You ₹{fmt(myBetDelhi)}</span> : <span />}
               </button>
               <div style={{ width: 1.5, height: '100%', background: 'linear-gradient(180deg,transparent,var(--gold),transparent)', zIndex: 3 }} />
@@ -439,22 +444,22 @@ const GameScreen: React.FC = () => {
               <button onClick={() => handleBet(BettingSide.BOMBAY)} aria-disabled={isClosed || isResult} style={sideStyle(BettingSide.BOMBAY)}>
                 {!cardImg[BettingSide.BOMBAY] && <div style={{ position: 'absolute', inset: 0, background: 'radial-gradient(120% 82% at 50% 128%, rgba(46,134,222,.55), transparent 62%)' }} />}
                 {!cardImg[BettingSide.BOMBAY] && <div style={{ position: 'absolute', inset: 0, background: 'repeating-linear-gradient(90deg, rgba(255,255,255,.045) 0 2px, transparent 2px 30px)', opacity: .5 }} />}
-                {isResult && winner === BettingSide.BOMBAY && <div className="bb-shimmer" />}
-                <span style={{ position: 'relative', zIndex: 2, fontSize: 9, fontWeight: 800, letterSpacing: '.18em', textTransform: 'uppercase', color: 'rgba(255,255,255,.55)' }}>Gateway of India</span>
-                <span className="font-grotesk" style={{ position: 'relative', zIndex: 2, fontWeight: 700, fontSize: sideFont, letterSpacing: '.08em', textTransform: 'uppercase', color: isResult && winner === BettingSide.BOMBAY ? '#FFD700' : 'var(--bombay)', textShadow: '0 2px 12px rgba(0,0,0,.9)' }}>{isResult && winner === BettingSide.BOMBAY ? '🏆 BOMBAY' : 'Bombay'}</span>
+                <BetCardFill side="BOMBAY" mode={shareMode} pct={shares.BOMBAY} />
+                {isResult && winner === BettingSide.BOMBAY && <div className="bb-shimmer" style={{ zIndex: 1 }} />}
+                <span style={{ position: 'relative', zIndex: 2, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+                <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.18em', textTransform: 'uppercase', color: 'rgba(255,255,255,.55)' }}>Gateway of India</span>
+                <span className="font-grotesk" style={{ fontWeight: 700, fontSize: sideFont, letterSpacing: '.08em', textTransform: 'uppercase', color: isResult && winner === BettingSide.BOMBAY ? '#FFD700' : 'var(--bombay)', textShadow: '0 2px 12px rgba(0,0,0,.9)' }}>{isResult && winner === BettingSide.BOMBAY ? '🏆 BOMBAY' : 'Bombay'}</span>
+                </span>
+                <BetCardFigure side="BOMBAY" mode={shareMode} pct={shares.BOMBAY} pool={poolBombay} big={bigShare} />
                 {myBetBombay > 0 ? <span style={{ position: 'relative', zIndex: 2, background: 'var(--bombay)', color: '#fff', fontSize: 10, fontWeight: 800, padding: '3px 11px', borderRadius: 999, boxShadow: '0 0 16px var(--bombay)' }}>You ₹{fmt(myBetBombay)}</span> : <span />}
               </button>
              </div>
-              {/* The VS bar, the cards' own foot: live share of the pool, BLIND BETTING once merged */}
-              <div style={{ flex: 'none', height: vsBand, display: 'flex', alignItems: 'center', padding: '0 8px', background: 'var(--bg)', borderTop: '1px solid var(--line2)' }}>
-                <div style={{ width: '100%' }}>
-                  <VsStrip delhiPct={dPct} blind={showMerged} empty={!showMerged && poolDelhi + poolBombay === 0} compact={mobile} />
-                </div>
-              </div>
             </div>
 
-            {!isClosed && !isResult && (
-              <div style={{ position: 'absolute', top: `calc((100% - ${vsBand}px) / 2)`, left: '50%', transform: 'translate(-50%,-50%)', width: mobile ? 42 : 50, height: mobile ? 42 : 50, borderRadius: '50%', background: 'var(--bg)', border: '2px solid var(--gold)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 4 }}>
+            {/* Merged: one band across both cards in place of the VS medallion */}
+            {shareMode === 'blind' && !isClosed && <BlindBand total={total} compact={cardH < 200} />}
+            {!isClosed && !isResult && shareMode !== 'blind' && (
+              <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%,-50%)', width: mobile ? 42 : 50, height: mobile ? 42 : 50, borderRadius: '50%', background: 'var(--bg)', border: '2px solid var(--gold)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 4 }}>
                 <span className="font-grotesk" style={{ fontWeight: 700, fontStyle: 'italic', fontSize: 17, color: 'var(--gold-ink)' }}>VS</span>
               </div>
             )}
@@ -475,7 +480,7 @@ const GameScreen: React.FC = () => {
         </div>
 
         {/* Bet controls */}
-        <div ref={controlsRef} style={{ flex: 'none', padding: '6px 0 2px' }}>
+        <div ref={controlsRef} style={{ flex: 'none', padding: mobile ? '6px 0 2px' : '10px 0 2px' }}>
           {canUseGhostMode && (
             <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 4 }}>
               <button onClick={() => { toggleGhostMode(); setSelectedChip(null); setManualInput(''); }} style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 10, fontWeight: 800, letterSpacing: '.04em', padding: '5px 14px', borderRadius: 999, cursor: 'pointer', border: `1px solid ${isGhostMode ? '#a78bfa' : 'var(--line2)'}`, background: isGhostMode ? 'rgba(139,111,224,.22)' : 'var(--surface2)', color: isGhostMode ? '#c4b5fd' : 'var(--text3)', boxShadow: isGhostMode ? '0 0 16px -4px rgba(139,111,224,.6)' : 'none' }}>
@@ -510,7 +515,7 @@ const GameScreen: React.FC = () => {
               </div>
             )}
           </div>
-          <div style={{ position: 'relative', width: '100%', maxWidth: 360, margin: '8px auto 0', padding: '0 8px' }}>
+          <div style={{ position: 'relative', width: '100%', maxWidth: 360, margin: mobile ? '8px auto 0' : '12px auto 0', padding: '0 8px' }}>
             <input type="number" min={1} placeholder={`Or type amount (min ₹${minBet})`} value={manualInput} onChange={e => onManual(e.target.value)} className="font-grotesk" style={{ width: '100%', height: 42, background: 'var(--surface2)', border: `1px solid ${betAmount && manualInput !== '' ? 'var(--gold)' : 'var(--line2)'}`, borderRadius: 12, padding: '0 44px 0 15px', color: 'var(--text)', fontSize: 13, fontWeight: 700, outline: 'none' }} />
             <span style={{ position: 'absolute', right: 20, top: '50%', transform: 'translateY(-50%)', color: 'var(--gold-ink)', fontWeight: 800, fontSize: 12, pointerEvents: 'none' }}>₹</span>
             {isGhostMode && (

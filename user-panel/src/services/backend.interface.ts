@@ -1,7 +1,7 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import {
   User, Bet, GameCycle, BettingSide,
-  PromoContent, PromoLocation,
+  PromoContent, PromoLocation, HomePromoCard, PromoDevice,
   SystemConfigData
 } from '../types';
 
@@ -97,6 +97,8 @@ export interface Backend {
   } | null>;
 
   getPublicContent(location: PromoLocation): Promise<PromoContent[]>;
+  /** The home promo cards and the screens they are drawn for (`promo_data`). */
+  getHomeCards(): Promise<{ cards: HomePromoCard[]; devices: PromoDevice[] }>;
 
   updateUserProfile(userId: string, updates: any): Promise<User>;
 

@@ -170,88 +170,50 @@
 }
 @keyframes bb-sparkle { 0%, 100% { opacity: .2; transform: scale(.6) rotate(0deg); } 50% { opacity: 1; transform: scale(1.15) rotate(45deg); } }
 
-/* ── VS strip (redesign/VsStrip.tsx) ───────────────────────────────────────────
-   A bevelled bar: red from the left, blue from the right, a glowing strike
-   where they meet. Merged, it turns violet and reads BLIND BETTING. */
-@keyframes bb-vs-spark {
-  0% { transform: rotate(var(--a)) translateX(4px) scale(1); opacity: 0; }
-  15% { opacity: 1; }
-  100% { transform: rotate(var(--a)) translateX(var(--r)) scale(.2); opacity: 0; }
-}
-@keyframes bb-vs-burst { to { transform: translate(-50%, -50%) rotate(360deg); } }
-@keyframes bb-vs-core {
-  0%, 100% { box-shadow: 0 0 6px 2px #fff, 0 0 16px 5px var(--gold2), 0 0 30px 10px rgba(255, 200, 80, .45); }
-  50% { box-shadow: 0 0 9px 3px #fff, 0 0 24px 8px var(--gold2), 0 0 44px 16px rgba(255, 200, 80, .6); }
-}
-@keyframes bb-vs-flow { from { background-position: 0% 50%; } to { background-position: 200% 50%; } }
-@keyframes bb-vs-text { 0%, 100% { text-shadow: 0 0 8px rgba(255, 255, 255, .55), 0 2px 3px rgba(0, 0, 0, .7); } 50% { text-shadow: 0 0 16px rgba(255, 255, 255, .9), 0 0 26px var(--blind2), 0 2px 3px rgba(0, 0, 0, .7); } }
+/* ── Card shares (redesign/BetCardShare.tsx) ──────────────────────────────────
+   Each betting card fills from the bottom in its side's colour up to its share
+   of the pool. Merged, both cards are lit evenly and a violet band across them
+   reads BLIND BETTING. */
+@keyframes bb-share-flow { from { background-position: 0% 50%; } to { background-position: 200% 50%; } }
+@keyframes bb-share-text { 0%, 100% { text-shadow: 0 0 8px rgba(255, 255, 255, .55), 0 2px 3px rgba(0, 0, 0, .7); } 50% { text-shadow: 0 0 16px rgba(255, 255, 255, .9), 0 0 26px var(--blind2), 0 2px 3px rgba(0, 0, 0, .7); } }
 
-.bb-vs { position: relative; width: 100%; perspective: 600px; }
-.bb-vs__track {
-  position: absolute; inset: 0; border-radius: 999px; overflow: hidden;
-  background: var(--surface3);
-  border: 1px solid rgba(255, 255, 255, .14);
-  box-shadow: 0 10px 22px -10px rgba(0, 0, 0, .75), inset 0 -3px 6px rgba(0, 0, 0, .45), inset 0 2px 2px rgba(255, 255, 255, .22);
-  transform: rotateX(8deg);
+.bb-share-fill {
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 1; pointer-events: none;
+  background: linear-gradient(0deg, color-mix(in srgb, var(--share-c) 62%, transparent) 0%, color-mix(in srgb, var(--share-c) 30%, transparent) 100%);
+  border-top: 2px solid color-mix(in srgb, var(--share-c) 70%, #fff);
+  box-shadow: 0 -6px 18px -6px color-mix(in srgb, var(--share-c) 80%, transparent);
+  transition: height .7s cubic-bezier(.2, .8, .2, 1);
 }
-.bb-vs__side { position: absolute; top: 0; bottom: 0; transition: width .7s cubic-bezier(.2, .8, .2, 1), left .7s cubic-bezier(.2, .8, .2, 1); }
-.bb-vs__side--d {
-  left: 0;
-  background: linear-gradient(180deg, color-mix(in srgb, var(--delhi) 55%, #fff) 0%, var(--delhi) 42%, color-mix(in srgb, var(--delhi) 55%, #000) 100%);
+.bb-share-fill--blind {
+  border-top: none; box-shadow: none;
+  background: linear-gradient(0deg, color-mix(in srgb, var(--share-c) 34%, transparent), color-mix(in srgb, var(--share-c) 18%, transparent));
 }
-.bb-vs__side--b {
-  right: 0;
-  background: linear-gradient(180deg, color-mix(in srgb, var(--bombay) 55%, #fff) 0%, var(--bombay) 42%, color-mix(in srgb, var(--bombay) 55%, #000) 100%);
+.bb-share-figure {
+  position: relative; z-index: 2; display: flex; flex-direction: column; align-items: center; gap: 3px;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, .85), 0 0 12px rgba(0, 0, 0, .5);
 }
-.bb-vs__gloss {
-  position: absolute; left: 10px; right: 10px; top: 2px; height: 42%; border-radius: 999px; pointer-events: none;
-  background: linear-gradient(180deg, rgba(255, 255, 255, .38), rgba(255, 255, 255, 0));
-}
-.bb-vs__pct {
-  position: absolute; top: 50%; transform: translateY(-50%); z-index: 2;
-  display: flex; align-items: baseline; gap: 6px;
-  font-weight: 700; color: #fff; letter-spacing: .02em; font-variant-numeric: tabular-nums;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, .85), 0 0 10px rgba(0, 0, 0, .45);
-}
-.bb-vs__pct small { font-size: 9px; font-weight: 800; letter-spacing: .14em; opacity: .9; }
-.bb-vs__pct--d { left: 14px; }
-.bb-vs__pct--b { right: 14px; }
-.bb-vs__blind {
-  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+.bb-share-figure__pct { font-weight: 700; line-height: 1; color: #fff; font-variant-numeric: tabular-nums; letter-spacing: .01em; }
+.bb-share-figure__pool { font-weight: 700; line-height: 1.1; color: rgba(255, 255, 255, .84); font-variant-numeric: tabular-nums; }
+.bb-share-blind {
+  position: absolute; left: 0; right: 0; top: calc(50% + 10px); transform: translateY(-50%); z-index: 4; pointer-events: none;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; padding: 7px 0;
   background: linear-gradient(90deg, var(--blind), var(--blind2), color-mix(in srgb, var(--blind) 60%, #000), var(--blind2), var(--blind));
   background-size: 200% 100%;
-  animation: bb-vs-flow 3.2s linear infinite;
+  border-top: 1px solid rgba(255, 255, 255, .22); border-bottom: 1px solid rgba(0, 0, 0, .35);
+  box-shadow: 0 8px 20px -8px rgba(0, 0, 0, .7);
+  animation: bb-share-flow 3.2s linear infinite;
 }
-.bb-vs__blindtext {
-  position: relative; z-index: 2; color: #fff; font-weight: 700; letter-spacing: .32em; padding-left: .32em;
-  animation: bb-vs-text 1.8s ease-in-out infinite;
+.bb-share-blind__text {
+  color: #fff; font-weight: 700; letter-spacing: .32em; padding-left: .32em; line-height: 1.1;
+  animation: bb-share-text 1.8s ease-in-out infinite;
 }
-.bb-vs__strike { position: absolute; top: 50%; width: 0; height: 0; z-index: 3; pointer-events: none; transition: left .7s cubic-bezier(.2, .8, .2, 1); }
-.bb-vs--blind .bb-vs__strike { display: none; }
-.bb-vs__core {
-  position: absolute; left: -3px; top: -20px; width: 6px; height: 40px; border-radius: 3px;
-  background: linear-gradient(180deg, transparent, #fff 25%, #fff 75%, transparent);
-  animation: bb-vs-core 1.2s ease-in-out infinite;
-}
-.bb-vs__burst {
-  position: absolute; left: 0; top: 0; width: 64px; height: 64px; border-radius: 50%;
-  transform: translate(-50%, -50%);
-  background: repeating-conic-gradient(from 0deg, rgba(255, 236, 170, .55) 0deg 5deg, transparent 5deg 30deg);
-  -webkit-mask: radial-gradient(circle, #000 0 18%, transparent 62%);
-  mask: radial-gradient(circle, #000 0 18%, transparent 62%);
-  animation: bb-vs-burst 4s linear infinite;
-}
-.bb-vs__spark {
-  position: absolute; left: 0; top: -1.5px; width: 7px; height: 3px; border-radius: 2px; transform-origin: 0 50%;
-  background: linear-gradient(90deg, #fff, var(--gold2));
-  box-shadow: 0 0 6px var(--gold2);
-  animation: bb-vs-spark 1.1s ease-out infinite;
-}
+.bb-share-blind--compact { flex-direction: row; gap: 10px; padding: 5px 0; }
+.bb-share-blind__pool { font-weight: 700; color: rgba(255, 255, 255, .88); letter-spacing: .08em; }
 
 @media (prefers-reduced-motion: reduce) {
   .bb-shimmer::after, .bb-skel, .bb-spin, .bb-gametab__spark, .bb-pulse, .bb-rise, .bb-chipfloat, .bb-chipshine,
-  .bb-vs__blind, .bb-vs__blindtext, .bb-vs__core, .bb-vs__burst {
+  .bb-share-blind, .bb-share-blind__text {
     animation: none !important;
   }
-  .bb-vs__spark { display: none; }
+  .bb-share-fill { transition: none; }
 }

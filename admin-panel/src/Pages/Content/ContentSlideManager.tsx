@@ -5,13 +5,13 @@
  * Admin page to manage full-screen image slides for:
  *   - TRICKS_PAGE  → user Promo / Tips & Tricks page
  *   - RULES_PAGE   → user Rules / How to Play page
- *   - HOME         → promo cards in the board's side columns (laptop) and a
- *                    banner under the header (phone, tablet) (owner, 2026-10-10; shown while
- *                    Admin › Player Screen's "Promo cards" is on). The title is
- *                    the card's label; `linkUrl` is where a tap goes.
+ *
+ * Shown inside Images › Page banners & slides. Home promo cards are not slides:
+ * each has an image per screen, set under Images › Promo cards
+ * (PromoDeviceCards.tsx).
  *
  * Each slide = one PromoContent document with:
- *   location : TRICKS_PAGE | RULES_PAGE | HOME
+ *   location : TRICKS_PAGE | RULES_PAGE
  *   fileUrl  : CDN URL of the image
  *   title    : caption shown below image (optional)
  *   priority : sort order (higher = shown first)
@@ -36,7 +36,7 @@ import api from '../../services/api';
 import toast from 'react-hot-toast';
 import { Toolbar } from '../../components/design';
 
-type Location = 'TRICKS_PAGE' | 'RULES_PAGE' | 'HOME';
+type Location = 'TRICKS_PAGE' | 'RULES_PAGE';
 
 interface Slide {
   _id: string;
@@ -46,8 +46,6 @@ interface Slide {
   // The server answers its own vocabulary (`PUBLISHED`/`DRAFT`/`ARCHIVED`,
   // content.admin.routes.js `PROMO_STATUS`); `ACTIVE` is accepted as PUBLISHED.
   status: 'PUBLISHED' | 'DRAFT' | 'ARCHIVED' | 'ACTIVE';
-  /** Home cards: where a tap goes (an app page like /referrals, or https). */
-  linkUrl?: string | null;
   location: Location;
   createdAt: string;
 }
@@ -57,7 +55,6 @@ const isLive = (slide: Slide) => slide.status === 'PUBLISHED' || slide.status ==
 const TABS: { key: Location; label: string; icon: React.ReactNode }[] = [
   { key: 'TRICKS_PAGE', label: 'Tips & Tricks', icon: <Lightbulb size={15} /> },
   { key: 'RULES_PAGE',  label: 'Rules / How to Play', icon: <BookOpen size={15} /> },
-  { key: 'HOME',        label: 'Home promo cards', icon: <ImageIcon size={15} /> },
 ];
 
 export const ContentSlideManager: React.FC = () => {
@@ -68,7 +65,7 @@ export const ContentSlideManager: React.FC = () => {
   const [confirmDel, setConfirmDel] = useState<Slide | null>(null);
 
   // Form state
-  const [form, setForm] = useState({ title: '', fileUrl: '', linkUrl: '', priority: 0, urlMode: true });
+  const [form, setForm] = useState({ title: '', fileUrl: '', priority: 0, urlMode: true });
   const [uploading, setUploading]   = useState(false);
   const [saving, setSaving]         = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -127,11 +124,10 @@ export const ContentSlideManager: React.FC = () => {
         mediaType: 'IMAGE',
         priority:  form.priority,
         status:    'PUBLISHED',
-        ...(activeTab === 'HOME' ? { linkUrl: form.linkUrl.trim() } : {}),
       });
       toast.success('Slide added');
       setShowAdd(false);
-      setForm({ title: '', fileUrl: '', linkUrl: '', priority: 0, urlMode: true });
+      setForm({ title: '', fileUrl: '', priority: 0, urlMode: true });
       loadSlides();
     } catch (e: any) { toast.error(e?.response?.data?.message || 'Failed to save slide'); }
     finally { setSaving(false); }
@@ -194,7 +190,7 @@ export const ContentSlideManager: React.FC = () => {
       <div className="text-xs text-gray-500">
         {slides.filter(isLive).length} active slide(s) •&nbsp;
         {slides.filter(s => !isLive(s)).length} hidden —&nbsp;
-        {activeTab === 'HOME' ? 'players see active cards beside the game' : 'users see active slides in swipeable full-screen view'}
+        users see active slides in swipeable full-screen view
       </div>
 
       {/* Grid */}
@@ -208,7 +204,7 @@ export const ContentSlideManager: React.FC = () => {
         <div className="card text-center py-16 text-gray-500">
           <ImageIcon size={48} className="mx-auto mb-3 opacity-30" />
           <p className="font-medium">No slides yet</p>
-          <p className="text-xs mt-1">Add images that users will see on the {TABS.find(t => t.key === activeTab)?.label} {activeTab === 'HOME' ? 'row' : 'page'}</p>
+          <p className="text-xs mt-1">Add images that users will see on the {TABS.find(t => t.key === activeTab)?.label} page</p>
         </div>
       ) : (
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
@@ -240,9 +236,6 @@ export const ContentSlideManager: React.FC = () => {
               <div className="absolute inset-0 bg-linear-to-t from-black/80 via-transparent to-transparent flex flex-col justify-end p-2 gap-1">
                 {slide.title && (
                   <p className="text-white text-xs font-medium truncate">{slide.title}</p>
-                )}
-                {slide.linkUrl && (
-                  <p className="text-[10px] text-gold-400 truncate">→ {slide.linkUrl}</p>
                 )}
                 <div className="flex items-center justify-between">
                   {/* Priority arrows */}
@@ -290,7 +283,7 @@ export const ContentSlideManager: React.FC = () => {
 
       {/* Add Slide Modal */}
       {showAdd && (
-        <Modal isOpen onClose={() => { setShowAdd(false); setForm({ title: '', fileUrl: '', linkUrl: '', priority: 0, urlMode: true }); }} title="Add Slide">
+        <Modal isOpen onClose={() => { setShowAdd(false); setForm({ title: '', fileUrl: '', priority: 0, urlMode: true }); }} title="Add Slide">
           <div className="space-y-4">
             <p className="text-xs text-gray-400">
               Adding to: <span className="text-white font-medium">{TABS.find(t => t.key === activeTab)?.label}</span>
@@ -373,24 +366,6 @@ export const ContentSlideManager: React.FC = () => {
                 className="input"
               />
             </div>
-
-            {activeTab === 'HOME' && (
-              <div>
-                <label className="label" htmlFor="card-link">Opens when tapped (optional)</label>
-                <input id="card-link"
-                  type="text"
-                  value={form.linkUrl}
-                  onChange={e => setForm(f => ({ ...f, linkUrl: e.target.value }))}
-                  placeholder="/referrals or https://t.me/yourchannel"
-                  className="input"
-                />
-                <p className="text-xs text-gray-500 mt-1">
-                  A page of the app (/referrals, /wallet, /promo) or a full https:// link, which opens in a new tab.
-                  Empty = the card is not clickable. The card shows in the board's side columns on laptops and as a banner under the header on
-                  phones. The phone banner is 3:1: an image 1200 × 400 fills it exactly; any other shape is shown whole, never cropped.
-                </p>
-              </div>
-            )}
 
             <div>
               <label className="label" htmlFor="priority-higher-shown-first">Priority (higher = shown first)</label>

@@ -16,11 +16,19 @@ import React from 'react';
 import { getAssetUrl } from '../services/backend.service';
 
 // ── Promo card ───────────────────────────────────────────────────────────────
+/**
+ * One home card as this screen draws it: the card's own image for this
+ * screen and the screen's frame (owner, 2026-10-10: a separate image per
+ * device, never one image fitted to all). Built by `useHomeCards`.
+ */
 export interface HomeCard {
   promoId?: string;
   id?: string;
   title?: string;
-  fileUrl?: string;
+  /** This screen's image of the card. */
+  image: string;
+  /** This screen's frame, width : height (database/spec/promoDevices.js). */
+  ratio: { w: number; h: number };
   /** An app page ('/referrals') or an https link; the server's `promoLinkUrl` rule. */
   linkUrl?: string | null;
 }
@@ -34,32 +42,18 @@ export function cardHref(linkUrl?: string | null): { href: string; external: boo
 }
 
 /**
- * The phone banner's shape, width to height (owner, 2026-10-10: "less height
- * for mobile", one card filling the width). An image of another shape is shown
- * whole inside it over a blurred copy of itself, so nothing is cropped and the
- * card is never left with bars; a 3:1 image (1200 × 400) fills it exactly.
+ * The card in its screen's frame. The image was made for this frame (Admin ›
+ * Images shows the size and warns when an upload's shape differs), so it fills
+ * it edge to edge.
  */
-export const PROMO_BANNER_RATIO = 3;
-/** A tablet's wider banner stays this short; the image is still shown whole. */
-export const PROMO_BANNER_MAX_H = 170;
-
-/** `banner`: the phone carousel's short, uncropped card. */
-export const PromoCard: React.FC<{ card: HomeCard; banner?: boolean }> = ({ card, banner }) => {
+export const PromoCard: React.FC<{ card: HomeCard; rounded?: boolean }> = ({ card, rounded = true }) => {
   const link = cardHref(card.linkUrl);
   const label = card.title || 'Promotion';
-  const src = getAssetUrl(card.fileUrl || '');
-  const body = banner ? (
-    <span style={{ position: 'relative', display: 'block', width: '100%', aspectRatio: `${PROMO_BANNER_RATIO} / 1`, maxHeight: PROMO_BANNER_MAX_H, overflow: 'hidden' }}>
-      <img src={src} alt="" aria-hidden="true" style={{ position: 'absolute', inset: '-10%', width: '120%', height: '120%', objectFit: 'cover', filter: 'blur(18px) brightness(.7)' }} />
-      <img src={src} alt={label} loading="lazy" style={{ position: 'relative', display: 'block', width: '100%', height: '100%', objectFit: 'contain' }} />
-    </span>
-  ) : (
-    <>
-      <img src={src} alt={label} loading="lazy" style={{ display: 'block', width: '100%', aspectRatio: '16 / 9', objectFit: 'cover' }} />
-      <span style={{ position: 'absolute', top: 8, left: 8, padding: '2px 8px', borderRadius: 999, background: 'rgba(0,0,0,.6)', color: '#fff', fontSize: 9, fontWeight: 800, letterSpacing: '.12em', textTransform: 'uppercase' }}>{label}</span>
-    </>
+  const body = (
+    <img src={getAssetUrl(card.image)} alt={label} loading="lazy"
+      style={{ display: 'block', width: '100%', aspectRatio: `${card.ratio.w} / ${card.ratio.h}`, objectFit: 'cover' }} />
   );
-  const frame: React.CSSProperties = { position: 'relative', display: 'block', borderRadius: 16, overflow: 'hidden', border: '1px solid var(--line)', background: 'var(--surface)', flex: 'none' };
+  const frame: React.CSSProperties = { position: 'relative', display: 'block', borderRadius: rounded ? 16 : 0, overflow: 'hidden', border: rounded ? '1px solid var(--line)' : 'none', background: 'var(--surface)', flex: 'none' };
   if (!link) return <div style={frame}>{body}</div>;
   return (
     <a href={link.href} {...(link.external ? { target: '_blank', rel: 'noopener noreferrer' } : {})} aria-label={label} style={{ ...frame, cursor: 'pointer' }}>

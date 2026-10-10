@@ -8,6 +8,7 @@ import { generatePresignedUploadUrl } from '../../services/cdn.service.js';
 import { db } from '#db';
 import { assertCdnAssetUrl } from '../../shared/storedUrl.js';
 import { promoLinkUrl } from './promoLink.js';
+import { PROMO_DEVICES, isPromoDevice } from '#db/spec/promoDevices.js';
 import { serverError, respondError } from '../../shared/httpError.js';
 
 const router = express.Router();
@@ -251,6 +252,27 @@ router.post('/promo/upload-url', authenticate, hasPermission('canManageContent')
   }
 });
 
+/**
+ * A home card's per-screen images from a request body: { DEVICE: url | '' }.
+ * Each URL must be one this platform hosts (the same rule as a slide's file);
+ * '' or null removes that screen's image. Undefined: the body named none.
+ */
+function promoImagesFrom(body) {
+  const raw = body?.images;
+  if (raw === undefined) return undefined;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw Object.assign(new Error('images must be an object keyed by screen'), { status: 400 });
+  }
+  const out = {};
+  for (const [device, url] of Object.entries(raw)) {
+    if (!isPromoDevice(device)) throw Object.assign(new Error(`Unknown screen: ${device}`), { status: 400 });
+    out[device] = String(url ?? '').trim() ? assertCdnAssetUrl(url, `${device.toLowerCase().replace('_', ' ')} image`) : null;
+  }
+  return out;
+}
+
+const HOME_TAKES_DEVICE_IMAGES = 'A home card takes one image per screen (images), not a single file.';
+
 router.get('/promo', authenticate, hasPermission('canManageContent'), async (req, res) => {
   try {
     const { location, status } = req.query;
@@ -258,7 +280,9 @@ router.get('/promo', authenticate, hasPermission('canManageContent'), async (req
       location: location ? String(location).toUpperCase() : null,
       status: status ? promoStatus(status) : null,
     });
-    res.json({ success: true, promos });
+    // The screens a home card is drawn for, with their sizes and places, so
+    // the Images page shows the server's list rather than keeping its own.
+    res.json({ success: true, promos, devices: PROMO_DEVICES });
   } catch (error) {
     console.error('Get promo content error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch promo content' });
@@ -270,11 +294,21 @@ router.post('/promo', authenticate, hasPermission('canManageContent'), async (re
     const { title, description, location, mediaType, fileUrl, priority, status } = req.body;
     const resolved = promoStatus(status) ?? 'DRAFT';
     const media = String(mediaType || 'IMAGE').toUpperCase();
+    const where = String(location || 'HOME').toUpperCase();
+    const home = where === 'HOME';
+
+    let images;
+    try { images = promoImagesFrom(req.body); }
+    catch (e) { return res.status(400).json({ success: false, message: e.message }); }
+    if (home && String(fileUrl ?? '').trim()) {
+      return res.status(400).json({ success: false, message: HOME_TAKES_DEVICE_IMAGES });
+    }
 
     // The table refuses a PUBLISHED promo with nothing to show. Rejecting it
     // here turns that into a 400 the admin panel can display, instead of a 500
-    // from a constraint violation.
-    if (resolved === 'PUBLISHED' && media !== 'TEXT' && !fileUrl) {
+    // from a constraint violation. A home card's rule (an image for at least
+    // one screen) is held in the writing transaction (`applyPromoImages`).
+    if (!home && resolved === 'PUBLISHED' && media !== 'TEXT' && !fileUrl) {
       return res.status(400).json({
         success: false, message: 'A published promo needs a file to show',
       });
@@ -294,8 +328,8 @@ router.post('/promo', authenticate, hasPermission('canManageContent'), async (re
     catch (e) { return res.status(400).json({ success: false, message: e.message }); }
 
     const promo = await db.content.upsertPromo({
-      title, description, linkUrl,
-      location: String(location || 'HOME').toUpperCase(),
+      title, description, linkUrl, images,
+      location: where,
       mediaType: media, fileUrl: safeFileUrl,
       priority: Number(priority) || 0,
       status: resolved, isActive: resolved === 'PUBLISHED',
@@ -303,6 +337,7 @@ router.post('/promo', authenticate, hasPermission('canManageContent'), async (re
     });
     res.json({ success: true, promo });
   } catch (error) {
+    if (error.status === 400) return res.status(400).json({ success: false, message: error.message });
     console.error('Create promo content error:', error);
     res.status(500).json({ success: false, message: 'Failed to create promo content' });
   }
@@ -317,6 +352,14 @@ router.put('/promo/:id', authenticate, hasPermission('canManageContent'), async 
     // A promo slide is rendered to every player. Stored raw, this accepted a
     // link to any site — and by the permission gap recorded as F-001 every
     // sub-admin can write one, whatever their keys say. Empty clears it.
+    try { patch.images = promoImagesFrom(req.body); }
+    catch (e) { return res.status(400).json({ success: false, message: e.message }); }
+    if (fileUrl !== undefined && String(fileUrl ?? '').trim()) {
+      const current = await db.content.getPromo(req.params.id);
+      if (String(location ?? current?.location ?? '').toUpperCase() === 'HOME') {
+        return res.status(400).json({ success: false, message: HOME_TAKES_DEVICE_IMAGES });
+      }
+    }
     if (fileUrl !== undefined) {
       try {
         patch.fileUrl = String(fileUrl ?? '').trim() ? assertCdnAssetUrl(fileUrl, 'slide image') : null;
@@ -338,10 +381,11 @@ router.put('/promo/:id', authenticate, hasPermission('canManageContent'), async 
       patch.isActive = resolved === 'PUBLISHED';
     }
 
-    const promo = await db.content.updatePromo(req.params.id, patch);
+    const promo = await db.content.updatePromo(req.params.id, patch, { updatedBy: req.user.userId });
     if (!promo) return res.status(404).json({ success: false, message: 'Promo not found' });
     res.json({ success: true, promo });
   } catch (error) {
+    if (error.status === 400) return res.status(400).json({ success: false, message: error.message });
     console.error('Update promo content error:', error);
     res.status(500).json({ success: false, message: 'Failed to update promo content' });
   }
