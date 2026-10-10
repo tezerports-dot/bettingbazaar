@@ -113,3 +113,18 @@ Plus the app's own `/metrics`: `http_request_duration_seconds`,
 When you have numbers, put them in `docs/governance/LATENCY.md` under
 "horizontal scaling" and replace the "unmeasured" note. That file currently
 says the ceiling is unknown; it should not keep saying that after a run.
+
+## Settlement duration: does one round settle inside the round?
+
+`npm run loadtest:settlement -- --bets 10000 --round-seconds 60` (against a
+`bb_load` database; it truncates the betting, wallet and ledger tables) places
+real bets on one declared cycle and times the real engine settling it. The
+engine settles one bet per transaction, in sequence, and every bet locks the
+house-reserve row, so the number that matters is total duration against the
+round length, not contention. Exit 0 = fits, 2 = falls behind.
+
+First measurement (2026-10-10, 4-core sandbox, PostgreSQL 16, no PgBouncer):
+2,000 bets in 11.6 s and 10,000 bets in 57.6 s, i.e. ~5.8 ms per bet. So
+10,000 bets on a 1-minute board leaves ~2 s of headroom on that machine, and
+the engine settles every board and both audiences through the same loop.
+Re-run it on the production VPS before enabling a high-frequency board (§18.4).
