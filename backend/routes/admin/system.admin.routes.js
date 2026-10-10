@@ -12,6 +12,7 @@ import { getSystemConfig } from '#db/repositories/config.js';
 // so this route neither restates a default nor keeps its own list of fields.
 import { SYSTEM_CONFIG_SPEC } from '#db/spec/config.spec.js';
 import { approvedApiHosts } from '../../config/apiHosts.js';
+import { gatewayDocumentStatus } from '../../domains/configuration/gatewayConfig.js';
 import { db } from '#db';
 import { respondError } from '../../shared/httpError.js';
 import { systemConfigPayload } from '../../domains/configuration/systemConfigPayload.js';
@@ -98,6 +99,9 @@ router.get('/system/config', authenticate, hasPermission('canManageSystemSetting
         // PUT ignores it (undeclared). The saved choice is checked against the
         // same list on the way in (`oneOf` in the spec).
         apiHostChoices:        approvedApiHosts(),
+        // The signed gateway document's state, shown under API Host. Read-only
+        // like the choices: not a setting, and the PUT ignores it (undeclared).
+        gatewayDocument:       await gatewayDocumentStatus(),
         // The INR peg, from its one owner. It was a literal here and in the
         // response below, a third and fourth declaration of a rule that already
         // had two.

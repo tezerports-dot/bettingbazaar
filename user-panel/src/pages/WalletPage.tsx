@@ -3,7 +3,7 @@
  * WalletPage.tsx — 2026 "Bazaar" redesign.
  *
  * P2P token exchange (fixed 1:1, 1 BB token = ₹1). The data layer is UNCHANGED —
- * every apiClient endpoint, the order state machine, polling, the UPI link and UTR flow
+ * every payment endpoint (services/api), the order state machine, polling, the UPI link and UTR flow
  * and dispute handling are preserved exactly. Only the presentation is rebuilt on
  * the redesign theme tokens (dark/light) to match the handoff prototype.
  *
@@ -11,7 +11,7 @@
  * (INR) only. Token conversion is the fixed 1:1 constant (Phase 006).
  */
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import apiClient from '../services/apiClient';
+import { payments, wallet, platform } from '../services/api';
 import { DisputeWindowPanel } from '../components/DisputeWindow';
 import { PAYMENT_STATE_LABELS, PAYMENT_STATE_COLOR, type PaymentOrderState } from '../services/paymentStateMachine';
 // M-05: WalletTransactionDTO normalizer — GOVERNANCE §4: this module must have consumers.
@@ -234,7 +234,7 @@ export function BuyPaymentUI({ order, onPaid, onExpire, onExpiryExtended }: {
   const handleTapPaid = async () => {
     setSubmitting(true); setError('');
     try {
-      const res: any = await apiClient.post(`/api/payment/order/${order.orderId}/mark-paid`, {});
+      const res: any = await payments.markPaid(order.orderId);
       // The server's order when it sent one; it says PAID with no reference.
       onPaid({ status: 'PAID', ...(res?.order ?? {}) });
     } catch (err: any) { setError(err?.message || 'Failed to submit. Try again.'); }
@@ -252,15 +252,9 @@ export function BuyPaymentUI({ order, onPaid, onExpire, onExpiryExtended }: {
       // Two routes, because they are two different things: `mark-paid` reports
       // the payment, `payment-reference` evidences one already reported. On the
       // cash rail the order is already PAID by the time this runs.
-      //
-      // Written out rather than interpolated. `${order.orderId}/${path}` is one
-      // string to a reader and TWO unresolvable segments to
-      // `check:ui-coverage`, which reported it as a dead button — correctly,
-      // since a gate that cannot see which route a call reaches cannot tell you
-      // the route exists (§28).
       const res: any = awaitingReference
-        ? await apiClient.post(`/api/payment/order/${order.orderId}/payment-reference`, { utrNumber: utr.trim() })
-        : await apiClient.post(`/api/payment/order/${order.orderId}/mark-paid`, { utrNumber: utr.trim() });
+        ? await payments.submitPaymentReference(order.orderId, utr.trim())
+        : await payments.markPaid(order.orderId, utr.trim());
       // The reference is on the order now. Without it the cash rail would read
       // as still awaiting one until the next status poll.
       onPaid({ status: 'PAID', utrNumber: utr.trim(), ...(res?.order ?? {}) });
@@ -286,7 +280,7 @@ export function BuyPaymentUI({ order, onPaid, onExpire, onExpiryExtended }: {
     if (askedForGrace.current) return;
     askedForGrace.current = true;
     try {
-      const res: any = await apiClient.post(`/api/payment/order/${order.orderId}/utr-grace`, {});
+      const res: any = await payments.requestUtrGrace(order.orderId);
       if (res?.expiresAt && new Date(res.expiresAt).getTime() > new Date(order.expiresAt || 0).getTime()) {
         setGraceNote('Extra time added to submit your UTR.');
         onExpiryExtended?.(res.expiresAt);
@@ -297,7 +291,7 @@ export function BuyPaymentUI({ order, onPaid, onExpire, onExpiryExtended }: {
   const handleDispute = async () => {
     if (!disputeReason.trim()) { setError('Please enter a dispute reason'); return; }
     try {
-      await apiClient.post(`/api/payment/order/${order.orderId}/dispute`, { reason: disputeReason.trim() });
+      await payments.raiseDispute(order.orderId, disputeReason.trim());
       alert('Dispute raised. Admin will review shortly.');
     } catch (err: any) { setError(err?.message || 'Failed to raise dispute'); }
   };
@@ -536,7 +530,7 @@ const WalletPage: React.FC = () => {
       // each other on screen.
       // The amounts each rail allows, from the one payload that owns them
       // (domains/configuration/systemConfigPayload.js).
-      const sys: any = await apiClient.get('/api/v1/system/config');
+      const sys: any = await platform.systemConfig();
       if (sys?.config) {
         setRail({
           sizes: {
@@ -549,7 +543,7 @@ const WalletPage: React.FC = () => {
         });
       }
 
-      const lim: any = await apiClient.get('/api/user/bet-limits');
+      const lim: any = await wallet.betLimits();
       if (lim?.success) {
         setBalances({
           depositBalance: lim.deposit ?? 0, winningsBalance: lim.winnings ?? 0,
@@ -567,7 +561,7 @@ const WalletPage: React.FC = () => {
 
   const loadOrders = useCallback(async () => {
     try {
-      const res: any = await apiClient.get('/api/payment/orders?limit=20');
+      const res: any = await payments.listOrders(20);
       const orders = Array.isArray(res?.orders) ? res.orders : [];
       setPaymentOrders(orders);
       // An INR buy only. A USDT buy in flight is `activeUsdtOrder`, drawn by
@@ -583,7 +577,7 @@ const WalletPage: React.FC = () => {
   const loadLedger = useCallback(async (pg: number, reset = false) => {
     setLoading(true);
     try {
-      const res: any = await apiClient.get(`/api/v1/wallet/ledger?page=${pg}&limit=25`);
+      const res: any = await wallet.ledger(pg, 25);
       // M-05: DTO normalizer is the canonical shape; we validate each row through
       // it (single consumer) but render the raw CREDIT/DEBIT ledger fields, which
       // carry the +/− sign the DTO flattens away.
@@ -604,7 +598,7 @@ const WalletPage: React.FC = () => {
   const loadBonuses = useCallback(async (pg: number, reset = false) => {
     setBonusState('loading');
     try {
-      const res: any = await apiClient.get(`/api/bonuses/my?page=${pg}&limit=25`);
+      const res: any = await wallet.bonuses(pg, 25);
       const items: BonusRecord[] = Array.isArray(res?.records) ? res.records : [];
       setBonuses(prev => reset ? items : [...prev, ...items]);
       setBonusTotal(Number(res?.total ?? 0));
@@ -627,7 +621,7 @@ const WalletPage: React.FC = () => {
     if (!activeOrderId) { if (pollRef.current) clearInterval(pollRef.current); return; }
     pollRef.current = setInterval(async () => {
       try {
-        const res: any = await apiClient.get(`/api/payment/order/${activeOrderId}/status`);
+        const res: any = await payments.orderStatus(activeOrderId);
         if (activeBuyOrder) {
           // The poll carries `payTo` on both rails (payment.routes.js, the
           // status route), so a link that arrives after the order — nobody was
@@ -648,7 +642,7 @@ const WalletPage: React.FC = () => {
   }, [activeBuyOrder?.orderId, activeSellOrder?.orderId]);
 
   const cancelOrder = async (orderId: string) => {
-    try { await apiClient.post('/api/payment/order/cancel', { orderId }); loadOrders(); }
+    try { await payments.cancelOrder(orderId); loadOrders(); }
     catch (e: any) { alert(e?.message || 'Failed to cancel'); }
   };
 
@@ -668,7 +662,7 @@ const WalletPage: React.FC = () => {
   const retryOrder = async (orderId: string) => {
     setRetrying(orderId);
     try {
-      await apiClient.post(`/api/payment/order/${orderId}/retry`, {});
+      await payments.retryOrder(orderId);
       setRetriedAway(prev => [...prev, orderId]);
       await loadOrders();
       await loadMeta();
@@ -684,7 +678,7 @@ const WalletPage: React.FC = () => {
     if (!amt) { setBuyError('Choose how many tokens to buy'); return; }
     setBuyLoading(true); setBuyError('');
     try {
-      const res: any = await apiClient.post('/api/payment/deposit/create', { tokenAmount: amt });
+      const res: any = await payments.createBuy(amt);
       const order = res?.order;
       if (!order) throw new Error('No order returned');
       setActiveBuyOrder(order); setBuyStep('pay_now'); loadMeta();
@@ -698,7 +692,7 @@ const WalletPage: React.FC = () => {
     if (amt > balances.winningsBalance) { setSellError(`Insufficient winnings balance (${fmtT(balances.winningsBalance)} available)`); return; }
     setSellLoading(true); setSellError('');
     try {
-      const res: any = await apiClient.post('/api/payment/withdrawal/create', { tokenAmount: amt });
+      const res: any = await payments.createSell(amt);
       const order = res?.order;
       if (!order) throw new Error('No order returned');
       setActiveSellOrder({ ...order, userBankDetails: res.order.userBankDetails });

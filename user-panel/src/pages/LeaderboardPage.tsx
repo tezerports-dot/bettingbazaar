@@ -1,7 +1,7 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router';
-import { apiClient } from '../services/apiClient';
+import { platform } from '../services/api';
 
 type Period = 'daily'|'weekly'|'monthly'|'alltime';
 
@@ -30,17 +30,14 @@ export default function LeaderboardPage() {
   const [generated, setGenerated] = useState('');
 
   useEffect(() => {
-    // apiClient, not bare fetch: a relative '/api/...' resolves against the
-    // page origin, which inside the Android shell is https://localhost — the
-    // handset itself. It also skips origin failover and auth header injection.
-    // This page was never routed, so the bug never surfaced.
+    // Through the API layer, not bare fetch: a relative '/api/...' resolves
+    // against the page origin, which inside the Android shell is
+    // https://localhost — the handset itself. It would also skip origin
+    // failover and auth header injection.
     let cancelled = false;
     setLoading(true);
-    apiClient
-      .get<{ success?: boolean; entries?: LeaderboardEntry[]; generatedAt?: string }>(
-        `/api/leaderboard/${period}`,
-      )
-      .then((d) => {
+    platform.leaderboard(period)
+      .then((d: { success?: boolean; entries?: LeaderboardEntry[]; generatedAt?: string }) => {
         if (cancelled || !d?.success) return;
         setEntries(d.entries || []);
         setGenerated(d.generatedAt || '');

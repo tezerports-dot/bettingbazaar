@@ -11,6 +11,10 @@ It is deployment infrastructure, not application-domain code.
 - Routes only to explicitly owned backend services in the allow-list.
 - Sends PROXY protocol v2 headers so trusted downstream services can recover the
   true client IP/source port without relying on spoofable public headers.
+- Keeps an active origin and a `backup` standby per backend, in separate failure
+  domains, so one region failing shifts traffic behind the **same** public
+  domain. See `deploy/REGIONAL_FAILOVER_RUNBOOK.md` for the failover,
+  promotion-for-maintenance and rollback procedures.
 - Fails closed for malformed TLS or unmapped SNI.
 
 ## Operator TODO before production

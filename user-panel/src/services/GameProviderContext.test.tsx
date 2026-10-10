@@ -11,13 +11,19 @@
 import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
+// apiClient waits for a validated origin; here it is ready and fixed.
+vi.mock('./originFailover', async (orig) => ({
+  ...(await orig<typeof import('./originFailover')>()),
+  whenEndpointReady: async () => '', currentOrigin: () => '', failoverAvailable: () => false,
+}));
+
 import { GameProviderProvider, useGameProviders } from './GameProviderContext';
 
 const provider = (key: string, gameCount: number) =>
   ({ key, name: key, enabled: true, description: '', logoUrl: '', gameCount });
 
 const answer = (providers: object) => {
-  vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ success: true, providers }) })));
+  vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ success: true, providers }) })));
 };
 
 const Probe = () => {

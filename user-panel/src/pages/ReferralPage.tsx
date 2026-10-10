@@ -26,7 +26,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import ScreenShell, { card } from '../redesign/Screen';
 import BonusPlayPrompt from '../redesign/BonusPlayPrompt';
-import { apiClient } from '../services/apiClient';
+import { player } from '../services/api';
 import { getBackend } from '../services/backend.service';
 
 interface LevelTotals {
@@ -69,7 +69,7 @@ const ReferralPage: React.FC = () => {
 
   const load = useCallback(async () => {
     try {
-      const res: any = await apiClient.get('/api/user/referrals');
+      const res: any = await player.referrals();
       if (res?.success) setData(res as Summary);
       else setError(res?.message || 'Could not load your referral report.');
     } catch (e: any) {

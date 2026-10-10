@@ -28,8 +28,7 @@
  * announcement simply stops arriving and nothing here has to track time.
  */
 import React, { useCallback, useEffect, useState } from 'react';
-import { apiUrl } from '../services/apiUrl';
-import { secureFetch } from '../services/secureTransport';
+import { platform } from '../services/api';
 
 interface Announcement {
   announcementId: string;
@@ -61,9 +60,7 @@ const AnnouncementBanner: React.FC = () => {
 
   const load = useCallback(async () => {
     try {
-      const res = await secureFetch(apiUrl('/api/announcements'));
-      if (!res.ok) return;
-      const data = await res.json();
+      const data: any = await platform.announcements();
       if (Array.isArray(data?.announcements)) setLive(data.announcements);
     } catch { /* an announcement failing to load must never break the page */ }
   }, []);

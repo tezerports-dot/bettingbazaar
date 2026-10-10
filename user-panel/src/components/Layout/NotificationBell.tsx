@@ -18,8 +18,7 @@
  * render a number is the kind of read that looks free until there are players.
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { apiUrl } from '../../services/apiUrl';
-import { secureFetch } from '../../services/secureTransport';
+import { notifications } from '../../services/api';
 
 interface Note {
   id: number;
@@ -31,11 +30,6 @@ interface Note {
 }
 
 const POLL_MS = 60_000;
-
-const authHeaders = () => {
-  const token = localStorage.getItem('auth_token') || '';
-  return { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
-};
 
 /** ERROR reads as bad news; a blocked account should not look like an INFO notice. */
 const toneOf = (type: string) =>
@@ -63,8 +57,7 @@ export const NotificationBell: React.FC<{ isAuthenticated: boolean }> = ({ isAut
   const loadCount = useCallback(async () => {
     if (!isAuthenticated) { setUnread(0); return; }
     try {
-      const r = await secureFetch(apiUrl('/api/user/notifications/unread-count'), { headers: authHeaders() });
-      const d = await r.json();
+      const d = await notifications.unreadCount();
       // A failed poll leaves the last known count alone rather than showing
       // zero — "nothing for you" is a claim, and a network blip is not evidence
       // for it.
@@ -82,8 +75,7 @@ export const NotificationBell: React.FC<{ isAuthenticated: boolean }> = ({ isAut
   const openPanel = async () => {
     setOpen(true); setLoading(true); setError('');
     try {
-      const r = await secureFetch(apiUrl('/api/user/notifications'), { headers: authHeaders() });
-      const d = await r.json();
+      const d = await notifications.list();
       if (!d?.success) throw new Error(d?.message || 'Could not load notifications');
       setNotes(d.notifications || []);
       setUnread(Number(d.unreadCount) || 0);
@@ -104,10 +96,7 @@ export const NotificationBell: React.FC<{ isAuthenticated: boolean }> = ({ isAut
     setNotes((prev) => prev.map((n) => ({ ...n, isRead: true })));
     setUnread(0);
     try {
-      const r = await secureFetch(apiUrl('/api/user/notifications/read'), {
-        method: 'POST', headers: authHeaders(), body: JSON.stringify({}),
-      });
-      const d = await r.json();
+      const d = await notifications.markAllRead();
       if (!d?.success) throw new Error(d?.message || 'Could not mark read');
     } catch (e: any) {
       // Put it back. A badge that clears on a failed write tells the player

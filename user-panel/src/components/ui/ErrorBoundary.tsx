@@ -1,8 +1,7 @@
 // GOVERNANCE: Read CLAUDE.md before editing this file. (See sec.0 for the mandatory pre-edit checklist.)
 import React, { Component, ErrorInfo, ReactNode } from 'react';
 import { logger } from '../../services/logging.service';
-import { apiUrl } from '../../services/apiUrl';
-import { secureFetch } from '../../services/secureTransport';
+import { platform } from '../../services/api';
 
 interface Props {
   children?: ReactNode;
@@ -27,20 +26,14 @@ const storeCrashReport = (
   componentStack?: string,
   panel: 'user' | 'merchant' | 'unknown' = 'unknown',
 ): void => {
-  // The adopted, validated origin ('' = same origin) — never a raw build value.
-  secureFetch(apiUrl('/api/internal/error-report'), {
-    method:  'POST',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'include',
-    body:    JSON.stringify({
-      message:   error.message,
-      stack:     error.stack,
-      component: componentStack,
-      ts:        new Date().toISOString(),
-      url:       window.location.href,
-      panel,
-    }),
-  }).catch(() => {});
+  platform.reportCrash({
+    message:   error.message,
+    stack:     error.stack,
+    component: componentStack,
+    ts:        new Date().toISOString(),
+    url:       window.location.href,
+    panel,
+  });
 };
 
 const checkIsAdmin = (): boolean => {

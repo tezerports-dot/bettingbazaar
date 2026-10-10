@@ -10,7 +10,7 @@
  * deposit switches to VIP on the server, so the panel only re-reads.
  */
 import React, { useCallback, useEffect, useState } from 'react';
-import apiClient from '../services/apiClient';
+import { player } from '../services/api';
 import type { PlayProfile } from '../types';
 
 export type { PlayProfile };
@@ -38,7 +38,7 @@ export function usePlayProfile(isAuthenticated: boolean, key: string) {
   const load = useCallback(async () => {
     if (!isAuthenticated) { setGeneral(null); return; }
     try {
-      const res: any = await apiClient.get('/api/user/general');
+      const res: any = await player.generalSummary();
       if (res?.success) setGeneral(res as GeneralSummary);
     } catch { /* the header keeps the last answer; the wallet pill still works */ }
   }, [isAuthenticated]);
@@ -54,7 +54,7 @@ export function usePlayProfile(isAuthenticated: boolean, key: string) {
   const choose = useCallback(async (profile: PlayProfile): Promise<boolean> => {
     setError('');
     try {
-      const res: any = await apiClient.put('/api/user/play-profile', { profile });
+      const res: any = await player.setPlayProfile(profile);
       if (!res?.success) throw new Error(res?.message || 'Could not switch profile');
       await load();
       window.dispatchEvent(new Event(PROFILE_CHANGED_EVENT));

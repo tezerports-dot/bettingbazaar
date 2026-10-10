@@ -10,8 +10,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { useGameProviders } from '../services/GameProviderContext';
 import ScreenShell, { card } from '../redesign/Screen';
-import { apiUrl } from '../services/apiUrl';
-import { secureFetch } from '../services/secureTransport';
+import { games as gamesApi } from '../services/api';
 
 interface RegistryGame {
   slug: string; name: string; providerKey: string; categorySlug: string;
@@ -35,7 +34,7 @@ const CrashPage: React.FC = () => {
   useEffect(() => { if (!anyCrash) navigate('/', { replace: true }); }, [anyCrash, navigate]);
   useEffect(() => {
     (async () => {
-      try { const d = await secureFetch(apiUrl('/api/game/games?category=crash')).then(r => r.json()); if (d.success) setGames(d.games || []); }
+      try { const d = await gamesApi.catalogue('crash'); if (d.success) setGames(d.games || []); }
       catch (e) { console.warn('[CrashPage] catalogue fetch failed:', e instanceof Error ? e.message : e); }
     })();
   }, []);
@@ -49,12 +48,10 @@ const CrashPage: React.FC = () => {
     if (game.status === 'MAINTENANCE') { alert(`${game.name} is under maintenance`); return; }
     setLaunching(game.slug);
     try {
-      const token = localStorage.getItem('auth_token') || '';
-      const r = await secureFetch(apiUrl('/api/game/launch'), { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ providerKey: game.providerKey, gameId: game.externalGameId, gameName: game.name }) });
-      const d = await r.json();
+      const d = await gamesApi.launch({ providerKey: game.providerKey, gameId: game.externalGameId, gameName: game.name });
       if (d.success && d.launchUrl) { setGameUrl(d.launchUrl); setGameName(game.name); }
       else alert(d.message || 'Could not launch');
-    } catch { alert('Launch failed'); } finally { setLaunching(null); }
+    } catch (e: any) { alert(e?.message || 'Launch failed'); } finally { setLaunching(null); }
   }, []);
 
   if (gameUrl) return (

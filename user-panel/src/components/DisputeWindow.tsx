@@ -17,7 +17,7 @@
  *                         once in the app shell, fed by the `order_update` push
  */
 import React, { useEffect, useState } from 'react';
-import apiClient from '../services/apiClient';
+import { payments } from '../services/api';
 
 export interface DisputeWindowOrder {
   orderId: string;
@@ -83,7 +83,7 @@ export function DisputeWindowPanel({ order, onDisputed }: { order: DisputeWindow
     if (reason.trim().length < 5) { setError('Say briefly what happened, so staff can check it.'); return; }
     setBusy(true); setError('');
     try {
-      await apiClient.post(`/api/payment/order/${order.orderId}/dispute`, { reason: reason.trim() });
+      await payments.raiseDispute(order.orderId, reason.trim());
       setDone(true);
       onDisputed?.();
     } catch (err: any) {
