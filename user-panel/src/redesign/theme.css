@@ -115,7 +115,6 @@
 @keyframes bb-shimmer { 0% { transform: translateX(-160%) skewX(-14deg); } 60%, 100% { transform: translateX(220%) skewX(-14deg); } }
 @keyframes bb-spin { to { transform: rotate(360deg); } }
 @keyframes bb-skel { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
-@keyframes bb-livedot { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .35; transform: scale(.7); } }
 @keyframes bb-pulse {
   0%, 100% { box-shadow: 0 0 0 1px var(--gold), 0 0 26px -4px var(--glow); }
   50% { box-shadow: 0 0 0 2px var(--gold), 0 0 46px 2px var(--glow); }
@@ -138,12 +137,38 @@
   animation: bb-shimmer 2.4s ease-in-out infinite;
 }
 .bb-skel { animation: bb-skel 1.4s ease-in-out infinite; }
-.bb-livedot { animation: bb-livedot 1.2s ease-in-out infinite; }
 .bb-spin { animation: bb-spin 1s linear infinite; }
 .bb-pulse { animation: bb-pulse 1.5s ease-in-out infinite; }
 .bb-rise { animation: bb-rise .34s ease both; }
 .bb-chipfloat { animation: bb-chipfloat 2.6s ease-in-out infinite; }
 .bb-chipshine { animation: bb-chipshine 3.4s ease-in-out infinite; }
+
+/* Game tabs under the header (owner, 2026-10-10): flat, part of the bar; each
+   name glows green, the open one shines brighter in the text colour with a
+   sparkle and a glowing underline. */
+.bb-gametab {
+  flex: none; position: relative; display: flex; align-items: center; gap: 7px;
+  height: 42px; padding: 0 12px; border: none; background: none; cursor: pointer;
+  white-space: nowrap; scroll-snap-align: start;
+}
+.bb-gametab__name {
+  font-weight: 700; font-size: 13px; letter-spacing: .04em; color: var(--green);
+  text-shadow: 0 0 8px color-mix(in srgb, var(--green) 55%, transparent);
+  transition: color .2s, text-shadow .2s;
+}
+.bb-gametab--on .bb-gametab__name {
+  color: var(--text);
+  text-shadow: 0 0 6px color-mix(in srgb, var(--text) 85%, transparent), 0 0 16px color-mix(in srgb, var(--text) 55%, transparent);
+}
+.bb-gametab--on::after {
+  content: ''; position: absolute; left: 10px; right: 10px; bottom: 0; height: 2px; border-radius: 2px;
+  background: var(--text); box-shadow: 0 0 10px var(--text);
+}
+.bb-gametab__spark {
+  position: absolute; top: 5px; right: 2px; font-size: 9px; color: var(--text);
+  text-shadow: 0 0 6px var(--text); animation: bb-sparkle 1.6s ease-in-out infinite;
+}
+@keyframes bb-sparkle { 0%, 100% { opacity: .2; transform: scale(.6) rotate(0deg); } 50% { opacity: 1; transform: scale(1.15) rotate(45deg); } }
 
 /* ── VS strip (redesign/VsStrip.tsx) ───────────────────────────────────────────
    A bevelled bar: red from the left, blue from the right, a glowing strike
@@ -224,7 +249,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .bb-shimmer::after, .bb-skel, .bb-livedot, .bb-spin, .bb-pulse, .bb-rise, .bb-chipfloat, .bb-chipshine,
+  .bb-shimmer::after, .bb-skel, .bb-spin, .bb-gametab__spark, .bb-pulse, .bb-rise, .bb-chipfloat, .bb-chipshine,
   .bb-vs__blind, .bb-vs__blindtext, .bb-vs__core, .bb-vs__burst {
     animation: none !important;
   }

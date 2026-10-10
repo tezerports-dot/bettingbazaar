@@ -304,7 +304,8 @@ export const SYSTEM_CONFIG_SPEC = group({
   // their own bonus turnover, the published promo cards). Served to every
   // client in `systemConfigPayload` as `boardExtras`.
   boardExtras: group({
-    // The LIVE pill and the "Closing 0:09" chip on the board timer.
+    // The timer turning amber then red, and the "Closing 0:09" chip on the
+    // betting cards (no LIVE pill: owner, 2026-10-10).
     urgencyChips:        b(true),
     // Seconds before bets close that the timer turns red and the chip shows.
     // The timer is amber for twice this long first. 0 = no closing chip.
@@ -315,7 +316,8 @@ export const SYSTEM_CONFIG_SPEC = group({
     // The General wallet's unlock progress as a bar.
     bonusProgress:       b(true),
     // The published HOME promo cards (Admin › Page Slides): the board's side
-    // columns on a laptop, below the game on a phone or tablet.
+    // columns on a laptop, a one-card-wide 3:1 banner carousel under the
+    // header on a phone or tablet.
     promoCards:          b(true),
   }),
 

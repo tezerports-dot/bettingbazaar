@@ -32,13 +32,13 @@ const DEFAULTS: BoardExtras = {
 };
 
 const SWITCHES: { key: Exclude<keyof BoardExtras, 'closingWarnSeconds'>; label: string; where: string; what: string }[] = [
-  { key: 'urgencyChips', label: 'Live and closing chips', where: 'Board timer',
-    what: 'A LIVE pill while bets are open, the timer turning amber then red, and a "Closing 0:09" chip in the last seconds.' },
+  { key: 'urgencyChips', label: 'Closing warning', where: 'Board timer and betting cards',
+    what: 'The timer turning amber then red, and a "Closing 0:09" chip on the betting cards in the last seconds.' },
   { key: 'resultCelebration', label: 'Result celebration', where: 'Board, on the result',
     what: 'The winning side in large type and, for a player who won, their own payout counting up.' },
   { key: 'bonusProgress', label: 'Bonus unlock bar', where: 'Wallet › General wallet',
     what: "How much of the referral bonus's play requirement is done, as a bar." },
-  { key: 'promoCards', label: 'Promo cards', where: "Board side columns (laptop); below the game (phone, tablet)",
+  { key: 'promoCards', label: 'Promo cards', where: 'Board side columns (laptop); a swipeable banner under the header (phone, tablet)',
     what: 'The cards published under Content › Page Slides › Home promo cards, each opening its own link. Off, or with none published, the side columns show the built-in artwork instead.' },
 ];
 

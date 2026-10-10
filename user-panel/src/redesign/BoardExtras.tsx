@@ -4,7 +4,7 @@
  * in Admin › Player Screen (`SystemConfig.boardExtras`, served in
  * `system_config`):
  *
- *   • `UrgencyChips`      — LIVE pill, timer tone, "Closing 0:09" chip
+ *   • `ClosingChip`       — timer tone, "Closing 0:09" chip on the cards
  *   • `ResultCelebration` — the winning side large, and this player's own
  *                            payout counting up (from their `payout_success`)
  *   • `useHomeCards`      — the published HOME cards (Admin › Page Slides),
@@ -39,20 +39,16 @@ export const TONE_COLOR: Record<TimerTone, string> = { calm: 'var(--text)', ambe
 
 const mmss = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 
-/** The LIVE pill while bets are open, and the closing chip inside the warning. */
-export const UrgencyChips: React.FC<{ open: boolean; secondsToClose: number; warnSeconds: number }> = ({ open, secondsToClose, warnSeconds }) => {
-  if (!open) return null;
-  const closing = warnSeconds > 0 && secondsToClose <= warnSeconds;
+/**
+ * The closing chip, only inside the warning. It sits ON the betting cards, not
+ * in the timer row: the LIVE pill that used to stand there made the board
+ * switch wrap onto two lines (owner, 2026-10-10: "we dont need that").
+ */
+export const ClosingChip: React.FC<{ open: boolean; secondsToClose: number; warnSeconds: number }> = ({ open, secondsToClose, warnSeconds }) => {
+  if (!open || warnSeconds <= 0 || secondsToClose > warnSeconds) return null;
   return (
-    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '2px 8px', borderRadius: 999, background: 'var(--red)', color: '#fff', fontSize: 9, fontWeight: 900, letterSpacing: '.12em' }}>
-        <span className="bb-livedot" aria-hidden="true" style={{ width: 6, height: 6, borderRadius: '50%', background: '#fff' }} />LIVE
-      </span>
-      {closing && (
-        <span role="status" style={{ padding: '2px 8px', borderRadius: 999, background: 'color-mix(in srgb,var(--gold) 22%,transparent)', border: '1px solid var(--gold)', color: 'var(--gold-ink)', fontSize: 9, fontWeight: 900, letterSpacing: '.06em', fontVariantNumeric: 'tabular-nums' }}>
-          Closing {mmss(Math.max(0, secondsToClose))}
-        </span>
-      )}
+    <span role="status" style={{ padding: '3px 10px', borderRadius: 999, background: 'color-mix(in srgb,var(--bg) 70%,transparent)', border: '1px solid var(--red)', color: 'var(--red)', fontSize: 10, fontWeight: 900, letterSpacing: '.06em', fontVariantNumeric: 'tabular-nums', backdropFilter: 'blur(4px)' }}>
+      Closing {mmss(Math.max(0, secondsToClose))}
     </span>
   );
 };
@@ -152,10 +148,9 @@ export function useHomeCards(enabled: boolean): HomeCard[] {
 
 /**
  * Phone and tablet: the cards as a carousel right under the header (owner,
- * 2026-10-10: "dont crop the promo size", "slides through those left right
- * easily"). Each card is shown whole at its own proportions, one per view
- * with the next peeking in, snapping as it is swiped; the dots say where you
- * are and take you to a card.
+ * 2026-10-10). One card fills the width, short (`PROMO_BANNER_RATIO`) and
+ * uncropped; the next one is seen only by swiping ("for next promo to see
+ * they need to slide"). The dots sit on the card and take you to one.
  */
 export const PromoCarousel: React.FC<{ cards: HomeCard[] }> = ({ cards }) => {
   const track = useRef<HTMLDivElement | null>(null);
@@ -163,36 +158,34 @@ export const PromoCarousel: React.FC<{ cards: HomeCard[] }> = ({ cards }) => {
   if (cards.length === 0) return null;
   const onScroll = () => {
     const el = track.current;
-    if (!el || !el.firstElementChild) return;
-    const w = (el.firstElementChild as HTMLElement).offsetWidth + 10;
-    setAt(Math.max(0, Math.min(cards.length - 1, Math.round(el.scrollLeft / w))));
+    if (!el || !el.clientWidth) return;
+    setAt(Math.max(0, Math.min(cards.length - 1, Math.round(el.scrollLeft / el.clientWidth))));
   };
   const goTo = (i: number) => {
     const el = track.current;
-    const card = el?.children[i] as HTMLElement | undefined;
-    if (el && card) el.scrollTo({ left: card.offsetLeft - el.offsetLeft - 14, behavior: 'smooth' });
+    if (el) el.scrollTo({ left: i * el.clientWidth, behavior: 'smooth' });
   };
-  const one = cards.length === 1;
   return (
-    <section aria-label="Promotions" style={{ flex: 'none', padding: '10px 0 4px' }}>
-      <div ref={track} onScroll={onScroll} className="bb-noscroll" style={{
-        display: 'flex', gap: 10, overflowX: 'auto', padding: '0 14px', alignItems: 'flex-start',
-        scrollSnapType: 'x mandatory', scrollPaddingInline: 14, overscrollBehaviorX: 'contain', WebkitOverflowScrolling: 'touch',
-      }}>
-        {cards.map((c, i) => (
-          <div key={c.promoId ?? c.id ?? i} style={{ flex: `0 0 ${one ? '100%' : '88%'}`, maxWidth: 560, scrollSnapAlign: 'start' }}>
-            <PromoCard card={c} whole />
-          </div>
-        ))}
-      </div>
-      {!one && (
-        <div style={{ display: 'flex', justifyContent: 'center', gap: 6, marginTop: 8 }}>
+    <section aria-label="Promotions" style={{ flex: 'none', padding: '8px 12px 2px' }}>
+      <div style={{ position: 'relative', borderRadius: 14, overflow: 'hidden', border: '1px solid var(--line)' }}>
+        <div ref={track} onScroll={onScroll} className="bb-noscroll" style={{
+          display: 'flex', overflowX: 'auto', scrollSnapType: 'x mandatory', overscrollBehaviorX: 'contain', WebkitOverflowScrolling: 'touch',
+        }}>
           {cards.map((c, i) => (
-            <button key={c.promoId ?? c.id ?? i} type="button" onClick={() => goTo(i)} aria-label={`Promotion ${i + 1} of ${cards.length}`} aria-current={i === at ? 'true' : undefined}
-              style={{ width: i === at ? 18 : 6, height: 6, padding: 0, border: 'none', borderRadius: 999, cursor: 'pointer', background: i === at ? 'var(--gold)' : 'var(--line2)', transition: 'width .2s' }} />
+            <div key={c.promoId ?? c.id ?? i} style={{ flex: '0 0 100%', scrollSnapAlign: 'start', scrollSnapStop: 'always' }}>
+              <PromoCard card={c} banner />
+            </div>
           ))}
         </div>
-      )}
+        {cards.length > 1 && (
+          <div style={{ position: 'absolute', left: 0, right: 0, bottom: 6, display: 'flex', justifyContent: 'center', gap: 5, pointerEvents: 'none' }}>
+            {cards.map((c, i) => (
+              <button key={c.promoId ?? c.id ?? i} type="button" onClick={() => goTo(i)} aria-label={`Promotion ${i + 1} of ${cards.length}`} aria-current={i === at ? 'true' : undefined}
+                style={{ pointerEvents: 'auto', width: i === at ? 16 : 6, height: 6, padding: 0, border: 'none', borderRadius: 999, cursor: 'pointer', background: i === at ? 'var(--gold)' : 'rgba(255,255,255,.55)', boxShadow: '0 0 4px rgba(0,0,0,.6)', transition: 'width .2s' }} />
+            ))}
+          </div>
+        )}
+      </div>
     </section>
   );
 };

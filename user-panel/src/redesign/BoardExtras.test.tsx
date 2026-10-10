@@ -6,7 +6,7 @@
 import React from 'react';
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, act } from '@testing-library/react';
-import { LATE_PAYOUT_MS, PromoCarousel, ResultCelebration, UnlockBar, UrgencyChips, timerTone, unlockProgress } from './BoardExtras';
+import { LATE_PAYOUT_MS, PromoCarousel, ResultCelebration, UnlockBar, ClosingChip, timerTone, unlockProgress } from './BoardExtras';
 import { MY_PAYOUT_EVENT } from '../services/GameContext';
 
 describe('timerTone', () => {
@@ -22,16 +22,18 @@ describe('timerTone', () => {
   });
 });
 
-describe('UrgencyChips', () => {
-  it('shows LIVE while open and the closing chip only inside the warning', () => {
-    const { rerender } = render(<UrgencyChips open secondsToClose={30} warnSeconds={10} />);
-    expect(screen.getByText('LIVE')).toBeInTheDocument();
-    expect(screen.queryByText(/Closing/)).toBeNull();
-    rerender(<UrgencyChips open secondsToClose={9} warnSeconds={10} />);
+describe('ClosingChip', () => {
+  it('shows only inside the warning, and no LIVE pill at all', () => {
+    const { rerender, container } = render(<ClosingChip open secondsToClose={30} warnSeconds={10} />);
+    expect(container).toBeEmptyDOMElement();
+    expect(screen.queryByText('LIVE')).toBeNull();
+    rerender(<ClosingChip open secondsToClose={9} warnSeconds={10} />);
     expect(screen.getByRole('status')).toHaveTextContent('Closing 0:09');
   });
-  it('shows nothing once bets are closed', () => {
-    const { container } = render(<UrgencyChips open={false} secondsToClose={0} warnSeconds={10} />);
+  it('shows nothing once bets are closed, or with the warning at 0', () => {
+    const { container, rerender } = render(<ClosingChip open={false} secondsToClose={0} warnSeconds={10} />);
+    expect(container).toBeEmptyDOMElement();
+    rerender(<ClosingChip open secondsToClose={0} warnSeconds={0} />);
     expect(container).toBeEmptyDOMElement();
   });
 });
@@ -101,12 +103,12 @@ describe('PromoCarousel (phone, under the header)', () => {
     { promoId: 'a', title: 'Refer & Earn', fileUrl: 'https://cdn.example/a.png', linkUrl: '/referrals' },
     { promoId: 'b', title: 'Channel', fileUrl: 'https://cdn.example/b.png', linkUrl: 'https://t.me/x' },
   ];
-  it('shows every card whole, never cropped, each opening its own link', () => {
-    render(<PromoCarousel cards={cards} />);
-    for (const img of screen.getAllByRole('img')) {
-      expect(img.style.objectFit).toBe('');
-      expect(img.style.height).toBe('auto');
-    }
+  it('shows one short card across the width, each image whole, each opening its own link', () => {
+    const { container } = render(<PromoCarousel cards={cards} />);
+    const slides = container.querySelectorAll<HTMLElement>('[style*="scroll-snap-align"]');
+    expect(slides).toHaveLength(2);
+    for (const sl of slides) expect(sl.style.flex).toBe('0 0 100%');
+    for (const img of screen.getAllByRole('img')) expect(img.style.objectFit).toBe('contain');
     expect(screen.getByRole('link', { name: 'Refer & Earn' })).toHaveAttribute('href', '#/referrals');
     expect(screen.getByRole('link', { name: 'Channel' })).toHaveAttribute('target', '_blank');
   });

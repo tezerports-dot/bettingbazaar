@@ -5,8 +5,8 @@
  * Admin page to manage full-screen image slides for:
  *   - TRICKS_PAGE  → user Promo / Tips & Tricks page
  *   - RULES_PAGE   → user Rules / How to Play page
- *   - HOME         → promo cards in the board's side columns (laptop) and below
- *                    the game (phone, tablet) (owner, 2026-10-10; shown while
+ *   - HOME         → promo cards in the board's side columns (laptop) and a
+ *                    banner under the header (phone, tablet) (owner, 2026-10-10; shown while
  *                    Admin › Player Screen's "Promo cards" is on). The title is
  *                    the card's label; `linkUrl` is where a tap goes.
  *
@@ -386,7 +386,8 @@ export const ContentSlideManager: React.FC = () => {
                 />
                 <p className="text-xs text-gray-500 mt-1">
                   A page of the app (/referrals, /wallet, /promo) or a full https:// link, which opens in a new tab.
-                  Empty = the card is not clickable. The card shows in the board's side columns on laptops and below the game on phones.
+                  Empty = the card is not clickable. The card shows in the board's side columns on laptops and as a banner under the header on
+                  phones. The phone banner is 3:1: an image 1200 × 400 fills it exactly; any other shape is shown whole, never cropped.
                 </p>
               </div>
             )}

@@ -374,13 +374,15 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
               the board's side columns instead. */}
           {onBoard && !desktop && <PromoCarousel cards={homeCards} />}
           {/*
-            The games, as slim buttons that slide sideways (owner, 2026-10-10:
-            "like stake does with casino, sports"), so the board keeps its
-            room. One per category that has somewhere to go.
+            The games, as flat tabs that slide sideways and belong to the bar
+            above them (owner, 2026-10-10: "like stake does with casino,
+            sports", "not this round type button"). Each name glows green; the
+            one you are on shines brighter white, with a sparkle. One per
+            category that has somewhere to go.
           */}
-          <nav aria-label="Games" className="bb-noscroll" style={{
-            flex: 'none', display: 'flex', gap: 8, padding: '8px 14px', overflowX: 'auto',
-            borderBottom: '1px solid var(--line)', scrollSnapType: 'x proximity',
+          <nav aria-label="Games" className="bb-noscroll bb-gametabs" style={{
+            flex: 'none', display: 'flex', gap: 2, padding: '0 8px', overflowX: 'auto',
+            borderBottom: '1px solid var(--line)', background: 'var(--bg)', scrollSnapType: 'x proximity',
           }}>
             {liveCategories.map(cat => {
               const active = isActive(cat.path);
@@ -390,14 +392,10 @@ const RedesignShell: React.FC<React.PropsWithChildren> = ({ children }) => {
                   // because these navigate — they are not a toggle.
                   aria-current={active ? 'page' : undefined}
                   title={cat.sub}
-                  style={{
-                  flex: 'none', height: 36, borderRadius: 999, padding: '0 14px 0 10px', display: 'flex',
-                  alignItems: 'center', gap: 7, cursor: 'pointer', scrollSnapAlign: 'start', whiteSpace: 'nowrap',
-                  background: active ? `color-mix(in srgb, ${cat.accent} 16%, var(--surface))` : 'var(--surface)',
-                  border: `1.5px solid ${active ? cat.accent : 'var(--line)'}`,
-                }}>
-                  <span aria-hidden="true" style={{ fontSize: 16, lineHeight: 1 }}>{cat.icon}</span>
-                  <span className="font-grotesk" style={{ fontWeight: 700, fontSize: 12, letterSpacing: '.03em', color: active ? cat.accent : 'var(--text)' }}>{cat.title}</span>
+                  className={`bb-gametab${active ? ' bb-gametab--on' : ''}`}>
+                  <span aria-hidden="true" style={{ fontSize: 15, lineHeight: 1 }}>{cat.icon}</span>
+                  <span className="font-grotesk bb-gametab__name">{cat.title}</span>
+                  {active && <span aria-hidden="true" className="bb-gametab__spark">✦</span>}
                 </button>
               );
             })}

@@ -33,15 +33,29 @@ export function cardHref(linkUrl?: string | null): { href: string; external: boo
   return null;
 }
 
-/** `whole`: the image at its own proportions, never cropped (the phone carousel). */
-export const PromoCard: React.FC<{ card: HomeCard; whole?: boolean }> = ({ card, whole }) => {
+/**
+ * The phone banner's shape, width to height (owner, 2026-10-10: "less height
+ * for mobile", one card filling the width). An image of another shape is shown
+ * whole inside it over a blurred copy of itself, so nothing is cropped and the
+ * card is never left with bars; a 3:1 image (1200 × 400) fills it exactly.
+ */
+export const PROMO_BANNER_RATIO = 3;
+/** A tablet's wider banner stays this short; the image is still shown whole. */
+export const PROMO_BANNER_MAX_H = 170;
+
+/** `banner`: the phone carousel's short, uncropped card. */
+export const PromoCard: React.FC<{ card: HomeCard; banner?: boolean }> = ({ card, banner }) => {
   const link = cardHref(card.linkUrl);
   const label = card.title || 'Promotion';
-  const body = (
+  const src = getAssetUrl(card.fileUrl || '');
+  const body = banner ? (
+    <span style={{ position: 'relative', display: 'block', width: '100%', aspectRatio: `${PROMO_BANNER_RATIO} / 1`, maxHeight: PROMO_BANNER_MAX_H, overflow: 'hidden' }}>
+      <img src={src} alt="" aria-hidden="true" style={{ position: 'absolute', inset: '-10%', width: '120%', height: '120%', objectFit: 'cover', filter: 'blur(18px) brightness(.7)' }} />
+      <img src={src} alt={label} loading="lazy" style={{ position: 'relative', display: 'block', width: '100%', height: '100%', objectFit: 'contain' }} />
+    </span>
+  ) : (
     <>
-      <img src={getAssetUrl(card.fileUrl || '')} alt={label} loading="lazy" style={whole
-        ? { display: 'block', width: '100%', height: 'auto' }
-        : { display: 'block', width: '100%', aspectRatio: '16 / 9', objectFit: 'cover' }} />
+      <img src={src} alt={label} loading="lazy" style={{ display: 'block', width: '100%', aspectRatio: '16 / 9', objectFit: 'cover' }} />
       <span style={{ position: 'absolute', top: 8, left: 8, padding: '2px 8px', borderRadius: 999, background: 'rgba(0,0,0,.6)', color: '#fff', fontSize: 9, fontWeight: 800, letterSpacing: '.12em', textTransform: 'uppercase' }}>{label}</span>
     </>
   );
